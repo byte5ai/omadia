@@ -1216,20 +1216,31 @@ verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
 |---|---|
 | `GET  /` | Erkannte CLIs (installiert / angemeldet), `?refresh=1` bustet den Cache |
 | `POST /:id/login/start` | Spawnt `claude auth login --claudeai`; Antwort `{ sessionId, verificationUrl, codeEntry, status }` |
-| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|invalid\|expired\|error, account?, error? }` |
-| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin (nur ältere CLIs) |
+| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|error, account?, error? }` — `invalid` ist seit #1084 nur noch das Ergebnis eines `login/code`-Versuchs, kein Session-Status |
+| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin — wann immer die CLI auf einen Code wartet, auch als Fallback aus dem Polling-Modus; ist die Session schon `authorized`/`error` (Callback fertig, Prozess gescheitert), meldet es genau das statt „läuft nicht mehr" |
 | `POST /:id/login/cancel` | Verwirft die aktive Login-Session |
 | `POST /:id/logout` | `claude auth logout` + Cache-Bust |
 
-**Zwei CLI-Generationen, ein Flow.** Ältere CLIs (≤ 2.1.187) warten an
-`Paste code here >`; die UI zeigt das Code-Feld. Neuere (≥ 2.1.246) schließen
-den Login per localhost-Callback ab und beenden sich mit Exit 0, ohne Code.
-`startCliLogin` klassifiziert die Startausgabe (`Waiting for browser
-authorization…` / `If the browser didn't open, visit:` vs. `Paste code here`)
-und liefert `codeEntry`; die 2.1.259-Bundle druckt beides, dann gilt Callback
-mit optionalem Code (`codeEntry: false`). Der Exit-Handler liest den Exit-Code:
-0 → Detection bestätigt → `authorized`; ≠ 0 → `error` mit Output-Tail. Die UI
-pollt `login/status` in beiden Fällen.
+**Zwei CLI-Generationen, ein Flow (#1084).** Die im Image gebündelte CLI
+(2.1.187) druckt `Opening browser to sign in…` und `If the browser didn't open,
+visit: …` (URL mit `code=true` und platform.claude.com-Callback) und wartet dann
+ausschließlich an `Paste code here if prompted >` auf stdin. Neuere CLIs
+(≥ 2.1.246) können den Login per localhost-Callback abschließen und sich mit
+Exit 0 beenden, drucken denselben Paste-Prompt aber als Fallback mit. Die
+Browser-Zeilen kommen also in beiden Generationen vor und tragen kein Signal:
+**der Paste-Prompt entscheidet allein.** `startCliLogin` wartet bis zu
+`CODE_PROMPT_PROBE_MS` auf den Prompt (bricht nicht bei der ersten
+Browser-Zeile ab, der Prompt kann in einem späteren stdout-Chunk kommen) und
+liefert `codeEntry = true`, sobald er da ist — auch für 2.1.259. Nur ohne Prompt
+kommt `codeEntry: false`; dann zeigt die UI den Polling-Modus, **immer mit einem
+sichtbaren Fallback-Code-Feld**. Die UI pollt `login/status` in beiden Modi, ein
+per Callback abgeschlossener Login löst also auch im Code-Modus auf. Endet der
+Poll terminal (Timeout, `idle`, `expired`, `error`), zeigt die UI „Erneut
+versuchen" statt eines toten Code-Felds. Ein falscher Code liefert dem Aufrufer
+`invalid`, lässt die Session aber `pending` — sonst verweigert
+`markAuthorized` den korrekten zweiten Versuch und der Post-Login-Hook feuert
+nie. Der Exit-Handler liest den Exit-Code: 0 → Detection bestätigt →
+`authorized`; ≠ 0 → `error` mit Output-Tail.
 
 **Post-Login-Hook (OM-79).** `cliAuthService.setCliLoginAuthorizedHook(fn)`
 feuert genau einmal pro Session auf dem Übergang pending → authorized
