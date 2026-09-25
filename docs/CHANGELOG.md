@@ -51,7 +51,11 @@ so an operator on a fresh install saw an empty page and read it as broken
 receipts.
 
 The subtitle (en/de) now states the real rule, and the empty state explains
-that turns in which the shield had nothing to do write no receipt. The README
+that turns in which the shield had nothing to do write no receipt. The
+subtitle and `docs/ai-act-transparency.md` also name the runtime that never
+writes one: agents on the Claude subscription CLI run without the privacy
+shield (`CliChatAgent` installs no privacy handle), so an empty page there is
+not "nothing to protect". The README
 feature row separates the per-run trace from privacy receipts. The same false
 claim was corrected in `docs/ai-act-transparency.md`, the handoff doc,
 `middleware/.env.example`, the `turnReceiptStore` doc comment and the

@@ -9,11 +9,17 @@ import { describe, expect, it } from 'vitest';
  *
  * A privacy receipt is only written for turns in which the privacy shield
  * acted: `finalizeTurn()` in harness-plugin-privacy-guard `service.ts`
- * returns no receipt unless the turn interned a dataset, recorded a bypass,
- * produced structured output, or masked the prompt, and the orchestrator
- * persists a row only when a receipt exists. The subtitle used to promise a
- * receipt for "every completed turn", which contradicted both the code and
- * the empty state right below it.
+ * returns no receipt unless the turn interned a dataset, recorded a bypass or
+ * a connected tool's structured output, or masked the prompt, and the
+ * orchestrator persists a row only when a receipt exists. The subtitle used to
+ * promise a receipt for "every completed turn", which contradicted both the
+ * code and the empty state right below it.
+ *
+ * The subscription-CLI runtime (`CliChatAgent`, selected for `claude-cli` in
+ * `buildOrchestrator.ts`) never installs a privacy handle, so the shield does
+ * not run there and no turn on that path ever reaches `finalizeTurn()`. An
+ * operator on that provider must not read an empty page as "the shield had
+ * nothing to do".
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -30,16 +36,21 @@ const EVERY_TURN_CLAIMS: readonly RegExp[] = [
 
 /**
  * Per-locale wording the page must carry: the subtitle names the condition
- * (shield activity) and the empty state says that turns without it write no
- * receipt. Both went unguarded before — a revert to the old copy has to fail.
+ * (shield activity) and the subscription-CLI exception, and the empty state
+ * says that turns without shield activity write no receipt. All went
+ * unguarded before — a revert to the old copy has to fail.
  */
-const REQUIRED_COPY: Readonly<Record<string, { subtitle: RegExp; empty: RegExp }>> = {
+const REQUIRED_COPY: Readonly<
+  Record<string, { subtitle: RegExp; cliPath: RegExp; empty: RegExp }>
+> = {
   en: {
     subtitle: /every completed turn in which the privacy shield acted/i,
+    cliPath: /Claude subscription CLI do not pass through the privacy shield/i,
     empty: /write no receipt/i,
   },
   de: {
     subtitle: /jeden abgeschlossenen Turn, in dem der Privacy Shield aktiv war/i,
+    cliPath: /Claude-Abo \(Claude-CLI\) laufen, durchlaufen den Privacy Shield nicht/i,
     empty: /schreiben keinen Receipt/i,
   },
 };
@@ -88,6 +99,15 @@ describe('operatorReceipts copy (#1081)', () => {
       expect(entry, `missing ${locale} catalog`).toBeDefined();
       expect(entry?.copy.subtitle as string).toMatch(required.subtitle);
       expect(entry?.copy.empty as string).toMatch(required.empty);
+    },
+  );
+
+  it.each(Object.entries(REQUIRED_COPY))(
+    '%s subtitle names the subscription-CLI path that writes no receipts',
+    (locale, required) => {
+      const entry = locales.find((l) => l.locale === locale);
+      expect(entry, `missing ${locale} catalog`).toBeDefined();
+      expect(entry?.copy.subtitle as string).toMatch(required.cliPath);
     },
   );
 });

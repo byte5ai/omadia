@@ -831,7 +831,7 @@
   "operatorReceipts": {
     "metaTitle": "Receipts · omadia",
     "title": "Privacy receipts",
-    "subtitle": "A PII-free privacy receipt is written here for every completed turn in which the privacy shield acted: it interned tool data, masked the prompt, recorded a bypass, or recorded a connected tool's structured output. Turns where the shield had nothing to do write no receipt. The record survives the chat view; retention is bounded by the middleware's RECEIPT_RETENTION_DAYS.",
+    "subtitle": "A PII-free privacy receipt is written here for every completed turn in which the privacy shield acted: it interned tool data, masked the prompt, recorded a bypass, or recorded a connected tool's structured output. Turns where the shield had nothing to do write no receipt. Agents running on the Claude subscription CLI do not pass through the privacy shield, so their turns never write a receipt. The record survives the chat view; retention is bounded by the middleware's RECEIPT_RETENTION_DAYS.",
     "loadError": "Failed to load receipts",
     "empty": "No receipts recorded yet. A receipt appears here as soon as a turn with privacy-shield activity completes. Turns in which the shield had nothing to do (for example a plain answer without tool calls whose prompt contained nothing to mask) write no receipt, so an empty list alone does not mean receipts are broken.",
     "scopeLabel": "Scope",

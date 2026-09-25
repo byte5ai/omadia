@@ -13,10 +13,11 @@ import { ReceiptsList } from './_components/ReceiptsList';
  * A turn writes its PII-free receipt to the middleware's `turn_receipts`
  * store only when the privacy shield acted in it: it interned a dataset,
  * recorded a bypass or a connected tool's structured output, or masked the
- * prompt
- * (`finalizeTurn()` in harness-plugin-privacy-guard `src/service.ts`
+ * prompt (`finalizeTurn()` in harness-plugin-privacy-guard `src/service.ts`
  * returns no receipt otherwise, and the orchestrator persists only when one
- * exists). Turns without shield activity leave no row (#1081). This page is
+ * exists). Turns without shield activity leave no row (#1081), and neither
+ * do turns on the Claude subscription CLI: that runtime (`CliChatAgent`)
+ * installs no privacy handle, so the shield never runs there. This page is
  * the read surface: what did the shield intern, mask, and (where the
  * operator opted into bypass) pass through, per turn, after the fact, not
  * only while the answer was on screen.
