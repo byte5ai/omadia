@@ -1103,6 +1103,10 @@
         "what": "The chosen model belongs to a different provider than the one selected.",
         "next": "Pick a model this provider serves, or switch to the provider the model belongs to."
       },
+      "model_class_unavailable": {
+        "what": "The selected provider serves no model for this model class.",
+        "next": "Refresh or register the provider's models, or pick a concrete model instead of a class."
+      },
       "not_installed": {
         "what": "The plugin you are assigning a provider to is not installed here.",
         "next": "Install the plugin first, then set its provider.",
@@ -3767,6 +3771,17 @@
       "routingLabel": "Per-turn model routing (Haiku triage)",
       "routingHint": "A cheap Haiku call classifies each turn — simple turns get a cheaper model, complex ones the frontier model.",
       "routingAnthropicOnly": "Only available with Anthropic.",
+      "classGroup": "Follow a model class (applies on next activation)",
+      "modelsGroup": "Pinned models",
+      "classOption": "{class} (auto → {model})",
+      "classOptionUnresolved": "{class} (auto)",
+      "classOptionNoModel": "{class} (unresolved — no model available)",
+      "unlistedModel": "{model} (not in the model list)",
+      "classNames": {
+        "frontier": "Frontier",
+        "balanced": "Balanced",
+        "fast": "Fast"
+      },
       "retryDependentRebuild": "Retry"
     },
     "status": {

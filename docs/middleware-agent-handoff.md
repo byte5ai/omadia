@@ -1342,6 +1342,30 @@ explizite Wahl (`openai`, OAuth, lokaler keyless Server) wird nie überschrieben
 benutzt (Fail-closed-Regeln: tool-loser Provider vs. tool-treibendes Plugin,
 Modell/Provider-Mismatch, Routing-Disable bei Nicht-Anthropic).
 
+**Klassen-Refs bleiben stehen (#1083).** Eine Klassen-Referenz
+(`class:frontier` / `class:balanced` / `class:fast`) speichert
+`applyProviderAssignment` wörtlich — wie der Runtime-`PATCH` — statt sie auf die
+heutige konkrete `modelId` festzunageln; die Konsumenten lösen sie über
+`resolveConfiguredModel` / `resolveModelRefStrict` auf (#1079) — Orchestrator,
+Verifier und Extras einmal bei der Aktivierung (das Assignment reaktiviert das
+Plugin), die Issue-Umformulierung (`issuesRouter`, liest `orchestrator_model`)
+pro Aufruf. Die Sub-Agents lesen keinen dieser Keys (`SUB_AGENT_MODEL` bzw. das
+Manifest) und lösen in `DynamicAgentRuntime.activate()` auf. Kann der Provider
+gar kein Modell liefern (auch keine Nachbarklasse), antwortet der
+POST fail-closed mit `400 providers.model_class_unavailable`. Qualifizierte IDs
+(`openai:gpt-5.5`) und Aliase (`opus`) werden weiterhin auf die nackte
+`modelId` normalisiert. Das Ergebnis trägt zusätzlich `resolvedModel` (auch in
+der POST-Antwort). `GET /admin/providers` liefert pro Assignment `model` (der
+gespeicherte Ref) plus `resolvedModel` (derselbe Resolver wie zur Laufzeit,
+gegen den AKTUELLEN Katalog; Plugins, die bei der Aktivierung auflösen, behalten
+ihr Modell bis zur nächsten Reaktivierung — verschiebt die Model-Discovery
+(`modelCatalogSync`) danach das Ziel einer Klasse, kann das Label vom laufenden
+Modell abweichen, siehe §13 „Klassen-Refs veralten nach Discovery“; `null` wenn nichts gesetzt ist oder der
+Ref nicht auflösbar ist) und pro Provider `classDefaults` (Klasse →
+`modelId` via `modelForClass`). Die Admin-UI rendert Klassen als eigene,
+beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
+Provider-Wechsel einen Klassen-Ref bei.
+
 ### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
 
 Die Middleware hat keine Request-Locale — niemand liest `Accept-Language`, und
@@ -3039,6 +3063,24 @@ Dieselbe Klasse wie oben, außerhalb des Scopes von #1076:
 steht damit der geerbte Orchestrator-Provider bis zum nächsten Rebuild fest.
 Ein lazy Getter würde das dort beheben; das „kein Lazy-Lookup“ aus #1076 gilt nur
 für extras, dessen Instanzen der Orchestrator eager festhält.
+
+**Klassen-Refs veralten nach Discovery (#1083, offen).** Orchestrator, Verifier
+und extras lösen einen Klassen-Ref (`class:frontier` …) **einmal bei der
+Aktivierung** auf. Verschiebt `modelCatalogSync` danach das Ziel der Klasse,
+laufen sie auf dem alten Modell weiter, während `GET /admin/providers` das
+`resolvedModel` (und damit das Label `Frontier (auto → X)`) gegen den
+AKTUELLEN Katalog berechnet — das Label kann dem laufenden Modell also
+vorauseilen. Ein Neustart repariert das nicht verlässlich: Discovery-Ergebnisse
+werden nicht persistiert, und `void modelCatalogSync.refreshAll()` in
+`src/index.ts` läuft beim Boot fire-and-forget, während die Plugin-Aktivierung
+später awaited wird — sie kann gegen den gebündelten Katalog auflösen. Eine
+automatische Reaktivierung nach Discovery wurde in #1083 bewusst wieder
+entfernt, weil sie so nicht sicher ist. Voraussetzungen für eine sichere
+Variante: (1) nach einer Orchestrator-Reaktivierung die Kernel-Hydration erneut
+ausführen (Domain-Tools, `dynamicAgentRuntime.attachOrchestrator`,
+`setOnAgentBuilt`) — heute läuft sie nur beim Boot; (2) den Status nach der
+Reaktivierung prüfen, statt Erfolg anzunehmen; (3) den Orchestrator **nach**
+Verifier und extras reaktivieren, damit er deren neue Instanzen bindet.
 
 ### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
 

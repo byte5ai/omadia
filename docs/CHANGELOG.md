@@ -508,6 +508,34 @@ refuse the correct retry, so the post-login auto-assign hook (OM-79) never ran
 and the exit handler dropped the session instead of confirming it. The fixtures
 are now the verbatim 2.1.187 output from the container.
 
+### Fixed — per-agent model select showed the first list entry for a class ref (#1083)
+
+On `/admin/providers` → "Per-agent assignment" the model select could not
+display a model class ref such as `class:frontier` — the platform default the
+orchestrator is auto-installed with. No option matched the stored value, so the
+browser showed the first entry of the model list, which could name a model the
+agent was not using, and switching the provider or re-saving silently pinned a
+concrete model. The model classes are now first-class options, grouped above
+the pinned models and labelled with what they resolve to right now (e.g.
+`Frontier (auto → Claude Opus 5)`); any other stored value that is not in the
+list (a legacy alias, a qualified or dropped id) gets its own selected option.
+Switching the provider keeps a class ref. `GET /api/v1/admin/providers` adds
+`resolvedModel` to each assignment (computed with the runtime's own resolver)
+and `classDefaults` to each provider. `POST /api/v1/admin/providers/assignment`
+now stores a class ref as given — like the runtime config PATCH already did —
+instead of normalising it to a concrete id, returns `resolvedModel`, and
+rejects a class ref the provider cannot serve with any model with
+`400 providers.model_class_unavailable`. Qualified ids and aliases are still
+normalised. The orchestrator, verifier and background scorer resolve a class
+ref once, at activation, and keep that model until the plugin is reactivated
+(e.g. by re-saving the assignment). The admin label is computed from the
+current catalog, so when model discovery later moves a class, the
+`(auto → X)` label can run ahead of the model the plugin is actually running
+until it is reactivated. A server restart does not reliably converge either:
+discovery results are not persisted and boot discovery runs fire-and-forget,
+so activation can resolve against the bundled catalog. The in-app issue reporter's reformulation now resolves the
+orchestrator's model ref too, instead of sending a class ref raw to the vendor.
+
 ### Fixed — dynamic sub-agents on the Anthropic host sent `class:frontier` raw (404) (#1079)
 
 Every dynamic sub-agent on an Anthropic host failed its first real call with
