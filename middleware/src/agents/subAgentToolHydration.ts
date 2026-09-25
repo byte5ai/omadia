@@ -17,6 +17,7 @@ import {
   type AnthropicClient,
 } from '@omadia/llm-adapter-anthropic';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
+import { resolveClaudeCliBin } from '../platform/cliBinary.js';
 import {
   buildSubAgentDomainTools,
   createLongRunningSubAgentTool,
@@ -358,6 +359,9 @@ export function registerDbSubAgentTools(
           ...(deps.cliModelAlias !== undefined
             ? { cliModelAlias: deps.cliModelAlias }
             : {}),
+          // #1085 — a sub-agent turn spawns the CLI like any other turn, so it
+          // resolves through the same rule rather than PATH.
+          resolveCliBinary: resolveClaudeCliBin,
           ...(deps.log ? { log: deps.log } : {}),
         });
 

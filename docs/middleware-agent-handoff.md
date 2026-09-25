@@ -202,6 +202,49 @@ schon selbst), Kontext ohne belegbaren Turn-Owner ⇒ Verweigerung, Mismatch ⇒
 Verweigerung. Nur der CLI-Pfad, der In-Process-Pfad ist unberührt. Hosts ohne
 diesen Service verhalten sich wie vor #1016.
 
+### CLI-Binary-Auflösung für alle Spawn-Sites (`cliBinaryResolver`, #1085)
+
+Zweite Kernel-Service-Registrierung nach demselben Muster:
+`serviceRegistry.provide('cliBinaryResolver', (bin) => resolveCliBin(bin))` in
+`middleware/src/index.ts`, deklariert im Orchestrator-Manifest unter
+`optional_requires: ["cliBinaryResolver@1"]`, aufgelöst per
+`ctx.services.getOptional`, weitergereicht von `buildOrchestratorForAgent` als
+`resolveCliBinary` in `CliChatAgent`. Die Deklarationspflicht und die
+Legacy-Allowlist-Regel aus dem Abschnitt oben gelten unverändert;
+`test/cliBinaryResolverGrant.test.ts` pinnt Konstante, Literal und Manifest
+gegeneinander.
+
+Warum nicht als Default im Orchestrator-Package: `resolveCliBin` liest
+`CLI_TOOLS_DIR` / `PLATFORM_DATA_DIR` und das Verzeichnis, in das der
+"Install now"-Button der Admin-UI installiert — App-Schicht, die dieses Package
+nicht importieren darf. Genau deshalb existierte vorher ein zweites
+`const DEFAULT_CLI_BINARY = 'claude'`, und der Turn spawnte das Binary aus
+`PATH`, während Version-Badge und Install-Button das aus dem Install-Verzeichnis
+beschrieben. Die Folge war kein Fehler, sondern eine unsichtbar degradierte
+Grenze: die Versions-Probe lief gegen das falsche Binary, `--restricted` fiel
+weg (`supportsRestrictedFlag`, ≥ 2.1.248), und die UI meldete trotzdem "logged
+in and ready".
+
+Zwei Regeln, die beim Erweitern zählen:
+
+- **Pro Turn auflösen, nie einmal beim Bauen.** `resolveCliBin` prüft das
+  Dateisystem beim Aufruf — ein beim Konstruieren aufgelöster String verpasst
+  genau die Installation, die der Operator gerade angestoßen hat. Deshalb ist
+  der Dep eine Funktion (`() => string`), kein `string`.
+- **Jede Spawn-Site einzeln.** `createCliSubAgent` baut seine eigenen
+  `CliChatAgentDeps` und erbt nichts vom Chat-Agent, also bekommen
+  `ask_<slug>`-Sub-Agents, Agent-Builder und Preview-Chat die Regel explizit
+  gereicht (kernel-seitig über `resolveClaudeCliBin()` aus
+  `src/platform/cliBinary.ts`, im Package über `SubAgentToolDeps`). Ein Test in
+  `cliBinaryResolverGrant.test.ts` scannt die Call-Sites und schlägt fehl, wenn
+  eine neue es vergisst.
+
+Verwandt: `cliInstallService` leert nach erfolgreicher Installation **beide**
+Caches — den Detector-Snapshot (`__resetCliBackendCache`) und die
+Versions-Probe des Spawn-Gates (`clearCliVersionCache`). Bei einem In-Place-
+Update ändert sich der Binary-Pfad nicht, also bliebe der Cache-Key sonst
+gleich und der Turn liefe bis zu fünf Minuten weiter gegen die alte Version.
+
 ### Plugin-Tool-Readiness-Gate (#474)
 
 `Orchestrator.isToolAvailable(agentId)` entscheidet pro Tool, ob es dem

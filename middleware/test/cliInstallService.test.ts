@@ -31,6 +31,7 @@ import {
   getInstallPackage,
   __resetCliBackendCache,
 } from '../src/platform/cliBackendDetector.js';
+import { resolveCliVersion } from '@omadia/orchestrator';
 import { createAdminCliBackendsRouter } from '../src/routes/adminCliBackends.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
@@ -435,6 +436,40 @@ describe('cliInstallService', () => {
     release();
     const done = await waitForTerminal('codex');
     assert.equal(done.status, 'succeeded');
+  });
+
+  it('a successful install drops the cached CLI version probe (#1085)', async () => {
+    // The badge's cache is reset on success (`__resetCliBackendCache`), but the
+    // SPAWN gate keeps its own `<binary> --version` cache, keyed by path with a
+    // 5-minute TTL. On a first install the path changes, so a probe happens
+    // anyway; on an in-place UPDATE (same `<cliToolsDir>/bin/claude`, new
+    // version) the key does not change — so without this reset every turn kept
+    // seeing the old version for up to five minutes and omitted `--restricted`
+    // while the UI reported the new one. That is the #1085 failure mode
+    // surviving the #1085 fix.
+    const bin = resolveCliBin('claude');
+    let probes = 0;
+    const probeReturning = (version: string) => ((
+      _binary: string,
+      _args: readonly string[],
+      cb: (error: Error | null, stdout: string) => void,
+    ) => {
+      probes += 1;
+      cb(null, `${version} (Claude Code)`);
+      return undefined;
+    }) as Parameters<typeof resolveCliVersion>[1] extends { exec?: infer E } ? E : never;
+
+    assert.equal(await resolveCliVersion(bin, { exec: probeReturning('2.1.246') }), '2.1.246');
+    // Cached: the probe does not run again.
+    assert.equal(await resolveCliVersion(bin, { exec: probeReturning('2.1.259') }), '2.1.246');
+    assert.equal(probes, 1);
+
+    __setCliInstallRunner(async () => ({ ok: true, output: '' }));
+    await startCliInstall('claude', '2.1.259');
+    assert.equal((await waitForTerminal('claude')).status, 'succeeded');
+
+    assert.equal(await resolveCliVersion(bin, { exec: probeReturning('2.1.259') }), '2.1.259');
+    assert.equal(probes, 2, 'the install must force a fresh version probe');
   });
 
   it('status for a backend with no job is idle', () => {
