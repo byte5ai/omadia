@@ -1,6 +1,6 @@
 import { describe, it, afterEach, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -183,6 +183,52 @@ describe('claudeCliAdapter (Shape-2)', () => {
       writeFileSync(path.join(dir, 'bin', 'claude'), '#!/bin/sh\n', { mode: 0o644 });
 
       assert.equal(resolveClaudeCliBin(), 'claude');
+    });
+
+    it('returns an absolute path even for a relative CLI_TOOLS_DIR', () => {
+      // Every spawn site runs the CLI with `cwd` set to a fresh temp dir. A
+      // relative candidate passes X_OK against the process cwd and then
+      // ENOENTs at spawn — on every turn, with a working binary on PATH.
+      mkdirSync(path.join(dir, 'bin'), { recursive: true });
+      writeFileSync(path.join(dir, 'bin', 'claude'), '#!/bin/sh\n', { mode: 0o755 });
+      process.env['CLI_TOOLS_DIR'] = path.relative(process.cwd(), dir);
+
+      assert.equal(resolveClaudeCliBin(), path.join(dir, 'bin', 'claude'));
+    });
+
+    it('the completion adapter probes and spawns the resolved binary, not PATH', async () => {
+      // Both fakes log `$0`; the PATH one answers differently and shadows any
+      // real `claude` on this machine, so a regression to the bare name is
+      // caught here and never reaches a logged-in CLI.
+      const calls = path.join(dir, 'calls.log');
+      const fake = (answer: string): string =>
+        `#!/bin/sh\necho "$0" >> '${calls}'\n` +
+        `if [ "$1" = "--version" ]; then echo "2.1.259 (Claude Code)"; exit 0; fi\n` +
+        `cat > /dev/null\n` +
+        `echo '{"type":"result","is_error":false,"result":"${answer}","usage":{"input_tokens":1,"output_tokens":1}}'\n`;
+      const installed = path.join(dir, 'bin', 'claude');
+      mkdirSync(path.join(dir, 'bin'), { recursive: true });
+      writeFileSync(installed, fake('from-runtime-install'), { mode: 0o755 });
+      const pathDir = mkdtempSync(path.join(tmpdir(), 'path-claude-'));
+      writeFileSync(path.join(pathDir, 'claude'), fake('from-path'), { mode: 0o755 });
+      const prevPath = process.env['PATH'];
+      process.env['PATH'] = `${pathDir}${path.delimiter}${prevPath ?? ''}`;
+      try {
+        const provider = claudeCliAdapter.build({ apiKey: 'no-key-required', id: 'claude-cli' });
+        const res = await provider.complete({
+          model: 'sonnet-cli',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+          maxTokens: 100,
+        });
+
+        assert.deepEqual(res.content, [{ type: 'text', text: 'from-runtime-install' }]);
+        // One `--version` probe, one completion — both against the SAME path.
+        assert.deepEqual(readFileSync(calls, 'utf8').trim().split('\n'), [installed, installed]);
+      } finally {
+        if (prevPath === undefined) delete process.env['PATH'];
+        else process.env['PATH'] = prevPath;
+        rmSync(pathDir, { recursive: true, force: true });
+      }
     });
 
     it('takes the binary name from the detector table, not a second literal', () => {

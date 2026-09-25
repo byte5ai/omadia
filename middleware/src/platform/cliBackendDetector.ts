@@ -156,9 +156,13 @@ export function cliToolsDir(): string {
  * dangling-symlink case alike (access(2) follows links), and is still a
  * filesystem read per call — what makes a fresh install visible on the next
  * turn rather than the next restart.
+ *
+ * The candidate is ABSOLUTE: every spawn site runs the CLI with `cwd` set to a
+ * fresh temp dir, so a relative `CLI_TOOLS_DIR` / `PLATFORM_DATA_DIR` would
+ * pass the check below against the process cwd and then ENOENT at spawn.
  */
 export function resolveCliBin(bin: string): string {
-  const candidate = path.join(cliToolsDir(), 'bin', bin);
+  const candidate = path.resolve(cliToolsDir(), 'bin', bin);
   try {
     accessSync(candidate, fsConstants.X_OK);
     return candidate;
