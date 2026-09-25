@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  SHELL_UI_LOCALES,
   createShellLocaleStore,
   parseUiLocale,
   readPersistedUiLocale,
@@ -22,6 +23,7 @@ import {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(here, '..', 'src');
+const WEB_UI = path.join(here, '..', '..', 'web-ui');
 
 const EN_TITLE = 'omadia could not start';
 const DE_TITLE = 'omadia konnte nicht starten';
@@ -185,5 +187,32 @@ describe('source census — one reader of the OS locale', () => {
 
   it('still finds it in shellLocale.ts', () => {
     assert.ok(fs.readFileSync(path.join(SRC, 'shellLocale.ts'), 'utf8').includes('app.getLocale('));
+  });
+});
+
+/**
+ * The store above is only half the fix: the value has to travel preload →
+ * ipcMain → store, and main's translator has to read the store per dialog.
+ * None of that runs under node:test (no Electron), so pin it as source.
+ */
+describe('wiring — the web-ui push reaches every dialog (source contract)', () => {
+  const src = (file: string): string => fs.readFileSync(path.join(SRC, file), 'utf8');
+
+  it('carries the value preload → ipcMain → store, and rebuilds the menu on a change', () => {
+    assert.match(src('preload.ts'), /setUiLocale: \(locale: string\): void => ipcRenderer\.send\(CH\.uiLocale, locale\)/);
+    assert.match(src('ipc.ts'), /ipcMain\.on\(CH\.uiLocale, \(_e, locale: unknown\) => deps\.onUiLocale\(locale\)\)/);
+    assert.match(src('main.ts'), /onUiLocale: \(locale\) => \{\s*if \(shellLocale\.setUiLocale\(locale\)\) installApplicationMenu\(menuActions, t\);/);
+  });
+
+  it("resolves main's translator per dialog, so a switch reaches the next one", () => {
+    assert.match(src('main.ts'), /\bt = \(key, fallback\) => shellLocale\.translator\(\)\(key, fallback\);/);
+  });
+
+  it('accepts exactly the locales the web-ui offers, under the bridge name it calls', () => {
+    const locales = fs.readFileSync(path.join(WEB_UI, 'i18n', 'locales.ts'), 'utf8');
+    const offered = /export const LOCALES = \[([^\]]*)\]/.exec(locales)?.[1]?.match(/'([^']+)'/g)?.map((q) => q.slice(1, -1));
+    assert.deepEqual([...(offered ?? [])].sort(), [...SHELL_UI_LOCALES].sort());
+    const bridge = fs.readFileSync(path.join(WEB_UI, 'app', '_lib', 'desktopShell.ts'), 'utf8');
+    assert.match(bridge, /readonly setUiLocale\?: \(locale: string\) => void;/);
   });
 });
