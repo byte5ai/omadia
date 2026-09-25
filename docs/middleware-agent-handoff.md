@@ -3556,10 +3556,50 @@ unverändert; kein Key, aber angemeldete Claude-CLI → CLI-Pfad; keins von beid
 Dynamic-Agent-Runtime für hochgeladene Agenten seit #309 macht, aus demselben Grund: der
 Completion-Adapter lehnt jede Anfrage mit Tools ab.
 
-**Bekannte Einschränkung:** `createCliSubAgent().ask()` nimmt keinen `AskObserver` und keine
-`AskOptions` entgegen. Auf dem Abo-Weg fehlen dem Builder-UI deshalb `tool_use` /
-`tool_result` / Token-Zähler, und `expectedTurnToolUse: 'fill_slot'` wirkt nicht. Der Turn
-läuft, die Live-Anzeige bleibt beim Heartbeat. Eigene Unit.
+**Live-Anzeige und `fill_slot`-Pflicht auf dem Abo-Weg (#1072):** `createCliSubAgent().ask()`
+erfüllt jetzt den vollen `Askable`-Vertrag `ask(question, observer?, options?)` (`AskOptions`
+liegt dafür neben `Askable` in `tools/domainQueryTool.ts`, `localSubAgent.ts` re-exportiert
+den Typ). `CliChatAgent.chat(input, hooks?)` reicht jedes Lifecycle-Event an
+`hooks.onEvent` und nach einem erfolgreichen Turn die CLI-Usage an `hooks.onUsage`; ein
+terminales `is_error` wirft weiterhin. Bewusst nicht `chatStream()`: `streamTurn` prüft
+`parser.isError()` nicht und meldet einen toten Turn als normales `done`.
+
+`CliObserverBridge` (`cliSubAgentObserverBridge.ts`) übersetzt die Events pro `ask()` auf den
+`AskObserver`, wie `LocalSubAgent` + `streaming.ts` ihn treiben:
+
+- `tool_use` / `tool_result` → `onSubToolUse` / `onSubToolResult`, der Präfix
+  `mcp__omadia__` wird abgeschnitten (das Builder-UI und die Pflichtprüfung vergleichen nackte
+  IDs wie `fill_slot`). `isError` aus dem Flag oder einem `Error:`-Präfix.
+- `text_delta` → `onTokenChunk` mit `ceil(Zeichen/4)` pro Iteration, 500-ms-Fenster für
+  `tokensPerSec`; Phasen `thinking → streaming → tool_running`, `idle` auf jedem Ausgang.
+- Iterationsgrenze: das erste Text- oder Tool-Event nach einem `tool_result` (oder das
+  Spawn-Ende danach) schließt die Iteration mit `stopReason: 'tool_use'`; das Spawn-Ende
+  schließt mit `end_turn`. Die CLI meldet Usage nur pro Spawn → ein aggregiertes
+  `onIterationUsage` auf der letzten Iteration. Die Zählung läuft über den Re-Prompt weiter.
+- Fremde Tool-Calls (ohne `mcp__omadia__`, OM-81) gehen nie an den Observer. Builder und
+  Preview zählen sie über `recordForeignToolCall(name, 'builder' | 'builder-preview')`; ohne
+  Callback loggt die Bridge `[security] FOREIGN …` auf Error-Level.
+
+`expectedTurnToolUse` lässt sich auf der CLI nicht erzwingen (kein `tool_choice`). Stattdessen
+Nachprüfung nach dem Turn: fehlt das Tool, genau **ein** Re-Prompt mit Originalfrage, erster
+Antwort und der Anweisung, `mcp__omadia__<tool>` aufzurufen oder konkret zu begründen, warum
+nicht; bereits ausgeführte Tool-Calls werden genannt. Weil der zweite Spawn deren Ergebnisse
+nicht sieht, darf er lesende Calls erneut ausführen, zustandsändernde aber nicht. Der
+Re-Prompt reitet in `userMessage`, nicht in `priorTurns` (dort würde auf 600 Zeichen gekürzt).
+Fehlt das Tool danach immer noch → Warnung, Antwort wird trotzdem zurückgegeben.
+`maxEscalations: 0` schaltet den Re-Prompt ab. Ein fehlschlagender Re-Prompt lässt das ganze
+`ask()` scheitern (Parität zu `LocalSubAgent`; das Builder-UI zeigt `builder.ask_failed`); der
+Fehler nennt das erwartete Tool und die schon gelaufenen Tools (`cause` = Originalfehler), deren
+Seiteneffekte bestehen bleiben.
+
+Rest-Unschärfen: Der Re-Prompt-Spawn nutzt den System-Prompt vom Turn-Start und sieht
+Spec-Patches des ersten Spawns nicht; Token-Zahlen stammen nur aus Text-Deltas (die CLI
+liefert keine Tool-Input-Deltas); Usage ist pro Spawn, nicht pro Modell-Iteration.
+`dynamicAgentRuntime.ts` und `registry/subAgentTools.ts` bleiben unverändert. Auf einem
+`claude-cli`-Host bekommen deren CLI-Sub-Agenten trotzdem keinen Observer:
+`ToolDispatchService.dispatch` ruft `domainTool.handle(input)` ohne Observer auf, und fremde
+Tool-Calls landen dort nur in `console.error`, nicht in `recordForeignToolCall`. Eigene Unit
+nach #1079.
 
 ### Kosten-Ledger nimmt Abo-Turns (OM-103)
 

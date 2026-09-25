@@ -191,7 +191,13 @@ working across it:
 - **Foreign tool marking.** `StreamJsonParser` sets `foreign: true` on every
   `tool_use` event whose name is not `mcp__omadia__*`. The built-ins are
   removed at spawn time; if one ever surfaces anyway it can never read like an
-  omadia tool in the trace.
+  omadia tool in the trace. CLI sub-agents (`createCliSubAgent`: the builder
+  and its preview chat, #1072) never forward such a call to their
+  `AskObserver`, because the builder trace cannot mark it; they count it via
+  `recordForeignToolCall` (`builder` / `builder-preview`) or, with no counter
+  wired, log `[security] FOREIGN`. Their `AskOptions` only shape the text of
+  the one post-turn re-prompt and never reach the spawn argv, so they cannot
+  widen the gate.
 - **Turn context across the process hop (#993).** A tool call on this path
   arrives as an HTTP request from the external process, in a fresh async
   context, so `AsyncLocalStorage` values the channel set around `chat()`
