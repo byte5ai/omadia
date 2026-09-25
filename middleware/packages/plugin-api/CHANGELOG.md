@@ -8,6 +8,19 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.19.0 — 2026-09-25
+
+Additive. A turn the capture filter wrote for session continuity only is now
+marked on the ingest result, so the kernel can count filtered turns instead of
+leaving them visible only as a log line (#1082).
+
+### Added
+
+- **`TurnIngestResult.tailOnly?: boolean`** — `true` when a capture decorator
+  wrote the turn as a tail-only record (`TurnIngest.tailOnly`). Absent means an
+  ordinary knowledge turn. Optional and set by the decorator that made the
+  decision, so existing backends and callers compile and behave unchanged.
+
 ## 1.17.0 — 2026-09-24
 
 Additive. One canonicaliser for dataset ids, so the `query_dataset` tool and
