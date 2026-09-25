@@ -325,6 +325,11 @@ export function buildForAgent(
       ...(runtime.maxTurnSeconds !== undefined
         ? { maxTurnSeconds: runtime.maxTurnSeconds }
         : {}),
+      // OM-104 / #1077: registry-built agents (with a DB, that includes the web
+      // chat's fallback agent) take the same CLI turn budget as the default agent.
+      ...(runtime.cliTurnSeconds !== undefined
+        ? { cliTurnSeconds: runtime.cliTurnSeconds }
+        : {}),
       // #445 — registry-managed Agents inherit the platform sticky flag, so
       // the knob means the same thing for the legacy default Agent and for
       // every Agent the registry builds.
