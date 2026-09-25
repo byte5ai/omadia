@@ -53,6 +53,10 @@ fallback. Both paths share one scope function. A plugin without
 store gets an "unavailable" error. Neither case ever falls back to the registry
 handler. All other tool names dispatch as before. Same shape as #904/#908;
 part of #860.
+`PostgresMemoryStore` now escapes `%`, `_` and `\` in its `LIKE` prefix scans.
+Unescaped, the `_` a plugin id may contain matched any character, so a
+directory rename or delete in one plugin's scope could reach a sibling
+plugin's tree.
 
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
