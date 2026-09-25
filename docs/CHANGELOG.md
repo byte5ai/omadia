@@ -36,6 +36,36 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — plugin-office/web-search Hub drift: lost setup guide restored, versions bumped, build-zip + drift guards (#1075)
+
+2026-09-24 — the Hub served `@omadia/plugin-office` 0.1.2, a version no commit
+ever carried, while the repo sat on 0.1.1 with months of newer content (#656,
+#1020, #1118, #1120) and no bump. Diffing the Hub ZIPs showed `dist/` in 0.1.2
+byte-identical to 0.1.1: the whole +826 B was a `setup.guide` (en + de) that was
+written, bumped and published from a working tree nobody committed.
+`@omadia/plugin-web-search` 0.1.0 on the Hub likewise predated #477 and #1020
+without a bump. Neither package had a way to build its own release artifact.
+
+The office guide is restored verbatim from the 0.1.2 ZIP. `plugin-office` goes
+to **0.1.3** (0.1.2 is never reused) and `plugin-web-search` to **0.1.1**, each
+in `manifest.yaml`, `package.json` and the lockfile workspace entry. New
+`middleware/scripts/build-plugin-zip.mjs`, wired as `npm run package` in both
+packages, is the only way to cut their ZIPs. It hard-fails on manifest vs.
+`package.json` version or id drift, on any uncommitted, untracked or gitignored
+non-build file under the package (the actual root cause), on a HEAD no
+remote-tracking ref contains (unless `--allow-unpushed-commit`, which marks the
+output not publishable), on a `lifecycle.entry` that is missing after a fresh
+build or absent from the archive, and on symlinks under `dist/`. It writes a
+flat, byte-reproducible ZIP to `<repo>/out/` with `yazl` and prints the commit
+SHA and sha256. `test/pluginPackageVersions.test.ts` holds manifest,
+`package.json` and lockfile versions equal for every in-tree package with a
+`manifest.yaml`, so a manifest/`package.json`/lockfile disagreement fails CI.
+It does not catch the other #1075 drift classes — a Hub version the repo never
+had, or content changing without a bump. Publishing the two new versions is an
+operator step after merge (docs/creating-plugins.md §8); publishing web-search
+0.1.1 puts a dead "update available" badge on kernels that installed 0.1.0,
+because store update detection does not skip bundled IDs.
+
 ### Fixed — `agents.privacy_profile` no longer rebuilds live agents; declared inert (#978)
 
 2026-09-24 — `agents.privacy_profile` (`'strict' | 'default'`, since migration

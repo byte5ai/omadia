@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-office"
   name: "Headless Office"
-  version: "0.1.1"
+  version: "0.1.3"
   kind: "tool"
   domain: "productivity.office"
   description:
@@ -26,6 +26,52 @@ lifecycle:
   entry: "dist/plugin.js"
 
 setup:
+  guide:
+    en: |
+      ## Set up document storage (Tigris / S3)
+
+      Headless Office renders .xlsx/.docx files and stores them in an
+      **S3-compatible bucket** (Tigris), then serves signed `/documents` URLs.
+      You need a bucket and your middleware's public URL.
+
+      ### 1. Create an S3-compatible bucket
+      1. Create a bucket on **[Tigris](https://www.tigrisdata.com)** (or any
+         S3-compatible store).
+      2. Note the **endpoint** (e.g. `https://fly.storage.tigris.dev`) and the
+         **bucket name** → fields **Tigris/S3 Endpoint** and **Bucket-Name**.
+      3. Create access credentials (access key id + secret) and provide them when
+         prompted during install.
+
+      ### 2. Public base URL
+      Set **Public Middleware Base-URL** to the public origin where this
+      middleware is reachable (e.g. `https://bot.omadia.ai`). It is embedded in
+      the signed file URLs that channels render as attachments.
+
+      > **Tenant prefix** namespaces keys in a shared bucket (default `dev`);
+      > **Signed-URL TTL** controls how long a document link stays valid.
+    de: |
+      ## Datei-Speicher einrichten (Tigris / S3)
+
+      Headless Office erzeugt .xlsx/.docx-Dateien, legt sie in einem
+      **S3-kompatiblen Bucket** (Tigris) ab und liefert signierte
+      `/documents`-URLs. Du brauchst einen Bucket und die öffentliche URL deiner
+      Middleware.
+
+      ### 1. S3-kompatiblen Bucket anlegen
+      1. Lege einen Bucket bei **[Tigris](https://www.tigrisdata.com)** (oder
+         einem beliebigen S3-kompatiblen Store) an.
+      2. Notiere **Endpoint** (z.B. `https://fly.storage.tigris.dev`) und
+         **Bucket-Name** → Felder **Tigris/S3 Endpoint** und **Bucket-Name**.
+      3. Erstelle Zugangsdaten (Access Key ID + Secret) und trage sie bei der
+         Installation ein, wenn danach gefragt wird.
+
+      ### 2. Öffentliche Base-URL
+      Setze **Öffentliche Middleware-Base-URL** auf die öffentliche Origin, unter
+      der diese Middleware erreichbar ist (z.B. `https://bot.omadia.ai`). Sie
+      steckt in den signierten Datei-URLs, die Channels als Anhang rendern.
+
+      > **Tenant-Prefix** trennt Keys in einem gemeinsamen Bucket (Default `dev`);
+      > **Signed-URL-TTL** steuert, wie lange ein Dokument-Link gültig bleibt.
   fields:
     - key: "public_base_url"
       type: "url"
