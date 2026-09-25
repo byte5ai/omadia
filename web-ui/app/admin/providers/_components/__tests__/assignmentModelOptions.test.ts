@@ -92,7 +92,20 @@ describe('buildModelSelect (#1083)', () => {
     expect(sel.classOptions.find((o) => o.cls === 'frontier')).toEqual({
       value: 'class:frontier',
       cls: 'frontier',
+      unresolved: true,
     });
+  });
+
+  it('flags only the stored class unresolved; the others keep their class default', () => {
+    const sel = buildModelSelect({
+      stored: 'class:frontier',
+      resolvedModel: null,
+      models: MODELS,
+      classDefaults: DEFAULTS,
+    });
+    const others = sel.classOptions.filter((o) => o.cls !== 'frontier');
+    expect(others.length).toBeGreaterThan(0);
+    for (const o of others) expect(o.unresolved).toBeUndefined();
   });
 
   it('falls back to the class default only when the server did not report a resolution', () => {

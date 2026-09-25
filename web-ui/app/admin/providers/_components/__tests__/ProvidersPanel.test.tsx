@@ -1256,7 +1256,9 @@ describe('<ProvidersPanel />', () => {
 
       const select = (await screen.findByLabelText(modelLabel)) as HTMLSelectElement;
       expect(select.value).toBe('class:frontier');
-      expect(select.options[select.selectedIndex]?.textContent).toBe('Frontier (auto)');
+      expect(select.options[select.selectedIndex]?.textContent).toBe(
+        'Frontier (unresolved — no model available)',
+      );
       expect(screen.queryByRole('option', { name: /Claude Opus 5/ })).toBeNull();
       expect(select.disabled).toBe(true);
     });

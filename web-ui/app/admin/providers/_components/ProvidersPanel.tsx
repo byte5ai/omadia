@@ -135,9 +135,11 @@ export function ProvidersPanel({
         const res = await assignProvider({ pluginId, provider, model });
         // #1083 — the server stores a class ref as given and says what it
         // resolves to. Without that answer (older middleware), a concrete id
-        // resolves to itself and a class ref stays unresolved.
+        // resolves to itself and a class ref's resolution stays unknown
+        // (`undefined`, not `null` — `null` means "resolves to nothing").
         const storedModel = res?.model ?? model;
-        const resolvedModel = res?.resolvedModel ?? (isClassRef(model) ? null : model);
+        const resolvedModel =
+          res?.resolvedModel ?? (isClassRef(storedModel) ? undefined : storedModel);
         setState((prev) =>
           prev.kind === 'ready'
             ? {
@@ -863,6 +865,7 @@ function AssignmentRow({
   });
   const classLabel = (o: ClassOption): string => {
     const cls = t(`assignments.classNames.${o.cls}`);
+    if (o.unresolved) return t('assignments.classOptionNoModel', { class: cls });
     return o.target === undefined
       ? t('assignments.classOptionUnresolved', { class: cls })
       : t('assignments.classOption', { class: cls, model: o.target });

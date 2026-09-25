@@ -3763,6 +3763,7 @@
       "modelsGroup": "Feste Modelle",
       "classOption": "{class} (automatisch → {model})",
       "classOptionUnresolved": "{class} (automatisch)",
+      "classOptionNoModel": "{class} (nicht auflösbar — kein Modell verfügbar)",
       "unlistedModel": "{model} (nicht in der Modellliste)",
       "classNames": {
         "frontier": "Frontier",

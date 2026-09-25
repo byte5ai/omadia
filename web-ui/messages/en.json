@@ -3763,6 +3763,7 @@
       "modelsGroup": "Pinned models",
       "classOption": "{class} (auto → {model})",
       "classOptionUnresolved": "{class} (auto)",
+      "classOptionNoModel": "{class} (unresolved — no model available)",
       "unlistedModel": "{model} (not in the model list)",
       "classNames": {
         "frontier": "Frontier",

@@ -32,6 +32,10 @@ export interface ClassOption {
   /** Display label of the model this class resolves to; `undefined` when the
    *  server did not say (older middleware, or nothing resolvable). */
   readonly target?: string;
+  /** Set only on the stored class when the server explicitly reported that it
+   *  resolves to nothing (`resolvedModel: null`): the label must say so rather
+   *  than read like a working "auto" choice. */
+  readonly unresolved?: true;
 }
 
 export interface ModelOption {
@@ -83,13 +87,13 @@ export function buildModelSelect(input: ModelSelectInput): ModelSelect {
     // Only an ABSENT `resolvedModel` (older middleware) falls back to the class
     // default: an explicit `null` is the server saying the ref resolves to
     // nothing, and borrowing a default there would name a model the agent does
-    // not run — the false label #1083 removes.
+    // not run — the false label #1083 removes — so it is flagged unresolved.
+    const isStored = cls === storedClass;
+    if (isStored && resolvedModel === null) {
+      return { value: `class:${cls}`, cls, unresolved: true };
+    }
     const targetId =
-      cls === storedClass
-        ? resolvedModel === undefined
-          ? classDefaults?.[cls]
-          : resolvedModel
-        : classDefaults?.[cls];
+      isStored && resolvedModel !== undefined ? resolvedModel : classDefaults?.[cls];
     const target = displayLabel(targetId, models);
     return target === undefined
       ? { value: `class:${cls}`, cls }
