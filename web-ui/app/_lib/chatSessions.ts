@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { mergeProactiveFromRemote } from './chatProactiveMerge';
+import { mergeProactiveFromRemote, reconcileNewerRemote } from './chatProactiveMerge';
 
 /**
  * Persisted chat-tab sessions. Each tab is a self-contained session —
@@ -847,7 +847,12 @@ async function fetchRemoteSession(id: string): Promise<ChatSession | null> {
   return coerceSession(await res.json());
 }
 
-async function putRemoteSession(session: ChatSession): Promise<void> {
+/**
+ * Upserts a session. Resolves to the document the server stored — since
+ * #1071 the server MERGES (it keeps routine deliveries the body lacks) — or
+ * `null` when the response carries no readable session.
+ */
+async function putRemoteSession(session: ChatSession): Promise<ChatSession | null> {
   const payload = sanitizeForPersist(session);
   const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(session.id)}`, {
     method: 'PUT',
@@ -858,6 +863,9 @@ async function putRemoteSession(session: ChatSession): Promise<void> {
     const text = await res.text().catch(() => '');
     throw new Error(`PUT session: HTTP ${String(res.status)} ${text}`);
   }
+  const body: unknown = await res.json().catch(() => null);
+  if (typeof body !== 'object' || body === null) return null;
+  return coerceSession((body as { session?: unknown }).session);
 }
 
 async function deleteRemoteSession(id: string): Promise<void> {
@@ -884,6 +892,12 @@ export interface UseChatSessionsResult {
     mutator: (session: ChatSession) => ChatSession,
   ): void;
   persistById(sessionId: string): void;
+  /**
+   * #1071 — re-read one chat from the server and fold in routine deliveries
+   * appended since hydration (additive, never PUTs). The chat page calls it on
+   * mount, after hydration and whenever the active chat changes.
+   */
+  refreshProactive(sessionId: string): void;
 }
 
 /**
@@ -977,7 +991,10 @@ export function useChatSessions(): UseChatSessionsResult {
           if (r.updatedAt > l.updatedAt) {
             try {
               const remote = await fetchRemoteSession(id);
-              merged.push(remote ?? l);
+              // #1071 — a routine delivery makes the server copy newer, but
+              // that copy lacks every client-only message field; fold the
+              // delivery into the local chat instead of replacing it.
+              merged.push(remote ? reconcileNewerRemote(l, remote) : l);
             } catch {
               merged.push(l);
             }
@@ -1166,6 +1183,20 @@ export function useChatSessions(): UseChatSessionsResult {
   // already committed. Deliberately NOT resolved inside a `setSessions`
   // updater: that is a side effect in a function React may double-invoke, and
   // it conflicts with the React-Compiler `immutability` rule.
+  // #1071 — fold routine deliveries from a server copy of a chat into the
+  // local one. Additive only (`mergeProactiveFromRemote`), and a session with
+  // a turn in flight is left alone — the stream owns that state until it
+  // finishes.
+  const foldProactive = useCallback((id: string, remote: ChatSession): void => {
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === id && !s.messages.some((m) => m.streaming === true)
+          ? mergeProactiveFromRemote(s, remote)
+          : s,
+      ),
+    );
+  }, []);
+
   const persistQueueRef = useRef<Set<string>>(new Set());
   const [persistTick, setPersistTick] = useState(0);
 
@@ -1184,32 +1215,30 @@ export function useChatSessions(): UseChatSessionsResult {
       // PUT is what keeps a late background turn from resurrecting a session
       // the user already threw away.
       if (!snapshot) continue;
-      putRemoteSession(snapshot).catch((err: unknown) => {
-        console.warn(
-          '[chat-sessions] persistById failed:',
-          err instanceof Error ? err.message : err,
-        );
-      });
+      putRemoteSession(snapshot)
+        .then((stored) => {
+          // #1071 — the server merges the PUT with routine deliveries it
+          // appended meanwhile and answers with the stored document.
+          if (stored) foldProactive(id, stored);
+        })
+        .catch((err: unknown) => {
+          console.warn(
+            '[chat-sessions] persistById failed:',
+            err instanceof Error ? err.message : err,
+          );
+        });
     }
-  }, [persistTick, sessions]);
+  }, [persistTick, sessions, foldProactive]);
 
   // #1071 — re-read a session for routine deliveries the server appended
-  // since hydration. There is no live push for the web chat, so this runs when
-  // the user switches to a chat and when the tab becomes visible. Additive
-  // only (`mergeProactiveFromRemote`), never PUTs, and leaves a session with
-  // a turn in flight alone — the stream owns that state until it finishes.
+  // since hydration. There is no live push for the web chat, so the chat page
+  // calls this when it mounts, when hydration finishes and when the active
+  // chat changes, and the hook itself when the tab becomes visible. Never PUTs.
   const refreshProactive = useCallback((id: string): void => {
     if (!id) return;
     fetchRemoteSession(id)
       .then((remote) => {
-        if (!remote) return;
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === id && !s.messages.some((m) => m.streaming === true)
-              ? mergeProactiveFromRemote(s, remote)
-              : s,
-          ),
-        );
+        if (remote) foldProactive(id, remote);
       })
       .catch((err: unknown) => {
         console.warn(
@@ -1217,15 +1246,7 @@ export function useChatSessions(): UseChatSessionsResult {
           err instanceof Error ? err.message : err,
         );
       });
-  }, []);
-
-  const setActive = useCallback(
-    (id: string): void => {
-      setActiveId(id);
-      refreshProactive(id);
-    },
-    [refreshProactive],
-  );
+  }, [foldProactive]);
 
   const resolvedActiveId =
     sessions.find((s) => s.id === activeId)?.id ?? sessions[0]?.id ?? '';
@@ -1255,9 +1276,10 @@ export function useChatSessions(): UseChatSessionsResult {
     createSession,
     deleteSession,
     renameSession,
-    setActive,
+    setActive: setActiveId,
     clearMessages,
     mutateById,
     persistById,
+    refreshProactive,
   };
 }

@@ -193,8 +193,19 @@ export default function ChatPage(): React.ReactElement {
     setActive,
     clearMessages,
     mutateById,
+    refreshProactive,
   } = useChatSessionsCtx();
   const streamStore = useStreamStore();
+
+  // #1071 — a scheduled routine created from a chat delivers into that chat on
+  // the server. Sessions hydrate once per full page load (the provider lives
+  // in the root layout), so re-read the chat the user is looking at whenever
+  // this page mounts, hydration finishes or the active chat changes —
+  // otherwise navigating here from /routines would show nothing new.
+  useEffect(() => {
+    if (hydrating || !activeId) return;
+    refreshProactive(activeId);
+  }, [hydrating, activeId, refreshProactive]);
   const sending = streamStore.isActive(activeId);
   const kgMockEnabled = useKgMockEnabled();
   const [kgWalkEnabled, setKgWalkEnabled] = useKgWalkEnabled();

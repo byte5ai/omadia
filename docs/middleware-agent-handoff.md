@@ -3773,10 +3773,21 @@ durch den Web-Sender unten.
   routineId?, routineName? }` an den Chat an, in dem die Routine angelegt wurde
   (`ChatSessionStore.appendProactiveMessage`). Kein Live-Push: der Web-Chat hat keinen
   Realtime-Kanal (`WebSocketRegistry` gehört den Channel-Plugins, SSE nur dem Builder).
-  Stattdessen liest die Web-UI die Session **additiv** neu, wenn man auf den Chat-Tab
-  wechselt oder der Browser-Tab wieder sichtbar wird (`mergeProactiveFromRemote`, nie ein
-  PUT, übersprungen solange ein Turn streamt). Offline-User sehen die Nachricht beim
+  Stattdessen liest die Web-UI die aktive Session **additiv** neu
+  (`refreshProactive` → `mergeProactiveFromRemote`, nie ein PUT, übersprungen solange ein
+  Turn streamt): wenn `/chat` mountet — der `ChatSessionsProvider` sitzt im Root-Layout
+  und hydratisiert nur einmal pro Full-Load, ein In-App-Wechsel von `/routines` nach
+  `/chat` sähe sonst nichts —, wenn die Hydration fertig ist, wenn der aktive Chat
+  wechselt und wenn der Browser-Tab wieder sichtbar wird. Die Antwort des PUT (das
+  gemergte Dokument) wird ebenso eingefaltet. Offline-User sehen die Nachricht beim
   nächsten Öffnen; die UI zeigt ein Badge "Geplante Routine · <Name>".
+- **Hydration faltet, ersetzt nicht.** Eine Zustellung macht die Server-Kopie neuer. Die
+  Server-Kopie kennt aber nur, was `MessageSchema` deklariert (zod strippt den Rest):
+  Attachments, Privacy-Receipts, Routing, Persona, Follow-ups … gibt es nur im Browser.
+  Unterscheidet sich die Server-Kopie **nur** um Zustellungen (gleiche Nicht-Proactive-Ids
+  in gleicher Reihenfolge), behält die Hydration die lokale Kopie und fügt die Zustellungen
+  ein (`reconcileNewerRemote`); nur der Titel kommt vom Server. Jeder andere Unterschied
+  (Turn von einem anderen Gerät, Leeren, Reset) → Server-Kopie gewinnt wie vor #1071.
 - **Delivery-Handle:** `conversationRef = { kind: 'http-chat', sessionScope, sessionId? }`.
   `sessionId` wird serverseitig nur gesetzt, wenn die `sessionId` des Requests wirklich der
   Scope des Turns ist (nicht unter Debug-`scope`, nicht bei `http-default`). Fehlt sie,
@@ -3790,13 +3801,24 @@ durch den Web-Sender unten.
   ersten späteren User-Nachricht einsortiert, nie zwischen Frage und Antwort). Der Marker
   zählt nur aus der Server-Kopie; ein vom Client gesetzter wird entfernt. Ein PUT mit
   `messages: []` ist "Chat leeren" und löscht auch Zustellungen. `MessageSchema` kennt
-  `proactive`, sonst entfernt zod ihn beim nächsten PUT (die #445-Falle). Append, Merge-Save und
-  `appendTurnFromServer` laufen unter einem per-Session-Lock (in-process).
+  `proactive`, sonst entfernt zod ihn beim nächsten PUT (die #445-Falle).
+- **Per-Session-Lock, modulweit, nur in-process.** Append, Merge-Save,
+  `appendTurnFromServer`, `captureSnapshot`, `clearSnapshot`, `resetMessages` und `delete`
+  laufen unter einem Lock pro Session-Id, den **alle** `ChatSessionStore`-Instanzen teilen
+  (`buildOrchestrator` baut eine pro Agent, alle über dasselbe
+  `/memories/chat-sessions`). Damit ist auch der SessionLogger-Mirror eines Registry-Agents
+  gegen Web-Sender und PUT-Route serialisiert, und ein DELETE kann nicht von einem
+  parallelen Read-Modify-Write zurückgeholt werden. Er gilt **nicht** über Prozesse
+  hinweg — bei mehreren Middleware-Instanzen auf einem geteilten Memory-Store bleibt ein
+  Fenster.
 - **Gelöschter Chat wird nicht wiederbelebt.** `send` wirft *"web chat conversation '<id>'
   no longer exists"*, der Runner schreibt das nach `last_run_error`, die Routine bleibt
   aktiv (ProactiveSender-Vertrag).
 - **Nur Text.** `cardBody`/`approval` werden ignoriert; `message.text` trägt schon den
-  Markdown-Fallback, und das Session-Schema persistiert keine Attachments.
+  Markdown-Fallback, und das Session-Schema persistiert keine Attachments. Verworfene
+  Attachments werden als `WARN` geloggt. Eine **leere Antwort** (z. B. ein reiner
+  Diagramm-Turn) wirft — der Lauf landet als `error` in `last_run_error` statt als `ok`
+  ohne Zustellung.
 - **Nicht im Modellkontext.** `chatSessionTailTurns` überspringt Proactive-Nachrichten,
   sonst würde ein Report hinter einer unbeantworteten Frage als deren Antwort replayed —
   wie bei Teams, wo Routine-Turns unter `routine:<id>` laufen.
@@ -3805,8 +3827,16 @@ durch den Web-Sender unten.
   dem authentifizierten Turn des Erstellers.
 
 **Follow-up:** Chat-Sessions haben keinen Per-User-Owner — `GET /api/chat/sessions` listet
-alle Sessions jedem angemeldeten User, `PUT` nimmt jede Id. #1071 erweitert das nicht,
-schließt es aber auch nicht.
+alle Sessions jedem angemeldeten User, `PUT` nimmt jede Id, und ein Turn mit fremder
+`sessionId` spiegelt schon heute in diesen Chat. #1071 **erweitert** diese Fläche leicht:
+die `conversationRef.sessionId` stammt aus dem Request-Body des Erstellers, also kann
+User A eine Routine anlegen, die *wiederkehrend* und mit Server-Badge in den Chat von
+User B schreibt; B sieht die Routine nicht und kann sie weder pausieren noch löschen
+(Routinen sind owner-gescoped). Das schließt #1071 nicht; nötig ist Per-User-Ownership
+der Chat-Sessions (Owner beim Anlegen stempeln, `GET`/`PUT`/`DELETE` und
+`validateConversationRef` darauf prüfen). Weitere offene Punkte: ein Chat, der gelöscht
+wurde, lässt seine Routine aktiv (jeder Fire zahlt einen Agent-Turn, bevor `send` wirft);
+`validateConversationRef` prüft nur die Syntax der `sessionId`, nicht ob der Chat existiert.
 
 ### Der Principal für *jeden* Kanal: Producer in `CoreApi` (#1086)
 

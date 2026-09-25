@@ -1,6 +1,7 @@
 import type { MemoryStore } from '@omadia/plugin-api';
 import type { DirectLineSessionState } from '@omadia/channel-sdk';
 
+import { withSessionLock } from './chatSessionLock.js';
 import { mergeServerProactiveMessages } from './chatSessionProactive.js';
 
 /**
@@ -196,26 +197,11 @@ interface ServerTurn {
 }
 
 export class ChatSessionStore {
-  /**
-   * #1071 — per-session in-process lock. The proactive append, the client
-   * merge-save and `appendTurnFromServer` are all read-modify-write on the
-   * same document; serialising them per id keeps one from losing another's
-   * update. Values are the tail of each chain and never reject.
-   */
-  private readonly locks = new Map<string, Promise<unknown>>();
-
   constructor(private readonly store: MemoryStore) {}
 
-  private async withLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.locks.get(id) ?? Promise.resolve();
-    const run = prev.then(fn);
-    const tail = run.catch(() => undefined);
-    this.locks.set(id, tail);
-    try {
-      return await run;
-    } finally {
-      if (this.locks.get(id) === tail) this.locks.delete(id);
-    }
+  /** #1071 — module-wide per-session lock, see `chatSessionLock.ts`. */
+  private withLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    return withSessionLock(id, fn);
   }
 
   /** Summary of all persisted sessions, newest `updatedAt` first. */
@@ -281,17 +267,19 @@ export class ChatSessionStore {
     id: string,
     source: () => Promise<SessionConfigSnapshot>,
   ): Promise<SessionConfigSnapshot | null> {
-    const session = await this.get(id);
-    if (!session) return null;
-    if (session.snapshot) return session.snapshot;
-    const snap = await source();
-    const updated: ChatSession = {
-      ...session,
-      snapshot: snap,
-      updatedAt: Date.now(),
-    };
-    await this.save(updated);
-    return snap;
+    return this.withLock(id, async () => {
+      const session = await this.get(id);
+      if (!session) return null;
+      if (session.snapshot) return session.snapshot;
+      const snap = await source();
+      const updated: ChatSession = {
+        ...session,
+        snapshot: snap,
+        updatedAt: Date.now(),
+      };
+      await this.save(updated);
+      return snap;
+    });
   }
 
   /**
@@ -300,11 +288,13 @@ export class ChatSessionStore {
    * re-bind to the current Agent config).
    */
   async clearSnapshot(id: string): Promise<void> {
-    const session = await this.get(id);
-    if (!session) return;
-    if (!session.snapshot) return;
-    const { snapshot: _snapshot, ...rest } = session;
-    await this.save({ ...rest, updatedAt: Date.now() });
+    await this.withLock(id, async () => {
+      const session = await this.get(id);
+      if (!session) return;
+      if (!session.snapshot) return;
+      const { snapshot: _snapshot, ...rest } = session;
+      await this.save({ ...rest, updatedAt: Date.now() });
+    });
   }
 
   /**
@@ -315,15 +305,17 @@ export class ChatSessionStore {
    */
   async resetMessages(id: string): Promise<ChatSession | null> {
     if (!ID_RE.test(id)) throw new InvalidSessionIdError(id);
-    const existing = await this.get(id);
-    if (!existing) return null;
-    const updated: ChatSession = {
-      ...existing,
-      messages: [],
-      updatedAt: Date.now(),
-    };
-    await this.save(updated);
-    return updated;
+    return this.withLock(id, async () => {
+      const existing = await this.get(id);
+      if (!existing) return null;
+      const updated: ChatSession = {
+        ...existing,
+        messages: [],
+        updatedAt: Date.now(),
+      };
+      await this.save(updated);
+      return updated;
+    });
   }
 
   /**
@@ -333,7 +325,18 @@ export class ChatSessionStore {
   async saveFromClient(session: ChatSession): Promise<ChatSession> {
     if (!ID_RE.test(session.id)) throw new InvalidSessionIdError(session.id);
     return this.withLock(session.id, async () => {
-      const merged = mergeServerProactiveMessages(await this.get(session.id), session);
+      // A corrupt stored file must not turn every PUT into a 500 — before
+      // #1071 a PUT overwrote (and so repaired) it. Fall back to that.
+      let existing: ChatSession | null = null;
+      try {
+        existing = await this.get(session.id);
+      } catch (err) {
+        console.warn(
+          `[chat-sessions] unreadable session ${session.id}, overwriting from client:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+      const merged = mergeServerProactiveMessages(existing, session);
       await this.save(merged);
       return merged;
     });
@@ -376,8 +379,10 @@ export class ChatSessionStore {
 
   async delete(id: string): Promise<void> {
     const virtualPath = this.pathFor(id);
-    if (!(await this.store.fileExists(virtualPath))) return;
-    await this.store.delete(virtualPath);
+    await this.withLock(id, async () => {
+      if (!(await this.store.fileExists(virtualPath))) return;
+      await this.store.delete(virtualPath);
+    });
   }
 
   /**

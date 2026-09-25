@@ -100,9 +100,10 @@ class FakeRunsStore {
   }
 }
 
+let nextAnswer = 'report';
 const orchestrator: OrchestratorLike = {
   async runTurn(): Promise<ChatTurnResult> {
-    return { answer: 'report', toolCalls: 0, iterations: 1 };
+    return { answer: nextAnswer, toolCalls: 0, iterations: 1 };
   },
 };
 
@@ -124,6 +125,7 @@ describe('#1071 — routines created from the web chat', () => {
   let runner: RoutineRunner;
 
   beforeEach(async () => {
+    nextAnswer = 'report';
     chats = new ChatSessionStore(new InMemoryMemoryStore());
     await chats.save({
       id: SESSION_ID,
@@ -174,6 +176,20 @@ describe('#1071 — routines created from the web chat', () => {
     assert.equal(run?.status, 'error');
     assert.match(run?.error ?? '', /no longer exists/);
     assert.equal(await chats.get(SESSION_ID), null);
+  });
+
+  it('records an empty answer as an error run, not as ok with nothing delivered', async () => {
+    const routine = await runner.createRoutine(
+      createInput(webChatConversationRef(SESSION_ID, SESSION_ID)),
+    );
+    nextAnswer = '';
+
+    await runner.triggerRoutineNow(routine.id, OWNER);
+
+    const run = store.runs.at(-1);
+    assert.equal(run?.status, 'error');
+    assert.match(run?.error ?? '', /empty answer; nothing was delivered/);
+    assert.equal((await chats.get(SESSION_ID))?.messages.length, 1);
   });
 
   it('refuses at create time a web routine with no chat to deliver into', async () => {

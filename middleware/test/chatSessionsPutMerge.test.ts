@@ -146,3 +146,45 @@ describe('#1071 — PUT /sessions/:id keeps server-written proactive messages', 
     assert.equal((await stored()).messages.length, 3, 'no duplicate');
   });
 });
+
+describe('#1071 — the per-session lock spans ChatSessionStore instances', () => {
+  // Each orchestrator builds its own store over the same chat-sessions
+  // directory (buildOrchestrator), so the lock must not be per instance.
+  it('a stale merge-save from one instance cannot drop a delivery another instance is appending', async () => {
+    const memory = new InMemoryMemoryStore();
+    const webSender = new ChatSessionStore(memory);
+    const putRoute = new ChatSessionStore(memory);
+    await webSender.save(clientCopy());
+
+    const [outcome] = await Promise.all([
+      webSender.appendProactiveMessage(ID, { content: 'Report', deliveredAt: T0 + 5, routineId: 'r1' }),
+      putRoute.saveFromClient(clientCopy()),
+    ]);
+
+    assert.equal(outcome, 'appended');
+    const ids = (await putRoute.get(ID))?.messages.map((m) => m.id);
+    assert.deepEqual(ids, ['u1', 'a1', `proactive-r1-${String(T0 + 5)}`]);
+  });
+
+  it('a client save repairs a corrupt stored file instead of failing', async () => {
+    const memory = new InMemoryMemoryStore();
+    await memory.writeFile(`/memories/chat-sessions/${ID}.json`, '{not json');
+    const chats = new ChatSessionStore(memory);
+
+    const stored = await chats.saveFromClient(clientCopy());
+
+    assert.deepEqual(stored.messages.map((m) => m.id), ['u1', 'a1']);
+    assert.deepEqual((await chats.get(ID))?.messages.map((m) => m.id), ['u1', 'a1']);
+  });
+
+  it('a reset racing a delete on another instance does not bring the chat back', async () => {
+    const memory = new InMemoryMemoryStore();
+    const a = new ChatSessionStore(memory);
+    const b = new ChatSessionStore(memory);
+    await a.save(clientCopy());
+
+    await Promise.all([a.delete(ID), b.resetMessages(ID)]);
+
+    assert.equal(await b.get(ID), null);
+  });
+});

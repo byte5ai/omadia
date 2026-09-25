@@ -77,6 +77,57 @@ pre-existing defects that are deliberately not fixed here; both are recorded as
   stores a fractional entry such as `240.5` verbatim, and shows raw exception
   text instead of a catalog message.
 
+### Fixed — routines created from the browser chat deliver into that chat (#1071)
+
+2026-09-25 — `manage_routine create` from the web chat failed with *"no
+proactive sender registered for channel 'web'"*: the browser chat had no
+`ProactiveSender`, so a routine could be listed, paused and deleted there but
+never created.
+
+- **Web sender, Postgres only.** `plugins/routines/webChatProactiveSender.ts`
+  is registered by the kernel through `initRoutines({ proactiveSenders })`,
+  inside `if (graphPool)`. Without `DATABASE_URL` routines and the tool stay
+  unwired, exactly as before.
+- **Delivery is persisted into the originating chat.** `/chat` and
+  `/chat/stream` capture the chat tab's `sessionId` in the routine's
+  `conversationRef`; a run appends an assistant message with a
+  `proactive: { deliveredAt, routineId?, routineName? }` marker to that chat in
+  `ChatSessionStore` (`appendProactiveMessage`), the same store the web UI
+  hydrates from. A deleted chat is never recreated — the run fails with "no
+  longer exists" in `last_run_error`. A request without a saved chat (debug
+  `scope`, `http-default`) is refused at create time. An empty answer (for
+  example a diagram-only turn) fails the run instead of being recorded as `ok`
+  with nothing delivered; dropped attachments are logged. There is no live
+  push (the web chat has no realtime channel): the web UI re-reads the active
+  chat when `/chat` mounts, after hydration, on chat switch and when the browser
+  tab becomes visible, and folds in deliveries the server returns on a PUT. The
+  message carries a "Scheduled routine" badge (en + de).
+- **Hydration folds, it no longer replaces.** A delivery makes the server copy
+  newer. When that copy differs from the browser's only by deliveries, the web
+  UI now keeps its own copy and adds the deliveries; replacing it would have
+  dropped every client-only field (attachments, privacy receipts, routing,
+  persona, follow-ups …) that the PUT schema strips. Any other difference is
+  still resolved in favour of the newer server copy.
+- **`PUT /api/chat/sessions/:id` merges instead of overwriting**
+  (`ChatSessionStore.saveFromClient` → `mergeServerProactiveMessages`) and
+  answers with the stored document: server-written deliveries the body lacks are
+  kept. `messages: []` is still an explicit clear, and an unreadable stored
+  file is still overwritten (repaired) rather than failing the PUT.
+- **The `proactive` marker is server-trusted.** It counts only from the
+  server's own copy; a marker minted by a client PUT is stripped.
+- **Deliveries stay out of the model tail.** `chatSessionTailTurns` skips them,
+  so a report behind an unanswered question is never replayed as its answer.
+
+- **One per-session lock for every `ChatSessionStore` instance.** Each
+  orchestrator builds its own store over the same chat-sessions directory, so
+  the lock is now module-level and also covers `delete`, `captureSnapshot`,
+  `clearSnapshot` and `resetMessages`: a concurrent read-modify-write can no
+  longer drop a delivery or bring a deleted chat back. It is in-process only.
+
+Known limit, recorded in `docs/middleware-agent-handoff.md` (Web-Sender
+(#1071)): chat sessions still have no per-user owner, so the target chat of a
+web routine is whatever chat id the creating user's turn named.
+
 ### Fixed — plugin-office/web-search Hub drift: lost setup guide restored, versions bumped, build-zip + drift guards (#1075)
 
 2026-09-24 — the Hub served `@omadia/plugin-office` 0.1.2, a version no commit

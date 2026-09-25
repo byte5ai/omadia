@@ -91,13 +91,44 @@ describe('#1071 — web chat proactive sender', () => {
     assert.equal(delivered.id, `proactive-reminder-${String(DELIVERED_AT)}`);
   });
 
-  it('writes nothing for an empty answer', async () => {
+  it('fails — and writes nothing — for an empty answer, so the run is not recorded as ok', async () => {
     const store = await seededStore();
     const sender = createWebChatProactiveSender({ getStore: () => store, log: () => {} });
 
-    await sender.send({ conversationRef: REF, message: answer('   '), routine: ROUTINE });
+    await assert.rejects(
+      sender.send({ conversationRef: REF, message: answer('   '), routine: ROUTINE }),
+      /empty answer; nothing was delivered/,
+    );
 
     assert.equal((await store.get(SESSION_ID))?.messages.length, 2);
+  });
+
+  it('fails for an attachment-only answer instead of silently dropping it', async () => {
+    const store = await seededStore();
+    const sender = createWebChatProactiveSender({ getStore: () => store, log: () => {} });
+    const message = { text: '', attachments: [{ kind: 'image' }] } as unknown as SemanticAnswer;
+
+    await assert.rejects(
+      sender.send({ conversationRef: REF, message, routine: ROUTINE }),
+      /only attachments \(1\)/,
+    );
+    assert.equal((await store.get(SESSION_ID))?.messages.length, 2);
+  });
+
+  it('delivers the text and warns when attachments are dropped', async () => {
+    const store = await seededStore();
+    const logs: string[] = [];
+    const sender = createWebChatProactiveSender({
+      getStore: () => store,
+      log: (m) => logs.push(m),
+      now: () => DELIVERED_AT,
+    });
+    const message = { text: 'Report', attachments: [{ kind: 'image' }, { kind: 'file' }] } as unknown as SemanticAnswer;
+
+    await sender.send({ conversationRef: REF, message, routine: ROUTINE });
+
+    assert.equal((await store.get(SESSION_ID))?.messages.at(-1)?.content, 'Report');
+    assert.ok(logs.some((l) => /WARN .*dropped 2 attachment/.test(l)), logs.join('\n'));
   });
 
   it('throws when the chat session store is not available', async () => {

@@ -11,14 +11,16 @@ import type { ProactiveSender } from './proactiveSender.js';
  * `proactive`, so the user sees it when they open or re-focus that chat.
  * There is no live push: the web chat has no realtime channel (the WebSocket
  * registry serves channel plugins, SSE serves the builder), so the web UI
- * re-reads the session on tab switch / visibility change instead.
+ * re-reads the active chat when /chat mounts, after hydration, on chat switch
+ * and on visibility change, and folds deliveries into its local copy.
  *
  * Deliberate limits:
  *  - A deleted chat is NOT recreated. `send` throws; the runner records it as
  *    `last_run_error` and keeps the routine active (ProactiveSender contract).
  *  - Text only. `cardBody` / `approval` are ignored; `message.text` already
  *    carries the markdown fallback, and the session schema persists no
- *    attachments for any message.
+ *    attachments for any message. Dropped attachments are logged; an empty
+ *    answer throws so the run is not recorded as `ok` with nothing delivered.
  */
 
 /** Routine `channel` value of the browser chat. */
@@ -91,11 +93,21 @@ export function createWebChatProactiveSender(
       if (!store) {
         throw new Error('web chat is not configured (no chat session store)');
       }
+      const attachmentCount = message.attachments?.length ?? 0;
+      // An empty answer must fail the run: returning quietly would record it
+      // as `ok` while the user receives nothing (a diagram- or file-only turn
+      // has an empty `text`). Thrown, it lands in `last_run_error`.
       if (message.text.trim().length === 0) {
-        log(
-          `[routines/web-sender] empty answer for chat '${sessionId}'${routine ? ` (routine ${routine.id})` : ''} — nothing delivered`,
+        throw new Error(
+          attachmentCount > 0
+            ? `routine produced only attachments (${String(attachmentCount)}), which the web chat delivery cannot carry; nothing was delivered`
+            : 'routine produced an empty answer; nothing was delivered to the web chat',
         );
-        return;
+      }
+      if (attachmentCount > 0) {
+        log(
+          `[routines/web-sender] WARN chat '${sessionId}'${routine ? ` (routine ${routine.id})` : ''}: dropped ${String(attachmentCount)} attachment(s) — web delivery is text-only`,
+        );
       }
       const outcome = await store.appendProactiveMessage(sessionId, {
         content: message.text,
