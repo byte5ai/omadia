@@ -1,6 +1,6 @@
 {
   "name": "@omadia/plugin-web-search",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -9,7 +9,8 @@
   "license": "MIT",
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "package": "node ../../scripts/build-plugin-zip.mjs"
   },
   "peerDependencies": {
     "@omadia/plugin-api": "*",

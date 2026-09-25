@@ -32,7 +32,10 @@ export type AuditAction =
   // same trail as the role batons.
   | 'channel.binding_change'
   // #330 round 4 — the operator terminated a live facilitation from the admin lens.
-  | 'conductor.facilitation_terminate';
+  | 'conductor.facilitation_terminate'
+  // #965 — an operator extended their own session ("I'm still here"). One
+  // row per renewal keeps a renewal chain visible after the fact.
+  | 'auth.session_renew';
 
 export interface AuditActor {
   id?: string;

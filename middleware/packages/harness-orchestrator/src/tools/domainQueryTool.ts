@@ -95,7 +95,8 @@ export interface AskOptions {
  *   turn instead. If the expected tool was not called, it re-prompts EXACTLY
  *   ONCE with the original question, the first answer and an explicit
  *   instruction to call the tool (or to say concretely why not), then returns
- *   that answer whether or not the tool was called — a warning is logged when
+ *   that answer (the first one if the re-prompt comes back empty) whether or
+ *   not the tool was called — a warning is logged when
  *   it still was not. `maxEscalations: 0` disables the re-prompt; any value of
  *   1 or more means one re-prompt. A failing re-prompt fails the whole
  *   `ask()`, as a failing escalation iteration does in `LocalSubAgent`; the

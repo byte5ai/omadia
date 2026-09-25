@@ -60,11 +60,11 @@ import type {
  *  - `remove`  — Agent disappeared (row deleted OR status flipped to
  *                disabled). Drop the existing `BuiltOrchestrator`.
  *  - `rebuild` — Agent kept its slug but a runtime-relevant field changed
- *                (privacy_profile, runtime config, PLUGIN GRANTS). Tear down
- *                + rebuild.
+ *                (runtime config, PLUGIN GRANTS). Tear down + rebuild.
  *  - `update`  — Agent kept its slug, its runtime config AND its plugin
- *                grants; only the channel bindings changed. Refresh registry
- *                metadata without touching the `Orchestrator` instance.
+ *                grants; only the channel bindings or the reserved
+ *                `privacy_profile` changed. Refresh registry metadata without
+ *                touching the `Orchestrator` instance.
  *
  * Why plugin grants rebuild rather than update: the granted plugin set is
  * baked into the `Orchestrator` at build time twice over — once as the
@@ -168,7 +168,14 @@ export function diffSnapshots(
     const oldBindings = oldBindingsByAgent.get(oldAgent!.id) ?? [];
     const newBindings = newBindingsByAgent.get(newAgent.id) ?? [];
 
-    if (!equalBindings(oldBindings, newBindings)) {
+    // #978 — `privacy_profile` is reserved and not enforced, so it is no
+    // rebuild reason (see `runtimeChangeReasons`). It still has to refresh the
+    // registry's cached row: `/operator/agents/resolve-channel` reports the
+    // value from there, and emitting no action would leave it stale.
+    if (
+      !equalBindings(oldBindings, newBindings) ||
+      oldAgent!.privacyProfile !== newAgent.privacyProfile
+    ) {
       actions.push({ kind: 'update', agent: newAgent });
     }
   }
@@ -398,11 +405,11 @@ export function personaSkillsFor(
 
 function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] {
   const reasons: string[] = [];
-  if (oldAgent.privacyProfile !== newAgent.privacyProfile) {
-    reasons.push(
-      `privacy_profile:${oldAgent.privacyProfile}->${newAgent.privacyProfile}`,
-    );
-  }
+  // #978 — `privacy_profile` is deliberately NOT a rebuild reason. The value is
+  // reserved and not enforced: no runtime path reads it (`AgentRuntimeConfig`
+  // has no posture field, nothing branches on `'strict'`). Rebuilding on it
+  // rolled every live session of the agent for a change that did nothing. A
+  // privacy-only edit is a metadata `update` in `diffSnapshots` instead.
   // Per-agent model routing (Agent Builder P5) changes which model the turn
   // loop selects — a runtime-relevant change warranting a rebuild.
   if (

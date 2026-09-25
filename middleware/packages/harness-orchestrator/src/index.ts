@@ -566,6 +566,7 @@ export {
   RunTraceOutcomeStats,
   recordRunTraceOutcome,
   RUN_TRACE_RECORDED,
+  RUN_TRACE_STATS_SERVICE,
 } from './runTraceObservability.js';
 export type {
   RunTraceOutcome,

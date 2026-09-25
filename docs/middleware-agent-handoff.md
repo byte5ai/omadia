@@ -1216,20 +1216,31 @@ verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
 |---|---|
 | `GET  /` | Erkannte CLIs (installiert / angemeldet), `?refresh=1` bustet den Cache |
 | `POST /:id/login/start` | Spawnt `claude auth login --claudeai`; Antwort `{ sessionId, verificationUrl, codeEntry, status }` |
-| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|invalid\|expired\|error, account?, error? }` |
-| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin (nur ältere CLIs) |
+| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|error, account?, error? }` — `invalid` ist seit #1084 nur noch das Ergebnis eines `login/code`-Versuchs, kein Session-Status |
+| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin — wann immer die CLI auf einen Code wartet, auch als Fallback aus dem Polling-Modus; ist die Session schon `authorized`/`error` (Callback fertig, Prozess gescheitert), meldet es genau das statt „läuft nicht mehr" |
 | `POST /:id/login/cancel` | Verwirft die aktive Login-Session |
 | `POST /:id/logout` | `claude auth logout` + Cache-Bust |
 
-**Zwei CLI-Generationen, ein Flow.** Ältere CLIs (≤ 2.1.187) warten an
-`Paste code here >`; die UI zeigt das Code-Feld. Neuere (≥ 2.1.246) schließen
-den Login per localhost-Callback ab und beenden sich mit Exit 0, ohne Code.
-`startCliLogin` klassifiziert die Startausgabe (`Waiting for browser
-authorization…` / `If the browser didn't open, visit:` vs. `Paste code here`)
-und liefert `codeEntry`; die 2.1.259-Bundle druckt beides, dann gilt Callback
-mit optionalem Code (`codeEntry: false`). Der Exit-Handler liest den Exit-Code:
-0 → Detection bestätigt → `authorized`; ≠ 0 → `error` mit Output-Tail. Die UI
-pollt `login/status` in beiden Fällen.
+**Zwei CLI-Generationen, ein Flow (#1084).** Die im Image gebündelte CLI
+(2.1.187) druckt `Opening browser to sign in…` und `If the browser didn't open,
+visit: …` (URL mit `code=true` und platform.claude.com-Callback) und wartet dann
+ausschließlich an `Paste code here if prompted >` auf stdin. Neuere CLIs
+(≥ 2.1.246) können den Login per localhost-Callback abschließen und sich mit
+Exit 0 beenden, drucken denselben Paste-Prompt aber als Fallback mit. Die
+Browser-Zeilen kommen also in beiden Generationen vor und tragen kein Signal:
+**der Paste-Prompt entscheidet allein.** `startCliLogin` wartet bis zu
+`CODE_PROMPT_PROBE_MS` auf den Prompt (bricht nicht bei der ersten
+Browser-Zeile ab, der Prompt kann in einem späteren stdout-Chunk kommen) und
+liefert `codeEntry = true`, sobald er da ist — auch für 2.1.259. Nur ohne Prompt
+kommt `codeEntry: false`; dann zeigt die UI den Polling-Modus, **immer mit einem
+sichtbaren Fallback-Code-Feld**. Die UI pollt `login/status` in beiden Modi, ein
+per Callback abgeschlossener Login löst also auch im Code-Modus auf. Endet der
+Poll terminal (Timeout, `idle`, `expired`, `error`), zeigt die UI „Erneut
+versuchen" statt eines toten Code-Felds. Ein falscher Code liefert dem Aufrufer
+`invalid`, lässt die Session aber `pending` — sonst verweigert
+`markAuthorized` den korrekten zweiten Versuch und der Post-Login-Hook feuert
+nie. Der Exit-Handler liest den Exit-Code: 0 → Detection bestätigt →
+`authorized`; ≠ 0 → `error` mit Output-Tail.
 
 **Post-Login-Hook (OM-79).** `cliAuthService.setCliLoginAuthorizedHook(fn)`
 feuert genau einmal pro Session auf dem Übergang pending → authorized
@@ -1427,8 +1438,20 @@ Tests: `test/conductorWorkflowDelete.test.ts`.
 
 ### Turn-Receipts (#757) — persistierte Per-Turn-Privacy-Receipts
 
-Jeder abgeschlossene Turn persistiert seinen PII-freien `PrivacyReceipt`
-synchron nach `turn_receipts` (Migration `0039`, Postgres-Backend only). Der
+Ein Turn persistiert seinen PII-freien `PrivacyReceipt` synchron nach
+`turn_receipts` (Migration `0039`, Postgres-Backend only) — aber **nur, wenn
+der Privacy Shield in diesem Turn aktiv war**: `finalizeTurn()` in
+`harness-plugin-privacy-guard/src/service.ts` liefert nur dann einen Receipt,
+wenn der Turn ein Dataset interniert, einen Bypass oder die strukturierte
+Ausgabe eines angebundenen Tools protokolliert oder den Prompt maskiert hat
+(Letzteres nur bei mindestens einem erkannten PII-Span); der Orchestrator
+persistiert nur `if (receipt)`. Ein Turn ohne Shield-Aktivität (z. B. reine
+Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt;
+`mask_user_prompt` ist per Default ohnehin aus) schreibt weder eine Zeile
+noch eine Log-Zeile. UI-Copy und README sagen das seit #1081 so. Ein
+Null-Aktivitäts-Receipt pro Turn wurde bewusst verworfen: er würde die
+Hash-Kette (#758), die signierten Checkpoints und das Retention-Volumen
+verändern und braucht eine eigene Produktentscheidung. Der
 Orchestrator löst den Store late-bound über den Service
 `turnReceiptStore` auf (Kernel provided in `index.ts`, gleiches Muster wie
 `privacyRedact`); ohne Service bleiben Receipts ephemer. Fehlschläge werden
@@ -1910,6 +1933,93 @@ Fehlerpfade), `test/embeddingColumnMigrationGuard.test.ts` (Gate-Hälfte:
 Permission, Master-Switch `auto_migrate_vector_columns`, `requireEmpty`),
 `web-ui/app/admin/embedding-provider/__tests__/page.test.tsx` (UI).
 
+### Run-Trace- und Capture-Filter-Zähler: `GET /api/admin/run-trace` (#684 / #1082)
+
+Die Run-Trace-Outcomes (#684) und die Zahl der vom Capture-Filter als
+tail-only geschriebenen Turns sind Zähler, nicht nur Log-Zeilen. Das
+Orchestrator-Plugin baut **eine** `RunTraceOutcomeStats`-Instanz, reicht sie
+an jeden `SessionLogger` weiter (jeder Agent, Registry-Rebuilds,
+`transcribe_recording`) und publiziert sie als Service `runTraceStats`
+(`RUN_TRACE_STATS_SERVICE`). Der Admin-Router löst sie pro Request über die
+Service-Registry auf.
+
+- **Auth:** `Authorization: Bearer <ADMIN_TOKEN>`, wie
+  `/api/admin/security/screening`. Der Router wird nur gemountet, wenn
+  `ADMIN_TOKEN` gesetzt ist; ohne Token gibt es die Route nicht, mit falschem
+  Token `401`.
+- **Antwort (200):** `{ outcomes, droppedTotal, captureTailOnlyTurns }`.
+  `outcomes` hat die fünf Zähler `recorded`, `no-graph-sink`,
+  `transcript-failed`, `turn-ingest-failed`, `run-ingest-failed`;
+  `droppedTotal` summiert alle außer `recorded`. `captureTailOnlyTurns` zählt
+  Turns, keine Traces, und fließt bewusst **nicht** in `droppedTotal` ein: der
+  Trace eines gefilterten Turns ist `recorded`.
+- **`503 { error: 'run_trace_stats_unavailable' }`**, solange kein
+  Orchestrator aktiv ist (kein LLM-Zugang, fehlende Kernel-Services,
+  deaktiviert).
+- **In-Memory, prozessweit:** kein Persistenz-Store. Die Zähler starten bei
+  einem Neustart und bei jeder Reaktivierung des Orchestrator-Plugins (z. B.
+  Provider-Wechsel) wieder bei null. Nicht auf `/health`, das keine
+  Traffic-Zahlen trägt.
+
+Tests: `test/adminRunTraceRoute.test.ts` (Route mit echtem Capture-Decorator
+und `SessionLogger`), `test/runTraceStatsServicePublish.test.ts` (echtes
+`activate()` gegen eine `ServiceRegistry`: publizierte Instanz = die des
+Agent-Loggers, 503 vor Aktivierung und nach Deaktivierung),
+`test/buildOrchestrator.test.ts` (jeder gebaute Agent teilt
+`deps.runTraceStats`).
+
+### Session-Verlängerung „Ich bin noch da“ (`POST /api/v1/auth/renew`, #965)
+
+Die Admin-UI-Sitzung ist ein zustandsloses HS512-JWT mit 4h-Fenster
+(`SESSION_WINDOW_S` in `auth/sessionCookie.ts`). Bisher war nach 4h
+zwingend ein neuer Login fällig; die Warnkarte im `SessionWatcher` bot nur
+„Jetzt neu anmelden“. Jetzt verlängert ein Klick auf „Ich bin noch da“ die
+Sitzung ohne Navigation.
+
+- **Claim `auth_time`** (`auth/sessionJwt.ts`): Zeitpunkt der
+  *ursprünglichen* Anmeldung, überlebt jedes Re-Minting (anders als `iat`).
+  `signSession` stempelt ihn beim Login; `verifySession` fällt bei alten
+  Tokens ohne den Claim auf `iat` zurück.
+- **Route** (`routes/authRenew.ts`, gemountet im Auth-Router). Reihenfolge,
+  jeder Schritt fail-closed:
+  1. `evaluateSessionToken` wie `requireAuth` (Cookie gültig, Whitelist):
+     401 `auth.missing` / `auth.invalid`, 403 `auth.not_whitelisted`.
+     Eine abgelaufene Sitzung ist nicht verlängerbar, nur ersetzbar.
+  2. Absolute Obergrenze: `now >= auth_time + cap` bzw. `exp` liegt schon auf
+     der Grenze → 401 `auth.renew_expired`.
+  3. Provider noch aktiv, `users`-Zeile vorhanden und `active` → sonst 401
+     `auth.renew_denied`. Gilt für lokale und Entra-Zeilen.
+  4. OIDC: `OidcProvider.revalidateSession` (Entra: Refresh-Token einlösen,
+     `oid`/E-Mail/Whitelist prüfen, rotierten Token speichern). `denied` →
+     401 `auth.renew_denied`, `unavailable` (Netz, 5xx, 429) → 502
+     `auth.renew_idp_unavailable`. Ein OIDC-Provider ohne die Methode wird
+     abgelehnt.
+  5. Audit-Zeile `auth.session_renew` (`actor.id` = users-UUID, #775),
+     **vor** dem Cookie: scheitert der Audit-Write, gibt es 500 und kein
+     neues Cookie.
+  6. Gleiche Claims neu signiert, `exp = min(now + 4h, auth_time + cap)`.
+     Antwort `{ expires_at, server_now, renewable_until }`.
+- Ohne `renewal`-Deps im `AuthDeps` (Test-Harnesses) antwortet `/renew` mit
+  503 `auth.renew_unavailable`.
+- **`GET /me`** liefert zusätzlich `renewable_until` (`auth_time + cap`,
+  `null` ohne Renewal). Die UI zeigt damit im letzten Fenster vor der Grenze
+  direkt „Neu anmelden“ statt eines Klicks, der sicher abgelehnt wird.
+- **`POST /logout`** vergisst bei Entra-Sitzungen den Refresh-Token
+  (`RefreshStore.forget`), damit ein vor dem Logout kopiertes Cookie sich
+  nicht weiter über den IdP verlängern kann.
+- **UI** (`web-ui/app/_components/SessionWatcher.tsx`, `renewSession()` in
+  `_lib/api.ts`): Erfolg setzt die Phase von `warning` zurück auf `normal`
+  und plant die Timer neu. Ein Heartbeat, der vor der Verlängerung losging,
+  darf die Ablaufzeit nicht wieder verkürzen (höchstes gesehenes `exp`
+  gewinnt). Abgelehnt → „Neu anmelden“, Fehler → „Erneut versuchen“. Das
+  Ablauf-Overlay verlangt weiterhin einen echten Login.
+
+Obergrenze: `AUTH_SESSION_MAX_LIFETIME_HOURS` (§10). Sicherheitsbegründung
+und Restrisiken: `docs/security-architecture.md` → „Session renewal“.
+
+Tests: `test/auth/renewRoute.test.ts`, `test/auth/entraProviderRevalidate.test.ts`,
+`test/auth/sessionJwt.test.ts`, `web-ui/app/_components/__tests__/SessionWatcher.test.tsx`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -2255,6 +2365,12 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 
 ## 10. Konfiguration
 
+### Admin-UI-Sitzung (#965)
+
+| Variable | Wirkung |
+|---|---|
+| `AUTH_SESSION_MAX_LIFETIME_HOURS` | Absolute Obergrenze einer Verlängerungskette in Stunden, gemessen ab der **ursprünglichen** Anmeldung (`auth_time`), nicht ab der letzten Verlängerung. Default `12`, erlaubt `4`–`168` (zod-validiert beim Boot). Jeder Login und jede „Ich bin noch da“-Verlängerung gibt ein 4h-Fenster, geklemmt auf diese Grenze; danach antwortet `POST /api/v1/auth/renew` mit 401 `auth.renew_expired` und die UI verlangt einen neuen Login. Werte unter 4 wären sinnlos, weil schon das Login-Fenster 4h lang ist. |
+
 ### Test-Schalter (nicht von der Middleware gelesen)
 
 Drei Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
@@ -2311,7 +2427,8 @@ TRANSCRIPTION_REALTIME_EXPERIMENTAL=1   # opt-in: gpt-live-transcribe Realtime-P
                                         # @omadia/transcription-adapter-openai
                                         # installiert + mit API-Key versorgt ist
 # Optional endpoints
-ADMIN_TOKEN                         # mount /api/admin (mutating memory)
+ADMIN_TOKEN                         # mount /api/admin (mutating memory; read-only
+                                    # counters: /security/screening #749, /run-trace #1082)
 DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (Session-gated seit #669; Dev-Scaffolding)
 DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#669)
 # Teams
@@ -2697,6 +2814,27 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
+
+`classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
+0060 nur noch Zeilen ohne vertrauenswürdigen `error_code`: solche von vor 0060 und solche,
+deren `last_error` ein Build ohne die neuen Spalten überschrieben hat (Rollback über 0060).
+Löschbar, sobald kein Build von vor #897 mehr gegen eine migrierte DB laufen kann **und**
+keine Zeile ohne passendes Siegel mehr existiert:
+
+```sql
+SELECT count(*) FROM agent_teams_identities
+ WHERE last_error IS NOT NULL
+   AND (error_code IS NULL
+        OR error_detail->>'sentenceSha256'
+           IS DISTINCT FROM encode(sha256(convert_to(last_error, 'UTF8')), 'hex'));
+-- muss 0 sein
+```
+
+Dann fallen auch der Präfix-Fallback im Config-Sync-Cleanup und die
+Round-Trip-Tests in `test/teamsProvisioningLastError.test.ts` weg; die Satz-Präfixe dürfen
+danach frei umformuliert werden.
+
 ### Gedächtnis-Provider wird bei Neuzuweisung nicht neu aufgelöst (OM-102 follow-up)
 
 `TODO(OM-102 follow-up)` in
@@ -2942,6 +3080,39 @@ Admin-UI unsichtbar UND unlöschbar:
   soll sichtbar sein statt geglaubt werden zu müssen.
 - ACL unverändert owner-only: die Seite zeigt ausschließlich Datensätze
   des eingeloggten Kontos, nicht die der Instanz.
+
+### Offen — Was `agents.privacy_profile = 'strict'` bedeuten soll (#978-Follow-up)
+
+Stand #978: Die Spalte ist **reserviert, nicht wirksam**. Sie wird
+persistiert, von der Operator-API gemeldet und im UI angezeigt, aber kein
+Runtime-Pfad liest sie. `AgentRuntimeConfig` hat kein Posture-Feld, und nichts
+verzweigt auf `'strict'`. Eine Änderung ist seit #978 ein Metadaten-`update` in
+`applyDiff.ts` und kein `rebuild` mehr. Die Migration `0061` schreibt den
+Status als Kommentar an die Spalte. Im UI gibt es keinen Toggle mehr, der Wert
+steht mit „(nicht wirksam)“ in der Zusammenfassung.
+
+Bevor `strict` etwas erzwingt, muss eine Produktentscheidung fallen. Die
+Optionen aus dem Issue:
+
+- **Privacy Guard erzwingen**, unabhängig von der installationsweiten
+  Einstellung. Heute ist `deps.privacyGuard` ein spät gebundener
+  `privacy.redact@1`-Lookup und plattformweit.
+- **Strengere Intern-Policy** (`packages/harness-orchestrator/src/privacyInternPolicy.ts`),
+  heute ebenfalls plattformweit.
+- **Engerer Memory-Scope** für das Agent.
+
+Randbedingungen für jede Variante:
+
+- Sub-Agent-Aufrufe reichen das Handle über `turnContext.privacyHandle` weiter
+  (`localSubAgent.ts`, `toolDispatchService.ts`). Eine Posture pro Agent muss
+  diese Grenze überleben, sonst gilt `strict` nur für den äußersten Turn.
+- Der Onboarding-Seed legt den Fallback-Agent mit `'strict'` an
+  (`registry/onboarding.ts`). Sobald `strict` etwas erzwingt, ist Masking für
+  den produktiven Fallback-Agent **ohne Operator-Aktion** an. Das braucht
+  entweder einen Daten-Backfill oder eine bewusste Release-Notiz.
+- Wird `strict` wirksam, muss `privacy_profile` in `runtimeChangeReasons`
+  zurück (sonst greift die Änderung erst nach dem nächsten Neustart), und die
+  UI bekommt ihren Toggle wieder.
 
 ---
 
@@ -3343,22 +3514,58 @@ Der Job-Runner erlaubt genau einen Run pro Agent (`teamsProvisioningJob.ts:381-4
 zweiter Enqueue für ein *anderes* Team wird `rejected`. Das Script prüft deshalb vorab auf
 `running` und bricht ab, statt in einen Team-Konflikt zu laufen.
 
-### `last_error_detail` — Klassifikation serverseitig
+### `last_error_detail` — persistiert, nicht geparst (#897)
 
 `GET …/teams-identity` liefert zusätzlich zu `last_error` (englischer Satz) ein
 strukturiertes `last_error_detail`:
-`{ code: 'consent_missing' | 'arm_not_configured' | 'throttled' | 'unknown', scopes?, fields?, retry_after_seconds?, raw }`.
-Klassifiziert wird in `classifyTeamsProvisioningError()` — **direkt neben den Producern**,
-die die Sätze schreiben (`services/teamsProvisioningJob.ts`). Additiv, keine
-Schema-Änderung, keine Migration. Das web-ui rendert aus dem Objekt über i18n-Keys; den
-Rohsatz höchstens als technisches Detail. **Niemand sonst parst `last_error`.**
-Round-Trip-Test: `test/teamsProvisioningLastError.test.ts` — wer eine Meldung umformuliert
-und den Parser vergisst, bricht einen Test in derselben Ecke des Codes, statt still die
-Operator-UI in Produktion zu verschlechtern.
+`{ code, scopes?, fields?, retryAfterSeconds?, adminConsentUrl?, reason?, raw }`.
+`code` ist die geschlossene Union `TeamsProvisioningErrorCode` in
+`services/teamsProvisioningJob.ts` (11 Codes: `consent_missing`, `rsc_permissions_mismatch`,
+`arm_not_configured`, `throttled`, `config_sync_failed`, `bot_handle_unavailable`,
+`delegated_sign_in_required`, `delegated_consent_required`, `delegated_token_expired`,
+`device_code_flow_failed`, `unknown`). Das web-ui rendert aus dem Objekt über i18n-Keys; den
+Rohsatz höchstens als technisches Detail. **Niemand parst `last_error`.**
 
-**Follow-up (nicht in dieser Wave):** Der Runner sollte den Code von Anfang an strukturiert
-persistieren; das braucht eine Migration auf `agent_teams_identities` und damit eine eigene
-Unit.
+Seit Migration 0060 schreibt der Runner den Fehler **strukturiert mit**: `error_code TEXT` +
+`error_detail JSONB` auf `agent_teams_identities`, im selben UPDATE wie `last_error`, an der
+Stelle, an der er den typisierten Fehler noch in der Hand hat. Je Code gibt es einen
+`*Failure`-Builder, der Satz und Argumente aus denselben Eingaben baut. Der Store-Port des
+Runners (`TeamsIdentityJobUpdate`) nimmt als Fehlerteil nur einen Clear oder eine ganze
+`TeamsProvisioningFailure` — ein Satz ohne Code kompiliert auf keinem Runner-Schreibpfad.
+Der Store schreibt alle drei Spalten gemeinsam (jeder Clear leert alle drei) und
+**versiegelt** den Code: `error_detail` trägt neben den Argumenten einen SHA-256 des Satzes
+(reservierter Key `sentenceSha256`, `platform/teamsProvisioningErrorSeal.ts`), ist bei
+einem Code also nie NULL.
+
+Warum das Siegel: Die Spalten gemeinsam zu schreiben garantiert nur der Build ab #897. Ein
+älterer Build gegen eine DB, die schon auf 0060 steht (automatischer Rollback des Updaters
+nach rotem Health-Gate, siehe `sidecars/updater/README.md`), schreibt `last_error` allein —
+seine Clears lassen den Code stehen, sein nächster Fehlersatz landet neben dem alten Code.
+Leser vertrauen dem Code deshalb nur, solange das Siegel zum aktuellen Satz passt
+(`trustedTeamsProvisioningErrorOf()`); sonst gilt die Zeile als Legacy-Zeile. Garantie: Ein
+Code wird nie gegen einen Satz gelesen, mit dem er nicht geschrieben wurde.
+
+Gelesen wird über `teamsProvisioningErrorDetailOf()`: bekannter, versiegelter Code →
+Spalten, jedes Feld validiert (Consent-URL nur absolut https, Listen nur Strings,
+Retry-After nur endliche Zahl ≥ 0). **Kein, unbekannter oder veralteter Code** (Zeile vor
+0060, Code eines neueren Builds, oder Satz von einem älteren Build neben einem alten Code)
+→ Fallback auf `classifyTeamsProvisioningError()` über den Satz. Dieselbe Regel gilt für das
+Aufräumen der eigenen `config_sync_failed`-Warnung im Runner (Code wenn vertrauenswürdig,
+sonst Präfix). Der Classifier ist damit nur noch der Legacy-Pfad (Roadmap §13). `enqueue_failed` (Store-Write) bleibt bewusst `unknown` und wird explizit so
+kodiert.
+
+**Kein CHECK auf `error_code`:** Die Union ist in Wochen von 4 auf 11 gewachsen, jede
+Erweiterung bräuchte DROP/ADD CHECK (0056 existiert nur für CHECK-Idempotenz). Vor allem
+schreibt `recordError` `state` und Fehler in *einem* best-effort-UPDATE, das Store-Fehler
+schluckt — ein Code außerhalb eines CHECK würde den terminalen `state='failed'`-Write still
+verlieren (#915-Klasse). Die TS-Union plus Read-Validierung ist die einzige Quelle.
+
+Tests: `test/teamsProvisioningErrorCode.test.ts` (jeder Fehlerpfad schreibt einen Code;
+Parität Spalten ↔ Classifier; umformulierter Satz behält die Bedeutung; veralteter Code
+neben dem Satz eines älteren Builds wird ignoriert; Read-Validierung),
+`test/agentTeamsIdentityStore.pg.test.ts` (Siegel auf echtem Postgres, simulierter
+Alt-Build-Write),
+`test/teamsProvisioningLastError.test.ts` (Legacy-Round-Trip Producer ↔ Classifier).
 
 ## Abo-Parität: der Weg ohne API-Key (Runde 5, Wave 3)
 
@@ -3421,8 +3628,11 @@ Seiteneffekte bestehen bleiben.
 Rest-Unschärfen: Der Re-Prompt-Spawn nutzt den System-Prompt vom Turn-Start und sieht
 Spec-Patches des ersten Spawns nicht; Token-Zahlen stammen nur aus Text-Deltas (die CLI
 liefert keine Tool-Input-Deltas); Usage ist pro Spawn, nicht pro Modell-Iteration.
-`dynamicAgentRuntime.ts` und `registry/subAgentTools.ts` bleiben unverändert — beide hängen
-den Sub-Agenten hinter `createDomainTool`, der den Observer bereits durchreicht.
+`dynamicAgentRuntime.ts` und `registry/subAgentTools.ts` bleiben unverändert. Auf einem
+`claude-cli`-Host bekommen deren CLI-Sub-Agenten trotzdem keinen Observer:
+`ToolDispatchService.dispatch` ruft `domainTool.handle(input)` ohne Observer auf, und fremde
+Tool-Calls landen dort nur in `console.error`, nicht in `recordForeignToolCall`. Eigene Unit
+nach #1079.
 
 ### Kosten-Ledger nimmt Abo-Turns (OM-103)
 

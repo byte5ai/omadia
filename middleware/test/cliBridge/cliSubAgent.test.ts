@@ -400,6 +400,14 @@ describe('createCliSubAgent expectedTurnToolUse post-turn check (#1072)', () => 
     assert.equal(inputs.length, 1);
   });
 
+  it('matches a prefixed expectedTurnToolUse against the bare tool name', async () => {
+    const { agent, inputs } = scriptedSubAgent([fillSlotSpawn('built')]);
+
+    const prefixed: AskOptions = { expectedTurnToolUse: `${PREFIX}fill_slot` };
+    assert.equal(await agent.ask('build it', undefined, prefixed), 'built');
+    assert.equal(inputs.length, 1);
+  });
+
   it('re-prompts exactly once with question, first answer and a reminder naming the tool', async (t) => {
     const warn = t.mock.method(console, 'warn', () => undefined);
     const { agent, inputs } = scriptedSubAgent([
@@ -515,7 +523,11 @@ describe('createCliSubAgent expectedTurnToolUse post-turn check (#1072)', () => 
     t.mock.method(console, 'error', () => undefined);
     const { agent, inputs } = scriptedSubAgent([
       {
-        events: [{ type: 'tool_use', id: 'x', name: 'fill_slot', input: {}, foreign: true }],
+        events: [
+          { type: 'tool_use', id: 'x', name: 'fill_slot', input: {}, foreign: true },
+          // The `foreign` flag wins even over the omadia prefix.
+          { type: 'tool_use', id: 'y', name: `${PREFIX}fill_slot`, input: {}, foreign: true },
+        ],
         answer: 'hm',
       },
       fillSlotSpawn('ok'),

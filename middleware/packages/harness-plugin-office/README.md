@@ -59,6 +59,15 @@ Standard tool-plugin shape: `src/` → compiled `dist/`. `xlsxRenderer.ts` /
 `provenance.ts` holds the static provenance constants, `signing.ts` the
 HMAC-signed `/documents` URLs.
 
+## Release
+
+The version lives in `manifest.yaml` (`identity.version`) **and**
+`package.json` — bump both. The Hub ZIP is cut only by
+`npm run package -w @omadia/plugin-office` (→
+`middleware/scripts/build-plugin-zip.mjs`, output in `<repo>/out/`), from a
+clean, committed tree. Publish steps: `docs/creating-plugins.md` §8
+("In-tree-Pakete").
+
 ## Tests
 
 Central suite: `middleware/test/office.test.ts` (and `office-dataset.test.ts`).

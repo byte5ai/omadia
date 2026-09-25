@@ -38,6 +38,22 @@ export interface IdTokenClaims {
   tid: string;
 }
 
+/**
+ * #965 — the token endpoint answered with a non-2xx status. Typed so a
+ * caller can tell a definite denial (400 `invalid_grant`, 401) from an IdP
+ * outage (5xx, 429). Network failures stay a plain `Error`: no status means
+ * the IdP was never reached.
+ */
+export class OAuthTokenEndpointError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'OAuthTokenEndpointError';
+    this.status = status;
+  }
+}
+
 const SCOPE = ['openid', 'profile', 'email', 'offline_access', 'User.Read'].join(' ');
 
 export class OAuthClient {
@@ -115,7 +131,10 @@ export class OAuthClient {
     });
     const text = await res.text();
     if (!res.ok) {
-      throw new Error(`azure-ad token endpoint ${res.status}: ${text}`);
+      throw new OAuthTokenEndpointError(
+        res.status,
+        `azure-ad token endpoint ${res.status}: ${text}`,
+      );
     }
     const parsed = JSON.parse(text) as Record<string, unknown>;
     const at = parsed['access_token'];

@@ -108,7 +108,9 @@ import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
+  RunTraceOutcomeStats,
 } from '@omadia/orchestrator';
+import { RUN_TRACE_STATS_SERVICE } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
 import { createDatasetsRouter } from './routes/datasets.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
@@ -2931,14 +2933,14 @@ async function main(): Promise<void> {
         });
       }
       // Persist the wiring so a later `registry.reload()` that REBUILDS an
-      // Agent (privacy_profile flip, etc.) re-hydrates the new orchestrator —
-      // still scoped to the Agent's enabled plugins, and now from the LIVE tool
-      // source so a runtime-installed agent's tool survives the rebuild. The
-      // entry is in the registry map before `onAgentBuilt` fires (both the
-      // `add` and `rebuild` actions set it first), so the plugin lookup is
-      // available here. Without this, the rebuilt Agent goes back to
-      // `domainTools: []` and the operator's next chat turn cannot reach its
-      // sub-agents.
+      // Agent (model_routing / instructions change, etc.) re-hydrates the new
+      // orchestrator — still scoped to the Agent's enabled plugins, and now
+      // from the LIVE tool source so a runtime-installed agent's tool survives
+      // the rebuild. The entry is in the registry map before `onAgentBuilt`
+      // fires (both the `add` and `rebuild` actions set it first), so the
+      // plugin lookup is available here. Without this, the rebuilt Agent goes
+      // back to `domainTools: []` and the operator's next chat turn cannot
+      // reach its sub-agents.
       registryForHydrate.setOnAgentBuilt((slug, built) => {
         const entry = registryForHydrate.get(slug);
         const tools = entry
@@ -4649,6 +4651,15 @@ async function main(): Promise<void> {
         publicBaseUrl: config.PUBLIC_BASE_URL,
         defaultReturnPath: config.AUTH_DEFAULT_RETURN_PATH,
         setupAllowed: bootstrapResult.setupRequired,
+        // #965 — explicit session renewal ("I'm still here"): re-checks the
+        // principal, audits every renewal, bounded by an absolute cap from
+        // the original sign-in.
+        renewal: {
+          whitelist: emailWhitelist,
+          audit: adminAudit,
+          refreshStore: authRefreshStore,
+          maxLifetimeSeconds: config.AUTH_SESSION_MAX_LIFETIME_HOURS * 3600,
+        },
         // OB-61 — the /setup ENDPOINT still seeds an operator-supplied
         // `anthropic_api_key` into each consumer plugin's vault and
         // reactivates the plugin so the LLM-bound capabilities go live
@@ -6020,6 +6031,10 @@ async function main(): Promise<void> {
       createAdminRouter({
         store: memoryStore,
         token: config.ADMIN_TOKEN,
+        // #1082 — per request: the orchestrator plugin publishes the tally
+        // on activate, possibly after this router is mounted.
+        runTraceStats: () =>
+          serviceRegistry.get<RunTraceOutcomeStats>(RUN_TRACE_STATS_SERVICE),
       }),
     );
     console.log('[middleware] admin endpoints enabled at /api/admin');

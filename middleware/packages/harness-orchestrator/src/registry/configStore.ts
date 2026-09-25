@@ -37,6 +37,14 @@ import {
  * uniqueness, FK cascades, CHECK constraints).
  */
 
+/**
+ * Reserved, not enforced (#978). Persisted in `agents.privacy_profile`,
+ * returned by the operator API and shown in the UI, but read by no runtime
+ * path: `AgentRuntimeConfig` carries no posture and nothing branches on
+ * `'strict'`. A change refreshes registry metadata (`update`) and does NOT
+ * rebuild the agent. What `strict` should enforce is an open product decision
+ * (see docs/middleware-agent-handoff.md §13).
+ */
 export type PrivacyProfile = 'strict' | 'default';
 export type AgentStatus = 'enabled' | 'disabled';
 
@@ -50,6 +58,7 @@ export interface AgentRow {
   readonly slug: string;
   readonly name: string;
   readonly description: string | null;
+  /** Reserved, not enforced (#978) — see {@link PrivacyProfile}. */
   readonly privacyProfile: PrivacyProfile;
   readonly status: AgentStatus;
   /** Per-agent model routing (Agent Builder P0). Raw JSONB; shaped to
@@ -194,6 +203,7 @@ export interface AgentInput {
   readonly slug: string;
   readonly name: string;
   readonly description?: string | null;
+  /** Reserved, not enforced (#978) — see {@link PrivacyProfile}. */
   readonly privacyProfile?: PrivacyProfile;
   readonly status?: AgentStatus;
 }
@@ -201,6 +211,7 @@ export interface AgentInput {
 export interface AgentPatch {
   readonly name?: string;
   readonly description?: string | null;
+  /** Reserved, not enforced (#978) — see {@link PrivacyProfile}. */
   readonly privacyProfile?: PrivacyProfile;
   readonly status?: AgentStatus;
   readonly modelRouting?: Record<string, unknown> | null;

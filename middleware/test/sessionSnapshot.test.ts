@@ -165,15 +165,9 @@ test('SC-006: a registry rebuild does NOT mutate the snapshot pinned on an exist
   assert.ok(pinned);
   assert.deepEqual(pinned.pluginIds, ['@omadia/agent-seo-analyst']);
 
-  // Mutate the DB: add a second plugin to public + a privacy_profile flip.
+  // Mutate the DB: add a second plugin to public (a grant change rebuilds).
   cfgStore.set({
     ...baseSnapshot,
-    agents: [
-      agent('public', '00000000-0000-0000-0000-000000000001', {
-        privacyProfile: 'strict',
-      }),
-      agent('general', '00000000-0000-0000-0000-000000000002'),
-    ],
     agentPlugins: [
       ...baseSnapshot.agentPlugins,
       {
@@ -303,12 +297,13 @@ test('T025: lookupForSession routes by snapshot agentSlug, surviving an Orchestr
   const orchBefore = registry.lookupForSession(snap!);
   assert.ok(orchBefore);
 
-  // Trigger a rebuild via privacy_profile flip.
+  // Trigger a rebuild via an instructions edit (#978: a privacy_profile flip
+  // is a metadata update now, not a rebuild).
   cfgStore.set({
     ...baseSnapshot,
     agents: [
       agent('public', '00000000-0000-0000-0000-000000000001', {
-        privacyProfile: 'strict',
+        instructions: 'Answer in one sentence.',
       }),
       agent('general', '00000000-0000-0000-0000-000000000002'),
     ],
