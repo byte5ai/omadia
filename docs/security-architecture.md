@@ -1229,6 +1229,53 @@ owner-mismatch refusals, approve after revocation mints no grant).
 
 ---
 
+## 10d. WebSocket upgrade authentication (#746 W1-1)
+
+`WebSocketRegistry` (`middleware/src/channels/webSocketRegistry.ts`) is the
+process's only `upgrade` listener. It routes each upgrade through a
+path → route table, and every route authenticates **before** the handshake:
+a rejected peer gets a raw status line and a destroyed socket, never a `101`,
+so no WebSocket is ever allocated for it. An unregistered path is `404`.
+
+- **Channel routes** (`register`, reached by plugins only through
+  `CoreApi.registerWebSocket`) authenticate with `requireAuth`'s own
+  `evaluateSessionToken`: same signing key, same Entra-whitelist gate, same
+  status mapping (`auth.not_whitelisted` → 403, anything else → 401). A
+  deactivated channel answers `503`, and the active flag is checked again
+  after the async cookie verification, so a deactivation during that window
+  cannot leak a socket past `deactivateChannel`.
+- **Kernel routes** (`registerKernel`) bring their own authenticator. They
+  are a kernel-only capability and are deliberately not on `CoreApi`, so no
+  plugin can opt out of the session cookie. The authenticator's verdict maps
+  to `401`/`403`. A throw, a result that is not a result, or a missed
+  deadline (`authTimeoutMs`, default 10 s) is an infrastructure failure, not
+  a verdict on the credential. It answers `503` and is logged at error level
+  with the stack, so a key-store outage cannot read as "credential rejected".
+  All of these fail closed.
+- **The status line is fixed.** The reason phrase comes from a constant
+  table (`middleware/src/channels/webSocketUpgradeAuth.ts`, which also holds
+  the deadline and the 503 mapping). An authenticator's `message` only reaches the server log, and there
+  it is JSON-quoted, so a CR/LF in it can neither inject a response header
+  nor forge a log line.
+- **Frame caps are explicit.** Channel routes share `CHANNEL_WS_MAX_PAYLOAD_BYTES`
+  (32 MiB, below `ws`'s 100 MiB default). Every kernel route must set its own
+  `maxPayload`. Caps are bounded to `2^31 − 1` because `ws` stores
+  `maxPayload | 0`, and 2^31 or more would silently mean "unlimited". An
+  oversized frame closes that one socket with `1009`. Every accepted socket
+  has an `'error'` listener, so a hostile frame cannot raise an uncaught
+  exception.
+
+Out of scope here and owned by W1-2: the satellite tunnel's credential (API
+key plus signed challenge) and its revocation of live sockets.
+
+Tests: `middleware/test/webSocketRegistry.test.ts` (exact statuses, per-route
+auth and caps, collisions, deactivation) and
+`middleware/test/webSocketRegistryHardening.test.ts` (503 on throw, deadline
+and junk result, raw status-line bytes, bounds, the deactivate-during-auth
+race).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1269,6 +1316,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       itself, and then only the narrowest regex covering that one route (§10).
 - [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —
       operator routers belong under `/api/v1/admin/*` (§10).
+- [ ] A WebSocket route with its own authenticator is registered through
+      `WebSocketRegistry.registerKernel` from kernel code only, never exposed on
+      `CoreApi`. Plugins always get session-cookie and whitelist auth via
+      `CoreApi.registerWebSocket`. The authenticator rejects before the `101`
+      (raw 401/403; a throw or missed deadline is a fail-closed 503), and the
+      route sets an explicit, bounded `maxPayload` (§10c).
 - [ ] A new path that mints or re-mints the session cookie carries
       `auth_time` over (never resets it) and respects the absolute cap; a new
       OIDC provider implements `revalidateSession` or its sessions cannot be

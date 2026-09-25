@@ -116,6 +116,11 @@ export interface CoreApi {
    * lifecycle as {@link registerRoute}: deactivating the channel rejects new
    * upgrades and closes its live sockets.
    *
+   * Inbound frames are capped by the kernel (32 MiB for channel sockets): a
+   * frame above the cap closes the socket with code 1009 (message too big).
+   * Channel sockets always use session-cookie auth — custom authenticators
+   * are a kernel-only capability.
+   *
    * Optional: present only when the kernel wired a WebSocket registry into
    * `createCoreApi`. Channels MUST feature-detect
    * (`typeof core.registerWebSocket === 'function'`) before using it.
