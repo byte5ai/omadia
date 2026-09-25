@@ -53,8 +53,17 @@ binding.
 | `ctx.llm` | skip | Pure retrieval — no LLM step inside the plugin. |
 | `ctx.mcp` | skip | Direct provider REST APIs via `ctx.http` are the point of this plugin; an MCP indirection adds nothing. |
 
-Versioning: stays independently versioned (currently `0.1.0`); does not bump
-in lockstep with core (`compat.core: ">=1.0 <2.0"` states compatibility).
+Versioning: stays independently versioned; does not bump in lockstep with core
+(`compat.core: ">=1.0 <2.0"` states compatibility). The version lives in
+`manifest.yaml` (`identity.version`) **and** `package.json` — bump both;
+`middleware/test/pluginPackageVersions.test.ts` fails CI when they drift.
+
+## Release
+
+The Hub ZIP is cut only by `npm run package -w @omadia/plugin-web-search`
+(→ `middleware/scripts/build-plugin-zip.mjs`, output in `<repo>/out/`), from a
+clean, committed tree. Publish steps: `docs/creating-plugins.md` §8
+("In-tree-Pakete").
 
 ## Tests
 

@@ -262,6 +262,74 @@ test('a claude-cli agent replays the chat session store as its tail (#1087)', as
 });
 
 /**
+ * OM-104 / #1077 — the WIRING pin for the operator-set CLI turn budget.
+ *
+ * The LLM-access page writes `cli_turn_seconds`; `buildOrchestratorForAgent`
+ * is the one place that turns it into the `spawnTimeoutMs` the CLI agent
+ * reads. The resolver behind it is pinned in `cliTurnBudget.test.ts`; this
+ * pins the hop into the agent, which no test called before #1077. Deleting the
+ * spread, or changing its unit or rounding, must fail here.
+ */
+function installedSpawnTimeout(agent: unknown): number | undefined {
+  return (agent as { deps?: { spawnTimeoutMs?: number } }).deps?.spawnTimeoutMs;
+}
+
+function hasSpawnTimeoutKey(agent: unknown): boolean {
+  const d = (agent as { deps?: object }).deps;
+  // Absent deps would make every "no key" check pass vacuously.
+  assert.ok(d, 'the built CLI agent must carry its deps');
+  return Object.prototype.hasOwnProperty.call(d, 'spawnTimeoutMs');
+}
+
+function cliAgentWithBudget(cliTurnSeconds: number | undefined): unknown {
+  const built = buildOrchestratorForAgent(
+    {
+      agentId: 'cli',
+      model: 'opus-cli',
+      maxTokens: 100,
+      maxToolIterations: 4,
+      ...(cliTurnSeconds !== undefined ? { cliTurnSeconds } : {}),
+    },
+    cliDeps(),
+  );
+  // Same guard as the #1016 pin: the assertion must inspect the CLI agent.
+  assert.notEqual(built.bundle.agent, built.orchestrator);
+  return built.bundle.agent;
+}
+
+test('a claude-cli agent gets the configured turn budget in milliseconds (OM-104)', () => {
+  assert.equal(installedSpawnTimeout(cliAgentWithBudget(240)), 240_000);
+});
+
+test('a fractional turn budget is truncated, not rounded (OM-104)', () => {
+  // 2.5007 s = 2500.7 ms → 2500; Math.round would give 2501.
+  assert.equal(installedSpawnTimeout(cliAgentWithBudget(2.5007)), 2500);
+});
+
+test('an unset, zero or negative turn budget forwards no key at all (OM-104)', () => {
+  // ABSENT, not `undefined`/0 — only then does the environment override stay
+  // reachable in `resolveCliSpawnTimeoutMs`.
+  for (const seconds of [undefined, 0, -5]) {
+    assert.equal(
+      hasSpawnTimeoutKey(cliAgentWithBudget(seconds)),
+      false,
+      `cliTurnSeconds=${String(seconds)} must not install a spawn timeout`,
+    );
+  }
+});
+
+test('a metered agent ignores the CLI turn budget (OM-104)', () => {
+  const built = buildOrchestratorForAgent(
+    { agentId: 'metered', model: 'm', maxTokens: 100, maxToolIterations: 4, cliTurnSeconds: 240 },
+    deps(),
+  );
+  // The budget exists only on the CLI runtime; the in-process path keeps the
+  // orchestrator as its agent.
+  assert.equal(built.bundle.agent, built.orchestrator);
+  assert.equal(installedSpawnTimeout(built.bundle.agent), undefined);
+});
+
+/**
  * #1082 — the WIRING pin for the run-trace / capture-filter tally. The admin
  * route reads ONE instance; a factory that ignored `deps.runTraceStats` would
  * leave every Agent counting into a private tally nobody can read, and the
