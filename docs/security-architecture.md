@@ -40,6 +40,19 @@ Benefits:
   place.
 - Rotating a credential is a vault update + middleware redeploy. The agent
   configuration does not change.
+- LLM provider keys are the exception to the redeploy: since #1080 a vault
+  write to the orchestrator scope drops the kernel provider pool's cached
+  client, and removing the Anthropic key revokes the shared host
+  `anthropicClient`/`llm` live (falling back to `ANTHROPIC_API_KEY` if set,
+  otherwise to an unauthenticated client). After a deletion the kernel pool
+  and the orchestrator stop using the key immediately. Two limits remain:
+  the shared host client falls back to `ANTHROPIC_API_KEY` when it is set,
+  and on installs whose vault key was seeded from that env var at first boot
+  it is the same key, so host consumers (plan-runner gate, Teams, builder)
+  keep using it until the env var is removed. Sub-agents that
+  `DynamicAgentRuntime` has already built keep their captured provider until
+  a restart or rebuild. Both limits are recorded as open items in
+  `middleware-agent-handoff.md` §13.
 
 Pattern: thin proxy handler → typed client → upstream API. Document the
 proxy contract next to the handler, not in the agent prompt.
@@ -1055,6 +1068,78 @@ an empty tenant beside a populated neighbour, and the global lock).
 
 ---
 
+## 10b. Session renewal and its absolute cap (#965)
+
+The admin UI session is a stateless HS512 JWT (`omadia_session`) with a 4h
+window. `POST /api/v1/auth/renew` lets an operator extend it explicitly
+("I'm still here" on the expiry warning) instead of signing in again. A
+renewal chain that never ends would let a stolen cookie live forever, so the
+route is built around a few rules.
+
+**Absolute cap from the original sign-in.** Every token carries an
+`auth_time` claim: the moment of the real login. Renewal re-signs the same
+claims with `auth_time` carried over, so `iat` moves and `auth_time` does
+not. The new `exp` is `min(now + 4h, auth_time + cap)`, and once `now` or
+the current `exp` reaches `auth_time + cap` the route answers 401
+`auth.renew_expired`. The cap is `AUTH_SESSION_MAX_LIFETIME_HOURS` (default
+12, zod-bounded to 4..168 at boot; below the 4h login window it would be
+meaningless). Tokens minted before #965 have no `auth_time`, and
+`verifySession` substitutes `iat`: those tokens came from a real login, so
+`iat` is their first-login moment. A legacy token therefore gets the same cap
+as a new one, never an unbounded one.
+
+**Renewal requires a currently valid session.** The route sits under the
+public `/api/v1/auth/*` prefix (`auth/publicPaths.ts`) because it
+authenticates itself: it calls `evaluateSessionToken`, the same single code
+path `requireAuth` and `ctx.operatorAuth` use, whitelist gate included. An
+expired cookie gets 401 `auth.invalid`. It can only be replaced by a login.
+
+**The principal is re-checked on every renewal, fail closed.**
+
+- The session's provider must still be active in the registry.
+- The `users` row (`provider`, `sub`) must exist and be `active`. This covers
+  local users and Entra users alike (the OIDC callback upserts Entra rows, and
+  admins can disable them).
+- OIDC sessions are re-validated at the IdP through
+  `OidcProvider.revalidateSession`. For Entra that redeems the refresh token
+  kept in the vault (`RefreshStore`), then checks that the new id_token
+  carries the same `oid` and email and that the email is still whitelisted. A
+  400/401 from the token endpoint (`invalid_grant`, disabled account, revoked
+  grant) is a denial: 401 `auth.renew_denied`, and the dead token is
+  forgotten. A network error, 5xx or 429 is an outage: 502
+  `auth.renew_idp_unavailable`. Both refuse the renewal. We fail closed on an
+  outage too, because a sign-in fails during an IdP outage as well, so no
+  path gets worse. An OIDC provider that cannot re-validate is refused.
+
+**Every renewal is audited, and the audit comes first.** One
+`admin_audit` row per renewal (`auth.session_renew`; `actor.id` is the users
+uuid, `before`/`after` carry the old and new `exp` and `auth_time`). The row
+is written before the cookie is set. If the write fails, the error reaches
+Express as a 500 and no renewed cookie leaves the server.
+
+**Logout ends the Entra renewal chain.** `POST /logout` forgets the user's
+Entra refresh token. A cookie copied before the logout then fails the IdP
+re-check (no refresh token on file → denied) instead of renewing itself until
+the cap.
+
+**Residual risks (accepted, documented).**
+
+- Local-password sessions have no server-side revocation store. A cookie
+  copied before logout stays valid for the rest of its window and can be
+  renewed until the cap, as long as the users row stays `active`. Before #965
+  that window was a hard 4h; now it is bounded by the cap. Disabling the user
+  stops the chain at the next renewal attempt.
+- The refresh token is keyed by email. If the same Entra user signs in again
+  after a logout, a still-valid copy of the *old* cookie could redeem the
+  *new* refresh token, bounded by the old cookie's own `auth_time + cap`.
+- Renewal only runs on an explicit click. Activity-based silent renewal is
+  deliberately not implemented.
+
+Tests: `middleware/test/auth/renewRoute.test.ts` (every refusal path, cap,
+legacy `iat` fallback, audit-before-cookie, logout forget),
+`middleware/test/auth/entraProviderRevalidate.test.ts` (denial vs. outage
+classification).
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1086,6 +1171,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       itself, and then only the narrowest regex covering that one route (§10).
 - [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —
       operator routers belong under `/api/v1/admin/*` (§10).
+- [ ] A new path that mints or re-mints the session cookie carries
+      `auth_time` over (never resets it) and respects the absolute cap; a new
+      OIDC provider implements `revalidateSession` or its sessions cannot be
+      renewed (§10b).
 - [ ] A new native tool bound to shared/unscoped state (like memory) is routed
       through the caller's scoped accessor in `ctx.tools.invoke`, or denied
       there (§4, #909).

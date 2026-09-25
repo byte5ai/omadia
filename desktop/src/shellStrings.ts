@@ -10,7 +10,8 @@
  *
  * This module is the shell's dictionary. It deliberately does NOT import
  * `electron`: the locale is passed in, which keeps it a pure lookup that tests
- * can drive without an Electron runtime. `main.ts` supplies `app.getLocale()`.
+ * can drive without an Electron runtime. `shellLocale.ts` supplies it: the
+ * language the web-ui is showing, else the OS locale (#1074).
  *
  * Scope split, so nothing is translated twice: the phase strings a *renderer*
  * shows (`boot.*`) stay in `wizard-i18n.js`, which both the wizard and the
@@ -149,7 +150,7 @@ const DICTIONARIES: Readonly<Record<string, Dictionary>> = { de: DE };
 /**
  * The language subtag of a BCP-47 locale, lowercased.
  *
- * `app.getLocale()` returns things like `de`, `de-DE`, `de-AT`, `en-GB`. We key
+ * The OS locale comes as `de`, `de-DE`, `de-AT`, `en-GB` and the like. We key
  * on the language only: a German-speaking user in Austria wants German copy,
  * and maintaining region variants buys nothing for the string sets here.
  */

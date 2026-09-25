@@ -20,7 +20,12 @@ import {
   LlmServiceUnavailableError,
 } from '@omadia/plugin-api';
 import type { LlmProvider } from '@omadia/plugin-api';
-import { modelForClass } from '@omadia/llm-provider';
+import {
+  clearExternalModels,
+  isClassRef,
+  LlmProviderCatalog,
+  modelForClass,
+} from '@omadia/llm-provider';
 
 import type { Plugin } from '../src/api/admin-v1.js';
 import type {
@@ -472,5 +477,60 @@ describe('S4 — class-ref LLM whitelist gate', () => {
     assert.equal(second.text, 'Hallo Welt');
     assert.equal(buildCalls, 1);
     assert.equal(calls.count, 0);
+  });
+});
+
+// #1079 — a class ref a plugin REQUESTS must never reach the provider raw, even
+// when the `*` whitelist lets it past the gate and the active provider serves
+// no model of that class (coerceModelToProvider used to return it unchanged).
+describe('#1079 — ctx.llm never delivers a class ref to the provider', () => {
+  let registry: ServiceRegistry;
+  let calls: Calls;
+
+  beforeEach(() => {
+    registry = new ServiceRegistry();
+    calls = { count: 0, lastModel: '' };
+    registry.provide('llm', makeFakeLlm(calls));
+  });
+
+  it('class:frontier on an anthropic catalog without a frontier model → nearest class', async () => {
+    clearExternalModels();
+    new LlmProviderCatalog().register({
+      id: 'anthropic',
+      label: 'Anthropic',
+      wireFormat: 'anthropic',
+      baseURL: 'https://api.anthropic.com',
+      models: [
+        {
+          id: 'anthropic:claude-sonnet-5',
+          provider: 'anthropic',
+          modelId: 'claude-sonnet-5',
+          label: 'Sonnet 5',
+          class: 'balanced',
+          maxTokens: 1,
+          contextWindow: 2,
+          vision: true,
+        },
+      ],
+    });
+    const ctx = makeCtx(['*'], 'anthropic', registry);
+    await ctx.llm!.complete({
+      model: 'class:frontier',
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    assert.equal(calls.count, 1);
+    assert.equal(calls.lastModel, 'claude-sonnet-5');
+    assert.equal(isClassRef(calls.lastModel), false);
+  });
+
+  it('class:frontier with anthropic unregistered (empty overlay) → the pinned seed', async () => {
+    clearExternalModels();
+    const ctx = makeCtx(['*'], 'anthropic', registry);
+    await ctx.llm!.complete({
+      model: 'class:frontier',
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    assert.equal(calls.count, 1);
+    assert.equal(calls.lastModel, 'claude-opus-5');
   });
 });
