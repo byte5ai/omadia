@@ -2933,14 +2933,14 @@ async function main(): Promise<void> {
         });
       }
       // Persist the wiring so a later `registry.reload()` that REBUILDS an
-      // Agent (privacy_profile flip, etc.) re-hydrates the new orchestrator —
-      // still scoped to the Agent's enabled plugins, and now from the LIVE tool
-      // source so a runtime-installed agent's tool survives the rebuild. The
-      // entry is in the registry map before `onAgentBuilt` fires (both the
-      // `add` and `rebuild` actions set it first), so the plugin lookup is
-      // available here. Without this, the rebuilt Agent goes back to
-      // `domainTools: []` and the operator's next chat turn cannot reach its
-      // sub-agents.
+      // Agent (model_routing / instructions change, etc.) re-hydrates the new
+      // orchestrator — still scoped to the Agent's enabled plugins, and now
+      // from the LIVE tool source so a runtime-installed agent's tool survives
+      // the rebuild. The entry is in the registry map before `onAgentBuilt`
+      // fires (both the `add` and `rebuild` actions set it first), so the
+      // plugin lookup is available here. Without this, the rebuilt Agent goes
+      // back to `domainTools: []` and the operator's next chat turn cannot
+      // reach its sub-agents.
       registryForHydrate.setOnAgentBuilt((slug, built) => {
         const entry = registryForHydrate.get(slug);
         const tools = entry

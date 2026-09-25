@@ -7,8 +7,8 @@
  *  1. SC-001 / SC-002 — adding/removing an Agent leaves the other Agents'
  *     `Orchestrator` instances untouched (zero downtime).
  *  2. T020 — `diffSnapshots` emits the expected minimal action set for
- *     each mutation kind (add, remove, rebuild on privacy_profile flip,
- *     update on plugin list change).
+ *     each mutation kind (add, remove, rebuild on an instructions edit,
+ *     update on a binding change).
  *  3. T022 — a throw inside one diff action does not abort the rest of
  *     the diff (per-Agent isolation).
  *  4. Idempotent reload: a `reload()` against an unchanged snapshot yields
@@ -158,7 +158,7 @@ test('SC-001/SC-002: adding a new Agent leaves existing Agents instances untouch
   assert.ok(registry.get('general'));
 });
 
-test('T020: privacy_profile flip emits a rebuild action and replaces the Orchestrator', async () => {
+test('T020: an instructions edit emits a rebuild action and replaces the Orchestrator', async () => {
   const store = new MutableFakeStore(baseSnapshot);
   const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
     defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
@@ -171,7 +171,7 @@ test('T020: privacy_profile flip emits a rebuild action and replaces the Orchest
     ...baseSnapshot,
     agents: [
       agent('public', '00000000-0000-0000-0000-000000000001', {
-        privacyProfile: 'strict',
+        instructions: 'x',
       }),
       agent('general', '00000000-0000-0000-0000-000000000002'),
     ],
@@ -589,7 +589,7 @@ test('T020: diffSnapshots is pure — exposes the action set without touching li
     ...baseSnapshot,
     agents: [
       agent('public', '00000000-0000-0000-0000-000000000001', {
-        privacyProfile: 'strict',
+        instructions: 'x',
       }),
       agent('new-agent', '00000000-0000-0000-0000-000000000003'),
     ],

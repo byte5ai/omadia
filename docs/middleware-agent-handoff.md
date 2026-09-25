@@ -3081,6 +3081,39 @@ Admin-UI unsichtbar UND unlöschbar:
 - ACL unverändert owner-only: die Seite zeigt ausschließlich Datensätze
   des eingeloggten Kontos, nicht die der Instanz.
 
+### Offen — Was `agents.privacy_profile = 'strict'` bedeuten soll (#978-Follow-up)
+
+Stand #978: Die Spalte ist **reserviert, nicht wirksam**. Sie wird
+persistiert, von der Operator-API gemeldet und im UI angezeigt, aber kein
+Runtime-Pfad liest sie. `AgentRuntimeConfig` hat kein Posture-Feld, und nichts
+verzweigt auf `'strict'`. Eine Änderung ist seit #978 ein Metadaten-`update` in
+`applyDiff.ts` und kein `rebuild` mehr. Die Migration `0061` schreibt den
+Status als Kommentar an die Spalte. Im UI gibt es keinen Toggle mehr, der Wert
+steht mit „(nicht wirksam)“ in der Zusammenfassung.
+
+Bevor `strict` etwas erzwingt, muss eine Produktentscheidung fallen. Die
+Optionen aus dem Issue:
+
+- **Privacy Guard erzwingen**, unabhängig von der installationsweiten
+  Einstellung. Heute ist `deps.privacyGuard` ein spät gebundener
+  `privacy.redact@1`-Lookup und plattformweit.
+- **Strengere Intern-Policy** (`packages/harness-orchestrator/src/privacyInternPolicy.ts`),
+  heute ebenfalls plattformweit.
+- **Engerer Memory-Scope** für das Agent.
+
+Randbedingungen für jede Variante:
+
+- Sub-Agent-Aufrufe reichen das Handle über `turnContext.privacyHandle` weiter
+  (`localSubAgent.ts`, `toolDispatchService.ts`). Eine Posture pro Agent muss
+  diese Grenze überleben, sonst gilt `strict` nur für den äußersten Turn.
+- Der Onboarding-Seed legt den Fallback-Agent mit `'strict'` an
+  (`registry/onboarding.ts`). Sobald `strict` etwas erzwingt, ist Masking für
+  den produktiven Fallback-Agent **ohne Operator-Aktion** an. Das braucht
+  entweder einen Daten-Backfill oder eine bewusste Release-Notiz.
+- Wird `strict` wirksam, muss `privacy_profile` in `runtimeChangeReasons`
+  zurück (sonst greift die Änderung erst nach dem nächsten Neustart), und die
+  UI bekommt ihren Toggle wieder.
+
 ---
 
 ## 14. Commands (vom `middleware/`-Dir aus)

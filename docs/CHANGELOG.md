@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — `agents.privacy_profile` no longer rebuilds live agents; declared inert (#978)
+
+2026-09-24 — `agents.privacy_profile` (`'strict' | 'default'`, since migration
+`0001`) was written by the operator API, returned by `GET /operator/agents`,
+shown in the web UI, and treated by the registry diff as a *rebuild* reason:
+every flip threw away the agent's live `Orchestrator` and rolled all of its
+sessions. No runtime path read the value, though. `AgentRuntimeConfig` has no
+posture field and nothing branches on `'strict'`, so the rebuild changed
+nothing an operator could observe except the dropped sessions. The column is
+now declared **reserved, not enforced**. What `strict` should mean is an open
+product decision (see `docs/middleware-agent-handoff.md` §13); enforcing it
+now would silently switch masking on for the seeded fallback agent, which is
+`strict`. So `applyDiff.ts` no longer lists `privacy_profile` as a rebuild
+reason. A privacy-only edit becomes a metadata `update` that refreshes the
+registry row, so `/operator/agents/resolve-channel` keeps reporting the current
+value, and the running orchestrator stays in place. The column, the API field
+and `AgentNode.privacyProfile` in `@omadia/plugin-api` (JSDoc only, 1.19.1)
+are unchanged. In the web UI, the "Toggle privacy" button and the create-form
+privacy select are gone, the canvas agent node no longer shows a bare
+`strict`/`default` pill, and the card and detail summaries show the value as
+"(not enforced)" / "(nicht wirksam)". **Migration `0061_agent_privacy_profile_reserved`**
+records this status on the column: it is a comment-only `COMMENT ON COLUMN
+agents.privacy_profile` and makes no data or constraint change.
+
 ### Fixed — builder live view and fill_slot obligation on the subscription path (#1072)
 
 2026-09-24 — on the Claude subscription-CLI provider the plugin builder and its
