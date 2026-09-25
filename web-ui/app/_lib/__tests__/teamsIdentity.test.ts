@@ -126,9 +126,10 @@ describe('the classified sentences are the ones the middleware writes', () => {
     // The acceptance criterion the copy rests on: registration-only is a valid
     // END STATE. If the runner ever moves this to `failed`, the reassuring
     // sentence becomes a lie and this test is what says so.
-    expect(job).toContain(
-      "await this.recordError(agentId, { state: 'app_registered', lastError: detail });",
-    );
+    // Matched on the call's state argument only: since #897 the same call
+    // also carries the structured error code, so the rest of the argument
+    // list is not part of this contract.
+    expect(job).toMatch(/await this\.recordError\(agentId, \{\s*state: 'app_registered',/);
   });
 
   it('teamsProvisioningJob still prefixes an exhausted throttle', () => {

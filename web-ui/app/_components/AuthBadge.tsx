@@ -4,7 +4,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useLocale, useTranslations } from 'next-intl';
 
-import { ApiError, getAuthMe, postAuthLogout, type AuthUser } from '../_lib/api';
+import {
+  ApiError,
+  getAuthMe,
+  postAuthLogout,
+  SESSION_RENEWED_EVENT,
+  type AuthUser,
+} from '../_lib/api';
 
 type State =
   | { kind: 'loading' }
@@ -47,6 +53,19 @@ export function AuthBadge(): React.ReactElement | null {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // #965 — an "I'm still here" renewal moves the expiry; keep the
+  // "valid until" line in the menu in step without a reload.
+  useEffect(() => {
+    const onRenewed = (event: Event): void => {
+      const detail = (event as CustomEvent<{ expiresAt?: unknown }>).detail;
+      const expiresAt = detail?.expiresAt;
+      if (typeof expiresAt !== 'number') return;
+      setState((cur) => (cur.kind === 'authed' ? { ...cur, expiresAt } : cur));
+    };
+    window.addEventListener(SESSION_RENEWED_EVENT, onRenewed);
+    return () => window.removeEventListener(SESSION_RENEWED_EVENT, onRenewed);
   }, []);
 
   useEffect(() => {

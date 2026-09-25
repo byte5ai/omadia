@@ -17,6 +17,7 @@
 import type {
   LlmProviderCatalog,
   LlmProviderDescriptor,
+  ModelClass,
 } from '@omadia/llm-provider';
 
 export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
@@ -434,4 +435,29 @@ export function registerBuiltinLlmProviders(
       catalog.register(descriptor);
     }
   }
+}
+
+/**
+ * The pinned concrete default of a model class for a bundled provider, read
+ * from its offline seed `models` (#1079). Used ONLY as the last resort when the
+ * live registry holds no model at all for the provider (its catalog entry was
+ * unregistered, e.g. an installed provider plugin that had replaced the
+ * built-in got uninstalled) — so a class ref such as
+ * `SUB_AGENT_MODEL=class:frontier` still becomes a real id instead of reaching
+ * the vendor raw. Returns the `classDefault` model of that class, else the sole
+ * one, else `undefined` (unknown provider, or no seed model of the class).
+ */
+export function builtinClassDefault(
+  providerId: string,
+  cls: ModelClass,
+): string | undefined {
+  const descriptor = [
+    ...BUILTIN_LLM_PROVIDERS,
+    ...EXPERIMENTAL_LLM_PROVIDERS,
+  ].find((d) => d.id === providerId);
+  const ofClass = (descriptor?.models ?? []).filter((m) => m.class === cls);
+  const pinned =
+    ofClass.find((m) => m.classDefault === true) ??
+    (ofClass.length === 1 ? ofClass[0] : undefined);
+  return pinned?.modelId;
 }

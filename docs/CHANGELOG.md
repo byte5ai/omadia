@@ -77,6 +77,270 @@ pre-existing defects that are deliberately not fixed here; both are recorded as
   stores a fractional entry such as `240.5` verbatim, and shows raw exception
   text instead of a catalog message.
 
+### Fixed — plugin-office/web-search Hub drift: lost setup guide restored, versions bumped, build-zip + drift guards (#1075)
+
+2026-09-24 — the Hub served `@omadia/plugin-office` 0.1.2, a version no commit
+ever carried, while the repo sat on 0.1.1 with months of newer content (#656,
+#1020, #1118, #1120) and no bump. Diffing the Hub ZIPs showed `dist/` in 0.1.2
+byte-identical to 0.1.1: the whole +826 B was a `setup.guide` (en + de) that was
+written, bumped and published from a working tree nobody committed.
+`@omadia/plugin-web-search` 0.1.0 on the Hub likewise predated #477 and #1020
+without a bump. Neither package had a way to build its own release artifact.
+
+The office guide is restored verbatim from the 0.1.2 ZIP. `plugin-office` goes
+to **0.1.3** (0.1.2 is never reused) and `plugin-web-search` to **0.1.1**, each
+in `manifest.yaml`, `package.json` and the lockfile workspace entry. New
+`middleware/scripts/build-plugin-zip.mjs`, wired as `npm run package` in both
+packages, is the only way to cut their ZIPs. It hard-fails on manifest vs.
+`package.json` version or id drift, on any uncommitted, untracked or gitignored
+non-build file under the package (the actual root cause), on a HEAD no
+remote-tracking ref contains (unless `--allow-unpushed-commit`, which marks the
+output not publishable), on a `lifecycle.entry` that is missing after a fresh
+build or absent from the archive, and on symlinks under `dist/`. It writes a
+flat, byte-reproducible ZIP to `<repo>/out/` with `yazl` and prints the commit
+SHA and sha256. `test/pluginPackageVersions.test.ts` holds manifest,
+`package.json` and lockfile versions equal for every in-tree package with a
+`manifest.yaml`, so a manifest/`package.json`/lockfile disagreement fails CI.
+It does not catch the other #1075 drift classes — a Hub version the repo never
+had, or content changing without a bump. Publishing the two new versions is an
+operator step after merge (docs/creating-plugins.md §8); publishing web-search
+0.1.1 puts a dead "update available" badge on kernels that installed 0.1.0,
+because store update detection does not skip bundled IDs.
+
+### Fixed — `agents.privacy_profile` no longer rebuilds live agents; declared inert (#978)
+
+2026-09-24 — `agents.privacy_profile` (`'strict' | 'default'`, since migration
+`0001`) was written by the operator API, returned by `GET /operator/agents`,
+shown in the web UI, and treated by the registry diff as a *rebuild* reason:
+every flip threw away the agent's live `Orchestrator` and rolled all of its
+sessions. No runtime path read the value, though. `AgentRuntimeConfig` has no
+posture field and nothing branches on `'strict'`, so the rebuild changed
+nothing an operator could observe except the dropped sessions. The column is
+now declared **reserved, not enforced**. What `strict` should mean is an open
+product decision (see `docs/middleware-agent-handoff.md` §13); enforcing it
+now would silently switch masking on for the seeded fallback agent, which is
+`strict`. So `applyDiff.ts` no longer lists `privacy_profile` as a rebuild
+reason. A privacy-only edit becomes a metadata `update` that refreshes the
+registry row, so `/operator/agents/resolve-channel` keeps reporting the current
+value, and the running orchestrator stays in place. The column, the API field
+and `AgentNode.privacyProfile` in `@omadia/plugin-api` (JSDoc only, 1.19.1)
+are unchanged. In the web UI, the "Toggle privacy" button and the create-form
+privacy select are gone, the canvas agent node no longer shows a bare
+`strict`/`default` pill, and the card and detail summaries show the value as
+"(not enforced)" / "(nicht wirksam)". **Migration `0061_agent_privacy_profile_reserved`**
+records this status on the column: it is a comment-only `COMMENT ON COLUMN
+agents.privacy_profile` and makes no data or constraint change.
+
+### Fixed — builder live view and fill_slot obligation on the subscription path (#1072)
+
+2026-09-24 — on the Claude subscription-CLI provider the plugin builder and its
+preview chat ran through `createCliSubAgent`, whose `ask()` dropped the
+`AskObserver` and took no `AskOptions`. The builder UI got no `tool_use` /
+`tool_result` / token / usage events (the live view sat on the heartbeat), and
+`expectedTurnToolUse: 'fill_slot'` for a build-intent turn had no effect.
+
+`CliChatAgent.chat(input, hooks?)` now hands every lifecycle event and the
+terminal usage to the caller while still throwing on a terminal `is_error`
+result, and a new `CliObserverBridge` maps those events onto the observer:
+omadia tool calls with the `mcp__omadia__` prefix stripped, per-iteration token
+chunks (chars/4), phases, iteration boundaries after tool results, and one
+aggregate usage per CLI spawn. Foreign (non-omadia) tool calls are never
+forwarded; builder and preview count them via `recordForeignToolCall`. Because
+the CLI has no `tool_choice`, `expectedTurnToolUse` is enforced by a post-turn
+check with exactly one re-prompt; a failing re-prompt fails the ask, as on the
+API path.
+
+### Fixed — filtered turns are counted, and the run-ingest hint no longer blames the User-Cluster (#1082)
+
+2026-09-24 — #1171 (the #1096 fix) already made a turn below the capture
+threshold a tail-only Turn instead of a skipped one, so its run trace is
+recorded, promotion reports `tail-only` rather than `missing-turn`, and the
+`run-ingest-failed` / #684 warning no longer fires for it. That covered the
+first three acceptance criteria of #1082. The fourth, that the number of
+filtered turns is a counter and not only the `[capture-filter] turn tail-only`
+log line, was still open: `SessionLogger` threw the `ingestTurn` result away,
+and the result had no way to say the turn was tail-only.
+
+`TurnIngestResult` gains an optional `tailOnly` (plugin-api **1.19.0**,
+additive), which `CaptureFilteringKnowledgeGraph` sets on the result of a
+tail-only write. `SessionLogger` reads it and counts the turn on its
+`RunTraceOutcomeStats` as `captureTailOnlyTurns()`, with or without a trace,
+next to the existing run-trace counters. It is deliberately not a sixth
+`RunTraceOutcome`: the filtered turn's trace is `recorded`, so an outcome would
+count it twice, raise `droppedTotal()` and print a false "run trace not
+recorded" warning.
+
+A counter nobody can read is still only a log line, and until now nothing read
+these tallies, the #684 ones included: every `SessionLogger` held a private
+instance, split per Agent and reset whenever a config diff rebuilt one. The
+orchestrator plugin now hands ONE `RunTraceOutcomeStats` to every logger it
+builds (each Agent, registry rebuilds, `transcribe_recording`) and publishes it
+as `runTraceStats`. `GET /api/admin/run-trace` (Bearer `ADMIN_TOKEN`, like
+`/api/admin/security/screening`) returns the outcome counts, `droppedTotal`
+and `captureTailOnlyTurns`; process-scoped, reset on restart. It is not on the
+public `/health`, which carries no traffic figures.
+
+The `run-ingest-failed` text no longer claims the cause is "most often" a
+missing User-Cluster that is "resolved only on the browser-login path".
+`ingestRun` also fails on pool, connection and insert errors, and a missing
+Turn is a second known cause, not only a missing node. The text no longer
+asserts a cause: it says the trace was not written, defers to the error detail,
+and lists a missing Turn and a missing User-Cluster (#684) only as known cases.
+
+### Fixed — receipts page states when privacy receipts are written (#1081)
+
+2026-09-24 — the `/operator/receipts` subtitle promised that "every completed
+turn writes its PII-free privacy receipt here", while the empty state right
+below it said receipts appear once a turn *with privacy-shield activity*
+completes. The empty state was right. `finalizeTurn()` in
+`harness-plugin-privacy-guard/src/service.ts` returns a receipt only when the
+turn interned a dataset, recorded a bypass, recorded a connected tool's
+structured payload, or masked the prompt (at least one detected PII span), and
+the orchestrator persists a `turn_receipts` row only when a receipt exists. A
+plain answer without tool calls whose prompt held nothing to mask leaves no row,
+so an operator on a fresh install saw an empty page and read it as broken
+receipts.
+
+The subtitle (en/de) now states the real rule, and the empty state explains
+that turns in which the shield had nothing to do write no receipt. The
+subtitle and `docs/ai-act-transparency.md` also name the runtime that never
+writes one: agents on the Claude subscription CLI run without the privacy
+shield (`CliChatAgent` installs no privacy handle), so an empty page there is
+not "nothing to protect". The README
+feature row separates the per-run trace from privacy receipts. The same false
+claim was corrected in `docs/ai-act-transparency.md`, the handoff doc,
+`middleware/.env.example`, the `turnReceiptStore` doc comment and the
+privacy-guard README. The #757 entry further down carries the old wording
+("every completed turn writes its PII-free receipt"). It stays as
+written, as a record of what #757 claimed, but it was never accurate.
+`receiptsCopy.test.ts` fails if either catalog promises a receipt for every
+turn again or drops the shield-activity rule.
+
+Copy only, deliberately. A zero-activity receipt for every turn was considered
+and rejected. Each row enters the #758 hash chain and the signed checkpoints,
+so the change would alter what the chain attests to and multiply retention
+volume for rows that say "nothing happened". That needs its own product
+decision.
+
+### Added — "I'm still here" renews the admin session instead of a re-login (#965)
+
+2026-09-24 — the session-expiry warning used to offer only "Sign in now",
+which sent an operator who was actively working through the login form (and,
+on Entra, a full IdP round trip). The card's primary action is now
+"I'm still here": it calls the new `POST /api/v1/auth/renew`, which re-checks
+the principal (users row active, provider active, whitelist, and for Entra a
+refresh-token redemption at the IdP), writes one `auth.session_renew` audit
+row, and re-mints the cookie with a fresh 4h window. The page stays where it
+is. A refused renewal and the expired overlay still require a real login.
+
+Renewal chains are bounded by an absolute cap measured from the original
+sign-in, carried in a new `auth_time` JWT claim (tokens without it fall back to
+`iat`). New env var **`AUTH_SESSION_MAX_LIFETIME_HOURS`** (default `12`,
+allowed `4`–`168`); see `middleware/.env.example`. `GET /api/v1/auth/me` now
+also returns `renewable_until`, and `POST /api/v1/auth/logout` forgets the
+Entra refresh token so a logout ends the renewal chain. Details and residual
+risks: `docs/security-architecture.md` §10b.
+
+### Changed — Teams provisioning persists a structured error code (#897)
+
+2026-09-24 — the Teams provisioning runner recorded failures only as an English
+sentence in `agent_teams_identities.last_error`, and
+`GET /api/v1/operator/agents/:slug/teams-identity` rebuilt `last_error_detail`
+by parsing that sentence (prefixes, the first `[...]` group, `; retry after Ns`).
+Migration **0060** (`0060_agent_teams_error_code.sql`) adds `error_code TEXT` and
+`error_detail JSONB`; the runner now writes the code and its typed arguments in
+the same UPDATE as the sentence, while it still holds the typed error. The route
+reads the columns (validated on the way out) and falls back to the sentence
+classifier only for rows written before 0060. Each coded write also stores a
+SHA-256 of its sentence inside `error_detail`, and readers trust the code only
+while it matches: an older build rolled back onto a migrated database writes
+`last_error` alone, and its sentence must not be read with the previous
+failure's code. The config-sync stale-warning cleanup now also matches on the
+(trusted) code instead of the sentence prefix. No backfill
+and no CHECK constraint (see the migration header); the wire shape of
+`last_error_detail` is unchanged.
+
+### Fixed — subscription login on the shipped image shows the code field again (#1084)
+
+2026-09-24 — connecting a Claude subscription from **Admin → Providers →
+Subscriptions** dead-ended on every prebuilt image. The CLI bundled there
+(`claude` 2.1.187) prints `Opening browser to sign in…` and `If the browser
+didn't open, visit: …` and then waits at `Paste code here if prompted >` on
+stdin. `startCliLogin` treated those two browser lines as proof of a
+localhost-callback login (the rule came with #1013, which was checked against a
+host-installed 2.1.259, not the image's CLI), reported `codeEntry: false`, and
+the panel showed "no code to paste" plus Cancel. The browser displayed a code
+that could not be entered anywhere, and after the 5-minute poll a code field
+appeared for a session the server had already reaped. The unit fixture that
+should have caught it (`Please visit: …\nPaste code here >`) was not real CLI
+output.
+
+The paste prompt now decides alone: any prompt means `codeEntry: true`, for
+2.1.187 and 2.1.259 alike (the UI polls the login status in parallel, so a
+login that finishes through the browser callback still resolves). The probe no
+longer stops at the first browser line, so a prompt arriving in a later stdout
+chunk still counts. The polling view, used only when no prompt appeared, always
+carries a secondary "paste code instead" field. A poll that ends in timeout,
+`idle`, `expired` or `error` shows Retry instead of a dead field. A wrong code no
+longer marks the server session `invalid`: that status made `markAuthorized`
+refuse the correct retry, so the post-login auto-assign hook (OM-79) never ran
+and the exit handler dropped the session instead of confirming it. The fixtures
+are now the verbatim 2.1.187 output from the container.
+
+### Fixed — dynamic sub-agents on the Anthropic host sent `class:frontier` raw (404) (#1079)
+
+Every dynamic sub-agent on an Anthropic host failed its first real call with
+`404 not_found_error: model: class:frontier`. `SUB_AGENT_MODEL` defaults to the
+class ref `class:frontier`, and `DynamicAgentRuntime` resolved it only in the
+non-Anthropic branch — on the default provider the config string went verbatim
+to api.anthropic.com. Activation succeeded and the tools registered, so the
+failure only surfaced at call time. The provider + model selection now lives in
+`selectSubAgentHost` and resolves the ref on every provider branch through the
+orchestrator's own resolver (`resolveConfiguredModel`, moved into
+`@omadia/llm-provider` and re-exported by `@omadia/orchestrator`) via the new
+`resolveModelRefStrict`. If the registry holds no model at all for the provider
+(its catalog entry was unregistered), the bundled provider's pinned seed model
+for that class is used; with no seed either, activation fails with an error that
+names `SUB_AGENT_MODEL` (or the manifest's `llm.prefers.model`) instead of
+sending a class ref to the vendor. The same guarantee now covers plugin
+`ctx.llm` requests, `VERIFIER_MODEL` (which is also mapped to the configured
+`llm_provider` now, and on an unresolvable ref leaves `verifier@1` unpublished)
+and the orchestrator-extras' fact-extractor / topic-classifier models. Pinning
+`SUB_AGENT_MODEL` to a concrete id is no longer needed as a workaround.
+
+### Fixed — saving, rotating or removing an LLM key takes effect without a restart (#1080)
+
+2026-09-24 — on a stack booted without an LLM key, saving a key in
+`/admin/providers` never armed the orchestrator: every reactivation logged
+`no API key for provider 'anthropic' — chatAgent@1 capability NOT published`
+until the container restarted, while key verification, model discovery and the
+provider badge (which all read the vault directly) looked green. Removing a key
+had the mirror-image bug: the chat kept answering, and billing, with the deleted
+key. The kernel `llmProviderPool` memoises the resolved provider per id,
+including a negative "no key" result, and since #1039 the orchestrator reuses
+that pool instead of building its own, but no production code ever called
+`invalidate`. The concrete vaults (`FileSecretVault`, `InMemorySecretVault`) now
+announce every completed write through a kernel-internal `onWrite` observer
+(not on the `SecretVault` interface). A listener on the orchestrator scope drops
+the matching pool entry, so every write path is covered: the admin settings
+save, the runtime-secrets PATCH, install-time seeding, uninstall purge, the
+OAuth token-store binding and the OAuth broker. The listener runs before the
+write settles, so it lands before any reactivate. An API-key change
+(`provider:<id>/api_key`, legacy `anthropic_api_key`) also clears that
+provider's circuit breaker, because a new key is a new credential. An OAuth
+access-token write only drops the cache entry, since hourly rotation is the same
+credential. `verified_at` writes are ignored. Registering or unregistering a
+provider plugin invalidates its id as well. The shared host
+`anthropicClient`/`llm` is now revoked on key removal: it falls back to
+`ANTHROPIC_API_KEY` when set, otherwise to the unauthenticated client a keyless
+boot builds. Before this fix, OB-61's refresh returned early on a missing key.
+Not covered, and not yet filed as an issue: sub-agents that
+`DynamicAgentRuntime` has already built resolve their provider once at
+`activate()` and keep it until a restart or rebuild. After a keyless boot,
+Anthropic sub-agents stay on the unauthenticated client after a key is saved,
+and non-Anthropic agents whose activation failed are never retried. The open
+item is recorded in `docs/middleware-agent-handoff.md` §13.
+
 ### Fixed — desktop dialogs follow the UI language (#1074)
 
 2026-09-24 — the desktop shell's own dialogs (updater, boot failure, recovery

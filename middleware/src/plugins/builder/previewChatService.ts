@@ -10,6 +10,7 @@ import {
   type LocalSubAgentTool,
 } from '@omadia/orchestrator';
 
+import { recordForeignToolCall } from '../../platform/foreignToolMetrics.js';
 import {
   inferFamilyFromModel,
   warnIfEmptyInputSchema,
@@ -371,6 +372,8 @@ function defaultBuildSubAgent(opts: SubAgentBuildOptions): Askable {
       systemPrompt: opts.systemPrompt,
       model: opts.cliModel,
       tools: opts.tools,
+      // #1072 — see `builderAgent.defaultBuildSubAgent`.
+      onForeignToolUse: (toolName) => recordForeignToolCall(toolName, 'builder-preview'),
     });
   }
   if (!opts.provider) {

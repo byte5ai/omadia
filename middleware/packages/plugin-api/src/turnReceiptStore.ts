@@ -1,16 +1,20 @@
 /**
  * #757 — persistent per-turn audit receipts.
  *
- * The `PrivacyReceipt` (see `privacyReceipt.ts`) is emitted once per turn and
- * was, until #757, attached to the `done` event and then gone — an operator
- * could never answer "what did the system disclose or mask for turn X last
- * Tuesday?". This service persists that receipt, guaranteed per turn, into a
- * kernel-owned store (`turn_receipts`, migration `0039`).
+ * The `PrivacyReceipt` (see `privacyReceipt.ts`) is emitted at most once per
+ * turn and was, until #757, attached to the `done` event and then gone — an
+ * operator could never answer "what did the system disclose or mask for turn X
+ * last Tuesday?". This service persists that receipt into a kernel-owned store
+ * (`turn_receipts`, migration `0039`) for every turn that produces one. The
+ * privacy guard's `finalizeTurn()` produces one only when the shield acted in
+ * the turn (a dataset was interned, a bypass or a tool's structured payload was
+ * recorded, or the prompt was masked); a turn without shield activity has no
+ * receipt and leaves no row (#1081).
  *
  * Deliberately NOT the RunTrace: the trace is best-effort telemetry behind an
  * optional graph sink (`runTraceObservability.ts` documents why it must not be
  * promised as a record). This store has no user-cluster precondition and no
- * optional sink — a turn either lands here or the failure is counted and
+ * optional sink — a receipt either lands here or the failure is counted and
  * logged loudly.
  *
  * The record stays PII-free by construction: it carries the receipt's counts

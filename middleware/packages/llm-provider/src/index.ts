@@ -140,6 +140,15 @@ export {
   type ProviderId,
 } from './modelRegistry.js';
 
+// ---- Runtime: configured model refs → concrete ids (#296, #1079) ----
+export {
+  resolveConfiguredModel,
+  resolveModelIdForProvider,
+  resolveModelRefStrict,
+  UnresolvedModelRefError,
+  type ResolveModelRefStrictOptions,
+} from './configuredModelRef.js';
+
 // ---- Runtime: provider pool + health (#1033) ----
 export {
   createLlmProviderPool,
