@@ -3753,7 +3753,7 @@
       "routingLabel": "Per-turn model routing (Haiku triage)",
       "routingHint": "A cheap Haiku call classifies each turn — simple turns get a cheaper model, complex ones the frontier model.",
       "routingAnthropicOnly": "Only available with Anthropic.",
-      "classGroup": "Follow a model class (auto-updates)",
+      "classGroup": "Follow a model class (applies on next activation)",
       "modelsGroup": "Pinned models",
       "classOption": "{class} (auto → {model})",
       "classOptionUnresolved": "{class} (auto)",

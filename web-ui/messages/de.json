@@ -3753,7 +3753,7 @@
       "routingLabel": "Per-Turn Model-Routing (Haiku-Triage)",
       "routingHint": "Ein günstiger Haiku-Call klassifiziert jeden Turn — einfache Turns bekommen ein günstigeres Modell, komplexe das Frontier-Modell.",
       "routingAnthropicOnly": "Nur mit Anthropic verfügbar.",
-      "classGroup": "Modellklasse folgen (aktualisiert sich automatisch)",
+      "classGroup": "Modellklasse folgen (greift bei der nächsten Aktivierung)",
       "modelsGroup": "Feste Modelle",
       "classOption": "{class} (automatisch → {model})",
       "classOptionUnresolved": "{class} (automatisch)",

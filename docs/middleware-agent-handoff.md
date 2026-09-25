@@ -1259,9 +1259,9 @@ POST fail-closed mit `400 providers.model_class_unavailable`. Qualifizierte IDs
 der POST-Antwort). `GET /admin/providers` liefert pro Assignment `model` (der
 gespeicherte Ref) plus `resolvedModel` (derselbe Resolver wie zur Laufzeit,
 gegen den AKTUELLEN Katalog; Plugins, die bei der Aktivierung auflösen, behalten
-ihr Modell bis zur nächsten Reaktivierung bzw. zum Neustart — verschiebt die
-Model-Discovery (`modelCatalogSync`) danach das Ziel einer Klasse, kann das
-Label vom laufenden Modell abweichen; `null` wenn nichts gesetzt ist oder der
+ihr Modell bis zur nächsten Reaktivierung — verschiebt die Model-Discovery
+(`modelCatalogSync`) danach das Ziel einer Klasse, kann das Label vom laufenden
+Modell abweichen, siehe §13 „Klassen-Refs veralten nach Discovery“; `null` wenn nichts gesetzt ist oder der
 Ref nicht auflösbar ist) und pro Provider `classDefaults` (Klasse →
 `modelId` via `modelForClass`). Die Admin-UI rendert Klassen als eigene,
 beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
@@ -2705,6 +2705,24 @@ Allowlist in `src/platform/pluginServiceGrants.ts`, obwohl es beide eager
 konsumiert. Zwei Zeilen `optional_requires` in dessen Manifest würden diese
 Allowlist-Zeilen mit demselben Mechanismus leeren, den OM-102 für extras
 benutzt hat.
+
+**Klassen-Refs veralten nach Discovery (#1083, offen).** Orchestrator, Verifier
+und extras lösen einen Klassen-Ref (`class:frontier` …) **einmal bei der
+Aktivierung** auf. Verschiebt `modelCatalogSync` danach das Ziel der Klasse,
+laufen sie auf dem alten Modell weiter, während `GET /admin/providers` das
+`resolvedModel` (und damit das Label `Frontier (auto → X)`) gegen den
+AKTUELLEN Katalog berechnet — das Label kann dem laufenden Modell also
+vorauseilen. Ein Neustart repariert das nicht verlässlich: Discovery-Ergebnisse
+werden nicht persistiert, und `void modelCatalogSync.refreshAll()` in
+`src/index.ts` läuft beim Boot fire-and-forget, während die Plugin-Aktivierung
+später awaited wird — sie kann gegen den gebündelten Katalog auflösen. Eine
+automatische Reaktivierung nach Discovery wurde in #1083 bewusst wieder
+entfernt, weil sie so nicht sicher ist. Voraussetzungen für eine sichere
+Variante: (1) nach einer Orchestrator-Reaktivierung die Kernel-Hydration erneut
+ausführen (Domain-Tools, `dynamicAgentRuntime.attachOrchestrator`,
+`setOnAgentBuilt`) — heute läuft sie nur beim Boot; (2) den Status nach der
+Reaktivierung prüfen, statt Erfolg anzunehmen; (3) den Orchestrator **nach**
+Verifier und extras reaktivieren, damit er deren neue Instanzen bindet.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

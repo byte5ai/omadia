@@ -55,8 +55,13 @@ instead of normalising it to a concrete id, returns `resolvedModel`, and
 rejects a class ref the provider cannot serve with any model with
 `400 providers.model_class_unavailable`. Qualified ids and aliases are still
 normalised. The orchestrator, verifier and background scorer resolve a class
-ref once, at activation, and keep that model until they are reactivated or the
-server restarts. The in-app issue reporter's reformulation now resolves the
+ref once, at activation, and keep that model until the plugin is reactivated
+(e.g. by re-saving the assignment). The admin label is computed from the
+current catalog, so when model discovery later moves a class, the
+`(auto → X)` label can run ahead of the model the plugin is actually running
+until it is reactivated. A server restart does not reliably converge either:
+discovery results are not persisted and boot discovery runs fire-and-forget,
+so activation can resolve against the bundled catalog. The in-app issue reporter's reformulation now resolves the
 orchestrator's model ref too, instead of sending a class ref raw to the vendor.
 
 ### Fixed — dynamic sub-agents on the Anthropic host sent `class:frontier` raw (404) (#1079)
