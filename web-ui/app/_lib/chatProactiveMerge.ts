@@ -8,8 +8,9 @@ import type { ChatSession, Message } from './chatSessions';
  * persisted session on the server (a `proactive` assistant message). The
  * web UI hydrates once per page load, so without a re-read the delivery only
  * shows after a full reload. The chat page re-reads the active session when it
- * mounts, after hydration, on chat switch and when the tab becomes visible
- * again, folds in the document a PUT answers with, and merges ADDITIVELY:
+ * mounts, after hydration, on chat switch, when the tab becomes visible
+ * again and when the window regains focus, folds in the document a PUT
+ * answers with, and merges ADDITIVELY:
  * remote proactive messages missing locally are inserted, every other remote
  * difference is ignored — local state stays the source of truth while the
  * app runs.

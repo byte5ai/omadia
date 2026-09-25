@@ -105,9 +105,12 @@ export function useProactiveRefresh(deps: ProactiveRefreshDeps): ProactiveRefres
     [bumpClearEpoch],
   );
 
-  // Session objects a fold produced. A state change whose changed chats are
-  // all in here was made by folds alone (`isFoldOnlyChange`).
-  const foldedRef = useRef<WeakSet<ChatSession>>(new WeakSet());
+  // Maps each session object a fold produced to the object it was folded
+  // from. A state change is made of folds alone (`isFoldOnlyChange`) only when
+  // every changed chat leads back through this chain to its previous object:
+  // a fold applied on top of another edit (a settled title, batched into the
+  // same render) must still be written whole.
+  const foldedFromRef = useRef<WeakMap<ChatSession, ChatSession>>(new WeakMap());
 
   // Additive only (`mergeProactiveFromRemote`), and a session with a turn in
   // flight is left alone — the stream owns that state until it finishes.
@@ -122,7 +125,7 @@ export function useProactiveRefresh(deps: ProactiveRefreshDeps): ProactiveRefres
         const next = prev.map((s) => {
           if (s.id !== id || s.messages.some((m) => m.streaming === true)) return s;
           const merged = mergeProactiveFromRemote(s, remote);
-          if (merged !== s) foldedRef.current.add(merged);
+          if (merged !== s) foldedFromRef.current.set(merged, s);
           return merged;
         });
         return next.every((s, i) => s === prev[i]) ? prev : next;
@@ -133,12 +136,16 @@ export function useProactiveRefresh(deps: ProactiveRefreshDeps): ProactiveRefres
   );
 
   const isFoldOnlyChange = useCallback(
-    (prev: readonly ChatSession[], next: readonly ChatSession[]): boolean =>
-      prev.length === next.length &&
-      next.every(
-        (s, i) =>
-          s === prev[i] || (s.id === prev[i]?.id && foldedRef.current.has(s)),
-      ),
+    (prev: readonly ChatSession[], next: readonly ChatSession[]): boolean => {
+      const foldedFrom = foldedFromRef.current;
+      const reachedByFolds = (s: ChatSession, before: ChatSession | undefined): boolean => {
+        for (let cur: ChatSession | undefined = s; cur !== undefined; cur = foldedFrom.get(cur)) {
+          if (cur === before) return true;
+        }
+        return false;
+      };
+      return prev.length === next.length && next.every((s, i) => reachedByFolds(s, prev[i]));
+    },
     [],
   );
 

@@ -2982,6 +2982,8 @@ Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
   und die Routine wird pausiert).
 - **`checkDeliverable` liest "Datei fehlt" als "Chat gelöscht"** und pausiert die Routine.
   Existiert der Chat nur im Browser (sein erster PUT scheiterte), wird eine gültige Routine
+  pausiert. Gleiches nach jedem Neustart mit `MEMORY_BACKEND=inmemory` (oder persistierter
+  Operator-Wahl `inmemory`): alle Chat-Sessions sind weg, der erste Fire vor einem Reload
   pausiert. Abhilfe: Tombstone beim `DELETE` oder nicht-pausierender Fehler bei bloßem Fehlen.
 - **Konkurrierendes Umbenennen bei nicht synchronisiertem Titel.** Hält dieser Browser ein
   Umbenennen, dessen PUT scheiterte (`titleUnsynced`), und hat ein anderes Gerät den Chat

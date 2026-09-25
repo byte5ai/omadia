@@ -27,6 +27,8 @@ let server: ChatSession;
 let putStatus = 200;
 let putBodies: Record<string, unknown>[] = [];
 let requests: string[] = [];
+// When set, a PUT waits for this answer instead of answering at once.
+let putAnswer: Promise<Response> | null = null;
 
 function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -39,6 +41,7 @@ beforeEach(() => {
   putStatus = 200;
   putBodies = [];
   requests = [];
+  putAnswer = null;
   window.localStorage.clear();
   server = { id: ID, title: 'Old', createdAt: 1_000, updatedAt: 2_000, messages: [USER_TURN] };
   vi.spyOn(globalThis, 'fetch').mockImplementation(
@@ -49,6 +52,7 @@ beforeEach(() => {
       if (method === 'PUT') {
         putBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         if (putStatus !== 200) return Promise.resolve(new Response('', { status: putStatus }));
+        if (putAnswer) return putAnswer;
         return Promise.resolve(json({ ok: true }));
       }
       if (url === '/bot-api/chat/sessions') {
@@ -70,6 +74,12 @@ async function hydrated(): Promise<ReturnType<typeof renderHook<ReturnType<typeo
     expect(view.result.current.hydrating).toBe(false);
   });
   return view;
+}
+
+function storedChat(): Record<string, unknown> | undefined {
+  const raw = window.localStorage.getItem(LS_SESSIONS);
+  const all = raw ? (JSON.parse(raw) as Record<string, unknown>[]) : [];
+  return all.find((s) => s['id'] === ID);
 }
 
 function chat(view: { result: { current: ReturnType<typeof useChatSessions> } }): ChatSession | undefined {
@@ -102,6 +112,38 @@ describe('useChatSessions — rename sync (#1071)', () => {
 
     expect(chat(view)?.title).toBe('Quarterly');
     expect(chat(view)?.titleUnsynced).toBeUndefined();
+  });
+
+  it('stores the settled title when the rename answer also carries a new delivery', async () => {
+    const view = await hydrated();
+    let answer: (res: Response) => void = () => undefined;
+    putAnswer = new Promise<Response>((resolve) => {
+      answer = resolve;
+    });
+
+    let renamed: Promise<void> = Promise.resolve();
+    act(() => {
+      renamed = view.result.current.renameSession(ID, 'Quarterly');
+    });
+    // The slow PUT outlives the debounced write of the still-unsynced rename.
+    await waitFor(() => {
+      expect(storedChat()?.['titleUnsynced']).toBe(true);
+    });
+
+    const merged = { ...server, title: 'Quarterly', updatedAt: 9_000, messages: [USER_TURN, DELIVERY] };
+    await act(async () => {
+      answer(json({ ok: true, session: merged }));
+      await renamed;
+    });
+
+    expect(chat(view)?.titleUnsynced).toBeUndefined();
+    expect(chat(view)?.messages.map((m) => m.id)).toEqual(['u1', DELIVERY.id]);
+    // Settling the title is a local edit, not a fold: the stored copy must
+    // lose the marker too, or a later hydration keeps a stale title.
+    await waitFor(() => {
+      expect(storedChat()).not.toHaveProperty('titleUnsynced');
+    });
+    expect(storedChat()?.['title']).toBe('Quarterly');
   });
 
   it('hydration keeps an unsynced rename although a delivery made the server copy newer', async () => {

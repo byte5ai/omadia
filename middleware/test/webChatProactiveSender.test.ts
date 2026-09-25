@@ -149,6 +149,18 @@ describe('#1071 — web chat proactive sender', () => {
     assert.equal((await store.get(SESSION_ID))?.messages.length, 2);
   });
 
+  it('names the interactive element of a question-only answer instead of calling it empty', async () => {
+    const store = await seededStore();
+    const sender = createWebChatProactiveSender({ getStore: () => store, warn: () => {} });
+    const message = { text: '', interactive: { kind: 'choice' } } as unknown as SemanticAnswer;
+
+    await assert.rejects(
+      sender.send({ conversationRef: REF, message, routine: ROUTINE }),
+      /only an interactive 'choice', which the web chat delivery cannot carry/,
+    );
+    assert.equal((await store.get(SESSION_ID))?.messages.length, 2);
+  });
+
   // Dropping content silently (or only in an info-level log) left the reader
   // of the chat with a report that pointed at a chart or a button that never
   // arrived. Warn at warn level AND record it on the marker, which the web UI

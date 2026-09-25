@@ -12,8 +12,9 @@ import { ProactiveTargetGoneError, type ProactiveSender } from './proactiveSende
  * `proactive`, so the user sees it when they open or re-focus that chat.
  * There is no live push: the web chat has no realtime channel (the WebSocket
  * registry serves channel plugins, SSE serves the builder), so the web UI
- * re-reads the active chat when /chat mounts, after hydration, on chat switch
- * and on visibility change, and folds deliveries into its local copy.
+ * re-reads the active chat when /chat mounts, after hydration, on chat switch,
+ * on visibility change and on window focus, and folds deliveries into its
+ * local copy.
  *
  * Deliberate limits:
  *  - A deleted chat is NOT recreated. `checkDeliverable` notices it before
@@ -31,8 +32,8 @@ import { ProactiveTargetGoneError, type ProactiveSender } from './proactiveSende
  *    delivery's `proactive` marker (`droppedAttachments`,
  *    `droppedInteractive`), which the web UI names next to the badge in the
  *    reader's language — the stored text stays the routine's own output. An
- *    empty answer throws so the run is not recorded as `ok` with nothing
- *    delivered.
+ *    answer with no text (empty, or only attachments / an interactive card)
+ *    throws so the run is not recorded as `ok` with nothing delivered.
  */
 
 /** Routine `channel` value of the browser chat. */
@@ -94,6 +95,21 @@ function goneError(sessionId: string): ProactiveTargetGoneError {
   return new ProactiveTargetGoneError(`web chat conversation '${sessionId}' no longer exists`);
 }
 
+/**
+ * Why an answer with no text cannot be delivered. Names the attachments and
+ * the interactive element the web chat cannot carry, so `last_run_error`
+ * does not call a question-only answer "empty".
+ */
+function emptyOutputError(attachmentCount: number, interactiveKind: string | undefined): string {
+  const carried = [
+    ...(attachmentCount > 0 ? [`attachments (${String(attachmentCount)})`] : []),
+    ...(interactiveKind ? [`an interactive '${interactiveKind}'`] : []),
+  ];
+  return carried.length > 0
+    ? `routine produced only ${carried.join(' and ')}, which the web chat delivery cannot carry; nothing was delivered`
+    : 'routine produced an empty answer; nothing was delivered to the web chat';
+}
+
 export function createWebChatProactiveSender(
   opts: WebChatProactiveSenderOptions,
 ): ProactiveSender {
@@ -131,11 +147,7 @@ export function createWebChatProactiveSender(
       // as `ok` while the user receives nothing (a diagram- or file-only turn
       // has an empty `text`). Thrown, it lands in `last_run_error`.
       if (message.text.trim().length === 0) {
-        throw new Error(
-          attachmentCount > 0
-            ? `routine produced only attachments (${String(attachmentCount)}), which the web chat delivery cannot carry; nothing was delivered`
-            : 'routine produced an empty answer; nothing was delivered to the web chat',
-        );
+        throw new Error(emptyOutputError(attachmentCount, message.interactive?.kind));
       }
       const where = `chat '${sessionId}'${routine ? ` (routine ${routine.id})` : ''}`;
       if (attachmentCount > 0) {
