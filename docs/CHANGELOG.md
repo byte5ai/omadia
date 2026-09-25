@@ -36,6 +36,33 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
+
+2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
+effect on deployments with a database. The orchestrator plugin passed the
+parsed value to the default agent and into the registry's
+`defaultRuntimeConfig`. But `buildForAgent` in `registry/applyDiff.ts` copies
+the runtime knobs into `buildOrchestratorForAgent` one by one, and
+`cliTurnSeconds` was not on that list. With a DB every agent is built there,
+including the web chat's fallback agent, so a CLI turn still ran under the ENV
+value or the 600 s default. It is now forwarded exactly like `maxTurnSeconds`.
+The `> 0` rule and the conversion to `spawnTimeoutMs` stay in
+`buildOrchestratorForAgent`, so an unset value still leaves the ENV override
+reachable.
+
+The settings field itself could destroy the value it edits. Input and Save
+were locked only while the config was loading. After a *failed* load the field
+stayed empty and Save stayed enabled, so one click PATCHed
+`cli_turn_seconds: null` and showed "Saved". Save now stays disabled until a
+load succeeds, and a "Load again" button retries. Validation used `parseInt`,
+so `240.5` was saved verbatim and `1e3` read as 1. Only whole numbers from 30
+to 3600 are accepted now, and text a number input cannot parse
+(`validity.badInput`) no longer counts as clearing the field. A stored
+fractional value is shown as the orchestrator reads it (`Number()`), not
+truncated. Both failure paths had shown the raw exception as the headline.
+They now show localized en/de copy through the shared `ErrorHelp`, with the
+redacted detail behind "Details for support".
+
 ### Changed — WebSocket frames capped at 32 MiB, per-route WebSocket auth (Refs #746)
 
 2026-09-24 — `WebSocketRegistry` (the process's only `upgrade` listener) is now
@@ -267,18 +294,9 @@ they cover turns them red.
 - CI: `PG_TEST_FLOOR` 281 → 365 (main measured 359, plus 6 new Postgres tests).
 
 Tests only; no production code changed. Writing the tests surfaced two
-pre-existing defects that are deliberately not fixed here; both are recorded as
-#1077 follow-ups in `docs/middleware-agent-handoff.md` §13:
-
-- `registry/applyDiff.ts` `buildForAgent` forwards the loop guards,
-  `maxTurnSeconds` and `directLineSticky` from the registry runtime defaults,
-  but not `cliTurnSeconds`. Every Agent the registry builds ignores the turn
-  budget, and with a database the web chat runs on the registry's fallback
-  Agent, so on those deployments the OM-104 setting has no effect.
-- `TurnBudgetField` keeps Save enabled after a failed load; saving then sends
-  `null` and wipes the stored budget while the field reads "Saved". It also
-  stores a fractional entry such as `240.5` verbatim, and shows raw exception
-  text instead of a catalog message.
+pre-existing defects, both fixed by the companion change in the entry above:
+`buildForAgent` did not forward `cliTurnSeconds` to registry-built Agents, and
+`TurnBudgetField` could wipe the stored budget after a failed load.
 
 ### Fixed — plugin-office/web-search Hub drift: lost setup guide restored, versions bumped, build-zip + drift guards (#1075)
 
