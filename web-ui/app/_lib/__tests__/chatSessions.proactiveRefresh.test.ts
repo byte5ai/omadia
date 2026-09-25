@@ -129,6 +129,9 @@ describe('useChatSessions — proactive re-read (#1071)', () => {
     });
     expect(messagesOf(view, ID_B).at(-1)?.proactive?.routineName).toBe('Daily');
     expect(puts).toEqual([]);
+    // The fold keeps the local clock: had this chat's last turn PUT failed,
+    // the next hydration must still see the server as newer and reconcile.
+    expect(view.result.current.sessions.find((s) => s.id === ID_B)?.updatedAt).toBe(1_500);
   });
 
   it('hydration keeps client-only fields when the server copy is newer only by a delivery', async () => {
@@ -201,6 +204,10 @@ describe('useChatSessions — proactive re-read (#1071)', () => {
     await waitFor(() => {
       expect(puts.some((url) => url.endsWith(`/${ID_B}`))).toBe(true);
     });
+    // The pushed copy carries the server's clock (never winds it back); the
+    // local one keeps its own, so a failed push is retried on the next load.
+    expect(putBodies.find((b) => b.id === ID_B)?.updatedAt).toBe(9_000);
+    expect(view.result.current.sessions.find((s) => s.id === ID_B)?.updatedAt).toBe(2_200);
   });
 
   it('hydration lets the mirror win over a partial local answer (mid-stream reload)', async () => {
@@ -306,6 +313,41 @@ describe('useChatSessions — proactive re-read (#1071)', () => {
     await waitFor(() => {
       expect(messagesOf(view, ID_B).map((m) => m.id)).toEqual([later.id]);
     });
+  });
+
+  it('renaming a cleared chat keeps a delivery the server appended after the clear', async () => {
+    const view = await hydrated();
+    await act(async () => {
+      await view.result.current.clearMessages(ID_B);
+    });
+    // The routine fires after the clear; this tab has not re-read yet.
+    serverB = { ...serverB, updatedAt: 12_000, messages: [DELIVERY] };
+    putBodies = [];
+
+    await act(async () => {
+      await view.result.current.renameSession(ID_B, 'Reports');
+    });
+
+    // An empty PUT would be read as "clear chat" and delete the delivery.
+    const body = putBodies.find((b) => b.id === ID_B);
+    expect(body?.title).toBe('Reports');
+    expect(body?.messages.map((m) => m.id)).toEqual([DELIVERY.id]);
+    expect(messagesOf(view, ID_B).map((m) => m.id)).toEqual([DELIVERY.id]);
+  });
+
+  it('renaming a cleared chat with nothing new on the server still PUTs the title', async () => {
+    const view = await hydrated();
+    await act(async () => {
+      await view.result.current.clearMessages(ID_B);
+    });
+    serverB = { ...serverB, updatedAt: 12_000, messages: [] };
+    putBodies = [];
+
+    await act(async () => {
+      await view.result.current.renameSession(ID_B, 'Reports');
+    });
+
+    expect(putBodies.find((b) => b.id === ID_B)).toMatchObject({ title: 'Reports', messages: [] });
   });
 
   it('folds a delivery the server merged into its PUT answer', async () => {

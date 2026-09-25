@@ -348,7 +348,13 @@ never created.
   delivery leaves the session state untouched (no re-render, no localStorage
   write), so a stale tab regaining focus cannot overwrite another tab's stored
   chats. A re-read or PUT answer requested before "clear chat" is discarded, so
-  a cleared delivery does not come back.
+  a cleared delivery does not come back. A fold keeps the browser's own
+  `updatedAt`, so a turn whose PUT failed still triggers the next hydration's
+  catch-up PUT (which carries the server's clock and, like a same-turns fold,
+  keeps the server's title). Renaming a cleared chat re-reads it first: an empty
+  PUT means "clear chat", so a delivery that arrived after the clear would
+  otherwise be deleted. A chat holding only deliveries still counts as empty,
+  so its first real turn names it and ships the selected agent.
 - **The "Run now" notice no longer promises ~30 seconds** for a web routine:
   the result shows when that chat is next opened or focused.
 - **`PUT /api/chat/sessions/:id` merges instead of overwriting**

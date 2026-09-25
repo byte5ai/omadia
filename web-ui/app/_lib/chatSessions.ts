@@ -913,6 +913,13 @@ export function useChatSessions(): UseChatSessionsResult {
   // Debounced localStorage writes. Streaming a long answer triggers many
   // state updates; we don't need to serialize on every keystroke.
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest committed sessions, for async actions that must build a request
+  // body from state (a value captured inside a `setSessions` updater is only
+  // there when React runs the updater eagerly, which it does not guarantee).
+  const sessionsRef = useRef<ChatSession[]>(sessions);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
   useEffect(() => {
     if (hydrating) return;
     if (persistTimerRef.current !== null) clearTimeout(persistTimerRef.current);
@@ -1001,7 +1008,13 @@ export function useChatSessions(): UseChatSessionsResult {
                 const { session: reconciled, pushLocal } = reconcileNewerRemote(l, remote);
                 merged.push(reconciled);
                 if (pushLocal) {
-                  putRemoteSession(reconciled).catch((err: unknown) => {
+                  // The local copy keeps its older clock so a failed push is
+                  // retried by the next hydration; the pushed copy carries
+                  // the server's, so the catch-up never winds it back.
+                  putRemoteSession({
+                    ...reconciled,
+                    updatedAt: Math.max(reconciled.updatedAt, r.updatedAt),
+                  }).catch((err: unknown) => {
                     console.warn(
                       '[chat-sessions] backend catch-up put failed:',
                       err instanceof Error ? err.message : err,
@@ -1122,30 +1135,6 @@ export function useChatSessions(): UseChatSessionsResult {
     [],
   );
 
-  const renameSession = useCallback(
-    async (id: string, title: string): Promise<void> => {
-      const trimmed = title.trim().length === 0 ? 'Neuer Chat' : title.trim();
-      let updated: ChatSession | undefined;
-      setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id !== id) return s;
-          updated = { ...s, title: trimmed, updatedAt: Date.now() };
-          return updated;
-        }),
-      );
-      if (updated) {
-        try {
-          await putRemoteSession(updated);
-        } catch (err) {
-          console.warn(
-            '[chat-sessions] rename PUT failed:',
-            err instanceof Error ? err.message : err,
-          );
-        }
-      }
-    },
-    [],
-  );
 
   // #1071 — per-session clear epoch, bumped by `clearMessages`. A re-read or
   // PUT answer requested before a clear still carries the deliveries the user
@@ -1222,6 +1211,55 @@ export function useChatSessions(): UseChatSessionsResult {
       });
     },
     [clearEpochOf],
+  );
+
+  // #1071 — the server reads a PUT with no messages as "clear chat" and drops
+  // its routine deliveries. Renaming a cleared chat PUTs exactly that, so a
+  // delivery the server appended after the clear would vanish without a
+  // trace. Re-read first and send the copy with those deliveries folded in
+  // (and show them). A clear since `epoch` means the user wants them gone.
+  const withServerDeliveries = useCallback(
+    async (local: ChatSession, epoch: number): Promise<ChatSession> => {
+      const remote = await fetchRemoteSession(local.id).catch((err: unknown) => {
+        console.warn(
+          '[chat-sessions] re-read before rename failed:',
+          err instanceof Error ? err.message : err,
+        );
+        return null;
+      });
+      if (!remote || clearEpochOf(local.id) !== epoch) return local;
+      const folded = mergeProactiveFromRemote(local, remote);
+      if (folded !== local) foldProactive(local.id, remote, epoch);
+      return folded;
+    },
+    [clearEpochOf, foldProactive],
+  );
+
+  const renameSession = useCallback(
+    async (id: string, title: string): Promise<void> => {
+      const trimmed = title.trim().length === 0 ? 'Neuer Chat' : title.trim();
+      const epoch = clearEpochOf(id);
+      const current = sessionsRef.current.find((s) => s.id === id);
+      if (!current) return;
+      const updatedAt = Date.now();
+      const updated: ChatSession = { ...current, title: trimmed, updatedAt };
+      setSessions((prev) =>
+        prev.map((s) => (s.id === id ? { ...s, title: trimmed, updatedAt } : s)),
+      );
+      try {
+        const body =
+          updated.messages.length === 0
+            ? await withServerDeliveries(updated, epoch)
+            : updated;
+        await putRemoteSession(body);
+      } catch (err) {
+        console.warn(
+          '[chat-sessions] rename PUT failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    },
+    [clearEpochOf, withServerDeliveries],
   );
 
   // #617 — commit-ordered persistence. A background turn is followed by no

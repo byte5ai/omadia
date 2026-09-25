@@ -17,7 +17,8 @@ import type { ApprovalReminder } from '@omadia/plugin-api';
 export interface ProactiveSender {
   /**
    * Channel id this sender handles. Must match the `channel` column on
-   * routine rows it's expected to deliver to. Today: `'teams'`.
+   * routine rows it's expected to deliver to — e.g. `'teams'`, `'telegram'`,
+   * or `'web'` for the kernel's browser-chat sender.
    */
   readonly channel: string;
 

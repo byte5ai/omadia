@@ -20,6 +20,12 @@ import type { ChatSession, Message } from './chatSessions';
  *
  * Returns `local` itself when there is nothing to add, so a re-read that
  * finds nothing new causes no state change.
+ *
+ * `updatedAt` stays the LOCAL value: a fold is not a sync. Raising it to the
+ * server's would hide a turn whose PUT failed (the CLI runtime has no
+ * SessionLogger mirror) from the next hydration, which pushes a local copy
+ * back only when it is newer or holds turns the server lacks — see
+ * `reconcileNewerRemote`.
  */
 export function mergeProactiveFromRemote(
   local: ChatSession,
@@ -39,11 +45,7 @@ export function mergeProactiveFromRemote(
     if (at === -1) messages.push(m);
     else messages.splice(at, 0, m);
   }
-  return {
-    ...local,
-    messages,
-    updatedAt: Math.max(local.updatedAt, remote.updatedAt),
-  };
+  return { ...local, messages };
 }
 
 /**
@@ -83,7 +85,7 @@ export interface NewerRemoteReconciliation {
  *   delivery then made the server copy newer. Keep the local copy (its turns
  *   exist nowhere else), fold the deliveries in and ask for a catch-up PUT,
  *   exactly the "backend is behind" healing a chat got before deliveries
- *   could bump `updatedAt`.
+ *   could bump `updatedAt`. The title follows the server here too.
  * - Anything else — a turn from another device, an answer the local copy
  *   only holds partially under either id (a mid-stream reload, or a tab closed
  *   before the debounced local write caught up: the server's full answer must
@@ -105,13 +107,21 @@ export function reconcileNewerRemote(
       session: {
         ...merged,
         title: remote.title,
-        updatedAt: Math.max(merged.updatedAt, remote.updatedAt),
+        // In sync: adopt the server's clock so the next load does not re-read.
+        // A pending catch-up PUT keeps the local one, so a failed PUT is
+        // retried by the next hydration instead of looking settled.
+        updatedAt: matchedMirror ? merged.updatedAt : Math.max(merged.updatedAt, remote.updatedAt),
       },
       pushLocal: matchedMirror,
     };
   }
   if (isPrefix && remoteTurns.length > 0 && remoteTurns.length < localTurns.length) {
-    return { session: mergeProactiveFromRemote(local, remote), pushLocal: true };
+    // Same title rule as above: the newer server copy carries the latest
+    // rename, and the catch-up PUT must not revert it.
+    return {
+      session: { ...mergeProactiveFromRemote(local, remote), title: remote.title },
+      pushLocal: true,
+    };
   }
   if (remoteTurns.length === 0 && localTurns.length > 0) {
     console.warn(
@@ -154,4 +164,13 @@ function isMirroredTurn(m: Message): boolean {
  *  streaming, errored or partial local answer is not the mirrored one. */
 function sameFinishedTurn(remote: Message, local: Message): boolean {
   return remote.role === local.role && local.error !== true && sameContent(remote, local);
+}
+
+/**
+ * #1071 — a chat holding only routine deliveries has no conversation yet
+ * (the rule `buildOrchestrator` applies server-side): its first real turn
+ * still names the chat and ships the selected agent.
+ */
+export function hasNoTurns(messages: readonly Message[]): boolean {
+  return messages.every((m) => m.proactive !== undefined);
 }

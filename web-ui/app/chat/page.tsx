@@ -39,6 +39,7 @@ import { Markdown } from '../_components/Markdown';
 import { resetChatSession, steerActiveTurn } from '../_lib/api';
 import { isSendKey } from '../_lib/composerKeys';
 import { parseTurnIncomplete } from '../_lib/turnIncomplete';
+import { hasNoTurns } from '../_lib/chatProactiveMerge';
 import {
   deriveTitle,
   newSessionId,
@@ -265,6 +266,7 @@ export default function ChatPage(): React.ReactElement {
   const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [
     activeSession.messages,
   ]);
+  const activeHasNoTurns = hasNoTurns(activeSession.messages);
 
   // Slice 4c — clear the auto-promoted-MK marker on a message after the
   // user Discards it. The manual save-as-memory button then comes back so
@@ -309,7 +311,7 @@ export default function ChatPage(): React.ReactElement {
       };
 
       mutateById(targetSessionId, (session) => {
-        const isFirst = session.messages.length === 0;
+        const isFirst = hasNoTurns(session.messages);
         // Strip pendingUserChoice, pendingMcpInput AND followUpOptions from
         // older assistant messages so the button rows / input forms disappear as
         // soon as the user commits to a choice or types a fresh message. Lives
@@ -334,7 +336,8 @@ export default function ChatPage(): React.ReactElement {
       // longer kills the stream.
       // Phase A — only the FIRST turn ships agentSlug; subsequent turns
       // use the session-pinned snapshot on the server side.
-      const isFirstTurn = activeSession.messages.length === 0;
+      // #1071 — a cleared chat holding only routine deliveries counts as empty.
+      const isFirstTurn = activeHasNoTurns;
       streamStore.startTurn({
         sessionId: targetSessionId,
         pendingMessageId: pendingId,
@@ -352,7 +355,7 @@ export default function ChatPage(): React.ReactElement {
       activeId,
       mutateById,
       streamStore,
-      activeSession.messages.length,
+      activeHasNoTurns,
       selectedAgentSlug,
       scrollToBottom,
     ],

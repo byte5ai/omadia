@@ -1,5 +1,5 @@
 import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
-import type { ChatSessionStore } from '@omadia/orchestrator';
+import { isValidSessionId, type ChatSessionStore } from '@omadia/orchestrator';
 
 import type { ProactiveSender } from './proactiveSender.js';
 
@@ -44,8 +44,6 @@ export interface WebChatConversationRef {
   sessionId?: string;
 }
 
-const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
-
 export function webChatConversationRef(
   sessionScope: string,
   sessionId?: string,
@@ -68,7 +66,7 @@ function targetSessionId(ref: unknown): string {
   }
   const r = ref as Record<string, unknown>;
   const sessionId = r['sessionId'];
-  if (r['kind'] !== 'http-chat' || typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) {
+  if (r['kind'] !== 'http-chat' || typeof sessionId !== 'string' || !isValidSessionId(sessionId)) {
     throw new Error(WEB_CHAT_NO_CONVERSATION_ERROR);
   }
   return sessionId;

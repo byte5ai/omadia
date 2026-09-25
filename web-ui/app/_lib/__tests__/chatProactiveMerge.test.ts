@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { mergeProactiveFromRemote, reconcileNewerRemote } from '../chatProactiveMerge';
+import { hasNoTurns, mergeProactiveFromRemote, reconcileNewerRemote } from '../chatProactiveMerge';
 import type { ChatSession, Message } from '../chatSessions';
 
 /**
@@ -30,7 +30,9 @@ describe('mergeProactiveFromRemote', () => {
     const merged = mergeProactiveFromRemote(local, remote);
 
     expect(merged.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'p1', 'u2', 'a2']);
-    expect(merged.updatedAt).toBe(40);
+    // A fold is not a sync: raising the clock to the server's would hide a
+    // local turn whose PUT failed from the next hydration's catch-up.
+    expect(merged.updatedAt).toBe(30);
   });
 
   it('appends at the end when no later user message exists', () => {
@@ -86,12 +88,29 @@ describe('reconcileNewerRemote', () => {
   it('keeps a local turn the server never received and asks for a catch-up PUT', () => {
     // The turn-2 PUT failed; a delivery then made the server copy newer.
     const local = session([U1, A1, U2, A2], 30);
-    const remote = session([U1, A1, DELIVERY], 40);
+    const remote = { ...session([U1, A1, DELIVERY], 40), title: 'Renamed' };
 
     const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
 
     expect(result.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'p1']);
     expect(pushLocal).toBe(true);
+    // The catch-up PUT must not revert a rename made on another device …
+    expect(result.title).toBe('Renamed');
+    // … and a failed catch-up must still look unsettled to the next load.
+    expect(result.updatedAt).toBe(30);
+  });
+
+  it('keeps the local clock when a mirrored turn still needs its catch-up PUT', () => {
+    const local = session([U1, A1, U2, A2], 30);
+    const remote = session(
+      [U1, A1, msg('srv-u-12', 'user', 12, { content: 'u2' }), msg('srv-a-14', 'assistant', 12, { content: 'a2' }), DELIVERY],
+      40,
+    );
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(pushLocal).toBe(true);
+    expect(result.updatedAt).toBe(30);
   });
 
   it('takes the server copy when it has a turn the local copy lacks', () => {
@@ -224,5 +243,17 @@ describe('reconcileNewerRemote', () => {
     // Dropping local turns is never silent.
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('holds no turns'));
     warn.mockRestore();
+  });
+});
+
+describe('hasNoTurns', () => {
+  it('counts a chat holding only routine deliveries as empty', () => {
+    expect(hasNoTurns([])).toBe(true);
+    expect(hasNoTurns([DELIVERY])).toBe(true);
+  });
+
+  it('counts any real turn', () => {
+    expect(hasNoTurns([DELIVERY, msg('u1', 'user', 20)])).toBe(false);
+    expect(hasNoTurns([msg('a1', 'assistant', 10)])).toBe(false);
   });
 });
