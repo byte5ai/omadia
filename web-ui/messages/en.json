@@ -904,6 +904,7 @@
   "themeControls": {
     "paletteAriaLabel": "Accent palette",
     "appearanceAriaLabel": "Appearance",
+    "menuAriaLabel": "Palette and appearance",
     "palette": {
       "lagoon": "Lagoon (teal)",
       "petrol": "Petrol (blue)",
@@ -3801,7 +3802,8 @@
       "heading": "Sign in to your subscription",
       "openHint": "Open the Anthropic sign-in page and approve access:",
       "openLink": "Open the sign-in page",
-      "pasteHint": "Copy the code shown after you approve, paste it here, and submit:",
+      "pasteHint": "If a code is shown after you approve, paste it here and submit. Otherwise this page updates on its own:",
+      "fallbackPasteHint": "Did the browser show a code instead? Paste it here:",
       "codePlaceholder": "Paste the login code",
       "submit": "Submit code",
       "submitting": "Signing in …",
@@ -3809,7 +3811,7 @@
       "retry": "Try again",
       "failed": "Sign-in failed. Try again.",
       "stillPending": "Not signed in yet. Open the link, approve access, then submit the code again.",
-      "callbackWait": "Approve access in the browser. This CLI finishes the sign-in on its own, no code to paste — this page updates when it is done.",
+      "callbackWait": "Approve access in the browser. This page updates when the sign-in completes.",
       "callbackTimedOut": "The sign-in did not complete in time. Start again, approve access in the browser, and keep this page open.",
       "manualSummary": "Prefer the terminal?",
       "step1": "Make sure the CLI is installed (bundled in the omadia image, or install it):",

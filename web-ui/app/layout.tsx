@@ -18,6 +18,7 @@ import { SessionWatcher } from './_components/SessionWatcher';
 import { TimeZoneSync } from './_components/TimeZoneSync';
 import { RuntimeReadinessBanner } from './_components/RuntimeReadinessBanner';
 import { DesktopUiReady } from './_components/DesktopUiReady';
+import { DesktopLocaleSync } from './_components/DesktopLocaleSync';
 import { StreamRunner } from './_components/StreamRunner';
 import { fontVariables } from './_fonts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
@@ -104,12 +105,13 @@ export default async function RootLayout({
                       </span>
                     </span>
                   </Link>
-                  {/* `min-w-0` + a tighter sub-xl gap: flex items default to
-                      `min-width:auto`, so at the desktop shell's 1100px window
-                      the logo, six uppercase nav items, the issue button, both
-                      selects and the auth badge over-subscribe the row and
-                      overflow instead of shrinking (OM-20/40, OM-30). */}
-                  <div className="ml-auto flex min-w-0 items-center gap-2 xl:gap-4">
+                  {/* The row fits by construction, not by shrinking: below xl
+                      the theme selects collapse into one icon menu and the
+                      auth badge drops the first name, and the wide gap only
+                      starts at 2xl (#1073, OM-30). No `min-w-0` — the nowrap
+                      nav cannot shrink, so it would spill over the controls
+                      instead of overflowing at the edge. */}
+                  <div className="ml-auto flex items-center gap-2 2xl:gap-4">
                     <Nav entries={navEntries} />
                     <span
                       className="hidden h-5 w-px bg-[color:var(--border)] sm:block"
@@ -134,6 +136,17 @@ export default async function RootLayout({
               <TimeZoneSync />
               <SessionWatcher />
               <RuntimeReadinessBanner />
+              {/* Headless — tells the desktop shell the UI language so its
+                  own dialogs follow it, not the OS (issue #1074).
+                  ORDER IS LOAD-BEARING: this must stay BEFORE
+                  <DesktopUiReady />. Sibling effects run in tree order and
+                  Electron keeps IPC send order, so mounting it first puts
+                  `omadia:uiLocale` ahead of `omadia:uiReady`. The ready ping
+                  releases the recovery-key reminder, which translates its
+                  text synchronously; arriving second, the locale would come
+                  too late and the reminder would speak the OS language.
+                  Pinned by DesktopLocaleSync.test.tsx. */}
+              <DesktopLocaleSync />
               <DesktopUiReady />
             </StreamStoreProvider>
           </ChatSessionsProvider>
