@@ -59,20 +59,26 @@ every writer of `llm_provider` goes through the same
 that leaves the effective provider unchanged (a model-only change, or unset to
 explicit `anthropic`) rebuilds only the plugin itself as long as extras is
 healthy. If extras is `errored`, any write that carries `llm_provider` retries
-it too, changed or not, and every save on `/admin/providers` carries it. So a
-model-only save of the orchestrator there also rebuilds an errored extras, and
-if extras keeps failing it answers `providers.dependent_rebuild_failed`, not
-`ok`. If extras does not come back up (the kernel's reactivation records the
-failure and marks it `errored` rather than throwing), the orchestrator is
-still rebuilt on its persisted config, and the write answers with its own
-code instead of a success: `providers.dependent_rebuild_failed` on the
-providers route, `runtime.dependent_rebuild_failed` on the runtime `PATCH`
-routes, both carrying `dependentId` and `primaryApplied: true` next to
-extras' activation error. The providers page then keeps the new provider
-selected rather than snapping back to the old one, and both codes have en/de
-error-help copy. Saving the same provider again (what that copy recommends)
-retries every dependent still left `errored`, so the retry answers `ok` only
-once extras is really back up. The subscription-login hand-off now assigns
+it too, changed or not. Every provider or model assignment on
+`/admin/providers` carries it (the per-turn routing toggle there does not: it
+writes only `orchestrator_model_routing`). So a model-only assignment of the
+orchestrator also rebuilds an errored extras, and if extras keeps failing it
+answers `providers.dependent_rebuild_failed`, not `ok`. If extras does not
+come back up (the kernel's reactivation records the failure and marks it
+`errored` rather than throwing), the orchestrator is still rebuilt on its
+persisted config, and the write answers with its own code instead of a
+success: `providers.dependent_rebuild_failed` on the providers route,
+`runtime.dependent_rebuild_failed` on the runtime `PATCH` routes, both
+carrying `dependentId` and `primaryApplied` next to extras' activation error.
+`primaryApplied` is `true` when the orchestrator itself came back up, and
+`false` when its own rebuild left it `errored` too; the message then does not
+claim it runs on the new provider. The config is persisted in both cases, so
+the providers page keeps the new provider selected rather than snapping back
+to the old one, and both codes have en/de error-help copy. Because both
+selects then already hold the saved values, re-picking them fires no change
+event, so the row shows a Retry button that re-sends the same assignment.
+That same-provider write retries every dependent still left `errored`, so the
+retry answers `ok` only once extras is really back up. The subscription-login hand-off now assigns
 plugins that others inherit from last (verifier, extras, orchestrator), so the
 final rebuild captures extras with its own hand-off model rather than an
 intermediate one, and it counts a plugin whose only failure was a dependent

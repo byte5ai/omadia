@@ -206,6 +206,45 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
     assert.equal(result.ok === false ? result.primaryApplied : undefined, true);
   });
 
+  it('when the orchestrator is left errored too, primaryApplied is false and the message does not claim it runs', async () => {
+    // Both rebuilds fail the way production fails: the real
+    // `InstallService.reactivate` records the error and flips `errored`.
+    const { registry, deps } = await makeDeps([
+      { id: ORCH, config: { llm_provider: 'anthropic' } },
+      { id: EXTRAS },
+    ]);
+    const installService = new InstallService({
+      catalog: {} as PluginCatalog,
+      registry,
+      vault: {} as SecretVault,
+      onUninstall: async () => undefined,
+      onInstalled: async (id: string) => {
+        throw new Error(`${id} activate() exploded`);
+      },
+    });
+    const result = await applyProviderAssignment(
+      {
+        ...deps,
+        reactivate: async (id: string): Promise<void> => {
+          await installService.reactivate(id);
+        },
+      },
+      { pluginId: ORCH, provider: 'openai', model: 'gpt-5.5' },
+    );
+    assert.equal(registry.get(ORCH)?.status, 'errored');
+    assert.equal(registry.get(ORCH)?.config['llm_provider'], 'openai');
+    assert.equal(result.ok, false);
+    assert.equal(result.ok === false ? result.code : undefined, 'providers.dependent_rebuild_failed');
+    assert.equal(result.ok === false ? result.dependentId : undefined, EXTRAS);
+    assert.equal(result.ok === false ? result.primaryApplied : undefined, false);
+    const message = result.ok === false ? result.message : '';
+    assert.doesNotMatch(message, /runs on its new provider/);
+    assert.doesNotMatch(message, /rebuilt on its unchanged provider/);
+    assert.match(message, /did not come back up either/);
+    assert.match(message, /@omadia\/orchestrator activate\(\) exploded/);
+    assert.match(message, /@omadia\/orchestrator-extras failed to rebuild/);
+  });
+
   it('a dependent that comes back up (errored lifted by the rebuild) is not a failure', async () => {
     const { registry, deps } = await makeDeps([
       { id: ORCH, config: { llm_provider: 'anthropic' } },
@@ -234,10 +273,10 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
     assert.equal(registry.get(EXTRAS)?.status, 'active');
   });
 
-  // After a failed extras rebuild the UI tells the operator to "Save again".
-  // That second save carries the SAME provider, so without the errored-retry
-  // rule it would rebuild only the orchestrator and answer ok while extras
-  // stays down. Both variants run through the real InstallService.
+  // After a failed extras rebuild the UI offers a Retry button that re-sends
+  // the same assignment. That second save carries the SAME provider, so
+  // without the errored-retry rule it would rebuild only the orchestrator and
+  // answer ok while extras stays down. Both variants run through the real InstallService.
   async function saveTwiceWithExtrasFailing(extrasFailures: number) {
     const { registry, deps } = await makeDeps([
       { id: ORCH, config: { llm_provider: 'anthropic' } },

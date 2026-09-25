@@ -982,15 +982,15 @@ async function applySetupValues(
 
 /**
  * #1076 — the envelope for a config write whose `llm_provider` rebuild left a
- * provider dependent (extras) down. The write itself IS persisted and the
- * plugin was rebuilt on it (`primaryApplied`), so neither `update_failed` nor
- * `vault_write_failed` ("could not be written") would be true.
+ * provider dependent (extras) down. The write itself IS persisted, so neither
+ * `update_failed` nor `vault_write_failed` ("could not be written") would be
+ * true. `primaryApplied` says whether the plugin itself came back up on it.
  */
 function dependentRebuildFailure(err: ProviderDependentRebuildError): {
   readonly code: 'runtime.dependent_rebuild_failed';
   readonly message: string;
   readonly dependentId: string;
-  readonly primaryApplied: true;
+  readonly primaryApplied: boolean;
 } {
   return {
     code: 'runtime.dependent_rebuild_failed',

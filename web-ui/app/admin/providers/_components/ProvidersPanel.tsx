@@ -64,20 +64,21 @@ function errorCode(err: unknown): string | null {
 }
 
 /**
- * #1076 — true when a failed assignment says the assignment itself landed:
- * `providers.dependent_rebuild_failed` carries `primaryApplied: true` when the
- * plugin runs on the new provider and only a dependent (extras) did not come
- * back up. The row must then show the NEW provider; snapping the controlled
- * select back to the old one would misstate what the server now holds.
+ * #1076 — the one failure after which the assignment IS persisted: the
+ * server wrote the new provider/model and only the rebuild of a plugin that
+ * inherits it (extras) failed. `primaryApplied` on the envelope says whether
+ * the plugin itself came back up; the saved config is the same either way.
  */
-function wasPrimaryApplied(err: unknown): boolean {
-  if (!(err instanceof ApiError)) return false;
-  try {
-    const parsed = JSON.parse(err.body) as { primaryApplied?: unknown };
-    return parsed.primaryApplied === true;
-  } catch {
-    return false;
-  }
+const DEPENDENT_REBUILD_FAILED = 'providers.dependent_rebuild_failed';
+
+/**
+ * True when a failed assignment still landed (see
+ * {@link DEPENDENT_REBUILD_FAILED}). The row must then show the NEW provider:
+ * snapping the controlled select back to the old one would misstate what the
+ * server now holds, and would point the row's Retry at the old assignment.
+ */
+function isAssignmentPersisted(err: unknown): boolean {
+  return errorCode(err) === DEPENDENT_REBUILD_FAILED;
 }
 
 /**
@@ -187,9 +188,9 @@ export function ProvidersPanel({
         commitRow();
         setStatus((s) => ({ ...s, [pluginId]: 'saved' }));
       } catch (err) {
-        // #1076 — the assignment landed; only a dependent is down. Show the
-        // row on the provider the server now holds, AND the error.
-        if (wasPrimaryApplied(err)) commitRow();
+        // #1076 — the assignment landed; a dependent is down. Show the row on
+        // the provider the server now holds, AND the error with its Retry.
+        if (isAssignmentPersisted(err)) commitRow();
         setStatus((s) => ({ ...s, [pluginId]: 'error' }));
         setErrors((e) => ({ ...e, [pluginId]: err }));
       }
@@ -999,6 +1000,24 @@ function AssignmentRow({
       )}
       {error !== undefined && (
         <ErrorHelp code={errorCode(error)} rawDetail={error} />
+      )}
+      {/* #1076 — after a failed dependent rebuild both selects already hold
+          the saved values (the row was committed), so re-picking them fires
+          no change event. Retry re-sends the same assignment; the server then
+          rebuilds every dependent still left errored. */}
+      {isAssignmentPersisted(error) && a.model !== null && (
+        <div>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={status === 'saving'}
+            onClick={() => {
+              if (a.model !== null) onApply(a.pluginId, a.provider, a.model);
+            }}
+          >
+            {t('assignments.retryDependentRebuild')}
+          </Button>
+        </div>
       )}
     </div>
   );

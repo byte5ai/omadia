@@ -60,6 +60,9 @@ async function makeHarness(
     modelCatalogSync?: ModelCatalogSync;
     /** Plugin whose reactivation throws (#1076 dependent failure). */
     reactivateThrowsFor?: string;
+    /** Plugins whose reactivation records a failure and leaves them
+     *  `errored` without throwing, as production's `reactivate` does. */
+    reactivateLeavesErrored?: readonly string[];
   } = {},
 ): Promise<Harness> {
   const vault = new InMemorySecretVault();
@@ -89,6 +92,9 @@ async function makeHarness(
       reactivate: async (id: string) => {
         reactivated.push(id);
         if (opts.reactivateThrowsFor === id) throw new Error(`${id} activate() exploded`);
+        if (opts.reactivateLeavesErrored?.includes(id) === true) {
+          await registry.markActivationBlocked(id, `${id} activate() exploded`);
+        }
       },
       llmProviderCatalog,
       ...(opts.modelCatalogSync !== undefined
@@ -517,6 +523,30 @@ describe('admin providers route — POST /assignment', () => {
     // The assignment itself landed and the orchestrator was rebuilt on it.
     assert.equal(h.registry.get(ORCH)?.config['llm_provider'], 'openai');
     assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
+  });
+
+  it('answers primaryApplied: false when the orchestrator is left errored too', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], {
+      reactivateLeavesErrored: [EXTRAS, ORCH],
+    });
+    const { status, json } = await assign(h, {
+      pluginId: ORCH,
+      provider: 'openai',
+      model: 'gpt-5.5',
+    });
+    assert.equal(status, 500);
+    const body = json as {
+      code?: string;
+      message?: string;
+      dependentId?: string;
+      primaryApplied?: boolean;
+    };
+    assert.equal(body.code, 'providers.dependent_rebuild_failed');
+    assert.equal(body.dependentId, EXTRAS);
+    assert.equal(body.primaryApplied, false);
+    assert.doesNotMatch(body.message ?? '', /runs on its new provider/);
+    // Persisted all the same: the row must show what the server holds.
+    assert.equal(h.registry.get(ORCH)?.config['llm_provider'], 'openai');
   });
 
   it('sets BOTH model keys for the extras plugin', async () => {

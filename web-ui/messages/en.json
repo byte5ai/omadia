@@ -1087,8 +1087,8 @@
         "next": "Save again. If it keeps failing, the middleware cannot write to its config store."
       },
       "dependent_rebuild_failed": {
-        "what": "The assignment was saved and is live, but the background memory features that inherit it did not restart.",
-        "next": "Save again to retry the restart. If it keeps failing, the support details name the plugin and its activation error."
+        "what": "The assignment was saved, but the background memory features that inherit it did not restart.",
+        "next": "Use Retry to restart them. If it keeps failing, the support details name the plugin and its activation error."
       },
       "invalid_request": {
         "what": "The assignment was missing the plugin, the provider or the model.",
@@ -1154,7 +1154,7 @@
         "next": "Activate the plugin, then reload this page."
       },
       "dependent_rebuild_failed": {
-        "what": "The change was saved and is live, but a plugin that depends on it did not restart.",
+        "what": "The change was saved, but a plugin that depends on it did not restart.",
         "next": "Save again to retry the restart. If it keeps failing, the support details name the plugin and its activation error."
       },
       "empty_secrets_patch": {
@@ -3756,7 +3756,8 @@
       "subscriptionNotice": "{provider} runs on a personal Claude subscription of the signed-in account. No data-processing agreement (DPA/AVV) is available on a consumer plan — do not route personal data through this agent.",
       "routingLabel": "Per-turn model routing (Haiku triage)",
       "routingHint": "A cheap Haiku call classifies each turn — simple turns get a cheaper model, complex ones the frontier model.",
-      "routingAnthropicOnly": "Only available with Anthropic."
+      "routingAnthropicOnly": "Only available with Anthropic.",
+      "retryDependentRebuild": "Retry"
     },
     "status": {
       "saving": "saving …",

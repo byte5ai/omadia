@@ -463,9 +463,10 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
         code: result.code,
         message: result.message,
         // #1076 — `providers.dependent_rebuild_failed`: the assignment IS
-        // persisted and live on the plugin; only a provider dependent is down.
-        ...(result.primaryApplied === true
-          ? { dependentId: result.dependentId, primaryApplied: true }
+        // persisted; a provider dependent is down. `primaryApplied` says
+        // whether the plugin itself came back up on it.
+        ...(result.dependentId !== undefined
+          ? { dependentId: result.dependentId, primaryApplied: result.primaryApplied === true }
           : {}),
       });
       return;

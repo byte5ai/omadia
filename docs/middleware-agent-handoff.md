@@ -1811,22 +1811,28 @@ seinem eigenen `activate()` ab, und ein Teardown von extras kaskadiert nicht
 (`toolPluginRuntime.deactivate` ruft nur `disposeBySource`). Extras erst danach
 neu zu bauen, ließe die Chat-Turn-Faktenextraktion auf der alten Instanz. Scheitert
 ein abhängiges Plugin, wird der Orchestrator trotzdem neu gebaut und danach eine
-`ProviderDependentRebuildError` (mit `dependentId`, `primaryApplied: true` und
-dem `last_activation_error` im Text; „runs on its new provider“ nur bei einer
-effektiven Änderung, sonst „rebuilt on its unchanged provider“) geworfen. Die
-Routen antworten mit eigenem Code, `providers.dependent_rebuild_failed` bzw.
-`runtime.dependent_rebuild_failed` (beide PATCH-Routen), und legen
-`dependentId` + `primaryApplied: true` mit auf den Envelope; beide Codes haben
-en/de-Copy im ErrorHelp-Katalog. Das `ProvidersPanel` übernimmt bei
-`primaryApplied` den neuen Provider in die Zeile, statt das kontrollierte Select
-auf den alten zurückspringen zu lassen, und `autoAssignSubscriptionCli` zählt
-so ein Plugin als `assigned`. „Gescheitert“ heißt: `reactivate` wirft **oder**
+`ProviderDependentRebuildError` (mit `dependentId`, `primaryApplied` und
+dem `last_activation_error` im Text) geworfen. `primaryApplied` ist nur `true`,
+wenn der Orchestrator selbst wieder hochkam; lässt auch sein eigener Rebuild
+ihn `errored` zurück (dieselbe Registry-Prüfung wie bei den Abhängigen), ist es
+`false`, und der Text behauptet nicht, dass er läuft. Sonst steht „runs on its
+new provider“ nur bei einer effektiven Änderung, ansonsten „rebuilt on its
+unchanged provider“. Die Routen antworten mit eigenem Code,
+`providers.dependent_rebuild_failed` bzw. `runtime.dependent_rebuild_failed`
+(beide PATCH-Routen), und legen `dependentId` + `primaryApplied` mit auf den
+Envelope; beide Codes haben en/de-Copy im ErrorHelp-Katalog. Die Config ist in
+beiden Fällen persistiert, deshalb übernimmt das `ProvidersPanel` bei diesem
+Code den neuen Provider in die Zeile, statt das kontrollierte Select auf den
+alten zurückspringen zu lassen, und zeigt einen „Erneut versuchen“-Button, der
+dieselbe Zuordnung noch einmal schickt; ein erneutes Auswählen der schon
+gewählten Option löst kein Change-Event aus. `autoAssignSubscriptionCli` zählt
+ein Plugin mit `primaryApplied: true` als `assigned`. „Gescheitert“ heißt: `reactivate` wirft **oder**
 hinterlässt das Plugin als `errored` in der Registry. Letzteres ist der
 Produktionsfall, denn `installService.reactivate` wirft bei einem
 Aktivierungsfehler nie, sondern ruft `markActivationFailed`, setzt `errored` und
 kehrt zurück; ein erfolgreicher Rebuild hebt `errored` über
 `clearActivationError` wieder auf. Ein erneutes Speichern **desselben**
-Providers (der Rat der Fehlermeldung: „Save again“) ist keine effektive
+Providers (der Retry-Button nach der Fehlermeldung) ist keine effektive
 Änderung, baut aber jedes abhängige Plugin neu, das noch `errored` ist
 (`providerWritten` im Helper, gesetzt, sobald der Write `llm_provider` enthält);
 sonst hätte der Retry nur den Orchestrator neu gebaut und `ok` gemeldet, während

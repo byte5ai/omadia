@@ -12,10 +12,11 @@ import {
 
 /**
  * #1076 — `providers.dependent_rebuild_failed` means the assignment LANDED:
- * the orchestrator runs on the new provider and only orchestrator-extras did
- * not come back up. The row must show the new provider (the select is
- * controlled, so leaving the state alone snaps it back to the old one) and
- * still surface the error. Any other failure keeps the old row.
+ * the server persisted the new provider and only orchestrator-extras did not
+ * come back up. The row must show the new provider (the select is controlled,
+ * so leaving the state alone snaps it back to the old one), surface the error
+ * and offer a Retry, because re-picking the already-selected option fires no
+ * change event. Any other failure keeps the old row.
  */
 
 const { mockGetProviders, mockAssignProvider } = vi.hoisted(() => ({
@@ -50,6 +51,19 @@ vi.mock('../../../../_lib/api', () => ({
 }));
 
 const ORCH = '@omadia/orchestrator';
+
+function dependentRebuildFailure(primaryApplied: boolean): ApiError {
+  return new ApiError(
+    500,
+    'POST /v1/admin/providers/assignment failed: 500',
+    JSON.stringify({
+      code: 'providers.dependent_rebuild_failed',
+      message: 'extras failed to rebuild',
+      dependentId: '@omadia/orchestrator-extras',
+      primaryApplied,
+    }),
+  );
+}
 
 function model(id: string) {
   return {
@@ -117,18 +131,7 @@ describe('<ProvidersPanel /> dependent rebuild failure (#1076)', () => {
   });
 
   it('keeps the new provider selected and shows the dependent-rebuild copy', async () => {
-    mockAssignProvider.mockRejectedValue(
-      new ApiError(
-        500,
-        'POST /v1/admin/providers/assignment failed: 500',
-        JSON.stringify({
-          code: 'providers.dependent_rebuild_failed',
-          message: 'extras failed to rebuild',
-          dependentId: '@omadia/orchestrator-extras',
-          primaryApplied: true,
-        }),
-      ),
-    );
+    mockAssignProvider.mockRejectedValue(dependentRebuildFailure(true));
     const select = await switchToOpenAi();
 
     expect(
@@ -141,6 +144,50 @@ describe('<ProvidersPanel /> dependent rebuild failure (#1076)', () => {
       en.adminProviders.assignments.routingLabel,
     ) as HTMLInputElement;
     expect(toggle.checked).toBe(false);
+  });
+
+  it('Retry re-sends the same assignment and clears the error once it succeeds', async () => {
+    mockAssignProvider
+      .mockRejectedValueOnce(dependentRebuildFailure(true))
+      .mockResolvedValueOnce({ ok: true });
+    await switchToOpenAi();
+
+    const retry = await screen.findByRole('button', {
+      name: en.adminProviders.assignments.retryDependentRebuild,
+    });
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(mockAssignProvider).toHaveBeenCalledTimes(2));
+    expect(mockAssignProvider.mock.calls[1]).toEqual(mockAssignProvider.mock.calls[0]);
+    expect(mockAssignProvider.mock.calls[1]).toEqual([
+      { pluginId: ORCH, provider: 'openai', model: 'gpt-5.5' },
+    ]);
+    await waitFor(() =>
+      expect(screen.getByText(en.adminProviders.status.saved)).toBeTruthy(),
+    );
+    expect(
+      screen.queryByRole('button', {
+        name: en.adminProviders.assignments.retryDependentRebuild,
+      }),
+    ).toBeNull();
+    expect(
+      screen.queryByText(en.errorHelp.providers.dependent_rebuild_failed.what),
+    ).toBeNull();
+  });
+
+  it('keeps the saved provider and offers Retry even when the orchestrator did not come back up', async () => {
+    // The config is persisted either way; `primaryApplied: false` only says
+    // the plugin itself is errored too. Snapping back would point Retry at
+    // the OLD assignment.
+    mockAssignProvider.mockRejectedValue(dependentRebuildFailure(false));
+    const select = await switchToOpenAi();
+
+    expect(
+      await screen.findByRole('button', {
+        name: en.adminProviders.assignments.retryDependentRebuild,
+      }),
+    ).toBeTruthy();
+    expect(select.value).toBe('openai');
   });
 
   it('snaps back to the old provider when the assignment did not land', async () => {
@@ -157,5 +204,10 @@ describe('<ProvidersPanel /> dependent rebuild failure (#1076)', () => {
       await screen.findByText(en.errorHelp.providers.apply_failed.what),
     ).toBeTruthy();
     expect(select.value).toBe('anthropic');
+    expect(
+      screen.queryByRole('button', {
+        name: en.adminProviders.assignments.retryDependentRebuild,
+      }),
+    ).toBeNull();
   });
 });
