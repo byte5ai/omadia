@@ -48,10 +48,12 @@ import type { EmailWhitelist } from '../auth/whitelist.js';
  * 100 MiB). Derived from the largest frame the canvas channel accepts:
  * `canvas_list_put` is sanitized to 50 entries × a 262_144-character tree
  * (`omadia-ui-channel/src/protocol.ts` `sanitizeCanvasList`) ≈ 12.5 MiB of
- * ASCII. The desktop client caps neither the slot count nor the tree size
- * before sending (the server trims after parsing), so the cap leaves ~2.5×
- * headroom for multibyte UTF-8 and slots beyond 50. Real trees are a few KB.
- * A frame above the cap closes the socket with 1009.
+ * ASCII (the limit counts UTF-16 code units, not bytes), so the cap leaves
+ * ~2.5× headroom over that ASCII worst case. The desktop client caps neither
+ * the slot count nor the tree size before sending (the server trims after
+ * parsing). A maximal list of purely 3-byte UTF-8 text (~37.5 MiB) would
+ * exceed the cap; real trees are a few KB. A frame above the cap closes the
+ * socket with 1009.
  */
 export const CHANNEL_WS_MAX_PAYLOAD_BYTES = 32 * 1024 * 1024;
 

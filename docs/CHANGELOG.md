@@ -47,8 +47,11 @@ slice W1-1 of the Satellites epic and the prerequisite for the tunnel at
   accept inbound frames up to **32 MiB** (`CHANNEL_WS_MAX_PAYLOAD_BYTES`). They
   previously inherited `ws`'s 100 MiB default. A larger frame closes the socket
   with code **1009**. The cap comes from the largest frame the canvas channel
-  treats as valid (`canvas_list_put`, 50 × 262_144-character trees ≈ 12.5 MiB),
-  with headroom because the desktop client doesn't trim before sending.
+  treats as valid (`canvas_list_put`, 50 × 262_144-character trees ≈ 12.5 MiB
+  of ASCII), leaving ~2.5× headroom over that ASCII worst case because the
+  desktop client doesn't trim before sending. The limit counts UTF-16 code
+  units, so a maximal list of purely 3-byte UTF-8 text (~37.5 MiB) would still
+  exceed the cap; real trees are a few KB.
 - **New kernel-only API:** `registerKernel(path, { authenticate, maxPayload,
   handler })` gives a route its own pre-handshake authenticator (a rejected
   peer gets a raw 401/403 and never a 101; a throwing authenticator fails
@@ -59,6 +62,124 @@ slice W1-1 of the Satellites epic and the prerequisite for the tunnel at
   oversized frame from an authenticated peer made `ws` emit an unhandled
   `'error'`, which surfaced as an uncaught exception that only
   `processGuards` absorbed.
+
+### Fixed — saving, rotating or removing an LLM key takes effect without a restart (#1080)
+
+2026-09-24 — on a stack booted without an LLM key, saving a key in
+`/admin/providers` never armed the orchestrator: every reactivation logged
+`no API key for provider 'anthropic' — chatAgent@1 capability NOT published`
+until the container restarted, while key verification, model discovery and the
+provider badge (which all read the vault directly) looked green. Removing a key
+had the mirror-image bug: the chat kept answering, and billing, with the deleted
+key. The kernel `llmProviderPool` memoises the resolved provider per id,
+including a negative "no key" result, and since #1039 the orchestrator reuses
+that pool instead of building its own, but no production code ever called
+`invalidate`. The concrete vaults (`FileSecretVault`, `InMemorySecretVault`) now
+announce every completed write through a kernel-internal `onWrite` observer
+(not on the `SecretVault` interface). A listener on the orchestrator scope drops
+the matching pool entry, so every write path is covered: the admin settings
+save, the runtime-secrets PATCH, install-time seeding, uninstall purge, the
+OAuth token-store binding and the OAuth broker. The listener runs before the
+write settles, so it lands before any reactivate. An API-key change
+(`provider:<id>/api_key`, legacy `anthropic_api_key`) also clears that
+provider's circuit breaker, because a new key is a new credential. An OAuth
+access-token write only drops the cache entry, since hourly rotation is the same
+credential. `verified_at` writes are ignored. Registering or unregistering a
+provider plugin invalidates its id as well. The shared host
+`anthropicClient`/`llm` is now revoked on key removal: it falls back to
+`ANTHROPIC_API_KEY` when set, otherwise to the unauthenticated client a keyless
+boot builds. Before this fix, OB-61's refresh returned early on a missing key.
+Not covered, and not yet filed as an issue: sub-agents that
+`DynamicAgentRuntime` has already built resolve their provider once at
+`activate()` and keep it until a restart or rebuild. After a keyless boot,
+Anthropic sub-agents stay on the unauthenticated client after a key is saved,
+and non-Anthropic agents whose activation failed are never retried. The open
+item is recorded in `docs/middleware-agent-handoff.md` §13.
+
+### Fixed — desktop dialogs follow the UI language (#1074)
+
+2026-09-24 — the desktop shell's own dialogs (updater, boot failure, recovery
+key) and its menu headings took their language from `app.getLocale()`, the OS
+locale. A user on an English OS who had switched the web UI to German still got
+English shell dialogs, because nothing told the main process which language the
+UI was showing (the OM-91 residual left open by #1069).
+
+The web UI now pushes the language it is showing to the shell over a new
+fire-and-forget preload channel, `omadia:uiLocale` (`window.omadia.setUiLocale`),
+on first load and after every switch, on every route. The shell accepts only
+`'en'` and `'de'`, applies the value to the next dialog, rebuilds the menu
+headings, and persists it to `userData/ui-locale.json` so dialogs that fire
+before the web UI is up (a boot failure, the updater at startup) use it too.
+Without a valid value it still falls back to the OS locale, so a fresh install
+behaves as before. `desktop/src/shellLocale.ts` is now the only place that
+reads the OS locale; a source-census test keeps it that way. Electron's own
+`role:` menu entries still follow the OS language.
+
+Still not following the UI language, and outside this fix: the tray menu
+(`desktop/src/tray.ts`, hard-coded English), the data-dir picker and its
+cloud-sync warning (`desktop/src/ipc.ts`, hard-coded English), and the loading
+and setup-wizard pages (`desktop/src/renderer/wizard-i18n.js`, keyed off
+`navigator.language`). The last one is now a visible mismatch: a boot-failure or
+recovery dialog follows the persisted UI language while the loading page behind
+it follows the OS. Tracked in `docs/middleware-agent-handoff.md` §13.
+
+### Fixed — header nav no longer overlaps at desktop-window widths (#1073)
+
+At the desktop shell's ~1100 px window the palette select covered HELP and the
+ADMIN trigger covered the "create issue" button. The header row and `<nav>`
+carried `min-w-0`, but every nav item is `whitespace-nowrap`, so only the nav's
+box shrank while its content spilled over the controls to its right. The row
+now fits by construction: below `xl` the palette and appearance selects
+collapse into one icon-triggered panel and the account badge shows initials
+only, and the wide nav spacing starts at `2xl` instead of `xl`. Every nav
+target stays reachable without overlap from 1024 px up; narrower desktop
+windows (880–1023 px) overflow at the right edge instead of overlapping.
+
+### Fixed — bootstrap auto-removals purge agent bindings (#1070)
+
+2026-09-24 — the boot-time bootstrap removes a plugin on its own at four
+sites: the memory self-heal, the #1053 `embeddingClient@1` conflict, the
+legacy-KG migration and the KG dual-active conflict. None of them purged the
+plugin's `agent_plugins` rows, so each removal left orphaned orchestrator
+bindings behind. #1063 (OM-95) had fixed this for operator uninstalls only.
+Every site now reports the id through a new `BootstrapDeps.onPluginRemoved`
+hook. Bootstrap runs before `@omadia/orchestrator` provides its binding store,
+so the host queues the ids (`pendingBindingPurge.ts`) and purges them via the
+existing `purgePluginAgentBindings` at two points: right after
+`toolPluginRuntime.activateAllInstalled()`, and whenever the orchestrator is
+(re)activated, which covers a fresh host that boots without an LLM key and
+gets its store only after `/setup`. A failed DELETE is logged with
+`console.error` and the plugin id; a still-missing store is a `console.warn`
+listing the ids on a Postgres host and an info line without `DATABASE_URL`.
+The queue is kept in both cases, because the KG can publish a `graphPool` from
+a vault-stored DSN without `DATABASE_URL`. An id that is installed again by
+flush time (operator reinstall while the store was still missing) is dropped
+without a purge, so bindings granted after the reinstall are never deleted. A
+throwing hook is logged and never aborts boot. Residual: the queue lives in memory only, so ids still pending
+when the process exits (Postgres host whose orchestrator never activated in
+that lifetime) are not retried on the next boot.
+
+### Fixed — ctx.tools.invoke('memory') no longer reaches the unscoped root store (#909)
+
+2026-09-24 — `ctx.tools.invoke(name, input)` dispatched straight to the
+`NativeToolRegistry` entry, and the `memory` entry is the memory provider's
+handler bound to the undecorated root store. Any activated tool-kind plugin,
+with or without `permissions.memory`, could therefore read and write every
+Agent's tree. The UI orchestrator's canvas refresh replays recipes through the
+same accessor, so a recorded recipe naming `memory` would have done the same.
+`invoke('memory', …)` now runs the memory tool against the caller's own
+`ctx.memory` scope: `/memories` is the plugin's
+`/memories/orchestrators/<agentSlug>/plugins/<pluginId>/` subtree, the slug is
+resolved per call, and the default-Agent legacy tree stays a read-only
+fallback. Both paths share one scope function. A plugin without
+`permissions.memory` gets a `ToolInvokePermissionError`, and a missing memory
+store gets an "unavailable" error. Neither case ever falls back to the registry
+handler. All other tool names dispatch as before. Same shape as #904/#908;
+part of #860.
+`PostgresMemoryStore` now escapes `%`, `_` and `\` in its `LIKE` prefix scans.
+Unescaped, the `_` a plugin id may contain matched any character, so a
+directory rename or delete in one plugin's scope could reach a sibling
+plugin's tree.
 
 ### Fixed — `manage_routine` works on core-dispatched channels, and says so honestly elsewhere (#1086)
 

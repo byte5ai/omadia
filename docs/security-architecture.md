@@ -40,6 +40,19 @@ Benefits:
   place.
 - Rotating a credential is a vault update + middleware redeploy. The agent
   configuration does not change.
+- LLM provider keys are the exception to the redeploy: since #1080 a vault
+  write to the orchestrator scope drops the kernel provider pool's cached
+  client, and removing the Anthropic key revokes the shared host
+  `anthropicClient`/`llm` live (falling back to `ANTHROPIC_API_KEY` if set,
+  otherwise to an unauthenticated client). After a deletion the kernel pool
+  and the orchestrator stop using the key immediately. Two limits remain:
+  the shared host client falls back to `ANTHROPIC_API_KEY` when it is set,
+  and on installs whose vault key was seeded from that env var at first boot
+  it is the same key, so host consumers (plan-runner gate, Teams, builder)
+  keep using it until the env var is removed. Sub-agents that
+  `DynamicAgentRuntime` has already built keep their captured provider until
+  a restart or rebuild. Both limits are recorded as open items in
+  `middleware-agent-handoff.md` §13.
 
 Pattern: thin proxy handler → typed client → upstream API. Document the
 proxy contract next to the handler, not in the agent prompt.
@@ -420,6 +433,39 @@ deliberately data-only:
   resolve/instantiate path as every other template, including live
   `KnownRefs` validation — a template referencing entities this install
   lacks fails visibly at mapping time, never silently.
+
+### `ctx.tools.invoke('memory')` runs in the caller's own scope (#909)
+
+`ctx.tools.invoke(name, input)` dispatches straight to a `NativeToolRegistry`
+handler and bypasses the per-turn dispatch hooks (privacy guard, telemetry).
+For `memory` that handler belongs to the memory provider and is bound to the
+undecorated root store, so before #909 any activated plugin could read, write,
+rename and delete every Agent's and every plugin's memory, with or without
+`permissions.memory`. `invoke('memory', …)` therefore never reaches the
+registry handler (`src/platform/pluginContext.ts`):
+
+- A plugin whose manifest declares no `permissions.memory` (no non-empty
+  `reads`/`writes`) gets a `ToolInvokePermissionError`. The call is denied,
+  not narrowed.
+- If no memory store is published, the call throws `'memory' is unavailable`.
+  It never falls back to the root-bound handler.
+- Otherwise the kernel runs its own `MemoryToolHandler` over
+  `createPluginMemoryToolStore` (`src/platform/memoryAccessor.ts`). In that
+  view `/memories` is the plugin's `ctx.memory` scope,
+  `/memories/orchestrators/<agentSlug>/plugins/<pluginId>/`, with the slug
+  read from the turn context on every call (`default` outside a turn). Both
+  views share `pluginMemoryScope()` and `normalizeRelPath()`, so they cannot
+  disagree. Paths outside `/memories`, `..` and NUL bytes are refused before
+  any store call, and store entries outside the scope throw instead of
+  leaking. The pre-isolation `/memories/agents/<pluginId>/` tree is a
+  read-only fallback for the default Agent only.
+- The scope is a string prefix, and every store must treat it literally.
+  `PostgresMemoryStore` escapes `%`, `_` and `\` in its `LIKE` prefix scans.
+  Plugin ids may contain `_`, and an unescaped `_` would let `@omadi_/x` match
+  `@omadia/x`'s tree on a directory rename or delete.
+- Only `memory` is routed; every other tool name keeps the registry dispatch.
+  A new native tool bound to shared or unscoped state must be routed or denied
+  the same way before it is registered.
 
 ## 5. Signed artefact URLs
 
@@ -1059,6 +1105,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `CoreApi.registerWebSocket`. The authenticator rejects before the `101`
       (raw 401/403, fail closed on throw), and the route sets an explicit
       `maxPayload`.
+- [ ] A new native tool bound to shared/unscoped state (like memory) is routed
+      through the caller's scoped accessor in `ctx.tools.invoke`, or denied
+      there (§4, #909).
 
 ---
 
