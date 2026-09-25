@@ -22,6 +22,7 @@ import { Pool } from 'pg';
 
 import { probePgTest } from './_helpers/pgTestDb.js';
 
+import { CredentialAskRejectedError, type CredentialAskRejection } from '../src/credentials/asks.js';
 import { PostgresCredentialAskStore } from '../src/credentials/postgresCredentialAskStore.js';
 import { PostgresCredentialStore } from '../src/credentials/postgresCredentialStore.js';
 import { sealSecret } from '../src/credentials/crypto.js';
@@ -98,6 +99,10 @@ CREATE TABLE IF NOT EXISTS credential_asks (
 );`;
 
 const KEY = Buffer.alloc(32, 6);
+
+function rejectedWith(reason: CredentialAskRejection): (err: unknown) => boolean {
+  return (err: unknown) => err instanceof CredentialAskRejectedError && err.reason === reason;
+}
 
 describe('#578 PostgresCredentialAskStore against a real Postgres', { skip: !pgAvailable }, () => {
   let pool: Pool;
@@ -220,6 +225,79 @@ describe('#578 PostgresCredentialAskStore against a real Postgres', { skip: !pgA
     const shoutyOwner = makePrincipal('user', `OWNER-${mark}@EXAMPLE.COM`) as Principal;
     const pending = await askStore.listPendingForOwner(shoutyOwner, new Date());
     assert.ok(pending.some((a) => a.purpose === 'listed'), 'canonicalisation must make this owner spelling match');
+  });
+
+  // ── #778 S1: askable parity with the in-memory store ──────────────────────
+
+  const askInput = (credentialId: string) => ({
+    credentialId,
+    requester: alice,
+    purpose: 'need it',
+    mode: 'standing' as const,
+    askExpiresAt: new Date(Date.now() + 60_000),
+  });
+
+  async function askCount(credentialId: string): Promise<number> {
+    const r = await pool.query(`SELECT count(*)::int AS n FROM credential_asks WHERE credential_id = $1`, [credentialId]);
+    return r.rows[0]?.n as number;
+  }
+
+  it('#778 S1: refuses an ask against a SERVICE credential (not_askable) and inserts no row', async () => {
+    const service = await credStore.createCredential({ name: `ask-svc-${mark}`, kind: 'service', secret: 's', createdBy: 'op' });
+    await assert.rejects(() => askStore.createAsk(askInput(service.id)), rejectedWith('not_askable'));
+    assert.equal(await askCount(service.id), 0);
+  });
+
+  it('#778 S1: refuses an ask against a REVOKED personal credential (revoked) and inserts no row', async () => {
+    const cred = await makeAskableCredential(`ask-revoked-${mark}`);
+    await credStore.revokeCredential(cred.id, 'op');
+    await assert.rejects(() => askStore.createAsk(askInput(cred.id)), rejectedWith('revoked'));
+    assert.equal(await askCount(cred.id), 0);
+  });
+
+  it('#778 S1: refuses a caller-supplied owner that is not the credential owner (owner_mismatch)', async () => {
+    const cred = await makeAskableCredential(`ask-mismatch-${mark}`);
+    await assert.rejects(
+      () => askStore.createAsk({ ...askInput(cred.id), owner: makePrincipal('user', `mallory-${mark}@example.com`) as Principal }),
+      rejectedWith('owner_mismatch'),
+    );
+    assert.equal(await askCount(cred.id), 0);
+  });
+
+  it('#778 S1: an omitted owner is derived from the credential, in its canonical spelling', async () => {
+    const cred = await credStore.createCredential({
+      name: `ask-derive-${mark}`,
+      kind: 'personal',
+      owner: { kind: 'user', userId: `  MixedCase-${mark}@Example.COM ` },
+      secret: 'shh',
+      createdBy: 'op',
+    });
+    const ask = await askStore.createAsk(askInput(cred.id));
+    assert.deepEqual(ask.owner, { kind: 'user', userId: `mixedcase-${mark}@example.com` });
+    const spoken = await askStore.createAsk({ ...askInput(cred.id), owner: { kind: 'user', userId: `MIXEDCASE-${mark}@example.com` } });
+    assert.deepEqual(spoken.owner, ask.owner, 'a matching owner in another spelling is accepted and stored canonically');
+  });
+
+  it('#778 S1: a non-uuid credentialId is unknown_credential, not a raw 22P02', async () => {
+    await assert.rejects(() => askStore.createAsk(askInput('not-a-uuid')), rejectedWith('unknown_credential'));
+    await assert.rejects(() => askStore.createAsk(askInput(randomUUID())), rejectedWith('unknown_credential'));
+  });
+
+  it('#778 S1: approve() after the credential was revoked closes the ask as expired and mints no grant', async () => {
+    const cred = await makeAskableCredential(`ask-revoke-later-${mark}`);
+    const ask = await askStore.createAsk(askInput(cred.id));
+    await credStore.revokeCredential(cred.id, 'op');
+
+    const result = await askStore.approve(ask.id, `owner-${mark}@example.com`, new Date());
+    assert.equal(result, undefined);
+    assert.equal((await askStore.getAsk(ask.id))?.status, 'expired');
+    const grants = await pool.query(`SELECT count(*)::int AS n FROM credential_grants WHERE credential_id = $1`, [cred.id]);
+    assert.equal(grants.rows[0]?.n, 0, 'a revoked credential must never be granted through an old ask');
+  });
+
+  it('#778 S1: a malformed ask id addresses no row — getAsk undefined, cancel false', async () => {
+    assert.equal(await askStore.getAsk('not-a-uuid'), undefined);
+    assert.equal(await askStore.cancel('not-a-uuid', alice), false);
   });
 
   it('a "once" ask requires requestedGrantExpiresAt — the DB CHECK backs up validateNewAskInput', async () => {

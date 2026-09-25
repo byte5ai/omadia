@@ -2,26 +2,50 @@
  * #578 Phase 3 — the HTTP surface for keychain-asks: request a `personal`
  * credential from its owner; approval creates the grant.
  *
- * Not mounted into `middleware/src/index.ts` yet — same deliberate choice
- * phases 1 and 2 made (see their PR descriptions): this is a fully tested,
- * standalone router a future integration step mounts with one line, behind
- * `requireAuth` like every other `/api/v1/admin/*` router (`audience/routes.ts`
- * is the precedent). Keeping it unmounted keeps this phase's blast radius to
- * new files only, consistent with phases 1 and 2, and avoids a merge
- * collision with the parallel #577 session's own changes to `index.ts`.
+ * Mounted by #778 W1 (#792) at `/api/v1/admin/credential-asks` behind
+ * `requireAuth` (`index.ts`; pinned by `778RouteMounts.wiring.test.ts`).
+ *
+ * ## #778 S1 — every caller identity comes from the session
+ *
+ * The caller is `user:<req.session.omadia_user_id>`, and nothing else. No
+ * `sub`/`email` fallback: `auth/sessionIdentity.ts` documents that as a
+ * different namespace (MCP tokens), and every other owner-style check on
+ * this server (`datasets.ts`, `memory.ts`, `skillPromotion.ts`) compares
+ * against `omadia_user_id`. No session id → 401 `auth.required`.
+ *
+ * Client-supplied caller identity is REJECTED (400
+ * `credential_ask.identity_from_session`), not silently ignored, so a
+ * pre-S1 client fails loudly instead of acting as someone it did not mean:
+ * `requesterUserId` (create, cancel), `resolvedBy` (approve, deny),
+ * `?owner` (`/pending`), `?requester` (`/mine`).
+ *
+ *  - **create** — requester = session. The owner is derived by the store
+ *    from the credential's own `owner`; an optional `ownerUserId` is only a
+ *    cross-check (mismatch → 400 `credential_ask.owner_mismatch`). Domain
+ *    rejections (unknown / not askable / revoked credential) → 400; any
+ *    other failure → 500 with a generic message.
+ *  - **approve / deny** — owner-only (maintainer decision D2: no operator
+ *    break-glass). Unknown id → 404; session ≠ `ask.owner` → 403
+ *    `credential_ask.forbidden`; not actionable (resolved, expired, or the
+ *    credential was revoked since the ask) → 409. `ask.owner` is immutable
+ *    (migration 0043), so reading it before the atomic claim is race-free.
+ *  - **cancel** — requester-scoped in the store; anyone else gets the same
+ *    404 as an unknown id.
+ *
+ * Consequence for credential creation (#778 follow-up): a personal
+ * credential's owner must be stored as `user:<omadia_user_id>`, or nobody
+ * can ever approve an ask against it.
  *
  * There is deliberately no "list all asks" / operator-wide endpoint here:
- * every read is scoped to a principal (`owner` for the inbox, `requester`
- * for "my asks"), matching the ask's own access model — an owner sees what
- * is addressed to them, a requester sees what they asked for, and nobody
- * else's asks leak into either view.
+ * every read is scoped to the session principal — an owner sees what is
+ * addressed to them, a requester sees what they asked for.
  */
 
 import { Router, type Request, type Response } from 'express';
 
 import { makePrincipal, type Principal } from '@omadia/channel-sdk';
 
-import type { CredentialAskStore } from '../credentials/asks.js';
+import { CredentialAskRejectedError, type CredentialAsk, type CredentialAskStore } from '../credentials/asks.js';
 
 export interface CredentialAskRoutesDeps {
   readonly store: CredentialAskStore;
@@ -54,6 +78,13 @@ function num(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+/** A string that parses to a real instant, or undefined. */
+function parseDate(value: unknown): Date | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) return undefined;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : undefined;
+}
+
 /** Only `user:` principals are accepted — same reasoning as
  *  `audience/routes.ts`'s `parseUserPrincipal`: a `role:` requester or owner
  *  is an indirection over holders, not a subject that can own a credential
@@ -64,6 +95,47 @@ function parseUserPrincipal(userId: string): Principal | undefined {
   return makePrincipal('user', trimmed);
 }
 
+interface SessionCaller {
+  /** The raw `omadia_user_id` — what `resolved_by` records. */
+  readonly userId: string;
+  readonly principal: Principal;
+}
+
+/** Same shape as `skillPromotion.ts`/`datasets.ts`: `omadia_user_id` only,
+ *  no `sub`/`email` fallback (see the file header). */
+function requireSessionCaller(req: Request, res: Response): SessionCaller | null {
+  const userId = req.session?.omadia_user_id;
+  const principal = typeof userId === 'string' ? parseUserPrincipal(userId) : undefined;
+  if (!userId || !principal) {
+    res.status(401).json({ code: 'auth.required', message: 'login required' });
+    return null;
+  }
+  return { userId: userId.trim(), principal };
+}
+
+/** 400s (and returns true) when the client tried to name a caller identity
+ *  the route takes from the session instead. */
+function rejectClientIdentity(res: Response, source: Record<string, unknown>, field: string): boolean {
+  if (source[field] === undefined) return false;
+  res.status(400).json({
+    code: 'credential_ask.identity_from_session',
+    message: `${field} is not accepted: the caller identity comes from the session`,
+  });
+  return true;
+}
+
+function samePrincipal(a: Principal, b: Principal): boolean {
+  if (a.kind !== b.kind) return false;
+  const refA = makePrincipal(a.kind, a.kind === 'user' ? a.userId : a.roleKey);
+  const refB = makePrincipal(b.kind, b.kind === 'user' ? b.userId : b.roleKey);
+  return refA !== undefined && refB !== undefined && principalRef(refA) === principalRef(refB);
+}
+
+const NOT_ACTIONABLE_BODY = {
+  code: 'credential_ask.not_actionable',
+  message: 'ask is already resolved, has expired, or its credential is no longer askable',
+} as const;
+
 export function createCredentialAskRouter(deps: CredentialAskRoutesDeps): Router {
   const router = Router();
   const now = deps.now ?? (() => new Date());
@@ -71,24 +143,49 @@ export function createCredentialAskRouter(deps: CredentialAskRoutesDeps): Router
   const maxTtl = deps.maxAskTtlMs ?? DEFAULT_MAX_ASK_TTL_MS;
 
   router.post('/', async (req: Request, res: Response): Promise<void> => {
+    const caller = requireSessionCaller(req, res);
+    if (!caller) return;
     const body = asObject(req.body);
+    if (rejectClientIdentity(res, body, 'requesterUserId')) return;
+
     const credentialId = str(body.credentialId).trim();
-    const requester = parseUserPrincipal(str(body.requesterUserId));
-    const owner = parseUserPrincipal(str(body.ownerUserId));
     const purpose = str(body.purpose).trim();
     const mode = str(body.mode);
-    if (!credentialId || !requester || !owner || !purpose || (mode !== 'once' && mode !== 'standing')) {
+    let owner: Principal | undefined;
+    if (body.ownerUserId !== undefined) {
+      owner = parseUserPrincipal(str(body.ownerUserId));
+      if (!owner) {
+        res.status(400).json({
+          code: 'credential_ask.invalid_input',
+          message: 'ownerUserId, when given, must be a non-empty user id',
+        });
+        return;
+      }
+    }
+    if (!credentialId || !purpose || (mode !== 'once' && mode !== 'standing')) {
       res.status(400).json({
         code: 'credential_ask.invalid_input',
-        message: 'credentialId, requesterUserId, ownerUserId, purpose and mode ("once"|"standing") are required',
+        message: 'credentialId, purpose and mode ("once"|"standing") are required',
       });
       return;
     }
     const requestedTtl = num(body.askTtlMs) ?? defaultTtl;
     const clampedTtl = Math.min(Math.max(requestedTtl, MIN_ASK_TTL_MS), maxTtl);
-    const requestedGrantExpiresAtRaw = str(body.requestedGrantExpiresAt);
-    const requestedGrantExpiresAt = requestedGrantExpiresAtRaw ? new Date(requestedGrantExpiresAtRaw) : undefined;
-    if (mode === 'once' && (!requestedGrantExpiresAt || Number.isNaN(requestedGrantExpiresAt.getTime()))) {
+    // Validated for every mode: a garbage value on a 'standing' ask used to
+    // reach the store as an Invalid Date (500 on Postgres), and a non-string
+    // was silently dropped into an unbounded standing grant.
+    let requestedGrantExpiresAt: Date | undefined;
+    if (body.requestedGrantExpiresAt !== undefined) {
+      requestedGrantExpiresAt = parseDate(body.requestedGrantExpiresAt);
+      if (!requestedGrantExpiresAt) {
+        res.status(400).json({
+          code: 'credential_ask.invalid_input',
+          message: 'requestedGrantExpiresAt, when given, must be a valid date string',
+        });
+        return;
+      }
+    }
+    if (mode === 'once' && !requestedGrantExpiresAt) {
       res.status(400).json({
         code: 'credential_ask.invalid_input',
         message: 'mode "once" requires a valid requestedGrantExpiresAt',
@@ -99,7 +196,7 @@ export function createCredentialAskRouter(deps: CredentialAskRoutesDeps): Router
     try {
       const ask = await deps.store.createAsk({
         credentialId,
-        requester,
+        requester: caller.principal,
         owner,
         purpose,
         mode,
@@ -108,18 +205,22 @@ export function createCredentialAskRouter(deps: CredentialAskRoutesDeps): Router
       });
       res.status(201).json(toAskBody(ask));
     } catch (err) {
-      res.status(400).json({ code: 'credential_ask.create_failed', message: errMsg(err) });
+      if (err instanceof CredentialAskRejectedError) {
+        const code = err.reason === 'owner_mismatch' ? 'credential_ask.owner_mismatch' : 'credential_ask.create_failed';
+        res.status(400).json({ code, message: err.message });
+        return;
+      }
+      console.error('[credential-asks] create failed:', err);
+      res.status(500).json({ code: 'credential_ask.create_failed', message: 'could not create the credential ask' });
     }
   });
 
   router.get('/pending', async (req: Request, res: Response): Promise<void> => {
-    const owner = parseUserPrincipal(str(req.query.owner));
-    if (!owner) {
-      res.status(400).json({ code: 'credential_ask.invalid_input', message: 'owner is required' });
-      return;
-    }
+    const caller = requireSessionCaller(req, res);
+    if (!caller) return;
+    if (rejectClientIdentity(res, asObject(req.query), 'owner')) return;
     try {
-      const asks = await deps.store.listPendingForOwner(owner, now());
+      const asks = await deps.store.listPendingForOwner(caller.principal, now());
       res.json({ asks: asks.map(toAskBody) });
     } catch (err) {
       res.status(500).json({ code: 'credential_ask.list_failed', message: errMsg(err) });
@@ -127,76 +228,61 @@ export function createCredentialAskRouter(deps: CredentialAskRoutesDeps): Router
   });
 
   router.get('/mine', async (req: Request, res: Response): Promise<void> => {
-    const requester = parseUserPrincipal(str(req.query.requester));
-    if (!requester) {
-      res.status(400).json({ code: 'credential_ask.invalid_input', message: 'requester is required' });
-      return;
-    }
+    const caller = requireSessionCaller(req, res);
+    if (!caller) return;
+    if (rejectClientIdentity(res, asObject(req.query), 'requester')) return;
     try {
-      const asks = await deps.store.listForRequester(requester);
+      const asks = await deps.store.listForRequester(caller.principal);
       res.json({ asks: asks.map(toAskBody) });
     } catch (err) {
       res.status(500).json({ code: 'credential_ask.list_failed', message: errMsg(err) });
     }
   });
 
-  router.post('/:id/approve', async (req: Request, res: Response): Promise<void> => {
-    const body = asObject(req.body);
-    const resolvedBy = str(body.resolvedBy).trim();
-    if (!resolvedBy) {
-      res.status(400).json({ code: 'credential_ask.invalid_input', message: 'resolvedBy is required' });
-      return;
-    }
-    try {
-      const ask = await deps.store.approve(req.params.id as string, resolvedBy, now());
-      if (!ask) {
-        res.status(409).json({
-          code: 'credential_ask.not_actionable',
-          message: 'ask is already resolved or has expired',
-        });
-        return;
+  for (const action of ['approve', 'deny'] as const) {
+    router.post(`/:id/${action}`, async (req: Request, res: Response): Promise<void> => {
+      const caller = requireSessionCaller(req, res);
+      if (!caller) return;
+      if (rejectClientIdentity(res, asObject(req.body), 'resolvedBy')) return;
+      const id = req.params.id as string;
+      try {
+        const existing = await deps.store.getAsk(id);
+        if (!existing) {
+          res.status(404).json({ code: 'credential_ask.not_found', message: 'no ask with that id' });
+          return;
+        }
+        if (!samePrincipal(existing.owner, caller.principal)) {
+          res.status(403).json({
+            code: 'credential_ask.forbidden',
+            message: `only the credential owner may ${action} this ask`,
+          });
+          return;
+        }
+        const ask =
+          action === 'approve'
+            ? await deps.store.approve(id, caller.userId, now())
+            : await deps.store.deny(id, caller.userId, now());
+        if (!ask) {
+          res.status(409).json(NOT_ACTIONABLE_BODY);
+          return;
+        }
+        res.json(toAskBody(ask));
+      } catch (err) {
+        res.status(500).json({ code: `credential_ask.${action}_failed`, message: errMsg(err) });
       }
-      res.json(toAskBody(ask));
-    } catch (err) {
-      res.status(500).json({ code: 'credential_ask.approve_failed', message: errMsg(err) });
-    }
-  });
-
-  router.post('/:id/deny', async (req: Request, res: Response): Promise<void> => {
-    const body = asObject(req.body);
-    const resolvedBy = str(body.resolvedBy).trim();
-    if (!resolvedBy) {
-      res.status(400).json({ code: 'credential_ask.invalid_input', message: 'resolvedBy is required' });
-      return;
-    }
-    try {
-      const ask = await deps.store.deny(req.params.id as string, resolvedBy, now());
-      if (!ask) {
-        res.status(409).json({
-          code: 'credential_ask.not_actionable',
-          message: 'ask is already resolved or has expired',
-        });
-        return;
-      }
-      res.json(toAskBody(ask));
-    } catch (err) {
-      res.status(500).json({ code: 'credential_ask.deny_failed', message: errMsg(err) });
-    }
-  });
+    });
+  }
 
   router.post('/:id/cancel', async (req: Request, res: Response): Promise<void> => {
-    const body = asObject(req.body);
-    const requester = parseUserPrincipal(str(body.requesterUserId));
-    if (!requester) {
-      res.status(400).json({ code: 'credential_ask.invalid_input', message: 'requesterUserId is required' });
-      return;
-    }
+    const caller = requireSessionCaller(req, res);
+    if (!caller) return;
+    if (rejectClientIdentity(res, asObject(req.body), 'requesterUserId')) return;
     try {
-      const cancelled = await deps.store.cancel(req.params.id as string, requester);
+      const cancelled = await deps.store.cancel(req.params.id as string, caller.principal);
       if (!cancelled) {
         res.status(404).json({
           code: 'credential_ask.not_found',
-          message: 'no pending ask with that id belonging to that requester',
+          message: 'no pending ask with that id belonging to you',
         });
         return;
       }
@@ -209,21 +295,7 @@ export function createCredentialAskRouter(deps: CredentialAskRoutesDeps): Router
   return router;
 }
 
-function toAskBody(ask: {
-  id: string;
-  credentialId: string;
-  requester: Principal;
-  owner: Principal;
-  purpose: string;
-  mode: string;
-  requestedGrantExpiresAt?: Date;
-  askExpiresAt: Date;
-  status: string;
-  createdAt: Date;
-  resolvedAt?: Date;
-  resolvedBy?: string;
-  grantId?: string;
-}): Record<string, unknown> {
+function toAskBody(ask: CredentialAsk): Record<string, unknown> {
   return {
     id: ask.id,
     credential_id: ask.credentialId,

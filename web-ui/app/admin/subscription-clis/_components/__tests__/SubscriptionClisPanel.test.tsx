@@ -45,6 +45,11 @@ vi.mock('../../../../_lib/api', () => ({
   cliLogout: vi.fn(),
   startCliInstall: mockStartCliInstall,
   getCliInstallStatus: mockGetCliInstallStatus,
+  // The embedded TurnBudgetField (OM-104) loads the orchestrator config. Let it
+  // load cleanly, so its own failed-load disclosure (#1077) never competes
+  // with the install box's "Details for support" in these assertions.
+  getInstalledPlugin: vi.fn().mockResolvedValue({ config: {} }),
+  updateInstalledPluginConfig: vi.fn(),
   ApiError: class MockApiError extends Error {},
 }));
 

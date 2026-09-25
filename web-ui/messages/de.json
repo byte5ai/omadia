@@ -3884,7 +3884,10 @@
       "help": "Wie lange ein einzelner Turn auf dem Abo-Weg laufen darf. Leer lassen für den Standard von {default} Sekunden bzw. den Wert aus OMADIA_CLI_SPAWN_TIMEOUT_MS.",
       "save": "Speichern",
       "saved": "Gespeichert",
-      "invalid": "Bitte eine ganze Zahl zwischen {min} und {max} eingeben."
+      "invalid": "Bitte eine ganze Zahl zwischen {min} und {max} eingeben.",
+      "loadFailed": "Das aktuelle Zeitlimit konnte nicht geladen werden. Speichern ist gesperrt, bis es geladen ist.",
+      "saveFailed": "Das Zeitlimit konnte nicht gespeichert werden.",
+      "reload": "Erneut laden"
     }
   },
   "createIssue": {

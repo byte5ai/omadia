@@ -534,16 +534,44 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   Channels feature-detecten (`typeof core.registerWebSocket === 'function'`).
 - **Kernel** `src/channels/webSocketRegistry.ts`: spiegelt `ExpressRouteRegistry`
   (per-Channel-`active`-Flag; `deactivateChannel` lehnt neue Upgrades ab **und**
-  schließt Live-Sockets). Ein einzelner `ws.Server` im `noServer`-Modus;
-  `attach(server)` hängt sich an `server.on('upgrade')`. Pfad-/Active-Match →
-  Auth → `handleUpgrade`. **Single-Owner-Invariante:** die Registry ist der
-  einzige `upgrade`-Consumer des Prozesses (heute kein anderer); unbekannter
-  Pfad → `404` + `destroy`. Ein künftiger zweiter WS-Consumer müsste das zu
-  einer Delegations-Kette machen statt unmatched Sockets zu zerstören.
+  schließt Live-Sockets). `attach(server)` hängt sich an
+  `server.on('upgrade')`. Die Registry bleibt der **einzige** `upgrade`-Listener
+  des Prozesses, delegiert aber seit Epic #746 W1-1 über eine **Routen-Tabelle**
+  (Pfad → Route) mit zwei Arten; unbekannter Pfad → `404` + `destroy`:
+  - **Channel-Routen** (`register`, für Plugins nur via
+    `CoreApi.registerWebSocket`): Session-Cookie + Whitelist-Auth, Active-Gate
+    (`503`), `ChannelSocket`-Wrapper, gemeinsamer `ws.Server` mit
+    `maxPayload = CHANNEL_WS_MAX_PAYLOAD_BYTES` (**32 MiB**, vorher ws-Default
+    100 MiB). Herleitung: größter gültiger Canvas-Frame `canvas_list_put` =
+    50 × 262_144 Zeichen ≈ 12,5 MiB ASCII; der Desktop-Client kappt vor dem
+    Senden nicht, daher ~2,5× Reserve gegenüber diesem ASCII-Worst-Case. Das
+    Limit zählt UTF-16-Code-Units, nicht Bytes: eine maximale Liste aus reinem
+    3-Byte-UTF-8-Text (~37,5 MiB) läge über dem Cap. Frame über dem Cap →
+    Close `1009`.
+  - **Kernel-Routen** (`registerKernel(path, { authenticate, maxPayload, handler })`,
+    **nur Kernel-Code**, nicht auf `CoreApi`): eigener
+    `WebSocketAuthenticator<T>` (läuft **vor** dem `101`; `ok:false` → rohes
+    `401`/`403`; Exception, Nicht-Ergebnis oder verpasste Deadline
+    `authTimeoutMs` (Default 10 s) → `503` fail-closed, `console.error` mit
+    Stack — ein Key-Store-Ausfall liest sich so nicht als „Credential
+    abgelehnt"), **Pflicht**-`maxPayload` (positiver Integer ≤ `2^31 − 1`, weil
+    `ws` `maxPayload | 0` speichert und 2^31+ still „unbegrenzt" hieße;
+    eigener `ws.Server` pro Route), Handler bekommt den rohen `ws`-Socket
+    (Ping/Pong, Binär-Frames, Backpressure) + Principal. Unabhängig vom
+    Channel-Lifecycle: `deactivateChannel` schließt keine Kernel-Sockets.
+    Erster Consumer: `/api/v1/satellites/ws` (W1-2).
+  - Pfad-Kollision Kernel↔Channel (beide Richtungen) und doppelte
+    Kernel-Registrierung werfen.
+  - Jeder akzeptierte Socket hat einen `'error'`-Listener: `ws` emittiert
+    `'error'` bei Protokollverletzungen (inkl. `maxPayload`-Überschreitung);
+    ohne Listener war das eine uncaught exception, die nur `processGuards`
+    abfing.
 - **Auth — vor dem Upgrade, nicht danach.** Der `upgrade`-Request trägt das
   Session-Cookie (`omadia_session`) in `req.headers.cookie`. Die Registry parst
-  es selbst (beim rohen `upgrade` läuft **kein** `cookie-parser` davor) und ruft
-  `verifySession(token, sessionSigningKey)` — **derselbe Key wie `requireAuth`**.
+  es selbst (beim rohen `upgrade` läuft **kein** `cookie-parser` davor; ein
+  kaputtes `%`-Escape ist ein normales `401`) und ruft seit W1-1
+  `evaluateSessionToken` aus `requireAuth.ts` — **derselbe Code-Pfad wie
+  `requireAuth`**, keine Handkopie mehr, die driften könnte.
   Fehlt/ungültig → rohes `401` + `socket.destroy()` **vor** dem `101`; für einen
   unauthentifizierten Peer wird kein WebSocket allokiert. Nur authentifizierte
   Upgrades werden zu `ChannelSocket`s; die verifizierten `ChannelSessionClaims`
@@ -552,17 +580,34 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   eine OIDC-(`entra`)-Session mit nicht (mehr) whitelisteter E-Mail → `403`
   (Auth-Parität zu den HTTP-Routes; der `EmailWhitelist` wird mitinjiziert).
   (Hinweis: `CoreApi.resolveIdentity` ist channel-natives User-Mapping,
-  **nicht** Session-Auth — daher direkt `verifySession`.)
-- **Wiring** (`index.ts`): `new WebSocketRegistry({ signingKey: sessionSigningKey })`
-  vor `createCoreApi({ … webSockets })` (≈2505), zusätzlich an die
-  `DefaultChannelRegistry` gereicht (Lifecycle-Spiegel zu `routes`), und
-  `attach(server)` nach `const server = app.listen(PORT, '::')` (≈2592) —
-  dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit.
+  **nicht** Session-Auth — daher die Session-Evaluation von `requireAuth`.)
+  Nach der asynchronen Cookie-Prüfung wird das Active-Flag **erneut** geprüft:
+  ein `deactivateChannel` im Auth-Fenster führt zu `503` statt zu einem Socket,
+  der an `deactivateChannel` vorbeigerutscht ist.
+- **Wiring** (`index.ts`, per `grep -n WebSocketRegistry src/index.ts` finden —
+  Zeilennummern driften): `new WebSocketRegistry({ signingKey:
+  sessionSigningKey, whitelist: emailWhitelist })` vor
+  `createCoreApi({ … webSockets })`, zusätzlich an die `DefaultChannelRegistry`
+  gereicht (Lifecycle-Spiegel zu `routes`), und
+  `webSocketRegistry.attach(server)` nach `const server = app.listen(PORT, '::')`
+  — dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit.
+  `channelMaxPayloadBytes` bleibt in Prod ungesetzt, also greift der
+  32-MiB-Default; nur Tests setzen einen kleinen Cap.
 - **Dependency:** `ws` + `@types/ws` nur im Kernel, nicht im SDK.
 
 Test: `test/webSocketRegistry.test.ts` fährt einen echten `http.Server` + echten
 `ws`-Client (authentifizierter Upgrade → Claims + Echo-Frame; ohne Cookie →
-`401`; unbekannter Pfad → `404`; deaktivierter Channel → `503`). Damit ist der
+`401`; unbekannter Pfad → `404`; deaktivierter Channel → `503`; seit W1-1
+zusätzlich: Kernel-Route ignoriert Cookies und nutzt ihren Authenticator,
+`401`/`403` ohne `101`, `maxPayload` pro Route mit `1009` ohne
+uncaught exception, Kernel↔Channel-Pfadkollision wirft, `deactivateChannel`
+lässt Kernel-Sockets offen, 32-MiB-Default; Statuscodes werden exakt geprüft,
+nicht per `|unexpected server response`). `test/webSocketRegistryHardening.test.ts`
+deckt `503` bei Exception/Deadline/Nicht-Ergebnis (auch ein spätes `ok` nach
+der Deadline öffnet nichts), die rohen Status-Line-Bytes bei CR/LF im
+`message`, die Grenzen für `maxPayload`/`authTimeoutMs`/`channelMaxPayloadBytes`,
+das kaputte Cookie-Escape und das Deaktivieren im Auth-Fenster ab. Gemeinsame
+Fixtures: `test/_helpers/wsRegistryKit.ts`. Damit ist der
 Transport bereit für **PR-10b** (echter Canvas-Channel: Handshake-`offer→select→
 ack`, `IncomingTurn`-Bildung, `surface_*`-Fan-out).
 
@@ -2946,34 +2991,6 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
-### Turn-Budget (OM-104) — offene Defekte (#1077 follow-up)
-
-Beim Schreiben der #1077-Tests gefunden, dort bewusst nicht repariert (die
-Änderung ist tests-only):
-
-- **Turn-Budget greift nicht bei Registry-Agents.**
-  `packages/harness-orchestrator/src/registry/applyDiff.ts` `buildForAgent`
-  reicht aus den Registry-Runtime-Defaults `loopRepeatSoft/Hard`,
-  `maxTurnSeconds` und `directLineSticky` durch, aber **nicht**
-  `cliTurnSeconds`. Das Plugin legt den Wert korrekt in
-  `defaultRuntimeConfig` ab (gepinnt von
-  `test/subscriptionParity/cliTurnBudgetRegistry.pg.test.ts`), er kommt nur
-  nie beim `CliChatAgent` an. Mit Datenbank baut die Registry jeden Agent
-  (`registry/index.ts`, beide `buildForAgent`-Aufrufe), und der Web-Chat
-  läuft über `reg.slugForFallback()` (`src/index.ts`, `getDefaultSlug`).
-  Auf DB-Deployments hat das Setup-Feld `cli_turn_seconds` damit keine
-  Wirkung; es gilt nur ENV bzw. Default. Reparatur: eine Spread-Zeile neben
-  `maxTurnSeconds` plus ein Test auf `spawnTimeoutMs` des gebauten Agents.
-- **`TurnBudgetField` löscht nach fehlgeschlagenem Laden das Budget.**
-  `web-ui/app/admin/subscription-clis/_components/TurnBudgetField.tsx`
-  sperrt Eingabe und Speichern nur bei `status.kind === 'loading'`. Scheitert
-  `getInstalledPlugin`, bleibt das Feld leer und Speichern aktiv; ein Klick
-  schickt `{ cli_turn_seconds: null }`, löscht den gespeicherten Wert und
-  zeigt "Gespeichert". Daneben: `240.5` besteht die `parseInt`-Prüfung und
-  wird unverändert gespeichert, und beide `catch`-Zweige rendern die rohe
-  Exception-Meldung statt eines Katalog-Schlüssels (web-ui/CLAUDE.md,
-  Checkliste Punkt 3).
-
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
@@ -2994,6 +3011,20 @@ SELECT count(*) FROM agent_teams_identities
 Dann fallen auch der Präfix-Fallback im Config-Sync-Cleanup und die
 Round-Trip-Tests in `test/teamsProvisioningLastError.test.ts` weg; die Satz-Präfixe dürfen
 danach frei umformuliert werden.
+
+### Keychain-Asks (Epic #778) — Rest nach S1
+
+S1 bindet `/api/v1/admin/credential-asks` an die Session
+(`req.session.omadia_user_id`), leitet den Owner eines Asks aus dem Owner des
+Credentials ab und lässt nur diesen Owner approven/denyen (D2: kein
+Operator-Break-Glass). Daraus folgt eine Vorgabe für alles, was künftig
+Credentials anlegt (Create-Route, Admin-UI): der Owner eines
+`personal`-Credentials **muss** als `user:<omadia_user_id>` gespeichert werden —
+nicht als `sub`/E-Mail, nicht als `role:`. Sonst stimmt kein Session-Principal je
+mit `ask.owner` überein, und niemand kann das Ask beantworten
+(`role`-Owner lehnt `assertAskableCredential` deshalb schon als `not_askable`
+ab). Offen im Epic: das agent-aufrufbare Broker-/Ask-Tool, die Benachrichtigung
+des Owners (heute nur per `GET /pending` auffindbar) und die Admin-UIs (P4).
 
 ### Umgekehrte Richtung: extras allein neu gebaut, Orchestrator hält alte Instanzen (#1076 follow-up)
 
@@ -3896,9 +3927,22 @@ Orchestrator-Setup-Feld **`cli_turn_seconds`** → `spawnTimeoutMs` des `CliChat
 Reihenfolge: Setting > ENV `OMADIA_CLI_SPAWN_TIMEOUT_MS` > Default 600 s. Leer/0 heißt
 "nicht gesetzt", damit ein leeres Feld die ENV nicht überschreibt. UI auf der
 LLM-Zugang-Seite, Reiter Abos; sie schreibt über den normalen Plugin-Config-PATCH, das
-Plugin reaktiviert, kein Neustart. **Ausnahme:** Agents, die die Registry baut (mit
-Datenbank also auch der Web-Chat), ignorieren das Setting derzeit — offener Defekt, siehe
-§13 "Turn-Budget (OM-104) — offene Defekte".
+Plugin reaktiviert, kein Neustart.
+
+Der Wert erreicht **beide** Bauwege: den Default-Agenten und jeden Agenten, den die
+Registry baut (`registry/applyDiff.ts` `buildForAgent` reicht `cliTurnSeconds` wie
+`maxTurnSeconds` durch). Mit DB läuft der Web-Chat auf dem Registry-Fallback-Agenten;
+bis #1077 fehlte dort der Forward, das Setting war auf echten Deployments wirkungslos.
+Pins: `middleware/test/buildForAgentCliTurnBudget.test.ts` (ohne DB) und
+`middleware/test/subscriptionParity/cliTurnBudgetRegistry.pg.test.ts` (echtes `activate()`
+gegen Postgres, prüft `spawnTimeoutMs` eines von der Registry gebauten Agenten).
+
+Die UI (`TurnBudgetField`) sperrt Eingabe und Speichern, solange der aktuelle Wert nicht
+geladen ist, und bietet nach einem Ladefehler "Erneut laden" an. Ein leeres Speichern
+PATCHt `null` und darf deshalb nur nach erfolgreichem Laden möglich sein. Akzeptiert werden
+nur ganze Zahlen 30–3600 (`/^\d+$/`, plus `validity.badInput`). Ein gespeicherter
+Bruchwert wird so angezeigt, wie der Orchestrator ihn liest (`Number()`), und beim nächsten
+Speichern abgelehnt.
 
 ### `manage_routine` bekommt den Principal (OM-82)
 
