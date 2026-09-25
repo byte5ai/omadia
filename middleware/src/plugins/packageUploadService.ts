@@ -304,7 +304,8 @@ export class PackageUploadService {
       //
       // What is protected is not the id but what the id inherits.
       // `LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20` is keyed by plugin id,
-      // and `@omadia/orchestrator`'s row alone carries nineteen capabilities,
+      // and `@omadia/orchestrator`'s row alone still carries more than a dozen
+      // capabilities (nineteen at the 2026-08-20 audit, drained since),
       // `graphPool` and `tigrisStore` among them. The grant gate already
       // refuses those to a shadowing package (`legacyServiceGrantsFor`); this
       // is the second lock — on the door rather than on the safe.

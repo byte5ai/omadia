@@ -1087,6 +1087,10 @@
         "what": "The assignment was accepted but could not be written to the plugin.",
         "next": "Save again. If it keeps failing, the middleware cannot write to its config store."
       },
+      "dependent_rebuild_failed": {
+        "what": "The assignment was saved, but the background memory features that inherit it did not restart.",
+        "next": "Use Retry to restart them. Until they run again, a restart of omadia would leave this plugin down as well. If it keeps failing, the support details name the plugin and its activation error."
+      },
       "invalid_request": {
         "what": "The assignment was missing the plugin, the provider or the model.",
         "next": "Pick a provider and a model, then save again."
@@ -1128,6 +1132,10 @@
         "what": "The provider list could not be read.",
         "next": "Reload the page. If it stays empty, the middleware cannot reach its config store."
       },
+      "rebuild_failed": {
+        "what": "The assignment was saved, but the plugin did not start on it and is not running right now.",
+        "next": "Use Retry to start it again. If it keeps failing, the support details carry its activation error."
+      },
       "tool_incompatible": {
         "what": "This plugin drives a tool loop and the selected provider cannot do that.",
         "next": "Give this plugin a key-based provider and keep the subscription CLI for tool-less roles."
@@ -1153,6 +1161,10 @@
       "agent_inactive": {
         "what": "The plugin is installed but not running, so it cannot answer right now.",
         "next": "Activate the plugin, then reload this page."
+      },
+      "dependent_rebuild_failed": {
+        "what": "The change was saved, but not every plugin that uses it restarted.",
+        "next": "Save again to retry the restart. If it keeps failing, the support details name the plugin and its activation error."
       },
       "empty_secrets_patch": {
         "what": "The save carried no changed value.",
@@ -3769,7 +3781,8 @@
         "frontier": "Frontier",
         "balanced": "Balanced",
         "fast": "Fast"
-      }
+      },
+      "retryDependentRebuild": "Retry"
     },
     "status": {
       "saving": "saving …",

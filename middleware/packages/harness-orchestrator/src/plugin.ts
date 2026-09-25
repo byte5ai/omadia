@@ -523,7 +523,10 @@ export async function activate(
   // Plugin-contributed providers (e.g. MiniMax) supply their baseURL + quirks
   // via the kernel's LlmProviderCatalog; passing it lets the factory resolve a
   // provider id that isn't built in. Absent for the Anthropic/OpenAI defaults.
-  const llmProviderCatalog = ctx.services.get<LlmProviderCatalog>(
+  // #1076 — `getOptional`, paired with `optional_requires:
+  // ["llmProviderCatalog@1"]`: kernel-published at boot, absent only on legacy
+  // hosts and in unit tests.
+  const llmProviderCatalog = ctx.services.getOptional<LlmProviderCatalog>(
     'llmProviderCatalog',
   );
   // #1033 W1 — ONE pool, MANY providers. The configured provider is simply
@@ -693,8 +696,8 @@ export async function activate(
   // (`middleware/src/index.ts:installedPluginConfigReader`). When absent
   // (legacy hosts, unit tests) the resolver falls back to kernel-tool
   // bypass only — domain and sub-agent inner tools then always run
-  // guarded.
-  const pluginConfigGet = ctx.services.get<
+  // guarded. #1076 — declared under `optional_requires`, hence `getOptional`.
+  const pluginConfigGet = ctx.services.getOptional<
     (agentId: string, configKey: string) => unknown | undefined
   >('installedPluginConfigReader');
 

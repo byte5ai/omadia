@@ -64,6 +64,9 @@ export const ERROR_HELP_CODES = [
   'cli_install.spawn_failed',
   // adminProviders.ts (+ providerCredentialVerifier.ts for key_rejected)
   'providers.apply_failed',
+  // #1076 — the assignment landed and the plugin was rebuilt on it, but a
+  // plugin inheriting its provider (orchestrator-extras) did not come back up.
+  'providers.dependent_rebuild_failed',
   'providers.discovery_unavailable',
   'providers.invalid_request',
   'providers.key_rejected',
@@ -75,6 +78,10 @@ export const ERROR_HELP_CODES = [
   'providers.oauth_too_many_flows',
   'providers.oauth_unsupported',
   'providers.read_failed',
+  // #1076 — the assignment landed, but the plugin's own rebuild left it
+  // errored. Also the row's copy for a dependent_rebuild_failed whose
+  // envelope says `primaryApplied: false` (ProvidersPanel.tsx).
+  'providers.rebuild_failed',
   'providers.tool_incompatible',
   'providers.unknown_plugin',
   'providers.unknown_provider',
@@ -86,6 +93,9 @@ export const ERROR_HELP_CODES = [
   'package.id_conflict_bundled',
   // runtime.ts
   'runtime.agent_inactive',
+  // #1076 — same as providers.dependent_rebuild_failed, on the generic
+  // PATCH …/config and PATCH …/secrets writes of `llm_provider`.
+  'runtime.dependent_rebuild_failed',
   'runtime.empty_secrets_patch',
   // #470 C16 (#817) — a second consent change arrived for a plugin whose first
   // one is still being applied. Refused rather than queued; see

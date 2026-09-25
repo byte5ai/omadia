@@ -1087,6 +1087,10 @@
         "what": "Die Zuordnung wurde angenommen, konnte aber nicht ins Plugin geschrieben werden.",
         "next": "Speichere erneut. Bleibt es dabei, kann die Middleware ihren Config-Store nicht schreiben."
       },
+      "dependent_rebuild_failed": {
+        "what": "Die Zuordnung wurde gespeichert, aber die Hintergrund-Gedächtnisfunktionen, die sie übernehmen, sind nicht neu gestartet.",
+        "next": "Starte sie mit „Erneut versuchen“ neu. Solange sie nicht laufen, würde auch dieses Plugin nach einem Neustart von omadia nicht starten. Bleibt es dabei, nennen die Support-Details das Plugin und seinen Aktivierungsfehler."
+      },
       "invalid_request": {
         "what": "In der Zuordnung fehlte das Plugin, der Provider oder das Modell.",
         "next": "Wähle Provider und Modell und speichere erneut."
@@ -1128,6 +1132,10 @@
         "what": "Die Provider-Liste konnte nicht gelesen werden.",
         "next": "Lade die Seite neu. Bleibt sie leer, erreicht die Middleware ihren Config-Store nicht."
       },
+      "rebuild_failed": {
+        "what": "Die Zuordnung wurde gespeichert, aber das Plugin ist damit nicht gestartet und läuft gerade nicht.",
+        "next": "Starte es mit „Erneut versuchen“ neu. Bleibt es dabei, nennen die Support-Details seinen Aktivierungsfehler."
+      },
       "tool_incompatible": {
         "what": "Dieses Plugin braucht eine Tool-Schleife, die der gewählte Provider nicht kann.",
         "next": "Gib diesem Plugin einen Key-basierten Provider und nutze die Abo-CLI für Tool-lose Rollen."
@@ -1153,6 +1161,10 @@
       "agent_inactive": {
         "what": "Das Plugin ist installiert, läuft aber nicht und kann deshalb gerade nicht antworten.",
         "next": "Aktiviere das Plugin und lade diese Seite neu."
+      },
+      "dependent_rebuild_failed": {
+        "what": "Die Änderung wurde gespeichert, aber nicht jedes Plugin, das sie nutzt, ist neu gestartet.",
+        "next": "Speichere erneut, um den Neustart zu wiederholen. Bleibt es dabei, nennen die Support-Details das Plugin und seinen Aktivierungsfehler."
       },
       "empty_secrets_patch": {
         "what": "Beim Speichern war kein geänderter Wert dabei.",
@@ -3769,7 +3781,8 @@
         "frontier": "Frontier",
         "balanced": "Ausgewogen",
         "fast": "Schnell"
-      }
+      },
+      "retryDependentRebuild": "Erneut versuchen"
     },
     "status": {
       "saving": "speichert …",

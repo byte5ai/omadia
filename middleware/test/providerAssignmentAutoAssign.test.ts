@@ -35,7 +35,7 @@ const EXTRAS = '@omadia/orchestrator-extras';
 
 async function makeDeps(
   installed: Array<{ id: string; config?: Record<string, unknown> }>,
-  opts: { reactivateThrows?: boolean } = {},
+  opts: { reactivateThrows?: boolean; throwFor?: string; leavesErrored?: string } = {},
 ) {
   const vault = new InMemorySecretVault();
   const registry = new InMemoryInstalledRegistry();
@@ -63,6 +63,11 @@ async function makeDeps(
       reactivate: async (id: string) => {
         if (opts.reactivateThrows) throw new Error('activation exploded');
         reactivated.push(id);
+        if (opts.throwFor === id) throw new Error(`${id} activation exploded`);
+        // Mirror `installService.reactivate`: record, flip to errored, return.
+        if (opts.leavesErrored === id) {
+          await registry.markActivationBlocked(id, `${id} activate() exploded`);
+        }
       },
     },
   };
@@ -187,7 +192,12 @@ describe('autoAssignSubscriptionCli (OM-79)', () => {
     // Extras has two model keys; both must be set.
     assert.equal(registry.get(EXTRAS)?.config?.['fact_extractor_model'], model.modelId);
     assert.equal(registry.get(EXTRAS)?.config?.['topic_classifier_model'], model.modelId);
-    assert.equal(reactivated.length, 3);
+    // #1076 — plugins with provider dependents go LAST, so the orchestrator's
+    // cascade (extras, then orchestrator) runs after extras has its own final
+    // assignment. The orchestrator therefore ends up holding an extras instance
+    // built from extras' final config, not an intermediate one.
+    assert.deepEqual(reactivated, [VERIFIER, EXTRAS, EXTRAS, ORCH]);
+    assert.equal(reactivated.at(-1), ORCH, 'the orchestrator is rebuilt last');
   });
 
   it('reports a failing reactivate as apply_failed and does not throw', async () => {
@@ -198,6 +208,53 @@ describe('autoAssignSubscriptionCli (OM-79)', () => {
     assert.deepEqual(outcome.assigned, []);
     assert.ok(
       outcome.skipped.some((s) => s.pluginId === ORCH && s.reason === 'providers.apply_failed'),
+    );
+  });
+
+  // #1076 — the orchestrator's switch rebuilds extras first. If only extras
+  // fails, the orchestrator's config IS persisted and rebuilt on the CLI, so it
+  // counts as assigned; reporting it as skipped would claim it never moved.
+  it('counts the orchestrator as assigned when only its dependent fails to rebuild', async () => {
+    const { registry, reactivated, deps } = await makeDeps(
+      [
+        { id: ORCH, config: {} },
+        { id: EXTRAS, config: { llm_provider: SUBSCRIPTION_CLI_PROVIDER } },
+      ],
+      { throwFor: EXTRAS },
+    );
+    const logs: string[] = [];
+
+    const outcome = await autoAssignSubscriptionCli({ ...deps, log: (m) => logs.push(m) });
+
+    assert.deepEqual(outcome.assigned, [ORCH]);
+    assert.ok(!outcome.skipped.some((s) => s.pluginId === ORCH));
+    assert.equal(registry.get(ORCH)?.config?.['llm_provider'], SUBSCRIPTION_CLI_PROVIDER);
+    assert.deepEqual(reactivated, [EXTRAS, ORCH]);
+    assert.ok(
+      logs.some((l) => l.includes(ORCH) && l.includes(`dependent ${EXTRAS} failed to rebuild`)),
+      logs.join('\n'),
+    );
+  });
+
+  // #1076 — persisted, but the plugin's own rebuild left it errored: it runs
+  // on nothing, so it is neither "assigned" nor "not switched".
+  it('reports a plugin left errored by its own rebuild as saved but not running', async () => {
+    const { registry, deps } = await makeDeps([{ id: ORCH, config: {} }], {
+      leavesErrored: ORCH,
+    });
+    const logs: string[] = [];
+
+    const outcome = await autoAssignSubscriptionCli({ ...deps, log: (m) => logs.push(m) });
+
+    assert.deepEqual(outcome.assigned, []);
+    assert.ok(
+      outcome.skipped.some((s) => s.pluginId === ORCH && s.reason === 'providers.rebuild_failed'),
+      JSON.stringify(outcome.skipped),
+    );
+    assert.equal(registry.get(ORCH)?.config?.['llm_provider'], SUBSCRIPTION_CLI_PROVIDER);
+    assert.ok(
+      logs.some((l) => l.includes(ORCH) && l.includes('saved but not running')),
+      logs.join('\n'),
     );
   });
 
