@@ -1,5 +1,9 @@
 import type { Pool } from 'pg';
-import { resolveLlmProvider } from '@omadia/llm-provider';
+import {
+  resolveLlmProvider,
+  resolveModelRefStrict,
+  UnresolvedModelRefError,
+} from '@omadia/llm-provider';
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 import type { PluginContext } from '@omadia/plugin-api';
 import {
@@ -139,8 +143,28 @@ export async function activate(
   // already used for stub-injection).
   const odooClient = ctx.services.get<OdooReader>('odoo.client');
 
-  const model =
+  // #1079 — resolve the configured ref for the serving provider: a class ref
+  // (`class:fast`) becomes that provider's concrete model, a Claude id on a
+  // non-Anthropic provider its same-class model. An unresolvable class ref
+  // must never reach the vendor API (opaque 404 on every verification).
+  const modelRef =
     (ctx.config.get<string>('verifier_model') ?? '').trim() || DEFAULT_MODEL;
+  let model: string;
+  try {
+    model = resolveModelRefStrict(modelRef, providerId, {
+      configKey: 'verifier_model (VERIFIER_MODEL)',
+    });
+  } catch (err) {
+    if (!(err instanceof UnresolvedModelRefError)) throw err;
+    ctx.log(
+      `[harness-verifier] ${err.message} — plugin active but verifier@1 capability NOT published`,
+    );
+    return {
+      async close(): Promise<void> {
+        ctx.log('[harness-verifier] deactivating (unresolved model)');
+      },
+    };
+  }
   const maxClaims =
     parseNumberOrDefault(
       ctx.config.get<unknown>('verifier_max_claims'),
