@@ -256,7 +256,8 @@ jobs:
           # 281 → 365 with #1077: main had drifted to ran=359 (CI run on
           # d5bb0b61), i.e. 78 tests of slack; #1077 adds 6 (usageDashboard
           # 4, cliTurnBudgetRegistry 2). Re-pinned to the measured total.
-          PG_TEST_FLOOR: '365'
+          # 365 → 372 with #778 S1 (7 credential-ask askability/owner tests).
+          PG_TEST_FLOOR: '372'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

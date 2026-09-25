@@ -12,11 +12,14 @@ import { describe, it } from 'node:test';
 import { InMemoryCredentialStore, makePrincipal, type EncryptedSecretMaterial, type Principal } from '@omadia/channel-sdk';
 
 import {
+  CredentialAskRejectedError,
   InMemoryCredentialAskStore,
   assertAskableCredential,
   isAskActionable,
+  resolveAskOwner,
   validateNewAskInput,
   type CredentialAsk,
+  type CredentialAskRejection,
 } from '../src/credentials/asks.js';
 
 const ALICE = makePrincipal('user', 'alice@example.com') as Principal; // requester
@@ -27,6 +30,10 @@ function fakeSeal(plaintext: string): EncryptedSecretMaterial {
 }
 function fakeUnseal(material: EncryptedSecretMaterial): string {
   return Buffer.from(material.ciphertext, 'base64').toString('utf8');
+}
+
+function rejectedWith(reason: CredentialAskRejection): (err: unknown) => boolean {
+  return (err: unknown) => err instanceof CredentialAskRejectedError && err.reason === reason;
 }
 
 function baseAsk(overrides: Partial<CredentialAsk> = {}): CredentialAsk {
@@ -50,15 +57,17 @@ async function makeCredentialStore(): Promise<InMemoryCredentialStore> {
 
 describe('#578 validateNewAskInput', () => {
   it('rejects an empty purpose', () => {
-    assert.throws(() =>
-      validateNewAskInput({
-        credentialId: 'c1',
-        requester: ALICE,
-        owner: OWNER,
-        purpose: '   ',
-        mode: 'standing',
-        askExpiresAt: new Date(),
-      }),
+    assert.throws(
+      () =>
+        validateNewAskInput({
+          credentialId: 'c1',
+          requester: ALICE,
+          owner: OWNER,
+          purpose: '   ',
+          mode: 'standing',
+          askExpiresAt: new Date(),
+        }),
+      rejectedWith('invalid_input'),
     );
   });
 
@@ -86,6 +95,22 @@ describe('#578 validateNewAskInput', () => {
         requestedGrantExpiresAt: new Date(Date.now() + 1000),
         askExpiresAt: new Date(),
       }),
+    );
+  });
+
+  it('#778 S1: rejects an Invalid Date in either date field, for every mode', () => {
+    const base = { credentialId: 'c1', requester: ALICE, owner: OWNER, purpose: 'p', askExpiresAt: new Date() };
+    for (const mode of ['once', 'standing'] as const) {
+      assert.throws(
+        () => validateNewAskInput({ ...base, mode, requestedGrantExpiresAt: new Date('not-a-date') }),
+        rejectedWith('invalid_input'),
+        `${mode}: requestedGrantExpiresAt`,
+      );
+    }
+    assert.throws(
+      () => validateNewAskInput({ ...base, mode: 'standing', askExpiresAt: new Date(Number.NaN) }),
+      rejectedWith('invalid_input'),
+      'askExpiresAt',
     );
   });
 });
@@ -127,7 +152,29 @@ describe('#578 assertAskableCredential', () => {
     const cred = await store.createCredential({ name: 'p2', kind: 'personal', owner: OWNER, secret: 's', createdBy: 'op' });
     await store.revokeCredential(cred.id, 'op');
     const revoked = await store.getCredential(cred.id);
-    assert.throws(() => assertAskableCredential(revoked!));
+    assert.throws(() => assertAskableCredential(revoked!), rejectedWith('revoked'));
+  });
+
+  it('#778 S1: accepts the minimal facts shape the Postgres store selects', () => {
+    assert.doesNotThrow(() => assertAskableCredential({ id: 'c1', kind: 'personal', owner: OWNER }));
+    assert.throws(() => assertAskableCredential({ id: 'c1', kind: 'personal', owner: undefined }), rejectedWith('not_askable'));
+  });
+});
+
+describe('#778 S1 resolveAskOwner', () => {
+  const facts = { id: 'c1', kind: 'personal' as const, owner: { kind: 'user' as const, userId: ' Owner@Example.com' } };
+
+  it('derives the canonical owner when none is requested', () => {
+    assert.deepEqual(resolveAskOwner(facts), OWNER);
+  });
+
+  it('accepts a requested owner equal after canonicalisation', () => {
+    assert.deepEqual(resolveAskOwner(facts, { kind: 'user', userId: 'OWNER@EXAMPLE.COM ' }), OWNER);
+  });
+
+  it('rejects a requested owner of a different subject or kind', () => {
+    assert.throws(() => resolveAskOwner(facts, ALICE), rejectedWith('owner_mismatch'));
+    assert.throws(() => resolveAskOwner(facts, { kind: 'role', roleKey: 'owner@example.com' }), rejectedWith('owner_mismatch'));
   });
 });
 
@@ -268,18 +315,140 @@ describe('#578 InMemoryCredentialAskStore', () => {
 
   it('listPendingForOwner only shows asks addressed to that owner', async () => {
     const credStore = await makeCredentialStore();
+    const otherOwner = makePrincipal('user', 'someone-else@example.com') as Principal;
+    const mine = await credStore.createCredential({ name: 'p', kind: 'personal', owner: OWNER, secret: 's', createdBy: 'op' });
+    const theirs = await credStore.createCredential({ name: 'q', kind: 'personal', owner: otherOwner, secret: 's', createdBy: 'op' });
+    const askStore = new InMemoryCredentialAskStore(credStore);
+    const forOwner = await askStore.createAsk({
+      credentialId: mine.id,
+      requester: ALICE,
+      purpose: 'mine',
+      mode: 'standing',
+      askExpiresAt: new Date(Date.now() + 60_000),
+    });
+    await askStore.createAsk({
+      credentialId: theirs.id,
+      requester: ALICE,
+      purpose: 'theirs',
+      mode: 'standing',
+      askExpiresAt: new Date(Date.now() + 60_000),
+    });
+    const inbox = await askStore.listPendingForOwner(OWNER, new Date());
+    assert.deepEqual(
+      inbox.map((a) => a.id),
+      [forOwner.id],
+    );
+  });
+
+  it('#778 S1: a caller-supplied owner that is not the credential owner is rejected (owner_mismatch)', async () => {
+    const credStore = await makeCredentialStore();
     const cred = await credStore.createCredential({ name: 'p', kind: 'personal', owner: OWNER, secret: 's', createdBy: 'op' });
     const askStore = new InMemoryCredentialAskStore(credStore);
-    const otherOwner = makePrincipal('user', 'someone-else@example.com') as Principal;
-    await askStore.createAsk({
+    await assert.rejects(
+      () =>
+        askStore.createAsk({
+          credentialId: cred.id,
+          requester: ALICE,
+          owner: makePrincipal('user', 'mallory@example.com') as Principal,
+          purpose: 'need it',
+          mode: 'standing',
+          askExpiresAt: new Date(Date.now() + 60_000),
+        }),
+      rejectedWith('owner_mismatch'),
+    );
+    assert.deepEqual(await askStore.listForRequester(ALICE), [], 'a rejected ask must not be stored');
+  });
+
+  it('#778 S1: an omitted owner is derived from the credential and canonicalised', async () => {
+    const credStore = await makeCredentialStore();
+    // `InMemoryCredentialStore` stores the owner verbatim — a raw, mixed-case
+    // spelling is exactly what the derivation has to canonicalise.
+    const cred = await credStore.createCredential({
+      name: 'p',
+      kind: 'personal',
+      owner: { kind: 'user', userId: '  Owner@Example.COM ' },
+      secret: 's',
+      createdBy: 'op',
+    });
+    const askStore = new InMemoryCredentialAskStore(credStore);
+    const ask = await askStore.createAsk({
       credentialId: cred.id,
       requester: ALICE,
-      owner: otherOwner,
       purpose: 'need it',
       mode: 'standing',
       askExpiresAt: new Date(Date.now() + 60_000),
     });
-    assert.deepEqual(await askStore.listPendingForOwner(OWNER, new Date()), []);
+    assert.deepEqual(ask.owner, OWNER);
+  });
+
+  it('#778 S1: a matching owner in a different spelling is accepted and stored canonically', async () => {
+    const credStore = await makeCredentialStore();
+    const cred = await credStore.createCredential({ name: 'p', kind: 'personal', owner: OWNER, secret: 's', createdBy: 'op' });
+    const askStore = new InMemoryCredentialAskStore(credStore);
+    const ask = await askStore.createAsk({
+      credentialId: cred.id,
+      requester: ALICE,
+      owner: { kind: 'user', userId: 'OWNER@example.com' },
+      purpose: 'need it',
+      mode: 'standing',
+      askExpiresAt: new Date(Date.now() + 60_000),
+    });
+    assert.deepEqual(ask.owner, OWNER);
+  });
+
+  it('#778 S1: a role-owned personal credential is not askable — no session principal could ever answer it', async () => {
+    const credStore = await makeCredentialStore();
+    const cred = await credStore.createCredential({
+      name: 'p',
+      kind: 'personal',
+      owner: makePrincipal('role', 'finance') as Principal,
+      secret: 's',
+      createdBy: 'op',
+    });
+    const askStore = new InMemoryCredentialAskStore(credStore);
+    await assert.rejects(
+      () =>
+        askStore.createAsk({
+          credentialId: cred.id,
+          requester: ALICE,
+          purpose: 'need it',
+          mode: 'standing',
+          askExpiresAt: new Date(Date.now() + 60_000),
+        }),
+      rejectedWith('not_askable'),
+    );
+  });
+
+  it('#778 S1: unknown / service / revoked credentials reject with typed reasons', async () => {
+    const credStore = await makeCredentialStore();
+    const service = await credStore.createCredential({ name: 's', kind: 'service', secret: 's', createdBy: 'op' });
+    const revoked = await credStore.createCredential({ name: 'r', kind: 'personal', owner: OWNER, secret: 's', createdBy: 'op' });
+    await credStore.revokeCredential(revoked.id, 'op');
+    const askStore = new InMemoryCredentialAskStore(credStore);
+    const input = { requester: ALICE, purpose: 'need it', mode: 'standing' as const, askExpiresAt: new Date(Date.now() + 60_000) };
+    await assert.rejects(() => askStore.createAsk({ ...input, credentialId: 'nope' }), rejectedWith('unknown_credential'));
+    await assert.rejects(() => askStore.createAsk({ ...input, credentialId: service.id }), rejectedWith('not_askable'));
+    await assert.rejects(() => askStore.createAsk({ ...input, credentialId: revoked.id }), rejectedWith('revoked'));
+  });
+
+  it('#778 S1: approve() after the credential was revoked closes the ask as expired and mints no grant', async () => {
+    const credStore = await makeCredentialStore();
+    const cred = await credStore.createCredential({ name: 'p', kind: 'personal', owner: OWNER, secret: 's', createdBy: 'op' });
+    const askStore = new InMemoryCredentialAskStore(credStore);
+    const ask = await askStore.createAsk({
+      credentialId: cred.id,
+      requester: ALICE,
+      purpose: 'need it',
+      mode: 'standing',
+      askExpiresAt: new Date(Date.now() + 60_000),
+    });
+    await credStore.revokeCredential(cred.id, 'op');
+
+    const result = await askStore.approve(ask.id, 'owner@example.com', new Date());
+    assert.equal(result, undefined);
+    assert.equal((await askStore.getAsk(ask.id))?.status, 'expired');
+    assert.deepEqual(await credStore.listGrantsForCredential(cred.id), []);
+    assert.equal(await askStore.approve(ask.id, 'owner@example.com', new Date()), undefined, 'an expired ask stays closed');
   });
 
   it('cancel() only lets the ORIGINAL requester withdraw', async () => {

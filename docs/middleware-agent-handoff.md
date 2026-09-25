@@ -534,16 +534,44 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   Channels feature-detecten (`typeof core.registerWebSocket === 'function'`).
 - **Kernel** `src/channels/webSocketRegistry.ts`: spiegelt `ExpressRouteRegistry`
   (per-Channel-`active`-Flag; `deactivateChannel` lehnt neue Upgrades ab **und**
-  schließt Live-Sockets). Ein einzelner `ws.Server` im `noServer`-Modus;
-  `attach(server)` hängt sich an `server.on('upgrade')`. Pfad-/Active-Match →
-  Auth → `handleUpgrade`. **Single-Owner-Invariante:** die Registry ist der
-  einzige `upgrade`-Consumer des Prozesses (heute kein anderer); unbekannter
-  Pfad → `404` + `destroy`. Ein künftiger zweiter WS-Consumer müsste das zu
-  einer Delegations-Kette machen statt unmatched Sockets zu zerstören.
+  schließt Live-Sockets). `attach(server)` hängt sich an
+  `server.on('upgrade')`. Die Registry bleibt der **einzige** `upgrade`-Listener
+  des Prozesses, delegiert aber seit Epic #746 W1-1 über eine **Routen-Tabelle**
+  (Pfad → Route) mit zwei Arten; unbekannter Pfad → `404` + `destroy`:
+  - **Channel-Routen** (`register`, für Plugins nur via
+    `CoreApi.registerWebSocket`): Session-Cookie + Whitelist-Auth, Active-Gate
+    (`503`), `ChannelSocket`-Wrapper, gemeinsamer `ws.Server` mit
+    `maxPayload = CHANNEL_WS_MAX_PAYLOAD_BYTES` (**32 MiB**, vorher ws-Default
+    100 MiB). Herleitung: größter gültiger Canvas-Frame `canvas_list_put` =
+    50 × 262_144 Zeichen ≈ 12,5 MiB ASCII; der Desktop-Client kappt vor dem
+    Senden nicht, daher ~2,5× Reserve gegenüber diesem ASCII-Worst-Case. Das
+    Limit zählt UTF-16-Code-Units, nicht Bytes: eine maximale Liste aus reinem
+    3-Byte-UTF-8-Text (~37,5 MiB) läge über dem Cap. Frame über dem Cap →
+    Close `1009`.
+  - **Kernel-Routen** (`registerKernel(path, { authenticate, maxPayload, handler })`,
+    **nur Kernel-Code**, nicht auf `CoreApi`): eigener
+    `WebSocketAuthenticator<T>` (läuft **vor** dem `101`; `ok:false` → rohes
+    `401`/`403`; Exception, Nicht-Ergebnis oder verpasste Deadline
+    `authTimeoutMs` (Default 10 s) → `503` fail-closed, `console.error` mit
+    Stack — ein Key-Store-Ausfall liest sich so nicht als „Credential
+    abgelehnt"), **Pflicht**-`maxPayload` (positiver Integer ≤ `2^31 − 1`, weil
+    `ws` `maxPayload | 0` speichert und 2^31+ still „unbegrenzt" hieße;
+    eigener `ws.Server` pro Route), Handler bekommt den rohen `ws`-Socket
+    (Ping/Pong, Binär-Frames, Backpressure) + Principal. Unabhängig vom
+    Channel-Lifecycle: `deactivateChannel` schließt keine Kernel-Sockets.
+    Erster Consumer: `/api/v1/satellites/ws` (W1-2).
+  - Pfad-Kollision Kernel↔Channel (beide Richtungen) und doppelte
+    Kernel-Registrierung werfen.
+  - Jeder akzeptierte Socket hat einen `'error'`-Listener: `ws` emittiert
+    `'error'` bei Protokollverletzungen (inkl. `maxPayload`-Überschreitung);
+    ohne Listener war das eine uncaught exception, die nur `processGuards`
+    abfing.
 - **Auth — vor dem Upgrade, nicht danach.** Der `upgrade`-Request trägt das
   Session-Cookie (`omadia_session`) in `req.headers.cookie`. Die Registry parst
-  es selbst (beim rohen `upgrade` läuft **kein** `cookie-parser` davor) und ruft
-  `verifySession(token, sessionSigningKey)` — **derselbe Key wie `requireAuth`**.
+  es selbst (beim rohen `upgrade` läuft **kein** `cookie-parser` davor; ein
+  kaputtes `%`-Escape ist ein normales `401`) und ruft seit W1-1
+  `evaluateSessionToken` aus `requireAuth.ts` — **derselbe Code-Pfad wie
+  `requireAuth`**, keine Handkopie mehr, die driften könnte.
   Fehlt/ungültig → rohes `401` + `socket.destroy()` **vor** dem `101`; für einen
   unauthentifizierten Peer wird kein WebSocket allokiert. Nur authentifizierte
   Upgrades werden zu `ChannelSocket`s; die verifizierten `ChannelSessionClaims`
@@ -552,17 +580,34 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   eine OIDC-(`entra`)-Session mit nicht (mehr) whitelisteter E-Mail → `403`
   (Auth-Parität zu den HTTP-Routes; der `EmailWhitelist` wird mitinjiziert).
   (Hinweis: `CoreApi.resolveIdentity` ist channel-natives User-Mapping,
-  **nicht** Session-Auth — daher direkt `verifySession`.)
-- **Wiring** (`index.ts`): `new WebSocketRegistry({ signingKey: sessionSigningKey })`
-  vor `createCoreApi({ … webSockets })` (≈2505), zusätzlich an die
-  `DefaultChannelRegistry` gereicht (Lifecycle-Spiegel zu `routes`), und
-  `attach(server)` nach `const server = app.listen(PORT, '::')` (≈2592) —
-  dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit.
+  **nicht** Session-Auth — daher die Session-Evaluation von `requireAuth`.)
+  Nach der asynchronen Cookie-Prüfung wird das Active-Flag **erneut** geprüft:
+  ein `deactivateChannel` im Auth-Fenster führt zu `503` statt zu einem Socket,
+  der an `deactivateChannel` vorbeigerutscht ist.
+- **Wiring** (`index.ts`, per `grep -n WebSocketRegistry src/index.ts` finden —
+  Zeilennummern driften): `new WebSocketRegistry({ signingKey:
+  sessionSigningKey, whitelist: emailWhitelist })` vor
+  `createCoreApi({ … webSockets })`, zusätzlich an die `DefaultChannelRegistry`
+  gereicht (Lifecycle-Spiegel zu `routes`), und
+  `webSocketRegistry.attach(server)` nach `const server = app.listen(PORT, '::')`
+  — dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit.
+  `channelMaxPayloadBytes` bleibt in Prod ungesetzt, also greift der
+  32-MiB-Default; nur Tests setzen einen kleinen Cap.
 - **Dependency:** `ws` + `@types/ws` nur im Kernel, nicht im SDK.
 
 Test: `test/webSocketRegistry.test.ts` fährt einen echten `http.Server` + echten
 `ws`-Client (authentifizierter Upgrade → Claims + Echo-Frame; ohne Cookie →
-`401`; unbekannter Pfad → `404`; deaktivierter Channel → `503`). Damit ist der
+`401`; unbekannter Pfad → `404`; deaktivierter Channel → `503`; seit W1-1
+zusätzlich: Kernel-Route ignoriert Cookies und nutzt ihren Authenticator,
+`401`/`403` ohne `101`, `maxPayload` pro Route mit `1009` ohne
+uncaught exception, Kernel↔Channel-Pfadkollision wirft, `deactivateChannel`
+lässt Kernel-Sockets offen, 32-MiB-Default; Statuscodes werden exakt geprüft,
+nicht per `|unexpected server response`). `test/webSocketRegistryHardening.test.ts`
+deckt `503` bei Exception/Deadline/Nicht-Ergebnis (auch ein spätes `ok` nach
+der Deadline öffnet nichts), die rohen Status-Line-Bytes bei CR/LF im
+`message`, die Grenzen für `maxPayload`/`authTimeoutMs`/`channelMaxPayloadBytes`,
+das kaputte Cookie-Escape und das Deaktivieren im Auth-Fenster ab. Gemeinsame
+Fixtures: `test/_helpers/wsRegistryKit.ts`. Damit ist der
 Transport bereit für **PR-10b** (echter Canvas-Channel: Handshake-`offer→select→
 ack`, `IncomingTurn`-Bildung, `surface_*`-Fan-out).
 
@@ -1860,6 +1905,71 @@ hier zwingend ist: der Orchestrator muss downstream bleiben. Alle drei Services
 stellt der Kernel beim Boot bereit, vor jeder Plugin-Aktivierung, deshalb ist
 das eager `getOptional` in `activate()` zulässig.
 
+**Neuzuweisung des Orchestrator-Providers (#1076).** Die Kette wird bewusst
+**einmal je `activate()`** aufgelöst. Ändert sich das `llm_provider` des
+Orchestrators, baut die Zuweisungsseite extras neu — die Lehre aus #989: eine
+capability-relevante Änderung ist ein Rebuild, kein Update. Die Kante steht als
+Daten im Kernel: `inheritsProviderFrom: '@omadia/orchestrator'` am extras-Eintrag
+von `LLM_PLUGINS` (`src/platform/pluginLlmReadiness.ts`), gespiegelt durch die
+exportierte Konstante `INHERITS_PROVIDER_FROM_PLUGIN_ID` im extras-Paket (ein
+Drift-Test hält beide gleich). `reactivateAfterProviderWrite`
+(`src/platform/providerDependents.ts`) baut bei einer **effektiven**
+Provider-Änderung (vorher `?? 'anthropic'` gegen nachher; unset → explizit
+`anthropic` zählt nicht) zuerst jedes installierte abhängige Plugin neu, dann das
+Plugin selbst. Die Reihenfolge ist tragend: der Orchestrator greift
+`factExtractor`, `contextRetriever` und `sessionBriefing` von extras eager in
+seinem eigenen `activate()` ab, und ein Teardown von extras kaskadiert nicht
+(`toolPluginRuntime.deactivate` ruft nur `disposeBySource`). Extras erst danach
+neu zu bauen, ließe die Chat-Turn-Faktenextraktion auf der alten Instanz. Scheitert
+ein abhängiges Plugin, wird der Orchestrator trotzdem neu gebaut und danach eine
+`ProviderDependentRebuildError` (mit `dependentId`, `primaryApplied` und
+dem `last_activation_error` im Text) geworfen. `primaryApplied` ist nur `true`,
+wenn der Orchestrator selbst wieder hochkam; lässt auch sein eigener Rebuild
+ihn `errored` zurück (dieselbe Registry-Prüfung wie bei den Abhängigen), ist es
+`false`, und der Text behauptet nicht, dass er läuft. Sonst steht „runs on its
+new provider“ nur bei einer effektiven Änderung, ansonsten „rebuilt on its
+unchanged provider“. Die Routen antworten mit eigenem Code,
+`providers.dependent_rebuild_failed` bzw. `runtime.dependent_rebuild_failed`
+(beide PATCH-Routen), und legen `dependentId` + `primaryApplied` mit auf den
+Envelope; beide Codes haben en/de-Copy im ErrorHelp-Katalog. Die Config ist in
+beiden Fällen persistiert, deshalb übernimmt das `ProvidersPanel` bei diesem
+Code den neuen Provider in die Zeile, statt das kontrollierte Select auf den
+alten zurückspringen zu lassen, und zeigt einen „Erneut versuchen“-Button, der
+dieselbe Zuordnung noch einmal schickt; ein erneutes Auswählen der schon
+gewählten Option löst kein Change-Event aus. `autoAssignSubscriptionCli` zählt
+ein Plugin mit `primaryApplied: true` als `assigned`. Kommt kein abhängiges
+Plugin zu Fall, liefert `reactivateAfterProviderWrite` das `primaryFailure`
+des Plugins selbst zurück; `applyProviderAssignment` antwortet dann mit
+`providers.rebuild_failed` (`primaryApplied: false`) statt `ok`, weil die
+Providers-Antwort keinen Status trägt (die Runtime-PATCH-Routen liefern den
+Status im `updated`-Objekt und bleiben unverändert). Das `ProvidersPanel`
+behandelt den Code wie `dependent_rebuild_failed` (Zeile übernimmt den neuen
+Provider, Retry) und zeigt dessen Copy auch für ein
+`dependent_rebuild_failed` mit `primaryApplied: false`. „Gescheitert“ heißt: `reactivate` wirft **oder**
+hinterlässt das Plugin als `errored` in der Registry. Letzteres ist der
+Produktionsfall, denn `installService.reactivate` wirft bei einem
+Aktivierungsfehler nie, sondern ruft `markActivationFailed`, setzt `errored` und
+kehrt zurück; ein erfolgreicher Rebuild hebt `errored` über
+`clearActivationError` wieder auf. Ein erneutes Speichern **desselben**
+Providers (der Retry-Button nach der Fehlermeldung) ist keine effektive
+Änderung, baut aber jedes abhängige Plugin neu, das noch `errored` ist
+(`providerWritten` im Helper, gesetzt, sobald der Write `llm_provider` enthält);
+sonst hätte der Retry nur den Orchestrator neu gebaut und `ok` gemeldet, während
+extras weiter ausfällt. Alle Schreibpfade für
+`llm_provider` laufen durch den Helper: `POST /api/v1/admin/providers/assignment`
+bzw. `applyProviderAssignment`, `PATCH /api/v1/admin/runtime/installed/:id/config`
+und der Config-Zweig von `PATCH …/secrets` (`applySetupValues`). Der
+Abo-Hand-off `autoAssignSubscriptionCli` bearbeitet Plugins mit Abhängigen
+**zuletzt** (heute nur der Orchestrator; Reihenfolge damit Verifier, extras,
+Orchestrator), damit der letzte Rebuild extras
+mit dessen finaler Konfiguration einfängt; `LLM_PLUGINS` selbst bleibt
+unsortiert, weil es auch die UI-Liste ordnet.
+
+Der Orchestrator deklariert `llmProviderCatalog@1` und
+`installedPluginConfigReader@1` seit #1076 ebenfalls unter `optional_requires`
+und liest beide per `getOptional`; die beiden Zeilen sind aus seinem Eintrag in
+`BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20` entfernt (19 → 17 Namen).
+
 **`memoryFeatures` auf `GET /api/v1/admin/embedding-provider/status`.** Neben
 den vier bestehenden Feldern:
 
@@ -2878,25 +2988,57 @@ Dann fallen auch der Präfix-Fallback im Config-Sync-Cleanup und die
 Round-Trip-Tests in `test/teamsProvisioningLastError.test.ts` weg; die Satz-Präfixe dürfen
 danach frei umformuliert werden.
 
-### Gedächtnis-Provider wird bei Neuzuweisung nicht neu aufgelöst (OM-102 follow-up)
+### Keychain-Asks (Epic #778) — Rest nach S1
 
-`TODO(OM-102 follow-up)` in
-`packages/harness-orchestrator-extras/src/plugin.ts`. Die Provider-Kette wird
-**einmal je `activate()`** aufgelöst. Ändert ein Operator danach das
-`llm_provider` des Orchestrators, wird `@omadia/orchestrator-extras` nicht neu
-gebaut — Faktenextraktion, Themenerkennung und Reaper laufen bis zum nächsten
-Rebuild weiter auf dem alten Provider, ohne dass irgendeine Fläche das sagt.
-Dieselbe Klasse wie #989 (`agent_plugins`-Änderung war ein `update` statt eines
-`rebuild` und wirkte deshalb erst nach Neustart). Die Reparatur gehört auf die
-Zuweisungsseite — Rebuild von extras auslösen, wenn sich der Provider des
-Orchestrators ändert — nicht in ein weiteres Lazy-Lookup im Plugin.
+S1 bindet `/api/v1/admin/credential-asks` an die Session
+(`req.session.omadia_user_id`), leitet den Owner eines Asks aus dem Owner des
+Credentials ab und lässt nur diesen Owner approven/denyen (D2: kein
+Operator-Break-Glass). Daraus folgt eine Vorgabe für alles, was künftig
+Credentials anlegt (Create-Route, Admin-UI): der Owner eines
+`personal`-Credentials **muss** als `user:<omadia_user_id>` gespeichert werden —
+nicht als `sub`/E-Mail, nicht als `role:`. Sonst stimmt kein Session-Principal je
+mit `ask.owner` überein, und niemand kann das Ask beantworten
+(`role`-Owner lehnt `assertAskableCredential` deshalb schon als `not_askable`
+ab). Offen im Epic: das agent-aufrufbare Broker-/Ask-Tool, die Benachrichtigung
+des Owners (heute nur per `GET /pending` auffindbar) und die Admin-UIs (P4).
 
-Nebenbei aufgefallen und offen: `@omadia/orchestrator` bezieht
-`llmProviderCatalog` und `installedPluginConfigReader` weiterhin aus der
-Allowlist in `src/platform/pluginServiceGrants.ts`, obwohl es beide eager
-konsumiert. Zwei Zeilen `optional_requires` in dessen Manifest würden diese
-Allowlist-Zeilen mit demselben Mechanismus leeren, den OM-102 für extras
-benutzt hat.
+### Umgekehrte Richtung: extras allein neu gebaut, Orchestrator hält alte Instanzen (#1076 follow-up)
+
+#1076 baut bei einer Provider-Änderung des Orchestrators extras **vor** dem
+Orchestrator neu. Offen ist die Gegenrichtung: wird extras allein reaktiviert
+(direkte Zuweisung an extras; `adminSettings`, das nach einem Key-Speichern
+den Orchestrator vor extras reaktiviert; oder der OAuth-Fan-out
+`fanOutProviderOAuthTokens` in `src/routes/adminProviders.ts`, der in
+`LLM_PLUGINS`-Reihenfolge reaktiviert und Fehler per `.catch(() => undefined)`
+verschluckt), hält der laufende Orchestrator
+weiter die vorherigen `FactExtractor`/`ContextRetriever`/`SessionBriefing` und
+den KG-Wrapper, weil er sie eager in `activate()` abgreift und ein Teardown
+nicht kaskadiert. Die allgemeine Lösung — nach einem Provider-Rebuild die eager
+Konsumenten neu bauen — gehört in das gemeinsame `reactivateAgent` in
+`src/index.ts`. #1080 (PR #1186, gemergt) hat dort nur den Refresh des
+geteilten Host-Clients ergänzt, keinen Rebuild eager Konsumenten; die
+Gegenrichtung bleibt offen und bewusst außerhalb von #1076.
+
+### Weitere eager Abgriffe, die ein extras- oder Provider-Rebuild nicht erreicht
+
+Dieselbe Klasse wie oben, außerhalb des Scopes von #1076:
+
+- **Teams** greift den `topicDetector` von extras einmal in `activate()` ab
+  (`omadia-channel-teams`, `src/plugin.ts`). Nach einer Neuzuweisung des
+  Orchestrators kann `memoryFeatureStatus` den Detektor als aktiv auf dem neuen
+  Provider melden, während Teams noch die alte (oder keine) Instanz hält.
+- **Plan-Runner und Verifier** halten den KG-Wrapper von extras aus ihrem
+  eigenen `activate()`.
+- **Dynamische Sub-Agents** lösen `hostProviderId` einmal je Aktivierung auf
+  (`src/index.ts`, `dynamicAgentRuntime.ts`).
+
+### `ctx.llm` friert den geerbten Provider bei Kontext-Erzeugung ein
+
+`resolveActiveProvider` (`src/platform/pluginContext.ts`) wird einmal in
+`createPluginContext` ausgewertet. Für jedes Plugin ohne eigenes `llm_provider`
+steht damit der geerbte Orchestrator-Provider bis zum nächsten Rebuild fest.
+Ein lazy Getter würde das dort beheben; das „kein Lazy-Lookup“ aus #1076 gilt nur
+für extras, dessen Instanzen der Orchestrator eager festhält.
 
 ### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
 

@@ -26,6 +26,13 @@ import {
   type LlmProviderCatalogView,
   type ProviderKeyVault,
 } from './pluginLlmReadiness.js';
+import {
+  ProviderDependentRebuildError,
+  isEffectiveProviderChange,
+  providerDependentsOf,
+  reactivateAfterProviderWrite,
+  type PrimaryRebuildOutcome,
+} from './providerDependents.js';
 
 export interface ProviderAssignmentDeps {
   readonly installedRegistry: InstalledRegistry;
@@ -54,12 +61,23 @@ export type ProviderAssignmentResult =
       readonly status: 400 | 404 | 500;
       readonly code: string;
       readonly message: string;
+      /**
+       * #1076 — set only when the assignment IS persisted but something did
+       * not come back up on it: `providers.dependent_rebuild_failed` names the
+       * provider dependent in `dependentId`; `providers.rebuild_failed` means
+       * the plugin itself is left `errored`. `primaryApplied` says whether the
+       * plugin itself runs on the saved assignment. The route puts both on the
+       * error envelope.
+       */
+      readonly dependentId?: string;
+      readonly primaryApplied?: boolean;
     };
 
 /**
  * Validate and persist `{ provider, model }` for an LLM-consuming plugin, then
- * reactivate it. Pure with respect to HTTP: the route turns the result into a
- * response, the hand-off logs it.
+ * reactivate it (on a provider change, its provider dependents first). Pure
+ * with respect to HTTP: the route turns the result into a response, the
+ * hand-off logs it.
  */
 export async function applyProviderAssignment(
   deps: ProviderAssignmentDeps,
@@ -135,15 +153,44 @@ export async function applyProviderAssignment(
     }
   }
 
+  let outcome: PrimaryRebuildOutcome | undefined;
   try {
     await deps.installedRegistry.updateConfig(pluginId, nextConfig);
-    if (deps.reactivate) await deps.reactivate(pluginId);
+    outcome = await reactivateAfterProviderWrite(deps, pluginId, {
+      providerChanged: isEffectiveProviderChange(entry?.config, nextConfig),
+      providerWritten: true,
+    });
   } catch (err) {
+    if (err instanceof ProviderDependentRebuildError) {
+      // Persisted, but a dependent (extras) is down: its own code, so the
+      // operator is not told the assignment failed to write.
+      return {
+        ok: false,
+        status: 500,
+        code: 'providers.dependent_rebuild_failed',
+        message: err.message,
+        dependentId: err.dependentId,
+        primaryApplied: err.primaryApplied,
+      };
+    }
     return {
       ok: false,
       status: 500,
       code: 'providers.apply_failed',
       message: err instanceof Error ? err.message : String(err),
+    };
+  }
+  if (outcome?.primaryFailure !== undefined) {
+    // #1076 — persisted, but the plugin's own rebuild left it `errored`. This
+    // response carries no status, so answering `ok` would show "saved" for a
+    // plugin that runs on nothing (e.g. after a Retry whose dependents came
+    // back up while the plugin itself still fails).
+    return {
+      ok: false,
+      status: 500,
+      code: 'providers.rebuild_failed',
+      message: `${pluginId}'s assignment was saved, but ${pluginId} did not come back up on it: ${outcome.primaryFailure}`,
+      primaryApplied: false,
     };
   }
   return { ok: true, pluginId, provider, model: storeModel };
@@ -213,7 +260,19 @@ export async function autoAssignSubscriptionCli(
     return { assigned, skipped: LLM_PLUGINS.map((p) => ({ pluginId: p.id, reason: 'no_cli_model' })) };
   }
 
-  for (const desc of LLM_PLUGINS) {
+  // #1076 — plugins that others inherit their provider from go LAST. Their
+  // assignment rebuilds those dependents and then themselves; processing them
+  // after the dependents' own assignment means the final rebuild sees every
+  // dependent's final config (the orchestrator ends up holding an extras
+  // instance with extras' hand-off model, not an intermediate one). The UI
+  // order of `LLM_PLUGINS` stays untouched.
+  const hasDependents = (id: string): boolean => providerDependentsOf(id).length > 0;
+  const handOffOrder = [
+    ...LLM_PLUGINS.filter((p) => !hasDependents(p.id)),
+    ...LLM_PLUGINS.filter((p) => hasDependents(p.id)),
+  ];
+
+  for (const desc of handOffOrder) {
     if (!deps.installedRegistry.has(desc.id)) {
       skipped.push({ pluginId: desc.id, reason: 'not_installed' });
       continue;
@@ -257,9 +316,23 @@ export async function autoAssignSubscriptionCli(
       log(
         `[providers] subscription hand-off: ${desc.id} had no credential for '${current}', now runs on '${SUBSCRIPTION_CLI_PROVIDER}' (model=${result.model})`,
       );
+    } else if (result.primaryApplied === true) {
+      // #1076 — the assignment was persisted and the plugin rebuilt on it; only
+      // a provider dependent did not come back up. The plugin IS switched, so
+      // reporting it as skipped would be untrue; the dependent's failure is
+      // logged (and stays visible as `errored` on the plugin list).
+      assigned.push(desc.id);
+      log(
+        `[providers] subscription hand-off: ${desc.id} had no credential for '${current}', now runs on '${SUBSCRIPTION_CLI_PROVIDER}', but its dependent ${result.dependentId ?? '(unknown)'} failed to rebuild (${result.code}: ${result.message})`,
+      );
     } else {
+      // `primaryApplied: false` (`providers.rebuild_failed`, or a
+      // `dependent_rebuild_failed` whose plugin failed too) means the config
+      // WAS persisted but the plugin itself did not come back up on it, so it
+      // runs on nothing; the log says so rather than "not switched".
       skipped.push({ pluginId: desc.id, reason: result.code });
-      log(`[providers] subscription hand-off: ${desc.id} not switched (${result.code}: ${result.message})`);
+      const verdict = result.primaryApplied === false ? 'saved but not running' : 'not switched';
+      log(`[providers] subscription hand-off: ${desc.id} ${verdict} (${result.code}: ${result.message})`);
     }
   }
   return { assigned, skipped };
