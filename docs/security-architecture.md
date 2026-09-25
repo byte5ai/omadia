@@ -1055,6 +1055,72 @@ an empty tenant beside a populated neighbour, and the global lock).
 
 ---
 
+## 10b. Credential broker egress (#578, #778 S3a)
+
+`CredentialBroker` (`middleware/src/credentials/broker.ts`) stamps a
+`service` credential onto an outbound request so the caller never holds the
+secret. Its checks (credential, grant, host, method, path) decide whether
+the request may leave. Once it has left, the upstream answers, so the
+boundary has to cover the response too. S3a hardens that half before any
+agent can reach the broker (#778 S3b wires the agent tool):
+
+- **Redirects are never followed** (`redirect: 'manual'`). A 3xx comes back
+  as its status plus a scrubbed `location`. The Fetch spec strips
+  `Authorization` on a cross-origin redirect but not custom headers, so a
+  followed redirect would carry an `X-Api-Key` to whatever host the upstream
+  names. This is the same reasoning as `providerCredentialVerifier.ts`.
+- **Time and size are bounded.** One `AbortSignal.timeout` covers headers
+  and body (default 20 s, `BROKER_DEFAULT_TIMEOUT_MS`). The body is read as
+  a stream under a byte cap (default 1 MiB, `BROKER_DEFAULT_MAX_RESPONSE_BYTES`),
+  and the stream is cancelled at the cap rather than drained. The response
+  says `truncated: true`. The cap is a memory bound; the agent tool applies
+  its own, tighter context bound.
+- **The secret is scrubbed from the response**, header values (including
+  `location`) and body, in three encodings: raw, base64 (what
+  `basic-password` sends) and URL-encoded (what `query-param` sends), plus
+  the `+`-for-space and `URLSearchParams` variants, with `%XX` hex matched
+  case-insensitively. Echo endpoints and error pages that reflect the
+  request otherwise hand the secret straight back. For `basic-password` the
+  password segment of `user:pass` is scrubbed on its own too. When the body
+  is truncated, the tail that could hold a prefix of a secret cut by the cap
+  is dropped after scrubbing (`brokerResponse.ts`).
+- **The 8-character floor.** Secrets (and password segments) shorter than 8
+  characters are **not** scrubbed: redacting a short value would shred
+  ordinary text and still not be a guarantee. Refusing such a secret at
+  creation time is #778 S2's job.
+- **Caller headers pass a static allow-list** (`brokerOutbound.ts`):
+  `accept`, `accept-language`, `content-type`, `content-language`,
+  `if-match`, `if-none-match`, `if-modified-since`, `if-unmodified-since`,
+  `idempotency-key`, `user-agent`. Names are compared case-insensitively,
+  the credential's own `injectionKey` is always dropped, and values with
+  CR/LF/NUL are dropped. There is no `x-*` wildcard. That namespace holds
+  `X-HTTP-Method-Override`, `X-Original-URL` and `X-Rewrite-URL`, which
+  would bypass `allowedMethods` / `pathPrefixes`, and case variants of the
+  injected header, which `Headers` would join into `forged, Bearer <secret>`.
+  `accept-encoding` is excluded so the scrub never sees bytes fetch did not
+  decode. Dropped header **names** (never values) go on the `allow` audit
+  event as `droppedHeaderNames`; the request itself still goes out.
+- **Failures are sanitized.** A timeout is denied as `upstream-timeout`,
+  anything else as `upstream-unreachable`. The thrown `BrokerDenialError`
+  carries no `cause`, no URL and no upstream message, because for
+  `query-param` the URL is the secret. Both reasons count in
+  `brokerMetrics.ts` and toward the denial-streak alert.
+
+**Known residuals.** Vendor headers such as `Notion-Version` need a
+per-credential `allowedHeaders` (a schema change, #778 S2/S3b). The scrub
+does not cover other transformations of the secret, such as JSON `\u`
+escapes or hashes. The default fetch is plain `globalThis.fetch`, not
+`guardedOutboundFetch`: the destination host is operator-declared and must
+match exactly, and operators may broker to intranet hosts on purpose.
+
+Tests: `middleware/test/credentialBrokerEgress.test.ts` (a real local HTTP
+upstream: echo in every encoding, a cross-origin 302, a trickling upstream,
+a 50 MB body, forged headers, a secret-bearing fetch error) and
+`middleware/test/credentialBrokerResponse.test.ts` (forms, the floor, the
+cap straddle).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1089,6 +1155,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] A new native tool bound to shared/unscoped state (like memory) is routed
       through the caller's scoped accessor in `ctx.tools.invoke`, or denied
       there (§4, #909).
+- [ ] A change to `CredentialBroker` dispatch keeps `redirect: 'manual'`,
+      the timeout signal, the streaming byte cap, the response scrub and the
+      caller-header allow-list, and a new allow-list entry is not an `x-*`
+      override header (§10b).
 
 ---
 

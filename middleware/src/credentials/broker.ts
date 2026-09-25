@@ -35,20 +35,46 @@
  * its own false-return (lost a race to a concurrent use of the same
  * single-use grant) is itself a fail-closed denial — see
  * `grant-consumed-concurrently` in `brokerMetrics.ts`.
+ *
+ * ## Egress hardening (#778 S3a)
+ *
+ * Passing every check is not the end of the boundary, because the upstream
+ * answers. Redirects are never followed, a timeout bounds the whole call,
+ * the body is read under a byte cap, caller headers pass an allow-list
+ * (`brokerOutbound.ts`), and the secret is scrubbed from the response
+ * (`brokerResponse.ts`). A failed dispatch is a sanitized `upstream-timeout`
+ * / `upstream-unreachable` denial that carries neither the URL nor the
+ * underlying error. See `docs/security-architecture.md` §10b.
  */
 
 import {
   isGrantActive,
   type Credential,
   type CredentialId,
-  type CredentialInjectionScheme,
   type CredentialStore,
   type EncryptedSecretMaterial,
   type Principal,
 } from '@omadia/channel-sdk';
 
 import { recordBrokerOutcome, type BrokerDenialReason } from './brokerMetrics.js';
+import { buildOutboundRequest, needsInjectionKey } from './brokerOutbound.js';
+import {
+  readBodyCapped,
+  sanitizeResponseHeaders,
+  scrubBody,
+  secretForms,
+  type BrokerUpstreamResponse,
+} from './brokerResponse.js';
 import { matchesAnyPrefix, normalizeHost, normalizeMethod, normalizePathForMatch } from './requestMatching.js';
+
+/** How long one brokered call may take, headers AND body. A slow upstream
+ *  otherwise holds the request, the grant use and the socket open forever. */
+export const BROKER_DEFAULT_TIMEOUT_MS = 20_000;
+
+/** A memory bound, not a context-size bound: the agent-facing tool (#778
+ *  S3b) applies its own, tighter cap. The body is truncated here, not
+ *  refused — see `brokerResponse.ts`. */
+export const BROKER_DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 
 export interface BrokerRequestDescriptor {
   /** The destination the agent wants this request sent to. Checked against
@@ -58,17 +84,25 @@ export interface BrokerRequestDescriptor {
   /** Path, optionally carrying a `?query`. Never a full URL — see
    *  `normalizePathForMatch`, which refuses an embedded scheme/authority. */
   readonly path: string;
-  /** Extra headers the caller wants sent. The broker's own injected
-   *  Authorization/header/query-param value always wins on a collision — a
-   *  caller cannot override or discover it by supplying the same key. */
+  /** Extra headers the caller wants sent. Only the static allow-list in
+   *  `brokerOutbound.ts` survives, compared case-insensitively; everything
+   *  else — including any case variant of the injected Authorization or
+   *  injectionKey header — is dropped, and the dropped NAMES are audited. */
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: string;
 }
 
+/**
+ * What the caller gets back. Redirects are NOT followed: a 3xx arrives here
+ * as its status plus a scrubbed `location` header. Header values and the
+ * body are scrubbed of the secret (see `brokerResponse.ts`); `truncated`
+ * says the body hit the byte cap.
+ */
 export interface BrokerResponse {
   readonly status: number;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: string;
+  readonly truncated: boolean;
 }
 
 /**
@@ -100,14 +134,27 @@ export interface BrokerAuditEvent {
    *  not this audit trail's business to persist. */
   readonly path: string;
   readonly reason?: BrokerDenialReason;
+  /** On `allow` only, and only when non-empty: lowercased names of caller
+   *  headers the allow-list dropped. Never their values. */
+  readonly droppedHeaderNames?: readonly string[];
+}
+
+/** What the broker passes to `fetch`. `redirect: 'manual'` is not optional:
+ *  a followed redirect would carry a custom-header secret to whatever host
+ *  the upstream names — the Fetch spec strips `Authorization` on a
+ *  cross-origin hop, but not `X-Api-Key` (same reasoning as
+ *  `providerCredentialVerifier.ts`). */
+export interface BrokerFetchInit {
+  readonly method: string;
+  readonly headers: Record<string, string>;
+  readonly body?: string;
+  readonly redirect: 'manual';
+  readonly signal: AbortSignal;
 }
 
 /** Minimal shape of the global `fetch` this module needs — narrowed so a
  *  test stub does not have to implement the full `fetch` surface. */
-export type BrokerFetch = (
-  url: string,
-  init: { method: string; headers: Record<string, string>; body?: string },
-) => Promise<{ status: number; headers: Iterable<[string, string]>; text(): Promise<string> }>;
+export type BrokerFetch = (url: string, init: BrokerFetchInit) => Promise<BrokerUpstreamResponse>;
 
 export interface CredentialBrokerDeps {
   readonly store: CredentialStore;
@@ -119,6 +166,10 @@ export interface CredentialBrokerDeps {
    *  `isGrantActive` header for why `now` is always a parameter, never read
    *  internally at the point of comparison. */
   readonly now?: () => Date;
+  /** Defaults to {@link BROKER_DEFAULT_TIMEOUT_MS}. */
+  readonly timeoutMs?: number;
+  /** Defaults to {@link BROKER_DEFAULT_MAX_RESPONSE_BYTES}. */
+  readonly maxResponseBytes?: number;
 }
 
 /** Everything a `deny`/`allow` call needs to finish auditing and throwing,
@@ -206,18 +257,7 @@ export class CredentialBroker {
     if (!material) this.deny(ctx, 'credential-not-found');
     const secret = this.deps.unseal(material);
 
-    recordBrokerOutcome('allow');
-    this.deps.onAudit?.({
-      kind: 'allow',
-      credentialId,
-      credentialFingerprint: ctx.fingerprint,
-      principal,
-      host: declaredHost,
-      method,
-      path: pathname,
-    });
-
-    const { url, headers } = buildOutboundRequest(
+    const { url, headers, droppedHeaderNames } = buildOutboundRequest(
       declaredHost,
       pathname,
       search,
@@ -226,10 +266,66 @@ export class CredentialBroker {
       secret,
       req.headers,
     );
+
+    // The allow audit precedes dispatch on purpose: it records that the
+    // secret is about to leave the process, whatever the upstream does next.
+    // The allow METRIC waits for a completed dispatch, so a failed one counts
+    // once, as a deny, and never as both.
+    this.deps.onAudit?.({
+      kind: 'allow',
+      credentialId,
+      credentialFingerprint: ctx.fingerprint,
+      principal,
+      host: declaredHost,
+      method,
+      path: pathname,
+      ...(droppedHeaderNames.length > 0 ? { droppedHeaderNames } : {}),
+    });
+
+    return this.dispatch(ctx, url, method, headers, req.body, secretForms(secret, declaration.injectionScheme));
+  }
+
+  /**
+   * Send the stamped request and make its response safe to return: no
+   * redirect following, a timeout over headers AND body, a streaming byte
+   * cap, and the secret scrubbed from headers and body. Any failure becomes
+   * a sanitized denial — the raw error is dropped, never wrapped, because
+   * for `query-param` its message, `input` or `cause` can carry the URL and
+   * with it the secret.
+   */
+  private async dispatch(
+    ctx: RequestContext,
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    body: string | undefined,
+    forms: readonly string[],
+  ): Promise<BrokerResponse> {
     const fetchImpl = this.deps.fetchImpl ?? (globalThis.fetch as unknown as BrokerFetch);
-    const response = await fetchImpl(url, { method, headers, body: req.body });
-    const body = await response.text();
-    return { status: response.status, headers: Object.fromEntries(response.headers), body };
+    const signal = AbortSignal.timeout(this.deps.timeoutMs ?? BROKER_DEFAULT_TIMEOUT_MS);
+    const maxBytes = this.deps.maxResponseBytes ?? BROKER_DEFAULT_MAX_RESPONSE_BYTES;
+
+    let result: BrokerResponse;
+    try {
+      const response = await fetchImpl(url, { method, headers, body, redirect: 'manual', signal });
+      const capped = await readBodyCapped(response, maxBytes, signal);
+      result = {
+        status: response.status,
+        headers: sanitizeResponseHeaders(response.headers, forms),
+        body: scrubBody(capped, forms),
+        truncated: capped.truncated,
+      };
+    } catch (err) {
+      this.dispatchFailure(ctx, err, signal);
+    }
+    recordBrokerOutcome('allow');
+    return result;
+  }
+
+  private dispatchFailure(ctx: RequestContext, err: unknown, signal: AbortSignal): never {
+    const name = err instanceof Error ? err.name : '';
+    const timedOut = signal.aborted || name === 'TimeoutError' || name === 'AbortError';
+    this.deny(ctx, timedOut ? 'upstream-timeout' : 'upstream-unreachable');
   }
 
   private deny(ctx: RequestContext, reason: BrokerDenialReason): never {
@@ -246,34 +342,4 @@ export class CredentialBroker {
     });
     throw new BrokerDenialError(reason, `credential broker denied the request: ${reason}`);
   }
-}
-
-function needsInjectionKey(scheme: CredentialInjectionScheme): boolean {
-  return scheme === 'header' || scheme === 'query-param';
-}
-
-function buildOutboundRequest(
-  host: string,
-  pathname: string,
-  search: string,
-  scheme: CredentialInjectionScheme,
-  injectionKey: string | undefined,
-  secret: string,
-  callerHeaders: Readonly<Record<string, string>> | undefined,
-): { url: string; headers: Record<string, string> } {
-  const headers: Record<string, string> = { ...(callerHeaders ?? {}) };
-  let effectiveSearch = search;
-
-  if (scheme === 'bearer') {
-    headers.Authorization = `Bearer ${secret}`;
-  } else if (scheme === 'basic-password') {
-    headers.Authorization = `Basic ${Buffer.from(secret, 'utf8').toString('base64')}`;
-  } else if (scheme === 'header') {
-    headers[injectionKey as string] = secret;
-  } else if (scheme === 'query-param') {
-    const param = `${encodeURIComponent(injectionKey as string)}=${encodeURIComponent(secret)}`;
-    effectiveSearch = effectiveSearch ? `${effectiveSearch}&${param}` : `?${param}`;
-  }
-
-  return { url: `https://${host}${pathname}${effectiveSearch}`, headers };
 }

@@ -36,6 +36,26 @@ changelog.
 
 ## [Unreleased]
 
+### Security — credential broker hardened for agent-driven use (#778 S3a)
+
+2026-09-25 — `CredentialBroker.request` sent the stamped request with a plain
+`fetch` and returned the upstream answer verbatim. It followed redirects (a
+302 carried an `X-Api-Key` to the host the upstream named), had no timeout,
+buffered any body size, spread caller headers next to the injected one (a
+lowercase `authorization` was joined into `forged, Bearer <secret>`), returned
+headers and body unscrubbed (an echoing upstream handed the secret back), and
+let a raw fetch error escape (for `query-param`, its URL is the secret). Nothing
+instantiates the broker yet, so nothing was exposed. This is the precondition
+for the agent tool (#778 S3b).
+
+The broker now dispatches with `redirect: 'manual'` and a 20 s timeout, reads
+the body under a 1 MiB streaming cap (`truncated: true` on overflow), scrubs the
+secret from header values and body in raw, base64 and URL-encoded form (secrets
+of 8+ characters), filters caller headers against a static allow-list and
+audits the dropped names, and maps failures to sanitized `upstream-timeout` /
+`upstream-unreachable` denials. `dispatch-failed`, which had no call site, is
+replaced by those two reasons. See `docs/security-architecture.md` §10b.
+
 ### Fixed — bootstrap auto-removals purge agent bindings (#1070)
 
 2026-09-24 — the boot-time bootstrap removes a plugin on its own at four

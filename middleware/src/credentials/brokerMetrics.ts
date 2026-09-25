@@ -36,7 +36,11 @@ export type BrokerDenialReason =
   | 'path-not-allowed'
   | 'invalid-broker-declaration'
   | 'store-unavailable'
-  | 'dispatch-failed';
+  // #778 S3a: the checks passed and the request left, but the upstream did
+  // not answer usably. These count toward the streak alert on purpose: five
+  // consecutive upstream timeouts is an operator signal, not noise.
+  | 'upstream-unreachable'
+  | 'upstream-timeout';
 
 export const BROKER_DENIAL_REASONS: readonly BrokerDenialReason[] = Object.freeze([
   'credential-not-found',
@@ -49,7 +53,8 @@ export const BROKER_DENIAL_REASONS: readonly BrokerDenialReason[] = Object.freez
   'path-not-allowed',
   'invalid-broker-declaration',
   'store-unavailable',
-  'dispatch-failed',
+  'upstream-unreachable',
+  'upstream-timeout',
 ]);
 
 export interface BrokerMetrics {

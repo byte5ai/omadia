@@ -45,6 +45,15 @@ describe('#578 brokerMetrics', () => {
     assert.equal(m.byReason['method-not-allowed'], 0, 'every reason must be present, even at zero');
   });
 
+  it('#778 S3a: carries the upstream failure reasons at zero, and no dead dispatch-failed', () => {
+    const byReason = getBrokerMetrics().byReason as Record<string, number>;
+    assert.equal(byReason['upstream-unreachable'], 0);
+    assert.equal(byReason['upstream-timeout'], 0);
+    assert.equal('dispatch-failed' in byReason, false);
+    recordBrokerOutcome('deny', 'upstream-timeout');
+    assert.equal(getBrokerMetrics().byReason['upstream-timeout'], 1);
+  });
+
   it('computes deniedRate over total requests', () => {
     recordBrokerOutcome('allow');
     recordBrokerOutcome('deny', 'no-active-grant');
