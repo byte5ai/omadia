@@ -65,8 +65,16 @@ describe('MessageRow proactive routine delivery (#1071)', () => {
     expect(
       screen.getByText("2 attachments of this routine's output cannot be shown in the web chat."),
     ).toBeTruthy();
+    // The kind is named in words, never as the raw enum value.
     expect(
-      screen.getByText("An interactive element (choice) of this routine's output cannot be shown in the web chat."),
+      screen.getByText("A choice card of this routine's output cannot be shown in the web chat."),
+    ).toBeTruthy();
+  });
+
+  it('names an unknown interactive kind generically (de)', () => {
+    row(delivery({ deliveredAt: 1, droppedInteractive: 'future_kind' }), 'de');
+    expect(
+      screen.getByText('Ein interaktives Element dieser Routine-Ausgabe kann im Web-Chat nicht angezeigt werden.'),
     ).toBeTruthy();
   });
 

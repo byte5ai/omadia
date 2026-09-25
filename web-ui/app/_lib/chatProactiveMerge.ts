@@ -96,7 +96,11 @@ export interface NewerRemoteReconciliation {
  *
  * - Same turns, in order: the server differs only by routine deliveries.
  *   Keep the local copy and fold the deliveries in; the title follows the
- *   server (a rename is the only other thing a newer copy can carry). If a
+ *   server (a rename is the only other thing a newer copy can carry) —
+ *   unless this browser renamed the chat and no PUT carried that rename yet
+ *   (`titleUnsynced`): a delivery then makes the server copy newer without
+ *   it holding a newer title, and adopting the server's would silently
+ *   revert the rename. The local title is kept and pushed instead. If a
  *   mirrored turn matched, the server never received the client's copy of
  *   it — ask for a catch-up PUT so the client ids replace the `srv-*` ones.
  * - The server's turns are a proper prefix of the local ones: the browser is
@@ -133,19 +137,29 @@ export function reconcileNewerRemote(
   const isPrefix = matches.every((m) => m !== 'none');
   const matchedMirror = matches.includes('mirror');
   if (isPrefix && remoteTurns.length === localTurns.length) {
-    const merged = mergeProactiveFromRemote(local, remote);
-    if (matchedMirror) {
+    // Same turns: a reset the server stamped is one these turns already
+    // reflect, so its `resetAt` is adopted whichever branch follows.
+    const merged = {
+      ...mergeProactiveFromRemote(local, remote),
+      ...(remote.resetAt !== undefined ? { resetAt: remote.resetAt } : {}),
+    };
+    const keepLocalTitle =
+      local.title !== remote.title &&
+      (local.titleUnsynced === true || local.updatedAt >= remote.updatedAt);
+    if (matchedMirror || keepLocalTitle) {
       // The local copy keeps its clock, so a failed catch-up PUT is retried
       // by the next hydration instead of looking settled.
       return { session: merged, pushLocal: true };
     }
+    // The titles agree (or the server's is the newer rename): nothing of this
+    // browser's is left to sync.
+    const { titleUnsynced: _synced, ...settled } = merged;
     return {
       session: {
-        ...merged,
+        ...settled,
         title: remote.title,
         // In sync: adopt the server's clock so the next load does not re-read.
         updatedAt: Math.max(merged.updatedAt, remote.updatedAt),
-        ...(remote.resetAt !== undefined ? { resetAt: remote.resetAt } : {}),
       },
       pushLocal: false,
     };
@@ -185,7 +199,23 @@ function clearedElsewhere(local: ChatSession, remote: ChatSession): boolean {
 }
 
 function turns(session: ChatSession): Message[] {
-  return session.messages.filter((m) => m.proactive === undefined);
+  return session.messages.filter((m) => !isRoutineDelivery(m));
+}
+
+/** Ids `ChatSessionStore.appendProactiveMessage` gives a delivery; a
+ *  client-generated id (UUID / `id-…`) never looks like this. */
+const DELIVERY_ID = /^proactive-/;
+
+/**
+ * A routine delivery is never a turn — by its marker, or by the id the
+ * server gave it. The id counts too: a copy that lost its marker (stored by
+ * a server that stripped instead of dropping foreign markers) would
+ * otherwise read as a turn the local copy lacks, and the whole server copy
+ * would replace the local one — losing every client-only field (attachments,
+ * receipts, …) of its turns.
+ */
+export function isRoutineDelivery(m: Message): boolean {
+  return m.proactive !== undefined || DELIVERY_ID.test(m.id);
 }
 
 type TurnMatch = 'id' | 'mirror' | 'none';
@@ -225,5 +255,5 @@ function sameFinishedTurn(remote: Message, local: Message): boolean {
  * still names the chat and ships the selected agent.
  */
 export function hasNoTurns(messages: readonly Message[]): boolean {
-  return messages.every((m) => m.proactive !== undefined);
+  return messages.every(isRoutineDelivery);
 }

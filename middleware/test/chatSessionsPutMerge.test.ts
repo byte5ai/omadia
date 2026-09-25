@@ -152,20 +152,45 @@ describe('#1071 — PUT /sessions/:id keeps server-written proactive messages', 
     assert.equal((await stored()).resetAt, undefined);
   });
 
-  it('does not trust a proactive marker the client minted', async () => {
+  it('does not trust a proactive marker the client minted: the message is dropped', async () => {
     const forged: ChatMessage = {
       ...msg('x1', 'assistant', T0 + 2),
       proactive: { deliveredAt: T0 + 2, routineId: 'fake' },
     };
-    await put(clientCopy([forged]));
+    const res = await put(clientCopy([forged]));
 
-    const kept = (await stored()).messages.find((m) => m.id === 'x1');
-    assert.ok(kept);
-    assert.equal(kept.proactive, undefined, 'marker stripped');
+    assert.equal(res.status, 200);
+    assert.deepEqual((await stored()).messages.map((m) => m.id), ['u1', 'a1'], 'forged message dropped');
+    assert.deepEqual(res.body.session.messages.map((m) => m.id), ['u1', 'a1']);
+  });
 
-    // …so a later PUT that drops it does not resurrect it.
-    await put(clientCopy());
-    assert.equal((await stored()).messages.some((m) => m.id === 'x1'), false);
+  // A browser that folded a delivery in, then PUTs after the chat was reset
+  // (or deleted) on another device, sends a marked message the server no
+  // longer holds. Stored as a plain assistant turn it would outlive the clear,
+  // reach the model's replayed tail and look like a turn the browser lacks.
+  it('a PUT into a reset store carrying a marked delivery stores no plain copy of it', async () => {
+    await store.appendProactiveMessage(ID, { content: 'Report', deliveredAt: T0 + 5, routineId: 'r1' });
+    const fetched = (await (await fetch(`${base}/sessions/${ID}`)).json()) as ChatSession;
+    const delivery = fetched.messages.at(-1);
+    assert.ok(delivery?.proactive, 'the browser holds the marked delivery');
+    await fetch(`${base}/sessions/${ID}/reset`, { method: 'POST' });
+
+    // The stale browser PUTs its whole copy, delivery included.
+    await put(fetched);
+
+    const after = await stored();
+    assert.deepEqual(after.messages.map((m) => m.id), ['u1', 'a1']);
+    assert.equal(after.messages.some((m) => m.id === delivery.id), false, 'no plain copy');
+  });
+
+  it('a PUT that recreates a deleted chat stores no copy of its old delivery', async () => {
+    await store.appendProactiveMessage(ID, { content: 'Report', deliveredAt: T0 + 5, routineId: 'r1' });
+    const fetched = (await (await fetch(`${base}/sessions/${ID}`)).json()) as ChatSession;
+    await store.delete(ID);
+
+    await put(fetched);
+
+    assert.deepEqual((await stored()).messages.map((m) => m.id), ['u1', 'a1']);
   });
 
   it('the marker survives a GET → PUT round trip (schema accepts it)', async () => {

@@ -194,6 +194,9 @@ describe('#1071 — routines created from the web chat', () => {
     const run = store.runs.at(-1);
     assert.equal(run?.status, 'error');
     assert.match(run?.error ?? '', /no longer exists; the routine was paused/);
+    // Both ways out: the chat may still live in a browser (reopen + resume),
+    // or it is gone for good (recreate).
+    assert.match(run?.error ?? '', /still exists in your browser, open it and resume the routine; otherwise delete the routine and create it again/);
     assert.equal(store.rows.get(routine.id)?.status, 'paused');
     assert.deepEqual(scheduler.disposed, [routine.id], 'its cron no longer fires');
     assert.equal(await chats.get(SESSION_ID), null);

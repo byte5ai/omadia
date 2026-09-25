@@ -7,8 +7,16 @@ import type { ChatMessage, ChatSession } from './chatSessionStore.js';
  * every turn, so a message the server appended in between (a routine's
  * proactive delivery) would be overwritten by the next PUT from any open tab.
  * This keeps every server-written proactive message the incoming document
- * lacks, and strips the marker from any incoming message the server did not
- * write — the marker is trusted only from the server's own copy.
+ * lacks, and DROPS any incoming message carrying a marker the server copy
+ * does not hold — the marker is trusted only from the server's own copy.
+ *
+ * Dropping (not keeping it as a plain assistant turn) matters: such a
+ * message is a delivery the server no longer has — the chat was reset or
+ * deleted on another device, or the client forged it. Kept as a plain turn
+ * it would outlive the clear it predates, reach the model's replayed tail
+ * (`chatSessionTailTurns` skips only marked messages) and count as a turn
+ * the browser's copy does not have, so the next hydration would replace
+ * that copy wholesale and lose its client-only fields.
  *
  * Placement: before the first incoming USER message that started after the
  * delivery, else at the end. Inserting before a user message never splits a
@@ -31,19 +39,22 @@ export function mergeServerProactiveMessages(
   for (const m of existing?.messages ?? []) {
     if (m.proactive) serverProactive.set(m.id, m);
   }
-  let stripped = 0;
-  const messages = incoming.messages.map((m): ChatMessage => {
+  let dropped = 0;
+  const messages: ChatMessage[] = [];
+  for (const m of incoming.messages) {
     const server = serverProactive.get(m.id);
     // Keep the server's own marker on a delivery the client round-tripped.
-    if (server?.proactive) return { ...m, proactive: server.proactive };
-    if (!m.proactive) return m;
-    stripped += 1;
-    const { proactive: _forged, ...rest } = m;
-    return rest;
-  });
-  if (stripped > 0) {
+    if (server?.proactive) {
+      messages.push({ ...m, proactive: server.proactive });
+    } else if (m.proactive) {
+      dropped += 1;
+    } else {
+      messages.push(m);
+    }
+  }
+  if (dropped > 0) {
     console.warn(
-      `[chat-sessions] ${incoming.id}: stripped ${String(stripped)} proactive marker(s) the server never wrote`,
+      `[chat-sessions] ${incoming.id}: dropped ${String(dropped)} proactive message(s) the stored copy does not hold`,
     );
   }
 

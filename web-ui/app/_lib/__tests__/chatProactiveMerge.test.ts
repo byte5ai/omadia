@@ -321,6 +321,82 @@ describe('reconcileNewerRemote', () => {
   });
 });
 
+describe('reconcileNewerRemote — routine deliveries are never turns', () => {
+  const U1 = msg('u1', 'user', 10);
+  const A1 = msg('a1', 'assistant', 11, {
+    attachments: [{ kind: 'image', url: '/diagrams/x.png', altText: 'chart' }],
+  } as unknown as Partial<Message>);
+  const D1 = msg('proactive-r1-12', 'assistant', 12, { proactive: { deliveredAt: 12, routineId: 'r1' } });
+  const U2 = msg('u2', 'user', 13);
+  const A2 = msg('a2', 'assistant', 14);
+  const D2 = msg('proactive-r1-20', 'assistant', 20, { proactive: { deliveredAt: 20, routineId: 'r1' } });
+
+  // A server that stripped (instead of dropping) a marker it did not hold
+  // stored the delivery as a plain assistant message. Counted as a turn, it
+  // made the turns diverge, the whole server copy replaced the local one and
+  // every client-only field (a1's attachments) was lost.
+  it('keeps local client-only fields when the server holds a delivery without its marker', () => {
+    const local = session([U1, A1, D1, U2, A2], 30);
+    const { proactive: _stripped, ...plainD1 } = D1;
+    const remote = session([msg('u1', 'user', 10), msg('a1', 'assistant', 11), plainD1, U2, A2, D2], 40);
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(pushLocal).toBe(false);
+    expect(result.messages.map((m) => m.id)).toEqual(['u1', 'a1', D1.id, 'u2', 'a2', D2.id]);
+    const a1 = result.messages.find((m) => m.id === 'a1') as unknown as { attachments?: unknown[] };
+    expect(a1.attachments).toHaveLength(1);
+    expect(result.messages.find((m) => m.id === D1.id)?.proactive).toEqual(D1.proactive);
+  });
+
+  it('does not count an unmarked delivery id as a turn in hasNoTurns', () => {
+    const { proactive: _stripped, ...plainD1 } = D1;
+    expect(hasNoTurns([plainD1])).toBe(true);
+  });
+});
+
+describe('reconcileNewerRemote — a rename this browser has not synced yet', () => {
+  const U1 = msg('u1', 'user', 10);
+  const A1 = msg('a1', 'assistant', 11);
+
+  // The rename's PUT failed; a delivery then made the server copy newer while
+  // it still held the old title. Adopting that title silently reverted the
+  // rename.
+  it('keeps and re-pushes the local title while its rename is unsynced', () => {
+    const local: ChatSession = { ...session([U1, A1], 30), title: 'Quarterly', titleUnsynced: true };
+    const remote = { ...session([U1, A1, DELIVERY], 40), title: 'Neuer Chat' };
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(result.title).toBe('Quarterly');
+    expect(pushLocal).toBe(true);
+    // Unsettled until the push lands: the next hydration retries it.
+    expect(result.updatedAt).toBe(30);
+    expect(result.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'p1']);
+  });
+
+  it('settles the flag once the server holds the same title', () => {
+    const local: ChatSession = { ...session([U1, A1], 30), title: 'Quarterly', titleUnsynced: true };
+    const remote = { ...session([U1, A1, DELIVERY], 40), title: 'Quarterly' };
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(pushLocal).toBe(false);
+    expect(result.titleUnsynced).toBeUndefined();
+    expect(result.updatedAt).toBe(40);
+  });
+
+  it('follows a synced rename made on another device', () => {
+    const local = { ...session([U1, A1], 30), title: 'Old' };
+    const remote = { ...session([U1, A1, DELIVERY], 40), title: 'Renamed elsewhere' };
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(pushLocal).toBe(false);
+    expect(result.title).toBe('Renamed elsewhere');
+  });
+});
+
 describe('hasNoTurns', () => {
   it('counts a chat holding only routine deliveries as empty', () => {
     expect(hasNoTurns([])).toBe(true);

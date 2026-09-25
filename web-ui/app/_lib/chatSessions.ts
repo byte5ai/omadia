@@ -13,9 +13,30 @@ import { useProactiveRefresh } from './chatProactiveRefresh';
  * Storage is hybrid:
  *   - localStorage: fast sync cache, available offline, source of truth
  *     while the app is running.
- *   - backend (`/bot-api/chat/sessions`): durable store. On mount we merge
- *     local + remote by `updatedAt` (whole-session last-write-wins). After
- *     each turn we PUT the active session so the backend stays in sync.
+ *   - backend (`/bot-api/chat/sessions`): durable store. After each turn we
+ *     PUT the active session; the server MERGES that PUT with the routine
+ *     deliveries it appended meanwhile (#1071) and answers with the stored
+ *     document, whose deliveries are folded in.
+ *
+ * Hydration (once per page load) compares local and remote per chat by
+ * `updatedAt`:
+ *   - server copy newer → `reconcileNewerRemote`: when the server differs
+ *     only by routine deliveries (same turns), the local copy stays and the
+ *     deliveries are folded in — a delivery bumps the server clock, but the
+ *     server copy lacks every client-only field; when the server's turns are
+ *     a prefix of the local ones (a turn's PUT failed), the local copy stays
+ *     and is pushed back (catch-up); anything else (a turn from another
+ *     device, a clear elsewhere, a partial local answer) — the server wins.
+ *   - local copy newer → the local copy stays and is pushed back (catch-up).
+ *   - only one side has the chat → that side's copy (a local-only one is
+ *     pushed).
+ *
+ * The fold rule (`mergeProactiveFromRemote`) is additive: server deliveries
+ * missing locally are inserted before the first later user message; nothing
+ * else of the server copy is taken, and the local clock is kept (a fold is
+ * not a sync). While the app runs, `useProactiveRefresh` re-reads the active
+ * chat (mount, chat switch, visibility, focus) with the same fold, and a fold
+ * persists into its one stored chat only (`persistFoldLocally`).
  */
 
 /**
@@ -685,6 +706,13 @@ export interface ChatSession {
    * "this browser's turn never reached the server" (`reconcileNewerRemote`).
    */
   resetAt?: number;
+  /**
+   * #1071 — local-only (never sent): this browser renamed the chat and no PUT
+   * carrying that title has succeeded yet. A routine delivery can make the
+   * server copy newer while it still holds the OLD title; hydration keeps
+   * (and re-pushes) the local title instead of silently reverting the rename.
+   */
+  titleUnsynced?: true;
 }
 
 interface SessionSummary {
@@ -799,6 +827,7 @@ export function coerceSession(v: unknown): ChatSession | null {
     session.snapshot = snapshot as SessionAgentSnapshot;
   }
   if (typeof s['resetAt'] === 'number') session.resetAt = s['resetAt'];
+  if (s['titleUnsynced'] === true) session.titleUnsynced = true;
   return session;
 }
 
@@ -895,7 +924,8 @@ async function fetchRemoteSession(id: string): Promise<ChatSession | null> {
  * `null` when the response carries no readable session.
  */
 async function putRemoteSession(session: ChatSession): Promise<ChatSession | null> {
-  const payload = sanitizeForPersist(session);
+  const { titleUnsynced: _localOnly, ...sent } = session;
+  const payload = sanitizeForPersist(sent);
   const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(session.id)}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
@@ -950,11 +980,15 @@ async function resetRemoteSessionWithRetry(id: string): Promise<number | null | 
 }
 
 /**
- * #1071 — how far a clear reached. `'partial'`: the chat is cleared in this
- * browser, but the server reset failed, so routine deliveries it holds come
- * back on the next re-read.
+ * #1071 — how far a clear reached.
+ * - `'partial'`: the chat is cleared in this browser, but the server reset
+ *   failed. The server may still hold the whole conversation (when the PUT
+ *   that follows failed too) or at least its routine deliveries, which come
+ *   back on the next re-read.
+ * - `'not_loaded'`: this tab holds no such chat — nothing was cleared and
+ *   nothing was sent.
  */
-export type ClearOutcome = 'cleared' | 'partial';
+export type ClearOutcome = 'cleared' | 'partial' | 'not_loaded';
 
 async function deleteRemoteSession(id: string): Promise<void> {
   const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(id)}`, {
@@ -1005,6 +1039,19 @@ export function useChatSessions(): UseChatSessionsResult {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
+  // #1071 — a PUT carrying `title` succeeded: a rename to that title is on the
+  // server now (`titleUnsynced`). A title changed again since stays unsynced.
+  const settleTitle = useCallback((id: string, title: string): void => {
+    setSessions((prev) => {
+      const at = prev.findIndex(
+        (s) => s.id === id && s.titleUnsynced === true && s.title === title,
+      );
+      if (at === -1) return prev;
+      const { titleUnsynced: _synced, ...settled } = prev[at] as ChatSession;
+      return prev.map((s, i) => (i === at ? settled : s));
+    });
+  }, []);
 
   useEffect(() => {
     if (hydrating) return;
@@ -1089,12 +1136,16 @@ export function useChatSessions(): UseChatSessionsResult {
                   putRemoteSession({
                     ...reconciled,
                     updatedAt: Math.max(reconciled.updatedAt, r.updatedAt),
-                  }).catch((err: unknown) => {
-                    console.warn(
-                      '[chat-sessions] backend catch-up put failed:',
-                      err instanceof Error ? err.message : err,
-                    );
-                  });
+                  })
+                    .then(() => {
+                      settleTitle(id, reconciled.title);
+                    })
+                    .catch((err: unknown) => {
+                      console.warn(
+                        '[chat-sessions] backend catch-up put failed:',
+                        err instanceof Error ? err.message : err,
+                      );
+                    });
                 }
               }
             } catch (err) {
@@ -1108,12 +1159,16 @@ export function useChatSessions(): UseChatSessionsResult {
             merged.push(l);
             // Backend is behind — push our copy once (don't block hydration).
             if (l.updatedAt > r.updatedAt) {
-              putRemoteSession(l).catch((err: unknown) => {
-                console.warn(
-                  '[chat-sessions] backend catch-up put failed:',
-                  err instanceof Error ? err.message : err,
-                );
-              });
+              putRemoteSession(l)
+                .then(() => {
+                  settleTitle(id, l.title);
+                })
+                .catch((err: unknown) => {
+                  console.warn(
+                    '[chat-sessions] backend catch-up put failed:',
+                    err instanceof Error ? err.message : err,
+                  );
+                });
             }
           }
         } else if (r) {
@@ -1169,7 +1224,7 @@ export function useChatSessions(): UseChatSessionsResult {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [settleTitle]);
 
   const createSession = useCallback((): ChatSession => {
     const s = emptySession();
@@ -1233,6 +1288,7 @@ export function useChatSessions(): UseChatSessionsResult {
     persistFold: persistFoldLocally,
   });
 
+
   // Debounced localStorage writes: streaming a long answer triggers many
   // state updates. `lastSeenRef` is the array this effect last saw,
   // `localDirtyRef` says a whole-array write (a local edit) is pending.
@@ -1269,9 +1325,11 @@ export function useChatSessions(): UseChatSessionsResult {
   // (`sessionsRef`), not from inside a `setSessions` updater.
   //
   // The reset is retried once. When it still fails, the chat is cleared here
-  // but the server may keep routine deliveries (the PUT that follows replaces
-  // only the turns), and those come back on the next re-read — the result
-  // says so (`'partial'`) and the chat page tells the user.
+  // but the server keeps its routine deliveries (the PUT that follows replaces
+  // only the turns — and when the server is unreachable, that PUT fails too
+  // and the server keeps the whole conversation). Deliveries come back on the
+  // next re-read — the result says so (`'partial'`) and the chat page tells
+  // the user.
   const clearMessages = useCallback(
     async (id: string): Promise<ClearOutcome> => {
       // Nothing is folded into this chat while the reset runs, and a server
@@ -1285,7 +1343,7 @@ export function useChatSessions(): UseChatSessionsResult {
       if (!current) {
         endClear(id);
         console.warn(`[chat-sessions] clear: session ${id} is not loaded; nothing sent to the server`);
-        return 'partial';
+        return 'not_loaded';
       }
       let resetAt: number | null | undefined;
       try {
@@ -1306,6 +1364,7 @@ export function useChatSessions(): UseChatSessionsResult {
       }
       try {
         await putRemoteSession({ ...current, messages: [], updatedAt });
+        settleTitle(id, current.title);
       } catch (err) {
         console.warn(
           '[chat-sessions] clear PUT failed:',
@@ -1314,7 +1373,7 @@ export function useChatSessions(): UseChatSessionsResult {
       }
       return resetAt === undefined ? 'partial' : 'cleared';
     },
-    [beginClear, endClear],
+    [beginClear, endClear, settleTitle],
   );
 
   // #617 — mutation is addressed by session id, never by "whatever is active".
@@ -1342,13 +1401,16 @@ export function useChatSessions(): UseChatSessionsResult {
       if (!current) return;
       const updatedAt = Date.now();
       setSessions((prev) =>
-        prev.map((s) => (s.id === id ? { ...s, title: trimmed, updatedAt } : s)),
+        prev.map((s) =>
+          s.id === id ? { ...s, title: trimmed, updatedAt, titleUnsynced: true } : s,
+        ),
       );
       try {
         // #1071 — the server keeps routine deliveries this copy lacks (even
         // when it holds no messages at all) and answers with the merged
         // document; fold those deliveries in so the renamed chat shows them.
         const stored = await putRemoteSession({ ...current, title: trimmed, updatedAt });
+        settleTitle(id, trimmed);
         if (stored) foldProactive(id, stored, epoch);
       } catch (err) {
         console.warn(
@@ -1357,7 +1419,7 @@ export function useChatSessions(): UseChatSessionsResult {
         );
       }
     },
-    [clearEpochOf, foldProactive],
+    [clearEpochOf, foldProactive, settleTitle],
   );
 
   // #617 — commit-ordered persistence. A background turn is followed by no
@@ -1390,6 +1452,7 @@ export function useChatSessions(): UseChatSessionsResult {
       const epoch = clearEpochOf(id);
       putRemoteSession(snapshot)
         .then((stored) => {
+          settleTitle(id, snapshot.title);
           // #1071 — the server merges the PUT with routine deliveries it
           // appended meanwhile and answers with the stored document.
           if (stored) foldProactive(id, stored, epoch);
@@ -1401,7 +1464,7 @@ export function useChatSessions(): UseChatSessionsResult {
           );
         });
     }
-  }, [persistTick, sessions, foldProactive, clearEpochOf]);
+  }, [persistTick, sessions, foldProactive, clearEpochOf, settleTitle]);
 
   // Always return *some* active session so the caller doesn't have to guard.
   // Build an ephemeral empty one during the brief hydrating window.

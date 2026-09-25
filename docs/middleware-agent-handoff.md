@@ -4030,6 +4030,12 @@ durch den Web-Sender unten.
   - **Titel bei Catch-up-PUT:** immer der lokale. Der Server hat den letzten Write dieses
     Browsers nie bekommen, sein Titel kann also noch der Default ("Neuer Chat") sein, den
     der gescheiterte PUT ersetzt hätte — der Catch-up würde den Rückfall persistieren.
+  - **Nicht synchronisierte Umbenennung:** `renameSession` setzt lokal `titleUnsynced`
+    (nur localStorage, nie gesendet); jeder erfolgreiche PUT mit diesem Titel löscht es.
+    Bei gleichen Turns und abweichendem Titel gewinnt der lokale Titel, wenn er
+    `titleUnsynced` ist (Catch-up-PUT) — sonst hätte eine Zustellung, die die
+    Server-Kopie neuer macht, die gescheiterte Umbenennung still zurückgedreht. Ohne das
+    Flag gewinnt der Server-Titel (Umbenennung auf anderem Gerät).
 - **Delivery-Handle:** `conversationRef = { kind: 'http-chat', sessionScope, sessionId? }`.
   `sessionId` wird serverseitig nur gesetzt, wenn die `sessionId` des Requests wirklich der
   Scope des Turns ist (nicht unter Debug-`scope`, nicht bei `http-default`). Fehlt sie,
@@ -4041,7 +4047,14 @@ durch den Web-Sender unten.
   läuft deshalb über `ChatSessionStore.saveFromClient` → `mergeServerProactiveMessages`:
   server-geschriebene Proactive-Nachrichten, die im Body fehlen, bleiben erhalten (vor der
   ersten späteren User-Nachricht einsortiert, nie zwischen Frage und Antwort). Der Marker
-  zählt nur aus der Server-Kopie; ein vom Client gesetzter wird entfernt. Ein PUT mit
+  zählt nur aus der Server-Kopie; eine Nachricht mit einem Marker, den die Server-Kopie
+  nicht hält (Chat auf anderem Gerät geleert/gelöscht, oder vom Client gefälscht), wird
+  **verworfen** (`WARN`-Log mit Anzahl und Session-Id) — nicht als normale
+  Assistant-Nachricht behalten: so überlebte sie das Leeren, landete im Modell-Tail
+  (`chatSessionTailTurns` überspringt nur markierte Nachrichten) und zählte bei der
+  nächsten Hydration als Turn, den der Browser nicht hat, sodass die Server-Kopie die
+  lokale samt Attachments ersetzte. Die Web-UI zählt zusätzlich jede Nachricht mit
+  `proactive-*`-Id nie als Turn (`isRoutineDelivery`). Ein PUT mit
   `messages: []` ist **kein** "Chat leeren" mehr: genau das PUTten auch das Umbenennen
   eines geleerten Chats, der Catch-up eines veralteten Tabs und ein neuer Chat, und
   jedes davon hat ungesehene Zustellungen gelöscht. Leeren ist explizit
@@ -4049,8 +4062,10 @@ durch den Web-Sender unten.
   ruft es selbst auf und PUTtet danach die geleerte Kopie aus dem committeten State
   (`sessionsRef`). Scheitert der Reset auch im zweiten Versuch, ist der Chat nur im Browser
   geleert (der PUT ersetzt nur die Turns, Zustellungen bleiben); `clearMessages` liefert
-  dann `'partial'`, und die Chat-Seite sagt, dass geplante Nachrichten wieder auftauchen
-  können (`chat.resetPartialNotice`, en + de). Umbenennen liest nicht mehr vorab, sondern
+  dann `'partial'`, und die Chat-Seite sagt, dass der Server die Unterhaltung — mindestens
+  ihre geplanten Nachrichten — noch halten kann (`chat.resetPartialNotice`, en + de; war
+  auch der PUT nicht erreichbar, hält er die ganze Unterhaltung). Ist der Chat in diesem
+  Tab gar nicht geladen, wird nichts gesendet und `'not_loaded'` geliefert (kein Hinweis). Umbenennen liest nicht mehr vorab, sondern
   faltet die PUT-Antwort ein. `MessageSchema` kennt
   `proactive`, sonst entfernt zod ihn beim nächsten PUT (die #445-Falle). Ist die
   gespeicherte Datei korrupt (JSON nicht parsebar, `SyntaxError`), überschreibt der PUT
@@ -4072,8 +4087,11 @@ durch den Web-Sender unten.
   `ProactiveTargetGoneError` (*"web chat conversation '<id>' no longer exists"*); dasselbe,
   wenn der Chat während des Turns verschwindet (`send`). Der Runner pausiert die Routine
   dann (unscoped, System-Aktion), meldet sie beim Scheduler ab und schreibt nach
-  `last_run_error` *"…; the routine was paused — delete it and create it again from an
-  existing conversation"*. Ein fehlender Store (LLM-Key noch nicht gesetzt) ist dagegen ein
+  `last_run_error` *"…; the routine was paused — if the chat still exists in your browser,
+  open it and resume the routine; otherwise delete the routine and create it again from an
+  existing conversation"* (ein nur serverseitig fehlender Chat wird beim Laden im Browser
+  wieder gespeichert). "Jetzt" auf die pausierte Routine nennt beide Wege
+  (`routines.actions.triggerNotActive`). Ein fehlender Store (LLM-Key noch nicht gesetzt) ist dagegen ein
   normaler Fehler; die Routine bleibt aktiv. Ein Fire auf eine nicht mehr aktive Routine
   wird übersprungen, **ohne** einen Lauf aufzuzeichnen (früher `ok`, was den
   `last_run_error` mit der Pausen-Erklärung überschrieb). "Jetzt" auf eine pausierte

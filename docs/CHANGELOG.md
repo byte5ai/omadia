@@ -317,7 +317,9 @@ never created.
   hydrates from. A deleted chat is never recreated: a pre-flight
   (`ProactiveSender.checkDeliverable`) notices it BEFORE the agent turn runs,
   and the runner pauses the routine with "no longer exists; the routine was
-  paused …" in `last_run_error`, so cron stops paying a turn on every fire
+  paused — if the chat still exists in your browser, open it and resume the
+  routine; otherwise delete the routine and create it again …" in
+  `last_run_error`, so cron stops paying a turn on every fire
   (the same happens when the chat vanishes during the turn). A request
   without a saved chat (debug `scope`, `http-default`) is refused at create
   time. An empty answer (for example a diagram-only turn) fails the run
@@ -384,12 +386,22 @@ never created.
   `POST /api/chat/sessions/:id/reset`, which the web UI's `clearMessages` now
   calls itself before PUTting the cleared copy. A failed reset is retried
   once; if it still fails, the chat is cleared in the browser only and the
-  chat page says that scheduled routine messages may reappear (en + de),
+  chat page says that the server may still hold the conversation — at least
+  its scheduled routine messages, which may reappear (en + de),
   instead of letting them come back unexplained. A corrupt stored file
   (unparseable JSON) is still overwritten (repaired) rather than failing the
   PUT; any other read failure fails the PUT instead of dropping deliveries.
 - **The `proactive` marker is server-trusted.** It counts only from the
-  server's own copy; a marker minted by a client PUT is stripped.
+  server's own copy; a PUT message carrying a marker the stored copy does not
+  hold (a delivery cleared or deleted on another device, or a forged one) is
+  dropped with a warning — kept as a plain answer it would outlive the clear,
+  reach the model tail and make the browser's next hydration replace its copy
+  (and its attachments). The web UI never counts a `proactive-*` message as a
+  turn either.
+- **An unsynced rename survives a delivery.** A rename whose PUT failed is
+  remembered locally (`titleUnsynced`, never sent); a delivery that makes the
+  server copy newer no longer reverts it at the next page load — the local
+  title is kept and pushed.
 - **Deliveries stay out of the model tail.** `chatSessionTailTurns` skips them,
   so a report behind an unanswered question is never replayed as its answer,
   and the subscription-CLI tail treats a chat holding only deliveries as empty
@@ -400,7 +412,8 @@ never created.
   a routine that is no longer active is skipped without recording a run — it
   used to record `ok` and overwrite the `last_run_error` explaining an
   auto-pause (deleted chat). `POST /api/v1/routines/:id/trigger` answers 409
-  `routines.not_active` (the routines page names it, en + de), and the smart
+  `routines.not_active` (the routines page names it, en + de, with both ways
+  out of an auto-pause: reopen the chat and resume, or recreate), and the smart
   card's "trigger now" says the routine is paused.
 - **One per-session lock for every `ChatSessionStore` instance.** Each
   orchestrator builds its own store over the same chat-sessions directory, so

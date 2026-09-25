@@ -726,7 +726,10 @@ export class RoutineRunner {
       const paused = await this.store.setStatus(id, 'paused');
       if (!paused) return reason;
       this.unregisterFromScheduler(id);
-      return `${reason}; the routine was paused — delete it and create it again from an existing conversation`;
+      // The chat can be gone from the server yet still live in a browser
+      // (its first PUT failed, or another device deleted it): loading the
+      // chat there stores it again, and the routine can simply be resumed.
+      return `${reason}; the routine was paused — if the chat still exists in your browser, open it and resume the routine; otherwise delete the routine and create it again from an existing conversation`;
     } catch (err) {
       this.log(`[routines/runner] could not pause orphaned routine ${id}: ${errMsg(err)}`);
       return reason;

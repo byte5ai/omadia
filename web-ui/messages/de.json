@@ -1475,8 +1475,8 @@
     "proactiveRoutineBadge": "Geplante Routine · {name}",
     "proactiveBadge": "Geplante Nachricht",
     "proactiveDroppedAttachments": "{count, plural, one {# Anhang} other {# Anhänge}} dieser Routine-Ausgabe {count, plural, one {kann} other {können}} im Web-Chat nicht angezeigt werden.",
-    "proactiveDroppedInteractive": "Ein interaktives Element ({kind}) dieser Routine-Ausgabe kann im Web-Chat nicht angezeigt werden.",
-    "resetPartialNotice": "Nur in diesem Browser geleert — der Server war nicht erreichbar, daher können geplante Routine-Nachrichten dieses Chats wieder auftauchen. Starte den Chat später noch einmal neu, um sie zu entfernen.",
+    "proactiveDroppedInteractive": "{kind, select, choice {Eine Auswahlkarte} slots {Eine Terminauswahl} topic {Eine Themen-Rückfrage} routine_list {Eine Routinenliste} mcp_input {Ein Eingabeformular} other {Ein interaktives Element}} dieser Routine-Ausgabe kann im Web-Chat nicht angezeigt werden.",
+    "resetPartialNotice": "Nur in diesem Browser geleert — der Server war nicht erreichbar und kann diese Unterhaltung noch enthalten, zumindest ihre geplanten Routine-Nachrichten, die hier wieder auftauchen können. Starte den Chat später noch einmal neu, um ihn auch auf dem Server zu leeren.",
     "streamingSuffix": "· streamt…",
     "toolTraceHeading": "Tool-Trace ({count})",
     "subCallCount": "{count, plural, one {# Sub-Call} other {# Sub-Calls}}",
@@ -5714,7 +5714,7 @@
       "triggerNotice": "Gestartet — Ergebnis erscheint in ~30 Sekunden im Channel.",
       "triggerNoticeWeb": "Gestartet — das Ergebnis landet im Chat, in dem die Routine angelegt wurde, und erscheint dort, sobald du den Chat das nächste Mal öffnest oder zu ihm zurückkehrst.",
       "triggerChatUnavailable": "Kein LLM-API-Key konfiguriert — bitte in Admin → Einstellungen hinterlegen und erneut auslösen.",
-      "triggerNotActive": "Diese Routine ist pausiert — erst fortsetzen, dann auslösen.",
+      "triggerNotActive": "Diese Routine ist pausiert — erst fortsetzen, dann auslösen. Wurde sie pausiert, weil ihr Chat fehlt: Gibt es den Chat in deinem Browser noch, öffne ihn zuerst; sonst lösche die Routine und lege sie aus einem Chat neu an.",
       "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden."
     },
     "templateEditor": {
