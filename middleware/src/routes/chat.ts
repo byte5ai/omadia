@@ -176,10 +176,15 @@ const HTTP_ROUTINE_CHANNEL = 'web';
  * `#993` taught the loopback dispatch to restore the caller's async context
  * across the CLI process boundary and `#1016` taught it to refuse a stale one.
  * Both hardened the transport of a value the HTTP chat route never installed:
- * the only writer of `routineTurnContext` in the whole tree is
+ * at the time, the only writer of `routineTurnContext` in the whole tree was
  * `RoutinesIntegration.captureRoutineTurn`, which only the out-of-tree Teams
  * adapter calls. So on the web chat `routineTurnContext.current()` was
  * `undefined` for the entire turn and `manage_routine` refused every action.
+ *
+ * #1086 closed the same gap for channel plugins, in `CoreApi.handleTurnStream`.
+ * This producer stays: the web chat is an HTTP route, not a channel plugin, and
+ * it does not go through that method. It also resolves a principal the core
+ * cannot — the server-side session, see below.
  *
  * Returns `undefined` when no principal resolved. That is deliberate: the
  * `#1016` owner guard REFUSES a dispatch whose restored context has a userId
