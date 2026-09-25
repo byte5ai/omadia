@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 
 import type { AgentPluginBindingStore } from '../src/plugins/installService.js';
@@ -182,5 +183,41 @@ describe('createPendingBindingPurge (#1070)', () => {
         String(c.arguments[0]).includes('purge SKIPPED for reinstalled'),
       ),
     );
+  });
+});
+
+/**
+ * The tests above drive the queue directly, so they stay green whatever
+ * `index.ts` does with it. Pin the host wiring by reading the source (same
+ * style as agentIdentityBootRecompose.test.ts — importing it boots the whole
+ * middleware): bootstrap enqueues, the boot flush runs after the orchestrator
+ * activation, and an orchestrator (re)activation drains what is still queued.
+ */
+describe('#1070 boot wiring — pendingBindingPurge in index.ts', () => {
+  const indexSource = (): Promise<string> =>
+    readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
+
+  it('enqueues from bootstrap and flushes after the tool runtime activated', async () => {
+    const src = await indexSource();
+    let from = 0;
+    for (const needle of [
+      'await runLegacyBootstrap(',
+      'pendingBindingPurge.enqueue(pluginId)',
+      'await toolPluginRuntime.activateAllInstalled();',
+      'await pendingBindingPurge.flush();',
+    ]) {
+      const idx = src.indexOf(needle, from);
+      assert.notEqual(idx, -1, `index.ts no longer has \`${needle}\` after the previous anchor — update this pin`);
+      from = idx + needle.length;
+    }
+  });
+
+  it('drains the queue on an orchestrator (re)activation and checks the registry', async () => {
+    const src = await indexSource();
+    assert.match(
+      src,
+      /await toolPluginRuntime\.activate\(agentId\);[^}]{0,400}?if \(agentId === ORCHESTRATOR_PLUGIN_ID\) \{\s*await pendingBindingPurge\.flush\(\);/,
+    );
+    assert.match(src, /isInstalled: \(pluginId\) => installedRegistry\.has\(pluginId\)/);
   });
 });
