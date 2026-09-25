@@ -216,6 +216,22 @@ working across it:
   channels only the Teams adapter calls `captureRoutineTurn`, so it is the only
   one that installs a context this guard can find stale.
 
+  **#1086 changed what reaches the guard, not what it refuses.** Channels that
+  drive their turn through `CoreApi.handleTurnStream` (in-tree: public API,
+  canvas) now carry a routine principal the core installed. That producer uses
+  `routineTurnContext.run`, so its value ends with the turn and can never be the
+  stale one; and it deliberately does not defer to a context belonging to a
+  *different* user. Adapters that call the `chatAgent` capability directly
+  (Teams, Telegram, Slack, Discord, WhatsApp as of 2026-09) never reach that
+  producer. `enterWith` — i.e. `captureRoutineTurn` — remains the only way to
+  leak a principal forward, and Teams remains its only caller; because Teams is
+  one of the direct-`chatAgent` adapters, the producer's stale-context
+  correction never applies to it, and this guard is still the only defence
+  against its staleness. Routine ownership is `(tenant, userId)` with
+  channel-native ids and no channel component, so a channel moving onto
+  `handleTurnStream` must supply ids that cannot collide with another
+  channel's (`key:<uuid>` on the public API).
+
   **The declaration is part of the mechanism, not bookkeeping.** Both
   `services.get` and `services.getOptional` run `assertServiceGranted`, which
   throws `ServiceNotDeclaredError` for a name in none of `requires:`,

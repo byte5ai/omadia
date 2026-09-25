@@ -160,10 +160,11 @@ describe('ManageRoutineTool — create', () => {
       prompt: 'p',
     });
     // OM-82 (#993) — the message no longer blames the caller ("outside a
-    // channel turn"); a subscription-CLI user IS in a channel and the context
-    // was dropped crossing the loopback boundary. It now reads as a runtime fault.
-    assert.match(result, /^Error: routines are unavailable in this session/);
+    // channel turn"). #1086 — nor does it claim a runtime fault an operator
+    // could fix: a missing context now means a channel no producer covers.
+    assert.match(result, /^Error: routines are not available in this conversation/);
     assert.doesNotMatch(result, /outside a channel/);
+    assert.doesNotMatch(result, /wiring|operator/i);
     assert.equal(calls.length, 0);
   });
 
