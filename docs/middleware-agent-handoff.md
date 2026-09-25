@@ -2662,6 +2662,34 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Turn-Budget (OM-104) — offene Defekte (#1077 follow-up)
+
+Beim Schreiben der #1077-Tests gefunden, dort bewusst nicht repariert (die
+Änderung ist tests-only):
+
+- **Turn-Budget greift nicht bei Registry-Agents.**
+  `packages/harness-orchestrator/src/registry/applyDiff.ts` `buildForAgent`
+  reicht aus den Registry-Runtime-Defaults `loopRepeatSoft/Hard`,
+  `maxTurnSeconds` und `directLineSticky` durch, aber **nicht**
+  `cliTurnSeconds`. Das Plugin legt den Wert korrekt in
+  `defaultRuntimeConfig` ab (gepinnt von
+  `test/subscriptionParity/cliTurnBudgetRegistry.pg.test.ts`), er kommt nur
+  nie beim `CliChatAgent` an. Mit Datenbank baut die Registry jeden Agent
+  (`registry/index.ts`, beide `buildForAgent`-Aufrufe), und der Web-Chat
+  läuft über `reg.slugForFallback()` (`src/index.ts`, `getDefaultSlug`).
+  Auf DB-Deployments hat das Setup-Feld `cli_turn_seconds` damit keine
+  Wirkung; es gilt nur ENV bzw. Default. Reparatur: eine Spread-Zeile neben
+  `maxTurnSeconds` plus ein Test auf `spawnTimeoutMs` des gebauten Agents.
+- **`TurnBudgetField` löscht nach fehlgeschlagenem Laden das Budget.**
+  `web-ui/app/admin/subscription-clis/_components/TurnBudgetField.tsx`
+  sperrt Eingabe und Speichern nur bei `status.kind === 'loading'`. Scheitert
+  `getInstalledPlugin`, bleibt das Feld leer und Speichern aktiv; ein Klick
+  schickt `{ cli_turn_seconds: null }`, löscht den gespeicherten Wert und
+  zeigt "Gespeichert". Daneben: `240.5` besteht die `parseInt`-Prüfung und
+  wird unverändert gespeichert, und beide `catch`-Zweige rendern die rohe
+  Exception-Meldung statt eines Katalog-Schlüssels (web-ui/CLAUDE.md,
+  Checkliste Punkt 3).
+
 ### Gedächtnis-Provider wird bei Neuzuweisung nicht neu aufgelöst (OM-102 follow-up)
 
 `TODO(OM-102 follow-up)` in
@@ -3378,7 +3406,9 @@ Orchestrator-Setup-Feld **`cli_turn_seconds`** → `spawnTimeoutMs` des `CliChat
 Reihenfolge: Setting > ENV `OMADIA_CLI_SPAWN_TIMEOUT_MS` > Default 600 s. Leer/0 heißt
 "nicht gesetzt", damit ein leeres Feld die ENV nicht überschreibt. UI auf der
 LLM-Zugang-Seite, Reiter Abos; sie schreibt über den normalen Plugin-Config-PATCH, das
-Plugin reaktiviert, kein Neustart.
+Plugin reaktiviert, kein Neustart. **Ausnahme:** Agents, die die Registry baut (mit
+Datenbank also auch der Web-Chat), ignorieren das Setting derzeit — offener Defekt, siehe
+§13 "Turn-Budget (OM-104) — offene Defekte".
 
 Der Wert erreicht **beide** Bauwege: den Default-Agenten und jeden Agenten, den die
 Registry baut (`registry/applyDiff.ts` `buildForAgent` reicht `cliTurnSeconds` wie
