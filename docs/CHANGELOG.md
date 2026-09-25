@@ -91,6 +91,73 @@ with `getOptional`; both names are gone from its row in the legacy
 service-grant allowlist (nineteen names at the 2026-08-20 audit, seventeen
 now).
 
+### Changed — Teams provisioning persists a structured error code (#897)
+
+2026-09-24 — the Teams provisioning runner recorded failures only as an English
+sentence in `agent_teams_identities.last_error`, and
+`GET /api/v1/operator/agents/:slug/teams-identity` rebuilt `last_error_detail`
+by parsing that sentence (prefixes, the first `[...]` group, `; retry after Ns`).
+Migration **0060** (`0060_agent_teams_error_code.sql`) adds `error_code TEXT` and
+`error_detail JSONB`; the runner now writes the code and its typed arguments in
+the same UPDATE as the sentence, while it still holds the typed error. The route
+reads the columns (validated on the way out) and falls back to the sentence
+classifier only for rows written before 0060. Each coded write also stores a
+SHA-256 of its sentence inside `error_detail`, and readers trust the code only
+while it matches: an older build rolled back onto a migrated database writes
+`last_error` alone, and its sentence must not be read with the previous
+failure's code. The config-sync stale-warning cleanup now also matches on the
+(trusted) code instead of the sentence prefix. No backfill
+and no CHECK constraint (see the migration header); the wire shape of
+`last_error_detail` is unchanged.
+
+### Fixed — subscription login on the shipped image shows the code field again (#1084)
+
+2026-09-24 — connecting a Claude subscription from **Admin → Providers →
+Subscriptions** dead-ended on every prebuilt image. The CLI bundled there
+(`claude` 2.1.187) prints `Opening browser to sign in…` and `If the browser
+didn't open, visit: …` and then waits at `Paste code here if prompted >` on
+stdin. `startCliLogin` treated those two browser lines as proof of a
+localhost-callback login (the rule came with #1013, which was checked against a
+host-installed 2.1.259, not the image's CLI), reported `codeEntry: false`, and
+the panel showed "no code to paste" plus Cancel. The browser displayed a code
+that could not be entered anywhere, and after the 5-minute poll a code field
+appeared for a session the server had already reaped. The unit fixture that
+should have caught it (`Please visit: …\nPaste code here >`) was not real CLI
+output.
+
+The paste prompt now decides alone: any prompt means `codeEntry: true`, for
+2.1.187 and 2.1.259 alike (the UI polls the login status in parallel, so a
+login that finishes through the browser callback still resolves). The probe no
+longer stops at the first browser line, so a prompt arriving in a later stdout
+chunk still counts. The polling view, used only when no prompt appeared, always
+carries a secondary "paste code instead" field. A poll that ends in timeout,
+`idle`, `expired` or `error` shows Retry instead of a dead field. A wrong code no
+longer marks the server session `invalid`: that status made `markAuthorized`
+refuse the correct retry, so the post-login auto-assign hook (OM-79) never ran
+and the exit handler dropped the session instead of confirming it. The fixtures
+are now the verbatim 2.1.187 output from the container.
+
+### Fixed — dynamic sub-agents on the Anthropic host sent `class:frontier` raw (404) (#1079)
+
+Every dynamic sub-agent on an Anthropic host failed its first real call with
+`404 not_found_error: model: class:frontier`. `SUB_AGENT_MODEL` defaults to the
+class ref `class:frontier`, and `DynamicAgentRuntime` resolved it only in the
+non-Anthropic branch — on the default provider the config string went verbatim
+to api.anthropic.com. Activation succeeded and the tools registered, so the
+failure only surfaced at call time. The provider + model selection now lives in
+`selectSubAgentHost` and resolves the ref on every provider branch through the
+orchestrator's own resolver (`resolveConfiguredModel`, moved into
+`@omadia/llm-provider` and re-exported by `@omadia/orchestrator`) via the new
+`resolveModelRefStrict`. If the registry holds no model at all for the provider
+(its catalog entry was unregistered), the bundled provider's pinned seed model
+for that class is used; with no seed either, activation fails with an error that
+names `SUB_AGENT_MODEL` (or the manifest's `llm.prefers.model`) instead of
+sending a class ref to the vendor. The same guarantee now covers plugin
+`ctx.llm` requests, `VERIFIER_MODEL` (which is also mapped to the configured
+`llm_provider` now, and on an unresolvable ref leaves `verifier@1` unpublished)
+and the orchestrator-extras' fact-extractor / topic-classifier models. Pinning
+`SUB_AGENT_MODEL` to a concrete id is no longer needed as a workaround.
+
 ### Fixed — saving, rotating or removing an LLM key takes effect without a restart (#1080)
 
 2026-09-24 — on a stack booted without an LLM key, saving a key in

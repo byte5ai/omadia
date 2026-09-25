@@ -2,16 +2,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import {
-  createAnthropicProvider,
-  type AnthropicClient,
-} from '@omadia/llm-adapter-anthropic';
-import {
-  coerceModelToProvider,
-  resolveLlmProvider,
-  type LlmProviderPool,
-  type LlmProvider,
-} from '@omadia/llm-provider';
+import type { AnthropicClient } from '@omadia/llm-adapter-anthropic';
+import type { LlmProviderPool } from '@omadia/llm-provider';
 import type { z } from 'zod';
 
 import { canvasOutputToolIds } from '../platform/canvasOutputRegistry.js';
@@ -41,6 +33,7 @@ import {
 } from '@omadia/orchestrator';
 
 import { parseAgentMd } from './agentMdFrontmatter.js';
+import { selectSubAgentHost } from './subAgentHostModel.js';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { JobScheduler } from './jobScheduler.js';
@@ -476,64 +469,20 @@ export class DynamicAgentRuntime {
       effectiveModel,
     );
 
-    // OB-61 follow-up: the host arms the shared Anthropic client from the
-    // operator's vault key AFTER boot (see index.ts
-    // `createSharedAnthropicClientRefresher` →
-    // `serviceRegistry.replace('anthropicClient', …)`). The constructor-
-    // injected `this.deps.anthropic` is the *boot-time* client, built from
-    // `config.ANTHROPIC_API_KEY ?? ''`. On deployments where the key lives
-    // only in the vault (operator completed /setup, no ANTHROPIC_API_KEY in
-    // ENV — e.g. the Docker demo), that injected client has an empty apiKey
-    // and every sub-agent inner call throws "Could not resolve authentication
-    // method" at construction time (0 ms, before any tool runs). Late-resolve
-    // the live, vault-armed client from the registry — matching the documented
-    // late-resolve contract (index.ts ~295) — and fall back to the injected
-    // client only when no provider override is registered (env-key path).
     // Provider-agnostic sub-agents: run on the host's configured provider
-    // (default Anthropic, so the existing path is byte-identical). For Anthropic
-    // we keep the live, vault-armed shared client (the OB-61 late-resolve). For
-    // any other provider we build it from the host vault key via the factory and
-    // coerce the configured model to that provider (a Claude model maps to the
-    // provider's same-class model) — this is what lets the stack run with no
-    // Anthropic key at all.
-    const liveAnthropicProvider = (): LlmProvider =>
-      createAnthropicProvider({
-        client:
-          this.deps.serviceRegistry.get<AnthropicClient>('anthropicClient') ??
-          this.deps.anthropic,
-      });
-    const hostProviderId = this.deps.hostProviderId?.() ?? 'anthropic';
-    let provider: LlmProvider;
-    let subAgentModel = effectiveModel;
-    if (hostProviderId === 'anthropic') {
-      provider = liveAnthropicProvider();
-    } else {
-      // #1033 W1 — through the kernel's provider pool when one is wired
-      // (memoised per provider id; the kernel's vault write listener
-      // invalidates the entry on a key change, #1080), else a one-off
-      // resolve as before.
-      const resolved = this.deps.providerPool
-        ? await this.deps.providerPool.get(hostProviderId)
-        : this.deps.hostGetSecret
-          ? await resolveLlmProvider({
-              providerId: hostProviderId,
-              getSecret: this.deps.hostGetSecret,
-            })
-          : undefined;
-      if (resolved === undefined) {
-        // #1033 W1 — no key for the configured non-Anthropic provider. This
-        // used to fall back to the shared Anthropic client SILENTLY, so a
-        // sub-agent on a host configured for, say, Mistral would quietly run
-        // on Anthropic (or throw an unrelated auth error at first call).
-        // Refusing to build it names the actual problem at the point where an
-        // operator can fix it.
-        throw new Error(
-          `dynamic agent '${catalogEntry.plugin.id}': the host LLM provider '${hostProviderId}' has no API key configured — add the key under Providers or switch the orchestrator's llm_provider`,
-        );
-      }
-      provider = resolved;
-      subAgentModel = coerceModelToProvider(effectiveModel, hostProviderId);
-    }
+    // (default Anthropic, via the live vault-armed shared client — OB-61) and
+    // resolve the configured model ref to a concrete id of THAT provider on
+    // every branch (#1079: the Anthropic branch used to send `class:frontier`
+    // raw). The selection lives in `selectSubAgentHost` so it is unit-testable.
+    const {
+      providerId: hostProviderId,
+      provider,
+      model: subAgentModel,
+    } = await selectSubAgentHost(this.deps, {
+      agentId: catalogEntry.plugin.id,
+      effectiveModel,
+      modelSource: preferredModel !== undefined ? 'manifest' : 'SUB_AGENT_MODEL',
+    });
 
     // #309 recursive Shape 3: on the subscription CLI provider the in-process
     // LocalSubAgent cannot run a tool loop (its provider rejects tool-carrying

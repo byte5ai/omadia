@@ -64,11 +64,11 @@ import type { DomainTool } from '@omadia/orchestrator';
 import { MEMORY_TOOL_NAME, turnContext } from '@omadia/orchestrator';
 import { MemoryToolHandler } from '@omadia/memory';
 import {
-  coerceModelToProvider,
   isClassRef,
   modelForClass,
   resolveLlmProvider,
   resolveModelRef,
+  resolveModelRefStrict,
   type ModelClass,
   type ProviderId,
 } from '@omadia/llm-provider';
@@ -88,6 +88,7 @@ import {
   writeStoredTokens,
 } from '../plugins/oauth/tokenStore.js';
 import { createLlmProviderFromNeutral } from './anthropicLlmProvider.js';
+import { builtinClassDefault } from './builtinLlmProviders.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
 import type { NotificationRouter } from './notificationRouter.js';
@@ -1734,11 +1735,16 @@ function createLlmAccessor(
         );
       }
 
-      // Coerce the requested model to the serving provider: a `class:*` ref or a
-      // cross-vendor id maps to that provider's same-class model; a concrete id
-      // the provider already owns is returned unchanged (Anthropic default is
-      // idempotent — byte-identical to before). Unknown/custom ids pass through.
-      const model = coerceModelToProvider(req.model, activeProvider);
+      // Coerce the requested model to the serving provider: a cross-vendor id
+      // maps to that provider's same-class model; a concrete id the provider
+      // already owns is returned unchanged (Anthropic default is idempotent —
+      // byte-identical to before). Unknown/custom ids pass through. A `class:*`
+      // ref goes through the orchestrator's resolver (nearest class, then the
+      // pinned seed) and is NEVER delivered raw — it throws instead (#1079).
+      const model = resolveModelRefStrict(req.model, activeProvider, {
+        configKey: `model requested by plugin '${callerAgentId}'`,
+        pinnedClassDefault: builtinClassDefault,
+      });
 
       callsUsed += 1;
       return provider.complete({

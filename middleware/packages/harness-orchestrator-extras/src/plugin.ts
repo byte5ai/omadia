@@ -7,7 +7,10 @@ import type {
 import {
   coerceModelToProvider,
   createLlmProviderPool,
+  isClassRef,
   resolveModelRef,
+  resolveModelRefStrict,
+  UnresolvedModelRefError,
 } from '@omadia/llm-provider';
 import type { PluginContext } from '@omadia/plugin-api';
 import type { EmbeddingClient } from '@omadia/embeddings';
@@ -271,14 +274,26 @@ export async function activate(
   // Coercion is silent by design for the DEFAULT ref, and loud for anything
   // else: an operator who typed a model into `fact_extractor_model` deserves
   // to know it was rewritten. The second log covers the failure mode
-  // `coerceModelToProvider` cannot fix — when the target provider has no model
-  // of that class it returns the ref UNCHANGED, which then reaches a backend
-  // that never heard of it and fails at first background call, not at boot.
+  // coercion cannot fix — when the target provider has no model of that class
+  // a concrete id comes back UNCHANGED, which then reaches a backend that never
+  // heard of it and fails at first background call, not at boot. A CLASS ref
+  // goes through the orchestrator's resolver and is never returned raw (#1079):
+  // if even that yields nothing, the (concrete) default is used instead.
   const coerceModel = (configKey: string, fallbackRef: string): string => {
     const configured = (ctx.config.get<string>(configKey) ?? '').trim();
     const requested = configured || fallbackRef;
-    const coerced = coerceModelToProvider(requested, providerId as ProviderId);
-    if (configured && coerced !== requested) {
+    let coerced: string;
+    try {
+      coerced = resolveModelRefStrict(requested, providerId, { configKey });
+    } catch (err) {
+      if (!(err instanceof UnresolvedModelRefError)) throw err;
+      coerced = coerceModelToProvider(fallbackRef, providerId as ProviderId);
+      ctx.log(
+        `[harness-orchestrator-extras] WARNING ${err.message} — falling back to '${coerced}'`,
+      );
+      return coerced;
+    }
+    if (configured && !isClassRef(requested) && coerced !== requested) {
       ctx.log(
         `[harness-orchestrator-extras] ${configKey}='${requested}' is not served by provider '${providerId}' — using its same-class model '${coerced}'`,
       );
