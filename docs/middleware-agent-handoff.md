@@ -2727,10 +2727,13 @@ benutzt hat.
   unauthentifizierten `''`-Client, bis sie neu gebaut werden (Neustart oder
   Rebuild). Nicht-Anthropic-Agenten, deren Aktivierung mangels Key
   fehlgeschlagen ist, werden nie erneut aktiviert. Umgekehrt nutzen gebaute
-  Sub-Agenten einen gelöschten Key weiter. Erreichbar sind sie nur über den
-  Orchestrator, der ohne Key `chatAgent@1` nicht mehr published — das begrenzt
-  den Schaden, behebt ihn aber nicht. Reparatur: Provider pro Aufruf spät
-  auflösen oder die dynamischen Agenten bei einem Credential-Write neu bauen.
+  Sub-Agenten einen gelöschten Key weiter. Der Chat-Pfad ist zu, weil der
+  Orchestrator ohne Key `chatAgent@1` nicht mehr published; Plugins mit
+  `permissions.subAgents.calls`-Grant erreichen sie aber weiterhin über
+  `ctx.subAgent.ask` (`src/platform/pluginContext.ts`, Service
+  `subAgent:<id>`). Das begrenzt den Schaden, behebt ihn aber nicht.
+  Reparatur: Provider pro Aufruf spät auflösen oder die dynamischen Agenten
+  bei einem Credential-Write neu bauen.
 - Auf env-geseedeten Installationen nutzen Host-Consumer nach dem Löschen des
   Vault-Keys weiter `ANTHROPIC_API_KEY` (derselbe Key). Der Refresher sollte das
   zumindest als Warnung loggen.
