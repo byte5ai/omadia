@@ -1472,6 +1472,11 @@
     "emptyStatePrompt": "Ask the orchestrator — the answer streams live including tool calls.",
     "emptyStateShortcut": "Shortcut: ↵ to send · ⇧↵ for a new line · new tab via „+ New chat\"",
     "composerSendHint": "↵ to send · ⇧↵ for a new line",
+    "proactiveRoutineBadge": "Scheduled routine · {name}",
+    "proactiveBadge": "Scheduled message",
+    "proactiveDroppedAttachments": "{count, plural, one {# attachment} other {# attachments}} of this routine's output cannot be shown in the web chat.",
+    "proactiveDroppedInteractive": "{kind, select, choice {A choice card} slots {A time-slot picker} topic {A topic question} routine_list {A routine list} mcp_input {An input form} other {An interactive element}} of this routine's output cannot be shown in the web chat.",
+    "resetPartialNotice": "Cleared in this browser only — the server could not be reached and may still hold this conversation, at least its scheduled routine messages, which may reappear here. Restart the chat again later to clear it on the server too.",
     "streamingSuffix": "· streaming…",
     "toolTraceHeading": "Tool trace ({count})",
     "subCallCount": "{count, plural, one {# sub-call} other {# sub-calls}}",
@@ -5707,7 +5712,9 @@
       "triggerButton": "Now",
       "triggerTitle": "Trigger the routine manually now — fires an agent run and delivers the result to the channel.",
       "triggerNotice": "Started — the result will appear in the channel in ~30 seconds.",
+      "triggerNoticeWeb": "Started — the result is added to the chat this routine was created in and shows up there the next time you open or return to that chat.",
       "triggerChatUnavailable": "No LLM API key configured — add it in Admin → Settings, then trigger again.",
+      "triggerNotActive": "This routine is paused — resume it first, then trigger it. If it was paused because its chat is gone: when that chat still exists in your browser, open it first; otherwise delete the routine and create it again from a chat.",
       "deleteConfirm": "Delete routine ''{name}''? This cannot be undone."
     },
     "templateEditor": {

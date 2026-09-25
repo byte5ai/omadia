@@ -15,9 +15,18 @@ import { LLM_SETUP_HINT } from '../llmSetupHint.js';
  * routes are:
  *
  *   GET    /api/chat/sessions            list summaries (newest first)
- *   GET    /api/chat/sessions/:id        full session document
- *   PUT    /api/chat/sessions/:id        upsert — body must match id
+ *   GET    /api/chat/sessions/:id        full session document (incl. the
+ *                                        server-owned `resetAt`, #1071)
+ *   PUT    /api/chat/sessions/:id        upsert — body must match id. MERGES
+ *                                        (#1071): keeps server-written
+ *                                        proactive messages the body lacks and
+ *                                        answers `{ ok, session }` with the
+ *                                        stored document. An empty `messages`
+ *                                        array is NOT a clear.
  *   DELETE /api/chat/sessions/:id        drop the file
+ *   POST   /api/chat/sessions/:id/reset  the explicit clear: drops turns AND
+ *                                        routine deliveries, stamps `resetAt`
+ *   POST   /api/chat/sessions/:id/re-snapshot  drop the pinned Agent snapshot
  *
  * Gated by `requireAuth` at mount time (see middleware/src/index.ts) —
  * Sessions können PII / Tool-Outputs / Code-Snippets enthalten.
@@ -75,6 +84,18 @@ const MessageSchema = z.object({
         .enum(['entered', 'switched', 'continued', 'left', 'unavailable', 'refused'])
         .optional(),
       refusedReason: z.enum(['no-scope', 'shared-scope', 'synthetic-scope']).optional(),
+    })
+    .optional(),
+  // #1071 — marker of a server-written routine delivery. Accepted so a
+  // client round-trip does not strip it (same trap as #445 above); the store
+  // trusts it only when the server's own copy carries it.
+  proactive: z
+    .object({
+      deliveredAt: z.number(),
+      routineId: z.string().optional(),
+      routineName: z.string().max(200).optional(),
+      droppedAttachments: z.number().int().nonnegative().optional(),
+      droppedInteractive: z.string().max(100).optional(),
     })
     .optional(),
 });
@@ -163,8 +184,11 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     const store = resolveStore(res);
     if (!store) return;
     try {
-      await store.save(parsed.data);
-      res.json({ ok: true, session: parsed.data });
+      // #1071 — merge, not overwrite: the client PUTs the whole document from
+      // a copy hydrated at page load, which would otherwise delete a routine
+      // delivery the server appended since.
+      const session = await store.saveFromClient(parsed.data);
+      res.json({ ok: true, session });
     } catch (err) {
       if (err instanceof InvalidSessionIdError) {
         res.status(400).json({ error: 'invalid_id' });

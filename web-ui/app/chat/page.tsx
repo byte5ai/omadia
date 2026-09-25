@@ -36,9 +36,10 @@ import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
 import { TurnIncompleteNotice } from '../_components/chat/TurnIncompleteNotice';
 import { Markdown } from '../_components/Markdown';
-import { resetChatSession, steerActiveTurn } from '../_lib/api';
+import { steerActiveTurn } from '../_lib/api';
 import { isSendKey } from '../_lib/composerKeys';
 import { parseTurnIncomplete } from '../_lib/turnIncomplete';
+import { hasNoTurns } from '../_lib/chatProactiveMerge';
 import {
   deriveTitle,
   newSessionId,
@@ -107,6 +108,9 @@ const MOCK_KG_WALK: KgWalkPayload = {
 };
 
 const EMPTY_SUBSCRIBE = (): (() => void) => () => undefined;
+
+/** How long the "reset reached this browser only" notice stays (#1071). */
+const RESET_PARTIAL_NOTICE_MS = 10_000;
 
 function useKgMockEnabled(): boolean {
   // useSyncExternalStore avoids a setState-in-effect: the client snapshot reads
@@ -193,8 +197,19 @@ export default function ChatPage(): React.ReactElement {
     setActive,
     clearMessages,
     mutateById,
+    refreshProactive,
   } = useChatSessionsCtx();
   const streamStore = useStreamStore();
+
+  // #1071 — a scheduled routine created from a chat delivers into that chat on
+  // the server. Sessions hydrate once per full page load (the provider lives
+  // in the root layout), so re-read the chat the user is looking at whenever
+  // this page mounts, hydration finishes or the active chat changes —
+  // otherwise navigating here from /routines would show nothing new.
+  useEffect(() => {
+    if (hydrating || !activeId) return;
+    refreshProactive(activeId);
+  }, [hydrating, activeId, refreshProactive]);
   const sending = streamStore.isActive(activeId);
   const kgMockEnabled = useKgMockEnabled();
   const [kgWalkEnabled, setKgWalkEnabled] = useKgWalkEnabled();
@@ -236,6 +251,9 @@ export default function ChatPage(): React.ReactElement {
   const [input, setInput] = useState('');
   const [resetPending, setResetPending] = useState(false);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  /** #1071 — the last reset cleared this browser only; the server kept its
+   *  routine deliveries, which come back on the next re-read. */
+  const [resetPartial, setResetPartial] = useState(false);
   /** Mid-turn steering — true while a `/chat/steer` request is in flight. */
   const [steerBusy, setSteerBusy] = useState(false);
   /** Transient composer notice after a steer attempt: 'sent' when it was
@@ -254,6 +272,7 @@ export default function ChatPage(): React.ReactElement {
   const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [
     activeSession.messages,
   ]);
+  const activeHasNoTurns = hasNoTurns(activeSession.messages);
 
   // Slice 4c — clear the auto-promoted-MK marker on a message after the
   // user Discards it. The manual save-as-memory button then comes back so
@@ -298,7 +317,7 @@ export default function ChatPage(): React.ReactElement {
       };
 
       mutateById(targetSessionId, (session) => {
-        const isFirst = session.messages.length === 0;
+        const isFirst = hasNoTurns(session.messages);
         // Strip pendingUserChoice, pendingMcpInput AND followUpOptions from
         // older assistant messages so the button rows / input forms disappear as
         // soon as the user commits to a choice or types a fresh message. Lives
@@ -323,7 +342,8 @@ export default function ChatPage(): React.ReactElement {
       // longer kills the stream.
       // Phase A — only the FIRST turn ships agentSlug; subsequent turns
       // use the session-pinned snapshot on the server side.
-      const isFirstTurn = activeSession.messages.length === 0;
+      // #1071 — a cleared chat holding only routine deliveries counts as empty.
+      const isFirstTurn = activeHasNoTurns;
       streamStore.startTurn({
         sessionId: targetSessionId,
         pendingMessageId: pendingId,
@@ -341,7 +361,7 @@ export default function ChatPage(): React.ReactElement {
       activeId,
       mutateById,
       streamStore,
-      activeSession.messages.length,
+      activeHasNoTurns,
       selectedAgentSlug,
       scrollToBottom,
     ],
@@ -393,6 +413,17 @@ export default function ChatPage(): React.ReactElement {
     };
   }, [steerNotice]);
 
+  // …and the partial-reset notice once it has been read.
+  useEffect(() => {
+    if (!resetPartial) return;
+    const timer = setTimeout(() => {
+      setResetPartial(false);
+    }, RESET_PARTIAL_NOTICE_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [resetPartial]);
+
   // OM-21/37: plain Enter sends, matching every other composer in the app.
   // ⌘/Ctrl+Enter stays an accepted alias (it was the only documented shortcut
   // here), Shift+Enter falls through to the browser's own newline, and an
@@ -421,18 +452,13 @@ export default function ChatPage(): React.ReactElement {
       // runner would happily keep writing deltas into a freshly cleared
       // message list.
       streamStore.abort(activeId);
-      // Backend rotates the conversation pointer so the agent starts a new
-      // turn-chain. KG / Memory are NOT touched. If the backend isn't
-      // reachable we still clear locally — the user wanted a fresh slate.
-      try {
-        await resetChatSession(activeId);
-      } catch (err) {
-        console.warn(
-          '[chat-reset] backend reset failed, clearing locally only:',
-          err instanceof Error ? err.message : err,
-        );
-      }
-      await clearMessages(activeId);
+      // `clearMessages` resets the backend copy too (`POST …/reset`, #1071 —
+      // the only explicit clear): the conversation pointer rotates so the
+      // agent starts a new turn-chain; KG / Memory are NOT touched. If the
+      // backend isn't reachable it still clears locally — the user wanted a
+      // fresh slate — and says that routine deliveries may come back.
+      const outcome = await clearMessages(activeId);
+      setResetPartial(outcome === 'partial');
     } finally {
       setResetPending(false);
       inputRef.current?.focus();
@@ -684,6 +710,11 @@ export default function ChatPage(): React.ReactElement {
               )}
             </div>
           )}
+          {resetPartial && (
+            <p role="status" className="text-[11px] text-[color:var(--warning)]">
+              {t('resetPartialNotice')}
+            </p>
+          )}
           {/* §5.3 Spotlight: the composer is the stage — radial accent glow
               behind it, three-stop showcase glow on the focused input. */}
           <div className="lume-spotlight-stage flex items-end gap-2">
@@ -901,8 +932,10 @@ export function MessageRow({
 }): React.ReactElement {
   const t = useTranslations('chat');
   const isUser = message.role === 'user';
+  // #1071 — a routine delivery has no turn duration; a "⏱ 0.0s" would read
+  // as a measurement.
   const elapsed =
-    message.finishedAt !== undefined
+    message.finishedAt !== undefined && message.proactive === undefined
       ? ((message.finishedAt - message.startedAt) / 1000).toFixed(1)
       : null;
   // Show the Theme E0+E1 liveness row whenever the turn is in flight
@@ -989,6 +1022,7 @@ export function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
+            {message.proactive && <ProactiveBadge proactive={message.proactive} />}
             {message.routing && <TriageBadge routing={message.routing} />}
             {message.persona && <PersonaBadge persona={message.persona} />}
             {message.recalledContext && (
@@ -1412,6 +1446,44 @@ function PersonaBadge({
       >
         {label}
       </span>
+    </div>
+  );
+}
+
+/**
+ * #1071 — marks an assistant message the server delivered on a schedule (a
+ * routine created from this chat), so it is not mistaken for an answer to the
+ * user's last question.
+ */
+function ProactiveBadge({
+  proactive,
+}: {
+  proactive: NonNullable<Message['proactive']>;
+}): React.ReactElement {
+  const t = useTranslations('chat');
+  const label = proactive.routineName
+    ? t('proactiveRoutineBadge', { name: proactive.routineName })
+    : t('proactiveBadge');
+  // What the text-only web delivery had to drop, named from the marker in
+  // the reader's language (the server stores counts, not prose).
+  const attachments = proactive.droppedAttachments ?? 0;
+  const dropped: string[] = [];
+  if (attachments > 0) {
+    dropped.push(t('proactiveDroppedAttachments', { count: attachments }));
+  }
+  if (proactive.droppedInteractive !== undefined) {
+    dropped.push(t('proactiveDroppedInteractive', { kind: proactive.droppedInteractive }));
+  }
+  return (
+    <div className="mb-2 flex flex-col items-start gap-1 text-[11px]">
+      <span className="inline-flex items-center rounded-full bg-[color:var(--accent)]/10 px-2 py-0.5 font-medium text-[color:var(--accent)] ring-1 ring-[color:var(--accent)]">
+        {label}
+      </span>
+      {dropped.map((note) => (
+        <span key={note} className="text-[color:var(--fg-muted)]">
+          {note}
+        </span>
+      ))}
     </div>
   );
 }

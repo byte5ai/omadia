@@ -97,11 +97,15 @@ function fakeSession(req: Request, _res: Response, next: NextFunction): void {
   next();
 }
 
-async function post(url: string, headers: Record<string, string> = {}): Promise<number> {
+async function post(
+  url: string,
+  headers: Record<string, string> = {},
+  body: Record<string, unknown> = {},
+): Promise<number> {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify({ message: 'liste meine routinen' }),
+    body: JSON.stringify({ message: 'liste meine routinen', ...body }),
   });
   // Drain the stream so the handler finishes before the assertions run.
   await res.text();
@@ -147,6 +151,38 @@ describe('OM-82 — routines principal on the HTTP chat path', () => {
       // Cold-start outreach to other people needs a channel governance source
       // the web chat does not have, so it stays closed.
       assert.equal(seen.canTargetOthers, false);
+    });
+
+    // #1071 — the web sender delivers into the chat named by `sessionId`, so
+    // the handle must carry it exactly when it IS the turn's scope.
+    it(`${route}: the delivery handle names the chat tab the turn ran in`, async () => {
+      toolSawContext = undefined;
+      sessionUser = USER_ID;
+
+      assert.equal(await post(`${baseUrl}${route}`, {}, { sessionId: 'tab-1' }), 200);
+      assert.deepEqual(seenContext()?.conversationRef, {
+        kind: 'http-chat',
+        sessionScope: 'tab-1',
+        sessionId: 'tab-1',
+      });
+    });
+
+    it(`${route}: no chat id in the handle under a debug scope or without a tab`, async () => {
+      sessionUser = USER_ID;
+
+      toolSawContext = undefined;
+      await post(`${baseUrl}${route}`, {}, { scope: 'dbg', sessionId: 'tab-1' });
+      assert.deepEqual(seenContext()?.conversationRef, {
+        kind: 'http-chat',
+        sessionScope: 'http-dbg',
+      });
+
+      toolSawContext = undefined;
+      await post(`${baseUrl}${route}`);
+      assert.deepEqual(seenContext()?.conversationRef, {
+        kind: 'http-chat',
+        sessionScope: 'http-default',
+      });
     });
 
     it(`${route}: installs no context for an anonymous request`, async () => {

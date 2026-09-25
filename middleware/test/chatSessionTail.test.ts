@@ -97,3 +97,30 @@ test('returns nothing for an empty session or a zero window', () => {
     [],
   );
 });
+
+// #1071 — a routine's proactive delivery is not an answer to anything the user
+// asked. Pairing it would replay a routine report to the model as the answer
+// to whatever question happened to be unanswered when it landed.
+const PROACTIVE = { proactive: { deliveredAt: 1, routineId: 'r1' } };
+
+test('never pairs a proactive routine delivery with an unanswered user message', () => {
+  const turns = chatSessionTailTurns(
+    [msg('user', 'offene Frage'), msg('assistant', 'Routine-Report', PROACTIVE)],
+    3,
+  );
+
+  assert.deepEqual(turns, []);
+});
+
+test('skips a proactive delivery between a question and its real answer', () => {
+  const turns = chatSessionTailTurns(
+    [
+      msg('user', 'Frage'),
+      msg('assistant', 'Routine-Report', PROACTIVE),
+      msg('assistant', 'echte Antwort'),
+    ],
+    3,
+  );
+
+  assert.deepEqual(turns, [{ userMessage: 'Frage', assistantAnswer: 'echte Antwort' }]);
+});

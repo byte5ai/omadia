@@ -460,6 +460,7 @@ import {
   ROUTINE_TURN_OWNER_GUARD_SERVICE_NAME,
   createRoutineTurnOwnerGuard,
   createRoutinesIntegration,
+  createWebChatProactiveSender,
   initRoutines,
   routineTurnContext,
   type RoutinesHandle,
@@ -3019,7 +3020,9 @@ async function main(): Promise<void> {
   // want proactive delivery register their `ProactiveSender` into
   // `routinesHandle.senderRegistry` after this call (Teams: wrap a
   // long-lived `CloudAdapter.continueConversationAsync` via
-  // `createProactiveSender('teams', sendFn)`). The per-turn principal the
+  // `createProactiveSender('teams', sendFn)`). The browser chat's own sender
+  // (`channel: 'web'`, #1071) is passed in below: it appends the routine's
+  // output to the originating chat session. The per-turn principal the
   // `manage_routine` tool needs is installed by the core (#1086) only for
   // turns driven through `CoreApi.handleTurnStream` (in-tree: public API,
   // canvas). An adapter that calls the `chatAgent` capability directly —
@@ -3043,6 +3046,15 @@ async function main(): Promise<void> {
             ? { promptDoc: options.promptDoc }
             : {}),
         }),
+      // #1071 — the browser chat's sender: a routine created from the web
+      // chat delivers into that chat's persisted session. Resolved live so it
+      // survives the LLM-key hot-enable that publishes the store.
+      proactiveSenders: [
+        createWebChatProactiveSender({
+          getStore: getChatSessionStore,
+          warn: (msg) => console.warn(msg),
+        }),
+      ],
       log: (msg) => console.log(msg),
     });
     // Phase 5B: publish the channel-facing surface so dynamic-imported
