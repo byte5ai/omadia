@@ -26,6 +26,12 @@ export interface SessionClaims {
    *  kg-shell-only deployments). Consumers MUST treat absence as "no
    *  cluster yet", never "cookie invalid". */
   omadia_user_id?: string;
+  /** #965 — time of the ORIGINAL authentication, Unix epoch **seconds**
+   *  (OIDC `auth_time` semantics). Unlike `iat` it survives re-minting on
+   *  `POST /api/v1/auth/renew`, which is what lets the renewal chain be
+   *  bounded by an absolute cap. Optional on input: `signSession` stamps
+   *  "now" when absent (every login path); renewal passes the old value on. */
+  auth_time?: number;
 }
 
 /**
@@ -41,19 +47,34 @@ export interface VerifiedSession extends SessionClaims {
   exp: number;
   /** Issued-at — Unix epoch **seconds** (JWT `iat`). */
   iat: number;
+  /** Original authentication time — Unix epoch **seconds**. Tokens minted
+   *  before #965 carry no `auth_time`; for those it falls back to `iat`
+   *  (the moment that pre-renewal token was minted by a real login). */
+  auth_time: number;
 }
 
 /**
  * Sign a session token. Default lifetime is the 4h access window from the
  * plan; callers can override for short-lived side-channel tokens (e.g. the
  * PKCE verifier cookie).
+ *
+ * `expiresIn` follows jose's `setExpirationTime`: a string is a duration
+ * relative to now ('4h', '14400s'), a number is an ABSOLUTE Unix epoch in
+ * seconds — the renewal path uses the latter to clamp `exp` to the
+ * absolute cap.
+ *
+ * `auth_time` is stamped with "now" unless the caller carries one over.
  */
 export async function signSession(
   claims: SessionClaims,
   key: Uint8Array,
-  expiresIn: string = '4h',
+  expiresIn: string | number = '4h',
 ): Promise<string> {
-  return await new SignJWT(claims as unknown as Record<string, unknown>)
+  const payload: SessionClaims = {
+    ...claims,
+    auth_time: claims.auth_time ?? Math.floor(Date.now() / 1000),
+  };
+  return await new SignJWT(payload as unknown as Record<string, unknown>)
     .setProtectedHeader({ alg: ALG })
     .setIssuer(ISSUER)
     .setIssuedAt()
@@ -93,6 +114,14 @@ export async function verifySession(
     payload['omadia_user_id'].length > 0
       ? payload['omadia_user_id']
       : undefined;
+  // #965 — legacy tokens (minted before `auth_time` existed) treat `iat`
+  // as the authentication time: they were minted by a real login, never by
+  // a renewal, so `iat` IS their first-login moment.
+  const authTime =
+    typeof payload['auth_time'] === 'number' &&
+    Number.isFinite(payload['auth_time'])
+      ? payload['auth_time']
+      : iat;
   if (!sub || !email || !role) {
     throw new Error('session token missing required claims');
   }
@@ -105,5 +134,6 @@ export async function verifySession(
     ...(omadiaUserId ? { omadia_user_id: omadiaUserId } : {}),
     exp,
     iat,
+    auth_time: authTime,
   };
 }

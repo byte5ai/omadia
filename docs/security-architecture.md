@@ -191,7 +191,13 @@ working across it:
 - **Foreign tool marking.** `StreamJsonParser` sets `foreign: true` on every
   `tool_use` event whose name is not `mcp__omadia__*`. The built-ins are
   removed at spawn time; if one ever surfaces anyway it can never read like an
-  omadia tool in the trace.
+  omadia tool in the trace. CLI sub-agents (`createCliSubAgent`: the builder
+  and its preview chat, #1072) never forward such a call to their
+  `AskObserver`, because the builder trace cannot mark it; they count it via
+  `recordForeignToolCall` (`builder` / `builder-preview`) or, with no counter
+  wired, log `[security] FOREIGN`. Their `AskOptions` only shape the text of
+  the one post-turn re-prompt and never reach the spawn argv, so they cannot
+  widen the gate.
 - **Turn context across the process hop (#993).** A tool call on this path
   arrives as an HTTP request from the external process, in a fresh async
   context, so `AsyncLocalStorage` values the channel set around `chat()`
@@ -599,6 +605,12 @@ passthrough writes no receipt entry. The shape classifier has **no**
 control-flow exemption — verbs re-classify derived datasets, so one would turn
 `filter` + `select` into a cleartext channel — and `ToolDispatchService`
 still masks a thrown exception's message even when it starts with `Error:`.
+
+### 6d. `agents.privacy_profile` is not a Privacy Shield control (#978)
+
+`agents.privacy_profile` (`'strict' | 'default'`, CHECK since migration `0001`) is written by the operator API (`POST` / `PATCH /api/v1/operator/agents`) and `scripts/agents-apply.ts`, and reported by `GET /api/v1/operator/agents`, `GET /api/v1/operator/agents/enabled`, `POST /api/v1/operator/agents/resolve-channel` and the Agent Builder graph (`agentNode()` in `routes/agentBuilder.ts`; contract field `AgentNode.privacyProfile` in `@omadia/plugin-api`). No runtime path reads it: `AgentRuntimeConfig` has no posture field, `buildForAgent` does not forward the value, and nothing branches on `'strict'`. What masks a turn is the `privacy.redact@1` provider, reached through the late-bound `OrchestratorDeps.privacyGuard` lookup that the registry passes unchanged into every agent's build, plus the tool-name-only exemptions in `privacyInternPolicy.ts`; neither receives the agent's profile. `strict` therefore behaves exactly like `default`, including for the first-boot fallback agent that `registry/onboarding.ts` seeds as `strict`: a `strict` value in the table, the API or the UI is not evidence that an agent's traffic is masked.
+
+Since #978 a change to the value is a metadata `update` (registry row refreshed, live orchestrator kept), not a `rebuild`; the web UI no longer offers a toggle and labels the value "(not enforced)"; migration `0061` records the status as a column comment. Making `strict` enforce anything is a security decision that must update this section: the posture has to reach `AgentRuntimeConfig`, survive the sub-agent boundary (`turnContext.privacyHandle` in `localSubAgent.ts` / `toolDispatchService.ts`), go back into `runtimeChangeReasons` in `applyDiff.ts`, and it changes behaviour for the seeded fallback agent without operator action (open decision: `docs/middleware-agent-handoff.md` §13).
 
 ## 7. Conductor generic webhooks (#437)
 
@@ -1068,6 +1080,78 @@ an empty tenant beside a populated neighbour, and the global lock).
 
 ---
 
+## 10b. Session renewal and its absolute cap (#965)
+
+The admin UI session is a stateless HS512 JWT (`omadia_session`) with a 4h
+window. `POST /api/v1/auth/renew` lets an operator extend it explicitly
+("I'm still here" on the expiry warning) instead of signing in again. A
+renewal chain that never ends would let a stolen cookie live forever, so the
+route is built around a few rules.
+
+**Absolute cap from the original sign-in.** Every token carries an
+`auth_time` claim: the moment of the real login. Renewal re-signs the same
+claims with `auth_time` carried over, so `iat` moves and `auth_time` does
+not. The new `exp` is `min(now + 4h, auth_time + cap)`, and once `now` or
+the current `exp` reaches `auth_time + cap` the route answers 401
+`auth.renew_expired`. The cap is `AUTH_SESSION_MAX_LIFETIME_HOURS` (default
+12, zod-bounded to 4..168 at boot; below the 4h login window it would be
+meaningless). Tokens minted before #965 have no `auth_time`, and
+`verifySession` substitutes `iat`: those tokens came from a real login, so
+`iat` is their first-login moment. A legacy token therefore gets the same cap
+as a new one, never an unbounded one.
+
+**Renewal requires a currently valid session.** The route sits under the
+public `/api/v1/auth/*` prefix (`auth/publicPaths.ts`) because it
+authenticates itself: it calls `evaluateSessionToken`, the same single code
+path `requireAuth` and `ctx.operatorAuth` use, whitelist gate included. An
+expired cookie gets 401 `auth.invalid`. It can only be replaced by a login.
+
+**The principal is re-checked on every renewal, fail closed.**
+
+- The session's provider must still be active in the registry.
+- The `users` row (`provider`, `sub`) must exist and be `active`. This covers
+  local users and Entra users alike (the OIDC callback upserts Entra rows, and
+  admins can disable them).
+- OIDC sessions are re-validated at the IdP through
+  `OidcProvider.revalidateSession`. For Entra that redeems the refresh token
+  kept in the vault (`RefreshStore`), then checks that the new id_token
+  carries the same `oid` and email and that the email is still whitelisted. A
+  400/401 from the token endpoint (`invalid_grant`, disabled account, revoked
+  grant) is a denial: 401 `auth.renew_denied`, and the dead token is
+  forgotten. A network error, 5xx or 429 is an outage: 502
+  `auth.renew_idp_unavailable`. Both refuse the renewal. We fail closed on an
+  outage too, because a sign-in fails during an IdP outage as well, so no
+  path gets worse. An OIDC provider that cannot re-validate is refused.
+
+**Every renewal is audited, and the audit comes first.** One
+`admin_audit` row per renewal (`auth.session_renew`; `actor.id` is the users
+uuid, `before`/`after` carry the old and new `exp` and `auth_time`). The row
+is written before the cookie is set. If the write fails, the error reaches
+Express as a 500 and no renewed cookie leaves the server.
+
+**Logout ends the Entra renewal chain.** `POST /logout` forgets the user's
+Entra refresh token. A cookie copied before the logout then fails the IdP
+re-check (no refresh token on file → denied) instead of renewing itself until
+the cap.
+
+**Residual risks (accepted, documented).**
+
+- Local-password sessions have no server-side revocation store. A cookie
+  copied before logout stays valid for the rest of its window and can be
+  renewed until the cap, as long as the users row stays `active`. Before #965
+  that window was a hard 4h; now it is bounded by the cap. Disabling the user
+  stops the chain at the next renewal attempt.
+- The refresh token is keyed by email. If the same Entra user signs in again
+  after a logout, a still-valid copy of the *old* cookie could redeem the
+  *new* refresh token, bounded by the old cookie's own `auth_time + cap`.
+- Renewal only runs on an explicit click. Activity-based silent renewal is
+  deliberately not implemented.
+
+Tests: `middleware/test/auth/renewRoute.test.ts` (every refusal path, cap,
+legacy `iat` fallback, audit-before-cookie, logout forget),
+`middleware/test/auth/entraProviderRevalidate.test.ts` (denial vs. outage
+classification).
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1105,6 +1189,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `CoreApi.registerWebSocket`. The authenticator rejects before the `101`
       (raw 401/403, fail closed on throw), and the route sets an explicit
       `maxPayload`.
+- [ ] A new path that mints or re-mints the session cookie carries
+      `auth_time` over (never resets it) and respects the absolute cap; a new
+      OIDC provider implements `revalidateSession` or its sessions cannot be
+      renewed (§10b).
 - [ ] A new native tool bound to shared/unscoped state (like memory) is routed
       through the caller's scoped accessor in `ctx.tools.invoke`, or denied
       there (§4, #909).

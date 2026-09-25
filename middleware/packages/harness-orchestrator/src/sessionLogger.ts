@@ -96,12 +96,15 @@ export class SessionLogger {
      */
     private readonly agentSlug?: string,
     /**
-     * #684 — per-process tallies of run-trace outcomes. Public so an operator
+     * #684 — run-trace outcome tallies (in production one instance shared by
+     * every logger the orchestrator plugin builds, #1082). Public so an operator
      * surface can read the drop counts without this class growing a reporting
      * responsibility; injectable so two tests in one process cannot read each
-     * other's turns. Only ever written for a turn that actually CARRIED a
-     * trace: a turn with no `runTrace` is not a drop, it is a turn the
-     * orchestrator collected nothing for.
+     * other's turns. The trace OUTCOMES are only ever written for a turn that
+     * actually CARRIED a trace: a turn with no `runTrace` is not a drop, it is
+     * a turn the orchestrator collected nothing for. The #1082 tail-only
+     * counter is the exception on purpose — it counts turns the capture
+     * filter wrote for continuity only, whether or not they carried a trace.
      */
     readonly runTraceStats: RunTraceOutcomeStats = new RunTraceOutcomeStats(),
   ) {}
@@ -192,7 +195,7 @@ export class SessionLogger {
     if (this.graph) {
       const turnExternalId = turnNodeId(gScope, iso);
       try {
-        await this.graph.ingestTurn({
+        const ingested = await this.graph.ingestTurn({
           scope: gScope,
           time: iso,
           userMessage: entry.userMessage,
@@ -203,6 +206,13 @@ export class SessionLogger {
           ...(entry.userId ? { userId: entry.userId } : {}),
           ...(entry.speaker !== undefined ? { speaker: entry.speaker } : {}),
         });
+        // #1082 — the capture filter wrote this turn for session continuity
+        // only. Counted per TURN, with or without a trace: the number of
+        // filtered turns is the metric, not a trace outcome. Optional chaining
+        // because a graph double may resolve nothing.
+        if (ingested?.tailOnly === true) {
+          this.runTraceStats.recordCaptureTailOnly();
+        }
       } catch (err) {
         console.error(
           '[session-log] graph ingest failed:',
@@ -224,11 +234,13 @@ export class SessionLogger {
           });
           recordRunTraceOutcome(this.runTraceStats, 'recorded');
         } catch (err) {
-          // #684 — this is the drop the issue was filed about: `ingestRun`
-          // throws when no User-Cluster node exists for the user, which is the
-          // NORMAL state for every channel except the browser-login flow. The
-          // turn still succeeded and the transcript still holds it; only the
-          // trace is missing. Recorded as telemetry loss, not as a turn error.
+          // #684 / #1082 — `ingestRun` can throw for more than one reason: a
+          // node it links to is missing (the user's User-Cluster, #684, or the
+          // Turn itself), or the pool, connection or an insert failed. The
+          // cause is in the error message, and the drop text defers to it
+          // rather than guessing. The turn still succeeded and the transcript still
+          // holds it; only the trace is missing. Recorded as telemetry loss,
+          // not as a turn error.
           recordRunTraceOutcome(this.runTraceStats, 'run-ingest-failed', err);
         }
       }

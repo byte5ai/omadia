@@ -11,8 +11,11 @@ every tool result:
    a server-side **Verb API** (`v4_*` tools) against the real rows.
 4. The final answer is **materialized from ground truth** via
    `v4_render_answer`; real values are resolved behind the boundary.
-5. Each turn emits a PII-free **PrivacyReceipt** that the channel renderers
-   (Teams Adaptive Card, web inline disclosure) surface to the user.
+5. Each turn in which the shield acted (interned a dataset, recorded a bypass
+   or a tool's structured payload, or masked the prompt) emits a PII-free
+   **PrivacyReceipt** that the channel renderers (Teams Adaptive Card, web
+   inline disclosure) surface to the user. A turn without shield activity
+   emits none (#1081).
 
 **Control-flow results are not interned (#1105, #1097).** A tool result that
 is control flow rather than data — the orchestrator's `Error:`-prefix
