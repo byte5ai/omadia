@@ -3871,7 +3871,10 @@
       "help": "How long a single turn may run on the subscription path. Leave empty for the {default}-second default, or the value from OMADIA_CLI_SPAWN_TIMEOUT_MS.",
       "save": "Save",
       "saved": "Saved",
-      "invalid": "Enter a whole number between {min} and {max}."
+      "invalid": "Enter a whole number between {min} and {max}.",
+      "loadFailed": "Couldn't load the current time limit. Saving is disabled until it loads.",
+      "saveFailed": "Couldn't save the time limit.",
+      "reload": "Load again"
     }
   },
   "createIssue": {
