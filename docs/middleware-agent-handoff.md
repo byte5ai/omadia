@@ -1216,20 +1216,31 @@ verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
 |---|---|
 | `GET  /` | Erkannte CLIs (installiert / angemeldet), `?refresh=1` bustet den Cache |
 | `POST /:id/login/start` | Spawnt `claude auth login --claudeai`; Antwort `{ sessionId, verificationUrl, codeEntry, status }` |
-| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|invalid\|expired\|error, account?, error? }` |
-| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin (nur ältere CLIs) |
+| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|error, account?, error? }` — `invalid` ist seit #1084 nur noch das Ergebnis eines `login/code`-Versuchs, kein Session-Status |
+| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin — wann immer die CLI auf einen Code wartet, auch als Fallback aus dem Polling-Modus; ist die Session schon `authorized`/`error` (Callback fertig, Prozess gescheitert), meldet es genau das statt „läuft nicht mehr" |
 | `POST /:id/login/cancel` | Verwirft die aktive Login-Session |
 | `POST /:id/logout` | `claude auth logout` + Cache-Bust |
 
-**Zwei CLI-Generationen, ein Flow.** Ältere CLIs (≤ 2.1.187) warten an
-`Paste code here >`; die UI zeigt das Code-Feld. Neuere (≥ 2.1.246) schließen
-den Login per localhost-Callback ab und beenden sich mit Exit 0, ohne Code.
-`startCliLogin` klassifiziert die Startausgabe (`Waiting for browser
-authorization…` / `If the browser didn't open, visit:` vs. `Paste code here`)
-und liefert `codeEntry`; die 2.1.259-Bundle druckt beides, dann gilt Callback
-mit optionalem Code (`codeEntry: false`). Der Exit-Handler liest den Exit-Code:
-0 → Detection bestätigt → `authorized`; ≠ 0 → `error` mit Output-Tail. Die UI
-pollt `login/status` in beiden Fällen.
+**Zwei CLI-Generationen, ein Flow (#1084).** Die im Image gebündelte CLI
+(2.1.187) druckt `Opening browser to sign in…` und `If the browser didn't open,
+visit: …` (URL mit `code=true` und platform.claude.com-Callback) und wartet dann
+ausschließlich an `Paste code here if prompted >` auf stdin. Neuere CLIs
+(≥ 2.1.246) können den Login per localhost-Callback abschließen und sich mit
+Exit 0 beenden, drucken denselben Paste-Prompt aber als Fallback mit. Die
+Browser-Zeilen kommen also in beiden Generationen vor und tragen kein Signal:
+**der Paste-Prompt entscheidet allein.** `startCliLogin` wartet bis zu
+`CODE_PROMPT_PROBE_MS` auf den Prompt (bricht nicht bei der ersten
+Browser-Zeile ab, der Prompt kann in einem späteren stdout-Chunk kommen) und
+liefert `codeEntry = true`, sobald er da ist — auch für 2.1.259. Nur ohne Prompt
+kommt `codeEntry: false`; dann zeigt die UI den Polling-Modus, **immer mit einem
+sichtbaren Fallback-Code-Feld**. Die UI pollt `login/status` in beiden Modi, ein
+per Callback abgeschlossener Login löst also auch im Code-Modus auf. Endet der
+Poll terminal (Timeout, `idle`, `expired`, `error`), zeigt die UI „Erneut
+versuchen" statt eines toten Code-Felds. Ein falscher Code liefert dem Aufrufer
+`invalid`, lässt die Session aber `pending` — sonst verweigert
+`markAuthorized` den korrekten zweiten Versuch und der Post-Login-Hook feuert
+nie. Der Exit-Handler liest den Exit-Code: 0 → Detection bestätigt →
+`authorized`; ≠ 0 → `error` mit Output-Tail.
 
 **Post-Login-Hook (OM-79).** `cliAuthService.setCliLoginAuthorizedHook(fn)`
 feuert genau einmal pro Session auf dem Übergang pending → authorized
@@ -1836,6 +1847,41 @@ rendern hätte OM-84s falsches OK nur gegen ein ebenso nutzloses falsches WARN
 getauscht. Tests: `test/orchestratorExtrasProviderResolution.test.ts`,
 `test/adminEmbeddingProviderRoute.test.ts`, `web-ui/app/__tests__/page.test.tsx`.
 
+### Provider-Pool-Invalidierung bei Credential-Änderung (#1080)
+
+Der Kernel-`llmProviderPool` memoisiert pro Provider-Id, auch ein negatives
+„kein Key". Deshalb hängt er an einem kernel-internen Write-Observer der
+konkreten Vaults (`FileSecretVault.onWrite` / `InMemorySecretVault.onWrite`,
+Typen in `src/secrets/vaultWriteEvents.ts`, bewusst **nicht** auf dem
+`SecretVault`-Interface). Der Listener
+(`src/platform/providerPoolInvalidation.ts`) reagiert nur auf den Scope
+`@omadia/orchestrator`:
+
+- `provider:<id>/api_key` und das Legacy-`anthropic_api_key` →
+  `invalidate(id)` + `health.markHealthy(id)`, denn ein neuer Key ist ein
+  neues Credential und erbt keinen Breaker-Cooldown.
+- `provider:<id>/oauth_access_token` → nur `invalidate(id)`, weil die
+  stündliche Rotation dasselbe Credential ist.
+- `verified_at` und die übrigen OAuth-Leaves werden ignoriert.
+- `purge` → `invalidateAll()` plus alle Breaker zurück.
+
+Der Listener läuft, bevor der Write-Promise settled, also vor jedem
+Reactivate, egal über welchen Pfad geschrieben wurde. Zusätzlich invalidieren
+`registerProviderFromPlugin`/`unregisterProviderFromPlugin` die Id, weil der
+Descriptor `keyless`/`oauth`/`baseURL`/Wire-Format bestimmt. Der Pool wird
+dafür vor der Provider-Plugin-Boot-Schleife erzeugt.
+
+Der geteilte `anthropicClient`/`llm` läuft über
+`src/platform/sharedAnthropicClientRefresher.ts` (serialisiert, getriggert von
+`reactivateAgent` **und** einem Vault-Listener). Ein entfernter Vault-Key fällt
+auf `ANTHROPIC_API_KEY` zurück, sonst auf einen unauthentifizierten
+`''`-Client. Auf Installationen, deren Vault-Key beim ersten Boot aus
+`ANTHROPIC_API_KEY` geseedet wurde (`src/plugins/bootstrap.ts`), ist das
+derselbe Key: Host-Consumer (Plan-Runner-Gate, Teams, Builder) nutzen ihn nach
+dem Löschen weiter, nur der Orchestrator verweigert. Bereits gebaute
+dynamische Sub-Agenten behalten ihren Provider bis zum nächsten Rebuild — siehe
+§13 „Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild".
+
 ### Embedding-Provider-Reaktivierung (Beta-Runde 5, OM-97/98/99)
 
 **`POST /api/v1/admin/embedding-provider/reactivate`** (Auth wie der Rest des
@@ -1886,6 +1932,58 @@ Tests: `test/adminEmbeddingProviderReactivate.test.ts` (Route inkl.
 Fehlerpfade), `test/embeddingColumnMigrationGuard.test.ts` (Gate-Hälfte:
 Permission, Master-Switch `auto_migrate_vector_columns`, `requireEmpty`),
 `web-ui/app/admin/embedding-provider/__tests__/page.test.tsx` (UI).
+
+### Session-Verlängerung „Ich bin noch da“ (`POST /api/v1/auth/renew`, #965)
+
+Die Admin-UI-Sitzung ist ein zustandsloses HS512-JWT mit 4h-Fenster
+(`SESSION_WINDOW_S` in `auth/sessionCookie.ts`). Bisher war nach 4h
+zwingend ein neuer Login fällig; die Warnkarte im `SessionWatcher` bot nur
+„Jetzt neu anmelden“. Jetzt verlängert ein Klick auf „Ich bin noch da“ die
+Sitzung ohne Navigation.
+
+- **Claim `auth_time`** (`auth/sessionJwt.ts`): Zeitpunkt der
+  *ursprünglichen* Anmeldung, überlebt jedes Re-Minting (anders als `iat`).
+  `signSession` stempelt ihn beim Login; `verifySession` fällt bei alten
+  Tokens ohne den Claim auf `iat` zurück.
+- **Route** (`routes/authRenew.ts`, gemountet im Auth-Router). Reihenfolge,
+  jeder Schritt fail-closed:
+  1. `evaluateSessionToken` wie `requireAuth` (Cookie gültig, Whitelist):
+     401 `auth.missing` / `auth.invalid`, 403 `auth.not_whitelisted`.
+     Eine abgelaufene Sitzung ist nicht verlängerbar, nur ersetzbar.
+  2. Absolute Obergrenze: `now >= auth_time + cap` bzw. `exp` liegt schon auf
+     der Grenze → 401 `auth.renew_expired`.
+  3. Provider noch aktiv, `users`-Zeile vorhanden und `active` → sonst 401
+     `auth.renew_denied`. Gilt für lokale und Entra-Zeilen.
+  4. OIDC: `OidcProvider.revalidateSession` (Entra: Refresh-Token einlösen,
+     `oid`/E-Mail/Whitelist prüfen, rotierten Token speichern). `denied` →
+     401 `auth.renew_denied`, `unavailable` (Netz, 5xx, 429) → 502
+     `auth.renew_idp_unavailable`. Ein OIDC-Provider ohne die Methode wird
+     abgelehnt.
+  5. Audit-Zeile `auth.session_renew` (`actor.id` = users-UUID, #775),
+     **vor** dem Cookie: scheitert der Audit-Write, gibt es 500 und kein
+     neues Cookie.
+  6. Gleiche Claims neu signiert, `exp = min(now + 4h, auth_time + cap)`.
+     Antwort `{ expires_at, server_now, renewable_until }`.
+- Ohne `renewal`-Deps im `AuthDeps` (Test-Harnesses) antwortet `/renew` mit
+  503 `auth.renew_unavailable`.
+- **`GET /me`** liefert zusätzlich `renewable_until` (`auth_time + cap`,
+  `null` ohne Renewal). Die UI zeigt damit im letzten Fenster vor der Grenze
+  direkt „Neu anmelden“ statt eines Klicks, der sicher abgelehnt wird.
+- **`POST /logout`** vergisst bei Entra-Sitzungen den Refresh-Token
+  (`RefreshStore.forget`), damit ein vor dem Logout kopiertes Cookie sich
+  nicht weiter über den IdP verlängern kann.
+- **UI** (`web-ui/app/_components/SessionWatcher.tsx`, `renewSession()` in
+  `_lib/api.ts`): Erfolg setzt die Phase von `warning` zurück auf `normal`
+  und plant die Timer neu. Ein Heartbeat, der vor der Verlängerung losging,
+  darf die Ablaufzeit nicht wieder verkürzen (höchstes gesehenes `exp`
+  gewinnt). Abgelehnt → „Neu anmelden“, Fehler → „Erneut versuchen“. Das
+  Ablauf-Overlay verlangt weiterhin einen echten Login.
+
+Obergrenze: `AUTH_SESSION_MAX_LIFETIME_HOURS` (§10). Sicherheitsbegründung
+und Restrisiken: `docs/security-architecture.md` → „Session renewal“.
+
+Tests: `test/auth/renewRoute.test.ts`, `test/auth/entraProviderRevalidate.test.ts`,
+`test/auth/sessionJwt.test.ts`, `web-ui/app/_components/__tests__/SessionWatcher.test.tsx`.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -2231,6 +2329,12 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 ---
 
 ## 10. Konfiguration
+
+### Admin-UI-Sitzung (#965)
+
+| Variable | Wirkung |
+|---|---|
+| `AUTH_SESSION_MAX_LIFETIME_HOURS` | Absolute Obergrenze einer Verlängerungskette in Stunden, gemessen ab der **ursprünglichen** Anmeldung (`auth_time`), nicht ab der letzten Verlängerung. Default `12`, erlaubt `4`–`168` (zod-validiert beim Boot). Jeder Login und jede „Ich bin noch da“-Verlängerung gibt ein 4h-Fenster, geklemmt auf diese Grenze; danach antwortet `POST /api/v1/auth/renew` mit 401 `auth.renew_expired` und die UI verlangt einen neuen Login. Werte unter 4 wären sinnlos, weil schon das Login-Fenster 4h lang ist. |
 
 ### Test-Schalter (nicht von der Middleware gelesen)
 
@@ -2674,6 +2778,27 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
+
+`classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
+0060 nur noch Zeilen ohne vertrauenswürdigen `error_code`: solche von vor 0060 und solche,
+deren `last_error` ein Build ohne die neuen Spalten überschrieben hat (Rollback über 0060).
+Löschbar, sobald kein Build von vor #897 mehr gegen eine migrierte DB laufen kann **und**
+keine Zeile ohne passendes Siegel mehr existiert:
+
+```sql
+SELECT count(*) FROM agent_teams_identities
+ WHERE last_error IS NOT NULL
+   AND (error_code IS NULL
+        OR error_detail->>'sentenceSha256'
+           IS DISTINCT FROM encode(sha256(convert_to(last_error, 'UTF8')), 'hex'));
+-- muss 0 sein
+```
+
+Dann fallen auch der Präfix-Fallback im Config-Sync-Cleanup und die
+Round-Trip-Tests in `test/teamsProvisioningLastError.test.ts` weg; die Satz-Präfixe dürfen
+danach frei umformuliert werden.
+
 ### Gedächtnis-Provider wird bei Neuzuweisung nicht neu aufgelöst (OM-102 follow-up)
 
 `TODO(OM-102 follow-up)` in
@@ -2693,6 +2818,46 @@ Allowlist in `src/platform/pluginServiceGrants.ts`, obwohl es beide eager
 konsumiert. Zwei Zeilen `optional_requires` in dessen Manifest würden diese
 Allowlist-Zeilen mit demselben Mechanismus leeren, den OM-102 für extras
 benutzt hat.
+
+### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
+
+- `src/plugins/dynamicAgentRuntime.ts` (`activate()`, ~Z. 498-534) löst den
+  Provider **einmal** auf: `liveAnthropicProvider()` bzw.
+  `providerPool.get(hostProviderId)`. Die Pool-Invalidierung aus #1080 erreicht
+  bereits gebaute Sub-Agenten deshalb nicht. Nach einem Boot ohne Key bleiben
+  Anthropic-Sub-Agenten auch nach dem Speichern eines Keys auf dem
+  unauthentifizierten `''`-Client, bis sie neu gebaut werden (Neustart oder
+  Rebuild). Nicht-Anthropic-Agenten, deren Aktivierung mangels Key
+  fehlgeschlagen ist, werden nie erneut aktiviert. Umgekehrt nutzen gebaute
+  Sub-Agenten einen gelöschten Key weiter. Der Chat-Pfad ist zu, weil der
+  Orchestrator ohne Key `chatAgent@1` nicht mehr published; Plugins mit
+  `permissions.subAgents.calls`-Grant erreichen sie aber weiterhin über
+  `ctx.subAgent.ask` (`src/platform/pluginContext.ts`, Service
+  `subAgent:<id>`). Das begrenzt den Schaden, behebt ihn aber nicht.
+  Reparatur: Provider pro Aufruf spät auflösen oder die dynamischen Agenten
+  bei einem Credential-Write neu bauen.
+- Auf env-geseedeten Installationen nutzen Host-Consumer nach dem Löschen des
+  Vault-Keys weiter `ANTHROPIC_API_KEY` (derselbe Key). Der Refresher sollte das
+  zumindest als Warnung loggen.
+
+### Desktop-Shell: restliche Flächen folgen nicht der UI-Sprache (#1074 follow-up)
+
+#1074 hat die Shell-Dialoge (Updater, Boot-Fehler, Recovery-Key) und die
+Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprache
+über `omadia:uiLocale`, `desktop/src/shellLocale.ts` hält und persistiert sie in
+`userData/ui-locale.json`. Offen sind:
+
+- **Tray-Menü** (`desktop/src/tray.ts`) — Labels fest auf Englisch.
+- **Datenordner-Auswahl und Cloud-Sync-Warnung** (`desktop/src/ipc.ts`,
+  `chooseDataDirWithSyncWarning`) — Titel, Buttons und Text fest auf Englisch.
+- **Lade- und Setup-Wizard-Seiten** (`desktop/src/renderer/wizard-i18n.js`) —
+  richten sich nach `navigator.language`, also nach der OS-Sprache. Seit #1074
+  sichtbar inkonsistent: ein Boot-Fehler- oder Recovery-Dialog spricht die
+  persistierte UI-Sprache, die Ladeseite dahinter die OS-Sprache. Die Reparatur
+  wäre, der Seite den Wert aus `shellLocale` mitzugeben, statt
+  `navigator.language` zu lesen.
+- **Electrons eigene `role:`-Menüeinträge** folgen der OS-Sprache; außerhalb
+  unserer Reichweite, nur zu benennen.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
@@ -3280,22 +3445,58 @@ Der Job-Runner erlaubt genau einen Run pro Agent (`teamsProvisioningJob.ts:381-4
 zweiter Enqueue für ein *anderes* Team wird `rejected`. Das Script prüft deshalb vorab auf
 `running` und bricht ab, statt in einen Team-Konflikt zu laufen.
 
-### `last_error_detail` — Klassifikation serverseitig
+### `last_error_detail` — persistiert, nicht geparst (#897)
 
 `GET …/teams-identity` liefert zusätzlich zu `last_error` (englischer Satz) ein
 strukturiertes `last_error_detail`:
-`{ code: 'consent_missing' | 'arm_not_configured' | 'throttled' | 'unknown', scopes?, fields?, retry_after_seconds?, raw }`.
-Klassifiziert wird in `classifyTeamsProvisioningError()` — **direkt neben den Producern**,
-die die Sätze schreiben (`services/teamsProvisioningJob.ts`). Additiv, keine
-Schema-Änderung, keine Migration. Das web-ui rendert aus dem Objekt über i18n-Keys; den
-Rohsatz höchstens als technisches Detail. **Niemand sonst parst `last_error`.**
-Round-Trip-Test: `test/teamsProvisioningLastError.test.ts` — wer eine Meldung umformuliert
-und den Parser vergisst, bricht einen Test in derselben Ecke des Codes, statt still die
-Operator-UI in Produktion zu verschlechtern.
+`{ code, scopes?, fields?, retryAfterSeconds?, adminConsentUrl?, reason?, raw }`.
+`code` ist die geschlossene Union `TeamsProvisioningErrorCode` in
+`services/teamsProvisioningJob.ts` (11 Codes: `consent_missing`, `rsc_permissions_mismatch`,
+`arm_not_configured`, `throttled`, `config_sync_failed`, `bot_handle_unavailable`,
+`delegated_sign_in_required`, `delegated_consent_required`, `delegated_token_expired`,
+`device_code_flow_failed`, `unknown`). Das web-ui rendert aus dem Objekt über i18n-Keys; den
+Rohsatz höchstens als technisches Detail. **Niemand parst `last_error`.**
 
-**Follow-up (nicht in dieser Wave):** Der Runner sollte den Code von Anfang an strukturiert
-persistieren; das braucht eine Migration auf `agent_teams_identities` und damit eine eigene
-Unit.
+Seit Migration 0060 schreibt der Runner den Fehler **strukturiert mit**: `error_code TEXT` +
+`error_detail JSONB` auf `agent_teams_identities`, im selben UPDATE wie `last_error`, an der
+Stelle, an der er den typisierten Fehler noch in der Hand hat. Je Code gibt es einen
+`*Failure`-Builder, der Satz und Argumente aus denselben Eingaben baut. Der Store-Port des
+Runners (`TeamsIdentityJobUpdate`) nimmt als Fehlerteil nur einen Clear oder eine ganze
+`TeamsProvisioningFailure` — ein Satz ohne Code kompiliert auf keinem Runner-Schreibpfad.
+Der Store schreibt alle drei Spalten gemeinsam (jeder Clear leert alle drei) und
+**versiegelt** den Code: `error_detail` trägt neben den Argumenten einen SHA-256 des Satzes
+(reservierter Key `sentenceSha256`, `platform/teamsProvisioningErrorSeal.ts`), ist bei
+einem Code also nie NULL.
+
+Warum das Siegel: Die Spalten gemeinsam zu schreiben garantiert nur der Build ab #897. Ein
+älterer Build gegen eine DB, die schon auf 0060 steht (automatischer Rollback des Updaters
+nach rotem Health-Gate, siehe `sidecars/updater/README.md`), schreibt `last_error` allein —
+seine Clears lassen den Code stehen, sein nächster Fehlersatz landet neben dem alten Code.
+Leser vertrauen dem Code deshalb nur, solange das Siegel zum aktuellen Satz passt
+(`trustedTeamsProvisioningErrorOf()`); sonst gilt die Zeile als Legacy-Zeile. Garantie: Ein
+Code wird nie gegen einen Satz gelesen, mit dem er nicht geschrieben wurde.
+
+Gelesen wird über `teamsProvisioningErrorDetailOf()`: bekannter, versiegelter Code →
+Spalten, jedes Feld validiert (Consent-URL nur absolut https, Listen nur Strings,
+Retry-After nur endliche Zahl ≥ 0). **Kein, unbekannter oder veralteter Code** (Zeile vor
+0060, Code eines neueren Builds, oder Satz von einem älteren Build neben einem alten Code)
+→ Fallback auf `classifyTeamsProvisioningError()` über den Satz. Dieselbe Regel gilt für das
+Aufräumen der eigenen `config_sync_failed`-Warnung im Runner (Code wenn vertrauenswürdig,
+sonst Präfix). Der Classifier ist damit nur noch der Legacy-Pfad (Roadmap §13). `enqueue_failed` (Store-Write) bleibt bewusst `unknown` und wird explizit so
+kodiert.
+
+**Kein CHECK auf `error_code`:** Die Union ist in Wochen von 4 auf 11 gewachsen, jede
+Erweiterung bräuchte DROP/ADD CHECK (0056 existiert nur für CHECK-Idempotenz). Vor allem
+schreibt `recordError` `state` und Fehler in *einem* best-effort-UPDATE, das Store-Fehler
+schluckt — ein Code außerhalb eines CHECK würde den terminalen `state='failed'`-Write still
+verlieren (#915-Klasse). Die TS-Union plus Read-Validierung ist die einzige Quelle.
+
+Tests: `test/teamsProvisioningErrorCode.test.ts` (jeder Fehlerpfad schreibt einen Code;
+Parität Spalten ↔ Classifier; umformulierter Satz behält die Bedeutung; veralteter Code
+neben dem Satz eines älteren Builds wird ignoriert; Read-Validierung),
+`test/agentTeamsIdentityStore.pg.test.ts` (Siegel auf echtem Postgres, simulierter
+Alt-Build-Write),
+`test/teamsProvisioningLastError.test.ts` (Legacy-Round-Trip Producer ↔ Classifier).
 
 ## Abo-Parität: der Weg ohne API-Key (Runde 5, Wave 3)
 
@@ -3421,6 +3622,94 @@ Kanal ist `web`. Für den hat kein Plugin einen Proactive-Sender registriert, `c
 scheitert also weiter — aber mit *"no proactive sender registered for channel 'web'"*, was
 die tatsächliche Grenze benennt. `list`/`pause`/`resume`/`delete` funktionieren.
 **Offen:** ein Web-Sender, damit auch `create` aus dem Browser-Chat trägt.
+
+### Der Principal für *jeden* Kanal: Producer in `CoreApi` (#1086)
+
+Der OM-82-Fix oben war route-lokal. Channel-Plugins hatten weiter keinen Producer:
+`RoutinesIntegration.captureRoutineTurn` rief nur der (out-of-tree) Teams-Adapter. Kanäle
+erreichen den Orchestrator über **zwei** Türen: `CoreApi.handleTurnStream`
+(`middleware/src/channels/coreApi.ts`) oder direkt über die `chatAgent`-Capability. Keine
+der beiden hat den Kontext gesetzt. `manage_routine` lehnte dort **alle fünf** Aktionen
+ab, inklusive des lesenden `list` — auch auf den zwei Kanälen, die in diesem Repo liegen:
+`@omadia/channel-api` (Public API) und `@omadia/ui-channel` (Canvas), beide über
+`handleTurnStream`.
+
+Der generische Producer sitzt in `handleTurnStream`. Das deckt **nicht** die Adapter ab,
+die `chatAgent` direkt rufen — Stand 2026-09 sind das Teams, Telegram, Slack, Discord und
+WhatsApp. Das Telegram-Repro aus #1086 hat also weiter keinen Kontext; es bekommt jetzt
+aber eine ehrliche Antwort (`ROUTINE_NO_CONTEXT_ERROR`: in diesem Kanal nicht verfügbar,
+Routines-Seite nutzen) statt „runtime wiring issue, melde das deinem Operator". Volle
+Unterstützung dort braucht `captureRoutineTurn` / `beginRoutineTurn` im jeweiligen Adapter.
+Fünf Entscheidungen, die zum Producer gehören:
+
+- **Adapter-Kontext gewinnt — aber nur der eigene.** Ein Adapter, der `captureRoutineTurn`
+  *vor* `handleTurnStream` ruft, hält den echten Zustell-Handle (bei Teams wäre das die
+  Bot-Framework-`ConversationReference`; Teams selbst ruft allerdings `chatAgent` direkt und
+  kommt hier nie an). Ihn mit dem generischen Ref zu
+  überschreiben hieße: Routine wird angelegt, ist aber nicht zustellbar. Gleichzeitig hat
+  `captureRoutineTurn` kein Scope-Ende (`enterWith`, #1016), ein gefundener Kontext kann
+  also der des *vorigen* Turns sein. Der Producer fragt deshalb `hasContextFor(userId)`:
+  gleiche `userId` ⇒ Adapter-Kontext bleibt, andere ⇒ stale, dieser Turn setzt seinen
+  eigenen darüber.
+- **`run`, nicht `enterWith` — pro `next()`.** `handleTurnStream` gibt ein
+  `AsyncIterable` zurück; ein `run()` um den Aufruf deckt nur die synchrone Erzeugung des
+  Iterators ab, denn der Generator-Body läuft erst beim `next()` des Consumers weiter.
+  Gewrappt wird darum jeder Pull (`withRoutineTurnScope`). Ergebnis: Kontext über den
+  ganzen Turn, Scope-Ende inklusive — auch wenn der Consumer früh ausbricht (`return()`).
+- **Tenant kommt aus einer Quelle.** `IncomingTurn.tenantId` wenn der Kanal einen
+  liefert (heute nur Canvas), sonst der Deployment-Tenant `graphTenantId` — derselbe Wert,
+  den `routes/chat.ts` dem Web-Chat gibt. Zwei verschiedene Defaults hätten Routinen in
+  Tenant-Töpfe gelegt, die sich gegenseitig nicht sehen: `list` liefert leer, ohne Fehler.
+- **`userId` unverändert durchreichen.** Der #1016-Owner-Guard vergleicht den Kontext
+  gegen `ChatTurnInput.userId`, und der Dispatcher füllt den aus demselben
+  `turn.userRef.id` (`channels/orchestratorDispatcher.ts`). Jede Kanonisierung an dieser
+  Stelle würde den Guard auf dem Subscription-CLI-Pfad jeden Dispatch ablehnen lassen.
+- **`canTargetOthers` bleibt `false`.** Cold-Start-Outreach an *andere* Personen braucht
+  eine Governance-Quelle; der Kern hat keine. Der generische Producer kann das Flag gar
+  nicht ausdrücken — nur ein Adapter über `captureRoutineTurn`.
+
+Verdrahtung: `createRoutinesIntegration` bekommt `beginRoutineTurn(info)`
+(`@omadia/plugin-api` 1.18.0, additiv). Der Aufruf schreibt die Conductor-Channel-Bindung
+**einmal** und liefert einen Runner zurück, der je *Segment* des Turns den Principal
+setzt. Zwei Stufen statt einer, weil ein gestreamter Turn viele Segmente hat: eine Bindung
+im Runner wäre ein Postgres-Upsert pro Text-Delta. Reminder/Approvals erreichen damit auch
+Nicht-Teams-Kanäle, zum Preis von einem Write pro Turn. `index.ts` reicht das als
+optionales `routineTurn` in `createCoreApi`; ohne Routines-Feature (kein Postgres) fehlt
+die Option und `handleTurnStream` verhält sich exakt wie vorher.
+
+Kanal-String ist der kurze Binding-Typ — `turn.channelType`, sonst über **denselben**
+manifest-bewussten `channelTypeFor`, den auch der Dispatcher benutzt (eine Auflösung, nicht
+zwei: sonst routet ein deklarierter `channel_type` den Turn anders, als die Routine
+abgelegt wird). Genau dieser Schlüssel ist der, unter dem ein Plugin seinen
+`ProactiveSender` registriert. Wer keinen registriert hat, bekommt bei `create` weiterhin
+*"no proactive sender registered for channel '<x>'"*; `list`/`pause`/`resume`/`delete`
+laufen.
+
+Zwei Grenzen, die bewusst offen bleiben:
+
+- **Der generische `conversationRef`.** Der Kern kennt die Wire-Shape eines Kanals nicht
+  und legt darum `{kind:'channel', channelId, conversationId}` ab. Ein `ProactiveSender`,
+  der so einen Ref bekommt, muss über `conversationId` zustellen; ein Adapter mit echtem
+  Handle installiert weiter seinen eigenen Kontext (Teams) oder hebt einen gespeicherten
+  Ref per `updateRoutineConversationRef` an. Heute betrifft das keinen ausgelieferten
+  Sender: die beiden In-Tree-Kanäle registrieren keinen, Teams bringt seinen eigenen Ref
+  mit. Dieser Ref landet jetzt auch in der Conductor-Channel-Bindung — ein Plugin, das
+  einen `ProactiveSender` registriert, aber `captureRoutineTurn` nie ruft, wird also zum
+  Zustellen auf eine Shape gebeten, die es nicht definiert hat (fehlgeschlagener Versuch,
+  wo vorher gar keiner stattfand). Bindungen sind auf `(user, channel_type)` geschlüsselt,
+  die generische Zeile kann die Teams-Zeile also nicht überschreiben.
+- **Ein Mensch, mehrere Routinen-Besitzer.** `manage_routine` scopet Zeilen auf
+  `(tenant, userId)`, und `userId` ist die *kanal-native* Id — der Wert, gegen den der
+  #1016-Guard vergleicht. Web-Chat keyt auf `req.session.omadia_user_id`, der Canvas-Kanal
+  auf `session.subject`, die Public API auf `key:<uuid>`. Derselbe Mensch sieht also pro
+  Kanal seine eigene Routinen-Liste. Umgekehrt teilen sich alle Kanäle *eines* Tenants
+  denselben `(tenant, userId)`-Topf: ein Kanal, der neu über `handleTurnStream` läuft, muss
+  Ids liefern, die nicht mit den Ids eines anderen Kanals kollidieren können (Präfix wie
+  `key:` / `telegram:`), sonst sehen zwei Personen dieselben Routinen. Der *Tenant* stimmt seit #1086 überein, die User-Id
+  bewusst nicht — eine kanalübergreifende Identität ist ein eigenes Thema
+  (`resolveTurnOwnerIdentity`), nicht Teil dieses Fixes. Auf der Public API ist der
+  Principal der **API-Key** (`userRef.id` = `key:<uuid>`, #438), nicht eine Person —
+  Routinen gehören dort dem Key.
 
 ## Quality Guard: Grenzen stapeln sich, sie überschreiben nicht (#1104, 2026-09-21)
 

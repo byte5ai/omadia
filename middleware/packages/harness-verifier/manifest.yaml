@@ -86,7 +86,7 @@ setup:
       label: "Verifier Model"
       type: "string"
       required: false
-      help: "Anthropic-Model-ID für ClaimExtractor + EvidenceJudge. Default: claude-haiku-4-5-20251001."
+      help: "Model-ID oder Class-Ref (z.B. class:fast) für ClaimExtractor + EvidenceJudge; wird auf den konfigurierten llm_provider aufgelöst. Default: claude-haiku-4-5-20251001."
     - key: "verifier_max_claims"
       label: "Max Claims per Answer"
       type: "string"

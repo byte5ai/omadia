@@ -15,6 +15,11 @@ import {
 import { ENTRA_PROVIDER_ID } from '../auth/providers/EntraProvider.js';
 import type { ProviderRegistry } from '../auth/providerRegistry.js';
 import { SESSION_COOKIE } from '../auth/requireAuth.js';
+import {
+  isSecureContext,
+  SESSION_WINDOW_S,
+  setSessionCookie,
+} from '../auth/sessionCookie.js';
 import { signSession } from '../auth/sessionJwt.js';
 import type { UserStore } from '../auth/userStore.js';
 import {
@@ -24,6 +29,11 @@ import {
   verifyProviderCredential,
 } from '../platform/providerCredentialVerifier.js';
 import type { SecretVault } from '../secrets/vault.js';
+import {
+  createRenewHandler,
+  renewableUntil,
+  type SessionRenewalDeps,
+} from './authRenew.js';
 
 interface AuthDeps {
   registry: ProviderRegistry;
@@ -86,11 +96,16 @@ interface AuthDeps {
    * `@omadia/verifier`.
    */
   anthropicKeyConsumers?: readonly string[];
+  /**
+   * #965 — session renewal (`POST /renew`, `renewable_until` on `/me`,
+   * refresh-token forget on `/logout`). Optional so test harnesses that
+   * never renew keep compiling; production wiring always passes it.
+   */
+  renewal?: SessionRenewalDeps;
 }
 
 const PKCE_COOKIE = 'harness_auth_pkce';
 const PKCE_COOKIE_MAX_AGE_S = 600;
-const SESSION_COOKIE_MAX_AGE_S = 4 * 60 * 60;
 
 /**
  * Provider-aware Auth router (OB-49a).
@@ -103,6 +118,8 @@ const SESSION_COOKIE_MAX_AGE_S = 4 * 60 * 60;
  *   GET  /api/v1/auth/login/:id/cb     oidc-provider callback handler
  *   POST /api/v1/auth/logout           clear cookie + optional IdP-logout
  *   GET  /api/v1/auth/me               current session (or 401)
+ *   POST /api/v1/auth/renew            extend a valid session ("I'm still
+ *                                      here", #965; see ./authRenew.ts)
  *   POST /api/v1/auth/setup            first-user wizard (one-shot, 410 once locked)
  *
  * Provider mechanics live in `auth/providers/*` — the router branches
@@ -291,13 +308,33 @@ export function createAuthRouter(deps: AuthDeps): Router {
     const cookies = readCookies(req);
     const token = cookies[SESSION_COOKIE];
     let providerId: string | undefined;
+    let sessionEmail: string | undefined;
     if (token) {
       try {
         const { verifySession } = await import('../auth/sessionJwt.js');
         const claims = await verifySession(token, deps.signingKey);
         providerId = claims.provider;
+        sessionEmail = claims.email;
       } catch {
         /* expired / malformed — still clear the cookie below */
+      }
+    }
+    // #965 — the Entra refresh token is what `/renew` redeems. Forgetting it
+    // here ends the renewal chain, so a copy of the cookie taken before the
+    // logout cannot keep extending itself through the IdP. Non-fatal: the
+    // logout itself must always succeed.
+    if (
+      providerId === ENTRA_PROVIDER_ID &&
+      sessionEmail &&
+      deps.renewal?.refreshStore
+    ) {
+      try {
+        await deps.renewal.refreshStore.forget(sessionEmail);
+      } catch (err) {
+        console.error(
+          '[auth] /logout: failed to forget the refresh token:',
+          err instanceof Error ? err.message : err,
+        );
       }
     }
     res.clearCookie(SESSION_COOKIE, { path: '/' });
@@ -349,11 +386,27 @@ export function createAuthRouter(deps: AuthDeps): Router {
         // Both are Unix epoch SECONDS, matching the JWT `exp` convention.
         expires_at: claims.exp,
         server_now: Math.floor(Date.now() / 1000),
+        // #965 — end of the renewal chain (auth_time + cap), Unix epoch
+        // SECONDS, or null when renewal is not wired. Lets the watcher
+        // offer "sign in again" up front for the final window instead of
+        // an "I'm still here" click that is bound to be refused.
+        renewable_until: renewableUntil(claims.auth_time, deps.renewal),
       });
     } catch {
       res.status(401).json({ code: 'auth.invalid' });
     }
   });
+
+  // ── POST /renew ("I'm still here", #965) ─────────────────────────────────
+  router.post(
+    '/renew',
+    createRenewHandler({
+      registry: deps.registry,
+      userStore: deps.userStore,
+      signingKey: deps.signingKey,
+      ...(deps.renewal ? { renewal: deps.renewal } : {}),
+    }),
+  );
 
   // ── POST /setup (one-shot first-user wizard) ─────────────────────────────
   // Returns 410 Gone in two cases:
@@ -559,12 +612,6 @@ function pkceCookieNameFor(providerId: string): string {
   return `${PKCE_COOKIE}_${providerId}`;
 }
 
-function isSecureContext(req: Request): boolean {
-  const proto = req.headers['x-forwarded-proto'];
-  if (Array.isArray(proto)) return proto[0] === 'https';
-  return proto === 'https';
-}
-
 function sanitiseReturnPath(value: string | undefined): string | null {
   if (!value) return null;
   if (!value.startsWith('/') || value.startsWith('//')) return null;
@@ -627,15 +674,9 @@ async function mintSessionAndSetCookie(args: MintArgs): Promise<void> {
       ...(omadiaUserId ? { omadia_user_id: omadiaUserId } : {}),
     },
     args.signingKey,
-    `${SESSION_COOKIE_MAX_AGE_S}s`,
+    `${SESSION_WINDOW_S}s`,
   );
-  args.res.cookie(SESSION_COOKIE, session, {
-    httpOnly: true,
-    secure: isSecureContext(args.req),
-    sameSite: 'lax',
-    maxAge: SESSION_COOKIE_MAX_AGE_S * 1000,
-    path: '/',
-  });
+  setSessionCookie(args.req, args.res, session, SESSION_WINDOW_S);
 }
 
 function userPayload(

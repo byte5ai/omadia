@@ -17,6 +17,20 @@
  * values mirror the CHECK constraint of migration 0049 exactly, and both the
  * runner and the operator router import it from here.
  *
+ * `error_code` / `error_detail` (migration 0060, byte5ai/omadia#897) travel
+ * WITH `last_error`: the runner writes the typed failure it holds next to
+ * the human-facing sentence, so nothing downstream has to parse English.
+ * {@link AgentTeamsIdentityStore.update} writes all three columns together
+ * and SEALS the code to its sentence (a fingerprint inside `error_detail`,
+ * `teamsProvisioningErrorSeal.ts`). The seal, not the write path, is what
+ * readers rely on: an older build without these columns (a rollback across
+ * 0060) rewrites `last_error` alone, and the fingerprint mismatch then makes
+ * the row read like a pre-0060 one instead of pairing a stale code with a
+ * new sentence. The code vocabulary is the runner's closed
+ * `TeamsProvisioningErrorCode` union; this platform module stores it
+ * opaquely (`platform/` never imports from `services/`), and the read path
+ * validates it against the union.
+ *
  * NO SECRET MATERIAL. The row carries only app_id / tenant_id /
  * teams_app_id / teams_app_external_id — the bot's client secret stays in
  * the M365 connector's vault (opaque ref `teams_bot_password:<appId>`,
@@ -32,6 +46,7 @@
 import type { Pool } from 'pg';
 
 import type { TeamsTargetKind } from './teamsInstallTarget.js';
+import { sealTeamsErrorDetail } from './teamsProvisioningErrorSeal.js';
 
 // ---------------------------------------------------------------------------
 // State vocabulary — the CHECK constraint of migration 0049, verbatim.
@@ -95,6 +110,20 @@ export interface AgentTeamsIdentityRecord {
   readonly teamsAppId: string | null;
   readonly teamsAppExternalId: string | null;
   readonly lastError: string | null;
+  /**
+   * Machine-readable code of {@link lastError} (migration 0060, #897) — a
+   * `TeamsProvisioningErrorCode` when the runner wrote it, `null` on a clean
+   * row and on a row written before the migration (the read path then falls
+   * back to classifying the sentence). Typed opaquely here: the vocabulary
+   * belongs to the runner, and a stored value from a newer build must not
+   * make this row unreadable.
+   */
+  readonly errorCode: string | null;
+  /** Typed arguments of {@link errorCode} (scopes / fields / Retry-After /
+   *  consent URL / reason) plus the seal binding them to {@link lastError},
+   *  parsed JSONB. Read through `pairedTeamsErrorOf` and validated, never
+   *  trusted as stored. */
+  readonly errorDetail: unknown;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -133,6 +162,17 @@ export interface AgentTeamsIdentityUpdate {
   readonly teamsAppExternalId?: string | null;
   /** `null` clears a previous error. */
   readonly lastError?: string | null;
+  /**
+   * Structured form of {@link lastError} (migration 0060, #897). Only read
+   * TOGETHER with `lastError`: a patch that writes `lastError` writes these
+   * two columns as well (absent → NULL), and a patch without `lastError`
+   * ignores them, so every `lastError: null` clear also clears the code. A
+   * coded write stores `errorDetail` sealed to the sentence (never NULL);
+   * that seal is what protects readers from a stale code left behind by a
+   * build that writes `last_error` alone.
+   */
+  readonly errorCode?: string | null;
+  readonly errorDetail?: unknown;
 }
 
 /** The requested bot slug is already held by ANOTHER agent's identity. */
@@ -178,7 +218,7 @@ export class AgentTeamsIdentityStateError extends Error {
 // ---------------------------------------------------------------------------
 
 const COLUMNS =
-  'agent_id, bot_slug, display_name, state, team_id, target_kind, app_id, app_object_id, tenant_id, teams_app_id, teams_app_external_id, last_error, created_at, updated_at';
+  'agent_id, bot_slug, display_name, state, team_id, target_kind, app_id, app_object_id, tenant_id, teams_app_id, teams_app_external_id, last_error, error_code, error_detail, created_at, updated_at';
 
 interface AgentTeamsIdentityRow {
   agent_id: string;
@@ -193,6 +233,8 @@ interface AgentTeamsIdentityRow {
   teams_app_id: string | null;
   teams_app_external_id: string | null;
   last_error: string | null;
+  error_code: string | null;
+  error_detail: unknown;
   created_at: Date;
   updated_at: Date;
 }
@@ -215,6 +257,8 @@ function mapRow(row: AgentTeamsIdentityRow): AgentTeamsIdentityRecord {
     teamsAppId: row.teams_app_id,
     teamsAppExternalId: row.teams_app_external_id,
     lastError: row.last_error,
+    errorCode: row.error_code,
+    errorDetail: row.error_detail,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -321,7 +365,28 @@ export class AgentTeamsIdentityStore {
     if (patch.teamsAppExternalId !== undefined) {
       add('teams_app_external_id', patch.teamsAppExternalId);
     }
-    if (patch.lastError !== undefined) add('last_error', patch.lastError);
+    if (patch.lastError !== undefined) {
+      // #897: the sentence and its structured form are one write. A clear
+      // clears all three; a sentence without a code stores NULL for both,
+      // which the read path treats exactly like a pre-0060 row. A coded
+      // sentence stores its arguments SEALED with the sentence's fingerprint
+      // — the only thing that still holds when a build unaware of these
+      // columns later rewrites `last_error` on its own.
+      const code =
+        patch.lastError !== null && patch.errorCode != null && patch.errorCode !== ''
+          ? patch.errorCode
+          : null;
+      add('last_error', patch.lastError);
+      add('error_code', code);
+      // Serialized explicitly rather than handed to node-pg as an object:
+      // node-pg turns a JS array into a Postgres ARRAY literal, not JSON.
+      const detail =
+        code !== null && patch.lastError !== null
+          ? JSON.stringify(sealTeamsErrorDetail(patch.lastError, patch.errorDetail))
+          : null;
+      values.push(detail);
+      sets.push(`error_detail = $${String(values.length)}::jsonb`);
+    }
     sets.push('updated_at = now()');
     const res = await this.pool.query<AgentTeamsIdentityRow>(
       `UPDATE agent_teams_identities SET ${sets.join(', ')} WHERE agent_id = $1 RETURNING ${COLUMNS}`,
@@ -437,9 +502,18 @@ export class AgentTeamsIdentityStore {
 
   /** Persist an enqueue failure so the status endpoint can show WHY nothing
    *  is running (the POST handler calls this best-effort from its
-   *  fire-and-forget catch). State is deliberately untouched. */
+   *  fire-and-forget catch). State is deliberately untouched.
+   *
+   *  Coded `'unknown'` explicitly (#897) — the operator UI has no dedicated
+   *  message for it (the ops runbook sends operators to the raw prefix), and
+   *  writing the code here means no new row depends on the sentence
+   *  classifier. The value is a member of the runner's
+   *  `TeamsProvisioningErrorCode` union in `services/teamsProvisioningJob.ts`. */
   async recordEnqueueFailure(agentId: string, message: string): Promise<void> {
-    await this.update(agentId, { lastError: `enqueue_failed: ${message}` });
+    await this.update(agentId, {
+      lastError: `enqueue_failed: ${message}`,
+      errorCode: 'unknown',
+    });
   }
 
   /**

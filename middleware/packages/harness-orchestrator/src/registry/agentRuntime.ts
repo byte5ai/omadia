@@ -1,8 +1,6 @@
 import {
-  isClassRef,
-  listModelsByProvider,
-  modelForClass,
-  resolveModelRef,
+  resolveConfiguredModel,
+  resolveModelIdForProvider,
 } from '@omadia/llm-provider';
 
 import type { ModelRoutingConfig as RuntimeModelRouting } from '../modelRouter.js';
@@ -45,74 +43,13 @@ const DEFAULT_CLASSIFIER_MODEL = 'class:fast';
  */
 export const DEFAULT_ORCHESTRATOR_MODEL = 'class:frontier';
 
-/** Preference order when a class ref cannot be served exactly (a provider
- *  with no model of that class): the nearest class, then anything served. */
-const CLASS_FALLBACK_ORDER = ['frontier', 'balanced', 'fast'] as const;
-
 /**
- * Resolve a CONFIGURED model ref — class ref (`class:frontier`), legacy alias
- * (`opus`), provider-qualified id or bare vendor id — to the bare `modelId`
- * to send to `providerId`. Unlike `resolveModelIdForProvider` a class ref is
- * never passed through raw: the vendor API would 404 on it. When the provider
- * serves no model of the requested class, the nearest class's default is used,
- * then the first model the provider serves at all. Returns `undefined` only
- * when the ref is empty or the registry knows nothing about the provider.
+ * The configured-model resolvers live in `@omadia/llm-provider` since #1079 so
+ * the dynamic sub-agents, the verifier, the orchestrator-extras and plugin
+ * `ctx.llm` call the IDENTICAL function the orchestrator uses. Re-exported here
+ * to keep every existing import path working.
  */
-export function resolveConfiguredModel(
-  ref: string | null | undefined,
-  providerId: string | undefined,
-): string | undefined {
-  const trimmed = ref?.trim();
-  if (!trimmed) return undefined;
-  const resolved = resolveModelIdForProvider(trimmed, providerId);
-  if (resolved !== undefined && !isClassRef(resolved)) return resolved;
-  if (!isClassRef(trimmed)) return resolved;
-  const provider = providerId ?? 'anthropic';
-  for (const cls of CLASS_FALLBACK_ORDER) {
-    const hit = modelForClass(cls, provider);
-    if (hit !== undefined) return hit.modelId;
-  }
-  return listModelsByProvider(provider)[0]?.modelId;
-}
-
-/**
- * Resolve a model ref to the active provider's concrete bare `modelId`
- * (issue #296).
- *
- * Both the orchestrator main loop AND in-process sub-agents send `model` RAW to
- * a single concrete provider adapter — there is no ref→modelId resolution in
- * the send path. The Admin picker stores a provider-qualified id
- * (`anthropic:claude-opus-4-8`) or a legacy alias (`opus`); sending either raw
- * 404s every turn. Returns:
- *   - registry-known, same provider → the bare vendor `modelId`
- *   - registry-known, DIFFERENT provider than `activeProvider` → `undefined`
- *     (cross-provider is out of scope and would 404 on the wrong adapter — the
- *     caller falls back to its own default)
- *   - registry-UNKNOWN (not in the curated set) → the raw trimmed ref. The
- *     registry is a curated subset, not the universe of valid API ids — an id
- *     the registry does not list may still be served (e.g. an undated default
- *     or an operator-typed id). Passing it through preserves pre-resolution
- *     behaviour, matching the `resolveModelRef(x)?.modelId ?? x` contract used
- *     elsewhere (e.g. `builderPreviewPrompt`).
- *   - empty / whitespace → `undefined` (no model specified → caller falls back)
- *
- * The CLI provider owns its own alias scheme (`sonnet`/`opus`) and must be
- * handled by the caller BEFORE this — pass its refs through untouched.
- */
-export function resolveModelIdForProvider(
-  ref: string | null | undefined,
-  activeProvider: string | undefined,
-): string | undefined {
-  const trimmed = ref?.trim();
-  if (!trimmed) return undefined;
-  const info = resolveModelRef(
-    trimmed,
-    activeProvider ? { defaultProvider: activeProvider } : {},
-  );
-  if (info === undefined) return trimmed;
-  if (activeProvider && info.provider !== activeProvider) return undefined;
-  return info.modelId;
-}
+export { resolveConfiguredModel, resolveModelIdForProvider };
 
 export interface ResolvedAgentRuntime {
   /** Primary model override (the agent's `main`), if set. */
