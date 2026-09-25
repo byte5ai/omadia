@@ -105,12 +105,13 @@ export default async function RootLayout({
                       </span>
                     </span>
                   </Link>
-                  {/* `min-w-0` + a tighter sub-xl gap: flex items default to
-                      `min-width:auto`, so at the desktop shell's 1100px window
-                      the logo, six uppercase nav items, the issue button, both
-                      selects and the auth badge over-subscribe the row and
-                      overflow instead of shrinking (OM-20/40, OM-30). */}
-                  <div className="ml-auto flex min-w-0 items-center gap-2 xl:gap-4">
+                  {/* The row fits by construction, not by shrinking: below xl
+                      the theme selects collapse into one icon menu and the
+                      auth badge drops the first name, and the wide gap only
+                      starts at 2xl (#1073, OM-30). No `min-w-0` — the nowrap
+                      nav cannot shrink, so it would spill over the controls
+                      instead of overflowing at the edge. */}
+                  <div className="ml-auto flex items-center gap-2 2xl:gap-4">
                     <Nav entries={navEntries} />
                     <span
                       className="hidden h-5 w-px bg-[color:var(--border)] sm:block"
