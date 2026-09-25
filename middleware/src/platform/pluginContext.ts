@@ -61,7 +61,8 @@ import {
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
-import { turnContext } from '@omadia/orchestrator';
+import { MEMORY_TOOL_NAME, turnContext } from '@omadia/orchestrator';
+import { MemoryToolHandler } from '@omadia/memory';
 import {
   isClassRef,
   modelForClass,
@@ -97,7 +98,10 @@ import { audienceDeniesHost } from './audienceHostPolicy.js';
 import { createNetAccessor, type NetTarget } from './netAccessor.js';
 import { signFlowState, verifyFlowState } from './flowState.js';
 import type { PluginStatusRegistry } from './pluginStatusRegistry.js';
-import { createMemoryAccessor } from './memoryAccessor.js';
+import {
+  createMemoryAccessor,
+  createPluginMemoryToolStore,
+} from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
 import {
@@ -424,6 +428,20 @@ export function createPluginContext(
           resolveAgentSlug: () => turnContext.currentAgentSlug(),
         })
       : undefined;
+  // #909 — `ctx.tools.invoke('memory', …)` runs HERE, never through the
+  // registry's `memory` handler (which the memory provider bound to the root
+  // store). Same inputs and same gate as `memory` above, so the tool view and
+  // `ctx.memory` cannot disagree about scope or permission.
+  const memoryToolHandler: MemoryToolHandler | undefined =
+    memory && memoryStoreService
+      ? new MemoryToolHandler(
+          createPluginMemoryToolStore({
+            pluginId: agentId,
+            store: memoryStoreService,
+            resolveAgentSlug: () => turnContext.currentAgentSlug(),
+          }),
+        )
+      : undefined;
 
   // Spec 004 — runtime credential write. When the manifest declares
   // `permissions.secrets.runtime_write`, the plugin gets write methods on its
@@ -635,6 +653,25 @@ export function createPluginContext(
       });
     },
     async invoke(name, input) {
+      // #909 — the registry's `memory` handler is the memory PROVIDER's,
+      // bound to the undecorated root store. Dispatching to it here would let
+      // any plugin read/write every Agent's tree, with or without
+      // `permissions.memory`. Route the call through the caller's own scope
+      // instead, and deny loudly (never widen, never an empty "success") when
+      // that scope does not exist — same stance as #908.
+      if (name === MEMORY_TOOL_NAME) {
+        if (!memoryDeclared(agentId, catalog)) {
+          throw new ToolInvokePermissionError(
+            `tools.invoke: plugin '${agentId}' may not invoke '${MEMORY_TOOL_NAME}' — it declares no permissions.memory; memory calls run only inside the plugin's own scope`,
+          );
+        }
+        if (!memoryToolHandler) {
+          throw new Error(
+            `tools.invoke: '${MEMORY_TOOL_NAME}' is unavailable — no memory store is published`,
+          );
+        }
+        return memoryToolHandler.handle(input);
+      }
       const entry = opts.nativeToolRegistry.get(name);
       if (!entry?.handler) {
         throw new Error(`tools.invoke: '${name}' is unknown or handler-less`);
@@ -1816,6 +1853,19 @@ function isPathUnderPrefix(child: string, parent: string): boolean {
   if (child === parent) return true;
   const withSlash = parent.endsWith('/') ? parent : `${parent}/`;
   return child.startsWith(withSlash);
+}
+
+/**
+ * #909 — `ctx.tools.invoke` refused a call the plugin's manifest does not
+ * cover (today: `memory` without `permissions.memory`). Kernel-local on
+ * purpose: no plugin-api export, so the public surface is unchanged; callers
+ * that need to tell it apart match on `name`.
+ */
+class ToolInvokePermissionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ToolInvokePermissionError';
+  }
 }
 
 function memoryDeclared(agentId: string, catalog: PluginCatalog): boolean {
