@@ -6,7 +6,7 @@ import type {
 } from '@omadia/plugin-api';
 import { appendLimitSignalNote, isControlFlowToolResult } from '@omadia/plugin-api';
 import { streamMessageWithObserver } from './streaming.js';
-import type { AskObserver } from './tools/domainQueryTool.js';
+import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
 import { buildDateHeader, turnContext } from './turnContext.js';
 
@@ -33,31 +33,14 @@ interface LocalSubAgentOptions {
   tools: LocalSubAgentTool[];
 }
 
-/**
- * Per-call options for `ask()`. Threaded as the optional third argument
- * so existing callers (`subAgent.ask(question)` / `subAgent.ask(q, observer)`)
- * keep working unchanged.
- */
-export interface AskOptions {
-  /**
-   * Name of a tool that *must* be invoked at least once during this turn.
-   * If the model exits with `stop_reason !== 'tool_use'` without ever
-   * having called it, the loop performs ONE escalation iteration with
-   * `tool_choice: { type: 'tool', name: expectedTurnToolUse }` plus a
-   * synthetic user-message reminder. Catches the OB-31 "promise without
-   * delivery" pattern (model emits Build-Ankündigung text, ends turn,
-   * never calls `fill_slot`). Phase-detection (when to set this) lives
-   * in the calling agent — LocalSubAgent stays domain-agnostic.
-   */
-  expectedTurnToolUse?: string;
-  /**
-   * Cap on escalation iterations triggered by `expectedTurnToolUse`.
-   * Default 1. Bound exists so a stubbornly mute model cannot generate
-   * an infinite forced-tool-choice loop. After the budget is exhausted
-   * we honor the stop_reason and return whatever text the model gave us.
-   */
-  maxEscalations?: number;
-}
+// #1072 — `AskOptions` moved next to `Askable` in `tools/domainQueryTool.ts`
+// so the CLI sub-agent can take it without importing this API-path class.
+// Re-exported so every existing `import { AskOptions } from
+// './localSubAgent.js'` (and the package index) keeps working. On this path,
+// `expectedTurnToolUse` is enforced by ONE escalation iteration with
+// `tool_choice: { type: 'tool', name: expectedTurnToolUse }` plus a synthetic
+// user-message reminder, bounded by `maxEscalations` (default 1).
+export type { AskOptions };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ContentBlock = any;

@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 
-import type { SessionClaims } from './sessionJwt.js';
+import type { SessionClaims, VerifiedSession } from './sessionJwt.js';
 import { verifySession } from './sessionJwt.js';
 import type { EmailWhitelist } from './whitelist.js';
 
@@ -17,7 +17,10 @@ declare module 'express-serve-static-core' {
  *  shared evaluation (the Express middleware below AND the plugin-facing
  *  `ctx.operatorAuth` accessor) reports failures identically. */
 export type SessionEvaluation =
-  | { readonly ok: true; readonly claims: SessionClaims }
+  // `VerifiedSession` (a subtype of `SessionClaims`) so expiry-aware callers
+  // (`POST /api/v1/auth/renew`, #965) read `exp`/`auth_time` from this same
+  // evaluation instead of re-verifying the token on a second code path.
+  | { readonly ok: true; readonly claims: VerifiedSession }
   | {
       readonly ok: false;
       readonly code: 'auth.missing' | 'auth.invalid' | 'auth.not_whitelisted';
@@ -68,8 +71,10 @@ export async function evaluateSessionToken(
  *   - **local** (LocalPasswordProvider): no whitelist check — the JWT was
  *     minted from a verified password and an `active` user-row, so the
  *     cookie's existence IS the authorisation. Status changes propagate
- *     within the 4h cookie lifetime; V1.x will add a server-side revoke
- *     store.
+ *     within the 4h cookie lifetime, and a renewal (#965,
+ *     `POST /api/v1/auth/renew`) re-checks the users-row status, so a
+ *     disabled account cannot extend past its current window. V1.x will
+ *     add a server-side revoke store.
  *
  * Strict: missing/invalid/expired cookie → 401. Whitelist-rejected
  * (Entra path only) → 403. Admin UI redirects to /login on 401.

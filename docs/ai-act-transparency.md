@@ -159,9 +159,15 @@ fehlender Trace heißt "nicht aufgezeichnet", nie "diesen Turn gab es nicht". En
 und begründet in #684; jeder Ausfall wird seitdem gezählt und protokolliert.
 
 **Seit #757 gibt es daneben einen persistierten Per-Turn-Receipt** (`turn_receipts`,
-Migration `0039`): der PII-freie Privacy-Receipt jedes abgeschlossenen Turns wird auf dem
-Postgres-Backend synchron gespeichert — ohne Graph-Sink, ohne User-Cluster-Vorbedingung —
-und ist unter `/api/v1/operator/receipts` (auth-gated) sowie im Operator-UI abrufbar.
+Migration `0039`): der PII-freie Privacy-Receipt jedes abgeschlossenen Turns, in dem der
+Privacy Shield aktiv war (Dataset interniert, Bypass protokolliert, strukturierte
+Tool-Ausgabe protokolliert oder Prompt maskiert), wird auf dem Postgres-Backend synchron
+gespeichert — ohne Graph-Sink, ohne User-Cluster-Vorbedingung. Ein Turn ohne
+Shield-Aktivität hinterlässt keine Zeile (#1081); ein fehlender Receipt heißt daher nie
+"diesen Turn gab es nicht". Agenten auf dem Claude-Abo-Provider (`claude-cli`) laufen über
+die CLI-Runtime, die keinen Privacy Shield installiert (Masking-Parität offen, #1087): ihre
+Turns werden weder maskiert noch interniert und schreiben nie einen Receipt. Der Receipt
+ist unter `/api/v1/operator/receipts` (auth-gated) sowie im Operator-UI abrufbar.
 Fehlschläge werden gezählt und protokolliert, nie still verworfen. **Seit #758 ist der
 Record hash-verkettet und checkpoint-signiert** (Migration `0041`: `entry_hash` über
 `prev_hash` verkettet, Ed25519-Checkpoints mit Schlüssel außerhalb der DB, optionaler

@@ -39,6 +39,25 @@ export interface AuthError {
 
 export type AuthResult = AuthSuccess | AuthError;
 
+/**
+ * #965 — outcome of re-checking an existing session's identity against the
+ * IdP before `POST /api/v1/auth/renew` extends it.
+ *
+ *   - `ok`          the IdP still vouches for this identity.
+ *   - `denied`      a definite "no": revoked/expired refresh token, disabled
+ *                   account, identity mismatch, no refresh token on file.
+ *                   The router answers 401 and the UI falls back to login.
+ *   - `unavailable` the IdP could not be asked (network error, 5xx, 429).
+ *                   Still refused (renewal fails closed) but reported as
+ *                   retryable (502) rather than as a denial.
+ *
+ * `message` is operator-readable and goes to logs only, never into HTTP
+ * bodies (same rule as `AuthError.message`).
+ */
+export type SessionRevalidation =
+  | { outcome: 'ok' }
+  | { outcome: 'denied' | 'unavailable'; message: string };
+
 /** Marks a provider as "user submits credentials inline" — login is one
  *  POST to `/api/v1/auth/login/<id>` with a JSON body the provider
  *  knows how to read. */
@@ -86,6 +105,18 @@ export interface OidcProvider {
    * the local cookie and stops.
    */
   logoutUrl?(input: { postLogoutRedirect: string }): string | null;
+  /**
+   * #965 — re-validate an existing session against the IdP before the
+   * router extends it. Optional so a provider that cannot re-check still
+   * type-checks, but the router treats a missing implementation as
+   * `denied`: renewing an OIDC session without an IdP re-check fails closed.
+   */
+  revalidateSession?(input: {
+    /** Session `email` claim (lower-cased at login). */
+    email: string;
+    /** Session `sub` claim, the provider-internal user id. */
+    providerUserId: string;
+  }): Promise<SessionRevalidation>;
 }
 
 export type AuthProvider = PasswordProvider | OidcProvider;

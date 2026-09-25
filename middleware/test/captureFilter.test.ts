@@ -330,8 +330,39 @@ describe('CaptureFilteringKnowledgeGraph', () => {
     assert.equal(result.sessionId, 'session:drop-scope');
     assert.ok(result.turnId.startsWith('turn:drop-scope'));
     assert.deepEqual(result.entityNodeIds, []);
+    // #1082 — the result says so, which is how the session logger counts
+    // filtered turns without parsing the log line.
+    assert.equal(result.tailOnly, true, 'result marks the turn as tail-only');
 
     const session = await inner.getSession('drop-scope');
     assert.equal(session?.turns.length, 1, 'turn is readable from the session');
+  });
+
+  it('persist=true returns the inner result without a tail-only marker (#1082)', async () => {
+    const filter = new CaptureFilter({
+      captureLevel: 'normal',
+      defaultVisibility: 'team',
+      significanceThreshold: 0.2,
+      significanceScorer: {
+        async score() {
+          return { score: 0.9 };
+        },
+      },
+    });
+    const wrapped = new CaptureFilteringKnowledgeGraph({
+      inner: new InMemoryKnowledgeGraph(),
+      filter,
+      log: () => {},
+    });
+
+    const result = await wrapped.ingestTurn({
+      scope: 'keep-scope',
+      time: '2026-05-08T08:00:00.000Z',
+      userMessage: 'how do I run the daily etl',
+      assistantAnswer: '1) … 2) … 3) …',
+      entityRefs: [],
+    });
+    assert.equal(result.tailOnly, undefined);
+    assert.ok(result.turnId.startsWith('turn:keep-scope'));
   });
 });

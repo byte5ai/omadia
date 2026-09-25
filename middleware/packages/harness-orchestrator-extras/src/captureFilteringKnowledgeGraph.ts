@@ -38,6 +38,12 @@
  * So the capture filter keeps deciding what costs money, and stops deciding
  * what the model remembers.
  *
+ * #1082 — the result of a tail-only write carries `tailOnly: true`, so the
+ * session logger counts filtered turns (`RunTraceOutcomeStats.
+ * captureTailOnlyTurns()`) instead of leaving them visible only as the
+ * `[capture-filter] turn tail-only` log line. The decorators wrapped around
+ * this one forward `ingestTurn` verbatim, so the marker reaches the caller.
+ *
  * A failed tail-only write propagates like any other ingest failure: the
  * session logger already catches it without failing the turn, counts it as
  * `turn-ingest-failed` and skips the run-trace write that would point at the
@@ -170,7 +176,10 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
       // Not swallowed: a synthetic success would bypass the caller's own
       // failure handling and book the lost tail entry — the #1096 symptom —
       // under the wrong telemetry bucket (`run-ingest-failed`).
-      return this.inner.ingestTurn(tailOnly);
+      const result = await this.inner.ingestTurn(tailOnly);
+      // #1082 — say so on the result (a new object; the inner one is not
+      // touched) so the caller can count filtered turns.
+      return { ...result, tailOnly: true };
     }
 
     const cleaned: TurnIngest = {

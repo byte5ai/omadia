@@ -1324,6 +1324,9 @@ export interface AuthMeResponse {
   /** Server clock at response time — Unix epoch SECONDS. Lets the client
    *  correct for local clock skew instead of trusting its own `Date.now()`. */
   server_now: number;
+  /** #965 — last moment a renewal can reach (sign-in time + absolute cap),
+   *  Unix epoch SECONDS; null when the server cannot renew sessions. */
+  renewable_until?: number | null;
 }
 
 /**
@@ -1338,7 +1341,34 @@ export interface SessionStatus {
   expiresAt: number | null;
   /** Server clock at probe time, Unix epoch seconds — null when unauthenticated. */
   serverNow: number | null;
+  /** #965 — end of the renewal chain, Unix epoch seconds. Null when
+   *  unauthenticated or when the server cannot renew; the watcher then
+   *  offers only a re-login. */
+  renewableUntil: number | null;
 }
+
+/**
+ * #965 — outcome of `renewSession` ("I'm still here"). A refusal is an
+ * expected result, not an exception:
+ *   - `refused` (401/403): the server will not extend this session (cap
+ *     reached, account disabled, IdP said no). Only a re-login helps.
+ *   - `error` (network, 5xx, 502 IdP outage): worth a retry.
+ */
+export type SessionRenewal =
+  | {
+      ok: true;
+      /** New expiry, Unix epoch seconds. */
+      expiresAt: number;
+      /** Server clock at response time, Unix epoch seconds. */
+      serverNow: number;
+      renewableUntil: number | null;
+    }
+  | { ok: false; kind: 'refused'; code: string | null }
+  | { ok: false; kind: 'error' };
+
+/** Window event fired after a successful renewal so other session readers
+ *  on the page (AuthBadge's "valid until") can pick up the new expiry. */
+export const SESSION_RENEWED_EVENT = 'omadia:session-renewed';
 
 export interface AuthProviderSummary {
   id: string;
@@ -1398,6 +1428,7 @@ export async function getSessionStatus(): Promise<SessionStatus> {
       user: null,
       expiresAt: null,
       serverNow: null,
+      renewableUntil: null,
     };
   }
   if (!res.ok) {
@@ -1414,7 +1445,57 @@ export async function getSessionStatus(): Promise<SessionStatus> {
     user: data.user,
     expiresAt: data.expires_at,
     serverNow: data.server_now,
+    renewableUntil: data.renewable_until ?? null,
   };
+}
+
+/**
+ * #965 — explicit session extension ("I'm still here"). Like
+ * `getSessionStatus` this deliberately does NOT auto-navigate on a 401:
+ * the SessionWatcher card shows the refusal and offers the re-login itself.
+ * Never throws; every failure is folded into the returned union.
+ */
+export async function renewSession(): Promise<SessionRenewal> {
+  let res: Response;
+  try {
+    res = await fetch(botApi('/v1/auth/renew'), {
+      method: 'POST',
+      headers: { accept: 'application/json' },
+      cache: 'no-store',
+      credentials: 'include',
+    });
+  } catch {
+    return { ok: false, kind: 'error' };
+  }
+  if (res.status === 401 || res.status === 403) {
+    const body = (await res.json().catch(() => null)) as { code?: unknown } | null;
+    return {
+      ok: false,
+      kind: 'refused',
+      code: typeof body?.code === 'string' ? body.code : null,
+    };
+  }
+  if (!res.ok) return { ok: false, kind: 'error' };
+  try {
+    const data = (await res.json()) as {
+      expires_at: number;
+      server_now: number;
+      renewable_until?: number | null;
+    };
+    window.dispatchEvent(
+      new CustomEvent(SESSION_RENEWED_EVENT, {
+        detail: { expiresAt: data.expires_at },
+      }),
+    );
+    return {
+      ok: true,
+      expiresAt: data.expires_at,
+      serverNow: data.server_now,
+      renewableUntil: data.renewable_until ?? null,
+    };
+  } catch {
+    return { ok: false, kind: 'error' };
+  }
 }
 
 export async function getAuthProviders(): Promise<AuthProvidersResponse> {

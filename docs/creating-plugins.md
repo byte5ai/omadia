@@ -431,6 +431,64 @@ curl -sS "$HUB/registry/index.json" | jq '.plugins[].id'
 Artefakt-URL (host-gepinnt, wird beim Read auf `HUB_PUBLIC_URL` umgeschrieben):
 `$HUB/registry/<id>/<version>/plugin.zip`.
 
+### In-tree-Pakete (`plugin-office`, `plugin-web-search`)
+
+Zwei Pakete unter `middleware/packages/` werden zusätzlich auf den Hub
+publiziert: `@omadia/plugin-office` und `@omadia/plugin-web-search`. Ihr ZIP
+entsteht **ausschließlich** über das gemeinsame, geguardete Script
+`middleware/scripts/build-plugin-zip.mjs` — nie per Hand gezippt. Hintergrund
+(#1075): office 0.1.2 wurde aus einem nie committeten Working-Tree publiziert,
+der Hub trug danach einen Setup-Guide, den das Repo nicht hatte.
+
+```bash
+cd middleware
+npm ci && npm run build                     # Peers (plugin-api, …) brauchen dist/
+npm run package -w @omadia/plugin-office    # → <repo>/out/omadia-plugin-office-<version>.zip
+npm run package -w @omadia/plugin-web-search
+```
+
+Das Script bricht hart ab, wenn `manifest.yaml` `identity.version`/`identity.id`
+nicht mit `package.json` `version`/`name` übereinstimmt, wenn unter dem
+Paketordner **irgendetwas** uncommitted oder untracked ist — auch gitignorierte
+Dateien außer Build-Output (`dist/`, `node_modules/`, `*.tsbuildinfo`), denn die
+Root-`.gitignore` ignoriert `tmp/`, `build/`, `logs/` überall und `tsc` würde
+`src/tmp/*.ts` trotzdem kompilieren —, wenn `HEAD` auf keinem Remote-Tracking-Ref
+liegt (Dry-Run nur mit `--allow-unpushed-commit`, Ausgabe dann als
+„NOT PUBLISHABLE" markiert), wenn nach dem frischen Build (`dist/` +
+`*.tsbuildinfo` gelöscht, dann `npm run build`) `lifecycle.entry` fehlt oder
+nicht im Archiv landet, oder wenn unter `dist/` ein Symlink liegt. Das ZIP ist
+flach (`manifest.yaml`, `package.json`, `dist/`) und byte-reproduzierbar; die
+Ausgabe nennt Commit-SHA und sha256.
+`middleware/test/pluginPackageVersions.test.ts` hält Manifest, `package.json`
+und den Lockfile-Workspace-Eintrag jedes Pakets mit `manifest.yaml` im CI
+synchron.
+
+Vor dem Publish:
+
+1. `latest_version` aus `$HUB/registry/index.json` lesen — nur eine **höhere**
+   Version publizieren. Eine höhere Nummer beweist keinen neueren Inhalt: bei
+   Zweifel das Live-ZIP herunterladen und gegen den Build diffen.
+2. Vom Merge-Commit auf `main` bauen, nicht von einem Feature-Branch.
+3. **Ein** Plugin nach dem anderen publizieren, **nie** `?overwrite=true`, danach
+   `index.json` pollen (die Blob-Liste ist eventually consistent).
+
+> **Bundled-IDs:** Beide IDs sind auf einem Standard-Kernel mitgeliefert. Ein
+> Hub-Install derselben ID läuft durch `PackageUploadService.ingest` und wird
+> dort mit `package.id_conflict_bundled` abgelehnt (#789), außer die Middleware
+> läuft mit `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`. Das ZIP ist außerdem nicht
+> eigenständig lauffähig: office bündelt seine Runtime-`dependencies` (`docx`,
+> `exceljs`, `jszip`) nicht, sie müssen im Host-`node_modules` liegen.
+>
+> **Toter Update-Badge:** Die Update-Erkennung im Store (`routes/store.ts`,
+> Detailseite und `enrichWithRegistry`) vergleicht die Hub-`latest_version` mit
+> der gespeicherten `installed_version` und nimmt Bundled-IDs nicht aus. Jede
+> höhere Hub-Version zeigt auf Kernels mit älterer `installed_version` also
+> „Update verfügbar", der Klick endet in 422 `package.id_conflict_bundled`.
+> Für office besteht das schon (Hub 0.1.2 > installiert 0.1.1); ein Publish von
+> web-search 0.1.1 erzeugt es für web-search neu. Vor diesem Publish die
+> Update-Erkennung für Bundled-IDs abschalten oder den Badge bewusst in Kauf
+> nehmen.
+
 ---
 
 ## 9. Im Hub-Tab erscheinen lassen
@@ -458,7 +516,7 @@ lokal und startet dann den normalen Install-Job.
 | Plugin crasht zur Laufzeit mit `Cannot find package 'X'` | `X` ist nicht im Host-`node_modules` und wurde nicht gebundelt. Entweder `X` in `dist/` bundeln (esbuild, §5) oder — wenn host-bereitgestellt — als `peerDependencies` deklarieren. |
 | Ingest warnt `peers_missing` | Eine deklarierte Peer-Dep fehlt im Host. Host-Dep ergänzen, oder (für eigene Deps) auf `dependencies` + Bundle umstellen. |
 | `npm install` schlägt mit 404 auf `@omadia/*` fehl | Peers sind privat/nicht-npm. `.npmrc` mit `legacy-peer-deps=true`; `@omadia/*`-Typen via `tsconfig.paths` resolven. |
-| Plugin taucht nicht im **Hub**-Tab auf, obwohl publiziert | Eine **lokale** Kopie gleicher `id` ist installiert → Merge bevorzugt lokal (local-wins). Built-ins (z.B. `@omadia/plugin-office`) sind deshalb nie im Hub-Tab — zum Test ein Nicht-Built-in publishen. |
+| Plugin taucht nicht im **Hub**-Tab auf, obwohl publiziert | Eine **lokale** Kopie gleicher `id` ist installiert → Merge bevorzugt lokal (local-wins). Built-ins (z.B. `@omadia/plugin-office`) sind deshalb nie im Hub-Tab — zum Test ein Nicht-Built-in publishen. Ein Hub-Install einer Built-in-ID scheitert mit `package.id_conflict_bundled` (#789, Override nur via `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`), siehe §8 „In-tree-Pakete". |
 | `409 publish.version_exists` | Version existiert (immutable). Version bumpen oder `?overwrite=true` (dev). |
 | `401 publish.unauthorized` / `503 publish.disabled` | `HUB_PUBLISH_TOKEN` falsch/fehlt bzw. im Hub-Env nicht gesetzt. |
 | Admin-UI/QR lädt nicht im Store-iframe | `fetch()` war absolut statt relativ, oder Response ohne `{ ok }`, oder `admin_ui_path` zeigt nicht auf `…/index.html`. Siehe §4b + admin-ui CLAUDE.md. |
