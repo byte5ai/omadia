@@ -15,41 +15,31 @@ import { SNAPSHOTS_TO_KEEP } from './snapshotRetention';
 import { takeDbSnapshot, type SnapshotIo } from './dbSnapshot';
 import { prepareInstall } from './installPreflight';
 import { recordCheckFailed, recordCheckReachedFeed } from './updaterCheckHealth';
-import {
-  createShellTranslate,
-  fillPlaceholders,
-  type ShellTranslate,
-} from './shellStrings';
+import { fillPlaceholders, type ShellTranslate } from './shellStrings';
+import { shellLocale } from './shellLocale';
 
 /** Where a user is sent when the automatic path has given up. */
 const RELEASES_URL = 'https://github.com/byte5ai/omadia/releases';
 
 /**
- * The shell's translator (OM-91).
+ * The shell's translator (OM-91, #1074).
  *
- * Resolved per dialog rather than once at module load: `app.getLocale()` is
- * only meaningful after the ready event, and this module is imported before
- * it. Lookup is a plain dictionary hit, so the repetition costs nothing, and
- * a per-call resolve cannot go stale — which matters here more than elsewhere,
- * because several of these dialogs fire on error paths where a second failure
- * would be its own bug.
+ * Resolved per dialog rather than once at module load: the OS locale is only
+ * meaningful after the ready event, this module is imported before it, and the
+ * web-ui can switch language while the app runs. Lookup is a plain dictionary
+ * hit, so the repetition costs nothing, and a per-call resolve cannot go stale.
  *
- * Locale source is `app.getLocale()`, the same one `main.ts`, `menu.ts` and
- * every dialog in `shellDialogs.ts` use, so the shell speaks one language.
- *
- * The web-ui's own `NEXT_LOCALE` cookie is deliberately NOT consulted (OM-91).
- * It lives on the other side of a process boundary — the shell would have to
- * ask the renderer's session for it, which is async, and these dialogs fire on
- * error paths where a second failure source is the last thing wanted. The OS
- * locale is synchronous, always available, and never fails.
- *
- * Known gap that buys: a user on an English OS who switched the web-ui to
- * German still gets English shell dialogs. Tracked separately rather than
- * papered over here — fixing it properly means the renderer pushing its locale
- * to the main process on change, not the shell reaching across to read it.
+ * The language comes from `shellLocale.ts`, the same source as `main.ts`, the
+ * menu and every dialog in `shellDialogs.ts`, so the shell speaks one language.
+ * The web-ui pushes the language it is showing to the main process; the shell
+ * never reaches across the process boundary to read the `NEXT_LOCALE` cookie,
+ * which would be async on dialogs that fire on error paths (OM-91). The pushed
+ * value is persisted, so dialogs at startup (before the renderer is up) use it
+ * too, and the OS locale remains the fallback. So this stays synchronous and
+ * cannot fail.
  */
 function shellT(): ShellTranslate {
-  return createShellTranslate(app.getLocale());
+  return shellLocale.translator();
 }
 
 let installing = false;

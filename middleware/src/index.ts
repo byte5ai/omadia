@@ -365,6 +365,11 @@ import {
   createModelCatalogSync,
   type ModelCatalogSync,
 } from './platform/modelCatalogSync.js';
+import {
+  classifyProviderCredentialKey,
+  createProviderPoolCredentialListener,
+} from './platform/providerPoolInvalidation.js';
+import { createSharedAnthropicClientRefresher } from './platform/sharedAnthropicClientRefresher.js';
 import { BackgroundJobRegistry } from './platform/backgroundJobRegistry.js';
 import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
 import { PromptContributionRegistry } from './platform/promptContributionRegistry.js';
@@ -773,7 +778,7 @@ async function main(): Promise<void> {
   // Customer bug (builder.ask_failed / "Could not resolve authentication
   // method"): on installs where the key arrives via the LLM access page (vault)
   // and not via ENV, the boot-time `client` above is unauthenticated forever —
-  // `refreshSharedAnthropicClientFromVault` only swaps the REGISTRY providers,
+  // `sharedAnthropicClientRefresher` only swaps the REGISTRY providers,
   // never this const. Host-side consumers (BuilderAgent, PreviewChatService)
   // therefore take this accessor and re-resolve the current client per turn
   // instead of capturing the boot instance.
@@ -1004,6 +1009,37 @@ async function main(): Promise<void> {
     catalog: llmProviderCatalog,
     getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
   });
+  // #1033 W1 — the kernel's own provider pool: same credentials source as the
+  // orchestrator plugin (the vault scope `@omadia/orchestrator`), same
+  // catalog, memoised per provider id. Consumed by the dynamic sub-agent
+  // runtime today; the model-policy validation (W2) reads `usable()` from it.
+  // #1080 — created here, before the provider-plugin boot loop below, so the
+  // catalog register/unregister helpers can invalidate it.
+  const kernelProviderPool = createLlmProviderPool({
+    getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
+    catalog: llmProviderCatalog,
+    // The orchestrator's own retry budget (see harness-orchestrator plugin.ts);
+    // the pool is shared with it from W3 on, so both sides agree.
+    maxRetries: 5,
+  });
+  // #1033 W3 — published for the orchestrator plugin (`llmProviderPool@1`,
+  // optional_requires) so the fallback circuit breaker has ONE state for the
+  // turn loop and the providers admin page. Provided here, before any plugin
+  // activates, like `llmProviderCatalog`.
+  serviceRegistry.provide('llmProviderPool', kernelProviderPool);
+  // #1080 — the pool memoises per provider id, including a negative "no key"
+  // answer, so it must hear about every credential write. Subscribing on the
+  // vault (not on the reactivate helper) covers every write path: admin
+  // settings, the runtime-secrets PATCH, install-time seeding, uninstall
+  // purge, the OAuth token-store binding and the Spec-005 OAuth broker. The
+  // listener runs before the write's promise settles, i.e. before any caller
+  // reactivates the orchestrator.
+  secretVault.onWrite(
+    createProviderPoolCredentialListener({
+      pool: kernelProviderPool,
+      scope: '@omadia/orchestrator',
+    }),
+  );
   const registerProviderFromPlugin = (pluginId: string): void => {
     try {
       const descriptor = registerPluginLlmProvider(
@@ -1015,6 +1051,9 @@ async function main(): Promise<void> {
         console.log(
           `[middleware] llm provider '${descriptor.id}' registered from ${pluginId} (${String(descriptor.models.length)} seed model(s), baseURL ${descriptor.baseURL}, discovery ${descriptor.discovery !== undefined ? 'on' : 'off'})`,
         );
+        // #1080 — the descriptor decides keyless/oauth/baseURL/wire format;
+        // a cached resolution against the previous one is stale.
+        kernelProviderPool.invalidate(descriptor.id);
         if (descriptor.discovery !== undefined) {
           void modelCatalogSync.refresh(descriptor.id);
         }
@@ -1033,6 +1072,7 @@ async function main(): Promise<void> {
         llmProviderCatalog,
       );
       if (id !== undefined) {
+        kernelProviderPool.invalidate(id);
         console.log(
           `[middleware] llm provider '${id}' unregistered (plugin ${pluginId} uninstalled)`,
         );
@@ -1185,23 +1225,6 @@ async function main(): Promise<void> {
   const jobScheduler = new JobScheduler({
     log: (msg) => console.log(msg),
   });
-
-  // #1033 W1 — the kernel's own provider pool: same credentials source as the
-  // orchestrator plugin (the vault scope `@omadia/orchestrator`), same
-  // catalog, memoised per provider id. Consumed by the dynamic sub-agent
-  // runtime today; the model-policy validation (W2) reads `usable()` from it.
-  const kernelProviderPool = createLlmProviderPool({
-    getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
-    catalog: llmProviderCatalog,
-    // The orchestrator's own retry budget (see harness-orchestrator plugin.ts);
-    // the pool is shared with it from W3 on, so both sides agree.
-    maxRetries: 5,
-  });
-  // #1033 W3 — published for the orchestrator plugin (`llmProviderPool@1`,
-  // optional_requires) so the fallback circuit breaker has ONE state for the
-  // turn loop and the providers admin page. Provided here, before any plugin
-  // activates, like `llmProviderCatalog`.
-  serviceRegistry.provide('llmProviderPool', kernelProviderPool);
 
   // Live model discovery, boot run: every connected provider with discovery
   // rules is asked for its current model list here (fire-and-forget — boot
@@ -1684,20 +1707,19 @@ async function main(): Promise<void> {
   // 'llm' provider at call time, so already-active plugins pick up the swap on
   // their next call without re-activation.
   const ORCHESTRATOR_SECRET_SOURCE = '@omadia/orchestrator';
-  // The key currently baked into the shared `llm`/`anthropicClient` providers.
-  // Seeded with the boot-time ENV key (line ~288). Updated whenever we swap the
-  // providers, so we only churn the Anthropic client when the key truly changes.
-  let sharedAnthropicKeyApplied = config.ANTHROPIC_API_KEY ?? '';
-  const refreshSharedAnthropicClientFromVault = async (
-    sourceAgentId: string = ORCHESTRATOR_SECRET_SOURCE,
-  ): Promise<void> => {
-    try {
-      const key = await readProviderApiKey(
-        (k) => secretVault.get(sourceAgentId, k),
+  // #1080 — the refresher also REVOKES: when the vault key is removed the
+  // shared providers fall back to the env key, or to an unauthenticated ''
+  // client (exactly what a keyless boot builds). Serialized, so the reactivate
+  // path and the vault listener below cannot apply a stale read last.
+  const sharedAnthropicClientRefresher = createSharedAnthropicClientRefresher({
+    readVaultKey: () =>
+      readProviderApiKey(
+        (k) => secretVault.get(ORCHESTRATOR_SECRET_SOURCE, k),
         'anthropic',
-      );
-      if (!key || key === sharedAnthropicKeyApplied) return;
-      const refreshed = createAnthropicClient({ apiKey: key, maxRetries: 5 });
+      ),
+    envKey: config.ANTHROPIC_API_KEY,
+    apply: (apiKey) => {
+      const refreshed = createAnthropicClient({ apiKey, maxRetries: 5 });
       serviceRegistry.replace('anthropicClient', refreshed);
       serviceRegistry.replace(
         'llm',
@@ -1706,17 +1728,20 @@ async function main(): Promise<void> {
           log: (...args) => console.log('[llm]', ...args),
         }),
       );
-      sharedAnthropicKeyApplied = key;
-      console.log(
-        `[middleware] shared llm/anthropicClient sourced from ${sourceAgentId} vault key — host-LLM plugins (plan-runner gate, LocalSubAgent inner calls, Teams) now armed`,
+    },
+  });
+  // Path-independent trigger: any write of an Anthropic key leaf in the host
+  // scope (or a purge of it) re-sources the shared client, even on write paths
+  // that never call `reactivateAgent` (install seeding, the OAuth broker).
+  secretVault.onWrite((event) => {
+    if (event.scope !== ORCHESTRATOR_SECRET_SOURCE) return;
+    const touchesAnthropicKey =
+      'purged' in event ||
+      event.keys.some(
+        (k) => classifyProviderCredentialKey(k)?.providerId === 'anthropic',
       );
-    } catch (err) {
-      console.error(
-        '[middleware] failed to refresh shared anthropic client from vault:',
-        err instanceof Error ? err.message : err,
-      );
-    }
-  };
+    if (touchesAnthropicKey) void sharedAnthropicClientRefresher.refresh();
+  });
   const reactivateAgent = async (agentId: string): Promise<void> => {
     await installService.reactivate(agentId);
     // Live key-entry path (LLM access page, or a PATCH to
@@ -1725,7 +1750,7 @@ async function main(): Promise<void> {
     // plugin reaching the host LLM via `ctx.llm` picks up the real key without
     // a restart.
     if (agentId === ORCHESTRATOR_SECRET_SOURCE) {
-      await refreshSharedAnthropicClientFromVault(agentId);
+      await sharedAnthropicClientRefresher.refresh();
     }
   };
 
@@ -1972,8 +1997,8 @@ async function main(): Promise<void> {
   // the (empty) ENV key at line ~288, so host-LLM plugins (plan-runner's Haiku
   // gate, LocalSubAgent inner calls) would be broken until the next live
   // reactivate. Re-source them from the vault now. No-op when ENV already
-  // carried the key (key === sharedAnthropicKeyApplied) or no key is stored.
-  await refreshSharedAnthropicClientFromVault();
+  // carried the key (vault key equals the applied one) or no key is stored.
+  await sharedAnthropicClientRefresher.refresh();
 
   // S+8 sub-commit 2b: late-resolve services published by
   // @omadia/knowledge-graph's activate(). The plugin owns Pool +

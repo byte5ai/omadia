@@ -56,6 +56,78 @@ audits the dropped names, and maps failures to sanitized `upstream-timeout` /
 `upstream-unreachable` denials. `dispatch-failed`, which had no call site, is
 replaced by those two reasons. See `docs/security-architecture.md` §10b.
 
+### Fixed — saving, rotating or removing an LLM key takes effect without a restart (#1080)
+
+2026-09-24 — on a stack booted without an LLM key, saving a key in
+`/admin/providers` never armed the orchestrator: every reactivation logged
+`no API key for provider 'anthropic' — chatAgent@1 capability NOT published`
+until the container restarted, while key verification, model discovery and the
+provider badge (which all read the vault directly) looked green. Removing a key
+had the mirror-image bug: the chat kept answering, and billing, with the deleted
+key. The kernel `llmProviderPool` memoises the resolved provider per id,
+including a negative "no key" result, and since #1039 the orchestrator reuses
+that pool instead of building its own, but no production code ever called
+`invalidate`. The concrete vaults (`FileSecretVault`, `InMemorySecretVault`) now
+announce every completed write through a kernel-internal `onWrite` observer
+(not on the `SecretVault` interface). A listener on the orchestrator scope drops
+the matching pool entry, so every write path is covered: the admin settings
+save, the runtime-secrets PATCH, install-time seeding, uninstall purge, the
+OAuth token-store binding and the OAuth broker. The listener runs before the
+write settles, so it lands before any reactivate. An API-key change
+(`provider:<id>/api_key`, legacy `anthropic_api_key`) also clears that
+provider's circuit breaker, because a new key is a new credential. An OAuth
+access-token write only drops the cache entry, since hourly rotation is the same
+credential. `verified_at` writes are ignored. Registering or unregistering a
+provider plugin invalidates its id as well. The shared host
+`anthropicClient`/`llm` is now revoked on key removal: it falls back to
+`ANTHROPIC_API_KEY` when set, otherwise to the unauthenticated client a keyless
+boot builds. Before this fix, OB-61's refresh returned early on a missing key.
+Not covered, and not yet filed as an issue: sub-agents that
+`DynamicAgentRuntime` has already built resolve their provider once at
+`activate()` and keep it until a restart or rebuild. After a keyless boot,
+Anthropic sub-agents stay on the unauthenticated client after a key is saved,
+and non-Anthropic agents whose activation failed are never retried. The open
+item is recorded in `docs/middleware-agent-handoff.md` §13.
+
+### Fixed — desktop dialogs follow the UI language (#1074)
+
+2026-09-24 — the desktop shell's own dialogs (updater, boot failure, recovery
+key) and its menu headings took their language from `app.getLocale()`, the OS
+locale. A user on an English OS who had switched the web UI to German still got
+English shell dialogs, because nothing told the main process which language the
+UI was showing (the OM-91 residual left open by #1069).
+
+The web UI now pushes the language it is showing to the shell over a new
+fire-and-forget preload channel, `omadia:uiLocale` (`window.omadia.setUiLocale`),
+on first load and after every switch, on every route. The shell accepts only
+`'en'` and `'de'`, applies the value to the next dialog, rebuilds the menu
+headings, and persists it to `userData/ui-locale.json` so dialogs that fire
+before the web UI is up (a boot failure, the updater at startup) use it too.
+Without a valid value it still falls back to the OS locale, so a fresh install
+behaves as before. `desktop/src/shellLocale.ts` is now the only place that
+reads the OS locale; a source-census test keeps it that way. Electron's own
+`role:` menu entries still follow the OS language.
+
+Still not following the UI language, and outside this fix: the tray menu
+(`desktop/src/tray.ts`, hard-coded English), the data-dir picker and its
+cloud-sync warning (`desktop/src/ipc.ts`, hard-coded English), and the loading
+and setup-wizard pages (`desktop/src/renderer/wizard-i18n.js`, keyed off
+`navigator.language`). The last one is now a visible mismatch: a boot-failure or
+recovery dialog follows the persisted UI language while the loading page behind
+it follows the OS. Tracked in `docs/middleware-agent-handoff.md` §13.
+
+### Fixed — header nav no longer overlaps at desktop-window widths (#1073)
+
+At the desktop shell's ~1100 px window the palette select covered HELP and the
+ADMIN trigger covered the "create issue" button. The header row and `<nav>`
+carried `min-w-0`, but every nav item is `whitespace-nowrap`, so only the nav's
+box shrank while its content spilled over the controls to its right. The row
+now fits by construction: below `xl` the palette and appearance selects
+collapse into one icon-triggered panel and the account badge shows initials
+only, and the wide nav spacing starts at `2xl` instead of `xl`. Every nav
+target stays reachable without overlap from 1024 px up; narrower desktop
+windows (880–1023 px) overflow at the right edge instead of overlapping.
+
 ### Fixed — bootstrap auto-removals purge agent bindings (#1070)
 
 2026-09-24 — the boot-time bootstrap removes a plugin on its own at four

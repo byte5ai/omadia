@@ -1824,6 +1824,41 @@ rendern hätte OM-84s falsches OK nur gegen ein ebenso nutzloses falsches WARN
 getauscht. Tests: `test/orchestratorExtrasProviderResolution.test.ts`,
 `test/adminEmbeddingProviderRoute.test.ts`, `web-ui/app/__tests__/page.test.tsx`.
 
+### Provider-Pool-Invalidierung bei Credential-Änderung (#1080)
+
+Der Kernel-`llmProviderPool` memoisiert pro Provider-Id, auch ein negatives
+„kein Key". Deshalb hängt er an einem kernel-internen Write-Observer der
+konkreten Vaults (`FileSecretVault.onWrite` / `InMemorySecretVault.onWrite`,
+Typen in `src/secrets/vaultWriteEvents.ts`, bewusst **nicht** auf dem
+`SecretVault`-Interface). Der Listener
+(`src/platform/providerPoolInvalidation.ts`) reagiert nur auf den Scope
+`@omadia/orchestrator`:
+
+- `provider:<id>/api_key` und das Legacy-`anthropic_api_key` →
+  `invalidate(id)` + `health.markHealthy(id)`, denn ein neuer Key ist ein
+  neues Credential und erbt keinen Breaker-Cooldown.
+- `provider:<id>/oauth_access_token` → nur `invalidate(id)`, weil die
+  stündliche Rotation dasselbe Credential ist.
+- `verified_at` und die übrigen OAuth-Leaves werden ignoriert.
+- `purge` → `invalidateAll()` plus alle Breaker zurück.
+
+Der Listener läuft, bevor der Write-Promise settled, also vor jedem
+Reactivate, egal über welchen Pfad geschrieben wurde. Zusätzlich invalidieren
+`registerProviderFromPlugin`/`unregisterProviderFromPlugin` die Id, weil der
+Descriptor `keyless`/`oauth`/`baseURL`/Wire-Format bestimmt. Der Pool wird
+dafür vor der Provider-Plugin-Boot-Schleife erzeugt.
+
+Der geteilte `anthropicClient`/`llm` läuft über
+`src/platform/sharedAnthropicClientRefresher.ts` (serialisiert, getriggert von
+`reactivateAgent` **und** einem Vault-Listener). Ein entfernter Vault-Key fällt
+auf `ANTHROPIC_API_KEY` zurück, sonst auf einen unauthentifizierten
+`''`-Client. Auf Installationen, deren Vault-Key beim ersten Boot aus
+`ANTHROPIC_API_KEY` geseedet wurde (`src/plugins/bootstrap.ts`), ist das
+derselbe Key: Host-Consumer (Plan-Runner-Gate, Teams, Builder) nutzen ihn nach
+dem Löschen weiter, nur der Orchestrator verweigert. Bereits gebaute
+dynamische Sub-Agenten behalten ihren Provider bis zum nächsten Rebuild — siehe
+§13 „Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild".
+
 ### Embedding-Provider-Reaktivierung (Beta-Runde 5, OM-97/98/99)
 
 **`POST /api/v1/admin/embedding-provider/reactivate`** (Auth wie der Rest des
@@ -2681,6 +2716,46 @@ Allowlist in `src/platform/pluginServiceGrants.ts`, obwohl es beide eager
 konsumiert. Zwei Zeilen `optional_requires` in dessen Manifest würden diese
 Allowlist-Zeilen mit demselben Mechanismus leeren, den OM-102 für extras
 benutzt hat.
+
+### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
+
+- `src/plugins/dynamicAgentRuntime.ts` (`activate()`, ~Z. 498-534) löst den
+  Provider **einmal** auf: `liveAnthropicProvider()` bzw.
+  `providerPool.get(hostProviderId)`. Die Pool-Invalidierung aus #1080 erreicht
+  bereits gebaute Sub-Agenten deshalb nicht. Nach einem Boot ohne Key bleiben
+  Anthropic-Sub-Agenten auch nach dem Speichern eines Keys auf dem
+  unauthentifizierten `''`-Client, bis sie neu gebaut werden (Neustart oder
+  Rebuild). Nicht-Anthropic-Agenten, deren Aktivierung mangels Key
+  fehlgeschlagen ist, werden nie erneut aktiviert. Umgekehrt nutzen gebaute
+  Sub-Agenten einen gelöschten Key weiter. Der Chat-Pfad ist zu, weil der
+  Orchestrator ohne Key `chatAgent@1` nicht mehr published; Plugins mit
+  `permissions.subAgents.calls`-Grant erreichen sie aber weiterhin über
+  `ctx.subAgent.ask` (`src/platform/pluginContext.ts`, Service
+  `subAgent:<id>`). Das begrenzt den Schaden, behebt ihn aber nicht.
+  Reparatur: Provider pro Aufruf spät auflösen oder die dynamischen Agenten
+  bei einem Credential-Write neu bauen.
+- Auf env-geseedeten Installationen nutzen Host-Consumer nach dem Löschen des
+  Vault-Keys weiter `ANTHROPIC_API_KEY` (derselbe Key). Der Refresher sollte das
+  zumindest als Warnung loggen.
+
+### Desktop-Shell: restliche Flächen folgen nicht der UI-Sprache (#1074 follow-up)
+
+#1074 hat die Shell-Dialoge (Updater, Boot-Fehler, Recovery-Key) und die
+Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprache
+über `omadia:uiLocale`, `desktop/src/shellLocale.ts` hält und persistiert sie in
+`userData/ui-locale.json`. Offen sind:
+
+- **Tray-Menü** (`desktop/src/tray.ts`) — Labels fest auf Englisch.
+- **Datenordner-Auswahl und Cloud-Sync-Warnung** (`desktop/src/ipc.ts`,
+  `chooseDataDirWithSyncWarning`) — Titel, Buttons und Text fest auf Englisch.
+- **Lade- und Setup-Wizard-Seiten** (`desktop/src/renderer/wizard-i18n.js`) —
+  richten sich nach `navigator.language`, also nach der OS-Sprache. Seit #1074
+  sichtbar inkonsistent: ein Boot-Fehler- oder Recovery-Dialog spricht die
+  persistierte UI-Sprache, die Ladeseite dahinter die OS-Sprache. Die Reparatur
+  wäre, der Seite den Wert aus `shellLocale` mitzugeben, statt
+  `navigator.language` zu lesen.
+- **Electrons eigene `role:`-Menüeinträge** folgen der OS-Sprache; außerhalb
+  unserer Reichweite, nur zu benennen.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
