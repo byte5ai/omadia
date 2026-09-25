@@ -2983,10 +2983,11 @@ Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
 - **`checkDeliverable` liest "Datei fehlt" als "Chat gelöscht"** und pausiert die Routine.
   Existiert der Chat nur im Browser (sein erster PUT scheiterte), wird eine gültige Routine
   pausiert. Abhilfe: Tombstone beim `DELETE` oder nicht-pausierender Fehler bei bloßem Fehlen.
-- **Titel eines gescheiterten Umbenennens.** Im Hydration-Fall "gleiche Turns, Server neuer
-  wegen Zustellung" folgt der Titel dem Server. Ein Umbenennen, dessen PUT scheiterte, geht
-  dann verloren — ohne Zeitstempel des Titels auf dem Server ist es von einem Umbenennen auf
-  einem anderen Gerät nicht unterscheidbar.
+- **Konkurrierendes Umbenennen bei nicht synchronisiertem Titel.** Hält dieser Browser ein
+  Umbenennen, dessen PUT scheiterte (`titleUnsynced`), und hat ein anderes Gerät den Chat
+  inzwischen umbenannt, gewinnt der lokale Titel und wird per Catch-up-PUT über das andere
+  Umbenennen geschrieben. Ohne Zeitstempel des Titels auf dem Server sind beide nicht
+  gegeneinander abzuwägen.
 - **Zustellungen sind nicht im Modellkontext** (bewusst, s. § *Web-Sender*). Eine Rückfrage
   wie "erklär Punkt 2 des Reports" hat nichts, woran sie anknüpft; Zustellungen könnten als
   separater Kontext mitgegeben werden.
