@@ -1211,6 +1211,9 @@ does not cover other transformations of the secret, such as JSON `\u`
 escapes or hashes. The default fetch is plain `globalThis.fetch`, not
 `guardedOutboundFetch`: the destination host is operator-declared and must
 match exactly, and operators may broker to intranet hosts on purpose.
+These and the other S2/S3b preconditions (the unenforced
+`credential:broker:use` gate, the unsalted `fingerprintSecret`) are tracked
+in `docs/middleware-agent-handoff.md` §13.
 
 Tests: `middleware/test/credentialBrokerEgress.test.ts` (a real local HTTP
 upstream: echo in every encoding, a cross-origin 302, a trickling upstream,

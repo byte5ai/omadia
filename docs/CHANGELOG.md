@@ -54,7 +54,11 @@ secret from header values and body in raw, base64 and URL-encoded form (secrets
 of 8+ characters), filters caller headers against a static allow-list and
 audits the dropped names, and maps failures to sanitized `upstream-timeout` /
 `upstream-unreachable` denials. `dispatch-failed`, which had no call site, is
-replaced by those two reasons. See `docs/security-architecture.md` §10c.
+replaced by those two reasons. See `docs/security-architecture.md` §10c. What
+the slice leaves open for #778 S2/S3b (short-secret floor, the unenforced
+`credential:broker:use` gate, the unsalted `fingerprintSecret`, per-credential
+vendor headers) is tracked in `docs/middleware-agent-handoff.md` §13.
+
 ### Changed — direct tests for the Runde-5 code paths (#1077)
 
 2026-09-24 — the Runde-5 cross-vendor audit listed 14 changed production paths

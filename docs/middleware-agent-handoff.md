@@ -2814,6 +2814,45 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Credential-Broker: offen nach der Egress-Härtung (#778 S3a follow-up)
+
+S3a härtet nur die Antwortseite von `CredentialBroker.request`
+(`docs/security-architecture.md` §10c). Die folgenden Punkte lässt der Slice
+bewusst offen; sie müssen stehen, **bevor** das Agent-Tool (#778 S3b) den
+Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
+
+- **Kurze Secrets werden nicht gescrubbt (S2).** `brokerResponse.ts`
+  scrubbt Secrets und `basic-password`-Passwortsegmente erst ab
+  `MIN_SCRUBBABLE_SECRET_LENGTH` = 8 Zeichen; ein kürzeres Secret, das ein
+  Upstream zurückspiegelt, geht unverändert an den Aufrufer. Reparatur:
+  S2 lehnt solche Secrets (und bei `basic-password` ein zu kurzes
+  Passwortsegment) schon beim Anlegen ab, damit die Untergrenze nie greift.
+- **Die grobe Capability `credential:broker:use` wird nicht geprüft
+  (S3b).** Der Header von `harness-channel-sdk/src/credentials.ts` beschreibt
+  sie als Gate vor jeder Broker-Nutzung, aufgelöst über den normalen
+  #575-`GrantStore`. `broker.ts` prüft heute nur den feinen
+  `CredentialGrant`. S3b muss das Gate vor dem Tool-Aufruf durchsetzen,
+  sonst reicht ein Credential-Grant allein.
+- **`fingerprintSecret` ist ungesalzen (S2).** Der Log-Surrogat
+  (`harness-channel-sdk/src/credentials.ts`, SHA-256 gekürzt auf 64 Bit)
+  begründet seine Sicherheit damit, dass das Secret zufällig ist. Für
+  menschlich gewählte Secrets (vor allem `basic-password`, `user:pass`)
+  stimmt das nicht; ein Fingerprint in Audit-Events und Logs erlaubt dann
+  einen Wörterbuchabgleich. Reparatur: HMAC mit einem Server-Schlüssel statt
+  nacktem SHA-256, inklusive Umgang mit bestehenden `fingerprint`-Spalten.
+- **Vendor-Header brauchen ein `allowedHeaders` pro Credential (S2/S3b).**
+  Die Caller-Header-Allow-List in `brokerOutbound.ts` ist statisch;
+  `Notion-Version` o. ä. wird verworfen (und nur als Name auditiert). Das ist
+  eine Schema-Änderung am Credential.
+- **Nicht gescrubbte Transformationen.** Der Scrub deckt roh, base64 (des
+  ganzen Secrets) und URL-kodiert ab, nicht JSON-`\u`-Escapes, base64 des
+  Passwortsegments allein oder Hashes des Secrets. Vor S3b entscheiden, ob
+  das Agent-Tool dafür eine zweite Schicht braucht.
+- **Standard-`fetch` ist nicht `guardedOutboundFetch`.** Bewusst: der Host
+  ist vom Operator deklariert und muss exakt passen, Intranet-Ziele sind
+  erlaubt. Mit S3b prüfen, ob ein per-Credential-Opt-in für den SSRF-Guard
+  nötig ist.
+
 ### Turn-Budget (OM-104) — offene Defekte (#1077 follow-up)
 
 Beim Schreiben der #1077-Tests gefunden, dort bewusst nicht repariert (die
