@@ -104,6 +104,25 @@ pre-existing defects that are deliberately not fixed here; both are recorded as
   stores a fractional entry such as `240.5` verbatim, and shows raw exception
   text instead of a catalog message.
 
+### Fixed — builder live view and fill_slot obligation on the subscription path (#1072)
+
+2026-09-24 — on the Claude subscription-CLI provider the plugin builder and its
+preview chat ran through `createCliSubAgent`, whose `ask()` dropped the
+`AskObserver` and took no `AskOptions`. The builder UI got no `tool_use` /
+`tool_result` / token / usage events (the live view sat on the heartbeat), and
+`expectedTurnToolUse: 'fill_slot'` for a build-intent turn had no effect.
+
+`CliChatAgent.chat(input, hooks?)` now hands every lifecycle event and the
+terminal usage to the caller while still throwing on a terminal `is_error`
+result, and a new `CliObserverBridge` maps those events onto the observer:
+omadia tool calls with the `mcp__omadia__` prefix stripped, per-iteration token
+chunks (chars/4), phases, iteration boundaries after tool results, and one
+aggregate usage per CLI spawn. Foreign (non-omadia) tool calls are never
+forwarded; builder and preview count them via `recordForeignToolCall`. Because
+the CLI has no `tool_choice`, `expectedTurnToolUse` is enforced by a post-turn
+check with exactly one re-prompt; a failing re-prompt fails the ask, as on the
+API path.
+
 ### Fixed — `manage_routine` works on core-dispatched channels, and says so honestly elsewhere (#1086)
 
 2026-09-24 — asking an agent to create, list, pause, resume or delete a routine

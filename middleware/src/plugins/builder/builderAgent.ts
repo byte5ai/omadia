@@ -13,6 +13,7 @@ import {
 } from '@omadia/orchestrator';
 
 import { ASSETS } from '../../platform/assets.js';
+import { recordForeignToolCall } from '../../platform/foreignToolMetrics.js';
 import { warnIfEmptyInputSchema } from '../dynamicAgentRuntime.js';
 import { zodToJsonSchema } from '../zodToJsonSchema.js';
 import { type AuditLogger, createAuditLogger } from './audit.js';
@@ -920,6 +921,10 @@ function defaultBuildSubAgent(opts: BuilderSubAgentBuildOptions): Askable {
       systemPrompt: opts.systemPrompt,
       model: opts.cliModel,
       tools: opts.tools,
+      // #1072 — a foreign call is dropped from the builder trace; count it
+      // (#1017 item 4) instead of losing it. Constant slug, not
+      // `builder-<draftId>`, so `byAgent` does not grow one key per draft.
+      onForeignToolUse: (toolName) => recordForeignToolCall(toolName, 'builder'),
     });
   }
   if (!opts.provider) {
