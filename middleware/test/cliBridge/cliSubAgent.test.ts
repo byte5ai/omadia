@@ -19,6 +19,52 @@ import type {
 } from '../../packages/harness-orchestrator/src/tools/domainQueryTool.js';
 
 describe('createCliSubAgent', () => {
+  /**
+   * #1085 — a sub-agent turn is a CLI spawn like any other, and
+   * `createCliSubAgent` builds its own deps rather than inheriting the chat
+   * agent's, so the resolved binary has to be handed in explicitly. Without
+   * this forward the main chat turn runs the operator's installed CLI while
+   * every `ask_<slug>` sub-agent still spawns whatever PATH resolves.
+   */
+  it('forwards the resolved CLI binary into the sub-agent spawn (#1085)', async () => {
+    let capturedDeps: CliChatAgentDeps | undefined;
+
+    const agent = createCliSubAgent({
+      name: 'finance',
+      systemPrompt: 'You are finance.',
+      model: 'sonnet',
+      tools: [],
+      resolveCliBinary: () => '/data/cli-tools/bin/claude',
+      createCliAgent(deps) {
+        capturedDeps = deps;
+        return {
+          async chat() {
+            return { text: 'ok' };
+          },
+        } as never;
+      },
+    });
+    await agent.ask('anything');
+
+    assert.equal(capturedDeps?.resolveCliBinary?.(), '/data/cli-tools/bin/claude');
+  });
+
+  it('omits the resolver when none is wired, keeping the PATH fallback', () => {
+    let capturedDeps: CliChatAgentDeps | undefined;
+    createCliSubAgent({
+      name: 'finance',
+      systemPrompt: 'You are finance.',
+      model: 'sonnet',
+      tools: [],
+      createCliAgent(deps) {
+        capturedDeps = deps;
+        return { async chat() { return { text: 'ok' }; } } as never;
+      },
+    });
+
+    assert.equal(capturedDeps?.resolveCliBinary, undefined);
+  });
+
   it('routes ask() through CliChatAgent.chat and exposes sub-agent tools on dispatch', async () => {
     let seenInput: ChatTurnInput | undefined;
     let capturedDeps: CliChatAgentDeps | undefined;

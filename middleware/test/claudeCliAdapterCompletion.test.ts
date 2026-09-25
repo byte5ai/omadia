@@ -70,6 +70,7 @@ interface FakeCli {
 let binDir = '';
 let previousPath: string | undefined;
 let previousApiKey: string | undefined;
+let previousToolsDir: string | undefined;
 
 function writeFakeClaude(fake: FakeCli): void {
   writeFileSync(path.join(binDir, 'stdout.txt'), fake.stdout ?? '');
@@ -134,6 +135,11 @@ describe('claudeCliAdapter completion (Shape 2)', { skip: IS_WINDOWS ? 'POSIX sh
     // Our fake first; /usr/bin:/bin only so the script's `cat` resolves.
     process.env['PATH'] = `${binDir}:/usr/bin:/bin`;
     process.env['ANTHROPIC_API_KEY'] = 'sk-must-not-reach-the-cli';
+    // #1085 — the adapter prefers `<CLI_TOOLS_DIR>/bin/claude` over PATH. An
+    // empty dir keeps a developer's runtime install (default
+    // `<cwd>/data/cli-tools`) from shadowing the fake with a logged-in CLI.
+    previousToolsDir = process.env['CLI_TOOLS_DIR'];
+    process.env['CLI_TOOLS_DIR'] = path.join(binDir, 'no-runtime-install');
     clearCliVersionCache();
     captured.length = 0;
   });
@@ -143,6 +149,8 @@ describe('claudeCliAdapter completion (Shape 2)', { skip: IS_WINDOWS ? 'POSIX sh
     else process.env['PATH'] = previousPath;
     if (previousApiKey === undefined) delete process.env['ANTHROPIC_API_KEY'];
     else process.env['ANTHROPIC_API_KEY'] = previousApiKey;
+    if (previousToolsDir === undefined) delete process.env['CLI_TOOLS_DIR'];
+    else process.env['CLI_TOOLS_DIR'] = previousToolsDir;
     rmSync(binDir, { recursive: true, force: true });
   });
 

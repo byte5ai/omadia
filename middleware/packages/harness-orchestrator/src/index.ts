@@ -510,6 +510,8 @@ export type {
   CliUsage,
 } from './cliChatAgent.js';
 export { resolveCliSpawnTimeoutMs, CLI_SPAWN_TIMEOUT_ENV_KEY } from './cliChatAgent.js';
+/** #1085 — the binary name the kernel's `resolveCliBin` is asked to resolve. */
+export { DEFAULT_CLI_BINARY } from './cliChatAgent.js';
 export { createCliSubAgent } from './cliSubAgent.js';
 export type { CliSubAgentOptions } from './cliSubAgent.js';
 

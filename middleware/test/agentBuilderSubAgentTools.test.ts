@@ -3,6 +3,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 
 import type { LlmProvider } from '@omadia/llm-provider';
@@ -170,6 +173,85 @@ test('registerDbSubAgentTools registers one domain tool on local and CLI host pa
   assert.equal(cli.registered.length, 1);
   assert.equal(cli.registered[0]?.name, 'ask_researcher_bot');
 });
+
+test(
+  'a DB sub-agent on a CLI host spawns the runtime-installed CLI, not PATH (#1085)',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // registerDbSubAgentTools forwards `resolveClaudeCliBin` into
+    // buildSubAgentDomainTools, which passes it on behind a conditional
+    // spread. Dropping the forward compiles, passes the grant scan and sends
+    // every DB `ask_<slug>` turn back to PATH — the #1085 bug. Both fakes log
+    // `$0`, and the PATH one answers differently and shadows any real CLI.
+    const dir = mkdtempSync(path.join(tmpdir(), 'subagent-cli-bin-'));
+    const calls = path.join(dir, 'calls.log');
+    const fake = (answer: string): string =>
+      `#!/bin/sh\necho "$0" >> '${calls}'\n` +
+      `if [ "$1" = "--version" ]; then echo "2.1.259 (Claude Code)"; exit 0; fi\n` +
+      `cat > /dev/null\n` +
+      `echo '{"type":"result","subtype":"success","is_error":false,"result":"${answer}","num_turns":1,"usage":{"input_tokens":1,"output_tokens":1}}'\n`;
+    const toolsDir = path.join(dir, 'cli-tools');
+    const installed = path.join(toolsDir, 'bin', 'claude');
+    mkdirSync(path.dirname(installed), { recursive: true });
+    writeFileSync(installed, fake('from-runtime-install'), { mode: 0o755 });
+    const pathDir = path.join(dir, 'path');
+    mkdirSync(pathDir);
+    writeFileSync(path.join(pathDir, 'claude'), fake('from-path'), { mode: 0o755 });
+
+    const prevPath = process.env['PATH'];
+    const prevToolsDir = process.env['CLI_TOOLS_DIR'];
+    process.env['PATH'] = `${pathDir}${path.delimiter}${prevPath ?? ''}`;
+    process.env['CLI_TOOLS_DIR'] = toolsDir;
+    try {
+      const registered: Array<{ name: string; handle(input: unknown): Promise<string> }> = [];
+      const built = {
+        orchestrator: {
+          hasDomainTool: (name: string): boolean =>
+            registered.some((tool) => tool.name === name),
+          registerDomainTool: (tool: {
+            name: string;
+            handle(input: unknown): Promise<string>;
+          }): void => {
+            registered.push(tool);
+          },
+        },
+      };
+      const count = registerDbSubAgentTools(
+        { subAgents: [sub()], toolGrants: [], skills: [skill()] },
+        built,
+        {
+          client: {} as Parameters<typeof registerDbSubAgentTools>[2]['client'],
+          nativeToolRegistry: {
+            get: () => undefined,
+          } as unknown as Parameters<typeof registerDbSubAgentTools>[2]['nativeToolRegistry'],
+          mcpManager: {} as Parameters<typeof registerDbSubAgentTools>[2]['mcpManager'],
+          mcpServers: [],
+          defaultModel: 'sonnet-cli',
+          hostIsCliProvider: true,
+          cliModelAlias: (model: string): string => model.replace(/-cli$/, '') || 'sonnet',
+        },
+      );
+      assert.equal(count, 1);
+
+      const answer = await registered[0]!.handle({ question: 'hi' });
+
+      assert.match(answer, /from-runtime-install/);
+      const spawned = readFileSync(calls, 'utf8').trim().split('\n');
+      assert.ok(spawned.length >= 1, 'the sub-agent never spawned a CLI');
+      assert.deepEqual(
+        [...new Set(spawned)],
+        [installed],
+        'every probe and spawn of the sub-agent must hit the runtime install',
+      );
+    } finally {
+      if (prevPath === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = prevPath;
+      if (prevToolsDir === undefined) delete process.env['CLI_TOOLS_DIR'];
+      else process.env['CLI_TOOLS_DIR'] = prevToolsDir;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test('subAgentToolName + mcpToolNameFromRef', () => {
   assert.equal(subAgentToolName('GTM Agent!!'), 'ask_gtm_agent');
