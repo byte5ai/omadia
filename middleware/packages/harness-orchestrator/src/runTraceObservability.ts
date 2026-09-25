@@ -69,6 +69,12 @@ export const RUN_TRACE_RECORDED = 'recorded' satisfies RunTraceOutcome;
  *  {@link RunTraceOutcomeStats} instance. */
 export type RunTraceOutcomeCounts = Readonly<Record<RunTraceOutcome, number>>;
 
+/** #1082 — the service name the orchestrator plugin publishes its shared
+ *  {@link RunTraceOutcomeStats} under, so an operator surface
+ *  (`GET /api/admin/run-trace`) can read the counts without a reference into
+ *  the plugin. */
+export const RUN_TRACE_STATS_SERVICE = 'runTraceStats';
+
 const ZERO_COUNTS: RunTraceOutcomeCounts = Object.freeze({
   recorded: 0,
   'no-graph-sink': 0,
@@ -82,9 +88,10 @@ const ZERO_COUNTS: RunTraceOutcomeCounts = Object.freeze({
  *
  * Deliberately an injectable object rather than module-level mutable state: the
  * counters are asserted on in tests, and a shared global would make two tests
- * in one process read each other's turns. Each `SessionLogger` holds its own
- * instance, so the tallies are per logger, not process-wide; a test constructs
- * its own.
+ * in one process read each other's turns. The orchestrator plugin constructs ONE
+ * instance, hands it to every `SessionLogger` it builds and publishes it as
+ * {@link RUN_TRACE_STATS_SERVICE} (#1082); a `SessionLogger` built without one
+ * keeps its own, and a test constructs its own.
  */
 export class RunTraceOutcomeStats {
   #counts: Record<RunTraceOutcome, number> = { ...ZERO_COUNTS };

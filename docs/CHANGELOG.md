@@ -56,6 +56,16 @@ next to the existing run-trace counters. It is deliberately not a sixth
 count it twice, raise `droppedTotal()` and print a false "run trace not
 recorded" warning.
 
+A counter nobody can read is still only a log line, and until now nothing read
+these tallies, the #684 ones included: every `SessionLogger` held a private
+instance, split per Agent and reset whenever a config diff rebuilt one. The
+orchestrator plugin now hands ONE `RunTraceOutcomeStats` to every logger it
+builds (each Agent, registry rebuilds, `transcribe_recording`) and publishes it
+as `runTraceStats`. `GET /api/admin/run-trace` (Bearer `ADMIN_TOKEN`, like
+`/api/admin/security/screening`) returns the outcome counts, `droppedTotal`
+and `captureTailOnlyTurns`; process-scoped, reset on restart. It is not on the
+public `/health`, which carries no traffic figures.
+
 The `run-ingest-failed` text no longer claims the cause is "most often" a
 missing User-Cluster that is "resolved only on the browser-login path".
 `ingestRun` also fails on pool, connection and insert errors, and a missing

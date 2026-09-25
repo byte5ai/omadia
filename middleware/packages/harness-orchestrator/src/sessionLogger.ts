@@ -96,7 +96,8 @@ export class SessionLogger {
      */
     private readonly agentSlug?: string,
     /**
-     * #684 — per-logger tallies of run-trace outcomes. Public so an operator
+     * #684 — run-trace outcome tallies (in production one instance shared by
+     * every logger the orchestrator plugin builds, #1082). Public so an operator
      * surface can read the drop counts without this class growing a reporting
      * responsibility; injectable so two tests in one process cannot read each
      * other's turns. The trace OUTCOMES are only ever written for a turn that

@@ -108,7 +108,9 @@ import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
+  RunTraceOutcomeStats,
 } from '@omadia/orchestrator';
+import { RUN_TRACE_STATS_SERVICE } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
 import { createDatasetsRouter } from './routes/datasets.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
@@ -5962,6 +5964,10 @@ async function main(): Promise<void> {
       createAdminRouter({
         store: memoryStore,
         token: config.ADMIN_TOKEN,
+        // #1082 — per request: the orchestrator plugin publishes the tally
+        // on activate, possibly after this router is mounted.
+        runTraceStats: () =>
+          serviceRegistry.get<RunTraceOutcomeStats>(RUN_TRACE_STATS_SERVICE),
       }),
     );
     console.log('[middleware] admin endpoints enabled at /api/admin');

@@ -2276,7 +2276,8 @@ TRANSCRIPTION_REALTIME_EXPERIMENTAL=1   # opt-in: gpt-live-transcribe Realtime-P
                                         # @omadia/transcription-adapter-openai
                                         # installiert + mit API-Key versorgt ist
 # Optional endpoints
-ADMIN_TOKEN                         # mount /api/admin (mutating memory)
+ADMIN_TOKEN                         # mount /api/admin (mutating memory; read-only
+                                    # counters: /security/screening #749, /run-trace #1082)
 DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (Session-gated seit #669; Dev-Scaffolding)
 DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#669)
 # Teams
