@@ -8,7 +8,8 @@ import type { ApprovalReminder } from '@omadia/plugin-api';
  * (Teams ConversationReference, Telegram chat id, …).
  *
  * The routines runner holds one sender per channel id. Channels register
- * their sender at boot (today: Teams; Telegram + HTTP follow). Each sender
+ * their sender at boot (Teams, Telegram, …); the kernel registers the
+ * browser chat's own sender (`webChatProactiveSender.ts`, #1071). Each sender
  * is responsible for translating the channel-agnostic `SemanticAnswer`
  * into the wire format its connector expects — same translation the
  * channel does for inbound-driven turns.
@@ -19,6 +20,14 @@ export interface ProactiveSender {
    * routine rows it's expected to deliver to. Today: `'teams'`.
    */
   readonly channel: string;
+
+  /**
+   * #1071 — optional create-time check of the delivery handle. Throws with a
+   * user-facing reason when `conversationRef` could never be delivered to, so
+   * `createRoutine` refuses the routine up front instead of it failing on
+   * every cron fire. Senders that accept any handle omit it.
+   */
+  validateConversationRef?(conversationRef: unknown): void;
 
   /**
    * Deliver `message` to the conversation captured in `conversationRef`.

@@ -33,6 +33,15 @@ export {
   createProactiveSender,
 } from './genericProactiveSender.js';
 
+// #1071 — the browser chat's proactive sender; the kernel registers it.
+export {
+  WEB_ROUTINE_CHANNEL,
+  createWebChatProactiveSender,
+  webChatConversationRef,
+  type WebChatConversationRef,
+  type WebChatProactiveSenderOptions,
+} from './webChatProactiveSender.js';
+
 export {
   ADAPTIVE_CARD_CONTENT_TYPE,
   ROUTINE_CARD_ACTION_KIND,

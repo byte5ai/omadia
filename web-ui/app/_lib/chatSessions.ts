@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { mergeProactiveFromRemote } from './chatProactiveMerge';
+
 /**
  * Persisted chat-tab sessions. Each tab is a self-contained session —
  * tab-id === session-id === orchestrator scope, so the knowledge graph
@@ -571,6 +573,17 @@ export interface Message {
   };
   startedAt: number;
   finishedAt?: number;
+  /**
+   * #1071 — set by the SERVER on a scheduled routine's output it delivered
+   * into this chat (no user turn produced it). Drives the "scheduled
+   * routine" badge. The server keeps these across the client's whole-session
+   * PUT and trusts the marker only from its own copy.
+   */
+  proactive?: {
+    deliveredAt: number;
+    routineId?: string;
+    routineName?: string;
+  };
   streaming?: boolean;
   /**
    * Theme E0+E1 liveness pulse — last `heartbeat` event from the route.
@@ -1180,6 +1193,53 @@ export function useChatSessions(): UseChatSessionsResult {
     }
   }, [persistTick, sessions]);
 
+  // #1071 — re-read a session for routine deliveries the server appended
+  // since hydration. There is no live push for the web chat, so this runs when
+  // the user switches to a chat and when the tab becomes visible. Additive
+  // only (`mergeProactiveFromRemote`), never PUTs, and leaves a session with
+  // a turn in flight alone — the stream owns that state until it finishes.
+  const refreshProactive = useCallback((id: string): void => {
+    if (!id) return;
+    fetchRemoteSession(id)
+      .then((remote) => {
+        if (!remote) return;
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === id && !s.messages.some((m) => m.streaming === true)
+              ? mergeProactiveFromRemote(s, remote)
+              : s,
+          ),
+        );
+      })
+      .catch((err: unknown) => {
+        console.warn(
+          '[chat-sessions] proactive refresh failed:',
+          err instanceof Error ? err.message : err,
+        );
+      });
+  }, []);
+
+  const setActive = useCallback(
+    (id: string): void => {
+      setActiveId(id);
+      refreshProactive(id);
+    },
+    [refreshProactive],
+  );
+
+  const resolvedActiveId =
+    sessions.find((s) => s.id === activeId)?.id ?? sessions[0]?.id ?? '';
+  useEffect(() => {
+    if (hydrating || !resolvedActiveId) return;
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') refreshProactive(resolvedActiveId);
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [hydrating, resolvedActiveId, refreshProactive]);
+
   // Always return *some* active session so the caller doesn't have to guard.
   // Build an ephemeral empty one during the brief hydrating window.
   const activeSession =
@@ -1195,7 +1255,7 @@ export function useChatSessions(): UseChatSessionsResult {
     createSession,
     deleteSession,
     renameSession,
-    setActive: setActiveId,
+    setActive,
     clearMessages,
     mutateById,
     persistById,

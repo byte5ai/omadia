@@ -3757,10 +3757,56 @@ Stores). Drei Entscheidungen, die dazugehören:
   `enterWith` hätte den Principal ohne Scope-Ende auf der Request-Kette liegen lassen, und
   die In-Process-Runtime hat keinen Owner-Guard, der so etwas abfinge.
 
-Kanal ist `web`. Für den hat kein Plugin einen Proactive-Sender registriert, `create`
-scheitert also weiter — aber mit *"no proactive sender registered for channel 'web'"*, was
-die tatsächliche Grenze benennt. `list`/`pause`/`resume`/`delete` funktionieren.
-**Offen:** ein Web-Sender, damit auch `create` aus dem Browser-Chat trägt.
+Kanal ist `web`. `list`/`pause`/`resume`/`delete` funktionierten damit sofort; `create`
+scheiterte noch mit *"no proactive sender registered for channel 'web'"* — geschlossen
+durch den Web-Sender unten.
+
+#### Web-Sender (#1071)
+
+`middleware/src/plugins/routines/webChatProactiveSender.ts`, vom Kernel in
+`initRoutines({ proactiveSenders })` registriert — also nur **mit Postgres**. Ohne
+`DATABASE_URL` ist das Routines-Feature samt Tool gar nicht verdrahtet, exakt wie vorher.
+
+- **Zustellfläche ist der Chat-Verlauf selbst:** `ChatSessionStore`
+  (`/memories/chat-sessions/<id>.json`), derselbe Store, aus dem die Web-UI hydratisiert.
+  Ein Lauf hängt eine Assistant-Nachricht mit Marker `proactive: { deliveredAt,
+  routineId?, routineName? }` an den Chat an, in dem die Routine angelegt wurde
+  (`ChatSessionStore.appendProactiveMessage`). Kein Live-Push: der Web-Chat hat keinen
+  Realtime-Kanal (`WebSocketRegistry` gehört den Channel-Plugins, SSE nur dem Builder).
+  Stattdessen liest die Web-UI die Session **additiv** neu, wenn man auf den Chat-Tab
+  wechselt oder der Browser-Tab wieder sichtbar wird (`mergeProactiveFromRemote`, nie ein
+  PUT, übersprungen solange ein Turn streamt). Offline-User sehen die Nachricht beim
+  nächsten Öffnen; die UI zeigt ein Badge "Geplante Routine · <Name>".
+- **Delivery-Handle:** `conversationRef = { kind: 'http-chat', sessionScope, sessionId? }`.
+  `sessionId` wird serverseitig nur gesetzt, wenn die `sessionId` des Requests wirklich der
+  Scope des Turns ist (nicht unter Debug-`scope`, nicht bei `http-default`). Fehlt sie,
+  lehnt `createRoutine` schon beim Anlegen ab (`ProactiveSender.validateConversationRef`,
+  optionaler Hook im middleware-internen Interface, nicht in `@omadia/plugin-api`). Alte
+  `web`-Zeilen kann es nicht geben — `create` scheiterte dort immer.
+- **PUT merged statt überschreibt.** Die Web-UI PUTtet nach jedem Turn das *ganze*
+  Dokument aus einer beim Seitenladen hydratisierten Kopie. `PUT /api/chat/sessions/:id`
+  läuft deshalb über `ChatSessionStore.saveFromClient` → `mergeServerProactiveMessages`:
+  server-geschriebene Proactive-Nachrichten, die im Body fehlen, bleiben erhalten (vor der
+  ersten späteren User-Nachricht einsortiert, nie zwischen Frage und Antwort). Der Marker
+  zählt nur aus der Server-Kopie; ein vom Client gesetzter wird entfernt. Ein PUT mit
+  `messages: []` ist "Chat leeren" und löscht auch Zustellungen. `MessageSchema` kennt
+  `proactive`, sonst entfernt zod ihn beim nächsten PUT (die #445-Falle). Append, Merge-Save und
+  `appendTurnFromServer` laufen unter einem per-Session-Lock (in-process).
+- **Gelöschter Chat wird nicht wiederbelebt.** `send` wirft *"web chat conversation '<id>'
+  no longer exists"*, der Runner schreibt das nach `last_run_error`, die Routine bleibt
+  aktiv (ProactiveSender-Vertrag).
+- **Nur Text.** `cardBody`/`approval` werden ignoriert; `message.text` trägt schon den
+  Markdown-Fallback, und das Session-Schema persistiert keine Attachments.
+- **Nicht im Modellkontext.** `chatSessionTailTurns` überspringt Proactive-Nachrichten,
+  sonst würde ein Report hinter einer unbeantworteten Frage als deren Antwort replayed —
+  wie bei Teams, wo Routine-Turns unter `routine:<id>` laufen.
+- **Owner:** unverändert. Identität nur aus der Session, `canTargetOthers: false`,
+  `pause`/`resume`/`delete`/`trigger` owner-gescoped (#1025). Die `sessionId` kommt aus
+  dem authentifizierten Turn des Erstellers.
+
+**Follow-up:** Chat-Sessions haben keinen Per-User-Owner — `GET /api/chat/sessions` listet
+alle Sessions jedem angemeldeten User, `PUT` nimmt jede Id. #1071 erweitert das nicht,
+schließt es aber auch nicht.
 
 ### Der Principal für *jeden* Kanal: Producer in `CoreApi` (#1086)
 

@@ -55,9 +55,13 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
         // background — the manual trigger takes ~30 s on a routine
         // with the HR-agent + retry. Surface a notice so the operator
         // knows the click was received; the actual result arrives via
-        // the proactive sender (Teams card / web channel).
+        // the proactive sender — a Teams card, or (#1071) for `web`
+        // routines an assistant message in the chat the routine was
+        // created in.
         await triggerRoutineNow(routine.id);
-        setNotice(t('triggerNotice'));
+        setNotice(
+          t(routine.channel === 'web' ? 'triggerNoticeWeb' : 'triggerNotice'),
+        );
         // Auto-clear after the typical run window so the row doesn't
         // stay decorated for ever.
         setTimeout(() => {

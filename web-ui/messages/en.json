@@ -1460,6 +1460,8 @@
     "emptyStatePrompt": "Ask the orchestrator — the answer streams live including tool calls.",
     "emptyStateShortcut": "Shortcut: ↵ to send · ⇧↵ for a new line · new tab via „+ New chat\"",
     "composerSendHint": "↵ to send · ⇧↵ for a new line",
+    "proactiveRoutineBadge": "Scheduled routine · {name}",
+    "proactiveBadge": "Scheduled message",
     "streamingSuffix": "· streaming…",
     "toolTraceHeading": "Tool trace ({count})",
     "subCallCount": "{count, plural, one {# sub-call} other {# sub-calls}}",
@@ -5691,6 +5693,7 @@
       "triggerButton": "Now",
       "triggerTitle": "Trigger the routine manually now — fires an agent run and delivers the result to the channel.",
       "triggerNotice": "Started — the result will appear in the channel in ~30 seconds.",
+      "triggerNoticeWeb": "Started — the result will be added to the chat this routine was created in within ~30 seconds.",
       "triggerChatUnavailable": "No LLM API key configured — add it in Admin → Settings, then trigger again.",
       "deleteConfirm": "Delete routine ''{name}''? This cannot be undone."
     },

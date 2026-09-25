@@ -1460,6 +1460,8 @@
     "emptyStatePrompt": "Frage an den Orchestrator stellen — Antwort streamt live inkl. Tool-Aufrufen.",
     "emptyStateShortcut": "Shortcut: ↵ senden · ⇧↵ neue Zeile · Neuer Tab über „+ Neuer Chat\"",
     "composerSendHint": "↵ senden · ⇧↵ neue Zeile",
+    "proactiveRoutineBadge": "Geplante Routine · {name}",
+    "proactiveBadge": "Geplante Nachricht",
     "streamingSuffix": "· streamt…",
     "toolTraceHeading": "Tool-Trace ({count})",
     "subCallCount": "{count, plural, one {# Sub-Call} other {# Sub-Calls}}",
@@ -5691,6 +5693,7 @@
       "triggerButton": "Jetzt",
       "triggerTitle": "Routine jetzt manuell auslösen — feuert einen Agent-Run und liefert das Ergebnis ins Channel.",
       "triggerNotice": "Gestartet — Ergebnis erscheint in ~30 Sekunden im Channel.",
+      "triggerNoticeWeb": "Gestartet — das Ergebnis erscheint in ~30 Sekunden im Chat, in dem die Routine angelegt wurde.",
       "triggerChatUnavailable": "Kein LLM-API-Key konfiguriert — bitte in Admin → Einstellungen hinterlegen und erneut auslösen.",
       "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden."
     },

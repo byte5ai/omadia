@@ -1,6 +1,8 @@
 import type { MemoryStore } from '@omadia/plugin-api';
 import type { DirectLineSessionState } from '@omadia/channel-sdk';
 
+import { mergeServerProactiveMessages } from './chatSessionProactive.js';
+
 /**
  * Persisted chat sessions for the dev-UI chat tab. Each session is a
  * self-contained JSON document under `/memories/chat-sessions/<id>.json`,
@@ -65,6 +67,21 @@ export interface ChatMessage {
    * the banner instead of dropping it. Optional: legacy messages pre-date it.
    */
   directLineSession?: DirectLineSessionState;
+  /**
+   * #1071 — set only on messages the SERVER wrote into the session without a
+   * user turn: a scheduled routine's output delivered to the web chat. The
+   * marker is what lets a stale whole-document PUT from an open tab keep the
+   * delivery (`mergeServerProactiveMessages`), keeps the message out of the
+   * model's replayed tail (`chatSessionTailTurns`) and drives the UI badge.
+   * Trusted only from the server's own copy — a client cannot mint one.
+   */
+  proactive?: ChatProactiveMarker;
+}
+
+export interface ChatProactiveMarker {
+  deliveredAt: number;
+  routineId?: string;
+  routineName?: string;
 }
 
 /**
@@ -146,6 +163,11 @@ export function chatSessionTailTurns(
   let pendingUser: string | undefined;
 
   for (const message of messages) {
+    // #1071 — a routine's proactive delivery is not an answer to anything the
+    // user asked. Skip it WITHOUT resetting `pendingUser`: were it paired, a
+    // routine report landing after an unanswered question would be replayed
+    // to the model as that question's answer.
+    if (message.proactive) continue;
     if (message.role === 'user') {
       pendingUser = message.content;
       continue;
@@ -164,8 +186,37 @@ export function chatSessionTailTurns(
   return turns.slice(-limit);
 }
 
+/** A completed turn the SessionLogger mirrors into the session. */
+interface ServerTurn {
+  userMessage: string;
+  assistantMessage: string;
+  telemetry?: { tool_calls: number; iterations: number };
+  startedAt: number;
+  finishedAt: number;
+}
+
 export class ChatSessionStore {
+  /**
+   * #1071 — per-session in-process lock. The proactive append, the client
+   * merge-save and `appendTurnFromServer` are all read-modify-write on the
+   * same document; serialising them per id keeps one from losing another's
+   * update. Values are the tail of each chain and never reject.
+   */
+  private readonly locks = new Map<string, Promise<unknown>>();
+
   constructor(private readonly store: MemoryStore) {}
+
+  private async withLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(id) ?? Promise.resolve();
+    const run = prev.then(fn);
+    const tail = run.catch(() => undefined);
+    this.locks.set(id, tail);
+    try {
+      return await run;
+    } finally {
+      if (this.locks.get(id) === tail) this.locks.delete(id);
+    }
+  }
 
   /** Summary of all persisted sessions, newest `updatedAt` first. */
   async list(): Promise<ChatSessionSummary[]> {
@@ -275,6 +326,54 @@ export class ChatSessionStore {
     return updated;
   }
 
+  /**
+   * #1071 — persist a client PUT without dropping server-written proactive
+   * messages the client has not seen yet. Returns the document as stored.
+   */
+  async saveFromClient(session: ChatSession): Promise<ChatSession> {
+    if (!ID_RE.test(session.id)) throw new InvalidSessionIdError(session.id);
+    return this.withLock(session.id, async () => {
+      const merged = mergeServerProactiveMessages(await this.get(session.id), session);
+      await this.save(merged);
+      return merged;
+    });
+  }
+
+  /**
+   * #1071 — append a scheduled routine's output to an EXISTING session as an
+   * assistant message. Never creates a session: a chat the user deleted stays
+   * deleted, and the caller reports `not_found` as a delivery failure.
+   */
+  async appendProactiveMessage(
+    id: string,
+    message: { content: string; deliveredAt: number; routineId?: string; routineName?: string },
+  ): Promise<'appended' | 'not_found'> {
+    if (!ID_RE.test(id)) return 'not_found';
+    return this.withLock(id, async () => {
+      const existing = await this.get(id);
+      if (!existing) return 'not_found';
+      const proactive: ChatProactiveMarker = {
+        deliveredAt: message.deliveredAt,
+        ...(message.routineId !== undefined ? { routineId: message.routineId } : {}),
+        ...(message.routineName !== undefined ? { routineName: message.routineName } : {}),
+      };
+      const appended: ChatMessage = {
+        id: `proactive-${message.routineId ?? 'reminder'}-${String(message.deliveredAt)}`,
+        role: 'assistant',
+        content: message.content,
+        startedAt: message.deliveredAt,
+        finishedAt: message.deliveredAt,
+        proactive,
+      };
+      await this.save({
+        ...existing,
+        messages: [...existing.messages, appended],
+        updatedAt: Math.max(Date.now(), existing.updatedAt),
+      });
+      return 'appended';
+    });
+  }
+
   async delete(id: string): Promise<void> {
     const virtualPath = this.pathFor(id);
     if (!(await this.store.fileExists(virtualPath))) return;
@@ -293,15 +392,16 @@ export class ChatSessionStore {
    */
   async appendTurnFromServer(
     id: string,
-    turn: {
-      userMessage: string;
-      assistantMessage: string;
-      telemetry?: { tool_calls: number; iterations: number };
-      startedAt: number;
-      finishedAt: number;
-    },
+    turn: ServerTurn,
   ): Promise<void> {
     if (!ID_RE.test(id)) return;
+    await this.withLock(id, () => this.appendTurnUnlocked(id, turn));
+  }
+
+  private async appendTurnUnlocked(
+    id: string,
+    turn: ServerTurn,
+  ): Promise<void> {
     const now = Date.now();
     const existing = await this.get(id);
 

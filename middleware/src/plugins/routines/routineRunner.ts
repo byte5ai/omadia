@@ -349,9 +349,14 @@ export class RoutineRunner {
   }
 
   async createRoutine(input: CreateRoutineInput): Promise<Routine> {
-    if (!this.senders.get(input.channel)) {
+    const sender = this.senders.get(input.channel);
+    if (!sender) {
       throw new UnknownChannelError(input.channel);
     }
+    // #1071 — refuse a routine whose delivery handle the channel can never
+    // deliver to (e.g. a web routine requested outside a saved chat) now,
+    // rather than recording the same error on every cron fire.
+    sender.validateConversationRef?.(input.conversationRef ?? {});
 
     // Issue #506: check for a reconcile-eligible retry BEFORE the quota
     // gate. A retried `createRoutine` call for a routine that already

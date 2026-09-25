@@ -901,8 +901,10 @@ export function MessageRow({
 }): React.ReactElement {
   const t = useTranslations('chat');
   const isUser = message.role === 'user';
+  // #1071 — a routine delivery has no turn duration; a "⏱ 0.0s" would read
+  // as a measurement.
   const elapsed =
-    message.finishedAt !== undefined
+    message.finishedAt !== undefined && message.proactive === undefined
       ? ((message.finishedAt - message.startedAt) / 1000).toFixed(1)
       : null;
   // Show the Theme E0+E1 liveness row whenever the turn is in flight
@@ -989,6 +991,7 @@ export function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
+            {message.proactive && <ProactiveBadge proactive={message.proactive} />}
             {message.routing && <TriageBadge routing={message.routing} />}
             {message.persona && <PersonaBadge persona={message.persona} />}
             {message.recalledContext && (
@@ -1410,6 +1413,29 @@ function PersonaBadge({
       <span
         className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ring-1 ${cls}`}
       >
+        {label}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * #1071 — marks an assistant message the server delivered on a schedule (a
+ * routine created from this chat), so it is not mistaken for an answer to the
+ * user's last question.
+ */
+function ProactiveBadge({
+  proactive,
+}: {
+  proactive: NonNullable<Message['proactive']>;
+}): React.ReactElement {
+  const t = useTranslations('chat');
+  const label = proactive.routineName
+    ? t('proactiveRoutineBadge', { name: proactive.routineName })
+    : t('proactiveBadge');
+  return (
+    <div className="mb-2 inline-flex items-center text-[11px]">
+      <span className="inline-flex items-center rounded-full bg-[color:var(--accent)]/10 px-2 py-0.5 font-medium text-[color:var(--accent)] ring-1 ring-[color:var(--accent)]">
         {label}
       </span>
     </div>
