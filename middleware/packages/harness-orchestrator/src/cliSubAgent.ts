@@ -19,6 +19,16 @@ export interface CliSubAgentOptions {
   /** The sub-agent's own tools, in kernel `LocalSubAgentTool` shape. */
   readonly tools: readonly LocalSubAgentTool[];
   /**
+   * #1085 — resolves the `claude` binary this sub-agent spawns, per turn.
+   *
+   * A sub-agent builds its own `CliChatAgent` deps rather than inheriting the
+   * chat agent's, so the rule has to be handed in here too: without it the
+   * main turn runs the CLI the operator installed through the UI while every
+   * `ask_<slug>` sub-agent keeps spawning whatever PATH resolves. Absent ⇒ the
+   * bare name, the pre-#1085 behaviour.
+   */
+  readonly resolveCliBinary?: () => string;
+  /**
    * #1072 — called with the raw name of a tool call that did NOT go through
    * omadia's loopback MCP server (one of the CLI's own tools, OM-81). Such a
    * call is never forwarded to the observer. The app layer wires this to
@@ -56,6 +66,9 @@ export function createCliSubAgent(options: CliSubAgentOptions): Askable {
     dispatch,
     model: options.model,
     systemPrompt: options.systemPrompt,
+    ...(options.resolveCliBinary
+      ? { resolveCliBinary: options.resolveCliBinary }
+      : {}),
   });
   const label = options.name;
 

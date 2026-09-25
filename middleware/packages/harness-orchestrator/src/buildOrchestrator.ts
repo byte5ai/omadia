@@ -303,6 +303,15 @@ export interface OrchestratorDeps {
   readonly turnOwnerGuard?: (
     input: ChatTurnInput,
   ) => (() => void) | undefined;
+  /**
+   * #1085 — resolves the `claude` binary the CLI runtime spawns, called once
+   * per turn. Wired from the kernel's `cliBinaryResolver` service, which
+   * carries `resolveCliBin` (runtime install dir first, PATH second) — the
+   * same rule the version badge, the login flow and the "Install now" button
+   * already use. Absent (legacy hosts, unit tests) ⇒ the bare name from PATH,
+   * the pre-#1085 behaviour.
+   */
+  readonly resolveCliBinary?: () => string;
   readonly contextRetriever?: ContextRetriever;
   readonly sessionBriefing?: SessionBriefingService;
   readonly factExtractor?: FactExtractor;
@@ -917,6 +926,13 @@ export function buildOrchestratorForAgent(
           // principal instead of being refused.
           ...(deps.turnOwnerGuard
             ? { turnOwnerGuard: deps.turnOwnerGuard }
+            : {}),
+          // #1085 — without this forward the kernel publishes the rule and
+          // the turn still spawns whatever PATH resolves, which is the whole
+          // bug: an operator's runtime install moves the version badge and
+          // nothing else.
+          ...(deps.resolveCliBinary
+            ? { resolveCliBinary: deps.resolveCliBinary }
             : {}),
           // OM-104 — operator-set turn budget. Only forwarded when actually
           // configured, so an unset field leaves the ENV override reachable.

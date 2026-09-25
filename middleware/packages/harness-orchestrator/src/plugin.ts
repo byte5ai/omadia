@@ -72,6 +72,8 @@ import {
   type OrchestratorDeps,
 } from './buildOrchestrator.js';
 import type { ChatPeerAgentsProvider } from './chatParticipants.js';
+// #1085 — the name the kernel's resolver is asked to resolve; one source.
+import { DEFAULT_CLI_BINARY } from './cliChatAgent.js';
 import {
   audienceGuardedAttachmentReader,
   createAttachmentReader,
@@ -227,6 +229,17 @@ const DEFAULT_MODEL = DEFAULT_ORCHESTRATOR_MODEL;
  * standing in for the import that is not available.
  */
 export const ROUTINE_TURN_OWNER_GUARD_SERVICE = 'routineTurnOwnerGuard';
+
+/**
+ * #1085 — the kernel service carrying the CLI binary resolution rule
+ * (`resolveCliBin`: runtime install dir first, PATH second).
+ *
+ * Duplicated rather than imported, for the same reason as the guard above:
+ * the rule lives in `middleware/src/platform/cliBackendDetector.ts`, which
+ * this package cannot depend on. `test/cliBinaryResolverGrant.test.ts` pins
+ * this literal against the kernel constant and against the manifest.
+ */
+export const CLI_BINARY_RESOLVER_SERVICE = 'cliBinaryResolver';
 
 /**
  * #1018 — kernel-published resolver for the peer AGENTS the calling agent may
@@ -719,6 +732,22 @@ export async function activate(
     (input: ChatTurnInput) => (() => void) | undefined
   >(ROUTINE_TURN_OWNER_GUARD_SERVICE);
 
+  // #1085 — the kernel's CLI binary resolution rule. Same shape and the same
+  // reasoning as the guard above: published by the kernel at boot
+  // (`middleware/src/index.ts:cliBinaryResolver`) because the rule reads
+  // `CLI_TOOLS_DIR` / `PLATFORM_DATA_DIR` and the install dir the admin UI
+  // writes to, all of which live in the application layer. Absent (legacy
+  // hosts, unit tests) → the CLI paths spawn the bare name from PATH, the
+  // pre-#1085 behaviour.
+  //
+  // The service resolves a binary NAME to a path, so the wrapper below is
+  // called per turn rather than resolved here: the whole point is that an
+  // install performed after this plugin activated takes effect on the next
+  // turn without a restart.
+  const cliBinaryResolver = ctx.services.getOptional<(bin: string) => string>(
+    CLI_BINARY_RESOLVER_SERVICE,
+  );
+
   // Setup-field config (with defaults). `orchestrator_model` is a REF — a
   // class ref (`class:frontier`, the default), an alias or a vendor id — and
   // is resolved against the live catalog for the active provider here, at
@@ -1109,6 +1138,9 @@ export async function activate(
     ...(pluginConfigGet ? { pluginConfigGet } : {}),
     ...(isPluginToolsReady ? { isPluginToolsReady } : {}),
     ...(turnOwnerGuard ? { turnOwnerGuard } : {}),
+    ...(cliBinaryResolver
+      ? { resolveCliBinary: (): string => cliBinaryResolver(DEFAULT_CLI_BINARY) }
+      : {}),
     // #1018 — resolved PER CALL (optional service, provided by the kernel from
     // inside its database block, possibly after this plugin activated).
     chatPeerAgents: async () =>
