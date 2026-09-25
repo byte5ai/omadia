@@ -143,6 +143,20 @@ export function updateAttemptsFile(): string {
   return path.join(app.getPath('userData'), 'update-attempts.json');
 }
 
+/**
+ * The language the web-ui last reported it is showing (#1074), so shell dialogs
+ * that fire before the renderer is up still speak it.
+ *
+ * `userData` rather than `dataRoot()` for the same reasons as
+ * {@link updateAttemptsFile}: it is a preference, it is read before a data-dir
+ * override matters, and it has no business in a cloud-synced folder (#934). Its
+ * own file rather than `setup.json`, which the wizard rewrites and which holds
+ * setup state, not preferences.
+ */
+export function uiLocaleFile(): string {
+  return path.join(app.getPath('userData'), 'ui-locale.json');
+}
+
 /** A file under userData recording an operator-chosen alternate data dir. */
 function dataDirOverrideFile(): string {
   return path.join(app.getPath('userData'), 'datadir.txt');

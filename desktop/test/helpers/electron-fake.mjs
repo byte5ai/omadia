@@ -28,8 +28,9 @@ export const app = {
 };
 
 /**
- * The shell resolves its language from `app.getLocale()` (OM-59, OM-91), so a
- * test that asserts on dialog copy has to be able to move it.
+ * The shell falls back to `app.getLocale()` while the web-ui has not reported
+ * its language (OM-59, OM-91, #1074: `shellLocale.ts`), so a test that asserts
+ * on dialog copy has to be able to move it.
  */
 let locale = 'en-US';
 export function __setLocale(next) {

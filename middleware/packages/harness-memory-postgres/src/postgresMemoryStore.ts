@@ -10,6 +10,18 @@ import type { Pool } from 'pg';
 const MEMORY_ROOT = '/memories';
 
 /**
+ * `LIKE` pattern matching every strict descendant of `dir` — and nothing else.
+ * A directory path is a LITERAL prefix, but `%` and `_` are `LIKE` wildcards
+ * (and `\` the escape character), so they are escaped here and every query
+ * using the pattern pins `ESCAPE '\'`. Without it a directory rename/delete of
+ * `/memories/a_b` would also reach the sibling tree `/memories/a-b` — and
+ * plugin ids, which name per-plugin memory scopes, may contain `_` (#909).
+ */
+export function descendantsLikePattern(dir: string): string {
+  return `${dir.replace(/[\\%_]/g, '\\$&')}/%`;
+}
+
+/**
  * Postgres-backed memory store. Maps the virtual `/memories` namespace onto
  * rows of a single `memory_files` table (one row per file). A drop-in
  * alternative to @omadia/memory's `FilesystemMemoryStore` — it replicates the
@@ -49,8 +61,8 @@ export class PostgresMemoryStore implements MemoryStore {
       virtual_path: string;
       size_bytes: number;
     }>(
-      'SELECT virtual_path, size_bytes FROM memory_files WHERE virtual_path LIKE $1',
-      [`${p}/%`],
+      "SELECT virtual_path, size_bytes FROM memory_files WHERE virtual_path LIKE $1 ESCAPE '\\'",
+      [descendantsLikePattern(p)],
     );
 
     return walk(p, descendants.rows, 2, 0);
@@ -76,8 +88,8 @@ export class PostgresMemoryStore implements MemoryStore {
     if ((fileRow.rowCount ?? 0) > 0) return false;
 
     const prefixed = await this.pool.query(
-      'SELECT 1 FROM memory_files WHERE virtual_path LIKE $1 LIMIT 1',
-      [`${p}/%`],
+      "SELECT 1 FROM memory_files WHERE virtual_path LIKE $1 ESCAPE '\\' LIMIT 1",
+      [descendantsLikePattern(p)],
     );
     return (prefixed.rowCount ?? 0) > 0;
   }
@@ -141,8 +153,8 @@ export class PostgresMemoryStore implements MemoryStore {
     if ((fileDel.rowCount ?? 0) > 0) return;
 
     const dirDel = await this.pool.query(
-      'DELETE FROM memory_files WHERE virtual_path LIKE $1',
-      [`${p}/%`],
+      "DELETE FROM memory_files WHERE virtual_path LIKE $1 ESCAPE '\\'",
+      [descendantsLikePattern(p)],
     );
     if ((dirDel.rowCount ?? 0) > 0) return;
 
@@ -182,8 +194,8 @@ export class PostgresMemoryStore implements MemoryStore {
         `UPDATE memory_files
            SET virtual_path = $1 || substring(virtual_path from $2::int),
                updated_at = now()
-         WHERE virtual_path LIKE $3`,
-        [tp, fp.length + 1, `${fp}/%`],
+         WHERE virtual_path LIKE $3 ESCAPE '\\'`,
+        [tp, fp.length + 1, descendantsLikePattern(fp)],
       );
       await client.query('COMMIT');
     } catch (err) {
