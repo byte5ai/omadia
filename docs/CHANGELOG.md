@@ -47,7 +47,7 @@ filtered turns is a counter and not only the `[capture-filter] turn tail-only`
 log line, was still open: `SessionLogger` threw the `ingestTurn` result away,
 and the result had no way to say the turn was tail-only.
 
-`TurnIngestResult` gains an optional `tailOnly` (plugin-api **1.18.0**,
+`TurnIngestResult` gains an optional `tailOnly` (plugin-api **1.19.0**,
 additive), which `CaptureFilteringKnowledgeGraph` sets on the result of a
 tail-only write. `SessionLogger` reads it and counts the turn on its
 `RunTraceOutcomeStats` as `captureTailOnlyTurns()`, with or without a trace,

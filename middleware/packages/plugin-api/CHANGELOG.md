@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.18.0 — 2026-09-24
+## 1.19.0 — 2026-09-25
 
 Additive. A turn the capture filter wrote for session continuity only is now
 marked on the ingest result, so the kernel can count filtered turns instead of
