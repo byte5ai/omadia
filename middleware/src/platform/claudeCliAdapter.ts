@@ -33,6 +33,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { CLI_COMPLETION_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
+
+import { resolveClaudeCliBin } from './cliBinary.js';
 import type {
   LlmAdapter,
   LlmAdapterBuildOptions,
@@ -56,7 +58,7 @@ import {
 } from '@omadia/orchestrator';
 
 
-const CLI_BIN = 'claude';
+
 const COMPLETE_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
@@ -204,8 +206,12 @@ async function runClaude(req: LlmRequest): Promise<LlmResponse> {
     // OM-85 — same version gate as the chat path: `--restricted` only where
     // the installed CLI accepts it. The probe is cached, so this is one
     // `claude --version` per five minutes, not one per completion.
-    const cliVersion = await resolveCliVersion(CLI_BIN);
-    return await spawnClaude(req, forced, mcpConfigPath, workDir, cliVersion);
+    // #1085 — one resolution per completion, shared by the probe and the
+    // spawn: probing one binary and running another is exactly how the chat
+    // path ended up dropping `--restricted` against an up-to-date install.
+    const cliBin = resolveClaudeCliBin();
+    const cliVersion = await resolveCliVersion(cliBin);
+    return await spawnClaude(req, forced, mcpConfigPath, workDir, cliVersion, cliBin);
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
@@ -217,6 +223,7 @@ function spawnClaude(
   mcpConfigPath: string,
   workDir: string,
   cliVersion: string | undefined,
+  cliBin: string,
 ): Promise<LlmResponse> {
   // #1007 — argv and gate come from the orchestrator package, the same source
   // the chat path uses, so a flag cannot be present on one spawn site and
@@ -233,7 +240,7 @@ function spawnClaude(
     : buildPrompt(req.messages);
 
   return new Promise<LlmResponse>((resolve, reject) => {
-    const child = spawn(CLI_BIN, args, {
+    const child = spawn(cliBin, args, {
       // `scrubbedEnv()` used to wrap this. It is a no-op behind the allowlist:
       // every key it deletes is absent from the allowlist anyway, and a test
       // asserts the allowlist and the scrub list never overlap.

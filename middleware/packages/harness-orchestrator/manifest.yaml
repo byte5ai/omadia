@@ -69,11 +69,22 @@ requires:
 # cooldown). When published, this plugin runs its turns through it so the
 # operator surfaces and the turn loop see ONE breaker state; absent → the
 # plugin builds a private pool, which behaves the same minus the sharing.
+#
+# #1085 — cliBinaryResolver@1 carries the kernel's ONE rule for resolving a
+# CLI binary (`resolveCliBin`: the runtime install dir first, PATH second).
+# The rule reads env and the directory the admin UI installs into, so it lives
+# in the application layer; without it the CLI chat runtime spawned the bare
+# `claude` from PATH while the version badge and the "Install now" button
+# described the binary in the install dir. (Credentials are unaffected either
+# way: both binaries read the same CLAUDE_CONFIG_DIR.) OPTIONAL for the same
+# reason as the entries above: a host that publishes no resolver keeps the
+# pre-#1085 PATH behaviour rather than losing chat.
 optional_requires:
   - "transcription@1"
   - "routineTurnOwnerGuard@1"
   - "chatPeerAgents@1"
   - "llmProviderPool@1"
+  - "cliBinaryResolver@1"
 
 # chatAgent@1 — published bundle consumed by channel-plugins (Teams,
 # Telegram), the kernel-side HTTP chat route, and the dynamic-agent runtime
