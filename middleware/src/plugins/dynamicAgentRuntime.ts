@@ -478,7 +478,7 @@ export class DynamicAgentRuntime {
 
     // OB-61 follow-up: the host arms the shared Anthropic client from the
     // operator's vault key AFTER boot (see index.ts
-    // `refreshSharedAnthropicClientFromVault` →
+    // `createSharedAnthropicClientRefresher` →
     // `serviceRegistry.replace('anthropicClient', …)`). The constructor-
     // injected `this.deps.anthropic` is the *boot-time* client, built from
     // `config.ANTHROPIC_API_KEY ?? ''`. On deployments where the key lives
@@ -509,8 +509,9 @@ export class DynamicAgentRuntime {
       provider = liveAnthropicProvider();
     } else {
       // #1033 W1 — through the kernel's provider pool when one is wired
-      // (memoised per provider id; a key change is picked up on invalidate),
-      // else a one-off resolve as before.
+      // (memoised per provider id; the kernel's vault write listener
+      // invalidates the entry on a key change, #1080), else a one-off
+      // resolve as before.
       const resolved = this.deps.providerPool
         ? await this.deps.providerPool.get(hostProviderId)
         : this.deps.hostGetSecret

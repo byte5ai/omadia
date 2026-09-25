@@ -36,6 +36,39 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — saving, rotating or removing an LLM key takes effect without a restart (#1080)
+
+2026-09-24 — on a stack booted without an LLM key, saving a key in
+`/admin/providers` never armed the orchestrator: every reactivation logged
+`no API key for provider 'anthropic' — chatAgent@1 capability NOT published`
+until the container restarted, while key verification, model discovery and the
+provider badge (which all read the vault directly) looked green. Removing a key
+had the mirror-image bug: the chat kept answering, and billing, with the deleted
+key. The kernel `llmProviderPool` memoises the resolved provider per id,
+including a negative "no key" result, and since #1039 the orchestrator reuses
+that pool instead of building its own, but no production code ever called
+`invalidate`. The concrete vaults (`FileSecretVault`, `InMemorySecretVault`) now
+announce every completed write through a kernel-internal `onWrite` observer
+(not on the `SecretVault` interface). A listener on the orchestrator scope drops
+the matching pool entry, so every write path is covered: the admin settings
+save, the runtime-secrets PATCH, install-time seeding, uninstall purge, the
+OAuth token-store binding and the OAuth broker. The listener runs before the
+write settles, so it lands before any reactivate. An API-key change
+(`provider:<id>/api_key`, legacy `anthropic_api_key`) also clears that
+provider's circuit breaker, because a new key is a new credential. An OAuth
+access-token write only drops the cache entry, since hourly rotation is the same
+credential. `verified_at` writes are ignored. Registering or unregistering a
+provider plugin invalidates its id as well. The shared host
+`anthropicClient`/`llm` is now revoked on key removal: it falls back to
+`ANTHROPIC_API_KEY` when set, otherwise to the unauthenticated client a keyless
+boot builds. Before this fix, OB-61's refresh returned early on a missing key.
+Not covered, and not yet filed as an issue: sub-agents that
+`DynamicAgentRuntime` has already built resolve their provider once at
+`activate()` and keep it until a restart or rebuild. After a keyless boot,
+Anthropic sub-agents stay on the unauthenticated client after a key is saved,
+and non-Anthropic agents whose activation failed are never retried. The open
+item is recorded in `docs/middleware-agent-handoff.md` §13.
+
 ### Fixed — desktop dialogs follow the UI language (#1074)
 
 2026-09-24 — the desktop shell's own dialogs (updater, boot failure, recovery
