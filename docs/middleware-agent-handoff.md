@@ -1438,8 +1438,20 @@ Tests: `test/conductorWorkflowDelete.test.ts`.
 
 ### Turn-Receipts (#757) — persistierte Per-Turn-Privacy-Receipts
 
-Jeder abgeschlossene Turn persistiert seinen PII-freien `PrivacyReceipt`
-synchron nach `turn_receipts` (Migration `0039`, Postgres-Backend only). Der
+Ein Turn persistiert seinen PII-freien `PrivacyReceipt` synchron nach
+`turn_receipts` (Migration `0039`, Postgres-Backend only) — aber **nur, wenn
+der Privacy Shield in diesem Turn aktiv war**: `finalizeTurn()` in
+`harness-plugin-privacy-guard/src/service.ts` liefert nur dann einen Receipt,
+wenn der Turn ein Dataset interniert, einen Bypass oder die strukturierte
+Ausgabe eines angebundenen Tools protokolliert oder den Prompt maskiert hat
+(Letzteres nur bei mindestens einem erkannten PII-Span); der Orchestrator
+persistiert nur `if (receipt)`. Ein Turn ohne Shield-Aktivität (z. B. reine
+Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt;
+`mask_user_prompt` ist per Default ohnehin aus) schreibt weder eine Zeile
+noch eine Log-Zeile. UI-Copy und README sagen das seit #1081 so. Ein
+Null-Aktivitäts-Receipt pro Turn wurde bewusst verworfen: er würde die
+Hash-Kette (#758), die signierten Checkpoints und das Retention-Volumen
+verändern und braucht eine eigene Produktentscheidung. Der
 Orchestrator löst den Store late-bound über den Service
 `turnReceiptStore` auf (Kernel provided in `index.ts`, gleiches Muster wie
 `privacyRedact`); ohne Service bleiben Receipts ephemer. Fehlschläge werden
@@ -1921,6 +1933,58 @@ Fehlerpfade), `test/embeddingColumnMigrationGuard.test.ts` (Gate-Hälfte:
 Permission, Master-Switch `auto_migrate_vector_columns`, `requireEmpty`),
 `web-ui/app/admin/embedding-provider/__tests__/page.test.tsx` (UI).
 
+### Session-Verlängerung „Ich bin noch da“ (`POST /api/v1/auth/renew`, #965)
+
+Die Admin-UI-Sitzung ist ein zustandsloses HS512-JWT mit 4h-Fenster
+(`SESSION_WINDOW_S` in `auth/sessionCookie.ts`). Bisher war nach 4h
+zwingend ein neuer Login fällig; die Warnkarte im `SessionWatcher` bot nur
+„Jetzt neu anmelden“. Jetzt verlängert ein Klick auf „Ich bin noch da“ die
+Sitzung ohne Navigation.
+
+- **Claim `auth_time`** (`auth/sessionJwt.ts`): Zeitpunkt der
+  *ursprünglichen* Anmeldung, überlebt jedes Re-Minting (anders als `iat`).
+  `signSession` stempelt ihn beim Login; `verifySession` fällt bei alten
+  Tokens ohne den Claim auf `iat` zurück.
+- **Route** (`routes/authRenew.ts`, gemountet im Auth-Router). Reihenfolge,
+  jeder Schritt fail-closed:
+  1. `evaluateSessionToken` wie `requireAuth` (Cookie gültig, Whitelist):
+     401 `auth.missing` / `auth.invalid`, 403 `auth.not_whitelisted`.
+     Eine abgelaufene Sitzung ist nicht verlängerbar, nur ersetzbar.
+  2. Absolute Obergrenze: `now >= auth_time + cap` bzw. `exp` liegt schon auf
+     der Grenze → 401 `auth.renew_expired`.
+  3. Provider noch aktiv, `users`-Zeile vorhanden und `active` → sonst 401
+     `auth.renew_denied`. Gilt für lokale und Entra-Zeilen.
+  4. OIDC: `OidcProvider.revalidateSession` (Entra: Refresh-Token einlösen,
+     `oid`/E-Mail/Whitelist prüfen, rotierten Token speichern). `denied` →
+     401 `auth.renew_denied`, `unavailable` (Netz, 5xx, 429) → 502
+     `auth.renew_idp_unavailable`. Ein OIDC-Provider ohne die Methode wird
+     abgelehnt.
+  5. Audit-Zeile `auth.session_renew` (`actor.id` = users-UUID, #775),
+     **vor** dem Cookie: scheitert der Audit-Write, gibt es 500 und kein
+     neues Cookie.
+  6. Gleiche Claims neu signiert, `exp = min(now + 4h, auth_time + cap)`.
+     Antwort `{ expires_at, server_now, renewable_until }`.
+- Ohne `renewal`-Deps im `AuthDeps` (Test-Harnesses) antwortet `/renew` mit
+  503 `auth.renew_unavailable`.
+- **`GET /me`** liefert zusätzlich `renewable_until` (`auth_time + cap`,
+  `null` ohne Renewal). Die UI zeigt damit im letzten Fenster vor der Grenze
+  direkt „Neu anmelden“ statt eines Klicks, der sicher abgelehnt wird.
+- **`POST /logout`** vergisst bei Entra-Sitzungen den Refresh-Token
+  (`RefreshStore.forget`), damit ein vor dem Logout kopiertes Cookie sich
+  nicht weiter über den IdP verlängern kann.
+- **UI** (`web-ui/app/_components/SessionWatcher.tsx`, `renewSession()` in
+  `_lib/api.ts`): Erfolg setzt die Phase von `warning` zurück auf `normal`
+  und plant die Timer neu. Ein Heartbeat, der vor der Verlängerung losging,
+  darf die Ablaufzeit nicht wieder verkürzen (höchstes gesehenes `exp`
+  gewinnt). Abgelehnt → „Neu anmelden“, Fehler → „Erneut versuchen“. Das
+  Ablauf-Overlay verlangt weiterhin einen echten Login.
+
+Obergrenze: `AUTH_SESSION_MAX_LIFETIME_HOURS` (§10). Sicherheitsbegründung
+und Restrisiken: `docs/security-architecture.md` → „Session renewal“.
+
+Tests: `test/auth/renewRoute.test.ts`, `test/auth/entraProviderRevalidate.test.ts`,
+`test/auth/sessionJwt.test.ts`, `web-ui/app/_components/__tests__/SessionWatcher.test.tsx`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -2265,6 +2329,12 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 ---
 
 ## 10. Konfiguration
+
+### Admin-UI-Sitzung (#965)
+
+| Variable | Wirkung |
+|---|---|
+| `AUTH_SESSION_MAX_LIFETIME_HOURS` | Absolute Obergrenze einer Verlängerungskette in Stunden, gemessen ab der **ursprünglichen** Anmeldung (`auth_time`), nicht ab der letzten Verlängerung. Default `12`, erlaubt `4`–`168` (zod-validiert beim Boot). Jeder Login und jede „Ich bin noch da“-Verlängerung gibt ein 4h-Fenster, geklemmt auf diese Grenze; danach antwortet `POST /api/v1/auth/renew` mit 401 `auth.renew_expired` und die UI verlangt einen neuen Login. Werte unter 4 wären sinnlos, weil schon das Login-Fenster 4h lang ist. |
 
 ### Test-Schalter (nicht von der Middleware gelesen)
 

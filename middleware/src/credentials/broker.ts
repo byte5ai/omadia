@@ -44,7 +44,7 @@
  * (`brokerOutbound.ts`), and the secret is scrubbed from the response
  * (`brokerResponse.ts`). A failed dispatch is a sanitized `upstream-timeout`
  * / `upstream-unreachable` denial that carries neither the URL nor the
- * underlying error. See `docs/security-architecture.md` §10b.
+ * underlying error. See `docs/security-architecture.md` §10c.
  */
 
 import {
