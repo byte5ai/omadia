@@ -276,5 +276,77 @@ export function runMemoryStoreConformance(
         assert.ok(notes);
         assert.equal(notes.sizeBytes, 5);
       }));
+
+    // #909 — a directory path is a LITERAL prefix. Plugin ids (and so
+    // per-plugin memory scopes) may contain `_`; a store that matched it as a
+    // wildcard (SQL `LIKE`) would let `/memories/a_b` reach `/memories/a-b`.
+    it('`_` in a missing directory path never matches a sibling tree', () =>
+      withStore(async (store) => {
+        await store.createFile('/memories/a-b/x.md', 'victim');
+
+        assert.equal(await store.directoryExists('/memories/a_b'), false);
+        await assert.rejects(
+          () => store.list('/memories/a_b'),
+          MemoryPathNotFoundError,
+        );
+        await assert.rejects(
+          () => store.rename('/memories/a_b', '/memories/loot'),
+          MemoryPathNotFoundError,
+        );
+        await assert.rejects(
+          () => store.delete('/memories/a_b'),
+          MemoryPathNotFoundError,
+        );
+
+        assert.equal(await store.readFile('/memories/a-b/x.md'), 'victim');
+        assert.equal(await store.directoryExists('/memories/loot'), false);
+      }));
+
+    it('rename / delete of a real `_` directory leave the sibling tree alone', () =>
+      withStore(async (store) => {
+        await store.createFile('/memories/a_b/own.md', 'own');
+        await store.createFile('/memories/a-b/x.md', 'victim');
+
+        const listed = (await store.list('/memories/a_b')).map(
+          (e: MemoryEntry) => e.virtualPath,
+        );
+        assert.deepEqual(listed, ['/memories/a_b', '/memories/a_b/own.md']);
+
+        await store.rename('/memories/a_b', '/memories/moved');
+        assert.equal(await store.readFile('/memories/moved/own.md'), 'own');
+        assert.equal(await store.fileExists('/memories/moved/x.md'), false);
+        assert.equal(await store.readFile('/memories/a-b/x.md'), 'victim');
+
+        await store.createFile('/memories/a_b/own.md', 'own');
+        await store.delete('/memories/a_b');
+        assert.equal(await store.directoryExists('/memories/a_b'), false);
+        assert.equal(await store.readFile('/memories/a-b/x.md'), 'victim');
+      }));
+
+    it('`%` and `\\` in a directory path are literal too', () =>
+      withStore(async (store) => {
+        await store.createFile('/memories/abc/x.md', 'victim');
+        await store.createFile('/memories/ab/y.md', 'victim');
+
+        assert.equal(await store.directoryExists('/memories/a%'), false);
+        await assert.rejects(
+          () => store.rename('/memories/a%', '/memories/loot'),
+          MemoryPathNotFoundError,
+        );
+        await assert.rejects(
+          () => store.delete('/memories/a%'),
+          MemoryPathNotFoundError,
+        );
+        // `\b` is `LIKE`'s escaped literal `b`, so an unescaped `\` would
+        // turn `/memories/a\b` into a match for `/memories/ab`.
+        assert.equal(await store.directoryExists('/memories/a\\b'), false);
+        await assert.rejects(
+          () => store.delete('/memories/a\\b'),
+          MemoryPathNotFoundError,
+        );
+
+        assert.equal(await store.readFile('/memories/abc/x.md'), 'victim');
+        assert.equal(await store.readFile('/memories/ab/y.md'), 'victim');
+      }));
   });
 }

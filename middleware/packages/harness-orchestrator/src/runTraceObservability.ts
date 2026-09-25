@@ -54,8 +54,10 @@ export type RunTraceOutcome =
   | 'transcript-failed'
   /** `ingestTurn` failed, so the Run would have pointed at a missing Turn. */
   | 'turn-ingest-failed'
-  /** `ingestRun` itself threw — most commonly the missing User-Cluster node
-   *  described in #684. */
+  /** `ingestRun` itself threw. The cause is in the error detail: a node it
+   *  links to may be missing — the Turn (it was not written) or the user's
+   *  User-Cluster (#684) — but a pool, connection or insert failure lands here
+   *  too, so nothing about the cause is assumed. */
   | 'run-ingest-failed';
 
 /** The one outcome that is not a drop. `satisfies` rather than a type
@@ -63,8 +65,15 @@ export type RunTraceOutcome =
  *  and an `=== RUN_TRACE_RECORDED` check would then narrow nothing. */
 export const RUN_TRACE_RECORDED = 'recorded' satisfies RunTraceOutcome;
 
-/** Monotonic per-outcome tallies since process start. */
+/** Monotonic per-outcome tallies over the lifetime of one
+ *  {@link RunTraceOutcomeStats} instance. */
 export type RunTraceOutcomeCounts = Readonly<Record<RunTraceOutcome, number>>;
+
+/** #1082 — the service name the orchestrator plugin publishes its shared
+ *  {@link RunTraceOutcomeStats} under, so an operator surface
+ *  (`GET /api/admin/run-trace`) can read the counts without a reference into
+ *  the plugin. */
+export const RUN_TRACE_STATS_SERVICE = 'runTraceStats';
 
 const ZERO_COUNTS: RunTraceOutcomeCounts = Object.freeze({
   recorded: 0,
@@ -79,11 +88,14 @@ const ZERO_COUNTS: RunTraceOutcomeCounts = Object.freeze({
  *
  * Deliberately an injectable object rather than module-level mutable state: the
  * counters are asserted on in tests, and a shared global would make two tests
- * in one process read each other's turns. The kernel holds one instance; a test
- * constructs its own.
+ * in one process read each other's turns. The orchestrator plugin constructs ONE
+ * instance, hands it to every `SessionLogger` it builds and publishes it as
+ * {@link RUN_TRACE_STATS_SERVICE} (#1082); a `SessionLogger` built without one
+ * keeps its own, and a test constructs its own.
  */
 export class RunTraceOutcomeStats {
   #counts: Record<RunTraceOutcome, number> = { ...ZERO_COUNTS };
+  #captureTailOnlyTurns = 0;
 
   /** Tally one outcome. */
   record(outcome: RunTraceOutcome): void {
@@ -102,6 +114,27 @@ export class RunTraceOutcomeStats {
       0,
     );
   }
+
+  /**
+   * #1082 — tally one turn the capture filter wrote as a tail-only record
+   * (significance below the capture threshold).
+   *
+   * Counts TURNS, not traces, and is deliberately not a {@link RunTraceOutcome}
+   * member: since #1171 a filtered turn is still written, so its trace is
+   * `recorded`. As an outcome it would count the turn twice, inflate
+   * {@link droppedTotal} and print a false "run trace not recorded" warning.
+   * It is a separate dimension on the same stats object instead, and stays out
+   * of {@link snapshot}.
+   */
+  recordCaptureTailOnly(): void {
+    this.#captureTailOnlyTurns += 1;
+  }
+
+  /** Turns the capture filter wrote as tail-only records over the lifetime of
+   *  this instance. */
+  captureTailOnlyTurns(): number {
+    return this.#captureTailOnlyTurns;
+  }
 }
 
 /** Operator-facing explanation per drop reason. Kept next to the union so a new
@@ -115,7 +148,7 @@ const DROP_REASON_TEXT: Readonly<Record<Exclude<RunTraceOutcome, 'recorded'>, st
     'turn-ingest-failed':
       'ingestTurn failed, so the run trace was skipped rather than left pointing at a missing Turn',
     'run-ingest-failed':
-      'ingestRun failed — most often no User-Cluster node exists for this user yet (see #684); channel identity is resolved only on the browser-login path',
+      'ingestRun failed — the run trace was not written; the error detail after this names the cause (known cases: the Turn was not written, or no User-Cluster node exists yet for this user, see #684)',
   });
 
 /**

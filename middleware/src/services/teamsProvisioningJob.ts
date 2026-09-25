@@ -82,6 +82,7 @@ import type {
   BackgroundJobHandle,
 } from '../platform/backgroundJobRegistry.js';
 import { normalizeTeamsTeamId } from '../platform/teamsTeamId.js';
+import { pairedTeamsErrorOf } from '../platform/teamsProvisioningErrorSeal.js';
 import {
   isChatTarget,
   type TeamsTargetKind,
@@ -132,18 +133,44 @@ export interface TeamsIdentityJobRecord {
   readonly teamsAppId: string | null;
   readonly teamsAppExternalId: string | null;
   readonly lastError: string | null;
+  /**
+   * Structured form of {@link lastError} (migration 0060, #897). OPTIONAL on
+   * this port like every other additive field: a store or test double that
+   * predates the columns still satisfies it, and absent means "legacy row" —
+   * readers fall back to classifying the sentence. Opaque here because it is
+   * stored data: readers go through {@link trustedTeamsProvisioningErrorOf},
+   * which trusts it only while its seal matches {@link lastError}.
+   */
+  readonly errorCode?: string | null;
+  readonly errorDetail?: unknown;
 }
 
-export interface TeamsIdentityJobUpdate {
+/** The non-error fields a runner patch may carry. */
+interface TeamsIdentityJobFields {
   readonly state?: TeamsProvisioningState;
   readonly appId?: string;
   readonly appObjectId?: string | null;
   readonly tenantId?: string;
   readonly teamsAppId?: string;
   readonly teamsAppExternalId?: string;
-  /** `null` clears a previous error. */
-  readonly lastError?: string | null;
 }
+
+/**
+ * One runner write. The error part is either absent, a clear
+ * (`lastError: null` — the store clears both structured columns with it), or
+ * a whole {@link TeamsProvisioningFailure} from a `*Failure` builder (#897).
+ * A non-null `lastError` without its `errorCode` does not compile on ANY
+ * runner write path, not only through `recordError`.
+ */
+export type TeamsIdentityJobUpdate = TeamsIdentityJobFields &
+  (
+    | {
+        readonly lastError?: null;
+        readonly errorCode?: undefined;
+        readonly errorDetail?: undefined;
+      }
+    | TeamsProvisioningFailure
+  );
 
 /** The runner writes state/last_error EXCLUSIVELY through this port. */
 export interface TeamsIdentityJobStore {
@@ -1437,9 +1464,14 @@ export class TeamsProvisioningJobRunner {
     const scopes = missingScopesOf(err);
     if (scopes !== undefined) {
       // TERMINAL — an admin has to consent; retrying is pointless.
-      const detail = consentMissingDetail(scopes);
-      await this.recordError(agentId, { state: 'failed', lastError: detail });
-      return { status: 'failed', agentId, reason: 'consent_missing', detail };
+      const failure = consentMissingFailure(scopes);
+      await this.recordError(agentId, { state: 'failed', ...failure });
+      return {
+        status: 'failed',
+        agentId,
+        reason: 'consent_missing',
+        detail: failure.lastError,
+      };
     }
 
     const setupFields = missingSetupFieldsOf(err);
@@ -1447,8 +1479,11 @@ export class TeamsProvisioningJobRunner {
       // NOT terminal — partial success: the app registration exists, only the
       // ARM leg is unconfigured. Keep state app_registered, tell the operator
       // exactly what to configure.
-      const detail = armNotConfiguredDetail(setupFields);
-      await this.recordError(agentId, { state: 'app_registered', lastError: detail });
+      const failure = armNotConfiguredFailure(setupFields);
+      await this.recordError(agentId, {
+        state: 'app_registered',
+        ...failure,
+      });
       return {
         status: 'halted',
         agentId,
@@ -1462,9 +1497,14 @@ export class TeamsProvisioningJobRunner {
       // TERMINAL and DETERMINISTIC — the global namespace will not free the
       // name on the next attempt. Fail on attempt 1 with an explanation
       // instead of five identical 400s (#921).
-      const detail = botHandleUnavailableDetail(errorMessage(err), takenHandle.botName);
-      await this.recordError(agentId, { state: 'failed', lastError: detail });
-      return { status: 'failed', agentId, reason: 'bot_handle_unavailable', detail };
+      const failure = botHandleUnavailableFailure(errorMessage(err), takenHandle.botName);
+      await this.recordError(agentId, { state: 'failed', ...failure });
+      return {
+        status: 'failed',
+        agentId,
+        reason: 'bot_handle_unavailable',
+        detail: failure.lastError,
+      };
     }
 
     // #924 — THE FOUR DELEGATED ERRORS, EACH WITH A DIFFERENT INSTRUCTION.
@@ -1481,12 +1521,17 @@ export class TeamsProvisioningJobRunner {
     // evidence away and re-walk the chain on the next run.
 
     if (isDelegatedSignInRequiredError(err)) {
-      const detail = delegatedSignInRequiredDetail(
+      const failure = delegatedSignInRequiredFailure(
         requiredScopesOf(err),
         delegatedStepOf(err),
       );
-      await this.recordError(agentId, { lastError: detail });
-      return { status: 'halted', agentId, reason: 'delegated_sign_in_required', detail };
+      await this.recordError(agentId, failure);
+      return {
+        status: 'halted',
+        agentId,
+        reason: 'delegated_sign_in_required',
+        detail: failure.lastError,
+      };
     }
 
     if (isDelegatedConsentRequiredError(err)) {
@@ -1495,12 +1540,17 @@ export class TeamsProvisioningJobRunner {
       // naming a tenant and a client id, not a credential. It is validated as
       // absolute https by `adminConsentUrlOf` before it gets anywhere near a
       // link, and it is NOT put into a progress-event detail.
-      const detail = delegatedConsentRequiredDetail(
+      const failure = delegatedConsentRequiredFailure(
         requiredScopesOf(err),
         adminConsentUrlOf(err),
       );
-      await this.recordError(agentId, { lastError: detail });
-      return { status: 'halted', agentId, reason: 'delegated_consent_required', detail };
+      await this.recordError(agentId, failure);
+      return {
+        status: 'halted',
+        agentId,
+        reason: 'delegated_consent_required',
+        detail: failure.lastError,
+      };
     }
 
     if (isDelegatedTokenExpiredError(err)) {
@@ -1510,17 +1560,27 @@ export class TeamsProvisioningJobRunner {
       // though, not `delegated_sign_in_required`: "your sign-in expired" and
       // "nobody has ever signed in" send an operator to the same button for
       // different reasons, and only one of them is worth investigating.
-      const detail = delegatedTokenExpiredDetail(err.reason);
-      await this.recordError(agentId, { lastError: detail });
-      return { status: 'halted', agentId, reason: 'delegated_token_expired', detail };
+      const failure = delegatedTokenExpiredFailure(err.reason);
+      await this.recordError(agentId, failure);
+      return {
+        status: 'halted',
+        agentId,
+        reason: 'delegated_token_expired',
+        detail: failure.lastError,
+      };
     }
 
     if (isDeviceCodeFlowError(err)) {
       // TERMINAL and DETERMINISTIC: the flow is refused by configuration, not
       // by load. Retrying it five times produces five identical refusals.
-      const detail = deviceCodeFlowFailedDetail(errorMessage(err), err.oauthError);
-      await this.recordError(agentId, { state: 'failed', lastError: detail });
-      return { status: 'failed', agentId, reason: 'device_code_flow_failed', detail };
+      const failure = deviceCodeFlowFailedFailure(errorMessage(err), err.oauthError);
+      await this.recordError(agentId, { state: 'failed', ...failure });
+      return {
+        status: 'failed',
+        agentId,
+        reason: 'device_code_flow_failed',
+        detail: failure.lastError,
+      };
     }
 
     const throttle = throttleHintOf(err);
@@ -1570,7 +1630,9 @@ export class TeamsProvisioningJobRunner {
           `${this.catalogReplicationAttempts} times for the catalog entry to replicate — ` +
           `treat as a configuration error, not a timing one)`
         : `${errorMessage(err)} (deterministic — not retried)`;
-      await this.recordError(agentId, { state: 'failed', lastError: detail });
+      // No dedicated code: the operator UI renders a raw connector verdict as
+      // `unknown` with the sentence as the technical detail.
+      await this.recordError(agentId, { state: 'failed', ...unknownFailure(detail) });
       return { status: 'failed', agentId, reason: 'error', detail };
     }
 
@@ -1579,17 +1641,18 @@ export class TeamsProvisioningJobRunner {
     if (attempt >= this.maxAttempts) {
       // A throttle exhaustion is its OWN code — the operator can simply come
       // back later, so the UI must be able to say that without reading prose.
-      const detail =
+      const failure =
         throttle !== undefined
-          ? throttledDetail(errorMessage(err), attempt, throttle.retryAfterSeconds)
-          : `${errorMessage(err)} (gave up after ${attempt} attempts)`;
+          ? throttledFailure(errorMessage(err), attempt, throttle.retryAfterSeconds)
+          : unknownFailure(`${errorMessage(err)} (gave up after ${attempt} attempts)`);
+      const detail = failure.lastError;
       if (retryable) {
         // Progress states are real — keep them, record why the run stopped so
         // a later re-run resumes from the same point.
-        await this.recordError(agentId, { lastError: detail });
+        await this.recordError(agentId, failure);
         return { status: 'retries_exhausted', agentId, detail };
       }
-      await this.recordError(agentId, { state: 'failed', lastError: detail });
+      await this.recordError(agentId, { state: 'failed', ...failure });
       return { status: 'failed', agentId, reason: 'error', detail };
     }
 
@@ -1633,10 +1696,15 @@ export class TeamsProvisioningJobRunner {
    * answered `true`. Marking first makes the pair unobservable: from the
    * instant the terminal state can be READ, the runner already agrees the run
    * is over. Marking afterwards would leave exactly the window #915 reports.
+   *
+   * A SENTENCE NEVER TRAVELS WITHOUT ITS CODE (#897). The patch is either a
+   * clear (`lastError: null`) or a whole {@link TeamsProvisioningFailure}
+   * from one of the `*Failure` builders, so a non-null `lastError` without an
+   * `errorCode` does not compile.
    */
   private async recordError(
     agentId: string,
-    patch: TeamsIdentityJobUpdate,
+    patch: RecordErrorPatch,
   ): Promise<void> {
     if (patch.state === 'failed') this.markSettled(agentId);
     try {
@@ -1855,10 +1923,9 @@ export class TeamsProvisioningJobRunner {
         messagingEndpoint: this.buildMessagingEndpoint(row.botSlug),
       });
       if (outcome.kind === 'registration-only') {
-        const detail = armNotConfiguredDetail(outcome.missingSetupFields);
         await this.store.update(agentId, {
           state: 'app_registered',
-          lastError: detail,
+          ...armNotConfiguredFailure(outcome.missingSetupFields),
         });
         return {
           status: 'halted',
@@ -1987,13 +2054,13 @@ export class TeamsProvisioningJobRunner {
       // consent to — a tenant-side role grant. TERMINAL: no retry makes a
       // missing grant appear.
       if (isRscPermissionsMismatch(err)) {
-        const detail = rscPermissionsMismatchDetail(targetKind);
-        await this.recordError(agentId, { state: 'failed', lastError: detail });
+        const failure = rscPermissionsMismatchFailure(targetKind);
+        await this.recordError(agentId, { state: 'failed', ...failure });
         return {
           status: 'failed',
           agentId,
           reason: 'rsc_permissions_mismatch',
-          detail,
+          detail: failure.lastError,
         };
       }
       throw err;
@@ -2076,17 +2143,17 @@ export class TeamsProvisioningJobRunner {
 
     const tokens = await custody.read();
     if (tokens === undefined) {
-      const detail = delegatedSignInRequiredDetail([]);
+      const failure = delegatedSignInRequiredFailure([]);
       // State deliberately untouched — every step already taken is real, and
       // the row's own rank is what makes the next run resume from here.
-      await this.recordError(agentId, { lastError: detail });
+      await this.recordError(agentId, failure);
       return {
         kind: 'sign_in_required',
         result: {
           status: 'halted',
           agentId,
           reason: 'delegated_sign_in_required',
-          detail,
+          detail: failure.lastError,
         },
       };
     }
@@ -2260,41 +2327,62 @@ export class TeamsProvisioningJobRunner {
       // Retiring OUR OWN stale warning is part of "re-run provisioning to
       // retry the write": without this, a run that fixed the problem would
       // leave the operator staring at the warning that sent them here.
-      // Scoped to the `config_sync_failed` prefix on purpose — an unrelated
-      // error on the row is not this method's to clear.
-      if (row.lastError?.startsWith(CONFIG_SYNC_FAILED_PREFIX)) {
+      // Scoped to the `config_sync_failed` code on purpose — an unrelated
+      // error on the row is not this method's to clear. Read from the
+      // persisted code (#897) while its seal matches the sentence; the
+      // sentence prefix decides for a row whose code is absent, unknown or
+      // stale (pre-0060, or `last_error` rewritten by a build that predates
+      // the columns — a rollback across 0060).
+      const trusted = trustedTeamsProvisioningErrorOf(
+        row.lastError,
+        row.errorCode,
+        row.errorDetail,
+      );
+      const ownWarning =
+        trusted !== undefined
+          ? trusted.code === 'config_sync_failed'
+          : row.lastError?.startsWith(CONFIG_SYNC_FAILED_PREFIX) === true;
+      if (ownWarning) {
         await this.recordError(row.agentId, { lastError: null });
       }
     } catch (err) {
-      const detail = configSyncFailedDetail(errorMessage(err));
+      const failure = configSyncFailedFailure(errorMessage(err));
       // A step-level failure on a run whose verdict is `installed` — the
       // timeline shows it as a warning line, because the terminal `run`
       // event that follows says `succeeded`. Only the code travels; the
-      // connector's message stays in `last_error`, which the UI already
-      // renders through the classifier.
+      // connector's message stays in `last_error`, and its sanitized form in
+      // `error_detail.reason` (#897), which the UI renders from.
       await this.emit(row.agentId, 'config_sync', 'failed', {
         detail: 'config_sync_failed',
       });
       this.log(
         `[teams-provisioning] teams_bots config sync for ${row.agentId} (${row.botSlug}) failed: ${errorMessage(err)} — identity stays installed; the operator can paste the block manually`,
       );
-      await this.recordError(row.agentId, { lastError: detail });
+      await this.recordError(row.agentId, failure);
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// last_error sentences + their classifier (W2a, epic #860)
+// last_error sentences, their structured failures + the legacy classifier
+// (W2a, epic #860; persisted code since #897)
 //
-// The runner is the ONLY writer of `agent_teams_identities.last_error`, and
-// every sentence it writes starts with a machine-readable code. The operator
-// UI must not re-derive meaning from English prose, so the classifier that
-// decodes those sentences lives HERE, next to the producers: changing a
-// message and forgetting the decoder breaks the colocated round-trip test
-// instead of silently degrading the operator UI in production.
+// The runner is the ONLY writer of `agent_teams_identities.last_error`. Since
+// migration 0060 every failure is written TWICE in one UPDATE: the sentence
+// (`last_error`, for humans) and its code plus typed arguments
+// (`error_code` / `error_detail`, for the operator UI). The `*Failure`
+// builders below produce both from the same inputs, so the columns carry
+// exactly what the sentence says without anything having to parse it.
 //
-// Follow-up (out of scope here): persist the structured code as its own
-// column from the start, so the sentence stays purely human-facing.
+// The store seals the columns to the sentence (a fingerprint inside
+// `error_detail`, platform/teamsProvisioningErrorSeal.ts). A build that
+// predates 0060 still writes `last_error` alone — after a rollback across the
+// migration — so readers trust the code only while the seal matches, and
+// otherwise classify the sentence exactly like a pre-0060 row.
+//
+// The sentence classifier stays, as the read path for those rows (see
+// teamsProvisioningErrorDetailOf). Its colocated round-trip tests still hold
+// the sentences to it until such rows can no longer be written.
 // ---------------------------------------------------------------------------
 
 /** Bracket filler used when the connector named no ARM field. Shared by the
@@ -2393,8 +2481,15 @@ export function throttledDetail(
  *  producer, the classifier and the runner's stale-warning cleanup. */
 export const CONFIG_SYNC_FAILED_PREFIX = 'config_sync_failed:';
 
+/** The reason as {@link configSyncFailedDetail} prints it — brackets and
+ *  newlines stripped. Shared with {@link configSyncFailedFailure} so the
+ *  persisted `reason` is exactly the one inside the sentence's brackets. */
+function sanitizeConfigSyncReason(reason: string): string {
+  return reason.replace(/[[\]]/g, '').replace(/\s+/g, ' ').trim();
+}
+
 export function configSyncFailedDetail(reason: string): string {
-  const safe = reason.replace(/[[\]]/g, '').replace(/\s+/g, ' ').trim();
+  const safe = sanitizeConfigSyncReason(reason);
   return `config_sync_failed: [${safe.length > 0 ? safe : CONFIG_SYNC_REASON_UNSPECIFIED}] — the Teams identity is provisioned and installed; only the automatic teams_bots entry in the Teams channel plugin was not written. Paste the shown block into that setup field to bring the bot online, or re-run provisioning to retry the write`;
 }
 
@@ -2547,9 +2642,16 @@ function bracketList(sentence: string, sentinel?: string): readonly string[] {
  */
 function consentUrlOf(sentence: string): string | undefined {
   const raw = new RegExp(`${CONSENT_URL_TOKEN}(\\S+)`).exec(sentence)?.[1];
-  if (raw === undefined) return undefined;
+  return raw === undefined ? undefined : httpsUrlOrUndefined(raw);
+}
+
+/** `value` when it is an absolute https URL, otherwise `undefined`. The one
+ *  guard between stored text and an `href` — used on the sentence token and
+ *  on the persisted `error_detail.adminConsentUrl` alike. */
+function httpsUrlOrUndefined(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
   try {
-    return new URL(raw).protocol === 'https:' ? raw : undefined;
+    return new URL(value).protocol === 'https:' ? value : undefined;
   } catch {
     return undefined;
   }
@@ -2560,6 +2662,14 @@ function consentUrlOf(sentence: string): string | undefined {
  * form the operator UI renders from. Pure and total: an unrecognized sentence
  * (an older row, a store-level write such as `enqueue_failed: …`) classifies
  * as `unknown` with the raw text preserved — never throws, never guesses.
+ *
+ * THE LEGACY PATH since #897. The runner now persists the code and its
+ * arguments (`error_code` / `error_detail`, migration 0060), and readers go
+ * through {@link teamsProvisioningErrorDetailOf}, which lands here only for a
+ * row without a trusted code — written before the migration, carrying a code
+ * this build does not know, or with a sentence rewritten by a build that
+ * predates the columns (the seal no longer matches). Deletable once no
+ * pre-0060 build can write to a migrated database any more.
  */
 export function classifyTeamsProvisioningError(
   raw: string,
@@ -2628,4 +2738,262 @@ export function classifyTeamsProvisioningError(
     };
   }
   return { code: 'unknown', raw };
+}
+
+// ---------------------------------------------------------------------------
+// Persisted structured failures (#897, migration 0060)
+//
+// One builder per code. Each one calls the sentence producer above for
+// `last_error` and returns, alongside it, the typed arguments that producer
+// was given — so `error_code` / `error_detail` say exactly what the sentence
+// says, and the operator UI never has to read the sentence to find out.
+// Shapes mirror what the classifier decodes for the same sentence (the
+// colocated parity tests hold that), so the wire contract of
+// `last_error_detail` is the same for a new row and a legacy one.
+// ---------------------------------------------------------------------------
+
+/**
+ * The runtime twin of {@link TeamsProvisioningErrorCode}. The mapped type
+ * makes the compiler reject a union member missing here (or an extra key),
+ * so there is still exactly one vocabulary.
+ */
+const TEAMS_PROVISIONING_ERROR_CODE_SET: {
+  readonly [K in TeamsProvisioningErrorCode]: true;
+} = {
+  consent_missing: true,
+  rsc_permissions_mismatch: true,
+  arm_not_configured: true,
+  throttled: true,
+  config_sync_failed: true,
+  bot_handle_unavailable: true,
+  delegated_sign_in_required: true,
+  delegated_consent_required: true,
+  delegated_token_expired: true,
+  device_code_flow_failed: true,
+  unknown: true,
+};
+
+export function isTeamsProvisioningErrorCode(
+  value: unknown,
+): value is TeamsProvisioningErrorCode {
+  return (
+    typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(TEAMS_PROVISIONING_ERROR_CODE_SET, value)
+  );
+}
+
+/** The typed arguments of one failure — what `error_detail` stores. */
+export type TeamsProvisioningErrorArgs = Omit<TeamsProvisioningErrorDetail, 'code' | 'raw'>;
+
+/** One failure as the runner persists it: the human sentence plus its
+ *  machine-readable form. Spread into a store patch as a whole. */
+export interface TeamsProvisioningFailure {
+  readonly lastError: string;
+  readonly errorCode: TeamsProvisioningErrorCode;
+  /** `null` for a code that carries no arguments. */
+  readonly errorDetail: TeamsProvisioningErrorArgs | null;
+}
+
+/** What `recordError` accepts: a clear, or a whole failure — never a bare
+ *  sentence. */
+type RecordErrorPatch =
+  | { readonly state?: TeamsProvisioningState; readonly lastError: null }
+  | ({ readonly state?: TeamsProvisioningState } & TeamsProvisioningFailure);
+
+/** A persisted code that is known to this build AND sealed to the row's
+ *  current sentence, with its arguments (seal removed). */
+export interface TrustedTeamsProvisioningError {
+  readonly code: TeamsProvisioningErrorCode;
+  readonly args: Readonly<Record<string, unknown>>;
+}
+
+function failureOf(
+  errorCode: TeamsProvisioningErrorCode,
+  lastError: string,
+  args: TeamsProvisioningErrorArgs = {},
+): TeamsProvisioningFailure {
+  return {
+    lastError,
+    errorCode,
+    errorDetail: Object.keys(args).length > 0 ? args : null,
+  };
+}
+
+export function consentMissingFailure(
+  missingScopes: readonly string[],
+): TeamsProvisioningFailure {
+  return failureOf('consent_missing', consentMissingDetail(missingScopes), {
+    scopes: [...missingScopes],
+  });
+}
+
+export function armNotConfiguredFailure(
+  missingSetupFields: readonly string[],
+): TeamsProvisioningFailure {
+  return failureOf('arm_not_configured', armNotConfiguredDetail(missingSetupFields), {
+    fields: [...missingSetupFields],
+  });
+}
+
+export function botHandleUnavailableFailure(
+  message: string,
+  botName?: string,
+): TeamsProvisioningFailure {
+  return failureOf('bot_handle_unavailable', botHandleUnavailableDetail(message, botName));
+}
+
+export function rscPermissionsMismatchFailure(
+  targetKind: TeamsTargetKind,
+): TeamsProvisioningFailure {
+  return failureOf('rsc_permissions_mismatch', rscPermissionsMismatchDetail(targetKind));
+}
+
+export function throttledFailure(
+  message: string,
+  attempts: number,
+  retryAfterSeconds?: number,
+): TeamsProvisioningFailure {
+  return failureOf(
+    'throttled',
+    throttledDetail(message, attempts, retryAfterSeconds),
+    retryAfterSeconds !== undefined ? { retryAfterSeconds } : {},
+  );
+}
+
+export function configSyncFailedFailure(reason: string): TeamsProvisioningFailure {
+  return failureOf('config_sync_failed', configSyncFailedDetail(reason), {
+    reason: sanitizeConfigSyncReason(reason),
+  });
+}
+
+export function delegatedSignInRequiredFailure(
+  requiredScopes: readonly string[],
+  step?: string,
+): TeamsProvisioningFailure {
+  return failureOf(
+    'delegated_sign_in_required',
+    delegatedSignInRequiredDetail(requiredScopes, step),
+    { scopes: [...requiredScopes] },
+  );
+}
+
+export function delegatedConsentRequiredFailure(
+  requiredScopes: readonly string[],
+  adminConsentUrl?: string,
+): TeamsProvisioningFailure {
+  // Same guard the classifier applies to the sentence token — the sentence
+  // and the column must agree on whether there is a link at all.
+  const url = httpsUrlOrUndefined(adminConsentUrl);
+  return failureOf(
+    'delegated_consent_required',
+    delegatedConsentRequiredDetail(requiredScopes, adminConsentUrl),
+    { scopes: [...requiredScopes], ...(url !== undefined ? { adminConsentUrl: url } : {}) },
+  );
+}
+
+export function delegatedTokenExpiredFailure(reason?: string): TeamsProvisioningFailure {
+  return failureOf('delegated_token_expired', delegatedTokenExpiredDetail(reason));
+}
+
+export function deviceCodeFlowFailedFailure(
+  message: string,
+  oauthError?: string,
+): TeamsProvisioningFailure {
+  // The bracketed OAuth error is the `reason`, as the classifier reads it.
+  const reason = oauthError?.replace(/[[\]]/g, '').trim() ?? '';
+  return failureOf(
+    'device_code_flow_failed',
+    deviceCodeFlowFailedDetail(message, oauthError),
+    reason !== '' ? { reason } : {},
+  );
+}
+
+/** A sentence with no dedicated code (a raw connector verdict, an exhausted
+ *  non-throttle retry budget). Coded explicitly so the row does not depend on
+ *  the classifier happening to find no known prefix in connector text. */
+export function unknownFailure(sentence: string): TeamsProvisioningFailure {
+  return failureOf('unknown', sentence);
+}
+
+// --- read side -------------------------------------------------------------
+
+/** String entries of a stored list; anything else becomes `[]`. */
+function storedStrings(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+}
+
+/**
+ * The persisted code of one row, when it may be believed: known to this
+ * build and sealed to exactly `lastError`. `undefined` otherwise — a clean
+ * row, a pre-0060 row, a code from a newer build, or a sentence that a build
+ * predating 0060 rewrote next to a stale code (the seal no longer matches).
+ * Every reader of `error_code` goes through here; `undefined` means
+ * "classify the sentence", never "no error".
+ */
+export function trustedTeamsProvisioningErrorOf(
+  lastError: string | null | undefined,
+  errorCode: unknown,
+  errorDetail: unknown,
+): TrustedTeamsProvisioningError | undefined {
+  const paired = pairedTeamsErrorOf(lastError, errorCode, errorDetail);
+  if (paired === undefined || !isTeamsProvisioningErrorCode(paired.errorCode)) {
+    return undefined;
+  }
+  return { code: paired.errorCode, args: paired.errorArgs };
+}
+
+/**
+ * The structured form of one identity's failure — what the operator route
+ * publishes as `last_error_detail`.
+ *
+ * Reads the persisted `error_code` / `error_detail` (migration 0060) when
+ * {@link trustedTeamsProvisioningErrorOf} vouches for them, and validates
+ * every field on the way out: the columns are stored data, and a row edited
+ * by hand or written by another build must not be able to put a non-https
+ * link or a non-numeric wait in front of an operator. Any other row falls
+ * back to {@link classifyTeamsProvisioningError} on the sentence.
+ */
+export function teamsProvisioningErrorDetailOf(
+  lastError: string,
+  errorCode: unknown,
+  errorDetail: unknown,
+): TeamsProvisioningErrorDetail {
+  const trusted = trustedTeamsProvisioningErrorOf(lastError, errorCode, errorDetail);
+  if (trusted === undefined) return classifyTeamsProvisioningError(lastError);
+  const { code, args } = trusted;
+  const raw = lastError;
+  switch (code) {
+    case 'consent_missing':
+    case 'delegated_sign_in_required':
+      return { code, scopes: storedStrings(args['scopes']), raw };
+    case 'arm_not_configured':
+      return { code, fields: storedStrings(args['fields']), raw };
+    case 'delegated_consent_required': {
+      const url = httpsUrlOrUndefined(args['adminConsentUrl']);
+      return {
+        code,
+        scopes: storedStrings(args['scopes']),
+        ...(url !== undefined ? { adminConsentUrl: url } : {}),
+        raw,
+      };
+    }
+    case 'throttled': {
+      const wait = args['retryAfterSeconds'];
+      const valid = typeof wait === 'number' && Number.isFinite(wait) && wait >= 0;
+      return { code, ...(valid ? { retryAfterSeconds: wait } : {}), raw };
+    }
+    case 'config_sync_failed': {
+      const reason = args['reason'];
+      return { code, reason: typeof reason === 'string' ? reason : '', raw };
+    }
+    case 'device_code_flow_failed': {
+      const reason = args['reason'];
+      const valid = typeof reason === 'string' && reason !== '';
+      return { code, ...(valid ? { reason } : {}), raw };
+    }
+    default:
+      return { code, raw };
+  }
 }

@@ -14,6 +14,16 @@
  * not change — call sites stay the same.
  */
 
+import {
+  VaultWriteEmitter,
+  type SecretVaultWriteListener,
+} from './vaultWriteEvents.js';
+
+export type {
+  SecretVaultWriteEvent,
+  SecretVaultWriteListener,
+} from './vaultWriteEvents.js';
+
 export interface SecretVault {
   set(agentId: string, key: string, value: string): Promise<void>;
   setMany(agentId: string, entries: Record<string, string>): Promise<void>;
@@ -26,6 +36,12 @@ export interface SecretVault {
 
 export class InMemorySecretVault implements SecretVault {
   private readonly store = new Map<string, Map<string, string>>();
+  private readonly writes = new VaultWriteEmitter();
+
+  /** #1080 — observe completed writes (kernel-internal; not on the interface). */
+  onWrite(listener: SecretVaultWriteListener): () => void {
+    return this.writes.on(listener);
+  }
 
   private namespace(agentId: string): Map<string, string> {
     let ns = this.store.get(agentId);
@@ -38,6 +54,7 @@ export class InMemorySecretVault implements SecretVault {
 
   async set(agentId: string, key: string, value: string): Promise<void> {
     this.namespace(agentId).set(key, value);
+    this.writes.emit({ scope: agentId, keys: [key] });
   }
 
   async setMany(
@@ -45,9 +62,11 @@ export class InMemorySecretVault implements SecretVault {
     entries: Record<string, string>,
   ): Promise<void> {
     const ns = this.namespace(agentId);
+    const keys = Object.keys(entries);
     for (const [k, v] of Object.entries(entries)) {
       ns.set(k, v);
     }
+    if (keys.length > 0) this.writes.emit({ scope: agentId, keys });
   }
 
   async get(agentId: string, key: string): Promise<string | undefined> {
@@ -62,11 +81,13 @@ export class InMemorySecretVault implements SecretVault {
 
   async purge(agentId: string): Promise<void> {
     this.store.delete(agentId);
+    this.writes.emit({ scope: agentId, purged: true });
   }
 
   async deleteKey(agentId: string, key: string): Promise<void> {
     const ns = this.store.get(agentId);
-    if (!ns) return;
+    if (!ns || !ns.has(key)) return;
     ns.delete(key);
+    this.writes.emit({ scope: agentId, keys: [key] });
   }
 }

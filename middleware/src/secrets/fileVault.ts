@@ -3,6 +3,11 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import type { SecretVault } from './vault.js';
+import {
+  VaultWriteEmitter,
+  type SecretVaultWriteEvent,
+  type SecretVaultWriteListener,
+} from './vaultWriteEvents.js';
 
 /**
  * Encrypted, file-backed per-agent secret vault.
@@ -38,6 +43,7 @@ export interface MasterKeyResult {
 export class FileSecretVault implements SecretVault {
   private readonly byAgent = new Map<string, Map<string, string>>();
   private loaded = false;
+  private readonly writes = new VaultWriteEmitter();
 
   constructor(
     private readonly filePath: string,
@@ -71,6 +77,14 @@ export class FileSecretVault implements SecretVault {
     this.loaded = true;
   }
 
+  /**
+   * #1080 — observe completed writes. Kernel-internal (the kernel owns this
+   * concrete instance), deliberately not on the `SecretVault` interface.
+   */
+  onWrite(listener: SecretVaultWriteListener): () => void {
+    return this.writes.on(listener);
+  }
+
   async set(agentId: string, key: string, value: string): Promise<void> {
     this.ensureLoaded();
     let ns = this.byAgent.get(agentId);
@@ -79,7 +93,7 @@ export class FileSecretVault implements SecretVault {
       this.byAgent.set(agentId, ns);
     }
     ns.set(key, value);
-    await this.persist();
+    await this.persistThenEmit({ scope: agentId, keys: [key] });
   }
 
   async setMany(
@@ -92,8 +106,13 @@ export class FileSecretVault implements SecretVault {
       ns = new Map<string, string>();
       this.byAgent.set(agentId, ns);
     }
+    const keys = Object.keys(entries);
     for (const [k, v] of Object.entries(entries)) ns.set(k, v);
-    await this.persist();
+    if (keys.length === 0) {
+      await this.persist();
+      return;
+    }
+    await this.persistThenEmit({ scope: agentId, keys });
   }
 
   async get(agentId: string, key: string): Promise<string | undefined> {
@@ -110,7 +129,7 @@ export class FileSecretVault implements SecretVault {
   async purge(agentId: string): Promise<void> {
     this.ensureLoaded();
     this.byAgent.delete(agentId);
-    await this.persist();
+    await this.persistThenEmit({ scope: agentId, purged: true });
   }
 
   async deleteKey(agentId: string, key: string): Promise<void> {
@@ -118,7 +137,22 @@ export class FileSecretVault implements SecretVault {
     const ns = this.byAgent.get(agentId);
     if (!ns || !ns.has(key)) return;
     ns.delete(key);
-    await this.persist();
+    await this.persistThenEmit({ scope: agentId, keys: [key] });
+  }
+
+  /**
+   * Persist, then notify — in a `finally`, because the in-memory map that
+   * `get()` reads is already mutated even when the disk write fails, so every
+   * derived cache is stale either way. Emitting AFTER the persist (rather than
+   * right after the mutation) also covers a read that began before the write:
+   * whatever it cached is dropped once the write settles.
+   */
+  private async persistThenEmit(event: SecretVaultWriteEvent): Promise<void> {
+    try {
+      await this.persist();
+    } finally {
+      this.writes.emit(event);
+    }
   }
 
   private ensureLoaded(): void {
