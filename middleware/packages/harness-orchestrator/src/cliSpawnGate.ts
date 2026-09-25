@@ -553,7 +553,21 @@ const CLI_VERSION_PROBE_TIMEOUT_MS = 10_000;
 
 const cliVersionCache = new Map<string, CliVersionCacheEntry>();
 
-/** Test seam: forget every cached probe. */
+/**
+ * Forget every cached probe.
+ *
+ * NOT a test seam — production calls it (#1085). `cliInstallService` invokes
+ * it the moment a runtime install succeeds, because the version cache is keyed
+ * by binary PATH: a first install changes that path and re-probes anyway, but
+ * an in-place UPDATE does not, so without this reset the turn path keeps the
+ * pre-update version for up to {@link CLI_VERSION_CACHE_TTL_MS} — dropping
+ * `--restricted` while the badge, whose own cache was just reset, already
+ * reports the new one.
+ *
+ * So: keep it exported from the package barrel, keep it unconditional, and do
+ * not inline it into tests. `middleware/test/cliInstallService.test.ts` pins
+ * the call — a different package's test directory, easy to miss from here.
+ */
 export function clearCliVersionCache(): void {
   cliVersionCache.clear();
 }
