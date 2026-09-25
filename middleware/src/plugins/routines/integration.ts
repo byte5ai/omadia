@@ -1,11 +1,12 @@
 import {
   type RoutineListAttachmentInput,
+  type RoutineTurnInput,
   type RoutinesIntegration,
 } from '@omadia/plugin-api';
 
 import type { RoutinesHandle } from './initRoutines.js';
 import { createProactiveSender } from './genericProactiveSender.js';
-import { actorScope } from './manageRoutineTool.js';
+import { actorScope, type ManageRoutineContext } from './manageRoutineTool.js';
 import type { RoutineActorScope } from './routineRunner.js';
 import { recordUnscopedRoutineAction } from './unscopedActionMetrics.js';
 import {
@@ -31,20 +32,52 @@ export function createRoutinesIntegration(
    *  reminders, without coupling routines to Conductor. Best-effort: failures must not break a turn. */
   onTurnCaptured?: (info: { userId: string; principalRef?: string; channel: string; conversationRef: unknown }) => void,
 ): RoutinesIntegration {
+  /** The ALS value both turn-capture entry points install. */
+  function contextFor(info: RoutineTurnInput): ManageRoutineContext {
+    return {
+      tenant: info.tenant,
+      userId: info.userId,
+      channel: info.channel,
+      conversationRef: info.conversationRef,
+      canTargetOthers: info.canTargetOthers ?? false,
+    };
+  }
+
+  /** Conductor channel binding for reminders. Best-effort, never fatal. */
+  function notifyTurnCaptured(info: RoutineTurnInput): void {
+    try {
+      onTurnCaptured?.({ userId: info.userId, principalRef: info.principalRef, channel: info.channel, conversationRef: info.conversationRef });
+    } catch {
+      // never let a binding-capture error break the inbound turn
+    }
+  }
+
   return {
     captureRoutineTurn(info) {
-      routineTurnContext.enter({
-        tenant: info.tenant,
-        userId: info.userId,
-        channel: info.channel,
-        conversationRef: info.conversationRef,
-        canTargetOthers: info.canTargetOthers ?? false,
-      });
-      try {
-        onTurnCaptured?.({ userId: info.userId, principalRef: info.principalRef, channel: info.channel, conversationRef: info.conversationRef });
-      } catch {
-        // never let a binding-capture error break the inbound turn
-      }
+      routineTurnContext.enter(contextFor(info));
+      notifyTurnCaptured(info);
+    },
+
+    /**
+     * #1086 — the scoped sibling of `captureRoutineTurn`.
+     *
+     * Same principal, same Conductor binding, but `run` instead of `enterWith`:
+     * the context is gone again when a segment settles. `captureRoutineTurn`
+     * cannot offer that — it returns before the turn runs, so it has nothing to
+     * scope — and its leak-forward is what #1016 had to build a staleness guard
+     * against. Callers that CAN wrap the turn (the kernel's channel-agnostic
+     * producer in `CoreApi.handleTurnStream`, and any adapter that controls its
+     * own turn body) should prefer this one.
+     *
+     * Turn-scoped work happens HERE, not in the returned runner: a streaming
+     * caller invokes the runner once per pull, so a Conductor binding written
+     * inside it would be written once per streamed event instead of once per
+     * turn.
+     */
+    beginRoutineTurn(info) {
+      notifyTurnCaptured(info);
+      const ctx = contextFor(info);
+      return (fn) => routineTurnContext.run(ctx, fn);
     },
 
     async updateRoutineConversationRef(routineId, conversationRef) {
