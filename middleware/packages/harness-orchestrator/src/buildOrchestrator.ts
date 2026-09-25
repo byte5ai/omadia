@@ -79,6 +79,7 @@ import {
 import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatAgentBundle } from './plugin.js';
 import { SessionLogger, isChatSessionScope } from './sessionLogger.js';
+import type { RunTraceOutcomeStats } from './runTraceObservability.js';
 import { AskUserChoiceTool } from './tools/askUserChoiceTool.js';
 import { BookMeetingTool } from './tools/bookMeetingTool.js';
 import type { ChatPeerAgentsProvider } from './chatParticipants.js';
@@ -237,6 +238,14 @@ export interface OrchestratorDeps {
    * conversation whenever an operator tweaked something unrelated.
    */
   readonly directLineStickyStore?: DirectLineStickyStore;
+  /**
+   * #1082 — process-shared run-trace / capture tallies, handed to every
+   * `SessionLogger` this factory builds. Deps for the SAME reason as
+   * `directLineStickyStore`: a per-instance tally would split the counts per
+   * Agent and reset whenever a config diff rebuilt one. Absent ⇒ each logger
+   * keeps its own.
+   */
+  readonly runTraceStats?: RunTraceOutcomeStats;
   /**
    * W2-1 (#544) — process-shared MCP pending-input store + replayer.
    *
@@ -558,6 +567,7 @@ export function buildOrchestratorForAgent(
     deps.knowledgeGraph,
     chatSessionStore,
     config.agentId,
+    deps.runTraceStats,
   );
   // Trigger T1 — durable-rules live hook. Wrap the (shared-passthrough)
   // namespacer so writes to `/memories/_rules/` auto-promote into curated

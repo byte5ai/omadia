@@ -38,22 +38,26 @@
  * / Window / Help" above correctly-translated submenus. They now go through the
  * shell dictionary like every other main-process string.
  *
+ * #1074: the translator is injected rather than built here, so the headings
+ * follow the language the web-ui is showing, and `main.ts` rebuilds the menu
+ * when that language changes. Electron's `role:` entries stay in the OS
+ * language; that is Electron's own localization and out of our reach.
+ *
  * OM-58 follow-up: the Help menu also carries "Show recovery key…". The wizard
  * step that offers the key could be skipped without the user noticing, and until
  * now there was no second way to ever see it.
  */
 import { Menu, app, type MenuItemConstructorOptions } from 'electron';
-import { createShellTranslate } from './shellStrings';
+import type { ShellTranslate } from './shellStrings';
 
 export interface MenuActions {
   checkForUpdates: () => void;
   showRecoveryKey: () => void;
 }
 
-export function installApplicationMenu(actions: MenuActions): void {
+export function installApplicationMenu(actions: MenuActions, t: ShellTranslate): void {
   const isMac = process.platform === 'darwin';
   const showDevTools = !app.isPackaged;
-  const t = createShellTranslate(app.getLocale());
 
   const template: MenuItemConstructorOptions[] = [
     // App menu (macOS only — holds About/Hide/Quit by convention).

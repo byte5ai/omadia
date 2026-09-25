@@ -24,6 +24,7 @@ import {
   type CliBackendStatus,
 } from '../../../_lib/api';
 import { InstallBox, ManualInstallSteps } from './InstallBox';
+import { LoginCodeForm } from './LoginCodeForm';
 import { TurnBudgetField } from './TurnBudgetField';
 
 type T = ReturnType<typeof useTranslations>;
@@ -215,9 +216,15 @@ type LoginPhase =
   | { phase: 'starting' }
   | { phase: 'awaiting'; sessionId: string; url: string }
   | { phase: 'submitting'; sessionId: string; url: string }
-  // OM-73 — the newer CLI finishes through a browser callback with no code to
-  // paste; we show the link and poll the login status until it resolves.
-  | { phase: 'polling'; url: string }
+  // OM-73 — no paste prompt was seen, so the CLI is expected to finish
+  // through a browser callback: show the link and poll the login status until
+  // it resolves. #1084 — the guess can be wrong (the image's 2.1.187 CLI waited
+  // on stdin while the UI showed no field), so the session id is kept and a
+  // fallback code field is always offered here too.
+  | { phase: 'polling'; sessionId: string; url: string }
+  // `sessionId` present ⇒ the server session is still alive (e.g. a wrong
+  // code) and the code field stays usable. Absent ⇒ terminal: the session is
+  // gone (timeout, `idle`, `expired`, `error`), only Retry makes sense.
   | { phase: 'error'; message: string; sessionId?: string; url?: string };
 
 /** Poll budget for the login status (OM-73): 100 tries × 3s = 5 min, matching
@@ -263,10 +270,13 @@ function CliRow({
         : t('status.installedUnknown');
 
   /**
-   * OM-73 — poll the login status until it resolves. Runs for BOTH flows: the
-   * browser-callback flow has nothing else to wait on, and in the paste-code
-   * flow the 2.1.259 CLI may still finish via the callback before the operator
-   * pastes anything — so the row resolves regardless of the `codeEntry` guess.
+   * OM-73 — poll the login status until it resolves. Runs in BOTH modes: the
+   * polling view has nothing else to wait on, and in code-entry mode the
+   * 2.1.259 CLI may still finish via the browser callback before the operator
+   * pastes anything — so the row resolves regardless of `codeEntry`. Every
+   * terminal outcome here is written WITHOUT a session id (#1084): the server
+   * session is gone, so the row offers Retry instead of a code field that
+   * could only answer "No active login session".
    */
   const pollUntilResolved = useCallback(
     async (url: string): Promise<void> => {
@@ -320,18 +330,18 @@ function CliRow({
         onChanged();
         return;
       }
-      // `codeEntry === false` ⇒ the newer CLI finishes via a browser callback
-      // and prints no code (OM-73). Show the link and poll instead of asking
-      // for a code that will never appear. `undefined` ⇒ old middleware ⇒ old
+      // `codeEntry === false` ⇒ the CLI printed no paste prompt (OM-73), so
+      // lead with the browser-callback wait; the polling view still carries a
+      // fallback code field (#1084). `undefined` ⇒ old middleware ⇒ old
       // paste-code flow.
       if (start.codeEntry === false) {
-        setLogin({ phase: 'polling', url: start.verificationUrl });
+        setLogin({ phase: 'polling', sessionId: start.sessionId, url: start.verificationUrl });
         void pollUntilResolved(start.verificationUrl);
         return;
       }
       setLogin({ phase: 'awaiting', sessionId: start.sessionId, url: start.verificationUrl });
-      // Poll here as well — the heuristic may be wrong, or the CLI may finish
-      // through the browser callback while the code field is still showing.
+      // Poll here as well — the CLI may finish through the browser callback
+      // while the code field is still showing (2.1.259 prints both).
       void pollUntilResolved(start.verificationUrl);
     } catch (err) {
       setLogin({ phase: 'error', message: err instanceof Error ? err.message : String(err) });
@@ -367,8 +377,15 @@ function CliRow({
           }
         }
         setLogin({ phase: 'error', message: t('connect.stillPending'), sessionId, url });
-      } else {
+      } else if (res.status === 'invalid') {
+        // #1084 — a wrong code leaves the server session pending: keep the
+        // field for another try and resume polling, so a login that finishes
+        // through the browser callback meanwhile still resolves.
         setLogin({ phase: 'error', message: res.error ?? t('connect.failed'), sessionId, url });
+        void pollUntilResolved(url);
+      } else {
+        // `expired` / `error`: the server session is gone, only Retry helps.
+        setLogin({ phase: 'error', message: res.error ?? t('connect.failed'), url });
       }
     } catch (err) {
       setLogin({ phase: 'error', message: err instanceof Error ? err.message : String(err), sessionId, url });
@@ -471,7 +488,9 @@ function CliRow({
             <p className="text-sm text-[color:var(--fg-muted)]">{t('connect.starting')}</p>
           )}
 
-          {/* OM-73 — browser-callback flow: open the link, then we wait. No code. */}
+          {/* OM-73 — browser-callback wait: open the link, then we poll.
+              #1084 — plus an always-visible fallback code field, in case the
+              browser shows a code after all. */}
           {login.phase === 'polling' && (
             <div>
               <div className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
@@ -491,6 +510,17 @@ function CliRow({
                 </li>
                 <li>{t('connect.callbackWait')}</li>
               </ol>
+              <div className="mt-3 text-sm text-[color:var(--fg-muted)]">
+                {t('connect.fallbackPasteHint')}
+                <LoginCodeForm
+                  code={code}
+                  onCodeChange={setCode}
+                  onSubmit={() => void onSubmitCode(login.sessionId, login.url)}
+                  busy={false}
+                  submitVariant="secondary"
+                  t={t}
+                />
+              </div>
               <div className="mt-3">
                 <Button variant="ghost" size="sm" onClick={onCancel}>
                   {t('connect.cancel')}
@@ -499,7 +529,9 @@ function CliRow({
             </div>
           )}
 
-          {(login.phase === 'awaiting' || login.phase === 'submitting' || (login.phase === 'error' && login.url)) && (
+          {(login.phase === 'awaiting' ||
+            login.phase === 'submitting' ||
+            (login.phase === 'error' && login.sessionId)) && (
             <div>
               <div className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
                 {t('connect.heading')}
@@ -520,31 +552,18 @@ function CliRow({
                 </li>
                 <li>
                   {t('connect.pasteHint')}
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <input
-                      type="text"
-                      value={code}
-                      onChange={(e) => setCode(e.target.value)}
-                      placeholder={t('connect.codePlaceholder')}
-                      className="min-w-[260px] flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-1.5 text-sm text-[color:var(--fg-strong)]"
-                    />
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      busy={login.phase === 'submitting'}
-                      busyLabel={t('connect.submitting')}
-                      onClick={() => {
-                        const sid = 'sessionId' in login ? login.sessionId : undefined;
-                        const url = 'url' in login ? login.url : undefined;
-                        if (sid && url) void onSubmitCode(sid, url);
-                      }}
-                    >
-                      {t('connect.submit')}
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={onCancel}>
-                      {t('connect.cancel')}
-                    </Button>
-                  </div>
+                  <LoginCodeForm
+                    code={code}
+                    onCodeChange={setCode}
+                    onSubmit={() => {
+                      const sid = 'sessionId' in login ? login.sessionId : undefined;
+                      const url = 'url' in login ? login.url : undefined;
+                      if (sid && url) void onSubmitCode(sid, url);
+                    }}
+                    busy={login.phase === 'submitting'}
+                    onCancel={onCancel}
+                    t={t}
+                  />
                 </li>
               </ol>
               {login.phase === 'error' && (
@@ -553,7 +572,7 @@ function CliRow({
             </div>
           )}
 
-          {login.phase === 'error' && !login.url && (
+          {login.phase === 'error' && !login.sessionId && (
             <div>
               <p className="text-sm text-[color:var(--danger)]">{login.message}</p>
               <div className="mt-2">

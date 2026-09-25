@@ -39,6 +39,13 @@ const api = {
    * where this bridge does not exist.
    */
   uiReady: (): void => ipcRenderer.send(CH.uiReady),
+  /**
+   * #1074 — the web UI reports the language it is showing, on load and after
+   * every switch, so the shell's own dialogs and menu speak it too. Main
+   * accepts only `'en'` and `'de'`. Fire-and-forget; the web UI must keep
+   * working in a browser where this bridge does not exist.
+   */
+  setUiLocale: (locale: string): void => ipcRenderer.send(CH.uiLocale, locale),
 };
 
 contextBridge.exposeInMainWorld('omadia', api);

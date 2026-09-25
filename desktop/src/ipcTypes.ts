@@ -10,6 +10,8 @@ export const CH = {
   bootLog: 'omadia:bootLog',
   /** OM-71: renderer → main, "the first real screen is standing". */
   uiReady: 'omadia:uiReady',
+  /** #1074: renderer → main, "this is the language I am showing" (`'en'` | `'de'`). */
+  uiLocale: 'omadia:uiLocale',
 } as const;
 
 /** A single line streamed to the wizard/loading UI during boot. */

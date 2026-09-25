@@ -49,16 +49,13 @@ export interface AgentPluginBindingStore {
  * Runtime reactivation must NOT invoke it: `onUninstall` fires on that path
  * too, and purging there would destroy grants the operator never revoked.
  *
- * Exported and store-injected so it can also be called from the bootstrap
- * auto-removals (`bootstrap.ts` drops a losing provider at four `registry.remove`
- * sites — the memory self-heal, the #1053 embeddings conflict, the legacy-KG
- * migration and the KG conflict). Those sites are NOT wired yet, so a
- * bootstrap-side removal still leaves its `agent_plugins` rows behind: the
- * reconciler no longer re-logs them every minute, but the row survives until
- * the operator uninstalls the plugin through `installService`. Wiring them
- * needs a `BootstrapDeps.onPluginRemoved` hook plus a place to defer the purge
- * until the orchestrator store exists, which is why it is deliberately a
- * follow-up rather than a silent half-fix here.
+ * Exported and store-injected so it is also used for the bootstrap
+ * auto-removals (#1070): `bootstrap.ts` drops a losing provider at four sites
+ * (the memory self-heal, the #1053 embeddings conflict, the legacy-KG
+ * migration and the KG conflict) and reports each id through
+ * `BootstrapDeps.onPluginRemoved`. Those removals run before the orchestrator
+ * store exists, so the host queues them in `pendingBindingPurge.ts` and calls
+ * this function per id once the store is available.
  * Resolve the store lazily because the orchestrator can become available after
  * this service is constructed. Hosts without it have no binding store to clean;
  * lookup/query failures are best-effort and must never abort plugin removal.

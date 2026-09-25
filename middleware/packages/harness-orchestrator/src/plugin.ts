@@ -102,6 +102,10 @@ import { ReloadBus } from './registry/reloadBus.js';
 import { ChannelResolver } from './routing/channelResolver.js';
 import { SessionLogger } from './sessionLogger.js';
 import {
+  RunTraceOutcomeStats,
+  RUN_TRACE_STATS_SERVICE,
+} from './runTraceObservability.js';
+import {
   TRANSCRIBE_RECORDING_TOOL_NAME,
   TranscribeRecordingTool,
   transcribeRecordingToolSpec,
@@ -1048,6 +1052,12 @@ export async function activate(
     ctx.log('[harness-orchestrator] sandbox_publish_enabled not set — skipping publish/publish_rollback native tools');
   }
 
+  // #1082 — ONE tally for every SessionLogger this plugin builds (the
+  // per-call transcription loggers below and every Agent's logger via
+  // `orchestratorDeps`), published as `RUN_TRACE_STATS_SERVICE` so the
+  // operator route can read it.
+  const runTraceStats = new RunTraceOutcomeStats();
+
   // #584 WS I — `transcribe_recording` native tool: batch ingestion of
   // recorded audio through the `transcription@1` capability. Registered
   // UNCONDITIONALLY with a late-bound service getter: the transcription
@@ -1064,7 +1074,7 @@ export async function activate(
     getTranscription: (): TranscriptionService | undefined =>
       ctx.services.get<TranscriptionService>(TRANSCRIPTION_SERVICE_NAME),
     makeSessionLogger: (agentSlug): SessionLogger =>
-      new SessionLogger(memoryStore, knowledgeGraph, undefined, agentSlug),
+      new SessionLogger(memoryStore, knowledgeGraph, undefined, agentSlug, runTraceStats),
   });
   const disposeTranscribeTool = nativeToolRegistry.register(
     TRANSCRIBE_RECORDING_TOOL_NAME,
@@ -1137,6 +1147,7 @@ export async function activate(
     // in deps means toggling the flag at runtime never strands a binding in a
     // store that has been thrown away.
     directLineStickyStore: new InMemoryDirectLineStickyStore(),
+    runTraceStats,
     // W2-1 (#544) — the SAME store instance the kernel's `McpManager` parks
     // into, plus the replayer the kernel registered once it had a manager and a
     // server registry. Unconditional store (empty until something parks);
@@ -1224,6 +1235,7 @@ export async function activate(
     orchestratorDeps,
   );
   disposeServices.push(ctx.services.provide(CHAT_AGENT_SERVICE, built.bundle));
+  disposeServices.push(ctx.services.provide(RUN_TRACE_STATS_SERVICE, runTraceStats));
 
   // US4 — multi-orchestrator registry. Optional: only when a Postgres pool
   // is available (test/in-memory boots skip it). The registry runs its own

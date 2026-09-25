@@ -3,11 +3,16 @@ import {
   decodeIdToken,
   generatePkcePair,
   generateState,
+  OAuthTokenEndpointError,
   pickEmail,
 } from '../oauthClient.js';
 import type { RefreshStore } from '../refreshStore.js';
 import type { EmailWhitelist } from '../whitelist.js';
-import type { AuthResult, OidcProvider } from './AuthProvider.js';
+import type {
+  AuthResult,
+  OidcProvider,
+  SessionRevalidation,
+} from './AuthProvider.js';
 
 /**
  * Adapter that exposes the existing Azure-AD `OAuthClient` through the
@@ -160,6 +165,84 @@ export class EntraProvider implements OidcProvider {
 
   logoutUrl(input: { postLogoutRedirect: string }): string | null {
     return this.deps.oauth.buildLogoutUrl(input.postLogoutRedirect);
+  }
+
+  /**
+   * #965 — prove the IdP still vouches for this identity before the router
+   * extends the session. Redeems the stored refresh token; a disabled or
+   * deleted account, a revoked grant or an expired token makes Entra answer
+   * 400 `invalid_grant`, and that ends the renewal chain.
+   *
+   * Classification (fail closed either way, the router never renews on
+   * anything but `ok`):
+   *   - 400/401 from the token endpoint → `denied`, and the stored token is
+   *     forgotten (it is dead; keeping it only invites a retry loop).
+   *   - network error, 5xx, 429, malformed response → `unavailable`.
+   *   - an id_token for another `oid`/email, or an email that has left the
+   *     whitelist → `denied`.
+   */
+  async revalidateSession(input: {
+    email: string;
+    providerUserId: string;
+  }): Promise<SessionRevalidation> {
+    const email = input.email.toLowerCase();
+    const refreshToken = await this.deps.refreshStore.get(email);
+    if (!refreshToken) {
+      return { outcome: 'denied', message: `no refresh token on file for ${email}` };
+    }
+
+    let tokens;
+    try {
+      tokens = await this.deps.oauth.refreshAccessToken(refreshToken);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (
+        err instanceof OAuthTokenEndpointError &&
+        (err.status === 400 || err.status === 401)
+      ) {
+        await this.forgetQuietly(email);
+        return { outcome: 'denied', message };
+      }
+      return { outcome: 'unavailable', message };
+    }
+
+    let claims;
+    try {
+      claims = decodeIdToken(tokens.id_token);
+    } catch (err) {
+      return {
+        outcome: 'unavailable',
+        message: err instanceof Error ? err.message : 'id_token undecodable',
+      };
+    }
+    if (claims.oid !== input.providerUserId) {
+      return { outcome: 'denied', message: 'refreshed id_token belongs to another oid' };
+    }
+    const refreshedEmail = pickEmail(claims);
+    if (refreshedEmail !== email) {
+      return { outcome: 'denied', message: 'refreshed id_token carries another email' };
+    }
+    if (!this.deps.whitelist.isAllowed(email)) {
+      return { outcome: 'denied', message: `email ${email} is not on the entra whitelist` };
+    }
+
+    // Entra rotates refresh tokens; keep the newest so the next renewal
+    // redeems a live one.
+    if (tokens.refresh_token) {
+      await this.deps.refreshStore.save(email, tokens.refresh_token);
+    }
+    return { outcome: 'ok' };
+  }
+
+  private async forgetQuietly(email: string): Promise<void> {
+    try {
+      await this.deps.refreshStore.forget(email);
+    } catch (err) {
+      console.error(
+        '[auth] entra: failed to forget a rejected refresh token:',
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 }
 

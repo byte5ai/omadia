@@ -6,16 +6,16 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Clock, LogIn } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
-import { getSessionStatus } from '../_lib/api';
+import { getSessionStatus, renewSession } from '../_lib/api';
 
 /**
  * SessionWatcher — turns the previously *silent* session logout into a
- * visible one.
+ * visible one, and lets an active operator extend it explicitly.
  *
- * The `omadia_session` cookie is a 4h JWT with no refresh. The edge proxy
- * catches an expired cookie on navigation and `api.ts` catches it on a 401
- * from an API call — but a tab that is sitting idle (no navigation, no API
- * call) just goes dead with no signal. This component closes that gap:
+ * The `omadia_session` cookie is a 4h JWT. The edge proxy catches an expired
+ * cookie on navigation and `api.ts` catches it on a 401 from an API call —
+ * but a tab that is sitting idle (no navigation, no API call) just goes dead
+ * with no signal. This component closes that gap:
  *
  *   - It learns the session's `exp` from GET /api/v1/auth/me (skew-corrected
  *     against the server clock) and schedules two transitions: a warning
@@ -23,8 +23,15 @@ import { getSessionStatus } from '../_lib/api';
  *   - A 60s heartbeat (plus an immediate re-check whenever the tab regains
  *     focus) also catches server-side revocation — account disabled, key
  *     rotation — which the local expiry clock alone cannot see.
- *   - At expiry it shows a blocking overlay instead of leaving the operator
- *     staring at a frozen UI. No silent auto-extend: re-login is explicit.
+ *   - The warning card offers "I'm still here" (#965): one click calls
+ *     POST /api/v1/auth/renew, the server re-checks the principal and
+ *     re-mints the cookie, and the watcher drops back to `normal` with the
+ *     new expiry. No navigation, no lost page state. Renewal is explicit
+ *     only, never silent, and bounded server-side by an absolute cap from
+ *     the original sign-in; the card switches to "sign in again" for the
+ *     final window (`renewable_until`) and after a refused renewal.
+ *   - At expiry it shows a blocking overlay. An expired session cannot be
+ *     renewed, only replaced by a real login.
  *
  * Mounted once in the root layout. Renders nothing on the /login + /setup
  * pages (no session to watch there).
@@ -34,9 +41,21 @@ import { getSessionStatus } from '../_lib/api';
 const WARN_BEFORE_MS = 5 * 60 * 1000;
 /** Heartbeat cadence — the only thing that can see server-side revocation. */
 const HEARTBEAT_MS = 60 * 1000;
+/** Expiry changes below this are clock jitter between probes, not news. */
+const EXPIRY_JITTER_MS = 2000;
 
 type Phase = 'normal' | 'warning' | 'expired';
 const PHASE_RANK: Record<Phase, number> = { normal: 0, warning: 1, expired: 2 };
+
+type RenewState = 'idle' | 'pending' | 'refused' | 'error';
+
+interface SessionClock {
+  /** Session expiry translated into THIS browser's clock (ms). */
+  expiresAtLocal: number;
+  /** False once the session sits on the server's absolute cap (or the
+   *  server cannot renew at all) — only a re-login helps then. */
+  canRenew: boolean;
+}
 
 function isAuthPage(pathname: string): boolean {
   return pathname === '/login' || pathname === '/setup';
@@ -57,7 +76,7 @@ function formatClock(ms: number): string {
  * The `reauth=1` flag marks this as an *explicit* re-login. During the
  * warning phase the current session is still (briefly) valid, so without
  * this flag the login page would see a live session and immediately bounce
- * back here — making the "Relogin now" button look like it does nothing.
+ * back here — making the re-login button look like it does nothing.
  * The flag tells /login to show the form regardless.
  */
 function relogin(): void {
@@ -71,17 +90,50 @@ export function SessionWatcher(): React.ReactElement | null {
   const onAuthPage = isAuthPage(pathname);
 
   const [phase, setPhase] = useState<Phase>('normal');
-  // Session expiry translated into THIS browser's clock (skew-corrected).
   // null until the first probe resolves.
-  const [expiresAtLocal, setExpiresAtLocal] = useState<number | null>(null);
+  const [clock, setClock] = useState<SessionClock | null>(null);
   const [warningDismissed, setWarningDismissed] = useState(false);
+  const [renewState, setRenewState] = useState<RenewState>('idle');
+  // Highest server-side `exp` seen (epoch s). A session's expiry only moves
+  // forward (login, renewal). A heartbeat sent before a renewal that answers
+  // after it carries the OLD exp and must not shrink the clock again.
+  const maxExpiresAtRef = useRef(0);
 
-  // Phase only ever advances. A warn-timer that fires late (e.g. after the
-  // heartbeat already detected revocation and jumped to 'expired') must not
-  // pull the state backwards.
+  // 'expired' is terminal. A warn-timer that fires late (e.g. after the
+  // heartbeat already detected revocation) must not pull the state back.
   const advancePhase = useCallback((next: Phase) => {
     setPhase((cur) => (PHASE_RANK[next] > PHASE_RANK[cur] ? next : cur));
   }, []);
+
+  // 'warning' is NOT terminal: a renewal here or in another tab pushes the
+  // expiry out again, and the card must go away.
+  const recoverToNormal = useCallback(() => {
+    setPhase((cur) => (cur === 'warning' ? 'normal' : cur));
+    setWarningDismissed(false);
+    setRenewState('idle');
+  }, []);
+
+  /** Record a server-reported expiry; returns the local-clock expiry in force. */
+  const applyServerExpiry = useCallback(
+    (expiresAt: number, serverNow: number, renewableUntil: number | null) => {
+      const effective = Math.max(expiresAt, maxExpiresAtRef.current);
+      maxExpiresAtRef.current = effective;
+      // Re-express the server's expiry in the local clock so the countdown
+      // is correct even when this machine's clock drifts.
+      const skewMs = Date.now() - serverNow * 1000;
+      const expiresAtLocal = effective * 1000 + skewMs;
+      const canRenew = renewableUntil !== null && effective < renewableUntil;
+      setClock((prev) =>
+        prev !== null &&
+        prev.canRenew === canRenew &&
+        Math.abs(prev.expiresAtLocal - expiresAtLocal) < EXPIRY_JITTER_MS
+          ? prev
+          : { expiresAtLocal, canRenew },
+      );
+      return expiresAtLocal;
+    },
+    [],
+  );
 
   // ── Initial probe + heartbeat + focus re-check ─────────────────────────
   useEffect(() => {
@@ -100,21 +152,19 @@ export function SessionWatcher(): React.ReactElement | null {
           advancePhase('expired');
           return;
         }
-        // Re-express the server's expiry in the local clock so the
-        // countdown is correct even when this machine's clock drifts.
-        const skewMs = Date.now() - status.serverNow * 1000;
-        const nextExpiry = status.expiresAt * 1000 + skewMs;
-        setExpiresAtLocal((prev) =>
-          prev !== null && Math.abs(prev - nextExpiry) < 2000
-            ? prev
-            : nextExpiry,
+        const expiresAtLocal = applyServerExpiry(
+          status.expiresAt,
+          status.serverNow,
+          status.renewableUntil,
         );
         // Catch up if the tab was loaded (or woke from sleep) already
         // inside a warning/expired window — the scheduled timers below
-        // only cover transitions that are still in the future.
-        const remaining = nextExpiry - Date.now();
+        // only cover transitions that are still in the future. Outside the
+        // window, recover from a warning (renewed in another tab).
+        const remaining = expiresAtLocal - Date.now();
         if (remaining <= 0) advancePhase('expired');
         else if (remaining <= WARN_BEFORE_MS) advancePhase('warning');
+        else recoverToNormal();
       } catch {
         // Network blip — leave state intact; the next heartbeat retries.
       }
@@ -132,12 +182,14 @@ export function SessionWatcher(): React.ReactElement | null {
       window.clearInterval(heartbeat);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [onAuthPage, advancePhase]);
+  }, [onAuthPage, advancePhase, applyServerExpiry, recoverToNormal]);
 
   // ── Schedule the warning + expiry transitions ──────────────────────────
   // Only arms future-dated timers; the probe above handles the case where
   // the page is already inside a window. Keeping setState out of the effect
   // body (timer callbacks run asynchronously) avoids cascading renders.
+  // Re-arms whenever a renewal (or a probe) moves the expiry.
+  const expiresAtLocal = clock?.expiresAtLocal ?? null;
   useEffect(() => {
     if (onAuthPage || expiresAtLocal === null) return;
 
@@ -157,18 +209,38 @@ export function SessionWatcher(): React.ReactElement | null {
     return () => timers.forEach((id) => window.clearTimeout(id));
   }, [onAuthPage, expiresAtLocal, advancePhase]);
 
+  // ── "I'm still here" ───────────────────────────────────────────────────
+  const onRenew = useCallback(async () => {
+    setRenewState('pending');
+    const result = await renewSession();
+    if (!result.ok) {
+      setRenewState(result.kind);
+      return;
+    }
+    const next = applyServerExpiry(
+      result.expiresAt,
+      result.serverNow,
+      result.renewableUntil,
+    );
+    // A renewal clamped to the cap can still land inside the warn window;
+    // then the card stays and (canRenew=false) offers the re-login.
+    if (next - Date.now() > WARN_BEFORE_MS) recoverToNormal();
+    else setRenewState('idle');
+  }, [applyServerExpiry, recoverToNormal]);
+
   if (onAuthPage) return null;
 
   return (
     <AnimatePresence>
       {phase === 'expired' ? (
         <SessionExpiredOverlay key="expired" />
-      ) : phase === 'warning' &&
-        !warningDismissed &&
-        expiresAtLocal !== null ? (
+      ) : phase === 'warning' && !warningDismissed && clock !== null ? (
         <SessionWarningCard
           key="warning"
-          expiresAtLocal={expiresAtLocal}
+          expiresAtLocal={clock.expiresAtLocal}
+          canRenew={clock.canRenew}
+          renewState={renewState}
+          onRenew={() => void onRenew()}
           onDismiss={() => setWarningDismissed(true)}
         />
       ) : null}
@@ -176,14 +248,28 @@ export function SessionWatcher(): React.ReactElement | null {
   );
 }
 
+interface SessionWarningCardProps {
+  expiresAtLocal: number;
+  canRenew: boolean;
+  renewState: RenewState;
+  onRenew: () => void;
+  onDismiss: () => void;
+}
+
+interface CardAction {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}
+
 /** Non-blocking bottom-right card with a live countdown to expiry. */
 function SessionWarningCard({
   expiresAtLocal,
+  canRenew,
+  renewState,
+  onRenew,
   onDismiss,
-}: {
-  expiresAtLocal: number;
-  onDismiss: () => void;
-}): React.ReactElement {
+}: SessionWarningCardProps): React.ReactElement {
   const t = useTranslations('session');
   const [remaining, setRemaining] = useState(
     () => expiresAtLocal - Date.now(),
@@ -195,6 +281,30 @@ function SessionWarningCard({
     }, 1000);
     return () => window.clearInterval(tick);
   }, [expiresAtLocal]);
+
+  const time = formatClock(remaining);
+  let body: string;
+  let primary: CardAction;
+  let secondary: CardAction | null = null;
+  if (!canRenew) {
+    body = t('warningFinalBody', { time });
+    primary = { label: t('warningFinalCta'), onClick: relogin };
+  } else if (renewState === 'refused') {
+    body = t('warningRefusedBody', { time });
+    primary = { label: t('warningRefusedCta'), onClick: relogin };
+  } else if (renewState === 'error') {
+    body = t('warningErrorBody', { time });
+    primary = { label: t('warningRetry'), onClick: onRenew };
+    secondary = { label: t('warningRefusedCta'), onClick: relogin };
+  } else {
+    const pending = renewState === 'pending';
+    body = t('warningBody', { time });
+    primary = {
+      label: pending ? t('warningRenewing') : t('warningCta'),
+      onClick: onRenew,
+      disabled: pending,
+    };
+  }
 
   return (
     <motion.div
@@ -210,17 +320,29 @@ function SessionWarningCard({
         {t('warningTitle')}
       </div>
       <p className="mt-2 text-[13px] leading-relaxed text-[color:var(--ink)]">
-        {t('warningBody', { time: formatClock(remaining) })}
+        {body}
       </p>
-      <div className="mt-4 flex items-center gap-2">
+      <div className="mt-4 flex flex-wrap items-center gap-2">
         {/* eslint-disable-next-line no-restricted-syntax -- bespoke ink-fill CTA (paper/ink palette + uppercase tracking), not §4.2 primary */}
         <button
           type="button"
-          onClick={relogin}
-          className="flex-1 border border-[color:var(--ink)] bg-[color:var(--ink)] px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-[color:var(--paper)] transition hover:border-[color:var(--accent)] hover:bg-[color:var(--accent)]"
+          onClick={primary.onClick}
+          disabled={primary.disabled}
+          aria-busy={primary.disabled ? true : undefined}
+          className="flex-1 border border-[color:var(--ink)] bg-[color:var(--ink)] px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-[color:var(--paper)] transition hover:border-[color:var(--accent)] hover:bg-[color:var(--accent)] disabled:cursor-wait disabled:opacity-70"
         >
-          {t('warningCta')}
+          {primary.label}
         </button>
+        {secondary ? (
+          // eslint-disable-next-line no-restricted-syntax -- bespoke bordered secondary (paper/ink palette + uppercase tracking), not §4.2 secondary
+          <button
+            type="button"
+            onClick={secondary.onClick}
+            className="border border-[color:var(--rule-strong)] px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-[color:var(--ink)] transition hover:border-[color:var(--accent)]"
+          >
+            {secondary.label}
+          </button>
+        ) : null}
         {/* eslint-disable-next-line no-restricted-syntax -- bespoke bordered dismiss (paper/ink palette + uppercase tracking), not §4.2 secondary */}
         <button
           type="button"

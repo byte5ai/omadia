@@ -5,6 +5,7 @@ import type { MemoryStore } from '@omadia/plugin-api';
 import {
   getSecurityScreenMetrics,
   UNSCREENABLE_STREAK_ALERT,
+  type RunTraceOutcomeStats,
 } from '@omadia/orchestrator';
 
 const PutBodySchema = z.object({
@@ -20,6 +21,12 @@ const DeleteBodySchema = z.object({
 interface AdminDeps {
   store: MemoryStore;
   token: string;
+  /** #1082 — the orchestrator's shared run-trace tally, resolved per request
+   *  (`undefined` while no orchestrator is active). Read-only view: the route
+   *  never records. */
+  runTraceStats?: () =>
+    | Pick<RunTraceOutcomeStats, 'snapshot' | 'droppedTotal' | 'captureTailOnlyTurns'>
+    | undefined;
 }
 
 /**
@@ -63,6 +70,26 @@ export function createAdminRouter(deps: AdminDeps): Router {
       ...metrics,
       alertThreshold: UNSCREENABLE_STREAK_ALERT,
       healthy: metrics.consecutiveUnscreenable < UNSCREENABLE_STREAK_ALERT,
+    });
+  });
+
+  /**
+   * #684 / #1082 — run-trace outcomes and capture-filtered turns as numbers,
+   * not only as log lines. `captureTailOnlyTurns` counts turns the capture
+   * filter judged below the threshold and wrote for session continuity only;
+   * it is a separate dimension, not part of `droppedTotal` (their traces are
+   * `recorded`). Process-scoped, reset on restart or orchestrator reactivation.
+   */
+  router.get('/run-trace', (_req: Request, res: Response) => {
+    const stats = deps.runTraceStats?.();
+    if (!stats) {
+      res.status(503).json({ error: 'run_trace_stats_unavailable' });
+      return;
+    }
+    res.json({
+      outcomes: stats.snapshot(),
+      droppedTotal: stats.droppedTotal(),
+      captureTailOnlyTurns: stats.captureTailOnlyTurns(),
     });
   });
 

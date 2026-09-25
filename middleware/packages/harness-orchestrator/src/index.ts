@@ -503,7 +503,12 @@ export type {
   CliVersionExec,
   CompletionCliArgvOptions,
 } from './cliSpawnGate.js';
-export type { CliChatAgentDeps, CliSpawnLogger, CliUsage } from './cliChatAgent.js';
+export type {
+  CliChatAgentDeps,
+  CliChatHooks,
+  CliSpawnLogger,
+  CliUsage,
+} from './cliChatAgent.js';
 export { resolveCliSpawnTimeoutMs, CLI_SPAWN_TIMEOUT_ENV_KEY } from './cliChatAgent.js';
 export { createCliSubAgent } from './cliSubAgent.js';
 export type { CliSubAgentOptions } from './cliSubAgent.js';
@@ -561,6 +566,7 @@ export {
   RunTraceOutcomeStats,
   recordRunTraceOutcome,
   RUN_TRACE_RECORDED,
+  RUN_TRACE_STATS_SERVICE,
 } from './runTraceObservability.js';
 export type {
   RunTraceOutcome,

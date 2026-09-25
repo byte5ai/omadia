@@ -21,7 +21,7 @@ export function AgentNodeView({
       hasSource
     >
       <div className="mt-2 flex flex-wrap gap-1">
-        <Pill text={agent.privacyProfile} />
+        {/* #978 — no privacy pill: `privacyProfile` is reserved, not enforced. */}
         <Pill text={agent.status} />
         {routing ? <Pill text={`${routing.mode}: ${routing.main}`} /> : null}
       </div>
