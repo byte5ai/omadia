@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import type { LlmProvider } from '@omadia/llm-provider';
+import { resolveClaudeCliBin } from '../../platform/cliBinary.js';
 import {
   LocalSubAgent,
   createCliSubAgent,
@@ -920,6 +921,8 @@ function defaultBuildSubAgent(opts: BuilderSubAgentBuildOptions): Askable {
       systemPrompt: opts.systemPrompt,
       model: opts.cliModel,
       tools: opts.tools,
+      // #1085 — the binary an operator installed through the UI, not PATH.
+      resolveCliBinary: resolveClaudeCliBin,
     });
   }
   if (!opts.provider) {

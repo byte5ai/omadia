@@ -16,6 +16,16 @@ export interface CliSubAgentOptions {
   readonly model: string;
   /** The sub-agent's own tools, in kernel `LocalSubAgentTool` shape. */
   readonly tools: readonly LocalSubAgentTool[];
+  /**
+   * #1085 — resolves the `claude` binary this sub-agent spawns, per turn.
+   *
+   * A sub-agent builds its own `CliChatAgent` deps rather than inheriting the
+   * chat agent's, so the rule has to be handed in here too: without it the
+   * main turn runs the CLI the operator installed through the UI while every
+   * `ask_<slug>` sub-agent keeps spawning whatever PATH resolves. Absent ⇒ the
+   * bare name, the pre-#1085 behaviour.
+   */
+  readonly resolveCliBinary?: () => string;
   /** Test seam: override CliChatAgent construction (inject fake spawn/loopback). */
   readonly createCliAgent?: (deps: CliChatAgentDeps) => CliChatAgent;
 }
@@ -41,6 +51,9 @@ export function createCliSubAgent(options: CliSubAgentOptions): Askable {
     dispatch,
     model: options.model,
     systemPrompt: options.systemPrompt,
+    ...(options.resolveCliBinary
+      ? { resolveCliBinary: options.resolveCliBinary }
+      : {}),
   });
   return {
     async ask(question: string, _observer?: AskObserver): Promise<string> {

@@ -184,7 +184,11 @@ import {
   autoAssignSubscriptionCli,
   SUBSCRIPTION_CLI_PROVIDER,
 } from './platform/providerAssignment.js';
-import { detectCliBackends } from './platform/cliBackendDetector.js';
+import {
+  CLI_BINARY_RESOLVER_SERVICE_NAME,
+  detectCliBackends,
+  resolveCliBin,
+} from './platform/cliBackendDetector.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import {
   memoizeRuntimeReadinessCause,
@@ -1171,6 +1175,20 @@ async function main(): Promise<void> {
   serviceRegistry.provide(
     ROUTINE_TURN_OWNER_GUARD_SERVICE_NAME,
     createRoutineTurnOwnerGuard(),
+  );
+
+  // #1085 — the ONE rule for resolving a CLI binary, published so the spawn
+  // sites in `@omadia/orchestrator` use it too. The detector, the login flow
+  // and the "Install now" button already resolve through `resolveCliBin`
+  // (runtime install dir first, PATH second); the CLI chat agent spawned the
+  // bare name, so a runtime install changed the version badge and nothing
+  // else — including the probe that decides whether `--restricted` is passed.
+  // Provided as the rule itself, not a resolved path: `resolveCliBin` checks
+  // the filesystem per call, which is what makes an install visible on the
+  // next turn instead of the next restart.
+  serviceRegistry.provide(
+    CLI_BINARY_RESOLVER_SERVICE_NAME,
+    (bin: string): string => resolveCliBin(bin),
   );
 
   // Kernel-wide background-job scheduler. Plugin-contributed jobs (cron or

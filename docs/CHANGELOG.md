@@ -36,6 +36,67 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the CLI a turn spawns is the one the admin UI describes (#1085)
+
+2026-09-24 — omadia resolved the `claude` binary two different ways, and the UI
+showed the result of one while every agent turn used the other. `resolveCliBin()`
+prefers a runtime install (`<CLI_TOOLS_DIR>/bin/claude`, default
+`<PLATFORM_DATA_DIR>/cli-tools`) over PATH, and the version badge, the login
+flow and the "Install now" button on `/admin/providers?tab=subscriptions` all
+went through it. The two spawn sites did not: `CliChatAgent` spawned a
+`DEFAULT_CLI_BINARY = 'claude'` that no caller ever overrode, and the
+`claude-cli` completion provider (verifier claim extraction, evidence judge,
+summaries, fact extraction) carried its own `CLI_BIN = 'claude'`. On the Compose
+image that is `/usr/local/bin/claude`, the version pinned in the Dockerfile.
+
+So the product's own "install / update the CLI" button had no effect on agent
+turns: the install landed in `/data/cli-tools`, the badge updated, the turn kept
+running the image binary. Worse, it degraded the spawn gate invisibly.
+`--restricted` is passed only when the probed CLI is ≥ 2.1.248, and the probe
+runs against the spawned binary — so after an operator "fixed" the CLI through
+the UI, the turn still ran the older one and the gate dropped the flag while the
+UI advertised an up-to-date CLI. The remaining flags (`--tools ""`,
+`--disallowedTools`, `--strict-mcp-config`, `--permission-mode dontAsk`,
+`--setting-sources ""`) and the env twin `CLAUDE_CODE_RESTRICTED=1` still held,
+so this was a degraded boundary rather than an open one — but degraded where
+nobody could see it and nobody could repair it from the UI. Before the version
+gate existed, the same mismatch was a hard failure: every turn died with
+`unknown option '--restricted'` even after the operator had installed a newer
+CLI through the UI.
+
+Every spawn site now resolves through the one rule: the chat turn, the
+completion provider, and the CLI sub-agents (`ask_<slug>`, the agent builder,
+the preview chat), which build their own `CliChatAgent` deps and so had to be
+handed the rule explicitly. The kernel publishes it as
+the `cliBinaryResolver` service (declared under `optional_requires` in the
+orchestrator manifest) because `@omadia/orchestrator` cannot import the
+application layer, where the rule reads its env and the directory the admin UI
+installs into; a host that publishes no resolver keeps the previous PATH
+behaviour instead of losing chat. Resolution happens per turn and per
+completion, not once at construction — `resolveCliBin` checks the filesystem
+when called, which is what makes an install visible on the next turn rather than
+the next restart — and the version probe now runs against the same path the
+spawn uses. The spawn log names the resolved absolute path instead of `claude`.
+Kernel-side callers share one entry point (`src/platform/cliBinary.ts`), and a
+test fails the build if a new `createCliSubAgent` call site forgets it. That
+entry point takes the binary NAME from the `CLI_BACKENDS` table the detector and
+`cliAuthService` already read, not from a second literal — a fix for a drift bug
+that kept its own copy of the name would only move the drift.
+
+Because the rule now sits under every turn instead of only the badge and the
+login probe, it checks that the install-dir candidate is executable rather than
+merely present. An `npm install -g --prefix` that dies after writing
+`<CLI_TOOLS_DIR>/bin/claude` but before setting the exec bit used to leave a
+file an existence check would return, so every spawn failed EACCES with a
+working PATH binary one fallback away; the blast radius of a bad install dir is
+back to what it was before this change.
+
+Login is unaffected and always was: both binaries read the same
+`CLAUDE_CONFIG_DIR`, so the "logged in" the UI reports is the login a turn uses.
+Note that the image's own pin is still below the `--restricted` floor, so a
+default deployment runs without that flag until a newer CLI is installed —
+bumping the pin is a separate change.
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a

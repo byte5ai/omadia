@@ -27,6 +27,7 @@ import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { OAuthReadinessTracker } from './oauth/oauthReadinessTracker.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
+import { resolveClaudeCliBin } from '../platform/cliBinary.js';
 import {
   createCliSubAgent,
   LocalSubAgent,
@@ -546,6 +547,8 @@ export class DynamicAgentRuntime {
             systemPrompt,
             model: stripCliModelAlias(subAgentModel),
             tools: subAgentTools,
+            // #1085 — the binary an operator installed through the UI, not PATH.
+            resolveCliBinary: resolveClaudeCliBin,
           })
         : new LocalSubAgent({
             name: shortName,

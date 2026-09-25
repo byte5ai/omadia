@@ -148,15 +148,23 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
       readonly cliVersion?: string | undefined;
       /** Exit the child with this code and stderr instead of a clean result. */
       readonly fail?: { readonly code: number; readonly stderr: string };
+      /** #1085 — the binary resolver the kernel normally wires in. */
+      readonly resolveCliBinary?: () => string;
     } = {},
   ): {
     readonly agent: CliChatAgent;
     readonly argv: () => readonly string[];
     readonly spawnOptions: () => { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv };
     readonly logged: readonly { level: 'info' | 'warn'; message: string; meta?: Record<string, unknown> }[];
+    /** #1085 — the binary the agent actually spawned, per turn. */
+    readonly spawnedBinaries: readonly string[];
+    /** #1085 — the binary each version probe ran against, per turn. */
+    readonly probedBinaries: readonly string[];
   } {
     let captured: readonly string[] = [];
     let capturedOptions: { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv } = {};
+    const spawnedBinaries: string[] = [];
+    const probedBinaries: string[] = [];
     const logged: { level: 'info' | 'warn'; message: string; meta?: Record<string, unknown> }[] = [];
     const logger: CliSpawnLogger = {
       info: (message, meta) => logged.push({ level: 'info', message, ...(meta ? { meta: { ...meta } } : {}) }),
@@ -177,9 +185,13 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
         }) as never,
       // Default to a CLI that knows `--restricted`, so the pre-OM-85 assertions
       // below keep testing the full gate.
-      resolveCliVersion: async () => ('cliVersion' in opts ? opts.cliVersion : '2.1.259'),
+      resolveCliVersion: async (binary: string) => {
+        probedBinaries.push(binary);
+        return 'cliVersion' in opts ? opts.cliVersion : '2.1.259';
+      },
       logger,
       ...(opts.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
+      ...(opts.resolveCliBinary ? { resolveCliBinary: opts.resolveCliBinary } : {}),
       buildEnv: () => ({
         PATH: '/usr/bin',
         HOME: '/Users/tester',
@@ -189,10 +201,11 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
         ANTHROPIC_API_KEY: 'sk-ant-test-key',
       }),
       spawnFn: ((
-        _bin: string,
+        bin: string,
         argv: readonly string[],
         options: { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv },
       ) => {
+        spawnedBinaries.push(bin);
         captured = argv;
         capturedOptions = options;
         const stdout = new PassThrough();
@@ -223,13 +236,84 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
         return child;
       }) as unknown as CliChatAgentDeps['spawnFn'],
     });
-    return { agent, argv: () => captured, spawnOptions: () => capturedOptions, logged };
+    return {
+      agent,
+      argv: () => captured,
+      spawnOptions: () => capturedOptions,
+      logged,
+      spawnedBinaries,
+      probedBinaries,
+    };
   }
 
   function valueAfter(argv: readonly string[], flag: string): string | undefined {
     const idx = argv.indexOf(flag);
     return idx === -1 ? undefined : argv[idx + 1];
   }
+
+  /**
+   * #1085 — one resolution rule for one binary.
+   *
+   * The detector, the login flow and the "Install now" button all go through
+   * `resolveCliBin()`, which prefers `<cliToolsDir>/bin/claude` over PATH. The
+   * turn path spawned the bare name instead, so an operator could install a
+   * newer CLI through the UI, watch the version badge update, and still have
+   * every turn run the image binary — including the version probe that decides
+   * whether `--restricted` is passed.
+   */
+  describe('binary resolution (#1085)', () => {
+    it('spawns the resolved binary and probes that same path for the version', async () => {
+      const { agent, spawnedBinaries, probedBinaries } = makeAgent({
+        resolveCliBinary: () => '/data/cli-tools/bin/claude',
+      });
+      await agent.chat({ userMessage: 'hi' });
+
+      assert.deepEqual(spawnedBinaries, ['/data/cli-tools/bin/claude']);
+      // The gate reads the version of the binary it is about to spawn. Probing
+      // a different one is how `restrictedFlag: false` ended up on a turn the
+      // UI had just reported as 2.1.259.
+      assert.deepEqual(probedBinaries, ['/data/cli-tools/bin/claude']);
+    });
+
+    it('re-resolves per turn, so a runtime install lands without a restart', async () => {
+      // `resolveCliBin` evaluates `existsSync` at call time: the whole point of
+      // the install button is that it takes effect on the NEXT turn. Resolving
+      // once into a string at construction would reproduce the bug for every
+      // install that happens after boot.
+      const resolved = ['claude', '/data/cli-tools/bin/claude'];
+      let turn = 0;
+      const { agent, spawnedBinaries } = makeAgent({
+        resolveCliBinary: () => resolved[Math.min(turn, resolved.length - 1)] as string,
+      });
+
+      await agent.chat({ userMessage: 'before the install' });
+      turn = 1;
+      await agent.chat({ userMessage: 'after the install' });
+
+      assert.deepEqual(spawnedBinaries, ['claude', '/data/cli-tools/bin/claude']);
+    });
+
+    it('falls back to the bare name when no resolver is wired', async () => {
+      // Unit tests and hosts that publish no `cliBinaryResolver` keep the
+      // pre-#1085 behaviour rather than failing to spawn.
+      const { agent, spawnedBinaries, probedBinaries } = makeAgent();
+      await agent.chat({ userMessage: 'hi' });
+
+      assert.deepEqual(spawnedBinaries, ['claude']);
+      assert.deepEqual(probedBinaries, ['claude']);
+    });
+
+    it('logs the resolved path, so the log answers which binary ran', async () => {
+      const { agent, logged } = makeAgent({
+        resolveCliBinary: () => '/data/cli-tools/bin/claude',
+      });
+      await agent.chat({ userMessage: 'hi' });
+
+      const spawnLine = logged.find((l) => l.message === 'spawning claude CLI');
+      assert.ok(spawnLine, 'the spawn must be logged');
+      assert.equal(spawnLine.meta?.['binary'], '/data/cli-tools/bin/claude');
+    });
+  });
 
   it('removes the CLI built-in tool set and denies anything not pre-approved', async () => {
     const { agent, argv } = makeAgent();

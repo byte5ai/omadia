@@ -25,7 +25,7 @@
  * "needs verification" and not yet recommended.
  */
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { accessSync, constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import { CLI_ENV_SCRUB_KEYS } from '@omadia/orchestrator';
 
@@ -144,11 +144,56 @@ export function cliToolsDir(): string {
  * a volume install visible to detection and login without mutating PATH.
  * POSIX layout only — on Windows npm puts `<bin>.cmd` directly in the prefix,
  * so there the PATH fallback is the effective path. Deployment is Linux.
+ *
+ * The candidate must be EXECUTABLE, not merely present (#1085). Since that
+ * issue this function sits under every chat turn and every completion, not
+ * just the version badge and the login probe, so a half-written install dir
+ * is now the difference between "badge shows the wrong version" and "chat is
+ * down": an `npm install -g --prefix` that dies after writing
+ * `<cliToolsDir>/bin/<bin>` but before setting the exec bit leaves a file that
+ * an existence check happily returns, and every spawn then fails EACCES with
+ * a working PATH binary sitting one fallback away. `X_OK` covers that and the
+ * dangling-symlink case alike (access(2) follows links), and is still a
+ * filesystem read per call — what makes a fresh install visible on the next
+ * turn rather than the next restart.
  */
 export function resolveCliBin(bin: string): string {
   const candidate = path.join(cliToolsDir(), 'bin', bin);
-  return existsSync(candidate) ? candidate : bin;
+  try {
+    accessSync(candidate, fsConstants.X_OK);
+    return candidate;
+  } catch {
+    return bin;
+  }
 }
+
+/**
+ * The binary name a supported backend spawns under, e.g. `claude` for the
+ * `claude` backend id.
+ *
+ * #1085 — single-sources the name against {@link CLI_BACKENDS}, the table the
+ * detector and `cliAuthService` already resolve through. A second literal in
+ * the same layer would mean a rename (or a second Claude backend id) silently
+ * pointing login and detection at one binary and every spawn at another: the
+ * drift class #1085 exists to remove. Falls back to the id — true for every
+ * entry in the table today — rather than throwing under a spawn site.
+ */
+export function cliBackendBin(cliId: string): string {
+  return CLI_BACKENDS.find((s) => s.id === cliId)?.bin ?? cliId;
+}
+
+/**
+ * #1085 — the kernel service that carries {@link resolveCliBin} to the spawn
+ * sites that cannot import it.
+ *
+ * `harness-orchestrator` is a separate package and the app layer imports
+ * packages, never the reverse — which is how the CLI chat agent came to spawn
+ * its own `'claude'` constant while everything the operator sees (version
+ * badge, login state, "Install now") resolved through the rule above. Publish
+ * the rule instead of duplicating it; `test/cliBinaryResolverGrant.test.ts`
+ * pins this name against the plugin-side literal and the manifest.
+ */
+export const CLI_BINARY_RESOLVER_SERVICE_NAME = 'cliBinaryResolver';
 
 /** npm package for a backend id, or undefined when not runtime-installable. */
 export function getInstallPackage(cliId: string): string | undefined {
