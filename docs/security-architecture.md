@@ -229,6 +229,22 @@ working across it:
   channels only the Teams adapter calls `captureRoutineTurn`, so it is the only
   one that installs a context this guard can find stale.
 
+  **#1086 changed what reaches the guard, not what it refuses.** Channels that
+  drive their turn through `CoreApi.handleTurnStream` (in-tree: public API,
+  canvas) now carry a routine principal the core installed. That producer uses
+  `routineTurnContext.run`, so its value ends with the turn and can never be the
+  stale one; and it deliberately does not defer to a context belonging to a
+  *different* user. Adapters that call the `chatAgent` capability directly
+  (Teams, Telegram, Slack, Discord, WhatsApp as of 2026-09) never reach that
+  producer. `enterWith` — i.e. `captureRoutineTurn` — remains the only way to
+  leak a principal forward, and Teams remains its only caller; because Teams is
+  one of the direct-`chatAgent` adapters, the producer's stale-context
+  correction never applies to it, and this guard is still the only defence
+  against its staleness. Routine ownership is `(tenant, userId)` with
+  channel-native ids and no channel component, so a channel moving onto
+  `handleTurnStream` must supply ids that cannot collide with another
+  channel's (`key:<uuid>` on the public API).
+
   **The declaration is part of the mechanism, not bookkeeping.** Both
   `services.get` and `services.getOptional` run `assertServiceGranted`, which
   throws `ServiceNotDeclaredError` for a name in none of `requires:`,
@@ -417,6 +433,39 @@ deliberately data-only:
   resolve/instantiate path as every other template, including live
   `KnownRefs` validation — a template referencing entities this install
   lacks fails visibly at mapping time, never silently.
+
+### `ctx.tools.invoke('memory')` runs in the caller's own scope (#909)
+
+`ctx.tools.invoke(name, input)` dispatches straight to a `NativeToolRegistry`
+handler and bypasses the per-turn dispatch hooks (privacy guard, telemetry).
+For `memory` that handler belongs to the memory provider and is bound to the
+undecorated root store, so before #909 any activated plugin could read, write,
+rename and delete every Agent's and every plugin's memory, with or without
+`permissions.memory`. `invoke('memory', …)` therefore never reaches the
+registry handler (`src/platform/pluginContext.ts`):
+
+- A plugin whose manifest declares no `permissions.memory` (no non-empty
+  `reads`/`writes`) gets a `ToolInvokePermissionError`. The call is denied,
+  not narrowed.
+- If no memory store is published, the call throws `'memory' is unavailable`.
+  It never falls back to the root-bound handler.
+- Otherwise the kernel runs its own `MemoryToolHandler` over
+  `createPluginMemoryToolStore` (`src/platform/memoryAccessor.ts`). In that
+  view `/memories` is the plugin's `ctx.memory` scope,
+  `/memories/orchestrators/<agentSlug>/plugins/<pluginId>/`, with the slug
+  read from the turn context on every call (`default` outside a turn). Both
+  views share `pluginMemoryScope()` and `normalizeRelPath()`, so they cannot
+  disagree. Paths outside `/memories`, `..` and NUL bytes are refused before
+  any store call, and store entries outside the scope throw instead of
+  leaking. The pre-isolation `/memories/agents/<pluginId>/` tree is a
+  read-only fallback for the default Agent only.
+- The scope is a string prefix, and every store must treat it literally.
+  `PostgresMemoryStore` escapes `%`, `_` and `\` in its `LIKE` prefix scans.
+  Plugin ids may contain `_`, and an unescaped `_` would let `@omadi_/x` match
+  `@omadia/x`'s tree on a directory rename or delete.
+- Only `memory` is routed; every other tool name keeps the registry dispatch.
+  A new native tool bound to shared or unscoped state must be routed or denied
+  the same way before it is registered.
 
 ## 5. Signed artefact URLs
 
@@ -1050,6 +1099,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       itself, and then only the narrowest regex covering that one route (§10).
 - [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —
       operator routers belong under `/api/v1/admin/*` (§10).
+- [ ] A new native tool bound to shared/unscoped state (like memory) is routed
+      through the caller's scoped accessor in `ctx.tools.invoke`, or denied
+      there (§4, #909).
 
 ---
 

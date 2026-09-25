@@ -166,3 +166,24 @@ describe('<Nav /> cluster dropdown', () => {
     expect(menuVisible()).toBe(true);
   });
 });
+
+/**
+ * Issue #1073 — every nav item is `whitespace-nowrap`, so `min-w-0` on <nav>
+ * only let the nav's BOX shrink while its content kept full width and spilled
+ * over the siblings (HELP under the palette select, the issue button under the
+ * ADMIN trigger). jsdom does no layout, so this pins the root cause via the
+ * class list: no `min-w-0`, and the wide spacing only from 2xl.
+ */
+describe('<Nav /> header fit (#1073)', () => {
+  it('does not let the nowrap nav shrink under its siblings', () => {
+    const { container } = renderWithIntl(<Nav />);
+    const nav = container.querySelector('nav');
+    if (!nav) throw new Error('nav not rendered');
+    const classes = nav.className.split(/\s+/);
+
+    expect(classes).not.toContain('min-w-0');
+    expect(classes).not.toContain('xl:gap-4');
+    expect(classes).not.toContain('xl:tracking-[0.18em]');
+    expect(classes).toContain('2xl:gap-4');
+  });
+});

@@ -69,6 +69,165 @@ Anthropic sub-agents stay on the unauthenticated client after a key is saved,
 and non-Anthropic agents whose activation failed are never retried. The open
 item is recorded in `docs/middleware-agent-handoff.md` §13.
 
+### Fixed — header nav no longer overlaps at desktop-window widths (#1073)
+
+At the desktop shell's ~1100 px window the palette select covered HELP and the
+ADMIN trigger covered the "create issue" button. The header row and `<nav>`
+carried `min-w-0`, but every nav item is `whitespace-nowrap`, so only the nav's
+box shrank while its content spilled over the controls to its right. The row
+now fits by construction: below `xl` the palette and appearance selects
+collapse into one icon-triggered panel and the account badge shows initials
+only, and the wide nav spacing starts at `2xl` instead of `xl`. Every nav
+target stays reachable without overlap from 1024 px up; narrower desktop
+windows (880–1023 px) overflow at the right edge instead of overlapping.
+
+### Fixed — bootstrap auto-removals purge agent bindings (#1070)
+
+2026-09-24 — the boot-time bootstrap removes a plugin on its own at four
+sites: the memory self-heal, the #1053 `embeddingClient@1` conflict, the
+legacy-KG migration and the KG dual-active conflict. None of them purged the
+plugin's `agent_plugins` rows, so each removal left orphaned orchestrator
+bindings behind. #1063 (OM-95) had fixed this for operator uninstalls only.
+Every site now reports the id through a new `BootstrapDeps.onPluginRemoved`
+hook. Bootstrap runs before `@omadia/orchestrator` provides its binding store,
+so the host queues the ids (`pendingBindingPurge.ts`) and purges them via the
+existing `purgePluginAgentBindings` at two points: right after
+`toolPluginRuntime.activateAllInstalled()`, and whenever the orchestrator is
+(re)activated, which covers a fresh host that boots without an LLM key and
+gets its store only after `/setup`. A failed DELETE is logged with
+`console.error` and the plugin id; a still-missing store is a `console.warn`
+listing the ids on a Postgres host and an info line without `DATABASE_URL`.
+The queue is kept in both cases, because the KG can publish a `graphPool` from
+a vault-stored DSN without `DATABASE_URL`. An id that is installed again by
+flush time (operator reinstall while the store was still missing) is dropped
+without a purge, so bindings granted after the reinstall are never deleted. A
+throwing hook is logged and never aborts boot. Residual: the queue lives in memory only, so ids still pending
+when the process exits (Postgres host whose orchestrator never activated in
+that lifetime) are not retried on the next boot.
+
+### Fixed — ctx.tools.invoke('memory') no longer reaches the unscoped root store (#909)
+
+2026-09-24 — `ctx.tools.invoke(name, input)` dispatched straight to the
+`NativeToolRegistry` entry, and the `memory` entry is the memory provider's
+handler bound to the undecorated root store. Any activated tool-kind plugin,
+with or without `permissions.memory`, could therefore read and write every
+Agent's tree. The UI orchestrator's canvas refresh replays recipes through the
+same accessor, so a recorded recipe naming `memory` would have done the same.
+`invoke('memory', …)` now runs the memory tool against the caller's own
+`ctx.memory` scope: `/memories` is the plugin's
+`/memories/orchestrators/<agentSlug>/plugins/<pluginId>/` subtree, the slug is
+resolved per call, and the default-Agent legacy tree stays a read-only
+fallback. Both paths share one scope function. A plugin without
+`permissions.memory` gets a `ToolInvokePermissionError`, and a missing memory
+store gets an "unavailable" error. Neither case ever falls back to the registry
+handler. All other tool names dispatch as before. Same shape as #904/#908;
+part of #860.
+`PostgresMemoryStore` now escapes `%`, `_` and `\` in its `LIKE` prefix scans.
+Unescaped, the `_` a plugin id may contain matched any character, so a
+directory rename or delete in one plugin's scope could reach a sibling
+plugin's tree.
+
+### Fixed — `manage_routine` works on core-dispatched channels, and says so honestly elsewhere (#1086)
+
+2026-09-24 — asking an agent to create, list, pause, resume or delete a routine
+from any channel other than Microsoft Teams failed with *"routines are
+unavailable in this session because the user context did not reach the routines
+tool (a runtime wiring issue…)"*. The text pointed an operator at a lever that
+did not exist: no channel other than Teams could supply that context.
+
+`manage_routine` resolves its principal from `routineTurnContext.current()`, and
+the only producer for channel traffic was `RoutinesIntegration.captureRoutineTurn`
+— called solely by the out-of-tree Teams adapter. Channels reach the orchestrator
+through one of two doors: `CoreApi.handleTurnStream`, or the `chatAgent`
+capability called directly. Neither installed a context, so it was `undefined`
+for the whole turn and all five actions refused, including the read-only `list`.
+That included the two channels shipped in this repo, `@omadia/channel-api`
+(public API) and `@omadia/ui-channel` (canvas), which both use
+`handleTurnStream`. The web chat had been fixed route-locally in v0.159.0
+(`routes/chat.ts`); channel plugins got no equivalent.
+
+`CoreApi.handleTurnStream` now installs the principal itself. That covers every
+channel that drives its turn through it — but **not** adapters that call the
+`chatAgent` capability directly, which is what Teams, Telegram, Slack, Discord
+and WhatsApp do as of 2026-09. The issue's own reproduction (Telegram) therefore
+still has no context; it now gets an honest answer instead of a false fault
+report (see below), and full support needs those adapters to call
+`captureRoutineTurn` / `beginRoutineTurn` themselves. Details that are
+load-bearing:
+
+- **An adapter's own context still wins, a stale one does not.** An adapter that
+  installs its context before calling `handleTurnStream` holds the channel-native
+  delivery handle the proactive sender delivers through; replacing it would
+  produce routines that cannot be delivered. (No shipped adapter does this today:
+  Teams installs its context but calls `chatAgent` directly.) But `captureRoutineTurn` uses
+  `enterWith` and never exits (#1016), so a context found here may belong to the
+  previous turn. The producer skips only a context that names **this turn's**
+  user, and installs its own over any other.
+- **`run`, per pull.** `handleTurnStream` returns an `AsyncIterable`, so wrapping
+  the call would cover only the synchronous construction of the iterator — the
+  dispatcher's generator body resumes on the consumer's `next()`. Each pull is
+  wrapped instead, which keeps the context for the whole turn *and* keeps the
+  scope exit, including when a consumer breaks out early.
+- **One tenant source.** `IncomingTurn.tenantId` when the channel declares one
+  (only the canvas channel does today), else the deployment tenant — the same
+  value `routes/chat.ts` gives the web chat, so both name the same tenant. Two
+  defaults would have split routines by tenant as well as by user, and `list`
+  would answer empty with no error. (The *user* id still differs per channel by
+  design — see the limitation below.)
+- **`userId` verbatim.** The #1016 owner guard compares the context against
+  `ChatTurnInput.userId`, which the dispatcher fills from the same
+  `turn.userRef.id`; canonicalising here would make the guard refuse every
+  subscription-CLI dispatch.
+- **`canTargetOthers` stays `false`** for every channel. Cold-start outreach to
+  other people needs an explicit governance source and the core has none — the
+  generic producer cannot express the flag at all.
+
+`RoutinesIntegration` gains `beginRoutineTurn(info)` (`@omadia/plugin-api` 1.18.0,
+additive): it writes the Conductor channel binding once and returns a runner that
+scopes one async segment of the turn. Two calls rather than one because a streamed
+turn has many segments — a binding written inside the runner would be one Postgres
+upsert per streamed delta. Non-Teams channels therefore get a Conductor channel
+binding at all (one write per turn), where before they had none — but whether a
+reminder can actually be *delivered* through it still depends on the channel
+having a `ProactiveSender` that understands the stored ref; see the limitation
+below. Bindings are keyed `(user, channel_type)`, so a channel's generic entry
+cannot overwrite the Teams one. The kernel passes the producer into `createCoreApi` as
+an optional `routineTurn`; without the routines feature (no Postgres) the option is
+absent and `handleTurnStream` behaves exactly as before. `createCoreApi` also takes
+the same manifest-aware `channelTypeFor` resolver the dispatcher uses, so a plugin
+whose manifest declares a `channel_type` that is not the last segment of its id has
+its routines filed under the key its `ProactiveSender` actually registers under.
+
+Delivery is unchanged and already honest: `RoutineRunner.createRoutine` refuses up
+front when no `ProactiveSender` is registered for the channel, with *"no proactive
+sender registered for channel '<x>'"*. So on a channel without a sender, `create`
+names the real limitation and `list`/`pause`/`resume`/`delete` simply work.
+`ROUTINE_NO_CONTEXT_ERROR` no longer calls a missing context "a runtime wiring
+issue" or sends the user to their operator. Reaching it now almost always means a
+channel no producer covers (the direct-`chatAgent` adapters above), which no
+operator can configure, so it says routines are not available in this
+conversation and points at the Routines page for viewing, pausing or deleting
+existing routines (the page cannot create one). The issue's suggested split into a
+second, operator-facing "genuine wiring fault" message is not done: the tool has
+no signal that tells the two cases apart. Registering senders for `web` and the
+reference channels, and wiring the direct-`chatAgent` adapters, remain open.
+
+**Known limitation — the generic `conversationRef`.** The core cannot know a
+channel's wire shape, so for a turn whose adapter installed no context it stores
+`{ kind: 'channel', channelId, conversationId }`. That ref now also reaches the
+Conductor reminder path for such a channel, so a plugin that registers a
+`ProactiveSender` without calling `captureRoutineTurn` will be asked to send to a
+shape it did not define — a failed delivery where there previously was no attempt.
+A `ProactiveSender` that receives one must route by `conversationId`; an adapter that has a richer handle should keep
+installing its own context (Teams does) or upgrade a stored ref via
+`updateRoutineConversationRef`. No shipped sender is affected today — the only
+in-tree channels (`channel-api`, `ui-channel`) register none, and Teams brings its
+own ref. Also note the principal is per channel: `manage_routine` scopes rows by
+`(tenant, userId)` and `userId` is the channel-native id (the value the #1016 guard
+compares against), so the same human's routines from the web chat and from a
+channel are separate sets. The tenant now matches across both; the user id
+deliberately does not.
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a
