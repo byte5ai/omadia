@@ -16,7 +16,7 @@
         "downDetail": "Keine Antwort von der Middleware-API."
       },
       "llm": {
-        "title": "LLM-Provider",
+        "title": "LLM-Zugang",
         "connected": "{count, plural, one {# Provider verbunden} other {# Provider verbunden}}",
         "none": "Kein Provider verbunden",
         "active": "Aktiv: {name}",
@@ -154,13 +154,15 @@
         "doneViaRuntime": "Die Agent-Runtime läuft über {label}.",
         "doneViaRuntimeNoLabel": "Die Agent-Runtime läuft.",
         "accessWithoutRuntime": "Ein LLM-Zugang ist hinterlegt, aber die Agent-Runtime läuft noch nicht. Meist fehlt nur die Zuordnung des Orchestrators zu diesem Zugang.",
-        "assignOrchestrator": "Orchestrator zuordnen"
+        "assignOrchestrator": "Orchestrator zuordnen",
+        "unreachable": "Die Agent-Runtime hat nicht geantwortet, dieser Schritt lässt sich deshalb nicht prüfen. Möglicherweise ist die Middleware nicht verfügbar, startet noch oder liefert einen Fehler.",
+        "openSystemStatus": "Update & Status öffnen"
       },
       "embeddingsNote": "Gedächtnis eingeschränkt: Es ist kein Embedding-Anbieter aktiv. Prozessgedächtnis, semantische Suche und Dublettenerkennung bleiben aus, bis einer läuft. Es gibt auch einen schlüssellosen Weg — ohne API-Schlüssel und ohne eigenen Server.",
       "embeddingsCta": "Embedding-Anbieter einrichten",
       "heading": "Erste Schritte",
       "kicker": "Einrichtung",
-      "applied": "Installiert",
+      "done": "Erledigt",
       "browseAll": "Alle Plugins ansehen",
       "bringSkills": {
         "kicker": "Optional",
@@ -946,11 +948,7 @@
     "passwordTooShort": "Das Passwort muss mindestens 8 Zeichen lang sein.",
     "alreadyLocked": "Setup ist bereits abgeschlossen — ein anderer Nutzer wurde angelegt.",
     "credentialsRejected": "E-Mail oder Passwort wurde vom Server abgelehnt (gültige E-Mail + mindestens 8 Zeichen erforderlich).",
-    "anthropicKeyLabel": "Anthropic API Key (optional)",
-    "anthropicKeyHelp": "Beginnt mit sk-ant-…. Hol dir einen unter console.anthropic.com. Wird verschlüsselt im Per-Plugin-Vault gespeichert — nicht in .env. Du kannst das Feld leer lassen und den Key später unter Admin → Runtime → Secrets nachtragen.",
-    "anthropicKeyInvalid": "Anthropic API Keys beginnen mit „sk-ant-\". Bitte den Wert von console.anthropic.com prüfen.",
-    "anthropicKeyRejected": "Der Server hat diesen Anthropic-Key abgelehnt (401/403). Bitte unter console.anthropic.com → API keys überprüfen.",
-    "providerHint": "Hier ist kein LLM-Schlüssel nötig. Nachdem du das Admin-Konto angelegt hast, verbinde unter Admin → LLM-Provider einen Provider (Anthropic, OpenAI, …)."
+    "providerHint": "Hier ist kein LLM-Schlüssel nötig. Nachdem du das Admin-Konto angelegt hast, verbinde unter Admin → LLM-Zugang einen Provider (Anthropic, OpenAI, …)."
   },
   "onboarding": {
     "ariaLabel": "Erste Einrichtung",
@@ -958,7 +956,7 @@
     "ariaClose": "Schließen",
     "kicker": "Erste Einrichtung",
     "title": "Profil wählen — in <60 Sekunden arbeitsfähig",
-    "intro": "Diese Middleware ist noch leer ({count, plural, one {# Plugin} other {# Plugins}} installiert). Wähle ein curated Profil — die Plugins werden in der korrekten Capability-Reihenfolge registriert. Secrets wie API-Keys setzt du im Anschluss über den Wizard.",
+    "intro": "Du hast noch keine Plugins installiert — die bereits laufenden Pakete kommen aus dem Image. Wähle ein curated Profil, dann werden dessen Plugins in der korrekten Capability-Reihenfolge registriert. Secrets wie API-Keys setzt du im Anschluss je Plugin auf dessen Detail-Seite.",
     "exportPrefix": "Bereits eingerichtet?",
     "exportLink": "Profil als YAML exportieren",
     "exportSuffix": "und in einen anderen Deploy importieren.",
@@ -1382,8 +1380,11 @@
     "bodyNoAssignment": "Ein LLM-Zugang ist vorhanden, aber der Orchestrator ist noch keinem Provider mit Zugang zugeordnet. Wähle im LLM-Zugang unter Zuordnung den verbundenen Provider für den Orchestrator, bei einem Abo „Claude (subscription CLI)“. Die Runtime startet danach ohne Neustart.",
     "titleUnknown": "Agent-Runtime antwortet nicht",
     "bodyUnknown": "Zugang und Zuordnung sind gesetzt, die Agent-Runtime antwortet trotzdem nicht. Prüfe den hinterlegten Zugang unter LLM-Zugang.",
+    "titleUnreachable": "Runtime-Status unbekannt",
+    "bodyUnreachable": "Die Anfrage an die Agent-Runtime ist fehlgeschlagen, ihr Status lässt sich deshalb nicht bestimmen. Möglicherweise ist die Middleware nicht verfügbar, startet noch oder liefert einen Fehler. Prüfe die Versions- und Statusseite und lade die Seite neu.",
     "cta": "LLM-Zugang öffnen",
     "ctaNoAssignment": "Zuordnung öffnen",
+    "ctaUnreachable": "Update & Status öffnen",
     "dismiss": "Später"
   },
   "agentDetailsModal": {
@@ -1604,6 +1605,12 @@
       "factNotEmbedded": "— kein Vektor",
       "factPrivateBlocks": "'<private>'-Blöcke",
       "factHintTags": "'<palaia-hint>'-Tags"
+    },
+    "turnIncomplete": {
+      "heading": "Dieser Turn wurde nicht abgeschlossen",
+      "body": "Die unten genannten Aktionen wurden ausgeführt — der Assistent konnte danach aber keine Antwort erzeugen, deine Frage ist also weiterhin offen. Stelle die Frage erneut; die Aktionen selbst nur dann wiederholen, wenn sie sicher ein zweites Mal laufen sollen.",
+      "bodyNoTools": "Beim Abbruch dieses Turns waren bereits Aktionen ausgeführt worden, und der Assistent konnte danach keine Antwort erzeugen — deine Frage ist also weiterhin offen. Stelle die Frage erneut; alles, was Daten verändert, vorher mit deinem Betreiber klären.",
+      "completedTools": "Ausgeführte Aktionen:"
     },
     "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber.",
     "errorCorrelationRef": "Referenz für den Support: {id}",
@@ -2291,7 +2298,8 @@
           "communication": "Kommunikation"
         },
         "customLabel": "Eigene Verbote",
-        "customHint": "Eine Regel pro Zeile.",
+        "customHint": "Eine Regel pro Zeile, als vollständiger Satz formuliert — sie erreicht den Agenten genau so, wie eingegeben.",
+        "customPlaceholder": "Gib keine Anlageberatung; verweise auf eine unabhängige Beratung.",
         "sycophancyLabel": "Schmeichel-Bremse",
         "sycophancyHint": "Wie deutlich der Agent widersprechen darf, statt dem Nutzer nach dem Mund zu reden.",
         "sycophancyLevels": {
@@ -3137,6 +3145,8 @@
         "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
         "unknownPresets": "Unbekannte Preset-IDs: {ids}",
         "customLabel": "Eigene Boundaries (eine pro Zeile)",
+        "customHint": "Jede als vollständigen Satz formulieren — sie erreicht den Agenten genau so, wie eingegeben.",
+        "customPlaceholder": "Gib keine Anlageberatung; verweise auf eine unabhängige Beratung.",
         "save": "Boundaries speichern",
         "saving": "Boundaries speichern…",
         "saved": "Gespeichert",
@@ -3674,7 +3684,6 @@
     }
   },
   "adminProviders": {
-    "title": "LLM-Provider",
     "intro": "Verbinde LLM-Provider und lege fest, mit welchem jeder Agent läuft. Schlüssel werden verschlüsselt im Vault gespeichert und verlassen deinen Server nie. Anthropic ist der Standard; ein Provider-Wechsel pro Agent wirkt sofort.",
     "loading": "Lädt …",
     "loadError": "Die Provider-Liste konnte nicht geladen werden.",
@@ -3736,7 +3745,10 @@
       "pickModel": "Modell wählen …",
       "avvDisclosure": "Dieser Agent läuft über {provider}. Seine Prompt-Daten werden an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor du ihn für personenbezogene Daten nutzt.",
       "euHostedNote": "{provider} wird in der EU gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern.",
-      "subscriptionNotice": "{provider} läuft über das persönliche Claude-Abo des angemeldeten Kontos. Für Consumer-Tarife gibt es keinen Auftragsverarbeitungsvertrag (AVV) — verarbeite über diesen Agenten keine personenbezogenen Daten."
+      "subscriptionNotice": "{provider} läuft über das persönliche Claude-Abo des angemeldeten Kontos. Für Consumer-Tarife gibt es keinen Auftragsverarbeitungsvertrag (AVV) — verarbeite über diesen Agenten keine personenbezogenen Daten.",
+      "routingLabel": "Per-Turn Model-Routing (Haiku-Triage)",
+      "routingHint": "Ein günstiger Haiku-Call klassifiziert jeden Turn — einfache Turns bekommen ein günstigeres Modell, komplexe das Frontier-Modell.",
+      "routingAnthropicOnly": "Nur mit Anthropic verfügbar."
     },
     "status": {
       "saving": "speichert …",
@@ -3764,7 +3776,7 @@
     "explainer": {
       "heading": "Abo vs. API-Schlüssel",
       "body": "Ein API-Schlüssel rechnet pro Token ab. Eine Abo-CLI läuft über deinen bestehenden Tarif: Du meldest dich einmal mit dem offiziellen Tool an, und omadia nutzt diese Sitzung weiter. Das ist derselbe erlaubte Weg, den die offizielle CLI selbst nutzt, kein Token-Auslesen.",
-      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Provider.",
+      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Zugang.",
       "featureNote": "Ein Unterschied zum API-Schlüssel: Auf dem Abo-Weg hat der Assistent noch kein Langzeitgedächtnis, er merkt sich also keine Fakten über Chats hinweg. Wissensgraph-Abfragen, Auswahl-Karten, Follow-up-Buttons und Kalender funktionieren wie gewohnt."
     },
     "loading": "Lädt …",

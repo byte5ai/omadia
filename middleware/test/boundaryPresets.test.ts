@@ -73,12 +73,25 @@ describe('compileBoundaries (issue #54)', () => {
     assert.ok(piiIdx >= 0 && piiIdx < medIdx, 'preset order not preserved');
   });
 
-  it('renders custom lines with the "You must NOT:" prefix, trimming whitespace', () => {
-    const { text } = compileBoundaries([], ['  promise refunds  ', '', 'leak internal data']);
-    assert.match(text, /You must NOT: promise refunds/);
-    assert.match(text, /You must NOT: leak internal data/);
-    // Empty / whitespace-only entries are skipped (do not produce a "You must NOT: " bare line)
-    assert.equal(text.split('You must NOT:').length - 1, 2);
+  it('splices custom lines verbatim, trimming whitespace (issue #1101)', () => {
+    const { text } = compileBoundaries([], [
+      '  Never promise refunds.  ',
+      '',
+      'Never leak internal data.',
+    ]);
+    // No hardcoded prefix — the line reaches the prompt as written.
+    assert.doesNotMatch(text, /You must NOT:/);
+    assert.deepEqual(text.split('\n'), ['Never promise refunds.', 'Never leak internal data.']);
+  });
+
+  it('does not double-negate a line already phrased as a prohibition (issue #1101)', () => {
+    // Regression: an operator writes the finished rule; the old prefix turned
+    // "Give no investment advice" into "You must NOT: Give no investment
+    // advice", literally permitting what was forbidden.
+    const { text } = compileBoundaries([], [
+      'Give no investment advice; refer to independent advisors.',
+    ]);
+    assert.equal(text, 'Give no investment advice; refer to independent advisors.');
   });
 
   it('reports unknown preset IDs via droppedIds instead of silently dropping', () => {
@@ -110,6 +123,33 @@ describe('compileBoundariesSection (issue #54)', () => {
     const { text } = compileBoundariesSection(['no-pii'], []);
     assert.match(text, /^## Boundaries\n/);
     assert.match(text, /personally identifiable information/);
+  });
+
+  it('states that boundaries override the rest of the prompt (#1100)', () => {
+    // A boundary the UI calls a "hard prohibition" must say so in the prompt:
+    // without a precedence clause a later section (e.g. the sycophancy guard)
+    // that licenses answering wins on recency. The clause sits between the
+    // header and the rules, so `^## Boundaries\n` still holds.
+    const { text } = compileBoundariesSection(['no-legal-advice'], []);
+    assert.match(text, /^## Boundaries\n/);
+    assert.match(text, /override every other instruction/);
+    assert.match(text, /not even behind a disclaimer/);
+    // Scoped, not a blanket refusal: `no-commitments` still lets the agent
+    // inform, and `no-pii` / `no-external-links` name no redirect.
+    assert.match(text, /where a boundary says to redirect/);
+    assert.doesNotMatch(text, /When a boundary applies, do not answer/);
+    // The precedence clause comes before the first rule.
+    const overrideIdx = text.indexOf('override every other instruction');
+    const ruleIdx = text.indexOf('You must NEVER provide legal advice');
+    assert.ok(
+      overrideIdx >= 0 && overrideIdx < ruleIdx,
+      'precedence clause must precede the boundary rules',
+    );
+  });
+
+  it('omits the section (and its precedence clause) when there is no content', () => {
+    const { text } = compileBoundariesSection([], []);
+    assert.equal(text, '');
   });
 
   it('byte-identical output for the same inputs (cache stability AC)', () => {

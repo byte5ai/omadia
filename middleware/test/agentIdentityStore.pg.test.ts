@@ -35,6 +35,7 @@ import {
   resolveAgentIdentity,
 } from '../src/platform/agentIdentityStore.js';
 import type { OperatorAgentIdentityStore } from '../src/routes/operatorAgents.js';
+import type { IdentityRecomposeStore } from '../src/services/agentIdentityPrompt.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   label: 'agentIdentityStore',
@@ -321,6 +322,35 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
       undefined,
     );
     assert.equal(await store.getByAgentId(agentId), undefined);
+  });
+
+  it('listAll hands every identity row to the boot recompose (#1100)', async () => {
+    // Compile-time pin: the boot pass talks to the port, not to this class.
+    const recomposeStore: IdentityRecomposeStore = store;
+    assert.ok(recomposeStore);
+    const other = await pool.query<{ id: string }>(
+      `INSERT INTO agents (slug, name, description) VALUES ('support', 'Support Agent', 'Helps') RETURNING id`,
+    );
+    const otherId = (other.rows[0] as { id: string }).id;
+    await store.save(agentId, {
+      ...EMPTY,
+      instructions: 'a',
+      composed: { text: 'a', family: 'sonnet', byFamily: { sonnet: 'a' } },
+    });
+    await store.save(otherId, { ...EMPTY, displayName: 'Support' });
+
+    const all = await store.listAll();
+
+    assert.deepEqual(
+      all.map((r) => r.agentId).sort(),
+      [agentId, otherId].sort(),
+    );
+    const mine = all.find((r) => r.agentId === agentId);
+    assert.deepEqual(mine?.composed, {
+      text: 'a',
+      family: 'sonnet',
+      byFamily: { sonnet: 'a' },
+    });
   });
 
   it('drops the identity with its agent', async () => {

@@ -1606,6 +1606,22 @@ export interface TurnIngest {
   entryType?: EntryType;
   visibility?: Visibility;
   significance?: number | null;
+  /**
+   * #1096 — session-continuity record only. Set by the capture filter for a
+   * turn whose significance fell below the capture threshold: the turn is
+   * still part of the conversation, so it MUST remain visible to
+   * `getSession()` (and thus to the orchestrator's context tail), but it is
+   * NOT knowledge. Backends that honour the flag:
+   *   - write no embedding for the turn,
+   *   - exclude it from cross-session recall (`searchTurns`,
+   *     `searchTurnsByEmbedding`, `findEntityCapturedTurns`).
+   * A re-ingest of the same turn WITHOUT the flag clears it: the capture and
+   * promotion thresholds are configured independently, so "sub-threshold"
+   * cannot be assumed to mean "below the promotion threshold" — the promotion
+   * paths check this flag rather than inferring it from the score. Backends
+   * that ignore the flag stay correct, just less economical.
+   */
+  tailOnly?: boolean;
 }
 
 export interface TurnIngestResult {

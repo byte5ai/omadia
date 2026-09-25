@@ -371,7 +371,9 @@ function serialiseRef(ref: EntityRef): Record<string, unknown> {
  * the server-side chat-session mirror from accidentally creating entries
  * for HTTP smoke tests or Teams conversations.
  */
-function isChatSessionScope(scope: string): boolean {
+/** Is this scope a persisted chat session (as opposed to an HTTP/channel
+ *  transcript scope)? The `ChatSessionStore` is keyed by exactly these ids. */
+export function isChatSessionScope(scope: string): boolean {
   if (scope.startsWith('http-') || scope.startsWith('teams-')) return false;
   return isValidSessionId(scope);
 }

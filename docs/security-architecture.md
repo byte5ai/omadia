@@ -102,6 +102,23 @@ The gate, asserted by `test/cliBridge/cliSpawnGate.test.ts` and
 | `cwd` = empty temp dir (#1014) | The CLI **hardcodes** `CLAUDE.md` / `AGENTS.md` discovery and only `--bare` skips it, so no flag closes this. Without a `cwd` the child inherited the middleware process's directory and any `CLAUDE.md` at or above it joined a prompt built from user content. Both sites now spawn in a per-turn temp dir holding nothing but the mcp-config. |
 | Env allowlist (#1014) | `buildGatedCliEnv()` passes only `PATH`, `HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR`, locale/`TZ`, proxy and CA vars, and `USER`/`LOGNAME`. It replaced a deny list that removed credentials and billing switches but passed `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and the whole `CLAUDE_CODE_*` family. The deny list is kept as a second layer, and a test asserts the two never overlap. |
 
+### No Privacy Shield on this path — and chat history is replayed (#1087)
+
+"Privacy guard" in the list above does not mean the CLI child receives masked
+data. Only the in-process orchestrator installs a per-turn privacy handle, so on
+the subscription-CLI path the live user message,
+tool results and — since #1087 — the replayed chat history reach the vendor
+unmasked. `CliChatAgent` replays the newest `DEFAULT_CLI_SESSION_TAIL_SIZE` (10)
+completed turns of the session into the child's stdin prompt, truncated to 600
+characters per question and 1,200 per answer, with role markers neutralised so
+replayed text cannot forge a `User:`/`Assistant:` line. For a session whose
+earlier turns ran on an API-key provider with Privacy Shield active, those
+persisted turns hold RESTORED real values, so up to ten of them now reach the
+CLI child raw. This is a deliberate trade-off in line with the UI's notice not
+to route personal data through this provider. `maskHistory` already routes the
+replay through the turn's privacy handle and becomes effective the moment one is
+installed on this path; masking parity is tracked on #1087.
+
 ### Why the deny list is generated, not written (#1014)
 
 The first version was hand-collected and missed 40 real tool names, `Tmux`
@@ -509,6 +526,26 @@ makes existing ciphertexts unreadable — an operational decision to announce, n
 a silent `fly secrets set`. Without any secret the import falls back to the old
 irreversible masking and says so in the `[dataset-imported]` fact, so the model
 does not promise real values in an export it cannot deliver.
+
+### 6c. Control-flow tool results pass the shield unmasked (#1105, #1097)
+
+A tool result that is control flow — the `Error:` tool-error convention, or an
+MCP auth prompt — reaches the model verbatim instead of being interned, so the
+model can read the hint and self-correct. Four seams apply it, each after the
+intern exemption and the operator bypass and before interning:
+`Orchestrator.dispatchTool`, `Orchestrator.guardReplayResult`,
+`ToolDispatchService.afterDispatch` and `LocalSubAgent.dispatch`. All four call
+one predicate, `isControlFlowToolResult` (`@omadia/plugin-api`), which is
+**prefix-anchored only**: `Error:` or the exact `🔒 The MCP server "` producer
+prefix. It never matches a substring, so a marker planted in one cell cannot
+unmask a multi-row result such as a decrypted `query_dataset` page (§6b).
+Known limits: remote MCP error
+bodies and `Error: ${err.message}` wrappers (`bridgeTool`) pass through as
+foreign or unsanitized text, matching the chat path's thrown-error policy; a
+passthrough writes no receipt entry. The shape classifier has **no**
+control-flow exemption — verbs re-classify derived datasets, so one would turn
+`filter` + `select` into a cleartext channel — and `ToolDispatchService`
+still masks a thrown exception's message even when it starts with `Error:`.
 
 ## 7. Conductor generic webhooks (#437)
 

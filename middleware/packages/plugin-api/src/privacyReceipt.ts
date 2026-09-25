@@ -219,6 +219,15 @@ export interface PrivacyRenderedAnswer {
    * boundary. Empty when the rendered answer exposed no masked field.
    */
   readonly maskedValues: readonly string[];
+  /**
+   * #1097 — true when the materialized text is control flow rather than an
+   * answer: a tool error (`Error: …`) or an MCP auth prompt that the model
+   * rendered as if it were data. The render still happens (the text is what
+   * the model asked for), but channels can present it as a failure — and a
+   * caller can tell a rendered error apart from a rendered result without
+   * re-parsing the prose. Omitted for an ordinary rendered answer.
+   */
+  readonly isError?: boolean;
 }
 
 /**

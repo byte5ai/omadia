@@ -20,6 +20,10 @@ import type {
 } from './toolDispatchService.js';
 import type { PendingSlotCard } from './tools/findFreeSlotsTool.js';
 import { LoopbackMcpServer } from './loopbackMcpServer.js';
+// Aliased: `turnContext` is already a parameter name inside this module
+// (the caller's captured async context), and the store is a different thing.
+import { turnContext as turnContextStore } from './turnContext.js';
+import type { PrivacyTurnHandle } from './privacyHandle.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
 import { CLI_CHAT_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
 import {
@@ -183,28 +187,96 @@ function joinPhrases(phrases: readonly string[]): string {
 }
 
 /**
+ * Issue #1087 — what to say when this turn was composed WITHOUT the chat's
+ * earlier turns (no tail supplier wired, a scope the supplier cannot read, a
+ * failed read, or a replay dropped because masking was blocked).
+ *
+ * The reported symptom was not only the missing memory: asked to summarize the
+ * conversation, the model asserted that none had taken place ("dies ist Ihre
+ * erste Nachricht an mich in diesem Chat"), which reads to a user like data
+ * loss rather than a wiring gap. The model cannot distinguish "no history
+ * exists" from "no history was handed to me" — so it has to be told which of
+ * the two this turn is. Deliberately NOT emitted when the tail was read
+ * successfully and came back empty: that IS a genuine first turn.
+ */
+const NO_HISTORY_NOTE =
+  'You were given no transcript of earlier turns in this chat, even if earlier ' +
+  'turns exist. If the user refers to something said before, say plainly that ' +
+  'the earlier messages were not provided to you for this turn; never claim ' +
+  'that no conversation has taken place.';
+
+/**
  * Compose the `--system-prompt` value: the caller's persona (or a neutral
- * default when none is configured), the omadia runtime context, and — when any
- * kernel-native capability is absent this turn (#1102) — an honesty sentence
- * naming what the model CANNOT do, so it stops inventing durable side effects
- * it never performed.
+ * default when none is configured), the omadia runtime context, an honesty
+ * sentence naming the kernel-native capabilities that are absent this turn
+ * (#1102), and — when this turn carries no conversation history (#1087) — the
+ * note that says so instead of letting the model deny the conversation.
  */
 export function composeCliSystemPrompt(
   persona: string | undefined,
   absentCapabilities?: readonly string[],
+  options?: { readonly conversationHistoryAvailable?: boolean },
 ): string {
   const base = typeof persona === 'string' && persona.trim().length > 0
     ? persona.trimEnd()
     : DEFAULT_CLI_SYSTEM_PROMPT;
-  const prompt = `${base}\n\n${CLI_RUNTIME_CONTEXT}`;
-  if (absentCapabilities === undefined || absentCapabilities.length === 0) {
-    return prompt;
+  const sections = [base, CLI_RUNTIME_CONTEXT];
+  if (absentCapabilities !== undefined && absentCapabilities.length > 0) {
+    sections.push(
+      `In this mode you cannot ${joinPhrases(absentCapabilities)}. ` +
+        'If the user asks for one of these, say plainly that it is not available ' +
+        'in this mode; never claim to have done it.',
+    );
   }
-  const honesty =
-    `In this mode you cannot ${joinPhrases(absentCapabilities)}. ` +
-    'If the user asks for one of these, say plainly that it is not available ' +
-    'in this mode; never claim to have done it.';
-  return `${prompt}\n\n${honesty}`;
+  if (options?.conversationHistoryAvailable === false) {
+    sections.push(NO_HISTORY_NOTE);
+  }
+  return sections.join('\n\n');
+}
+
+/**
+ * Per-replayed-turn size budget, mirroring the in-process verbatim tail
+ * (`contextRetriever.ts`: 600 chars per question, 1200 per answer). The turn
+ * COUNT alone is not a budget — one long answer (a table, a document, a code
+ * listing) would otherwise be prepended in full to every prompt for the length
+ * of the replay window, inflating cost and eventually overflowing the model's
+ * context.
+ */
+const REPLAY_USER_MAX_CHARS = 600;
+const REPLAY_ASSISTANT_MAX_CHARS = 1200;
+
+function truncateReplay(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+/**
+ * Neutralize forged turn boundaries in replayed content.
+ *
+ * The composed prompt separates turns by lines that START with `User:` /
+ * `Assistant:` / `System Hint:`, and replayed turns are persisted chat content
+ * — a user who pastes a transcript (or writes such a line deliberately) would
+ * otherwise inject fabricated turns into the one region of the prompt the model
+ * reads as established history. A single leading space keeps the text readable
+ * while the line stops being a boundary.
+ */
+function neutralizeRoleMarkers(text: string): string {
+  return text.replace(/^(User|Assistant|System Hint):/gm, ' $1:');
+}
+
+/**
+ * Mask one replayed span through the turn's privacy handle. Returns the text
+ * unchanged when the provider is disabled, and `undefined` when the provider
+ * BLOCKED it — the caller then drops the whole replay (see `maskHistory`).
+ * Mirrors `maskPromptForWire` in `orchestrator.ts`, minus the throw: a blocked
+ * history is a degraded turn here, not a failed one.
+ */
+async function maskReplayedText(
+  privacy: PrivacyTurnHandle,
+  text: string,
+): Promise<string | undefined> {
+  const result = await privacy.maskUserPrompt(text);
+  if (result.outcome === 'blocked') return undefined;
+  return result.outcome === 'masked' ? result.maskedText : text;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -224,11 +296,22 @@ export interface CliUsage {
  * `recordUsage` is fire-and-forget and no-ops until a pool is wired, so this
  * is safe on every host (in-memory KG boots, unit tests) and can never fail a
  * turn. Kept a free function so the parser stays a pure NDJSON reader.
+ *
+ * #1098 — `attribution` is passed explicitly because this runtime never opens
+ * an orchestrator turn scope: the ambient scope here is the route's
+ * placeholder, which the recorder's context provider reads as "no turn".
  */
-function recordCliTurnUsage(model: string, usage: CliUsage): void {
+function recordCliTurnUsage(
+  model: string,
+  usage: CliUsage,
+  attribution: { readonly turnId: string; readonly sessionId: string },
+): void {
   recordUsage({
     source: CLI_CHAT_USAGE_SOURCE,
     model,
+    turnId: attribution.turnId,
+    sessionId: attribution.sessionId,
+    provider: 'claude-cli',
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     cacheReadTokens: usage.cacheReadInputTokens,
@@ -615,6 +698,80 @@ export interface CliChatAgentDeps {
    * before.
    */
   readonly drainTurnCards?: () => CliTurnCards;
+  /**
+   * Issue #1087 — the chat's own recent turns, oldest first, for the session
+   * this turn belongs to. The child process is stateless by design (one fully
+   * composed prompt per spawn), so without this the agent has no memory at all
+   * and every turn is a single shot.
+   *
+   * Consulted ONLY when the caller supplied no `priorTurns` of its own, so a
+   * channel that assembles history itself stays authoritative. Wired by
+   * `buildOrchestratorForAgent` to the `ChatSessionStore` — the RAW session
+   * source, deliberately not the `ContextRetriever` verbatim tail: that one
+   * reads knowledge-graph Session nodes, and CLI turns never reach the graph
+   * (`SessionLogger.log` is called from the in-process orchestrator only), so a
+   * KG-backed tail would be empty on this path rather than merely lossy.
+   *
+   * Left unset (unit tests, hosts with no chat store) the agent behaves as
+   * before — and says so in its system prompt instead of denying the chat.
+   * Implementations must resolve rather than reject; a failed read is caught
+   * here and degrades the turn to "no history", it never fails the turn.
+   *
+   * `undefined` means "I cannot read this scope" (a channel or ad-hoc HTTP
+   * scope the chat store was never keyed by) — distinct from `[]`, which means
+   * "read it, the chat has no earlier turns". The two must not collapse: the
+   * first is an undisclosed memory gap, the second is a genuine first turn.
+   */
+  readonly sessionTail?: (
+    sessionScope: string,
+    limit: number,
+  ) => Promise<readonly CliPriorTurn[] | undefined>;
+  /** How many prior turns {@link sessionTail} is asked for. Default
+   *  {@link DEFAULT_CLI_SESSION_TAIL_SIZE} (10). */
+  readonly sessionTailSize?: number;
+  /**
+   * Deadline for the {@link sessionTail} read, in ms (default 5000). The read
+   * happens while this turn already holds one of the (3) concurrency permits
+   * and an open loopback MCP server, and before the spawn timer is armed — a
+   * store that hangs rather than rejects (stalled pg connection, socket with no
+   * timeout) would otherwise wedge the permit forever. On the deadline the turn
+   * proceeds without history, exactly as a failed read does.
+   */
+  readonly sessionTailTimeoutMs?: number;
+}
+
+/**
+ * One replayed turn of the active chat. Structurally the same pair
+ * `ChatTurnInput.priorTurns` carries, so both sources compose into one list.
+ */
+export interface CliPriorTurn {
+  readonly userMessage: string;
+  readonly assistantAnswer: string;
+}
+
+/**
+ * Default replay window, matching `ContextRetriever`'s default `tailSize` (10
+ * since #1096 / #1171) so the subscription-CLI provider and the in-process one
+ * give a chat the same depth of short-term memory. A shorter window brings the
+ * #1096 symptom back on this provider — the model presents the last few turns
+ * as the whole conversation, with no disclosure note, because the tail DID
+ * read. The operator's `context_tail_size` does not reach this path yet
+ * (`buildOrchestratorForAgent` passes no `sessionTailSize`).
+ */
+export const DEFAULT_CLI_SESSION_TAIL_SIZE = 10;
+
+/** Default deadline for {@link CliChatAgentDeps.sessionTailTimeoutMs}. */
+const DEFAULT_SESSION_TAIL_TIMEOUT_MS = 5_000;
+
+/** Race outcome meaning "the deadline won", distinct from any tail value. */
+const TAIL_READ_TIMED_OUT = Symbol('cli-session-tail-timeout');
+
+/** The history this turn will be composed with, and whether the runtime was
+ *  able to establish it — `available: false` means "not handed to me", which is
+ *  what the system prompt discloses on a chat turn (#1087). */
+interface ResolvedCliHistory {
+  readonly turns: readonly CliPriorTurn[];
+  readonly available: boolean;
 }
 
 /**
@@ -744,20 +901,197 @@ export class CliChatAgent implements ChatAgent {
     }
   }
 
-  private composePrompt(input: ChatTurnInput): string {
+  private composePrompt(
+    input: ChatTurnInput,
+    priorTurns: readonly CliPriorTurn[],
+  ): string {
     const lines: string[] = [];
 
     if (typeof input.extraSystemHint === 'string' && input.extraSystemHint.trim().length > 0) {
-      lines.push(`System Hint: ${input.extraSystemHint}`);
+      lines.push(`System Hint: ${neutralizeRoleMarkers(input.extraSystemHint)}`);
     }
 
-    for (const turn of input.priorTurns ?? []) {
-      lines.push(`User: ${turn.userMessage}`);
-      lines.push(`Assistant: ${turn.assistantAnswer}`);
+    for (const turn of priorTurns) {
+      lines.push(
+        `User: ${neutralizeRoleMarkers(truncateReplay(turn.userMessage, REPLAY_USER_MAX_CHARS))}`,
+      );
+      lines.push(
+        `Assistant: ${neutralizeRoleMarkers(
+          truncateReplay(turn.assistantAnswer, REPLAY_ASSISTANT_MAX_CHARS),
+        )}`,
+      );
     }
 
-    lines.push(`User: ${input.userMessage}`);
+    // The live message rides the same newline-delimited transcript, so it gets
+    // the same treatment — the boundaries in this prompt must come from the
+    // agent, never from content.
+    lines.push(`User: ${neutralizeRoleMarkers(input.userMessage)}`);
     return lines.join('\n');
+  }
+
+  /**
+   * Issue #1087 — the turn's conversation history, and whether the runtime was
+   * actually able to establish it.
+   *
+   * Precedence: a caller that assembled `priorTurns` itself wins; otherwise the
+   * injected {@link CliChatAgentDeps.sessionTail} is read for this turn's
+   * `sessionScope`. A missing supplier, a scope-less turn, a throwing read, or
+   * a replay the privacy handle refuses all resolve to `available: false` — the
+   * turn still runs, and the system prompt discloses the gap.
+   */
+  private async resolveHistory(
+    input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
+  ): Promise<ResolvedCliHistory> {
+    const limit = Math.max(
+      0,
+      Math.trunc(this.deps.sessionTailSize ?? DEFAULT_CLI_SESSION_TAIL_SIZE),
+    );
+
+    const callerTurns = input.priorTurns ?? [];
+    if (callerTurns.length > 0) {
+      // A channel that assembles its own history owns its depth, exactly as on
+      // the in-process path — `sessionTailSize` budgets the tail READ below,
+      // not what a caller hands over. The per-turn size budget still applies.
+      return this.maskHistory(callerTurns, turnContext);
+    }
+
+    if (
+      limit === 0 ||
+      this.deps.sessionTail === undefined ||
+      input.sessionScope === undefined
+    ) {
+      // `limit === 0` is an operator who turned the tail read off; the model
+      // still has to know it is answering without the chat's earlier turns.
+      // Handled here rather than by `slice`, where `-0` returns the WHOLE array.
+      return { turns: [], available: false };
+    }
+
+    const deadlineMs = this.deps.sessionTailTimeoutMs ?? DEFAULT_SESSION_TAIL_TIMEOUT_MS;
+    let tail: readonly CliPriorTurn[] | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    // The deadline RESOLVES with a sentinel rather than rejecting, and the
+    // loser of the race is settled in `finally`. A racer that can never settle
+    // (a rejection the timer clears, say) leaks a pending promise per turn —
+    // node's test runner reports exactly that, and nothing collects it in
+    // production either.
+    let settleDeadline: ((outcome: typeof TAIL_READ_TIMED_OUT) => void) | undefined;
+    try {
+      const outcome = await Promise.race([
+        this.deps.sessionTail(input.sessionScope, limit),
+        new Promise<typeof TAIL_READ_TIMED_OUT>((resolve) => {
+          settleDeadline = resolve;
+          // Deliberately NOT unref'd: an unref'd deadline does not hold the
+          // event loop, so a process with nothing else pending exits (or, under
+          // the test runner, reports the awaited race as never settling) rather
+          // than applying the deadline. It is cleared in `finally` the moment
+          // the read settles, so it holds the loop only while a read is live.
+          timer = setTimeout(() => { resolve(TAIL_READ_TIMED_OUT); }, deadlineMs);
+        }),
+      ]);
+      if (outcome === TAIL_READ_TIMED_OUT) {
+        (this.deps.logger ?? consoleSpawnLogger).warn('session tail read timed out', {
+          sessionScope: input.sessionScope,
+          deadlineMs,
+        });
+        return { turns: [], available: false };
+      }
+      tail = outcome;
+    } catch (error) {
+      // A history read is never worth a failed turn — degrade to a single shot
+      // that SAYS it has no history rather than one that denies the chat.
+      (this.deps.logger ?? consoleSpawnLogger).warn('session tail read failed', {
+        sessionScope: input.sessionScope,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { turns: [], available: false };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      settleDeadline?.(TAIL_READ_TIMED_OUT);
+    }
+
+    // A scope the supplier cannot read is an undisclosed memory gap, not an
+    // empty chat — it must not pass as a genuine first turn.
+    if (tail === undefined) return { turns: [], available: false };
+
+    // The window is this agent's contract, not the supplier's: a supplier that
+    // over-delivers must not silently widen the replay.
+    return this.maskHistory(tail.slice(-limit), turnContext);
+  }
+
+  /**
+   * Mask replayed turns through this turn's privacy handle before they reach
+   * the child, the way the in-process path does (`maskPriorTurnsForWire` in
+   * `orchestrator.ts`): persisted turns hold RESTORED real values, so replaying
+   * them raw would undo turn N's masking on turn N+1.
+   *
+   * Empty/whitespace pairs are dropped first, so a failed prior turn cannot
+   * poison the context. A `blocked` masking outcome drops the whole replay
+   * (and reports `available: false`) rather than failing the turn — history is
+   * an enhancement, and a blocked history must not become raw history.
+   *
+   * INERT ON THIS PATH TODAY, deliberately: the handle is read from
+   * `turnContext`, and only the in-process orchestrator installs one
+   * (`orchestrator.ts`, `privacyHandle`). The subscription-CLI path therefore
+   * has no masking at all right now — the replayed history, the live user
+   * message and tool results all reach the child unmasked, in line with the
+   * UI's notice not to route personal data through this provider. The replay
+   * does widen that for one case: a session whose earlier turns were answered
+   * on an API-key provider with Privacy Shield active holds their RESTORED
+   * real values, so up to the tail window of them reach the CLI child raw.
+   * This seam covers the replay the moment a handle is installed here; masking
+   * parity stays open on #1087, which this change does not close.
+   */
+  private async maskHistory(
+    turns: readonly CliPriorTurn[],
+    turnContext: CapturedTurnContext,
+  ): Promise<ResolvedCliHistory> {
+    const usable = turns.filter(
+      (turn) =>
+        turn.userMessage.trim().length > 0 && turn.assistantAnswer.trim().length > 0,
+    );
+    // Read through the context CAPTURED at the public entry point, never the
+    // ambient one: this runs in the `runLifecycle` generator body, which is
+    // resumed in the async context of whoever calls `.next()` (#1016, OM-82).
+    // The HTTP route happens to wrap the iteration in `turnContext.runGenerator`,
+    // but `createOrchestratorDispatcher` `yield*`s the stream with no wrapper at
+    // all — so an ambient read would resolve `undefined` on channel turns and
+    // replay restored real values raw, indistinguishably from "no provider
+    // installed".
+    // Turns that were supplied but all filtered away are a gap, not an empty
+    // chat: something WAS there and none of it is replayable, so the model has
+    // to be told rather than left to conclude the chat is new.
+    const available = usable.length > 0 || turns.length === 0;
+    const privacy = turnContext.runInTurnContext(
+      () => turnContextStore.current()?.privacyHandle,
+    );
+    if (privacy === undefined || usable.length === 0) {
+      return { turns: usable, available };
+    }
+
+    const masked: CliPriorTurn[] = [];
+    try {
+      for (const turn of usable) {
+        const userMessage = await maskReplayedText(privacy, turn.userMessage);
+        const assistantAnswer = await maskReplayedText(privacy, turn.assistantAnswer);
+        if (userMessage === undefined || assistantAnswer === undefined) {
+          (this.deps.logger ?? consoleSpawnLogger).warn(
+            'prior-turn masking blocked; replaying no history this turn',
+          );
+          return { turns: [], available: false };
+        }
+        masked.push({ userMessage, assistantAnswer });
+      }
+    } catch (error) {
+      // A privacy provider that THROWS (service unreachable, adapter bug) must
+      // degrade the same way a blocked one does: the turn runs without history
+      // and says so. Raw history is never the fallback.
+      (this.deps.logger ?? consoleSpawnLogger).warn('prior-turn masking failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { turns: [], available: false };
+    }
+    return { turns: masked, available };
   }
 
   private buildMcpConfig(url: string, bearer: string): string {
@@ -781,6 +1115,10 @@ export class CliChatAgent implements ChatAgent {
     const parser = new StreamJsonParser();
     const tools = this.deps.dispatch.listDispatchableToolSpecs();
     const bearer = randomUUID();
+    // #1098 — the cost-ledger turn key. Minted per lifecycle so two turns of
+    // one session stay separable; the session mirrors the orchestrator's
+    // `sessionScope ?? turnId`.
+    const cliTurnId = randomUUID();
     const createLoopbackServer =
       this.deps.createLoopbackServer ??
       ((serverDeps: {
@@ -883,6 +1221,11 @@ export class CliChatAgent implements ChatAgent {
       const configPath = join(tempDir, 'mcp-config.json');
       await writeFile(configPath, this.buildMcpConfig(handle.url, bearer), { mode: 0o600 });
 
+      // #1087 — resolved BEFORE argv: the system prompt has to disclose whether
+      // this turn carries the chat's earlier turns, and the composed prompt
+      // below is the only place they can be replayed.
+      const history = await this.resolveHistory(input, turnContext);
+
       const cliBinary = this.deps.cliBinary ?? DEFAULT_CLI_BINARY;
       // OM-85 — probe (cached) before building argv; unknown → no `--restricted`.
       const cliVersion = await (this.deps.resolveCliVersion ?? resolveCliVersion)(cliBinary);
@@ -916,6 +1259,15 @@ export class CliChatAgent implements ChatAgent {
           // #1102 — derive the honesty sentence from what THIS turn actually
           // advertised, so it names only genuinely-absent capabilities.
           absentKernelCapabilities(tools.map((tool) => tool.name)),
+          {
+            // Disclose the gap on CHAT turns only. A CLI sub-agent
+            // (`cliSubAgent.ts`) is a single-shot question answerer with no
+            // chat and no `sessionScope`; telling it to report missing earlier
+            // messages would put that disclaimer into the string its tool call
+            // returns to the parent.
+            conversationHistoryAvailable:
+              input.sessionScope === undefined ? undefined : history.available,
+          },
         ),
       ];
 
@@ -1003,7 +1355,7 @@ export class CliChatAgent implements ChatAgent {
 
       // We send one fully composed plain-text prompt so the child process stays stateless and
       // deterministic for tests; replaying prior turns here mirrors the CLI's single-shot mode.
-      child.stdin.end(this.composePrompt(input));
+      child.stdin.end(this.composePrompt(input, history.turns));
 
       while (true) {
         while (lineQueue.length > 0) {
@@ -1073,7 +1425,10 @@ export class CliChatAgent implements ChatAgent {
       // API path. `costUsd: 0` is not a placeholder — a subscription turn
       // genuinely costs nothing per call — and the CLI's own `total_cost_usd`
       // is kept beside it as the informational reference.
-      recordCliTurnUsage(this.deps.model ?? DEFAULT_MODEL, parser.usage());
+      recordCliTurnUsage(this.deps.model ?? DEFAULT_MODEL, parser.usage(), {
+        turnId: cliTurnId,
+        sessionId: input.sessionScope ?? cliTurnId,
+      });
 
       return parser;
     } finally {

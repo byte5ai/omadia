@@ -548,6 +548,27 @@ export interface Message {
    */
   directLineSession?: DirectLineSessionState;
   error?: boolean;
+  /**
+   * #1094 — set when the turn ended DEGRADED: a tool call had already
+   * committed a real side effect when a later step of the same turn threw, so
+   * the side effect stands but no answer was ever generated. The turn is not
+   * an `error` (that would make the next turn re-invoke the committed tool —
+   * #506), and it must not render as an ordinary success either: the bubble
+   * gets a warning heading over the server's notice (see
+   * `TurnIncompleteNotice`). Restored on a local reload — `coerceMessage`
+   * spreads unknown fields through. NOT carried by the server-side mirror:
+   * its `MessageSchema` (middleware `routes/chatSessions.ts`) strips unknown
+   * keys, and the mirror stores the expanded notice rather than the marker,
+   * so `parseTurnIncomplete` cannot re-derive it — a mirror-restored degraded
+   * turn shows the notice text without the warning heading.
+   */
+  degradedTurn?: {
+    /** Distinct tool names that committed, in commit order. Not a call count. */
+    committedTools: readonly string[];
+    /** Token matching the `[orchestrator] turn failed (correlationId=…)` log
+     *  line. Absent on middleware older than #1094. */
+    correlationId?: string;
+  };
   startedAt: number;
   finishedAt?: number;
   streaming?: boolean;

@@ -314,6 +314,11 @@ export async function* streamMessageEvents(args: {
           recordUsage({
             source: streamLabel,
             model: ev.response.model,
+            // #1098: the provider this attempt actually ran on — after a
+            // fallback hop `provider` is the fallback, so the ledger shows
+            // which provider generated the cost. turnId/sessionId are filled
+            // from the ambient turn context by the recorder.
+            provider: provider.id,
             inputTokens: ev.response.usage.inputTokens,
             outputTokens: ev.response.usage.outputTokens,
             cacheReadTokens: ev.response.usage.cacheReadTokens ?? 0,

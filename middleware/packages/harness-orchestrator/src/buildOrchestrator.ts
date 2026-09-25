@@ -46,7 +46,7 @@ import type { Pool } from 'pg';
 
 import { MemoryToolHandler } from '@omadia/memory';
 
-import { ChatSessionStore } from './chatSessionStore.js';
+import { ChatSessionStore, chatSessionTailTurns } from './chatSessionStore.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
@@ -78,7 +78,7 @@ import {
 } from './registry/scopedMemoryStore.js';
 import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatAgentBundle } from './plugin.js';
-import { SessionLogger } from './sessionLogger.js';
+import { SessionLogger, isChatSessionScope } from './sessionLogger.js';
 import { AskUserChoiceTool } from './tools/askUserChoiceTool.js';
 import { BookMeetingTool } from './tools/bookMeetingTool.js';
 import type { ChatPeerAgentsProvider } from './chatParticipants.js';
@@ -862,6 +862,43 @@ export function buildOrchestratorForAgent(
           // subscription-CLI path renders them like the API-key path.
           drainTurnCards: () => orchestrator.drainCliTurnCards(),
           model: config.model.replace(/-cli$/, '') || 'sonnet',
+          // #1087 — the CLI child is stateless by design, so the composed
+          // prompt is the only memory a turn has. Feed it from the RAW chat
+          // session, not the ContextRetriever tail: that one reads Session
+          // nodes from the knowledge graph, and CLI turns never reach the
+          // graph (`SessionLogger.log` runs on the in-process path only), so a
+          // KG-backed tail would be empty here rather than merely lossy.
+          sessionTail: async (sessionScope: string, limit: number) => {
+            // Channel and ad-hoc HTTP scopes are not chat-session ids; the
+            // store would reject them, and nothing ever wrote them. `undefined`
+            // (not `[]`) so the agent discloses the gap instead of treating a
+            // Teams conversation as a brand-new chat.
+            if (!isChatSessionScope(sessionScope)) return undefined;
+            const session = await chatSessionStore.get(sessionScope);
+            // Absent session ⇒ unreadable, NOT an empty chat. On this path the
+            // store is written only by the browser's fire-and-forget PUT
+            // (`chatSessions.ts`, `putRemoteSession`), which the web UI already
+            // issues when the tab is created — so a missing document means the
+            // write was lost, not that the chat is new. Reading it as "new"
+            // would reproduce #1087 silently; the cost of the other reading is
+            // a disclosure note on the rare first turn that races the PUT.
+            if (session === null || !Array.isArray(session.messages)) {
+              // Logged, because the system-prompt note is otherwise the only
+              // trace of the lost write (thrown and timed-out reads log too).
+              console.warn(
+                `[cli-chat-agent] session tail unreadable: chat-session document missing or malformed ${JSON.stringify({ sessionScope })}`,
+              );
+              return undefined;
+            }
+            const turns = chatSessionTailTurns(session.messages, limit);
+            // Messages exist but none of them form a replayable turn (a first
+            // question that errored or was never answered): that is a gap the
+            // agent must disclose, not the empty chat `[]` would claim. A
+            // session with NO messages (fresh or cleared tab) is the genuine
+            // first turn and falls through to `[]`.
+            if (turns.length === 0 && session.messages.length > 0) return undefined;
+            return turns;
+          },
           ...(assistantIdentityWithName
             ? { systemPrompt: assistantIdentityWithName }
             : {}),

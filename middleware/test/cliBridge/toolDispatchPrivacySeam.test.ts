@@ -2,7 +2,10 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import { NativeToolRegistry } from '../../packages/harness-orchestrator/src/nativeToolRegistry.js';
-import type { PrivacyTurnHandle } from '../../packages/harness-orchestrator/src/privacyHandle.js';
+import {
+  createPrivacyTurnHandle,
+  type PrivacyTurnHandle,
+} from '../../packages/harness-orchestrator/src/privacyHandle.js';
 import {
   ToolDispatchService,
   type ToolDispatchCallerContext,
@@ -10,6 +13,10 @@ import {
 import { currentDispatchCaller } from '../../packages/harness-orchestrator/src/toolCallerContext.js';
 import { turnContext } from '../../packages/harness-orchestrator/src/turnContext.js';
 import type { DomainTool } from '../../packages/harness-orchestrator/src/tools/domainQueryTool.js';
+// Imported from SOURCE (like privacyV4Bypass.test.ts): the real classifier is
+// what the thrown-exception case below pins, so a change in `src/` must turn
+// it red without a rebuild.
+import { createPrivacyGuardService } from '../../packages/harness-plugin-privacy-guard/src/index.js';
 
 /**
  * #542 prerequisite — the privacy/trace seam in `ToolDispatchService`.
@@ -313,6 +320,56 @@ function throwingDomainTool(name: string, message: string): DomainTool {
   };
 }
 
+/**
+ * #1097 — the public dispatch seam must also let an MCP auth prompt through.
+ * `McpManager.handleFailure` answers an auth-shaped failure with the app
+ * layer's connect prompt (`🔒 …` plus the `<mcp-auth-required>` machine block
+ * the chat UI parses into a Connect card) instead of a raw failure, and that
+ * prompt carries no `Error:` prefix — so the #1105 guard missed it and the
+ * prompt was interned: no card, and a model narrating success over a digest.
+ */
+const AUTH_PROMPT =
+  '🔒 The MCP server "Strava" needs authorization before it can be used. Ask the ' +
+  "user to click Connect (this opens the provider's login), then retry: " +
+  'https://example.test/oauth/authorize?x=1\n' +
+  '<mcp-auth-required serverId="s-1" server="Strava" needsClient="false"></mcp-auth-required>';
+
+describe('ToolDispatchService — control-flow passthrough (#1097)', () => {
+  it('passes an MCP auth prompt through unmasked so the Connect card survives', async () => {
+    const service = new ToolDispatchService({
+      nativeTools: registryWith('mcp__Strava__list_activities', AUTH_PROMPT),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    const result = await service.dispatch('mcp__Strava__list_activities', {});
+
+    assert.equal(result.content, AUTH_PROMPT, 'the connect prompt must reach the caller verbatim');
+    assert.ok(
+      result.content.includes('<mcp-auth-required'),
+      'the machine block the Connect card is parsed from must survive the boundary',
+    );
+    assert.equal(
+      result.content.includes('«dataset:'),
+      false,
+      'an auth prompt must not be interned as a renderable dataset',
+    );
+  });
+
+  it('control — a PII-bearing result from the same tool IS still interned', async () => {
+    const service = new ToolDispatchService({
+      nativeTools: registryWith('mcp__Strava__list_activities', PII_RESULT),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    const result = await service.dispatch('mcp__Strava__list_activities', {});
+
+    assert.match(result.content, /«dataset:mcp__Strava__list_activities»/);
+    assert.equal(result.content.includes(EMAIL), false);
+  });
+});
+
 describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
   it('MASKS PII out of a NATIVE handler exception message', async () => {
     const service = new ToolDispatchService({
@@ -347,6 +404,69 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
     assert.equal(result.content.includes(IBAN), false, 'domain-tool error path leaked the IBAN');
     assert.match(result.content, /\[masked:email\]/);
     assert.equal(result.isError, true);
+  });
+
+  /**
+   * #1097 — the fulfilled-result paths stopped interning strings that follow
+   * the `Error:` tool-error convention (those are sanitized control-flow text
+   * the model must read). A THROWN exception is a different animal: nothing
+   * sanitized it, and its message may well start with the same prefix. Pinning
+   * this here so the exception path is not "fixed" later by pattern-matching on
+   * that prefix — the leak below is exactly what would come back.
+   */
+  it('still MASKS a thrown exception whose message starts with `Error:` (not the tool-error convention)', async () => {
+    const service = new ToolDispatchService({
+      nativeTools: throwingRegistryWith('odoo_search_partner', `Error: ${PII_ERROR}`),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    const result = await service.dispatch('odoo_search_partner', {});
+
+    assert.equal(result.content.includes(EMAIL), false, 'a thrown `Error:` message leaked the email');
+    assert.equal(result.content.includes(IBAN), false, 'a thrown `Error:` message leaked the IBAN');
+    assert.equal(
+      result.content.includes('Erika Mustermann'),
+      false,
+      'a thrown `Error:` message leaked the person name',
+    );
+    assert.match(result.content, /\[masked:email\]/, 'the masked digest should have replaced it');
+    assert.equal(result.isError, true, 'masking must not swallow the error signal');
+  });
+
+  /**
+   * #1097 / triage AC3 — the same pin against the REAL privacy-guard service.
+   * The stub above redacts by string replace, so it stays green whatever the
+   * shape classifier does. This message carries no email, IBAN or phone — only
+   * a name and a salary, which only the classifier's deny-by-default rule
+   * masks. An `Error:`-prefix exemption in the classifier would put both on
+   * the wire.
+   */
+  it('still MASKS a thrown `Error:` message through the real privacy-guard service', async () => {
+    const turnHandle = createPrivacyTurnHandle({
+      service: createPrivacyGuardService(),
+      sessionId: 's-1097',
+      turnId: 't-1097-thrown',
+    });
+    const service = new ToolDispatchService({
+      nativeTools: throwingRegistryWith(
+        'odoo_search_partner',
+        "Error: Invalid field 'x' on record {'id':42,'name':'Erika Mustermann','salary':'7.450 EUR'}",
+      ),
+      domainTools: [],
+      privacy: () => turnHandle,
+    });
+
+    const result = await service.dispatch('odoo_search_partner', {});
+
+    assert.equal(result.isError, true, 'masking must not swallow the error signal');
+    assert.ok(result.content.includes('[privacy-shield-v4]'), 'the message was interned');
+    assert.equal(
+      result.content.includes('Erika Mustermann'),
+      false,
+      'a thrown `Error:` message leaked the person name past the real classifier',
+    );
+    assert.equal(result.content.includes('7.450 EUR'), false, 'the salary leaked');
   });
 
   it('marks a masked error as `origin: tool` so a consumer knows it had to cross the boundary', async () => {

@@ -146,7 +146,7 @@ describe('POST /v1/routines/:id/trigger — chat-agent availability (issue #473)
     });
     assert.equal(first.status, 503);
 
-    // Setup Wizard key save → reactivate → chatAgent@1 published.
+    // LLM-access-page key save → reactivate → chatAgent@1 published.
     h.runner.chatAvailable = true;
 
     const second = await fetch(`${h.baseUrl}/v1/routines/routine-1/trigger`, {
