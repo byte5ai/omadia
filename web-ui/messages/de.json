@@ -5709,7 +5709,7 @@
       "triggerButton": "Jetzt",
       "triggerTitle": "Routine jetzt manuell auslösen — feuert einen Agent-Run und liefert das Ergebnis ins Channel.",
       "triggerNotice": "Gestartet — Ergebnis erscheint in ~30 Sekunden im Channel.",
-      "triggerNoticeWeb": "Gestartet — das Ergebnis erscheint in ~30 Sekunden im Chat, in dem die Routine angelegt wurde.",
+      "triggerNoticeWeb": "Gestartet — das Ergebnis landet im Chat, in dem die Routine angelegt wurde, und erscheint dort, sobald du den Chat das nächste Mal öffnest oder zu ihm zurückkehrst.",
       "triggerChatUnavailable": "Kein LLM-API-Key konfiguriert — bitte in Admin → Einstellungen hinterlegen und erneut auslösen.",
       "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden."
     },

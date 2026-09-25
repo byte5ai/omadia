@@ -1188,15 +1188,6 @@ export function useChatSessions(): UseChatSessionsResult {
     [],
   );
 
-  // #617 — commit-ordered persistence. A background turn is followed by no
-  // corrective user turn in its session, so the PUT it fires from the stream
-  // runner's `finally` is the FINAL persisted state; reading the snapshot from
-  // an effect-synced ref would write state that predates the `done` fold.
-  // Instead `persistById` only enqueues, and the effect below drains the queue
-  // against the `sessions` value from render scope — i.e. state that has
-  // already committed. Deliberately NOT resolved inside a `setSessions`
-  // updater: that is a side effect in a function React may double-invoke, and
-  // it conflicts with the React-Compiler `immutability` rule.
   // #1071 — fold routine deliveries from a server copy of a chat into the
   // local one. Additive only (`mergeProactiveFromRemote`), and a session with
   // a turn in flight is left alone — the stream owns that state until it
@@ -1211,6 +1202,15 @@ export function useChatSessions(): UseChatSessionsResult {
     );
   }, []);
 
+  // #617 — commit-ordered persistence. A background turn is followed by no
+  // corrective user turn in its session, so the PUT it fires from the stream
+  // runner's `finally` is the FINAL persisted state; reading the snapshot from
+  // an effect-synced ref would write state that predates the `done` fold.
+  // Instead `persistById` only enqueues, and the effect below drains the queue
+  // against the `sessions` value from render scope — i.e. state that has
+  // already committed. Deliberately NOT resolved inside a `setSessions`
+  // updater: that is a side effect in a function React may double-invoke, and
+  // it conflicts with the React-Compiler `immutability` rule.
   const persistQueueRef = useRef<Set<string>>(new Set());
   const [persistTick, setPersistTick] = useState(0);
 

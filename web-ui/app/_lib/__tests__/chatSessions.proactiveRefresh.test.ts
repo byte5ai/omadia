@@ -40,6 +40,7 @@ let serverA: ChatSession;
 let serverB: ChatSession;
 let putResponse: ChatSession | null = null;
 let puts: string[] = [];
+let putBodies: ChatSession[] = [];
 
 function session(id: string, updatedAt: number, messages: Message[]): ChatSession {
   return { id, title: id, createdAt: 1_000, updatedAt, messages };
@@ -64,6 +65,7 @@ function summary(s: ChatSession): Record<string, unknown> {
 
 beforeEach(() => {
   puts = [];
+  putBodies = [];
   putResponse = null;
   window.localStorage.clear();
   serverA = session(ID_A, 2_000, []);
@@ -74,6 +76,7 @@ beforeEach(() => {
       const method = init?.method ?? 'GET';
       if (method === 'PUT') {
         puts.push(url);
+        putBodies.push(JSON.parse(String(init?.body)) as ChatSession);
         return Promise.resolve(putResponse ? json({ ok: true, session: putResponse }) : json({ ok: true }));
       }
       if (method === 'GET' && url === '/bot-api/chat/sessions') {
@@ -139,26 +142,75 @@ describe('useChatSessions — proactive re-read (#1071)', () => {
     expect(messages[2]?.proactive?.routineId).toBe('r1');
   });
 
+  // Turn 2 as the browser holds it, and as the in-process runtime's
+  // SessionLogger mirrors it into the server copy (`srv-u-<startedAt>` /
+  // `srv-a-<finishedAt>`) before the client's own PUT would replace those ids.
+  const U2: Message = { id: 'u2', role: 'user', content: 'and next week?', startedAt: 2_000 };
+  const A2: Message = { id: 'a2', role: 'assistant', content: 'Next week…', startedAt: 2_100, finishedAt: 2_200 };
+  const MIRRORED_U2: Message = { id: 'srv-u-2000', role: 'user', content: 'and next week?', startedAt: 2_000, finishedAt: 2_000 };
+  const MIRRORED_A2: Message = { id: 'srv-a-2250', role: 'assistant', content: 'Next week…', startedAt: 2_000, finishedAt: 2_250 };
+  const STRIPPED_A1 = { id: 'a1', role: 'assistant', content: 'Here is the chart', startedAt: 1_100, finishedAt: 1_200 } as Message;
+
   it('hydration keeps a local turn whose PUT failed when a delivery made the server copy newer', async () => {
-    // Turn 2's fire-and-forget PUT never reached the server; the routine then
-    // fired, so the server copy is newer but BEHIND on turns.
-    const u2: Message = { id: 'u2', role: 'user', content: 'and next week?', startedAt: 2_000 };
-    const a2: Message = { id: 'a2', role: 'assistant', content: 'Next week…', startedAt: 2_100, finishedAt: 2_200 };
-    const local = session(ID_B, 2_200, [USER_TURN, RICH_ANSWER, u2, a2]);
+    // Turn 2's fire-and-forget PUT never reached the server — only the
+    // server-side mirror of it did; the routine then fired, so the server copy
+    // is newer and holds turn 2 under srv-* ids only.
+    const local = session(ID_B, 2_200, [USER_TURN, RICH_ANSWER, U2, A2]);
     window.localStorage.setItem('odoo-bot-chat-sessions', JSON.stringify([local]));
     window.localStorage.setItem('odoo-bot-chat-active-id', ID_B);
-    const stripped = { id: 'a1', role: 'assistant', content: 'Here is the chart', startedAt: 1_100, finishedAt: 1_200 } as Message;
-    serverB = session(ID_B, 9_000, [USER_TURN, stripped, DELIVERY]);
+    serverB = session(ID_B, 9_000, [USER_TURN, STRIPPED_A1, MIRRORED_U2, MIRRORED_A2, DELIVERY]);
 
     const view = await hydrated();
 
     const messages = messagesOf(view, ID_B);
     expect(messages.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', DELIVERY.id]);
-    expect((messages[1] as unknown as Record<string, unknown>)['privacyReceipt']).toEqual({ receiptId: 'rcpt-1' });
-    // The backend is healed with the local turns (its merge keeps the delivery).
+    const answer = messages[1] as unknown as Record<string, unknown>;
+    expect(answer['privacyReceipt']).toEqual({ receiptId: 'rcpt-1' });
+    expect(answer['attachments']).toEqual(RICH_ANSWER.attachments);
+    // The backend is healed with the local turns: the catch-up PUT replaces the
+    // mirror's srv-* ids with the client's (its merge keeps the delivery).
+    await waitFor(() => {
+      expect(putBodies.find((b) => b.id === ID_B)?.messages.map((m) => m.id)).toEqual([
+        'u1',
+        'a1',
+        'u2',
+        'a2',
+        DELIVERY.id,
+      ]);
+    });
+  });
+
+  it('hydration keeps a local turn whose PUT failed and was never mirrored', async () => {
+    // Subscription-CLI runtime: no SessionLogger mirror, so the server copy is
+    // simply behind on turns.
+    const local = session(ID_B, 2_200, [USER_TURN, RICH_ANSWER, U2, A2]);
+    window.localStorage.setItem('odoo-bot-chat-sessions', JSON.stringify([local]));
+    window.localStorage.setItem('odoo-bot-chat-active-id', ID_B);
+    serverB = session(ID_B, 9_000, [USER_TURN, STRIPPED_A1, DELIVERY]);
+
+    const view = await hydrated();
+
+    expect(messagesOf(view, ID_B).map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', DELIVERY.id]);
     await waitFor(() => {
       expect(puts.some((url) => url.endsWith(`/${ID_B}`))).toBe(true);
     });
+  });
+
+  it('hydration lets the mirror win over a partial local answer (mid-stream reload)', async () => {
+    // The tab closed mid-stream: localStorage holds a truncated answer, the
+    // server mirror holds the whole one. The recovered answer must win.
+    const partial: Message = { ...A2, content: 'Next' };
+    const local = session(ID_B, 2_150, [USER_TURN, RICH_ANSWER, U2, partial]);
+    window.localStorage.setItem('odoo-bot-chat-sessions', JSON.stringify([local]));
+    window.localStorage.setItem('odoo-bot-chat-active-id', ID_B);
+    serverB = session(ID_B, 9_000, [USER_TURN, STRIPPED_A1, MIRRORED_U2, MIRRORED_A2, DELIVERY]);
+
+    const view = await hydrated();
+
+    const messages = messagesOf(view, ID_B);
+    expect(messages.map((m) => m.id)).toEqual(['u1', 'a1', 'srv-u-2000', 'srv-a-2250', DELIVERY.id]);
+    expect(messages[3]?.content).toBe('Next week…');
+    expect(puts.some((url) => url.endsWith(`/${ID_B}`))).toBe(false);
   });
 
   it('hydration still takes the server copy when it carries a turn this browser lacks', async () => {

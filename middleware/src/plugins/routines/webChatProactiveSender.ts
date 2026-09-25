@@ -23,7 +23,8 @@ import type { ProactiveSender } from './proactiveSender.js';
  *    channel. The run is recorded `ok`: saying nothing was the intent.
  *  - Text only. `cardBody` / `approval` are ignored; `message.text` already
  *    carries the markdown fallback, and the session schema persists no
- *    attachments for any message. Dropped attachments are logged; an empty
+ *    attachments for any message. Dropped attachments and interactive cards
+ *    (`message.interactive`) are logged; an empty
  *    answer throws so the run is not recorded as `ok` with nothing delivered.
  */
 
@@ -121,6 +122,11 @@ export function createWebChatProactiveSender(
       if (attachmentCount > 0) {
         log(
           `[routines/web-sender] WARN chat '${sessionId}'${routine ? ` (routine ${routine.id})` : ''}: dropped ${String(attachmentCount)} attachment(s) — web delivery is text-only`,
+        );
+      }
+      if (message.interactive) {
+        log(
+          `[routines/web-sender] WARN chat '${sessionId}'${routine ? ` (routine ${routine.id})` : ''}: dropped interactive '${message.interactive.kind}' — web delivery is text-only`,
         );
       }
       const outcome = await store.appendProactiveMessage(sessionId, {

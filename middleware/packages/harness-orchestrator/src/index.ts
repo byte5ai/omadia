@@ -579,7 +579,6 @@ export {
   InvalidSessionIdError,
   isValidSessionId,
 } from './chatSessionStore.js';
-export { mergeServerProactiveMessages } from './chatSessionProactive.js';
 export type {
   ChatSubAgentEvent,
   ChatToolEvent,

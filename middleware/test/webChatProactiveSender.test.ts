@@ -164,6 +164,22 @@ describe('#1071 — web chat proactive sender', () => {
     assert.ok(logs.some((l) => /WARN .*dropped 2 attachment/.test(l)), logs.join('\n'));
   });
 
+  it('delivers the text and warns when an interactive card is dropped', async () => {
+    const store = await seededStore();
+    const logs: string[] = [];
+    const sender = createWebChatProactiveSender({
+      getStore: () => store,
+      log: (m) => logs.push(m),
+      now: () => DELIVERED_AT,
+    });
+    const message = { text: 'Pick one', interactive: { kind: 'choice' } } as unknown as SemanticAnswer;
+
+    await sender.send({ conversationRef: REF, message, routine: ROUTINE });
+
+    assert.equal((await store.get(SESSION_ID))?.messages.at(-1)?.content, 'Pick one');
+    assert.ok(logs.some((l) => /WARN .*dropped interactive 'choice'/.test(l)), logs.join('\n'));
+  });
+
   it('throws when the chat session store is not available', async () => {
     const sender = createWebChatProactiveSender({ getStore: () => undefined });
     await assert.rejects(

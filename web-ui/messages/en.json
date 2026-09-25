@@ -5709,7 +5709,7 @@
       "triggerButton": "Now",
       "triggerTitle": "Trigger the routine manually now — fires an agent run and delivers the result to the channel.",
       "triggerNotice": "Started — the result will appear in the channel in ~30 seconds.",
-      "triggerNoticeWeb": "Started — the result will be added to the chat this routine was created in within ~30 seconds.",
+      "triggerNoticeWeb": "Started — the result is added to the chat this routine was created in and shows up there the next time you open or return to that chat.",
       "triggerChatUnavailable": "No LLM API key configured — add it in Admin → Settings, then trigger again.",
       "deleteConfirm": "Delete routine ''{name}''? This cannot be undone."
     },

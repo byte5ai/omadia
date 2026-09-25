@@ -63,27 +63,40 @@ export interface NewerRemoteReconciliation {
  * The server copy only holds what the PUT schema declares (zod strips the
  * rest), so attachments, privacy receipts, routing, persona, follow-up
  * options, … exist only in the browser's copy. A routine delivery bumps the
- * server `updatedAt`, so "newer" no longer means "ahead". Three cases, keyed
- * on the non-proactive (turn) message ids:
+ * server `updatedAt`, so "newer" no longer means "ahead". Turns (the
+ * non-proactive messages) are compared position by position: a remote turn
+ * matches the local one with the same id, or — for a turn the server's
+ * SessionLogger mirrored (`srv-u-…` / `srv-a-…`, see `isMirroredTurn`) — the
+ * finished local message with the same role and content, the rule the
+ * mirror's own idempotency check (`appendTurnUnlocked`) uses. Only a client
+ * PUT swaps those ids for the client's, so on the in-process runtime a turn
+ * whose PUT failed sits on the server under `srv-*` ids. Three cases:
  *
  * - Same turns, in order: the server differs only by routine deliveries.
  *   Keep the local copy and fold the deliveries in; the title follows the
- *   server (a rename is the only other thing a newer copy can carry).
+ *   server (a rename is the only other thing a newer copy can carry). If a
+ *   mirrored turn matched, the server never received the client's copy of
+ *   it — ask for a catch-up PUT so the client ids replace the `srv-*` ones.
  * - The server's turns are a NON-EMPTY proper prefix of the local ones: the
- *   browser is AHEAD — a turn's PUT failed, and a delivery then made the
- *   server copy newer. Keep the local copy (its turns exist nowhere else),
- *   fold the deliveries in and ask for a catch-up PUT, exactly the "backend
- *   is behind" healing a chat got before deliveries could bump `updatedAt`.
- * - Anything else — a turn from another device, a clear or reset (no server
- *   turns) — is a real newer state and the server copy wins.
+ *   browser is AHEAD — a turn's PUT failed (and was not mirrored), and a
+ *   delivery then made the server copy newer. Keep the local copy (its turns
+ *   exist nowhere else), fold the deliveries in and ask for a catch-up PUT,
+ *   exactly the "backend is behind" healing a chat got before deliveries
+ *   could bump `updatedAt`.
+ * - Anything else — a turn from another device, a mirrored answer the local
+ *   copy only holds partially (a mid-stream reload: the server's recovered
+ *   answer must win), a clear or reset (no server turns) — is a real newer
+ *   state and the server copy wins.
  */
 export function reconcileNewerRemote(
   local: ChatSession,
   remote: ChatSession,
 ): NewerRemoteReconciliation {
-  const localTurns = turnIds(local);
-  const remoteTurns = turnIds(remote);
-  const isPrefix = remoteTurns.every((id, i) => id === localTurns[i]);
+  const localTurns = turns(local);
+  const remoteTurns = turns(remote);
+  const matches = remoteTurns.map((r, i) => matchTurn(r, localTurns[i]));
+  const isPrefix = matches.every((m) => m !== 'none');
+  const matchedMirror = matches.includes('mirror');
   if (isPrefix && remoteTurns.length === localTurns.length) {
     const merged = mergeProactiveFromRemote(local, remote);
     return {
@@ -92,15 +105,48 @@ export function reconcileNewerRemote(
         title: remote.title,
         updatedAt: Math.max(merged.updatedAt, remote.updatedAt),
       },
-      pushLocal: false,
+      pushLocal: matchedMirror,
     };
   }
   if (isPrefix && remoteTurns.length > 0 && remoteTurns.length < localTurns.length) {
     return { session: mergeProactiveFromRemote(local, remote), pushLocal: true };
   }
+  if (remoteTurns.length === 0 && localTurns.length > 0) {
+    console.warn(
+      `[chat-sessions] server copy of ${local.id} holds no turns; replacing ${String(localTurns.length)} local turn(s) with it`,
+    );
+  }
   return { session: remote, pushLocal: false };
 }
 
-function turnIds(session: ChatSession): string[] {
-  return session.messages.filter((m) => m.proactive === undefined).map((m) => m.id);
+function turns(session: ChatSession): Message[] {
+  return session.messages.filter((m) => m.proactive === undefined);
+}
+
+type TurnMatch = 'id' | 'mirror' | 'none';
+
+function matchTurn(remote: Message, local: Message | undefined): TurnMatch {
+  if (local === undefined) return 'none';
+  if (remote.id === local.id) return 'id';
+  return isMirroredTurn(remote) && sameFinishedTurn(remote, local) ? 'mirror' : 'none';
+}
+
+/** Ids the SessionLogger mirror (`ChatSessionStore.appendTurnUnlocked`)
+ *  gives a turn it writes; a client PUT replaces them with the client's. */
+const MIRRORED_TURN_ID = /^srv-[ua]-/;
+
+function isMirroredTurn(m: Message): boolean {
+  return MIRRORED_TURN_ID.test(m.id);
+}
+
+/** A mirrored remote turn stands for the local message at the same position
+ *  only when that message is finished and says the same thing — a still
+ *  streaming, errored or partial local answer is not the mirrored one. */
+function sameFinishedTurn(remote: Message, local: Message): boolean {
+  return (
+    remote.role === local.role &&
+    local.streaming !== true &&
+    local.error !== true &&
+    remote.content.trim() === local.content.trim()
+  );
 }

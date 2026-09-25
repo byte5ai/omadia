@@ -318,8 +318,9 @@ never created.
   longer exists" in `last_run_error`. A request without a saved chat (debug
   `scope`, `http-default`) is refused at create time. An empty answer (for
   example a diagram-only turn) fails the run instead of being recorded as `ok`
-  with nothing delivered; dropped attachments are logged. A `NO_REPLY` answer
-  (the orchestrator's default for a routine with nothing to report) is dropped
+  with nothing delivered; dropped attachments and interactive cards are
+  logged. A `NO_REPLY` answer (the orchestrator's default for a routine with
+  nothing to report) is dropped
   like on every other channel: nothing is written and the run counts as `ok`.
   There is no live
   push (the web chat has no realtime channel): the web UI re-reads the active
@@ -333,9 +334,16 @@ never created.
   persona, follow-ups …) that the PUT schema strips. When the browser is
   AHEAD — a turn's fire-and-forget PUT failed and a delivery then made the
   server copy newer — it keeps its turns, folds the deliveries in and PUTs a
-  catch-up copy, as it did before deliveries could bump `updatedAt`. Any other
-  difference (a turn from another device, a clear) is still resolved in favour
-  of the newer server copy.
+  catch-up copy, as it did before deliveries could bump `updatedAt`. On the
+  in-process runtime the server copy holds such a turn under the SessionLogger
+  mirror's `srv-u-…` / `srv-a-…` ids; a mirrored message matches the finished
+  local one with the same role and trimmed content, and the catch-up PUT swaps
+  the `srv-*` ids for the client's. Any other difference (a turn from another
+  device, a partial local answer after a mid-stream reload, a clear) is still
+  resolved in favour of the newer server copy; dropping local turns for a copy
+  with none is logged.
+- **The "Run now" notice no longer promises ~30 seconds** for a web routine:
+  the result shows when that chat is next opened or focused.
 - **`PUT /api/chat/sessions/:id` merges instead of overwriting**
   (`ChatSessionStore.saveFromClient` → `mergeServerProactiveMessages`) and
   answers with the stored document: server-written deliveries the body lacks are
@@ -352,8 +360,11 @@ never created.
 - **One per-session lock for every `ChatSessionStore` instance.** Each
   orchestrator builds its own store over the same chat-sessions directory, so
   the lock is now module-level and also covers `delete`, `captureSnapshot`,
-  `clearSnapshot` and `resetMessages`: a concurrent read-modify-write can no
-  longer drop a delivery or bring a deleted chat back. It is in-process only.
+  `clearSnapshot` and `resetMessages`. The lock only orders concurrent
+  writers: a read-modify-write racing another can no longer drop a delivery or
+  bring a deleted chat back. A later, non-concurrent mirror turn or client PUT
+  can still recreate a deleted chat (as before), and a web routine then
+  delivers into it again. It is in-process only.
 
 Known limit, recorded in `docs/security-architecture.md` §3a and as a
 follow-up in `docs/middleware-agent-handoff.md` §13 (Web-Routine-Zustellung):
