@@ -77,6 +77,69 @@ pre-existing defects that are deliberately not fixed here; both are recorded as
   stores a fractional entry such as `240.5` verbatim, and shows raw exception
   text instead of a catalog message.
 
+### Fixed — desktop dialogs follow the UI language (#1074)
+
+2026-09-24 — the desktop shell's own dialogs (updater, boot failure, recovery
+key) and its menu headings took their language from `app.getLocale()`, the OS
+locale. A user on an English OS who had switched the web UI to German still got
+English shell dialogs, because nothing told the main process which language the
+UI was showing (the OM-91 residual left open by #1069).
+
+The web UI now pushes the language it is showing to the shell over a new
+fire-and-forget preload channel, `omadia:uiLocale` (`window.omadia.setUiLocale`),
+on first load and after every switch, on every route. The shell accepts only
+`'en'` and `'de'`, applies the value to the next dialog, rebuilds the menu
+headings, and persists it to `userData/ui-locale.json` so dialogs that fire
+before the web UI is up (a boot failure, the updater at startup) use it too.
+Without a valid value it still falls back to the OS locale, so a fresh install
+behaves as before. `desktop/src/shellLocale.ts` is now the only place that
+reads the OS locale; a source-census test keeps it that way. Electron's own
+`role:` menu entries still follow the OS language.
+
+Still not following the UI language, and outside this fix: the tray menu
+(`desktop/src/tray.ts`, hard-coded English), the data-dir picker and its
+cloud-sync warning (`desktop/src/ipc.ts`, hard-coded English), and the loading
+and setup-wizard pages (`desktop/src/renderer/wizard-i18n.js`, keyed off
+`navigator.language`). The last one is now a visible mismatch: a boot-failure or
+recovery dialog follows the persisted UI language while the loading page behind
+it follows the OS. Tracked in `docs/middleware-agent-handoff.md` §13.
+
+### Fixed — header nav no longer overlaps at desktop-window widths (#1073)
+
+At the desktop shell's ~1100 px window the palette select covered HELP and the
+ADMIN trigger covered the "create issue" button. The header row and `<nav>`
+carried `min-w-0`, but every nav item is `whitespace-nowrap`, so only the nav's
+box shrank while its content spilled over the controls to its right. The row
+now fits by construction: below `xl` the palette and appearance selects
+collapse into one icon-triggered panel and the account badge shows initials
+only, and the wide nav spacing starts at `2xl` instead of `xl`. Every nav
+target stays reachable without overlap from 1024 px up; narrower desktop
+windows (880–1023 px) overflow at the right edge instead of overlapping.
+
+### Fixed — bootstrap auto-removals purge agent bindings (#1070)
+
+2026-09-24 — the boot-time bootstrap removes a plugin on its own at four
+sites: the memory self-heal, the #1053 `embeddingClient@1` conflict, the
+legacy-KG migration and the KG dual-active conflict. None of them purged the
+plugin's `agent_plugins` rows, so each removal left orphaned orchestrator
+bindings behind. #1063 (OM-95) had fixed this for operator uninstalls only.
+Every site now reports the id through a new `BootstrapDeps.onPluginRemoved`
+hook. Bootstrap runs before `@omadia/orchestrator` provides its binding store,
+so the host queues the ids (`pendingBindingPurge.ts`) and purges them via the
+existing `purgePluginAgentBindings` at two points: right after
+`toolPluginRuntime.activateAllInstalled()`, and whenever the orchestrator is
+(re)activated, which covers a fresh host that boots without an LLM key and
+gets its store only after `/setup`. A failed DELETE is logged with
+`console.error` and the plugin id; a still-missing store is a `console.warn`
+listing the ids on a Postgres host and an info line without `DATABASE_URL`.
+The queue is kept in both cases, because the KG can publish a `graphPool` from
+a vault-stored DSN without `DATABASE_URL`. An id that is installed again by
+flush time (operator reinstall while the store was still missing) is dropped
+without a purge, so bindings granted after the reinstall are never deleted. A
+throwing hook is logged and never aborts boot. Residual: the queue lives in memory only, so ids still pending
+when the process exits (Postgres host whose orchestrator never activated in
+that lifetime) are not retried on the next boot.
+
 ### Fixed — ctx.tools.invoke('memory') no longer reaches the unscoped root store (#909)
 
 2026-09-24 — `ctx.tools.invoke(name, input)` dispatched straight to the

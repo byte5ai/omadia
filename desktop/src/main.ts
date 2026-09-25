@@ -24,7 +24,8 @@ import {
   finishNavigation,
   startNavigation,
 } from './shellNavigator';
-import { createShellTranslate, type ShellTranslate } from './shellStrings';
+import type { ShellTranslate } from './shellStrings';
+import { shellLocale } from './shellLocale';
 import {
   showBootFailure,
   showRecoveryExhausted,
@@ -66,9 +67,11 @@ const UI_READY_FALLBACK_MS = 15_000;
 const uiReadyGate = createUiReadyGate(UI_READY_FALLBACK_MS);
 
 /**
- * `app.getLocale()` is only meaningful after the ready event, so the translator
- * is built in `onReady`. Until then the identity translator keeps every call
- * site honest rather than forcing null checks into error paths.
+ * The OS locale is only meaningful after the ready event, so the live
+ * translator is wired in `onReady`. Until then the identity translator keeps
+ * every call site honest rather than forcing null checks into error paths.
+ * From then on each call resolves the language at call time (`shellLocale.ts`),
+ * so a switch in the web-ui reaches the next dialog (#1074).
  */
 let t: ShellTranslate = (_key, fallback) => fallback;
 
@@ -395,16 +398,17 @@ function startWizard(): void {
 }
 
 async function onReady(): Promise<void> {
-  // `app.getLocale()` is valid from here on (OM-59).
-  t = createShellTranslate(app.getLocale());
+  // The OS locale is valid from here on (OM-59); the UI language wins once known.
+  t = (key, fallback) => shellLocale.translator()(key, fallback);
   // OM-41 — replace Electron's default menu (which shipped a second
   // fullscreen item and a DevTools accelerator into customer builds).
-  installApplicationMenu({
+  const menuActions = {
     checkForUpdates: checkForUpdatesAction,
     showRecoveryKey: () => {
       if (win) void showRecoveryKeyAction(win, t);
     },
-  });
+  };
+  installApplicationMenu(menuActions, t);
   supervisor = new Supervisor();
   setActiveSupervisor(supervisor);
 
@@ -432,6 +436,10 @@ async function onReady(): Promise<void> {
       setTrayStatus(trayActions(), 'running');
     },
     onUiReady: () => uiReadyGate.signal(),
+    // #1074: menu headings are baked in at build time, so rebuild on a switch.
+    onUiLocale: (locale) => {
+      if (shellLocale.setUiLocale(locale)) installApplicationMenu(menuActions, t);
+    },
   });
 
   initUpdater();
