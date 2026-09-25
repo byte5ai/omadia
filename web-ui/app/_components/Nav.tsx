@@ -237,10 +237,12 @@ export function Nav({
     [pathname, items],
   );
   return (
-    // Tighter gap/tracking below xl so the bar stays inside the desktop
-    // shell's 1100px window instead of overflowing its container (OM-30).
-    // `min-w-0` lets it actually shrink — flex items default to min-width:auto.
-    <nav className="flex min-w-0 items-center gap-2 text-[13px] uppercase tracking-[0.12em] xl:gap-4 xl:tracking-[0.18em]">
+    // Tight gap/tracking below 2xl so the bar fits the desktop shell's
+    // ~1100px window (OM-30); the wide spacing only fits from 2xl (#1073).
+    // No `min-w-0`: every item is nowrap and cannot shrink, so letting the
+    // nav's box shrink only made its content spill over the header controls
+    // (HELP under the palette select, the issue button under ADMIN, #1073).
+    <nav className="flex items-center gap-2 text-[13px] uppercase tracking-[0.12em] 2xl:gap-4 2xl:tracking-[0.18em]">
       {items.map((item) =>
         item.kind === 'link' ? (
           <LeafLink
@@ -390,7 +392,7 @@ function ClusterDropdown({
           setMode((m) => (m === 'pinned' ? 'closed' : 'pinned'));
         }}
         className={[
-          'relative inline-flex items-center gap-1 whitespace-nowrap py-1 uppercase tracking-[0.12em] transition-colors xl:tracking-[0.18em]',
+          'relative inline-flex items-center gap-1 whitespace-nowrap py-1 uppercase tracking-[0.12em] transition-colors 2xl:tracking-[0.18em]',
           containsActive
             ? 'text-[color:var(--ink)]'
             : 'text-[color:var(--muted-ink)] hover:text-[color:var(--ink)]',

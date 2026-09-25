@@ -19,6 +19,7 @@
  *       name: Public Agent
  *       description: ...                  # optional
  *       privacy_profile: default          # 'strict' | 'default', default 'default'
+ *                                         # reserved, not enforced (#978)
  *       status: enabled                   # 'enabled' | 'disabled', default 'enabled'
  *       plugins:
  *         - id: '@omadia/agent-seo-analyst'

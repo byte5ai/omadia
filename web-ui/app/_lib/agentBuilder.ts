@@ -101,6 +101,8 @@ export interface AgentNode {
   slug: string;
   name: string;
   description: string | null;
+  /** Reserved, not enforced (#978): persisted and reported, read by no
+   *  runtime path — `strict` behaves like `default`. */
   privacyProfile: PrivacyProfile;
   status: NodeStatus;
   modelRouting: ModelRoutingConfig | null;

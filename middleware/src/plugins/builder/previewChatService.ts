@@ -11,6 +11,7 @@ import {
   type LocalSubAgentTool,
 } from '@omadia/orchestrator';
 
+import { recordForeignToolCall } from '../../platform/foreignToolMetrics.js';
 import {
   inferFamilyFromModel,
   warnIfEmptyInputSchema,
@@ -374,6 +375,8 @@ function defaultBuildSubAgent(opts: SubAgentBuildOptions): Askable {
       tools: opts.tools,
       // #1085 — the binary an operator installed through the UI, not PATH.
       resolveCliBinary: resolveClaudeCliBin,
+      // #1072 — see `builderAgent.defaultBuildSubAgent`.
+      onForeignToolUse: (toolName) => recordForeignToolCall(toolName, 'builder-preview'),
     });
   }
   if (!opts.provider) {

@@ -28,7 +28,6 @@ import {
   type OperatorAgentDto,
   type OperatorAgentsListDto,
   type PluginCatalogEntryDto,
-  type PrivacyProfile,
   type ResolveChannelResponse,
 } from '../../../_lib/agents';
 
@@ -390,20 +389,18 @@ function CreateAgentForm(props: {
     slug: string;
     name: string;
     description?: string;
-    privacy_profile?: PrivacyProfile;
   }) => void;
 }): React.ReactElement {
   const t = useTranslations('operatorAgents');
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [privacy, setPrivacy] = useState<PrivacyProfile>('default');
 
   return (
     <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">
       <h2 className="mb-4 text-lg font-medium">{t('createHeading')}</h2>
       <form
-        className="grid gap-4 lg:grid-cols-4"
+        className="grid gap-4 lg:grid-cols-3"
         onSubmit={(e) => {
           e.preventDefault();
           if (!slug || !name) return;
@@ -411,12 +408,10 @@ function CreateAgentForm(props: {
             slug,
             name,
             description: description || undefined,
-            privacy_profile: privacy,
           });
           setSlug('');
           setName('');
           setDescription('');
-          setPrivacy('default');
         }}
       >
         <Field label={t('fieldSlug')}>
@@ -447,17 +442,10 @@ function CreateAgentForm(props: {
             className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-sm"
           />
         </Field>
-        <Field label={t('fieldPrivacy')}>
-          <select
-            value={privacy}
-            onChange={(e) => setPrivacy(e.target.value as PrivacyProfile)}
-            className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-sm"
-          >
-            <option value="default">default</option>
-            <option value="strict">strict</option>
-          </select>
-        </Field>
-        <div className="lg:col-span-4">
+        {/* #978 — no privacy-profile select: the value is reserved and not
+            enforced, so offering a choice here would be a control that does
+            nothing. New agents get the server default. */}
+        <div className="lg:col-span-3">
           <Button
             type="submit"
             variant="primary"
@@ -480,7 +468,6 @@ function AgentCard(props: {
   onPatch: (patch: {
     name?: string;
     description?: string | null;
-    privacy_profile?: PrivacyProfile;
     status?: 'enabled' | 'disabled';
   }) => void;
   onDelete: () => void;
@@ -589,19 +576,9 @@ function AgentCard(props: {
                   : t('actionEnable')}
               </Button>
             )}
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={props.disabled}
-              onClick={() =>
-                props.onPatch({
-                  privacy_profile:
-                    agent.privacy_profile === 'strict' ? 'default' : 'strict',
-                })
-              }
-            >
-              {t('actionTogglePrivacy')}
-            </Button>
+            {/* #978 — no privacy toggle: `privacy_profile` is reserved and
+                not enforced. The value is still shown (labelled "not
+                enforced") in the summary line above. */}
             {!props.isFallback && (
               <Button
                 variant="danger"

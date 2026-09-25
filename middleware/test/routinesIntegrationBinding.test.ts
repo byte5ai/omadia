@@ -5,6 +5,7 @@ import { createRoutinesIntegration } from '../src/plugins/routines/integration.j
 import type { RoutinesHandle } from '../src/plugins/routines/initRoutines.js';
 import { bindingKeyForTurn, canonicalizePrincipalId } from '../src/conductor/principalId.js';
 import { ConductorChannelBindingStore } from '../src/conductor/channelBindingStore.js';
+import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
 
 // Conductor real-world P2a — the routines turn-capture seam forwards an optional `principalRef` to
 // `onTurnCaptured` so the kernel can key the Conductor channel binding by an operator-addressable id
@@ -55,6 +56,116 @@ describe('createRoutinesIntegration onTurnCaptured principalRef (P2a)', () => {
     assert.doesNotThrow(() =>
       integ.captureRoutineTurn({ tenant: 't1', userId: 'u', channel: 'teams', conversationRef: {} }),
     );
+  });
+});
+
+// #1086 — `beginRoutineTurn` is the scoped sibling of `captureRoutineTurn`: same
+// principal, same Conductor binding, but an ALS scope that EXITS. The generic
+// producer in CoreApi goes through it so non-Teams channels get both halves —
+// a principal for `manage_routine` AND a channel binding for reminders.
+describe('createRoutinesIntegration beginRoutineTurn (#1086)', () => {
+  it('exposes the principal for the duration of fn and clears it afterwards', async () => {
+    const integ = createRoutinesIntegration(stubHandle);
+    const conversationRef = { kind: 'channel', channelId: 'de.byte5.channel.telegram', conversationId: 'c9' };
+
+    const inside = await integ.beginRoutineTurn({
+      tenant: 't1',
+      userId: 'tg-42',
+      channel: 'telegram',
+      conversationRef,
+    })(async () => routineTurnContext.current());
+
+    assert.deepEqual(inside, {
+      tenant: 't1',
+      userId: 'tg-42',
+      channel: 'telegram',
+      conversationRef,
+      canTargetOthers: false,
+    });
+    assert.equal(routineTurnContext.current(), undefined);
+  });
+
+  it('fires the Conductor binding observer exactly like captureRoutineTurn', async () => {
+    const seen: Captured[] = [];
+    const integ = createRoutinesIntegration(stubHandle, (info) => seen.push(info));
+
+    await integ.beginRoutineTurn({
+      tenant: 't1',
+      userId: 'tg-42',
+      principalRef: 'jane@co',
+      channel: 'telegram',
+      conversationRef: { c: 1 },
+    })(async () => undefined);
+
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.principalRef, 'jane@co');
+    assert.equal(seen[0]?.channel, 'telegram');
+    assert.deepEqual(seen[0]?.conversationRef, { c: 1 });
+  });
+
+  // A streamed turn invokes the runner once per pull. The binding is a
+  // per-TURN fact and a Postgres write; firing it per event would put one
+  // upsert on every text delta of every turn on every channel.
+  it('writes the binding ONCE per turn, however many segments the turn has', async () => {
+    const seen: Captured[] = [];
+    const integ = createRoutinesIntegration(stubHandle, (info) => seen.push(info));
+
+    const run = integ.beginRoutineTurn({
+      tenant: 't1',
+      userId: 'tg-42',
+      channel: 'telegram',
+      conversationRef: { c: 1 },
+    });
+    for (let i = 0; i < 5; i += 1) {
+      await run(async () => routineTurnContext.current());
+    }
+
+    assert.equal(seen.length, 1);
+  });
+
+  it('clears the scope even when fn throws', async () => {
+    const integ = createRoutinesIntegration(stubHandle);
+    await assert.rejects(
+      integ.beginRoutineTurn({ tenant: 't1', userId: 'u', channel: 'telegram', conversationRef: {} })(async () => {
+        throw new Error('turn failed');
+      }),
+      /turn failed/,
+    );
+    assert.equal(routineTurnContext.current(), undefined);
+  });
+
+  it('a throwing observer never breaks the turn', async () => {
+    const integ = createRoutinesIntegration(stubHandle, () => {
+      throw new Error('binding store down');
+    });
+    assert.equal(
+      await integ.beginRoutineTurn({
+        tenant: 't1',
+        userId: 'u',
+        channel: 'telegram',
+        conversationRef: {},
+      })(async () => 'ok'),
+      'ok',
+    );
+  });
+
+  it('keeps cold-start outreach closed unless the channel says otherwise', async () => {
+    const integ = createRoutinesIntegration(stubHandle);
+    const granted = await integ.beginRoutineTurn({
+      tenant: 't1',
+      userId: 'u',
+      channel: 'teams',
+      conversationRef: {},
+      canTargetOthers: true,
+    })(async () => routineTurnContext.current()?.canTargetOthers);
+    const omitted = await integ.beginRoutineTurn({
+      tenant: 't1',
+      userId: 'u',
+      channel: 'telegram',
+      conversationRef: {},
+    })(async () => routineTurnContext.current()?.canTargetOthers);
+    assert.equal(granted, true);
+    assert.equal(omitted, false);
   });
 });
 

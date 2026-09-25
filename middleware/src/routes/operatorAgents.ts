@@ -35,8 +35,8 @@ import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import {
   buildBotHandle,
-  classifyTeamsProvisioningError,
   TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
+  teamsProvisioningErrorDetailOf,
   type TeamsProvisioningErrorDetail,
 } from '../services/teamsProvisioningJob.js';
 import {
@@ -358,6 +358,13 @@ export interface OperatorTeamsIdentityRecord {
   readonly teamsAppId: string | null;
   readonly teamsAppExternalId: string | null;
   readonly lastError: string | null;
+  /** Persisted code + typed arguments of {@link lastError} (migration 0060,
+   *  #897). OPTIONAL on this structural mirror like the other additive
+   *  columns: absent reads as a pre-0060 row, whose sentence is classified
+   *  instead. Never surfaced raw — {@link projectTeamsIdentityErrorDetail}
+   *  validates them into `last_error_detail`. */
+  readonly errorCode?: string | null;
+  readonly errorDetail?: unknown;
   readonly createdAt?: Date;
   readonly updatedAt?: Date;
 }
@@ -679,13 +686,21 @@ export {
   type TeamsBotConfigProjection,
 } from '../services/teamsBotsConfigSync.js';
 
-/** Structured form of the identity's `last_error`, decoded by the runner's
- *  own classifier so the UI renders from a code + typed arguments instead of
- *  parsing English. `null` while the row carries no error. */
+/** Structured form of the identity's `last_error`, so the UI renders from a
+ *  code + typed arguments instead of parsing English. Read from the
+ *  persisted `error_code` / `error_detail` columns (#897); a row written
+ *  before migration 0060 falls back to the runner's own sentence classifier.
+ *  `null` while the row carries no error. */
 export function projectTeamsIdentityErrorDetail(
   record: OperatorTeamsIdentityRecord,
 ): TeamsProvisioningErrorDetail | null {
-  return record.lastError ? classifyTeamsProvisioningError(record.lastError) : null;
+  return record.lastError
+    ? teamsProvisioningErrorDetailOf(
+        record.lastError,
+        record.errorCode ?? null,
+        record.errorDetail ?? null,
+      )
+    : null;
 }
 
 /** One event as the status endpoint publishes it — snake_case like the rest
@@ -1072,7 +1087,9 @@ const CONSENTED_EVIDENCE_STATES: ReadonlySet<string> = new Set([
  * The connector's typed errors (`ConsentMissingError` → `missingScopes`) are
  * caught where they are thrown — inside the provisioning runner, which is the
  * single writer of `last_error` — so this projection reads them back through
- * the runner's own classifier instead of re-deriving the taxonomy. It never
+ * {@link projectTeamsIdentityErrorDetail} (the persisted code, #897, or the
+ * runner's own classifier for a legacy row) instead of re-deriving the
+ * taxonomy. It never
  * claims `granted` without evidence: only a state the chain could not have
  * reached with missing consent counts.
  */
@@ -1308,7 +1325,7 @@ function startProvisioningRun(
       );
       void deps.store
         .recordEnqueueFailure?.(agent.id, refused)
-        .catch(() => undefined);
+        .catch((persistErr: unknown) => logEnqueueFailurePersistError(agent.slug, persistErr));
     })
     .catch((err: unknown) => {
       console.error(
@@ -1320,8 +1337,18 @@ function startProvisioningRun(
           agent.id,
           err instanceof Error ? err.message : String(err),
         )
-        .catch(() => undefined);
+        .catch((persistErr: unknown) => logEnqueueFailurePersistError(agent.slug, persistErr));
     });
+}
+
+/** Persisting the enqueue failure is best-effort, but a failure to persist it
+ *  leaves the status endpoint looking like a healthy just-enqueued row — so
+ *  it is logged, never swallowed. */
+function logEnqueueFailurePersistError(slug: string, err: unknown): void {
+  console.error(
+    `[operator-agents] persisting the teams provisioning enqueue failure for '${slug}' failed:`,
+    err,
+  );
 }
 
 /**
@@ -2973,8 +3000,9 @@ export function createOperatorAgentsRouter(
           // server. `null` on a row created before a target was known.
           team_id: row.teamId,
           last_error: row.lastError,
-          // Additive (W2a): the same failure, decoded by the runner's own
-          // classifier. The UI renders from `code` + the typed arguments and
+          // Additive (W2a): the same failure, structured — read from the
+          // persisted code since #897, classified from the sentence only for
+          // a pre-0060 row. The UI renders from `code` + the typed arguments and
           // may show `raw` only as a secondary technical detail — it must
           // never parse the sentence itself.
           last_error_detail: projectTeamsIdentityErrorDetail(row),

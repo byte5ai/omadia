@@ -3,7 +3,10 @@ import { CORE_AUTH_AGENT_ID, refreshTokenKey } from './coreAuthScope.js';
 
 /**
  * Azure AD refresh tokens, keyed by user email. The middleware never hands
- * these out; they are consumed only by requireAuth-side re-issue logic.
+ * these out. Their only consumer is the session re-issue logic of
+ * `POST /api/v1/auth/renew` (#965, via `EntraProvider.revalidateSession`),
+ * and `POST /api/v1/auth/logout` forgets them so a logout ends the renewal
+ * chain.
  *
  * Rationale for storing in-vault rather than in a cookie: the cookie stays
  * tiny (just the signed session JWT), revoke-on-logout is a one-liner

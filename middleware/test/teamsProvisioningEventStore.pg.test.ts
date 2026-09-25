@@ -72,6 +72,8 @@ describe(
         '0051_agent_teams_installs.sql',
         '0054_agent_teams_target_kind.sql',
         '0055_agent_teams_app_object_id.sql',
+        // 0060 (#897): the identity store's SELECT reads error_code/_detail.
+        '0060_agent_teams_error_code.sql',
       ]) {
         const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
         // Applied TWICE on purpose — the migrations README requires every
