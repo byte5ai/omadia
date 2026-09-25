@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — ctx.tools.invoke('memory') no longer reaches the unscoped root store (#909)
+
+2026-09-24 — `ctx.tools.invoke(name, input)` dispatched straight to the
+`NativeToolRegistry` entry, and the `memory` entry is the memory provider's
+handler bound to the undecorated root store. Any activated tool-kind plugin,
+with or without `permissions.memory`, could therefore read and write every
+Agent's tree. The UI orchestrator's canvas refresh replays recipes through the
+same accessor, so a recorded recipe naming `memory` would have done the same.
+`invoke('memory', …)` now runs the memory tool against the caller's own
+`ctx.memory` scope: `/memories` is the plugin's
+`/memories/orchestrators/<agentSlug>/plugins/<pluginId>/` subtree, the slug is
+resolved per call, and the default-Agent legacy tree stays a read-only
+fallback. Both paths share one scope function. A plugin without
+`permissions.memory` gets a `ToolInvokePermissionError`, and a missing memory
+store gets an "unavailable" error. Neither case ever falls back to the registry
+handler. All other tool names dispatch as before. Same shape as #904/#908;
+part of #860.
+`PostgresMemoryStore` now escapes `%`, `_` and `\` in its `LIKE` prefix scans.
+Unescaped, the `_` a plugin id may contain matched any character, so a
+directory rename or delete in one plugin's scope could reach a sibling
+plugin's tree.
+
 ### Fixed — `manage_routine` works on core-dispatched channels, and says so honestly elsewhere (#1086)
 
 2026-09-24 — asking an agent to create, list, pause, resume or delete a routine
