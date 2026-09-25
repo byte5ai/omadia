@@ -1990,6 +1990,41 @@ Fehlerpfade), `test/embeddingColumnMigrationGuard.test.ts` (Gate-Hälfte:
 Permission, Master-Switch `auto_migrate_vector_columns`, `requireEmpty`),
 `web-ui/app/admin/embedding-provider/__tests__/page.test.tsx` (UI).
 
+### Run-Trace- und Capture-Filter-Zähler: `GET /api/admin/run-trace` (#684 / #1082)
+
+Die Run-Trace-Outcomes (#684) und die Zahl der vom Capture-Filter als
+tail-only geschriebenen Turns sind Zähler, nicht nur Log-Zeilen. Das
+Orchestrator-Plugin baut **eine** `RunTraceOutcomeStats`-Instanz, reicht sie
+an jeden `SessionLogger` weiter (jeder Agent, Registry-Rebuilds,
+`transcribe_recording`) und publiziert sie als Service `runTraceStats`
+(`RUN_TRACE_STATS_SERVICE`). Der Admin-Router löst sie pro Request über die
+Service-Registry auf.
+
+- **Auth:** `Authorization: Bearer <ADMIN_TOKEN>`, wie
+  `/api/admin/security/screening`. Der Router wird nur gemountet, wenn
+  `ADMIN_TOKEN` gesetzt ist; ohne Token gibt es die Route nicht, mit falschem
+  Token `401`.
+- **Antwort (200):** `{ outcomes, droppedTotal, captureTailOnlyTurns }`.
+  `outcomes` hat die fünf Zähler `recorded`, `no-graph-sink`,
+  `transcript-failed`, `turn-ingest-failed`, `run-ingest-failed`;
+  `droppedTotal` summiert alle außer `recorded`. `captureTailOnlyTurns` zählt
+  Turns, keine Traces, und fließt bewusst **nicht** in `droppedTotal` ein: der
+  Trace eines gefilterten Turns ist `recorded`.
+- **`503 { error: 'run_trace_stats_unavailable' }`**, solange kein
+  Orchestrator aktiv ist (kein LLM-Zugang, fehlende Kernel-Services,
+  deaktiviert).
+- **In-Memory, prozessweit:** kein Persistenz-Store. Die Zähler starten bei
+  einem Neustart und bei jeder Reaktivierung des Orchestrator-Plugins (z. B.
+  Provider-Wechsel) wieder bei null. Nicht auf `/health`, das keine
+  Traffic-Zahlen trägt.
+
+Tests: `test/adminRunTraceRoute.test.ts` (Route mit echtem Capture-Decorator
+und `SessionLogger`), `test/runTraceStatsServicePublish.test.ts` (echtes
+`activate()` gegen eine `ServiceRegistry`: publizierte Instanz = die des
+Agent-Loggers, 503 vor Aktivierung und nach Deaktivierung),
+`test/buildOrchestrator.test.ts` (jeder gebaute Agent teilt
+`deps.runTraceStats`).
+
 ### Session-Verlängerung „Ich bin noch da“ (`POST /api/v1/auth/renew`, #965)
 
 Die Admin-UI-Sitzung ist ein zustandsloses HS512-JWT mit 4h-Fenster
@@ -2449,7 +2484,8 @@ TRANSCRIPTION_REALTIME_EXPERIMENTAL=1   # opt-in: gpt-live-transcribe Realtime-P
                                         # @omadia/transcription-adapter-openai
                                         # installiert + mit API-Key versorgt ist
 # Optional endpoints
-ADMIN_TOKEN                         # mount /api/admin (mutating memory)
+ADMIN_TOKEN                         # mount /api/admin (mutating memory; read-only
+                                    # counters: /security/screening #749, /run-trace #1082)
 DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (Session-gated seit #669; Dev-Scaffolding)
 DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#669)
 # Teams

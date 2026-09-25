@@ -23,6 +23,7 @@ import {
   type OrchestratorDeps,
 } from '../packages/harness-orchestrator/src/buildOrchestrator.js';
 import type { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
+import { RunTraceOutcomeStats } from '../packages/harness-orchestrator/src/runTraceObservability.js';
 
 /** Minimal NativeToolRegistry — the Orchestrator constructor only calls
  *  `has` and `register` while seeding the kernel native-tool names. */
@@ -258,4 +259,33 @@ test('a claude-cli agent replays the chat session store as its tail (#1087)', as
   // `undefined`, or every new chat's first turn would carry the missing-history
   // note.
   assert.deepEqual(await tail('sess-empty', 3), []);
+});
+
+/**
+ * #1082 — the WIRING pin for the run-trace / capture-filter tally. The admin
+ * route reads ONE instance; a factory that ignored `deps.runTraceStats` would
+ * leave every Agent counting into a private tally nobody can read, and the
+ * counter would be back to "only visible in the log".
+ */
+test('every built Agent logs into the shared run-trace tally from deps (#1082)', () => {
+  const runTraceStats = new RunTraceOutcomeStats();
+  const shared = { ...deps(), runTraceStats };
+  const a = buildOrchestratorForAgent(
+    { agentId: 'public', model: 'm', maxTokens: 100, maxToolIterations: 4 },
+    shared,
+  );
+  const b = buildOrchestratorForAgent(
+    { agentId: 'general', model: 'm', maxTokens: 100, maxToolIterations: 4 },
+    shared,
+  );
+  assert.equal(a.bundle.sessionLogger.runTraceStats, runTraceStats);
+  assert.equal(b.bundle.sessionLogger.runTraceStats, runTraceStats);
+
+  // Without one in deps each logger keeps its own (tests, bare hosts).
+  const bare = buildOrchestratorForAgent(
+    { agentId: 'bare', model: 'm', maxTokens: 100, maxToolIterations: 4 },
+    deps(),
+  );
+  assert.ok(bare.bundle.sessionLogger.runTraceStats instanceof RunTraceOutcomeStats);
+  assert.notEqual(bare.bundle.sessionLogger.runTraceStats, runTraceStats);
 });
