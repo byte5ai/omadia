@@ -36,6 +36,33 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
+
+2026-09-24. The OM-104 "time limit per turn" (`cli_turn_seconds`) had no
+effect on deployments with a database. The orchestrator plugin passed the
+parsed value to the default agent and into the registry's
+`defaultRuntimeConfig`. But `buildForAgent` in `registry/applyDiff.ts` copies
+the runtime knobs into `buildOrchestratorForAgent` one by one, and
+`cliTurnSeconds` was not on that list. With a DB every agent is built there,
+including the web chat's fallback agent, so a CLI turn still ran under the ENV
+value or the 600 s default. It is now forwarded exactly like `maxTurnSeconds`.
+The `> 0` rule and the conversion to `spawnTimeoutMs` stay in
+`buildOrchestratorForAgent`, so an unset value still leaves the ENV override
+reachable.
+
+The settings field itself could destroy the value it edits. Input and Save
+were locked only while the config was loading. After a *failed* load the field
+stayed empty and Save stayed enabled, so one click PATCHed
+`cli_turn_seconds: null` and showed "Saved". Save now stays disabled until a
+load succeeds, and a "Load again" button retries. Validation used `parseInt`,
+so `240.5` was saved verbatim and `1e3` read as 1. Only whole numbers from 30
+to 3600 are accepted now, and text a number input cannot parse
+(`validity.badInput`) no longer counts as clearing the field. A stored
+fractional value is shown as the orchestrator reads it (`Number()`), not
+truncated. Both failure paths had shown the raw exception as the headline.
+They now show localized en/de copy through the shared `ErrorHelp`, with the
+redacted detail behind "Details for support".
+
 ### Fixed — `manage_routine` works on core-dispatched channels, and says so honestly elsewhere (#1086)
 
 2026-09-24 — asking an agent to create, list, pause, resume or delete a routine

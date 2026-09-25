@@ -3380,6 +3380,19 @@ Reihenfolge: Setting > ENV `OMADIA_CLI_SPAWN_TIMEOUT_MS` > Default 600 s. Leer/0
 LLM-Zugang-Seite, Reiter Abos; sie schreibt über den normalen Plugin-Config-PATCH, das
 Plugin reaktiviert, kein Neustart.
 
+Der Wert erreicht **beide** Bauwege: den Default-Agenten und jeden Agenten, den die
+Registry baut (`registry/applyDiff.ts` `buildForAgent` reicht `cliTurnSeconds` wie
+`maxTurnSeconds` durch). Mit DB läuft der Web-Chat auf dem Registry-Fallback-Agenten;
+bis #1077 fehlte dort der Forward, das Setting war auf echten Deployments wirkungslos.
+Pin: `middleware/test/buildForAgentCliTurnBudget.test.ts`.
+
+Die UI (`TurnBudgetField`) sperrt Eingabe und Speichern, solange der aktuelle Wert nicht
+geladen ist, und bietet nach einem Ladefehler "Erneut laden" an. Ein leeres Speichern
+PATCHt `null` und darf deshalb nur nach erfolgreichem Laden möglich sein. Akzeptiert werden
+nur ganze Zahlen 30–3600 (`/^\d+$/`, plus `validity.badInput`). Ein gespeicherter
+Bruchwert wird so angezeigt, wie der Orchestrator ihn liest (`Number()`), und beim nächsten
+Speichern abgelehnt.
+
 ### `manage_routine` bekommt den Principal (OM-82)
 
 Root Cause war nicht der Transport. `#993` (Kontext über die Prozessgrenze restaurieren)
