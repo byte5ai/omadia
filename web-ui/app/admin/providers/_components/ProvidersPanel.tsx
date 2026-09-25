@@ -829,9 +829,14 @@ function AssignmentRow({
   onToggleRouting: (pluginId: string, next: boolean) => void;
   t: T;
 }): React.ReactElement {
-  const selectedProvider =
-    providers.find((p) => p.id === a.provider) ?? providers[0];
-  const models = selectedProvider?.models ?? [];
+  // The row's own provider may be missing from `providers[]` (a provider with
+  // no models, e.g. its plugin was uninstalled). The fallback to `providers[0]`
+  // is kept for the provider-level notices, but the model select must never
+  // borrow another provider's models or class defaults (#1083): that would
+  // label a stored ref with a model the agent is not running.
+  const ownProvider = providers.find((p) => p.id === a.provider);
+  const selectedProvider = ownProvider ?? providers[0];
+  const models = ownProvider?.models ?? [];
   const disabled = !a.installed;
   // Per-turn routing (#1099) is Anthropic-only — plugin.ts suppresses it under
   // any other provider — so the toggle is both disabled and guarded off it.
@@ -854,7 +859,7 @@ function AssignmentRow({
     stored: a.model,
     resolvedModel: a.resolvedModel,
     models,
-    classDefaults: selectedProvider?.classDefaults,
+    classDefaults: ownProvider?.classDefaults,
   });
   const classLabel = (o: ClassOption): string => {
     const cls = t(`assignments.classNames.${o.cls}`);

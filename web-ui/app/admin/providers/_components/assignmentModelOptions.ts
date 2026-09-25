@@ -53,7 +53,9 @@ export interface ModelSelect {
 
 export interface ModelSelectInput {
   readonly stored: string | null;
-  /** Server-computed concrete model the stored ref resolves to. */
+  /** Server-computed concrete model the stored ref resolves to. `null` means
+   *  the server resolved nothing; `undefined` means it did not say (older
+   *  middleware). The two are deliberately not conflated. */
   readonly resolvedModel?: string | null;
   readonly models: readonly AdminProviderModel[];
   /** Server-computed class → modelId map for the selected provider. */
@@ -78,8 +80,16 @@ export function buildModelSelect(input: ModelSelectInput): ModelSelect {
   ).map((cls) => {
     // The stored class shows what the runtime actually resolves (it covers the
     // nearest-class fallback); the others show the provider's class default.
+    // Only an ABSENT `resolvedModel` (older middleware) falls back to the class
+    // default: an explicit `null` is the server saying the ref resolves to
+    // nothing, and borrowing a default there would name a model the agent does
+    // not run — the false label #1083 removes.
     const targetId =
-      cls === storedClass ? (resolvedModel ?? classDefaults?.[cls]) : classDefaults?.[cls];
+      cls === storedClass
+        ? resolvedModel === undefined
+          ? classDefaults?.[cls]
+          : resolvedModel
+        : classDefaults?.[cls];
     const target = displayLabel(targetId, models);
     return target === undefined
       ? { value: `class:${cls}`, cls }

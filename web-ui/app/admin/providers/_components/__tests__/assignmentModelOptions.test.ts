@@ -79,6 +79,31 @@ describe('buildModelSelect (#1083)', () => {
     });
   });
 
+  it('names no model when the server says the stored class resolves to nothing', () => {
+    // `null` is the server's "unresolvable" (e.g. the stored provider has no
+    // models); only an absent `resolvedModel` may fall back to a class default.
+    const sel = buildModelSelect({
+      stored: 'class:frontier',
+      resolvedModel: null,
+      models: MODELS,
+      classDefaults: { frontier: 'x' },
+    });
+    expect(sel.value).toBe('class:frontier');
+    expect(sel.classOptions.find((o) => o.cls === 'frontier')).toEqual({
+      value: 'class:frontier',
+      cls: 'frontier',
+    });
+  });
+
+  it('falls back to the class default only when the server did not report a resolution', () => {
+    const sel = buildModelSelect({
+      stored: 'class:frontier',
+      models: MODELS,
+      classDefaults: DEFAULTS,
+    });
+    expect(sel.classOptions.find((o) => o.cls === 'frontier')?.target).toBe('Claude Opus 5');
+  });
+
   it('leaves the target off when nothing says what a class resolves to', () => {
     const sel = buildModelSelect({ stored: 'class:frontier', models: MODELS });
     expect(sel.classOptions.find((o) => o.cls === 'frontier')).toEqual({

@@ -1236,6 +1236,31 @@ describe('<ProvidersPanel />', () => {
       await waitFor(() => expect(select.value).toBe('class:frontier'));
     });
 
+    it('never labels an unresolvable class ref with another provider’s model', async () => {
+      // The stored provider has no models, so it is missing from `providers[]`
+      // and the server reports `resolvedModel: null`. The row must not borrow
+      // the first listed provider's class defaults or models.
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic()],
+          assignments: [
+            orchestratorAssignment({
+              provider: 'gone-provider',
+              model: 'class:frontier',
+              resolvedModel: null,
+            }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const select = (await screen.findByLabelText(modelLabel)) as HTMLSelectElement;
+      expect(select.value).toBe('class:frontier');
+      expect(select.options[select.selectedIndex]?.textContent).toBe('Frontier (auto)');
+      expect(screen.queryByRole('option', { name: /Claude Opus 5/ })).toBeNull();
+      expect(select.disabled).toBe(true);
+    });
+
     it('shows a stored alias as its own selected option, never as option 0', async () => {
       mockGetProviders.mockResolvedValue(
         providersResponse({
