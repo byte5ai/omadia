@@ -34,7 +34,13 @@ import {
   resolveCliVersion,
 } from './cliSpawnGate.js';
 
-const DEFAULT_CLI_BINARY = 'claude';
+/**
+ * The binary the CLI chat path spawns, and the name the kernel's
+ * `resolveCliBin` is asked to resolve (#1085). Exported so `plugin.ts` asks
+ * for THIS name rather than repeating the literal — the duplicate-constant
+ * habit is what split the resolution rule in the first place.
+ */
+export const DEFAULT_CLI_BINARY = 'claude';
 const DEFAULT_MODEL = 'sonnet';
 /**
  * OM-104 — the wall-clock budget of one CLI-owned turn. It used to be a
@@ -681,7 +687,28 @@ export interface CliChatAgentDeps {
    */
   readonly turnOwnerGuard?: (input: ChatTurnInput) => (() => void) | undefined;
 
-  readonly cliBinary?: string;
+  /**
+   * #1085 — resolves the `claude` binary this agent spawns, called ONCE PER
+   * TURN.
+   *
+   * Everything the operator drives — the version badge, the login flow, the
+   * "Install now" button — goes through `resolveCliBin()` in the kernel's
+   * `cliBackendDetector`, which prefers `<cliToolsDir>/bin/claude` over PATH.
+   * This path spawned the bare name, so an operator could install a newer CLI
+   * through the UI, watch the badge update, and still have every turn run the
+   * image binary — including the version probe below that decides whether
+   * `--restricted` is passed, which is why the gate quietly dropped the flag
+   * on a deployment the UI advertised as up to date.
+   *
+   * A function, not a string, because `resolveCliBin` evaluates `existsSync`
+   * at call time and an install is expected to take effect on the next turn:
+   * a string resolved at construction would miss exactly the install the
+   * operator just performed. Wired by `buildOrchestratorForAgent` from the
+   * kernel's `cliBinaryResolver` service (the rule has to live in the
+   * application layer, which this package cannot import). Left unset (unit
+   * tests, legacy hosts) the bare name is spawned, the pre-#1085 behaviour.
+   */
+  readonly resolveCliBinary?: () => string;
   readonly model?: string;
   readonly systemPrompt?: string;
   readonly buildEnv?: () => NodeJS.ProcessEnv;
@@ -1269,7 +1296,7 @@ export class CliChatAgent implements ChatAgent {
       // below is the only place they can be replayed.
       const history = await this.resolveHistory(input, turnContext);
 
-      const cliBinary = this.deps.cliBinary ?? DEFAULT_CLI_BINARY;
+      const cliBinary = this.deps.resolveCliBinary?.() ?? DEFAULT_CLI_BINARY;
       // OM-85 — probe (cached) before building argv; unknown → no `--restricted`.
       const cliVersion = await (this.deps.resolveCliVersion ?? resolveCliVersion)(cliBinary);
       const spawnTimeoutMs = resolveCliSpawnTimeoutMs(this.deps.spawnTimeoutMs);

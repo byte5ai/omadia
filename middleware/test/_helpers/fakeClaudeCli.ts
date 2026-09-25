@@ -85,6 +85,12 @@ process.stdin.on('end', () => {
 
   const previousPath = process.env['PATH'];
   process.env['PATH'] = `${binDir}${path.delimiter}${previousPath ?? ''}`;
+  // #1085 — the real factories resolve the binary through `resolveCliBin()`,
+  // which prefers `<CLI_TOOLS_DIR>/bin/claude` (default `<cwd>/data/cli-tools`)
+  // over PATH. Point it at an empty dir so a developer's local runtime install
+  // cannot shadow the fake and get spawned, logged in, from a test.
+  const previousToolsDir = process.env['CLI_TOOLS_DIR'];
+  process.env['CLI_TOOLS_DIR'] = path.join(binDir, 'no-runtime-install');
 
   const readLog = (): string[] =>
     existsSync(logFile)
@@ -100,6 +106,8 @@ process.stdin.on('end', () => {
     dispose() {
       if (previousPath === undefined) delete process.env['PATH'];
       else process.env['PATH'] = previousPath;
+      if (previousToolsDir === undefined) delete process.env['CLI_TOOLS_DIR'];
+      else process.env['CLI_TOOLS_DIR'] = previousToolsDir;
       rmSync(binDir, { recursive: true, force: true });
     },
   };
