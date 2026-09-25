@@ -2738,6 +2738,25 @@ benutzt hat.
   Vault-Keys weiter `ANTHROPIC_API_KEY` (derselbe Key). Der Refresher sollte das
   zumindest als Warnung loggen.
 
+### Desktop-Shell: restliche Flächen folgen nicht der UI-Sprache (#1074 follow-up)
+
+#1074 hat die Shell-Dialoge (Updater, Boot-Fehler, Recovery-Key) und die
+Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprache
+über `omadia:uiLocale`, `desktop/src/shellLocale.ts` hält und persistiert sie in
+`userData/ui-locale.json`. Offen sind:
+
+- **Tray-Menü** (`desktop/src/tray.ts`) — Labels fest auf Englisch.
+- **Datenordner-Auswahl und Cloud-Sync-Warnung** (`desktop/src/ipc.ts`,
+  `chooseDataDirWithSyncWarning`) — Titel, Buttons und Text fest auf Englisch.
+- **Lade- und Setup-Wizard-Seiten** (`desktop/src/renderer/wizard-i18n.js`) —
+  richten sich nach `navigator.language`, also nach der OS-Sprache. Seit #1074
+  sichtbar inkonsistent: ein Boot-Fehler- oder Recovery-Dialog spricht die
+  persistierte UI-Sprache, die Ladeseite dahinter die OS-Sprache. Die Reparatur
+  wäre, der Seite den Wert aus `shellLocale` mitzugeben, statt
+  `navigator.language` zu lesen.
+- **Electrons eigene `role:`-Menüeinträge** folgen der OS-Sprache; außerhalb
+  unserer Reichweite, nur zu benennen.
+
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
 Alles hier ist **nicht** umgesetzt. Vollständige Darstellung samt Codestellen:

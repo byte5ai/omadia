@@ -18,6 +18,7 @@ import { SessionWatcher } from './_components/SessionWatcher';
 import { TimeZoneSync } from './_components/TimeZoneSync';
 import { RuntimeReadinessBanner } from './_components/RuntimeReadinessBanner';
 import { DesktopUiReady } from './_components/DesktopUiReady';
+import { DesktopLocaleSync } from './_components/DesktopLocaleSync';
 import { StreamRunner } from './_components/StreamRunner';
 import { fontVariables } from './_fonts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
@@ -135,6 +136,17 @@ export default async function RootLayout({
               <TimeZoneSync />
               <SessionWatcher />
               <RuntimeReadinessBanner />
+              {/* Headless — tells the desktop shell the UI language so its
+                  own dialogs follow it, not the OS (issue #1074).
+                  ORDER IS LOAD-BEARING: this must stay BEFORE
+                  <DesktopUiReady />. Sibling effects run in tree order and
+                  Electron keeps IPC send order, so mounting it first puts
+                  `omadia:uiLocale` ahead of `omadia:uiReady`. The ready ping
+                  releases the recovery-key reminder, which translates its
+                  text synchronously; arriving second, the locale would come
+                  too late and the reminder would speak the OS language.
+                  Pinned by DesktopLocaleSync.test.tsx. */}
+              <DesktopLocaleSync />
               <DesktopUiReady />
             </StreamStoreProvider>
           </ChatSessionsProvider>

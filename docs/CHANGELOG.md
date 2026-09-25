@@ -69,6 +69,33 @@ Anthropic sub-agents stay on the unauthenticated client after a key is saved,
 and non-Anthropic agents whose activation failed are never retried. The open
 item is recorded in `docs/middleware-agent-handoff.md` §13.
 
+### Fixed — desktop dialogs follow the UI language (#1074)
+
+2026-09-24 — the desktop shell's own dialogs (updater, boot failure, recovery
+key) and its menu headings took their language from `app.getLocale()`, the OS
+locale. A user on an English OS who had switched the web UI to German still got
+English shell dialogs, because nothing told the main process which language the
+UI was showing (the OM-91 residual left open by #1069).
+
+The web UI now pushes the language it is showing to the shell over a new
+fire-and-forget preload channel, `omadia:uiLocale` (`window.omadia.setUiLocale`),
+on first load and after every switch, on every route. The shell accepts only
+`'en'` and `'de'`, applies the value to the next dialog, rebuilds the menu
+headings, and persists it to `userData/ui-locale.json` so dialogs that fire
+before the web UI is up (a boot failure, the updater at startup) use it too.
+Without a valid value it still falls back to the OS locale, so a fresh install
+behaves as before. `desktop/src/shellLocale.ts` is now the only place that
+reads the OS locale; a source-census test keeps it that way. Electron's own
+`role:` menu entries still follow the OS language.
+
+Still not following the UI language, and outside this fix: the tray menu
+(`desktop/src/tray.ts`, hard-coded English), the data-dir picker and its
+cloud-sync warning (`desktop/src/ipc.ts`, hard-coded English), and the loading
+and setup-wizard pages (`desktop/src/renderer/wizard-i18n.js`, keyed off
+`navigator.language`). The last one is now a visible mismatch: a boot-failure or
+recovery dialog follows the persisted UI language while the loading page behind
+it follows the OS. Tracked in `docs/middleware-agent-handoff.md` §13.
+
 ### Fixed — header nav no longer overlaps at desktop-window widths (#1073)
 
 At the desktop shell's ~1100 px window the palette select covered HELP and the
