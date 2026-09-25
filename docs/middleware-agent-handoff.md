@@ -2970,7 +2970,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ### Credential-Broker: offen nach der Egress-Härtung (#778 S3a follow-up)
 
 S3a härtet Anfrage- und Antwortseite von `CredentialBroker.request`
-(`docs/security-architecture.md` §10c): auf der Anfrageseite die
+(`docs/security-architecture.md` §10e): auf der Anfrageseite die
 Caller-Header-Allow-List samt undici-Wertprüfung, die Ablehnung von GET/HEAD
 mit Body (`invalid-request`), den Abgleich der `pathPrefixes` mit dem
 Wire-Pfad und die Prüfung des deklarierten Hosts; auf der Antwortseite
@@ -3033,34 +3033,6 @@ Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
   ist vom Operator deklariert und muss exakt passen, Intranet-Ziele sind
   erlaubt. Mit S3b prüfen, ob ein per-Credential-Opt-in für den SSRF-Guard
   nötig ist.
-
-### Turn-Budget (OM-104) — offene Defekte (#1077 follow-up)
-
-Beim Schreiben der #1077-Tests gefunden, dort bewusst nicht repariert (die
-Änderung ist tests-only):
-
-- **Turn-Budget greift nicht bei Registry-Agents.**
-  `packages/harness-orchestrator/src/registry/applyDiff.ts` `buildForAgent`
-  reicht aus den Registry-Runtime-Defaults `loopRepeatSoft/Hard`,
-  `maxTurnSeconds` und `directLineSticky` durch, aber **nicht**
-  `cliTurnSeconds`. Das Plugin legt den Wert korrekt in
-  `defaultRuntimeConfig` ab (gepinnt von
-  `test/subscriptionParity/cliTurnBudgetRegistry.pg.test.ts`), er kommt nur
-  nie beim `CliChatAgent` an. Mit Datenbank baut die Registry jeden Agent
-  (`registry/index.ts`, beide `buildForAgent`-Aufrufe), und der Web-Chat
-  läuft über `reg.slugForFallback()` (`src/index.ts`, `getDefaultSlug`).
-  Auf DB-Deployments hat das Setup-Feld `cli_turn_seconds` damit keine
-  Wirkung; es gilt nur ENV bzw. Default. Reparatur: eine Spread-Zeile neben
-  `maxTurnSeconds` plus ein Test auf `spawnTimeoutMs` des gebauten Agents.
-- **`TurnBudgetField` löscht nach fehlgeschlagenem Laden das Budget.**
-  `web-ui/app/admin/subscription-clis/_components/TurnBudgetField.tsx`
-  sperrt Eingabe und Speichern nur bei `status.kind === 'loading'`. Scheitert
-  `getInstalledPlugin`, bleibt das Feld leer und Speichern aktiv; ein Klick
-  schickt `{ cli_turn_seconds: null }`, löscht den gespeicherten Wert und
-  zeigt "Gespeichert". Daneben: `240.5` besteht die `parseInt`-Prüfung und
-  wird unverändert gespeichert, und beide `catch`-Zweige rendern die rohe
-  Exception-Meldung statt eines Katalog-Schlüssels (web-ui/CLAUDE.md,
-  Checkliste Punkt 3).
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 

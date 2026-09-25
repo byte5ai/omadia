@@ -67,10 +67,11 @@ it (`resolveWirePath`), before a `once` grant is consumed, against prefixes
 serialised the same way (so `/drive/My Files` or `/v1/über` still match); a declared host
 that is not a plain `host[:port]` is denied as `invalid-broker-declaration`,
 and `timeoutMs` is capped at Node's timer limit (2^31 - 1). `dispatch-failed`, which had no call site, is
-replaced by those two reasons. See `docs/security-architecture.md` §10c. What
+replaced by those two reasons. See `docs/security-architecture.md` §10e. What
 the slice leaves open for #778 S2/S3b (short-secret floor, the unenforced
 `credential:broker:use` gate, the unsalted `fingerprintSecret`, per-credential
 vendor headers) is tracked in `docs/middleware-agent-handoff.md` §13.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
