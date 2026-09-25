@@ -65,7 +65,14 @@ import {
   secretForms,
   type BrokerUpstreamResponse,
 } from './brokerResponse.js';
-import { matchesAnyPrefix, normalizeHost, normalizeMethod, normalizePathForMatch } from './requestMatching.js';
+import {
+  matchesAnyPrefix,
+  normalizeHost,
+  normalizeMethod,
+  normalizePathForMatch,
+  resolveWirePath,
+  type NormalizedPath,
+} from './requestMatching.js';
 
 /** How long one brokered call may take, headers AND body. A slow upstream
  *  otherwise holds the request, the grant use and the socket open forever. */
@@ -176,8 +183,8 @@ export interface CredentialBrokerDeps {
    *  `isGrantActive` header for why `now` is always a parameter, never read
    *  internally at the point of comparison. */
   readonly now?: () => Date;
-  /** Defaults to {@link BROKER_DEFAULT_TIMEOUT_MS}. A positive safe
-   *  integer, checked in the constructor. */
+  /** Defaults to {@link BROKER_DEFAULT_TIMEOUT_MS}. A positive integer of
+   *  at most 2^31 - 1 (Node's timer limit), checked in the constructor. */
   readonly timeoutMs?: number;
   /** Defaults to {@link BROKER_DEFAULT_MAX_RESPONSE_BYTES}. A positive safe
    *  integer, checked in the constructor. */
@@ -187,11 +194,16 @@ export interface CredentialBrokerDeps {
 /** Methods fetch refuses to send with a body. */
 const BODYLESS_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
 
-function assertPositiveInteger(name: string, value: number | undefined): void {
-  if (value === undefined || (Number.isSafeInteger(value) && value > 0)) return;
+/** The largest delay a Node timer honours. `AbortSignal.timeout(2 ** 31)`
+ *  fires after 1 ms (TimeoutOverflowWarning); `2 ** 32` throws
+ *  ERR_OUT_OF_RANGE — both only after the `once` grant is consumed. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+function assertPositiveInteger(name: string, value: number | undefined, max = Number.MAX_SAFE_INTEGER): void {
+  if (value === undefined || (Number.isSafeInteger(value) && value > 0 && value <= max)) return;
   // A NaN timeout makes `AbortSignal.timeout` throw only after the grant is
   // consumed; a NaN or infinite cap silently removes the memory bound.
-  throw new RangeError(`CredentialBroker: ${name} must be a positive safe integer`);
+  throw new RangeError(`CredentialBroker: ${name} must be a positive integer no greater than ${String(max)}`);
 }
 
 /** Everything a `deny`/`allow` call needs to finish auditing and throwing,
@@ -200,14 +212,15 @@ interface RequestContext {
   readonly credentialId: CredentialId;
   readonly principal: Principal;
   readonly method: string;
-  readonly pathname: string;
+  /** Replaced by the wire-resolved path once the declared host is known. */
+  pathname: string;
   fingerprint?: string;
   host: string;
 }
 
 export class CredentialBroker {
   constructor(private readonly deps: CredentialBrokerDeps) {
-    assertPositiveInteger('timeoutMs', deps.timeoutMs);
+    assertPositiveInteger('timeoutMs', deps.timeoutMs, MAX_TIMER_MS);
     assertPositiveInteger('maxResponseBytes', deps.maxResponseBytes);
   }
 
@@ -252,8 +265,21 @@ export class CredentialBroker {
     const declaration = credential.broker as NonNullable<Credential['broker']>;
     const declaredHost = normalizeHost(declaration.host);
     if (ctx.host !== declaredHost) this.deny(ctx, 'host-not-allowed');
+
+    // Match the path fetch will SEND, not the string the caller wrote: the
+    // WHATWG parser resolves `%2e%2e` that `path.posix` left alone (#778
+    // S3a, `resolveWirePath`). From here on the checked, audited and sent
+    // path are the same string.
+    let wire: NormalizedPath;
+    try {
+      wire = resolveWirePath(declaredHost, pathname, search);
+    } catch {
+      this.deny(ctx, 'invalid-broker-declaration');
+    }
+    ctx.pathname = wire.pathname;
+
     if (!declaration.allowedMethods.map(normalizeMethod).includes(method)) this.deny(ctx, 'method-not-allowed');
-    if (!matchesAnyPrefix(pathname, declaration.pathPrefixes)) this.deny(ctx, 'path-not-allowed');
+    if (!matchesAnyPrefix(wire.pathname, declaration.pathPrefixes)) this.deny(ctx, 'path-not-allowed');
     if (needsInjectionKey(declaration.injectionScheme) && !declaration.injectionKey) {
       this.deny(ctx, 'invalid-broker-declaration');
     }
@@ -289,8 +315,8 @@ export class CredentialBroker {
 
     const { url, headers, droppedHeaderNames } = buildOutboundRequest(
       declaredHost,
-      pathname,
-      search,
+      wire.pathname,
+      wire.search,
       declaration.injectionScheme,
       declaration.injectionKey,
       secret,
@@ -308,7 +334,7 @@ export class CredentialBroker {
       principal,
       host: declaredHost,
       method,
-      path: pathname,
+      path: wire.pathname,
       ...(droppedHeaderNames.length > 0 ? { droppedHeaderNames } : {}),
     });
 

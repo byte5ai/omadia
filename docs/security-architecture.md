@@ -1214,10 +1214,30 @@ agent can reach the broker (#778 S3b wires the agent tool):
   HEAD with a body (even an empty one) is denied as `invalid-request` right
   after path normalisation. fetch would reject it locally, after the `once`
   grant was consumed and the `allow` audited, as a misleading
-  `upstream-unreachable`. `timeoutMs` and `maxResponseBytes` must be
-  positive safe integers; the constructor throws a `RangeError` otherwise,
-  because a NaN timeout would throw after the grant is consumed and a NaN
-  cap would remove the memory bound.
+  `upstream-unreachable`. `timeoutMs` must be a positive integer no greater
+  than 2^31 - 1 and `maxResponseBytes` a positive safe integer; the
+  constructor throws a `RangeError` otherwise, because a NaN or too-large
+  timeout would throw (or, at 2^31, fire after 1 ms) after the grant is
+  consumed and a NaN cap would remove the memory bound.
+- **`pathPrefixes` hold for the path that goes on the wire.** The path
+  check used to run on `path.posix.normalize` output, but fetch re-parses
+  the URL with the WHATWG parser, which also resolves percent-encoded dot
+  segments (`%2e%2e`, `.%2E`, `%2e.`), reads `\` as `/` and strips tab, LF
+  and CR. So `/v1/messages/%2e%2e/%2e%2e/admin/users` passed the check for
+  `/v1/messages` and left as `GET /admin/users` with the secret attached,
+  while the `allow` audit recorded the unresolved path. (This predates S3a;
+  the slice closes it because it owns the URL builder.) Now
+  `normalizePathForMatch` refuses a backslash in the path and any C0
+  control or DEL as `path-not-allowed`, and the broker resolves the path
+  exactly as fetch will (`resolveWirePath`, an absolute
+  `new URL('https://' + host + path)`, never a relative resolution that a
+  `/\evil.example.com` path could re-target), matches `pathPrefixes`
+  against that, audits it and sends it. The checked, audited and sent path
+  are one string, and all of it happens before a `once` grant is consumed.
+  A declared host that is not a plain `host[:port]` (userinfo, a path, an
+  invalid port) is denied as `invalid-broker-declaration` at the same step.
+  An encoded slash (`group%2Fproject`, GitLab-style IDs) is deliberately
+  **not** refused.
 - **Failures are sanitized.** A timeout is denied as `upstream-timeout`,
   anything else as `upstream-unreachable`. The thrown `BrokerDenialError`
   carries no `cause`, no URL and no upstream message, because for
@@ -1230,7 +1250,11 @@ agent can reach the broker (#778 S3b wires the agent tool):
   secret left, no usable answer came back", not as a contradiction.
 
 **Known residuals.** Vendor headers such as `Notion-Version` need a
-per-credential `allowedHeaders` (a schema change, #778 S2/S3b). The scrub
+per-credential `allowedHeaders` (a schema change, #778 S2/S3b). An upstream
+(or a proxy in front of it) that decodes `%2F` and then normalises the path
+again can still be walked out of a prefix with `..%2F`; the broker cannot
+see that server-side decoding, and refusing `%2F` would break encoded IDs.
+Operators should declare the narrowest prefix the upstream API allows. The scrub
 does not cover other transformations of the secret, such as JSON `\u`
 escapes, partial URL encodings (e.g. `/` left unencoded), base64 of the
 password segment alone, or hashes. Upstream `set-cookie` passes through
@@ -1252,6 +1276,9 @@ a 50 MB body, forged headers, a secret-bearing fetch error),
 `middleware/test/credentialBrokerEgressRequest.test.ts` (whitespace-padded
 secrets, a `'` in a query-param secret, header values undici refuses, a
 GET/HEAD body against a `once` grant, an allow-listed injectionKey),
+`middleware/test/credentialBrokerWirePath.test.ts` (percent-encoded,
+backslash and control-character traversal against a `once` grant; the
+audited path equals the path the upstream received),
 `middleware/test/credentialBrokerOutbound.test.ts` (the header-filter rules)
 and `middleware/test/credentialBrokerResponse.test.ts` (forms, the floor, the
 cap straddle).
@@ -1300,6 +1327,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       the timeout signal, the streaming byte cap, the response scrub and the
       caller-header allow-list, and a new allow-list entry is not an `x-*`
       override header (§10c).
+- [ ] A change to how `CredentialBroker` builds the outbound URL matches
+      `pathPrefixes` on the same path fetch sends (`resolveWirePath`), not
+      on a string-level normalisation of the caller's input (§10c).
 
 ---
 

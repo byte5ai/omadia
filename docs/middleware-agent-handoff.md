@@ -2861,6 +2861,15 @@ Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
   idempotenter POST blind wiederholt. Eigene Fehlerklasse oder ein
   `dispatched`-Flag erwägen und ein sicheres `cause.code` (`ENOTFOUND`,
   `UND_ERR_*`) als Diagnose loggen.
+- **`pathPrefixes` gegen serverseitiges `%2F`-Dekodieren (S3b).** Seit S3a
+  prüft, auditiert und sendet der Broker den Pfad genau so, wie fetch ihn
+  auflöst (`resolveWirePath`: `%2e%2e`, `\`, Tab/LF/CR sind zu). Ein
+  Upstream oder Proxy, der `%2F` dekodiert und danach erneut normalisiert,
+  lässt sich mit `..%2F` trotzdem aus einem Präfix führen; `%2F` pauschal
+  abzulehnen würde GitLab-artige IDs brechen. S3b/S2: in der Anlage-UI
+  darauf hinweisen, das engste Präfix zu deklarieren, und den deklarierten
+  Host beim Anlegen validieren (heute erst beim Request als
+  `invalid-broker-declaration`).
 - **Standard-`fetch` ist nicht `guardedOutboundFetch`.** Bewusst: der Host
   ist vom Operator deklariert und muss exakt passen, Intranet-Ziele sind
   erlaubt. Mit S3b prüfen, ob ein per-Credential-Opt-in für den SSRF-Guard

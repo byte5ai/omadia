@@ -56,7 +56,16 @@ header value undici sends, the `%27` the URL parser adds; secrets of 8+
 characters), filters caller headers against a static allow-list plus
 undici's own value check and audits the dropped names, refuses a GET/HEAD with
 a body as `invalid-request` before a `once` grant is consumed, and maps
-failures to sanitized `upstream-timeout` / `upstream-unreachable` denials. `dispatch-failed`, which had no call site, is
+failures to sanitized `upstream-timeout` / `upstream-unreachable` denials.
+It also closes a `pathPrefixes` bypass that predates the slice: the prefix
+check ran on `path.posix` output, but fetch's WHATWG parser resolves
+`%2e%2e` / `.%2E`, reads `\` as `/` and strips tab/LF/CR, so
+`/v1/messages/%2e%2e/%2e%2e/admin` passed a `/v1/messages` check and sent the
+secret to `/admin`. The broker now refuses backslashes and control characters
+in the path and matches, audits and sends the path exactly as fetch resolves
+it (`resolveWirePath`), before a `once` grant is consumed; a declared host
+that is not a plain `host[:port]` is denied as `invalid-broker-declaration`,
+and `timeoutMs` is capped at Node's timer limit (2^31 - 1). `dispatch-failed`, which had no call site, is
 replaced by those two reasons. See `docs/security-architecture.md` §10c. What
 the slice leaves open for #778 S2/S3b (short-secret floor, the unenforced
 `credential:broker:use` gate, the unsalted `fingerprintSecret`, per-credential

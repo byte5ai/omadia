@@ -27,6 +27,11 @@ import path from 'node:path';
  * escaping above it (`path.posix.normalize('/a/../../b')` is `/b`, not
  * `/../b`) — so `/v1/messages/../../../admin` normalises to `/admin`, which
  * then correctly fails the `/v1/messages` prefix check.
+ *
+ * `path.posix` alone is not enough, though: fetch re-parses the URL with the
+ * WHATWG parser, which ALSO resolves `%2e%2e`, reads `\` as `/` and strips
+ * tab/LF/CR. The broker therefore matches the path {@link resolveWirePath}
+ * returns — the one that actually goes on the wire (#778 S3a).
  */
 
 /** Uppercased, trimmed HTTP method — `'get'` and `'GET'` must compare equal. */
@@ -60,6 +65,14 @@ export interface NormalizedPath {
   readonly search: string;
 }
 
+/** C0 controls and DEL. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+
+/** Characters that would end or re-shape the authority of
+ *  `https://${host}` instead of being part of the host. */
+const NON_HOST_CHARACTER = /[/?#@\\\s]/;
+
 /**
  * Splits `?query`/`#fragment` off a raw path, ensures a leading `/`, and
  * resolves `.`/`..` segments via `path.posix.normalize` (which clamps at the
@@ -69,16 +82,25 @@ export interface NormalizedPath {
  *    smuggle a full URL past a same-host check via `path.resolve`-style
  *    reinterpretation downstream, so this is refused outright rather than
  *    normalised.
- *  - a NUL byte — defence in depth against a truncation trick some HTTP
- *    stacks are still vulnerable to.
+ *  - a control character (C0 or DEL) anywhere — a NUL is a truncation trick
+ *    some HTTP stacks are still vulnerable to, and the WHATWG URL parser
+ *    fetch uses silently STRIPS tab, LF and CR, so `/v1/.\t./admin` would
+ *    reach the wire as `/v1/../admin` (#778 S3a).
+ *  - a backslash in the path — the WHATWG parser reads it as `/` for an
+ *    `https` URL, so `..\..\admin` is a traversal that `path.posix` never
+ *    sees. No caller can put a literal backslash on the wire anyway.
  *
- * Both refusals throw; the broker turns that into a denial with a specific
+ * Every refusal throws; the broker turns that into a denial with a specific
  * reason rather than passing a hostile string through as "just another
  * mismatch".
+ *
+ * Percent-encoded dot segments (`%2e%2e`, `.%2E`) are NOT handled here: this
+ * is a string-level pre-check. {@link resolveWirePath} resolves what the
+ * wire actually carries, and the broker matches that.
  */
 export function normalizePathForMatch(rawPath: string): NormalizedPath {
-  if (rawPath.includes('\0')) {
-    throw new Error('path must not contain a NUL byte');
+  if (CONTROL_CHARACTER.test(rawPath)) {
+    throw new Error('path must not contain a control character');
   }
   const hashIndex = rawPath.indexOf('#');
   const withoutHash = hashIndex === -1 ? rawPath : rawPath.slice(0, hashIndex);
@@ -89,10 +111,43 @@ export function normalizePathForMatch(rawPath: string): NormalizedPath {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(pathOnly) || pathOnly.startsWith('//')) {
     throw new Error('path must not embed a scheme or authority');
   }
+  if (pathOnly.includes('\\')) {
+    throw new Error('path must not contain a backslash');
+  }
 
   const withLeadingSlash = pathOnly.startsWith('/') ? pathOnly : `/${pathOnly}`;
   const normalized = path.posix.normalize(withLeadingSlash);
   return { pathname: normalized, search };
+}
+
+/**
+ * The path and query exactly as fetch will put them on the wire (#778 S3a).
+ *
+ * fetch parses the URL with the WHATWG parser, which resolves
+ * percent-encoded dot segments (`%2e%2e`, `.%2E`, `%2E.` …) that
+ * `path.posix.normalize` treats as ordinary names. So
+ * `/v1/messages/%2e%2e/%2e%2e/admin` passes a string-level prefix check
+ * against `/v1/messages` and then leaves as `GET /admin` with the secret
+ * attached. The broker therefore matches `pathPrefixes` against THIS
+ * result, audits it, and sends it — the checked path, the audited path and
+ * the sent path are one string.
+ *
+ * The URL is built absolute (`https://host` + path), never resolved
+ * relative to a base: a relative `/\evil.example.com` would re-target the
+ * authority. `host` is the operator's declaration; anything that is not a
+ * plain `host[:port]` (userinfo, a path, whitespace) or that the parser
+ * rejects throws, and the broker denies it as `invalid-broker-declaration`.
+ *
+ * Serialising the result and parsing it again (as fetch does) is stable:
+ * dot segments are gone and every other character is already in its
+ * serialised form.
+ */
+export function resolveWirePath(host: string, pathname: string, search: string): NormalizedPath {
+  if (host === '' || NON_HOST_CHARACTER.test(host)) {
+    throw new Error('declared host is not a plain host[:port]');
+  }
+  const url = new URL(`https://${host}${pathname}${search}`);
+  return { pathname: url.pathname, search: url.search };
 }
 
 /**
