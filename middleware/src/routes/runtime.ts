@@ -7,6 +7,11 @@ import type { PromptContributionRegistry } from '../platform/promptContributionR
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { TurnHookRegistry } from '../platform/turnHookRegistry.js';
 import { isAuditMode } from '../platform/httpAccessor.js';
+import {
+  ProviderDependentRebuildError,
+  isEffectiveProviderChange,
+  reactivateAfterProviderWrite,
+} from '../platform/providerDependents.js';
 import type { SetupOption } from '../api/admin-v1.js';
 import {
   SetupOptionsResolveError,
@@ -216,9 +221,12 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       }
       try {
         await deps.installedRegistry.updateConfig(id, nextConfig);
-        if (deps.reactivate) {
-          await deps.reactivate(id);
-        }
+        // #1076 — an `llm_provider` change also rebuilds the plugins that
+        // inherit it (extras from the orchestrator), dependents first.
+        await reactivateAfterProviderWrite(deps, id, {
+          providerChanged: isEffectiveProviderChange(installed.config, nextConfig),
+          providerWritten: Object.hasOwn(patch, 'llm_provider'),
+        });
         const updated = deps.installedRegistry.get(id);
         res.json({
           updated: updated
@@ -230,6 +238,10 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
             : null,
         });
       } catch (err) {
+        if (err instanceof ProviderDependentRebuildError) {
+          res.status(500).json(dependentRebuildFailure(err));
+          return;
+        }
         const message = err instanceof Error ? err.message : String(err);
         res
           .status(500)
@@ -934,6 +946,9 @@ async function applySetupValues(
     for (const key of vaultDelete) {
       await vault.deleteKey(id, key);
     }
+    let providerChanged = false;
+    const providerWritten =
+      Object.hasOwn(configSet, 'llm_provider') || configDelete.includes('llm_provider');
     if (Object.keys(configSet).length > 0 || configDelete.length > 0) {
       const nextConfig: Record<string, unknown> = {
         ...installed.config,
@@ -941,10 +956,10 @@ async function applySetupValues(
       };
       for (const k of configDelete) delete nextConfig[k];
       await deps.installedRegistry.updateConfig(id, nextConfig);
+      providerChanged = isEffectiveProviderChange(installed.config, nextConfig);
     }
-    if (deps.reactivate) {
-      await deps.reactivate(id);
-    }
+    // #1076 — same dependent rebuild as PATCH /installed/:id/config.
+    await reactivateAfterProviderWrite(deps, id, { providerChanged, providerWritten });
     const keys = await vault.listKeys(id);
     const updated = deps.installedRegistry.get(id);
     const configValues = stringifyConfigValues(updated?.config);
@@ -956,9 +971,33 @@ async function applySetupValues(
       config_values: configValues,
     });
   } catch (err) {
+    if (err instanceof ProviderDependentRebuildError) {
+      res.status(500).json(dependentRebuildFailure(err));
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ code: 'runtime.vault_write_failed', message });
   }
+}
+
+/**
+ * #1076 — the envelope for a config write whose `llm_provider` rebuild left a
+ * provider dependent (extras) down. The write itself IS persisted, so neither
+ * `update_failed` nor `vault_write_failed` ("could not be written") would be
+ * true. `primaryApplied` says whether the plugin itself came back up on it.
+ */
+function dependentRebuildFailure(err: ProviderDependentRebuildError): {
+  readonly code: 'runtime.dependent_rebuild_failed';
+  readonly message: string;
+  readonly dependentId: string;
+  readonly primaryApplied: boolean;
+} {
+  return {
+    code: 'runtime.dependent_rebuild_failed',
+    message: err.message,
+    dependentId: err.dependentId,
+    primaryApplied: err.primaryApplied,
+  };
 }
 
 function resolveSecretFieldKeys(

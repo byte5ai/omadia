@@ -118,7 +118,14 @@ import {
 // OM-102 — whose `llm_provider` assignment this plugin inherits when it has
 // none of its own. The operator assigns "the assistant", not "the background
 // scorer", so the orchestrator's choice is the honest second candidate.
-const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
+//
+// Exported because the kernel records the same edge as data
+// (`inheritsProviderFrom` in `src/platform/pluginLlmReadiness.ts`) to know
+// which plugin to rebuild when the orchestrator's provider changes (#1076).
+// That descriptor table spells the id out as a literal instead of importing
+// it, so it stays a plain data table with no plugin-package imports; a drift
+// test compares the two.
+export const INHERITS_PROVIDER_FROM_PLUGIN_ID = '@omadia/orchestrator';
 
 const CONTEXT_RETRIEVER_SERVICE = 'contextRetriever';
 const FACT_EXTRACTOR_SERVICE = 'factExtractor';
@@ -188,9 +195,16 @@ export async function activate(
     (agentId: string, configKey: string) => unknown
   >('installedPluginConfigReader');
   const orchestratorProviderRaw = pluginConfigGet?.(
-    ORCHESTRATOR_PLUGIN_ID,
+    INHERITS_PROVIDER_FROM_PLUGIN_ID,
     'llm_provider',
   );
+  // Read ONCE, here, on purpose. A change to the orchestrator's `llm_provider`
+  // rebuilds this plugin (and then the orchestrator, which captures the
+  // services published below eagerly) through `reactivateAfterProviderWrite`
+  // in the kernel's `src/platform/providerDependents.ts` (#1076). Do not add a
+  // lazy per-call lookup instead: the orchestrator would keep holding the
+  // instances built here, so a lookup inside them could never be the whole fix.
+  //
   // Credential sources, in order. This plugin's OWN vault scope first — that
   // is where `anthropic_api_key` has always lived. The kernel pool (reading
   // the orchestrator's scope, sharing its circuit breaker) is the fallback
@@ -234,12 +248,8 @@ export async function activate(
         ]
       : []),
   ];
-  // TODO(OM-102 follow-up): this resolves ONCE per activate. Re-assigning the
-  // orchestrator's `llm_provider` does not rebuild this plugin, so the memory
-  // features keep the old provider until the next rebuild — the same shape as
-  // #989 (an `agent_plugins` change that was an `update`, not a `rebuild`).
-  // The fix belongs on the assignment side (rebuild extras when the
-  // orchestrator's provider changes), not in another lazy lookup here.
+  // Resolved once per activate(); see the #1076 note at the
+  // `installedPluginConfigReader` read above for why that is correct.
   const resolvedProvider = await resolveExtrasLlmProvider({
     candidates: providerCandidates,
     sources: providerSources,

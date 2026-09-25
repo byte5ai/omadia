@@ -64,6 +64,84 @@ mode, not only `once`: a malformed value is a 400 `credential_ask.invalid_input`
 (before, on a `standing` ask it reached Postgres as an Invalid Date, and a
 non-string value was silently dropped into an unbounded standing grant). The
 rules are written up in `docs/security-architecture.md` §10c.
+
+### Fixed — re-assigning the orchestrator's provider now reaches the memory features (#1076)
+
+2026-09-24 — `@omadia/orchestrator-extras` (fact extraction, context
+retrieval, session briefing, the scratch-promotion reaper and its other
+background jobs) falls back to the orchestrator's `llm_provider`
+since OM-102, but resolves it once per `activate()`. Changing the
+orchestrator's provider on `/admin/providers` reactivated only the
+orchestrator, so the background memory features kept running on the old
+provider until the next restart, and no surface said so.
+
+A change of the orchestrator's effective provider now rebuilds extras first,
+then the orchestrator. The order matters: the orchestrator captures extras'
+`factExtractor`, `contextRetriever` and `sessionBriefing` instances eagerly in
+its own `activate()`, and an extras teardown does not cascade, so rebuilding
+extras afterwards would have left chat-turn fact extraction on the old
+instance. The dependency is data (`inheritsProviderFrom` on the extras entry
+of `LLM_PLUGINS`, drift-tested against a constant exported by extras), and
+every writer of `llm_provider` goes through the same
+`reactivateAfterProviderWrite`: the providers assignment route, the runtime
+`PATCH …/config` route and the config branch of `PATCH …/secrets`. A write
+that leaves the effective provider unchanged (a model-only change, or unset to
+explicit `anthropic`) rebuilds only the plugin itself as long as extras is
+healthy. If extras is `errored`, any write that carries `llm_provider` retries
+it too, changed or not. Every provider or model assignment on
+`/admin/providers` carries it (the per-turn routing toggle there does not: it
+writes only `orchestrator_model_routing`). So a model-only assignment of the
+orchestrator also rebuilds an errored extras, and if extras keeps failing it
+answers `providers.dependent_rebuild_failed`, not `ok`. If extras does not
+come back up (the kernel's reactivation records the failure and marks it
+`errored` rather than throwing), the orchestrator is still rebuilt on its
+persisted config, and the write answers with its own code instead of a
+success: `providers.dependent_rebuild_failed` on the providers route,
+`runtime.dependent_rebuild_failed` on the runtime `PATCH` routes, both
+carrying `dependentId` and `primaryApplied` next to extras' activation error.
+`primaryApplied` is `true` when the orchestrator itself came back up, and
+`false` when its own rebuild left it `errored` too; the message then does not
+claim it runs on the new provider. The config is persisted in both cases, so
+the providers page keeps the new provider selected rather than snapping back
+to the old one, and both codes have en/de error-help copy. Because both
+selects then already hold the saved values, re-picking them fires no change
+event, so the row shows a Retry button that re-sends the same assignment.
+That same-provider write retries every dependent still left `errored`, so the
+retry answers `ok` only once extras is really back up. The subscription-login
+hand-off now assigns the orchestrator last, since it is the only plugin others
+inherit from (resulting order: verifier, extras, orchestrator), so the
+final rebuild captures extras with its own hand-off model rather than an
+intermediate one, and it counts a plugin whose only failure was a dependent
+rebuild as assigned, because its config was persisted and rebuilt.
+
+An assignment on `/admin/providers` whose plugin is left `errored` by its own
+rebuild no longer answers `ok` either: it answers `providers.rebuild_failed`
+with `primaryApplied: false`. The route's response carries no plugin status,
+so before this the page showed "saved" for a plugin running on nothing; the
+Retry path made that reachable (both fail, Retry, extras recovers, the
+orchestrator still fails). The page keeps the saved provider, offers Retry and
+shows the plugin-down copy, which it also shows for a
+`dependent_rebuild_failed` with `primaryApplied: false` instead of the
+understating memory-features copy. The dependent-rebuild copy now says that
+a restart would leave the orchestrator down too while extras is `errored`
+(boot skips non-active entries, and the orchestrator hard-requires extras'
+services). The subscription hand-off logs such a plugin as "saved but not
+running". The dependent helpers moved from `providerAssignment.ts` to
+`providerDependents.ts`.
+
+The rebuild does not change OM-102's precedence: extras follows the
+orchestrator only where it inherits. An explicit `llm_provider` on extras, or
+an Anthropic key in extras' own vault scope, still wins over the orchestrator's
+assignment, and a central Anthropic key saved on `/admin/settings` is written
+into that scope too. On such installs re-assigning the orchestrator leaves the
+memory features on Anthropic.
+
+The orchestrator also declares `llmProviderCatalog@1` and
+`installedPluginConfigReader@1` under `optional_requires` and resolves both
+with `getOptional`; both names are gone from its row in the legacy
+service-grant allowlist (nineteen names at the 2026-08-20 audit, seventeen
+now).
+
 ### Fixed — the CLI a turn spawns is the one the admin UI describes (#1085)
 
 2026-09-24 — omadia resolved the `claude` binary two different ways, and the UI

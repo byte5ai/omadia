@@ -55,7 +55,15 @@ interface Harness {
 
 async function makeHarness(
   installed: Array<{ id: string; config?: Record<string, unknown> }>,
-  opts: { probeStatus?: number; modelCatalogSync?: ModelCatalogSync } = {},
+  opts: {
+    probeStatus?: number;
+    modelCatalogSync?: ModelCatalogSync;
+    /** Plugin whose reactivation throws (#1076 dependent failure). */
+    reactivateThrowsFor?: string;
+    /** Plugins whose reactivation records a failure and leaves them
+     *  `errored` without throwing, as production's `reactivate` does. */
+    reactivateLeavesErrored?: readonly string[];
+  } = {},
 ): Promise<Harness> {
   const vault = new InMemorySecretVault();
   const registry = new InMemoryInstalledRegistry();
@@ -83,6 +91,10 @@ async function makeHarness(
       vault,
       reactivate: async (id: string) => {
         reactivated.push(id);
+        if (opts.reactivateThrowsFor === id) throw new Error(`${id} activate() exploded`);
+        if (opts.reactivateLeavesErrored?.includes(id) === true) {
+          await registry.markActivationBlocked(id, `${id} activate() exploded`);
+        }
       },
       llmProviderCatalog,
       ...(opts.modelCatalogSync !== undefined
@@ -471,7 +483,7 @@ describe('admin providers route — POST /assignment', () => {
     __clearVerificationCache();
   });
 
-  it('sets provider + model, disables routing for the orchestrator, reactivates', async () => {
+  it('sets provider + model, disables routing for the orchestrator, rebuilds extras then the orchestrator', async () => {
     h = await makeHarness([
       { id: ORCH, config: { orchestrator_model: 'claude-opus-4-8', orchestrator_model_routing: 'true' } },
       { id: VERIFIER },
@@ -488,7 +500,71 @@ describe('admin providers route — POST /assignment', () => {
     assert.equal(cfg['orchestrator_model'], 'gpt-5.5');
     // non-anthropic → per-turn routing forced off
     assert.equal(cfg['orchestrator_model_routing'], 'false');
-    assert.deepEqual(h.reactivated, [ORCH]);
+    // #1076 — extras inherits the orchestrator's provider and resolves it once
+    // per activate(), so a provider change must rebuild it too. Extras FIRST:
+    // the orchestrator captures extras' services eagerly in its own activate().
+    assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
+  });
+
+  it('answers dependent_rebuild_failed with dependentId + primaryApplied when only extras fails', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], {
+      reactivateThrowsFor: EXTRAS,
+    });
+    const { status, json } = await assign(h, {
+      pluginId: ORCH,
+      provider: 'openai',
+      model: 'gpt-5.5',
+    });
+    assert.equal(status, 500);
+    const body = json as { code?: string; dependentId?: string; primaryApplied?: boolean };
+    assert.equal(body.code, 'providers.dependent_rebuild_failed');
+    assert.equal(body.dependentId, EXTRAS);
+    assert.equal(body.primaryApplied, true);
+    // The assignment itself landed and the orchestrator was rebuilt on it.
+    assert.equal(h.registry.get(ORCH)?.config['llm_provider'], 'openai');
+    assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
+  });
+
+  it('answers primaryApplied: false when the orchestrator is left errored too', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], {
+      reactivateLeavesErrored: [EXTRAS, ORCH],
+    });
+    const { status, json } = await assign(h, {
+      pluginId: ORCH,
+      provider: 'openai',
+      model: 'gpt-5.5',
+    });
+    assert.equal(status, 500);
+    const body = json as {
+      code?: string;
+      message?: string;
+      dependentId?: string;
+      primaryApplied?: boolean;
+    };
+    assert.equal(body.code, 'providers.dependent_rebuild_failed');
+    assert.equal(body.dependentId, EXTRAS);
+    assert.equal(body.primaryApplied, false);
+    assert.doesNotMatch(body.message ?? '', /runs on its new provider/);
+    // Persisted all the same: the row must show what the server holds.
+    assert.equal(h.registry.get(ORCH)?.config['llm_provider'], 'openai');
+  });
+
+  it('answers rebuild_failed with primaryApplied: false when only the orchestrator is left errored', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], {
+      reactivateLeavesErrored: [ORCH],
+    });
+    const { status, json } = await assign(h, {
+      pluginId: ORCH,
+      provider: 'openai',
+      model: 'gpt-5.5',
+    });
+    assert.equal(status, 500);
+    const body = json as { code?: string; dependentId?: string; primaryApplied?: boolean };
+    assert.equal(body.code, 'providers.rebuild_failed');
+    assert.equal(body.primaryApplied, false);
+    assert.equal('dependentId' in body, false);
+    assert.equal(h.registry.get(ORCH)?.config['llm_provider'], 'openai');
+    assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
   });
 
   it('sets BOTH model keys for the extras plugin', async () => {
