@@ -2971,6 +2971,20 @@ Dann fallen auch der Präfix-Fallback im Config-Sync-Cleanup und die
 Round-Trip-Tests in `test/teamsProvisioningLastError.test.ts` weg; die Satz-Präfixe dürfen
 danach frei umformuliert werden.
 
+### Keychain-Asks (Epic #778) — Rest nach S1
+
+S1 bindet `/api/v1/admin/credential-asks` an die Session
+(`req.session.omadia_user_id`), leitet den Owner eines Asks aus dem Owner des
+Credentials ab und lässt nur diesen Owner approven/denyen (D2: kein
+Operator-Break-Glass). Daraus folgt eine Vorgabe für alles, was künftig
+Credentials anlegt (Create-Route, Admin-UI): der Owner eines
+`personal`-Credentials **muss** als `user:<omadia_user_id>` gespeichert werden —
+nicht als `sub`/E-Mail, nicht als `role:`. Sonst stimmt kein Session-Principal je
+mit `ask.owner` überein, und niemand kann das Ask beantworten
+(`role`-Owner lehnt `assertAskableCredential` deshalb schon als `not_askable`
+ab). Offen im Epic: das agent-aufrufbare Broker-/Ask-Tool, die Benachrichtigung
+des Owners (heute nur per `GET /pending` auffindbar) und die Admin-UIs (P4).
+
 ### Umgekehrte Richtung: extras allein neu gebaut, Orchestrator hält alte Instanzen (#1076 follow-up)
 
 #1076 baut bei einer Provider-Änderung des Orchestrators extras **vor** dem

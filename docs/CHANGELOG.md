@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Security — credential asks are bound to the session; Postgres asks enforce askability (#778 S1)
+
+2026-09-25 — the mounted `/api/v1/admin/credential-asks` router took every
+identity from the client: `requesterUserId`/`ownerUserId` on create, `?owner`
+and `?requester` on the list routes, `resolvedBy` on approve/deny. Any logged-in
+session could file an ask in someone else's name, read anyone's inbox, and
+approve an ask (minting a real credential grant) without being its owner. The
+caller is now `user:<session omadia_user_id>` on every route (no `sub`/`email`
+fallback, 401 `auth.required` without it), and those identity fields are
+rejected with 400 `credential_ask.identity_from_session`. An ask's owner is
+derived from the credential's own owner, so an `ownerUserId` is only a
+cross-check (mismatch → 400 `credential_ask.owner_mismatch`). Approve and deny
+are owner-only with no operator override: 404 for an unknown ask, 403
+`credential_ask.forbidden` for a non-owner. Unexpected create failures are now a
+500 with a generic message instead of a 400 carrying the store's error text.
+`PostgresCredentialAskStore.createAsk`, the production backend, had drifted from
+the in-memory store and relied on the foreign key alone, so it accepted asks
+against `service` and revoked credentials. Both stores now share the askability
+rules and check them under a `FOR SHARE` row lock. `approve` re-checks the
+credential, and an ask whose credential was revoked in the meantime closes as
+`expired` (409 `credential_ask.not_actionable`) without a grant. A personal
+credential owned by a role is no longer askable (`not_askable`): approval is
+bound to the session principal, which is always a user, so nobody could have
+answered such an ask. `requestedGrantExpiresAt` is now validated for every
+mode, not only `once`: a malformed value is a 400 `credential_ask.invalid_input`
+(before, on a `standing` ask it reached Postgres as an Invalid Date, and a
+non-string value was silently dropped into an unbounded standing grant). The
+rules are written up in `docs/security-architecture.md` §10c.
+
 ### Fixed — re-assigning the orchestrator's provider now reaches the memory features (#1076)
 
 2026-09-24 — `@omadia/orchestrator-extras` (fact extraction, context
