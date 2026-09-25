@@ -100,8 +100,9 @@ for (const [label, runtime] of [
     assertCliAgent(built);
     const deps = agentDeps(built);
     assert.ok(deps, 'the CLI agent must expose its construction deps');
-    // No own key at all: an explicit `undefined` would still shadow the
-    // ENV override inside the CLI runtime's defaults spread.
+    // No own key at all. `resolveCliSpawnTimeoutMs` (cliChatAgent.ts) already
+    // falls back to the ENV override for an explicit `undefined`; the stricter
+    // check keeps an unset budget from ever reaching the CLI runtime as a key.
     assert.equal(
       Object.prototype.hasOwnProperty.call(deps, 'spawnTimeoutMs'),
       false,
