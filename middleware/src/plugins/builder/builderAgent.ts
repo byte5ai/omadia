@@ -719,7 +719,9 @@ export class BuilderAgent {
     // command, declare a per-turn obligation that `fill_slot` must be
     // invoked at least once. The LocalSubAgent enforces it by re-iterating
     // with tool_choice when the model would naturally exit without ever
-    // having called fill_slot. Detection runs against the raw user
+    // having called fill_slot; on the subscription CLI path
+    // `createCliSubAgent` re-prompts once after the turn instead (#1072).
+    // Detection runs against the raw user
     // message — composeContextualMessage wraps it in XML for the model
     // but the heuristic ignores the surrounding history (the user's
     // *current* intent is what matters).
@@ -1167,7 +1169,8 @@ export {
  * command. The match is conservative — favors false-negative over
  * false-positive, because a true positive locks the next turn into a
  * forced `fill_slot` API call (via LocalSubAgent's expectedTurnToolUse
- * escalation), which is bad UX if the user was actually asking a
+ * escalation; one extra CLI spawn on the subscription path, #1072),
+ * which is bad UX if the user was actually asking a
  * question. Patterns:
  *
  *   - imperative build verb adjacent to slot/plugin/all object:

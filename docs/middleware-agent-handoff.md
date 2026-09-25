@@ -3346,8 +3346,11 @@ Seiteneffekte bestehen bleiben.
 Rest-Unschärfen: Der Re-Prompt-Spawn nutzt den System-Prompt vom Turn-Start und sieht
 Spec-Patches des ersten Spawns nicht; Token-Zahlen stammen nur aus Text-Deltas (die CLI
 liefert keine Tool-Input-Deltas); Usage ist pro Spawn, nicht pro Modell-Iteration.
-`dynamicAgentRuntime.ts` und `registry/subAgentTools.ts` bleiben unverändert — beide hängen
-den Sub-Agenten hinter `createDomainTool`, der den Observer bereits durchreicht.
+`dynamicAgentRuntime.ts` und `registry/subAgentTools.ts` bleiben unverändert. Auf einem
+`claude-cli`-Host bekommen deren CLI-Sub-Agenten trotzdem keinen Observer:
+`ToolDispatchService.dispatch` ruft `domainTool.handle(input)` ohne Observer auf, und fremde
+Tool-Calls landen dort nur in `console.error`, nicht in `recordForeignToolCall`. Eigene Unit
+nach #1079.
 
 ### Kosten-Ledger nimmt Abo-Turns (OM-103)
 
