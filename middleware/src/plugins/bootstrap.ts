@@ -93,6 +93,35 @@ export interface BootstrapDeps {
    *  omitted, only legacy .env-based bootstrapping runs. */
   builtInStore?: BuiltInPackageStore;
   log?: (msg: string) => void;
+  /**
+   * #1070 (OM-95 follow-up) — called after bootstrap removed a plugin on its
+   * own (memory self-heal, #1053 embeddings conflict, legacy-KG migration, KG
+   * dual-active conflict), so the host can purge that plugin's `agent_plugins`
+   * bindings. Bootstrap runs before the orchestrator provides its binding
+   * store, so the host must QUEUE the id and purge later (see
+   * `pendingBindingPurge.ts`). A throwing hook is logged, never fatal.
+   */
+  onPluginRemoved?: (pluginId: string) => void;
+}
+
+/**
+ * Remove a plugin bootstrap decided to drop and report it through
+ * `onPluginRemoved`. The hook is fenced: a failure there is logged with the
+ * plugin id but must never abort boot, since the removal itself succeeded.
+ */
+async function removeAutoProvider(
+  deps: BootstrapDeps,
+  pluginId: string,
+  log: (msg: string) => void,
+): Promise<void> {
+  await deps.registry.remove(pluginId);
+  try {
+    deps.onPluginRemoved?.(pluginId);
+  } catch (err) {
+    log(
+      `[bootstrap] onPluginRemoved hook FAILED for ${pluginId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -420,7 +449,7 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
   // performs the inmemory↔Postgres swap when the backend flips AND self-heals a
   // prior both-active state. Runs BEFORE the built-in catch-all.
   if (deps.registry.has(otherId)) {
-    await deps.registry.remove(otherId);
+    await removeAutoProvider(deps, otherId, log);
     log(
       `[bootstrap] ⚐ memory backend='${backend}' — removed non-selected provider ${otherId}`,
     );
@@ -530,7 +559,7 @@ export async function bootstrapEmbeddingsFromEnv(
       Boolean(deps.config.OLLAMA_BASE_URL) ||
       typeof ollamaEntry.config?.['ollama_base_url'] === 'string';
     const loserId = ollamaConfigured ? EMBEDDINGS_LOCAL_ID : EMBEDDINGS_TOOL_ID;
-    await deps.registry.remove(loserId);
+    await removeAutoProvider(deps, loserId, log);
     log(
       `[bootstrap] ⚐ both ${EMBEDDINGS_TOOL_ID} and ${EMBEDDINGS_LOCAL_ID} were active — removed ${loserId} (only one embeddingClient@1 provider may be active; ${ollamaConfigured ? 'Ollama is configured' : 'Ollama has no base URL'})`,
     );
@@ -682,7 +711,7 @@ export async function bootstrapKnowledgeGraphFromEnv(
   // no-op shell, so leaving the entry in installed.json would just clutter
   // the install UI.
   if (deps.registry.has(KNOWLEDGE_GRAPH_LEGACY_ID)) {
-    await deps.registry.remove(KNOWLEDGE_GRAPH_LEGACY_ID);
+    await removeAutoProvider(deps, KNOWLEDGE_GRAPH_LEGACY_ID, log);
     log(
       `[bootstrap] ⚐ migrated ${KNOWLEDGE_GRAPH_LEGACY_ID} → uninstalled (capability ownership moved to ${KNOWLEDGE_GRAPH_INMEMORY_ID} or ${KNOWLEDGE_GRAPH_NEON_ID} in S+11-2b)`,
     );
@@ -767,7 +796,7 @@ export async function bootstrapKnowledgeGraphFromEnv(
     const dropId = neonUsable
       ? KNOWLEDGE_GRAPH_INMEMORY_ID
       : KNOWLEDGE_GRAPH_NEON_ID;
-    await deps.registry.remove(dropId);
+    await removeAutoProvider(deps, dropId, log);
     log(
       `[bootstrap] ⚐ knowledge-graph dual-active conflict — removed ${dropId}, kept ${keepId} (neon DSN ${neonUsable ? 'present' : 'absent'})`,
     );

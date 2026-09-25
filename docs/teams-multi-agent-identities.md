@@ -82,6 +82,7 @@ Beide Plugin-Versionen sind der aktuelle Stand auf `hub.omadia.ai` (Registry-Pol
 |---|---|---|
 | `0049_agent_teams_identities.sql` | Core (`middleware/migrations/`) | die Tabelle der Agent-Teams-Identitäten (`PRIMARY KEY (agent_id)`, `UNIQUE (bot_slug)`) |
 | `0050_agent_context_memory_flag.sql` | Core (`middleware/migrations/`) | Spalte `agents.context_memory` — der Rollout-Schalter der Memory-ACL (Default `off`, siehe Abschnitt 8) |
+| `0060_agent_teams_error_code.sql` | Core (`middleware/migrations/`) | Spalten `error_code` + `error_detail` (JSONB) auf `agent_teams_identities` — der Provisioning-Fehler strukturiert neben dem Satz in `last_error` (#897); ohne Backfill, alte Zeilen werden beim Lesen aus dem Satz klassifiziert |
 | `0031_teams_conversation_refs.sql` | Knowledge-Graph (`middleware/packages/harness-knowledge-graph-neon/src/migrations/`) | `teams_conversation_refs` mit `bot_app_id` und Composite-PK `(conversation_id, bot_app_id)` |
 
 Zu `0031` lohnt der Hintergrund: die ursprüngliche DDL lag als `0009` in
@@ -460,8 +461,16 @@ GET /api/v1/operator/agents/<agent-slug>/teams-identity
   das channel-teams parst) — direkt kopierbar. Sie ist `null`, solange noch keine
   Entra-App existiert (`app_id`/`tenant_id` fehlen).
 - `last_error_detail` ist derselbe Fehler, nur strukturiert:
-  `{code, raw, scopes?, fields?, retryAfterSeconds?, reason?}` mit
-  `code ∈ {consent_missing, arm_not_configured, throttled, config_sync_failed, unknown}`.
+  `{code, raw, scopes?, fields?, retryAfterSeconds?, adminConsentUrl?, reason?}` mit
+  `code ∈ {consent_missing, rsc_permissions_mismatch, arm_not_configured, throttled,
+  config_sync_failed, bot_handle_unavailable, delegated_sign_in_required,
+  delegated_consent_required, delegated_token_expired, device_code_flow_failed, unknown}`.
+  Seit Migration `0060` (#897) wird er **persistiert, nicht geparst**: der Runner schreibt
+  `error_code`/`error_detail` im selben Write wie den Satz und versiegelt den Code mit
+  einem SHA-256 des Satzes. Die Route liest die Spalten (validiert), solange das Siegel
+  zum Satz passt, und klassifiziert den Satz sonst — für Zeilen von vor `0060` und für
+  Sätze, die ein älterer Build nach einem Rollback neben einen alten Code geschrieben hat.
+  `last_error` darf damit frei umformuliert werden.
   Clients rendern aus `code` plus typisierten Argumenten — nie durch Parsen des
   englischen Satzes. `config_sync_failed` ist die einzige **Warnung** in dieser Liste:
   die Identität ist gültig, nur der automatische `teams_bots`-Schreibvorgang nicht

@@ -10,6 +10,8 @@
 interface DesktopBridge {
   /** OM-71: tell the shell the first real screen is standing. */
   readonly uiReady?: () => void;
+  /** #1074: tell the shell which language the UI is showing. */
+  readonly setUiLocale?: (locale: string) => void;
 }
 
 interface BridgeHost {
@@ -26,6 +28,27 @@ export function signalDesktopUiReady(host: BridgeHost | undefined = bridgeHost()
   if (typeof ping !== 'function') return false;
   try {
     ping();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Tell the desktop shell which language the UI is showing, so its own dialogs
+ * and menu speak it instead of the OS language (#1074). The shell accepts only
+ * the locales the UI offers and persists the last one for dialogs that fire
+ * before the UI is up. Returns whether a bridge was there to tell (false in a
+ * browser, and against an older shell without the channel). Never throws.
+ */
+export function pushDesktopUiLocale(
+  locale: string,
+  host: BridgeHost | undefined = bridgeHost(),
+): boolean {
+  const push = host?.omadia?.setUiLocale;
+  if (typeof push !== 'function') return false;
+  try {
+    push(locale);
     return true;
   } catch {
     return false;
