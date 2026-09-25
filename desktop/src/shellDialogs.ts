@@ -9,8 +9,9 @@
  * them in one file makes the copy reviewable as a set instead of scattered
  * across an orchestration file.
  *
- * Every function takes the translator rather than building one, so the locale is
- * resolved once at startup and no dialog can silently fall back to English.
+ * Every function takes the translator rather than building one, so the language
+ * comes from one place (`shellLocale.ts`: the web-ui's language, else the OS
+ * locale) and no dialog can silently fall back to English.
  */
 import { BrowserWindow, clipboard, dialog, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron';
 import { fillPlaceholders, type ShellTranslate } from './shellStrings';
