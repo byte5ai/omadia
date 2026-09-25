@@ -1438,8 +1438,20 @@ Tests: `test/conductorWorkflowDelete.test.ts`.
 
 ### Turn-Receipts (#757) — persistierte Per-Turn-Privacy-Receipts
 
-Jeder abgeschlossene Turn persistiert seinen PII-freien `PrivacyReceipt`
-synchron nach `turn_receipts` (Migration `0039`, Postgres-Backend only). Der
+Ein Turn persistiert seinen PII-freien `PrivacyReceipt` synchron nach
+`turn_receipts` (Migration `0039`, Postgres-Backend only) — aber **nur, wenn
+der Privacy Shield in diesem Turn aktiv war**: `finalizeTurn()` in
+`harness-plugin-privacy-guard/src/service.ts` liefert nur dann einen Receipt,
+wenn der Turn ein Dataset interniert, einen Bypass oder die strukturierte
+Ausgabe eines angebundenen Tools protokolliert oder den Prompt maskiert hat
+(Letzteres nur bei mindestens einem erkannten PII-Span); der Orchestrator
+persistiert nur `if (receipt)`. Ein Turn ohne Shield-Aktivität (z. B. reine
+Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt;
+`mask_user_prompt` ist per Default ohnehin aus) schreibt weder eine Zeile
+noch eine Log-Zeile. UI-Copy und README sagen das seit #1081 so. Ein
+Null-Aktivitäts-Receipt pro Turn wurde bewusst verworfen: er würde die
+Hash-Kette (#758), die signierten Checkpoints und das Retention-Volumen
+verändern und braucht eine eigene Produktentscheidung. Der
 Orchestrator löst den Store late-bound über den Service
 `turnReceiptStore` auf (Kernel provided in `index.ts`, gleiches Muster wie
 `privacyRedact`); ohne Service bleiben Receipts ephemer. Fehlschläge werden
