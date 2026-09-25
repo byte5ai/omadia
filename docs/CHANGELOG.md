@@ -36,6 +36,47 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — direct tests for the Runde-5 code paths (#1077)
+
+2026-09-24 — the Runde-5 cross-vendor audit listed 14 changed production paths
+that CI only exercised through substitute factories, mocked APIs or logic the
+test recomputed itself, so a regression in any of them would have passed. This
+change pins 12 of the 14 with a test that calls (or renders) the real path; the
+other two, the `BuilderAgent` and `PreviewChatService` subscription-CLI
+factories, are covered by the separate #1072 change and stay open on #1077 until
+it lands. The new tests were mutation-checked: breaking the production line
+they cover turns them red.
+
+- Middleware: the `cli_turn_seconds` → `spawnTimeoutMs` hop in
+  `buildOrchestratorForAgent`, the orchestrator plugin's real `activate()`
+  (default Agent and, against Postgres, the registry runtime defaults),
+  `getUsageDashboard` over a real `token_usage` table, the `claude-cli`
+  completion adapter against a fake `claude` binary (version gate, exit/parse
+  errors, ledger row, forced tool), and the orchestrator-extras `activate()`:
+  provider resolution, `memoryFeatureStatus@1`, and the model coercion that
+  turns the Anthropic default or an operator-typed model into the provider's
+  same-class model (checked against the shipped model catalog). A shared
+  `test/_helpers/fakePluginContext.ts` backs the two `activate()` suites.
+- Web UI: `TurnBudgetField`, the usage page's subscription block, the
+  missing-LLM-access branch of both builder chat panes, the dashboard's
+  last-turn card, the root `loading.tsx` boundary and the
+  `reactivateEmbeddingProvider` request wrapper.
+- CI: `PG_TEST_FLOOR` 281 → 365 (main measured 359, plus 6 new Postgres tests).
+
+Tests only; no production code changed. Writing the tests surfaced two
+pre-existing defects that are deliberately not fixed here; both are recorded as
+#1077 follow-ups in `docs/middleware-agent-handoff.md` §13:
+
+- `registry/applyDiff.ts` `buildForAgent` forwards the loop guards,
+  `maxTurnSeconds` and `directLineSticky` from the registry runtime defaults,
+  but not `cliTurnSeconds`. Every Agent the registry builds ignores the turn
+  budget, and with a database the web chat runs on the registry's fallback
+  Agent, so on those deployments the OM-104 setting has no effect.
+- `TurnBudgetField` keeps Save enabled after a failed load; saving then sends
+  `null` and wipes the stored budget while the field reads "Saved". It also
+  stores a fractional entry such as `240.5` verbatim, and shows raw exception
+  text instead of a catalog message.
+
 ### Fixed — plugin-office/web-search Hub drift: lost setup guide restored, versions bumped, build-zip + drift guards (#1075)
 
 2026-09-24 — the Hub served `@omadia/plugin-office` 0.1.2, a version no commit
