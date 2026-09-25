@@ -1216,20 +1216,31 @@ verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
 |---|---|
 | `GET  /` | Erkannte CLIs (installiert / angemeldet), `?refresh=1` bustet den Cache |
 | `POST /:id/login/start` | Spawnt `claude auth login --claudeai`; Antwort `{ sessionId, verificationUrl, codeEntry, status }` |
-| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|invalid\|expired\|error, account?, error? }` |
-| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin (nur ältere CLIs) |
+| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|error, account?, error? }` — `invalid` ist seit #1084 nur noch das Ergebnis eines `login/code`-Versuchs, kein Session-Status |
+| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin — wann immer die CLI auf einen Code wartet, auch als Fallback aus dem Polling-Modus; ist die Session schon `authorized`/`error` (Callback fertig, Prozess gescheitert), meldet es genau das statt „läuft nicht mehr" |
 | `POST /:id/login/cancel` | Verwirft die aktive Login-Session |
 | `POST /:id/logout` | `claude auth logout` + Cache-Bust |
 
-**Zwei CLI-Generationen, ein Flow.** Ältere CLIs (≤ 2.1.187) warten an
-`Paste code here >`; die UI zeigt das Code-Feld. Neuere (≥ 2.1.246) schließen
-den Login per localhost-Callback ab und beenden sich mit Exit 0, ohne Code.
-`startCliLogin` klassifiziert die Startausgabe (`Waiting for browser
-authorization…` / `If the browser didn't open, visit:` vs. `Paste code here`)
-und liefert `codeEntry`; die 2.1.259-Bundle druckt beides, dann gilt Callback
-mit optionalem Code (`codeEntry: false`). Der Exit-Handler liest den Exit-Code:
-0 → Detection bestätigt → `authorized`; ≠ 0 → `error` mit Output-Tail. Die UI
-pollt `login/status` in beiden Fällen.
+**Zwei CLI-Generationen, ein Flow (#1084).** Die im Image gebündelte CLI
+(2.1.187) druckt `Opening browser to sign in…` und `If the browser didn't open,
+visit: …` (URL mit `code=true` und platform.claude.com-Callback) und wartet dann
+ausschließlich an `Paste code here if prompted >` auf stdin. Neuere CLIs
+(≥ 2.1.246) können den Login per localhost-Callback abschließen und sich mit
+Exit 0 beenden, drucken denselben Paste-Prompt aber als Fallback mit. Die
+Browser-Zeilen kommen also in beiden Generationen vor und tragen kein Signal:
+**der Paste-Prompt entscheidet allein.** `startCliLogin` wartet bis zu
+`CODE_PROMPT_PROBE_MS` auf den Prompt (bricht nicht bei der ersten
+Browser-Zeile ab, der Prompt kann in einem späteren stdout-Chunk kommen) und
+liefert `codeEntry = true`, sobald er da ist — auch für 2.1.259. Nur ohne Prompt
+kommt `codeEntry: false`; dann zeigt die UI den Polling-Modus, **immer mit einem
+sichtbaren Fallback-Code-Feld**. Die UI pollt `login/status` in beiden Modi, ein
+per Callback abgeschlossener Login löst also auch im Code-Modus auf. Endet der
+Poll terminal (Timeout, `idle`, `expired`, `error`), zeigt die UI „Erneut
+versuchen" statt eines toten Code-Felds. Ein falscher Code liefert dem Aufrufer
+`invalid`, lässt die Session aber `pending` — sonst verweigert
+`markAuthorized` den korrekten zweiten Versuch und der Post-Login-Hook feuert
+nie. Der Exit-Handler liest den Exit-Code: 0 → Detection bestätigt →
+`authorized`; ≠ 0 → `error` mit Output-Tail.
 
 **Post-Login-Hook (OM-79).** `cliAuthService.setCliLoginAuthorizedHook(fn)`
 feuert genau einmal pro Session auf dem Übergang pending → authorized
@@ -2697,6 +2708,27 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
+
+`classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
+0060 nur noch Zeilen ohne vertrauenswürdigen `error_code`: solche von vor 0060 und solche,
+deren `last_error` ein Build ohne die neuen Spalten überschrieben hat (Rollback über 0060).
+Löschbar, sobald kein Build von vor #897 mehr gegen eine migrierte DB laufen kann **und**
+keine Zeile ohne passendes Siegel mehr existiert:
+
+```sql
+SELECT count(*) FROM agent_teams_identities
+ WHERE last_error IS NOT NULL
+   AND (error_code IS NULL
+        OR error_detail->>'sentenceSha256'
+           IS DISTINCT FROM encode(sha256(convert_to(last_error, 'UTF8')), 'hex'));
+-- muss 0 sein
+```
+
+Dann fallen auch der Präfix-Fallback im Config-Sync-Cleanup und die
+Round-Trip-Tests in `test/teamsProvisioningLastError.test.ts` weg; die Satz-Präfixe dürfen
+danach frei umformuliert werden.
+
 ### Gedächtnis-Provider wird bei Neuzuweisung nicht neu aufgelöst (OM-102 follow-up)
 
 `TODO(OM-102 follow-up)` in
@@ -3343,22 +3375,58 @@ Der Job-Runner erlaubt genau einen Run pro Agent (`teamsProvisioningJob.ts:381-4
 zweiter Enqueue für ein *anderes* Team wird `rejected`. Das Script prüft deshalb vorab auf
 `running` und bricht ab, statt in einen Team-Konflikt zu laufen.
 
-### `last_error_detail` — Klassifikation serverseitig
+### `last_error_detail` — persistiert, nicht geparst (#897)
 
 `GET …/teams-identity` liefert zusätzlich zu `last_error` (englischer Satz) ein
 strukturiertes `last_error_detail`:
-`{ code: 'consent_missing' | 'arm_not_configured' | 'throttled' | 'unknown', scopes?, fields?, retry_after_seconds?, raw }`.
-Klassifiziert wird in `classifyTeamsProvisioningError()` — **direkt neben den Producern**,
-die die Sätze schreiben (`services/teamsProvisioningJob.ts`). Additiv, keine
-Schema-Änderung, keine Migration. Das web-ui rendert aus dem Objekt über i18n-Keys; den
-Rohsatz höchstens als technisches Detail. **Niemand sonst parst `last_error`.**
-Round-Trip-Test: `test/teamsProvisioningLastError.test.ts` — wer eine Meldung umformuliert
-und den Parser vergisst, bricht einen Test in derselben Ecke des Codes, statt still die
-Operator-UI in Produktion zu verschlechtern.
+`{ code, scopes?, fields?, retryAfterSeconds?, adminConsentUrl?, reason?, raw }`.
+`code` ist die geschlossene Union `TeamsProvisioningErrorCode` in
+`services/teamsProvisioningJob.ts` (11 Codes: `consent_missing`, `rsc_permissions_mismatch`,
+`arm_not_configured`, `throttled`, `config_sync_failed`, `bot_handle_unavailable`,
+`delegated_sign_in_required`, `delegated_consent_required`, `delegated_token_expired`,
+`device_code_flow_failed`, `unknown`). Das web-ui rendert aus dem Objekt über i18n-Keys; den
+Rohsatz höchstens als technisches Detail. **Niemand parst `last_error`.**
 
-**Follow-up (nicht in dieser Wave):** Der Runner sollte den Code von Anfang an strukturiert
-persistieren; das braucht eine Migration auf `agent_teams_identities` und damit eine eigene
-Unit.
+Seit Migration 0060 schreibt der Runner den Fehler **strukturiert mit**: `error_code TEXT` +
+`error_detail JSONB` auf `agent_teams_identities`, im selben UPDATE wie `last_error`, an der
+Stelle, an der er den typisierten Fehler noch in der Hand hat. Je Code gibt es einen
+`*Failure`-Builder, der Satz und Argumente aus denselben Eingaben baut. Der Store-Port des
+Runners (`TeamsIdentityJobUpdate`) nimmt als Fehlerteil nur einen Clear oder eine ganze
+`TeamsProvisioningFailure` — ein Satz ohne Code kompiliert auf keinem Runner-Schreibpfad.
+Der Store schreibt alle drei Spalten gemeinsam (jeder Clear leert alle drei) und
+**versiegelt** den Code: `error_detail` trägt neben den Argumenten einen SHA-256 des Satzes
+(reservierter Key `sentenceSha256`, `platform/teamsProvisioningErrorSeal.ts`), ist bei
+einem Code also nie NULL.
+
+Warum das Siegel: Die Spalten gemeinsam zu schreiben garantiert nur der Build ab #897. Ein
+älterer Build gegen eine DB, die schon auf 0060 steht (automatischer Rollback des Updaters
+nach rotem Health-Gate, siehe `sidecars/updater/README.md`), schreibt `last_error` allein —
+seine Clears lassen den Code stehen, sein nächster Fehlersatz landet neben dem alten Code.
+Leser vertrauen dem Code deshalb nur, solange das Siegel zum aktuellen Satz passt
+(`trustedTeamsProvisioningErrorOf()`); sonst gilt die Zeile als Legacy-Zeile. Garantie: Ein
+Code wird nie gegen einen Satz gelesen, mit dem er nicht geschrieben wurde.
+
+Gelesen wird über `teamsProvisioningErrorDetailOf()`: bekannter, versiegelter Code →
+Spalten, jedes Feld validiert (Consent-URL nur absolut https, Listen nur Strings,
+Retry-After nur endliche Zahl ≥ 0). **Kein, unbekannter oder veralteter Code** (Zeile vor
+0060, Code eines neueren Builds, oder Satz von einem älteren Build neben einem alten Code)
+→ Fallback auf `classifyTeamsProvisioningError()` über den Satz. Dieselbe Regel gilt für das
+Aufräumen der eigenen `config_sync_failed`-Warnung im Runner (Code wenn vertrauenswürdig,
+sonst Präfix). Der Classifier ist damit nur noch der Legacy-Pfad (Roadmap §13). `enqueue_failed` (Store-Write) bleibt bewusst `unknown` und wird explizit so
+kodiert.
+
+**Kein CHECK auf `error_code`:** Die Union ist in Wochen von 4 auf 11 gewachsen, jede
+Erweiterung bräuchte DROP/ADD CHECK (0056 existiert nur für CHECK-Idempotenz). Vor allem
+schreibt `recordError` `state` und Fehler in *einem* best-effort-UPDATE, das Store-Fehler
+schluckt — ein Code außerhalb eines CHECK würde den terminalen `state='failed'`-Write still
+verlieren (#915-Klasse). Die TS-Union plus Read-Validierung ist die einzige Quelle.
+
+Tests: `test/teamsProvisioningErrorCode.test.ts` (jeder Fehlerpfad schreibt einen Code;
+Parität Spalten ↔ Classifier; umformulierter Satz behält die Bedeutung; veralteter Code
+neben dem Satz eines älteren Builds wird ignoriert; Read-Validierung),
+`test/agentTeamsIdentityStore.pg.test.ts` (Siegel auf echtem Postgres, simulierter
+Alt-Build-Write),
+`test/teamsProvisioningLastError.test.ts` (Legacy-Round-Trip Producer ↔ Classifier).
 
 ## Abo-Parität: der Weg ohne API-Key (Runde 5, Wave 3)
 
