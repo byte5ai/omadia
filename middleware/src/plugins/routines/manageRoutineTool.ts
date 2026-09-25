@@ -16,15 +16,24 @@ import {
 export const MANAGE_ROUTINE_TOOL_NAME = 'manage_routine';
 
 /**
- * OM-82 (#993) — shown when the per-turn user context is missing. The old text
- * ("outside a channel turn") blamed the caller, but a subscription-CLI user is
- * IN a channel; the context was dropped crossing the loopback process boundary.
- * Phrase it as a runtime/configuration fault, not user error.
+ * Shown when the per-turn user context is missing.
+ *
+ * #1086 — this used to call it "a runtime wiring issue" and send the user to
+ * their operator (OM-82 / #993 phrasing, when the context was lost crossing the
+ * CLI loopback boundary; #993 fixed that transport). What is left is almost
+ * always a channel no producer covers: the web chat and every channel that
+ * drives its turn through `CoreApi.handleTurnStream` install a context, but an
+ * adapter that calls the `chatAgent` capability directly (Telegram, Slack,
+ * Discord, WhatsApp as of 2026-09) does not. There is nothing an operator can
+ * configure for that, so say what is true and point at the path that works.
+ * Keeps the `Error:` prefix: it is the tool-error convention the orchestrator
+ * and the privacy shield key on.
  */
 export const ROUTINE_NO_CONTEXT_ERROR =
-  'Error: routines are unavailable in this session because the user context ' +
-  'did not reach the routines tool (a runtime wiring issue, not something you ' +
-  'did wrong). Please report this to your omadia operator.';
+  'Error: routines are not available in this conversation — this channel does ' +
+  'not pass your identity to the routines tool yet, so routines cannot be ' +
+  'created, listed or changed from here. The Routines page can view, pause ' +
+  'or delete existing routines.';
 
 const ActionSchema = z.enum(['create', 'list', 'pause', 'resume', 'delete']);
 const ListFilterSchema = z.enum(['all', 'active', 'paused']);
