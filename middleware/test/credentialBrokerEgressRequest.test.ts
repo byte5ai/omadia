@@ -119,6 +119,44 @@ describe('#778 S3a CredentialBroker request edge cases against a real upstream',
     });
   }
 
+  // PHP's `json_encode` (Laravel, Symfony) escapes `/` as `\/` by default, so
+  // an echo of a `/`-bearing secret matched neither the raw nor the
+  // `JSON.stringify` form.
+  const PHP_SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+  const PHP_CASES: Array<{ scheme: CredentialInjectionScheme; key?: string }> = [
+    { scheme: 'header', key: 'X-Api-Key' },
+    { scheme: 'bearer' },
+    { scheme: 'query-param', key: 'api_key' },
+  ];
+
+  for (const c of PHP_CASES) {
+    it(`scrubs a PHP json_encode echo that escapes / as \\/ (${c.scheme})`, T, async () => {
+      const upstream = await startUpstream((req, res) => {
+        const received =
+          c.scheme === 'header'
+            ? String(req.headers['x-api-key'] ?? '')
+            : c.scheme === 'bearer'
+              ? String(req.headers.authorization ?? '').replace(/^Bearer /, '')
+              : (new URL(req.url ?? '/', 'http://h').searchParams.get('api_key') ?? '');
+        res.setHeader('content-type', 'application/json');
+        res.end(`{"x-api-key":"${received.replace(/\//g, '\\/')}"}`);
+      });
+      const cred = await credential(c.scheme, PHP_SECRET, { injectionKey: c.key });
+
+      const res = await broker(routeTo(upstream.base)).request(cred.id, ALICE, {
+        host: 'api.example.com',
+        method: 'GET',
+        path: '/v1/anything',
+      });
+
+      assert.equal(res.status, 200);
+      assert.equal(res.body, '{"x-api-key":"[REDACTED]"}');
+      for (const fragment of ['wJalrXUtnFEMI', 'bPxRfiCYEXAMPLEKEY']) {
+        assert.ok(!JSON.stringify(res).includes(fragment), `secret fragment ${fragment} echoed back`);
+      }
+    });
+  }
+
   it("scrubs the WHATWG-URL wire form of a query-param secret (' becomes %27)", T, async () => {
     const secret = "abc'defgh!ij";
     const upstream = await echoAuth();

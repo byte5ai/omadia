@@ -2859,8 +2859,13 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ### Credential-Broker: offen nach der Egress-Härtung (#778 S3a follow-up)
 
-S3a härtet nur die Antwortseite von `CredentialBroker.request`
-(`docs/security-architecture.md` §10c). Die folgenden Punkte lässt der Slice
+S3a härtet Anfrage- und Antwortseite von `CredentialBroker.request`
+(`docs/security-architecture.md` §10c): auf der Anfrageseite die
+Caller-Header-Allow-List samt undici-Wertprüfung, die Ablehnung von GET/HEAD
+mit Body (`invalid-request`), den Abgleich der `pathPrefixes` mit dem
+Wire-Pfad und die Prüfung des deklarierten Hosts; auf der Antwortseite
+manuelle Redirects, Timeout und Byte-Cap, den Secret-Scrub und bereinigte
+Upstream-Fehler. Die folgenden Punkte lässt der Slice
 bewusst offen; sie müssen stehen, **bevor** das Agent-Tool (#778 S3b) den
 Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
 
@@ -2889,7 +2894,8 @@ Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
   eine Schema-Änderung am Credential.
 - **Nicht gescrubbte Transformationen.** Der Scrub deckt roh, base64 (des
   ganzen Secrets), URL-kodiert (inkl. WHATWG-Form mit `%27`), JSON-escaped
-  (`\"`, `\\`, `\n`) und jeweils die whitespace-getrimmte Wire-Form ab, nicht
+  (`\"`, `\\`, `\n`), die PHP-`json_encode`-Form mit `\/` (für roh und
+  base64) und jeweils die whitespace-getrimmte Wire-Form ab, nicht
   JSON-`\u`-Escapes, teilweise URL-Kodierung (`/` unkodiert), base64 des
   Passwortsegments allein oder Hashes des Secrets. Vor S3b entscheiden, ob
   das Agent-Tool dafür eine zweite Schicht braucht.

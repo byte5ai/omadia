@@ -96,6 +96,21 @@ describe('#778 S3a brokerResponse', () => {
     assert.equal(scrubSecret(echoed, forms), JSON.stringify({ password: REDACTED, user: REDACTED }));
   });
 
+  it('scrubs the PHP json_encode form that escapes / as \\/ (raw and base64)', () => {
+    const secret = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const phpEscape = (s: string): string => s.replace(/\//g, '\\/');
+    for (const scheme of ['header', 'bearer', 'query-param'] as const) {
+      const forms = secretForms(secret, scheme);
+      assert.equal(scrubSecret(`{"x-api-key":"${phpEscape(secret)}"}`, forms), `{"x-api-key":"${REDACTED}"}`);
+    }
+    // A base64 alphabet has `/` too: `basic-password`'s Authorization echoed by PHP.
+    const basic = 'svc-user:p?>?>?>?pass';
+    const base64 = Buffer.from(basic).toString('base64');
+    assert.ok(base64.includes('/'), base64);
+    const forms = secretForms(basic, 'basic-password');
+    assert.equal(scrubSecret(`{"auth":"Basic ${phpEscape(base64)}"}`, forms), `{"auth":"Basic ${REDACTED}"}`);
+  });
+
   it('a secret straddling the cap leaves no prefix of any form at the tail', () => {
     const forms = secretForms(SECRET, 'bearer');
     const longest = Math.max(...forms.map((f) => f.length));

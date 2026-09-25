@@ -18,9 +18,11 @@ import path from 'node:path';
  *    `/v1extra/steal-data`, because `startsWith` has no concept of a path
  *    segment boundary.
  *
- * `matchPath` normalises BOTH sides (the declared prefix and the incoming
- * path) the same way, then requires the boundary to land on a `/` — closing
- * both holes with the same function so they cannot drift apart.
+ * BOTH sides (the declared prefix and the incoming path) go through the same
+ * two steps — `path.posix.normalize`, then the WHATWG serialiser fetch uses
+ * ({@link resolveWirePath} for the path, `serializePrefix` for the prefix) —
+ * and `matchPath` then requires the boundary to land on a `/`, closing both
+ * holes with one normalisation so the two sides cannot drift apart.
  *
  * Node's `path.posix.normalize` is doing the actual traversal-safety work
  * here: called on an absolute path, it clamps `..` at the root rather than
@@ -150,18 +152,55 @@ export function resolveWirePath(host: string, pathname: string, search: string):
   return { pathname: url.pathname, search: url.search };
 }
 
+/** Characters a declared prefix must not contain: `?`/`#` would end the
+ *  path when serialised (silently WIDENING `/api?x` to `/api`), and `\` or a
+ *  control character would be rewritten by the WHATWG parser. */
+// eslint-disable-next-line no-control-regex
+const NON_PREFIX_CHARACTER = /[?#\\\u0000-\u001f\u007f]/;
+
 /**
- * Whether `pathname` (already normalised) is covered by a declared
- * `prefix` — with a segment boundary, not a bare string prefix.
+ * A declared prefix in the same serialised form {@link resolveWirePath}
+ * gives the incoming path, or `undefined` when the prefix cannot be one.
  *
- * `prefix` is normalised here too (a declaration author may write
- * `/v1/messages` or `/v1/messages/`; both must mean the same thing), and the
- * comparison requires either an exact match or the next character in
+ * `path.posix.normalize` first (clamping `..` at the root, as for the
+ * incoming path), then the WHATWG serialiser: the wire path is
+ * percent-encoded (`/drive/My Files` travels as `/drive/My%20Files`, `ü` as
+ * `%C3%BC`, `{` as `%7B`), so a prefix compared in its raw form would never
+ * match — a declaration with a space, a non-ASCII character or a brace
+ * would refuse every request. A prefix that spells a dot segment
+ * percent-encoded (`/v1/%2e%2e`) is refused rather than resolved, so a
+ * declaration can never widen past what its author could read off it.
+ */
+function serializePrefix(prefix: string): string | undefined {
+  if (NON_PREFIX_CHARACTER.test(prefix)) return undefined;
+  const normalized = path.posix.normalize(prefix.startsWith('/') ? prefix : `/${prefix}`);
+  let serialized: string;
+  try {
+    serialized = new URL(`https://h${normalized}`).pathname;
+  } catch {
+    return undefined;
+  }
+  // Percent-encoding never adds or removes a `/`, so a changed segment count
+  // means the serialiser resolved a dot segment spelled `%2e%2e` — a prefix
+  // like `/v1/%2e%2e` would silently widen to `/`. Refuse it instead.
+  return serialized.split('/').length === normalized.split('/').length ? serialized : undefined;
+}
+
+/**
+ * Whether `pathname` (the wire path from {@link resolveWirePath}) is covered
+ * by a declared `prefix` — with a segment boundary, not a bare string prefix.
+ *
+ * `prefix` is normalised and serialised here too (see
+ * {@link serializePrefix}; a declaration author may also write
+ * `/v1/messages` or `/v1/messages/`, and both must mean the same thing), and
+ * the comparison requires either an exact match or the next character in
  * `pathname` after the prefix to be `/` — so a prefix of `/v1` matches
- * `/v1/anything` but NOT `/v1extra`.
+ * `/v1/anything` but NOT `/v1extra`. A prefix that cannot be serialised
+ * matches nothing: fail closed.
  */
 export function matchPath(pathname: string, prefix: string): boolean {
-  const normalizedPrefix = path.posix.normalize(prefix.startsWith('/') ? prefix : `/${prefix}`);
+  const normalizedPrefix = serializePrefix(prefix);
+  if (normalizedPrefix === undefined) return false;
   const withoutTrailingSlash =
     normalizedPrefix.length > 1 && normalizedPrefix.endsWith('/')
       ? normalizedPrefix.slice(0, -1)

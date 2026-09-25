@@ -160,6 +160,32 @@ describe('#578 matchPath — boundary-safe prefix matching', () => {
   it('normalises the prefix itself, not just the incoming path', () => {
     assert.equal(matchPath('/v1/messages/123', '/v1/./messages'), true);
   });
+
+  // #778 S3a — the incoming side is the WHATWG-serialised wire path, so the
+  // prefix must be serialised the same way or it never matches.
+  const wire = (p: string): string => resolveWirePath('h', normalizePathForMatch(p).pathname, '').pathname;
+
+  for (const prefix of ['/drive/My Files', '/v1/über', '/api/{tenant}']) {
+    it(`matches a prefix the serialiser percent-encodes (${prefix}) against the wire path`, () => {
+      assert.equal(matchPath(wire(`${prefix}/x`), prefix), true);
+      assert.equal(matchPath(wire(prefix), prefix), true);
+      assert.equal(matchPath(wire(`${prefix}EVIL/x`), prefix), false, 'the segment boundary still holds');
+    });
+  }
+
+  it('keeps traversal safety for a serialised prefix', () => {
+    assert.equal(matchPath(wire('/drive/My Files/../../admin'), '/drive/My Files'), false);
+    assert.equal(matchPath(wire('/drive/My Files/%2e%2e/%2e%2e/admin'), '/drive/My Files'), false);
+    assert.equal(matchPath('/drive/My%20Files/x', '/drive/./My Files/'), true);
+  });
+
+  it('a prefix that would widen or be rewritten when serialised matches nothing (fail closed)', () => {
+    for (const prefix of ['/v1/%2e%2e', '/v1/%2E%2E/admin', '/api?x=1', '/api#frag', '/v1\\admin', '/v1\tx']) {
+      assert.equal(matchPath('/api/x', prefix), false, prefix);
+      assert.equal(matchPath('/', prefix), false, prefix);
+      assert.equal(matchPath('/v1/admin', prefix), false, prefix);
+    }
+  });
 });
 
 describe('#578 matchesAnyPrefix', () => {

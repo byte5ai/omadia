@@ -39,13 +39,13 @@ describe('#778 S3a CredentialBroker matches pathPrefixes on the wire path', () =
 
   afterEach(closeAllUpstreams);
 
-  async function onceCredential(host = 'api.example.com'): Promise<Credential> {
+  async function onceCredential(host = 'api.example.com', pathPrefixes = ['/v1/messages']): Promise<Credential> {
     const cred = await store.createCredential({
       name: `svc-${Math.random().toString(36).slice(2)}`,
       kind: 'service',
       secret: SECRET,
       createdBy: 'op',
-      broker: { host, injectionScheme: 'bearer', allowedMethods: ['GET'], pathPrefixes: ['/v1/messages'] },
+      broker: { host, injectionScheme: 'bearer', allowedMethods: ['GET'], pathPrefixes },
     });
     await store.createGrant({
       credentialId: cred.id,
@@ -118,6 +118,43 @@ describe('#778 S3a CredentialBroker matches pathPrefixes on the wire path', () =
       assert.equal(upstream.requests[0]?.url, c.wire);
       const allow = audits.find((e) => e.kind === 'allow');
       assert.equal(allow?.path, c.wire.split('?')[0], 'the audited path must be the path that was sent');
+    });
+  }
+
+  // The prefix is serialised like the wire path; before that, a declared
+  // prefix with a space, a non-ASCII character or a brace refused every
+  // request, because the wire only ever carries the percent-encoded form.
+  const ENCODED_PREFIXES: Array<{ prefix: string; path: string; wire: string; sibling: string }> = [
+    { prefix: '/drive/My Files', path: '/drive/My Files/a.txt', wire: '/drive/My%20Files/a.txt', sibling: '/drive/My Filesystem' },
+    { prefix: '/v1/über', path: '/v1/über/x', wire: '/v1/%C3%BCber/x', sibling: '/v1/überall' },
+    { prefix: '/api/{tenant}', path: '/api/{tenant}/users', wire: '/api/%7Btenant%7D/users', sibling: '/api/{tenant}x' },
+  ];
+
+  for (const c of ENCODED_PREFIXES) {
+    it(`a declared prefix ${JSON.stringify(c.prefix)} allows its own wire path`, T, async () => {
+      const upstream = await okUpstream();
+      const cred = await onceCredential('api.example.com', [c.prefix]);
+
+      const res = await broker(upstream).request(cred.id, ALICE, { host: 'api.example.com', method: 'GET', path: c.path });
+
+      assert.equal(res.status, 200);
+      assert.equal(upstream.requests[0]?.url, c.wire);
+      assert.equal(audits.find((e) => e.kind === 'allow')?.path, c.wire);
+    });
+
+    it(`a declared prefix ${JSON.stringify(c.prefix)} still refuses a sibling and a traversal`, T, async () => {
+      const upstream = await okUpstream();
+      const cred = await onceCredential('api.example.com', [c.prefix]);
+
+      for (const path of [c.sibling, `${c.prefix}/%2e%2e/%2e%2e/admin`]) {
+        await assert.rejects(
+          broker(upstream).request(cred.id, ALICE, { host: 'api.example.com', method: 'GET', path }),
+          (err: unknown) => err instanceof BrokerDenialError && err.reason === 'path-not-allowed',
+          path,
+        );
+      }
+      assert.equal(upstream.requests.length, 0);
+      assert.ok(await store.activeGrant(cred.id, ALICE, new Date()), 'the once grant must still be active');
     });
   }
 

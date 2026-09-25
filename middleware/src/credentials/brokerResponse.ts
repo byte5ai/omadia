@@ -19,7 +19,9 @@
  *   hex matched case-insensitively because upstreams re-encode in lowercase,
  *   and the WHATWG-URL form fetch really sends (`'` as `%27`),
  * - JSON-escaped (`\"`, `\\`, `\n`), for an upstream echoing the request as
- *   JSON.
+ *   JSON, plus the PHP `json_encode` form (Laravel, Symfony) that also
+ *   escapes `/` as `\/` — applied to the raw base and to the base64 form,
+ *   whose alphabet contains `/` too.
  *
  * The forms are built from what goes on the WIRE, not only from the stored
  * value: undici trims leading and trailing HTTP whitespace (tab, LF, CR,
@@ -83,7 +85,11 @@ export function secretForms(secret: string, scheme: CredentialInjectionScheme): 
 
   const forms = new Set<string>();
   // base64 of the full stored secret is what `basic-password` puts on the wire.
-  if (secret.length >= MIN_SCRUBBABLE_SECRET_LENGTH) forms.add(Buffer.from(secret, 'utf8').toString('base64'));
+  if (secret.length >= MIN_SCRUBBABLE_SECRET_LENGTH) {
+    const base64 = Buffer.from(secret, 'utf8').toString('base64');
+    forms.add(base64);
+    forms.add(slashEscaped(base64));
+  }
   for (const base of bases) {
     if (base.length < MIN_SCRUBBABLE_SECRET_LENGTH) continue;
     const uriEncoded = encodeURIComponent(base);
@@ -94,11 +100,20 @@ export function secretForms(secret: string, scheme: CredentialInjectionScheme): 
     // What fetch's WHATWG URL parser actually sends for `query-param`: it
     // re-encodes `'` as `%27`, which `encodeURIComponent` leaves alone.
     forms.add(new URL(`https://h/?k=${uriEncoded}`).search.slice(3));
-    // A JSON echo escapes `"`, `\` and the short control escapes (`\n`, `\t`).
-    forms.add(JSON.stringify(base).slice(1, -1));
+    // A JSON echo escapes `"`, `\` and the short control escapes (`\n`, `\t`);
+    // PHP's `json_encode` additionally escapes `/` as `\/`.
+    const jsonEscaped = JSON.stringify(base).slice(1, -1);
+    forms.add(jsonEscaped);
+    forms.add(slashEscaped(jsonEscaped));
   }
 
   return [...forms].sort((a, b) => b.length - a.length);
+}
+
+/** `/` escaped as `\/`, the way PHP's `json_encode` writes it by default. A
+ *  value without `/` comes back unchanged and the Set drops the duplicate. */
+function slashEscaped(value: string): string {
+  return value.replace(/\//g, '\\/');
 }
 
 /** Leading/trailing HTTP whitespace, which undici strips from a header value

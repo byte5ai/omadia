@@ -50,8 +50,8 @@ for the agent tool (#778 S3b).
 
 The broker now dispatches with `redirect: 'manual'` and a 20 s timeout, reads
 the body under a 1 MiB streaming cap (`truncated: true` on overflow), scrubs the
-secret from header values and body in raw, base64, URL-encoded and
-JSON-escaped form, built from what goes on the wire (the whitespace-trimmed
+secret from header values and body in raw, base64, URL-encoded,
+JSON-escaped and PHP `json_encode` (`\/`) form, built from what goes on the wire (the whitespace-trimmed
 header value undici sends, the `%27` the URL parser adds; secrets of 8+
 characters), filters caller headers against a static allow-list plus
 undici's own value check and audits the dropped names, refuses a GET/HEAD with
@@ -63,7 +63,8 @@ check ran on `path.posix` output, but fetch's WHATWG parser resolves
 `/v1/messages/%2e%2e/%2e%2e/admin` passed a `/v1/messages` check and sent the
 secret to `/admin`. The broker now refuses backslashes and control characters
 in the path and matches, audits and sends the path exactly as fetch resolves
-it (`resolveWirePath`), before a `once` grant is consumed; a declared host
+it (`resolveWirePath`), before a `once` grant is consumed, against prefixes
+serialised the same way (so `/drive/My Files` or `/v1/über` still match); a declared host
 that is not a plain `host[:port]` is denied as `invalid-broker-declaration`,
 and `timeoutMs` is capped at Node's timer limit (2^31 - 1). `dispatch-failed`, which had no call site, is
 replaced by those two reasons. See `docs/security-architecture.md` §10c. What

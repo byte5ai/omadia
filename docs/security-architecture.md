@@ -1161,8 +1161,13 @@ classification).
 `service` credential onto an outbound request so the caller never holds the
 secret. Its checks (credential, grant, host, method, path) decide whether
 the request may leave. Once it has left, the upstream answers, so the
-boundary has to cover the response too. S3a hardens that half before any
-agent can reach the broker (#778 S3b wires the agent tool):
+boundary has to cover the response too. S3a hardens both sides before any
+agent can reach the broker (#778 S3b wires the agent tool): on the request
+side, the caller-header allow-list with undici's own value check, the
+GET/HEAD-with-body refusal (`invalid-request`), the declared-host check and
+the `pathPrefixes` match on the wire path; on the response side, manual
+redirects, the time and size bounds, the secret scrub and sanitized
+failures.
 
 - **Redirects are never followed** (`redirect: 'manual'`). A 3xx comes back
   as its status plus a scrubbed `location`. The Fetch spec strips
@@ -1176,11 +1181,13 @@ agent can reach the broker (#778 S3b wires the agent tool):
   says `truncated: true`. The cap is a memory bound; the agent tool applies
   its own, tighter context bound.
 - **The secret is scrubbed from the response**, header values (including
-  `location`) and body, in three encodings: raw, base64 (what
-  `basic-password` sends) and URL-encoded (what `query-param` sends), plus
-  the `+`-for-space and `URLSearchParams` variants, with `%XX` hex matched
-  case-insensitively, plus the JSON-escaped form (`\"`, `\\`, `\n`) for an
-  upstream that echoes the request as JSON. Echo endpoints and error pages
+  `location`) and body, in every form it travels in: raw, base64 (what
+  `basic-password` sends), URL-encoded (what `query-param` sends) with the
+  `+`-for-space and `URLSearchParams` variants and `%XX` hex matched
+  case-insensitively, the WHATWG-URL form (below), the JSON-escaped form
+  (`\"`, `\\`, `\n`) for an upstream that echoes the request as JSON, and
+  the PHP `json_encode` form (Laravel, Symfony) that also escapes `/` as
+  `\/`, for the raw secret and for its base64. Echo endpoints and error pages
   that reflect the request otherwise hand the secret straight back. For
   `basic-password` the password segment of `user:pass` is scrubbed on its
   own too. The forms are built from what goes on the **wire**, not only from
@@ -1238,7 +1245,13 @@ agent can reach the broker (#778 S3b wires the agent tool):
   A declared host that is not a plain `host[:port]` (userinfo, a path, an
   invalid port) is denied as `invalid-broker-declaration` at the same step.
   An encoded slash (`group%2Fproject`, GitLab-style IDs) is deliberately
-  **not** refused.
+  **not** refused. The declared prefix goes through the same two steps
+  (`path.posix.normalize`, then the WHATWG serialiser), so a prefix with a
+  space, a non-ASCII character or a brace (`/drive/My Files`, `/v1/über`,
+  `/api/{tenant}`) matches its percent-encoded wire form instead of
+  refusing every request. A prefix that serialising would widen or rewrite
+  (a percent-encoded dot segment, `?`, `#`, `\`, a control character)
+  matches nothing.
 - **Failures are sanitized.** A timeout is denied as `upstream-timeout`,
   anything else as `upstream-unreachable`. The thrown `BrokerDenialError`
   carries no `cause`, no URL and no upstream message, because for
