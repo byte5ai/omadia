@@ -56,6 +56,12 @@ export interface SubAgentToolDeps {
   /** CLI model alias resolver (strip `-cli`). Required only when
    *  hostIsCliProvider is true; defaults to identity otherwise. */
   readonly cliModelAlias?: (model: string) => string;
+  /**
+   * #1085 — resolves the `claude` binary a CLI sub-agent spawns, per turn.
+   * Wired by the kernel (`subAgentToolHydration`) to its `resolveCliBin` rule;
+   * absent ⇒ the bare name from PATH, the pre-#1085 behaviour.
+   */
+  readonly resolveCliBinary?: () => string;
   /** Resolves an MCP server id → connection config (for mcp tool grants). */
   readonly mcpServersById?: ReadonlyMap<string, McpServerConfig>;
   /** Shared MCP connection pool. Required to honour mcp tool grants. */
@@ -111,6 +117,9 @@ export function buildSubAgentDomainTools(
             resolveCliSubAgentModel(sub.model, deps.defaultModel),
           ),
           tools: subTools,
+          ...(deps.resolveCliBinary
+            ? { resolveCliBinary: deps.resolveCliBinary }
+            : {}),
         })
       : new LocalSubAgent({
           name: sub.name,

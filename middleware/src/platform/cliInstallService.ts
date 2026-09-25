@@ -25,6 +25,8 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
+import { clearCliVersionCache } from '@omadia/orchestrator';
+
 import {
   cliToolsDir,
   detectCliBackends,
@@ -213,6 +215,13 @@ export async function startCliInstall(
         // via the trailing catch.
         try {
           __resetCliBackendCache();
+          // #1085 — and on the next SPAWN, which reads its own `--version`
+          // cache keyed by binary path (5-minute TTL). A first install changes
+          // that path and re-probes anyway; an in-place UPDATE does not, so
+          // without this the turn path kept the pre-update version for up to
+          // five minutes — dropping `--restricted` while the badge, whose
+          // cache was just reset, reported the new one.
+          clearCliVersionCache();
         } catch {
           /* cache reset is best-effort */
         }
