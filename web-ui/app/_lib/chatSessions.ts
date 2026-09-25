@@ -992,9 +992,23 @@ export function useChatSessions(): UseChatSessionsResult {
             try {
               const remote = await fetchRemoteSession(id);
               // #1071 — a routine delivery makes the server copy newer, but
-              // that copy lacks every client-only message field; fold the
-              // delivery into the local chat instead of replacing it.
-              merged.push(remote ? reconcileNewerRemote(l, remote) : l);
+              // that copy lacks every client-only message field (and maybe
+              // turns whose PUT failed); fold the delivery into the local
+              // chat instead of replacing it, and heal a lagging backend.
+              if (!remote) {
+                merged.push(l);
+              } else {
+                const { session: reconciled, pushLocal } = reconcileNewerRemote(l, remote);
+                merged.push(reconciled);
+                if (pushLocal) {
+                  putRemoteSession(reconciled).catch((err: unknown) => {
+                    console.warn(
+                      '[chat-sessions] backend catch-up put failed:',
+                      err instanceof Error ? err.message : err,
+                    );
+                  });
+                }
+              }
             } catch {
               merged.push(l);
             }

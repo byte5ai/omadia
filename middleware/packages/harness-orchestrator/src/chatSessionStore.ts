@@ -325,15 +325,19 @@ export class ChatSessionStore {
   async saveFromClient(session: ChatSession): Promise<ChatSession> {
     if (!ID_RE.test(session.id)) throw new InvalidSessionIdError(session.id);
     return this.withLock(session.id, async () => {
-      // A corrupt stored file must not turn every PUT into a 500 — before
-      // #1071 a PUT overwrote (and so repaired) it. Fall back to that.
+      // A corrupt stored file (unparseable JSON) must not turn every PUT into
+      // a 500 — before #1071 a PUT overwrote (and so repaired) it. Fall back
+      // to that. Any other read failure (a transient storage error) is
+      // rethrown: overwriting then would drop deliveries the client has not
+      // seen and strip their `proactive` markers for good.
       let existing: ChatSession | null = null;
       try {
         existing = await this.get(session.id);
       } catch (err) {
+        if (!(err instanceof SyntaxError)) throw err;
         console.warn(
           `[chat-sessions] unreadable session ${session.id}, overwriting from client:`,
-          err instanceof Error ? err.message : err,
+          err.message,
         );
       }
       const merged = mergeServerProactiveMessages(existing, session);

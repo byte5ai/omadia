@@ -139,6 +139,28 @@ describe('useChatSessions — proactive re-read (#1071)', () => {
     expect(messages[2]?.proactive?.routineId).toBe('r1');
   });
 
+  it('hydration keeps a local turn whose PUT failed when a delivery made the server copy newer', async () => {
+    // Turn 2's fire-and-forget PUT never reached the server; the routine then
+    // fired, so the server copy is newer but BEHIND on turns.
+    const u2: Message = { id: 'u2', role: 'user', content: 'and next week?', startedAt: 2_000 };
+    const a2: Message = { id: 'a2', role: 'assistant', content: 'Next week…', startedAt: 2_100, finishedAt: 2_200 };
+    const local = session(ID_B, 2_200, [USER_TURN, RICH_ANSWER, u2, a2]);
+    window.localStorage.setItem('odoo-bot-chat-sessions', JSON.stringify([local]));
+    window.localStorage.setItem('odoo-bot-chat-active-id', ID_B);
+    const stripped = { id: 'a1', role: 'assistant', content: 'Here is the chart', startedAt: 1_100, finishedAt: 1_200 } as Message;
+    serverB = session(ID_B, 9_000, [USER_TURN, stripped, DELIVERY]);
+
+    const view = await hydrated();
+
+    const messages = messagesOf(view, ID_B);
+    expect(messages.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', DELIVERY.id]);
+    expect((messages[1] as unknown as Record<string, unknown>)['privacyReceipt']).toEqual({ receiptId: 'rcpt-1' });
+    // The backend is healed with the local turns (its merge keeps the delivery).
+    await waitFor(() => {
+      expect(puts.some((url) => url.endsWith(`/${ID_B}`))).toBe(true);
+    });
+  });
+
   it('hydration still takes the server copy when it carries a turn this browser lacks', async () => {
     const local = session(ID_B, 1_500, [USER_TURN]);
     window.localStorage.setItem('odoo-bot-chat-sessions', JSON.stringify([local]));

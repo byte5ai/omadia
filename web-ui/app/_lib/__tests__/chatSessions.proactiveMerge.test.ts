@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { mergeProactiveFromRemote } from '../chatProactiveMerge';
+import { mergeProactiveFromRemote, reconcileNewerRemote } from '../chatProactiveMerge';
 import type { ChatSession, Message } from '../chatSessions';
 
 /**
@@ -62,5 +62,56 @@ describe('mergeProactiveFromRemote', () => {
 
     expect(twice).toBe(once);
     expect(twice.messages.filter((m) => m.id === 'p1')).toHaveLength(1);
+  });
+});
+
+describe('reconcileNewerRemote', () => {
+  const U1 = msg('u1', 'user', 10);
+  const A1 = msg('a1', 'assistant', 11);
+  const U2 = msg('u2', 'user', 12);
+  const A2 = msg('a2', 'assistant', 13);
+
+  it('keeps the local turns and folds the delivery when only a delivery differs', () => {
+    const local = session([U1, A1], 30);
+    const remote = { ...session([U1, A1, DELIVERY], 40), title: 'Renamed' };
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(result.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'p1']);
+    expect(result.title).toBe('Renamed');
+    expect(result.updatedAt).toBe(40);
+    expect(pushLocal).toBe(false);
+  });
+
+  it('keeps a local turn the server never received and asks for a catch-up PUT', () => {
+    // The turn-2 PUT failed; a delivery then made the server copy newer.
+    const local = session([U1, A1, U2, A2], 30);
+    const remote = session([U1, A1, DELIVERY], 40);
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(result.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'p1']);
+    expect(pushLocal).toBe(true);
+  });
+
+  it('takes the server copy when it has a turn the local copy lacks', () => {
+    const local = session([U1, A1], 30);
+    const remote = session([U1, A1, U2], 40);
+
+    expect(reconcileNewerRemote(local, remote)).toEqual({ session: remote, pushLocal: false });
+  });
+
+  it('takes the server copy when its turns diverge from the local ones', () => {
+    const local = session([U1, A1, U2], 30);
+    const remote = session([U1, msg('x', 'assistant', 11), DELIVERY], 40);
+
+    expect(reconcileNewerRemote(local, remote)).toEqual({ session: remote, pushLocal: false });
+  });
+
+  it('takes the server copy when it holds no turns (a clear or reset)', () => {
+    const local = session([U1, A1], 30);
+    const remote = session([DELIVERY], 40);
+
+    expect(reconcileNewerRemote(local, remote)).toEqual({ session: remote, pushLocal: false });
   });
 });

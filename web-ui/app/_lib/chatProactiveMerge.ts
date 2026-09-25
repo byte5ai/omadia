@@ -47,37 +47,58 @@ export function mergeProactiveFromRemote(
 }
 
 /**
+ * Outcome of reconciling a NEWER server copy with the browser's copy.
+ * `pushLocal` asks the caller to PUT `session` back: the browser holds
+ * turns the server never received (a fire-and-forget PUT failed), and the
+ * server's merging PUT keeps the deliveries it already has.
+ */
+export interface NewerRemoteReconciliation {
+  session: ChatSession;
+  pushLocal: boolean;
+}
+
+/**
  * #1071 — hydration: the server copy of a chat is NEWER than the browser's.
  *
  * The server copy only holds what the PUT schema declares (zod strips the
  * rest), so attachments, privacy receipts, routing, persona, follow-up
  * options, … exist only in the browser's copy. A routine delivery bumps the
- * server `updatedAt`; replacing the whole local chat with the server copy on
- * the next page load would drop those fields for good.
+ * server `updatedAt`, so "newer" no longer means "ahead". Three cases, keyed
+ * on the non-proactive (turn) message ids:
  *
- * So when the server copy differs from the local one ONLY by routine
- * deliveries (its non-proactive message ids are exactly the local ones, in
- * order), keep the local copy and fold the deliveries in; the title follows
- * the server (a rename is the only other thing a newer copy can carry). Any
- * other difference — a turn from another device, a clear, a reset — is a real
- * newer state and the server copy wins, as before #1071.
+ * - Same turns, in order: the server differs only by routine deliveries.
+ *   Keep the local copy and fold the deliveries in; the title follows the
+ *   server (a rename is the only other thing a newer copy can carry).
+ * - The server's turns are a NON-EMPTY proper prefix of the local ones: the
+ *   browser is AHEAD — a turn's PUT failed, and a delivery then made the
+ *   server copy newer. Keep the local copy (its turns exist nowhere else),
+ *   fold the deliveries in and ask for a catch-up PUT, exactly the "backend
+ *   is behind" healing a chat got before deliveries could bump `updatedAt`.
+ * - Anything else — a turn from another device, a clear or reset (no server
+ *   turns) — is a real newer state and the server copy wins.
  */
 export function reconcileNewerRemote(
   local: ChatSession,
   remote: ChatSession,
-): ChatSession {
+): NewerRemoteReconciliation {
   const localTurns = turnIds(local);
   const remoteTurns = turnIds(remote);
-  const sameTurns =
-    localTurns.length === remoteTurns.length &&
-    localTurns.every((id, i) => id === remoteTurns[i]);
-  if (!sameTurns) return remote;
-  const merged = mergeProactiveFromRemote(local, remote);
-  return {
-    ...merged,
-    title: remote.title,
-    updatedAt: Math.max(merged.updatedAt, remote.updatedAt),
-  };
+  const isPrefix = remoteTurns.every((id, i) => id === localTurns[i]);
+  if (isPrefix && remoteTurns.length === localTurns.length) {
+    const merged = mergeProactiveFromRemote(local, remote);
+    return {
+      session: {
+        ...merged,
+        title: remote.title,
+        updatedAt: Math.max(merged.updatedAt, remote.updatedAt),
+      },
+      pushLocal: false,
+    };
+  }
+  if (isPrefix && remoteTurns.length > 0 && remoteTurns.length < localTurns.length) {
+    return { session: mergeProactiveFromRemote(local, remote), pushLocal: true };
+  }
+  return { session: remote, pushLocal: false };
 }
 
 function turnIds(session: ChatSession): string[] {

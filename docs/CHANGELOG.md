@@ -247,13 +247,18 @@ never created.
   newer. When that copy differs from the browser's only by deliveries, the web
   UI now keeps its own copy and adds the deliveries; replacing it would have
   dropped every client-only field (attachments, privacy receipts, routing,
-  persona, follow-ups …) that the PUT schema strips. Any other difference is
-  still resolved in favour of the newer server copy.
+  persona, follow-ups …) that the PUT schema strips. When the browser is
+  AHEAD — a turn's fire-and-forget PUT failed and a delivery then made the
+  server copy newer — it keeps its turns, folds the deliveries in and PUTs a
+  catch-up copy, as it did before deliveries could bump `updatedAt`. Any other
+  difference (a turn from another device, a clear) is still resolved in favour
+  of the newer server copy.
 - **`PUT /api/chat/sessions/:id` merges instead of overwriting**
   (`ChatSessionStore.saveFromClient` → `mergeServerProactiveMessages`) and
   answers with the stored document: server-written deliveries the body lacks are
-  kept. `messages: []` is still an explicit clear, and an unreadable stored
-  file is still overwritten (repaired) rather than failing the PUT.
+  kept. `messages: []` is still an explicit clear, and a corrupt stored file
+  (unparseable JSON) is still overwritten (repaired) rather than failing the
+  PUT; any other read failure fails the PUT instead of dropping deliveries.
 - **The `proactive` marker is server-trusted.** It counts only from the
   server's own copy; a marker minted by a client PUT is stripped.
 - **Deliveries stay out of the model tail.** `chatSessionTailTurns` skips them,

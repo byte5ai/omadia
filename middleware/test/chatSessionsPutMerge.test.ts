@@ -177,6 +177,21 @@ describe('#1071 — the per-session lock spans ChatSessionStore instances', () =
     assert.deepEqual((await chats.get(ID))?.messages.map((m) => m.id), ['u1', 'a1']);
   });
 
+  it('a transient read failure fails the save instead of overwriting the stored deliveries', async () => {
+    const memory = new InMemoryMemoryStore();
+    const chats = new ChatSessionStore(memory);
+    await chats.save(clientCopy());
+    await chats.appendProactiveMessage(ID, { content: 'Report', deliveredAt: T0 + 5, routineId: 'r1' });
+    const storedBefore = await memory.readFile(`/memories/chat-sessions/${ID}.json`);
+    const realRead = memory.readFile.bind(memory);
+    memory.readFile = () => Promise.reject(new Error('storage unavailable'));
+
+    await assert.rejects(chats.saveFromClient(clientCopy()), /storage unavailable/);
+
+    memory.readFile = realRead;
+    assert.equal(await memory.readFile(`/memories/chat-sessions/${ID}.json`), storedBefore);
+  });
+
   it('a reset racing a delete on another instance does not bring the chat back', async () => {
     const memory = new InMemoryMemoryStore();
     const a = new ChatSessionStore(memory);
