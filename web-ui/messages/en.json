@@ -1087,6 +1087,10 @@
         "what": "The assignment was accepted but could not be written to the plugin.",
         "next": "Save again. If it keeps failing, the middleware cannot write to its config store."
       },
+      "dependent_rebuild_failed": {
+        "what": "The assignment was saved, but the background memory features that inherit it did not restart.",
+        "next": "Use Retry to restart them. Until they run again, a restart of omadia would leave this plugin down as well. If it keeps failing, the support details name the plugin and its activation error."
+      },
       "invalid_request": {
         "what": "The assignment was missing the plugin, the provider or the model.",
         "next": "Pick a provider and a model, then save again."
@@ -1124,6 +1128,10 @@
         "what": "The provider list could not be read.",
         "next": "Reload the page. If it stays empty, the middleware cannot reach its config store."
       },
+      "rebuild_failed": {
+        "what": "The assignment was saved, but the plugin did not start on it and is not running right now.",
+        "next": "Use Retry to start it again. If it keeps failing, the support details carry its activation error."
+      },
       "tool_incompatible": {
         "what": "This plugin drives a tool loop and the selected provider cannot do that.",
         "next": "Give this plugin a key-based provider and keep the subscription CLI for tool-less roles."
@@ -1149,6 +1157,10 @@
       "agent_inactive": {
         "what": "The plugin is installed but not running, so it cannot answer right now.",
         "next": "Activate the plugin, then reload this page."
+      },
+      "dependent_rebuild_failed": {
+        "what": "The change was saved, but not every plugin that uses it restarted.",
+        "next": "Save again to retry the restart. If it keeps failing, the support details name the plugin and its activation error."
       },
       "empty_secrets_patch": {
         "what": "The save carried no changed value.",
@@ -3754,7 +3766,8 @@
       "subscriptionNotice": "{provider} runs on a personal Claude subscription of the signed-in account. No data-processing agreement (DPA/AVV) is available on a consumer plan — do not route personal data through this agent.",
       "routingLabel": "Per-turn model routing (Haiku triage)",
       "routingHint": "A cheap Haiku call classifies each turn — simple turns get a cheaper model, complex ones the frontier model.",
-      "routingAnthropicOnly": "Only available with Anthropic."
+      "routingAnthropicOnly": "Only available with Anthropic.",
+      "retryDependentRebuild": "Retry"
     },
     "status": {
       "saving": "saving …",
@@ -3856,7 +3869,10 @@
       "help": "How long a single turn may run on the subscription path. Leave empty for the {default}-second default, or the value from OMADIA_CLI_SPAWN_TIMEOUT_MS.",
       "save": "Save",
       "saved": "Saved",
-      "invalid": "Enter a whole number between {min} and {max}."
+      "invalid": "Enter a whole number between {min} and {max}.",
+      "loadFailed": "Couldn't load the current time limit. Saving is disabled until it loads.",
+      "saveFailed": "Couldn't save the time limit.",
+      "reload": "Load again"
     }
   },
   "createIssue": {

@@ -1296,6 +1296,124 @@ audited path equals the path the upstream received),
 `middleware/test/credentialBrokerOutbound.test.ts` (the header-filter rules)
 and `middleware/test/credentialBrokerResponse.test.ts` (forms, the floor, the
 cap straddle).
+## 10c. Credential asks: identity from the session, owner-only approval (#778 S1, D2)
+
+A credential ask asks the owner of a `personal` credential to let someone else
+use it, and approving one mints a real credential grant. Until #778 S1 the
+mounted `/api/v1/admin/credential-asks` router
+(`middleware/src/routes/credentialAsks.ts`) took every identity from the
+client: `requesterUserId` and `ownerUserId` on create, `?owner` on `/pending`,
+`?requester` on `/mine`, `resolvedBy` on approve/deny. It never compared the
+caller with the ask's owner. Any logged-in session could file an ask in
+someone else's name, read another user's inbox, and approve an ask it did not
+own. The rules below replace that.
+
+1. **The caller comes from `req.session.omadia_user_id`, and only from
+   there.** Every handler uses `user:<omadia_user_id>` as the caller. There
+   is no `sub`/`email` fallback: `auth/sessionIdentity.ts` documents those
+   claims as a different namespace (MCP tokens), and the other owner checks on
+   this server (`datasets.ts`, `skillPromotion.ts`) compare against
+   `omadia_user_id` too. A session without it, or with a blank one, gets 401
+   `auth.required`.
+2. **Client-supplied caller identity is rejected, not ignored.**
+   `requesterUserId` (create, cancel), `resolvedBy` (approve, deny), `?owner`
+   (`/pending`) and `?requester` (`/mine`) answer 400
+   `credential_ask.identity_from_session`. A pre-S1 client fails loudly
+   instead of quietly acting as a different principal than it meant to.
+3. **The owner is derived from the credential.** Both stores address the ask
+   to the credential's own `owner`, canonicalised (`resolveAskOwner` in
+   `credentials/asks.ts`). An `ownerUserId` in the body is only a cross-check;
+   naming anyone else answers 400 `credential_ask.owner_mismatch`. A requester
+   can therefore never route an ask, and the right to approve it, to a
+   principal of their choosing.
+4. **Approve and deny are owner-only, with no break-glass (D2).** An unknown
+   ask answers 404; a session that is not `ask.owner` answers 403
+   `credential_ask.forbidden`. No operator or admin override exists, by
+   maintainer decision. `ask.owner` is fixed when the ask is created
+   (migration 0043) and no code path updates it, so reading it before the
+   atomic claim cannot race.
+5. **Askability is checked under a row lock, in both stores.** An ask must
+   target a live `personal` credential owned by a `user`
+   (`assertAskableCredential`, shared by the in-memory and Postgres stores so
+   the rule cannot drift again; before S1 the Postgres store relied on the
+   foreign key alone and accepted `service` and revoked credentials).
+   `PostgresCredentialAskStore.createAsk` reads the credential with
+   `SELECT kind, owner_kind, owner_ref, revoked_at … FOR SHARE` in the same
+   transaction as the `INSERT`, so a revoke cannot slip between the check
+   and the insert. A non-uuid credential id is `unknown_credential`, not a
+   raw `22P02` 500.
+6. **Approve re-checks the credential.** Under the same `FOR SHARE` lock,
+   approve re-runs the askability check. When the credential has been revoked
+   since the ask was made, the ask is closed as `expired` and no grant is
+   minted; the route answers 409 `credential_ask.not_actionable`.
+   `revokeCredential` is a single `UPDATE credentials` that never touches
+   `credential_asks`, so the two lock orders cannot deadlock.
+7. **Role-owned personal credentials are no longer askable.** Approval is
+   bound to the session principal, which is always a user. An ask addressed
+   to a `role` owner could never be answered by anyone, so creating one is
+   refused as `not_askable`.
+
+Two consequences follow. A credential-creation surface must store a personal
+credential's owner as `user:<omadia_user_id>`, or nobody can ever approve an
+ask against it. And the approve-time re-check compares askability, not
+ownership: a pending ask created before S1 with a client-forged owner is not
+closed by it. No production code path creates credentials today (nothing in
+`middleware/src` calls `createCredential`), so such a row can only come from an
+out-of-band insert.
+
+Tests: `middleware/test/credentialAskRoutes.test.ts` (live `app.listen(0)`
+with a session stub: 401, `identity_from_session`, the non-owner approve/deny
+403 with no grant minted, 409 after revocation), `credentialAsks.test.ts`
+(in-memory store and the shared helpers) and
+`postgresCredentialAskStore.pg.test.ts` (real Postgres: service, revoked and
+owner-mismatch refusals, approve after revocation mints no grant).
+
+---
+
+## 10d. WebSocket upgrade authentication (#746 W1-1)
+
+`WebSocketRegistry` (`middleware/src/channels/webSocketRegistry.ts`) is the
+process's only `upgrade` listener. It routes each upgrade through a
+path → route table, and every route authenticates **before** the handshake:
+a rejected peer gets a raw status line and a destroyed socket, never a `101`,
+so no WebSocket is ever allocated for it. An unregistered path is `404`.
+
+- **Channel routes** (`register`, reached by plugins only through
+  `CoreApi.registerWebSocket`) authenticate with `requireAuth`'s own
+  `evaluateSessionToken`: same signing key, same Entra-whitelist gate, same
+  status mapping (`auth.not_whitelisted` → 403, anything else → 401). A
+  deactivated channel answers `503`, and the active flag is checked again
+  after the async cookie verification, so a deactivation during that window
+  cannot leak a socket past `deactivateChannel`.
+- **Kernel routes** (`registerKernel`) bring their own authenticator. They
+  are a kernel-only capability and are deliberately not on `CoreApi`, so no
+  plugin can opt out of the session cookie. The authenticator's verdict maps
+  to `401`/`403`. A throw, a result that is not a result, or a missed
+  deadline (`authTimeoutMs`, default 10 s) is an infrastructure failure, not
+  a verdict on the credential. It answers `503` and is logged at error level
+  with the stack, so a key-store outage cannot read as "credential rejected".
+  All of these fail closed.
+- **The status line is fixed.** The reason phrase comes from a constant
+  table (`middleware/src/channels/webSocketUpgradeAuth.ts`, which also holds
+  the deadline and the 503 mapping). An authenticator's `message` only reaches the server log, and there
+  it is JSON-quoted, so a CR/LF in it can neither inject a response header
+  nor forge a log line.
+- **Frame caps are explicit.** Channel routes share `CHANNEL_WS_MAX_PAYLOAD_BYTES`
+  (32 MiB, below `ws`'s 100 MiB default). Every kernel route must set its own
+  `maxPayload`. Caps are bounded to `2^31 − 1` because `ws` stores
+  `maxPayload | 0`, and 2^31 or more would silently mean "unlimited". An
+  oversized frame closes that one socket with `1009`. Every accepted socket
+  has an `'error'` listener, so a hostile frame cannot raise an uncaught
+  exception.
+
+Out of scope here and owned by W1-2: the satellite tunnel's credential (API
+key plus signed challenge) and its revocation of live sockets.
+
+Tests: `middleware/test/webSocketRegistry.test.ts` (exact statuses, per-route
+auth and caps, collisions, deactivation) and
+`middleware/test/webSocketRegistryHardening.test.ts` (503 on throw, deadline
+and junk result, raw status-line bytes, bounds, the deactivate-during-auth
+race).
 
 ---
 
@@ -1339,6 +1457,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       itself, and then only the narrowest regex covering that one route (§10).
 - [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —
       operator routers belong under `/api/v1/admin/*` (§10).
+- [ ] A WebSocket route with its own authenticator is registered through
+      `WebSocketRegistry.registerKernel` from kernel code only, never exposed on
+      `CoreApi`. Plugins always get session-cookie and whitelist auth via
+      `CoreApi.registerWebSocket`. The authenticator rejects before the `101`
+      (raw 401/403; a throw or missed deadline is a fail-closed 503), and the
+      route sets an explicit, bounded `maxPayload` (§10c).
 - [ ] A new path that mints or re-mints the session cookie carries
       `auth_time` over (never resets it) and respects the absolute cap; a new
       OIDC provider implements `revalidateSession` or its sessions cannot be
@@ -1353,6 +1477,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] A change to how `CredentialBroker` builds the outbound URL matches
       `pathPrefixes` on the same path fetch sends (`resolveWirePath`), not
       on a string-level normalisation of the caller's input (§10c).
+- [ ] An admin route takes the caller identity from
+      `req.session.omadia_user_id`, never from the body or the query string,
+      and rejects a client-supplied identity field instead of ignoring it
+      (§10c, #778).
 
 ---
 

@@ -22,6 +22,11 @@ const { mockGetInstalledPlugin, mockUpdateInstalledPluginConfig } = vi.hoisted((
 vi.mock('../../../../_lib/api', () => ({
   getInstalledPlugin: mockGetInstalledPlugin,
   updateInstalledPluginConfig: mockUpdateInstalledPluginConfig,
+  // The component classifies failures with `instanceof ApiError`; without a
+  // class here that check would throw inside its catch branches.
+  ApiError: class MockApiError extends Error {
+    code: string | null = null;
+  },
 }));
 
 const LABEL = 'Time limit per turn (seconds)';
@@ -66,22 +71,19 @@ describe('<TurnBudgetField />', () => {
     }
   });
 
-  // Only the message is pinned. After a failed load the field still enables
-  // Save with an empty value, and saving then PATCHes `null` — wiping a stored
-  // budget while the field reads "Saved". That pre-existing defect is recorded
-  // in docs/middleware-agent-handoff.md §13 ("TurnBudgetField") and left
-  // unfixed in this tests-only change, so the title claims no more than the
-  // assertion checks.
-  //
-  // KNOWN i18n DEBT: this case and 'shows a failed save' pin the raw
-  // `Error.message` the component renders (TurnBudgetField.tsx, both catch
-  // branches), which breaches web-ui/CLAUDE.md string checklist item 3. A fix
-  // that moves these behind a catalog key will turn both red — update the
-  // assertions, that is not a regression.
-  it('surfaces a failed load', async () => {
+  // Both failure paths show catalog copy; the raw exception text sits only
+  // behind ErrorHelp's support disclosure. The lock after a failed load (no
+  // empty save that would PATCH `null`), the retry and the disclosure are
+  // pinned in detail in TurnBudgetField.hardening.test.tsx.
+  it('surfaces a failed load with localized copy and keeps Save locked', async () => {
     mockGetInstalledPlugin.mockRejectedValue(new Error('plugin not installed'));
     renderWithIntl(<TurnBudgetField />);
-    expect(await screen.findByText('plugin not installed')).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "Couldn't load the current time limit. Saving is disabled until it loads.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
   it('rejects values outside 30–3600 seconds without saving', async () => {
@@ -121,7 +123,7 @@ describe('<TurnBudgetField />', () => {
     mockUpdateInstalledPluginConfig.mockRejectedValue(new Error('PATCH failed: 500'));
     const input = await renderLoaded();
     typeAndSave(input, '300');
-    expect(await screen.findByText('PATCH failed: 500')).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't save the time limit.")).toBeInTheDocument();
     expect(screen.queryByText('Saved')).not.toBeInTheDocument();
   });
 });

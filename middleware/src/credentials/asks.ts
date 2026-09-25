@@ -33,9 +33,24 @@
  * deny → grant lifecycle as a tested store + HTTP route; a human currently
  * discovers a pending ask by listing it (`listPendingForOwner`), not by
  * being pinged. Wiring that notification is a follow-up.
+ *
+ * ## #778 S1 — the rules both stores share
+ *
+ * An ask's owner is never the caller's say-so: it is DERIVED from the
+ * credential's own `owner` ({@link resolveAskOwner}); a caller-supplied
+ * owner is only checked against it (`owner_mismatch`). Askability
+ * ({@link assertAskableCredential}) is enforced by BOTH stores at create
+ * time — the Postgres store had drifted and only relied on the FK — and
+ * re-checked at approve time: an ask created before its credential was
+ * revoked closes as `expired` instead of minting a grant. Domain
+ * rejections are {@link CredentialAskRejectedError}s with a typed
+ * `reason`, so the route can tell a client mistake (400) from a store
+ * failure (500) without matching message text.
  */
 
 import {
+  canonicalizePrincipalRef,
+  principalRef,
   type Credential,
   type CredentialGrantMode,
   type CredentialId,
@@ -43,6 +58,27 @@ import {
   type NewCredentialGrantInput,
   type Principal,
 } from '@omadia/channel-sdk';
+
+/** Why a store refused to create (or validate) an ask. */
+export type CredentialAskRejection = 'invalid_input' | 'unknown_credential' | 'not_askable' | 'revoked' | 'owner_mismatch';
+
+/**
+ * A domain rejection — the caller asked for something the ask rules do not
+ * allow. Anything else a store throws is an infrastructure failure.
+ */
+export class CredentialAskRejectedError extends Error {
+  readonly reason: CredentialAskRejection;
+
+  constructor(reason: CredentialAskRejection, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'CredentialAskRejectedError';
+    this.reason = reason;
+  }
+}
+
+/** The credential facts the ask rules need — a full {@link Credential}
+ *  satisfies it; the Postgres store selects just these columns. */
+export type AskableCredentialFacts = Pick<Credential, 'id' | 'kind' | 'owner' | 'revokedAt'>;
 
 export type CredentialAskId = string;
 
@@ -88,7 +124,10 @@ export interface CredentialAsk {
 export interface NewCredentialAskInput {
   readonly credentialId: CredentialId;
   readonly requester: Principal;
-  readonly owner: Principal;
+  /** Optional since #778 S1: the stored owner is always the credential's
+   *  own owner. When given, it must name that same principal, otherwise the
+   *  store rejects with `owner_mismatch`. */
+  readonly owner?: Principal;
   readonly purpose: string;
   readonly mode: CredentialGrantMode;
   readonly requestedGrantExpiresAt?: Date;
@@ -104,11 +143,24 @@ export interface NewCredentialAskInput {
  */
 export function validateNewAskInput(input: NewCredentialAskInput): void {
   if (input.purpose.trim().length === 0) {
-    throw new Error('credential ask purpose must not be empty');
+    throw new CredentialAskRejectedError('invalid_input', 'credential ask purpose must not be empty');
   }
   if (input.mode === 'once' && !input.requestedGrantExpiresAt) {
-    throw new Error('a "once" credential ask requires requestedGrantExpiresAt');
+    throw new CredentialAskRejectedError('invalid_input', 'a "once" credential ask requires requestedGrantExpiresAt');
   }
+  // #778 S1: an Invalid Date would otherwise reach the store — the in-memory
+  // store keeps it silently, node-pg serialises it to "0NaN-…" and Postgres
+  // rejects it with 22007, which surfaces as a 500 instead of a 400.
+  if (input.requestedGrantExpiresAt !== undefined && !isValidDate(input.requestedGrantExpiresAt)) {
+    throw new CredentialAskRejectedError('invalid_input', 'requestedGrantExpiresAt must be a valid date');
+  }
+  if (!isValidDate(input.askExpiresAt)) {
+    throw new CredentialAskRejectedError('invalid_input', 'askExpiresAt must be a valid date');
+  }
+}
+
+function isValidDate(value: Date): boolean {
+  return value instanceof Date && Number.isFinite(value.getTime());
 }
 
 /**
@@ -133,6 +185,10 @@ export interface CredentialAskStore {
    * corresponding `CredentialGrant`. Returns `undefined` — never throws —
    * when the ask was already resolved or had expired by `now`: that is an
    * ordinary outcome (a lost race, a slow approver), not a store failure.
+   *
+   * #778 S1: the claim re-checks the credential. If it has since been
+   * revoked, deleted or otherwise stopped being askable, the ask is closed
+   * as `expired`, no grant is created, and this also returns `undefined`.
    */
   approve(id: CredentialAskId, resolvedBy: string, now: Date): Promise<CredentialAsk | undefined>;
   /** Same claim semantics as {@link approve}, without creating a grant. */
@@ -169,15 +225,18 @@ export class InMemoryCredentialAskStore implements CredentialAskStore {
   async createAsk(input: NewCredentialAskInput): Promise<CredentialAsk> {
     validateNewAskInput(input);
     const credential = await this.credentials.getCredential(input.credentialId);
-    if (!credential) throw new Error(`unknown credential: ${input.credentialId}`);
+    if (!credential) {
+      throw new CredentialAskRejectedError('unknown_credential', `unknown credential: ${input.credentialId}`);
+    }
     assertAskableCredential(credential);
+    const owner = resolveAskOwner(credential, input.owner);
 
     const id = nextId('ask');
     const ask: CredentialAsk = {
       id,
       credentialId: input.credentialId,
       requester: input.requester,
-      owner: input.owner,
+      owner,
       purpose: input.purpose,
       mode: input.mode,
       requestedGrantExpiresAt: input.requestedGrantExpiresAt,
@@ -211,6 +270,13 @@ export class InMemoryCredentialAskStore implements CredentialAskStore {
     // semantics for a caller that races two approvals).
     const claimed: CredentialAsk = { ...ask, status: 'approved', resolvedAt: now, resolvedBy };
     this.asks.set(id, claimed);
+
+    // #778 S1 — the credential may have been revoked since the ask was made.
+    const credential = await this.credentials.getCredential(ask.credentialId);
+    if (!isStillAskable(credential)) {
+      this.asks.set(id, { ...claimed, status: 'expired' });
+      return undefined;
+    }
 
     const grantInput: NewCredentialGrantInput = {
       credentialId: ask.credentialId,
@@ -247,12 +313,69 @@ export class InMemoryCredentialAskStore implements CredentialAskStore {
  * credential has no single owner to ask, it is reached through the broker
  * (phase 2) under an administratively-issued grant. Shared by both store
  * implementations so the rule cannot drift between them.
+ *
+ * #778 S1: the owner must be a `user` principal. Approval is bound to the
+ * session principal, which is always a user — an ask addressed to a `role`
+ * owner could never be answered by anyone.
  */
-export function assertAskableCredential(credential: Credential): void {
+export function assertAskableCredential(credential: AskableCredentialFacts): void {
   if (credential.kind !== 'personal') {
-    throw new Error(`credential ${credential.id} is not askable (kind=${credential.kind}, expected "personal")`);
+    throw new CredentialAskRejectedError(
+      'not_askable',
+      `credential ${credential.id} is not askable (kind=${credential.kind}, expected "personal")`,
+    );
+  }
+  if (credential.owner?.kind !== 'user') {
+    throw new CredentialAskRejectedError(
+      'not_askable',
+      `credential ${credential.id} is not askable (its owner is not a user who could approve)`,
+    );
   }
   if (credential.revokedAt) {
-    throw new Error(`credential ${credential.id} is revoked`);
+    throw new CredentialAskRejectedError('revoked', `credential ${credential.id} is revoked`);
+  }
+}
+
+/**
+ * The owner an ask against `credential` is addressed to: always the
+ * credential's own owner, canonicalised (`InMemoryCredentialStore` stores
+ * owners verbatim). A `requested` owner is only a cross-check — naming
+ * anyone else throws `owner_mismatch`, so a requester can never route an
+ * ask (and with it the power to approve) to a principal of their choosing.
+ */
+export function resolveAskOwner(credential: AskableCredentialFacts, requested?: Principal): Principal {
+  const owner = credential.owner;
+  if (!owner) {
+    throw new CredentialAskRejectedError('not_askable', `credential ${credential.id} has no owner`);
+  }
+  const canonical = canonicalPrincipal(owner);
+  if (requested) {
+    const wanted = canonicalPrincipal(requested);
+    if (wanted.kind !== canonical.kind || principalRef(wanted) !== principalRef(canonical)) {
+      throw new CredentialAskRejectedError(
+        'owner_mismatch',
+        `the requested owner is not the owner of credential ${credential.id}`,
+      );
+    }
+  }
+  return canonical;
+}
+
+function canonicalPrincipal(principal: Principal): Principal {
+  const ref = canonicalizePrincipalRef(principal.kind, principalRef(principal));
+  return principal.kind === 'user' ? { kind: 'user', userId: ref } : { kind: 'role', roleKey: ref };
+}
+
+/** The approve-time re-check: a missing credential, or one that fails
+ *  {@link assertAskableCredential}, can no longer be granted. Any error
+ *  that is NOT a domain rejection propagates. */
+export function isStillAskable(credential: AskableCredentialFacts | undefined): boolean {
+  if (!credential) return false;
+  try {
+    assertAskableCredential(credential);
+    return true;
+  } catch (err) {
+    if (err instanceof CredentialAskRejectedError) return false;
+    throw err;
   }
 }
