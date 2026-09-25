@@ -322,15 +322,17 @@ never created.
   without a saved chat (debug `scope`, `http-default`) is refused at create
   time. An empty answer (for example a diagram-only turn) fails the run
   instead of being recorded as `ok` with nothing delivered; dropped
-  attachments and interactive cards are logged at warn level and named in a
-  short note appended to the delivered message. A `NO_REPLY` answer (the orchestrator's default for a routine with
-  nothing to report) is dropped
-  like on every other channel: nothing is written and the run counts as `ok`.
-  There is no live
-  push (the web chat has no realtime channel): the web UI re-reads the active
-  chat when `/chat` mounts, after hydration, on chat switch and when the browser
-  tab becomes visible, and folds in deliveries the server returns on a PUT. The
-  message carries a "Scheduled routine" badge (en + de).
+  attachments and interactive cards are logged at warn level and recorded on
+  the marker (`droppedAttachments`, `droppedInteractive`), which the web UI
+  names under the badge from the en + de catalog — the stored text stays the
+  routine's own output. A `NO_REPLY` answer (the orchestrator's default for a
+  routine with nothing to report) is dropped like on every other channel:
+  nothing is written and the run counts as `ok`. There is no live push (the
+  web chat has no realtime channel): the web UI re-reads the active chat when
+  `/chat` mounts, after hydration, on chat switch, when the browser tab becomes
+  visible and when the window regains focus (a desktop window can be refocused
+  without ever turning hidden), and folds in deliveries the server returns on
+  a PUT. The message carries a "Scheduled routine" badge (en + de).
 - **Hydration folds, it no longer replaces.** A delivery makes the server copy
   newer. When that copy differs from the browser's only by deliveries, the web
   UI now keeps its own copy and adds the deliveries; replacing it would have
@@ -340,9 +342,12 @@ never created.
   server copy newer — it keeps its turns, folds the deliveries in and PUTs a
   catch-up copy, as it did before deliveries could bump `updatedAt`. That
   includes a server copy with no turns but a delivery (the chat's first turn
-  created the routine and its PUT failed): it can't be told apart from a clear
-  on another device, and the turns win because lost turns cannot come back.
-  A catch-up PUT keeps the browser's title, since the server's may still be
+  created the routine and its PUT failed). A clear on ANOTHER device followed
+  by a delivery leaves the same shape; the server's `resetAt` (stamped by
+  `POST …/reset`, server-owned, returned by GET) tells them apart: a reset
+  this browser did not perform and that is not older than its copy's last
+  change lets the clear win, so a stale device no longer pushes cleared turns
+  back for the subscription-CLI tail to replay. A catch-up PUT keeps the browser's title, since the server's may still be
   the "Neuer Chat" default the failed PUT would have replaced. On the
   in-process runtime the server copy holds such a turn under the SessionLogger
   mirror's `srv-u-…` / `srv-a-…` ids; a mirrored message matches the finished
@@ -356,8 +361,9 @@ never created.
 - **Re-reads never rewrite what they did not change.** A re-read that finds no
   delivery leaves the session state untouched (no re-render, no localStorage
   write), so a stale tab regaining focus cannot overwrite another tab's stored
-  chats. A re-read or PUT answer requested before "clear chat" is discarded, so
-  a cleared delivery does not come back. A fold keeps the browser's own
+  chats. A re-read or PUT answer requested before "clear chat", or answered
+  while its server reset is still in flight, is discarded, so a cleared
+  delivery does not come back. A fold keeps the browser's own
   `updatedAt`, so a turn whose PUT failed still triggers the next hydration's
   catch-up PUT (which carries the server's clock). A rename folds in the
   deliveries the server's merging PUT answer carries. A chat holding only
@@ -373,7 +379,10 @@ never created.
   rename of a cleared chat, a stale tab's catch-up and a new chat all PUT that,
   and each silently dropped unseen deliveries). Clearing is explicit:
   `POST /api/chat/sessions/:id/reset`, which the web UI's `clearMessages` now
-  calls itself before PUTting the cleared copy. A corrupt stored file
+  calls itself before PUTting the cleared copy. A failed reset is retried
+  once; if it still fails, the chat is cleared in the browser only and the
+  chat page says that scheduled routine messages may reappear (en + de),
+  instead of letting them come back unexplained. A corrupt stored file
   (unparseable JSON) is still overwritten (repaired) rather than failing the
   PUT; any other read failure fails the PUT instead of dropping deliveries.
 - **The `proactive` marker is server-trusted.** It counts only from the
@@ -381,8 +390,15 @@ never created.
 - **Deliveries stay out of the model tail.** `chatSessionTailTurns` skips them,
   so a report behind an unanswered question is never replayed as its answer,
   and the subscription-CLI tail treats a chat holding only deliveries as empty
-  (`[]`), not as unreadable history.
-
+  (`[]`), not as unreadable history. The SessionLogger mirror's idempotency
+  check looks past deliveries too, so a delivery landing between a client PUT
+  and the mirror of the same turn no longer stores that turn twice.
+- **"Run now" on a paused routine is refused, not recorded as `ok`.** A fire on
+  a routine that is no longer active is skipped without recording a run — it
+  used to record `ok` and overwrite the `last_run_error` explaining an
+  auto-pause (deleted chat). `POST /api/v1/routines/:id/trigger` answers 409
+  `routines.not_active` (the routines page names it, en + de), and the smart
+  card's "trigger now" says the routine is paused.
 - **One per-session lock for every `ChatSessionStore` instance.** Each
   orchestrator builds its own store over the same chat-sessions directory, so
   the lock is now module-level and also covers `delete`, `captureSnapshot`,

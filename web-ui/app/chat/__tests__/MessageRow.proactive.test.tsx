@@ -58,6 +58,30 @@ describe('MessageRow proactive routine delivery (#1071)', () => {
     expect(screen.queryByText(/⏱/)).toBeNull();
   });
 
+  // The server records what the text-only delivery dropped as counts on the
+  // marker; the note is rendered from the catalog, not stored as English prose.
+  it('names dropped attachments and an interactive element (en)', () => {
+    row(delivery({ deliveredAt: 1, routineName: 'Daily', droppedAttachments: 2, droppedInteractive: 'choice' }));
+    expect(
+      screen.getByText("2 attachments of this routine's output cannot be shown in the web chat."),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("An interactive element (choice) of this routine's output cannot be shown in the web chat."),
+    ).toBeTruthy();
+  });
+
+  it('names a single dropped attachment (de)', () => {
+    row(delivery({ deliveredAt: 1, droppedAttachments: 1 }), 'de');
+    expect(
+      screen.getByText('1 Anhang dieser Routine-Ausgabe kann im Web-Chat nicht angezeigt werden.'),
+    ).toBeTruthy();
+  });
+
+  it('adds no note when nothing was dropped', () => {
+    row(delivery({ deliveredAt: 1, routineName: 'Daily' }));
+    expect(screen.queryByText(/cannot be shown/)).toBeNull();
+  });
+
   it('shows no badge on an ordinary answer', () => {
     row(delivery(undefined));
     expect(screen.queryByText(/Scheduled/)).toBeNull();

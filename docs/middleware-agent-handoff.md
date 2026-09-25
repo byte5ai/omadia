@@ -2980,10 +2980,19 @@ Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
 - **`validateConversationRef` prüft Existenz.** Heute nur die Syntax der `sessionId`
   (ein gelöschter Chat fällt erst beim ersten Fire auf — dann aber vor dem Agent-Turn,
   und die Routine wird pausiert).
-- **Manueller Trigger einer pausierten Routine** (`triggerRoutineNow`) zeichnet heute einen
-  `ok`-Lauf auf, obwohl `runOnce` sofort zurückkehrt — das überschreibt den
-  `last_run_error` einer wegen gelöschtem Chat pausierten Routine. Vorbestehend, nicht Teil
-  von #1071.
+- **`checkDeliverable` liest "Datei fehlt" als "Chat gelöscht"** und pausiert die Routine.
+  Existiert der Chat nur im Browser (sein erster PUT scheiterte), wird eine gültige Routine
+  pausiert. Abhilfe: Tombstone beim `DELETE` oder nicht-pausierender Fehler bei bloßem Fehlen.
+- **Titel eines gescheiterten Umbenennens.** Im Hydration-Fall "gleiche Turns, Server neuer
+  wegen Zustellung" folgt der Titel dem Server. Ein Umbenennen, dessen PUT scheiterte, geht
+  dann verloren — ohne Zeitstempel des Titels auf dem Server ist es von einem Umbenennen auf
+  einem anderen Gerät nicht unterscheidbar.
+- **Zustellungen sind nicht im Modellkontext** (bewusst, s. § *Web-Sender*). Eine Rückfrage
+  wie "erklär Punkt 2 des Reports" hat nichts, woran sie anknüpft; Zustellungen könnten als
+  separater Kontext mitgegeben werden.
+- **Clock-Skew bei `resetAt`.** `clearedElsewhere` vergleicht den Server-Zeitstempel des
+  Resets mit dem Browser-`updatedAt` — nur im Fall "anderes Gerät hat geleert" und nur,
+  wenn der Browser den Reset nicht selbst ausgeführt hat.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
@@ -3966,15 +3975,18 @@ durch den Web-Sender unten.
   Turn streamt): wenn `/chat` mountet — der `ChatSessionsProvider` sitzt im Root-Layout
   und hydratisiert nur einmal pro Full-Load, ein In-App-Wechsel von `/routines` nach
   `/chat` sähe sonst nichts —, wenn die Hydration fertig ist, wenn der aktive Chat
-  wechselt und wenn der Browser-Tab wieder sichtbar wird. Die Antwort des PUT (das
-  gemergte Dokument) wird ebenso eingefaltet. Re-Read, Einfalten, Clear-Epoche und der
-  Visibility-Listener stecken im Hook `useProactiveRefresh`
-  (`web-ui/app/_lib/chatProactiveRefresh.ts`), den `useChatSessions` einbindet. Findet ein Re-Read nichts Neues, bleibt der
-  State-Array identisch (`foldProactive` gibt `prev` zurück) — kein Re-Render, kein
-  localStorage-Write; ein veralteter Tab, der wieder sichtbar wird, überschreibt so nicht,
-  was ein anderer Tab gespeichert hat. Ein Re-Read oder PUT-Answer, der **vor** einem
-  "Chat leeren" angefragt wurde, wird verworfen (Clear-Epoche pro Session), sonst kämen
-  die gerade gelöschten Zustellungen zurück. Offline-User sehen die Nachricht beim
+  wechselt, wenn der Browser-Tab wieder sichtbar wird und wenn das Fenster den Fokus
+  zurückbekommt (ein Desktop-/Electron-Fenster wird nie "hidden"). Die Antwort des PUT
+  (das gemergte Dokument) wird ebenso eingefaltet. Re-Read, Einfalten, Clear-Epoche und
+  die Visibility-/Focus-Listener stecken im Hook `useProactiveRefresh`
+  (`web-ui/app/_lib/chatProactiveRefresh.ts`), den `useChatSessions` einbindet. Findet
+  ein Re-Read nichts Neues, bleibt der State-Array identisch (`foldProactive` gibt `prev`
+  zurück) — kein Re-Render, kein localStorage-Write; ein veralteter Tab, der wieder
+  sichtbar wird, überschreibt so nicht, was ein anderer Tab gespeichert hat. Ein Re-Read
+  oder PUT-Answer, der **vor** einem "Chat leeren" angefragt wurde, wird verworfen
+  (Clear-Epoche pro Session), ebenso jeder, der beantwortet wird, **während** der Reset
+  noch läuft (`beginClear`/`endClear`) — sonst kämen die gerade gelöschten Zustellungen
+  zurück. Offline-User sehen die Nachricht beim
   nächsten Öffnen; die UI zeigt ein Badge "Geplante Routine · <Name>".
 - **Hydration faltet, ersetzt nicht.** Eine Zustellung macht die Server-Kopie neuer. Die
   Server-Kopie kennt aber nur, was `MessageSchema` deklariert (zod strippt den Rest):
@@ -3994,9 +4006,16 @@ durch den Web-Sender unten.
     Turn-PUT scheiterte, ohne gespiegelt zu werden). Lokale Kopie bleibt, Zustellungen
     werden eingefügt, Catch-up-PUT (der Merge-PUT behält die Zustellungen). Das gilt auch
     für eine Server-Kopie **ohne** Turns, aber mit Zustellung: der erste Turn des Chats
-    hat die Routine angelegt und sein PUT scheiterte. Von "auf anderem Gerät geleert,
-    danach zugestellt" ist das nicht unterscheidbar — die Turns gewinnen, denn ein
-    rückgängig gemachtes Leeren lässt sich wiederholen, verlorene Turns nicht.
+    hat die Routine angelegt und sein PUT scheiterte. "Auf anderem Gerät geleert, danach
+    zugestellt" hinterlässt dieselbe Form; unterschieden wird über `resetAt`
+    (`clearedElsewhere`): `resetMessages` stempelt es (Server-Uhr), `mergeServerProactiveMessages`
+    trägt den gespeicherten Wert über jeden PUT (ein Client kann ihn weder setzen noch
+    löschen), `GET` liefert ihn, `coerceSession` liest ihn, und `clearMessages` merkt sich
+    den `resetAt` eines selbst ausgeführten Resets lokal. Ein Reset, den dieser Browser
+    **nicht** kennt und der nicht älter als sein letzter lokaler Stand (`updatedAt`) ist →
+    das Leeren gewinnt (Server-Kopie, kein PUT); sonst gewinnen die Turns. So schiebt ein
+    veraltetes Gerät geleerte Turns nicht mehr zurück auf den Server, wo der
+    Subscription-CLI-Tail sie dem Modell replayed hätte.
   - **Alles andere** — Turn von einem anderen Gerät, eine lokal nur teilweise vorhandene
     Antwort unter gleicher oder Mirror-Id (Reload mitten im Stream, Tab geschlossen bevor
     der debouncte localStorage-Write nachzog), Leeren/Reset ohne spätere Zustellung
@@ -4022,7 +4041,11 @@ durch den Web-Sender unten.
   jedes davon hat ungesehene Zustellungen gelöscht. Leeren ist explizit
   `POST /api/chat/sessions/:id/reset` (`resetMessages`); `clearMessages` in der Web-UI
   ruft es selbst auf und PUTtet danach die geleerte Kopie aus dem committeten State
-  (`sessionsRef`). Umbenennen liest nicht mehr vorab, sondern faltet die PUT-Antwort ein. `MessageSchema` kennt
+  (`sessionsRef`). Scheitert der Reset auch im zweiten Versuch, ist der Chat nur im Browser
+  geleert (der PUT ersetzt nur die Turns, Zustellungen bleiben); `clearMessages` liefert
+  dann `'partial'`, und die Chat-Seite sagt, dass geplante Nachrichten wieder auftauchen
+  können (`chat.resetPartialNotice`, en + de). Umbenennen liest nicht mehr vorab, sondern
+  faltet die PUT-Antwort ein. `MessageSchema` kennt
   `proactive`, sonst entfernt zod ihn beim nächsten PUT (die #445-Falle). Ist die
   gespeicherte Datei korrupt (JSON nicht parsebar, `SyntaxError`), überschreibt der PUT
   sie wie vor #1071 (repariert sie, `WARN`-Log); jeder andere Lesefehler lässt den PUT
@@ -4035,7 +4058,9 @@ durch den Web-Sender unten.
   gegen Web-Sender und PUT-Route serialisiert, und ein DELETE kann nicht von einem
   parallelen Read-Modify-Write zurückgeholt werden. Er gilt **nicht** über Prozesse
   hinweg — bei mehreren Middleware-Instanzen auf einem geteilten Memory-Store bleibt ein
-  Fenster.
+  Fenster. Die Idempotenz-Prüfung des Mirrors (`appendTurnUnlocked`, "letzte zwei
+  Nachrichten") überspringt Zustellungen, sonst würde eine Zustellung zwischen Client-PUT
+  und Mirror desselben Turns ihn als `srv-u`/`srv-a` doppelt speichern.
 - **Gelöschter Chat wird nicht wiederbelebt — und kostet keinen Agent-Turn.** Der optionale
   Sender-Hook `checkDeliverable` läuft im Runner **vor** dem Agent-Turn und wirft
   `ProactiveTargetGoneError` (*"web chat conversation '<id>' no longer exists"*); dasselbe,
@@ -4043,13 +4068,20 @@ durch den Web-Sender unten.
   dann (unscoped, System-Aktion), meldet sie beim Scheduler ab und schreibt nach
   `last_run_error` *"…; the routine was paused — delete it and create it again from an
   existing conversation"*. Ein fehlender Store (LLM-Key noch nicht gesetzt) ist dagegen ein
-  normaler Fehler; die Routine bleibt aktiv.
+  normaler Fehler; die Routine bleibt aktiv. Ein Fire auf eine nicht mehr aktive Routine
+  wird übersprungen, **ohne** einen Lauf aufzuzeichnen (früher `ok`, was den
+  `last_run_error` mit der Pausen-Erklärung überschrieb). "Jetzt" auf eine pausierte
+  Routine: `triggerRoutineNow` wirft `RoutineNotActiveError`, `POST
+  /api/v1/routines/:id/trigger` antwortet 409 `routines.not_active` (Routinen-Seite:
+  `routines.actions.triggerNotActive`), die Smart-Card sagt "ist pausiert".
 - **Nur Text.** `cardBody`/`approval` werden stillschweigend ignoriert; `message.text`
   trägt schon den Markdown-Fallback, und das Session-Schema persistiert keine
   Attachments. Verworfene Attachments und ein verworfenes `message.interactive` (Kind
-  wird genannt) werden auf Warn-Level geloggt (`console.warn`) **und** in einem kurzen
-  Hinweis am Ende der zugestellten Nachricht benannt (`droppedContentNote`, englisch wie
-  alle serverseitigen Routine-Texte). Eine **leere Antwort** (z. B. ein reiner
+  wird genannt) werden auf Warn-Level geloggt (`console.warn`) **und** am Marker
+  festgehalten (`proactive.droppedAttachments`, `proactive.droppedInteractive`); die
+  Web-UI nennt sie unter dem Badge aus dem Katalog (`chat.proactiveDroppedAttachments`
+  mit ICU-Plural, `chat.proactiveDroppedInteractive`, en + de). Der gespeicherte Text
+  bleibt die Ausgabe der Routine — keine englische Prosa darin. Eine **leere Antwort** (z. B. ein reiner
   Diagramm-Turn) wirft — der Lauf landet als `error` in `last_run_error` statt als `ok`
   ohne Zustellung.
 - **`NO_REPLY` wird verworfen, nicht zugestellt.** Der Orchestrator-Systemprompt macht

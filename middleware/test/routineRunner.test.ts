@@ -848,6 +848,10 @@ describe('RoutineRunner — run-once delivery path', () => {
 
     assert.equal(stub.calls.length, 0, 'orchestrator must not be invoked');
     assert.equal(sender.calls.length, 0, 'sender must not be called');
+    // #1071 — a skipped fire is not a run: recording it as `ok` overwrote
+    // the last_run_error that explains an auto-pause.
+    assert.equal(h.runsStore.inserts.length, 0, 'no run history row');
+    assert.equal(h.store.recordRunCalls.length, 0, 'last_run_* untouched');
   });
 
   it('marks manually-triggered runs with trigger=manual', async () => {

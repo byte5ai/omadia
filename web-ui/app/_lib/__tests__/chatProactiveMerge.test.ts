@@ -258,6 +258,57 @@ describe('reconcileNewerRemote', () => {
     expect(pushLocal).toBe(true);
   });
 
+  // The same shape — no turns, a delivery — is what a clear on ANOTHER
+  // device followed by a delivery leaves. Pushing the stale local turns back
+  // then resurrected the cleared chat on the server, and the subscription-CLI
+  // tail replayed it to the model. The server's `resetAt` tells them apart.
+  it('lets a clear on another device win when the server reset after the last local change', () => {
+    const local = session([U1, A1], 30);
+    const remote = { ...session([DELIVERY], 40), resetAt: 35 };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(pushLocal).toBe(false);
+    expect(result).toBe(remote);
+    expect(result.messages.map((m) => m.id)).toEqual(['p1']);
+    warn.mockRestore();
+  });
+
+  it('keeps local turns written after a reset whose PUT failed', () => {
+    // Cleared at 25, then a turn at 30 whose PUT never reached the server.
+    const local = session([U1, A1], 30);
+    const remote = { ...session([DELIVERY], 40), resetAt: 25 };
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(result.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'p1']);
+    expect(pushLocal).toBe(true);
+  });
+
+  it('keeps local turns after a reset this browser performed itself, whatever the clocks say', () => {
+    // This browser's clock runs behind the server's: its later turn still
+    // reads as older than the reset. It remembers the reset, so it is not news.
+    const local = { ...session([U1, A1], 30), resetAt: 35 };
+    const remote = { ...session([DELIVERY], 40), resetAt: 35 };
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(result.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'p1']);
+    expect(pushLocal).toBe(true);
+  });
+
+  it('adopts the server resetAt when the copies are otherwise in sync', () => {
+    const local = session([], 30);
+    const remote = { ...session([DELIVERY], 40), resetAt: 35 };
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(pushLocal).toBe(false);
+    expect(result.resetAt).toBe(35);
+    expect(result.messages.map((m) => m.id)).toEqual(['p1']);
+  });
+
   it('takes the server copy when it holds no messages at all (a clear or reset)', () => {
     const local = session([U1, A1], 30);
     const remote = session([], 40);
@@ -265,7 +316,7 @@ describe('reconcileNewerRemote', () => {
 
     expect(reconcileNewerRemote(local, remote)).toEqual({ session: remote, pushLocal: false });
     // Dropping local turns is never silent.
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('holds no messages'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('holds no turns'));
     warn.mockRestore();
   });
 });

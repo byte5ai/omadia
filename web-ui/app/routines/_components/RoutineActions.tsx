@@ -79,6 +79,12 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
           setError(t('triggerChatUnavailable'));
           return;
         }
+        // #1071 — a paused routine (also one auto-paused because its web
+        // chat was deleted) is refused with 409 instead of a skipped run.
+        if (err instanceof ApiError && err.body.includes('routines.not_active')) {
+          setError(t('triggerNotActive'));
+          return;
+        }
         setError(err instanceof Error ? err.message : String(err));
       }
     });

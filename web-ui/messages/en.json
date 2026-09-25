@@ -1474,6 +1474,9 @@
     "composerSendHint": "↵ to send · ⇧↵ for a new line",
     "proactiveRoutineBadge": "Scheduled routine · {name}",
     "proactiveBadge": "Scheduled message",
+    "proactiveDroppedAttachments": "{count, plural, one {# attachment} other {# attachments}} of this routine's output cannot be shown in the web chat.",
+    "proactiveDroppedInteractive": "An interactive element ({kind}) of this routine's output cannot be shown in the web chat.",
+    "resetPartialNotice": "Cleared in this browser only — the server could not be reached, so scheduled routine messages of this chat may reappear. Restart the chat again later to remove them.",
     "streamingSuffix": "· streaming…",
     "toolTraceHeading": "Tool trace ({count})",
     "subCallCount": "{count, plural, one {# sub-call} other {# sub-calls}}",
@@ -5711,6 +5714,7 @@
       "triggerNotice": "Started — the result will appear in the channel in ~30 seconds.",
       "triggerNoticeWeb": "Started — the result is added to the chat this routine was created in and shows up there the next time you open or return to that chat.",
       "triggerChatUnavailable": "No LLM API key configured — add it in Admin → Settings, then trigger again.",
+      "triggerNotActive": "This routine is paused — resume it first, then trigger it.",
       "deleteConfirm": "Delete routine ''{name}''? This cannot be undone."
     },
     "templateEditor": {

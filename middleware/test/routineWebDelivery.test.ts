@@ -22,6 +22,7 @@ import type {
   RoutineRunsStore,
 } from '../src/plugins/routines/routineRunsStore.js';
 import {
+  RoutineNotActiveError,
   RoutineRunner,
   type JobSchedulerLike,
   type OrchestratorLike,
@@ -196,6 +197,23 @@ describe('#1071 — routines created from the web chat', () => {
     assert.equal(store.rows.get(routine.id)?.status, 'paused');
     assert.deepEqual(scheduler.disposed, [routine.id], 'its cron no longer fires');
     assert.equal(await chats.get(SESSION_ID), null);
+  });
+
+  // "Now" on the auto-paused routine used to record an `ok` run (the early
+  // return sat inside the recording try/finally), which overwrote the
+  // last_run_error explaining the pause.
+  it('refuses a manual trigger of the auto-paused routine and keeps the pause explanation', async () => {
+    const routine = await runner.createRoutine(
+      createInput(webChatConversationRef(SESSION_ID, SESSION_ID)),
+    );
+    await chats.delete(SESSION_ID);
+    await runner.triggerRoutineNow(routine.id, OWNER);
+    const recorded = store.runs.length;
+
+    await assert.rejects(runner.triggerRoutineNow(routine.id, OWNER), RoutineNotActiveError);
+
+    assert.equal(store.runs.length, recorded, 'no run recorded');
+    assert.match(store.runs.at(-1)?.error ?? '', /the routine was paused/);
   });
 
   it('pauses the routine when the chat vanishes while the turn runs', async () => {

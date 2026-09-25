@@ -15,11 +15,18 @@ import { LLM_SETUP_HINT } from '../llmSetupHint.js';
  * routes are:
  *
  *   GET    /api/chat/sessions            list summaries (newest first)
- *   GET    /api/chat/sessions/:id        full session document
- *   PUT    /api/chat/sessions/:id        upsert — body must match id; keeps
- *                                        server-written proactive messages
- *                                        the body lacks (#1071)
+ *   GET    /api/chat/sessions/:id        full session document (incl. the
+ *                                        server-owned `resetAt`, #1071)
+ *   PUT    /api/chat/sessions/:id        upsert — body must match id. MERGES
+ *                                        (#1071): keeps server-written
+ *                                        proactive messages the body lacks and
+ *                                        answers `{ ok, session }` with the
+ *                                        stored document. An empty `messages`
+ *                                        array is NOT a clear.
  *   DELETE /api/chat/sessions/:id        drop the file
+ *   POST   /api/chat/sessions/:id/reset  the explicit clear: drops turns AND
+ *                                        routine deliveries, stamps `resetAt`
+ *   POST   /api/chat/sessions/:id/re-snapshot  drop the pinned Agent snapshot
  *
  * Gated by `requireAuth` at mount time (see middleware/src/index.ts) —
  * Sessions können PII / Tool-Outputs / Code-Snippets enthalten.
@@ -87,6 +94,8 @@ const MessageSchema = z.object({
       deliveredAt: z.number(),
       routineId: z.string().optional(),
       routineName: z.string().max(200).optional(),
+      droppedAttachments: z.number().int().nonnegative().optional(),
+      droppedInteractive: z.string().max(100).optional(),
     })
     .optional(),
 });

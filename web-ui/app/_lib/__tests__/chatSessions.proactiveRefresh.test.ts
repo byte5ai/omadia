@@ -45,6 +45,10 @@ let putBodies: ChatSession[] = [];
 let requests: string[] = [];
 /** When set, a GET of one session waits for this promise before answering. */
 let holdSessionGet: Promise<void> | null = null;
+/** When set, POST …/reset waits for this promise before answering. */
+let holdReset: Promise<void> | null = null;
+/** HTTP status POST …/reset answers with. */
+let resetStatus = 200;
 
 function session(id: string, updatedAt: number, messages: Message[]): ChatSession {
   return { id, title: id, createdAt: 1_000, updatedAt, messages };
@@ -73,6 +77,8 @@ beforeEach(() => {
   requests = [];
   putResponse = null;
   holdSessionGet = null;
+  holdReset = null;
+  resetStatus = 200;
   window.localStorage.clear();
   serverA = session(ID_A, 2_000, []);
   serverB = session(ID_B, 1_500, [USER_TURN]);
@@ -93,6 +99,14 @@ beforeEach(() => {
         if (holdSessionGet) await holdSessionGet;
         return json(read());
       };
+      if (method === 'POST' && url.endsWith('/reset')) {
+        const reset = async (): Promise<Response> => {
+          if (holdReset) await holdReset;
+          if (resetStatus !== 200) return new Response('', { status: resetStatus });
+          return json({ sessionId: ID_B, newConversationId: `${ID_B}:7000`, resetAt: 7_000 });
+        };
+        return reset();
+      }
       if (method === 'GET' && url.endsWith(ID_A)) return answer(() => serverA);
       if (method === 'GET' && url.endsWith(ID_B)) return answer(() => serverB);
       return Promise.resolve(new Response('', { status: 200 }));
@@ -373,6 +387,90 @@ describe('useChatSessions — proactive re-read (#1071)', () => {
 
     act(() => {
       view.result.current.persistById(ID_B);
+    });
+
+    await waitFor(() => {
+      expect(messagesOf(view, ID_B).map((m) => m.id)).toEqual(['u1', DELIVERY.id]);
+    });
+  });
+
+  // A re-read requested AFTER the clear started carries the post-clear
+  // epoch, yet if it is answered before the server reset lands it still holds
+  // the cleared delivery. Nothing is folded while a clear is in flight.
+  it('does not fold a server copy answered while the reset is still in flight', async () => {
+    const view = await hydrated();
+    serverB = { ...serverB, updatedAt: 9_000, messages: [...serverB.messages, DELIVERY] };
+    let releaseReset: () => void = () => undefined;
+    holdReset = new Promise<void>((resolve) => {
+      releaseReset = resolve;
+    });
+
+    let clearing: Promise<unknown> = Promise.resolve();
+    act(() => {
+      clearing = view.result.current.clearMessages(ID_B);
+    });
+    act(() => {
+      view.result.current.refreshProactive(ID_B);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(messagesOf(view, ID_B)).toEqual([]);
+
+    await act(async () => {
+      releaseReset();
+      await clearing;
+    });
+    expect(messagesOf(view, ID_B)).toEqual([]);
+  });
+
+  it('remembers the server resetAt of a clear it performed', async () => {
+    const view = await hydrated();
+
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await view.result.current.clearMessages(ID_B);
+    });
+
+    expect(outcome).toBe('cleared');
+    expect(view.result.current.sessions.find((s) => s.id === ID_B)?.resetAt).toBe(7_000);
+  });
+
+  // A failed reset used to fall back to the PUT of `[]` silently: the turns
+  // were cleared on the server, its routine deliveries were not, and they
+  // came back on the next re-read without a word.
+  it('retries a failed reset once and reports a partial clear when it still fails', async () => {
+    const view = await hydrated();
+    resetStatus = 503;
+    requests = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await view.result.current.clearMessages(ID_B);
+    });
+
+    expect(outcome).toBe('partial');
+    expect(requests).toEqual([
+      `POST /bot-api/chat/sessions/${ID_B}/reset`,
+      `POST /bot-api/chat/sessions/${ID_B}/reset`,
+      `PUT /bot-api/chat/sessions/${ID_B}`,
+    ]);
+    expect(messagesOf(view, ID_B)).toEqual([]);
+    warn.mockRestore();
+  });
+
+  // A desktop / Electron window can regain focus without ever turning
+  // hidden, so a delivery into the open chat stayed invisible.
+  it('re-reads the active chat when the window regains focus', async () => {
+    const view = await hydrated();
+    act(() => {
+      view.result.current.setActive(ID_B);
+    });
+    serverB = { ...serverB, updatedAt: 9_000, messages: [...serverB.messages, DELIVERY] };
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
     });
 
     await waitFor(() => {

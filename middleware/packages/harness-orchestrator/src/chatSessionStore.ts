@@ -83,6 +83,13 @@ export interface ChatProactiveMarker {
   deliveredAt: number;
   routineId?: string;
   routineName?: string;
+  /**
+   * What the text-only web delivery had to drop from the routine's output.
+   * Stored as data, not as prose in `content`, so the UI names it in the
+   * reader's language.
+   */
+  droppedAttachments?: number;
+  droppedInteractive?: string;
 }
 
 /**
@@ -119,6 +126,14 @@ export interface ChatSession {
    *  (drain or kill) replaces or clears it. Optional because legacy sessions
    *  pre-date this field. */
   snapshot?: SessionConfigSnapshot;
+  /**
+   * #1071 — server clock of the last explicit clear (`resetMessages`). Lets
+   * a browser holding an older copy tell "cleared elsewhere, then a routine
+   * delivered" apart from "this browser's turn never reached the server".
+   * Written only by `resetMessages`; a client PUT can neither set nor drop
+   * it (`mergeServerProactiveMessages` carries the stored value over).
+   */
+  resetAt?: number;
 }
 
 export interface ChatSessionSummary {
@@ -308,10 +323,12 @@ export class ChatSessionStore {
     return this.withLock(id, async () => {
       const existing = await this.get(id);
       if (!existing) return null;
+      const now = Date.now();
       const updated: ChatSession = {
         ...existing,
         messages: [],
-        updatedAt: Date.now(),
+        updatedAt: now,
+        resetAt: now,
       };
       await this.save(updated);
       return updated;
@@ -353,7 +370,14 @@ export class ChatSessionStore {
    */
   async appendProactiveMessage(
     id: string,
-    message: { content: string; deliveredAt: number; routineId?: string; routineName?: string },
+    message: {
+      content: string;
+      deliveredAt: number;
+      routineId?: string;
+      routineName?: string;
+      droppedAttachments?: number;
+      droppedInteractive?: string;
+    },
   ): Promise<'appended' | 'not_found'> {
     if (!ID_RE.test(id)) return 'not_found';
     return this.withLock(id, async () => {
@@ -363,6 +387,12 @@ export class ChatSessionStore {
         deliveredAt: message.deliveredAt,
         ...(message.routineId !== undefined ? { routineId: message.routineId } : {}),
         ...(message.routineName !== undefined ? { routineName: message.routineName } : {}),
+        ...(message.droppedAttachments !== undefined && message.droppedAttachments > 0
+          ? { droppedAttachments: message.droppedAttachments }
+          : {}),
+        ...(message.droppedInteractive !== undefined
+          ? { droppedInteractive: message.droppedInteractive }
+          : {}),
       };
       const appended: ChatMessage = {
         id: `proactive-${message.routineId ?? 'reminder'}-${String(message.deliveredAt)}`,
@@ -443,7 +473,9 @@ export class ChatSessionStore {
     }
 
     // Idempotency: if the client has already PUT this exact pair, don't dupe.
-    const tail = existing.messages.slice(-2);
+    // #1071 — routine deliveries are skipped: one that landed between the
+    // client's PUT of this turn and this mirror must not hide the pair.
+    const tail = existing.messages.filter((m) => !m.proactive).slice(-2);
     const alreadyPersisted =
       tail.length === 2 &&
       tail[0]?.role === 'user' &&

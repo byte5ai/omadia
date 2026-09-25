@@ -1474,6 +1474,9 @@
     "composerSendHint": "↵ senden · ⇧↵ neue Zeile",
     "proactiveRoutineBadge": "Geplante Routine · {name}",
     "proactiveBadge": "Geplante Nachricht",
+    "proactiveDroppedAttachments": "{count, plural, one {# Anhang} other {# Anhänge}} dieser Routine-Ausgabe {count, plural, one {kann} other {können}} im Web-Chat nicht angezeigt werden.",
+    "proactiveDroppedInteractive": "Ein interaktives Element ({kind}) dieser Routine-Ausgabe kann im Web-Chat nicht angezeigt werden.",
+    "resetPartialNotice": "Nur in diesem Browser geleert — der Server war nicht erreichbar, daher können geplante Routine-Nachrichten dieses Chats wieder auftauchen. Starte den Chat später noch einmal neu, um sie zu entfernen.",
     "streamingSuffix": "· streamt…",
     "toolTraceHeading": "Tool-Trace ({count})",
     "subCallCount": "{count, plural, one {# Sub-Call} other {# Sub-Calls}}",
@@ -5711,6 +5714,7 @@
       "triggerNotice": "Gestartet — Ergebnis erscheint in ~30 Sekunden im Channel.",
       "triggerNoticeWeb": "Gestartet — das Ergebnis landet im Chat, in dem die Routine angelegt wurde, und erscheint dort, sobald du den Chat das nächste Mal öffnest oder zu ihm zurückkehrst.",
       "triggerChatUnavailable": "Kein LLM-API-Key konfiguriert — bitte in Admin → Einstellungen hinterlegen und erneut auslösen.",
+      "triggerNotActive": "Diese Routine ist pausiert — erst fortsetzen, dann auslösen.",
       "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden."
     },
     "templateEditor": {

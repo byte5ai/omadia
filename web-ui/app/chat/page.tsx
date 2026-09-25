@@ -109,6 +109,9 @@ const MOCK_KG_WALK: KgWalkPayload = {
 
 const EMPTY_SUBSCRIBE = (): (() => void) => () => undefined;
 
+/** How long the "reset reached this browser only" notice stays (#1071). */
+const RESET_PARTIAL_NOTICE_MS = 10_000;
+
 function useKgMockEnabled(): boolean {
   // useSyncExternalStore avoids a setState-in-effect: the client snapshot reads
   // the URL directly, the server snapshot is always false (no SSR mismatch
@@ -248,6 +251,9 @@ export default function ChatPage(): React.ReactElement {
   const [input, setInput] = useState('');
   const [resetPending, setResetPending] = useState(false);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  /** #1071 — the last reset cleared this browser only; the server kept its
+   *  routine deliveries, which come back on the next re-read. */
+  const [resetPartial, setResetPartial] = useState(false);
   /** Mid-turn steering — true while a `/chat/steer` request is in flight. */
   const [steerBusy, setSteerBusy] = useState(false);
   /** Transient composer notice after a steer attempt: 'sent' when it was
@@ -407,6 +413,17 @@ export default function ChatPage(): React.ReactElement {
     };
   }, [steerNotice]);
 
+  // …and the partial-reset notice once it has been read.
+  useEffect(() => {
+    if (!resetPartial) return;
+    const timer = setTimeout(() => {
+      setResetPartial(false);
+    }, RESET_PARTIAL_NOTICE_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [resetPartial]);
+
   // OM-21/37: plain Enter sends, matching every other composer in the app.
   // ⌘/Ctrl+Enter stays an accepted alias (it was the only documented shortcut
   // here), Shift+Enter falls through to the browser's own newline, and an
@@ -439,8 +456,9 @@ export default function ChatPage(): React.ReactElement {
       // the only explicit clear): the conversation pointer rotates so the
       // agent starts a new turn-chain; KG / Memory are NOT touched. If the
       // backend isn't reachable it still clears locally — the user wanted a
-      // fresh slate.
-      await clearMessages(activeId);
+      // fresh slate — and says that routine deliveries may come back.
+      const outcome = await clearMessages(activeId);
+      setResetPartial(outcome === 'partial');
     } finally {
       setResetPending(false);
       inputRef.current?.focus();
@@ -691,6 +709,11 @@ export default function ChatPage(): React.ReactElement {
                 </span>
               )}
             </div>
+          )}
+          {resetPartial && (
+            <p role="status" className="text-[11px] text-[color:var(--warning)]">
+              {t('resetPartialNotice')}
+            </p>
           )}
           {/* §5.3 Spotlight: the composer is the stage — radial accent glow
               behind it, three-stop showcase glow on the focused input. */}
@@ -1441,11 +1464,26 @@ function ProactiveBadge({
   const label = proactive.routineName
     ? t('proactiveRoutineBadge', { name: proactive.routineName })
     : t('proactiveBadge');
+  // What the text-only web delivery had to drop, named from the marker in
+  // the reader's language (the server stores counts, not prose).
+  const attachments = proactive.droppedAttachments ?? 0;
+  const dropped: string[] = [];
+  if (attachments > 0) {
+    dropped.push(t('proactiveDroppedAttachments', { count: attachments }));
+  }
+  if (proactive.droppedInteractive !== undefined) {
+    dropped.push(t('proactiveDroppedInteractive', { kind: proactive.droppedInteractive }));
+  }
   return (
-    <div className="mb-2 inline-flex items-center text-[11px]">
+    <div className="mb-2 flex flex-col items-start gap-1 text-[11px]">
       <span className="inline-flex items-center rounded-full bg-[color:var(--accent)]/10 px-2 py-0.5 font-medium text-[color:var(--accent)] ring-1 ring-[color:var(--accent)]">
         {label}
       </span>
+      {dropped.map((note) => (
+        <span key={note} className="text-[color:var(--fg-muted)]">
+          {note}
+        </span>
+      ))}
     </div>
   );
 }

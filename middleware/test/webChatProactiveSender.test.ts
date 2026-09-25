@@ -18,7 +18,6 @@ import { ProactiveTargetGoneError } from '../src/plugins/routines/proactiveSende
 import {
   WEB_ROUTINE_CHANNEL,
   createWebChatProactiveSender,
-  droppedContentNote,
   webChatConversationRef,
 } from '../src/plugins/routines/webChatProactiveSender.js';
 
@@ -152,8 +151,10 @@ describe('#1071 — web chat proactive sender', () => {
 
   // Dropping content silently (or only in an info-level log) left the reader
   // of the chat with a report that pointed at a chart or a button that never
-  // arrived. Warn at warn level AND say so in the delivered text.
-  it('delivers the text, warns at warn level and notes the dropped attachments in the chat', async () => {
+  // arrived. Warn at warn level AND record it on the marker, which the web UI
+  // names next to the badge in the reader's language (en + de catalog). The
+  // stored text stays the routine's own output — no English prose in it.
+  it('delivers the text unchanged, warns and records the dropped attachments on the marker', async () => {
     const store = await seededStore();
     const warns: string[] = [];
     const sender = createWebChatProactiveSender({
@@ -165,13 +166,14 @@ describe('#1071 — web chat proactive sender', () => {
 
     await sender.send({ conversationRef: REF, message, routine: ROUTINE });
 
-    const content = (await store.get(SESSION_ID))?.messages.at(-1)?.content ?? '';
-    assert.ok(content.startsWith('Report\n\n'), content);
-    assert.match(content, /_Note: 2 attachment\(s\) of this routine's output cannot be shown in the web chat\._$/);
+    const delivered = (await store.get(SESSION_ID))?.messages.at(-1);
+    assert.equal(delivered?.content, 'Report\n');
+    assert.equal(delivered?.proactive?.droppedAttachments, 2);
+    assert.equal(delivered?.proactive?.droppedInteractive, undefined);
     assert.ok(warns.some((l) => /dropped 2 attachment/.test(l)), warns.join('\n'));
   });
 
-  it('delivers the text, warns at warn level and notes a dropped interactive card in the chat', async () => {
+  it('delivers the text unchanged, warns and records a dropped interactive card on the marker', async () => {
     const store = await seededStore();
     const warns: string[] = [];
     const sender = createWebChatProactiveSender({
@@ -183,17 +185,11 @@ describe('#1071 — web chat proactive sender', () => {
 
     await sender.send({ conversationRef: REF, message, routine: ROUTINE });
 
-    const content = (await store.get(SESSION_ID))?.messages.at(-1)?.content ?? '';
-    assert.match(content, /^Pick one\n\n_Note: an interactive 'choice' element of this routine's output/);
+    const delivered = (await store.get(SESSION_ID))?.messages.at(-1);
+    assert.equal(delivered?.content, 'Pick one');
+    assert.equal(delivered?.proactive?.droppedInteractive, 'choice');
+    assert.equal(delivered?.proactive?.droppedAttachments, undefined);
     assert.ok(warns.some((l) => /dropped interactive 'choice'/.test(l)), warns.join('\n'));
-  });
-
-  it('names both dropped kinds in one note, and adds none when nothing was dropped', () => {
-    assert.equal(droppedContentNote(0, undefined), null);
-    assert.equal(
-      droppedContentNote(1, 'choice'),
-      "_Note: 1 attachment(s) and an interactive 'choice' element of this routine's output cannot be shown in the web chat._",
-    );
   });
 
   it('throws when the chat session store is not available', async () => {

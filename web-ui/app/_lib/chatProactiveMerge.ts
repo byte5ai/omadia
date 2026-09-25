@@ -86,11 +86,13 @@ export interface NewerRemoteReconciliation {
  *   else), fold the deliveries in and ask for a catch-up PUT, exactly the
  *   "backend is behind" healing a chat got before deliveries could bump
  *   `updatedAt`. This includes a server copy with NO turns but a delivery:
- *   the chat's first turn created the routine and its PUT failed. That copy
- *   looks exactly like a clear on another device followed by a delivery, and
- *   the two cannot be told apart — so the turns win: an undone remote clear
- *   can be cleared again, turns that exist only in this browser cannot come
- *   back once replaced.
+ *   the chat's first turn created the routine and its PUT failed. The same
+ *   shape is also what a clear on ANOTHER device followed by a delivery
+ *   leaves — `clearedElsewhere` tells the two apart through the server's
+ *   `resetAt`: a reset this browser did not perform and that is not older
+ *   than the local copy's last change means the clear wins (the server copy
+ *   is taken, no push), so a stale device cannot resurrect cleared turns
+ *   the subscription-CLI tail would replay to the model.
  * - Anything else — a turn from another device, an answer the local copy
  *   only holds partially under either id (a mid-stream reload, or a tab closed
  *   before the debounced local write caught up: the server's full answer must
@@ -124,6 +126,7 @@ export function reconcileNewerRemote(
         title: remote.title,
         // In sync: adopt the server's clock so the next load does not re-read.
         updatedAt: Math.max(merged.updatedAt, remote.updatedAt),
+        ...(remote.resetAt !== undefined ? { resetAt: remote.resetAt } : {}),
       },
       pushLocal: false,
     };
@@ -132,16 +135,34 @@ export function reconcileNewerRemote(
   if (
     isPrefix &&
     remoteTurns.length < localTurns.length &&
-    (remoteTurns.length > 0 || remoteHasDelivery)
+    (remoteTurns.length > 0 || (remoteHasDelivery && !clearedElsewhere(local, remote)))
   ) {
     return { session: mergeProactiveFromRemote(local, remote), pushLocal: true };
   }
   if (remoteTurns.length === 0 && localTurns.length > 0) {
     console.warn(
-      `[chat-sessions] server copy of ${local.id} holds no messages; replacing ${String(localTurns.length)} local turn(s) with it`,
+      `[chat-sessions] server copy of ${local.id} holds no turns; replacing ${String(localTurns.length)} local turn(s) with it`,
     );
   }
   return { session: remote, pushLocal: false };
+}
+
+/**
+ * The server copy was cleared by a reset this browser did not perform and
+ * that happened after the local copy's last change — the local turns
+ * predate the clear. A reset this browser performed (it remembers the
+ * server's `resetAt`), no reset at all, or one older than the local copy's
+ * last change (a turn after the clear whose PUT failed) is not.
+ *
+ * `resetAt` is the server's clock and `updatedAt` this browser's, so the
+ * comparison is only as good as the two clocks agree — it decides only
+ * between two devices, where a reset and the other device's last change are
+ * normally minutes apart; the same-device case never depends on it.
+ */
+function clearedElsewhere(local: ChatSession, remote: ChatSession): boolean {
+  if (remote.resetAt === undefined) return false;
+  if (remote.resetAt === local.resetAt) return false;
+  return remote.resetAt >= local.updatedAt;
 }
 
 function turns(session: ChatSession): Message[] {

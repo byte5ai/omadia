@@ -27,10 +27,12 @@ import { ProactiveTargetGoneError, type ProactiveSender } from './proactiveSende
  *  - Text only. `cardBody` / `approval` are ignored; `message.text` already
  *    carries the markdown fallback, and the session schema persists no
  *    attachments for any message. Dropped attachments and interactive cards
- *    (`message.interactive`) are logged at warn level AND named in a short
- *    note appended to the delivered text, so the reader knows something is
- *    missing; an empty answer throws so the run is not recorded as `ok` with
- *    nothing delivered.
+ *    (`message.interactive`) are logged at warn level AND recorded on the
+ *    delivery's `proactive` marker (`droppedAttachments`,
+ *    `droppedInteractive`), which the web UI names next to the badge in the
+ *    reader's language — the stored text stays the routine's own output. An
+ *    empty answer throws so the run is not recorded as `ok` with nothing
+ *    delivered.
  */
 
 /** Routine `channel` value of the browser chat. */
@@ -92,22 +94,6 @@ function goneError(sessionId: string): ProactiveTargetGoneError {
   return new ProactiveTargetGoneError(`web chat conversation '${sessionId}' no longer exists`);
 }
 
-/**
- * #1071 — the visible note appended to a delivery whose attachments or
- * interactive card the text-only web delivery had to drop. English, like
- * every other server-written routine string. `null` when nothing was dropped.
- */
-export function droppedContentNote(
-  attachmentCount: number,
-  interactiveKind: string | undefined,
-): string | null {
-  const parts: string[] = [];
-  if (attachmentCount > 0) parts.push(`${String(attachmentCount)} attachment(s)`);
-  if (interactiveKind !== undefined) parts.push(`an interactive '${interactiveKind}' element`);
-  if (parts.length === 0) return null;
-  return `_Note: ${parts.join(' and ')} of this routine's output cannot be shown in the web chat._`;
-}
-
 export function createWebChatProactiveSender(
   opts: WebChatProactiveSenderOptions,
 ): ProactiveSender {
@@ -162,11 +148,12 @@ export function createWebChatProactiveSender(
           `[routines/web-sender] ${where}: dropped interactive '${message.interactive.kind}' — web delivery is text-only`,
         );
       }
-      const note = droppedContentNote(attachmentCount, message.interactive?.kind);
       const outcome = await store.appendProactiveMessage(sessionId, {
-        content: note === null ? message.text : `${message.text.trimEnd()}\n\n${note}`,
+        content: message.text,
         deliveredAt: now(),
         ...(routine ? { routineId: routine.id, routineName: routine.name } : {}),
+        ...(attachmentCount > 0 ? { droppedAttachments: attachmentCount } : {}),
+        ...(message.interactive ? { droppedInteractive: message.interactive.kind } : {}),
       });
       // Deleted while the turn ran: gone for good, like the pre-flight case.
       if (outcome === 'not_found') throw goneError(sessionId);

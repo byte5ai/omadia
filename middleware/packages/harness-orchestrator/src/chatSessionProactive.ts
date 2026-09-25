@@ -18,6 +18,9 @@ import type { ChatMessage, ChatSession } from './chatSessionStore.js';
  * cleared chat, a stale tab's catch-up or a brand-new chat PUTs, and reading
  * it as "clear" silently dropped deliveries the client never saw. Clearing a
  * chat is explicit: `POST /sessions/:id/reset` (`resetMessages`).
+ *
+ * `resetAt` is server-owned: the stored value is carried over, whatever the
+ * incoming document says.
  */
 export function mergeServerProactiveMessages(
   existing: ChatSession | null,
@@ -28,18 +31,30 @@ export function mergeServerProactiveMessages(
   for (const m of existing?.messages ?? []) {
     if (m.proactive) serverProactive.set(m.id, m);
   }
+  let stripped = 0;
   const messages = incoming.messages.map((m): ChatMessage => {
     const server = serverProactive.get(m.id);
     // Keep the server's own marker on a delivery the client round-tripped.
     if (server?.proactive) return { ...m, proactive: server.proactive };
     if (!m.proactive) return m;
+    stripped += 1;
     const { proactive: _forged, ...rest } = m;
     return rest;
   });
+  if (stripped > 0) {
+    console.warn(
+      `[chat-sessions] ${incoming.id}: stripped ${String(stripped)} proactive marker(s) the server never wrote`,
+    );
+  }
 
+  const { resetAt: _clientResetAt, ...incomingRest } = incoming;
+  const base: ChatSession = {
+    ...incomingRest,
+    ...(existing?.resetAt !== undefined ? { resetAt: existing.resetAt } : {}),
+  };
   const incomingIds = new Set(messages.map((m) => m.id));
   const missing = [...serverProactive.values()].filter((m) => !incomingIds.has(m.id));
-  if (missing.length === 0 || !existing) return { ...incoming, messages };
+  if (missing.length === 0 || !existing) return { ...base, messages };
 
   for (const m of missing) {
     const at = messages.findIndex((x) => x.role === 'user' && x.startedAt > m.startedAt);
@@ -47,7 +62,7 @@ export function mergeServerProactiveMessages(
     else messages.splice(at, 0, m);
   }
   return {
-    ...incoming,
+    ...base,
     messages,
     updatedAt: Math.max(incoming.updatedAt, existing.updatedAt, now),
   };

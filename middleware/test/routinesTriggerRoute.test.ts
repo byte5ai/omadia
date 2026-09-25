@@ -157,4 +157,20 @@ describe('POST /v1/routines/:id/trigger — chat-agent availability (issue #473)
     assert.equal(body.routine.id, 'routine-1');
     assert.deepEqual(h.runner.triggerCalls, ['routine-1']);
   });
+
+  // #1071 — a paused routine (e.g. auto-paused because its web chat was
+  // deleted) is refused synchronously instead of accepted and then skipped.
+  it('returns 409 routines.not_active for a paused routine — without dispatching a run', async () => {
+    h.runner.chatAvailable = true;
+    h.runner.seed({ ...makeRoutine('routine-2'), status: 'paused' });
+
+    const res = await fetch(`${h.baseUrl}/v1/routines/routine-2/trigger`, {
+      method: 'POST',
+    });
+
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string };
+    assert.equal(body.code, 'routines.not_active');
+    assert.equal(h.runner.triggerCalls.length, 0);
+  });
 });

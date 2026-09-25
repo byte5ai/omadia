@@ -584,6 +584,10 @@ export interface Message {
     deliveredAt: number;
     routineId?: string;
     routineName?: string;
+    /** Attachments the text-only web delivery had to drop. */
+    droppedAttachments?: number;
+    /** Kind of the interactive element the web delivery had to drop. */
+    droppedInteractive?: string;
   };
   streaming?: boolean;
   /**
@@ -673,6 +677,14 @@ export interface ChatSession {
   updatedAt: number;
   messages: Message[];
   snapshot?: SessionAgentSnapshot;
+  /**
+   * #1071 — server clock of the chat's last explicit clear (`POST …/reset`).
+   * Server-owned (a PUT cannot set it); read from the server copy, and
+   * remembered locally for a clear this browser performed. Lets hydration
+   * tell "cleared on another device, then a routine delivered" apart from
+   * "this browser's turn never reached the server" (`reconcileNewerRemote`).
+   */
+  resetAt?: number;
 }
 
 interface SessionSummary {
@@ -786,6 +798,7 @@ export function coerceSession(v: unknown): ChatSession | null {
   ) {
     session.snapshot = snapshot as SessionAgentSnapshot;
   }
+  if (typeof s['resetAt'] === 'number') session.resetAt = s['resetAt'];
   return session;
 }
 
@@ -874,17 +887,46 @@ async function putRemoteSession(session: ChatSession): Promise<ChatSession | nul
  * deliveries; since #1071 the only explicit clear — and rotates the
  * conversation pointer so the agent's next turn starts a fresh turn-chain.
  * Memory and Knowledge-Graph entries are NOT touched. A chat the server
- * never stored has nothing to clear.
+ * never stored has nothing to clear (`null`). Otherwise resolves to the
+ * server's `resetAt` stamp, or `null` when the answer carries none.
  */
-async function resetRemoteSession(id: string): Promise<void> {
+async function resetRemoteSession(id: string): Promise<number | null> {
   const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(id)}/reset`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: '{}',
   });
-  if (res.status === 404) return;
+  if (res.status === 404) return null;
   if (!res.ok) throw new Error(`POST reset: HTTP ${String(res.status)}`);
+  const body: unknown = await res.json().catch(() => null);
+  const resetAt =
+    typeof body === 'object' && body !== null
+      ? (body as { resetAt?: unknown }).resetAt
+      : undefined;
+  return typeof resetAt === 'number' ? resetAt : null;
 }
+
+/** `resetRemoteSession`, retried once; `undefined` when both attempts failed. */
+async function resetRemoteSessionWithRetry(id: string): Promise<number | null | undefined> {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await resetRemoteSession(id);
+    } catch (err) {
+      console.warn(
+        `[chat-sessions] clear reset attempt ${String(attempt)} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return undefined;
+}
+
+/**
+ * #1071 — how far a clear reached. `'partial'`: the chat is cleared in this
+ * browser, but the server reset failed, so routine deliveries it holds come
+ * back on the next re-read.
+ */
+export type ClearOutcome = 'cleared' | 'partial';
 
 async function deleteRemoteSession(id: string): Promise<void> {
   const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(id)}`, {
@@ -904,7 +946,7 @@ export interface UseChatSessionsResult {
   deleteSession(id: string): Promise<void>;
   renameSession(id: string, title: string): Promise<void>;
   setActive(id: string): void;
-  clearMessages(id: string): Promise<void>;
+  clearMessages(id: string): Promise<ClearOutcome>;
   mutateById(
     sessionId: string,
     mutator: (session: ChatSession) => ChatSession,
@@ -1040,7 +1082,11 @@ export function useChatSessions(): UseChatSessionsResult {
                   });
                 }
               }
-            } catch {
+            } catch (err) {
+              console.warn(
+                `[chat-sessions] failed to read newer server copy of ${id}, keeping the local one:`,
+                err instanceof Error ? err.message : err,
+              );
               merged.push(l);
             }
           } else {
@@ -1157,7 +1203,7 @@ export function useChatSessions(): UseChatSessionsResult {
   // deliveries (see `chatProactiveRefresh.ts`).
   const resolvedActiveId =
     sessions.find((s) => s.id === activeId)?.id ?? sessions[0]?.id ?? '';
-  const { clearEpochOf, bumpClearEpoch, foldProactive, refreshProactive } =
+  const { clearEpochOf, beginClear, endClear, foldProactive, refreshProactive } =
     useProactiveRefresh({
       setSessions,
       hydrating,
@@ -1172,29 +1218,43 @@ export function useChatSessions(): UseChatSessionsResult {
   // server copy in sync with the local one (title, snapshot, …) and creates
   // it when the server never had it. The body is built from committed state
   // (`sessionsRef`), not from inside a `setSessions` updater.
+  //
+  // The reset is retried once. When it still fails, the chat is cleared here
+  // but the server may keep routine deliveries (the PUT that follows replaces
+  // only the turns), and those come back on the next re-read — the result
+  // says so (`'partial'`) and the chat page tells the user.
   const clearMessages = useCallback(
-    async (id: string): Promise<void> => {
-      // Bumped before AND after the reset: a server copy requested before
-      // the reset completed may still carry the cleared deliveries.
-      bumpClearEpoch(id);
+    async (id: string): Promise<ClearOutcome> => {
+      // Nothing is folded into this chat while the reset runs, and a server
+      // copy requested before it completed is stale (`beginClear`/`endClear`).
+      beginClear(id);
       const current = sessionsRef.current.find((s) => s.id === id);
       const updatedAt = Date.now();
       setSessions((prev) =>
         prev.map((s) => (s.id === id ? { ...s, messages: [], updatedAt } : s)),
       );
       if (!current) {
+        endClear(id);
         console.warn(`[chat-sessions] clear: session ${id} is not loaded; nothing sent to the server`);
-        return;
+        return 'partial';
       }
+      let resetAt: number | null | undefined;
       try {
-        await resetRemoteSession(id);
-      } catch (err) {
+        resetAt = await resetRemoteSessionWithRetry(id);
+      } finally {
+        endClear(id);
+      }
+      if (resetAt === undefined) {
         console.warn(
-          '[chat-sessions] clear reset failed, clearing the turns only:',
-          err instanceof Error ? err.message : err,
+          `[chat-sessions] clear: reset of ${id} failed twice; clearing the turns only — routine deliveries stay on the server`,
+        );
+      } else if (resetAt !== null) {
+        // Remember the reset this browser performed: a later hydration then
+        // knows it is not news from another device (`reconcileNewerRemote`).
+        setSessions((prev) =>
+          prev.map((s) => (s.id === id ? { ...s, resetAt } : s)),
         );
       }
-      bumpClearEpoch(id);
       try {
         await putRemoteSession({ ...current, messages: [], updatedAt });
       } catch (err) {
@@ -1203,8 +1263,9 @@ export function useChatSessions(): UseChatSessionsResult {
           err instanceof Error ? err.message : err,
         );
       }
+      return resetAt === undefined ? 'partial' : 'cleared';
     },
-    [bumpClearEpoch],
+    [beginClear, endClear],
   );
 
   // #617 — mutation is addressed by session id, never by "whatever is active".

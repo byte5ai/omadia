@@ -128,6 +128,23 @@ export class RoutineNotFoundError extends Error {
   }
 }
 
+/**
+ * #1071 — a manual trigger of a routine that is not active (paused by the
+ * user, or auto-paused because its web chat was deleted). Refused instead of
+ * run: a run would be skipped anyway, and recording it as `ok` overwrote the
+ * `last_run_error` that explains the pause.
+ */
+export class RoutineNotActiveError extends Error {
+  constructor(
+    id: string,
+    public readonly routineName: string,
+    public readonly status: string,
+  ) {
+    super(`routine '${id}' is ${status}; resume it before triggering it`);
+    this.name = 'RoutineNotActiveError';
+  }
+}
+
 export class UnknownChannelError extends Error {
   constructor(channel: string) {
     super(`no proactive sender registered for channel '${channel}'`);
@@ -311,6 +328,9 @@ export class RoutineRunner {
     // tenant's conversation on demand.
     if (!routine || !ownedBy(routine, scope)) {
       throw new RoutineNotFoundError(id);
+    }
+    if (routine.status !== 'active') {
+      throw new RoutineNotActiveError(id, routine.name, routine.status);
     }
     const controller = new AbortController();
     await this.runOnce(routine, controller.signal, 'manual');
@@ -571,6 +591,10 @@ export class RoutineRunner {
     let prompt = routine.prompt;
     let tenant = routine.tenant;
     let userId = routine.userId;
+    // #1071 — a fire on a routine that is no longer active is SKIPPED, not
+    // run: nothing is recorded. Recording it as `ok` overwrote the
+    // `last_run_error` that explains an auto-pause (deleted web chat).
+    let skipped = false;
 
     try {
       // Re-read the row before invoking. A pause/delete that landed
@@ -578,7 +602,10 @@ export class RoutineRunner {
       // best-effort, not transactional). Checked first so a raced fire on
       // a paused row never records a spurious availability error.
       const fresh = await this.store.get(routine.id);
-      if (!fresh || fresh.status !== 'active') return;
+      if (!fresh || fresh.status !== 'active') {
+        skipped = true;
+        return;
+      }
       prompt = fresh.prompt;
       tenant = fresh.tenant;
       userId = fresh.userId;
@@ -654,34 +681,36 @@ export class RoutineRunner {
         `[routines/runner] routine ${routine.id} ('${routine.name}') ${status}: ${errorMessage}`,
       );
     } finally {
-      const finishedAt = new Date();
+      if (!skipped) {
+        const finishedAt = new Date();
 
-      // Append-only per-run history with full agentic trace. Failures
-      // here log but never abort the run (parity with `recordRun`).
-      await this.runsStore.insert({
-        routineId: routine.id,
-        tenant,
-        userId,
-        trigger,
-        startedAt,
-        finishedAt,
-        status,
-        errorMessage,
-        prompt,
-        answer: result?.answer ?? null,
-        iterations: result?.iterations ?? null,
-        toolCalls: result?.toolCalls ?? null,
-        runTrace: result?.runTrace ?? null,
-      });
+        // Append-only per-run history with full agentic trace. Failures
+        // here log but never abort the run (parity with `recordRun`).
+        await this.runsStore.insert({
+          routineId: routine.id,
+          tenant,
+          userId,
+          trigger,
+          startedAt,
+          finishedAt,
+          status,
+          errorMessage,
+          prompt,
+          answer: result?.answer ?? null,
+          iterations: result?.iterations ?? null,
+          toolCalls: result?.toolCalls ?? null,
+          runTrace: result?.runTrace ?? null,
+        });
 
-      // Backwards-compat: keep updating last_run_* on the routines row
-      // so the existing operator-UI tabular row keeps working without
-      // having to join into routine_runs.
-      await this.store.recordRun({
-        id: routine.id,
-        status,
-        error: errorMessage,
-      });
+        // Backwards-compat: keep updating last_run_* on the routines row
+        // so the existing operator-UI tabular row keeps working without
+        // having to join into routine_runs.
+        await this.store.recordRun({
+          id: routine.id,
+          status,
+          error: errorMessage,
+        });
+      }
     }
   }
 

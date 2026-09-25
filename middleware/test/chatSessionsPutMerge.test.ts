@@ -126,6 +126,32 @@ describe('#1071 — PUT /sessions/:id keeps server-written proactive messages', 
     assert.deepEqual((await stored()).messages, []);
   });
 
+  // A browser holding an older copy must be able to tell "cleared elsewhere,
+  // then a routine delivered" from "my first turn's PUT failed" — both look
+  // like "no turns + a delivery". `resetAt` is what tells them apart, so it
+  // must survive every later write and be readable through GET.
+  it('POST /reset stamps a server-owned resetAt that later writes keep and GET returns', async () => {
+    const before = Date.now();
+    await fetch(`${base}/sessions/${ID}/reset`, { method: 'POST' });
+    const resetAt = (await stored()).resetAt;
+    assert.ok(resetAt !== undefined && resetAt >= before, 'reset stamps resetAt');
+
+    await store.appendProactiveMessage(ID, { content: 'Report', deliveredAt: resetAt + 5 });
+    // The client can neither drop it (zod strips the field) …
+    await put({ ...clientCopy(), messages: [] });
+    // … nor move it.
+    await put({ ...clientCopy(), messages: [], resetAt: 1 } as ChatSession);
+
+    assert.equal((await stored()).resetAt, resetAt);
+    const fetched = (await (await fetch(`${base}/sessions/${ID}`)).json()) as ChatSession;
+    assert.equal(fetched.resetAt, resetAt);
+  });
+
+  it('a chat that was never reset carries no resetAt, and a client cannot mint one', async () => {
+    await put({ ...clientCopy(), resetAt: T0 + 100 } as ChatSession);
+    assert.equal((await stored()).resetAt, undefined);
+  });
+
   it('does not trust a proactive marker the client minted', async () => {
     const forged: ChatMessage = {
       ...msg('x1', 'assistant', T0 + 2),
@@ -217,5 +243,26 @@ describe('#1071 — the per-session lock spans ChatSessionStore instances', () =
     await Promise.all([a.delete(ID), b.resetMessages(ID)]);
 
     assert.equal(await b.get(ID), null);
+  });
+});
+
+describe('#1071 — the SessionLogger mirror looks past routine deliveries', () => {
+  // The mirror skips a turn the client already PUT by comparing the last two
+  // messages. A delivery that lands between the client's PUT and the mirror
+  // used to hide that pair, so the turn was stored a second time as srv-u/srv-a.
+  it('a delivery between the client PUT and the mirror does not duplicate the turn', async () => {
+    const chats = new ChatSessionStore(new InMemoryMemoryStore());
+    await chats.save(clientCopy());
+    await chats.appendProactiveMessage(ID, { content: 'Report', deliveredAt: T0 + 5, routineId: 'r1' });
+
+    await chats.appendTurnFromServer(ID, {
+      userMessage: 'user-u1',
+      assistantMessage: 'assistant-a1',
+      startedAt: T0,
+      finishedAt: T0 + 1,
+    });
+
+    const ids = (await chats.get(ID))?.messages.map((m) => m.id);
+    assert.deepEqual(ids, ['u1', 'a1', `proactive-r1-${String(T0 + 5)}`]);
   });
 });

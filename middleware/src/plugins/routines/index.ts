@@ -78,6 +78,7 @@ export {
 export {
   ROUTINES_AGENT_ID,
   RoutineRunner,
+  RoutineNotActiveError,
   RoutineNotFoundError,
   RoutineQuotaExceededError,
   UnknownChannelError,

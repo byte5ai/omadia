@@ -7,7 +7,7 @@ import {
 import type { RoutinesHandle } from './initRoutines.js';
 import { createProactiveSender } from './genericProactiveSender.js';
 import { actorScope, type ManageRoutineContext } from './manageRoutineTool.js';
-import type { RoutineActorScope } from './routineRunner.js';
+import { RoutineNotActiveError, type RoutineActorScope } from './routineRunner.js';
 import { recordUnscopedRoutineAction } from './unscopedActionMetrics.js';
 import {
   ADAPTIVE_CARD_CONTENT_TYPE,
@@ -144,7 +144,15 @@ export function createRoutinesIntegration(
         return `Routine "${updated.name}" wieder aktiv.`;
       }
       if (action === 'trigger_now') {
-        const updated = await handle.runner.triggerRoutineNow(id, scope);
+        let updated;
+        try {
+          updated = await handle.runner.triggerRoutineNow(id, scope);
+        } catch (err) {
+          if (err instanceof RoutineNotActiveError) {
+            return `Routine "${err.routineName}" ist pausiert — erst fortsetzen, dann auslösen.`;
+          }
+          throw err;
+        }
         const status = updated.lastRunStatus ?? 'ok';
         return status === 'ok'
           ? `Routine "${updated.name}" wurde manuell ausgelöst — Antwort kommt gleich.`
