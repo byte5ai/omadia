@@ -2871,6 +2871,34 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Turn-Budget (OM-104) — offene Defekte (#1077 follow-up)
+
+Beim Schreiben der #1077-Tests gefunden, dort bewusst nicht repariert (die
+Änderung ist tests-only):
+
+- **Turn-Budget greift nicht bei Registry-Agents.**
+  `packages/harness-orchestrator/src/registry/applyDiff.ts` `buildForAgent`
+  reicht aus den Registry-Runtime-Defaults `loopRepeatSoft/Hard`,
+  `maxTurnSeconds` und `directLineSticky` durch, aber **nicht**
+  `cliTurnSeconds`. Das Plugin legt den Wert korrekt in
+  `defaultRuntimeConfig` ab (gepinnt von
+  `test/subscriptionParity/cliTurnBudgetRegistry.pg.test.ts`), er kommt nur
+  nie beim `CliChatAgent` an. Mit Datenbank baut die Registry jeden Agent
+  (`registry/index.ts`, beide `buildForAgent`-Aufrufe), und der Web-Chat
+  läuft über `reg.slugForFallback()` (`src/index.ts`, `getDefaultSlug`).
+  Auf DB-Deployments hat das Setup-Feld `cli_turn_seconds` damit keine
+  Wirkung; es gilt nur ENV bzw. Default. Reparatur: eine Spread-Zeile neben
+  `maxTurnSeconds` plus ein Test auf `spawnTimeoutMs` des gebauten Agents.
+- **`TurnBudgetField` löscht nach fehlgeschlagenem Laden das Budget.**
+  `web-ui/app/admin/subscription-clis/_components/TurnBudgetField.tsx`
+  sperrt Eingabe und Speichern nur bei `status.kind === 'loading'`. Scheitert
+  `getInstalledPlugin`, bleibt das Feld leer und Speichern aktiv; ein Klick
+  schickt `{ cli_turn_seconds: null }`, löscht den gespeicherten Wert und
+  zeigt "Gespeichert". Daneben: `240.5` besteht die `parseInt`-Prüfung und
+  wird unverändert gespeichert, und beide `catch`-Zweige rendern die rohe
+  Exception-Meldung statt eines Katalog-Schlüssels (web-ui/CLAUDE.md,
+  Checkliste Punkt 3).
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
@@ -3155,6 +3183,39 @@ Admin-UI unsichtbar UND unlöschbar:
   soll sichtbar sein statt geglaubt werden zu müssen.
 - ACL unverändert owner-only: die Seite zeigt ausschließlich Datensätze
   des eingeloggten Kontos, nicht die der Instanz.
+
+### Offen — Was `agents.privacy_profile = 'strict'` bedeuten soll (#978-Follow-up)
+
+Stand #978: Die Spalte ist **reserviert, nicht wirksam**. Sie wird
+persistiert, von der Operator-API gemeldet und im UI angezeigt, aber kein
+Runtime-Pfad liest sie. `AgentRuntimeConfig` hat kein Posture-Feld, und nichts
+verzweigt auf `'strict'`. Eine Änderung ist seit #978 ein Metadaten-`update` in
+`applyDiff.ts` und kein `rebuild` mehr. Die Migration `0061` schreibt den
+Status als Kommentar an die Spalte. Im UI gibt es keinen Toggle mehr, der Wert
+steht mit „(nicht wirksam)“ in der Zusammenfassung.
+
+Bevor `strict` etwas erzwingt, muss eine Produktentscheidung fallen. Die
+Optionen aus dem Issue:
+
+- **Privacy Guard erzwingen**, unabhängig von der installationsweiten
+  Einstellung. Heute ist `deps.privacyGuard` ein spät gebundener
+  `privacy.redact@1`-Lookup und plattformweit.
+- **Strengere Intern-Policy** (`packages/harness-orchestrator/src/privacyInternPolicy.ts`),
+  heute ebenfalls plattformweit.
+- **Engerer Memory-Scope** für das Agent.
+
+Randbedingungen für jede Variante:
+
+- Sub-Agent-Aufrufe reichen das Handle über `turnContext.privacyHandle` weiter
+  (`localSubAgent.ts`, `toolDispatchService.ts`). Eine Posture pro Agent muss
+  diese Grenze überleben, sonst gilt `strict` nur für den äußersten Turn.
+- Der Onboarding-Seed legt den Fallback-Agent mit `'strict'` an
+  (`registry/onboarding.ts`). Sobald `strict` etwas erzwingt, ist Masking für
+  den produktiven Fallback-Agent **ohne Operator-Aktion** an. Das braucht
+  entweder einen Daten-Backfill oder eine bewusste Release-Notiz.
+- Wird `strict` wirksam, muss `privacy_profile` in `runtimeChangeReasons`
+  zurück (sonst greift die Änderung erst nach dem nächsten Neustart), und die
+  UI bekommt ihren Toggle wieder.
 
 ---
 
@@ -3631,10 +3692,50 @@ unverändert; kein Key, aber angemeldete Claude-CLI → CLI-Pfad; keins von beid
 Dynamic-Agent-Runtime für hochgeladene Agenten seit #309 macht, aus demselben Grund: der
 Completion-Adapter lehnt jede Anfrage mit Tools ab.
 
-**Bekannte Einschränkung:** `createCliSubAgent().ask()` nimmt keinen `AskObserver` und keine
-`AskOptions` entgegen. Auf dem Abo-Weg fehlen dem Builder-UI deshalb `tool_use` /
-`tool_result` / Token-Zähler, und `expectedTurnToolUse: 'fill_slot'` wirkt nicht. Der Turn
-läuft, die Live-Anzeige bleibt beim Heartbeat. Eigene Unit.
+**Live-Anzeige und `fill_slot`-Pflicht auf dem Abo-Weg (#1072):** `createCliSubAgent().ask()`
+erfüllt jetzt den vollen `Askable`-Vertrag `ask(question, observer?, options?)` (`AskOptions`
+liegt dafür neben `Askable` in `tools/domainQueryTool.ts`, `localSubAgent.ts` re-exportiert
+den Typ). `CliChatAgent.chat(input, hooks?)` reicht jedes Lifecycle-Event an
+`hooks.onEvent` und nach einem erfolgreichen Turn die CLI-Usage an `hooks.onUsage`; ein
+terminales `is_error` wirft weiterhin. Bewusst nicht `chatStream()`: `streamTurn` prüft
+`parser.isError()` nicht und meldet einen toten Turn als normales `done`.
+
+`CliObserverBridge` (`cliSubAgentObserverBridge.ts`) übersetzt die Events pro `ask()` auf den
+`AskObserver`, wie `LocalSubAgent` + `streaming.ts` ihn treiben:
+
+- `tool_use` / `tool_result` → `onSubToolUse` / `onSubToolResult`, der Präfix
+  `mcp__omadia__` wird abgeschnitten (das Builder-UI und die Pflichtprüfung vergleichen nackte
+  IDs wie `fill_slot`). `isError` aus dem Flag oder einem `Error:`-Präfix.
+- `text_delta` → `onTokenChunk` mit `ceil(Zeichen/4)` pro Iteration, 500-ms-Fenster für
+  `tokensPerSec`; Phasen `thinking → streaming → tool_running`, `idle` auf jedem Ausgang.
+- Iterationsgrenze: das erste Text- oder Tool-Event nach einem `tool_result` (oder das
+  Spawn-Ende danach) schließt die Iteration mit `stopReason: 'tool_use'`; das Spawn-Ende
+  schließt mit `end_turn`. Die CLI meldet Usage nur pro Spawn → ein aggregiertes
+  `onIterationUsage` auf der letzten Iteration. Die Zählung läuft über den Re-Prompt weiter.
+- Fremde Tool-Calls (ohne `mcp__omadia__`, OM-81) gehen nie an den Observer. Builder und
+  Preview zählen sie über `recordForeignToolCall(name, 'builder' | 'builder-preview')`; ohne
+  Callback loggt die Bridge `[security] FOREIGN …` auf Error-Level.
+
+`expectedTurnToolUse` lässt sich auf der CLI nicht erzwingen (kein `tool_choice`). Stattdessen
+Nachprüfung nach dem Turn: fehlt das Tool, genau **ein** Re-Prompt mit Originalfrage, erster
+Antwort und der Anweisung, `mcp__omadia__<tool>` aufzurufen oder konkret zu begründen, warum
+nicht; bereits ausgeführte Tool-Calls werden genannt. Weil der zweite Spawn deren Ergebnisse
+nicht sieht, darf er lesende Calls erneut ausführen, zustandsändernde aber nicht. Der
+Re-Prompt reitet in `userMessage`, nicht in `priorTurns` (dort würde auf 600 Zeichen gekürzt).
+Fehlt das Tool danach immer noch → Warnung, Antwort wird trotzdem zurückgegeben.
+`maxEscalations: 0` schaltet den Re-Prompt ab. Ein fehlschlagender Re-Prompt lässt das ganze
+`ask()` scheitern (Parität zu `LocalSubAgent`; das Builder-UI zeigt `builder.ask_failed`); der
+Fehler nennt das erwartete Tool und die schon gelaufenen Tools (`cause` = Originalfehler), deren
+Seiteneffekte bestehen bleiben.
+
+Rest-Unschärfen: Der Re-Prompt-Spawn nutzt den System-Prompt vom Turn-Start und sieht
+Spec-Patches des ersten Spawns nicht; Token-Zahlen stammen nur aus Text-Deltas (die CLI
+liefert keine Tool-Input-Deltas); Usage ist pro Spawn, nicht pro Modell-Iteration.
+`dynamicAgentRuntime.ts` und `registry/subAgentTools.ts` bleiben unverändert. Auf einem
+`claude-cli`-Host bekommen deren CLI-Sub-Agenten trotzdem keinen Observer:
+`ToolDispatchService.dispatch` ruft `domainTool.handle(input)` ohne Observer auf, und fremde
+Tool-Calls landen dort nur in `console.error`, nicht in `recordForeignToolCall`. Eigene Unit
+nach #1079.
 
 ### Kosten-Ledger nimmt Abo-Turns (OM-103)
 
@@ -3702,7 +3803,9 @@ Orchestrator-Setup-Feld **`cli_turn_seconds`** → `spawnTimeoutMs` des `CliChat
 Reihenfolge: Setting > ENV `OMADIA_CLI_SPAWN_TIMEOUT_MS` > Default 600 s. Leer/0 heißt
 "nicht gesetzt", damit ein leeres Feld die ENV nicht überschreibt. UI auf der
 LLM-Zugang-Seite, Reiter Abos; sie schreibt über den normalen Plugin-Config-PATCH, das
-Plugin reaktiviert, kein Neustart.
+Plugin reaktiviert, kein Neustart. **Ausnahme:** Agents, die die Registry baut (mit
+Datenbank also auch der Web-Chat), ignorieren das Setting derzeit — offener Defekt, siehe
+§13 "Turn-Budget (OM-104) — offene Defekte".
 
 ### `manage_routine` bekommt den Principal (OM-82)
 
