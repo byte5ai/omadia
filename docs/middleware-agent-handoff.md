@@ -2967,6 +2967,73 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Credential-Broker: offen nach der Egress-Härtung (#778 S3a follow-up)
+
+S3a härtet Anfrage- und Antwortseite von `CredentialBroker.request`
+(`docs/security-architecture.md` §10e): auf der Anfrageseite die
+Caller-Header-Allow-List samt undici-Wertprüfung, die Ablehnung von GET/HEAD
+mit Body (`invalid-request`), den Abgleich der `pathPrefixes` mit dem
+Wire-Pfad und die Prüfung des deklarierten Hosts; auf der Antwortseite
+manuelle Redirects, Timeout und Byte-Cap, den Secret-Scrub und bereinigte
+Upstream-Fehler. Die folgenden Punkte lässt der Slice
+bewusst offen; sie müssen stehen, **bevor** das Agent-Tool (#778 S3b) den
+Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
+
+- **Kurze Secrets werden nicht gescrubbt (S2).** `brokerResponse.ts`
+  scrubbt Secrets und `basic-password`-Passwortsegmente erst ab
+  `MIN_SCRUBBABLE_SECRET_LENGTH` = 8 Zeichen; ein kürzeres Secret, das ein
+  Upstream zurückspiegelt, geht unverändert an den Aufrufer. Reparatur:
+  S2 lehnt solche Secrets (und bei `basic-password` ein zu kurzes
+  Passwortsegment) schon beim Anlegen ab, damit die Untergrenze nie greift.
+- **Die grobe Capability `credential:broker:use` wird nicht geprüft
+  (S3b).** Der Header von `harness-channel-sdk/src/credentials.ts` beschreibt
+  sie als Gate vor jeder Broker-Nutzung, aufgelöst über den normalen
+  #575-`GrantStore`. `broker.ts` prüft heute nur den feinen
+  `CredentialGrant`. S3b muss das Gate vor dem Tool-Aufruf durchsetzen,
+  sonst reicht ein Credential-Grant allein.
+- **`fingerprintSecret` ist ungesalzen (S2).** Der Log-Surrogat
+  (`harness-channel-sdk/src/credentials.ts`, SHA-256 gekürzt auf 64 Bit)
+  begründet seine Sicherheit damit, dass das Secret zufällig ist. Für
+  menschlich gewählte Secrets (vor allem `basic-password`, `user:pass`)
+  stimmt das nicht; ein Fingerprint in Audit-Events und Logs erlaubt dann
+  einen Wörterbuchabgleich. Reparatur: HMAC mit einem Server-Schlüssel statt
+  nacktem SHA-256, inklusive Umgang mit bestehenden `fingerprint`-Spalten.
+- **Vendor-Header brauchen ein `allowedHeaders` pro Credential (S2/S3b).**
+  Die Caller-Header-Allow-List in `brokerOutbound.ts` ist statisch;
+  `Notion-Version` o. ä. wird verworfen (und nur als Name auditiert). Das ist
+  eine Schema-Änderung am Credential.
+- **Nicht gescrubbte Transformationen.** Der Scrub deckt roh, base64 (des
+  ganzen Secrets), URL-kodiert (inkl. WHATWG-Form mit `%27`), JSON-escaped
+  (`\"`, `\\`, `\n`), die PHP-`json_encode`-Form mit `\/` (für roh und
+  base64) und jeweils die whitespace-getrimmte Wire-Form ab, nicht
+  JSON-`\u`-Escapes, teilweise URL-Kodierung (`/` unkodiert), base64 des
+  Passwortsegments allein oder Hashes des Secrets. Vor S3b entscheiden, ob
+  das Agent-Tool dafür eine zweite Schicht braucht.
+- **Upstream-`set-cookie` geht durch (S3b).** `sanitizeResponseHeaders`
+  scrubbt nur Secret-Formen. Die Request-Seite verwirft `Cookie` als
+  ambiente Autorität, aber ein Session-Cookie, das der Upstream ausstellt,
+  erreicht den Aufrufer. S3b entscheidet, ob es verworfen wird.
+- **`upstream-*` heißt „gesendet, Ausgang unbekannt“ (S3b).**
+  `upstream-timeout` / `upstream-unreachable` werden als `BrokerDenialError`
+  geworfen, nachdem das Secret raus ist (Audit: `allow`, dann `deny`). Das
+  Agent-Tool darf das nicht als Ablehnung darstellen, sonst wird ein nicht
+  idempotenter POST blind wiederholt. Eigene Fehlerklasse oder ein
+  `dispatched`-Flag erwägen und ein sicheres `cause.code` (`ENOTFOUND`,
+  `UND_ERR_*`) als Diagnose loggen.
+- **`pathPrefixes` gegen serverseitiges `%2F`-Dekodieren (S3b).** Seit S3a
+  prüft, auditiert und sendet der Broker den Pfad genau so, wie fetch ihn
+  auflöst (`resolveWirePath`: `%2e%2e`, `\`, Tab/LF/CR sind zu). Ein
+  Upstream oder Proxy, der `%2F` dekodiert und danach erneut normalisiert,
+  lässt sich mit `..%2F` trotzdem aus einem Präfix führen; `%2F` pauschal
+  abzulehnen würde GitLab-artige IDs brechen. S3b/S2: in der Anlage-UI
+  darauf hinweisen, das engste Präfix zu deklarieren, und den deklarierten
+  Host beim Anlegen validieren (heute erst beim Request als
+  `invalid-broker-declaration`).
+- **Standard-`fetch` ist nicht `guardedOutboundFetch`.** Bewusst: der Host
+  ist vom Operator deklariert und muss exakt passen, Intranet-Ziele sind
+  erlaubt. Mit S3b prüfen, ob ein per-Credential-Opt-in für den SSRF-Guard
+  nötig ist.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration

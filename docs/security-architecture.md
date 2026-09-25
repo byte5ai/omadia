@@ -1276,6 +1276,150 @@ race).
 
 ---
 
+## 10e. Credential broker egress (#578, #778 S3a)
+
+`CredentialBroker` (`middleware/src/credentials/broker.ts`) stamps a
+`service` credential onto an outbound request so the caller never holds the
+secret. Its checks (credential, grant, host, method, path) decide whether
+the request may leave. Once it has left, the upstream answers, so the
+boundary has to cover the response too. S3a hardens both sides before any
+agent can reach the broker (#778 S3b wires the agent tool): on the request
+side, the caller-header allow-list with undici's own value check, the
+GET/HEAD-with-body refusal (`invalid-request`), the declared-host check and
+the `pathPrefixes` match on the wire path; on the response side, manual
+redirects, the time and size bounds, the secret scrub and sanitized
+failures.
+
+- **Redirects are never followed** (`redirect: 'manual'`). A 3xx comes back
+  as its status plus a scrubbed `location`. The Fetch spec strips
+  `Authorization` on a cross-origin redirect but not custom headers, so a
+  followed redirect would carry an `X-Api-Key` to whatever host the upstream
+  names. This is the same reasoning as `providerCredentialVerifier.ts`.
+- **Time and size are bounded.** One `AbortSignal.timeout` covers headers
+  and body (default 20 s, `BROKER_DEFAULT_TIMEOUT_MS`). The body is read as
+  a stream under a byte cap (default 1 MiB, `BROKER_DEFAULT_MAX_RESPONSE_BYTES`),
+  and the stream is cancelled at the cap rather than drained. The response
+  says `truncated: true`. The cap is a memory bound; the agent tool applies
+  its own, tighter context bound.
+- **The secret is scrubbed from the response**, header values (including
+  `location`) and body, in every form it travels in: raw, base64 (what
+  `basic-password` sends), URL-encoded (what `query-param` sends) with the
+  `+`-for-space and `URLSearchParams` variants and `%XX` hex matched
+  case-insensitively, the WHATWG-URL form (below), the JSON-escaped form
+  (`\"`, `\\`, `\n`) for an upstream that echoes the request as JSON, and
+  the PHP `json_encode` form (Laravel, Symfony) that also escapes `/` as
+  `\/`, for the raw secret and for its base64. Echo endpoints and error pages
+  that reflect the request otherwise hand the secret straight back. For
+  `basic-password` the password segment of `user:pass` is scrubbed on its
+  own too. The forms are built from what goes on the **wire**, not only from
+  the stored value: undici trims leading and trailing HTTP whitespace from a
+  header value, so a secret stored with a copy-paste newline or space leaves
+  trimmed, and every base also contributes its trimmed variant; and fetch's
+  WHATWG URL parser sends `'` as `%27`, which `encodeURIComponent` leaves
+  alone, so that form is built too. When the body
+  is truncated, the tail that could hold a prefix of a secret cut by the cap
+  is dropped after scrubbing (`brokerResponse.ts`).
+- **The 8-character floor.** Secrets (and password segments) shorter than 8
+  characters are **not** scrubbed: redacting a short value would shred
+  ordinary text and still not be a guarantee. Refusing such a secret at
+  creation time is #778 S2's job.
+- **Caller headers pass a static allow-list** (`brokerOutbound.ts`):
+  `accept`, `accept-language`, `content-type`, `content-language`,
+  `if-match`, `if-none-match`, `if-modified-since`, `if-unmodified-since`,
+  `idempotency-key`, `user-agent`. Names are compared case-insensitively,
+  the credential's own `injectionKey` is always dropped (even when an
+  operator declared an allow-listed name such as `User-Agent` as the
+  injectionKey), and a value with any character outside tab, 0x20–0x7E and
+  0x80–0xFF is dropped. That is undici's own check: CR/LF/NUL could split the
+  request, and undici refuses every such value locally, which would fail the
+  call after the `once` grant is consumed. There is no `x-*` wildcard. That namespace holds
+  `X-HTTP-Method-Override`, `X-Original-URL` and `X-Rewrite-URL`, which
+  would bypass `allowedMethods` / `pathPrefixes`, and case variants of the
+  injected header, which `Headers` would join into `forged, Bearer <secret>`.
+  `accept-encoding` is excluded so the scrub never sees bytes fetch did not
+  decode. Dropped header **names** (never values) go on the `allow` audit
+  event as `droppedHeaderNames`; the request itself still goes out.
+- **A malformed request is refused before any grant is consumed.** A GET or
+  HEAD with a body (even an empty one) is denied as `invalid-request` right
+  after path normalisation. fetch would reject it locally, after the `once`
+  grant was consumed and the `allow` audited, as a misleading
+  `upstream-unreachable`. `timeoutMs` must be a positive integer no greater
+  than 2^31 - 1 and `maxResponseBytes` a positive safe integer; the
+  constructor throws a `RangeError` otherwise, because a NaN or too-large
+  timeout would throw (or, at 2^31, fire after 1 ms) after the grant is
+  consumed and a NaN cap would remove the memory bound.
+- **`pathPrefixes` hold for the path that goes on the wire.** The path
+  check used to run on `path.posix.normalize` output, but fetch re-parses
+  the URL with the WHATWG parser, which also resolves percent-encoded dot
+  segments (`%2e%2e`, `.%2E`, `%2e.`), reads `\` as `/` and strips tab, LF
+  and CR. So `/v1/messages/%2e%2e/%2e%2e/admin/users` passed the check for
+  `/v1/messages` and left as `GET /admin/users` with the secret attached,
+  while the `allow` audit recorded the unresolved path. (This predates S3a;
+  the slice closes it because it owns the URL builder.) Now
+  `normalizePathForMatch` refuses a backslash in the path and any C0
+  control or DEL as `path-not-allowed`, and the broker resolves the path
+  exactly as fetch will (`resolveWirePath`, an absolute
+  `new URL('https://' + host + path)`, never a relative resolution that a
+  `/\evil.example.com` path could re-target), matches `pathPrefixes`
+  against that, audits it and sends it. The checked, audited and sent path
+  are one string, and all of it happens before a `once` grant is consumed.
+  A declared host that is not a plain `host[:port]` (userinfo, a path, an
+  invalid port) is denied as `invalid-broker-declaration` at the same step.
+  An encoded slash (`group%2Fproject`, GitLab-style IDs) is deliberately
+  **not** refused. The declared prefix goes through the same two steps
+  (`path.posix.normalize`, then the WHATWG serialiser), so a prefix with a
+  space, a non-ASCII character or a brace (`/drive/My Files`, `/v1/über`,
+  `/api/{tenant}`) matches its percent-encoded wire form instead of
+  refusing every request. A prefix that serialising would widen or rewrite
+  (a percent-encoded dot segment, `?`, `#`, `\`, a control character)
+  matches nothing.
+- **Failures are sanitized.** A timeout is denied as `upstream-timeout`,
+  anything else as `upstream-unreachable`. The thrown `BrokerDenialError`
+  carries no `cause`, no URL and no upstream message, because for
+  `query-param` the URL is the secret. Both reasons count in
+  `brokerMetrics.ts` and toward the denial-streak alert, whose message
+  therefore reads "refusing every request or its upstream is failing";
+  `byReason` tells the two apart. A failed dispatch writes **two** audit
+  events, in this order: `allow` (just before the secret leaves) and then
+  `deny` with the upstream reason. An audit sink must read the pair as "the
+  secret left, no usable answer came back", not as a contradiction.
+
+**Known residuals.** Vendor headers such as `Notion-Version` need a
+per-credential `allowedHeaders` (a schema change, #778 S2/S3b). An upstream
+(or a proxy in front of it) that decodes `%2F` and then normalises the path
+again can still be walked out of a prefix with `..%2F`; the broker cannot
+see that server-side decoding, and refusing `%2F` would break encoded IDs.
+Operators should declare the narrowest prefix the upstream API allows. The scrub
+does not cover other transformations of the secret, such as JSON `\u`
+escapes, partial URL encodings (e.g. `/` left unencoded), base64 of the
+password segment alone, or hashes. Upstream `set-cookie` passes through
+(the scrub only redacts secret forms): the request side drops `Cookie` as
+ambient authority, but a session cookie the upstream issues reaches the
+caller; S3b decides whether to drop it. `upstream-timeout` /
+`upstream-unreachable` are thrown after the secret has left, so the S3b
+agent tool must present them as "sent, outcome unknown", not as a refusal,
+or a non-idempotent POST gets retried blindly. The default fetch is plain `globalThis.fetch`, not
+`guardedOutboundFetch`: the destination host is operator-declared and must
+match exactly, and operators may broker to intranet hosts on purpose.
+These and the other S2/S3b preconditions (the unenforced
+`credential:broker:use` gate, the unsalted `fingerprintSecret`) are tracked
+in `docs/middleware-agent-handoff.md` §13.
+
+Tests: `middleware/test/credentialBrokerEgress.test.ts` (a real local HTTP
+upstream: echo in every encoding, a cross-origin 302, a trickling upstream,
+a 50 MB body, forged headers, a secret-bearing fetch error),
+`middleware/test/credentialBrokerEgressRequest.test.ts` (whitespace-padded
+secrets, a `'` in a query-param secret, header values undici refuses, a
+GET/HEAD body against a `once` grant, an allow-listed injectionKey),
+`middleware/test/credentialBrokerWirePath.test.ts` (percent-encoded,
+backslash and control-character traversal against a `once` grant; the
+audited path equals the path the upstream received),
+`middleware/test/credentialBrokerOutbound.test.ts` (the header-filter rules)
+and `middleware/test/credentialBrokerResponse.test.ts` (forms, the floor, the
+cap straddle).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1329,6 +1473,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] A new native tool bound to shared/unscoped state (like memory) is routed
       through the caller's scoped accessor in `ctx.tools.invoke`, or denied
       there (§4, #909).
+- [ ] A change to `CredentialBroker` dispatch keeps `redirect: 'manual'`,
+      the timeout signal, the streaming byte cap, the response scrub and the
+      caller-header allow-list, and a new allow-list entry is not an `x-*`
+      override header (§10e).
+- [ ] A change to how `CredentialBroker` builds the outbound URL matches
+      `pathPrefixes` on the same path fetch sends (`resolveWirePath`), not
+      on a string-level normalisation of the caller's input (§10e).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it

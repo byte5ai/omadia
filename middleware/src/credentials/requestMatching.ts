@@ -18,15 +18,22 @@ import path from 'node:path';
  *    `/v1extra/steal-data`, because `startsWith` has no concept of a path
  *    segment boundary.
  *
- * `matchPath` normalises BOTH sides (the declared prefix and the incoming
- * path) the same way, then requires the boundary to land on a `/` — closing
- * both holes with the same function so they cannot drift apart.
+ * BOTH sides (the declared prefix and the incoming path) go through the same
+ * two steps — `path.posix.normalize`, then the WHATWG serialiser fetch uses
+ * ({@link resolveWirePath} for the path, `serializePrefix` for the prefix) —
+ * and `matchPath` then requires the boundary to land on a `/`, closing both
+ * holes with one normalisation so the two sides cannot drift apart.
  *
  * Node's `path.posix.normalize` is doing the actual traversal-safety work
  * here: called on an absolute path, it clamps `..` at the root rather than
  * escaping above it (`path.posix.normalize('/a/../../b')` is `/b`, not
  * `/../b`) — so `/v1/messages/../../../admin` normalises to `/admin`, which
  * then correctly fails the `/v1/messages` prefix check.
+ *
+ * `path.posix` alone is not enough, though: fetch re-parses the URL with the
+ * WHATWG parser, which ALSO resolves `%2e%2e`, reads `\` as `/` and strips
+ * tab/LF/CR. The broker therefore matches the path {@link resolveWirePath}
+ * returns — the one that actually goes on the wire (#778 S3a).
  */
 
 /** Uppercased, trimmed HTTP method — `'get'` and `'GET'` must compare equal. */
@@ -60,6 +67,14 @@ export interface NormalizedPath {
   readonly search: string;
 }
 
+/** C0 controls and DEL. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+
+/** Characters that would end or re-shape the authority of
+ *  `https://${host}` instead of being part of the host. */
+const NON_HOST_CHARACTER = /[/?#@\\\s]/;
+
 /**
  * Splits `?query`/`#fragment` off a raw path, ensures a leading `/`, and
  * resolves `.`/`..` segments via `path.posix.normalize` (which clamps at the
@@ -69,16 +84,25 @@ export interface NormalizedPath {
  *    smuggle a full URL past a same-host check via `path.resolve`-style
  *    reinterpretation downstream, so this is refused outright rather than
  *    normalised.
- *  - a NUL byte — defence in depth against a truncation trick some HTTP
- *    stacks are still vulnerable to.
+ *  - a control character (C0 or DEL) anywhere — a NUL is a truncation trick
+ *    some HTTP stacks are still vulnerable to, and the WHATWG URL parser
+ *    fetch uses silently STRIPS tab, LF and CR, so `/v1/.\t./admin` would
+ *    reach the wire as `/v1/../admin` (#778 S3a).
+ *  - a backslash in the path — the WHATWG parser reads it as `/` for an
+ *    `https` URL, so `..\..\admin` is a traversal that `path.posix` never
+ *    sees. No caller can put a literal backslash on the wire anyway.
  *
- * Both refusals throw; the broker turns that into a denial with a specific
+ * Every refusal throws; the broker turns that into a denial with a specific
  * reason rather than passing a hostile string through as "just another
  * mismatch".
+ *
+ * Percent-encoded dot segments (`%2e%2e`, `.%2E`) are NOT handled here: this
+ * is a string-level pre-check. {@link resolveWirePath} resolves what the
+ * wire actually carries, and the broker matches that.
  */
 export function normalizePathForMatch(rawPath: string): NormalizedPath {
-  if (rawPath.includes('\0')) {
-    throw new Error('path must not contain a NUL byte');
+  if (CONTROL_CHARACTER.test(rawPath)) {
+    throw new Error('path must not contain a control character');
   }
   const hashIndex = rawPath.indexOf('#');
   const withoutHash = hashIndex === -1 ? rawPath : rawPath.slice(0, hashIndex);
@@ -89,6 +113,9 @@ export function normalizePathForMatch(rawPath: string): NormalizedPath {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(pathOnly) || pathOnly.startsWith('//')) {
     throw new Error('path must not embed a scheme or authority');
   }
+  if (pathOnly.includes('\\')) {
+    throw new Error('path must not contain a backslash');
+  }
 
   const withLeadingSlash = pathOnly.startsWith('/') ? pathOnly : `/${pathOnly}`;
   const normalized = path.posix.normalize(withLeadingSlash);
@@ -96,17 +123,84 @@ export function normalizePathForMatch(rawPath: string): NormalizedPath {
 }
 
 /**
- * Whether `pathname` (already normalised) is covered by a declared
- * `prefix` — with a segment boundary, not a bare string prefix.
+ * The path and query exactly as fetch will put them on the wire (#778 S3a).
  *
- * `prefix` is normalised here too (a declaration author may write
- * `/v1/messages` or `/v1/messages/`; both must mean the same thing), and the
- * comparison requires either an exact match or the next character in
+ * fetch parses the URL with the WHATWG parser, which resolves
+ * percent-encoded dot segments (`%2e%2e`, `.%2E`, `%2E.` …) that
+ * `path.posix.normalize` treats as ordinary names. So
+ * `/v1/messages/%2e%2e/%2e%2e/admin` passes a string-level prefix check
+ * against `/v1/messages` and then leaves as `GET /admin` with the secret
+ * attached. The broker therefore matches `pathPrefixes` against THIS
+ * result, audits it, and sends it — the checked path, the audited path and
+ * the sent path are one string.
+ *
+ * The URL is built absolute (`https://host` + path), never resolved
+ * relative to a base: a relative `/\evil.example.com` would re-target the
+ * authority. `host` is the operator's declaration; anything that is not a
+ * plain `host[:port]` (userinfo, a path, whitespace) or that the parser
+ * rejects throws, and the broker denies it as `invalid-broker-declaration`.
+ *
+ * Serialising the result and parsing it again (as fetch does) is stable:
+ * dot segments are gone and every other character is already in its
+ * serialised form.
+ */
+export function resolveWirePath(host: string, pathname: string, search: string): NormalizedPath {
+  if (host === '' || NON_HOST_CHARACTER.test(host)) {
+    throw new Error('declared host is not a plain host[:port]');
+  }
+  const url = new URL(`https://${host}${pathname}${search}`);
+  return { pathname: url.pathname, search: url.search };
+}
+
+/** Characters a declared prefix must not contain: `?`/`#` would end the
+ *  path when serialised (silently WIDENING `/api?x` to `/api`), and `\` or a
+ *  control character would be rewritten by the WHATWG parser. */
+// eslint-disable-next-line no-control-regex
+const NON_PREFIX_CHARACTER = /[?#\\\u0000-\u001f\u007f]/;
+
+/**
+ * A declared prefix in the same serialised form {@link resolveWirePath}
+ * gives the incoming path, or `undefined` when the prefix cannot be one.
+ *
+ * `path.posix.normalize` first (clamping `..` at the root, as for the
+ * incoming path), then the WHATWG serialiser: the wire path is
+ * percent-encoded (`/drive/My Files` travels as `/drive/My%20Files`, `ü` as
+ * `%C3%BC`, `{` as `%7B`), so a prefix compared in its raw form would never
+ * match — a declaration with a space, a non-ASCII character or a brace
+ * would refuse every request. A prefix that spells a dot segment
+ * percent-encoded (`/v1/%2e%2e`) is refused rather than resolved, so a
+ * declaration can never widen past what its author could read off it.
+ */
+function serializePrefix(prefix: string): string | undefined {
+  if (NON_PREFIX_CHARACTER.test(prefix)) return undefined;
+  const normalized = path.posix.normalize(prefix.startsWith('/') ? prefix : `/${prefix}`);
+  let serialized: string;
+  try {
+    serialized = new URL(`https://h${normalized}`).pathname;
+  } catch {
+    return undefined;
+  }
+  // Percent-encoding never adds or removes a `/`, so a changed segment count
+  // means the serialiser resolved a dot segment spelled `%2e%2e` — a prefix
+  // like `/v1/%2e%2e` would silently widen to `/`. Refuse it instead.
+  return serialized.split('/').length === normalized.split('/').length ? serialized : undefined;
+}
+
+/**
+ * Whether `pathname` (the wire path from {@link resolveWirePath}) is covered
+ * by a declared `prefix` — with a segment boundary, not a bare string prefix.
+ *
+ * `prefix` is normalised and serialised here too (see
+ * {@link serializePrefix}; a declaration author may also write
+ * `/v1/messages` or `/v1/messages/`, and both must mean the same thing), and
+ * the comparison requires either an exact match or the next character in
  * `pathname` after the prefix to be `/` — so a prefix of `/v1` matches
- * `/v1/anything` but NOT `/v1extra`.
+ * `/v1/anything` but NOT `/v1extra`. A prefix that cannot be serialised
+ * matches nothing: fail closed.
  */
 export function matchPath(pathname: string, prefix: string): boolean {
-  const normalizedPrefix = path.posix.normalize(prefix.startsWith('/') ? prefix : `/${prefix}`);
+  const normalizedPrefix = serializePrefix(prefix);
+  if (normalizedPrefix === undefined) return false;
   const withoutTrailingSlash =
     normalizedPrefix.length > 1 && normalizedPrefix.endsWith('/')
       ? normalizedPrefix.slice(0, -1)

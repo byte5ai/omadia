@@ -36,7 +36,14 @@ export type BrokerDenialReason =
   | 'path-not-allowed'
   | 'invalid-broker-declaration'
   | 'store-unavailable'
-  | 'dispatch-failed';
+  // #778 S3a: a request fetch would refuse locally (a GET/HEAD with a body),
+  // denied before any grant is consumed.
+  | 'invalid-request'
+  // #778 S3a: the checks passed and the request left, but the upstream did
+  // not answer usably. These count toward the streak alert on purpose: five
+  // consecutive upstream timeouts is an operator signal, not noise.
+  | 'upstream-unreachable'
+  | 'upstream-timeout';
 
 export const BROKER_DENIAL_REASONS: readonly BrokerDenialReason[] = Object.freeze([
   'credential-not-found',
@@ -49,7 +56,9 @@ export const BROKER_DENIAL_REASONS: readonly BrokerDenialReason[] = Object.freez
   'path-not-allowed',
   'invalid-broker-declaration',
   'store-unavailable',
-  'dispatch-failed',
+  'invalid-request',
+  'upstream-unreachable',
+  'upstream-timeout',
 ]);
 
 export interface BrokerMetrics {
@@ -72,8 +81,10 @@ export interface BrokerMetrics {
 }
 
 /**
- * A run this long says "the broker is refusing everything", not "an
- * operator is testing grants". Same reasoning and same threshold as
+ * A run this long says "the broker is refusing everything, or its upstream
+ * is down", not "an operator is testing grants" — `upstream-*` failures feed
+ * the same streak (see `BrokerDenialReason`), and `byReason` in the alert
+ * tells the two apart. Same reasoning and same threshold as
  * `UNSCREENABLE_STREAK_ALERT` (#749): chosen against the failure it exists
  * to catch (a systemic misconfiguration denies from the first request), not
  * tuned down to 1, because a single denial is exactly the normal case the
@@ -115,7 +126,8 @@ let state: MutableState = emptyState();
 function defaultAlert(metrics: BrokerMetrics): void {
   console.error(
     `[credential-broker] ${String(metrics.consecutiveDenied)} consecutive denials — ` +
-      `the broker is refusing every request. byReason=${JSON.stringify(metrics.byReason)}`,
+      `the broker is refusing every request or its upstream is failing. ` +
+      `byReason=${JSON.stringify(metrics.byReason)}`,
   );
 }
 
