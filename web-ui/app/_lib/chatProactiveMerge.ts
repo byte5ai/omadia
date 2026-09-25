@@ -49,6 +49,25 @@ export function mergeProactiveFromRemote(
 }
 
 /**
+ * #1071 — fold a server copy into the chat as STORED in localStorage (which
+ * another tab may have written after this one loaded). Returns the chat to
+ * store, or `null` when there is nothing to write: no new delivery, or the
+ * server copy predates a clear the stored chat already records (its
+ * `resetAt` is newer than the server copy's) — folding it would bring the
+ * cleared deliveries back.
+ */
+export function foldIntoStored(
+  stored: ChatSession,
+  remote: ChatSession,
+): ChatSession | null {
+  if (stored.resetAt !== undefined && (remote.resetAt ?? -Infinity) < stored.resetAt) {
+    return null;
+  }
+  const merged = mergeProactiveFromRemote(stored, remote);
+  return merged === stored ? null : merged;
+}
+
+/**
  * Outcome of reconciling a NEWER server copy with the browser's copy.
  * `pushLocal` asks the caller to PUT `session` back: the browser holds
  * turns the server never received (a fire-and-forget PUT failed), and the

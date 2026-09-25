@@ -18,6 +18,15 @@ import type { ChatSession } from './chatSessions';
  * Electron window can be refocused without ever turning hidden). PUT answers
  * (the server merges deliveries into every PUT) are folded through
  * `foldProactive` too.
+ *
+ * A fold is not a local edit. Every omadia tab mounts the chat-sessions
+ * provider, so a tab loaded long ago folds a delivery the moment it regains
+ * focus — and its in-memory sessions predate whatever other tabs stored
+ * since. Writing that whole array would roll their turns back and bring
+ * chats they deleted back to life (hydration would even re-create them on the
+ * server). So a fold persists only the delivery, into the ONE stored chat it
+ * belongs to (`persistFold`), and `isFoldOnlyChange` lets the caller skip its
+ * whole-array localStorage write for a state change made of folds alone.
  */
 export interface ProactiveRefreshDeps {
   setSessions: Dispatch<SetStateAction<ChatSession[]>>;
@@ -26,6 +35,11 @@ export interface ProactiveRefreshDeps {
   activeId: string;
   /** Reads one chat from the server; `null` when it does not exist. */
   fetchSession: (id: string) => Promise<ChatSession | null>;
+  /**
+   * Persists a fold: adds the deliveries of `remote` to the STORED copy of
+   * chat `id` only, never re-writing any other chat.
+   */
+  persistFold: (id: string, remote: ChatSession) => void;
 }
 
 export interface ProactiveRefresh {
@@ -45,10 +59,15 @@ export interface ProactiveRefresh {
   foldProactive(id: string, remote: ChatSession, epoch: number): void;
   /** Re-read a chat and fold in its deliveries. Never PUTs. */
   refreshProactive(id: string): void;
+  /**
+   * `next` differs from `prev` only by folds (same chats, same order, every
+   * changed chat is a fold result) — nothing this tab needs to write whole.
+   */
+  isFoldOnlyChange(prev: readonly ChatSession[], next: readonly ChatSession[]): boolean;
 }
 
 export function useProactiveRefresh(deps: ProactiveRefreshDeps): ProactiveRefresh {
-  const { setSessions, hydrating, activeId, fetchSession } = deps;
+  const { setSessions, hydrating, activeId, fetchSession, persistFold } = deps;
 
   // Per-session clear epoch. A re-read or PUT answer requested before a
   // clear still carries the deliveries the user just cleared; folding it in
@@ -86,25 +105,41 @@ export function useProactiveRefresh(deps: ProactiveRefreshDeps): ProactiveRefres
     [bumpClearEpoch],
   );
 
+  // Session objects a fold produced. A state change whose changed chats are
+  // all in here was made by folds alone (`isFoldOnlyChange`).
+  const foldedRef = useRef<WeakSet<ChatSession>>(new WeakSet());
+
   // Additive only (`mergeProactiveFromRemote`), and a session with a turn in
   // flight is left alone — the stream owns that state until it finishes.
   // When nothing was folded the previous array is returned as-is, so a
-  // re-read that finds no delivery causes no re-render and no localStorage
-  // write — a stale tab regaining focus must not overwrite what another tab
-  // stored meanwhile.
+  // re-read that finds no delivery causes no re-render. What IS folded is
+  // persisted into the stored copy of this one chat (`persistFold`), never
+  // by re-writing this tab's whole — possibly stale — session array.
   const foldProactive = useCallback(
     (id: string, remote: ChatSession, epoch: number): void => {
       if (clearEpochOf(id) !== epoch || clearingRef.current.has(id)) return;
       setSessions((prev) => {
-        const next = prev.map((s) =>
-          s.id === id && !s.messages.some((m) => m.streaming === true)
-            ? mergeProactiveFromRemote(s, remote)
-            : s,
-        );
+        const next = prev.map((s) => {
+          if (s.id !== id || s.messages.some((m) => m.streaming === true)) return s;
+          const merged = mergeProactiveFromRemote(s, remote);
+          if (merged !== s) foldedRef.current.add(merged);
+          return merged;
+        });
         return next.every((s, i) => s === prev[i]) ? prev : next;
       });
+      persistFold(id, remote);
     },
-    [clearEpochOf, setSessions],
+    [clearEpochOf, setSessions, persistFold],
+  );
+
+  const isFoldOnlyChange = useCallback(
+    (prev: readonly ChatSession[], next: readonly ChatSession[]): boolean =>
+      prev.length === next.length &&
+      next.every(
+        (s, i) =>
+          s === prev[i] || (s.id === prev[i]?.id && foldedRef.current.has(s)),
+      ),
+    [],
   );
 
   const refreshProactive = useCallback(
@@ -143,5 +178,12 @@ export function useProactiveRefresh(deps: ProactiveRefreshDeps): ProactiveRefres
     };
   }, [hydrating, activeId, refreshProactive]);
 
-  return { clearEpochOf, beginClear, endClear, foldProactive, refreshProactive };
+  return {
+    clearEpochOf,
+    beginClear,
+    endClear,
+    foldProactive,
+    refreshProactive,
+    isFoldOnlyChange,
+  };
 }

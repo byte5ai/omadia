@@ -360,8 +360,11 @@ never created.
   copy; dropping local turns for a copy with no messages is logged.
 - **Re-reads never rewrite what they did not change.** A re-read that finds no
   delivery leaves the session state untouched (no re-render, no localStorage
-  write), so a stale tab regaining focus cannot overwrite another tab's stored
-  chats. A re-read or PUT answer requested before "clear chat", or answered
+  write). A re-read that does fold a delivery stores only that delivery, into
+  the one chat as currently stored (re-read from localStorage first); the
+  tab's whole in-memory array is not written. So a stale tab regaining focus
+  (every omadia page mounts the chat-sessions provider) cannot overwrite what
+  another tab stored since, nor bring back a chat another tab deleted. A re-read or PUT answer requested before "clear chat", or answered
   while its server reset is still in flight, is discarded, so a cleared
   delivery does not come back. A fold keeps the browser's own
   `updatedAt`, so a turn whose PUT failed still triggers the next hydration's

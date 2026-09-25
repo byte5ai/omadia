@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { reconcileNewerRemote } from './chatProactiveMerge';
+import { foldIntoStored, reconcileNewerRemote } from './chatProactiveMerge';
 import { useProactiveRefresh } from './chatProactiveRefresh';
 
 /**
@@ -845,6 +845,34 @@ function writeLocalSessions(sessions: ChatSession[]): void {
   }
 }
 
+/**
+ * #1071 — persist a routine-delivery fold into the ONE stored chat it
+ * belongs to, re-reading localStorage first: another tab may have written
+ * newer turns (or deleted chats) since this tab loaded. A chat that is not
+ * stored (deleted in another tab) stays gone.
+ */
+function persistFoldLocally(id: string, remote: ChatSession): void {
+  try {
+    const raw = window.localStorage.getItem(LS_SESSIONS);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return;
+    const stored: unknown[] = parsed;
+    const at = stored.findIndex(
+      (v) => typeof v === 'object' && v !== null && (v as { id?: unknown }).id === id,
+    );
+    const current = at === -1 ? null : coerceSession(stored[at]);
+    if (!current) return;
+    const folded = foldIntoStored(current, remote);
+    if (!folded) return;
+    const next = [...stored];
+    next[at] = sanitizeForPersist(folded);
+    window.localStorage.setItem(LS_SESSIONS, JSON.stringify(next));
+  } catch (err) {
+    console.warn('[chat-sessions] localStorage fold write failed:', err);
+  }
+}
+
 async function fetchRemoteSummaries(): Promise<SessionSummary[]> {
   const res = await fetch('/bot-api/chat/sessions');
   if (!res.ok) throw new Error(`GET sessions: HTTP ${String(res.status)}`);
@@ -970,9 +998,6 @@ export function useChatSessions(): UseChatSessionsResult {
   const [activeId, setActiveId] = useState<string>('');
   const [hydrating, setHydrating] = useState(true);
 
-  // Debounced localStorage writes. Streaming a long answer triggers many
-  // state updates; we don't need to serialize on every keystroke.
-  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Latest committed sessions, for async actions that must build a request
   // body from state (a value captured inside a `setSessions` updater is only
   // there when React runs the updater eagerly, which it does not guarantee).
@@ -980,16 +1005,6 @@ export function useChatSessions(): UseChatSessionsResult {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
-  useEffect(() => {
-    if (hydrating) return;
-    if (persistTimerRef.current !== null) clearTimeout(persistTimerRef.current);
-    persistTimerRef.current = setTimeout(() => {
-      writeLocalSessions(sessions);
-    }, 250);
-    return () => {
-      if (persistTimerRef.current !== null) clearTimeout(persistTimerRef.current);
-    };
-  }, [sessions, hydrating]);
 
   useEffect(() => {
     if (hydrating) return;
@@ -1203,13 +1218,47 @@ export function useChatSessions(): UseChatSessionsResult {
   // deliveries (see `chatProactiveRefresh.ts`).
   const resolvedActiveId =
     sessions.find((s) => s.id === activeId)?.id ?? sessions[0]?.id ?? '';
-  const { clearEpochOf, beginClear, endClear, foldProactive, refreshProactive } =
-    useProactiveRefresh({
-      setSessions,
-      hydrating,
-      activeId: resolvedActiveId,
-      fetchSession: fetchRemoteSession,
-    });
+  const {
+    clearEpochOf,
+    beginClear,
+    endClear,
+    foldProactive,
+    refreshProactive,
+    isFoldOnlyChange,
+  } = useProactiveRefresh({
+    setSessions,
+    hydrating,
+    activeId: resolvedActiveId,
+    fetchSession: fetchRemoteSession,
+    persistFold: persistFoldLocally,
+  });
+
+  // Debounced localStorage writes: streaming a long answer triggers many
+  // state updates. `lastSeenRef` is the array this effect last saw,
+  // `localDirtyRef` says a whole-array write (a local edit) is pending.
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSeenRef = useRef<ChatSession[] | null>(null);
+  const localDirtyRef = useRef(false);
+  useEffect(() => {
+    if (hydrating) return;
+    const prev = lastSeenRef.current;
+    lastSeenRef.current = sessions;
+    // #1071 — a change made of routine-delivery folds alone is already
+    // persisted into its one stored chat (`persistFoldLocally`). Writing the
+    // whole array here would let a stale tab that merely regained focus
+    // overwrite what other tabs stored since, and bring back chats they
+    // deleted. A pending local edit is still written whole, as before.
+    if (prev !== null && !localDirtyRef.current && isFoldOnlyChange(prev, sessions)) return;
+    localDirtyRef.current = true;
+    if (persistTimerRef.current !== null) clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = setTimeout(() => {
+      localDirtyRef.current = false;
+      writeLocalSessions(sessions);
+    }, 250);
+    return () => {
+      if (persistTimerRef.current !== null) clearTimeout(persistTimerRef.current);
+    };
+  }, [sessions, hydrating, isFoldOnlyChange]);
 
   // #1071 — clearing is EXPLICIT on the server (`POST …/reset`): an empty
   // `messages` array in a PUT no longer means "clear", since a rename of a

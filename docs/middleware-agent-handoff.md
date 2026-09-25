@@ -3981,8 +3981,14 @@ durch den Web-Sender unten.
   die Visibility-/Focus-Listener stecken im Hook `useProactiveRefresh`
   (`web-ui/app/_lib/chatProactiveRefresh.ts`), den `useChatSessions` einbindet. Findet
   ein Re-Read nichts Neues, bleibt der State-Array identisch (`foldProactive` gibt `prev`
-  zurück) — kein Re-Render, kein localStorage-Write; ein veralteter Tab, der wieder
-  sichtbar wird, überschreibt so nicht, was ein anderer Tab gespeichert hat. Ein Re-Read
+  zurück) — kein Re-Render, kein localStorage-Write. Faltet ein Re-Read eine Zustellung
+  ein, schreibt `persistFoldLocally` nur diese Zustellung in die EINE, frisch aus
+  localStorage gelesene Session (`foldIntoStored`; eine dort fehlende Session bleibt
+  gelöscht, ein neueres `resetAt` gewinnt), und der debouncte Gesamt-Array-Write wird für
+  reine Fold-Änderungen übersprungen (`isFoldOnlyChange`), solange kein lokaler Edit
+  aussteht. Da jede omadia-Seite den Chat-Sessions-Provider mountet, überschreibt ein
+  veralteter Tab, der wieder Fokus bekommt, so weder, was ein anderer Tab gespeichert hat,
+  noch holt er dort gelöschte Chats zurück. Ein Re-Read
   oder PUT-Answer, der **vor** einem "Chat leeren" angefragt wurde, wird verworfen
   (Clear-Epoche pro Session), ebenso jeder, der beantwortet wird, **während** der Reset
   noch läuft (`beginClear`/`endClear`) — sonst kämen die gerade gelöschten Zustellungen
