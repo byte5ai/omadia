@@ -48,8 +48,15 @@ export const BROKER_ALLOWED_CALLER_HEADERS: readonly string[] = Object.freeze([
 
 const ALLOWED = new Set(BROKER_ALLOWED_CALLER_HEADERS);
 
-/** A header value carrying one of these could split the request. */
-const UNSAFE_HEADER_VALUE = /[\r\n\0]/;
+/**
+ * Anything outside tab, 0x20–0x7E and 0x80–0xFF: CR/LF/NUL could split the
+ * request, and undici refuses every such value (and any non-Latin-1 one)
+ * LOCALLY, before a byte is sent. Letting one through would not leak
+ * anything, but it would fail the dispatch after the `once` grant is
+ * consumed and the `allow` audited, and report a caller mistake as
+ * `upstream-unreachable`. Same character class as undici's own check.
+ */
+const UNSAFE_HEADER_VALUE = /[^\t\x20-\x7e\x80-\xff]/;
 
 export interface FilteredCallerHeaders {
   /** Kept headers, names lowercased. */

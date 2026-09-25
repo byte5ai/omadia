@@ -1178,9 +1178,16 @@ agent can reach the broker (#778 S3b wires the agent tool):
   `location`) and body, in three encodings: raw, base64 (what
   `basic-password` sends) and URL-encoded (what `query-param` sends), plus
   the `+`-for-space and `URLSearchParams` variants, with `%XX` hex matched
-  case-insensitively. Echo endpoints and error pages that reflect the
-  request otherwise hand the secret straight back. For `basic-password` the
-  password segment of `user:pass` is scrubbed on its own too. When the body
+  case-insensitively, plus the JSON-escaped form (`\"`, `\\`, `\n`) for an
+  upstream that echoes the request as JSON. Echo endpoints and error pages
+  that reflect the request otherwise hand the secret straight back. For
+  `basic-password` the password segment of `user:pass` is scrubbed on its
+  own too. The forms are built from what goes on the **wire**, not only from
+  the stored value: undici trims leading and trailing HTTP whitespace from a
+  header value, so a secret stored with a copy-paste newline or space leaves
+  trimmed, and every base also contributes its trimmed variant; and fetch's
+  WHATWG URL parser sends `'` as `%27`, which `encodeURIComponent` leaves
+  alone, so that form is built too. When the body
   is truncated, the tail that could hold a prefix of a secret cut by the cap
   is dropped after scrubbing (`brokerResponse.ts`).
 - **The 8-character floor.** Secrets (and password segments) shorter than 8
@@ -1191,24 +1198,48 @@ agent can reach the broker (#778 S3b wires the agent tool):
   `accept`, `accept-language`, `content-type`, `content-language`,
   `if-match`, `if-none-match`, `if-modified-since`, `if-unmodified-since`,
   `idempotency-key`, `user-agent`. Names are compared case-insensitively,
-  the credential's own `injectionKey` is always dropped, and values with
-  CR/LF/NUL are dropped. There is no `x-*` wildcard. That namespace holds
+  the credential's own `injectionKey` is always dropped (even when an
+  operator declared an allow-listed name such as `User-Agent` as the
+  injectionKey), and a value with any character outside tab, 0x20–0x7E and
+  0x80–0xFF is dropped. That is undici's own check: CR/LF/NUL could split the
+  request, and undici refuses every such value locally, which would fail the
+  call after the `once` grant is consumed. There is no `x-*` wildcard. That namespace holds
   `X-HTTP-Method-Override`, `X-Original-URL` and `X-Rewrite-URL`, which
   would bypass `allowedMethods` / `pathPrefixes`, and case variants of the
   injected header, which `Headers` would join into `forged, Bearer <secret>`.
   `accept-encoding` is excluded so the scrub never sees bytes fetch did not
   decode. Dropped header **names** (never values) go on the `allow` audit
   event as `droppedHeaderNames`; the request itself still goes out.
+- **A malformed request is refused before any grant is consumed.** A GET or
+  HEAD with a body (even an empty one) is denied as `invalid-request` right
+  after path normalisation. fetch would reject it locally, after the `once`
+  grant was consumed and the `allow` audited, as a misleading
+  `upstream-unreachable`. `timeoutMs` and `maxResponseBytes` must be
+  positive safe integers; the constructor throws a `RangeError` otherwise,
+  because a NaN timeout would throw after the grant is consumed and a NaN
+  cap would remove the memory bound.
 - **Failures are sanitized.** A timeout is denied as `upstream-timeout`,
   anything else as `upstream-unreachable`. The thrown `BrokerDenialError`
   carries no `cause`, no URL and no upstream message, because for
   `query-param` the URL is the secret. Both reasons count in
-  `brokerMetrics.ts` and toward the denial-streak alert.
+  `brokerMetrics.ts` and toward the denial-streak alert, whose message
+  therefore reads "refusing every request or its upstream is failing";
+  `byReason` tells the two apart. A failed dispatch writes **two** audit
+  events, in this order: `allow` (just before the secret leaves) and then
+  `deny` with the upstream reason. An audit sink must read the pair as "the
+  secret left, no usable answer came back", not as a contradiction.
 
 **Known residuals.** Vendor headers such as `Notion-Version` need a
 per-credential `allowedHeaders` (a schema change, #778 S2/S3b). The scrub
 does not cover other transformations of the secret, such as JSON `\u`
-escapes or hashes. The default fetch is plain `globalThis.fetch`, not
+escapes, partial URL encodings (e.g. `/` left unencoded), base64 of the
+password segment alone, or hashes. Upstream `set-cookie` passes through
+(the scrub only redacts secret forms): the request side drops `Cookie` as
+ambient authority, but a session cookie the upstream issues reaches the
+caller; S3b decides whether to drop it. `upstream-timeout` /
+`upstream-unreachable` are thrown after the secret has left, so the S3b
+agent tool must present them as "sent, outcome unknown", not as a refusal,
+or a non-idempotent POST gets retried blindly. The default fetch is plain `globalThis.fetch`, not
 `guardedOutboundFetch`: the destination host is operator-declared and must
 match exactly, and operators may broker to intranet hosts on purpose.
 These and the other S2/S3b preconditions (the unenforced
@@ -1217,8 +1248,12 @@ in `docs/middleware-agent-handoff.md` §13.
 
 Tests: `middleware/test/credentialBrokerEgress.test.ts` (a real local HTTP
 upstream: echo in every encoding, a cross-origin 302, a trickling upstream,
-a 50 MB body, forged headers, a secret-bearing fetch error) and
-`middleware/test/credentialBrokerResponse.test.ts` (forms, the floor, the
+a 50 MB body, forged headers, a secret-bearing fetch error),
+`middleware/test/credentialBrokerEgressRequest.test.ts` (whitespace-padded
+secrets, a `'` in a query-param secret, header values undici refuses, a
+GET/HEAD body against a `once` grant, an allow-listed injectionKey),
+`middleware/test/credentialBrokerOutbound.test.ts` (the header-filter rules)
+and `middleware/test/credentialBrokerResponse.test.ts` (forms, the floor, the
 cap straddle).
 
 ---

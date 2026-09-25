@@ -16,7 +16,16 @@
  * - base64 (`basic-password` sends `Basic base64(user:pass)`),
  * - URL-encoded (`query-param` sends `encodeURIComponent(secret)`), plus the
  *   form-encoding variants (`+` for space, `URLSearchParams`), with the `%XX`
- *   hex matched case-insensitively because upstreams re-encode in lowercase.
+ *   hex matched case-insensitively because upstreams re-encode in lowercase,
+ *   and the WHATWG-URL form fetch really sends (`'` as `%27`),
+ * - JSON-escaped (`\"`, `\\`, `\n`), for an upstream echoing the request as
+ *   JSON.
+ *
+ * The forms are built from what goes on the WIRE, not only from the stored
+ * value: undici trims leading and trailing HTTP whitespace (tab, LF, CR,
+ * space) from a header value, so a secret stored with a copy-paste newline
+ * leaves trimmed, and an echo of it matches no form of the stored value.
+ * Every base therefore also contributes its trimmed variant.
  *
  * For `basic-password` the stored secret is `user:pass` (#778, confirmed
  * 2026-08-20), and an upstream can echo the password alone, so the password
@@ -66,26 +75,40 @@ export interface CappedBody {
  * secret is below the floor.
  */
 export function secretForms(secret: string, scheme: CredentialInjectionScheme): readonly string[] {
-  const bases = [secret];
+  const bases = withTrimmed(secret);
   if (scheme === 'basic-password') {
     const colon = secret.indexOf(':');
-    if (colon >= 0) bases.push(secret.slice(colon + 1));
+    if (colon >= 0) bases.push(...withTrimmed(secret.slice(colon + 1)));
   }
 
   const forms = new Set<string>();
-  bases
-    .filter((base) => base.length >= MIN_SCRUBBABLE_SECRET_LENGTH)
-    .forEach((base, index) => {
-      const uriEncoded = encodeURIComponent(base);
-      forms.add(base);
-      forms.add(uriEncoded);
-      forms.add(uriEncoded.replace(/%20/g, '+'));
-      forms.add(new URLSearchParams({ k: base }).toString().slice(2));
-      // base64 of the full secret is what `basic-password` puts on the wire.
-      if (index === 0) forms.add(Buffer.from(base, 'utf8').toString('base64'));
-    });
+  // base64 of the full stored secret is what `basic-password` puts on the wire.
+  if (secret.length >= MIN_SCRUBBABLE_SECRET_LENGTH) forms.add(Buffer.from(secret, 'utf8').toString('base64'));
+  for (const base of bases) {
+    if (base.length < MIN_SCRUBBABLE_SECRET_LENGTH) continue;
+    const uriEncoded = encodeURIComponent(base);
+    forms.add(base);
+    forms.add(uriEncoded);
+    forms.add(uriEncoded.replace(/%20/g, '+'));
+    forms.add(new URLSearchParams({ k: base }).toString().slice(2));
+    // What fetch's WHATWG URL parser actually sends for `query-param`: it
+    // re-encodes `'` as `%27`, which `encodeURIComponent` leaves alone.
+    forms.add(new URL(`https://h/?k=${uriEncoded}`).search.slice(3));
+    // A JSON echo escapes `"`, `\` and the short control escapes (`\n`, `\t`).
+    forms.add(JSON.stringify(base).slice(1, -1));
+  }
 
   return [...forms].sort((a, b) => b.length - a.length);
+}
+
+/** Leading/trailing HTTP whitespace, which undici strips from a header value
+ *  before sending — see the module header. */
+const HTTP_WHITESPACE_EDGES = /^[\t\n\r ]+|[\t\n\r ]+$/g;
+
+/** The value itself plus, when it differs, the whitespace-trimmed wire form. */
+function withTrimmed(value: string): string[] {
+  const trimmed = value.replace(HTTP_WHITESPACE_EDGES, '');
+  return trimmed === value ? [value] : [value, trimmed];
 }
 
 function escapeRegExp(literal: string): string {

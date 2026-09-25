@@ -9,15 +9,12 @@
  * a lowercase `authorization` joined the injected one, and a thrown fetch
  * error for a query-param credential carried the secret-bearing URL.
  *
- * Servers bind `127.0.0.1` explicitly (the listen(0) v4/v6 flake). The
- * broker always addresses `https://api.example.com`; `routeTo` rewrites that
- * to the local server and otherwise uses the real global fetch, so redirect,
- * abort and streaming behaviour are undici's own.
+ * The local-upstream plumbing lives in `_helpers/brokerUpstream.ts`; the
+ * request-side edge cases (whitespace-padded secrets, header values undici
+ * refuses, GET/HEAD bodies) are in `credentialBrokerEgressRequest.test.ts`.
  */
 
 import { strict as assert } from 'node:assert';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { inspect } from 'node:util';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
@@ -26,7 +23,6 @@ import {
   makePrincipal,
   type Credential,
   type CredentialInjectionScheme,
-  type EncryptedSecretMaterial,
   type Principal,
 } from '@omadia/channel-sdk';
 
@@ -39,65 +35,18 @@ import {
 } from '../src/credentials/broker.js';
 import { getBrokerMetrics, resetBrokerMetrics } from '../src/credentials/brokerMetrics.js';
 
+import { closeAllUpstreams, rawHeaderValues, routeTo, seal, startUpstream, unseal } from './_helpers/brokerUpstream.js';
+
 const ALICE = makePrincipal('user', 'alice@example.com') as Principal;
-const DECLARED_ORIGIN = 'https://api.example.com';
 // Space, slash and plus make every encoding of it distinct from the raw form.
 const SECRET = 'sk live/secret+value 42';
 const BASIC_SECRET = 'svc-user:p@ss word/secret+42';
 const MIB = 1024 * 1024;
 const T = { timeout: 5000 };
 
-function seal(plaintext: string): EncryptedSecretMaterial {
-  return { iv: 'iv', tag: 'tag', ciphertext: Buffer.from(plaintext, 'utf8').toString('base64') };
-}
-function unseal(material: EncryptedSecretMaterial): string {
-  return Buffer.from(material.ciphertext, 'base64').toString('utf8');
-}
-
 function encodingsOf(secret: string): string[] {
   const enc = encodeURIComponent(secret);
   return [secret, Buffer.from(secret, 'utf8').toString('base64'), enc, enc.replace(/%20/g, '+'), enc.toLowerCase()];
-}
-
-interface Upstream {
-  readonly base: string;
-  readonly port: number;
-  readonly requests: IncomingMessage[];
-  close(): Promise<void>;
-}
-
-const openServers: Server[] = [];
-
-async function startUpstream(handler: (req: IncomingMessage, res: ServerResponse) => void): Promise<Upstream> {
-  const requests: IncomingMessage[] = [];
-  const server = createServer((req, res) => {
-    requests.push(req);
-    handler(req, res);
-  });
-  openServers.push(server);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as AddressInfo;
-  return {
-    base: `http://127.0.0.1:${String(port)}`,
-    port,
-    requests,
-    close: () =>
-      new Promise<void>((resolve) => {
-        server.closeAllConnections();
-        server.close(() => resolve());
-      }),
-  };
-}
-
-function routeTo(base: string): BrokerFetch {
-  return (url, init) =>
-    globalThis.fetch(url.replace(DECLARED_ORIGIN, base), init) as unknown as ReturnType<BrokerFetch>;
-}
-
-async function readBody(req: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString('utf8');
 }
 
 describe('#778 S3a CredentialBroker egress against a real upstream', () => {
@@ -110,17 +59,7 @@ describe('#778 S3a CredentialBroker egress against a real upstream', () => {
     audits = [];
   });
 
-  afterEach(async () => {
-    await Promise.all(
-      openServers.splice(0).map(
-        (server) =>
-          new Promise<void>((resolve) => {
-            server.closeAllConnections();
-            server.close(() => resolve());
-          }),
-      ),
-    );
-  });
+  afterEach(closeAllUpstreams);
 
   async function credential(
     scheme: CredentialInjectionScheme,
@@ -314,10 +253,7 @@ describe('#778 S3a CredentialBroker egress against a real upstream', () => {
 
       const seen = upstream.requests[0];
       assert.ok(seen);
-      const values: string[] = [];
-      for (let i = 0; i < seen.rawHeaders.length; i += 2) {
-        if (seen.rawHeaders[i]?.toLowerCase() === c.injected) values.push(seen.rawHeaders[i + 1] ?? '');
-      }
+      const values = rawHeaderValues(seen, c.injected);
       const expected = c.scheme === 'bearer' ? `Bearer ${SECRET}` : SECRET;
       assert.deepEqual(values, [expected]);
       assert.equal(seen.headers.cookie, undefined);
@@ -377,8 +313,14 @@ describe('#778 S3a CredentialBroker egress against a real upstream', () => {
     for (const text of [err.message, err.stack ?? '', inspect(err, { depth: 10 })]) {
       for (const form of encodingsOf(SECRET)) assert.ok(!text.includes(form), `error leaked ${form}`);
     }
-    const deny = audits.find((e) => e.kind === 'deny');
-    assert.equal(deny?.reason, 'upstream-unreachable');
+    // The documented pair, in this order: the secret left, then no usable answer.
+    assert.deepEqual(
+      audits.map((e) => [e.kind, e.reason]),
+      [
+        ['allow', undefined],
+        ['deny', 'upstream-unreachable'],
+      ],
+    );
     assert.ok(!JSON.stringify(audits).includes(encodeURIComponent(SECRET)));
     const m = getBrokerMetrics();
     assert.equal(m.requests, 1);

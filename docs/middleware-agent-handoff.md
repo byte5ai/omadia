@@ -2845,9 +2845,22 @@ Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
   `Notion-Version` o. ä. wird verworfen (und nur als Name auditiert). Das ist
   eine Schema-Änderung am Credential.
 - **Nicht gescrubbte Transformationen.** Der Scrub deckt roh, base64 (des
-  ganzen Secrets) und URL-kodiert ab, nicht JSON-`\u`-Escapes, base64 des
+  ganzen Secrets), URL-kodiert (inkl. WHATWG-Form mit `%27`), JSON-escaped
+  (`\"`, `\\`, `\n`) und jeweils die whitespace-getrimmte Wire-Form ab, nicht
+  JSON-`\u`-Escapes, teilweise URL-Kodierung (`/` unkodiert), base64 des
   Passwortsegments allein oder Hashes des Secrets. Vor S3b entscheiden, ob
   das Agent-Tool dafür eine zweite Schicht braucht.
+- **Upstream-`set-cookie` geht durch (S3b).** `sanitizeResponseHeaders`
+  scrubbt nur Secret-Formen. Die Request-Seite verwirft `Cookie` als
+  ambiente Autorität, aber ein Session-Cookie, das der Upstream ausstellt,
+  erreicht den Aufrufer. S3b entscheidet, ob es verworfen wird.
+- **`upstream-*` heißt „gesendet, Ausgang unbekannt“ (S3b).**
+  `upstream-timeout` / `upstream-unreachable` werden als `BrokerDenialError`
+  geworfen, nachdem das Secret raus ist (Audit: `allow`, dann `deny`). Das
+  Agent-Tool darf das nicht als Ablehnung darstellen, sonst wird ein nicht
+  idempotenter POST blind wiederholt. Eigene Fehlerklasse oder ein
+  `dispatched`-Flag erwägen und ein sicheres `cause.code` (`ENOTFOUND`,
+  `UND_ERR_*`) als Diagnose loggen.
 - **Standard-`fetch` ist nicht `guardedOutboundFetch`.** Bewusst: der Host
   ist vom Operator deklariert und muss exakt passen, Intranet-Ziele sind
   erlaubt. Mit S3b prüfen, ob ein per-Credential-Opt-in für den SSRF-Guard

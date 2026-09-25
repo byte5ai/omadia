@@ -50,10 +50,13 @@ for the agent tool (#778 S3b).
 
 The broker now dispatches with `redirect: 'manual'` and a 20 s timeout, reads
 the body under a 1 MiB streaming cap (`truncated: true` on overflow), scrubs the
-secret from header values and body in raw, base64 and URL-encoded form (secrets
-of 8+ characters), filters caller headers against a static allow-list and
-audits the dropped names, and maps failures to sanitized `upstream-timeout` /
-`upstream-unreachable` denials. `dispatch-failed`, which had no call site, is
+secret from header values and body in raw, base64, URL-encoded and
+JSON-escaped form, built from what goes on the wire (the whitespace-trimmed
+header value undici sends, the `%27` the URL parser adds; secrets of 8+
+characters), filters caller headers against a static allow-list plus
+undici's own value check and audits the dropped names, refuses a GET/HEAD with
+a body as `invalid-request` before a `once` grant is consumed, and maps
+failures to sanitized `upstream-timeout` / `upstream-unreachable` denials. `dispatch-failed`, which had no call site, is
 replaced by those two reasons. See `docs/security-architecture.md` §10c. What
 the slice leaves open for #778 S2/S3b (short-secret floor, the unenforced
 `credential:broker:use` gate, the unsalted `fingerprintSecret`, per-credential

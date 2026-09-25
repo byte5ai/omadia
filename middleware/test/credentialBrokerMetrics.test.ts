@@ -50,6 +50,7 @@ describe('#578 brokerMetrics', () => {
     assert.equal(byReason['upstream-unreachable'], 0);
     assert.equal(byReason['upstream-timeout'], 0);
     assert.equal('dispatch-failed' in byReason, false);
+    assert.equal(byReason['invalid-request'], 0);
     recordBrokerOutcome('deny', 'upstream-timeout');
     assert.equal(getBrokerMetrics().byReason['upstream-timeout'], 1);
   });

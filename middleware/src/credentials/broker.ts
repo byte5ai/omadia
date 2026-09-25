@@ -89,6 +89,8 @@ export interface BrokerRequestDescriptor {
    *  else — including any case variant of the injected Authorization or
    *  injectionKey header — is dropped, and the dropped NAMES are audited. */
   readonly headers?: Readonly<Record<string, string>>;
+  /** Refused with `invalid-request` on GET/HEAD — before any grant is
+   *  consumed — because fetch rejects such a request locally. */
   readonly body?: string;
 }
 
@@ -120,6 +122,14 @@ export class BrokerDenialError extends Error {
   }
 }
 
+/**
+ * One broker decision. A request that passed every check and then failed in
+ * dispatch produces TWO events, in this order: `allow` (written just before
+ * the secret leaves the process) and then `deny` with `upstream-timeout` /
+ * `upstream-unreachable`. An audit sink must not read the pair as a
+ * contradiction: the `allow` records that the secret left, the `deny` that
+ * no usable answer came back.
+ */
 export interface BrokerAuditEvent {
   readonly kind: 'allow' | 'deny';
   readonly credentialId: CredentialId;
@@ -166,10 +176,22 @@ export interface CredentialBrokerDeps {
    *  `isGrantActive` header for why `now` is always a parameter, never read
    *  internally at the point of comparison. */
   readonly now?: () => Date;
-  /** Defaults to {@link BROKER_DEFAULT_TIMEOUT_MS}. */
+  /** Defaults to {@link BROKER_DEFAULT_TIMEOUT_MS}. A positive safe
+   *  integer, checked in the constructor. */
   readonly timeoutMs?: number;
-  /** Defaults to {@link BROKER_DEFAULT_MAX_RESPONSE_BYTES}. */
+  /** Defaults to {@link BROKER_DEFAULT_MAX_RESPONSE_BYTES}. A positive safe
+   *  integer, checked in the constructor. */
   readonly maxResponseBytes?: number;
+}
+
+/** Methods fetch refuses to send with a body. */
+const BODYLESS_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
+
+function assertPositiveInteger(name: string, value: number | undefined): void {
+  if (value === undefined || (Number.isSafeInteger(value) && value > 0)) return;
+  // A NaN timeout makes `AbortSignal.timeout` throw only after the grant is
+  // consumed; a NaN or infinite cap silently removes the memory bound.
+  throw new RangeError(`CredentialBroker: ${name} must be a positive safe integer`);
 }
 
 /** Everything a `deny`/`allow` call needs to finish auditing and throwing,
@@ -184,7 +206,10 @@ interface RequestContext {
 }
 
 export class CredentialBroker {
-  constructor(private readonly deps: CredentialBrokerDeps) {}
+  constructor(private readonly deps: CredentialBrokerDeps) {
+    assertPositiveInteger('timeoutMs', deps.timeoutMs);
+    assertPositiveInteger('maxResponseBytes', deps.maxResponseBytes);
+  }
 
   async request(
     credentialId: CredentialId,
@@ -205,6 +230,11 @@ export class CredentialBroker {
     }
 
     const ctx: RequestContext = { credentialId, principal, method, pathname, host: normalizeHost(req.host) };
+
+    // A malformed request is the caller's error, not the upstream's: refuse
+    // it here, before any grant is consumed, instead of letting fetch reject
+    // it after the `allow` audit as a misleading `upstream-unreachable`.
+    if (BODYLESS_METHODS.has(method) && req.body !== undefined) this.deny(ctx, 'invalid-request');
 
     let credential: Credential;
     try {

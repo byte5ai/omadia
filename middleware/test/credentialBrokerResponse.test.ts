@@ -67,6 +67,35 @@ describe('#778 S3a brokerResponse', () => {
     assert.equal(scrubSecret('svc-user:short', forms), REDACTED);
   });
 
+  it('scrubs the whitespace-trimmed form undici puts on the wire for a padded secret', () => {
+    for (const padded of ['sk-live-abcdefgh\n', ' sk-live-abcdefgh', '\tsk-live-abcdefgh\r\n']) {
+      const forms = secretForms(padded, 'bearer');
+      // A padded form may take its whitespace with it (`Bearer[REDACTED]`);
+      // what matters is that no trace of the secret survives.
+      const out = scrubSecret('Bearer sk-live-abcdefgh', forms);
+      assert.ok(out.startsWith('Bearer') && out.endsWith(REDACTED), `${JSON.stringify(padded)} -> ${out}`);
+      assert.ok(!out.includes('abcdefgh'));
+    }
+    const basic = secretForms('svc-user:pa55word-secret ', 'basic-password');
+    assert.equal(scrubSecret('password=pa55word-secret;', basic), `password=${REDACTED};`);
+  });
+
+  it('does not add a trimmed form that falls below the floor', () => {
+    assert.deepEqual(secretForms('abc1234 ', 'bearer').includes('abc1234'), false);
+  });
+
+  it("scrubs the WHATWG-URL form of a query-param secret (' as %27)", () => {
+    const forms = secretForms("abc'defgh!ij", 'query-param');
+    assert.equal(scrubSecret('/v1/x?api_key=abc%27defgh!ij', forms), `/v1/x?api_key=${REDACTED}`);
+  });
+
+  it('scrubs the JSON-escaped form of a secret carrying a quote or backslash', () => {
+    const forms = secretForms('svc-user:pa"ss\\word42', 'basic-password');
+    const echoed = JSON.stringify({ password: 'pa"ss\\word42', user: 'svc-user:pa"ss\\word42' });
+    assert.equal(echoed.includes('pa\\"ss'), true);
+    assert.equal(scrubSecret(echoed, forms), JSON.stringify({ password: REDACTED, user: REDACTED }));
+  });
+
   it('a secret straddling the cap leaves no prefix of any form at the tail', () => {
     const forms = secretForms(SECRET, 'bearer');
     const longest = Math.max(...forms.map((f) => f.length));
