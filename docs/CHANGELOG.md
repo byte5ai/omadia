@@ -91,6 +91,60 @@ with `getOptional`; both names are gone from its row in the legacy
 service-grant allowlist (nineteen names at the 2026-08-20 audit, seventeen
 now).
 
+### Fixed — receipts page states when privacy receipts are written (#1081)
+
+2026-09-24 — the `/operator/receipts` subtitle promised that "every completed
+turn writes its PII-free privacy receipt here", while the empty state right
+below it said receipts appear once a turn *with privacy-shield activity*
+completes. The empty state was right. `finalizeTurn()` in
+`harness-plugin-privacy-guard/src/service.ts` returns a receipt only when the
+turn interned a dataset, recorded a bypass, recorded a connected tool's
+structured payload, or masked the prompt (at least one detected PII span), and
+the orchestrator persists a `turn_receipts` row only when a receipt exists. A
+plain answer without tool calls whose prompt held nothing to mask leaves no row,
+so an operator on a fresh install saw an empty page and read it as broken
+receipts.
+
+The subtitle (en/de) now states the real rule, and the empty state explains
+that turns in which the shield had nothing to do write no receipt. The
+subtitle and `docs/ai-act-transparency.md` also name the runtime that never
+writes one: agents on the Claude subscription CLI run without the privacy
+shield (`CliChatAgent` installs no privacy handle), so an empty page there is
+not "nothing to protect". The README
+feature row separates the per-run trace from privacy receipts. The same false
+claim was corrected in `docs/ai-act-transparency.md`, the handoff doc,
+`middleware/.env.example`, the `turnReceiptStore` doc comment and the
+privacy-guard README. The #757 entry further down carries the old wording
+("every completed turn writes its PII-free receipt"). It stays as
+written, as a record of what #757 claimed, but it was never accurate.
+`receiptsCopy.test.ts` fails if either catalog promises a receipt for every
+turn again or drops the shield-activity rule.
+
+Copy only, deliberately. A zero-activity receipt for every turn was considered
+and rejected. Each row enters the #758 hash chain and the signed checkpoints,
+so the change would alter what the chain attests to and multiply retention
+volume for rows that say "nothing happened". That needs its own product
+decision.
+
+### Added — "I'm still here" renews the admin session instead of a re-login (#965)
+
+2026-09-24 — the session-expiry warning used to offer only "Sign in now",
+which sent an operator who was actively working through the login form (and,
+on Entra, a full IdP round trip). The card's primary action is now
+"I'm still here": it calls the new `POST /api/v1/auth/renew`, which re-checks
+the principal (users row active, provider active, whitelist, and for Entra a
+refresh-token redemption at the IdP), writes one `auth.session_renew` audit
+row, and re-mints the cookie with a fresh 4h window. The page stays where it
+is. A refused renewal and the expired overlay still require a real login.
+
+Renewal chains are bounded by an absolute cap measured from the original
+sign-in, carried in a new `auth_time` JWT claim (tokens without it fall back to
+`iat`). New env var **`AUTH_SESSION_MAX_LIFETIME_HOURS`** (default `12`,
+allowed `4`–`168`); see `middleware/.env.example`. `GET /api/v1/auth/me` now
+also returns `renewable_until`, and `POST /api/v1/auth/logout` forgets the
+Entra refresh token so a logout ends the renewal chain. Details and residual
+risks: `docs/security-architecture.md` §10b.
+
 ### Changed — Teams provisioning persists a structured error code (#897)
 
 2026-09-24 — the Teams provisioning runner recorded failures only as an English
