@@ -1152,6 +1152,82 @@ legacy `iat` fallback, audit-before-cookie, logout forget),
 `middleware/test/auth/entraProviderRevalidate.test.ts` (denial vs. outage
 classification).
 
+---
+
+## 10c. Credential asks: identity from the session, owner-only approval (#778 S1, D2)
+
+A credential ask asks the owner of a `personal` credential to let someone else
+use it, and approving one mints a real credential grant. Until #778 S1 the
+mounted `/api/v1/admin/credential-asks` router
+(`middleware/src/routes/credentialAsks.ts`) took every identity from the
+client: `requesterUserId` and `ownerUserId` on create, `?owner` on `/pending`,
+`?requester` on `/mine`, `resolvedBy` on approve/deny. It never compared the
+caller with the ask's owner. Any logged-in session could file an ask in
+someone else's name, read another user's inbox, and approve an ask it did not
+own. The rules below replace that.
+
+1. **The caller comes from `req.session.omadia_user_id`, and only from
+   there.** Every handler uses `user:<omadia_user_id>` as the caller. There
+   is no `sub`/`email` fallback: `auth/sessionIdentity.ts` documents those
+   claims as a different namespace (MCP tokens), and the other owner checks on
+   this server (`datasets.ts`, `skillPromotion.ts`) compare against
+   `omadia_user_id` too. A session without it, or with a blank one, gets 401
+   `auth.required`.
+2. **Client-supplied caller identity is rejected, not ignored.**
+   `requesterUserId` (create, cancel), `resolvedBy` (approve, deny), `?owner`
+   (`/pending`) and `?requester` (`/mine`) answer 400
+   `credential_ask.identity_from_session`. A pre-S1 client fails loudly
+   instead of quietly acting as a different principal than it meant to.
+3. **The owner is derived from the credential.** Both stores address the ask
+   to the credential's own `owner`, canonicalised (`resolveAskOwner` in
+   `credentials/asks.ts`). An `ownerUserId` in the body is only a cross-check;
+   naming anyone else answers 400 `credential_ask.owner_mismatch`. A requester
+   can therefore never route an ask, and the right to approve it, to a
+   principal of their choosing.
+4. **Approve and deny are owner-only, with no break-glass (D2).** An unknown
+   ask answers 404; a session that is not `ask.owner` answers 403
+   `credential_ask.forbidden`. No operator or admin override exists, by
+   maintainer decision. `ask.owner` is fixed when the ask is created
+   (migration 0043) and no code path updates it, so reading it before the
+   atomic claim cannot race.
+5. **Askability is checked under a row lock, in both stores.** An ask must
+   target a live `personal` credential owned by a `user`
+   (`assertAskableCredential`, shared by the in-memory and Postgres stores so
+   the rule cannot drift again; before S1 the Postgres store relied on the
+   foreign key alone and accepted `service` and revoked credentials).
+   `PostgresCredentialAskStore.createAsk` reads the credential with
+   `SELECT kind, owner_kind, owner_ref, revoked_at … FOR SHARE` in the same
+   transaction as the `INSERT`, so a revoke cannot slip between the check
+   and the insert. A non-uuid credential id is `unknown_credential`, not a
+   raw `22P02` 500.
+6. **Approve re-checks the credential.** Under the same `FOR SHARE` lock,
+   approve re-runs the askability check. When the credential has been revoked
+   since the ask was made, the ask is closed as `expired` and no grant is
+   minted; the route answers 409 `credential_ask.not_actionable`.
+   `revokeCredential` is a single `UPDATE credentials` that never touches
+   `credential_asks`, so the two lock orders cannot deadlock.
+7. **Role-owned personal credentials are no longer askable.** Approval is
+   bound to the session principal, which is always a user. An ask addressed
+   to a `role` owner could never be answered by anyone, so creating one is
+   refused as `not_askable`.
+
+Two consequences follow. A credential-creation surface must store a personal
+credential's owner as `user:<omadia_user_id>`, or nobody can ever approve an
+ask against it. And the approve-time re-check compares askability, not
+ownership: a pending ask created before S1 with a client-forged owner is not
+closed by it. No production code path creates credentials today (nothing in
+`middleware/src` calls `createCredential`), so such a row can only come from an
+out-of-band insert.
+
+Tests: `middleware/test/credentialAskRoutes.test.ts` (live `app.listen(0)`
+with a session stub: 401, `identity_from_session`, the non-owner approve/deny
+403 with no grant minted, 409 after revocation), `credentialAsks.test.ts`
+(in-memory store and the shared helpers) and
+`postgresCredentialAskStore.pg.test.ts` (real Postgres: service, revoked and
+owner-mismatch refusals, approve after revocation mints no grant).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1190,6 +1266,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] A new native tool bound to shared/unscoped state (like memory) is routed
       through the caller's scoped accessor in `ctx.tools.invoke`, or denied
       there (§4, #909).
+- [ ] An admin route takes the caller identity from
+      `req.session.omadia_user_id`, never from the body or the query string,
+      and rejects a client-supplied identity field instead of ignoring it
+      (§10c, #778).
 
 ---
 
