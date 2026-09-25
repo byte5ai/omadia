@@ -9,6 +9,16 @@
  * keep), so that method checks out its own client and runs both writes in
  * one transaction. Every other method uses the pool directly, same as the
  * rest of this package.
+ *
+ * #778 S1 — askable parity with `InMemoryCredentialAskStore`. `createAsk`
+ * used to INSERT and lean on the FK alone, so in Postgres mode an ask could
+ * target a `service` or a revoked credential. It now runs in its own
+ * transaction too: `SELECT ... FROM credentials ... FOR SHARE`, the shared
+ * `assertAskableCredential` / `resolveAskOwner` rules, then the INSERT. The
+ * `FOR SHARE` row lock blocks `revokeCredential`'s `UPDATE` until commit, so
+ * the credential cannot be revoked between the check and the write.
+ * `approve` takes the same lock after its claim and closes the ask as
+ * `expired` (no grant) when the credential is no longer askable.
  */
 
 import type { Pool, PoolClient } from 'pg';
@@ -18,11 +28,17 @@ import {
   principalRef,
   validateNewGrantInput,
   type CredentialGrantMode,
+  type CredentialKind,
   type Principal,
 } from '@omadia/channel-sdk';
 
 import {
+  CredentialAskRejectedError,
+  assertAskableCredential,
+  isStillAskable,
+  resolveAskOwner,
   validateNewAskInput,
+  type AskableCredentialFacts,
   type CredentialAsk,
   type CredentialAskId,
   type CredentialAskStatus,
@@ -80,9 +96,17 @@ export class PostgresCredentialAskStore implements CredentialAskStore {
   async createAsk(input: NewCredentialAskInput): Promise<CredentialAsk> {
     validateNewAskInput(input);
     const requesterRef = canonicalizePrincipalRef(input.requester.kind, principalRef(input.requester));
-    const ownerRef = canonicalizePrincipalRef(input.owner.kind, principalRef(input.owner));
+    const client = await this.pool.connect();
     try {
-      const result = await this.pool.query<AskRow>(
+      await client.query('BEGIN');
+      const credential = await selectCredentialFactsForShare(client, input.credentialId);
+      if (!credential) {
+        throw new CredentialAskRejectedError('unknown_credential', `unknown credential: ${input.credentialId}`);
+      }
+      assertAskableCredential(credential);
+      const owner = resolveAskOwner(credential, input.owner);
+
+      const result = await client.query<AskRow>(
         `INSERT INTO credential_asks (
            credential_id, requester_kind, requester_ref, owner_kind, owner_ref,
            purpose, mode, requested_grant_expires_at, ask_expires_at
@@ -92,8 +116,8 @@ export class PostgresCredentialAskStore implements CredentialAskStore {
           input.credentialId,
           input.requester.kind,
           requesterRef,
-          input.owner.kind,
-          ownerRef,
+          owner.kind,
+          principalRef(owner),
           input.purpose,
           input.mode,
           input.requestedGrantExpiresAt ?? null,
@@ -102,19 +126,31 @@ export class PostgresCredentialAskStore implements CredentialAskStore {
       );
       const row = result.rows[0];
       if (!row) throw new Error('credential ask insert returned no row');
+      await client.query('COMMIT');
       return rowToAsk(row);
     } catch (err) {
+      await rollbackSafely(client);
       if (pgErrorCode(err) === PG_FOREIGN_KEY_VIOLATION) {
-        throw new Error(`unknown credential: ${input.credentialId}`, { cause: err });
+        throw new CredentialAskRejectedError('unknown_credential', `unknown credential: ${input.credentialId}`, {
+          cause: err,
+        });
       }
       throw err;
+    } finally {
+      client.release();
     }
   }
 
   async getAsk(id: CredentialAskId): Promise<CredentialAsk | undefined> {
-    const result = await this.pool.query<AskRow>(`SELECT ${COLUMNS} FROM credential_asks WHERE id = $1`, [id]);
-    const row = result.rows[0];
-    return row ? rowToAsk(row) : undefined;
+    try {
+      const result = await this.pool.query<AskRow>(`SELECT ${COLUMNS} FROM credential_asks WHERE id = $1`, [id]);
+      const row = result.rows[0];
+      return row ? rowToAsk(row) : undefined;
+    } catch (err) {
+      // A non-uuid id addresses no row (the #1093 `datasets.ts` precedent).
+      if (pgErrorCode(err) === PG_INVALID_TEXT_REPRESENTATION) return undefined;
+      throw err;
+    }
   }
 
   async listPendingForOwner(owner: Principal, now: Date): Promise<readonly CredentialAsk[]> {
@@ -162,6 +198,16 @@ export class PostgresCredentialAskStore implements CredentialAskStore {
       }
       const ask = rowToAsk(claimedRow);
 
+      // #778 S1 — re-check the credential under a share lock (blocks a
+      // concurrent revoke until this transaction ends). Revoked or gone
+      // since the ask was made: close the ask as `expired`, no grant.
+      const credential = await selectCredentialFactsForShare(client, ask.credentialId);
+      if (!isStillAskable(credential)) {
+        await client.query(`UPDATE credential_asks SET status = 'expired' WHERE id = $1`, [id]);
+        await client.query('COMMIT');
+        return undefined;
+      }
+
       validateNewGrantInput({
         credentialId: ask.credentialId,
         principal: ask.requester,
@@ -206,17 +252,67 @@ export class PostgresCredentialAskStore implements CredentialAskStore {
 
   async cancel(id: CredentialAskId, requester: Principal): Promise<boolean> {
     const ref = canonicalizePrincipalRef(requester.kind, principalRef(requester));
-    const result = await this.pool.query(
-      `UPDATE credential_asks
-          SET status = 'cancelled', resolved_at = now()
-        WHERE id = $1 AND status = 'pending' AND requester_kind = $2 AND requester_ref = $3`,
-      [id, requester.kind, ref],
-    );
-    return (result.rowCount ?? 0) > 0;
+    try {
+      const result = await this.pool.query(
+        `UPDATE credential_asks
+            SET status = 'cancelled', resolved_at = now()
+          WHERE id = $1 AND status = 'pending' AND requester_kind = $2 AND requester_ref = $3`,
+        [id, requester.kind, ref],
+      );
+      return (result.rowCount ?? 0) > 0;
+    } catch (err) {
+      if (pgErrorCode(err) === PG_INVALID_TEXT_REPRESENTATION) return false;
+      throw err;
+    }
   }
 }
 
+interface CredentialFactsRow {
+  id: string;
+  kind: CredentialKind;
+  owner_kind: string | null;
+  owner_ref: string | null;
+  revoked_at: Date | null;
+}
+
+/**
+ * The askability facts of one credential, row-locked `FOR SHARE` for the
+ * rest of the caller's transaction. `undefined` when no such credential
+ * exists — including a non-uuid id, which Postgres reports as `22P02`.
+ * That error aborts the surrounding transaction, which is fine for the one
+ * caller that can see it: `createAsk` rejects and rolls back straight away.
+ * (`approve` passes the ask's own `credential_id`, a UUID column, so it
+ * never hits `22P02`.) Owner mapping is the same as
+ * `postgresCredentialStore.ts`'s `rowToCredential`.
+ */
+async function selectCredentialFactsForShare(
+  client: PoolClient,
+  credentialId: string,
+): Promise<AskableCredentialFacts | undefined> {
+  let row: CredentialFactsRow | undefined;
+  try {
+    const result = await client.query<CredentialFactsRow>(
+      `SELECT id, kind, owner_kind, owner_ref, revoked_at FROM credentials WHERE id = $1 FOR SHARE`,
+      [credentialId],
+    );
+    row = result.rows[0];
+  } catch (err) {
+    if (pgErrorCode(err) === PG_INVALID_TEXT_REPRESENTATION) return undefined;
+    throw err;
+  }
+  if (!row) return undefined;
+  const owner: Principal | undefined =
+    row.owner_kind && row.owner_ref
+      ? row.owner_kind === 'user'
+        ? { kind: 'user', userId: row.owner_ref }
+        : { kind: 'role', roleKey: row.owner_ref }
+      : undefined;
+  return { id: row.id, kind: row.kind, owner, revokedAt: row.revoked_at ?? undefined };
+}
+
 const PG_FOREIGN_KEY_VIOLATION = '23503';
+/** Postgres invalid_text_representation — e.g. a non-uuid string for a UUID column. */
+const PG_INVALID_TEXT_REPRESENTATION = '22P02';
 
 function pgErrorCode(err: unknown): string | undefined {
   return err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : undefined;
