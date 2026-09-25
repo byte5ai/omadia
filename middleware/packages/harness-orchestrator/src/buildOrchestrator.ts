@@ -905,8 +905,12 @@ export function buildOrchestratorForAgent(
             // question that errored or was never answered): that is a gap the
             // agent must disclose, not the empty chat `[]` would claim. A
             // session with NO messages (fresh or cleared tab) is the genuine
-            // first turn and falls through to `[]`.
-            if (turns.length === 0 && session.messages.length > 0) return undefined;
+            // first turn and falls through to `[]`. #1071 — routine deliveries
+            // (`proactive`) are no conversation either: a chat holding only
+            // those (cleared, then a routine delivered) is empty, not a gap.
+            if (turns.length === 0 && session.messages.some((m) => !m.proactive)) {
+              return undefined;
+            }
             return turns;
           },
           ...(assistantIdentityWithName

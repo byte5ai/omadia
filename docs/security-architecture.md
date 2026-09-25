@@ -353,6 +353,28 @@ working across it:
   follows each `$n` the SQL names into its bound value, which is what makes a
   dropped predicate fail. Planted-omission results: tool scope dropped 2 red,
   store predicate dropped 1 red, delete ordering flipped 1 red.
+- **Web routine delivery writes into an unowned chat (#1071, accepted gap).**
+  A routine created from the browser chat delivers its runs into the chat
+  named by the creating turn: `conversationRef.sessionId` is the `sessionId`
+  of that authenticated `/api/chat` request, taken from the request body and
+  checked only for syntax (`validateConversationRef`), not for existence or
+  ownership. Chat sessions have no per-user owner anywhere in the codebase —
+  `GET /api/chat/sessions` lists every session to every authenticated user,
+  and `PUT`/`DELETE` and chat turns accept any id — so this is not a new
+  class of access. What #1071 adds is its *shape*: user A, knowing user B's
+  chat id, can create a routine that writes into B's chat on a schedule,
+  under the server-trusted "Scheduled routine" badge (the `proactive` marker
+  is kept only from the server copy, so B cannot tell it from a routine of
+  B's own), and B can neither see, pause nor delete that routine, because
+  routine management is owner-scoped (#1025, above). The principal side is
+  unchanged: identity comes from the session only, `canTargetOthers` stays
+  `false`, the #1016 turn-owner guard applies, and the target never comes
+  from model or tool input. Accepted for #1071 because closing it needs an
+  owner model for chat sessions, which is a separate change. Follow-up
+  (handoff §13, "Web-Routine-Zustellung"): stamp an owner on each chat
+  session and check it in `GET`/`PUT`/`DELETE` and in
+  `validateConversationRef`; pause routines whose chat was deleted; have
+  `validateConversationRef` check that the chat exists.
 - **Only advertised tools are dispatchable (#1015).** `tools/call` used to
   forward any name into `dispatch()`. The dispatchable set is wider than the
   advertised one — handler-only registrations stay dispatchable but

@@ -97,7 +97,10 @@ never created.
   longer exists" in `last_run_error`. A request without a saved chat (debug
   `scope`, `http-default`) is refused at create time. An empty answer (for
   example a diagram-only turn) fails the run instead of being recorded as `ok`
-  with nothing delivered; dropped attachments are logged. There is no live
+  with nothing delivered; dropped attachments are logged. A `NO_REPLY` answer
+  (the orchestrator's default for a routine with nothing to report) is dropped
+  like on every other channel: nothing is written and the run counts as `ok`.
+  There is no live
   push (the web chat has no realtime channel): the web UI re-reads the active
   chat when `/chat` mounts, after hydration, on chat switch and when the browser
   tab becomes visible, and folds in deliveries the server returns on a PUT. The
@@ -116,7 +119,9 @@ never created.
 - **The `proactive` marker is server-trusted.** It counts only from the
   server's own copy; a marker minted by a client PUT is stripped.
 - **Deliveries stay out of the model tail.** `chatSessionTailTurns` skips them,
-  so a report behind an unanswered question is never replayed as its answer.
+  so a report behind an unanswered question is never replayed as its answer,
+  and the subscription-CLI tail treats a chat holding only deliveries as empty
+  (`[]`), not as unreadable history.
 
 - **One per-session lock for every `ChatSessionStore` instance.** Each
   orchestrator builds its own store over the same chat-sessions directory, so
@@ -124,9 +129,10 @@ never created.
   `clearSnapshot` and `resetMessages`: a concurrent read-modify-write can no
   longer drop a delivery or bring a deleted chat back. It is in-process only.
 
-Known limit, recorded in `docs/middleware-agent-handoff.md` (Web-Sender
-(#1071)): chat sessions still have no per-user owner, so the target chat of a
-web routine is whatever chat id the creating user's turn named.
+Known limit, recorded in `docs/security-architecture.md` §3a and as a
+follow-up in `docs/middleware-agent-handoff.md` §13 (Web-Routine-Zustellung):
+chat sessions still have no per-user owner, so the target chat of a web routine
+is whatever chat id the creating user's turn named.
 
 ### Fixed — plugin-office/web-search Hub drift: lost setup guide restored, versions bumped, build-zip + drift guards (#1075)
 

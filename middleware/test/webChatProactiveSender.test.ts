@@ -103,6 +103,39 @@ describe('#1071 — web chat proactive sender', () => {
     assert.equal((await store.get(SESSION_ID))?.messages.length, 2);
   });
 
+  // The orchestrator's default answer for a routine with nothing to report is
+  // `NO_REPLY` (orchestrator.ts system prompt). Every other routine channel
+  // drops it; delivered here it would post the literal sentinel into the chat.
+  for (const [label, text] of [
+    ['the strict NO_REPLY answer', 'NO_REPLY'],
+    ['a NO_REPLY answer with surrounding whitespace', '  NO_REPLY \n'],
+    ['NO_REPLY appended after an explanation', 'Keine offenen Tickets heute.\nNO_REPLY'],
+  ] as const) {
+    it(`drops ${label} — nothing appended, no throw`, async () => {
+      const store = await seededStore();
+      const sender = createWebChatProactiveSender({ getStore: () => store, now: () => DELIVERED_AT });
+
+      await sender.send({ conversationRef: REF, message: answer(text), routine: ROUTINE });
+
+      const session = await store.get(SESSION_ID);
+      assert.equal(session?.messages.length, 2);
+      assert.equal(session?.updatedAt, seededSession().updatedAt, 'the chat is untouched');
+    });
+  }
+
+  it('still delivers an answer that only mentions NO_REPLY mid-text', async () => {
+    const store = await seededStore();
+    const sender = createWebChatProactiveSender({ getStore: () => store, now: () => DELIVERED_AT });
+
+    await sender.send({
+      conversationRef: REF,
+      message: answer('Routine NO_REPLY-tracker ist gelaufen: 3 Treffer.'),
+      routine: ROUTINE,
+    });
+
+    assert.equal((await store.get(SESSION_ID))?.messages.length, 3);
+  });
+
   it('fails for an attachment-only answer instead of silently dropping it', async () => {
     const store = await seededStore();
     const sender = createWebChatProactiveSender({ getStore: () => store, log: () => {} });

@@ -1,3 +1,4 @@
+import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
 import type { ChatSessionStore } from '@omadia/orchestrator';
 
 import type { ProactiveSender } from './proactiveSender.js';
@@ -17,6 +18,9 @@ import type { ProactiveSender } from './proactiveSender.js';
  * Deliberate limits:
  *  - A deleted chat is NOT recreated. `send` throws; the runner records it as
  *    `last_run_error` and keeps the routine active (ProactiveSender contract).
+ *  - A `NO_REPLY` answer (the orchestrator's default for a routine with
+ *    nothing to report) is dropped, not delivered — as on every other
+ *    channel. The run is recorded `ok`: saying nothing was the intent.
  *  - Text only. `cardBody` / `approval` are ignored; `message.text` already
  *    carries the markdown fallback, and the session schema persists no
  *    attachments for any message. Dropped attachments are logged; an empty
@@ -89,6 +93,16 @@ export function createWebChatProactiveSender(
     },
     async send({ conversationRef, message, routine }): Promise<void> {
       const sessionId = targetSessionId(conversationRef);
+      // Checked before the store lookup and the empty-text throw: a quiet run
+      // must neither post the literal sentinel into the chat nor fail.
+      if (isNoReply(message)) {
+        logNoReplyDrop(WEB_ROUTINE_CHANNEL, {
+          trigger: 'routine',
+          sessionId,
+          ...(routine ? { routineId: routine.id, routineName: routine.name } : {}),
+        });
+        return;
+      }
       const store = opts.getStore();
       if (!store) {
         throw new Error('web chat is not configured (no chat session store)');

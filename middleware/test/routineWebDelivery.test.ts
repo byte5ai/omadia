@@ -192,6 +192,20 @@ describe('#1071 — routines created from the web chat', () => {
     assert.equal((await chats.get(SESSION_ID))?.messages.length, 1);
   });
 
+  it('a quiet run answering NO_REPLY is recorded ok and leaves the chat untouched', async () => {
+    const routine = await runner.createRoutine(
+      createInput(webChatConversationRef(SESSION_ID, SESSION_ID)),
+    );
+    nextAnswer = 'NO_REPLY';
+
+    await runner.triggerRoutineNow(routine.id, OWNER);
+
+    assert.deepEqual(store.runs.at(-1), { id: routine.id, status: 'ok', error: null });
+    const session = await chats.get(SESSION_ID);
+    assert.equal(session?.messages.length, 1);
+    assert.equal(session?.updatedAt, 1, 'no write reached the chat');
+  });
+
   it('refuses at create time a web routine with no chat to deliver into', async () => {
     await assert.rejects(
       runner.createRoutine(createInput(webChatConversationRef('http-default'))),

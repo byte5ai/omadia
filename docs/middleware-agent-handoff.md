@@ -2842,6 +2842,20 @@ Beim Schreiben der #1077-Tests gefunden, dort bewusst nicht repariert (die
   Exception-Meldung statt eines Katalog-Schlüssels (web-ui/CLAUDE.md,
   Checkliste Punkt 3).
 
+### Web-Routine-Zustellung (#1071 follow-up)
+
+Der Web-Sender (§ *Web-Sender (#1071)*) schreibt in einen Chat, den niemand besitzt.
+Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
+
+- **Per-User-Ownership der Chat-Sessions.** Owner beim Anlegen stempeln und in
+  `GET`/`PUT`/`DELETE /api/chat/sessions` sowie in `validateConversationRef` prüfen.
+  Heute listet `GET` jede Session jedem angemeldeten User, und User A kann eine Routine
+  anlegen, die wiederkehrend in den Chat von User B schreibt, ohne dass B sie sehen,
+  pausieren oder löschen kann.
+- **Routinen gelöschter Chats automatisch pausieren.** Heute bleibt die Routine aktiv;
+  jeder Fire zahlt einen Agent-Turn, bevor `send` mit *"no longer exists"* wirft.
+- **`validateConversationRef` prüft Existenz.** Heute nur die Syntax der `sessionId`.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
@@ -3819,9 +3833,16 @@ durch den Web-Sender unten.
   Attachments werden als `WARN` geloggt. Eine **leere Antwort** (z. B. ein reiner
   Diagramm-Turn) wirft — der Lauf landet als `error` in `last_run_error` statt als `ok`
   ohne Zustellung.
+- **`NO_REPLY` wird verworfen, nicht zugestellt.** Der Orchestrator-Systemprompt macht
+  `NO_REPLY` zur Standardantwort einer Routine ohne Neuigkeiten. Der Web-Sender prüft das
+  wie Teams, Telegram und die eingehende Web-Route (`isNoReply`, strikte und
+  angehängte Form) **vor** dem Leer-Text-Wurf, loggt `logNoReplyDrop('web', …)` und
+  schreibt nichts; der Lauf zählt als `ok`.
 - **Nicht im Modellkontext.** `chatSessionTailTurns` überspringt Proactive-Nachrichten,
   sonst würde ein Report hinter einer unbeantworteten Frage als deren Antwort replayed —
-  wie bei Teams, wo Routine-Turns unter `routine:<id>` laufen.
+  wie bei Teams, wo Routine-Turns unter `routine:<id>` laufen. Die Lücken-Prüfung des
+  CLI-Tails (`buildOrchestrator.ts`, "Verlauf nicht lesbar") zählt sie ebenfalls nicht:
+  ein Chat, der nur Zustellungen enthält, ist leer (`[]`), keine Lücke.
 - **Owner:** unverändert. Identität nur aus der Session, `canTargetOthers: false`,
   `pause`/`resume`/`delete`/`trigger` owner-gescoped (#1025). Die `sessionId` kommt aus
   dem authentifizierten Turn des Erstellers.
@@ -3832,7 +3853,9 @@ alle Sessions jedem angemeldeten User, `PUT` nimmt jede Id, und ein Turn mit fre
 die `conversationRef.sessionId` stammt aus dem Request-Body des Erstellers, also kann
 User A eine Routine anlegen, die *wiederkehrend* und mit Server-Badge in den Chat von
 User B schreibt; B sieht die Routine nicht und kann sie weder pausieren noch löschen
-(Routinen sind owner-gescoped). Das schließt #1071 nicht; nötig ist Per-User-Ownership
+(Routinen sind owner-gescoped). Das ist nicht Teil von #1071 und bleibt als Follow-up
+offen (§13, *Web-Routine-Zustellung*; Security-Eintrag in `docs/security-architecture.md`
+§3a); nötig ist Per-User-Ownership
 der Chat-Sessions (Owner beim Anlegen stempeln, `GET`/`PUT`/`DELETE` und
 `validateConversationRef` darauf prüfen). Weitere offene Punkte: ein Chat, der gelöscht
 wurde, lässt seine Routine aktiv (jeder Fire zahlt einen Agent-Turn, bevor `send` wirft);
