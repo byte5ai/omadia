@@ -2977,9 +2977,13 @@ Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
   Heute listet `GET` jede Session jedem angemeldeten User, und User A kann eine Routine
   anlegen, die wiederkehrend in den Chat von User B schreibt, ohne dass B sie sehen,
   pausieren oder löschen kann.
-- **Routinen gelöschter Chats automatisch pausieren.** Heute bleibt die Routine aktiv;
-  jeder Fire zahlt einen Agent-Turn, bevor `send` mit *"no longer exists"* wirft.
-- **`validateConversationRef` prüft Existenz.** Heute nur die Syntax der `sessionId`.
+- **`validateConversationRef` prüft Existenz.** Heute nur die Syntax der `sessionId`
+  (ein gelöschter Chat fällt erst beim ersten Fire auf — dann aber vor dem Agent-Turn,
+  und die Routine wird pausiert).
+- **Manueller Trigger einer pausierten Routine** (`triggerRoutineNow`) zeichnet heute einen
+  `ok`-Lauf auf, obwohl `runOnce` sofort zurückkehrt — das überschreibt den
+  `last_run_error` einer wegen gelöschtem Chat pausierten Routine. Vorbestehend, nicht Teil
+  von #1071.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
@@ -3963,7 +3967,9 @@ durch den Web-Sender unten.
   und hydratisiert nur einmal pro Full-Load, ein In-App-Wechsel von `/routines` nach
   `/chat` sähe sonst nichts —, wenn die Hydration fertig ist, wenn der aktive Chat
   wechselt und wenn der Browser-Tab wieder sichtbar wird. Die Antwort des PUT (das
-  gemergte Dokument) wird ebenso eingefaltet. Findet ein Re-Read nichts Neues, bleibt der
+  gemergte Dokument) wird ebenso eingefaltet. Re-Read, Einfalten, Clear-Epoche und der
+  Visibility-Listener stecken im Hook `useProactiveRefresh`
+  (`web-ui/app/_lib/chatProactiveRefresh.ts`), den `useChatSessions` einbindet. Findet ein Re-Read nichts Neues, bleibt der
   State-Array identisch (`foldProactive` gibt `prev` zurück) — kein Re-Render, kein
   localStorage-Write; ein veralteter Tab, der wieder sichtbar wird, überschreibt so nicht,
   was ein anderer Tab gespeichert hat. Ein Re-Read oder PUT-Answer, der **vor** einem
@@ -3981,15 +3987,24 @@ durch den Web-Sender unten.
   gleiche Rolle, gleichen getrimmten Inhalt hat, fertig und nicht `error` ist — die Regel
   der Mirror-Idempotenz (`appendTurnUnlocked`). Drei Fälle:
   - **Alle Turns passen, gleiche Anzahl:** lokale Kopie bleibt, Zustellungen werden
-    eingefügt, nur der Titel kommt vom Server. Hat ein Mirror-Turn gepasst, folgt ein
-    Catch-up-PUT, der die `srv-*`-Ids durch die des Clients ersetzt.
-  - **Server-Turns sind ein nicht-leeres echtes Präfix der lokalen:** der Browser ist
-    voraus (ein Turn-PUT scheiterte, ohne gespiegelt zu werden). Lokale Kopie bleibt,
-    Zustellungen werden eingefügt, Catch-up-PUT (der Merge-PUT behält die Zustellungen).
+    eingefügt, der Titel kommt vom Server. Hat ein Mirror-Turn gepasst, folgt ein
+    Catch-up-PUT, der die `srv-*`-Ids durch die des Clients ersetzt (Titel dann lokal,
+    s. u.).
+  - **Server-Turns sind ein echtes Präfix der lokalen:** der Browser ist voraus (ein
+    Turn-PUT scheiterte, ohne gespiegelt zu werden). Lokale Kopie bleibt, Zustellungen
+    werden eingefügt, Catch-up-PUT (der Merge-PUT behält die Zustellungen). Das gilt auch
+    für eine Server-Kopie **ohne** Turns, aber mit Zustellung: der erste Turn des Chats
+    hat die Routine angelegt und sein PUT scheiterte. Von "auf anderem Gerät geleert,
+    danach zugestellt" ist das nicht unterscheidbar — die Turns gewinnen, denn ein
+    rückgängig gemachtes Leeren lässt sich wiederholen, verlorene Turns nicht.
   - **Alles andere** — Turn von einem anderen Gerät, eine lokal nur teilweise vorhandene
     Antwort unter gleicher oder Mirror-Id (Reload mitten im Stream, Tab geschlossen bevor
-    der debouncte localStorage-Write nachzog), Leeren/Reset (Server ohne Turns; das wird
-    geloggt) → Server-Kopie gewinnt wie vor #1071, kein PUT.
+    der debouncte localStorage-Write nachzog), Leeren/Reset ohne spätere Zustellung
+    (Server ganz ohne Nachrichten; das wird geloggt) → Server-Kopie gewinnt wie vor
+    #1071, kein PUT.
+  - **Titel bei Catch-up-PUT:** immer der lokale. Der Server hat den letzten Write dieses
+    Browsers nie bekommen, sein Titel kann also noch der Default ("Neuer Chat") sein, den
+    der gescheiterte PUT ersetzt hätte — der Catch-up würde den Rückfall persistieren.
 - **Delivery-Handle:** `conversationRef = { kind: 'http-chat', sessionScope, sessionId? }`.
   `sessionId` wird serverseitig nur gesetzt, wenn die `sessionId` des Requests wirklich der
   Scope des Turns ist (nicht unter Debug-`scope`, nicht bei `http-default`). Fehlt sie,
@@ -4002,7 +4017,12 @@ durch den Web-Sender unten.
   server-geschriebene Proactive-Nachrichten, die im Body fehlen, bleiben erhalten (vor der
   ersten späteren User-Nachricht einsortiert, nie zwischen Frage und Antwort). Der Marker
   zählt nur aus der Server-Kopie; ein vom Client gesetzter wird entfernt. Ein PUT mit
-  `messages: []` ist "Chat leeren" und löscht auch Zustellungen. `MessageSchema` kennt
+  `messages: []` ist **kein** "Chat leeren" mehr: genau das PUTten auch das Umbenennen
+  eines geleerten Chats, der Catch-up eines veralteten Tabs und ein neuer Chat, und
+  jedes davon hat ungesehene Zustellungen gelöscht. Leeren ist explizit
+  `POST /api/chat/sessions/:id/reset` (`resetMessages`); `clearMessages` in der Web-UI
+  ruft es selbst auf und PUTtet danach die geleerte Kopie aus dem committeten State
+  (`sessionsRef`). Umbenennen liest nicht mehr vorab, sondern faltet die PUT-Antwort ein. `MessageSchema` kennt
   `proactive`, sonst entfernt zod ihn beim nächsten PUT (die #445-Falle). Ist die
   gespeicherte Datei korrupt (JSON nicht parsebar, `SyntaxError`), überschreibt der PUT
   sie wie vor #1071 (repariert sie, `WARN`-Log); jeder andere Lesefehler lässt den PUT
@@ -4016,13 +4036,20 @@ durch den Web-Sender unten.
   parallelen Read-Modify-Write zurückgeholt werden. Er gilt **nicht** über Prozesse
   hinweg — bei mehreren Middleware-Instanzen auf einem geteilten Memory-Store bleibt ein
   Fenster.
-- **Gelöschter Chat wird nicht wiederbelebt.** `send` wirft *"web chat conversation '<id>'
-  no longer exists"*, der Runner schreibt das nach `last_run_error`, die Routine bleibt
-  aktiv (ProactiveSender-Vertrag).
+- **Gelöschter Chat wird nicht wiederbelebt — und kostet keinen Agent-Turn.** Der optionale
+  Sender-Hook `checkDeliverable` läuft im Runner **vor** dem Agent-Turn und wirft
+  `ProactiveTargetGoneError` (*"web chat conversation '<id>' no longer exists"*); dasselbe,
+  wenn der Chat während des Turns verschwindet (`send`). Der Runner pausiert die Routine
+  dann (unscoped, System-Aktion), meldet sie beim Scheduler ab und schreibt nach
+  `last_run_error` *"…; the routine was paused — delete it and create it again from an
+  existing conversation"*. Ein fehlender Store (LLM-Key noch nicht gesetzt) ist dagegen ein
+  normaler Fehler; die Routine bleibt aktiv.
 - **Nur Text.** `cardBody`/`approval` werden stillschweigend ignoriert; `message.text`
   trägt schon den Markdown-Fallback, und das Session-Schema persistiert keine
   Attachments. Verworfene Attachments und ein verworfenes `message.interactive` (Kind
-  wird genannt) werden als `WARN` geloggt. Eine **leere Antwort** (z. B. ein reiner
+  wird genannt) werden auf Warn-Level geloggt (`console.warn`) **und** in einem kurzen
+  Hinweis am Ende der zugestellten Nachricht benannt (`droppedContentNote`, englisch wie
+  alle serverseitigen Routine-Texte). Eine **leere Antwort** (z. B. ein reiner
   Diagramm-Turn) wirft — der Lauf landet als `error` in `last_run_error` statt als `ok`
   ohne Zustellung.
 - **`NO_REPLY` wird verworfen, nicht zugestellt.** Der Orchestrator-Systemprompt macht
@@ -4049,9 +4076,8 @@ User B schreibt; B sieht die Routine nicht und kann sie weder pausieren noch lö
 offen (§13, *Web-Routine-Zustellung*; Security-Eintrag in `docs/security-architecture.md`
 §3a); nötig ist Per-User-Ownership
 der Chat-Sessions (Owner beim Anlegen stempeln, `GET`/`PUT`/`DELETE` und
-`validateConversationRef` darauf prüfen). Weitere offene Punkte: ein Chat, der gelöscht
-wurde, lässt seine Routine aktiv (jeder Fire zahlt einen Agent-Turn, bevor `send` wirft);
-`validateConversationRef` prüft nur die Syntax der `sessionId`, nicht ob der Chat existiert.
+`validateConversationRef` darauf prüfen). Weiterer offener Punkt: `validateConversationRef`
+prüft nur die Syntax der `sessionId`, nicht ob der Chat existiert.
 
 ### Der Principal für *jeden* Kanal: Producer in `CoreApi` (#1086)
 

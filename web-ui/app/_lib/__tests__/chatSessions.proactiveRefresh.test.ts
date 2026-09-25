@@ -41,6 +41,8 @@ let serverB: ChatSession;
 let putResponse: ChatSession | null = null;
 let puts: string[] = [];
 let putBodies: ChatSession[] = [];
+/** Every request in order, as `METHOD url`. */
+let requests: string[] = [];
 /** When set, a GET of one session waits for this promise before answering. */
 let holdSessionGet: Promise<void> | null = null;
 
@@ -68,6 +70,7 @@ function summary(s: ChatSession): Record<string, unknown> {
 beforeEach(() => {
   puts = [];
   putBodies = [];
+  requests = [];
   putResponse = null;
   holdSessionGet = null;
   window.localStorage.clear();
@@ -77,6 +80,7 @@ beforeEach(() => {
     (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = String(input);
       const method = init?.method ?? 'GET';
+      requests.push(`${method} ${url}`);
       if (method === 'PUT') {
         puts.push(url);
         putBodies.push(JSON.parse(String(init?.body)) as ChatSession);
@@ -315,39 +319,52 @@ describe('useChatSessions — proactive re-read (#1071)', () => {
     });
   });
 
-  it('renaming a cleared chat keeps a delivery the server appended after the clear', async () => {
+  // An empty `messages` array used to be the server's "clear chat" signal,
+  // so renaming a cleared chat — or any PUT of it after a failed re-read —
+  // deleted a delivery the tab had never seen. The clear is explicit now
+  // (POST …/reset); a rename PUTs without re-reading and folds the delivery
+  // the server's merging answer carries.
+  it('clears a chat through the explicit reset endpoint, then PUTs the cleared copy', async () => {
     const view = await hydrated();
-    await act(async () => {
-      await view.result.current.clearMessages(ID_B);
+    act(() => {
+      view.result.current.mutateById(ID_B, (s) => ({ ...s, title: 'Kept title' }));
     });
-    // The routine fires after the clear; this tab has not re-read yet.
-    serverB = { ...serverB, updatedAt: 12_000, messages: [DELIVERY] };
+    requests = [];
     putBodies = [];
 
     await act(async () => {
-      await view.result.current.renameSession(ID_B, 'Reports');
+      await view.result.current.clearMessages(ID_B);
     });
 
-    // An empty PUT would be read as "clear chat" and delete the delivery.
-    const body = putBodies.find((b) => b.id === ID_B);
-    expect(body?.title).toBe('Reports');
-    expect(body?.messages.map((m) => m.id)).toEqual([DELIVERY.id]);
-    expect(messagesOf(view, ID_B).map((m) => m.id)).toEqual([DELIVERY.id]);
+    expect(requests).toEqual([
+      `POST /bot-api/chat/sessions/${ID_B}/reset`,
+      `PUT /bot-api/chat/sessions/${ID_B}`,
+    ]);
+    // Built from committed state: the cleared copy keeps everything but the messages.
+    expect(putBodies[0]).toMatchObject({ id: ID_B, title: 'Kept title', messages: [] });
+    expect(messagesOf(view, ID_B)).toEqual([]);
   });
 
-  it('renaming a cleared chat with nothing new on the server still PUTs the title', async () => {
+  it('renaming a cleared chat PUTs the title without a re-read and shows the delivery the server kept', async () => {
     const view = await hydrated();
     await act(async () => {
       await view.result.current.clearMessages(ID_B);
     });
-    serverB = { ...serverB, updatedAt: 12_000, messages: [] };
+    // The routine fires after the clear; this tab has not re-read yet. The
+    // server's merging PUT keeps the delivery and answers with it.
+    putResponse = { ...serverB, title: 'Reports', updatedAt: 12_000, messages: [DELIVERY] };
     putBodies = [];
+    requests = [];
 
     await act(async () => {
       await view.result.current.renameSession(ID_B, 'Reports');
     });
 
-    expect(putBodies.find((b) => b.id === ID_B)).toMatchObject({ title: 'Reports', messages: [] });
+    expect(requests).toEqual([`PUT /bot-api/chat/sessions/${ID_B}`]);
+    expect(putBodies[0]).toMatchObject({ title: 'Reports', messages: [] });
+    await waitFor(() => {
+      expect(messagesOf(view, ID_B).map((m) => m.id)).toEqual([DELIVERY.id]);
+    });
   });
 
   it('folds a delivery the server merged into its PUT answer', async () => {

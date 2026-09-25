@@ -44,8 +44,11 @@ const SESSION_ID = 's1';
 const OWNER: RoutineActorScope = { kind: 'channel-user', tenant: TENANT, userId: USER };
 
 class NoopScheduler implements JobSchedulerLike {
-  register(_agentId: string, _spec: JobSpec, _handler: JobHandler): () => void {
-    return () => {};
+  readonly disposed: string[] = [];
+  register(_agentId: string, spec: JobSpec, _handler: JobHandler): () => void {
+    return () => {
+      this.disposed.push(spec.name);
+    };
   }
   stopForPlugin(): void {}
 }
@@ -90,6 +93,13 @@ class FakeRoutineStore {
   async recordRun(input: RecordRunInput): Promise<void> {
     this.runs.push(input);
   }
+  async setStatus(id: string, status: Routine['status']): Promise<Routine | null> {
+    const row = this.rows.get(id);
+    if (!row) return null;
+    const updated = { ...row, status };
+    this.rows.set(id, updated);
+    return updated;
+  }
 }
 
 class FakeRunsStore {
@@ -101,8 +111,10 @@ class FakeRunsStore {
 }
 
 let nextAnswer = 'report';
+let turns = 0;
 const orchestrator: OrchestratorLike = {
   async runTurn(): Promise<ChatTurnResult> {
+    turns += 1;
     return { answer: nextAnswer, toolCalls: 0, iterations: 1 };
   },
 };
@@ -123,9 +135,11 @@ describe('#1071 — routines created from the web chat', () => {
   let chats: ChatSessionStore;
   let store: FakeRoutineStore;
   let runner: RoutineRunner;
+  let scheduler: NoopScheduler;
 
   beforeEach(async () => {
     nextAnswer = 'report';
+    turns = 0;
     chats = new ChatSessionStore(new InMemoryMemoryStore());
     await chats.save({
       id: SESSION_ID,
@@ -135,12 +149,13 @@ describe('#1071 — routines created from the web chat', () => {
       messages: [{ id: 'u1', role: 'user', content: 'jeden Morgen', startedAt: 1 }],
     });
     store = new FakeRoutineStore();
+    scheduler = new NoopScheduler();
     const senderRegistry = new InMemoryProactiveSenderRegistry();
-    senderRegistry.register(createWebChatProactiveSender({ getStore: () => chats, log: () => {} }));
+    senderRegistry.register(createWebChatProactiveSender({ getStore: () => chats, warn: () => {} }));
     runner = new RoutineRunner({
       store: store as unknown as RoutineStore,
       runsStore: new FakeRunsStore() as unknown as RoutineRunsStore,
-      scheduler: new NoopScheduler(),
+      scheduler,
       getOrchestrator: () => orchestrator,
       senderRegistry,
       log: () => {},
@@ -164,7 +179,9 @@ describe('#1071 — routines created from the web chat', () => {
     assert.equal(delivered.proactive?.routineName, 'Daily report');
   });
 
-  it('records an error run and does not recreate a chat the user deleted', async () => {
+  // An orphaned routine used to run a full agent turn on every cron fire and
+  // only then fail at delivery — forever, since the routine stayed active.
+  it('fails a routine whose chat was deleted BEFORE the agent turn, pauses it, and does not recreate the chat', async () => {
     const routine = await runner.createRoutine(
       createInput(webChatConversationRef(SESSION_ID, SESSION_ID)),
     );
@@ -172,10 +189,40 @@ describe('#1071 — routines created from the web chat', () => {
 
     await runner.triggerRoutineNow(routine.id, OWNER);
 
+    assert.equal(turns, 0, 'no agent turn was spent on a chat nobody can open');
     const run = store.runs.at(-1);
     assert.equal(run?.status, 'error');
-    assert.match(run?.error ?? '', /no longer exists/);
+    assert.match(run?.error ?? '', /no longer exists; the routine was paused/);
+    assert.equal(store.rows.get(routine.id)?.status, 'paused');
+    assert.deepEqual(scheduler.disposed, [routine.id], 'its cron no longer fires');
     assert.equal(await chats.get(SESSION_ID), null);
+  });
+
+  it('pauses the routine when the chat vanishes while the turn runs', async () => {
+    const routine = await runner.createRoutine(
+      createInput(webChatConversationRef(SESSION_ID, SESSION_ID)),
+    );
+    const deleting: OrchestratorLike = {
+      async runTurn(): Promise<ChatTurnResult> {
+        await chats.delete(SESSION_ID);
+        return { answer: 'report', toolCalls: 0, iterations: 1 };
+      },
+    };
+    const senderRegistry = new InMemoryProactiveSenderRegistry();
+    senderRegistry.register(createWebChatProactiveSender({ getStore: () => chats, warn: () => {} }));
+    const racing = new RoutineRunner({
+      store: store as unknown as RoutineStore,
+      runsStore: new FakeRunsStore() as unknown as RoutineRunsStore,
+      scheduler: new NoopScheduler(),
+      getOrchestrator: () => deleting,
+      senderRegistry,
+      log: () => {},
+    });
+
+    await racing.triggerRoutineNow(routine.id, OWNER);
+
+    assert.match(store.runs.at(-1)?.error ?? '', /no longer exists; the routine was paused/);
+    assert.equal(store.rows.get(routine.id)?.status, 'paused');
   });
 
   it('records an empty answer as an error run, not as ok with nothing delivered', async () => {

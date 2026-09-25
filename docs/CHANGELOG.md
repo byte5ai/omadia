@@ -314,12 +314,16 @@ never created.
   `conversationRef`; a run appends an assistant message with a
   `proactive: { deliveredAt, routineId?, routineName? }` marker to that chat in
   `ChatSessionStore` (`appendProactiveMessage`), the same store the web UI
-  hydrates from. A deleted chat is never recreated — the run fails with "no
-  longer exists" in `last_run_error`. A request without a saved chat (debug
-  `scope`, `http-default`) is refused at create time. An empty answer (for
-  example a diagram-only turn) fails the run instead of being recorded as `ok`
-  with nothing delivered; dropped attachments and interactive cards are
-  logged. A `NO_REPLY` answer (the orchestrator's default for a routine with
+  hydrates from. A deleted chat is never recreated: a pre-flight
+  (`ProactiveSender.checkDeliverable`) notices it BEFORE the agent turn runs,
+  and the runner pauses the routine with "no longer exists; the routine was
+  paused …" in `last_run_error`, so cron stops paying a turn on every fire
+  (the same happens when the chat vanishes during the turn). A request
+  without a saved chat (debug `scope`, `http-default`) is refused at create
+  time. An empty answer (for example a diagram-only turn) fails the run
+  instead of being recorded as `ok` with nothing delivered; dropped
+  attachments and interactive cards are logged at warn level and named in a
+  short note appended to the delivered message. A `NO_REPLY` answer (the orchestrator's default for a routine with
   nothing to report) is dropped
   like on every other channel: nothing is written and the run counts as `ok`.
   There is no live
@@ -334,33 +338,42 @@ never created.
   persona, follow-ups …) that the PUT schema strips. When the browser is
   AHEAD — a turn's fire-and-forget PUT failed and a delivery then made the
   server copy newer — it keeps its turns, folds the deliveries in and PUTs a
-  catch-up copy, as it did before deliveries could bump `updatedAt`. On the
+  catch-up copy, as it did before deliveries could bump `updatedAt`. That
+  includes a server copy with no turns but a delivery (the chat's first turn
+  created the routine and its PUT failed): it can't be told apart from a clear
+  on another device, and the turns win because lost turns cannot come back.
+  A catch-up PUT keeps the browser's title, since the server's may still be
+  the "Neuer Chat" default the failed PUT would have replaced. On the
   in-process runtime the server copy holds such a turn under the SessionLogger
   mirror's `srv-u-…` / `srv-a-…` ids; a mirrored message matches the finished
   local one with the same role and trimmed content, and the catch-up PUT swaps
   the `srv-*` ids for the client's. A turn with the same id matches only when
   the local copy is finished and its trimmed content equals the server's. Any
   other difference (a turn from another device, a partial local answer after a
-  mid-stream reload or a tab closed before its local write caught up, a clear)
-  is still resolved in favour of the newer server copy; dropping local turns for
-  a copy with none is logged.
+  mid-stream reload or a tab closed before its local write caught up, a clear
+  with nothing delivered since) is still resolved in favour of the newer server
+  copy; dropping local turns for a copy with no messages is logged.
 - **Re-reads never rewrite what they did not change.** A re-read that finds no
   delivery leaves the session state untouched (no re-render, no localStorage
   write), so a stale tab regaining focus cannot overwrite another tab's stored
   chats. A re-read or PUT answer requested before "clear chat" is discarded, so
   a cleared delivery does not come back. A fold keeps the browser's own
   `updatedAt`, so a turn whose PUT failed still triggers the next hydration's
-  catch-up PUT (which carries the server's clock and, like a same-turns fold,
-  keeps the server's title). Renaming a cleared chat re-reads it first: an empty
-  PUT means "clear chat", so a delivery that arrived after the clear would
-  otherwise be deleted. A chat holding only deliveries still counts as empty,
-  so its first real turn names it and ships the selected agent.
+  catch-up PUT (which carries the server's clock). A rename folds in the
+  deliveries the server's merging PUT answer carries. A chat holding only
+  deliveries still counts as empty, so its first real turn names it and ships
+  the selected agent. The re-read / fold / clear-epoch / visibility logic lives
+  in `useProactiveRefresh` (`web-ui/app/_lib/chatProactiveRefresh.ts`).
 - **The "Run now" notice no longer promises ~30 seconds** for a web routine:
   the result shows when that chat is next opened or focused.
 - **`PUT /api/chat/sessions/:id` merges instead of overwriting**
   (`ChatSessionStore.saveFromClient` → `mergeServerProactiveMessages`) and
   answers with the stored document: server-written deliveries the body lacks are
-  kept. `messages: []` is still an explicit clear, and a corrupt stored file
+  kept — also for `messages: []`, which is no longer read as "clear chat" (a
+  rename of a cleared chat, a stale tab's catch-up and a new chat all PUT that,
+  and each silently dropped unseen deliveries). Clearing is explicit:
+  `POST /api/chat/sessions/:id/reset`, which the web UI's `clearMessages` now
+  calls itself before PUTting the cleared copy. A corrupt stored file
   (unparseable JSON) is still overwritten (repaired) rather than failing the
   PUT; any other read failure fails the PUT instead of dropping deliveries.
 - **The `proactive` marker is server-trusted.** It counts only from the

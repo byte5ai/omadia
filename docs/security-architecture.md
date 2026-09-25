@@ -374,8 +374,9 @@ working across it:
   owner model for chat sessions, which is a separate change. Follow-up
   (handoff §13, "Web-Routine-Zustellung"): stamp an owner on each chat
   session and check it in `GET`/`PUT`/`DELETE` and in
-  `validateConversationRef`; pause routines whose chat was deleted; have
-  `validateConversationRef` check that the chat exists.
+  `validateConversationRef`; have `validateConversationRef` check that the
+  chat exists. (A routine whose chat was deleted is paused on its next fire,
+  before the agent turn runs — `ProactiveTargetGoneError`.)
 - **Only advertised tools are dispatchable (#1015).** `tools/call` used to
   forward any name into `dispatch()`. The dispatchable set is wider than the
   advertised one — handler-only registrations stay dispatchable but

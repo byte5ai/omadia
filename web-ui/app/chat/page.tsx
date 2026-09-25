@@ -36,7 +36,7 @@ import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
 import { TurnIncompleteNotice } from '../_components/chat/TurnIncompleteNotice';
 import { Markdown } from '../_components/Markdown';
-import { resetChatSession, steerActiveTurn } from '../_lib/api';
+import { steerActiveTurn } from '../_lib/api';
 import { isSendKey } from '../_lib/composerKeys';
 import { parseTurnIncomplete } from '../_lib/turnIncomplete';
 import { hasNoTurns } from '../_lib/chatProactiveMerge';
@@ -435,17 +435,11 @@ export default function ChatPage(): React.ReactElement {
       // runner would happily keep writing deltas into a freshly cleared
       // message list.
       streamStore.abort(activeId);
-      // Backend rotates the conversation pointer so the agent starts a new
-      // turn-chain. KG / Memory are NOT touched. If the backend isn't
-      // reachable we still clear locally — the user wanted a fresh slate.
-      try {
-        await resetChatSession(activeId);
-      } catch (err) {
-        console.warn(
-          '[chat-reset] backend reset failed, clearing locally only:',
-          err instanceof Error ? err.message : err,
-        );
-      }
+      // `clearMessages` resets the backend copy too (`POST …/reset`, #1071 —
+      // the only explicit clear): the conversation pointer rotates so the
+      // agent starts a new turn-chain; KG / Memory are NOT touched. If the
+      // backend isn't reachable it still clears locally — the user wanted a
+      // fresh slate.
       await clearMessages(activeId);
     } finally {
       setResetPending(false);

@@ -87,30 +87,36 @@ describe('reconcileNewerRemote', () => {
 
   it('keeps a local turn the server never received and asks for a catch-up PUT', () => {
     // The turn-2 PUT failed; a delivery then made the server copy newer.
-    const local = session([U1, A1, U2, A2], 30);
-    const remote = { ...session([U1, A1, DELIVERY], 40), title: 'Renamed' };
+    const local = { ...session([U1, A1, U2, A2], 30), title: 'Quarterly numbers' };
+    const remote = { ...session([U1, A1, DELIVERY], 40), title: 'Neuer Chat' };
 
     const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
 
     expect(result.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'p1']);
     expect(pushLocal).toBe(true);
-    // The catch-up PUT must not revert a rename made on another device …
-    expect(result.title).toBe('Renamed');
-    // … and a failed catch-up must still look unsettled to the next load.
+    // The server never received this browser's last write, so its title can
+    // be the default the failed PUT would have replaced; adopting it rolled
+    // the chat back to "Neuer Chat" and the catch-up PUT persisted that.
+    expect(result.title).toBe('Quarterly numbers');
+    // A failed catch-up must still look unsettled to the next load.
     expect(result.updatedAt).toBe(30);
   });
 
-  it('keeps the local clock when a mirrored turn still needs its catch-up PUT', () => {
-    const local = session([U1, A1, U2, A2], 30);
-    const remote = session(
-      [U1, A1, msg('srv-u-12', 'user', 12, { content: 'u2' }), msg('srv-a-14', 'assistant', 12, { content: 'a2' }), DELIVERY],
-      40,
-    );
+  it('keeps the local clock and title when a mirrored turn still needs its catch-up PUT', () => {
+    const local = { ...session([U1, A1, U2, A2], 30), title: 'Quarterly numbers' };
+    const remote = {
+      ...session(
+        [U1, A1, msg('srv-u-12', 'user', 12, { content: 'u2' }), msg('srv-a-14', 'assistant', 12, { content: 'a2' }), DELIVERY],
+        40,
+      ),
+      title: 'Neuer Chat',
+    };
 
     const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
 
     expect(pushLocal).toBe(true);
     expect(result.updatedAt).toBe(30);
+    expect(result.title).toBe('Quarterly numbers');
   });
 
   it('takes the server copy when it has a turn the local copy lacks', () => {
@@ -234,14 +240,32 @@ describe('reconcileNewerRemote', () => {
     expect(reconcileNewerRemote(local, remote)).toEqual({ session: remote, pushLocal: false });
   });
 
-  it('takes the server copy when it holds no turns (a clear or reset)', () => {
+  // Before: a server copy with no turns always replaced the local chat. But
+  // "no turns + a delivery" is also what a chat looks like whose FIRST turn
+  // created the routine and whose PUT failed — replacing it destroyed turns
+  // that existed only in this browser. It cannot be told apart from a clear
+  // on another device followed by a delivery; the turns win, since an undone
+  // clear can be repeated and lost turns cannot be recovered.
+  it('keeps local turns the server never received when its copy holds only a delivery', () => {
+    const local = { ...session([U1, A1], 30), title: 'Routines' };
+    const remote = { ...session([DELIVERY], 40), title: 'Neuer Chat' };
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(result.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'p1']);
+    expect(result.title).toBe('Routines');
+    expect(result.updatedAt).toBe(30);
+    expect(pushLocal).toBe(true);
+  });
+
+  it('takes the server copy when it holds no messages at all (a clear or reset)', () => {
     const local = session([U1, A1], 30);
-    const remote = session([DELIVERY], 40);
+    const remote = session([], 40);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     expect(reconcileNewerRemote(local, remote)).toEqual({ session: remote, pushLocal: false });
     // Dropping local turns is never silent.
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('holds no turns'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('holds no messages'));
     warn.mockRestore();
   });
 });

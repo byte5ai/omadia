@@ -14,9 +14,11 @@ import { ChatSessionStore } from '@omadia/orchestrator';
 import type { ChatSession } from '@omadia/orchestrator';
 import type { SemanticAnswer } from '@omadia/channel-sdk';
 
+import { ProactiveTargetGoneError } from '../src/plugins/routines/proactiveSender.js';
 import {
   WEB_ROUTINE_CHANNEL,
   createWebChatProactiveSender,
+  droppedContentNote,
   webChatConversationRef,
 } from '../src/plugins/routines/webChatProactiveSender.js';
 
@@ -93,7 +95,7 @@ describe('#1071 — web chat proactive sender', () => {
 
   it('fails — and writes nothing — for an empty answer, so the run is not recorded as ok', async () => {
     const store = await seededStore();
-    const sender = createWebChatProactiveSender({ getStore: () => store, log: () => {} });
+    const sender = createWebChatProactiveSender({ getStore: () => store, warn: () => {} });
 
     await assert.rejects(
       sender.send({ conversationRef: REF, message: answer('   '), routine: ROUTINE }),
@@ -138,7 +140,7 @@ describe('#1071 — web chat proactive sender', () => {
 
   it('fails for an attachment-only answer instead of silently dropping it', async () => {
     const store = await seededStore();
-    const sender = createWebChatProactiveSender({ getStore: () => store, log: () => {} });
+    const sender = createWebChatProactiveSender({ getStore: () => store, warn: () => {} });
     const message = { text: '', attachments: [{ kind: 'image' }] } as unknown as SemanticAnswer;
 
     await assert.rejects(
@@ -148,36 +150,50 @@ describe('#1071 — web chat proactive sender', () => {
     assert.equal((await store.get(SESSION_ID))?.messages.length, 2);
   });
 
-  it('delivers the text and warns when attachments are dropped', async () => {
+  // Dropping content silently (or only in an info-level log) left the reader
+  // of the chat with a report that pointed at a chart or a button that never
+  // arrived. Warn at warn level AND say so in the delivered text.
+  it('delivers the text, warns at warn level and notes the dropped attachments in the chat', async () => {
     const store = await seededStore();
-    const logs: string[] = [];
+    const warns: string[] = [];
     const sender = createWebChatProactiveSender({
       getStore: () => store,
-      log: (m) => logs.push(m),
+      warn: (m) => warns.push(m),
       now: () => DELIVERED_AT,
     });
-    const message = { text: 'Report', attachments: [{ kind: 'image' }, { kind: 'file' }] } as unknown as SemanticAnswer;
+    const message = { text: 'Report\n', attachments: [{ kind: 'image' }, { kind: 'file' }] } as unknown as SemanticAnswer;
 
     await sender.send({ conversationRef: REF, message, routine: ROUTINE });
 
-    assert.equal((await store.get(SESSION_ID))?.messages.at(-1)?.content, 'Report');
-    assert.ok(logs.some((l) => /WARN .*dropped 2 attachment/.test(l)), logs.join('\n'));
+    const content = (await store.get(SESSION_ID))?.messages.at(-1)?.content ?? '';
+    assert.ok(content.startsWith('Report\n\n'), content);
+    assert.match(content, /_Note: 2 attachment\(s\) of this routine's output cannot be shown in the web chat\._$/);
+    assert.ok(warns.some((l) => /dropped 2 attachment/.test(l)), warns.join('\n'));
   });
 
-  it('delivers the text and warns when an interactive card is dropped', async () => {
+  it('delivers the text, warns at warn level and notes a dropped interactive card in the chat', async () => {
     const store = await seededStore();
-    const logs: string[] = [];
+    const warns: string[] = [];
     const sender = createWebChatProactiveSender({
       getStore: () => store,
-      log: (m) => logs.push(m),
+      warn: (m) => warns.push(m),
       now: () => DELIVERED_AT,
     });
     const message = { text: 'Pick one', interactive: { kind: 'choice' } } as unknown as SemanticAnswer;
 
     await sender.send({ conversationRef: REF, message, routine: ROUTINE });
 
-    assert.equal((await store.get(SESSION_ID))?.messages.at(-1)?.content, 'Pick one');
-    assert.ok(logs.some((l) => /WARN .*dropped interactive 'choice'/.test(l)), logs.join('\n'));
+    const content = (await store.get(SESSION_ID))?.messages.at(-1)?.content ?? '';
+    assert.match(content, /^Pick one\n\n_Note: an interactive 'choice' element of this routine's output/);
+    assert.ok(warns.some((l) => /dropped interactive 'choice'/.test(l)), warns.join('\n'));
+  });
+
+  it('names both dropped kinds in one note, and adds none when nothing was dropped', () => {
+    assert.equal(droppedContentNote(0, undefined), null);
+    assert.equal(
+      droppedContentNote(1, 'choice'),
+      "_Note: 1 attachment(s) and an interactive 'choice' element of this routine's output cannot be shown in the web chat._",
+    );
   });
 
   it('throws when the chat session store is not available', async () => {
@@ -188,16 +204,43 @@ describe('#1071 — web chat proactive sender', () => {
     );
   });
 
-  it('throws — and does not recreate the chat — when the chat was deleted', async () => {
+  it('throws ProactiveTargetGoneError — and does not recreate the chat — when the chat was deleted', async () => {
     const store = await seededStore();
     await store.delete(SESSION_ID);
     const sender = createWebChatProactiveSender({ getStore: () => store });
 
     await assert.rejects(
       sender.send({ conversationRef: REF, message: answer('x'), routine: ROUTINE }),
-      /no longer exists/,
+      (err: unknown) => err instanceof ProactiveTargetGoneError && /no longer exists/.test(err.message),
     );
     assert.equal(await store.get(SESSION_ID), null);
+  });
+
+  describe('checkDeliverable (pre-flight, before the agent turn)', () => {
+    it('passes for an existing chat', async () => {
+      const store = await seededStore();
+      const sender = createWebChatProactiveSender({ getStore: () => store });
+      await sender.checkDeliverable?.(REF);
+    });
+
+    it('throws ProactiveTargetGoneError for a deleted chat', async () => {
+      const store = await seededStore();
+      await store.delete(SESSION_ID);
+      const sender = createWebChatProactiveSender({ getStore: () => store });
+      assert.ok(sender.checkDeliverable);
+      await assert.rejects(
+        sender.checkDeliverable(REF),
+        (err: unknown) => err instanceof ProactiveTargetGoneError,
+      );
+    });
+
+    it('throws a plain error (routine stays active) when the store is not configured', async () => {
+      const sender = createWebChatProactiveSender({ getStore: () => undefined });
+      await assert.rejects(
+        sender.checkDeliverable?.(REF) ?? Promise.resolve(),
+        (err: unknown) => !(err instanceof ProactiveTargetGoneError) && /not configured/.test(String(err)),
+      );
+    });
   });
 
   for (const [label, ref] of [

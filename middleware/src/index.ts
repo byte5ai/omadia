@@ -3052,7 +3052,7 @@ async function main(): Promise<void> {
       proactiveSenders: [
         createWebChatProactiveSender({
           getStore: getChatSessionStore,
-          log: (msg) => console.log(msg),
+          warn: (msg) => console.warn(msg),
         }),
       ],
       log: (msg) => console.log(msg),

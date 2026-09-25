@@ -43,7 +43,10 @@ export interface JobSchedulerLike {
 export interface OrchestratorLike {
   runTurn(input: ChatTurnInput): Promise<ChatTurnResult>;
 }
-import type { ProactiveSenderRegistry } from './proactiveSender.js';
+import {
+  ProactiveTargetGoneError,
+  type ProactiveSenderRegistry,
+} from './proactiveSender.js';
 import type {
   RoutineRunsStore,
   RoutineRunTrigger,
@@ -594,6 +597,10 @@ export class RoutineRunner {
       if (!sender) {
         throw new UnknownChannelError(routine.channel);
       }
+      // #1071 — a delivery target that no longer exists (a deleted web
+      // chat) fails here, BEFORE the agent turn: otherwise every cron fire
+      // would run a full turn whose output nobody can receive.
+      await sender.checkDeliverable?.(fresh.conversationRef);
 
       if (signal.aborted) {
         status = 'timeout';
@@ -640,6 +647,9 @@ export class RoutineRunner {
     } catch (err) {
       status = signal.aborted ? 'timeout' : 'error';
       errorMessage = errMsg(err);
+      if (err instanceof ProactiveTargetGoneError) {
+        errorMessage = await this.pauseOrphanedRoutine(routine.id, errorMessage);
+      }
       this.log(
         `[routines/runner] routine ${routine.id} ('${routine.name}') ${status}: ${errorMessage}`,
       );
@@ -672,6 +682,25 @@ export class RoutineRunner {
         status,
         error: errorMessage,
       });
+    }
+  }
+
+  /**
+   * #1071 — the routine's delivery target is gone for good. Pause it (the
+   * system acting, so unscoped) and unregister its cron, so later fires do
+   * not each record the same failure. Returns the error to record, which
+   * says the routine was paused. A failed pause is logged, never thrown:
+   * the run is still recorded, and the next fire's pre-flight tries again.
+   */
+  private async pauseOrphanedRoutine(id: string, reason: string): Promise<string> {
+    try {
+      const paused = await this.store.setStatus(id, 'paused');
+      if (!paused) return reason;
+      this.unregisterFromScheduler(id);
+      return `${reason}; the routine was paused — delete it and create it again from an existing conversation`;
+    } catch (err) {
+      this.log(`[routines/runner] could not pause orphaned routine ${id}: ${errMsg(err)}`);
+      return reason;
     }
   }
 

@@ -12,8 +12,12 @@ import type { ChatMessage, ChatSession } from './chatSessionStore.js';
  *
  * Placement: before the first incoming USER message that started after the
  * delivery, else at the end. Inserting before a user message never splits a
- * user/answer pair. An empty `messages` array is an explicit clear (the web
- * UI's "clear chat") and is honoured as-is.
+ * user/answer pair.
+ *
+ * An empty `messages` array is NOT a clear. It is also what a rename of a
+ * cleared chat, a stale tab's catch-up or a brand-new chat PUTs, and reading
+ * it as "clear" silently dropped deliveries the client never saw. Clearing a
+ * chat is explicit: `POST /sessions/:id/reset` (`resetMessages`).
  */
 export function mergeServerProactiveMessages(
   existing: ChatSession | null,
@@ -32,7 +36,6 @@ export function mergeServerProactiveMessages(
     const { proactive: _forged, ...rest } = m;
     return rest;
   });
-  if (messages.length === 0) return { ...incoming, messages };
 
   const incomingIds = new Set(messages.map((m) => m.id));
   const missing = [...serverProactive.values()].filter((m) => !incomingIds.has(m.id));

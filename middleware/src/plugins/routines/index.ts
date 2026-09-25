@@ -61,6 +61,7 @@ export {
 
 export {
   InMemoryProactiveSenderRegistry,
+  ProactiveTargetGoneError,
   type ProactiveSender,
   type ProactiveSenderRegistry,
 } from './proactiveSender.js';

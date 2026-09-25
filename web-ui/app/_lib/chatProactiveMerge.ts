@@ -80,17 +80,27 @@ export interface NewerRemoteReconciliation {
  *   server (a rename is the only other thing a newer copy can carry). If a
  *   mirrored turn matched, the server never received the client's copy of
  *   it — ask for a catch-up PUT so the client ids replace the `srv-*` ones.
- * - The server's turns are a NON-EMPTY proper prefix of the local ones: the
- *   browser is AHEAD — a turn's PUT failed (and was not mirrored), and a
- *   delivery then made the server copy newer. Keep the local copy (its turns
- *   exist nowhere else), fold the deliveries in and ask for a catch-up PUT,
- *   exactly the "backend is behind" healing a chat got before deliveries
- *   could bump `updatedAt`. The title follows the server here too.
+ * - The server's turns are a proper prefix of the local ones: the browser is
+ *   AHEAD — a turn's PUT failed (and was not mirrored), and a delivery then
+ *   made the server copy newer. Keep the local copy (its turns exist nowhere
+ *   else), fold the deliveries in and ask for a catch-up PUT, exactly the
+ *   "backend is behind" healing a chat got before deliveries could bump
+ *   `updatedAt`. This includes a server copy with NO turns but a delivery:
+ *   the chat's first turn created the routine and its PUT failed. That copy
+ *   looks exactly like a clear on another device followed by a delivery, and
+ *   the two cannot be told apart — so the turns win: an undone remote clear
+ *   can be cleared again, turns that exist only in this browser cannot come
+ *   back once replaced.
  * - Anything else — a turn from another device, an answer the local copy
  *   only holds partially under either id (a mid-stream reload, or a tab closed
  *   before the debounced local write caught up: the server's full answer must
- *   win), a clear or reset (no server turns) — is a real newer state and the
- *   server copy wins, exactly as before #1071.
+ *   win), a clear or reset with nothing delivered since (no server messages at
+ *   all) — is a real newer state and the server copy wins, as before #1071.
+ *
+ * Whenever a catch-up PUT is asked for (`pushLocal`), the TITLE stays the
+ * local one: the server never received this browser's last write, so its
+ * title may be the stale default ("Neuer Chat") the failed turn's PUT would
+ * have replaced — and the catch-up would then persist that rollback.
  */
 export function reconcileNewerRemote(
   local: ChatSession,
@@ -103,29 +113,32 @@ export function reconcileNewerRemote(
   const matchedMirror = matches.includes('mirror');
   if (isPrefix && remoteTurns.length === localTurns.length) {
     const merged = mergeProactiveFromRemote(local, remote);
+    if (matchedMirror) {
+      // The local copy keeps its clock, so a failed catch-up PUT is retried
+      // by the next hydration instead of looking settled.
+      return { session: merged, pushLocal: true };
+    }
     return {
       session: {
         ...merged,
         title: remote.title,
         // In sync: adopt the server's clock so the next load does not re-read.
-        // A pending catch-up PUT keeps the local one, so a failed PUT is
-        // retried by the next hydration instead of looking settled.
-        updatedAt: matchedMirror ? merged.updatedAt : Math.max(merged.updatedAt, remote.updatedAt),
+        updatedAt: Math.max(merged.updatedAt, remote.updatedAt),
       },
-      pushLocal: matchedMirror,
+      pushLocal: false,
     };
   }
-  if (isPrefix && remoteTurns.length > 0 && remoteTurns.length < localTurns.length) {
-    // Same title rule as above: the newer server copy carries the latest
-    // rename, and the catch-up PUT must not revert it.
-    return {
-      session: { ...mergeProactiveFromRemote(local, remote), title: remote.title },
-      pushLocal: true,
-    };
+  const remoteHasDelivery = remote.messages.length > remoteTurns.length;
+  if (
+    isPrefix &&
+    remoteTurns.length < localTurns.length &&
+    (remoteTurns.length > 0 || remoteHasDelivery)
+  ) {
+    return { session: mergeProactiveFromRemote(local, remote), pushLocal: true };
   }
   if (remoteTurns.length === 0 && localTurns.length > 0) {
     console.warn(
-      `[chat-sessions] server copy of ${local.id} holds no turns; replacing ${String(localTurns.length)} local turn(s) with it`,
+      `[chat-sessions] server copy of ${local.id} holds no messages; replacing ${String(localTurns.length)} local turn(s) with it`,
     );
   }
   return { session: remote, pushLocal: false };

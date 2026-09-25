@@ -1,7 +1,7 @@
 import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
 import { isValidSessionId, type ChatSessionStore } from '@omadia/orchestrator';
 
-import type { ProactiveSender } from './proactiveSender.js';
+import { ProactiveTargetGoneError, type ProactiveSender } from './proactiveSender.js';
 
 /**
  * #1071 — the proactive sender for the browser chat (`channel: 'web'`).
@@ -16,16 +16,21 @@ import type { ProactiveSender } from './proactiveSender.js';
  * and on visibility change, and folds deliveries into its local copy.
  *
  * Deliberate limits:
- *  - A deleted chat is NOT recreated. `send` throws; the runner records it as
- *    `last_run_error` and keeps the routine active (ProactiveSender contract).
+ *  - A deleted chat is NOT recreated. `checkDeliverable` notices it before
+ *    the agent turn runs (and `send` if it vanished during the turn) and
+ *    throws `ProactiveTargetGoneError`: the runner records it as
+ *    `last_run_error` and PAUSES the routine, so cron stops spending a full
+ *    agent turn on every fire for a chat nobody can open.
  *  - A `NO_REPLY` answer (the orchestrator's default for a routine with
  *    nothing to report) is dropped, not delivered — as on every other
  *    channel. The run is recorded `ok`: saying nothing was the intent.
  *  - Text only. `cardBody` / `approval` are ignored; `message.text` already
  *    carries the markdown fallback, and the session schema persists no
  *    attachments for any message. Dropped attachments and interactive cards
- *    (`message.interactive`) are logged; an empty
- *    answer throws so the run is not recorded as `ok` with nothing delivered.
+ *    (`message.interactive`) are logged at warn level AND named in a short
+ *    note appended to the delivered text, so the reader knows something is
+ *    missing; an empty answer throws so the run is not recorded as `ok` with
+ *    nothing delivered.
  */
 
 /** Routine `channel` value of the browser chat. */
@@ -55,6 +60,8 @@ export function webChatConversationRef(
   };
 }
 
+const NO_STORE_ERROR = 'web chat is not configured (no chat session store)';
+
 export const WEB_CHAT_NO_CONVERSATION_ERROR =
   'this routine was requested outside a saved web chat, so there is no conversation ' +
   'to deliver it into; start it from a chat tab';
@@ -76,19 +83,48 @@ export interface WebChatProactiveSenderOptions {
   /** Live resolver — the store is published by the orchestrator plugin and
    *  can appear after boot (LLM-key hot-enable). */
   getStore: () => ChatSessionStore | undefined;
-  log?: (msg: string) => void;
+  /** Warn-level sink (dropped content). Defaults to `console.warn`. */
+  warn?: (msg: string) => void;
   now?: () => number;
+}
+
+function goneError(sessionId: string): ProactiveTargetGoneError {
+  return new ProactiveTargetGoneError(`web chat conversation '${sessionId}' no longer exists`);
+}
+
+/**
+ * #1071 — the visible note appended to a delivery whose attachments or
+ * interactive card the text-only web delivery had to drop. English, like
+ * every other server-written routine string. `null` when nothing was dropped.
+ */
+export function droppedContentNote(
+  attachmentCount: number,
+  interactiveKind: string | undefined,
+): string | null {
+  const parts: string[] = [];
+  if (attachmentCount > 0) parts.push(`${String(attachmentCount)} attachment(s)`);
+  if (interactiveKind !== undefined) parts.push(`an interactive '${interactiveKind}' element`);
+  if (parts.length === 0) return null;
+  return `_Note: ${parts.join(' and ')} of this routine's output cannot be shown in the web chat._`;
 }
 
 export function createWebChatProactiveSender(
   opts: WebChatProactiveSenderOptions,
 ): ProactiveSender {
-  const log = opts.log ?? ((m: string) => console.log(m));
+  const warn = opts.warn ?? ((m: string) => console.warn(m));
   const now = opts.now ?? (() => Date.now());
   return {
     channel: WEB_ROUTINE_CHANNEL,
     validateConversationRef(ref: unknown): void {
       targetSessionId(ref);
+    },
+    async checkDeliverable(ref: unknown): Promise<void> {
+      const sessionId = targetSessionId(ref);
+      const store = opts.getStore();
+      // No store is a configuration gap (LLM key not set yet), not a gone
+      // chat: fail the run, keep the routine active.
+      if (!store) throw new Error(NO_STORE_ERROR);
+      if (!(await store.get(sessionId))) throw goneError(sessionId);
     },
     async send({ conversationRef, message, routine }): Promise<void> {
       const sessionId = targetSessionId(conversationRef);
@@ -103,9 +139,7 @@ export function createWebChatProactiveSender(
         return;
       }
       const store = opts.getStore();
-      if (!store) {
-        throw new Error('web chat is not configured (no chat session store)');
-      }
+      if (!store) throw new Error(NO_STORE_ERROR);
       const attachmentCount = message.attachments?.length ?? 0;
       // An empty answer must fail the run: returning quietly would record it
       // as `ok` while the user receives nothing (a diagram- or file-only turn
@@ -117,24 +151,25 @@ export function createWebChatProactiveSender(
             : 'routine produced an empty answer; nothing was delivered to the web chat',
         );
       }
+      const where = `chat '${sessionId}'${routine ? ` (routine ${routine.id})` : ''}`;
       if (attachmentCount > 0) {
-        log(
-          `[routines/web-sender] WARN chat '${sessionId}'${routine ? ` (routine ${routine.id})` : ''}: dropped ${String(attachmentCount)} attachment(s) — web delivery is text-only`,
+        warn(
+          `[routines/web-sender] ${where}: dropped ${String(attachmentCount)} attachment(s) — web delivery is text-only`,
         );
       }
       if (message.interactive) {
-        log(
-          `[routines/web-sender] WARN chat '${sessionId}'${routine ? ` (routine ${routine.id})` : ''}: dropped interactive '${message.interactive.kind}' — web delivery is text-only`,
+        warn(
+          `[routines/web-sender] ${where}: dropped interactive '${message.interactive.kind}' — web delivery is text-only`,
         );
       }
+      const note = droppedContentNote(attachmentCount, message.interactive?.kind);
       const outcome = await store.appendProactiveMessage(sessionId, {
-        content: message.text,
+        content: note === null ? message.text : `${message.text.trimEnd()}\n\n${note}`,
         deliveredAt: now(),
         ...(routine ? { routineId: routine.id, routineName: routine.name } : {}),
       });
-      if (outcome === 'not_found') {
-        throw new Error(`web chat conversation '${sessionId}' no longer exists`);
-      }
+      // Deleted while the turn ran: gone for good, like the pre-flight case.
+      if (outcome === 'not_found') throw goneError(sessionId);
     },
   };
 }

@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { mergeProactiveFromRemote, reconcileNewerRemote } from './chatProactiveMerge';
+import { reconcileNewerRemote } from './chatProactiveMerge';
+import { useProactiveRefresh } from './chatProactiveRefresh';
 
 /**
  * Persisted chat-tab sessions. Each tab is a self-contained session —
@@ -868,6 +869,23 @@ async function putRemoteSession(session: ChatSession): Promise<ChatSession | nul
   return coerceSession((body as { session?: unknown }).session);
 }
 
+/**
+ * Resets a chat on the server: drops its messages — turns AND routine
+ * deliveries; since #1071 the only explicit clear — and rotates the
+ * conversation pointer so the agent's next turn starts a fresh turn-chain.
+ * Memory and Knowledge-Graph entries are NOT touched. A chat the server
+ * never stored has nothing to clear.
+ */
+async function resetRemoteSession(id: string): Promise<void> {
+  const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(id)}/reset`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  if (res.status === 404) return;
+  if (!res.ok) throw new Error(`POST reset: HTTP ${String(res.status)}`);
+}
+
 async function deleteRemoteSession(id: string): Promise<void> {
   const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(id)}`, {
     method: 'DELETE',
@@ -1135,42 +1153,58 @@ export function useChatSessions(): UseChatSessionsResult {
     [],
   );
 
+  // #1071 — re-read / fold / clear-epoch / visibility logic for routine
+  // deliveries (see `chatProactiveRefresh.ts`).
+  const resolvedActiveId =
+    sessions.find((s) => s.id === activeId)?.id ?? sessions[0]?.id ?? '';
+  const { clearEpochOf, bumpClearEpoch, foldProactive, refreshProactive } =
+    useProactiveRefresh({
+      setSessions,
+      hydrating,
+      activeId: resolvedActiveId,
+      fetchSession: fetchRemoteSession,
+    });
 
-  // #1071 — per-session clear epoch, bumped by `clearMessages`. A re-read or
-  // PUT answer requested before a clear still carries the deliveries the user
-  // just cleared; folding it in would bring them back (and the next PUT would
-  // persist them). `foldProactive` drops a result whose epoch moved since the
-  // request. (The chat page's reset clears the server copy BEFORE it calls
-  // `clearMessages`, so a request issued after the bump sees the cleared copy.)
-  const clearEpochRef = useRef<Map<string, number>>(new Map());
-  const clearEpochOf = useCallback(
-    (id: string): number => clearEpochRef.current.get(id) ?? 0,
-    [],
-  );
-
+  // #1071 — clearing is EXPLICIT on the server (`POST …/reset`): an empty
+  // `messages` array in a PUT no longer means "clear", since a rename of a
+  // cleared chat or a stale tab's catch-up PUTs exactly that and dropped
+  // routine deliveries the user never saw. The PUT that follows keeps the
+  // server copy in sync with the local one (title, snapshot, …) and creates
+  // it when the server never had it. The body is built from committed state
+  // (`sessionsRef`), not from inside a `setSessions` updater.
   const clearMessages = useCallback(
     async (id: string): Promise<void> => {
-      clearEpochRef.current.set(id, clearEpochOf(id) + 1);
-      let updated: ChatSession | undefined;
+      // Bumped before AND after the reset: a server copy requested before
+      // the reset completed may still carry the cleared deliveries.
+      bumpClearEpoch(id);
+      const current = sessionsRef.current.find((s) => s.id === id);
+      const updatedAt = Date.now();
       setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id !== id) return s;
-          updated = { ...s, messages: [], updatedAt: Date.now() };
-          return updated;
-        }),
+        prev.map((s) => (s.id === id ? { ...s, messages: [], updatedAt } : s)),
       );
-      if (updated) {
-        try {
-          await putRemoteSession(updated);
-        } catch (err) {
-          console.warn(
-            '[chat-sessions] clear PUT failed:',
-            err instanceof Error ? err.message : err,
-          );
-        }
+      if (!current) {
+        console.warn(`[chat-sessions] clear: session ${id} is not loaded; nothing sent to the server`);
+        return;
+      }
+      try {
+        await resetRemoteSession(id);
+      } catch (err) {
+        console.warn(
+          '[chat-sessions] clear reset failed, clearing the turns only:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+      bumpClearEpoch(id);
+      try {
+        await putRemoteSession({ ...current, messages: [], updatedAt });
+      } catch (err) {
+        console.warn(
+          '[chat-sessions] clear PUT failed:',
+          err instanceof Error ? err.message : err,
+        );
       }
     },
-    [clearEpochOf],
+    [bumpClearEpoch],
   );
 
   // #617 — mutation is addressed by session id, never by "whatever is active".
@@ -1190,51 +1224,6 @@ export function useChatSessions(): UseChatSessionsResult {
     [],
   );
 
-  // #1071 — fold routine deliveries from a server copy of a chat into the
-  // local one. Additive only (`mergeProactiveFromRemote`), and a session with
-  // a turn in flight is left alone — the stream owns that state until it
-  // finishes. `epoch` is the session's clear epoch when the server copy was
-  // requested; a clear since then makes the copy stale. When nothing was
-  // folded the previous array is returned as-is, so a re-read that finds no
-  // delivery causes no re-render and no localStorage write — a stale tab
-  // regaining focus must not overwrite what another tab stored meanwhile.
-  const foldProactive = useCallback(
-    (id: string, remote: ChatSession, epoch: number): void => {
-      if (clearEpochOf(id) !== epoch) return;
-      setSessions((prev) => {
-        const next = prev.map((s) =>
-          s.id === id && !s.messages.some((m) => m.streaming === true)
-            ? mergeProactiveFromRemote(s, remote)
-            : s,
-        );
-        return next.every((s, i) => s === prev[i]) ? prev : next;
-      });
-    },
-    [clearEpochOf],
-  );
-
-  // #1071 — the server reads a PUT with no messages as "clear chat" and drops
-  // its routine deliveries. Renaming a cleared chat PUTs exactly that, so a
-  // delivery the server appended after the clear would vanish without a
-  // trace. Re-read first and send the copy with those deliveries folded in
-  // (and show them). A clear since `epoch` means the user wants them gone.
-  const withServerDeliveries = useCallback(
-    async (local: ChatSession, epoch: number): Promise<ChatSession> => {
-      const remote = await fetchRemoteSession(local.id).catch((err: unknown) => {
-        console.warn(
-          '[chat-sessions] re-read before rename failed:',
-          err instanceof Error ? err.message : err,
-        );
-        return null;
-      });
-      if (!remote || clearEpochOf(local.id) !== epoch) return local;
-      const folded = mergeProactiveFromRemote(local, remote);
-      if (folded !== local) foldProactive(local.id, remote, epoch);
-      return folded;
-    },
-    [clearEpochOf, foldProactive],
-  );
-
   const renameSession = useCallback(
     async (id: string, title: string): Promise<void> => {
       const trimmed = title.trim().length === 0 ? 'Neuer Chat' : title.trim();
@@ -1242,16 +1231,15 @@ export function useChatSessions(): UseChatSessionsResult {
       const current = sessionsRef.current.find((s) => s.id === id);
       if (!current) return;
       const updatedAt = Date.now();
-      const updated: ChatSession = { ...current, title: trimmed, updatedAt };
       setSessions((prev) =>
         prev.map((s) => (s.id === id ? { ...s, title: trimmed, updatedAt } : s)),
       );
       try {
-        const body =
-          updated.messages.length === 0
-            ? await withServerDeliveries(updated, epoch)
-            : updated;
-        await putRemoteSession(body);
+        // #1071 — the server keeps routine deliveries this copy lacks (even
+        // when it holds no messages at all) and answers with the merged
+        // document; fold those deliveries in so the renamed chat shows them.
+        const stored = await putRemoteSession({ ...current, title: trimmed, updatedAt });
+        if (stored) foldProactive(id, stored, epoch);
       } catch (err) {
         console.warn(
           '[chat-sessions] rename PUT failed:',
@@ -1259,7 +1247,7 @@ export function useChatSessions(): UseChatSessionsResult {
         );
       }
     },
-    [clearEpochOf, withServerDeliveries],
+    [clearEpochOf, foldProactive],
   );
 
   // #617 — commit-ordered persistence. A background turn is followed by no
@@ -1304,38 +1292,6 @@ export function useChatSessions(): UseChatSessionsResult {
         });
     }
   }, [persistTick, sessions, foldProactive, clearEpochOf]);
-
-  // #1071 — re-read a session for routine deliveries the server appended
-  // since hydration. There is no live push for the web chat, so the chat page
-  // calls this when it mounts, when hydration finishes and when the active
-  // chat changes, and the hook itself when the tab becomes visible. Never PUTs.
-  const refreshProactive = useCallback((id: string): void => {
-    if (!id) return;
-    const epoch = clearEpochOf(id);
-    fetchRemoteSession(id)
-      .then((remote) => {
-        if (remote) foldProactive(id, remote, epoch);
-      })
-      .catch((err: unknown) => {
-        console.warn(
-          '[chat-sessions] proactive refresh failed:',
-          err instanceof Error ? err.message : err,
-        );
-      });
-  }, [foldProactive, clearEpochOf]);
-
-  const resolvedActiveId =
-    sessions.find((s) => s.id === activeId)?.id ?? sessions[0]?.id ?? '';
-  useEffect(() => {
-    if (hydrating || !resolvedActiveId) return;
-    const onVisibility = (): void => {
-      if (document.visibilityState === 'visible') refreshProactive(resolvedActiveId);
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [hydrating, resolvedActiveId, refreshProactive]);
 
   // Always return *some* active session so the caller doesn't have to guard.
   // Build an ephemeral empty one during the brief hydrating window.

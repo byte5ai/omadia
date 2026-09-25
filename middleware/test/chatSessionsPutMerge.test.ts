@@ -102,11 +102,27 @@ describe('#1071 — PUT /sessions/:id keeps server-written proactive messages', 
     );
   });
 
-  it('an empty PUT is an explicit clear and removes the delivery too', async () => {
+  // An empty `messages` array used to mean "clear chat" — but renaming a
+  // cleared chat, a stale tab's catch-up and a brand-new chat PUT exactly
+  // that too, so a delivery the client had never seen vanished without a
+  // trace. Clearing is explicit now: POST /sessions/:id/reset.
+  it('an empty PUT is not a clear: it drops the turns but keeps an unseen delivery', async () => {
     await store.appendProactiveMessage(ID, { content: 'Report', deliveredAt: T0 + 5 });
 
-    await put({ ...clientCopy(), messages: [] });
+    const res = await put({ ...clientCopy(), title: 'Renamed', messages: [] });
 
+    const after = await stored();
+    assert.equal(after.title, 'Renamed');
+    assert.deepEqual(after.messages.map((m) => m.id), [`proactive-reminder-${String(T0 + 5)}`]);
+    assert.deepEqual(res.body.session.messages.map((m) => m.id), after.messages.map((m) => m.id));
+  });
+
+  it('POST /reset is the explicit clear and removes the delivery too', async () => {
+    await store.appendProactiveMessage(ID, { content: 'Report', deliveredAt: T0 + 5 });
+
+    const res = await fetch(`${base}/sessions/${ID}/reset`, { method: 'POST' });
+
+    assert.equal(res.status, 200);
     assert.deepEqual((await stored()).messages, []);
   });
 
