@@ -36,6 +36,25 @@ changelog.
 
 ## [Unreleased]
 
+### Added — "I'm still here" renews the admin session instead of a re-login (#965)
+
+2026-09-24 — the session-expiry warning used to offer only "Sign in now",
+which sent an operator who was actively working through the login form (and,
+on Entra, a full IdP round trip). The card's primary action is now
+"I'm still here": it calls the new `POST /api/v1/auth/renew`, which re-checks
+the principal (users row active, provider active, whitelist, and for Entra a
+refresh-token redemption at the IdP), writes one `auth.session_renew` audit
+row, and re-mints the cookie with a fresh 4h window. The page stays where it
+is. A refused renewal and the expired overlay still require a real login.
+
+Renewal chains are bounded by an absolute cap measured from the original
+sign-in, carried in a new `auth_time` JWT claim (tokens without it fall back to
+`iat`). New env var **`AUTH_SESSION_MAX_LIFETIME_HOURS`** (default `12`,
+allowed `4`–`168`); see `middleware/.env.example`. `GET /api/v1/auth/me` now
+also returns `renewable_until`, and `POST /api/v1/auth/logout` forgets the
+Entra refresh token so a logout ends the renewal chain. Details and residual
+risks: `docs/security-architecture.md` §10b.
+
 ### Changed — Teams provisioning persists a structured error code (#897)
 
 2026-09-24 — the Teams provisioning runner recorded failures only as an English
