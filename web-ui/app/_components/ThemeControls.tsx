@@ -196,7 +196,6 @@ function ThemeMenu({ children }: { readonly children: React.ReactNode }): React.
         className="rounded p-1.5 text-[color:var(--fg-muted)] transition hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
         title={t('menuAriaLabel')}
         aria-label={t('menuAriaLabel')}
-        aria-haspopup="true"
         aria-expanded={open}
         aria-controls={panelId}
       >
