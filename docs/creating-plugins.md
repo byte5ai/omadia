@@ -30,7 +30,8 @@ Manifest, sondern auch im Code-Contract**:
 ## 0. Voraussetzungen
 
 - Node `>=20` (das Repo pinnt die genaue Version in `.nvmrc` → `nvm use`).
-- Zugang zur Admin-UI (`https://odoo-bot-harness.fly.dev`) für den lokalen Upload.
+- Zugang zur Admin-UI (lokal `http://localhost:3333`, sonst der Host der eigenen
+  omadia-Instanz) für den lokalen Upload.
 - Zum **Publishen** auf den Hub: das `HUB_PUBLISH_TOKEN` (Bearer-Token; liegt im
   Vercel-Env des Hub-Projekts bzw. lokal in `hub/.env.local` — **write-only,
   nie im Chat/Log leaken**).

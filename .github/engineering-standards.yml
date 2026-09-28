@@ -1,9 +1,9 @@
 # Engineering-Standards-Status dieses Repos.
 # Single source of truth, gilt host- und agent-übergreifend.
-# Schema: siehe byte5ai/engineering-standards.
+# Schema: siehe das `engineering-standards`-Repo des Accounts (nicht öffentlich).
 
 status: applied
-source: byte5ai/engineering-standards
+source: engineering-standards   # Repo des Accounts, nicht öffentlich
 decided_on: 2026-05-17
 reviewed_on: 2026-05-17
 reason: ""
