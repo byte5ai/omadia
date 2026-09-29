@@ -4553,7 +4553,7 @@ export class Orchestrator {
   /** #332 Layer 3 — synthetic reminder pushed when an obligation is unmet. */
   private obligationReminder(toolName: string): string {
     return (
-      `IMPORTANT: Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
+      `Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
       `(\`${toolName}\`) zu konsultieren. Dieser Consult ist für diesen Turn ` +
       `verpflichtend. Rufe \`${toolName}\` jetzt auf, bevor du dem Nutzer antwortest.`
     );
