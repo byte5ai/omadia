@@ -5077,8 +5077,11 @@ export class Orchestrator {
           }
           // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
           // turn end: escalate ONCE with a forced tool_choice + synthetic
-          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
-          // tool-enabled iteration follows within the iteration budget.
+          // reminder (OB-31). On the models that reject a forced choice
+          // (Opus 5.5 / Fable 5.1) the adapter degrades it to `auto`, so the
+          // reminder text is what actually steers the call. Guarded by
+          // `!finalizeThisIter` so a normal tool-enabled iteration follows
+          // within the iteration budget.
           if (
             obligationTool &&
             !obligationMet &&
@@ -6266,8 +6269,11 @@ export class Orchestrator {
           }
           // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
           // turn end: escalate ONCE with a forced tool_choice + synthetic
-          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
-          // tool-enabled iteration follows within the iteration budget.
+          // reminder (OB-31). On the models that reject a forced choice
+          // (Opus 5.5 / Fable 5.1) the adapter degrades it to `auto`, so the
+          // reminder text is what actually steers the call. Guarded by
+          // `!finalizeThisIter` so a normal tool-enabled iteration follows
+          // within the iteration budget.
           if (
             obligationTool &&
             !obligationMet &&

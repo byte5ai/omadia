@@ -266,9 +266,12 @@ export class LocalSubAgent {
           // OB-31 escalation: caller declared an obligation tool, model
           // would exit without ever calling it, escalation budget unspent,
           // and we have iteration headroom. Synthesize a user-message
-          // reminder + flip `tool_choice` for next iteration so the API
-          // *forces* the call. After the escalation iteration we honor
-          // whatever stop_reason comes back — no second-chance loop.
+          // reminder + flip `tool_choice` for next iteration. On models that
+          // honour a forced choice the API then *requires* the call; on the
+          // ones that reject it (Opus 5.5 / Fable 5.1) the adapter degrades it
+          // to `auto`, and the reminder text is the whole mechanism. After the
+          // escalation iteration we honor whatever stop_reason comes back —
+          // no second-chance loop.
           if (
             expectedTurnToolUse !== undefined &&
             !calledExpectedTool &&
