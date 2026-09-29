@@ -49,7 +49,7 @@ function sub(overrides: Partial<SubAgentRow> = {}): SubAgentRow {
   };
 }
 
-function skill(): SkillRow {
+function skill(overrides: Partial<SkillRow> = {}): SkillRow {
   return {
     id: 'skill-1',
     slug: 'research',
@@ -63,6 +63,7 @@ function skill(): SkillRow {
     forkedFrom: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
+    ...overrides,
   };
 }
 
@@ -102,6 +103,56 @@ test('builds one DomainTool per enabled sub-agent with sanitised name+domain', (
   assert.equal(tools.length, 1);
   assert.equal(tools[0]!.name, 'ask_researcher_bot');
   assert.equal(tools[0]!.domain, 'subagent.researcher-bot');
+});
+
+test('the delegation tool description carries the skill description + contract', () => {
+  const build = (s: SkillRow) =>
+    buildSubAgentDomainTools(
+      { subAgents: [sub()], toolGrants: [], skills: [s] },
+      {
+        provider: fakeProvider,
+        defaultModel: 'claude-sonnet-4-6',
+        defaultMaxTokens: 2048,
+        defaultMaxIterations: 6,
+      },
+    )[0]!.spec.description;
+
+  // The roster renders one `- \`name\`: description` line per tool, so the
+  // description must stay on a single line whatever the skill author wrote.
+  const withDescription = build(
+    skill({ description: '  Odoo HR: Mitarbeiter, Abwesenheiten\nund Verträge  ' }),
+  );
+  assert.match(withDescription, /^Delegate a focused question to the "Researcher Bot" sub-agent\./);
+  assert.match(
+    withDescription,
+    /Handles: Odoo HR: Mitarbeiter, Abwesenheiten und Verträge\./,
+  );
+  assert.match(withDescription, /cannot ask follow-up questions/);
+  assert.doesNotMatch(withDescription, /\n/);
+
+  // An author-supplied final period is not doubled.
+  assert.match(build(skill({ description: 'Reads the CRM.' })), /Handles: Reads the CRM\. It sees/);
+
+  // No skill description → no dangling separator, contract still stated.
+  const without = build(skill());
+  assert.equal(
+    without,
+    'Delegate a focused question to the "Researcher Bot" sub-agent. It sees none' +
+      ' of this conversation and cannot ask follow-up questions, so send one' +
+      ' self-contained question and expect a single answer back.',
+  );
+
+  // A sub-agent with no skill at all behaves like an empty description.
+  const noSkill = buildSubAgentDomainTools(
+    { subAgents: [sub({ skillId: null })], toolGrants: [], skills: [] },
+    {
+      provider: fakeProvider,
+      defaultModel: 'm',
+      defaultMaxTokens: 1,
+      defaultMaxIterations: 1,
+    },
+  )[0]!.spec.description;
+  assert.equal(noSkill, without);
 });
 
 test('disabled sub-agents are skipped', () => {
