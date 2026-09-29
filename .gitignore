@@ -158,6 +158,9 @@ docs/softgarden-agent-evaluation.md
 docs/diagrams.md
 docs/graph-deployment.md
 docs/harness-platform/
+# Local security-audit reports and their evidence (internal findings, retest
+# checklists). They are worked off through ordinary PRs and never published.
+docs/audits/
 
 # ─── Smoke scripts (internal validation harness, not part of public API) ──
 # Boot-test scripts that hit live byte5 Fly endpoints / Neon project. The

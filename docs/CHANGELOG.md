@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/`
+
+2026-09-29 — the `audit (high+critical block)` step treated an npm registry
+outage ("audit endpoint returned an error") as a pass, so an unknown audit
+state was indistinguishable from a clean one. It now retries the registry
+three times with backoff and then fails; for a confirmed upstream outage an
+admin can set the repository variable `AUDIT_ALLOW_REGISTRY_OUTAGE=true`,
+which downgrades that to a warning until the registry is back. The
+`audit-report.json` of every run is archived as a workflow artifact for 30
+days. Dependabot gets a `/desktop` npm block — the Electron shell had no
+dependency updates at all, and `electron` is a devDependency that ships as the
+runtime. Adding `desktop` to the audit matrix itself lands together with the
+dependency refresh that makes it pass. Local security-audit reports under
+`docs/audits/` are git-ignored.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no

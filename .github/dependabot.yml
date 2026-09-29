@@ -92,6 +92,38 @@ updates:
       - dependency-name: 'typescript'
         update-types: ['version-update:semver-major']
 
+  # Desktop (Electron shell). `electron` is a devDependency but it IS the
+  # shipped runtime, and Electron only patches its three newest majors, so
+  # Electron majors are deliberately NOT ignored here — they arrive as normal
+  # PRs (auto-merge stays off for majors, a human eyeballs each one).
+  - package-ecosystem: 'npm'
+    directory: '/desktop'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Europe/Berlin'
+    open-pull-requests-limit: 5
+    labels: ['deps', 'desktop']
+    commit-message:
+      prefix: 'chore(deps,desktop)'
+      include: 'scope'
+    groups:
+      dev-tooling:
+        applies-to: 'version-updates'
+        dependency-type: 'development'
+        update-types: ['patch', 'minor']
+      runtime-patches:
+        applies-to: 'version-updates'
+        dependency-type: 'production'
+        update-types: ['patch']
+    ignore:
+      # Same Node 22 LTS lock as middleware and web-ui (see the blocks above).
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
+
   # GitHub Actions versions in workflow files
   - package-ecosystem: 'github-actions'
     directory: '/'
