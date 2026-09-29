@@ -36,6 +36,69 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — dated prompt patterns and thin tool descriptions cleaned up (#1219)
+
+2026-09-29 — seven independent cleanups from a prompt audit against the current
+Claude models. Only the first changes what goes on the wire.
+
+`output_config.effort` has been GA since the 4.6 generation, but the Anthropic
+adapter attached the `effort-2025-11-24` beta to **every** request that carried
+an effort, pinning GA models to a beta surface for no reason. Opus 4.5 is not
+retired and still needs the opt-in, so the header is now gated on that family
+through `requiresEffortBeta()`, which follows the `supportsTemperature()`
+convention (substring match, so dated and provider-qualified ids resolve). A
+caller that passes the beta explicitly in `LlmRequest.betas` still gets it on
+any model, exactly once. The adapter test asserted the old behaviour on
+`claude-opus-4-8` and is inverted.
+
+The `<at>…</at>` @-mention contract lived in three places: the
+`get_chat_participants` block of the system prompt, the tool description, and
+the tool response itself (`usage_example` + `rendering_rule`, built from a real
+`displayName` in the current chat). The prompt copy was the weakest — it taught
+`Max Mustermann` where the response carries the actual name — and three copies
+of one syntax rule drift apart. The system-prompt block keeps only its routing
+guidance (when to call, once per turn, not in 1:1 chats) and points at the
+other two.
+
+The synthetic obligation reminder lost its `IMPORTANT:` prefix. Forced
+`tool_choice` degrades to `auto` on the models that reject it, so that reminder
+is what actually steers the consult; it should be clear, not loud. Its sibling
+in `LocalSubAgent` never carried a prefix.
+
+DB-defined sub-agents described their delegation tool as "Delegate a focused
+question to the `<name>` sub-agent." and nothing else — while that same string
+is the routing text in the system prompt's Fach-Agenten roster, and
+`SkillRow.description` sat unread. It now carries the skill's own description
+plus the delegation contract (no conversation context, no follow-up questions,
+one answer), collapsed to a single line because the roster renders one
+`- name: description` entry per tool.
+
+In `agent-reference-maximum`, three tool descriptions opened with an internal
+ticket ID and the word "Demo" (`OB-29-4`/`-3`/`-1`), and one closed by naming
+the pattern it demonstrates. None of that tells a model when to call the tool,
+and the builder uses this package as its primary reference, so the style
+propagated into generated agents. Each description now leads with the behaviour
+and states a call trigger; the behavioural facts are kept, and the pattern
+framing stays in `INTEGRATION.md`, which is the canonical index. The
+`reference-expert` skill also carried a prose `Kern-Tools` list naming one of
+the four registered tools, next to the real schemas the model already receives;
+it is gone, and the behaviour section stands on its own.
+
+The issue-triage workflow's plan prompt no longer caps its comment at ~90
+lines. It asks the same prompt for verified file paths, real symbols and
+acceptance criteria, and a numeric ceiling trades that evidence for brevity.
+The rules that carry the quality stay: every path and symbol must exist, and an
+already-shipped issue gets a verify+close recommendation instead of a plan.
+
+Not applied from the same audit: the `MANDATORY:` markers in the high-tier
+sycophancy guard are deliberately byte-identical to the upstream kemia source
+(`sycophancyGuard.test.ts` asserts exactly that, alongside the preset tests
+that lock kemia byte-identity), so rewording them would fork the mirror
+silently. The audit's remaining items — the conductor word caps, the incident
+histories in `builder-system.md` and the shipped boilerplate, the JSON-only
+pressure wording, and moving the repo agent-rule files out — are tracked
+separately.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
