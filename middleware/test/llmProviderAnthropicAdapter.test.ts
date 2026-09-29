@@ -16,6 +16,7 @@ import {
   requiresEffortBeta,
   supportsForcedToolChoice,
   EFFORT_BETA,
+  SERVER_SIDE_FALLBACK_BETA,
 } from '@omadia/llm-adapter-anthropic';
 import {
   collectText,
@@ -840,6 +841,87 @@ test('outputFormat maps to output_config.format and shares the object with effor
     messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
   });
   assert.equal('output_config' in (calls[2]?.params ?? {}), false);
+});
+
+// ---------------------------------------------------------------------------
+// #1219 — refusals
+// ---------------------------------------------------------------------------
+
+test('a refusal surfaces stop_details; every other stop reason carries none', async () => {
+  const replies: Array<Record<string, unknown>> = [
+    // Declined with a category — the shape Opus 5.5 returns.
+    {
+      stop_reason: 'refusal',
+      stop_details: { type: 'refusal', category: 'bio', explanation: 'declined' },
+      content: [],
+    },
+    // Declined with no details at all: presence is still the signal.
+    { stop_reason: 'refusal', stop_details: null, content: [] },
+    // A normal turn. stop_details is null here, and reading it unguarded on
+    // every response is the bug this guards against.
+    { stop_reason: 'end_turn', stop_details: null },
+  ];
+  let i = 0;
+  const client = {
+    messages: {
+      create: async () => textResponse(replies[i++]!),
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const ask = () =>
+    provider.complete({
+      model: 'claude-opus-5-5',
+      maxTokens: 64,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    });
+
+  const declined = await ask();
+  assert.deepEqual(declined.refusal, { category: 'bio', explanation: 'declined' });
+  // It is NOT an error and NOT a distinct finishReason — a caller that only
+  // looks at finishReason sees a normal stop with empty content.
+  assert.equal(declined.finishReason, 'stop');
+  assert.equal(declined.providerFinishReason, 'refusal');
+
+  const bare = await ask();
+  assert.deepEqual(bare.refusal, {});
+  assert.notEqual(bare.refusal, undefined);
+
+  const normal = await ask();
+  assert.equal(normal.refusal, undefined);
+});
+
+test('fallbacks is opt-in and carries its beta', async () => {
+  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return textResponse();
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    fallbacks: 'default',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal(calls[0]?.params['fallbacks'], 'default');
+  assert.deepEqual(calls[0]?.options, {
+    headers: { 'anthropic-beta': SERVER_SIDE_FALLBACK_BETA },
+  });
+
+  // Not asked for → neither the param nor the beta, so no turn silently
+  // answers on another model.
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal('fallbacks' in (calls[1]?.params ?? {}), false);
+  assert.equal(calls[1]?.options, undefined);
 });
 
 test('requiresEffortBeta matches only the Opus 4.5 family', () => {

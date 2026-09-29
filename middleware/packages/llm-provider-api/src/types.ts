@@ -160,6 +160,17 @@ export interface LlmRequest {
    * parameter; the adapter emits the current `output_config.format` shape.
    */
   readonly outputFormat?: OutputFormat;
+  /**
+   * Opt into the vendor's SERVER-side refusal fallback (#1219). `'default'`
+   * lets the vendor route a declined turn to a suitable other model by refusal
+   * category, so no model list has to be maintained here.
+   *
+   * Off unless a caller asks: a fallback silently answers on a different model,
+   * which is the right trade for a chat turn and the wrong one for a judge or
+   * an extractor whose output is compared across runs. Adapters without the
+   * concept ignore it — the turn then comes back as a normal refusal.
+   */
+  readonly fallbacks?: 'default';
 }
 
 /**
@@ -191,6 +202,21 @@ export type EffortLevel = (typeof EFFORT_LEVELS)[number];
  *  `LlmResponse.providerFinishReason` for callers that need it. */
 export type FinishReason = 'stop' | 'tool_calls' | 'max_tokens';
 
+/**
+ * Why a safety classifier declined the turn (#1219), when one did.
+ *
+ * Present on {@link LlmResponse.refusal} only for an actual refusal — a vendor
+ * that reports refusal details for nothing else, which is why this is a
+ * separate optional object rather than a field that is usually null. The
+ * category vocabulary is an OPEN set owned by the vendor (`bio`, `cyber`,
+ * `reasoning_extraction`, … and absent on older declines), so never switch on
+ * it exhaustively: treat an unknown category as a refusal like any other.
+ */
+export interface RefusalDetails {
+  readonly category?: string;
+  readonly explanation?: string;
+}
+
 export interface LlmUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -209,6 +235,14 @@ export interface LlmResponse {
   /** The model id the vendor reports having served. */
   readonly model: string;
   readonly usage: LlmUsage;
+  /**
+   * Set when a safety classifier declined this turn (#1219) — i.e. when
+   * `providerFinishReason` is `'refusal'`. The turn came back HTTP 200 with no
+   * text or only a fragment, so a caller that treats it as a normal stop shows
+   * an empty answer that reads like a platform bug. Absent on every other
+   * outcome; check it before deciding a blank answer is a failure.
+   */
+  readonly refusal?: RefusalDetails;
 }
 
 /**

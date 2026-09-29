@@ -294,6 +294,16 @@ export class LocalSubAgent {
           }
           const answer = textParts.join('\n\n').trim();
           if (answer.length === 0) {
+            // #1219 — a safety classifier declining the turn (HTTP 200,
+            // `stop_reason: 'refusal'`) also arrives as no text. Reported as
+            // "empty answer" it reads like a harness bug and sends whoever
+            // debugs it into the tool loop; name it instead, so the parent's
+            // tool result says what actually happened.
+            if (response.stop_reason === 'refusal') {
+              throw new Error(
+                `Sub-agent ${this.name}: the model declined this request for safety reasons (stop_reason: refusal). Rephrase the delegated question or run this sub-agent on a different model.`,
+              );
+            }
             throw new Error(`Sub-agent ${this.name} returned an empty answer.`);
           }
           return answer;
