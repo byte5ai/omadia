@@ -338,9 +338,30 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
   };
 }
 
-/** The beta that unlocks `output_config.effort`. Attached only when a request
- *  actually carries an effort, so the common path keeps its header set. */
+/** The beta that unlocked `output_config.effort`. Attached only when a request
+ *  carries an effort AND the model still needs the opt-in, so the common path
+ *  keeps its header set. */
 export const EFFORT_BETA = 'effort-2025-11-24';
+
+/**
+ * Models that still need {@link EFFORT_BETA} to accept `output_config.effort`.
+ *
+ * Effort is GA from the 4.6 generation onward. Opus 4.5 shipped it behind the
+ * beta and is not retired, so it keeps the opt-in. Sending the header to a GA
+ * model is not an error, but it pins the request to a beta surface for no
+ * reason — the newer models get the plain GA shape.
+ */
+const EFFORT_BETA_REQUIRED = ['claude-opus-4-5'];
+
+/**
+ * Whether `output_config.effort` needs its beta opt-in on this model.
+ *
+ * Exported for the test. The match is a substring so dated ids
+ * (`claude-opus-4-5-20251101`) and provider-qualified ids resolve correctly.
+ */
+export function requiresEffortBeta(model: string): boolean {
+  return EFFORT_BETA_REQUIRED.some((m) => model.includes(m));
+}
 
 /** Beta opt-ins → SDK request options (`anthropic-beta` header). Returns
  *  undefined when there are none, so callers pass nothing extra (preserving
@@ -350,7 +371,9 @@ function toRequestOptions(
 ): { headers: Record<string, string> } | undefined {
   const betas = [
     ...(req.betas ?? []),
-    ...(req.effort !== undefined && !(req.betas ?? []).includes(EFFORT_BETA)
+    ...(req.effort !== undefined &&
+    requiresEffortBeta(req.model) &&
+    !(req.betas ?? []).includes(EFFORT_BETA)
       ? [EFFORT_BETA]
       : []),
   ];
