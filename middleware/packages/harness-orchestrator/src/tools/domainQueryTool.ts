@@ -254,7 +254,12 @@ export function createDomainTool(options: DomainToolOptions): DomainTool {
         const elapsed = ((Date.now() - started) / 1000).toFixed(1);
         const message = err instanceof Error ? err.message : String(err);
         console.error(`${logTag} ${options.name} → ERROR (${elapsed}s): ${message}`);
-        return `Error while querying ${options.name}: ${message}`;
+        // `Error:` is TOOL_ERROR_PREFIX — `isControlFlowToolResult()` is
+        // prefix-anchored, and without the colon here the failure reason was
+        // interned by the privacy guard (#1097) and reached the parent model as
+        // a `[masked]` digest. A tool failure has to stay readable: the model
+        // decides whether to retry, ask, or answer around it.
+        return `Error: while querying ${options.name}: ${message}`;
       }
     },
   };
