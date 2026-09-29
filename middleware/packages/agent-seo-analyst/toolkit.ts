@@ -60,14 +60,20 @@ const auditSiteInput = z.object({
     .min(1)
     .max(100)
     .optional()
-    .describe('Seiten-Obergrenze, 1–100. Weggelassen → der konfigurierte Wert.'),
+    .describe(
+      'Seiten-Obergrenze, 1–100 (ein höherer Wert wird abgelehnt).' +
+        ' Weggelassen → der konfigurierte Wert.',
+    ),
   max_depth: z
     .number()
     .int()
     .min(1)
     .max(5)
     .optional()
-    .describe('Crawl-Tiefe ab der Einstiegs-URL, 1–5. Weggelassen → der konfigurierte Wert.'),
+    .describe(
+      'Crawl-Tiefe ab der Einstiegs-URL, 1–5 (ein höherer Wert wird abgelehnt).' +
+        ' Weggelassen → der konfigurierte Wert.',
+    ),
 });
 
 export function createToolkit(opts: ToolkitOptions): Toolkit {
@@ -120,9 +126,11 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
       description:
         'Crawlt eine Domain per BFS und aggregiert die On-Page-Issues über alle ' +
         'gefundenen Seiten. Nutze das Tool für domainweite Fragen; für eine ' +
-        'einzelne Seite `analyze_page`. Der Crawl ist immer begrenzt: maximal ' +
-        '100 Seiten und Tiefe 5, höhere Werte werden auf diese Grenzen gekappt. ' +
-        'Ohne `start_url` startet er auf der konfigurierten Domain.',
+        'einzelne Seite `analyze_page`. `max_pages` muss zwischen 1 und 100 ' +
+        'liegen, `max_depth` zwischen 1 und 5 — höhere Werte werden nicht ' +
+        'gekappt, sondern abgelehnt. Ohne `start_url` startet der Crawl auf der ' +
+        'konfigurierten Domain, ohne die beiden Grenzen auf den für diesen ' +
+        'Agenten konfigurierten Werten.',
       input: auditSiteInput as z.ZodType<unknown>,
       async run(raw): Promise<SiteAuditReport> {
         const { start_url, max_pages, max_depth } = auditSiteInput.parse(raw);
