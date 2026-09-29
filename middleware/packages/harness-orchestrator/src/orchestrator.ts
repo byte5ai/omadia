@@ -1622,11 +1622,7 @@ function buildSystemPrompt(
     : '';
   const chatParticipantsBlock = hasChatParticipants
     ? '\n- `get_chat_participants`: Liefert die Teilnehmer des aktuellen Teams-Chats. Nur aufrufen, wenn du jemanden im Antworttext **per @-Mention ansprechen** willst — Handoff, Rückfrage, Zuständigkeits-Tag. Max 1× pro Turn. In 1:1-Chats nicht nutzen.\n' +
-      '\n  **PFLICHT nach dem Tool-Call — sonst war der Call umsonst:**\n' +
-      '  1. Den Namen im Antworttext in der Form `<at>EXAKTER_DISPLAY_NAME</at>` schreiben.\n' +
-      '  2. `EXAKTER_DISPLAY_NAME` muss byte-für-byte dem `displayName`-Feld aus der Tool-Response entsprechen — inklusive Firmensuffix, Bindestriche, Großschreibung.\n' +
-      '  3. Ohne diese `<at>…</at>`-Tags wird KEINE Mention gerendert und die Person NICHT benachrichtigt — das Schreiben des Namens allein reicht NICHT.\n' +
-      '  4. Beispiel: wenn der Roster `displayName: "Jane Doe - ACME"` zurückgibt und du sie ansprechen willst, schreibst du `Hey <at>Jane Doe - ACME</at>, kannst du das übernehmen?` — nicht `Hey Jane Doe` und auch nicht `Hey @Jane`.\n'
+      '\n  Die exakte Mention-Syntax steht in der Beschreibung des Tools, und die Tool-Response liefert sie in `usage_example` / `rendering_rule` noch einmal mit einem echten `displayName` aus diesem Chat. Halte dich daran: ohne diese Form wird keine Mention gerendert, die Person nicht benachrichtigt, und der Call war umsonst.\n'
     : '';
 
   const graphBlock = hasGraph
