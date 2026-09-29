@@ -382,12 +382,12 @@ function toOutputConfig(req: LlmRequest): Record<string, unknown> | undefined {
     ...(req.effort !== undefined ? { effort: req.effort } : {}),
     ...(req.outputFormat !== undefined
       ? {
+          // Exactly `type` + `schema`: the API rejects unknown nested body
+          // fields with a 400, so the object is built field by field rather
+          // than spread from the neutral DTO.
           format: {
             type: req.outputFormat.type,
             schema: req.outputFormat.schema,
-            ...(req.outputFormat.name !== undefined
-              ? { name: req.outputFormat.name }
-              : {}),
           },
         }
       : {}),

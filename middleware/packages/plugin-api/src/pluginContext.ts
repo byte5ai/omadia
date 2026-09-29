@@ -1811,7 +1811,6 @@ export interface LlmCompleteRequest {
   readonly outputFormat?: {
     readonly type: 'json_schema';
     readonly schema: Record<string, unknown>;
-    readonly name?: string;
   };
 }
 

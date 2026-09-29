@@ -184,8 +184,6 @@ export interface LlmRequest {
 export interface OutputFormat {
   readonly type: 'json_schema';
   readonly schema: Record<string, unknown>;
-  /** Optional schema name. Adapters that have no field for it drop it. */
-  readonly name?: string;
 }
 
 /**

@@ -15,9 +15,11 @@ Additive: one optional field on a request type (#1219).
 ### Added
 
 - **`LlmCompleteRequest.outputFormat`** — ask `ctx.llm.complete` for a
-  schema-constrained JSON response (`{ type: 'json_schema', schema, name? }`)
-  instead of instructing the model to emit JSON in the prompt. The schema is a
-  JSON Schema object, forwarded to the provider untouched.
+  schema-constrained JSON response (`{ type: 'json_schema', schema }`) instead
+  of instructing the model to emit JSON in the prompt. The schema is a JSON
+  Schema object, forwarded to the provider untouched. Those two fields are the
+  whole object: Anthropic rejects unknown nested body fields with a 400, so
+  there is deliberately no `name`.
 
   Providers without a structured-output channel **ignore** the field rather
   than failing, so a plugin must still parse the result tolerantly: this

@@ -826,13 +826,22 @@ test('outputFormat maps to output_config.format and shares the object with effor
     model: 'claude-opus-5-5',
     maxTokens: 64,
     effort: 'low',
-    outputFormat: { type: 'json_schema', schema, name: 'entities' },
+    outputFormat: { type: 'json_schema', schema },
     messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
   });
   assert.deepEqual(calls[1]?.params['output_config'], {
     effort: 'low',
-    format: { type: 'json_schema', schema, name: 'entities' },
+    format: { type: 'json_schema', schema },
   });
+  // The format object carries exactly `type` + `schema`. Anthropic rejects
+  // unknown nested body fields with a 400, so an extra key here would be a
+  // hard failure on the first caller that set it — not a dropped field.
+  assert.deepEqual(
+    Object.keys(
+      (calls[1]?.params['output_config'] as { format: object }).format,
+    ).sort(),
+    ['schema', 'type'],
+  );
 
   // Neither → no `output_config` key at all, so the common path is unchanged.
   await provider.complete({
