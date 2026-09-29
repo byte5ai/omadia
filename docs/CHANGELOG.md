@@ -38,8 +38,10 @@ changelog.
 
 ### Changed — dated prompt patterns and thin tool descriptions cleaned up (#1219)
 
-2026-09-29 — seven independent cleanups from a prompt audit against the current
-Claude models. Only the first changes what goes on the wire.
+2026-09-29 — cleanups from a prompt audit against the current Claude models.
+Three of them change what goes on the wire — the effort beta, the
+structured-output seam and the refusal handling below; the rest are prompt and
+tool-description text.
 
 `output_config.effort` has been GA since the 4.6 generation, but the Anthropic
 adapter attached the `effort-2025-11-24` beta to **every** request that carried
@@ -89,6 +91,36 @@ lines. It asks the same prompt for verified file paths, real symbols and
 acceptance criteria, and a numeric ceiling trades that evidence for brevity.
 The rules that carry the quality stay: every path and symbol must exist, and an
 already-shipped issue gets a verify+close recommendation instead of a plan.
+
+Two API seams were added for the audit's "flagged only" items.
+
+**Structured outputs.** About ten prompts asked for JSON in prose because no
+request type could carry a schema. `LlmRequest.outputFormat` and
+`LlmCompleteRequest.outputFormat` now can, and the Anthropic adapter maps them
+to `output_config.format` — the current shape, not the deprecated top-level
+`output_format`. It shares one `output_config` object with `effort`, so both are
+built together rather than spread separately, where the second would silently
+drop the first. The format object carries exactly `type` and `schema`: the API
+rejects unknown nested body fields with a 400, so there is no `name`. Modelled
+on `effort`, an adapter without the concept ignores the field with a one-time
+note instead of failing — the OpenAI adapter does exactly that today, so a
+caller asking for a schema must still parse tolerantly. No prompt has been
+migrated onto it yet; that is a decision per call site.
+
+**Refusals.** `stop_details` was never read, so a declined turn was opaque —
+a `bio` decline and a `reasoning_extraction` one looked identical.
+`LlmResponse.refusal` now carries the category and explanation, gated on
+`stop_reason` because the API leaves `stop_details` null on every other outcome.
+The chat path was already honest about refusals (`MODEL_REFUSAL_NOTICE`), but
+`LocalSubAgent` reported one as "returned an empty answer", which reads as a
+harness bug; it now says what happened, with the `Error:` prefix that keeps a
+tool failure readable to the parent model instead of interned by the privacy
+guard. `LlmRequest.fallbacks: 'default'` opts into the vendor's server-side
+refusal fallback (routing by category, so no model list goes stale here) and
+attaches `server-side-fallback-2026-07-01`. It is off unless a caller asks: a
+fallback answers on a different model, which is right for a chat turn and wrong
+for a judge or an extractor whose output is compared across runs. No route
+enables it.
 
 Not applied from the same audit: the `MANDATORY:` markers in the high-tier
 sycophancy guard are deliberately byte-identical to the upstream kemia source
