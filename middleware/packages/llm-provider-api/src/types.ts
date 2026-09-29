@@ -148,6 +148,33 @@ export interface LlmRequest {
    * declared per model (`ModelInfo.effortLevels`), not guessed here.
    */
   readonly effort?: EffortLevel;
+  /**
+   * Schema-constrained response (#1219). The adapter maps it to its vendor's
+   * structured-output channel (Anthropic `output_config.format`); adapters and
+   * endpoints without the concept IGNORE it — never error — with a one-time
+   * warning, exactly like {@link LlmRequest.effort}. A caller therefore still
+   * has to parse the response tolerantly: this narrows the output, it does not
+   * guarantee it on every provider.
+   *
+   * NOT to be confused with Anthropic's deprecated top-level `output_format`
+   * parameter; the adapter emits the current `output_config.format` shape.
+   */
+  readonly outputFormat?: OutputFormat;
+}
+
+/**
+ * A JSON-Schema-constrained response shape.
+ *
+ * `schema` is a JSON Schema object, passed through to the vendor untouched —
+ * the contract deliberately does not model JSON Schema itself. Vendors reject
+ * schemas they cannot compile (Anthropic wants `additionalProperties: false`
+ * and an explicit `required`), so the schema is the caller's responsibility.
+ */
+export interface OutputFormat {
+  readonly type: 'json_schema';
+  readonly schema: Record<string, unknown>;
+  /** Optional schema name. Adapters that have no field for it drop it. */
+  readonly name?: string;
 }
 
 /**

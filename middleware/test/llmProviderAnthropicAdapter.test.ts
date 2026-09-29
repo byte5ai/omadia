@@ -782,6 +782,66 @@ test('effort maps to output_config.effort on every model, beta only where needed
   assert.equal(calls[4]?.options, undefined);
 });
 
+// ---------------------------------------------------------------------------
+// #1219 — structured outputs
+// ---------------------------------------------------------------------------
+
+test('outputFormat maps to output_config.format and shares the object with effort', async () => {
+  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return textResponse();
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const schema = {
+    type: 'object',
+    properties: { entities: { type: 'array', items: { type: 'string' } } },
+    required: ['entities'],
+    additionalProperties: false,
+  };
+
+  // Format alone: the current `output_config.format` shape, no beta header —
+  // structured outputs is GA, unlike effort on Opus 4.5.
+  await provider.complete({
+    model: 'claude-haiku-4-5',
+    maxTokens: 64,
+    outputFormat: { type: 'json_schema', schema },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[0]?.params['output_config'], {
+    format: { type: 'json_schema', schema },
+  });
+  assert.equal(calls[0]?.options, undefined);
+  // NOT the deprecated top-level parameter.
+  assert.equal(calls[0]?.params['output_format'], undefined);
+
+  // Effort + format share one object. Two independent spreads would have made
+  // the second silently drop the first.
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    effort: 'low',
+    outputFormat: { type: 'json_schema', schema, name: 'entities' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[1]?.params['output_config'], {
+    effort: 'low',
+    format: { type: 'json_schema', schema, name: 'entities' },
+  });
+
+  // Neither → no `output_config` key at all, so the common path is unchanged.
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal('output_config' in (calls[2]?.params ?? {}), false);
+});
+
 test('requiresEffortBeta matches only the Opus 4.5 family', () => {
   for (const model of ['claude-opus-4-5', 'claude-opus-4-5-20251101']) {
     assert.equal(requiresEffortBeta(model), true, `${model} lost its effort beta`);

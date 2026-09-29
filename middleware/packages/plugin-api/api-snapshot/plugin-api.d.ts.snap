@@ -1787,6 +1787,11 @@ readonly content: string;
 }>;
 readonly maxTokens?: number;
 readonly temperature?: number;
+readonly outputFormat?: {
+readonly type: 'json_schema';
+readonly schema: Record<string, unknown>;
+readonly name?: string;
+};
 }
 export interface McpAccessorToolDescriptor {
 readonly name: string;

@@ -8,6 +8,25 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.20.0 — 2026-09-29
+
+Additive: one optional field on a request type (#1219).
+
+### Added
+
+- **`LlmCompleteRequest.outputFormat`** — ask `ctx.llm.complete` for a
+  schema-constrained JSON response (`{ type: 'json_schema', schema, name? }`)
+  instead of instructing the model to emit JSON in the prompt. The schema is a
+  JSON Schema object, forwarded to the provider untouched.
+
+  Providers without a structured-output channel **ignore** the field rather
+  than failing, so a plugin must still parse the result tolerantly: this
+  narrows the output, it does not guarantee it everywhere. Today the Anthropic
+  adapter maps it (`output_config.format`) and the OpenAI adapter notes once
+  per model that it dropped it.
+
+  Optional and additive — existing plugins are unaffected.
+
 ## 1.19.1 — 2026-09-25
 
 Documentation only. No change to the exported type surface (#978).

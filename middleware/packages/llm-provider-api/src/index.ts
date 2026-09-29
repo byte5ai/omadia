@@ -24,6 +24,7 @@ export type {
   LlmResponse,
   LlmStreamEvent,
   LlmUsage,
+  OutputFormat,
   ProviderCapabilities,
   SystemBlock,
   TextPart,

@@ -311,6 +311,7 @@ function effectiveToolChoice(req: LlmRequest): ToolChoice | undefined {
 function buildParams(req: LlmRequest): Record<string, unknown> {
   const system = buildSystem(req);
   const toolChoice = effectiveToolChoice(req);
+  const outputConfig = toOutputConfig(req);
   return {
     model: req.model,
     max_tokens: req.maxTokens,
@@ -332,10 +333,38 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
     // #1033 — the normalized effort maps 1:1 onto Anthropic's
     // `output_config.effort` vocabulary (`low|medium|high|xhigh|max`); we
     // never send `max`, which the contract deliberately does not carry.
-    ...(req.effort !== undefined
-      ? { output_config: { effort: req.effort } }
+    // #1219 — `outputFormat` shares that object, so both are built together:
+    // two spreads would make the second overwrite the first.
+    ...(outputConfig !== undefined ? { output_config: outputConfig } : {}),
+  };
+}
+
+/**
+ * The `output_config` object, or undefined when the request carries neither an
+ * effort nor an output format — so the common path sends no such key at all.
+ *
+ * `format` is the CURRENT structured-output shape (`{type:'json_schema',
+ * schema}`), not the deprecated top-level `output_format` parameter. It is GA
+ * on every model and needs no beta. Anthropic rejects it together with
+ * document citations; nothing in this adapter sends citations today, so there
+ * is no guard here — add one if citation support lands.
+ */
+function toOutputConfig(req: LlmRequest): Record<string, unknown> | undefined {
+  const cfg: Record<string, unknown> = {
+    ...(req.effort !== undefined ? { effort: req.effort } : {}),
+    ...(req.outputFormat !== undefined
+      ? {
+          format: {
+            type: req.outputFormat.type,
+            schema: req.outputFormat.schema,
+            ...(req.outputFormat.name !== undefined
+              ? { name: req.outputFormat.name }
+              : {}),
+          },
+        }
       : {}),
   };
+  return Object.keys(cfg).length > 0 ? cfg : undefined;
 }
 
 /** The beta that unlocked `output_config.effort`. Attached only when a request
