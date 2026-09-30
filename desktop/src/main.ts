@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, shell } from 'electron';
 import { installApplicationMenu } from './menu';
 import path from 'node:path';
 import { Supervisor, setActiveSupervisor, BootProgress } from './supervisor';
@@ -30,6 +30,7 @@ import {
   showBootFailure,
   showRecoveryExhausted,
   showRestartRefused,
+  showSecretsUnreadable,
   showSupersededBoot,
 } from './shellDialogs';
 import { maybeRemindRecoveryKey, showRecoveryKeyAction } from './recoveryKeyActions';
@@ -369,12 +370,17 @@ async function presentBootFailure(err: unknown): Promise<void> {
 
   log.error(`[main] boot failed: ${failure.detail}`);
   setTrayStatus(trayActions(), 'error');
-  if ((await showBootFailure(win, t, failure.detail, logFile())) === 'rerun-setup') {
+  if (failure.kind === 'secrets-unreadable') {
+    // Setup would hit the same file: this dialog explains the restore, then quits.
+    await showSecretsUnreadable(win, t, failure.secrets, logFile(), (file) =>
+      shell.showItemInFolder(file),
+    );
+  } else if ((await showBootFailure(win, t, failure.detail, logFile())) === 'rerun-setup') {
     startWizard();
-  } else {
-    quitting = true;
-    app.quit();
+    return;
   }
+  quitting = true;
+  app.quit();
 }
 
 function startWizard(): void {

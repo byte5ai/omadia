@@ -17,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { classifyBootFailure, describeError } from '../src/bootFailure.ts';
+import { SecretsUnreadableError } from '../src/secretsBlob.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -47,6 +48,45 @@ describe('classifyBootFailure', () => {
 
   it('does not mistake an unrelated port error for a state', () => {
     assert.equal(classifyBootFailure(new Error('EADDRINUSE 5432')).kind, 'fatal');
+  });
+});
+
+/**
+ * An unreadable secrets file needs its own dialog: the generic one offers
+ * "Re-run setup", which cannot help (setup hits the same file) and was the
+ * default button. Classified from the error's code, before it is flattened to
+ * text, because message matching is exactly the coupling documented above.
+ */
+describe('classifyBootFailure — unreadable secrets file', () => {
+  const unreadable = new SecretsUnreadableError({
+    file: '/data/secrets.enc',
+    stage: 'decrypt',
+    reason: 'keychain denied',
+    snapshotDir: '/data/snapshots',
+    cause: new Error('keychain denied'),
+  });
+
+  it('classifies by the error code and carries what the dialog has to name', () => {
+    const failure = classifyBootFailure(unreadable);
+    assert.equal(failure.kind, 'secrets-unreadable');
+    assert.ok(failure.kind === 'secrets-unreadable');
+    assert.deepEqual(failure.secrets, {
+      file: '/data/secrets.enc',
+      stage: 'decrypt',
+      reason: 'keychain denied',
+      snapshotDir: '/data/snapshots',
+    });
+    assert.equal(failure.detail, unreadable.message, 'the full text still reaches the log');
+  });
+
+  it('does not classify on message text', () => {
+    const lookalike = new Error(`${unreadable.message} (secrets_unreadable)`);
+    assert.equal(classifyBootFailure(lookalike).kind, 'fatal');
+  });
+
+  it('does not trust a bare code without the fields the dialog needs', () => {
+    const partial = Object.assign(new Error('boom'), { code: 'secrets_unreadable' });
+    assert.equal(classifyBootFailure(partial).kind, 'fatal');
   });
 });
 
