@@ -257,7 +257,9 @@ jobs:
           # d5bb0b61), i.e. 78 tests of slack; #1077 adds 6 (usageDashboard
           # 4, cliTurnBudgetRegistry 2). Re-pinned to the measured total.
           # 365 → 372 with #778 S1 (7 credential-ask askability/owner tests).
-          PG_TEST_FLOOR: '372'
+          # 372 → 375 with server-side session revocation (3 users.session_version
+          # tests in test/auth/userStoreSessionVersion.pg.test.ts).
+          PG_TEST_FLOOR: '375'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
