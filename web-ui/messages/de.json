@@ -4553,6 +4553,8 @@
       "invalidName": "Der Name darf nur Buchstaben, Zahlen, . _ - enthalten.",
       "notFound": "Registry nicht gefunden — Liste neu geladen.",
       "missingFields": "Name und URL sind erforderlich.",
+      "sessionExpired": "Die Sitzung ist nicht mehr gültig. Weiterleitung zur Anmeldung …",
+      "authUnavailable": "Die Sitzung kann gerade nicht geprüft werden. Bitte in Kürze erneut versuchen.",
       "generic": "Fehler {status}."
     }
   },
