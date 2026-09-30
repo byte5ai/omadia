@@ -329,9 +329,9 @@ jobs:
   # Added for issue #932. Until now desktop/src was the only source tree in
   # the repo with no tests and no CI job -- and the only one that produced a
   # blocker in three rounds of beta testing, because it is the whole of the
-  # user's first impression. Electron's own binary is deliberately NOT
-  # downloaded: nothing here launches the app, so the ~100MB fetch would only
-  # slow the job down.
+  # user's first impression. Electron's own binary is not downloaded: since
+  # Electron 42 `npm ci` no longer fetches it (it arrives on first run), and
+  # nothing here launches the app.
   # ------------------------------------------------------------------
   desktop:
     name: desktop (typecheck + test)
@@ -340,8 +340,6 @@ jobs:
     defaults:
       run:
         working-directory: desktop
-    env:
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v7
 
@@ -483,9 +481,9 @@ jobs:
   # transitive deps.
   #
   # The matrix names every directory git tracks with its own package.json
-  # AND package-lock.json (desktop, middleware, web-ui); the first step
-  # fails every leg when one is missing. A new package directory also needs
-  # an npm block in .github/dependabot.yml and its
+  # AND package-lock.json (desktop, middleware, web-ui); a step before the
+  # audit fails every leg when one is missing. A new package directory also
+  # needs an npm block in .github/dependabot.yml and its
   # `audit (high+critical block) (<dir>)` context among main's required
   # status checks. The root package-lock.json is an empty stub with no
   # package.json beside it, so it is not a leg.
