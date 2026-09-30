@@ -34,11 +34,11 @@
   },
   "devDependencies": {
     "@electron/rebuild": "3.6.1",
-    "@types/node": "^22.10.0",
+    "@types/node": "^22.20.4",
     "@types/pg": "^8.11.10",
     "electron": "^37.2.0",
     "electron-builder": "^25.1.8",
-    "esbuild": "^0.28.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.2"
   }
 }
