@@ -63,6 +63,51 @@ const STRUCTURED: PrivacyReceipt = {
   ],
 };
 
+/** The answer verifier sent two requests under the turn's privacy rules. */
+const VERIFIED: PrivacyReceipt = {
+  ...RANKED,
+  verifierEgress: {
+    requests: 2,
+    maskedSpans: [
+      { type: 'name', detector: 'identity-values' },
+      { type: 'email', detector: 'c0-regex' },
+    ],
+  },
+};
+
+describe('<PrivacyReceiptCard /> — answer check', () => {
+  it('shows the verifier row with its request count and masked spans', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={VERIFIED} />, { locale: 'de' });
+    expect(screen.getByText('Antwortprüfung')).toBeInTheDocument();
+    expect(
+      screen.getByText('2 Modellanfragen · 2 (1 × name, 1 × email) maskiert'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Privacy Shield/).textContent).toContain(
+      'Antwortprüfung: 2 Anfragen',
+    );
+    expect(screen.getByText(/nach diesen Anfragen abgeschlossen/)).toBeInTheDocument();
+  });
+
+  it('keeps verifier spans out of the prompt row', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={VERIFIED} />, { locale: 'en' });
+    expect(screen.queryByText('PII masked in your prompt')).not.toBeInTheDocument();
+    expect(screen.getByText('2 model requests · 2 (1 × name, 1 × email) masked')).toBeInTheDocument();
+  });
+
+  it('shows the request count alone when nothing was masked', () => {
+    renderWithIntl(
+      <PrivacyReceiptCard receipt={{ ...RANKED, verifierEgress: { requests: 1, maskedSpans: [] } }} />,
+      { locale: 'en' },
+    );
+    expect(screen.getByText('1 model request')).toBeInTheDocument();
+  });
+
+  it('renders byte-identically to today when verifierEgress is absent', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'en' });
+    expect(screen.queryByText('Answer check')).not.toBeInTheDocument();
+  });
+});
+
 describe('<PrivacyReceiptCard />', () => {
   it('renders the collapsed summary with dataset + masked-field counts', () => {
     renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'de' });
@@ -303,6 +348,11 @@ describe('summarisePrivacyReceipt()', () => {
     expect(
       summarisePrivacyReceipt({ ...RANKED, structuredPayloads: [] }, t),
     ).not.toContain('summaryStructured');
+  });
+
+  it('adds the verifier clause when the answer check sent requests', () => {
+    expect(summarisePrivacyReceipt(VERIFIED, t)).toContain('summaryVerifier:2');
+    expect(summarisePrivacyReceipt(RANKED, t)).not.toContain('summaryVerifier');
   });
 });
 
