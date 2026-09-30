@@ -12,6 +12,7 @@ import {
   postAuthSetup,
 } from '../_lib/api';
 import { signalDesktopUiReady } from '../_lib/desktopShell';
+import { sanitiseReturnPath } from '../_lib/returnPath';
 
 type State =
   | { kind: 'loading' }
@@ -41,7 +42,8 @@ type State =
  * longer sends one.)
  *
  * On success the server mints + sets the session cookie itself, so we
- * just bounce the browser to the originally-requested path.
+ * just bounce the browser to the originally-requested path (`?return=`,
+ * sanitised to a same-origin path by `_lib/returnPath.ts`).
  */
 export default function SetupPage(): React.ReactElement {
   // Same Next-15 SSG bail as /login: useSearchParams() needs a Suspense
@@ -66,12 +68,10 @@ function SetupPageInner(): React.ReactElement {
   const t = useTranslations('setup');
   const router = useRouter();
   const searchParams = useSearchParams();
-  const returnPath = useMemo(() => {
-    const raw = searchParams.get('return');
-    if (typeof raw !== 'string') return '/';
-    if (!raw.startsWith('/') || raw.startsWith('//')) return '/';
-    return raw;
-  }, [searchParams]);
+  const returnPath = useMemo(
+    () => sanitiseReturnPath(searchParams.get('return')),
+    [searchParams],
+  );
 
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [email, setEmail] = useState('');

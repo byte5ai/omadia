@@ -6,7 +6,14 @@ import { renderWithIntl } from '../../_lib/test-utils';
 import SetupPage from '../page';
 
 /**
- * The first-user wizard and the operator setup token.
+ * The first-user wizard: where the browser goes afterwards, and the operator
+ * setup token.
+ *
+ * /setup creates the first administrator, then sends the browser to
+ * `?return=`. That value comes from the URL, so the page sanitises it to a
+ * same-origin path first (`_lib/returnPath.ts`). `mockSearchParamsGet` returns
+ * decoded values: `'/\t/evil.example'` is what the page sees for
+ * `?return=%2F%09%2Fevil.example`.
  *
  * A server install demands the token the middleware prints at boot (or
  * ADMIN_SETUP_TOKEN); the desktop app's kernel does not. The page learns which
@@ -15,15 +22,18 @@ import SetupPage from '../page';
  * of a raw error string.
  */
 
-const { mockReplace, mockGetAuthProviders, mockPostAuthSetup } = vi.hoisted(() => ({
-  mockReplace: vi.fn(),
-  mockGetAuthProviders: vi.fn(),
-  mockPostAuthSetup: vi.fn(),
-}));
+const { mockRouter, mockSearchParamsGet, mockGetAuthProviders, mockPostAuthSetup } =
+  vi.hoisted(() => ({
+    // Stable across renders, like Next's own router.
+    mockRouter: { replace: vi.fn() },
+    mockSearchParamsGet: vi.fn<(key: string) => string | null>(() => null),
+    mockGetAuthProviders: vi.fn(),
+    mockPostAuthSetup: vi.fn(),
+  }));
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: mockReplace }),
-  useSearchParams: () => ({ get: () => null }),
+  useRouter: () => mockRouter,
+  useSearchParams: () => ({ get: mockSearchParamsGet }),
 }));
 
 // Keep the real ApiError (its `code` comes from the JSON body); stub the calls.
@@ -48,28 +58,76 @@ function refusal(status: number, code: string): ApiError {
   return new ApiError(status, `HTTP ${String(status)}`, JSON.stringify({ code, message: 'raw server text' }));
 }
 
-async function fillAndSubmit(opts: { token?: string } = {}): Promise<void> {
-  fireEvent.change(await screen.findByLabelText('Email'), {
-    target: { value: 'admin@example.com' },
-  });
+let restoreLocation: (() => void) | null = null;
+
+/**
+ * jsdom treats `location.href = …` as a navigation it does not implement:
+ * the assignment is logged and lost. Swap in a plain object so the page's
+ * `window.location.href = returnPath` is observable.
+ */
+function stubLocation(): { href: string } {
+  const realLocation = window.location;
+  const stub = { href: 'http://localhost:3000/setup' };
+  Object.defineProperty(window, 'location', { configurable: true, value: stub });
+  restoreLocation = () =>
+    Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+  return stub;
+}
+
+const EMAIL = 'admin@example.com';
+const PASSWORD = 'synthetic-pass-1';
+
+async function fillAndSubmit(opts: { token?: string } = {}): Promise<{ href: string }> {
+  fireEvent.change(await screen.findByLabelText('Email'), { target: { value: EMAIL } });
   fireEvent.change(screen.getByLabelText('Password (min 8 chars)'), {
-    target: { value: 'pw-with-12-chars' },
+    target: { value: PASSWORD },
   });
   fireEvent.change(screen.getByLabelText('Confirm password'), {
-    target: { value: 'pw-with-12-chars' },
+    target: { value: PASSWORD },
   });
   if (opts.token !== undefined) {
     fireEvent.change(screen.getByLabelText('Setup token'), { target: { value: opts.token } });
   }
+  const location = stubLocation();
   fireEvent.click(screen.getByRole('button', { name: 'Create administrator' }));
+  return location;
 }
 
 beforeEach(() => {
+  mockSearchParamsGet.mockReturnValue(null);
+  mockGetAuthProviders.mockImplementation(() => providers(false));
   mockPostAuthSetup.mockResolvedValue({ ok: true });
 });
 
 afterEach(() => {
+  restoreLocation?.();
+  restoreLocation = null;
   vi.clearAllMocks();
+});
+
+describe('<SetupPage /> return path after the first admin is created', () => {
+  it.each([
+    ['/\\evil.example', '/'],
+    ['/\t/evil.example', '/'],
+    ['/login?x=1', '/'],
+    ['/admin/providers', '/admin/providers'],
+    ['/chat?thread=42#c', '/chat?thread=42#c'],
+  ])('with ?return=%j navigates to %j', async (returnValue, expected) => {
+    mockSearchParamsGet.mockImplementation((key) => (key === 'return' ? returnValue : null));
+
+    renderWithIntl(<SetupPage />);
+    const location = await fillAndSubmit();
+
+    await waitFor(() => expect(location.href).toBe(expected));
+    expect(mockPostAuthSetup).toHaveBeenCalledWith({ email: EMAIL, password: PASSWORD });
+  });
+
+  it("defaults to '/' when no ?return is given", async () => {
+    renderWithIntl(<SetupPage />);
+    const location = await fillAndSubmit();
+
+    await waitFor(() => expect(location.href).toBe('/'));
+  });
 });
 
 describe('<SetupPage /> — setup token', () => {
@@ -82,14 +140,13 @@ describe('<SetupPage /> — setup token', () => {
 
     await waitFor(() => expect(mockPostAuthSetup).toHaveBeenCalledTimes(1));
     expect(mockPostAuthSetup).toHaveBeenCalledWith({
-      email: 'admin@example.com',
-      password: 'pw-with-12-chars',
+      email: EMAIL,
+      password: PASSWORD,
       setup_token: 'generated-token-0123456789abcdef',
     });
   });
 
   it('shows no token field and sends no token when none is required (desktop app)', async () => {
-    mockGetAuthProviders.mockImplementation(() => providers(false));
     renderWithIntl(<SetupPage />);
 
     await screen.findByLabelText('Email');
@@ -128,7 +185,7 @@ describe('<SetupPage /> — refusals get their own message', () => {
     expect(
       await screen.findByText('Another setup request is being processed. Wait a moment and try again.'),
     ).toBeInTheDocument();
-    expect(mockReplace).not.toHaveBeenCalled();
+    expect(mockRouter.replace).not.toHaveBeenCalled();
   });
 
   it('410 auth.setup_disabled: names the restart and does not bounce to /login', async () => {
@@ -143,7 +200,7 @@ describe('<SetupPage /> — refusals get their own message', () => {
     ).toBeInTheDocument();
     // The locked path redirects after 1.5 s; the disabled one must not.
     await new Promise((resolve) => setTimeout(resolve, 1_700));
-    expect(mockReplace).not.toHaveBeenCalled();
+    expect(mockRouter.replace).not.toHaveBeenCalled();
   });
 
   it('410 auth.setup_locked: someone else finished setup → login', async () => {
@@ -154,6 +211,6 @@ describe('<SetupPage /> — refusals get their own message', () => {
     expect(
       await screen.findByText('Setup is already locked — another user has been created.'),
     ).toBeInTheDocument();
-    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/login'), { timeout: 3_000 });
+    await waitFor(() => expect(mockRouter.replace).toHaveBeenCalledWith('/login'), { timeout: 3_000 });
   });
 });

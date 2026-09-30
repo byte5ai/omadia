@@ -2218,7 +2218,7 @@ Der Env-Seed (`ADMIN_BOOTSTRAP_*`, `auth/bootstrap.ts`) läuft ebenfalls über
 `auth/publicPaths.ts` nicht mehr; in `CORE_RESERVED_ROOTS` bleibt er, damit kein
 Plugin ihn beanspruchen kann.
 
-Sicherheitsbegründung und Restrisiken: `docs/security-architecture.md` §10e.
+Sicherheitsbegründung und Restrisiken: `docs/security-architecture.md` §10f.
 Konfiguration: §10 „Ersteinrichtung“.
 
 Tests: `test/auth/setupRoute.test.ts`, `test/auth/setupToken.test.ts`,
@@ -2581,7 +2581,7 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 
 ### Ersteinrichtung
 
-Siehe §3 „Ersteinrichtung `POST /api/v1/auth/setup`“ und `docs/security-architecture.md` §10e.
+Siehe §3 „Ersteinrichtung `POST /api/v1/auth/setup`“ und `docs/security-architecture.md` §10f.
 
 | Variable | Wirkung |
 |---|---|
@@ -3032,6 +3032,47 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### CI-Schulden aus dem Security-Review (2026-09-29)
+
+- **`middleware/src/services/graph/migrations/` löschen** — 4 Dateien, byte-identisch mit
+  KG-neon 0002/0004/0012/0013; kein Runner liest sie (die Graph-Migrationen laufen über die
+  `harness-knowledge-graph-neon`-Serie; #875 hat die dort gestrandete 0009 gerettet). Seit
+  2026-09-29 schlägt der `schema`-Job fehl, sobald dort etwas anderes liegt als diese vier
+  Kopien (Schritt „Inert legacy graph migrations stay inert“). Löschen = Verzeichnis +
+  Eintrag in `scripts/copy-build-assets.mjs` + dieser CI-Schritt + der Pfad in
+  `test/mcpDelegationBackfillMigration.pg.test.ts` (liest das Verzeichnis und nennt es noch
+  „live migration series“); das Dockerfile kopiert es nicht.
+- **`desktop` in die Audit-Matrix aufnehmen.** Der `audit (high+critical block)`-Job prüft
+  nur `middleware` und `web-ui`; Dependabot deckt `desktop/` seit 2026-09-29 ab. Die Matrix
+  bekommt `desktop` zusammen mit dem Desktop-Dependency-Refresh (Electron, Builder-Toolchain),
+  der das Gate grün macht — danach den neuen Status-Check als Required eintragen.
+- **Typecheck-Ratchet `test/` + `scripts/` (#573): 347 bekannte Fehler in 120 Dateien**
+  (`middleware/test-typecheck-baseline.json`, Stand 2026-09-29). `npm run typecheck:test`
+  blockt nur *neue* Fehler. Abbau: `npm run typecheck:test -- --report`, fixen,
+  `-- --update` senkt die Baseline (nie erhöhen). Ziel: leere Baseline, dann den Ratchet
+  durch ein hartes `tsc -p test/tsconfig.json` ersetzen, wie `desktop` es mit
+  `typecheck:test` schon tut.
+- **Prompt-PII C0, Locale `nl`: strukturierter Recall 88,2 % statt 0,97.** Der Floor in
+  `packages/harness-plugin-privacy-guard/src/validation/ci-baseline.json` steht für `nl` auf
+  0.84 (de/en/es/fr/it: 0.97). Ursachen: NL-Adressen (`straat`/`gracht`/`plein`, Postcode
+  `1016 AZ`) ohne C0-Muster und bewusst ungepatterte BSN. Wege: NL-Adressmuster in C0, oder
+  `nl` nur mit C1-Sidecar freigeben (`c0+c1` laut `validation/README.md` 89,0 % / 100 %).
+  Floor anheben, sobald die Zahl steigt. `mask_user_prompt` ist ein globaler Schalter (kein
+  Locale-Schalter); Betreibern mit überwiegend niederländischen Nutzern bis dahin C1 mit
+  aktivieren oder die C0-Lücke bei Adressen bewusst in Kauf nehmen.
+
+### Offene Punkte aus den Security-Härtungen (2026-09-30)
+
+- **Desktop-Navigationsschutz → §10e nachziehen.** Das Desktop-Fenster hat noch keinen
+  `will-navigate`-/`setWindowOpenHandler`-Schutz; die Return-Pfad-Prüfung (§10e) ist dort
+  heute die einzige Schicht. Sobald der Desktop-Trust-Boundary-Change landet, den Absatz „at
+  the time of writing“ in `docs/security-architecture.md` §10e auf „zweite Schicht“ umstellen.
+- **IdP-Logout-URL nicht allowlisted.** Die serverseitig gelieferte absolute End-Session-URL
+  (`idpLogout.url`, `web-ui/app/_components/AuthBadge.tsx`) wird ungeprüft angesteuert. Eigene
+  Vertrauensgrenze; Härtung z. B. per Allowlist der konfigurierten IdP-Hosts.
+- **`/login/:id/start` ohne Längenlimit für `return`.** Der Web-UI-Helper begrenzt auf 2048
+  Zeichen; ein direkter Link auf die Middleware-Route ist unbegrenzt (landet im OIDC-State-Cookie).
 
 ### Ersteinrichtung: was nach Setup-Token und atomarem Admin offen ist
 
