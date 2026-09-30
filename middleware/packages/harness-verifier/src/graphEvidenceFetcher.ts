@@ -115,8 +115,11 @@ function displayNameOf(node: GraphNode): string {
   return node.id;
 }
 
-/** Props that name the node's kind or key rather than describe the record. */
-const STRUCTURAL_PROPS: ReadonlySet<string> = new Set(['id', 'model', 'system', 'type']);
+/** Props that name the node's kind rather than describe the record. The
+ *  record's own key (`id`) is not one of them: a string key can be a login or
+ *  an address, so it is judged like any other value below — a numeric one
+ *  stays, as it would in a v4 digest. */
+const STRUCTURAL_PROPS: ReadonlySet<string> = new Set(['model', 'system', 'type']);
 
 /** Values the v4 shape classifier would keep as cleartext on its own: ISO
  *  dates and plain numbers. Everything else a string prop holds is treated as
@@ -127,9 +130,10 @@ const NUMERIC_VALUE = /^[+-]?\d+([.,]\d+)?$/;
 function toSnippet(node: GraphNode): EvidenceSnippet {
   const display = displayNameOf(node);
   const extras: string[] = [];
-  // Display name plus every free-text value shown below: behind a Privacy
-  // Shield these are always replaced before the judge's request leaves the
-  // process (see EvidenceSnippet.identityValues).
+  // Display name plus every free-text value shown below, a string record key
+  // included: behind a Privacy Shield these are always replaced before the
+  // judge's request leaves the process (see EvidenceSnippet.identityValues).
+  // The node id needs no entry — the judge never sends a snippet's node id.
   const identityValues = display !== node.id ? [display] : [];
   for (const [k, v] of Object.entries(node.props)) {
     if (k === 'displayName') continue;

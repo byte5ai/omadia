@@ -203,8 +203,8 @@ export interface VerifierPrivacy {
   /**
    * Project a real, verifier-composed text (claim plus knowledge-graph
    * evidence) through the turn's surrogate map, whether or not
-   * `mask_user_prompt` is on. `identityValues` (display names, free-text
-   * fields of the evidence) are always replaced.
+   * `mask_user_prompt` is on. `identityValues` (node ids, display names and
+   * free-text fields of the evidence) are always replaced.
    */
   projectForWire(text: string, identityValues: readonly string[]): Promise<string>;
   /** Invert the turn's surrogate map. Server-side only — never sent. */

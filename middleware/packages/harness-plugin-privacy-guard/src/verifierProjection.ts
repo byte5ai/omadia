@@ -10,7 +10,7 @@
  *   - identity-bearing C0 shapes (e-mail, IBAN, phone, address, id number),
  *     the operator deny-list and the C1 detector, when wired;
  *   - every value the caller names as identity-bearing (an evidence node's
- *     display name and free-text fields), found case-insensitively;
+ *     id, display name and free-text fields), found case-insensitively;
  *   - the turn's known real values (the sweep in `maskPrompt`).
  *
  * Dates and amounts are deliberately NOT masked here: the v4 shape

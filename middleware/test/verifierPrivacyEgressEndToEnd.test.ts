@@ -78,7 +78,7 @@ function verifierLlm(requests: string[]): LlmProvider {
                 },
               ],
             }
-          : { verdict: 'verified', evidence_node_id: 'odoo:res.partner:7', rationale: 'passt' };
+          : { verdict: 'verified', evidence_node_id: 'ev-1', rationale: 'passt' };
       return {
         content: [{ type: 'tool_call', id: 'toolu_x', name: tool ?? 'none', input }],
         finishReason: 'tool_use',
@@ -180,9 +180,14 @@ describe('end to end — the verifier’s requests fall under the turn’s priva
     // Extraction request: the operator's policy says the prompt is not
     // masked, so it carries what the turn's own model saw — nothing more.
     assert.ok(requests[0]!.includes(RAW_EMAIL));
-    // Judge request: knowledge-graph evidence is projected regardless.
-    assert.deepEqual(findIdentityLeaks(requests[1]!, [RAW_EMAIL, REAL_NAME]), []);
+    // Judge request: knowledge-graph evidence is projected regardless, and
+    // the evidence node is named by a handle, never by its node id.
+    assert.deepEqual(
+      findIdentityLeaks(requests[1]!, [RAW_EMAIL, REAL_NAME, EVIDENCE.nodeId]),
+      [],
+    );
     assert.match(requests[1]!, /PLATZHALTER-NAME-\d+/);
+    assert.match(requests[1]!, /nodeId=ev-1,/);
     assert.equal(answer.privacyReceipt?.verifierEgress?.requests, 2);
     assert.equal(answer.privacyReceipt?.maskedPromptSpans, undefined);
     assert.equal(recorded.length, 1);

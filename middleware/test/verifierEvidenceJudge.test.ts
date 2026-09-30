@@ -313,11 +313,13 @@ describe('verifier/evidenceJudge - privacy view', () => {
     assert.equal(prompts.length, 1);
     assert.deepEqual(findIdentityLeaks(prompts[0], [REAL_NAME, REAL_MAIL]), []);
     // The same person is the same placeholder in the context and the evidence.
-    const placeholders = [...prompts[0]!.matchAll(/PLATZHALTER-NAME-\d+/g)].map((m) => m[0]);
-    assert.ok(placeholders.length >= 3, `expected context+title+content hits, got ${prompts[0]}`);
-    assert.equal(new Set(placeholders).size, 1);
-    // Structural references stay usable for the citation.
-    assert.match(prompts[0]!, /nodeId=odoo:hr\.employee:7/);
+    const person = /CONTEXT: (PLATZHALTER-NAME-\d+) wechselte/.exec(prompts[0]!)?.[1];
+    assert.ok(person, `expected a placeholder in CONTEXT, got ${prompts[0]}`);
+    assert.ok(prompts[0]!.includes(`title=${person}]`));
+    assert.ok(prompts[0]!.includes(`— ${person} (department=IT`));
+    // The citation is a handle; the node id itself stays in the process.
+    assert.match(prompts[0]!, /nodeId=ev-1,/);
+    assert.ok(!prompts[0]!.includes('odoo:hr.employee:7'));
   });
 
   it('a claim about a masked entity verifies against evidence masked through the same map', async () => {
@@ -327,7 +329,7 @@ describe('verifier/evidenceJudge - privacy view', () => {
       const subject = /CONTEXT: (PLATZHALTER-NAME-\d+) wechselte/.exec(prompt)?.[1];
       const evidenceSubject = /— (PLATZHALTER-NAME-\d+) \(department=IT/.exec(prompt)?.[1];
       return subject !== undefined && subject === evidenceSubject
-        ? { verdict: 'verified', evidence_node_id: 'odoo:hr.employee:7', rationale: `${subject} ist in der IT.` }
+        ? { verdict: 'verified', evidence_node_id: 'ev-1', rationale: `${subject} ist in der IT.` }
         : { verdict: 'unverified', rationale: 'placeholders differ' };
     });
     const judge = new EvidenceJudge({ llm: llm as never, fetcher: stubFetcher([EVIDENCE]) });
@@ -349,13 +351,14 @@ describe('verifier/evidenceJudge - privacy view', () => {
   });
 
   it('restores truth and detail of a confirmed contradiction the projection left untouched', async () => {
-    // Evidence without identity data: the projection changes nothing, so a
-    // contradiction is as trustworthy as without the shield — its rationale
-    // still passes through restore before it becomes truth/detail.
+    // Evidence without identity data (and no node id in its text): the
+    // projection changes nothing, so a contradiction is as trustworthy as
+    // without the shield — its rationale still passes through restore before
+    // it becomes truth/detail.
     const plain: EvidenceSnippet = {
       nodeId: 'odoo:res.company:1',
       source: 'graph',
-      content: 'Graph-Node odoo:res.company:1 — employees=48',
+      content: 'employees=48',
     };
     const view: VerifierPrivacy = {
       wireUserMessage: '',
@@ -366,7 +369,7 @@ describe('verifier/evidenceJudge - privacy view', () => {
     };
     const { llm, prompts } = capturingJudge(() => ({
       verdict: 'contradicted',
-      evidence_node_id: 'odoo:res.company:1',
+      evidence_node_id: 'ev-1',
       rationale: 'PLATZHALTER-NAME-9 hat 48 Mitarbeitende, nicht 50.',
     }));
     const judge = new EvidenceJudge({ llm: llm as never, fetcher: stubFetcher([plain]) });
@@ -385,7 +388,7 @@ describe('verifier/evidenceJudge - privacy view', () => {
   it('never confirms a contradiction judged on placeholders', async () => {
     const { llm, prompts } = capturingJudge(() => ({
       verdict: 'contradicted',
-      evidence_node_id: 'odoo:hr.employee:7',
+      evidence_node_id: 'ev-1',
       rationale: 'widerspricht',
     }));
     const judge = new EvidenceJudge({
@@ -425,7 +428,7 @@ describe('verifier/evidenceJudge - privacy view', () => {
     assert.ok(logs.some((l) => l.includes('prompt masking blocked')));
   });
 
-  it('projects a node id that embeds an identity value and maps the cited id back', async () => {
+  it('names a snippet by its handle, never by a node id that embeds an identity value', async () => {
     // Ids of ingested records can carry an external key or a channel user id.
     const nodeId = `mcp:contacts:${REAL_MAIL}`;
     const keyed: EvidenceSnippet = {
@@ -444,9 +447,10 @@ describe('verifier/evidenceJudge - privacy view', () => {
     const judge = new EvidenceJudge({ llm: llm as never, fetcher: stubFetcher([keyed]) });
     const verdict = await judge.check(CLAIM, servicePrivacy(false));
     assert.equal(prompts.length, 1);
-    assert.deepEqual(findIdentityLeaks(prompts[0], [REAL_NAME, REAL_MAIL]), []);
+    assert.deepEqual(findIdentityLeaks(prompts[0], [REAL_NAME, REAL_MAIL, nodeId]), []);
+    assert.match(prompts[0]!, /nodeId=ev-1,/);
     assert.equal(verdict.status, 'verified');
-    // Resolved through the restored id: the snippet's source, not the claim's
+    // Resolved through the handle: the snippet's source, not the claim's
     // expected source ('graph') a failed lookup falls back to.
     if (verdict.status === 'verified') assert.equal(verdict.source, 'odoo');
   });

@@ -22,19 +22,26 @@ import { MAX_CONTEXT_CHARS } from './claimExtractor.js';
  * context and evidence in one pass, so the same person is the same
  * placeholder on both sides. The judge can still verify; a contradiction
  * judged on placeholders is reported as `unverified` instead of blocking.
+ * Node ids never leave: the request names each snippet by a handle minted
+ * for that request (`ev-1`, `ev-2`, …), the handle the judge cites is mapped
+ * back to the snippet server-side, and a node id the text repeats is
+ * replaced like a display name.
  */
 
 export interface EvidenceSnippet {
-  nodeId: string;               // stable id the judge references on contradict
+  /** Stable id of the record — what a verdict resolves to. Behind a Privacy
+   *  Shield it is never sent (see the class comment). */
+  nodeId: string;
   source: 'graph' | 'confluence' | 'odoo';
   content: string;              // <= ~2 kB per snippet
   title?: string;
   /**
    * Values in `title` / `content` that identify a person or record (display
-   * name, free-text fields). Behind a Privacy Shield they are always
-   * replaced by placeholders before the judge's request leaves the process,
-   * whatever the detectors find. A fetcher that sets none leaves the
-   * projection to the detectors alone.
+   * name, free-text fields, a string record key). Behind a Privacy Shield
+   * they are always replaced by placeholders before the judge's request
+   * leaves the process, whatever the detectors find — as is `nodeId`, which
+   * need not be listed. A fetcher that sets none leaves the rest of the text
+   * to the detectors.
    */
   identityValues?: readonly string[];
 }
@@ -114,6 +121,8 @@ type PrimitiveVerdict = 'verified' | 'unverified' | 'contradicted';
 
 interface JudgeVerdict {
   verdict: PrimitiveVerdict;
+  /** As parsed: the ref the judge cited. After `resolveCitation`: the node id
+   *  of the snippet printed under that ref, or absent. */
   evidenceNodeId?: string;
   rationale?: string;
 }
@@ -124,7 +133,10 @@ interface JudgeRequestParts {
   readonly context: string;
   readonly related: string;
   readonly evidence: ReadonlyArray<{
-    readonly nodeId: string;
+    /** What the request prints for the snippet, and so the only value a
+     *  verdict can cite for it: the node id without a shield, an opaque
+     *  handle behind one. Never projected. */
+    readonly ref: string;
     readonly source: EvidenceSnippet['source'];
     readonly title: string;
     readonly content: string;
@@ -270,7 +282,7 @@ Rules:
     const evidenceBlock = parts.evidence
       .map(
         (e, idx) =>
-          `Evidence #${String(idx + 1)} [nodeId=${e.nodeId}, source=${e.source}${e.title ? `, title=${e.title}` : ''}]:\n${truncate(e.content, maxSnippetChars)}`,
+          `Evidence #${String(idx + 1)} [nodeId=${e.ref}, source=${e.source}${e.title ? `, title=${e.title}` : ''}]:\n${truncate(e.content, maxSnippetChars)}`,
       )
       .join('\n\n');
 
@@ -299,27 +311,25 @@ ${evidenceBlock}`;
       return null;
     }
 
-    const verdict = parseVerdict(response);
-    if (verdict === null) return null;
+    const parsed = parseVerdict(response);
+    if (parsed === null) return null;
+    const verdict = resolveCitation(parsed, real, evidence);
     if (privacy === undefined) return { ...verdict, projected };
-    return { ...(await this.restoreVerdict(verdict, privacy)), projected };
+    return { ...(await this.restoreRationale(verdict, privacy)), projected };
   }
 
   /**
-   * The judge argued over the projected request: map the node id it cites
-   * (so `check` finds the snippet) and its rationale (which `check` turns
-   * into truth / detail / reason) back to real values. A rationale that
-   * fails to restore is dropped rather than kept as placeholder text.
+   * The judge argued over the projected request: map its rationale (which
+   * `check` turns into truth / detail / reason) back to real values. A
+   * rationale that fails to restore is dropped rather than kept as
+   * placeholder text. The citation needs no restore — it is a handle.
    */
-  private async restoreVerdict(
+  private async restoreRationale(
     verdict: JudgeVerdict,
     privacy: VerifierPrivacy,
   ): Promise<JudgeVerdict> {
     const out: JudgeVerdict = { verdict: verdict.verdict };
-    const cited = verdict.evidenceNodeId;
-    if (cited !== undefined) {
-      out.evidenceNodeId = await privacy.restore(cited).catch(() => cited);
-    }
+    if (verdict.evidenceNodeId !== undefined) out.evidenceNodeId = verdict.evidenceNodeId;
     if (verdict.rationale !== undefined) {
       try {
         out.rationale = await privacy.restore(verdict.rationale);
@@ -334,26 +344,37 @@ ${evidenceBlock}`;
 // ---------------- helpers ----------------
 
 /**
+ * The ref a shielded judge request prints for its snippet at `index`. Minted
+ * per request, it names a position in that request and nothing else — a node
+ * id can embed an external key or a channel user id, and the judge needs a
+ * reference, not the key.
+ */
+function evidenceHandle(index: number): string {
+  return `ev-${String(index + 1)}`;
+}
+
+/**
  * The variable parts of a judge request from REAL values. The CONTEXT line is
  * decided here, on real values, so projection cannot change whether it shows.
- * Behind a privacy shield the evidence is capped before anything is masked.
+ * Behind a privacy shield the evidence is capped before anything is masked
+ * and each snippet is named by its handle instead of its node id.
  */
 function judgeRequestParts(
   claim: SoftClaim,
   evidence: readonly EvidenceSnippet[],
-  capForPrivacy: boolean,
+  shielded: boolean,
 ): JudgeRequestParts {
   const context =
     claim.context && claim.context.trim().toLowerCase() !== claim.text.trim().toLowerCase()
       ? claim.context
       : '';
-  const snippets = capForPrivacy ? evidence.slice(0, PRIVACY_MAX_SNIPPETS) : evidence;
+  const snippets = shielded ? evidence.slice(0, PRIVACY_MAX_SNIPPETS) : evidence;
   return {
     claimText: claim.text,
     context,
     related: claim.relatedEntities.join(', '),
-    evidence: snippets.map((e) => ({
-      nodeId: e.nodeId,
+    evidence: snippets.map((e, idx) => ({
+      ref: shielded ? evidenceHandle(idx) : e.nodeId,
       source: e.source,
       title: e.title ?? '',
       content: e.content,
@@ -366,10 +387,12 @@ function judgeRequestParts(
  * surrogate map in ONE call: the claim, its context and the evidence share a
  * map, so a person is the same placeholder on both sides of the comparison,
  * and the masking pass runs once per request instead of once per field.
- * Node ids are projected too — an id can embed an external key or a channel
- * user id — and the id the judge cites is restored afterwards; only the
- * source label stays as it is. Throws when the projection is blocked or
- * came back with a different structure; the caller then sends nothing.
+ * Besides each snippet's declared identity values, its node id is always
+ * replaced wherever the request repeats it (RELATED, a `Graph-Node …` line, a
+ * title that falls back to the id) — the detectors alone would pass a key
+ * that is not shaped like an e-mail or an IBAN. Refs and source labels stay
+ * as they are. Throws when the projection is blocked or came back with a
+ * different structure; the caller then sends nothing.
  */
 async function projectRequestParts(
   real: JudgeRequestParts,
@@ -380,14 +403,14 @@ async function projectRequestParts(
     real.claimText,
     real.context,
     real.related,
-    ...real.evidence.flatMap((e) => [e.nodeId, e.title, e.content]),
+    ...real.evidence.flatMap((e) => [e.title, e.content]),
   ];
   const joined = flat.join(PART_SEPARATOR);
   const identityValues = [
     ...new Set(
       evidence
         .slice(0, real.evidence.length)
-        .flatMap((e) => e.identityValues ?? []),
+        .flatMap((e) => [e.nodeId, ...(e.identityValues ?? [])]),
     ),
   ];
   const masked = await privacy.projectForWire(joined, identityValues);
@@ -403,13 +426,32 @@ async function projectRequestParts(
       context: at(1),
       related: at(2),
       evidence: real.evidence.map((e, idx) => ({
-        nodeId: at(3 + idx * 3),
+        ref: e.ref,
         source: e.source,
-        title: at(4 + idx * 3),
-        content: at(5 + idx * 3),
+        title: at(3 + idx * 2),
+        content: at(4 + idx * 2),
       })),
     },
   };
+}
+
+/**
+ * Map the ref a verdict cites to the node id of the snippet printed under it
+ * in the same request. A ref the request did not print resolves to nothing:
+ * a verdict can only cite what its own request showed.
+ */
+function resolveCitation(
+  verdict: JudgeVerdict,
+  parts: JudgeRequestParts,
+  evidence: readonly EvidenceSnippet[],
+): JudgeVerdict {
+  const out: JudgeVerdict = { verdict: verdict.verdict };
+  const cited = verdict.evidenceNodeId;
+  const idx = cited === undefined ? -1 : parts.evidence.findIndex((e) => e.ref === cited);
+  const nodeId = idx === -1 ? undefined : evidence[idx]?.nodeId;
+  if (nodeId !== undefined) out.evidenceNodeId = nodeId;
+  if (verdict.rationale !== undefined) out.rationale = verdict.rationale;
+  return out;
 }
 
 function parseVerdict(response: LlmResponse): JudgeVerdict | null {
