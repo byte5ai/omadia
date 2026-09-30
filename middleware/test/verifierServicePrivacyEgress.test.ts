@@ -155,6 +155,85 @@ describe('VerifierService.chat — privacy egress', () => {
     );
   });
 
+  // A borderline first answer, a re-sample that escalates to blocked and whose
+  // restored text still carries a placeholder the model reworded ("10.000 €"
+  // for "€10000"): whatever happens to the retry, the re-sample never
+  // replaces the first answer — the user would see a fake value.
+  describe('a blocked re-sample with unresolved placeholders', () => {
+    const FIRST = 'Die Prämie ist beantragt.';
+    const RESAMPLE = 'Die Prämie beträgt 10.000 €.';
+
+    function resampleCase(opts: {
+      readonly unresolved: number;
+      readonly withholdRetry?: boolean;
+      readonly retry?: 'blocked-unresolved';
+      readonly maxRetries?: number;
+    }): { service: VerifierService; state: ReturnType<typeof stubOrchestrator>['state'] } {
+      const { orchestrator, state } = stubOrchestrator({
+        results: [turn(FIRST), turn(RESAMPLE), turn('Dritte Antwort 10.000 €.')],
+        handOver: true,
+        privacyActive: true,
+        continuation: (i, r) => ({
+          wireAnswer: r.answer,
+          unresolved: i === 1 ? opts.unresolved : i === 2 ? 1 : 0,
+          maskWouldAlter: i === 1 && opts.withholdRetry === true,
+        }),
+      });
+      const { pipeline } = verdicts([BORDERLINE, BLOCKED, BLOCKED]);
+      const service = new VerifierService({
+        orchestrator,
+        pipeline,
+        enabled: true,
+        mode: 'enforce',
+        ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
+        log: SILENT,
+      });
+      return { service, state };
+    }
+
+    it('is not shown when the retry is withheld — the first answer is', async () => {
+      const { service, state } = resampleCase({ unresolved: 1, withholdRetry: true });
+
+      const answer = await service.chat({ userMessage: 'Wie hoch ist die Prämie?' });
+
+      assert.equal(state.runs.length, 2, 'a retry ran although its hint was withheld');
+      assert.equal(answer.text.startsWith(FIRST), true, 'the re-sample with a placeholder was shown');
+      assert.equal(answer.verifier?.status, 'failed');
+      assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
+      assert.deepEqual(state.continuations.map((c) => c.finalizeCalls), [1, 1]);
+    });
+
+    it('is not shown when no retry is allowed — the first answer is', async () => {
+      const { service, state } = resampleCase({ unresolved: 1, maxRetries: 0 });
+
+      const answer = await service.chat({ userMessage: 'Wie hoch ist die Prämie?' });
+
+      assert.equal(state.runs.length, 2);
+      assert.equal(answer.text.startsWith(FIRST), true, 'the re-sample with a placeholder was shown');
+      assert.equal(answer.verifier?.status, 'failed');
+    });
+
+    it('is not shown when the retry is still blocked with placeholders too', async () => {
+      const { service, state } = resampleCase({ unresolved: 1 });
+
+      const answer = await service.chat({ userMessage: 'Wie hoch ist die Prämie?' });
+
+      assert.equal(state.runs.length, 3);
+      assert.equal(answer.text.startsWith(FIRST), true, 'an answer with a placeholder was shown');
+      assert.equal(answer.verifier?.status, 'failed');
+      assert.deepEqual(state.continuations.map((c) => c.finalizeCalls), [1, 1, 1]);
+    });
+
+    it('control: a re-sample whose placeholders all resolved still replaces the first answer', async () => {
+      const { service } = resampleCase({ unresolved: 0, withholdRetry: true });
+
+      const answer = await service.chat({ userMessage: 'Wie hoch ist die Prämie?' });
+
+      assert.equal(answer.text.startsWith(RESAMPLE), true);
+      assert.equal(answer.verifier?.status, 'failed');
+    });
+  });
+
   it('still finalizes every turn when the retry run throws', async () => {
     const { orchestrator, state } = stubOrchestrator({
       results: [turn('Die Rechnung ist offen.')],

@@ -21,6 +21,7 @@ import type { TurnHookRunner } from './turnHooks.js';
 import type { PrivacyEgressContinuation } from './privacyEgress.js';
 import {
   EgressLedger,
+  carriesUnresolvedPlaceholders,
   privacySafeCorrection,
   settleQuietly,
   verifierGate,
@@ -344,9 +345,10 @@ export class VerifierService implements ChatAgent {
     if (effectiveVerdict.status === 'blocked') {
       this.fireVerifierBlocked(input, effectiveVerdict);
     }
-    const keepEffective = (): Promise<SemanticAnswer> => {
+    const keepEffective = async (): Promise<SemanticAnswer> => {
       void this.persist(runId, input, effectiveVerdict, 0);
-      return this.deliver(ledger, effective, summarise(effectiveVerdict, 0, this.mode));
+      const shown = await this.shownTurn(runId, first, effective);
+      return this.deliver(ledger, shown, summarise(effectiveVerdict, 0, this.mode));
     };
     if (effectiveVerdict.status !== 'blocked' || this.maxRetries <= 0) {
       return keepEffective();
@@ -400,16 +402,13 @@ export class VerifierService implements ChatAgent {
 
     // A still-blocked retry whose restored answer carries placeholders the
     // model reworded (so restore could not map them back) would show fake
-    // values: keep the first answer instead.
-    if (
-      secondVerdict.status === 'blocked' &&
-      second.egress !== undefined &&
-      (await second.egress.countUnresolvedSurrogates(second.result.answer)) > 0
-    ) {
+    // values: keep the earlier answer instead.
+    if (secondVerdict.status === 'blocked' && (await carriesUnresolvedPlaceholders(second))) {
       this.log(
-        `[verifier/service] retry answer still blocked and carries unresolved placeholders — keeping the first answer run=${runId}`,
+        `[verifier/service] retry answer still blocked and carries unresolved placeholders — keeping the earlier answer run=${runId}`,
       );
-      return this.deliver(ledger, effective, summarise(effectiveVerdict, 1, this.mode));
+      const shown = await this.shownTurn(runId, first, effective);
+      return this.deliver(ledger, shown, summarise(effectiveVerdict, 1, this.mode));
     }
 
     // Compute the user-facing badge: `corrected` when retry fixed it,
@@ -419,6 +418,27 @@ export class VerifierService implements ChatAgent {
       ...summarise(secondVerdict, 1, this.mode),
       badge,
     });
+  }
+
+  /**
+   * The turn shown while the verdict stays the one `effective` produced. A
+   * blocked re-sample replaces the first answer only when it can be shown:
+   * one whose restored text still carries a placeholder the model reworded
+   * would put a fake value in front of the user, so the first answer is shown
+   * instead — the verdict, and with it the badge, stay the re-sample's.
+   */
+  private async shownTurn(
+    runId: string,
+    first: EgressTurn,
+    effective: EgressTurn,
+  ): Promise<EgressTurn> {
+    if (effective === first || !(await carriesUnresolvedPlaceholders(effective))) {
+      return effective;
+    }
+    this.log(
+      `[verifier/service] re-sample carries unresolved placeholders — showing the first answer run=${runId}`,
+    );
+    return first;
   }
 
   /**

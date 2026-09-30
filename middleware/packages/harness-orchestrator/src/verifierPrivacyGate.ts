@@ -14,6 +14,8 @@
  *     shield.
  *   - {@link privacySafeCorrection}: the retry hint behind a shield carries
  *     no truth values, and is withheld when masking would still alter it.
+ *   - {@link carriesUnresolvedPlaceholders}: whether a second answer (re-sample
+ *     or retry) may replace the first one the user would otherwise see.
  */
 
 import type { ChatTurnInput, ChatTurnResult } from './orchestrator.js';
@@ -88,6 +90,18 @@ export class EgressLedger {
     if (egress !== undefined) this.open.add(egress);
     return egress;
   }
+}
+
+/**
+ * True when `turn`'s restored answer still carries placeholders of its own
+ * turn: the model reworded one ("10.000 €" for "€10000"), restore could not
+ * map it back, and the user would read a fake value. `false` for a turn that
+ * handed nothing over (no shield, nothing masked). Must run before the
+ * turn's continuation is finalized — finalize drops the map it reads.
+ */
+export async function carriesUnresolvedPlaceholders(turn: EgressTurn): Promise<boolean> {
+  if (turn.egress === undefined) return false;
+  return (await turn.egress.countUnresolvedSurrogates(turn.result.answer)) > 0;
 }
 
 /** `finalize()` that never throws — the answer outranks the receipt row. */
