@@ -173,6 +173,42 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past 0.167.5 — the first-user wizard asks for a setup token
+
+**Nothing to do on an instance that already has an admin.** The change only
+affects the first-user wizard (`/setup`), which such an instance has closed for
+good.
+
+**An instance whose wizard is still open** (fresh install, no user created
+yet) now asks for a **setup token** before it creates the first admin. With
+`ADMIN_SETUP_TOKEN` unset, the middleware generates one at start and prints it
+once per start to its log. The value stays the same across restarts and
+replicas until the first admin exists.
+
+```bash
+docker compose logs middleware | grep "setup token"      # compose
+fly logs -a <middleware-app> | grep "setup token"         # Fly.io
+```
+
+Paste it into the wizard's **Setup token** field. To choose the value yourself,
+set `ADMIN_SETUP_TOKEN` (at least 16 characters) in `middleware/.env` or as a
+platform secret before the start. An empty `ADMIN_SETUP_TOKEN=` counts as unset.
+The desktop app needs no token.
+
+Two behaviour changes worth knowing:
+
+- **Scripted setup** (`curl … /api/v1/auth/setup`) must send the token as the
+  `setup_token` JSON field. Without it the answer is 403
+  `auth.setup_token_invalid`. There is no header variant.
+- **Emptying the `users` table does not reopen the wizard on the running
+  process any more.** A boot that found users answers 410
+  `auth.setup_disabled` until the middleware restarts. It used to create an
+  admin anyway. Restart, then open the wizard.
+
+Parallel wizard submissions now create exactly one admin. A late one gets 410
+`auth.setup_locked`, and one that collides with a slow database gets 409
+`auth.setup_in_progress`, which is safe to retry.
+
 ## Upgrading to 0.115 or later — `CREDENTIAL_KEYCHAIN_KEY` is required
 
 > **Do this before pulling the image, or the update rolls back.**

@@ -9,11 +9,12 @@
 #
 # No secrets to paste: VAULT_KEY and CREDENTIAL_KEYCHAIN_KEY are generated
 # by Render on first sync (the GHCR image bakes NODE_ENV=production, which
-# makes both keys mandatory at boot — see README "Deployment"), and the LLM key is
-# collected by the first-admin /setup wizard at runtime and stored
-# encrypted in the vault. DEV_ENDPOINTS_ENABLED stays unset: these
-# services are publicly reachable, and the dev mounts expose raw KG +
-# memory state without auth.
+# makes both keys mandatory at boot — see README "Deployment"). The
+# first-admin /setup wizard asks for the one-time setup token the middleware
+# prints to its log on first boot (or set ADMIN_SETUP_TOKEN), and the LLM key
+# is connected in the admin UI afterwards and stored encrypted in the vault.
+# DEV_ENDPOINTS_ENABLED stays unset: these services are publicly reachable,
+# and the dev mounts expose raw KG + memory state without auth.
 #
 # Costs: the middleware needs a persistent disk, which requires paid
 # instance types — `starter` for both services plus `basic-256mb`

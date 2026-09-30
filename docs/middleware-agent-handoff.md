@@ -2173,6 +2173,60 @@ und Restrisiken: `docs/security-architecture.md` → „Session renewal“.
 Tests: `test/auth/renewRoute.test.ts`, `test/auth/entraProviderRevalidate.test.ts`,
 `test/auth/sessionJwt.test.ts`, `web-ui/app/_components/__tests__/SessionWatcher.test.tsx`.
 
+### Ersteinrichtung `POST /api/v1/auth/setup`: atomar und mit Setup-Token
+
+Der Wizard legt den ersten Admin an und liegt unter dem öffentlichen
+`/api/v1/auth/*`-Präfix, weil es noch keinen Operator gibt. Die Route steckt seit
+dieser Änderung in `routes/authSetup.ts` (wie `/renew` in `authRenew.ts`) und prüft in
+dieser Reihenfolge:
+
+1. **Setup-Token** (`auth/setupToken.ts`), vor allem anderen: Body-Feld
+   `setup_token`, konstant-zeitlicher Vergleich. Fehlt es oder ist es falsch, gibt es
+   403 `auth.setup_token_invalid`. Ein Aufrufer ohne Token bringt den Server damit
+   weder zum Body-Validieren noch zu argon2 noch zum Tabellen-Lock. Einen Header gibt
+   es nicht.
+2. **`resolveSetupState`**, dasselbe Prädikat, das `GET /providers` als
+   `setup_required` meldet: 410 `auth.setup_disabled` (Boot hat kein Setup erlaubt,
+   Neustart öffnet den Wizard wieder), 410 `auth.setup_no_local_provider`, 410
+   `auth.setup_locked`.
+3. Body-Validierung und optionaler Anthropic-Key-Ping (OB-61, unverändert), dann
+   argon2 **außerhalb** des Locks.
+4. **`UserStore.createFirstAdmin`**: eine Transaktion mit `SET LOCAL lock_timeout =
+   '2000ms'`, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`, `COUNT(*)` unter dem
+   Lock, INSERT, Audit-Zeile `auth.first_admin_create`, Löschen des gespeicherten
+   Setup-Tokens, COMMIT. `not_empty` wird zu 410 `auth.setup_locked`, ein Lock-Timeout
+   (55P03) zu 409 `auth.setup_in_progress`. Der Lock wartet auch auf Writer außerhalb
+   dieses Pfads (OIDC-Erstanmeldung, Admin-UI-Create). Plain-SELECTs blockiert er nicht.
+5. Session-Cookie, `markLoginNow`, Antwort wie bisher.
+
+Woher das Token kommt (Boot-Wiring `initSetupToken` in `index.ts`):
+
+- `ADMIN_SETUP_TOKEN` gesetzt → dieses Token, es wird nie geloggt.
+- Kein Setup auf diesem Boot → kein Token, ein altes gespeichertes wird gelöscht.
+- Desktop-Kernel (`OMADIA_DESKTOP_EMBEDDED=true` **und** Loopback-`HOST`) → kein Token.
+  Eine Hälfte allein reicht nicht.
+- Sonst generiert, set-if-absent in `platform_settings` (`auth.setup_token`)
+  gespeichert, also auf allen Replicas und über Neustarts gleich, und einmal pro Start
+  geloggt: `[auth] bootstrap: /setup wizard unlocked — setup token: …`.
+
+`GET /providers` liefert zusätzlich `setup_token_required`. Die Setup-Seite der Web-UI
+fragt das Token nur dann ab und zeigt für 403, 409 und beide 410-Codes eigene Texte.
+Der Env-Seed (`ADMIN_BOOTSTRAP_*`, `auth/bootstrap.ts`) läuft ebenfalls über
+`createFirstAdmin`. Verliert eine Replica das Rennen, loggt sie einen Skip statt an
+23505 zu sterben. Den ungenutzten Präfix `/api/v1/setup` gibt es in
+`auth/publicPaths.ts` nicht mehr; in `CORE_RESERVED_ROOTS` bleibt er, damit kein
+Plugin ihn beanspruchen kann.
+
+Sicherheitsbegründung und Restrisiken: `docs/security-architecture.md` §10e.
+Konfiguration: §10 „Ersteinrichtung“.
+
+Tests: `test/auth/setupRoute.test.ts`, `test/auth/setupToken.test.ts`,
+`test/auth/userStoreFirstAdmin.test.ts`, `test/auth/bootstrap.test.ts`, gegen echtes
+Postgres `test/auth/userStoreFirstAdmin.pg.test.ts` und
+`test/auth/setupRouteConcurrency.pg.test.ts`; UI
+`web-ui/app/setup/__tests__/page.test.tsx`; Desktop
+`desktop/test/supervisorKernelEnv.test.mts`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -2523,6 +2577,17 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 | Variable | Wirkung |
 |---|---|
 | `AUTH_SESSION_MAX_LIFETIME_HOURS` | Absolute Obergrenze einer Verlängerungskette in Stunden, gemessen ab der **ursprünglichen** Anmeldung (`auth_time`), nicht ab der letzten Verlängerung. Default `12`, erlaubt `4`–`168` (zod-validiert beim Boot). Jeder Login und jede „Ich bin noch da“-Verlängerung gibt ein 4h-Fenster, geklemmt auf diese Grenze; danach antwortet `POST /api/v1/auth/renew` mit 401 `auth.renew_expired` und die UI verlangt einen neuen Login. Werte unter 4 wären sinnlos, weil schon das Login-Fenster 4h lang ist. |
+
+### Ersteinrichtung
+
+Siehe §3 „Ersteinrichtung `POST /api/v1/auth/setup`“ und `docs/security-architecture.md` §10e.
+
+| Variable | Wirkung |
+|---|---|
+| `ADMIN_SETUP_TOKEN` | Setup-Token, das der Wizard im Body-Feld `setup_token` verlangt. 16 bis 512 Zeichen (sonst bricht der Boot mit Config-Fehler ab), ein leerer Wert gilt als nicht gesetzt (`optionalNonEmpty`). Nicht gesetzt: Die Middleware generiert beim Start ein Token, speichert es in `platform_settings` (gleich auf allen Replicas und über Neustarts, bis der erste Admin existiert) und loggt es einmal pro Start (`setup token: …`). Ein gesetzter Wert wird nie geloggt. Wer den Wert vor dem ersten Start kennen will (etwa für ein Deploy-Skript), setzt ihn selbst (`openssl rand -base64 24`). |
+| `OMADIA_DESKTOP_EMBEDDED` | `true`/`false`, Default `false`. Setzt **nur** der Supervisor der Desktop-App. Zusammen mit einer Loopback-`HOST` braucht der Wizard kein Token. Allein wirkt der Schalter nicht, und `HOST=127.0.0.1` ohne ihn auch nicht (Reverse-Proxy auf demselben Host). Nicht auf Servern setzen. |
+| `HOST` | Bind-Adresse des Kernels, Default `::`. Für die Setup-Token-Ausnahme zählt nur eine literale Loopback-Adresse (`127.0.0.0/8`, `::1`, `::ffff:127.x`), kein `localhost`. |
+| `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD`, `ADMIN_BOOTSTRAP_DISPLAY_NAME` | Deklarativer Seed statt Wizard: Ist die `users`-Tabelle beim Boot leer und sind E-Mail und Passwort (mindestens 8 Zeichen) gesetzt, legt der Boot diesen Admin über `createFirstAdmin` an. Der Wizard bleibt dann zu. Ungültige Werte loggen den Grund und fallen auf den Wizard zurück. |
 
 ### Test-Schalter (nicht von der Middleware gelesen)
 
@@ -2966,6 +3031,16 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Ersteinrichtung: was nach Setup-Token und atomarem Admin offen ist
+
+- **Rate-Limit auf `POST /api/v1/auth/setup`.** Das Token hält Unbefugte vor argon2
+  und dem Tabellen-Lock. Wer das Token hat, und jeder Prozess auf dem Desktop-Loopback,
+  löst pro Anfrage aber weiterhin einen argon2id-Lauf aus (19 MiB, t=2). Der
+  Login-Rate-Limiter sollte `/setup` mit abdecken.
+- **Token vorab erzeugen in `fly/deploy.sh` und `render.yaml`.** Heute holt der
+  Operator das generierte Token aus `fly logs` bzw. dem Render-Log. Ein beim Deploy
+  erzeugtes `ADMIN_SETUP_TOKEN`, wie schon `VAULT_KEY`, würde den Schritt sparen.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
