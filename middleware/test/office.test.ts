@@ -17,6 +17,7 @@ import {
   PROVENANCE_PROP_AI_GENERATED,
   PROVENANCE_PROP_GENERATOR,
   PROVENANCE_PROP_STANDARD,
+  XlsxToolInputSchema,
   type XlsxDescriptor,
   type DocxDescriptor,
 } from '@omadia/plugin-office';
@@ -211,6 +212,100 @@ describe('office xlsx renderer', () => {
     const f3 = (ws.getCell('C3').value as { formula?: string } | undefined)?.formula;
     assert.equal(f2, 'TEXT(A2,"YYYY-MM")', 'row 2 → A2');
     assert.equal(f3, 'TEXT(A3,"YYYY-MM")', 'row 3 → A3');
+  });
+
+  // A formula cell's displayed value must come from the application that
+  // computes it, never from the descriptor: omadia evaluates no formulas, so a
+  // caller-supplied cache would be stored as if it were the computed figure.
+  const cachedResultInput = {
+    sheets: [
+      {
+        name: 'S',
+        columns: [
+          { key: 'a', header: 'A' },
+          { key: 'b', header: 'B', type: 'number' },
+        ],
+        rows: [{ a: 'x', b: { formula: '1+1', result: 999 } }],
+      },
+    ],
+  };
+
+  it('never persists a descriptor-supplied formula result', async () => {
+    // The tool boundary drops the cached value …
+    const parsed = XlsxToolInputSchema.safeParse(cachedResultInput);
+    assert.ok(parsed.success, 'a formula cell with a result is still valid input');
+    assert.deepEqual(parsed.data.sheets[0]?.rows?.[0]?.['b'], { formula: '1+1' });
+
+    // … and the renderer ignores one smuggled past the type (a direct caller).
+    const result = await renderXlsx(cachedResultInput as unknown as XlsxDescriptor);
+    const sheet = (await unzipToText(result.buffer)).get('xl/worksheets/sheet1.xml') ?? '';
+    assert.match(sheet, /<c r="B2"[^>]*><f>1\+1<\/f><\/c>/, 'formula written with no cached value');
+    assert.doesNotMatch(sheet, /<f>1\+1<\/f><v>/, 'no <v> next to the formula');
+    assert.doesNotMatch(sheet, /<v>999<\/v>/, 'the supplied cache is not stored as any value');
+  });
+
+  it('asks the opening application to recalculate when the workbook holds a formula', async () => {
+    const workbookXml = async (d: XlsxDescriptor): Promise<string> =>
+      (await unzipToText((await renderXlsx(d)).buffer)).get('xl/workbook.xml') ?? '';
+
+    const inlineFormula = await workbookXml({
+      sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A' }], rows: [{ a: { formula: 'SUM(1,2)' } }] }],
+    });
+    assert.match(inlineFormula, /<calcPr [^>]*fullCalcOnLoad="1"/);
+
+    const computedColumn = await workbookXml({
+      sheets: [
+        {
+          name: 'S',
+          columns: [
+            { key: 'a', header: 'A', type: 'number' },
+            { key: 'b', header: 'B', formula: 'A{row}*2' },
+          ],
+          rows: [{ a: 1 }],
+        },
+      ],
+    });
+    assert.match(computedColumn, /<calcPr [^>]*fullCalcOnLoad="1"/);
+
+    // A plain data export has nothing to compute; the flag would only make
+    // Excel mark it as changed and ask to save on close.
+    const plain = await workbookXml(descriptor);
+    assert.match(plain, /<calcPr /);
+    assert.doesNotMatch(plain, /fullCalcOnLoad/);
+  });
+
+  it('stays deterministic when the workbook holds formulas (#645)', async (t) => {
+    // The recalculation flag is a constant, so it adds no wall-clock or
+    // per-render bytes. It is set only for workbooks that hold a formula: the
+    // cache tests below render formula-free descriptors, and making the flag
+    // unconditional would change their bytes (and every stored object's key).
+    const withFormulas: XlsxDescriptor = {
+      sheets: [
+        {
+          name: 'Data',
+          columns: [
+            { key: 'betrag', header: 'Betrag', type: 'currency' },
+            { key: 'doppelt', header: 'Doppelt', formula: 'A{row}*2' },
+          ],
+          rows: [{ betrag: 100 }, { betrag: 200 }],
+        },
+        {
+          name: 'Pivot',
+          columns: [{ key: 'summe', header: 'Summe' }],
+          rows: [{ summe: { formula: 'SUM(Data!A2:A3)' } }],
+        },
+      ],
+    };
+    t.mock.timers.enable({ apis: ['Date'] });
+    try {
+      t.mock.timers.setTime(1_700_000_000_000);
+      const a = await renderXlsx(withFormulas);
+      t.mock.timers.setTime(1_811_000_000_000); // ~3.5 years later
+      const b = await renderXlsx(withFormulas);
+      assert.ok(a.buffer.equals(b.buffer), 'wall-clock change must not change bytes');
+    } finally {
+      t.mock.timers.reset();
+    }
   });
 });
 

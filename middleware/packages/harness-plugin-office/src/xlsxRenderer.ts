@@ -57,9 +57,13 @@ function numFmtFor(col: ColumnSpec): string | undefined {
 
 /** Coerce a JSON cell value into the type Excel should store, so number
  *  formats actually apply (a currency stored as text would not sum). Falls
- *  back to the original value when coercion is not possible — never throws. */
+ *  back to the original value when coercion is not possible — never throws.
+ *  A formula cell is reduced to its formula here, so whatever else the object
+ *  carries (a cached `result` above all) never reaches exceljs, whose
+ *  `addRow` would otherwise store it next to the formula. */
 function coerce(value: CellValue, type: ColumnType | undefined): CellValue | Date {
   if (value === null) return null;
+  if (isFormulaCell(value)) return { formula: value.formula };
   if (type === 'date' && typeof value === 'string') {
     const d = new Date(value);
     return Number.isNaN(d.getTime()) ? value : d;
@@ -72,6 +76,18 @@ function coerce(value: CellValue, type: ColumnType | undefined): CellValue | Dat
     return Number.isNaN(n) ? value : n;
   }
   return value;
+}
+
+/** The formula a cell gets, or undefined for a plain value. A computed column
+ *  writes its template with `{row}` → this row's number; an inline formula
+ *  cell writes its own formula. */
+function formulaFor(
+  col: ColumnSpec,
+  value: CellValue | Date | undefined,
+  rowNumber: number,
+): string | undefined {
+  if (col.formula) return col.formula.replaceAll('{row}', String(rowNumber));
+  return isFormulaCell(value) ? value.formula : undefined;
 }
 
 /**
@@ -97,6 +113,7 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
   if (descriptor.title) workbook.title = descriptor.title;
 
   let rowsWritten = 0;
+  let wroteFormula = false;
 
   descriptor.sheets.forEach((sheet, index) => {
     const ws = workbook.addWorksheet(sanitizeSheetName(sheet.name, index));
@@ -120,28 +137,26 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
       }
       const added = ws.addRow(coerced);
       const rowNumber = added.number;
-      // Write real Excel formulas explicitly. Cross-sheet references (e.g.
-      // `'Offene Posten'!C:C`) and `{row}` row-number substitution resolve on
-      // open in Excel/LibreOffice.
+      // Write real Excel formulas explicitly, and nothing but the formula: no
+      // cached value is ever stored next to one (defence in depth on top of
+      // `coerce`). Cross-sheet references (e.g. `'Offene Posten'!C:C`) resolve
+      // when the opening application recalculates.
       for (const col of sheet.columns) {
-        if (col.formula) {
-          // Computed column: same formula every row, `{row}` → this row number.
-          added.getCell(col.key).value = {
-            formula: col.formula.replaceAll('{row}', String(rowNumber)),
-          };
-          continue;
-        }
-        const value = coerced[col.key];
-        if (isFormulaCell(value)) {
-          added.getCell(col.key).value = {
-            formula: value.formula,
-            ...(value.result !== undefined ? { result: value.result } : {}),
-          };
-        }
+        const formula = formulaFor(col, coerced[col.key], rowNumber);
+        if (formula === undefined) continue;
+        added.getCell(col.key).value = { formula };
+        wroteFormula = true;
       }
       rowsWritten += 1;
     }
   });
+
+  // omadia evaluates no formulas and stores no cached values, so ask the
+  // opening application for a full recalculation on load; exceljs 4.4 writes
+  // `<calcPr calcId="171027" fullCalcOnLoad="1"/>`. The flag is a constant
+  // (no new nondeterminism) and is set only when a formula exists: Excel marks
+  // a recalculated workbook as changed, which a plain data export does not need.
+  if (wroteFormula) workbook.calcProperties = { fullCalcOnLoad: true };
 
   const raw = Buffer.from((await workbook.xlsx.writeBuffer()) as unknown as Uint8Array);
   // exceljs pins the core-property timestamps to DETERMINISTIC_EPOCH but still

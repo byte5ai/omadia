@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { Readable } from 'node:stream';
+import ExcelJS from 'exceljs';
 import type { TigrisStore } from '@omadia/diagrams';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard';
 import { OfficeService, OfficeTool } from '@omadia/plugin-office';
@@ -9,6 +10,13 @@ const SECRET = 'z'.repeat(32);
 
 class InMemoryStore implements TigrisStore {
   private objects = new Map<string, { body: Buffer; contentType?: string }>();
+  /** Stored bytes for a key, so a test can open the file the tool produced. */
+  read(key: string): Buffer | undefined {
+    return this.objects.get(key)?.body;
+  }
+  get size(): number {
+    return this.objects.size;
+  }
   exists(key: string): Promise<boolean> {
     return Promise.resolve(this.objects.has(key));
   }
@@ -31,14 +39,28 @@ class InMemoryStore implements TigrisStore {
   }
 }
 
-function makeService(): OfficeService {
+function makeService(store: TigrisStore = new InMemoryStore()): OfficeService {
   return new OfficeService({
-    store: new InMemoryStore(),
+    store,
     secret: SECRET,
     publicBaseUrl: 'https://bot.example.com',
     tenantId: 'dev',
     signedUrlTtlSec: 60,
   });
+}
+
+/** Open the workbook a successful `create_xlsx` call stored: the storage key
+ *  is the path of the signed URL in the tool result. */
+async function loadStoredWorkbook(store: InMemoryStore, toolOutput: string): Promise<ExcelJS.Workbook> {
+  const { url } = JSON.parse(toolOutput) as { url: string };
+  const key = decodeURIComponent(new URL(url).pathname.replace(/^\/documents\/dl\//, ''));
+  const body = store.read(key);
+  assert.ok(body, `no stored object under ${key}`);
+  const wb = new ExcelJS.Workbook();
+  // exceljs declares its own `Buffer extends ArrayBuffer`; same cast as
+  // datasetImportXlsx.ts.
+  await wb.xlsx.load(body as unknown as ArrayBuffer);
+  return wb;
 }
 
 // --- B1: privacy-guard resolver --------------------------------------------
@@ -158,5 +180,47 @@ describe('office create_xlsx dataset mode (B3)', () => {
     });
     const parsed = JSON.parse(out) as { rows: number };
     assert.equal(parsed.rows, 2);
+  });
+
+  it('writes a dataset cell shaped like a formula object as text, never as a formula', async () => {
+    // Resolved dataset rows are data, not descriptors: an object value is
+    // JSON-stringified, so a system of record can never inject a formula or a
+    // cached result into the workbook.
+    const store = new InMemoryStore();
+    const tool = new OfficeTool(makeService(store), 100_000, {
+      currentTurnId: () => 't',
+      getPrivacyResolver: () => () => ({
+        rowCount: 1,
+        columns: [{ path: 'a', type: 'text' }],
+        rows: [{ a: { formula: '1+1', result: 999 } }],
+      }),
+    });
+    const out = await tool.handleXlsx({
+      sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A' }], datasetId: 'x' }],
+    });
+    const wb = await loadStoredWorkbook(store, out);
+    assert.equal(wb.getWorksheet('S')?.getCell('A2').value, '{"formula":"1+1","result":999}');
+  });
+});
+
+describe('office create_xlsx formula cells', () => {
+  it('drops a model-supplied cached result on the way to the stored file', async () => {
+    const store = new InMemoryStore();
+    const tool = new OfficeTool(makeService(store), 100_000, {});
+    const out = await tool.handleXlsx({
+      sheets: [
+        {
+          name: 'S',
+          columns: [{ key: 'a', header: 'A', type: 'number' }],
+          rows: [{ a: { formula: '1+1', result: 999 } }],
+        },
+      ],
+    });
+    const wb = await loadStoredWorkbook(store, out);
+    const value = wb.getWorksheet('S')?.getCell('A2').value as
+      | { formula?: string; result?: unknown }
+      | undefined;
+    assert.equal(value?.formula, '1+1', 'the formula itself is kept');
+    assert.equal(value?.result, undefined, 'no cached value reaches the file');
   });
 });
