@@ -648,19 +648,23 @@ written. They are now bound to the turn's own privacy handle:
   the model wrote it, recorded before restore (`TurnContextValue.wireAnswer`).
   A server-rendered v4 answer (`answerSource: 'privacy-render'`, real values
   the model never saw), a Direct Line relay and the privacy refusal are never
-  verified. Claims come back with placeholders and are restored server-side; a
-  claim whose span cut through a placeholder is dropped, and a value parsed
-  from a placeholder is dropped rather than compared against Odoo. The
-  deterministic re-query and the graph lookup run on real values and never
-  leave the process.
+  verified. Claims come back with placeholders and are restored server-side
+  (`harness-verifier/src/claimRestore.ts`); a claim whose span cut through a
+  placeholder is dropped, and an amount or date the model parsed from a
+  placeholder is re-read from the real literal it stands for — dropped when no
+  single literal can be tied to it, never compared as the placeholder's
+  value. The deterministic re-query and the graph lookup run on real values
+  and never leave the process.
 - **Evidence is projected regardless of the flag.** The judge's claim,
   context and knowledge-graph evidence are projected in ONE call per request
   through the turn's surrogate map (`projectVerifierText`): identity-shaped C0
   spans, the operator deny-list, the C1 detector when wired, the node's display
   name and free-text fields (`EvidenceSnippet.identityValues`, deny-by-default
   like the v4 classifier), and the turn's known real values. Dates and amounts
-  stay, as in a v4 digest. One map means the same person is the same
-  placeholder in claim and evidence, so the judge can still verify. A real
+  stay, as in a v4 digest. Node ids are projected too (an ingested record's
+  id can embed an external key or a channel user id); the id the judge cites
+  is restored before the snippet lookup. One map means the same person is the
+  same placeholder in claim and evidence, so the judge can still verify. A real
   value that equals a surrogate minted earlier in the turn blocks the request.
   Evidence is capped (3 snippets × 1200 chars) and the C1 timeout/degrade
   latch applies as for the prompt. Because a contradiction judged on

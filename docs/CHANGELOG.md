@@ -36,7 +36,7 @@ changelog.
 
 ## [Unreleased]
 
-### Fixed — answer-verifier requests run behind the Privacy Shield; the receipt is finalised after them
+### Security — answer-verifier requests run behind the Privacy Shield; the receipt is finalised after them
 
 2026-09-30 — with the privacy plugin installed and the answer verifier
 enabled, every turn the trigger router picked produced one to three extra model
@@ -47,9 +47,10 @@ raw knowledge-graph node content, and the enforce-mode retry put the re-queried
 truth into the system prompt verbatim. None of it reached the turn's receipt,
 which had already been written. A turn the verifier wraps now hands its privacy
 state over instead of finalising it: the extractor sees the turn's wire view
-(the prompt as masked for the turn, the answer as its model wrote it), the judge
-projects claim and evidence through the same surrogate map in one call — also
-with `mask_user_prompt` off — and the continuation finalises exactly once
+(the prompt as masked for the turn, the answer as its model wrote it; amounts
+and dates parsed from a placeholder are re-read from the real literal), the
+judge projects claim, evidence and node ids through the same surrogate map in
+one call — also with `mask_user_prompt` off — and the continuation finalises exactly once
 afterwards, so one receipt and one `turn_receipts` row cover the turn and the
 verifier (new receipt field `verifierEgress`, shown as "Answer check" on the web
 card). Server-rendered answers and Direct Line relays are not verified; with a
@@ -65,8 +66,8 @@ after the verifier finished, so the chat's "thinking" state lasts until then
 caller-supplied system hint is masked like the prompt, and a turn that throws or
 a stream the client abandons now drops its privacy state instead of keeping it
 until restart. `@omadia/plugin-api` 1.20.0 (additive: mask `stage`/`preview`,
-`projectVerifierText`, `countUnresolvedSurrogates`, `verifierEgress`),
-`@omadia/plugin-privacy-guard` 0.6.0.
+`projectVerifierText`, `countUnresolvedSurrogates`, `verifierEgress`); the
+in-tree privacy-guard plugin implements them without a version change.
 
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 

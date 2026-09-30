@@ -1574,8 +1574,14 @@ Stream gedrained ist und der Verifier fertig ist, und sendet es dann mit
 `privacyReceipt` + `receiptId`, gefolgt vom `verifier`-Event. Ein Turn, der
 wirft, oder ein abgebrochener Stream verwirft seinen Privacy-State jetzt
 sofort (vorher blieb er bis zum Neustart im Speicher). Sicherheitsseite:
-`docs/security-architecture.md` §6e. Tests: `test/orchestratorPrivacyEgress.test.ts`,
-`test/verifierServicePrivacyEgress.test.ts`.
+`docs/security-architecture.md` §6e. Claims aus der Wire-Sicht stellt
+`harness-verifier/src/claimRestore.ts` serverseitig wieder her (Beträge/Daten
+aus Platzhaltern werden aus dem echten Literal neu gelesen). Tests:
+`test/orchestratorPrivacyEgress.test.ts` (Übergabe),
+`test/verifierPrivacyEgressEndToEnd.test.ts` (Verifier um den echten
+Orchestrator), `test/verifierServicePrivacyEgress.test.ts` /
+`test/verifierServiceStreamPrivacyEgress.test.ts` (Wrapper, Harness in
+`test/_helpers/`).
 
 #### API-Turn-Attribution + Korrelations-Id (#1107)
 
