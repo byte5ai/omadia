@@ -9,7 +9,7 @@
 import { strict as assert } from 'node:assert';
 import { once } from 'node:events';
 import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 
 import { WebSocket } from 'ws';
 
@@ -152,6 +152,11 @@ export async function startRegistryServer(
 ): Promise<RegistryServer> {
   const registry = new WebSocketRegistry({ signingKey: KEY, whitelist: WHITELIST, ...deps });
   const server = createServer();
+  const connections = new Set<Socket>();
+  server.on('connection', (socket: Socket) => {
+    connections.add(socket);
+    socket.on('close', () => connections.delete(socket));
+  });
   registry.attach(server);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -163,6 +168,10 @@ export async function startRegistryServer(
     base: `ws://127.0.0.1:${String(port)}`,
     close: async () => {
       server.close();
+      // A test that failed half-way can leave a socket open, and `close`
+      // would wait on it forever: the report would read "timed out" instead
+      // of naming the failed assertion. Drop whatever is left.
+      for (const socket of connections) socket.destroy();
       await once(server, 'close');
     },
   };

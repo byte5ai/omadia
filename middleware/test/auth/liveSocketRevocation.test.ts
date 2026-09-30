@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { once } from 'node:events';
 import type { Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, before, describe, it } from 'node:test';
 
@@ -120,6 +120,8 @@ interface Harness {
 
 let passwordHash: string;
 let servers: Server[] = [];
+/** Every server-side connection, so a failed test cannot hang the teardown. */
+const connections = new Set<Socket>();
 
 before(async () => {
   passwordHash = await hashPassword(PASSWORD);
@@ -128,7 +130,9 @@ before(async () => {
 afterEach(async () => {
   const open = servers;
   servers = [];
-  await Promise.all(open.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))));
+  const closed = open.map((s) => new Promise<void>((resolve) => s.close(() => resolve())));
+  for (const socket of connections) socket.destroy();
+  await Promise.all(closed);
 });
 
 async function start(): Promise<Harness> {
@@ -179,6 +183,10 @@ async function start(): Promise<Harness> {
 
   const server = await listenLoopback(app);
   servers.push(server);
+  server.on('connection', (socket: Socket) => {
+    connections.add(socket);
+    socket.on('close', () => connections.delete(socket));
+  });
   const sockets = new WebSocketRegistry({
     signingKey: KEY,
     whitelist,
