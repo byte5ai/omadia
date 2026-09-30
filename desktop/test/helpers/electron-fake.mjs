@@ -77,11 +77,23 @@ export const dialog = {
 
 /** Records the last text written, so a "copy" button can be asserted on. */
 let clipboardText = null;
+let clipboardFailure = null;
 export function __lastClipboardText() {
   return clipboardText;
 }
+/** Make the next `clipboard.writeText` reject with `error`. */
+export function __failNextClipboardWrite(error) {
+  clipboardFailure = error;
+}
+// Async like Electron 44's W3C-shaped clipboard, so a caller that drops the
+// promise is caught by a test instead of by a user.
 export const clipboard = {
-  writeText: (text) => {
+  writeText: async (text) => {
+    if (clipboardFailure) {
+      const error = clipboardFailure;
+      clipboardFailure = null;
+      throw error;
+    }
     clipboardText = text;
   },
 };

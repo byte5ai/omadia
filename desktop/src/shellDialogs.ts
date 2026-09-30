@@ -161,7 +161,9 @@ export async function showRecoveryKey(
     defaultId: 0,
     cancelId: 1,
   });
-  if (response === 0) clipboard.writeText(key);
+  // Electron 44 made the clipboard writers async (W3C Clipboard API shape);
+  // awaiting keeps a failed copy from surfacing as an unhandled rejection.
+  if (response === 0) await clipboard.writeText(key);
 }
 
 export async function showRecoveryKeyUnavailable(

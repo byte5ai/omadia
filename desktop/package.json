@@ -33,9 +33,9 @@
     "pg": "^8.13.0"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^24.9.0",
     "@types/pg": "^8.11.10",
-    "electron": "^37.2.0",
+    "electron": "^44.5.0",
     "electron-builder": "^26.17.0",
     "esbuild": "^0.28.0",
     "typescript": "^5.7.2"

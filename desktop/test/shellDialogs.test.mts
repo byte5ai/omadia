@@ -14,7 +14,11 @@ import { describe, it, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import type { BrowserWindow } from 'electron';
 
-import { __setDialogHandler, __lastClipboardText } from './helpers/electron-fake.mjs';
+import {
+  __setDialogHandler,
+  __lastClipboardText,
+  __failNextClipboardWrite,
+} from './helpers/electron-fake.mjs';
 import {
   showBootFailure,
   showRecoveryExhausted,
@@ -96,6 +100,14 @@ describe('shellDialogs choices', () => {
     nextResponse = 0;
     await showRecoveryKey(fakeWindow(), t, 'KEY-COPY-ME');
     assert.equal(__lastClipboardText(), 'KEY-COPY-ME');
+  });
+
+  // Electron 44 turned clipboard.writeText into a promise. A dropped promise
+  // would report the copy as done and leave the rejection unhandled.
+  it('showRecoveryKey reports a failed copy instead of dropping it', async () => {
+    nextResponse = 0;
+    __failNextClipboardWrite(new Error('clipboard unavailable'));
+    await assert.rejects(showRecoveryKey(fakeWindow(), t, 'KEY-X'), /clipboard unavailable/);
   });
 
   it('showBootFailure maps the buttons to rerun-setup / quit', async () => {
