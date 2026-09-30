@@ -10,7 +10,10 @@ import {
   type XlsxDescriptor,
 } from './types.js';
 import { sanitizeFilename } from './filename.js';
-import { assertFormulaStaysInWorkbook } from './formulaPolicy.js';
+import {
+  assertComputedColumnStaysInWorkbook,
+  assertFormulaStaysInWorkbook,
+} from './formulaPolicy.js';
 import { normalizeOoxml } from './ooxmlNormalize.js';
 import {
   PROVENANCE_CATEGORY,
@@ -128,10 +131,14 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
     ws.getRow(1).font = { bold: true };
 
     // A computed column's template is checked once, not per row: `{row}` only
-    // ever becomes digits, which can neither form nor unmask a refused pattern.
+    // ever becomes digits, and the check refuses a template in which those
+    // digits could extend a function name or open a call.
     for (const col of sheet.columns) {
       if (col.formula) {
-        assertFormulaStaysInWorkbook(col.formula, `sheet "${ws.name}", computed column "${col.key}"`);
+        assertComputedColumnStaysInWorkbook(
+          col.formula,
+          `sheet "${ws.name}", computed column "${col.key}"`,
+        );
       }
     }
 

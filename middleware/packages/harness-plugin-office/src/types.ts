@@ -251,9 +251,10 @@ export class OfficeRenderError extends Error {
 }
 
 /**
- * A descriptor formula that would reach outside the workbook: the network,
- * another program or another file (see `formulaPolicy.ts`). Thrown before any
- * byte is written, so nothing is stored or delivered.
+ * A descriptor formula the formula policy refuses (`formulaPolicy.ts`): one
+ * that would reach outside the workbook (the network, another program or
+ * another file), or one that calls a function other than Excel's own. Thrown
+ * before any byte is written, so nothing is stored or delivered.
  */
 export class OfficeUnsafeFormulaError extends OfficeRenderError {
   constructor(
