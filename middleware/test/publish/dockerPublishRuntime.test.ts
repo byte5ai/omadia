@@ -1,4 +1,4 @@
-import { describe, it, after } from 'node:test';
+import { describe, it, after, afterEach, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
 
@@ -117,6 +117,57 @@ describe('DockerPublishRuntime.deploy — wiring (stub)', () => {
     assert.notEqual(a, c);
   });
 
+  describe('resource limits', () => {
+    const LIMIT_ENV_KEYS = ['OMADIA_SANDBOX_MEMORY_MB', 'OMADIA_SANDBOX_CPUS', 'OMADIA_SANDBOX_PIDS_LIMIT'] as const;
+    const saved = new Map<string, string | undefined>();
+    beforeEach(() => {
+      for (const key of LIMIT_ENV_KEYS) {
+        saved.set(key, process.env[key]);
+        delete process.env[key];
+      }
+    });
+    afterEach(() => {
+      for (const key of LIMIT_ENV_KEYS) {
+        const value = saved.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+
+    const IMAGE = 'publish-test-image:1';
+
+    async function runArgsFor(options: { resourceLimits?: { memoryMb?: number; cpus?: number; pidsLimit?: number } } = {}) {
+      const { exec, calls } = stubExec((ctx) => (ctx.args[0] === 'ps' ? ok('') : ok()));
+      const runtime = new DockerPublishRuntime({ ...options, execDocker: exec, image: IMAGE });
+      await runtime.deploy({ appId: 'todo', version: 1, entrypoint: 'x.js', files: new Map([['x.js', 'a']]) });
+      const runCall = calls.find((c) => c.args[0] === 'run');
+      assert.ok(runCall, 'expected a docker run');
+      return runCall.args;
+    }
+
+    function flagBeforeImage(args: readonly string[], flag: string): string {
+      const flagIndex = args.indexOf(flag);
+      assert.ok(flagIndex >= 0, `expected ${flag} in argv, got: ${JSON.stringify(args)}`);
+      assert.ok(flagIndex < args.indexOf(IMAGE), `${flag} must come before the image`);
+      return args[flagIndex + 1]!;
+    }
+
+    it('the app container gets the same memory, swap, CPU and PID ceilings as a sandbox', async () => {
+      const args = await runArgsFor();
+      assert.equal(flagBeforeImage(args, '--memory'), '512m');
+      assert.equal(flagBeforeImage(args, '--memory-swap'), '512m');
+      assert.equal(flagBeforeImage(args, '--cpus'), '1');
+      assert.equal(flagBeforeImage(args, '--pids-limit'), '256');
+    });
+
+    it('reflects resourceLimits overrides and never drops a flag for an invalid one', async () => {
+      const args = await runArgsFor({ resourceLimits: { memoryMb: 1024, cpus: 0, pidsLimit: 32 } });
+      assert.equal(flagBeforeImage(args, '--memory'), '1024m');
+      assert.equal(flagBeforeImage(args, '--cpus'), '1');
+      assert.equal(flagBeforeImage(args, '--pids-limit'), '32');
+    });
+  });
+
   it('surfaces a clear error when the container fails to start', async () => {
     const { exec } = stubExec((ctx) => {
       if (ctx.args[0] === 'ps') return ok('');
@@ -169,6 +220,35 @@ describeIfDocker('DockerPublishRuntime — real Docker (SANDBOX_DOCKER_TEST=1)',
         execFileSync('docker', ['volume', 'rm', '-f', name], { stdio: 'ignore' });
       } catch {
         /* best-effort cleanup */
+      }
+    }
+  });
+
+  it('the daemon applies the default ceilings to the app container', async () => {
+    const limitEnv = ['OMADIA_SANDBOX_MEMORY_MB', 'OMADIA_SANDBOX_CPUS', 'OMADIA_SANDBOX_PIDS_LIMIT'];
+    const saved = limitEnv.map((key) => [key, process.env[key]] as const);
+    for (const key of limitEnv) delete process.env[key];
+    try {
+      const runtime = new DockerPublishRuntime();
+      const appId = `pub-limits-${String(Date.now())}`;
+      await runtime.deploy({ appId, version: 1, entrypoint: 'idle.js', files: new Map([['idle.js', 'setInterval(() => {}, 1000);']]) });
+      const name = _internal.containerNameFor(appId, 1);
+      containersToClean.push(name);
+      volumesToClean.push(_internal.dataVolumeFor(appId));
+
+      const inspected = execFileSync('docker', [
+        'inspect',
+        '--format',
+        '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}',
+        name,
+      ])
+        .toString()
+        .trim();
+      assert.equal(inspected, '536870912 536870912 1000000000 256');
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
       }
     }
   });
