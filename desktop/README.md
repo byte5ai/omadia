@@ -258,14 +258,22 @@ not in the page:
   `app` surface that returns or writes a secret. `bridgeSurface.ts` is inlined
   into the sandboxed preload and must stay import-free.
 - **Navigation is fenced** (`src/navigationPolicy.ts`,
-  `src/navigationGuards.ts`, installed for every webContents from
-  `web-contents-created`). In place, the window stays on the web UI and kernel
-  origins. Other web links and popups open in the system browser. `file:`,
-  `javascript:`, `data:` and `about:blank` targets are refused; no page can
-  navigate the window to a file, since main loads the bundled pages itself.
-  Same-app popups open sandboxed and without a preload. Server redirects are
-  left alone so the in-window sign-in works; a foreign page reached that way
-  has no bridge and every handler refuses it.
+  `src/navigationGuards.ts`, installed for every webContents and its session
+  from `web-contents-created`). In place, the window stays on the web UI and
+  kernel origins. Other web links and popups open in the system browser.
+  `file:`, `javascript:`, `data:` and `about:blank` targets are refused; no
+  page can navigate the window to a file, since main loads the bundled pages
+  itself. Same-app popups open sandboxed and without a preload. Subframes may
+  load web pages and `about:`/`data:`/`blob:` documents, nothing else. Web
+  redirects are left alone so the in-window sign-in works; a foreign page
+  reached that way has no bridge and every handler refuses it. A redirect to
+  any other scheme is cancelled.
+- **Nothing reaches the OS but vetted web links.** Electron hands a custom
+  scheme (`ms-settings:`, `search-ms:`, an installed app's scheme) to the OS
+  only after asking for the `openExternal` permission, and grants it when no
+  handler is set. The session refuses it, whichever frame or redirect asked;
+  the shell opens web links itself through `shell.openExternal`, after
+  checking them. Other permissions keep Electron's defaults.
 
 Adding a bundled page means classifying it in `bridgeSurface.ts` and checking
 it by path in `ipcSender.ts`, never widening the wizard surface. The full

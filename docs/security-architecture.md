@@ -1321,16 +1321,25 @@ wizard, above all the recovery-key export, which returns the vault master key
   gone. `bridgeSurface.ts` is inlined into the sandboxed preload and stays
   import-free; a test asserts the bundle requires nothing but `electron`.
 - **Navigation is fenced** (`navigationPolicy.ts`, `navigationGuards.ts`,
-  installed for every webContents from `app.on('web-contents-created')`
-  before the window exists).
-  - `will-navigate` (links, `window.location`, form posts): the current
-    document decides. From the web UI, the kernel or a bundled page, the
-    window stays on the app's own loopback origins (web UI and kernel). Any
-    other `http(s)` target is prevented and handed to the system browser.
+  installed for every webContents and its session from
+  `app.on('web-contents-created')` before the window exists). Each way a
+  page can reach a new document has its own rule:
+  - `will-navigate` (main frame: links, `window.location`, form posts): the
+    current document decides. From the web UI, the kernel or a bundled page,
+    the window stays on the app's own loopback origins (web UI and kernel).
+    Any other `http(s)` target is prevented and handed to the system browser.
     Every other scheme is refused, `file:` included. From a foreign page (an
     IdP reached by a redirect), `http(s)` targets stay in the window so the
     IdP's own form posts and hops work; script, data and file targets are
     still refused.
+  - `will-frame-navigate` (subframes: plugin UIs, the builder preview,
+    anything a page embeds): any web page may load, as in a browser, and so
+    may what the browser renders in the page itself (`about:`, `data:`,
+    `blob:`). A custom scheme or `file:` is refused. Subframes never get the
+    bridge; the preload runs in main frames only.
+  - `will-redirect` (server redirects, any frame): web targets pass, so the
+    in-window sign-in keeps working. A redirect to any other scheme cancels
+    the navigation.
   - `setWindowOpenHandler` decides by target. A same-app popup (attachment,
     preview, download) opens as a sandboxed, context-isolated child without a
     preload. Electron merges only security-related webPreferences from the
@@ -1341,16 +1350,26 @@ wizard, above all the recovery-key export, which returns the vault master key
     system browser; any other scheme is just refused.
     Chromium's implicit `noopener` already applies to `target="_blank"`, so a
     missing `rel` attribute on such a link adds nothing here.
-  - `shell.openExternal` only ever receives `http:`/`https:` URLs. The logs
-    carry the target's origin, never the query (OAuth codes, `id_token_hint`).
+  - The session never grants Electron's `openExternal` permission. Electron
+    asks for it before it hands a non-web URL to the OS protocol handler,
+    from any frame and after any redirect, and without a handler it grants
+    every request. Any frame could otherwise launch an installed app's
+    scheme (`ms-settings:`, `search-ms:`, …) without a prompt. This is the
+    backstop behind the event rules above. Every other permission keeps
+    Electron's no-handler answer; narrowing those is a separate decision.
+  - So only vetted `http:`/`https:` URLs reach the OS. The shell passes
+    nothing else to `shell.openExternal`, and no page can make Electron hand
+    over anything else. The logs carry the target's origin or scheme, never
+    the query (OAuth codes, `id_token_hint`).
 
-Accepted residual: server redirects (`will-redirect`) are deliberately not
+Accepted residual: server redirects between web URLs are deliberately not
 guarded, so the in-window OIDC/Entra sign-in keeps working (kernel 302 to the
 IdP, the IdP's own steps, the callback on the kernel origin). A foreign
 document reached that way, or by a navigation from such a document, can be
-shown in the window. It gets no bridge, and every handler refuses it. The
-IdP end-session hop after a sign-out starts from the web UI, so it now opens
-in the system browser, which has its own cookie store.
+shown in the window. It gets no bridge, every handler refuses it, and the
+rules above still keep it from reaching the OS. The IdP end-session hop after
+a sign-out starts from the web UI, so it now opens in the system browser,
+which has its own cookie store.
 
 Main → renderer pushes (`bootProgress`, `bootLog`) are not sender-checked:
 every boot path loads a bundled page first and streams only while it is up,
@@ -1361,7 +1380,8 @@ Tests: `desktop/test/ipcSender.test.mts` (the rules, synthetic frames),
 `registerIpc`, nothing written on a refusal), `bridgeSurface.test.mts`
 (surfaces, what the preload really exposes, the sandbox-safe bundle),
 `navigationPolicy.test.mts` (including: every URL the kernel sends the window
-back to is trusted) and `navigationGuards.test.mts`.
+back to is trusted) and `navigationGuards.test.mts` (every path: main frame,
+subframes, redirects, popups, and the session's `openExternal` refusal).
 
 ---
 
@@ -1427,7 +1447,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       surface (the web UI and every plugin iframe in it) gets no method that
       returns or writes a secret. A new bundled page is classified in
       `bridgeSurface.ts` and checked by path in `ipcSender.ts` instead of
-      widening the wizard surface (§10e).
+      widening the wizard surface. A new window or session stays covered by
+      the `web-contents-created` guards, including the session's
+      `openExternal` refusal (§10e).
 
 ---
 

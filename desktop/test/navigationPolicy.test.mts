@@ -6,7 +6,9 @@
  * kept the preload bridge, and `target="_blank"` opened unvetted Electron
  * windows. The policy now keeps the window on the app's own loopback origins,
  * sends other web links to the system browser, and refuses every other scheme,
- * `file:` included.
+ * `file:` included. Subframes and server redirects may not reach the OS
+ * protocol handler either, and the `openExternal` permission that Electron asks
+ * before handing a URL to the OS is never granted.
  */
 import { describe, it, before } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -14,6 +16,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  canGrantPermission,
+  canPassPermissionCheck,
+  canRedirectTo,
+  canSubframeLoad,
   decideNavigation,
   decideNavigationFrom,
   isSafeForExternalOpen,
@@ -104,6 +110,82 @@ describe('decideNavigationFrom — the current document decides', () => {
     for (const target of ['javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', WIZARD, 'not a url']) {
       assert.equal(decideNavigationFrom(IDP_PAGE, target, TRUSTED), 'deny', target);
     }
+  });
+});
+
+/** Schemes the OS hands to an installed program; none may be reached from a page. */
+const OS_HANDLED = [
+  'ms-settings:privacy',
+  'search-ms:query=synthetic',
+  'facetime:+15550100',
+  'omadia-custom://open',
+  'mailto:someone@example.com',
+];
+
+describe('canSubframeLoad — iframes stay inside the page', () => {
+  it('lets a subframe show any web page, as in a browser', () => {
+    for (const url of [
+      `${UI}/p/synthetic-plugin/ui/index.html?theme=dark`,
+      `${UI}/bot-api/v1/builder/drafts/synthetic/preview`,
+      'https://maps.example/embed?q=synthetic',
+      'http://example.com/',
+    ]) {
+      assert.equal(canSubframeLoad(url), true, url);
+    }
+  });
+
+  it('lets a subframe show what the browser renders itself', () => {
+    for (const url of [
+      'about:srcdoc',
+      'about:blank',
+      'data:text/html,<p>synthetic</p>',
+      `blob:${UI}/5d9c7c2e-0000-4000-8000-000000000000`,
+    ]) {
+      assert.equal(canSubframeLoad(url), true, url);
+    }
+  });
+
+  it('refuses anything that would reach the OS protocol handler, and files', () => {
+    for (const url of [...OS_HANDLED, 'file:///etc/passwd', 'javascript:alert(1)', 'not a url', '']) {
+      assert.equal(canSubframeLoad(url), false, url);
+    }
+  });
+});
+
+describe('canRedirectTo — server redirects in any frame', () => {
+  it('lets web redirects through, the in-window sign-in is a chain of them', () => {
+    for (const url of [IDP_PAGE, `${KERNEL}/api/v1/auth/login/entra/cb?code=synthetic`, 'https://evil.example/']) {
+      assert.equal(canRedirectTo(url), true, url);
+    }
+  });
+
+  it('refuses a redirect to any other scheme', () => {
+    for (const url of [...OS_HANDLED, 'file:///etc/passwd', 'data:text/html,x', 'about:blank', 'not a url', '']) {
+      assert.equal(canRedirectTo(url), false, url);
+    }
+  });
+});
+
+describe('session permissions — the OS protocol handler is never a way out', () => {
+  it('never grants openExternal, whatever it would open', () => {
+    // Electron asks for it before handing a non-web URL to the OS, and grants
+    // every request when no handler is set.
+    assert.equal(canGrantPermission('openExternal'), false);
+    assert.equal(canPassPermissionCheck('openExternal'), false);
+  });
+
+  it('grants every other request, as Electron does without a handler', () => {
+    // The wizard and the web UI copy to the clipboard; nothing else changes.
+    for (const permission of ['clipboard-sanitized-write', 'clipboard-read', 'fullscreen', 'media', 'notifications']) {
+      assert.equal(canGrantPermission(permission), true, permission);
+    }
+  });
+
+  it('answers every other check as Electron does without a handler', () => {
+    for (const permission of ['clipboard-sanitized-write', 'fullscreen', 'media', 'geolocation']) {
+      assert.equal(canPassPermissionCheck(permission), true, permission);
+    }
+    assert.equal(canPassPermissionCheck('deprecated-sync-clipboard-read'), false);
   });
 });
 

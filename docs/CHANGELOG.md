@@ -56,8 +56,13 @@ Navigation is now fenced for every window. Links and `window.open` to other
 sites (links in chat answers, plugin author pages, GitHub help) open in the
 system browser instead of replacing the app or spawning Electron windows.
 Same-app popups open sandboxed and without the bridge. `about:blank` popups
-and `file:`, `javascript:` and `data:` targets are refused. The in-window
-OIDC/Entra sign-in keeps working, because server redirects and the IdP's own
+and `file:`, `javascript:` and `data:` targets are refused. No page can make
+the app hand a non-web link to another program any more (`mailto:`,
+`ms-settings:`, `search-ms:`, any installed app's scheme), including from an
+embedded frame such as a plugin UI or through a server redirect. Such
+navigations are cancelled, and the session refuses Electron's `openExternal`
+permission, which Electron grants to every page by default. The in-window
+OIDC/Entra sign-in keeps working, because web redirects and the IdP's own
 steps stay in the window. One visible change: signing out of an OIDC session
 no longer shows the IdP logout page in the app window. That page opens in the
 system browser, and the app window moves to the sign-in page once the web UI

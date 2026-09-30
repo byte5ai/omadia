@@ -1,13 +1,16 @@
 /**
  * The navigation guards every webContents gets (the Electron-facing half).
  *
- * Driven through a recording stand-in for `webContents`, with the Electron
- * surface injected, so no real `shell` or `BrowserWindow` is touched. What is
- * pinned: a foreign link from the app never replaces the web UI and opens in
- * the system browser instead; a script, data or file target is refused
- * outright; an IdP page reached by a redirect can finish the sign-in in the
- * window; popups are either sandboxed and bridge-less (same app) or handed to
- * the system browser (anything else), and `about:blank` is refused.
+ * Driven through a recording stand-in for `webContents` and its session, with
+ * the Electron surface injected, so no real `shell` or `BrowserWindow` is
+ * touched. What is pinned: a foreign link from the app never replaces the web
+ * UI and opens in the system browser instead; a script, data or file target is
+ * refused outright; an IdP page reached by a redirect can finish the sign-in in
+ * the window; popups are either sandboxed and bridge-less (same app) or handed
+ * to the system browser (anything else), and `about:blank` is refused. No
+ * frame and no redirect can hand a URL to the OS protocol handler: subframe
+ * navigations and redirects to such schemes are cancelled, and the session
+ * never grants Electron's `openExternal` permission.
  */
 import { describe, it, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -15,14 +18,22 @@ import type { WindowOpenHandlerResponse } from 'electron';
 
 import {
   installNavigationGuards,
+  type FrameNavigationEvent,
   type GuardableContents,
-  type WillNavigateEvent,
+  type GuardableSession,
+  type PermissionRequestDetails,
 } from '../src/navigationGuards.ts';
 import type { TrustedTargets } from '../src/navigationPolicy.ts';
 
 const UI = 'http://127.0.0.1:4567';
 const KERNEL = 'http://127.0.0.1:8769';
 const IDP_PAGE = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=synthetic';
+/** Schemes the OS would hand to an installed program. */
+const OS_HANDLED = ['ms-settings:privacy', 'search-ms:query=synthetic', 'facetime:+15550100', 'omadia-custom://open'];
+
+type NavigationListener = (event: FrameNavigationEvent) => void;
+type PermissionRequestHandler = Parameters<GuardableSession['setPermissionRequestHandler']>[0];
+type PermissionCheckHandler = Parameters<GuardableSession['setPermissionCheckHandler']>[0];
 
 interface Harness {
   /** The document on screen, as `webContents.getURL()` reports it. */
@@ -32,16 +43,35 @@ interface Harness {
   readonly logged: string[];
   /** Fire will-navigate; returns whether the navigation was prevented. */
   navigate(url: string): boolean;
+  /** Fire will-frame-navigate; returns whether the navigation was prevented. */
+  navigateFrame(url: string, isMainFrame: boolean): boolean;
+  /** Fire will-redirect; returns whether the navigation was prevented. */
+  redirect(url: string, isMainFrame: boolean): boolean;
   /** Fire the window-open handler. */
   open(url: string): WindowOpenHandlerResponse;
+  /** Ask the session's permission request handler; returns its answer. */
+  requestPermission(permission: string, details?: PermissionRequestDetails): boolean | undefined;
+  /** Ask the session's permission check handler. */
+  checkPermission(permission: string): boolean;
   openExternalFails: boolean;
   /** `getURL()` throws, as it does on a destroyed webContents. */
   getUrlThrows: boolean;
 }
 
 function harness(): Harness {
-  let willNavigate: ((event: WillNavigateEvent) => void) | null = null;
+  const listeners = new Map<string, NavigationListener>();
   let windowOpen: ((details: { readonly url: string }) => WindowOpenHandlerResponse) | null = null;
+  let permissionRequest: PermissionRequestHandler | null = null;
+  let permissionCheck: PermissionCheckHandler | null = null;
+
+  /** Fire a navigation event; returns whether a listener prevented it. */
+  const fire = (name: string, url: string, isMainFrame: boolean): boolean => {
+    const listener = listeners.get(name);
+    assert.ok(listener, `${name} listener installed`);
+    let prevented = false;
+    listener({ url, isMainFrame, preventDefault: () => (prevented = true) });
+    return prevented;
+  };
 
   const h: Harness = {
     current: `${UI}/chat`,
@@ -50,25 +80,40 @@ function harness(): Harness {
     logged: [],
     openExternalFails: false,
     getUrlThrows: false,
-    navigate(url) {
-      let prevented = false;
-      assert.ok(willNavigate, 'will-navigate listener installed');
-      willNavigate({ url, preventDefault: () => (prevented = true) });
-      return prevented;
-    },
+    navigate: (url) => fire('will-navigate', url, true),
+    navigateFrame: (url, isMainFrame) => fire('will-frame-navigate', url, isMainFrame),
+    redirect: (url, isMainFrame) => fire('will-redirect', url, isMainFrame),
     open(url) {
       assert.ok(windowOpen, 'window-open handler installed');
       return windowOpen({ url });
     },
+    requestPermission(permission, details = { isMainFrame: false }) {
+      assert.ok(permissionRequest, 'permission request handler installed on the session');
+      let answer: boolean | undefined;
+      permissionRequest(null, permission, (granted) => (answer = granted), details);
+      return answer;
+    },
+    checkPermission(permission) {
+      assert.ok(permissionCheck, 'permission check handler installed on the session');
+      return permissionCheck(null, permission);
+    },
   };
 
   const contents: GuardableContents = {
+    session: {
+      setPermissionRequestHandler: (handler) => {
+        permissionRequest = handler;
+      },
+      setPermissionCheckHandler: (handler) => {
+        permissionCheck = handler;
+      },
+    },
     getURL: () => {
       if (h.getUrlThrows) throw new Error('Object has been destroyed');
       return h.current;
     },
-    on: (_event, listener) => {
-      willNavigate = listener;
+    on: (event: string, listener: NavigationListener) => {
+      listeners.set(event, listener);
     },
     setWindowOpenHandler: (handler) => {
       windowOpen = handler;
@@ -210,6 +255,104 @@ describe('window.open and target="_blank"', () => {
     assert.deepEqual(h.open('https://login.microsoftonline.com/help'), { action: 'deny' });
     await nextTurn();
     assert.deepEqual(h.opened, ['https://login.microsoftonline.com/help']);
+  });
+});
+
+describe('subframes: plugin UIs, the builder preview, anything a page embeds', () => {
+  it('cancels a subframe navigation that would reach the OS protocol handler', () => {
+    for (const url of [...OS_HANDLED, 'file:///etc/passwd']) {
+      assert.equal(h.navigateFrame(url, false), true, url);
+    }
+    assert.deepEqual(h.opened, [], 'nothing is handed to the system browser either');
+    assert.equal(h.logged.filter((line) => line.startsWith('WARN')).length, OS_HANDLED.length + 1);
+  });
+
+  it('lets a subframe load web pages and what the browser renders in the page', () => {
+    for (const url of [
+      `${UI}/p/synthetic-plugin/ui/index.html?theme=dark`,
+      'https://maps.example/embed?q=synthetic',
+      'data:text/html,<p>synthetic</p>',
+      `blob:${UI}/5d9c7c2e-0000-4000-8000-000000000000`,
+    ]) {
+      assert.equal(h.navigateFrame(url, false), false, url);
+    }
+    assert.deepEqual(h.logged, []);
+  });
+
+  it('applies the same rule to the subframes of a foreign page', () => {
+    h.current = IDP_PAGE;
+    assert.equal(h.navigateFrame('ms-settings:privacy', false), true);
+    assert.equal(h.navigateFrame('https://login.microsoftonline.com/common/reprocess', false), false);
+  });
+
+  it('leaves the main frame to will-navigate', () => {
+    // Electron fires will-frame-navigate for the main frame as well.
+    assert.equal(h.navigateFrame('https://evil.example/', true), false);
+    assert.deepEqual(h.opened, [], 'will-navigate alone hands foreign links to the system browser');
+  });
+
+  it('never writes the full URL to the log', () => {
+    h.navigateFrame('search-ms:query=synthetic-secret&crumb=location:C%3A%5C', false);
+    assert.equal(h.logged.length, 1);
+    assert.match(h.logged[0] ?? '', /search-ms:/);
+    assert.equal(h.logged[0]?.includes('synthetic-secret'), false);
+  });
+});
+
+describe('server redirects', () => {
+  it('cancels a redirect to a non-web scheme, in the main frame and in subframes', () => {
+    for (const isMainFrame of [true, false]) {
+      for (const url of [...OS_HANDLED, 'file:///etc/passwd']) {
+        assert.equal(h.redirect(url, isMainFrame), true, `${url} main=${isMainFrame}`);
+      }
+    }
+    assert.deepEqual(h.opened, []);
+  });
+
+  it('lets web redirects through, so the in-window sign-in keeps working', () => {
+    // Kernel 302 to the IdP, the IdP's own hops, the callback on the kernel.
+    assert.equal(h.redirect(IDP_PAGE, true), false);
+    assert.equal(h.redirect('https://login.live.com/ppsecure/post.srf', true), false);
+    assert.equal(h.redirect(`${KERNEL}/api/v1/auth/login/entra/cb?code=synthetic`, true), false);
+    assert.equal(h.redirect('https://cdn.example/asset.js', false), false);
+    assert.deepEqual(h.logged, []);
+  });
+});
+
+describe('the OS protocol handler', () => {
+  it("refuses Electron's openExternal permission, whatever it would open", () => {
+    // Electron asks for it before it hands a non-web URL from any frame, or
+    // from a redirect, to the OS, and grants every request when no handler
+    // is set.
+    for (const isMainFrame of [true, false]) {
+      for (const externalURL of [...OS_HANDLED, 'https://example.com/']) {
+        assert.equal(
+          h.requestPermission('openExternal', { isMainFrame, externalURL }),
+          false,
+          `${externalURL} main=${isMainFrame}`,
+        );
+      }
+    }
+    assert.equal(h.requestPermission('openExternal', { isMainFrame: true }), false, 'also without a URL');
+    assert.equal(h.checkPermission('openExternal'), false);
+    assert.deepEqual(h.opened, []);
+  });
+
+  it("logs the refused scheme and the frame kind, never the URL's content", () => {
+    h.requestPermission('openExternal', { isMainFrame: false, externalURL: 'search-ms:query=synthetic-secret' });
+    assert.equal(h.logged.length, 1);
+    assert.match(h.logged[0] ?? '', /^WARN .*search-ms:.*subframe/);
+    assert.equal(h.logged[0]?.includes('synthetic-secret'), false);
+  });
+
+  it('keeps every other permission as Electron answers it without a handler', () => {
+    // The wizard and the web UI copy to the clipboard; that must keep working.
+    for (const permission of ['clipboard-sanitized-write', 'fullscreen', 'media', 'notifications']) {
+      assert.equal(h.requestPermission(permission), true, permission);
+      assert.equal(h.checkPermission(permission), true, permission);
+    }
+    assert.equal(h.checkPermission('deprecated-sync-clipboard-read'), false);
+    assert.deepEqual(h.logged, []);
   });
 });
 

@@ -1,18 +1,32 @@
 /**
  * Where the shell's windows may go. The pure half; `navigationGuards.ts` wires
- * it to every webContents.
+ * it to every webContents and its session.
  *
  * Nothing restricted navigation before. A link in a chat answer, a plugin
  * author's homepage or an IdP logout URL replaced the web UI in the app
  * window, and `target="_blank"` opened Electron windows for any site. The
- * rules now:
+ * rules now, per path:
  *
- *  - In place, the window stays on the app's own loopback origins: the web UI
- *    and the kernel (Entra callback, signed diagram URLs).
- *  - Any other `http:`/`https:` link opens in the system browser.
- *  - Every other scheme is refused: `javascript:`, `data:`, `blob:`, `about:`,
- *    custom schemes, and `file:`. No page may navigate to a file. Main shows
- *    the bundled pages with `loadFile`, which does not pass through here.
+ *  - Main frame, in place (`will-navigate`): the window stays on the app's own
+ *    loopback origins, the web UI and the kernel (Entra callback, signed
+ *    diagram URLs). Any other `http:`/`https:` link opens in the system
+ *    browser. Every other scheme is refused: `javascript:`, `data:`, `blob:`,
+ *    `about:`, custom schemes, and `file:`. No page may navigate to a file.
+ *    Main shows the bundled pages with `loadFile`, which does not pass through
+ *    here.
+ *  - Popups (`window.open`, `target="_blank"`): decided by target the same way.
+ *  - Subframes (plugin UIs, the builder preview, anything a page embeds) may
+ *    show any web page, as in a browser, and what the browser renders in the
+ *    page itself (`about:`, `data:`, `blob:`). A custom scheme or `file:` is
+ *    refused.
+ *  - Server redirects, in any frame, may lead to web URLs only.
+ *  - Last, the OS itself. Electron hands a non-web URL to the OS protocol
+ *    handler only after asking for the `openExternal` permission, which it
+ *    grants when no handler is set. That permission is never granted, so no
+ *    page can launch another program (`ms-settings:`, `search-ms:`, any
+ *    installed app's scheme), whatever path the rules above might miss. Vetted
+ *    web links reach the system browser through `shell.openExternal`, which
+ *    does not ask for it.
  *
  * One exception, decided by the CURRENT document: once a server redirect has
  * taken the window to a foreign page (the in-window OIDC/Entra sign-in), that
@@ -86,4 +100,51 @@ export function decideNavigationFrom(
 /** The last check before `shell.openExternal`: only web links reach the OS. */
 export function isSafeForExternalOpen(url: string): boolean {
   return isWebUrl(parse(url));
+}
+
+/** What the browser renders inside the page itself; never handed to the OS. */
+const IN_PAGE_PROTOCOLS: ReadonlySet<string> = new Set(['about:', 'data:', 'blob:']);
+
+/**
+ * Where a subframe may navigate. An iframe may show any web page, as in a
+ * browser: it stays inside its frame and never gets the bridge (the preload
+ * runs in main frames only). It may not hand a URL to the OS protocol handler
+ * or open a file.
+ */
+export function canSubframeLoad(url: string): boolean {
+  const target = parse(url);
+  if (target === null) return false;
+  return WEB_PROTOCOLS.has(target.protocol) || IN_PAGE_PROTOCOLS.has(target.protocol);
+}
+
+/**
+ * Where a server redirect may lead, in any frame. The in-window sign-in is a
+ * chain of web redirects, so those stay allowed; a redirect to any other scheme
+ * would reach the OS protocol handler. (Chromium itself refuses redirects to
+ * `data:`, `file:` and the like.)
+ */
+export function canRedirectTo(url: string): boolean {
+  return isWebUrl(parse(url));
+}
+
+/** The permission Electron asks for before handing a URL to the OS protocol handler. */
+const OPEN_EXTERNAL = 'openExternal';
+
+/**
+ * Whether a page's permission request is granted. `openExternal` never is: the
+ * shell opens vetted web links itself, so no page needs the OS to launch
+ * anything. Every other request keeps Electron's answer without a handler,
+ * which is to grant it; narrowing those is a separate decision.
+ */
+export function canGrantPermission(permission: string): boolean {
+  return permission !== OPEN_EXTERNAL;
+}
+
+/**
+ * The same for permission checks. Without a handler Electron passes every
+ * check except the deprecated synchronous clipboard read; that answer is kept,
+ * and `openExternal` fails too.
+ */
+export function canPassPermissionCheck(permission: string): boolean {
+  return permission !== OPEN_EXTERNAL && permission !== 'deprecated-sync-clipboard-read';
 }

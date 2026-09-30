@@ -492,9 +492,9 @@ if (!gotLock) {
     }
   });
 
-  // Navigation and popup guards for every webContents: the main window and any
-  // child it opens. Registered before the window exists, so nothing loads
-  // unguarded (see navigationGuards.ts).
+  // Navigation, popup and permission guards for every webContents (the main
+  // window and any child it opens) and its session. Registered before the
+  // window exists, so nothing loads unguarded (see navigationGuards.ts).
   app.on('web-contents-created', (_event, contents) => {
     installNavigationGuards(contents, {
       trusted: trustedTargets,

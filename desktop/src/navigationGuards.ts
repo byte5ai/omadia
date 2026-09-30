@@ -13,9 +13,14 @@
  *    bundled page a foreign link is prevented and handed to the system
  *    browser; from a foreign page reached by a redirect (an IdP mid sign-in)
  *    web targets stay in the window.
- *  - Server redirects (`will-redirect`) are deliberately not guarded, so the
- *    in-window OIDC/Entra sign-in keeps working. A foreign document reached
- *    that way gets no bridge, and main refuses its IPC.
+ *  - `will-frame-navigate` fires for page-initiated navigations in any frame.
+ *    The main frame is left to `will-navigate`; a subframe (a plugin UI, the
+ *    builder preview) may load web pages and in-page documents, never a
+ *    custom scheme or a file.
+ *  - `will-redirect` fires for server redirects in any frame. Web redirects
+ *    pass, so the in-window OIDC/Entra sign-in keeps working (a foreign
+ *    document reached that way gets no bridge, and main refuses its IPC); a
+ *    redirect to any other scheme cancels the navigation.
  *  - `setWindowOpenHandler` decides by target. A same-app popup (a chat
  *    attachment, the builder preview, a download) opens as a sandboxed child
  *    without a preload, so it carries no bridge. Electron merges only
@@ -25,9 +30,17 @@
  *    refused: Electron gives such a child the parent's webPreferences, preload
  *    included, and it shares the opener's origin. Anything else opens in the
  *    system browser.
+ *  - The contents' session never grants the `openExternal` permission, which
+ *    is how Electron hands any non-web URL to the OS protocol handler. That is
+ *    the backstop behind the event guards: whatever a page does, it cannot make
+ *    the OS launch a program.
  */
 import type { WindowOpenHandlerResponse } from 'electron';
 import {
+  canGrantPermission,
+  canPassPermissionCheck,
+  canRedirectTo,
+  canSubframeLoad,
   decideNavigation,
   decideNavigationFrom,
   isSafeForExternalOpen,
@@ -41,10 +54,39 @@ export interface WillNavigateEvent {
   preventDefault(): void;
 }
 
+/** The part of Electron's will-frame-navigate and will-redirect events read here. */
+export interface FrameNavigationEvent extends WillNavigateEvent {
+  readonly isMainFrame: boolean;
+}
+
+/** The part of a permission request's details read here. */
+export interface PermissionRequestDetails {
+  /** Set by Electron on every request. */
+  readonly isMainFrame: boolean;
+  /** The URL the OS would be handed, on an `openExternal` request. */
+  readonly externalURL?: string;
+}
+
+/** The part of `Session` the guards use. */
+export interface GuardableSession {
+  setPermissionRequestHandler(
+    handler: (
+      contents: unknown,
+      permission: string,
+      callback: (granted: boolean) => void,
+      details: PermissionRequestDetails,
+    ) => void,
+  ): void;
+  setPermissionCheckHandler(handler: (contents: unknown, permission: string) => boolean): void;
+}
+
 /** The part of `WebContents` the guards use. */
 export interface GuardableContents {
+  readonly session: GuardableSession;
   getURL(): string;
   on(event: 'will-navigate', listener: (event: WillNavigateEvent) => void): unknown;
+  on(event: 'will-frame-navigate', listener: (event: FrameNavigationEvent) => void): unknown;
+  on(event: 'will-redirect', listener: (event: FrameNavigationEvent) => void): unknown;
   setWindowOpenHandler(
     handler: (details: { readonly url: string }) => WindowOpenHandlerResponse,
   ): void;
@@ -70,6 +112,19 @@ export function installNavigationGuards(contents: GuardableContents, deps: Navig
     divert(verdict, target, deps);
   });
 
+  contents.on('will-frame-navigate', (event) => {
+    if (event.isMainFrame || canSubframeLoad(event.url)) return;
+    event.preventDefault();
+    deps.log.warn(`[nav] blocked a subframe navigation to ${describeTarget(event.url)}`);
+  });
+
+  contents.on('will-redirect', (event) => {
+    if (canRedirectTo(event.url)) return;
+    // Cancels the whole navigation; the frame keeps its current document.
+    event.preventDefault();
+    deps.log.warn(`[nav] blocked a redirect to ${describeTarget(event.url)}`);
+  });
+
   contents.setWindowOpenHandler(({ url }) => {
     const verdict = decideNavigation(url, deps.trusted());
     if (verdict === 'allow') return sameAppPopup();
@@ -77,6 +132,26 @@ export function installNavigationGuards(contents: GuardableContents, deps: Navig
     setImmediate(() => divert(verdict, url, deps));
     return { action: 'deny' };
   });
+
+  installPermissionGuards(contents.session, deps.log);
+}
+
+/**
+ * Refuse `openExternal` on a session; every other permission keeps Electron's
+ * default answer. Set for the session of every guarded webContents (all of
+ * them share the default session today, and setting it again is harmless), so
+ * a window on another session cannot slip past.
+ */
+function installPermissionGuards(session: GuardableSession, log: NavigationGuardDeps['log']): void {
+  session.setPermissionRequestHandler((_contents, permission, callback, details) => {
+    const granted = canGrantPermission(permission);
+    if (!granted) {
+      const frame = details.isMainFrame ? 'main frame' : 'subframe';
+      log.warn(`[nav] refused ${permission} for ${describeTarget(details.externalURL ?? '')} (${frame})`);
+    }
+    callback(granted);
+  });
+  session.setPermissionCheckHandler((_contents, permission) => canPassPermissionCheck(permission));
 }
 
 /** A same-app popup: sandboxed, isolated, and without a preload. */

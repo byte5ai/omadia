@@ -3099,10 +3099,18 @@ Details in [`security-architecture.md` §10e](security-architecture.md):
   `app`-Surface nie eine Methode bekommen, die ein Geheimnis liefert oder
   schreibt.
 - **Navigation:** `desktop/src/navigationGuards.ts` hängt an jedem
-  webContents. Fremde Links und Popups gehen in den Systembrowser.
-  `file:`, `javascript:`, `data:` und `about:blank` werden abgelehnt.
-  Same-App-Popups öffnen sandboxed und ohne Preload. `will-redirect` bleibt
-  bewusst offen, damit der In-Window-Login per OIDC/Entra funktioniert.
+  webContents und dessen Session. Fremde Links und Popups gehen in den
+  Systembrowser. `file:`, `javascript:`, `data:` und `about:blank` werden
+  abgelehnt. Same-App-Popups öffnen sandboxed und ohne Preload. Subframes
+  dürfen Webseiten und `about:`/`data:`/`blob:` laden, sonst nichts.
+  Web-Redirects bleiben bewusst offen, damit der In-Window-Login per
+  OIDC/Entra funktioniert; ein Redirect auf ein anderes Schema bricht die
+  Navigation ab.
+- **OS-Protokoll-Handler:** Die Session verweigert Electrons
+  `openExternal`-Permission, die Electron ohne Handler jeder Seite gewährt.
+  Damit startet keine Seite, kein Plugin-iframe und kein Redirect ein
+  Programm über ein eigenes Schema (`ms-settings:`, `search-ms:`, …). Web-Links
+  öffnet die Shell selbst, geprüft, über `shell.openExternal`.
 
 Offen:
 
@@ -3113,16 +3121,19 @@ Offen:
   Laufwerksbuchstabe) nicht. In der Web-UI muss
   `Object.keys(window.omadia)` genau `uiReady` und `setUiLocale` liefern.
   Plugin-Autor-Link, GitHub-Hilfe-Link und ein Link in einer Chat-Antwort
-  öffnen im Systembrowser. Ein Same-App-Popup hat kein `window.omadia`. Der
-  Entra-Login-Rundlauf klappt inklusive Passwort-POST.
+  öffnen im Systembrowser. Ein Same-App-Popup hat kein `window.omadia`. Ein
+  Link mit eigenem Schema in einer Plugin-UI startet kein Programm (Log:
+  `[nav] blocked a subframe navigation`). Der Entra-Login-Rundlauf klappt
+  inklusive Passwort-POST.
 - **Abmelden einer OIDC-Sitzung:** Die IdP-End-Session-URL öffnet jetzt im
   Systembrowser, der einen eigenen Cookie-Speicher hat. Die IdP-Sitzung im
   App-Fenster bleibt also bestehen. Folgepunkt für die Web-UI: in
   `web-ui/app/_components/AuthBadge.tsx` bei vorhandener Desktop-Bridge direkt
   auf `/login` gehen statt den IdP-Hop zu versuchen.
-- **Server-Redirects auf fremde Seiten** werden nicht blockiert. Das ist die
-  akzeptierte Rest-Ausnahme aus §10e: Solche Seiten bekommen keine Bridge, und
-  jeder Handler lehnt sie ab.
+- **Web-Redirects auf fremde Seiten** werden nicht blockiert. Das ist die
+  akzeptierte Rest-Ausnahme aus §10e: Solche Seiten bekommen keine Bridge,
+  jeder Handler lehnt sie ab, und auch sie erreichen keinen
+  OS-Protokoll-Handler.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
