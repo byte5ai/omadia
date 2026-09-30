@@ -68,8 +68,8 @@ function isPublicPath(pathname: string): boolean {
   if (pathname === '/favicon.ico') return true;
   // Pairing discovery (#293). A desktop client reads this descriptor before
   // it has a session; the descriptor is what tells it where to sign in. It
-  // is not confidential: the middleware serves the same descriptor without
-  // auth (outside its `/api` gate), and the provider list inside it is
+  // is not confidential: the middleware serves a descriptor of the same shape
+  // without auth (outside its `/api` gate), and the provider list inside it is
   // already public here through `/bot-api/v1/auth/providers`. The proxy runs
   // before the next.config.ts rewrite, so it sees the canonical path; the
   // handler path is reachable directly as well. Exact match only, never a

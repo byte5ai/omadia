@@ -1325,10 +1325,26 @@ publicly reachable, so this route is where `OMADIA_UI_INSTANCE_NAME` and
 `OMADIA_UI_PUBLIC_WS_URL` become visible from the internet. Both are
 non-secret by design, since a client needs them to connect. The handler
 echoes the caller's `x-forwarded-host`/`host` into `wsUrl` and
-`loginStartUrl`; the route is `force-dynamic`, so that reflection reaches
-only the caller who sent it. Each cookie-less request costs one server-side
-read of the provider list, the same read `/bot-api/v1/auth/providers`
-already allows without a session.
+`loginStartUrl`. Every answer carries `Cache-Control: no-store`, so a shared
+cache in front of the web-ui may not keep one caller's reflected host and
+hand it to the next; `force-dynamic` only turns off Next's own caching. Each
+cookie-less request costs one server-side read of the provider list, the
+same read `/bot-api/v1/auth/providers` already allows without a session.
+That read has a 5-second deadline, so a middleware that accepts the
+connection and never replies cannot hold discovery requests open.
+
+**An unread provider list is an error, not `none`.** The pairing protocol
+defines `auth.mode: 'none'` as "this host accepts unauthenticated connects"
+(`PairingAuth` in `middleware/src/pairing/discovery.ts`). When the handler
+cannot determine the providers (the middleware is unreachable, misses the
+deadline, answers with an error status, or sends no provider list), it
+answers `503` with `Retry-After` and `{ code: 'pairing.auth_unavailable' }`
+instead of a descriptor. Reporting `none` there would tell a client during
+an outage that no sign-in is needed. Nothing would be bypassed, since
+`requireAuth` and the canvas upgrade (§10d) check the session themselves,
+but the client would be sent down the wrong path. `none` remains the answer
+only for a provider list the middleware returned empty, which is how the
+middleware's own `buildPairingDescriptor` reads that state.
 
 **Rules for the allowlist.**
 
@@ -1345,7 +1361,9 @@ Tests: `web-ui/app/__tests__/proxy.test.ts` (both discovery paths pass
 without a cookie and leave an expired one alone; operator routes and
 near-miss paths redirect; the older exemptions and a fresh session pass) and
 `web-ui/app/pairing-discovery/__tests__/route.test.ts` (the handler answers
-JSON without a cookie and sends none upstream).
+JSON without a cookie and sends none upstream; an unreachable, stalled,
+failing or malformed upstream yields `503`, never `auth.mode: 'none'`; every
+answer is `no-store`).
 
 ---
 
@@ -1390,7 +1408,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] No new `isPublicPath` exemption in `web-ui/proxy.ts` unless the route
       serves only non-confidential data or authenticates itself; exact match,
       not a prefix, with a case in `web-ui/app/__tests__/proxy.test.ts`. The
-      pairing descriptor never gains a secret or session field (§10e).
+      pairing descriptor never gains a secret or session field, and a
+      provider list it could not read is a `503`, never `auth.mode: 'none'`
+      (§10e).
 - [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —
       operator routers belong under `/api/v1/admin/*` (§10).
 - [ ] A WebSocket route with its own authenticator is registered through

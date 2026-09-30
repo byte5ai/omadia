@@ -36,6 +36,31 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — pairing discovery answers 503 instead of claiming no sign-in is needed (#293)
+
+2026-09-30 — the pairing descriptor on the operator origin
+(`web-ui/app/pairing-discovery/route.ts`) reads the sign-in providers from
+the middleware. When that read failed (middleware unreachable, an error
+status, a response without a provider list), the handler still returned a
+descriptor, with `auth.mode: 'none'`. The pairing protocol defines `none` as
+"this host accepts unauthenticated connects", so an outage told a client
+that no sign-in was needed. Nothing was bypassed, since the API and the
+canvas WebSocket check the session themselves, but the client was sent down
+the wrong path. Since the route now answers without a session (entry below),
+it reaches exactly the clients that act on that field. The handler now
+answers `503` with `Retry-After: 5` and `{ "code": "pairing.auth_unavailable" }`
+instead, and logs the reason. `none` remains the answer only when the
+middleware returns an empty provider list, which is what the middleware's
+own descriptor says in that state.
+
+The provider read also had no deadline: a middleware that accepted the
+connection and never replied held every discovery request open for minutes.
+It now gives up after 5 seconds and answers the same `503`. Every answer
+carries `Cache-Control: no-store`, because the descriptor echoes the
+caller's host into `wsUrl` and `loginStartUrl`, and `force-dynamic` only
+turns off Next's own caching, not a shared cache in front of it.
+`docs/security-architecture.md` §10e describes the failure path.
+
 ### Fixed — pairing discovery on the operator origin no longer bounces to /login (#293)
 
 2026-09-30 — a desktop client that knows only the operator URL could not
@@ -51,10 +76,11 @@ is not publicly reachable, pairing through the operator URL could not work.
 Both paths are now exempt from the gate, by exact match. They are defined
 once in `web-ui/app/_lib/pairingDiscoveryPaths.ts`, which the rewrite imports
 too, so the two cannot drift apart. The descriptor carries nothing
-confidential: the middleware serves the same one without authentication, its
-provider list is already public through `/bot-api/v1/auth/providers`, and the
-canvas WebSocket its `wsUrl` points at authenticates every upgrade. Every
-other route keeps redirecting to `/login` without a session.
+confidential: the middleware serves a descriptor of the same shape without
+authentication, its provider list is already public through
+`/bot-api/v1/auth/providers`, and the canvas WebSocket its `wsUrl` points at
+authenticates every upgrade. Every other previously gated route keeps
+redirecting to `/login` without a session.
 `web-ui/app/__tests__/proxy.test.ts` pins the allowlist from both sides, and
 `docs/security-architecture.md` §10e documents the gate and its exemptions.
 

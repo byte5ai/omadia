@@ -3299,6 +3299,21 @@ Randbedingungen für jede Variante:
   zurück (sonst greift die Änderung erst nach dem nächsten Neustart), und die
   UI bekommt ihren Toggle wieder.
 
+### Pairing: `auth.mode: 'none'` bei leerer Provider-Liste (#293 follow-up)
+
+`PairingAuth` (`middleware/src/pairing/discovery.ts`) definiert `none` als
+„Host nimmt unauthentifizierte Verbindungen an". Das trifft auf keinen Host zu:
+der Canvas-WebSocket authentifiziert jedes Upgrade (security-architecture §10d).
+Trotzdem melden der Middleware-Deskriptor (`buildPairingDescriptor`), die
+mDNS-Ankündigung und `web-ui/app/pairing-discovery/route.ts` `none`, sobald die
+Provider-Liste leer ist — die Middleware auch ohne Postgres, wo `/api/v1/auth/*`
+mit 503 antwortet. Die web-ui-Route tut das seit dem 503-Fix nur noch für eine
+tatsächlich leer gelieferte Liste; eine unlesbare beantwortet sie mit 503. Kein
+Auth-Bypass, aber der Client versucht es ohne Login und scheitert am 401.
+Offen: mit dem Canvas-Client festlegen, wie „kein Login möglich" gemeldet wird,
+und dann alle drei Erzeuger gemeinsam umstellen, damit jeder Weg dieselbe
+Antwort gibt.
+
 ---
 
 ## 14. Commands (vom `middleware/`-Dir aus)
