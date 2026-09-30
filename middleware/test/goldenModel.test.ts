@@ -12,10 +12,10 @@
  * `tool_postcondition` violation and a `citation_missing` condition
  * (knowledge-graph used, answer carries no `[ref:]` marker) both inject a
  * `contradicted` verdict before/independent of claim extraction. A STUB
- * `LlmProvider` that returns empty content (the extractor treats that as "no
- * claims") lets us drive the real pipeline to a `blocked` verdict with zero
- * tokens and no key — and a control entry proves we are not merely
- * always-blocking.
+ * `LlmProvider` that returns empty content (the extractor reports that as a
+ * failed extraction, not as "no claims") lets us drive the real pipeline to a
+ * `blocked` verdict with zero tokens and no key — and a control entry proves
+ * we are not merely always-blocking.
  */
 
 import { describe, it } from 'node:test';
@@ -27,8 +27,10 @@ import { buildVerifierRunOnce } from './golden/goldenModel.js';
 import type { GoldenEntry } from './golden/goldenRunner.js';
 
 /** A provider whose `complete` returns no content — so `ClaimExtractor` finds no
- *  tool call and yields zero claims. `stream`/`classifyError` are never reached
- *  on the verify path, so they throw if the wiring ever routes through them. */
+ *  tool call and rejects: extraction failed. The synthetic block paths still
+ *  block, because their contradictions need no extraction; without one the
+ *  verdict is `unavailable`. `stream`/`classifyError` are never reached on the
+ *  verify path, so they throw if the wiring ever routes through them. */
 function stubProvider(onComplete?: () => void): LlmProvider {
   return {
     id: 'stub',
@@ -254,6 +256,25 @@ describe('goldenModel/buildVerifierRunOnce (synthetic paths, key-free)', () => {
     assert.notEqual(r.status, 'blocked');
     assert.equal(r.status, 'skipped');
     assert.equal(calls, 0);
+  });
+
+  it('reports a failed extraction as unavailable, not as a zero-claim skip', async () => {
+    // Triggering answer, no synthetic contradiction: the stub's empty content
+    // is an extractor failure. An eval sample must not read it as "the model
+    // found no claims" (`skipped`) — it fails its entry as `unavailable`.
+    const entry: GoldenEntry = {
+      id: 'ex',
+      userMessage: 'Wie hoch ist der offene Betrag?',
+      answer: 'Der offene Betrag beträgt 1.234,56 €.',
+      trace: { agent: 'accounting', domainToolsCalled: ['query_odoo_accounting'] },
+      expected: { status: 'approved' },
+    };
+    let calls = 0;
+    const r = await buildVerifierRunOnce(stubProvider(() => {
+      calls += 1;
+    }), 'stub-model')(entry);
+    assert.equal(calls, 1, 'the currency amount must fire the trigger');
+    assert.equal(r.status, 'unavailable');
   });
 
   it('reports zero tokens when the stub reports zero usage', async () => {

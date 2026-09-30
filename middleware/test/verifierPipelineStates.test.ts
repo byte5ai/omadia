@@ -1,19 +1,21 @@
 /**
  * The pipeline's verdict is bound to evidence. Four paths check nothing — no
- * trigger signal, an extractor that throws, zero extracted claims, claims no
+ * trigger signal, an extractor that fails, zero extracted claims, claims no
  * checker accepts — and none of them may come back `approved`. They are
  * `skipped` (ran, nothing checkable) or `unavailable` (could not run), each
  * with a closed reason code. `approved` needs at least one checked claim, all
- * of them verified.
+ * of them verified. The last block drives the production `ClaimExtractor`, so
+ * an LLM outage is proven to land in `unavailable`, not in `skipped`.
  */
 
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import {
+  ClaimExtractor,
   VerifierPipeline,
   type Claim,
-  type ClaimExtractor,
+  type ClaimExtractorOptions,
   type ClaimVerdict,
   type DeterministicChecker,
   type EvidenceJudge,
@@ -205,5 +207,90 @@ describe('verifier/pipeline — evidence-bound verdict states', () => {
         `${name}: approved with an unverified claim`,
       );
     }
+  });
+});
+
+/**
+ * The production `ClaimExtractor` over a scripted LLM `complete()`: the
+ * pipeline meets the extractor's own failure handling, not a stub that throws.
+ * No claim reaches a checker on these paths, so the checkers reject if called.
+ */
+function realExtractorPipeline(complete: () => Promise<unknown>): {
+  pipeline: VerifierPipeline;
+  logs: string[];
+} {
+  const logs: string[] = [];
+  const log = (msg: string): void => {
+    logs.push(msg);
+  };
+  const unreachable = (): Promise<ClaimVerdict[]> =>
+    Promise.reject(new Error('no claim may reach a checker on this path'));
+  const pipeline = new VerifierPipeline({
+    extractor: new ClaimExtractor({
+      llm: { complete } as unknown as ClaimExtractorOptions['llm'],
+      log,
+    }),
+    deterministic: { checkAll: unreachable } as unknown as DeterministicChecker,
+    judge: { checkAll: unreachable } as unknown as EvidenceJudge,
+    log,
+  });
+  return { pipeline, logs };
+}
+
+function recordClaimsCall(input: unknown): unknown {
+  return {
+    content: [{ type: 'tool_call', id: 'call_1', name: 'record_claims', input }],
+    finishReason: 'tool_calls',
+    model: 'stub',
+    usage: { inputTokens: 0, outputTokens: 0 },
+  };
+}
+
+describe('verifier/pipeline — the production extractor reports an outage as unavailable', () => {
+  it('LLM call rejects → unavailable/extractor_error, not skipped/no_claims', async () => {
+    const { pipeline, logs } = realExtractorPipeline(() =>
+      Promise.reject(new Error('rate limit from llm.example.invalid')),
+    );
+    const verdict = await pipeline.verify(input(TRIGGERING_ANSWER));
+    assert.equal(verdict.status, 'unavailable');
+    assert.equal(reasonOf(verdict), 'extractor_error');
+    assert.equal(verdict.claims.length, 0);
+    assert.doesNotMatch(JSON.stringify(verdict), /llm\.example\.invalid|rate limit/);
+    assert.ok(
+      logs.some((l) => l.startsWith('[claim-extractor] API FAIL') && l.includes('rate limit')),
+      'the extractor keeps its own failure log line',
+    );
+  });
+
+  it('response without the record_claims call → unavailable/extractor_error', async () => {
+    const { pipeline } = realExtractorPipeline(() =>
+      Promise.resolve({
+        content: [{ type: 'text', text: 'Keine Angaben.' }],
+        finishReason: 'stop',
+        model: 'stub',
+        usage: { inputTokens: 0, outputTokens: 0 },
+      }),
+    );
+    const verdict = await pipeline.verify(input(TRIGGERING_ANSWER));
+    assert.equal(verdict.status, 'unavailable');
+    assert.equal(reasonOf(verdict), 'extractor_error');
+  });
+
+  it('a record_claims call without a claims array → unavailable/extractor_error', async () => {
+    const { pipeline } = realExtractorPipeline(() =>
+      Promise.resolve(recordClaimsCall({ text: '1.234,56 €', type: 'amount' })),
+    );
+    const verdict = await pipeline.verify(input(TRIGGERING_ANSWER));
+    assert.equal(verdict.status, 'unavailable');
+    assert.equal(reasonOf(verdict), 'extractor_error');
+  });
+
+  it('an empty claims array is a real zero-claim result → skipped/no_claims', async () => {
+    const { pipeline } = realExtractorPipeline(() =>
+      Promise.resolve(recordClaimsCall({ claims: [] })),
+    );
+    const verdict = await pipeline.verify(input(TRIGGERING_ANSWER));
+    assert.equal(verdict.status, 'skipped');
+    assert.equal(reasonOf(verdict), 'no_claims');
   });
 });

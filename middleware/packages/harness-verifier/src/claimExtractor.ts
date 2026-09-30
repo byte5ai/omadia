@@ -19,11 +19,13 @@ import type {
  *    answer; we police this client-side by rejecting any claim whose
  *    `text` is not a substring. This is our primary anti-hallucination
  *    guard on the extractor itself (ironic but necessary).
- *  - On any parser / network failure we return []; the caller treats an
- *    empty claim list as "nothing to verify" and approves the answer. The
- *    trigger router has already decided this turn deserves verification,
- *    so a silent empty-extractor result is a minor telemetry signal but
- *    not a hard fail.
+ *  - A failed extraction is not an empty one. When the LLM call fails, or
+ *    the response carries no usable `record_claims` call, `extract` logs
+ *    and rejects, and the pipeline reports the verifier as `unavailable`.
+ *    An empty list means the model found no claim (or none survived the
+ *    verbatim guard), which the pipeline reports as `skipped`. Returning
+ *    [] on a failure would make an outage look like a clean
+ *    nothing-to-check run.
  */
 
 export interface ClaimExtractorOptions {
@@ -173,8 +175,11 @@ export class ClaimExtractor {
   }
 
   /**
-   * Extract claims from the given answer. Never throws; returns [] on any
-   * error (network, parse, validation).
+   * Extract claims from the given answer. Resolves [] when there is nothing
+   * to extract: an empty answer, or a model that reports no claim. Rejects
+   * when extraction could not run: the LLM call failed, or the response
+   * carries no usable `record_claims` call. Claims that fail validation are
+   * dropped, not errors.
    */
   async extract(input: ExtractInput): Promise<Claim[]> {
     const answer = input.answer.trim();
@@ -212,14 +217,17 @@ ${truncate(answer, 6000)}`;
       this.opts.log(
         `[claim-extractor] API FAIL: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return [];
+      // Not []: that reads as "the answer holds no claim". The pipeline maps
+      // a rejection to `unavailable`.
+      throw err;
     }
 
-    const rawClaims = readToolClaims(response);
-    if (rawClaims === null) {
-      this.opts.log('[claim-extractor] no tool_use block in response');
-      return [];
+    const read = readToolClaims(response);
+    if (!read.ok) {
+      this.opts.log(`[claim-extractor] ${read.problem}`);
+      throw new Error(`claim extraction failed: ${read.problem}`);
     }
+    const rawClaims = read.claims;
 
     const out: Claim[] = [];
     let idx = 0;
@@ -257,17 +265,25 @@ function tail(value: string, max: number): string {
   return value.length <= max ? value : value.slice(value.length - max);
 }
 
-function readToolClaims(response: LlmResponse): unknown[] | null {
-  // Defensive: the contract guarantees `content` is an array, but keep the
-  // historical "never throws; returns []" invariant against malformed input.
-  if (!Array.isArray(response.content)) return null;
-  for (const call of toolCalls(response.content)) {
-    if (call.name !== TOOL_NAME) continue;
-    const input = call.input as { claims?: unknown };
-    if (!input || !Array.isArray(input.claims)) return [];
-    return input.claims;
+/**
+ * The claims of the forced `record_claims` call, or why the response has none
+ * to read: no such call, or one without a `claims` array. Either is a failed
+ * extraction, which is not the same as a call that lists no claims.
+ */
+function readToolClaims(
+  response: LlmResponse,
+): { ok: true; claims: unknown[] } | { ok: false; problem: string } {
+  // Defensive: the contract guarantees `content` is an array.
+  if (Array.isArray(response.content)) {
+    for (const call of toolCalls(response.content)) {
+      if (call.name !== TOOL_NAME) continue;
+      const input = call.input as { claims?: unknown } | null | undefined;
+      return input && Array.isArray(input.claims)
+        ? { ok: true, claims: input.claims }
+        : { ok: false, problem: `${TOOL_NAME} call without a claims array` };
+    }
   }
-  return null;
+  return { ok: false, problem: 'no tool_use block in response' };
 }
 
 /**

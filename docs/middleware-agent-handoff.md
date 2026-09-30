@@ -2797,7 +2797,10 @@ Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
   Claims geprüft; `skipped` — der Verifier lief, fand aber nichts Prüfbares;
   `unavailable` — der Verifier konnte nicht laufen (Extractor- oder
   Pipeline-Fehler). `approved` heißt: mindestens ein Claim geprüft, alle
-  `verified`.
+  `verified`. Der `ClaimExtractor` wirft, wenn der LLM-Call scheitert oder
+  die Antwort keinen verwertbaren `record_claims`-Call trägt, statt eine leere
+  Claim-Liste zu liefern: ein Ausfall landet so in `unavailable`
+  (`extractor_error`), nie in `skipped` (`no_claims`).
 - `badge`: `verified` | `partial` | `corrected` | `failed` bei geprüften
   Claims, sonst `unverified` (zu `skipped`) bzw. `unavailable`.
 - `reason`: nur bei `skipped` (`no_trigger` | `no_claims` |
@@ -3177,6 +3180,16 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   `routes/chatSessions.ts`) verwirft `Message.verifier`; ein Mirror-Restore
   zeigt deshalb keinen Verifier-Chip (nur ein lokaler Reload). Nachziehen,
   falls der Chip auch geräteübergreifend sichtbar sein soll.
+- **Judge-Ausfall erscheint als `partial`.** Der `ClaimExtractor` meldet einen
+  Ausfall inzwischen als `unavailable`; der `EvidenceJudge` macht aus einem
+  gescheiterten LLM-Call pro Claim weiter ein `unverified`. Fällt der Judge
+  für alle Soft-Claims aus, wird das Verdict `approved_with_disclaimer`: Badge
+  `partial` („Partly verified", obwohl nichts bestätigt wurde), und im
+  Enforce-Modus stößt `isBorderlineVerdict` den bezahlten Resample (#132) an.
+  Nie grün, also kein Evidenz-Leck, aber für Kalibrierung und Kosten
+  unscharf. Offen: `approved_with_disclaimer` ohne einen einzigen `verified`
+  Claim eigens kennzeichnen oder einen Judge-Totalausfall als `unavailable`
+  werten.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

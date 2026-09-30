@@ -40,7 +40,7 @@ changelog.
 
 2026-09-30 — the answer verifier reported five situations in which it checked
 nothing as `approved` with an empty claim list: an answer without a trigger
-signal, an extractor that threw, an extractor that returned no claims,
+signal, an extractor that failed, an extractor that returned no claims,
 extracted claims that fit no checker, and a pipeline that threw. The badge
 mapping turned each of them into `verified`, and that is what the trailing
 `verifier` stream event told stream clients and what `verifier_verdicts`
@@ -50,7 +50,11 @@ failed off Teams. Verdicts are now bound to evidence: `approved` requires at
 least one checked claim, all of them verified (its claim list is typed
 non-empty); nothing checkable is `skipped` (reason `no_trigger`, `no_claims` or
 `no_checkable_claims`), and a verifier that could not run is `unavailable`
-(reason `extractor_error` or `pipeline_error`). Badges are derived under an
+(reason `extractor_error` or `pipeline_error`). The claim extractor used to
+turn its own failures (an LLM error, or a response without a usable
+`record_claims` call) into an empty claim list, so an extractor outage would
+still have read as `skipped` / `no_claims`; it now rejects, and the outage is
+`unavailable` / `extractor_error`. Badges are derived under an
 evidence gate (`hasVerificationEvidence`), so even an injected pipeline that
 returns `approved` over zero claims yields `unverified`, and a retry earns
 `corrected` only when the retry itself was checked. Contradictions found

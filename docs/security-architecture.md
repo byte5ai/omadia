@@ -708,7 +708,7 @@ The answer verifier (`@omadia/verifier`, wrapped by `VerifierService` in
 `@omadia/orchestrator`) puts a trust signal on a turn: a verdict, and from it
 a badge. A badge that says "verified" is a statement about the answer, so it
 may only follow from claims the verifier actually checked. Five paths check
-nothing: the answer carries no trigger signal, the extractor throws, the
+nothing: the answer carries no trigger signal, the extractor fails, the
 extractor returns no claims, no extracted claim fits a checker, or the
 pipeline itself throws. None of them is a pass.
 
@@ -725,6 +725,14 @@ an empty list.
 | `skipped` — `no_trigger`, `no_claims`, `no_checkable_claims` | ran, nothing checkable | `unverified` | none | neutral "not verified" |
 | `unavailable` — `extractor_error`, `pipeline_error` | could not run | `unavailable` | none | neutral "unavailable" |
 
+- **A failed extraction is not an empty one.** `ClaimExtractor.extract`
+  rejects when the LLM call fails or the response carries no usable
+  `record_claims` call (none, or one without a `claims` array); the pipeline
+  maps the rejection to `unavailable` / `extractor_error`. It resolves an
+  empty list only when the model reported no claim, or none survived the
+  verbatim guard, which is `skipped` / `no_claims`. A stage that cannot run
+  rejects rather than returning an empty result, so an outage never reads as
+  a clean run with nothing to check.
 - **Badges are derived under the evidence gate, not from the status alone.**
   `badgeFor` (`verifierService.ts`) checks `hasVerificationEvidence()`. The
   pipeline is injected (`verifier@1`), so a pipeline that returns `approved`
@@ -751,7 +759,9 @@ an empty list.
   migration), so a calibration query no longer counts an outage as a clean
   turn. No code in the repository reads the table.
 
-Tests: `middleware/test/verifierPipelineStates.test.ts`,
+Tests: `middleware/test/verifierPipelineStates.test.ts` (including the
+production `ClaimExtractor` over a failing LLM),
+`middleware/test/verifierClaimExtractor.test.ts`,
 `middleware/test/verifierServiceStates.test.ts`,
 `middleware/test/semanticAnswerGates.test.ts`,
 `middleware/test/channelApi/chatRouterVerifierStates.test.ts`,
@@ -1465,6 +1475,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       (status `approved` / `approved_with_disclaimer` / `blocked` and
       `claimCount > 0`) for a summary. `skipped` and `unavailable` never map to
       a green badge, and a verifier `reason` stays a closed code (§7c).
+- [ ] A verifier stage that cannot do its work (a failed LLM call, a model
+      response it cannot read) rejects instead of returning an empty result,
+      so the pipeline reports `unavailable` and not "nothing to check" (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
