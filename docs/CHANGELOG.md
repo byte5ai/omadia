@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — SessionWatcher test no longer races framer-motion's exit animation
+
+2026-09-30 — `SessionWatcher.test.tsx` "drops a warning back to normal when
+another tab renewed" failed intermittently in CI (twice on 2026-09-28 on
+Dependabot branches, twice on 2026-09-30). framer-motion's frame loop captures
+`requestAnimationFrame` when the module loads — jsdom's real one, not the fake
+timers the suite installs — so whether the warning card's exit animation
+finished inside a fake-time `flush()` depended on real wall-clock time.
+Removing the one-second slack made the unchanged test fail deterministically.
+The suite now renders `AnimatePresence`'s children directly, so a card leaves
+the DOM in the same commit that its phase ends; the component is unchanged.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
