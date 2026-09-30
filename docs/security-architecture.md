@@ -669,11 +669,16 @@ written. They are now bound to the turn's own privacy handle:
   spans, the operator deny-list, the C1 detector when wired, the node's display
   name and free-text fields (`EvidenceSnippet.identityValues`, deny-by-default
   like the v4 classifier), and the turn's known real values. Dates and amounts
-  stay, as in a v4 digest. Node ids are projected too (an ingested record's
-  id can embed an external key or a channel user id); the id the judge cites
-  is restored before the snippet lookup. One map means the same person is the
-  same placeholder in claim and evidence, so the judge can still verify. A real
-  value that equals a surrogate minted earlier in the turn blocks the request.
+  stay, as in a v4 digest. Node ids never leave the process (an ingested
+  record's id can embed an external key or a channel user id): the request
+  names each snippet by a handle minted for that request (`ev-1`, `ev-2`, …),
+  the handle the judge cites is resolved to its snippet server-side (a handle
+  the request did not print resolves to nothing), and a node id or a string
+  record key (`id=…`) that the evidence text repeats is always replaced like a
+  display name. Numeric record keys stay, as in a v4 digest. One map means the
+  same person is the same placeholder in claim and evidence, so the judge can
+  still verify. A real value that equals a surrogate minted earlier in the
+  turn blocks the request.
   Evidence is capped (3 snippets × 1200 chars) and the C1 timeout/degrade
   latch applies as for the prompt. Because a contradiction judged on
   placeholders can be an artefact of the substitution, it is reported as
@@ -1441,7 +1446,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       (it may still be an MCP input-card envelope) and never text handed to a
       bare `LlmProvider` — and the continuation's `finalize` runs after that
       call, exactly once, also on the error path (§6e). A new finalize site in
-      the orchestrator hands over when the turn was held.
+      the orchestrator hands over when the turn was held. An item such a
+      request asks the model to cite (an evidence snippet) is named by a
+      handle minted for that request and resolved server-side, never by its
+      record or node id (§6e).
 
 ---
 

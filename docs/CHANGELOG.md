@@ -50,9 +50,11 @@ state over instead of finalising it: the extractor sees the turn's wire view
 (the prompt exactly as the turn's model received it — an MCP input-card reply
 only as its label, never the envelope with the values typed for a third-party
 server — and the answer as its model wrote it; amounts and dates parsed from a
-placeholder are re-read from the real literal), the judge projects claim,
-evidence and node ids through the same surrogate map in one call — also with
-`mask_user_prompt` off — and the continuation finalises exactly once
+placeholder are re-read from the real literal), the judge projects claim and
+evidence through the same surrogate map in one call — also with
+`mask_user_prompt` off — and names each evidence snippet by a handle minted for
+that request, so no node id and no string record key reaches its provider, and
+the continuation finalises exactly once
 afterwards, so one receipt and one `turn_receipts` row cover the turn and the
 verifier (new receipt field `verifierEgress`, shown as "Answer check" on the web
 card). Server-rendered answers and Direct Line relays are not verified; with a

@@ -1582,13 +1582,18 @@ genau das und maskiert es nicht erneut (`admitWireView` bucht den Request nur);
 `VerifierService` gibt der Pipeline auch als `userMessage` nie den Envelope
 (`modelFacingUserMessage`). Claims aus der Wire-Sicht stellt
 `harness-verifier/src/claimRestore.ts` serverseitig wieder her (Beträge/Daten
-aus Platzhaltern werden aus dem echten Literal neu gelesen). Eine zweite
+aus Platzhaltern werden aus dem echten Literal neu gelesen). Der Judge bekommt
+keine Node-IDs: Jede Evidenz heißt im Request `ev-1`, `ev-2`, … (pro Request
+vergeben, die zitierte Kennung wird serverseitig auf das Snippet
+zurückgeführt), und eine Node-ID oder ein String-Schlüssel (`id=…`) im
+Evidenztext wird wie ein Anzeigename ersetzt. Eine zweite
 Antwort mit ungelösten Platzhaltern (`countUnresolvedSurrogates`) ersetzt die
 erste nie — weder ein weiter blockierter Retry noch ein blockiertes Re-Sample
 nach einer Borderline-Antwort. Tests:
 `test/orchestratorPrivacyEgress.test.ts` (Übergabe),
 `test/verifierPrivacyEgressEndToEnd.test.ts` (Verifier um den echten
-Orchestrator), `test/verifierServicePrivacyEgress.test.ts` /
+Orchestrator), `test/verifierEvidenceHandles.test.ts` (Judge-Kennungen),
+`test/verifierServicePrivacyEgress.test.ts` /
 `test/verifierServiceStreamPrivacyEgress.test.ts` (Wrapper, Harness in
 `test/_helpers/`).
 
