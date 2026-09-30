@@ -1,6 +1,7 @@
 /**
  * Types for the test-only Electron fake, so a test can import its control
- * surface (`__setDialogHandler`, `__lastClipboardText`) under `typecheck:test`.
+ * surface (`__setDialogHandler`, `__lastClipboardText`, `__setSafeStorage`)
+ * under `typecheck:test`.
  * Runtime behaviour lives in `electron-fake.mjs`; keep the two in step.
  */
 import type { MessageBoxOptions, MessageBoxReturnValue, BrowserWindow } from 'electron';
@@ -17,3 +18,13 @@ export function __lastClipboardText(): string | null;
 
 /** Set what `app.getLocale()` returns, so dialog copy can be asserted on. */
 export function __setLocale(locale: string): void;
+
+/** The `safeStorage` methods a test may replace; unset ones keep their defaults. */
+export interface SafeStorageOverride {
+  isEncryptionAvailable?: () => boolean;
+  encryptString?: (plainText: string) => Buffer;
+  decryptString?: (encrypted: Buffer) => string;
+}
+
+/** Swap `safeStorage` methods in place; null restores the defaults (no encryption). */
+export function __setSafeStorage(impl: SafeStorageOverride | null): void;
