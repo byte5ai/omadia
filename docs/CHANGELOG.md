@@ -36,6 +36,39 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — verifier evidence resolves the exact entity reference
+
+2026-09-30 — the answer verifier's graph evidence ignored the id in an entity
+handle. A soft claim about `hr.employee:7` (or `odoo:hr.employee:7`) was
+looked up as "any `hr.employee`", so the evidence judge — which sees nothing
+but those snippets — received up to three unrelated employees as evidence for
+record 7, plus whatever the capitalised-name search on `res.partner` /
+`hr.employee` turned up. The graph API had no exact-id lookup at all:
+`findEntities` only knew a model and a substring over display name and id, so
+the deterministic checker's graph `id` check matched "42" against 142, 420 or
+"Halle 42" as well. `FindEntitiesOptions.id` (plugin-api 1.20.0) now addresses
+one record by its source-system id, string-compared, in both the in-memory and
+the Neon backend; the extras wrappers forward it unchanged.
+
+An id-bearing handle now resolves exactly that record, and the fetcher
+re-checks model, id and (for three-part handles) system on the result, so a
+graph provider that ignores the new option yields no evidence instead of a
+substitute. A claim that pins a record gets only its pinned records: no model
+sample, no name search. When the record is not in the graph the claim ends
+`unverified` ("no evidence available") — in enforce mode an
+`approved_with_disclaimer` where a sibling record used to be able to verify or
+contradict it. Model-wide samples (for a bare `hr.department` handle) and the
+name search remain for claims without an id and are labelled as search results
+in the judge prompt; the judge is told, and `EvidenceJudge` enforces, that a
+verdict citing another record of a pinned model is demoted to `unverified`.
+`DeterministicChecker` checks an `odooRecord.id` against the graph by exact id;
+a miss there stays `contradicted`, as for a missing reference, although the
+graph is a periodically synced partial mirror (see
+`docs/security-architecture.md` §3b). Shadow-mode verdict metrics recorded
+before this change are not comparable with those after it: id-anchored claims
+about records outside the graph move from spurious `verified`/`contradicted`
+to `unverified`.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no

@@ -370,6 +370,75 @@ working across it:
   block indefinitely, the kill escalation never ran, and the turn hung holding
   its semaphore permit while a bearer-gated server kept listening.
 
+## 3b. Verifier evidence is resolved by exact entity id
+
+The answer verifier's evidence judge (`EvidenceJudge`) sees only the snippets
+`GraphEvidenceFetcher` hands it — never the answer, never the graph itself. So
+which node the fetcher picks decides what "verified" means. The claim
+extractor attaches entity handles to each claim (`related_entities`:
+`odoo:hr.employee:7`, `hr.employee:7`, or a bare model such as
+`hr.department`), and the fetcher treats them as follows
+(`middleware/packages/harness-verifier/src/graphEvidenceFetcher.ts`,
+`entityHandle.ts`):
+
+- **An id-bearing handle names one record.** It is resolved with
+  `findEntities({ model, id })` (plugin-api 1.20.0; both backends compare
+  `props.id` as a string, so `7` and `'7'` are the same record). The fetcher
+  re-checks `props.model`, `props.id` and, for a three-part handle,
+  `props.system` on whatever comes back: `knowledgeGraph` is a plugin-provided
+  capability, and a provider compiled against the contract before `id` existed
+  ignores the option and returns any record of the model. A record that is not
+  in the graph contributes nothing; another record of the same model is never
+  substituted.
+- **A claim that pins a record gets only its pinned records.** No model-wide
+  sample and no name search is added, so a claim whose records are all missing
+  has no evidence and ends `unverified` — fail closed, never a sibling record
+  that happens to verify or contradict it.
+- **Search results are labelled.** Only claims without an id get a model sample
+  (bare `hr.department`, or the system-qualified `odoo:res.partner`) and the
+  capitalised-name search on `res.partner` / `hr.employee`. Those snippets say
+  "model sample, not a referenced record" or "name match, not a referenced
+  record" in title and content, so the judge — and a stored contradiction that
+  falls back to snippet content — can tell a search hit from a resolved record.
+- **The judge is bound to the pinned record.** Its prompt states that a snippet
+  about another record of a model RELATED pins is a different entity, and
+  `EvidenceJudge` enforces it deterministically: a `verified` or `contradicted`
+  verdict citing a node of a pinned model with a different id is demoted to
+  `unverified`, on the first call and on the contradiction recheck alike.
+- **`nameContains` is a search, not an identity.** `'7'` matches records 7, 17
+  and 70 and every display name containing it. Code that starts from an entity
+  handle passes `id`.
+
+The deterministic checker applies the same primitive: `checkGraph` looks an
+`odooRecord.id` up by exact id and re-checks the hit (it used to substring-match
+the claim value, so "42" was also satisfied by 142 or "Halle 42"). A miss there
+stays `contradicted`, as for a missing document reference, because the
+extractor declared the graph the source of that claim. The graph is a partial
+mirror of Odoo master data, synced periodically, so in enforce mode an answer
+about a record created since the last sync is blocked and retried rather than
+released with a disclaimer — a known trade-off, not an oversight.
+
+Why a filter on `findEntities` rather than a node-by-id read: two-part handles
+(`hr.employee:7`) carry no `system`, so an external-id read of
+`odoo:hr.employee:7` would have to guess the namespace. The Neon backend's
+private external-id lookup is therefore not the fix for this path and should not
+be "rediscovered" as one.
+
+Limits, stated so nobody reads more into "exact id" than it covers:
+
+- `findEntities` returns `OdooEntity` and `ConfluencePage` nodes only. A handle
+  in a plugin namespace (`PluginEntity`, e.g. `dataset:…`) never resolves, with
+  or without `id`, and such claims get no graph evidence.
+- This is an integrity rule for verifier evidence, not an access control.
+  `findEntities` returns every match in the graph's tenant and applies no
+  per-user, per-chat or per-agent scope.
+
+Tests: `middleware/test/verifierGraphEvidenceFetcher.test.ts` (fetcher and
+judge, including a provider that ignores `id`),
+`kgFindEntitiesById.test.ts` / `kgFindEntitiesById.pg.test.ts` (the exact-id
+contract on both backends, tenant scope on Neon), and the graph cases in
+`verifierDeterministicChecker.test.ts`.
+
 ## 4. Plugin install surface
 
 Plugins are installed as signed ZIPs uploaded through the operator UI, not
@@ -1288,6 +1357,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] Any new proxy route validates the response shape before returning it
       to the agent (defends against prompt injection from upstream).
 - [ ] Any new sub-agent tool is scope-locked at construction time.
+- [ ] A graph lookup that starts from an entity handle (`model:id`,
+      `system:model:id`) passes the id as `findEntities({ id })` and re-checks
+      the returned node's model and id; it never feeds the id to `nameContains`
+      and never falls back to a model-wide or name search for that record
+      (§3b).
 - [ ] A change to either CLI spawn argv keeps the deny gate (`--tools ""`,
       `--disallowedTools`, `--permission-mode dontAsk`, `--setting-sources ""`,
       `--restricted` where the CLI version allows it plus the
