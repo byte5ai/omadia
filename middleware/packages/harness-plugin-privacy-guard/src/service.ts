@@ -26,6 +26,9 @@ import type {
   PrivacyReceipt,
   PrivacyRenderedAnswer,
   PrivacySubAgentResultV4Request,
+  PrivacyToolErrorRedactRequest,
+  PrivacyToolErrorRedactResult,
+  PrivacyToolErrorRequest,
   PrivacyToolResultV4Request,
   PrivacyToolResultV4Result,
   PrivacyV4ToolRequest,
@@ -33,6 +36,7 @@ import type {
   PromptMaskedSpanInfo,
   PromptPiiDetector,
   PromptPiiSpan,
+  ToolErrorEntry,
 } from '@omadia/plugin-api';
 import { isControlFlowToolResult } from '@omadia/plugin-api';
 
@@ -59,6 +63,10 @@ import {
   createCustomTermsDetector,
   maskPrompt,
 } from './promptMask.js';
+import {
+  createToolErrorBaselineDetector,
+  redactToolErrorSpans,
+} from './toolErrorRedact.js';
 import { findIdentityLeaks } from './v4/onTheWire.js';
 import { resolvePseudonyms } from './v4/pseudonym.js';
 import type { PseudonymMap } from './v4/types.js';
@@ -273,6 +281,10 @@ export function createPrivacyGuardService(deps?: {
   // the payload never crossed the model boundary, so nothing here is masked;
   // entries carry tool/server names + a byte count + a schema flag, no value.
   const structuredPayloads = new Map<string, StructuredPayloadEntry[]>();
+  // Per-turn list of tool errors the dispatch seams withheld, redacted or
+  // passed. Drained into the receipt by `finalizeTurn`. Entries carry tool
+  // name, carrier, outcome, a byte count and masked span TYPES — no text.
+  const toolErrors = new Map<string, ToolErrorEntry[]>();
   // #361 — per-turn prompt-surrogate map (real↔surrogate), server-side
   // only. Extended across repeated mask calls within one turn (message +
   // ingested attachment tail) so surrogates stay stable; inverted over the
@@ -327,6 +339,46 @@ export function createPrivacyGuardService(deps?: {
     }
     perTurn.set(text, spans);
   };
+
+  /**
+   * The C1 step shared by prompt masking and tool-error redaction, so both
+   * run the SAME detector assembly: the per-turn span cache, the per-turn
+   * degrade latch, and an audited tier-1 degrade to the baseline. Runs C1
+   * up-front so its failure cannot take the baseline down with it; its spans
+   * are memoized into a pass-through detector for the substitution pass.
+   */
+  async function c1DetectorFor(
+    turnId: string,
+    text: string,
+    degradeLogTag: string,
+  ): Promise<{ readonly detector?: PromptPiiDetector; readonly degraded: boolean }> {
+    if (!deps?.c1Detector) return { degraded: false };
+    const c1 = deps.c1Detector;
+    const cached = c1CacheGet(turnId, text);
+    if (c1FailedTurns.has(turnId)) {
+      // C1 already failed once in THIS turn. A down sidecar is down for
+      // every text, so retrying only buys another full timeout — a dozen
+      // of which is ~3 minutes for the C0 result the first attempt
+      // already produced. Degrade immediately, still audited by the caller.
+      return { degraded: true };
+    }
+    if (cached !== undefined) {
+      return { detector: { id: c1.id, detect: async () => cached }, degraded: false };
+    }
+    try {
+      const c1Spans = await c1.detect(text);
+      c1CacheSet(turnId, text, c1Spans);
+      return { detector: { id: c1.id, detect: async () => c1Spans }, degraded: false };
+    } catch (err) {
+      c1FailedTurns.add(turnId);
+      console.warn(
+        `[privacy-guard v4] ${degradeLogTag} turn=${turnId} ` +
+          `detector=${c1.id}: ${err instanceof Error ? err.message : String(err)} ` +
+          `(C1 disabled for the remainder of this turn)`,
+      );
+      return { degraded: true };
+    }
+  }
 
   // #760 — per-service fingerprint cache for the operator deny-list detector.
   const resolveCustomDetector = makeCustomDetectorResolver();
@@ -490,6 +542,34 @@ export function createPrivacyGuardService(deps?: {
       );
     },
 
+    async recordToolError(request: PrivacyToolErrorRequest): Promise<void> {
+      let list = toolErrors.get(request.turnId);
+      if (list === undefined) {
+        list = [];
+        toolErrors.set(request.turnId, list);
+      }
+      // Copy field by field: the entry lands in a receipt that is PII-free by
+      // construction, so nothing a caller attached beyond the contract rides
+      // along.
+      const spans = (request.redactedSpans ?? []).map((s) => ({
+        type: s.type,
+        detector: s.detector,
+      }));
+      list.push({
+        toolName: request.toolName,
+        carrier: request.carrier,
+        outcome: request.outcome,
+        bytes: request.bytes,
+        ...(spans.length > 0 ? { redactedSpans: spans } : {}),
+      });
+      console.log(
+        `[privacy-guard v4] tool-error turn=${request.turnId} ` +
+          `tool=${request.toolName} carrier=${request.carrier} ` +
+          `outcome=${request.outcome} bytes=${String(request.bytes)} ` +
+          `spans=${String(spans.length)}`,
+      );
+    },
+
     async runV4Tool(
       request: PrivacyV4ToolRequest,
     ): Promise<{ readonly resultText: string }> {
@@ -620,37 +700,13 @@ export function createPrivacyGuardService(deps?: {
       // Same confidence-1, fail-closed path as the baseline.
       const customDetector = resolveCustomDetector(deps?.readConfig);
       if (customDetector) detectors.push(customDetector);
-      let degraded = false;
-      if (deps?.c1Detector) {
-        // Run the C1 detector up-front so its failure cannot take the C0
-        // baseline down with it (tier-1 degrade, audited); its spans are
-        // memoized into a pass-through detector for the mask pass.
-        const c1 = deps.c1Detector;
-        const cached = c1CacheGet(request.turnId, request.text);
-        if (c1FailedTurns.has(request.turnId)) {
-          // C1 already failed once in THIS turn. A down sidecar is down for
-          // every text, so retrying only buys another full timeout — a dozen
-          // of which is ~3 minutes for the C0 result the first attempt
-          // already produced. Degrade immediately, still audited below.
-          degraded = true;
-        } else if (cached !== undefined) {
-          detectors.push({ id: c1.id, detect: async () => cached });
-        } else {
-          try {
-            const c1Spans = await c1.detect(request.text);
-            c1CacheSet(request.turnId, request.text, c1Spans);
-            detectors.push({ id: c1.id, detect: async () => c1Spans });
-          } catch (err) {
-            degraded = true;
-            c1FailedTurns.add(request.turnId);
-            console.warn(
-              `[privacy-guard v4] promptMaskDegraded turn=${request.turnId} ` +
-                `detector=${c1.id}: ${err instanceof Error ? err.message : String(err)} ` +
-                `(C1 disabled for the remainder of this turn)`,
-            );
-          }
-        }
-      }
+      const c1Step = await c1DetectorFor(
+        request.turnId,
+        request.text,
+        'promptMaskDegraded',
+      );
+      if (c1Step.detector) detectors.push(c1Step.detector);
+      const degraded = c1Step.degraded;
       try {
         const result = await maskPrompt(
           request.text,
@@ -700,6 +756,62 @@ export function createPrivacyGuardService(deps?: {
           outcome: 'blocked',
           reason: 'prompt PII detection failed',
         };
+      }
+    },
+
+    // Tool-error redaction. The same detector assembly as `maskUserPrompt`
+    // (baseline, operator deny-list, C1 with the per-turn cache and latch),
+    // but: the baseline is narrowed to identity types (dates and amounts are
+    // the hints a tool error exists to carry), substitution is irreversible
+    // (`[masked:<type>]`, the turn's surrogate map is read for the known-value
+    // sweep but never extended), and it does NOT consult `mask_user_prompt` —
+    // that flag is about the user's own words, and a tool error is no channel
+    // anyone consented to send in clear. Failure-closed: a detector failure or
+    // a surviving value means `withheld`, never the input text.
+    async redactToolErrorText(
+      request: PrivacyToolErrorRedactRequest,
+    ): Promise<PrivacyToolErrorRedactResult> {
+      const detectors: PromptPiiDetector[] = [createToolErrorBaselineDetector()];
+      const customDetector = resolveCustomDetector(deps?.readConfig);
+      if (customDetector) detectors.push(customDetector);
+      const c1Step = await c1DetectorFor(
+        request.turnId,
+        request.text,
+        'toolErrorRedactDegraded',
+      );
+      if (c1Step.detector) detectors.push(c1Step.detector);
+      try {
+        const known = promptMaskMaps.get(request.turnId)?.forward.keys() ?? [];
+        const result = await redactToolErrorSpans(request.text, detectors, known);
+        const residual = findIdentityLeaks(result.text, [...result.values]);
+        if (residual.length > 0) {
+          console.error(
+            `[privacy-guard v4] toolErrorRedactWithheld turn=${request.turnId} ` +
+              `tool=${request.toolName} residual=${String(residual.length)} ` +
+              'span(s) survived substitution',
+          );
+          return {
+            outcome: 'withheld',
+            reason: 'residual PII span survived substitution',
+          };
+        }
+        console.log(
+          `[privacy-guard v4] toolErrorRedact turn=${request.turnId} ` +
+            `tool=${request.toolName} spans=${String(result.spans.length)}` +
+            `${c1Step.degraded ? ' degraded=c0-only' : ''}`,
+        );
+        return {
+          outcome: 'redacted',
+          text: result.text,
+          spans: result.spans,
+          degraded: c1Step.degraded,
+        };
+      } catch (err) {
+        console.error(
+          `[privacy-guard v4] toolErrorRedactWithheld turn=${request.turnId} ` +
+            `tool=${request.toolName}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return { outcome: 'withheld', reason: 'tool-error PII detection failed' };
       }
     },
 
@@ -777,15 +889,24 @@ export function createPrivacyGuardService(deps?: {
       bypassedTools.delete(turnId);
       const structured = structuredPayloads.get(turnId);
       structuredPayloads.delete(turnId);
+      const errors = toolErrors.get(turnId);
+      toolErrors.delete(turnId);
       // No receipt for a turn that touched neither the boundary, a bypass,
-      // structured output, nor prompt masking — there is nothing to report and
-      // a zero receipt is just noise in the channel UI.
+      // structured output, prompt masking, nor a tool error — there is nothing
+      // to report and a zero receipt is just noise in the channel UI.
       const hasInterned = accum !== undefined && accum.datasetsInterned > 0;
       const hasBypassed = bypassed !== undefined && bypassed.length > 0;
       const hasStructured = structured !== undefined && structured.length > 0;
       const hasMaskedPrompt =
         accum !== undefined && accum.maskedPromptSpans.length > 0;
-      if (!hasInterned && !hasBypassed && !hasStructured && !hasMaskedPrompt)
+      const hasToolErrors = errors !== undefined && errors.length > 0;
+      if (
+        !hasInterned &&
+        !hasBypassed &&
+        !hasStructured &&
+        !hasMaskedPrompt &&
+        !hasToolErrors
+      )
         return undefined;
       // identityValuesOnWire — personal-identity values the requester named
       // in their own message text. A transparency notice (the user put a
@@ -804,6 +925,7 @@ export function createPrivacyGuardService(deps?: {
           `verbs=[${(accum?.verbsExecuted ?? []).join(',')}] ` +
           `bypassed=${String(bypassed?.length ?? 0)} ` +
           `structured=${String(structured?.length ?? 0)} ` +
+          `toolErrors=${String(errors?.length ?? 0)} ` +
           `identityOnWire=${String(identityValuesOnWire)}`,
       );
       return {
@@ -818,6 +940,7 @@ export function createPrivacyGuardService(deps?: {
         ...(hasMaskedPrompt
           ? { maskedPromptSpans: [...accum.maskedPromptSpans] }
           : {}),
+        ...(hasToolErrors ? { toolErrors: [...errors] } : {}),
       };
     },
   };

@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.5.0"
+  version: "0.6.0"
   kind: "tool"
   domain: "privacy.redact"
   description:
@@ -53,19 +53,19 @@ setup:
     - key: "custom_terms"
       type: "string"
       label: "Custom deny-list terms"
-      help: "Operator-defined literal terms that are ALWAYS masked in free-text prompts when prompt masking is on — project code names, customer names, internal identifiers. Separate entries with ';' or newlines; matched case-insensitively on word boundaries. Spans report type 'custom' in the privacy receipt and flow through the same fail-closed surrogate machinery as the built-in patterns. No effect while mask_user_prompt is off."
+      help: "Operator-defined literal terms that are ALWAYS masked in free-text prompts when prompt masking is on — project code names, customer names, internal identifiers. Separate entries with ';' or newlines; matched case-insensitively on word boundaries. Spans report type 'custom' in the privacy receipt and flow through the same fail-closed surrogate machinery as the built-in patterns. Prompts are untouched while mask_user_prompt is off; the terms are ALSO applied, regardless of that flag, to tool-error text (a tool's returned 'Error: …' string) before it reaches the model."
       required: false
       default: ""
     - key: "custom_patterns"
       type: "string"
       label: "Custom deny-list patterns (advanced)"
-      help: "Operator-defined regular expressions (one per NEWLINE — ';' is legal regex syntax and is not treated as a separator), each masked like a built-in pattern. Every pattern is vetted when the config changes: invalid syntax or catastrophic-backtracking candidates (probe budget exceeded) are REJECTED with a loud log line ('customPatternRejected') and are NOT active — check the middleware log after saving. No effect while mask_user_prompt is off."
+      help: "Operator-defined regular expressions (one per NEWLINE — ';' is legal regex syntax and is not treated as a separator), each masked like a built-in pattern. Every pattern is vetted when the config changes: invalid syntax or catastrophic-backtracking candidates (probe budget exceeded) are REJECTED with a loud log line ('customPatternRejected') and are NOT active — check the middleware log after saving. Prompts are untouched while mask_user_prompt is off; the patterns are ALSO applied, regardless of that flag, to tool-error text before it reaches the model."
       required: false
       default: ""
     - key: "c1_detector_url"
       type: "string"
       label: "C1 PII-detector sidecar URL"
-      help: "Base URL of the GLiNER PII-inference sidecar (middleware/sidecars/pii-detector) that detects person names and free-form addresses — the C1 tier on top of the C0 regex baseline. Under the docker-compose.pii-detector.yaml overlay: http://pii-detector:8812. Leave empty to run only the C0 regex baseline (no C1 call is attempted). The sidecar receives raw prompt PII — keep it internal-network-only, never public. Sidecar unreachable at runtime => audited degrade to C0 (promptMaskDegraded), never a silent unmasked pass-through. Falls back to the PRIVACY_C1_DETECTOR_URL env var when empty."
+      help: "Base URL of the GLiNER PII-inference sidecar (middleware/sidecars/pii-detector) that detects person names and free-form addresses — the C1 tier on top of the C0 regex baseline. Under the docker-compose.pii-detector.yaml overlay: http://pii-detector:8812. Leave empty to run only the C0 regex baseline (no C1 call is attempted). The sidecar receives raw prompt PII and raw tool-error text — keep it internal-network-only, never public. Sidecar unreachable at runtime => audited degrade to C0 (promptMaskDegraded), never a silent unmasked pass-through. Falls back to the PRIVACY_C1_DETECTOR_URL env var when empty."
       required: false
       default: ""
 
@@ -83,8 +83,18 @@ playbook:
         Server-Code aus.
       - `finalizeTurn` verwirft die Turn-Datasets und liefert eine PII-freie
         `PrivacyReceipt` für die UI-Disclosure.
+      - `redactToolErrorText` (ab 0.6.0) redigiert zurückgegebene
+        `Error:`-Texte irreversibel (`[masked:<typ>]`), bevor das Modell sie
+        liest; `recordToolError` listet jeden behandelten Tool-Fehler unter
+        `PrivacyReceipt.toolErrors`.
     Die Receipt landet als Message-Metadata im Channel-Output (Teams + Web)
     und kann dort als Collapsed-/Expanded-Card gerendert werden.
+
+    Versions-Paarung: Ein Orchestrator, der Tool-Fehler redigiert
+    (@omadia/plugin-api >= 1.20.0), braucht dieses Plugin in >= 0.6.0. Mit
+    einer älteren Version fehlt `redactToolErrorText`; der Orchestrator hält
+    zurückgegebene `Error:`-Texte dann vollständig zurück (fail-closed) und
+    loggt das einmal pro Prozess.
 
 # ---------------------------------------------------------------------------
 # Permissions. Server-side compute plus ONE deliberate network target
@@ -102,7 +112,8 @@ permissions:
     outbound:
       # #361 — the GLiNER PII-detector sidecar (`c1_detector_url` setup
       # field / PRIVACY_C1_DETECTOR_URL). Operator-configured, on-prem,
-      # internal-network-only — it receives raw prompt text, so this is a
+      # internal-network-only — it receives raw prompt text and raw
+      # tool-error text, so this is a
       # deliberate, security-reviewable exception to the plugin's
       # previously pure-compute posture.
       - "pii-detector-sidecar"
