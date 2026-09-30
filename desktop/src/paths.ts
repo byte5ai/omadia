@@ -78,7 +78,7 @@ export function platformDataDir(): string {
   return dir;
 }
 
-/** Directory the embedded Postgres (PGlite) persists into. */
+/** The embedded PostgreSQL 17 cluster's data directory (`initdb -D`). */
 export function embeddedDbDir(): string {
   const dir = path.join(dataRoot(), 'pgdata');
   ensureDir(dir);

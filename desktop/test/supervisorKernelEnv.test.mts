@@ -14,6 +14,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Supervisor } from '../src/supervisor.ts';
+import type { EmbeddedDb } from '../src/embeddedDb.ts';
+import { kernelDatabaseUrl } from '../src/embeddedDbAuth.ts';
+import { embeddedDbCredentials } from '../src/secrets.ts';
 
 before(() => {
   // `paths.ts` is compiled to CommonJS for the app and reads `__dirname` to
@@ -131,6 +134,31 @@ describe('Supervisor.kernelEnv login-redirect base (OM-90)', () => {
     } finally {
       if (saved === undefined) delete process.env['PUBLIC_BASE_URL'];
       else process.env['PUBLIC_BASE_URL'] = saved;
+    }
+  });
+});
+
+/**
+ * The embedded Postgres has two roles: the bootstrap superuser, whose password
+ * never leaves the shell, and the restricted `omadia_kernel` the kernel runs
+ * as. The kernel's environment carries the second and never the first.
+ */
+describe('Supervisor.kernelEnv database credentials', () => {
+  it('hands the kernel the restricted role and never the bootstrap password', () => {
+    const creds = embeddedDbCredentials();
+    const supervisor = new Supervisor();
+    const db: EmbeddedDb = {
+      databaseUrl: kernelDatabaseUrl(54_321, creds.kernelPassword),
+      port: 54_321,
+      stop: async () => true,
+    };
+    (supervisor as unknown as { db: EmbeddedDb | null }).db = db;
+    const env = (supervisor as unknown as WithKernelEnv).kernelEnv(8769, UI_PORT);
+
+    assert.equal(env['DATABASE_URL'], db.databaseUrl);
+    assert.equal(new URL(env['DATABASE_URL'] ?? '').username, 'omadia_kernel');
+    for (const [name, value] of Object.entries(env)) {
+      assert.ok(!value?.includes(creds.superuserPassword), `${name} must not carry the bootstrap password`);
     }
   });
 });

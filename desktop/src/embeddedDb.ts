@@ -1,11 +1,23 @@
 import { spawn, ChildProcess, execFileSync } from 'node:child_process';
 import { Client } from 'pg';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { embeddedDbDir, dataRoot, runtimeIsDev } from './paths';
 import { findFreePort, isPortFree } from './ports';
 import { log } from './log';
+import { embeddedDbCredentials } from './secrets';
+import {
+  DB_SUPERUSER,
+  ensureClusterAuth,
+  isAuthFailure,
+  kernelDatabaseUrl,
+  type AuthClient,
+  type ConnectOptions,
+  type DbAuthIo,
+} from './embeddedDbAuth';
 
 /**
  * The embedded database engine: a REAL, bundled PostgreSQL 17 + pgvector.
@@ -22,12 +34,13 @@ import { log } from './log';
  * — never trapped inside the asar archive). We drive initdb/postgres directly
  * rather than via the embedded-postgres wrapper, which is asar-unaware.
  *
- * The kernel connects over loopback TCP with trust auth (loopback-only; no LAN
- * exposure). No GRAPH_POOL_MAX=1 cap needed — real Postgres pools normally.
+ * The server listens on loopback TCP only, and every connection needs a SCRAM
+ * password (`embeddedDbAuth.ts`): the bootstrap superuser `omadia` is the
+ * shell's alone, and the kernel connects as the restricted `omadia_kernel`.
+ * Both passwords live in `secrets.enc`. No GRAPH_POOL_MAX=1 cap needed — real
+ * Postgres pools normally.
  */
 
-const DB_NAME = 'omadia';
-const DB_USER = 'omadia';
 const exe = (name: string): string => (process.platform === 'win32' ? `${name}.exe` : name);
 
 export interface EmbeddedDb {
@@ -50,8 +63,8 @@ let stopping = false;
 
 /** @embedded-postgres package name for this platform (win32 → windows). */
 function pgPlatform(): string {
-  const os = process.platform === 'win32' ? 'windows' : process.platform;
-  return `${os}-${process.arch}`;
+  const platform = process.platform === 'win32' ? 'windows' : process.platform;
+  return `${platform}-${process.arch}`;
 }
 
 /** The staged Postgres "native" dir (contains bin/, lib/, share/). */
@@ -67,10 +80,9 @@ function pgBin(name: string): string {
 }
 
 async function startRealEmbeddedDb(): Promise<EmbeddedDb> {
-  if (current) return toHandle(current.port);
+  if (current) return toHandle(current.port, embeddedDbCredentials().kernelPassword);
 
   const dataDir = embeddedDbDir();
-  const nativeDir = pgNativeDir();
   if (!fs.existsSync(pgBin('postgres'))) {
     throw new Error(
       `Embedded Postgres binary not found at ${pgBin('postgres')} — the installer ` +
@@ -78,25 +90,82 @@ async function startRealEmbeddedDb(): Promise<EmbeddedDb> {
     );
   }
 
-  // First run: initialise the data cluster. `-A trust` (loopback-only) + locale C
-  // (avoids the "no suitable text search config for UTF-8 locale" initdb warning).
+  // The passwords are in secrets.enc, written and read back, before a cluster
+  // is created or its authentication touched: a password that existed only in
+  // the cluster would lock the shell out of it. An unreadable secrets file
+  // stops the start here, before initdb, and reaches the restore dialog as is.
+  const creds = embeddedDbCredentials();
+
   if (!fs.existsSync(path.join(dataDir, 'PG_VERSION'))) {
-    log.info('[db] initialising embedded Postgres cluster…');
-    const pwFile = path.join(dataDir, '..', '.pg-init-noop');
-    fs.mkdirSync(path.dirname(pwFile), { recursive: true });
-    execFileSync(
-      pgBin('initdb'),
-      ['-D', dataDir, '-U', DB_USER, '-A', 'trust', '-E', 'UTF8', '--locale=C'],
-      { stdio: 'pipe' },
-    );
+    initCluster(dataDir, creds.superuserPassword);
   }
 
   const port = await stableDbPort();
-
-  // Start the server bound to loopback TCP only (unix sockets disabled — avoids
-  // the ~107-char socket-path limit under long userData paths and is moot on
-  // Windows). PG locates its share/lib relative to the binary.
   log.info(`[db] starting embedded Postgres on 127.0.0.1:${port}…`);
+  current = { proc: spawnServer(dataDir, port), port };
+
+  try {
+    await waitForReady(port, creds.superuserPassword);
+    await ensureClusterAuth(realDbAuthIo(dataDir, port, creds.superuserPassword), creds);
+  } catch (err) {
+    // Deliberate cleanup of a server that failed to come ready — mark it so the
+    // exit handler reports the original failure, not a spurious "exited
+    // unexpectedly". This also ends any trust window a failed credential repair
+    // could not close itself: no server keeps running on rules nobody checked.
+    stopping = true;
+    try {
+      if (current) await stopProc(current.proc);
+    } finally {
+      current = null;
+      stopping = false;
+    }
+    throw err;
+  }
+
+  log.info(`[db] embedded Postgres ready on 127.0.0.1:${port}`);
+  return toHandle(port, creds.kernelPassword);
+}
+
+/**
+ * First run: a cluster that asks for a SCRAM password from its first second,
+ * with the bootstrap superuser's password already set. Locale C avoids the
+ * "no suitable text search config for UTF-8 locale" initdb warning.
+ */
+function initCluster(dataDir: string, superuserPassword: string): void {
+  log.info('[db] initialising embedded Postgres cluster (SCRAM authentication)…');
+  // initdb reads the password from a file, since argv would show it in `ps`.
+  // A fresh private temp dir, never the data folder (which may be
+  // cloud-synced), and gone again whatever initdb does.
+  const pwDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omadia-initdb-'));
+  try {
+    const pwFile = path.join(pwDir, 'pwfile');
+    fs.writeFileSync(pwFile, `${superuserPassword}\n`, { mode: 0o600, flag: 'wx' });
+    execFileSync(
+      pgBin('initdb'),
+      [
+        '-D', dataDir,
+        '-U', DB_SUPERUSER,
+        '--auth=scram-sha-256',
+        `--pwfile=${pwFile}`,
+        '-E', 'UTF8',
+        '--locale=C',
+      ],
+      { stdio: 'pipe' },
+    );
+  } finally {
+    fs.rmSync(pwDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Start the server bound to loopback TCP only (unix sockets disabled — avoids
+ * the ~107-char socket-path limit under long userData paths and is moot on
+ * Windows). `hba_file` is pinned on the command line, which nothing in
+ * postgresql.conf or postgresql.auto.conf can override, so the rules in force
+ * are always the ones the shell writes. PG locates its share/lib relative to
+ * the binary.
+ */
+function spawnServer(dataDir: string, port: number): ChildProcess {
   const proc = spawn(
     pgBin('postgres'),
     [
@@ -104,9 +173,10 @@ async function startRealEmbeddedDb(): Promise<EmbeddedDb> {
       '-p', String(port),
       '-c', 'listen_addresses=127.0.0.1',
       '-c', 'unix_socket_directories=',
+      '-c', `hba_file=${path.join(dataDir, 'pg_hba.conf')}`,
       '-c', 'fsync=on',
     ],
-    { cwd: nativeDir, stdio: ['ignore', 'pipe', 'pipe'] },
+    { cwd: pgNativeDir(), stdio: ['ignore', 'pipe', 'pipe'] },
   );
   proc.stdout?.on('data', (d: Buffer) => log.info(`[postgres] ${d.toString().trimEnd()}`));
   proc.stderr?.on('data', (d: Buffer) => log.info(`[postgres] ${d.toString().trimEnd()}`));
@@ -118,68 +188,137 @@ async function startRealEmbeddedDb(): Promise<EmbeddedDb> {
       current = null;
     }
   });
-
-  current = { proc, port };
-
-  try {
-    await waitForReady(port);
-    await ensureDatabase(port);
-  } catch (err) {
-    // Deliberate cleanup of a server that failed to come ready — mark it so the
-    // exit handler reports the original failure, not a spurious "exited
-    // unexpectedly". (waitForReady already throws the actionable message.)
-    stopping = true;
-    await stopProc(proc);
-    current = null;
-    stopping = false;
-    throw err;
-  }
-
-  log.info(`[db] embedded Postgres ready on 127.0.0.1:${port}`);
-  return toHandle(port);
+  return proc;
 }
 
-/** Poll until the server accepts a TCP connection and answers a query. */
-async function waitForReady(port: number, timeoutMs = 30_000): Promise<void> {
+/**
+ * Poll until the server answers. An authentication verdict is an answer: the
+ * server is up, and whether the stored password still fits is
+ * `ensureClusterAuth`'s question (it repairs what does not).
+ */
+async function waitForReady(port: number, superuserPassword: string, timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastErr = '';
   while (Date.now() < deadline) {
     if (!current || current.proc.exitCode !== null) {
       throw new Error('embedded Postgres exited before becoming ready');
     }
-    const client = new Client({ host: '127.0.0.1', port, user: DB_USER, database: 'postgres', connectionTimeoutMillis: 3000 });
+    const client = new Client({
+      host: '127.0.0.1',
+      port,
+      user: DB_SUPERUSER,
+      password: superuserPassword,
+      database: 'postgres',
+      connectionTimeoutMillis: 3000,
+    });
     try {
       await client.connect();
       await client.query('SELECT 1');
       await client.end();
       return;
     } catch (err) {
-      lastErr = err instanceof Error ? err.message : String(err);
       await client.end().catch(() => {});
+      if (isAuthFailure(err)) return;
+      lastErr = err instanceof Error ? err.message : String(err);
     }
     await delay(400);
   }
   throw new Error(`embedded Postgres did not become ready in ${timeoutMs}ms (${lastErr})`);
 }
 
-/** Ensure the `omadia` database exists (CREATE DATABASE has no IF NOT EXISTS). */
-async function ensureDatabase(port: number): Promise<void> {
-  const client = new Client({ host: '127.0.0.1', port, user: DB_USER, database: 'postgres' });
-  await client.connect();
+/**
+ * Stop the server and start it again on the same port, so it reads
+ * pg_hba.conf afresh. The credential repair needs this: while the shell cannot
+ * log in, nothing can ask the server for a reload.
+ */
+async function restartServer(dataDir: string, port: number, superuserPassword: string): Promise<void> {
+  const running = current;
+  if (running === null) throw new Error('embedded Postgres is not running');
+  stopping = true;
+  let exited: boolean;
   try {
-    const { rowCount } = await client.query('SELECT 1 FROM pg_database WHERE datname = $1', [DB_NAME]);
-    if (!rowCount) {
-      await client.query(`CREATE DATABASE ${DB_NAME} OWNER ${DB_USER}`);
-      log.info(`[db] created database "${DB_NAME}"`);
-    }
+    exited = await stopProc(running.proc);
   } finally {
-    await client.end();
+    stopping = false;
+  }
+  if (!exited) throw new Error('embedded Postgres did not stop for the restart');
+  log.info(`[db] restarting embedded Postgres on 127.0.0.1:${port}…`);
+  current = { proc: spawnServer(dataDir, port), port };
+  await waitForReady(port, superuserPassword);
+}
+
+/** The running cluster behind `embeddedDbAuth.ts`'s port. */
+function realDbAuthIo(dataDir: string, port: number, superuserPassword: string): DbAuthIo {
+  const hbaFile = path.join(dataDir, 'pg_hba.conf');
+  return {
+    readHba: () => {
+      try {
+        return fs.readFileSync(hbaFile, 'utf8');
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw err;
+      }
+    },
+    writeHba: async (text) => writeFileAtomic(hbaFile, text),
+    connect: (options) => connectClient(port, options),
+    restartServer: () => restartServer(dataDir, port, superuserPassword),
+    sleep: (ms) => delay(ms),
+    info: (message) => log.info(message),
+    warn: (message) => log.warn(message),
+  };
+}
+
+async function connectClient(port: number, options: ConnectOptions): Promise<AuthClient> {
+  const client = new Client({
+    host: '127.0.0.1',
+    port,
+    user: options.user,
+    password: options.password,
+    database: options.database,
+    connectionTimeoutMillis: 5_000,
+  });
+  // A connection the server drops later (a restart) must not surface as an
+  // unhandled 'error' event.
+  client.on('error', (err) => log.warn(`[db] connection as ${options.user} dropped: ${err.message}`));
+  try {
+    await client.connect();
+  } catch (err) {
+    await client.end().catch(() => {});
+    throw err;
+  }
+  return {
+    query: async (sql, params) => ({ rows: (await client.query(sql, params ? [...params] : undefined)).rows }),
+    escapeLiteral: (value) => client.escapeLiteral(value),
+    end: () => client.end(),
+  };
+}
+
+/**
+ * Temp file, flushed, renamed over the target: a crash leaves the old rules or
+ * the new ones, never a torn pg_hba.conf the server refuses to start with.
+ */
+function writeFileAtomic(file: string, text: string): void {
+  const tmp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  const fd = fs.openSync(tmp, 'wx', 0o600);
+  try {
+    fs.writeFileSync(fd, text);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
   }
 }
 
-function toHandle(port: number): EmbeddedDb {
+function toHandle(port: number, kernelPassword: string): EmbeddedDb {
   return {
-    databaseUrl: `postgresql://${DB_USER}@127.0.0.1:${port}/${DB_NAME}`,
+    // The restricted kernel role. The bootstrap superuser's password never
+    // leaves this process.
+    databaseUrl: kernelDatabaseUrl(port, kernelPassword),
     port,
     async stop() {
       return stopEmbeddedDb();
