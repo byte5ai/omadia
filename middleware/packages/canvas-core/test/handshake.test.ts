@@ -55,4 +55,27 @@ describe('createHandshake', () => {
     hs.onMessage({ type: 'handshake_ack', handshakeId: 'h1', canvasSessionId: 'c' });
     expect(hs.onMessage(OFFER)).toBeNull();
   });
+
+  it("carries the ack's sessionExpiresAt into the ready action", () => {
+    const hs = createHandshake(CONFIG);
+    hs.onMessage(OFFER);
+    const ack: HandshakeAck = {
+      type: 'handshake_ack',
+      handshakeId: 'h1',
+      canvasSessionId: 'c-1',
+      sessionExpiresAt: 1_900_000_000,
+    };
+    expect(hs.onMessage(ack)).toEqual({
+      kind: 'ready',
+      canvasSessionId: 'c-1',
+      sessionExpiresAt: 1_900_000_000,
+    });
+  });
+
+  it('drops a sessionExpiresAt that is not a finite number (older or odd servers)', () => {
+    const hs = createHandshake(CONFIG);
+    hs.onMessage(OFFER);
+    const odd = { type: 'handshake_ack', handshakeId: 'h1', canvasSessionId: 'c-2', sessionExpiresAt: 'soon' };
+    expect(hs.onMessage(odd as unknown as HandshakeAck)).toEqual({ kind: 'ready', canvasSessionId: 'c-2' });
+  });
 });
