@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — builder issue-reporting docs no longer claim browser-submit is the only path (#1216)
+
+2026-09-30 — the builder system prompt and two source-file headers still said
+PAT-direct issue creation "gibt es in v1 nicht — nur Browser-Submit", written
+before the GitHub App direct-create path landed. The prompt contradicted itself:
+step 4 of the same section documents `mode='created-pending'`, where the server
+files the issue through the App. All three now state the real constraint — issues
+come about only through `omadia_report_core_bug`, on whichever path the server
+provides, and there is deliberately no PAT code path and no vault lookup, so the
+tool cannot regress into a half-working insecure mode. The header of
+`reportPlatformIssue.ts` also picked up the two branches it was missing
+(`created-pending` / `browser-submit`, chosen server-side, not by the agent) and
+the `mode='unavailable'` guard for an instance where the deps are not wired; its
+stale pre-#206 tool id and a citation of the never-committed
+`docs/plans/native-issue-reporting.md` are gone. Documentation only — no
+behaviour change; that same dead plan path is still cited in five other builder
+files.
+
 ### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
 
 2026-09-29 — the `audit (high+critical block)` step treated an npm registry

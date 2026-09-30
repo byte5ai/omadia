@@ -832,8 +832,8 @@ packages, Stacktrace landet in `middleware/src/plugins/builder/…` o.ä.),
    `patch_spec` in `builder_settings`. Der Builder-Loop checkt das
    Feld vor jedem Turn und wartet auf Operator-Resume.
 
-PAT-direkte-Issue-Erstellung gibt es in v1 nicht — nur Browser-Submit.
-Das ist Absicht. Kein eigener Versuch, einen PAT zu verwenden oder
-Vault zu konsultieren.
+Issues entstehen ausschließlich über `omadia_report_core_bug`
+(GitHub-App oder Browser-Submit). Verwende keinen PAT und konsultiere
+nicht den Vault.
 
 ---
