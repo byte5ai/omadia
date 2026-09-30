@@ -177,6 +177,17 @@ jobs:
       - name: Test — updater sidecar (node --test)
         run: npm run test:updater
 
+      # Update overlay (#432): render the merged compose model.
+      # test/composeUpdateOverlay.test.ts checks what each file declares, but
+      # only compose can say whether the merge is valid: an undeclared network,
+      # a misspelled key, a value the schema rejects. `config` only
+      # interpolates the token, so a dummy value is enough.
+      - name: Compose — update overlay renders (docker compose config)
+        working-directory: .
+        env:
+          UPDATER_TOKEN: ci-render-only-not-a-secret
+        run: docker compose -f docker-compose.yaml -f docker-compose.update.yaml config --quiet
+
       # PII-detector sidecar (#361). Python, therefore outside every glob
       # above — until now it was tested nowhere, which is how a shipped
       # IPv4-only bind and a CPU-dependent broken model export both reached
