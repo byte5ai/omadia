@@ -8,6 +8,31 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.20.0 — 2026-09-30
+
+Additive. `findEntities` can address one record by its source-system id, so a
+caller holding an entity handle such as `hr.employee:7` no longer has to turn
+the id into a substring search.
+
+### Added
+
+- **`FindEntitiesOptions.id?: string | number`** — exact match on the node's
+  `props.id` (Odoo record id, Confluence page id), compared as strings after
+  trimming, so `7` and `'7'` address the same record. An absent or empty id
+  returns `[]`, never another record of the model; combinable with
+  `nameContains` (both must hold). Both in-tree backends implement it. The
+  answer verifier resolves every id-bearing entity handle through it and
+  re-checks `props.model`/`props.id` on the result, so a provider that ignores
+  the option yields no evidence rather than a substitute record.
+
+Why a filter on `findEntities` and not a node-by-id read: the handles the
+verifier sees are often two-part (`hr.employee:7`) and carry no `system`, so an
+external-id read (`odoo:hr.employee:7`) would have to guess the namespace. The
+Neon backend's private external-id lookup and the in-memory node map stay
+internal for that reason. `findEntities` still covers only `OdooEntity` and
+`ConfluencePage` nodes; plugin-namespaced entities (`PluginEntity`) are not
+reachable through it, with or without `id`.
+
 ## 1.19.1 — 2026-09-25
 
 Documentation only. No change to the exported type surface (#978).

@@ -1049,6 +1049,7 @@ entityLimit?: number;
 }
 export interface FindEntitiesOptions {
 model: string;
+id?: string | number;
 nameContains?: string;
 limit?: number;
 }

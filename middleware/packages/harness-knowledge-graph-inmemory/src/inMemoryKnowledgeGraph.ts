@@ -2871,11 +2871,18 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
 
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 25, 200));
+    // Exact-id identity (plugin-api 1.20.0): string-compared, so a numeric
+    // and a string id address the same record. An empty id names no record.
+    const idFilter = opts.id === undefined ? undefined : String(opts.id).trim();
+    if (idFilter !== undefined && idFilter.length === 0) return [];
     const nameLower = opts.nameContains?.trim().toLowerCase();
     const out: GraphNode[] = [];
     for (const node of this.nodes.values()) {
       if (node.type !== 'OdooEntity' && node.type !== 'ConfluencePage') continue;
       if (String(node.props['model'] ?? '') !== opts.model) continue;
+      if (idFilter !== undefined && String(node.props['id'] ?? '') !== idFilter) {
+        continue;
+      }
       if (nameLower && nameLower.length > 0) {
         const hay =
           String(node.props['displayName'] ?? '').toLowerCase() +
