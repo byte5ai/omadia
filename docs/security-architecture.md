@@ -730,9 +730,10 @@ an empty list.
   `record_claims` call (none, or one without a `claims` array); the pipeline
   maps the rejection to `unavailable` / `extractor_error`. It resolves an
   empty list only when the model reported no claim, or none survived the
-  verbatim guard, which is `skipped` / `no_claims`. A stage that cannot run
-  rejects rather than returning an empty result, so an outage never reads as
-  a clean run with nothing to check.
+  verbatim guard, which is `skipped` / `no_claims`. The per-claim checkers
+  (deterministic re-query, evidence judge) already mark a claim they could
+  not check `unverified`. No failure comes back as an empty result, so an
+  outage never reads as a clean run with nothing to check.
 - **Badges are derived under the evidence gate, not from the status alone.**
   `badgeFor` (`verifierService.ts`) checks `hasVerificationEvidence()`. The
   pipeline is injected (`verifier@1`), so a pipeline that returns `approved`
@@ -1476,8 +1477,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `claimCount > 0`) for a summary. `skipped` and `unavailable` never map to
       a green badge, and a verifier `reason` stays a closed code (§7c).
 - [ ] A verifier stage that cannot do its work (a failed LLM call, a model
-      response it cannot read) rejects instead of returning an empty result,
-      so the pipeline reports `unavailable` and not "nothing to check" (§7c).
+      response it cannot read) never returns an empty result: claim
+      extraction rejects, so the pipeline reports `unavailable`, and a
+      per-claim checker marks that claim `unverified`. Neither may look like
+      "nothing to check" (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
