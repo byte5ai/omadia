@@ -1,7 +1,7 @@
 import { app, dialog, type MessageBoxOptions } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import fs from 'node:fs';
-import { embeddedDbDir, snapshotDir, updateAttemptsFile } from './paths';
+import { embeddedDbDir, secretsFile, snapshotDir, updateAttemptsFile } from './paths';
 import { getActiveSupervisor } from './supervisor';
 import { log, logFile } from './log';
 import {
@@ -78,6 +78,12 @@ async function showUpdaterDialog(options: MessageBoxOptions): Promise<void> {
  * directory, because a new app version may ship newer (idempotent) kernel
  * migrations that run on first boot, and an embedded DB has no managed backups.
  * If a migration goes wrong, the user can restore the snapshot.
+ *
+ * The snapshot holds `pgdata` plus the encrypted `secrets.enc` beside it
+ * (`<snapshot>.secrets.enc`), because the database's credentials and dataset
+ * cells are encrypted with keys that live only in that file. It does NOT hold
+ * `platform-data/` (the kernel's own vault, installed plugins); that gap is
+ * documented in docs/security-architecture.md §8a.
  */
 export function initUpdater(): void {
   if (!app.isPackaged) {
@@ -393,10 +399,14 @@ async function quiesceForInstall(version: string): Promise<boolean> {
   return false;
 }
 
-/** Copy the embedded DB directory into a snapshot unique to this attempt. */
+/**
+ * Copy the embedded DB directory, and the secrets file its ciphertexts depend
+ * on, into a snapshot unique to this attempt.
+ */
 function snapshotDbDir(version: string): void {
   takeDbSnapshot(realSnapshotIo, {
     sourceDir: embeddedDbDir(),
+    secretsFile: secretsFile(),
     snapshotRoot: snapshotDir(),
     version,
     now: new Date(),
@@ -406,14 +416,19 @@ function snapshotDbDir(version: string): void {
 
 /** The real filesystem, behind the snapshot module's port. */
 const realSnapshotIo: SnapshotIo = {
-  exists: (dir) => fs.existsSync(dir),
+  exists: (target) => fs.existsSync(target),
   listDirectories: (root) =>
     fs
       .readdirSync(root, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name),
   copy: (source, destination) => fs.cpSync(source, destination, { recursive: true }),
-  remove: (dir) => fs.rmSync(dir, { recursive: true, force: true }),
+  copyFile: (source, destination) => {
+    fs.copyFileSync(source, destination);
+    // Explicit, not inherited: the copy holds the same secrets as the original.
+    fs.chmodSync(destination, 0o600);
+  },
+  remove: (target) => fs.rmSync(target, { recursive: true, force: true }),
   info: (message) => log.info(`[updater] ${message}`),
   error: (message) => log.warn(`[updater] ${message}`),
 };
