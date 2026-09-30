@@ -1276,6 +1276,107 @@ race).
 
 ---
 
+## 10e. Self-update control plane: the Engine proxy is host root, reachability is the boundary (#432)
+
+The optional overlay `docker-compose.update.yaml` gives exactly one component
+Docker Engine access. An update travels this chain: operator session →
+`POST /api/v1/admin/update` (type-to-confirm, release tags only) → middleware →
+updater (`http://updater:8090`: shared bearer token, release tags only,
+protected services) → `docker-socket-proxy` (on `omadia-control` only) →
+`/var/run/docker.sock` (mounted read-only, into the proxy alone).
+
+1. **The proxy is host root to whoever reaches it.**
+   `tecnativa/docker-socket-proxy` has no authentication. Its section flags
+   match URL prefixes, and `CONTAINERS=1` + `POST=1` admit every method under
+   `/containers`. That covers creating a privileged container with host bind
+   mounts (root on the host once it starts), reading and writing any
+   container's files through `/containers/{id}/archive` (secrets on the
+   middleware's data volume included), and creating exec instances (`EXEC=0`
+   only blocks `/exec/{id}/start`). `VOLUMES=0` restricts the `/volumes` API,
+   not bind mounts. The flags therefore limit what a compromised *updater* can
+   do; they cannot make the proxy safe to reach. All 27 flags of the pinned
+   image are set explicitly, and only `CONTAINERS`, `IMAGES`, `NETWORKS`,
+   `POST` and `PING` are on. `EVENTS` and `VERSION` default to on in the image
+   and are off here.
+2. **Reachability is the boundary.** The proxy joins one network,
+   `omadia-control`, and the updater is the only other member. Three
+   properties keep everything on `omadia` (middleware, web-ui, postgres, every
+   overlay sidecar) away from it:
+   - Docker's embedded DNS answers `docker-socket-proxy` only to containers
+     that share a network with it.
+   - `internal: true` gives the network no route off the host and no
+     published ports.
+   - `com.docker.network.bridge.inhibit_ipv4` leaves the bridge without a
+     host-side address. The host then has no route into the subnet and cannot
+     forward traffic from another network to the proxy. IPv6 is switched off
+     on the network explicitly, so a daemon-wide IPv6 default cannot add a
+     second path.
+
+   The third property is there because isolation between networks is
+   otherwise a firewall feature of the runtime. A stock Linux dockerd
+   (verified on 29.8 with iptables) drops that traffic anyway. OrbStack
+   (verified on 29.4) forwards it: without `inhibit_ipv4`, a container on
+   `omadia` reached the proxy by IP address even though the name did not
+   resolve. With it, that path is closed on both runtimes. Every engine tested
+   accepts the option (20.10, 24, 27, 29).
+3. **Control-plane services live on internal networks, never on `omadia`.**
+   The updater is the only service on both networks, because the middleware
+   calls it (`OMADIA_UPDATER_URL`) and its health gate calls the middleware
+   (`UPDATER_HEALTH_URL`). Never attach an application service to
+   `omadia-control`: whatever joins it can drive the Engine. The same rule
+   applies to any later overlay with Engine access; the planned dev-runner
+   daemon (`docs/dev-platform/w1-manifest.json`) stays off `omadia` the same
+   way.
+
+**Why the network and not only the token.** The updater's guards (bearer
+token, release-tag check, protected services) live in the updater's own HTTP
+handler, and a direct call to the proxy never passes through them. Plugins run
+in the middleware process, and a plugin's egress allow-list is no boundary for
+internal hostnames. `permissions.network.outbound` accepts any host string
+(`$config.*` entries resolve to whatever the operator entered), and the
+static allow-list modes of `ctx.http` trust named hosts without the SSRF guard
+(`platform/httpAccessor.ts`). While the proxy sat on `omadia`, a manifest that
+named `docker-socket-proxy` got an HTTP client that could drive the Engine, no
+code-execution bug needed. Now the name does not resolve from the middleware,
+and the address does not route.
+
+**Residual risk, by design.**
+
+- A compromised updater is host root. It holds the only route to the proxy,
+  and the flags only trim what it can send.
+- The middleware holds the updater token (`OMADIA_UPDATER_TOKEN`), and so does
+  all code running in the middleware process, in-process plugins included.
+  With it they can read `/status` and start an update to any release tag,
+  including an older release. `routes/adminUpdate.ts` only refuses the release
+  that is already running, and the sidecar's `TAG_RE` checks the tag's shape;
+  neither compares the target with the running version. They cannot pick an
+  image repository, touch `postgres`, the updater or the proxy, or send any
+  other Engine call. A not-older-than-running gate is on the roadmap
+  (`docs/middleware-agent-handoff.md` §13).
+- `NETWORKS=1` stays on. `recreate.mjs` attaches a container's second and
+  later networks only after stop + remove, so turning it off would strand a
+  half-recreated middleware, and its rollback, on any stack that puts the
+  middleware on more than one network.
+
+**Assumptions.** The Docker daemon enforces all of the above. It was verified
+on stock dockerd and on OrbStack, not on rootless Docker, Podman or Docker
+Desktop, and a host firewall that rewrites Docker's chains can change it.
+Operators check their own host with the probe in `docs/upgrading.md`, by name
+and by address. The Fly.io engine has no proxy and no socket; it calls the
+Machines API with app-scoped deploy tokens, so this section does not apply
+there.
+
+Tests: `middleware/test/composeUpdateOverlay.test.ts` reads every
+`docker-compose*.yaml` at the repo root. It asserts the network membership (as
+the union compose builds when it merges files), the control network's
+`internal`, `inhibit_ipv4` and IPv6 settings, the socket mount, the absence of
+ports and `network_mode` on the proxy, and the full flag list of the pinned
+image. CI also renders the merged overlay with
+`docker compose -f docker-compose.yaml -f docker-compose.update.yaml config --quiet`,
+which catches merge errors that a per-file parse cannot see.
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1333,7 +1434,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
+- [ ] A compose change keeps `/var/run/docker.sock` on `docker-socket-proxy`
+      only, attaches nothing but `updater` to `omadia-control`, and leaves
+      that network `internal` with `inhibit_ipv4` set. A proxy image bump
+      re-audits the full flag list. `composeUpdateOverlay.test.ts` stays
+      green (§10e).
 
 ---
 
-*Last reviewed: 2026-08 (§10 added with issue #669).*
+*Last reviewed: 2026-09 (§10e added: self-update control plane, #432).*

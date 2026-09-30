@@ -40,10 +40,27 @@ pieces are deployed:
 ### Enabling one-click updates
 
 The executor is **opt-in**, because replacing running containers requires
-Docker Engine access, which is host-root-equivalent. It is isolated in a
-sidecar that reaches the Engine only through a `docker-socket-proxy` with a
-narrow endpoint allowlist, has no published port, and requires a shared token —
-see [`middleware/sidecars/updater/README.md`](../middleware/sidecars/updater/README.md).
+Docker Engine access, which is host-root-equivalent. The overlay confines that
+access to two containers on a network of their own:
+
+- `docker-socket-proxy` is the only container with `/var/run/docker.sock`
+  mounted (read-only). It has no authentication, and the Engine calls an
+  update needs are host-root-equivalent on their own, so its flag list is not
+  what protects you. Reachability is: the proxy sits on `omadia-control`
+  alone, an `internal` network without a host-side address.
+- `updater` is the only service on both `omadia-control` (to reach the proxy)
+  and the application network `omadia` (so the middleware can call it, and it
+  can check the middleware's `/health`). It has no published port and demands
+  the shared `UPDATER_TOKEN` on every call.
+
+Nothing on `omadia` (middleware, web-ui, postgres, any overlay sidecar) can
+resolve or reach the proxy. **Never attach another service to
+`omadia-control`**: whatever joins it can drive the Docker Engine, which means
+it owns the host. Treat the updater the same way. It is root-equivalent by
+design, and the middleware holds its token, so anything that takes over the
+middleware can start an update to any release tag, older ones included.
+Details: [`security-architecture.md`](security-architecture.md) §10e and
+[`middleware/sidecars/updater/README.md`](../middleware/sidecars/updater/README.md).
 
 ```bash
 # The updater rewrites OMADIA_VERSION in the project-root .env, so the file has
@@ -58,6 +75,62 @@ docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d
 Then open **Admin → Update**, retype the target version to confirm, and start
 the update. The page polls through the restart — the middleware is briefly
 unavailable while its container is replaced.
+
+#### Already running the overlay
+
+Pull the new compose files, then re-run the overlay with **both** files, plus
+every other overlay you normally use:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d
+```
+
+Compose creates `omadia-control` and recreates only `docker-socket-proxy` and
+`updater`. The middleware, web-ui and your data are not touched. An update
+that is running at that moment is aborted, because the updater keeps its job
+state in memory. A plain `docker compose up -d` without the overlay leaves the
+old proxy and updater running on `omadia` as orphans (compose only prints a
+warning), so the old exposure stays. Add `--remove-orphans` only when your
+`-f` list contains every overlay you run; otherwise it also removes the
+containers of the overlays you left out. Then run the check below.
+
+#### Checking the control network
+
+Run this after enabling the overlay, and again after any change to Docker or
+the host firewall:
+
+```bash
+PROXY=$(docker compose -f docker-compose.yaml -f docker-compose.update.yaml ps -q docker-socket-proxy)
+docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' "$PROXY"
+# → <project>_omadia-control   (one line: the proxy is on no other network)
+
+docker network inspect <project>_omadia-control --format '{{.Internal}} {{range .Containers}}{{.Name}} {{end}}'
+# → true <project>-docker-socket-proxy-1 <project>-updater-1   (in any order)
+
+# From the middleware, the proxy must be blocked by name AND by address.
+PROXY_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$PROXY")
+docker compose -f docker-compose.yaml -f docker-compose.update.yaml exec -e PROXY_IP="$PROXY_IP" middleware node -e '
+  for (const host of ["docker-socket-proxy", process.env.PROXY_IP])
+    fetch(`http://${host}:2375/_ping`, { signal: AbortSignal.timeout(4000) })
+      .then((r) => console.log(host, "REACHABLE", r.status))
+      .catch((e) => console.log(host, "blocked", e.cause?.code ?? e.name));'
+# → docker-socket-proxy blocked ENOTFOUND
+# → 172.19.0.1 blocked ECONNREFUSED   (a timeout or EHOSTUNREACH is fine too)
+```
+
+`REACHABLE` on either line means this host does not isolate the control
+network. Stop the two services
+(`docker compose -f docker-compose.yaml -f docker-compose.update.yaml stop docker-socket-proxy updater`)
+and find out why before you start them again; the runtimes checked so far are
+listed in [`security-architecture.md`](security-architecture.md) §10e. The
+`web-ui` container can run the same probe. The updater itself must still get
+through:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.update.yaml exec updater node -e '
+  fetch("http://docker-socket-proxy:2375/_ping").then((r) => console.log("updater -> proxy", r.status));'
+# → updater -> proxy 200
+```
 
 ### What the update does
 
