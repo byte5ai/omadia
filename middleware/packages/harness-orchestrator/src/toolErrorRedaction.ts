@@ -25,11 +25,12 @@
  *    goes through the privacy provider's free-text redactor
  *    (`redactToolErrorText`: C0 identity types, the operator deny-list, C1),
  *    which replaces every span irreversibly with `[masked:<type>]` so the hint
- *    survives. It is WITHHELD whole instead when it is exception-shaped (a JSON
- *    or dict row echo, a stack trace — partial regex masking of a record dump is
- *    not reliable, names survive it), when it is too long to check, or when the
- *    provider cannot redact (it predates the contract, throws, or reports
- *    `withheld`). Fail closed, never forward unchecked.
+ *    survives. It is WITHHELD whole instead when it is exception-shaped (a row
+ *    echo as JSON, a Python dict or a JavaScript object or `Map` the way
+ *    `util.inspect` / `%o` print it; a stack trace — partial regex masking of a
+ *    record dump is not reliable, names survive it), when it is too long to
+ *    check, or when the provider cannot redact (it predates the contract,
+ *    throws, or reports `withheld`). Fail closed, never forward unchecked.
  *  - MCP CONNECT PROMPT: passes byte-identical. It is kernel-authored, and the
  *    connect URL and the `<mcp-auth-required>` block the chat UI parses into a
  *    Connect card must survive (C0's phone pattern would rewrite digit runs in
@@ -80,10 +81,18 @@ export type ToolErrorWithholdReason =
 /** The minimum provider version that implements `redactToolErrorText`. */
 const REQUIRED_PROVIDER = '@omadia/plugin-privacy-guard >= 0.6.0';
 
-// A quoted key followed by a colon, opened by `{`, `[` or `,`: a JSON object,
-// a Python dict repr, an array of such — the shape of a record echo. Bounded
-// quantifiers keep the scan linear.
-const OBJECT_KEY = /[{[,]\s*["'][^"'\n]{1,128}["']\s*:/;
+// A quoted key followed by `:` or `=>`, opened by `{`, `[` or `,`: a JSON
+// object, a Python dict repr, a JavaScript `Map` as `util.inspect` prints it
+// (`Map(1) { 'name' => … }`), an array of such — the shape of a record echo.
+// Bounded quantifiers keep the scan linear.
+const QUOTED_KEY = /[{[,]\s*["'][^"'\n]{1,128}["']\s*(?::|=>)/;
+// A bare identifier key, a colon and a value that opens a string, a number, an
+// array or an object: a JavaScript object literal as `util.inspect`,
+// `console.log` and `util.format('%o')` print a record
+// (`{ name: 'Jane Doe', id: 42 }`). A key after `{` is an entry; a key after a
+// comma only counts once a `{` has opened (`hasBareKeyEntry`).
+const BARE_KEY_AFTER_BRACE = /\{\s*[A-Za-z_$][\w$]{0,63}\s*:\s*['"`\d[{-]/;
+const BARE_KEY_AFTER_COMMA = /,\s*[A-Za-z_$][\w$]{0,63}\s*:\s*['"`\d[{-]/;
 // A JavaScript / Java stack frame on its own line.
 const STACK_FRAME = /\n\s*at\s+\S/;
 // A Python traceback.
@@ -110,10 +119,28 @@ export function toolErrorRef(): string {
   return turnId !== undefined && turnId !== '' ? turnId : newToolErrorRef();
 }
 
+/**
+ * True when the text holds a JavaScript object literal with bare keys. Only
+ * text from the first `{` on is read: prose such as `invalid date, expected:
+ * '2026-10-01'` has a comma-key-colon run too, but no record around it. An
+ * entry whose value opens nothing (`active: true`, the type in a shape hint
+ * like `{ query: string }`) is not evidence on its own; a record with any
+ * string, number or nested value has at least one entry that is. `[` does not
+ * open a record here, so an IPv6 host (`[fd12:3456::1]`) or a log tag stays
+ * readable; an array of records still has the `{` of its first record.
+ */
+function hasBareKeyEntry(text: string): boolean {
+  const open = text.indexOf('{');
+  if (open === -1) return false;
+  const record = text.slice(open);
+  return BARE_KEY_AFTER_BRACE.test(record) || BARE_KEY_AFTER_COMMA.test(record);
+}
+
 /** True when an error text looks like a raw exception or a record dump. */
 export function looksExceptionShaped(text: string): boolean {
   return (
-    OBJECT_KEY.test(text) ||
+    QUOTED_KEY.test(text) ||
+    hasBareKeyEntry(text) ||
     STACK_FRAME.test(text) ||
     PY_TRACEBACK.test(text) ||
     KEY_VALUE_DETAIL.test(text)

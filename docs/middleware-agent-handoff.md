@@ -2929,9 +2929,10 @@ Herkunft:
   durch `redactToolErrorText` des Providers (C0-Identitätstypen ohne
   `date`/`amount`, Deny-List #760, C1; irreversibel `[masked:<typ>]`, die
   Surrogat-Map des Turns wird nicht erweitert). Zurückgehalten statt redigiert
-  wird er, wenn er nach Exception aussieht (JSON-/Dict-Zeilen-Echo,
-  Stacktrace, `Key (…)=(…)`), länger als 4096 Zeichen ist oder der Provider
-  ihn nicht prüfen kann.
+  wird er, wenn er nach Exception aussieht (Zeilen-Echo als JSON, Python-Dict
+  oder JS-Objekt/`Map`, wie `util.inspect`, `console.log` und `%o` es
+  drucken; Stacktrace; `Key (…)=(…)`), länger als 4096 Zeichen ist oder der
+  Provider ihn nicht prüfen kann.
 - **MCP-Connect-Prompt**: byte-identisch durchgereicht (kernel-authored,
   Connect-Karte muss überleben), aber quittiert.
 Die Kernel-eigenen Absagen aus `dispatchToolInner` (Tool nicht verfügbar /

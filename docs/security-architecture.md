@@ -601,7 +601,7 @@ the text came from, not its shape:
 | Carrier | What the model reads | Receipt entry (`toolErrors`) |
 |---|---|---|
 | A handler **threw** | The withheld notice: ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …`` — class name and a sanitised code (`describeThrownError`, `@omadia/plugin-api`), never the message | `thrown` / `withheld` |
-| A handler **returned** an `Error:` string | The text after the prefix, run through the provider's `redactToolErrorText`: the C0 identity types (e-mail, IBAN, phone, address, id number — not `date` or `amount`, which are hints), the operator deny-list (#760) and C1, each span replaced irreversibly by `[masked:<type>]`. **Withheld** whole instead when the text is exception-shaped (a JSON or dict record echo, a stack trace, a Postgres `Key (…)=(…)` detail), longer than 4096 characters, or the provider cannot check it | `returned` / `redacted` (with span types) or `withheld` |
+| A handler **returned** an `Error:` string | The text after the prefix, run through the provider's `redactToolErrorText`: the C0 identity types (e-mail, IBAN, phone, address, id number — not `date` or `amount`, which are hints), the operator deny-list (#760) and C1, each span replaced irreversibly by `[masked:<type>]`. **Withheld** whole instead when the text is exception-shaped (a record echo as JSON, as a Python dict, or as a JavaScript object or `Map` the way `util.inspect`, `console.log` and `%o` print it; a stack trace; a Postgres `Key (…)=(…)` detail), longer than 4096 characters, or the provider cannot check it | `returned` / `redacted` (with span types) or `withheld` |
 | The MCP **connect prompt** (`🔒 The MCP server "…`) | Byte-identical: kernel-authored, and its connect URL and `<mcp-auth-required>` block must survive | `mcp_auth_prompt` / `passed` |
 
 The seams, each applying the helper after the intern exemption and the
@@ -664,9 +664,12 @@ dispatcher-authored (`origin: 'dispatcher'`) and served.
 - The subscription-CLI path has no Privacy Shield at all (§3a, #1087): its
   loopback dispatcher runs without a privacy handle, so both carriers pass raw
   there.
-- C0 detects no names; C1 does when it is configured. A returned error that
-  names a person in running prose (not in a record echo, which is withheld)
-  keeps the name without C1.
+- C0 detects no names; C1 does when it is configured. Without C1 a returned
+  error keeps a name that stands in running prose, or in a record the
+  classifier does not recognise as one: keyword style (`Partner(name='…')`,
+  `name=…` pairs) or bare keys whose values are unquoted words
+  (`{Name:Jane Doe}`). A record echo in one of the shapes in the table is
+  withheld whole.
 - The connect prompt is recognized by its prefix only, so a remote result that
   starts with that prefix passes the same way (#1097).
 - Two server-side sinks read the raw result before the seam:

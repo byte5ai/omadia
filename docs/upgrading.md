@@ -225,7 +225,9 @@ full policy):
   instead of the driver or ORM message. The message, with its stack, is in the
   middleware log under the same ref (`grep 'ref=<ref>'`); on the chat path the
   ref is the turn's correlation id. A tool's *returned* `Error:` text still
-  reaches the model, with personal data masked as `[masked:<type>]`.
+  reaches the model, with personal data masked as `[masked:<type>]`, unless it
+  looks like a record dump or a stack trace; then it is withheld and logged the
+  same way.
 - **The privacy guard pairs with this release.** The bundled
   `@omadia/plugin-privacy-guard` is 0.6.0. If a 0.5.x copy was installed from
   the Hub or as a ZIP upload, update it: an older provider cannot redact tool

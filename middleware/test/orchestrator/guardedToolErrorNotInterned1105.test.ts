@@ -21,6 +21,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { format, inspect } from 'node:util';
 
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
@@ -195,6 +196,21 @@ function orchestratorWith(
   } as ConstructorParameters<typeof Orchestrator>[0]);
 }
 
+/** One turn in which `toolName` returns `returned`; the tool_result the model read. */
+async function wireTextOfReturnedError(
+  toolName: string,
+  returned: string,
+  recorded: PrivacyToolErrorRequest[],
+): Promise<string> {
+  const { provider, seen } = recordingProvider([toolCallResponse(toolName), textResponse('done')]);
+  await orchestratorWith(
+    provider,
+    registryWith(toolName, () => Promise.resolve(returned)),
+    markingPrivacyService(recorded),
+  ).runTurn({ userMessage: 'go' });
+  return toolResultTexts(seen)[0] ?? '';
+}
+
 describe('#1105 — guarded-tool error result is not interned as a dataset', () => {
   it('hands a PII-free `Error:` hint to the model unchanged, not as a digest — and receipts it', async () => {
     const recorded: PrivacyToolErrorRequest[] = [];
@@ -230,44 +246,28 @@ describe('#1105 — guarded-tool error result is not interned as a dataset', () 
   it('MUTATION CHECK — redacts PII out of a returned `Error:` text before the model reads it', async () => {
     const recorded: PrivacyToolErrorRequest[] = [];
     const returned = `Error: mailbox ${EMAIL} is over quota — nothing was sent`;
-    const { provider, seen } = recordingProvider([
-      toolCallResponse('mail_send'),
-      textResponse('done'),
-    ]);
-    const orchestrator = orchestratorWith(
-      provider,
-      registryWith('mail_send', () => Promise.resolve(returned)),
-      markingPrivacyService(recorded),
-    );
 
-    await orchestrator.runTurn({ userMessage: 'go' });
+    const text = await wireTextOfReturnedError('mail_send', returned, recorded);
 
-    const results = toolResultTexts(seen);
-    assert.equal(results[0], 'Error: mailbox [masked:email] is over quota — nothing was sent');
+    assert.equal(text, 'Error: mailbox [masked:email] is over quota — nothing was sent');
     assert.deepEqual(recorded[0]?.redactedSpans, [{ type: 'email', detector: 'c0-regex' }]);
   });
 
-  it('withholds an exception-shaped `Error:` text (a record echo) whole', async () => {
-    const recorded: PrivacyToolErrorRequest[] = [];
-    const { provider, seen } = recordingProvider([
-      toolCallResponse('odoo_write'),
-      textResponse('done'),
-    ]);
-    const orchestrator = orchestratorWith(
-      provider,
-      registryWith('odoo_write', () =>
-        Promise.resolve(`Error: Fault on record {"name":"Erika Mustermann","email":"${EMAIL}"}`),
-      ),
-      markingPrivacyService(recorded),
-    );
-
-    await orchestrator.runTurn({ userMessage: 'go' });
-
-    const text = toolResultTexts(seen)[0] ?? '';
-    assert.equal(text.includes('Erika Mustermann'), false, 'a name C0 cannot see must not survive');
-    assert.equal(text.includes(EMAIL), false);
-    assert.match(text, /^Error: tool `odoo_write` reported an error whose text looked like a raw/);
-    assert.equal(recorded[0]?.outcome, 'withheld');
+  it('withholds a record echo whole — JSON, a JS object literal, util.inspect, %o', async () => {
+    const record = { id: 42, name: 'Erika Mustermann', email: EMAIL };
+    for (const returned of [
+      `Error: Fault on record ${JSON.stringify(record)}`,
+      `Error: Fault on record { name: 'Erika Mustermann', email: '${EMAIL}' }`,
+      `Error: Fault on record ${inspect(record)}`,
+      format('Error: Fault on record %o', record),
+    ]) {
+      const recorded: PrivacyToolErrorRequest[] = [];
+      const text = await wireTextOfReturnedError('odoo_write', returned, recorded);
+      assert.equal(text.includes('Erika Mustermann'), false, `a name C0 cannot see: ${text}`);
+      assert.equal(text.includes(EMAIL), false, text);
+      assert.match(text, /^Error: tool `odoo_write` reported an error whose text looked like a raw/);
+      assert.equal(recorded[0]?.outcome, 'withheld', returned);
+    }
   });
 
   it('fails CLOSED with a provider that cannot redact — but kernel refusals still pass', async () => {

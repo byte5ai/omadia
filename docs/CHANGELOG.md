@@ -63,9 +63,10 @@ Both carriers now go through one helper, `toolErrorRedaction.ts`
 - **Returned `Error:` text is redacted** by the provider's new
   `redactToolErrorText` (C0 identity types — dates and amounts stay readable —,
   the operator deny-list and C1; irreversible `[masked:<type>]`), or withheld
-  whole when it looks like a record dump or a stack trace, is longer than 4096
-  characters, or cannot be checked. The MCP connect prompt passes unchanged; the
-  kernel's own refusals are exempt by provenance.
+  whole when it looks like a record dump (JSON, a Python dict, or a JavaScript
+  object or `Map` as `util.inspect` and `%o` print it) or a stack trace, is
+  longer than 4096 characters, or cannot be checked. The MCP connect prompt
+  passes unchanged; the kernel's own refusals are exempt by provenance.
 - **In-tree wrappers** (the three tool bridges, web search, diagrams,
   discussion, transcription, `manage_routine`, `query_dataset`, the
   long-running task handlers, domain tools) keep only messages they author and

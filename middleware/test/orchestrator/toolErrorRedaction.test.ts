@@ -19,11 +19,14 @@
 
 import { strict as assert } from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
+import { format, inspect } from 'node:util';
 
 import type {
   PrivacyToolErrorRedactResult,
   PrivacyToolErrorRequest,
 } from '@omadia/plugin-api';
+import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
+import { createPrivacyTurnHandle } from '../../packages/harness-orchestrator/src/privacyHandle.js';
 import type { PrivacyTurnHandle } from '../../packages/harness-orchestrator/src/privacyHandle.js';
 import {
   MAX_REDACTABLE_TOOL_ERROR_CHARS,
@@ -137,6 +140,24 @@ describe('looksExceptionShaped', () => {
     }
   });
 
+  it('flags a JavaScript record the way util.inspect, console.log and %o print it', () => {
+    class Partner {}
+    const record = { id: 42, active: true, name: 'Jane Doe', email: EMAIL };
+    for (const text of [
+      ` Fault on record { name: 'Jane Doe', email: '${EMAIL}' }`,
+      ` Fault on record ${inspect(record)}`, // multi-line
+      format(' Fault on record %o', record),
+      ` Fault on record ${inspect({ active: true, name: 'Jane Doe' })}`, // first value opens nothing
+      ` Fault on ${inspect(Object.assign(new Partner(), record))}`,
+      ` Fault on ${inspect(new Map(Object.entries(record)))}`, // 'name' => 'Jane Doe'
+      ` Fault on records ${inspect([record])}`,
+      ` Fault on ${inspect({ name: "Jane O'Doe" })}`, // double-quoted
+      ` Fault on ${inspect({ name: 'Jane "JD" O\'Doe' })}`, // backtick-quoted
+    ]) {
+      assert.equal(looksExceptionShaped(text), true, text);
+    }
+  });
+
   it('leaves ordinary hints alone', () => {
     for (const text of [
       ' session_summary requires `scope`.',
@@ -145,6 +166,10 @@ describe('looksExceptionShaped', () => {
       ' no free slot on 2026-10-01 between 09:00 and 17:00.',
       ' tool `x` failed with DatabaseError (code 22P02) [ref err_0a1b2c3d4e5f].',
       ' link_key_filter — column "__k_name" is a link key.',
+      ' expected { query: string, limit?: number } — got a string.',
+      " invalid date, expected: '2026-10-01'.",
+      ' could not reach http://[fd12:3456::1]:8080/mcp — connection refused.',
+      " unknown placeholder {customer} in template '{amount:.2f}'.",
     ]) {
       assert.equal(looksExceptionShaped(text), false, text);
     }
@@ -214,6 +239,30 @@ describe('guardControlFlowResult — returned `Error:` text', () => {
     const ref = /\[ref ([^\]]+)\]/.exec(out)?.[1];
     assert.ok(ref && errorLines.some((l) => l.includes(`ref=${ref}`) && l.includes(EMAIL)),
       'the original text is in the server log under the same ref');
+  });
+
+  it('WITHHOLDS a util.inspect / %o record echo that the real provider would half-mask', async () => {
+    const privacy = createPrivacyTurnHandle({
+      service: createPrivacyGuardService(),
+      sessionId: 's-inspect',
+      turnId: 't-inspect',
+    });
+    const body = ` Fault on record { name: 'Jane Doe', email: '${EMAIL}' }`;
+    // Premise: C0 masks the e-mail but sees no name, so redaction would leak it.
+    const alone = await privacy.redactToolErrorText({ toolName: 'odoo_write', text: body });
+    assert.ok(alone?.outcome === 'redacted' && alone.text.includes('Jane Doe'), 'premise');
+    const record = { id: 42, name: 'Jane Doe', email: EMAIL };
+    for (const result of [`Error:${body}`, format('Error: Fault on record %o', record)]) {
+      const out = await guardControlFlowResult({ toolName: 'odoo_write', result, privacy, site: 'test' });
+      assert.equal(out.includes('Jane Doe'), false, out);
+      assert.equal(out.includes(EMAIL), false, out);
+      assert.match(out, /^Error: tool `odoo_write` reported an error whose text looked like a raw/);
+    }
+    const receipt = await privacy.finalize();
+    assert.deepEqual(
+      receipt?.toolErrors?.map((e) => [e.carrier, e.outcome]),
+      [['returned', 'withheld'], ['returned', 'withheld']],
+    );
   });
 
   it('withholds a text too long to check', async () => {
