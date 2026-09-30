@@ -12,6 +12,7 @@ import {
 } from '@omadia/orchestrator';
 
 import { recordForeignToolCall } from '../../platform/foreignToolMetrics.js';
+import { bridgedToolError, type BridgeStage } from '../bridgedToolError.js';
 import {
   inferFamilyFromModel,
   warnIfEmptyInputSchema,
@@ -348,14 +349,16 @@ function bridgePreviewTool(td: PreviewToolDescriptor): LocalSubAgentTool {
       },
     },
     async handle(input: unknown): Promise<string> {
+      let stage: BridgeStage = 'input';
       try {
         const parsed = td.input.parse(input);
+        stage = 'run';
         const result = await td.run(parsed);
         return typeof result === 'string'
           ? result
           : JSON.stringify(result, null, 2);
       } catch (err) {
-        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+        return bridgedToolError(td.id, err, stage, 'preview-chat');
       }
     },
   };

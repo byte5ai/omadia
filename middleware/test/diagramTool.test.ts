@@ -74,4 +74,24 @@ describe('DiagramTool', () => {
     assert.ok(out.startsWith('Error: upstream renderer failed'));
     assert.equal(tool.takeLastRender(), undefined);
   });
+
+  it('withholds the text of an exception the tool did not author, and logs it', async () => {
+    const EMAIL = 'erika.mustermann@example.com';
+    const logged: string[] = [];
+    const tool = new DiagramTool(
+      stubService(() =>
+        Promise.reject(new Error(`storage write failed for owner ${EMAIL}`)),
+      ),
+      undefined,
+      (msg) => logged.push(msg),
+    );
+    const out = await tool.handle({ kind: 'mermaid', source: 'A-->B' });
+    assert.equal(out.includes(EMAIL), false, `the exception text reached the model: ${out}`);
+    assert.match(out, /^Error: tool `render_diagram` failed with Error \[ref (err_[0-9a-f]{12})\]/);
+    const ref = /\[ref (err_[0-9a-f]{12})\]/.exec(out)?.[1] ?? '?';
+    assert.ok(
+      logged.some((line) => line.includes(`ref=${ref}`) && line.includes(EMAIL)),
+      'the full error goes to the tool log under the same ref',
+    );
+  });
 });

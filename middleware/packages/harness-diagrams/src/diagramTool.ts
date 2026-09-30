@@ -1,3 +1,4 @@
+import { toolErrorFromException } from '@omadia/plugin-api';
 import { z } from 'zod';
 import {
   ALLOWED_DIAGRAM_KINDS,
@@ -154,8 +155,14 @@ export class DiagramTool {
       if (err instanceof DiagramRenderError) {
         return `Error: upstream renderer failed — ${err.message}`;
       }
-      const message = err instanceof Error ? err.message : String(err);
-      return `Error: ${message}`;
+      // An exception this tool did not author (storage, memory lookup, a
+      // bug): its text is withheld from the model and logged in full.
+      return toolErrorFromException(DIAGRAM_TOOL_NAME, err, {
+        site: 'diagrams',
+        log: (line, e) => {
+          this.log(`${line} ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+        },
+      });
     }
   }
 

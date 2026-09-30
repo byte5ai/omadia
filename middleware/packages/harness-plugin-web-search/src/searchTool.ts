@@ -1,4 +1,5 @@
 import type { NativeToolSpec } from '@omadia/plugin-api';
+import { toolErrorFromException } from '@omadia/plugin-api';
 import { z } from 'zod';
 
 import {
@@ -17,7 +18,9 @@ import type { SearchOptions, WebSearchService } from './types.js';
  * Tool result shape (success): JSON `{ provider, query, cached, results: [...] }`.
  * Tool result shape (error):   `Error: <message>` — the orchestrator-side
  * convention; the LLM sees a recoverable signal and can retry / pivot rather
- * than crashing the turn.
+ * than crashing the turn. The message is this plugin's own (auth, quota,
+ * config, provider status); an unexpected exception gets the withheld
+ * tool-error notice instead of its text.
  */
 
 export const WEB_SEARCH_TOOL_NAME = 'web_search';
@@ -148,8 +151,9 @@ export function createWebSearchToolHandler(
       if (err instanceof WebSearchError) {
         return `Error: ${err.message}`;
       }
-      const msg = err instanceof Error ? err.message : String(err);
-      return `Error: web_search unexpected failure — ${msg}`;
+      // Anything else is an exception this plugin did not author — its text
+      // is withheld from the model (logged in full under a ref).
+      return toolErrorFromException(WEB_SEARCH_TOOL_NAME, err, { site: 'web-search' });
     }
   };
 }

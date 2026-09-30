@@ -15,6 +15,7 @@ import {
 
 import { ASSETS } from '../../platform/assets.js';
 import { recordForeignToolCall } from '../../platform/foreignToolMetrics.js';
+import { bridgedToolError, type BridgeStage } from '../bridgedToolError.js';
 import { warnIfEmptyInputSchema } from '../dynamicAgentRuntime.js';
 import { zodToJsonSchema } from '../zodToJsonSchema.js';
 import { type AuditLogger, createAuditLogger } from './audit.js';
@@ -859,6 +860,7 @@ function bridgeBuilderTool(
       },
     },
     async handle(input: unknown): Promise<string> {
+      let stage: BridgeStage = 'input';
       try {
         let parsed;
         try {
@@ -877,6 +879,7 @@ function bridgeBuilderTool(
           );
           throw parseErr;
         }
+        stage = 'run';
         const result = await tool.run(parsed, ctx);
         if (typeof result === 'string') return result;
         // Builder tools (read_reference, lint_spec, …) return structured
@@ -903,7 +906,7 @@ function bridgeBuilderTool(
         }
         return JSON.stringify(result, null, 2);
       } catch (err) {
-        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+        return bridgedToolError(tool.id, err, stage, 'builder');
       }
     },
   };
