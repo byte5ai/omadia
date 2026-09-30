@@ -36,6 +36,41 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the finalize pass no longer rewrites `system` or empties `tools` (#1211)
+
+2026-09-30 — on the last iteration both tool loops in
+`middleware/packages/harness-orchestrator/src/orchestrator.ts` sent
+`tools: []` and appended the finalize directive to the system prompt. `tools`
+comes first in the Anthropic cache order, so that call lost the prompt cache
+for the whole request, and rewriting `system` mid-turn invalidates every
+preserved thinking block of the turn on models that replay them (Opus 5.5 /
+Fable 5.1). The pass is now append-only: `buildToolsList()` output goes out
+unchanged on every iteration, tool use is switched off with
+`tool_choice: { type: 'none' }` (as `LocalSubAgent` already does), and the
+directive rides as a text block on the newest user turn, after its
+`tool_result` blocks — the same shape live steering uses. Both loops now build
+that `tools`/`tool_choice` pair through one shared `toolParamsFor`.
+
+Two cases can't be suppressed that way and keep the old `tools: []`: an empty
+tool set, and a provider whose adapter drops `tool_choice` before the wire (the
+OpenAI-compatible `dropToolChoice` quirk, e.g. MiniMax). The latter is new:
+`createOpenAiProvider` now reports `capabilities.toolChoiceNone: false` under
+that quirk instead of silently promising a suppression that never reaches the
+server — without it the finalize pass would have handed such a model the full
+tool list, and a `tool_use` there ends the turn in the raw "exceeded
+maxToolIterations" error the pass exists to replace. Those calls lose the cache,
+as they did before.
+
+The directive itself lost its shouted caps and now says "rufe ab jetzt keine
+Tools mehr auf" rather than claiming tools are gone — they are still on the
+wire. Remaining open point (handoff §13): a model that ignores
+`tool_choice: none` and emits `tool_use` anyway gets a second directive copy on
+the next pass — new with the append-only shape, since the old per-iteration
+hint could not duplicate. New tests
+`middleware/test/orchestrator/finalizePass1211.test.ts` pin tools, `system`,
+`tool_choice`, the directive's position and the no-suppression fallback for both
+loops; `middleware/test/llmProviderMinimaxQuirks.test.ts` pins the capability.
+
 ### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
 
 2026-09-29 — the `audit (high+critical block)` step treated an npm registry
