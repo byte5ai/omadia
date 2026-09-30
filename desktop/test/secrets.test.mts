@@ -322,6 +322,24 @@ describe('secrets.ts — embedded database credentials', () => {
     assert.throws(() => embeddedDbCredentials(), /read back/, 'and the cache does not serve them later');
   });
 
+  it('does not serve them from the cache when the read-back itself fails', () => {
+    // The keychain opens the file it found but refuses the one just written.
+    const encode = (prefix: string, plain: string): Buffer =>
+      Buffer.from(`${prefix}${Buffer.from(plain, 'utf8').toString('base64')}`);
+    __setSafeStorage({
+      isEncryptionAvailable: () => true,
+      encryptString: (plain: string) => encode('new:', plain),
+      decryptString: (cipher: Buffer) => {
+        const text = cipher.toString('utf8');
+        if (!text.startsWith('old:')) throw new Error('keychain denied');
+        return Buffer.from(text.slice(4), 'base64').toString('utf8');
+      },
+    });
+    writeRaw(secretsFile(), encode('old:', JSON.stringify(FULL)).toString('utf8'));
+    assertUnreadable(() => embeddedDbCredentials(), 'decrypt', 'embeddedDbCredentials()');
+    assertUnreadable(() => embeddedDbCredentials(), 'decrypt', 'a retry reads the file, not the cache');
+  });
+
   it('never leave the shell through the recovery key', () => {
     const creds = embeddedDbCredentials();
     const recovery = exportRecoveryKey();

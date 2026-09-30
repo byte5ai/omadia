@@ -145,10 +145,17 @@ export function embeddedDbCredentials(): EmbeddedDbCredentials {
   if (loaded) return { ...loaded };
 
   const written = store.update(withEmbeddedDbCredentials).embeddedDb;
-  const durable = store.reread()?.embeddedDb;
+  // Until the read-back succeeds, the cache holds values the file may not:
+  // on any failure drop it, so a retry starts from the file instead of
+  // handing them out.
+  let durable: EmbeddedDbCredentials | undefined;
+  try {
+    durable = store.reread()?.embeddedDb;
+  } catch (err) {
+    store.reset();
+    throw err;
+  }
   if (durable === undefined || !sameCredentials(written, durable)) {
-    // The cache now holds values the file does not: drop it, so a retry
-    // starts from the file instead of handing them out.
     store.reset();
     throw new Error(
       '[secrets] the embedded database credentials did not read back from secrets.enc; ' +
