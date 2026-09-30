@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — pairing discovery on the operator origin no longer bounces to /login (#293)
+
+2026-09-30 — a desktop client that knows only the operator URL could not
+find out where to connect. It fetches the pairing descriptor at
+`/.well-known/omadia-ui` before it has signed in, since the descriptor is
+what tells it where to sign in. `next.config.ts` rewrites that path to the
+`/pairing-discovery` route handler, but the web-ui login gate
+(`web-ui/proxy.ts`) runs before rewrites and had neither path on its
+allowlist, so a client without a session got `302 /login` instead of the
+JSON. On split deployments, where the middleware's own copy of the endpoint
+is not publicly reachable, pairing through the operator URL could not work.
+
+Both paths are now exempt from the gate, by exact match. They are defined
+once in `web-ui/app/_lib/pairingDiscoveryPaths.ts`, which the rewrite imports
+too, so the two cannot drift apart. The descriptor carries nothing
+confidential: the middleware serves the same one without authentication, its
+provider list is already public through `/bot-api/v1/auth/providers`, and the
+canvas WebSocket its `wsUrl` points at authenticates every upgrade. Every
+other route keeps redirecting to `/login` without a session.
+`web-ui/app/__tests__/proxy.test.ts` pins the allowlist from both sides, and
+`docs/security-architecture.md` §10e documents the gate and its exemptions.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
