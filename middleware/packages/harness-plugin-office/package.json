@@ -13,7 +13,7 @@
     "package": "node ../../scripts/build-plugin-zip.mjs"
   },
   "dependencies": {
-    "docx": "^9.5.1",
+    "docx": "^9.7.2",
     "exceljs": "^4.4.0",
     "jszip": "^3.10.2"
   },
