@@ -278,7 +278,11 @@ describe('Supervisor boot — the readiness check is on the boot path', () => {
     path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'supervisor.ts'),
     'utf8',
   );
-  const boot = /private async bootOnce\([\s\S]*?\n {2}\}\n/.exec(source)?.[0] ?? '';
+  // Line comments stripped, so a call that was commented out does not count.
+  const boot = (/private async bootOnce\([\s\S]*?\n {2}\}\n/.exec(source)?.[0] ?? '')
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/, ''))
+    .join('\n');
 
   it('starts the kernel with the switches it then confirms', () => {
     assert.ok(boot, 'supervisor.ts must define bootOnce');
