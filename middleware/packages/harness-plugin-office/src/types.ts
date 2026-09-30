@@ -250,6 +250,25 @@ export class OfficeRenderError extends Error {
   }
 }
 
+/**
+ * A descriptor formula that would reach outside the workbook: the network,
+ * another program or another file (see `formulaPolicy.ts`). Thrown before any
+ * byte is written, so nothing is stored or delivered.
+ */
+export class OfficeUnsafeFormulaError extends OfficeRenderError {
+  constructor(
+    /** Where the formula sits, e.g. `sheet "Pivot", cell B2`. */
+    public readonly location: string,
+    /** Why it was refused, phrased for the caller (and the model). */
+    public readonly reason: string,
+  ) {
+    super(
+      `formula in ${location} rejected: ${reason}. Formulas may only compute over cells of this workbook.`,
+    );
+    this.name = 'OfficeUnsafeFormulaError';
+  }
+}
+
 export class OfficePostconditionError extends Error {
   constructor(
     public readonly expectedRows: number,
