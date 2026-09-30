@@ -370,6 +370,51 @@ working across it:
   block indefinitely, the kill escalation never ran, and the turn hung holding
   its semaphore permit while a bearer-gated server kept listening.
 
+## 3b. Answer-verifier judge: a verdict counts only with a citation the judge was shown
+
+The answer verifier (`@omadia/verifier`) hands every soft claim (names,
+qualitative statements) to `EvidenceJudge`: an LLM call that sees the claim and
+a bundle of evidence snippets, never the answer, and must reply through the
+forced `record_verdict` tool. Each snippet appears in the prompt as
+`Evidence #N [nodeId=…, source=…]`, and a `verified` or `contradicted` verdict
+has to name the snippet it rests on in `evidence_node_id`.
+
+That tool input is untrusted model output. The provider interface does not
+guarantee schema conformance, so any string can come back as the id. Checking
+only that the id is non-empty is not enough: an id that names no snippet would
+still yield a `verified` verdict, with its `source` taken from the claim's own
+`expectedSource`, and a made-up citation would earn the `verified` badge and
+skip the #132 borderline resample. The rules:
+
+- The citable ids are built from the same `EvidenceSnippet[]` array that the
+  call renders into its prompt, and the cited id is resolved against them by
+  exact match after trimming. Ids are opaque (for example
+  `odoo:hr.employee:7`), so there is no case-folding or prefix matching.
+- An id outside that set demotes the verdict to `unverified`, the same outcome
+  as a missing id. Nothing falls back to a value derived from the claim: a
+  verdict's `source` and `truth` come only from the cited snippet.
+- The contradiction recheck (the second, independent call that must agree
+  before a contradiction blocks) is parsed under the same rule, so a recheck
+  citing an unknown id does not confirm the contradiction. `check()` resolves
+  the snippet again before a recheck is spent, so the rule holds even if the
+  parser changes.
+- There is no switch to turn the check off. The tool schema already declares
+  the id required for `verified` and `contradicted`, and the check's off-state
+  is exactly the unearned badge described above.
+
+Trade-off: a genuine contradiction whose citation the model mistypes is
+released with the `partial` badge instead of blocking the answer. That is
+accepted because a contradiction must point at evidence by contract, and the
+deterministic checker (hard claims, anchored Odoo records, the trace
+cross-check) still blocks on its own. Each unknown-id demotion is logged as
+`[verifier/judge] evidence_node_id not in evidence set, …` with the claim id and
+the cited id, JSON-quoted and truncated to 80 characters so model output cannot
+break the log line. The claim text is not logged.
+
+The check proves that the judge cited a snippet it was shown, not that the
+snippet supports the verdict; that remains the judge's call. Asserted by
+`test/verifierEvidenceJudge.test.ts`.
+
 ## 4. Plugin install surface
 
 Plugins are installed as signed ZIPs uploaded through the operator UI, not
@@ -1333,7 +1378,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
+- [ ] An LLM judge or classifier output that references an input item by id
+      resolves that id deterministically against the concrete input set of
+      that call. An unknown id yields the conservative verdict, never a
+      fallback derived from the claim itself (§3b).
 
 ---
 
-*Last reviewed: 2026-08 (§10 added with issue #669).*
+*Last reviewed: 2026-09 (§3b added with the evidence-judge citation check).*

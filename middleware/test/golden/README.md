@@ -174,6 +174,12 @@ on `pull_request`, forks never attempt to run it.
    `amount_total` / `invoice_date` back the amount / date checks (see
    `deterministicChecker.ts` for the per-model field map).
 
+   The `evidence` fixture is exactly the set the judge may cite: a verdict
+   naming any other `nodeId` is demoted to `unverified`, so the entry lands on
+   `approved_with_disclaimer`. When a judge-backed entry flips to a disclaimer
+   unexpectedly, look for `[verifier/judge] evidence_node_id not in evidence
+   set` on stderr; it names the id the model cited.
+
 3. **The trigger trap — read this before writing a judge fixture.** The
    pipeline runs the stochastic extractor + judge only when
    `shouldTriggerVerifier(answer)` fires, and it fires **only on a hard signal in
