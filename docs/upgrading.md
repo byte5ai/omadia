@@ -188,18 +188,37 @@ topology. What changes for operators:
   restart the middleware: the limiter lives in memory and a restart clears it.
 - **A new cookie.** A successful sign-in (and the first-user wizard) sets
   `omadia_login_device`, which gives that browser its own sign-in budget for
-  the account. It authenticates nothing and survives logout.
+  the account and a reserved share of the sign-in capacity. Browsers that are
+  signed in when the new version starts get it from the session check the
+  admin UI runs every minute. It authenticates nothing and survives logout.
 - **Passwords over 1024 characters can no longer sign in.** Setting one
   through the admin UI still works, so reset such a password to a shorter one.
 
-**Behind a proxy that appends to `X-Forwarded-For`** (Fly.io's edge), every
-client reaches the middleware from the proxy's address by default. Set
-`AUTH_LOGIN_CLIENT_ADDRESS=xff:1` (or `header:Fly-Client-IP`) so the limiter
-sees the real client, after checking once that a forged `X-Forwarded-For` from
-outside does not change what the middleware sees. Leave the default `socket`
-on the docker-compose stack: the web-ui proxy forwards the browser's header
-unchanged, so it is not a trusted hop. `AUTH_LOGIN_MAX_INFLIGHT` (default 4)
-bounds concurrent argon2 runs; see `middleware/.env.example`.
+**Fly.io.** Every client reaches the middleware from Fly's proxy or from
+web-ui, so by default they all share one address. The limiter then relies on
+the device cookie alone to keep operators apart. Key clients by the address
+Fly's edge sets instead: `AUTH_LOGIN_CLIENT_ADDRESS=header:Fly-Client-IP`.
+Not `xff:1`: Fly puts the app's own IP address right-most in
+`X-Forwarded-For`, which would give every client the same key.
+`fly/middleware.fly.toml` now sets it, so a `fly deploy --config
+fly/middleware.fly.toml` picks it up. The one-click updater only swaps the
+image and keeps the old settings; there, set the variable once with
+`fly secrets set AUTH_LOGIN_CLIENT_ADDRESS=header:Fly-Client-IP --app
+<middleware-app>`.
+
+**docker-compose.** Keep the default `socket` unless every request reaches
+web-ui through a reverse proxy that appends the client's address to
+`X-Forwarded-For` (Caddy and Traefik do by default, nginx with
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`). Then
+`xff:1` keys clients by their own address. To check it, send six wrong
+sign-ins through the proxy with a made-up `X-Forwarded-For` value: the
+`[auth] login refused` log line must name your real address. On its own, the
+web-ui proxy forwards the browser's header unchanged, so it is not a trusted
+hop.
+
+`AUTH_LOGIN_IPV6_PREFIX` (default 64) sets how much of an IPv6 address counts
+as one client, and `AUTH_LOGIN_MAX_INFLIGHT` (default 4) bounds concurrent
+argon2 runs; see `middleware/.env.example`.
 
 ## Upgrading past 0.167.5 — the first-user wizard asks for a setup token
 

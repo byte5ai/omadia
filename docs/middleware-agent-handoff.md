@@ -2234,15 +2234,24 @@ Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` 
 
 1. Unbekannter oder Nicht-Passwort-Provider → 404 `auth.unknown_provider`, ohne Budget
    und ohne argon2.
-2. **Limiter** mit drei Schichten, nacheinander:
-   - **Client** (Client-Key): Leaky Bucket über Fehlversuche, Burst 100, danach einer
-     pro 6 s. Voll → 429 `auth.rate_limited`, Retry-After höchstens 15 s.
-   - **Konto × Client** (Paar): 5 freie Fehlversuche, dann Wartezeit
+2. **Limiter** mit drei Schichten, nacheinander. Welche greifen, hängt von der Art des
+   Client-Keys ab (`LoginClientKind`): `device` (gültiges Geräte-Cookie für das Konto),
+   `address` (eine Adresse, für die ein vertrauenswürdiger Proxy bürgt: `xff:<n>`,
+   `header:<name>`) oder `shared` (der TCP-Peer, in jeder ausgelieferten Topologie ein
+   Proxy, hinter dem alle Browser stehen).
+   - **Client** (nur `address`): Leaky Bucket über Fehlversuche, Burst 100, danach einer
+     pro 6 s. Voll → 429 `auth.rate_limited`, Retry-After höchstens 15 s. Ein
+     `shared`-Key fällt heraus: Ein einzelner Absender würde ihn füllen und dann jeden
+     6-s-Schritt selbst nehmen, und alle Browser hinter dem web-ui-Proxy bekämen 429.
+     Ein `device`-Key sieht nur sein eigenes Konto, dort ist die Paar-Schicht strenger.
+   - **Konto × Client** (Paar, alle Arten): 5 freie Fehlversuche, dann Wartezeit
      1 s × 2^(Fehlversuche − 5) ab dem letzten, gedeckelt auf 2 min → 429. Ein Erfolg
      löscht das Paar, 30 min nach dem letzten Fehlversuch wird es vergessen.
-   - **Global**: höchstens `AUTH_LOGIN_MAX_INFLIGHT` argon2-Läufe gleichzeitig und 300
-     zugelassene Versuche pro Minute → 503 `auth.busy`. Verbraucht nur, was die ersten
-     beiden Schichten zugelassen haben.
+   - **Global**: höchstens `AUTH_LOGIN_MAX_INFLIGHT` argon2-Läufe gleichzeitig und ein
+     Leaky Bucket, der 300 zugelassene Versuche pro Minute abfließen lässt → 503
+     `auth.busy`. Ohne Geräte-Cookie gibt es höchstens alle Slots bis auf einen und den
+     Bucket bis 240; den letzten Slot und die letzten 60 kann nur `device` nehmen.
+     Verbraucht nur, was die ersten beiden Schichten zugelassen haben.
 
    Jede Ablehnung trägt `Retry-After` und `retry_after_s`, setzt kein Cookie und ruft
    `verify` nicht auf. Gezählt wird bei der Zulassung: Ein laufender Versuch zählt bis
@@ -2256,11 +2265,20 @@ Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` 
    gültiges Geräte-Cookie für **dieses** Konto mit, ist sein Client-Key `device:<id>`
    statt der Adresse. Hinter dem web-ui-Proxy teilen sich sonst alle Browser eine
    Adresse, und die Fehlversuche eines Angreifers würden den Operator mit bremsen.
+   `GET /me` setzt das Cookie zusätzlich für jeden Browser mit gültiger Session eines
+   Passwort-Kontos, dem es fehlt (`ensureLoginDeviceCookie` in `routes/authLogin.ts`);
+   der Session-Watcher der UI fragt `/me` minütlich ab.
 
 Der Client-Key kommt aus `AUTH_LOGIN_CLIENT_ADDRESS` (`auth/clientAddress.ts`): `socket`
 (Default), `xff:<n>` (n-ter `X-Forwarded-For`-Eintrag von **rechts**) oder
-`header:<name>`, nie `req.ip`. Der Wert muss eine IP sein, sonst gilt der Socket-Peer.
-IPv6 zählt pro /64.
+`header:<name>`, nie `req.ip`. `clientAddressFor` liefert `{ key, shared }`: der
+Socket-Peer (Default oder Rückfall) ist `shared`. Der Wert muss eine IP sein, sonst gilt
+der Socket-Peer. IPv6 zählt pro Präfix, `AUTH_LOGIN_IPV6_PREFIX` Bit lang (Default 64).
+
+Bleibt offen: Wer sich einen Key teilt, teilt dessen Paare. Ein Absender, der alle
+2 Minuten auf ein Konto falsch rät, hält das Paar für jeden Browser ohne Geräte-Cookie
+auf demselben Key zu, etwa für die erste Anmeldung auf einem neuen Gerät. Vor argon2
+lässt sich der Browser nicht vom Absender unterscheiden (§10f „What stays open“).
 
 Weitere Stellen: `/setup` holt sich für seinen argon2-Hash einen globalen Slot
 (`acquireSlot()`, sonst 503 `auth.busy`) und setzt nach Erfolg ebenfalls das
@@ -2277,9 +2295,11 @@ Sicherheitsbegründung und Restrisiken (u. a. in-memory pro Prozess, Replicas
 multiplizieren die Grenzen): `docs/security-architecture.md` §10f. Konfiguration: §10
 „Anmelde-Rate-Limit“.
 
-Tests: `test/auth/loginRateLimiter.test.ts`, `test/auth/clientAddress.test.ts`,
-`test/auth/loginRoute.test.ts`, `test/auth/adminUsersRoute.test.ts`,
-`test/auth/localPasswordProvider.test.ts`; UI `web-ui/app/login/__tests__/page.test.tsx`.
+Tests: `test/auth/loginRateLimiter.test.ts`, `test/auth/loginRateLimiterFairness.test.ts`,
+`test/auth/clientAddress.test.ts`, `test/auth/loginRoute.test.ts`,
+`test/auth/loginLockoutDos.test.ts` (Harness in `test/auth/loginHarness.ts`),
+`test/auth/adminUsersRoute.test.ts`, `test/auth/localPasswordProvider.test.ts`; UI
+`web-ui/app/login/__tests__/page.test.tsx`.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -2646,13 +2666,14 @@ Siehe §3 „Ersteinrichtung `POST /api/v1/auth/setup`“ und `docs/security-arc
 ### Anmelde-Rate-Limit
 
 Siehe §3 „Passwort-Anmeldung mit Rate-Limit“ und `docs/security-architecture.md` §10f.
-Die Schwellen der drei Schichten sind Konstanten in `auth/loginRateLimiter.ts`, nur die
-zwei Einsatz-Fakten sind konfigurierbar.
+Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konstanten in
+`auth/loginRateLimiter.ts`, nur die drei Einsatz-Fakten sind konfigurierbar.
 
 | Variable | Wirkung |
 |---|---|
-| `AUTH_LOGIN_CLIENT_ADDRESS` | Woher der Limiter die Client-Adresse nimmt. `socket` (Default): der TCP-Peer, nicht fälschbar; hinter einem Proxy teilen sich alle Clients dessen Adresse, das Geräte-Cookie trennt wiederkehrende Operatoren. `xff:<n>` (1..8): der n-te `X-Forwarded-For`-Eintrag von **rechts**, n = Zahl der vertrauenswürdigen Proxies davor, die an den Header **anhängen**. Fly.io: `xff:1` (die Edge hängt den Client an, web-ui erreicht die Middleware über `.internal` ohne weiteren Hop; ein `.flycast`-Ziel bräuchte `xff:2`); vorher einmal mit gefälschtem Header prüfen. `header:<name>`: ein Header, den die Edge **setzt** (`Fly-Client-IP`, `CF-Connecting-IP`), genau eine Adresse. Nie der linke `X-Forwarded-For`-Eintrag, den schreibt der Client. Im Compose-Stack beim Default bleiben: Der web-ui-Proxy reicht den Header des Browsers unverändert durch, Next.js füllt ihn nur, wenn er fehlt. Ungültiger Wert → Config-Fehler beim Boot, leerer Wert = Default. |
-| `AUTH_LOGIN_MAX_INFLIGHT` | Gleichzeitige argon2-Läufe (Anmeldung und Setup-Hash), danach 503 `auth.busy`. Default `4`, erlaubt `1`–`16`. Jeder Lauf braucht 19 MiB und einen Thread des libuv-Pools (`UV_THREADPOOL_SIZE`, Default 4); mehr Slots als Pool-Threads stehen nur Schlange. 16 × 19 MiB ≈ 300 MiB. |
+| `AUTH_LOGIN_CLIENT_ADDRESS` | Woher der Limiter die Client-Adresse nimmt. `socket` (Default): der TCP-Peer, nicht fälschbar, gilt als geteilter Key (keine Client-Bremse); hinter einem Proxy teilen sich alle Clients dessen Adresse, das Geräte-Cookie trennt wiederkehrende Operatoren. `xff:<n>` (1..8): der n-te `X-Forwarded-For`-Eintrag von **rechts**, n = Zahl der vertrauenswürdigen Proxies davor, die die Client-Adresse an den Header **anhängen**. Compose hinter Caddy oder Traefik (hängen standardmäßig an) oder nginx mit `$proxy_add_x_forwarded_for`: `xff:1`, sofern nichts an diesem Proxy vorbei zum web-ui kommt; einmal mit ausgedachtem `X-Forwarded-For` prüfen, die Logzeile `[auth] login refused` muss die echte Adresse zeigen. `header:<name>`: ein Header, den die Edge **setzt**, genau eine Adresse. **Fly.io: `header:Fly-Client-IP`** (setzt `fly/middleware.fly.toml`), nicht `xff:1`: Fly stellt laut Doku die eigene IP der App rechts in `X-Forwarded-For`, damit hätten alle Clients denselben Key. Hinter Cloudflare `header:CF-Connecting-IP`, nur wenn die App nicht an Cloudflare vorbei erreichbar ist. Nie der linke `X-Forwarded-For`-Eintrag, den schreibt der Client. Ohne vorgeschalteten Proxy im Compose-Stack beim Default bleiben: Der web-ui-Proxy reicht den Header des Browsers unverändert durch, Next.js füllt ihn nur, wenn er fehlt. Ungültiger Wert → Config-Fehler beim Boot, leerer Wert = Default. |
+| `AUTH_LOGIN_IPV6_PREFIX` | Wie viele führende Bit einer IPv6-Adresse einen Client ausmachen. Default `64`, erlaubt `32`–`64`. Ein /56 enthält 256 /64, ein /48 65.536, bei 64 jedes ein eigener Client-Key mit eigenem Burst. 56 oder 48 fasst so eine Zuteilung zu einem Key zusammen, aber auch fremde Clients, die sich eine teilen (Mobilfunk, Hoster). |
+| `AUTH_LOGIN_MAX_INFLIGHT` | Gleichzeitige argon2-Läufe (Anmeldung und Setup-Hash), danach 503 `auth.busy`; einer davon bleibt Browsern mit Geräte-Cookie vorbehalten (bei `1` keiner). Default `4`, erlaubt `1`–`16`. Jeder Lauf braucht 19 MiB und einen Thread des libuv-Pools (`UV_THREADPOOL_SIZE`, Default 4); mehr Slots als Pool-Threads stehen nur Schlange. 16 × 19 MiB ≈ 300 MiB. |
 
 ### Test-Schalter (nicht von der Middleware gelesen)
 
@@ -3113,10 +3134,27 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **Verteilter Limiter (Redis oder Postgres), sobald die Middleware mit mehr als einer
   Replica läuft.** Heute zählt jeder Prozess für sich, N Replicas vervielfachen jede
   Grenze (§10f, wie beim API-Key-Limiter in §9).
-- **Fly: `AUTH_LOGIN_CLIENT_ADDRESS=xff:1` in `fly/middleware.fly.toml` setzen**, nachdem
-  ein Request mit gefälschtem `X-Forwarded-For` gegen die Live-App gezeigt hat, dass die
-  Edge den Client anhängt. Bis dahin sieht der Limiter auf Fly nur die Adressen von Edge
-  und web-ui, und nur das Geräte-Cookie trennt die Operatoren.
+- **Fly: `header:Fly-Client-IP` einmal gegen eine Live-App prüfen.**
+  `fly/middleware.fly.toml` setzt `AUTH_LOGIN_CLIENT_ADDRESS=header:Fly-Client-IP`,
+  gestützt auf Fly's Doku: `Fly-Client-IP` ist die Client-Adresse aus Sicht des
+  Fly-Proxys, und rechts in `X-Forwarded-For` steht die IP der App selbst (`xff:1`
+  wäre deshalb falsch). Nicht geprüft ist, dass die Edge einen vom Client
+  mitgeschickten `Fly-Client-IP` überschreibt. Prüfen: sechs falsche Anmeldungen mit
+  einem ausgedachten Wert in dem Header, direkt und über web-ui; die Logzeile
+  `[auth] login refused` muss die echte Adresse zeigen. Bestehende Fly-Installationen,
+  die über den Updater aktualisieren, bekommen den Wert nicht (der tauscht nur das
+  Image), siehe `docs/upgrading.md`.
+- **Render: Client-Header klären.** `render.yaml` lässt den Default `socket`, weil
+  nicht geprüft ist, welchen Header Render's Edge setzt und ob er überschrieben wird.
+  Bis dahin teilen sich dort alle Browser einen Key (siehe nächster Punkt).
+- **Geteilte Paare ohne Geräte-Cookie.** Wer sich einen Client-Key teilt, teilt dessen
+  Paare: Ein Absender, der alle 2 Minuten auf ein Konto falsch rät, hält es für jeden
+  Browser ohne Geräte-Cookie auf demselben Key zu (§10f „What stays open“). Unter
+  `socket` sind das alle Browser hinter web-ui. Eine echte Lösung braucht eine
+  vertrauenswürdige Browser-Adresse durch web-ui hindurch; der Next.js-Proxy sieht die
+  Socket-Adresse des Browsers nicht, sobald ein `X-Forwarded-For` mitkommt. Denkbar:
+  ein eigener Server-Wrapper um Next, der die Socket-Adresse in einen internen Header
+  schreibt, den die Middleware nur vom web-ui-Peer annimmt.
 - **Passwort-Obergrenze auch beim Setzen.** Setup-Wizard und Admin-Formulare prüfen nur
   die Mindestlänge. Ein dort gesetztes Passwort über 1024 Zeichen kann sich nicht
   anmelden.
