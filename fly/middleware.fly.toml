@@ -19,6 +19,12 @@ primary_region = "fra"
   # Persist vault, installed.json, builder drafts.db, and uploaded plugin
   # packages on the volume below instead of the image layer.
   PLATFORM_DATA_DIR = "/data"
+  # Password sign-in limiter (docs/security-architecture.md §10f): charge each
+  # attempt to the client address Fly's edge sets in Fly-Client-IP — on the
+  # direct path and through web-ui, which forwards the header over .internal.
+  # Not xff:1: Fly puts the app's own IP right-most in X-Forwarded-For, which
+  # would give every client the same key.
+  AUTH_LOGIN_CLIENT_ADDRESS = "header:Fly-Client-IP"
 
 [mounts]
   source = "omadia_data"
