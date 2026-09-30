@@ -2545,6 +2545,42 @@ nicht importieren kann.
 |---|---|
 | `OMADIA_CLI_SPAWN_TIMEOUT_MS` | Wanduhr-Budget **eines** CLI-geführten Chat-Turns (Shape 3) in Millisekunden, Default `600000`. Vorher fest 120 s ohne Override, während ein einzelner Aufruf des eigenen `query_seo_analyst`-Sub-Agenten 69–75 s dauert — zwei davon waren garantiert über dem Limit. Das Leerlauf-Limit (60 s ohne Ausgabe) bleibt getrennt bestehen. Nicht-numerische oder nicht-positive Werte werden ignoriert. Priorität: explizite `spawnTimeoutMs`-Dependency > ENV > Default. |
 
+### Sandbox-Container-Limits (#576 `execute`, #581 `publish`)
+
+Gelesen vom `@omadia/sandbox`-Package (`resolveSandboxResourceLimits()` in
+`resourceLimits.ts`), nicht über `config.ts`. Gelten für jeden Docker-Container,
+in dem Agent-Code läuft (Sandbox des `execute`-Tools und per `publish`
+veröffentlichte Apps), also nur, wenn `sandbox_execute_enabled` bzw.
+`sandbox_publish_enabled` an ist. Reihenfolge je Wert wie bei OM-104:
+Orchestrator-Setup-Feld > ENV > Default. Die Setup-Felder sind Plugin-Konfiguration
+(`manifest.yaml` des Orchestrators), keine Env-Variablen.
+
+| Variable | Setup-Feld | Default | Wirkung |
+|---|---|---|---|
+| `OMADIA_SANDBOX_MEMORY_MB` | `sandbox_memory_mb` | `512` | `docker run --memory` **und** `--memory-swap` mit demselben Wert, in MiB: der Container kann nicht über die Grenze hinaus auslagern. |
+| `OMADIA_SANDBOX_CPUS` | `sandbox_cpus` | `1` | `--cpus`, Bruchteile erlaubt (`0.5`). |
+| `OMADIA_SANDBOX_PIDS_LIMIT` | `sandbox_pids_limit` | `256` | `--pids-limit`, Prozesse und Threads je Container. |
+
+Leer, `0`, negativ oder nicht numerisch zählt als nicht gesetzt; ein
+„unbegrenzt“ gibt es bewusst nicht, weil Docker `0` als „kein Limit“ liest. Neue
+Werte gelten für neu erstellte Container; eine bestehende persistente Sandbox
+bekommt sie beim nächsten Wiederanhängen per `docker update` (Best-Effort, ein
+Fehler landet im Log, der Container läuft mit seinen alten Limits weiter). Die
+wirksamen Werte stehen beim Boot in der Log-Zeile `sandbox_execute_enabled=true`
+bzw. `sandbox_publish_enabled=true`. Details: `docs/security-architecture.md` §3b.
+
+### Web-UI: Frame-Freigabe (`UI_FRAME_ANCESTORS`)
+
+Gelesen vom **web-ui**-Prozess, nicht von der Middleware:
+`web-ui/proxy.ts` setzt die Operator-UI-Header pro Request aus
+`web-ui/app/_lib/securityHeaders.ts`.
+
+| Variable | Wirkung |
+|---|---|
+| `UI_FRAME_ANCESTORS` | CSP-`frame-ancestors`-Quellenliste für alle Operator-Seiten, z. B. `"'self' https://teams.microsoft.com"` (ganzen Wert in doppelte Anführungszeichen setzen). Ungesetzt: `frame-ancestors 'none'` plus `X-Frame-Options: DENY`. Gesetzt: ersetzt `'none'`, `X-Frame-Options` entfällt, weil es keine Freigabeliste kennt. Ungültige Werte (`;`, `,`, andere Schlüsselwörter, Steuerzeichen) werden mit Warnung im web-ui-Log ignoriert, der Default bleibt. `/p/*` und `/bot-api/*` behalten immer die Header der Middleware. Pro Request gelesen, wirkt also ohne Rebuild auf einem veröffentlichten Image. |
+
+Details: `docs/security-architecture.md` §10e.
+
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 
 ```
@@ -2966,6 +3002,23 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Operator-UI-Header und Sandbox-Limits — bewusst offen gelassen (Security-Doku §3b, §10e)
+
+- **Keine Script-Policy in der Operator-UI.** Die CSP enthält nur
+  `frame-ancestors`, `object-src` und `base-uri`. Der nächste Schritt wäre eine
+  Nonce pro Request aus `web-ui/proxy.ts` für `script-src`; das zwingt aber jede
+  Seite in dynamisches Rendering und muss vorher gemessen werden. `style-src`
+  bräuchte zusätzlich `'unsafe-inline'` wegen der `style`-Attribute.
+- **Keine zentralen Antwort-Header in der Middleware.** Plugin-UIs
+  (`pluginUiStatic.ts`, `withIframeSafeHeaders`) und die Builder-Preview setzen
+  eigene; die übrigen `/api/*`-Antworten, die über `/bot-api/*` ankommen,
+  tragen weder `nosniff` noch eine Frame-Policy. Die web-ui lässt `/bot-api/*`
+  absichtlich unverändert (§10e), die Lücke gehört also in die Middleware.
+- **Publish-Container von vor den Limits** laufen ohne Limits weiter, bis eine
+  neue Version sie ersetzt: `DockerPublishRuntime.deploy()` fasst bestehende
+  Versionen nie an (Unveränderlichkeit), und ein `docker update` dort würde
+  diese Zusage aufweichen.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 

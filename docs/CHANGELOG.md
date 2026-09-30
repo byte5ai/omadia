@@ -36,6 +36,34 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — operator UI response headers, non-root web-ui image, sandbox container limits
+
+2026-09-30 — operator pages were served without a frame policy, nosniff or
+Referrer-Policy, the web-ui image ran `node server.js` as root, and the Docker
+containers behind `execute` and `publish` had no memory, CPU or process
+ceiling, so one runaway command competed with the middleware for the whole
+host. Operator pages now carry `Content-Security-Policy: frame-ancestors
+'none'; object-src 'none'; base-uri 'none'`, `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff` and `Referrer-Policy:
+strict-origin-when-cross-origin`. `web-ui/proxy.ts` sets them per request, so
+the new `UI_FRAME_ANCESTORS` variable works on a published image: it replaces
+`'none'` for deployments that embed operator pages and drops `X-Frame-Options`.
+`/p/*` and `/bot-api/*` stay untouched, because they carry the framed plugin
+UIs and previews whose middleware headers a proxy header would override. The
+web-ui image now runs as `USER node`.
+
+Every sandbox and publish container gets `--memory` and `--memory-swap`
+(512 MiB), `--cpus` (1) and `--pids-limit` (256) from one builder in
+`@omadia/sandbox`. Each value comes from the orchestrator setup fields
+`sandbox_memory_mb`, `sandbox_cpus` and `sandbox_pids_limit`, else from
+`OMADIA_SANDBOX_MEMORY_MB`, `OMADIA_SANDBOX_CPUS` and
+`OMADIA_SANDBOX_PIDS_LIMIT`, else the default; `0` or junk never means
+"unlimited". An existing persistent sandbox gets the current limits through
+`docker update` when it is next re-attached, while a publish container created
+before this change keeps running without them until a new version replaces
+it. Details in `docs/security-architecture.md` §3b and §10e and in
+`docs/upgrading.md`.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no

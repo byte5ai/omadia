@@ -370,6 +370,63 @@ working across it:
   block indefinitely, the kill escalation never ran, and the turn hung holding
   its semaphore permit while a bearer-gated server kept listening.
 
+## 3b. Agent sandbox containers: resource ceilings (#576, #581)
+
+The `execute` tool (#576) runs agent-issued shell commands in a long-lived
+Docker container per scope, and `publish` (#581) runs agent-written apps in a
+container per version. Both are off by default (`sandbox_execute_enabled`,
+`sandbox_publish_enabled`). `profile.egress: false` already becomes
+`--network none`. `AgentComputerProfile.maxRunSeconds` bounds one `run()` call
+only: its `timeout` kills the wrapper shell, not processes the command left
+running in the container. Before this section existed nothing else bounded the
+container, so a fork bomb or a runaway allocation competed with the middleware
+for the same host.
+
+Every `docker run` for agent code now carries three ceilings:
+
+| Flag | Default | Setup field (orchestrator) | Env variable |
+|---|---|---|---|
+| `--memory` and `--memory-swap` (same value) | 512 MiB | `sandbox_memory_mb` | `OMADIA_SANDBOX_MEMORY_MB` |
+| `--cpus` | 1 | `sandbox_cpus` | `OMADIA_SANDBOX_CPUS` |
+| `--pids-limit` | 256 | `sandbox_pids_limit` | `OMADIA_SANDBOX_PIDS_LIMIT` |
+
+- **Resolution per field:** setup field, then env variable, then default
+  (`readSandboxResourceLimits()` in the orchestrator's `sandboxLimitsConfig.ts`
+  over `resolveSandboxResourceLimits()` in `@omadia/sandbox`). `plugin.ts`
+  reads the values once, passes them to both Docker paths and logs the
+  effective limits at boot.
+- **Fail-closed, no "unlimited".** Docker reads `0` as "no limit" for all three
+  flags. A value that is not a positive number (a whole number for memory and
+  PIDs) counts as unset and falls through to the next source.
+  `dockerResourceLimitArgs()` re-validates its input, so a hand-built
+  `{ memoryMb: 0 }` cannot reach argv either.
+- **Swap is capped at the memory limit.** With `--memory` alone Docker allows
+  the same amount again as swap, so "512 MiB" would have meant up to 1 GiB. It
+  also makes raising the limit work: `docker update` refuses a `--memory` above
+  a swap ceiling that is not updated in the same call.
+- **Existing containers.** Limits are fixed at `docker run`. When a persistent
+  sandbox is re-attached, the backend first runs `docker update` with the
+  current limits, then `docker start`. That covers containers created before
+  the limits existed and containers created under different values. The update
+  is best-effort: a refusal is logged (`[sandbox] docker update … failed`) and
+  the container keeps the limits it has; the re-attach itself does not fail.
+  Publish containers are immutable per version and never re-created, so one
+  that predates the limits runs without them until a new version replaces it.
+- **One builder.** Both `docker run` sites (`DockerSandboxBackend.runContainer`,
+  `DockerPublishRuntime.deploy`) and the update path take their flags from
+  `dockerResourceLimitArgs()`.
+- **Host caveat.** On a host whose kernel lacks one of the cgroup controllers,
+  `docker run` prints a warning and starts the container without that limit
+  (exit 0), so an argv assertion cannot notice. The real-Docker test tier
+  (`SANDBOX_DOCKER_TEST=1`) checks `docker inspect` and that a 700 MB
+  allocation is killed; run it once on any new host type.
+
+Tests: `middleware/test/sandbox/resourceLimits.test.ts`,
+`middleware/test/sandbox/dockerSandbox.test.ts` (stub tier for argv and the
+update-before-start order, real tier for what the daemon applied),
+`middleware/test/sandbox/sandboxLimitsConfig.test.ts` and
+`middleware/test/publish/dockerPublishRuntime.test.ts`.
+
 ## 4. Plugin install surface
 
 Plugins are installed as signed ZIPs uploaded through the operator UI, not
@@ -1274,6 +1331,69 @@ auth and caps, collisions, deactivation) and
 and junk result, raw status-line bytes, bounds, the deactivate-during-auth
 race).
 
+## 10e. Operator UI response headers and image user (web-ui)
+
+Every operator page of the web-ui answers with:
+
+| Header | Value |
+|---|---|
+| `Content-Security-Policy` | `frame-ancestors 'none'; object-src 'none'; base-uri 'none'` |
+| `X-Frame-Options` | `DENY` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+
+- **Set at request time.** `web-ui/proxy.ts` applies them from
+  `web-ui/app/_lib/securityHeaders.ts` on every response it returns. They are
+  deliberately not in `next.config.ts` `headers()`: Next freezes that into the
+  build, the same trap that once baked the compose hostname into `rewrites()`,
+  so an override set on a published image would do nothing.
+- **`UI_FRAME_ANCESTORS`** (env of the web-ui process) is for deployments that
+  embed operator pages, e.g.
+  `'self' https://teams.microsoft.com https://*.teams.microsoft.com`. It
+  replaces `'none'` in `frame-ancestors`, and `X-Frame-Options` is then left
+  out because it cannot express an allowlist. Only CSP source expressions are
+  accepted. A value containing `;`, `,`, a quoted keyword other than `'self'`
+  or `'none'`, or a control character is ignored with a warning in the web-ui
+  log, and the default stays in force. An explicit `'none'` equals the
+  default.
+- **`/p`, `/p/*`, `/bot-api` and `/bot-api/*` are left untouched**
+  (segment-exact, so `/bot-apix` is an operator route). These route handlers
+  stream middleware responses, and several of those are documents that are
+  framed: plugin UIs (`PluginUiFrame`, and Teams tabs load `/p/*`
+  cross-origin), the store's admin panel (`/bot-api<admin_ui_path>`) and the
+  builder preview (`/bot-api/v1/builder/.../preview/ui-route/...`). The
+  middleware sets their CSP, nosniff and Referrer-Policy itself
+  (`pluginUiStatic.ts`, `withIframeSafeHeaders` in `harness-ui-helpers`,
+  `builderPreview.ts`). Next copies proxy response headers onto the outgoing
+  response before the route handler runs, and its `send-response` does not
+  replace a header that is already there, so a header set by the proxy would
+  override the middleware's `frame-ancestors` and break those iframes.
+  Response headers on `/bot-api/*` stay the middleware's responsibility.
+- **Why `'none'` breaks nothing shipped.** No operator page is framed by
+  another operator page; the three iframe hosts in the web-ui load `/p/*` or
+  `/bot-api/*`. The Teams channel plugin's tabs (`hub`, `tab-config` and the
+  configured `contentUrl`s) all resolve under `/p/*`, and the desktop shell
+  loads the UI as a top-level page (`loadURL`). Checked against a prebuilt
+  image: `/login` is refused inside a cross-origin frame by default and shown
+  with a matching `UI_FRAME_ANCESTORS`, and a plugin iframe inside
+  `/plugin-ui/<id>` still renders.
+- **No script or style policy yet.** The App Router emits inline flight and
+  hydration scripts and components carry inline `style` attributes, so a
+  `script-src` needs `'unsafe-inline'` or a per-request nonce, which forces
+  every page into dynamic rendering. `object-src` and `base-uri` are locked
+  down because the operator UI renders no `<object>`, `<embed>` or `<base>`.
+- **The image runs unprivileged.** The web-ui image's runtime stage ends in
+  `USER node` (uid 1000) and copies the build with `--chown=node:node`, so
+  `.next/` stays writable. The middleware image drops root in its entrypoint
+  via gosu because it has to chown a mounted volume first; the web-ui mounts
+  none, so a plain `USER` is enough. If a volume is ever mounted into it,
+  handle its ownership the way the middleware image does.
+
+Tests: `web-ui/app/_lib/__tests__/securityHeaders.test.ts` (header table,
+exemption, override parsing), `web-ui/app/_lib/__tests__/proxySecurityHeaders.test.ts`
+(the headers on what `proxy()` returns, and the override read per request) and
+`web-ui/scripts/__tests__/runtimeImageUser.test.ts` (runtime stage `USER`).
+
 ---
 
 ## 11. Reviewer checklist
@@ -1333,7 +1453,15 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
+- [ ] A new `docker run` (or `docker update`) for agent code takes its limit
+      flags from `dockerResourceLimitArgs()` in `@omadia/sandbox`, never its
+      own copy, and offers no way to switch a limit off (§3b).
+- [ ] A new surface that has to be framed lives under `/p/*` or `/bot-api/*`
+      and sets its own `frame-ancestors`. The exemption in
+      `web-ui/app/_lib/securityHeaders.ts` is not widened, and the operator-UI
+      headers are not moved into `next.config.ts` `headers()` (§10e).
 
 ---
 
-*Last reviewed: 2026-08 (§10 added with issue #669).*
+*Last reviewed: 2026-09 (§3b sandbox container limits and §10e operator UI
+headers added; §10 added with issue #669).*
