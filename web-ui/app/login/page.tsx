@@ -146,8 +146,11 @@ function LoginPageInner(): React.ReactElement {
       // Cookie set by the server; bounce to the originally-requested path.
       window.location.href = returnPath;
     } catch (err) {
+      const retryAfterS = signInRetryAfterSeconds(err);
       if (err instanceof ApiError && err.status === 401) {
         setSubmitError(t('incorrectCredentials'));
+      } else if (retryAfterS !== null) {
+        setSubmitError(t('tooManyAttempts', { seconds: retryAfterS }));
       } else {
         setSubmitError(
           err instanceof Error ? err.message : String(err),
@@ -255,6 +258,29 @@ function LoginPageInner(): React.ReactElement {
       )}
     </PageShell>
   );
+}
+
+/** Refusals of the middleware's sign-in rate limiter: 429 and 503. */
+const SIGN_IN_LIMIT_CODES: ReadonlySet<string> = new Set(['auth.rate_limited', 'auth.busy']);
+
+/**
+ * Seconds to wait when the sign-in rate limiter refused the attempt, or null
+ * for any other error. The middleware always sends `retry_after_s`; a body
+ * without a usable value still reads as "wait a second" rather than falling
+ * back to the raw, untranslated error text.
+ */
+function signInRetryAfterSeconds(err: unknown): number | null {
+  if (!(err instanceof ApiError) || err.code === null || !SIGN_IN_LIMIT_CODES.has(err.code)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(err.body) as { retry_after_s?: unknown };
+    const seconds = parsed.retry_after_s;
+    if (typeof seconds === 'number' && Number.isInteger(seconds) && seconds >= 1) return seconds;
+  } catch {
+    // Not JSON — use the minimum below.
+  }
+  return 1;
 }
 
 function PageShell({ children }: { children: React.ReactNode }): React.ReactElement {

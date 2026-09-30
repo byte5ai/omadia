@@ -928,6 +928,7 @@
     "submit": "Sign in",
     "submitting": "Signing in…",
     "incorrectCredentials": "Incorrect email or password.",
+    "tooManyAttempts": "Too many sign-in attempts. Please wait {seconds, plural, one {# second} other {# seconds}} and try again.",
     "or": "or",
     "continueWith": "Continue with {provider}"
   },

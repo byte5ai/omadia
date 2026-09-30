@@ -1,4 +1,4 @@
-import { waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../_lib/test-utils';
@@ -10,13 +10,19 @@ import LoginPage from '../page';
  * short-circuited to '/'.
  */
 
-const { mockReplace, mockSearchParamsGet, mockGetSessionStatus, mockGetAuthProviders } =
-  vi.hoisted(() => ({
-    mockReplace: vi.fn(),
-    mockSearchParamsGet: vi.fn<(key: string) => string | null>(() => null),
-    mockGetSessionStatus: vi.fn(),
-    mockGetAuthProviders: vi.fn(),
-  }));
+const {
+  mockReplace,
+  mockSearchParamsGet,
+  mockGetSessionStatus,
+  mockGetAuthProviders,
+  mockPostAuthLogin,
+} = vi.hoisted(() => ({
+  mockReplace: vi.fn(),
+  mockSearchParamsGet: vi.fn<(key: string) => string | null>(() => null),
+  mockGetSessionStatus: vi.fn(),
+  mockGetAuthProviders: vi.fn(),
+  mockPostAuthLogin: vi.fn(),
+}));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: mockReplace }),
@@ -24,14 +30,28 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('../../_lib/api', () => ({
+  // Mirrors the real ApiError: the machine code is parsed out of the body.
   ApiError: class ApiError extends Error {
-    constructor(public status: number, message: string) {
+    public readonly code: string | null;
+    constructor(
+      public status: number,
+      message: string,
+      public body: string = '',
+    ) {
       super(message);
+      let code: string | null = null;
+      try {
+        const parsed = JSON.parse(body) as { code?: unknown };
+        code = typeof parsed.code === 'string' ? parsed.code : null;
+      } catch {
+        code = null;
+      }
+      this.code = code;
     }
   },
   getSessionStatus: mockGetSessionStatus,
   getAuthProviders: mockGetAuthProviders,
-  postAuthLogin: vi.fn(),
+  postAuthLogin: mockPostAuthLogin,
 }));
 
 function authedSession() {
@@ -129,5 +149,77 @@ describe('<LoginPage /> redirect on mount', () => {
       expect(mockGetSessionStatus).toHaveBeenCalled();
       expect(mockGetAuthProviders).toHaveBeenCalled();
     });
+  });
+});
+
+describe('<LoginPage /> sign-in errors', () => {
+  function passwordProvider() {
+    return Promise.resolve({
+      providers: [{ id: 'local', displayName: 'Email & Password', kind: 'password' }],
+      setup_required: false,
+      setup_token_required: false,
+    });
+  }
+
+  async function submit(): Promise<void> {
+    fireEvent.change(await screen.findByLabelText('Email'), {
+      target: { value: 'admin@example.com' },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'wrong' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+  }
+
+  beforeEach(() => {
+    mockGetSessionStatus.mockImplementation(unauthedSession);
+    mockGetAuthProviders.mockImplementation(passwordProvider);
+  });
+
+  it('shows the localized message, not the raw error, when sign-in is rate-limited', async () => {
+    const { ApiError } = await import('../../_lib/api');
+    mockPostAuthLogin.mockRejectedValue(
+      new ApiError(
+        429,
+        'POST /v1/auth/login/local → 429',
+        JSON.stringify({ code: 'auth.rate_limited', retry_after_s: 7 }),
+      ),
+    );
+    renderWithIntl(<LoginPage />);
+    await submit();
+    expect(
+      await screen.findByText('Too many sign-in attempts. Please wait 7 seconds and try again.'),
+    ).toBeTruthy();
+    expect(screen.queryByText(/→ 429/)).toBeNull();
+  });
+
+  it('treats a busy server (503 auth.busy) the same way', async () => {
+    const { ApiError } = await import('../../_lib/api');
+    mockPostAuthLogin.mockRejectedValue(
+      new ApiError(
+        503,
+        'POST /v1/auth/login/local → 503',
+        JSON.stringify({ code: 'auth.busy', retry_after_s: 1 }),
+      ),
+    );
+    renderWithIntl(<LoginPage />, { locale: 'de' });
+    fireEvent.change(await screen.findByLabelText('E-Mail'), {
+      target: { value: 'admin@example.com' },
+    });
+    fireEvent.change(screen.getByLabelText('Passwort'), { target: { value: 'wrong' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Anmelden' }));
+    expect(
+      await screen.findByText(
+        'Zu viele Anmeldeversuche. Bitte 1 Sekunde warten und erneut versuchen.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('keeps the incorrect-credentials message for a 401', async () => {
+    const { ApiError } = await import('../../_lib/api');
+    mockPostAuthLogin.mockRejectedValue(
+      new ApiError(401, 'POST /v1/auth/login/local → 401', '{"code":"auth.invalid_credentials"}'),
+    );
+    renderWithIntl(<LoginPage />);
+    await submit();
+    expect(await screen.findByText('Incorrect email or password.')).toBeTruthy();
   });
 });
