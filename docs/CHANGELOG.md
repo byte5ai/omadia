@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — `disambiguate-policy` skill now teaches the shipped `_pendingUserChoice` contract (#1213)
+
+2026-09-30 — `middleware/packages/agent-reference-maximum/skills/disambiguate-policy.md`
+still described a `disambiguate` hint in tool-results and told the model to call
+`ask_user_choice` itself, with `_pendingUserChoice` filed as future work under a
+"Ab Etappe 4" heading. That stage shipped: `query_notes_by_person` emits
+`_pendingUserChoice`, the orchestrator parses it (`parseToolEmittedChoice`),
+short-circuits the turn and renders the Smart-Card, and no tool emits
+`disambiguate` any more. The skill is `shareable: true`, so the dead contract
+reached other agents too. Body replaced with the current contract, including
+that a click starts a fresh turn with the chosen `value` as the user message;
+the manifest's skill `description` no longer names `ask_user_choice`. Prompt
+text only — no code path and no test changed.
+
 ### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
 
 2026-09-29 — the `audit (high+critical block)` step treated an npm registry
