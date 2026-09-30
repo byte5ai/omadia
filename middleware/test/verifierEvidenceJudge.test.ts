@@ -345,27 +345,53 @@ describe('verifier/evidenceJudge - cited evidence id must be in the evidence set
     }
   });
 
-  it('logs a rejected citation on one line, with the claim id but not the claim text', async () => {
-    const { llm } = stubProvider([
-      { verdict: 'verified', evidence_node_id: 'person:ghost\n[verifier/judge] forged line' },
-    ]);
-    const logs: string[] = [];
-    const judge = new EvidenceJudge({
-      llm: llm as never,
-      fetcher: stubFetcher([SNIPPET]),
-      log: (msg: string): void => {
-        logs.push(msg);
-      },
+  // The cited id is model output: it can repeat whatever the judge was shown
+  // (claim text, evidence content) or carry characters that break or disguise
+  // a log line. The line names the claim id and the cited id's length only.
+  const REJECTED_CITATIONS: ReadonlyArray<readonly [string, string]> = [
+    ['an id-shaped unknown id', 'person:jane-doe'],
+    ['a line feed', 'person:ghost\n[verifier/judge] forged line'],
+    ['a carriage return', 'person:ghost\r[verifier/judge] forged line'],
+    ['U+2028 LINE SEPARATOR', 'person:ghost\u2028[verifier/judge] forged line'],
+    ['U+2029 PARAGRAPH SEPARATOR', 'person:ghost\u2029[verifier/judge] forged line'],
+    ['ANSI escape sequences', 'person:ghost\u001b[2K\u001b[31mforged\u001b[0m'],
+    ['a bidi override', 'person:ghost\u202eenil degrof'],
+    ['the claim text, echoed back', makeSoftClaim().text],
+    ['evidence content, echoed back', SNIPPET.content],
+  ];
+  const LOG_BREAKERS = ['\n', '\r', '\u2028', '\u2029', '\u001b', '\u202e'];
+
+  for (const [label, cited] of REJECTED_CITATIONS) {
+    it(`logs a rejected citation by length only: ${label}`, async () => {
+      const { llm } = stubProvider([{ verdict: 'verified', evidence_node_id: cited }]);
+      const logs: string[] = [];
+      const judge = new EvidenceJudge({
+        llm: llm as never,
+        fetcher: stubFetcher([SNIPPET]),
+        log: (msg: string): void => {
+          logs.push(msg);
+        },
+      });
+      const claim = makeSoftClaim();
+      const verdict = await judge.check(claim);
+      assert.equal(verdict.status, 'unverified');
+      if (verdict.status === 'unverified') {
+        assert.equal(verdict.reason, 'evidence_node_id not in evidence set');
+      }
+      assert.equal(logs.length, 1);
+      const line = logs[0]!;
+      for (const ch of LOG_BREAKERS) {
+        const code = ch.codePointAt(0)!.toString(16).padStart(4, '0');
+        assert.ok(!line.includes(ch), `U+${code} from the cited id reached the log line`);
+      }
+      assert.ok(!line.includes(cited), 'the cited id must not be logged');
+      assert.ok(!line.includes(claim.text), 'the claim text must not be logged');
+      assert.equal(
+        line,
+        `[verifier/judge] evidence_node_id not in evidence set, downgrading to unverified claim=c_001 cited_len=${String(cited.length)}`,
+      );
     });
-    const claim = makeSoftClaim();
-    await judge.check(claim);
-    assert.equal(logs.length, 1);
-    const line = logs[0]!;
-    assert.match(line, /evidence_node_id not in evidence set/);
-    assert.match(line, /claim=c_001/);
-    assert.ok(!line.includes('\n'), 'the cited id must not break the log line');
-    assert.ok(!line.includes(claim.text), 'the claim text must not be logged');
-  });
+  }
 
   it('takes the source of a verified verdict from the cited snippet, not the claim', async () => {
     const { llm } = stubProvider([

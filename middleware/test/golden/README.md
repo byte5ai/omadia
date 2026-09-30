@@ -178,7 +178,8 @@ on `pull_request`, forks never attempt to run it.
    naming any other `nodeId` is demoted to `unverified`, so the entry lands on
    `approved_with_disclaimer`. When a judge-backed entry flips to a disclaimer
    unexpectedly, look for `[verifier/judge] evidence_node_id not in evidence
-   set` on stderr; it names the id the model cited.
+   set` on stderr; it names the claim id and the length of the id the model
+   cited. The id itself is model output and is never logged.
 
 3. **The trigger trap — read this before writing a judge fixture.** The
    pipeline runs the stochastic extractor + judge only when

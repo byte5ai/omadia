@@ -406,10 +406,19 @@ Trade-off: a genuine contradiction whose citation the model mistypes is
 released with the `partial` badge instead of blocking the answer. That is
 accepted because a contradiction must point at evidence by contract, and the
 deterministic checker (hard claims, anchored Odoo records, the trace
-cross-check) still blocks on its own. Each unknown-id demotion is logged as
-`[verifier/judge] evidence_node_id not in evidence set, …` with the claim id and
-the cited id, JSON-quoted and truncated to 80 characters so model output cannot
-break the log line. The claim text is not logged.
+cross-check) still blocks on its own.
+
+Each unknown-id demotion is logged as `[verifier/judge] evidence_node_id not in
+evidence set, downgrading to unverified claim=<id> cited_len=<n>`: the claim id
+the extractor assigned (`c_001`, …) and the length of the cited id, nothing
+else. The cited id itself is never logged. It is model output and can repeat
+anything the judge was shown, including claim text and evidence content that
+may hold personal data or credentials. It can also carry characters that break
+or disguise a log line, such as U+2028/U+2029 line separators, ANSI escape
+sequences or bidi overrides, and JSON quoting leaves some of those intact. An
+id-shaped value is not echoed either, because a name or a token can look like
+an id. The claim text is not logged, and the demoted verdict carries a fixed
+reason string, so the cited id goes no further in the verdict.
 
 The check proves that the judge cited a snippet it was shown, not that the
 snippet supports the verdict; that remains the judge's call. Asserted by

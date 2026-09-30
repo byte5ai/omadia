@@ -19,7 +19,8 @@ import { MAX_CONTEXT_CHARS } from './claimExtractor.js';
  *
  * A cited `evidence_node_id` is checked deterministically against the
  * snippet set the judge was shown in that call; an id outside that set
- * demotes the verdict to `unverified`, on the recheck call as well.
+ * demotes the verdict to `unverified`, on the recheck call as well. The
+ * rejected id is logged by its length only, never verbatim.
  */
 
 export interface EvidenceSnippet {
@@ -226,10 +227,12 @@ ${evidenceBlock}`;
       return null;
     }
 
-    return parseVerdict(response, knownIds, (cited) => {
-      // The cited id is model output: JSON-quoted so it stays on one line.
+    return parseVerdict(response, knownIds, (citedLength) => {
+      // Only the length: the cited id is model output that can repeat claim
+      // or evidence text, or break or disguise the line (U+2028, ANSI, bidi
+      // controls). `claim.id` is assigned by the extractor (`c_001`, …).
       this.log(
-        `[verifier/judge] ${UNKNOWN_EVIDENCE_REASON}, downgrading to unverified claim=${claim.id} cited=${JSON.stringify(truncate(cited, 80))}`,
+        `[verifier/judge] ${UNKNOWN_EVIDENCE_REASON}, downgrading to unverified claim=${claim.id} cited_len=${String(citedLength)}`,
       );
     });
   }
@@ -240,7 +243,7 @@ ${evidenceBlock}`;
 function parseVerdict(
   response: LlmResponse,
   knownIds: ReadonlySet<string>,
-  onUnknownId: (cited: string) => void,
+  onUnknownId: (citedLength: number) => void,
 ): {
   verdict: PrimitiveVerdict;
   evidenceNodeId?: string;
@@ -266,7 +269,7 @@ function parseVerdict(
     // ...and it must name a snippet this call was shown. Exact match on the
     // trimmed string: ids are opaque, so no case-folding or prefix matching.
     if (needsCitation && !knownIds.has(nodeId)) {
-      onUnknownId(nodeId);
+      onUnknownId(nodeId.length);
       return { verdict: 'unverified', rationale: UNKNOWN_EVIDENCE_REASON };
     }
     const rationale =
