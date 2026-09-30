@@ -16,7 +16,7 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
  * The core verifies the session cookie at upgrade time — BEFORE the WebSocket
  * handshake completes — so a handler only ever sees an authenticated peer.
  * Mirrors the kernel's session claims without coupling the SDK to its JWT
- * types.
+ * types. Claims only: the session token itself never reaches a handler.
  */
 export interface ChannelSessionClaims {
   /** Stable per-user id within the issuing provider (the session `sub`). */
@@ -27,6 +27,14 @@ export interface ChannelSessionClaims {
   provider: string;
   /** Omadia-Identity cluster root in the knowledge graph, when resolved. */
   omadiaUserId?: string;
+  /**
+   * When the session that opened this socket expires, Unix epoch seconds. The
+   * kernel closes the socket with 4401 at that moment; a handler never has to
+   * enforce it and may only use it as a hint (e.g. to tell its client when the
+   * socket will end). Optional only for hosts and tests that build claims by
+   * hand — the kernel always sets it.
+   */
+  expiresAt?: number;
 }
 
 /**
@@ -40,11 +48,19 @@ export interface ChannelSocket {
   send(data: string): void;
   /** Subscribe to inbound text frames. */
   onMessage(cb: (data: string) => void): void;
-  /** Subscribe to socket close. */
+  /**
+   * Subscribe to socket close. Also fires the moment the kernel ends the
+   * socket's session (expiry, revocation, channel deactivation), before the
+   * peer has acknowledged the close.
+   */
   onClose(cb: () => void): void;
   /** Close the socket (optional close code + reason). */
   close(code?: number, reason?: string): void;
-  /** The upgrade request that opened this socket (read-only). */
+  /**
+   * The upgrade request that opened this socket (read-only). The session
+   * cookie is removed from `headers.cookie`: handlers get the verified
+   * claims, never the token.
+   */
   readonly request: {
     url: string;
     headers: Record<string, string | string[] | undefined>;
@@ -120,6 +136,16 @@ export interface CoreApi {
    * frame above the cap closes the socket with code 1009 (message too big).
    * Channel sockets always use session-cookie auth — custom authenticators
    * are a kernel-only capability.
+   *
+   * The socket lives no longer than the session that opened it. The kernel
+   * closes it with **4401** at the session's `exp` (`session.expiresAt`) and
+   * with **4403** once the session is revoked (sign-out, password reset,
+   * disable, delete) or the identity is no longer authorised — on this
+   * replica at once, on any other within its periodic re-check. From that
+   * moment no further frame reaches the handler and `onClose` fires. A
+   * renewal extends the cookie, not an open socket: the client reconnects
+   * with its current cookie. Handlers must not cache authorisation beyond
+   * the socket's life, and must not re-implement this check.
    *
    * Optional: present only when the kernel wired a WebSocket registry into
    * `createCoreApi`. Channels MUST feature-detect

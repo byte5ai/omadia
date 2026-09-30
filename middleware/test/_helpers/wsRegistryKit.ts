@@ -1,7 +1,9 @@
 /**
- * Shared fixtures for the WebSocketRegistry suites: a session-cookie minter,
- * a bearer-only kernel authenticator, a registry mounted on a real loopback
- * http.Server, and client helpers that assert on the raw upgrade outcome.
+ * Shared fixtures for the WebSocketRegistry suites: a session-cookie minter
+ * (any lifetime, any local user), a revocation guard and a withdrawable
+ * whitelist for the session-lifetime checks, a bearer-only kernel
+ * authenticator, a registry mounted on a real loopback http.Server, and client
+ * helpers that assert on the raw upgrade outcome and on close codes.
  */
 
 import { strict as assert } from 'node:assert';
@@ -30,12 +32,27 @@ export const KEY = new Uint8Array(64).fill(7);
 // Only this email is whitelisted — mirrors the requireAuth Entra gate.
 export const WHITELIST = new EmailWhitelist('allowed@example.com');
 
-/** A local session for `u1`; `sv`/`uid` pin the revocation claims. */
-export async function authCookie(opts: { sv?: number; uid?: string } = {}): Promise<string> {
+export interface CookieOpts {
+  /** Session version the token claims (`sv`). */
+  sv?: number;
+  /** `users.id` the token is bound to (`uid`). */
+  uid?: string;
+  /**
+   * Token lifetime, as jose takes it: a duration (`'2s'`) or an ABSOLUTE
+   * epoch in seconds. Default: the production 4h window.
+   */
+  expiresIn?: string | number;
+  /** Local identity; default `u1` / `u1@example.com`. */
+  sub?: string;
+  email?: string;
+}
+
+/** A local session for `u1` (or `sub`); `sv`/`uid` pin the revocation claims. */
+export async function authCookie(opts: CookieOpts = {}): Promise<string> {
   const token = await signSession(
     {
-      sub: 'u1',
-      email: 'u1@example.com',
+      sub: opts.sub ?? 'u1',
+      email: opts.email ?? 'u1@example.com',
       display_name: 'User One',
       provider: 'local',
       role: 'admin',
@@ -43,22 +60,48 @@ export async function authCookie(opts: { sv?: number; uid?: string } = {}): Prom
       ...(opts.uid !== undefined ? { uid: opts.uid } : {}),
     },
     KEY,
+    opts.expiresIn,
   );
   return `${SESSION_COOKIE}=${token}`;
+}
+
+/** The raw token inside a `omadia_session=<token>` cookie from this kit. */
+export function tokenOf(cookie: string): string {
+  return cookie.slice(`${SESSION_COOKIE}=`.length);
+}
+
+/**
+ * An `EmailWhitelist` whose verdict a test can withdraw after the upgrade —
+ * the production whitelist is env-static, so this stands in for "the
+ * identity is no longer authorised" on the periodic re-check.
+ */
+export class MutableWhitelist extends EmailWhitelist {
+  private readonly withdrawn = new Set<string>();
+
+  withdraw(email: string): void {
+    this.withdrawn.add(email.toLowerCase());
+  }
+
+  override isAllowed(email: string): boolean {
+    return !this.withdrawn.has(email.toLowerCase()) && super.isAllowed(email);
+  }
 }
 
 /**
  * A server-side revocation guard over an in-memory account table keyed
  * `<provider>:<sub>` — the WS suites' stand-in for the users table. Change
- * `accounts` to revoke; make `fail` return true to simulate an outage.
+ * `accounts` to revoke; make `fail` return true to simulate an outage;
+ * `onLookup` sees every account read (i.e. every session check) and may
+ * delay it (`await` inside) to hold a check open.
  */
 export function revocationGuard(
   accounts: Map<string, SessionAccount>,
-  opts: { fail?: () => boolean } = {},
+  opts: { fail?: () => boolean; onLookup?: () => void | Promise<void> } = {},
 ): SessionRevocationGuard {
   const guard = new SessionRevocationGuard(() => undefined);
   guard.attach({
     findByProviderUserId: async (provider, sub) => {
+      await opts.onLookup?.();
       if (opts.fail?.()) throw new Error('users table unreachable');
       return accounts.get(`${provider}:${sub}`) ?? null;
     },
@@ -66,7 +109,10 @@ export function revocationGuard(
   return guard;
 }
 
-export async function entraCookie(email: string): Promise<string> {
+export async function entraCookie(
+  email: string,
+  opts: Pick<CookieOpts, 'expiresIn'> = {},
+): Promise<string> {
   const token = await signSession(
     {
       sub: 'e1',
@@ -76,6 +122,7 @@ export async function entraCookie(email: string): Promise<string> {
       role: 'admin',
     },
     KEY,
+    opts.expiresIn,
   );
   return `${SESSION_COOKIE}=${token}`;
 }
@@ -125,6 +172,14 @@ export async function startRegistryServer(
 export async function closeCode(ws: WebSocket): Promise<number> {
   const [code] = (await once(ws, 'close')) as [number, Buffer];
   return code;
+}
+
+/** Resolve with the close code and reason the server sent, and when it arrived. */
+export async function closeInfo(
+  ws: WebSocket,
+): Promise<{ code: number; reason: string; at: number }> {
+  const [code, reason] = (await once(ws, 'close')) as [number, Buffer];
+  return { code, reason: reason.toString(), at: Date.now() };
 }
 
 /**

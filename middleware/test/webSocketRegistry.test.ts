@@ -123,8 +123,10 @@ describe('WebSocketRegistry — auth before upgrade', () => {
 
   it('accepts an authenticated upgrade, delivers claims, round-trips a frame', FAST, async () => {
     let seenSubject: string | undefined;
+    let seenExpiresAt: number | undefined;
     rs.registry.register('ch.test', '/canvas', (socket, session) => {
       seenSubject = session.subject;
+      seenExpiresAt = session.expiresAt;
       socket.onMessage((m) => socket.send(`echo:${m}`));
     });
 
@@ -136,6 +138,8 @@ describe('WebSocketRegistry — auth before upgrade', () => {
     const [reply] = (await once(ws, 'message')) as [Buffer];
     assert.equal(reply.toString(), 'echo:hi');
     assert.equal(seenSubject, 'u1');
+    assert.equal(typeof seenExpiresAt, 'number', 'claims carry the session expiry');
+    assert.ok((seenExpiresAt ?? 0) * 1000 > Date.now(), 'an unexpired session');
     ws.close();
   });
 

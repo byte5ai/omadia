@@ -8,7 +8,9 @@
  *   - a CR/LF-laden rejection reason never reaches the wire: the response is
  *     exactly the fixed status line;
  *   - `maxPayload` / `authTimeoutMs` / `channelMaxPayloadBytes` are bounded
- *     (ws coerces `maxPayload | 0`, so 2^31+ would silently mean "unlimited");
+ *     (ws coerces `maxPayload | 0`, so 2^31+ would silently mean "unlimited"),
+ *     and so is `channelSessionRecheckMs` (setTimeout fires a larger delay
+ *     at once, which would turn the re-check into a busy loop);
  *   - a malformed session-cookie escape is an ordinary 401;
  *   - a channel deactivated while its cookie is being verified gets 503, not
  *     a socket that escaped `deactivateChannel`.
@@ -188,5 +190,17 @@ describe('WebSocketRegistry — route option bounds', () => {
         /channelMaxPayloadBytes/,
       );
     }
+  });
+
+  it('channelSessionRecheckMs must be a positive integer setTimeout honours', () => {
+    for (const channelSessionRecheckMs of [0, -1, 1.5, Number.NaN, 2 ** 31]) {
+      assert.throws(
+        () => new WebSocketRegistry({ signingKey: KEY, whitelist: WHITELIST, channelSessionRecheckMs }),
+        /channelSessionRecheckMs/,
+      );
+    }
+    assert.doesNotThrow(
+      () => new WebSocketRegistry({ signingKey: KEY, whitelist: WHITELIST, channelSessionRecheckMs: 1 }),
+    );
   });
 });

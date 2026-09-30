@@ -1,13 +1,9 @@
 import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import type { Duplex } from 'node:stream';
 
-import { WebSocketServer, type WebSocket, type RawData } from 'ws';
+import { WebSocketServer, type WebSocket } from 'ws';
 
-import type {
-  ChannelSocket,
-  ChannelSocketHandler,
-  ChannelSessionClaims,
-} from '@omadia/channel-sdk';
+import type { ChannelSocketHandler, ChannelSessionClaims } from '@omadia/channel-sdk';
 
 import { SESSION_COOKIE, evaluateSessionToken } from '../auth/requireAuth.js';
 import {
@@ -18,6 +14,13 @@ import {
 import type { EmailWhitelist } from '../auth/whitelist.js';
 
 import {
+  ChannelSessionTracker,
+  MAX_TIMER_MS,
+  WS_SESSION_RECHECK_MS,
+  type AuthenticatedChannelSession,
+  type SessionRevokeReason,
+} from './channelSessionLifetime.js';
+import {
   authenticateBeforeHandshake,
   rejectUpgrade as reject,
   type WebSocketAuthResult,
@@ -25,6 +28,11 @@ import {
 } from './webSocketUpgradeAuth.js';
 
 export type { WebSocketAuthResult, WebSocketAuthenticator } from './webSocketUpgradeAuth.js';
+export {
+  WS_CLOSE_SESSION_EXPIRED,
+  WS_CLOSE_SESSION_FORBIDDEN,
+  WS_SESSION_RECHECK_MS,
+} from './channelSessionLifetime.js';
 
 /**
  * The process's WebSocket mount — the upgrade-level counterpart to
@@ -52,6 +60,13 @@ export type { WebSocketAuthResult, WebSocketAuthenticator } from './webSocketUpg
  * peer gets a raw `503` (still no `101` — it fails closed). An unregistered
  * path is a raw `404`. Handlers only ever see an authenticated socket plus its
  * verified principal.
+ *
+ * A channel socket then lives no longer than its session
+ * (`channelSessionLifetime.ts`): closed with 4401 at the token's `exp`, with
+ * 4403 when the session is revoked — at once when the revocation is announced
+ * on this replica, within {@link WS_SESSION_RECHECK_MS} through the periodic
+ * re-check otherwise. Kernel routes own their principal and therefore their
+ * lifetime: the registry enforces none for them.
  *
  * Every accepted socket carries an `'error'` listener: `ws` emits `'error'` on
  * any protocol violation from the peer (including a frame above the route's
@@ -83,9 +98,6 @@ export const WS_MAX_PAYLOAD_LIMIT_BYTES = 2 ** 31 - 1;
 /** Default deadline for a kernel route's authenticator. */
 export const KERNEL_WS_AUTH_TIMEOUT_MS = 10_000;
 
-/** Largest delay `setTimeout` honours (a larger one fires immediately). */
-const MAX_TIMER_MS = 2 ** 31 - 1;
-
 /** Kernel-route handler: the raw `ws` socket plus the authenticated principal. */
 export type KernelSocketHandler<TPrincipal> = (
   ws: WebSocket,
@@ -93,6 +105,13 @@ export type KernelSocketHandler<TPrincipal> = (
   principal: TPrincipal,
 ) => void;
 
+/**
+ * A kernel route authenticates with its own credential, so the registry cannot
+ * tell when that credential stops being valid: unlike channel routes, a kernel
+ * socket gets no expiry close and no revocation close. A route whose credential
+ * can expire or be revoked must close its own sockets (and document how); the
+ * satellite tunnel's API key and signed challenge are no exception.
+ */
 export interface KernelWebSocketRoute<TPrincipal> {
   authenticate: WebSocketAuthenticator<TPrincipal>;
   /**
@@ -148,12 +167,11 @@ export interface WebSocketRegistryDeps {
    * ended (sign-out, admin password reset, disable, delete) is refused with a
    * raw 401, and one whose account could not be read with a raw 503.
    *
-   * It is also the seam for sockets that are ALREADY open when a session is
-   * revoked, which this registry does not close yet: `onRevoked` announces
-   * whose sessions just ended on this replica, and `check` re-evaluates a
-   * socket's session claims (exact across replicas — the announcement is
-   * process-local). Optional so test harnesses without a users table keep
-   * the signature-only verdict.
+   * It also ends sockets that are ALREADY open: `onRevoked` closes that user's
+   * channel sockets at once (4403), and the periodic re-check runs `check`
+   * again for every live socket, which is what reaches a revocation made on
+   * another replica (the announcement is process-local). Optional so test
+   * harnesses without a users table keep the signature-only verdict.
    */
   sessions?: SessionRevocation;
   /**
@@ -161,20 +179,34 @@ export interface WebSocketRegistryDeps {
    * {@link CHANNEL_WS_MAX_PAYLOAD_BYTES}; injectable so tests can use a small cap.
    */
   channelMaxPayloadBytes?: number;
+  /**
+   * Cadence of the live-session re-check for channel sockets, in ms. Defaults
+   * to {@link WS_SESSION_RECHECK_MS}; injectable so tests can use a short one.
+   * A positive integer that setTimeout honours.
+   */
+  channelSessionRecheckMs?: number;
 }
 
 export class WebSocketRegistry {
   private readonly routes = new Map<string, SocketRoute>();
   private readonly activeByChannel = new Map<string, boolean>();
-  private readonly liveByChannel = new Map<string, Set<WebSocket>>();
   /** Shared by every channel route (one cap for all channels). */
   private readonly channelWss: WebSocketServer;
+  /** Every live channel socket with its session: expiry, re-check, revocation. */
+  private readonly channelSessions: ChannelSessionTracker;
   private attached = false;
 
   constructor(private readonly deps: WebSocketRegistryDeps) {
     const maxPayload = deps.channelMaxPayloadBytes ?? CHANNEL_WS_MAX_PAYLOAD_BYTES;
     assertBoundedPositiveInteger('channelMaxPayloadBytes', maxPayload, WS_MAX_PAYLOAD_LIMIT_BYTES);
+    const recheckMs = deps.channelSessionRecheckMs ?? WS_SESSION_RECHECK_MS;
+    assertBoundedPositiveInteger('channelSessionRecheckMs', recheckMs, MAX_TIMER_MS);
     this.channelWss = createServer(maxPayload);
+    this.channelSessions = new ChannelSessionTracker({
+      evaluate: (token) => evaluateSessionToken(token, deps),
+      recheckMs,
+      ...(deps.sessions ? { revocations: deps.sessions } : {}),
+    });
   }
 
   /**
@@ -194,9 +226,6 @@ export class WebSocketRegistry {
     }
     this.routes.set(path, { kind: 'channel', channelId, path, handler });
     this.activeByChannel.set(channelId, true);
-    if (!this.liveByChannel.has(channelId)) {
-      this.liveByChannel.set(channelId, new Set());
-    }
     console.log(
       `[channels] websocket registered ${path} (channel=${channelId})`,
     );
@@ -245,14 +274,21 @@ export class WebSocketRegistry {
    */
   deactivateChannel(channelId: string): void {
     this.activeByChannel.set(channelId, false);
-    const live = this.liveByChannel.get(channelId);
-    if (live) {
-      for (const ws of live) {
-        ws.close(1001, 'channel deactivated');
-      }
-      live.clear();
-    }
+    this.channelSessions.closeChannel(channelId);
     console.log(`[channels] websocket deactivated (channel=${channelId})`);
+  }
+
+  /**
+   * Close every live channel socket whose session matches, with 4403 and
+   * `reason`; returns how many it closed. Revocations announced through
+   * `sessions.onRevoked` already end up here; this is the lever for any other
+   * kernel path that ends sessions. Kernel sockets are never touched.
+   */
+  closeSessions(
+    match: (claims: ChannelSessionClaims) => boolean,
+    reason?: SessionRevokeReason,
+  ): number {
+    return this.channelSessions.closeSessions(match, reason);
   }
 
   /**
@@ -302,13 +338,13 @@ export class WebSocketRegistry {
       reject(socket, 503);
       return;
     }
-    const session = await authenticateBeforeHandshake(
+    const auth = await authenticateBeforeHandshake(
       (r) => this.authenticateSession(r),
       req,
       socket,
       route.path,
     );
-    if (!session) return;
+    if (!auth) return;
     // The channel may have been deactivated (or the path re-registered) while
     // the cookie was being verified: re-check before handing out a socket.
     if (!this.isChannelRouteLive(route)) {
@@ -317,9 +353,12 @@ export class WebSocketRegistry {
     }
 
     this.channelWss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
-      const live = this.liveByChannel.get(route.channelId);
-      trackSocket(ws, live, `${route.path} (channel=${route.channelId})`);
-      route.handler(wrapSocket(ws, req), session.principal);
+      trackSocket(ws, undefined, `${route.path} (channel=${route.channelId})`);
+      const channelSocket = this.channelSessions.accept(ws, req, route.channelId, auth.principal);
+      // Expired while the upgrade was being checked (or no `exp` at all): the
+      // socket is already closed with 4401 and the handler never sees it.
+      if (!channelSocket) return;
+      route.handler(channelSocket, { ...auth.principal.claims });
     });
   }
 
@@ -359,11 +398,16 @@ export class WebSocketRegistry {
    * 503 (thrown, so `authenticateBeforeHandshake` answers it as the outage it
    * is), everything else → 401. The raw upgrade request has no cookie-parser
    * middleware in front of it, so the header is parsed by hand.
+   *
+   * The principal keeps the token and its `exp` for the session tracker; the
+   * handler later gets `claims` only.
    */
   private async authenticateSession(
     req: IncomingMessage,
-  ): Promise<WebSocketAuthResult<ChannelSessionClaims>> {
+  ): Promise<WebSocketAuthResult<AuthenticatedChannelSession>> {
     const token = sessionTokenFromCookie(req.headers.cookie);
+    // No cookie is routine (a reconnecting signed-out tab) and stays unlogged.
+    if (token === undefined) return { ok: false, status: 401 };
     const result = await evaluateSessionToken(token, this.deps);
     if (!result.ok) {
       if (result.code === SESSION_CHECK_UNAVAILABLE_CODE) {
@@ -383,11 +427,16 @@ export class WebSocketRegistry {
     return {
       ok: true,
       principal: {
-        subject: verified.sub,
-        email: verified.email,
-        displayName: verified.display_name,
-        provider: verified.provider,
-        ...(verified.omadia_user_id ? { omadiaUserId: verified.omadia_user_id } : {}),
+        token,
+        expiresAt: verified.exp,
+        claims: {
+          subject: verified.sub,
+          email: verified.email,
+          displayName: verified.display_name,
+          provider: verified.provider,
+          ...(verified.omadia_user_id ? { omadiaUserId: verified.omadia_user_id } : {}),
+          expiresAt: verified.exp,
+        },
       },
     };
   }
@@ -442,23 +491,4 @@ function sessionTokenFromCookie(cookieHeader: string | undefined): string | unde
     }
   }
   return undefined;
-}
-
-/** Wrap a raw `ws` socket in the transport-agnostic SDK {@link ChannelSocket}. */
-function wrapSocket(ws: WebSocket, req: IncomingMessage): ChannelSocket {
-  return {
-    send: (data: string) => ws.send(data),
-    onMessage: (cb: (data: string) => void) =>
-      ws.on('message', (data: RawData) => {
-        const text = Array.isArray(data)
-          ? Buffer.concat(data).toString('utf8')
-          : Buffer.isBuffer(data)
-            ? data.toString('utf8')
-            : Buffer.from(data).toString('utf8');
-        cb(text);
-      }),
-    onClose: (cb: () => void) => ws.on('close', () => cb()),
-    close: (code?: number, reason?: string) => ws.close(code, reason),
-    request: { url: req.url ?? '', headers: req.headers },
-  };
 }
