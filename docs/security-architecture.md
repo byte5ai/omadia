@@ -761,7 +761,7 @@ an empty list.
 
 Tests: `middleware/test/verifierPipelineStates.test.ts` (including the
 production `ClaimExtractor` over a failing LLM),
-`middleware/test/verifierClaimExtractor.test.ts`,
+`middleware/test/verifierClaimExtractorFailure.test.ts`,
 `middleware/test/verifierServiceStates.test.ts`,
 `middleware/test/semanticAnswerGates.test.ts`,
 `middleware/test/channelApi/chatRouterVerifierStates.test.ts`,
