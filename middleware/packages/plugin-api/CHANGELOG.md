@@ -8,6 +8,31 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.19.2 — 2026-09-30
+
+Documentation only: no change to the exported type surface (the API snapshot is
+unchanged). The documented contract of `RoutinesIntegration.handleRoutineAction`
+tightens at runtime.
+
+### Changed
+
+- **`handleRoutineAction` without a usable `actor` is refused.** Kernels from
+  this release on reject the call when `actor` is absent or its `tenant` or
+  `userId` is blank. The rejection carries a German, user-facing message, no
+  routine is read or changed, and the kernel counts and logs the refusal.
+  Before, such a call ran unscoped, i.e. across tenants. The per-turn routine
+  context is no longer consulted on this path either: card clicks arrive
+  out-of-band, so a context there could only be a stale one.
+- **`actor` stays optional in the type**, so every 1.x caller keeps compiling.
+  The runtime refusal, not the type, is what protects a caller built against an
+  older 1.x contract. The optional form is deprecated, and `actor` becomes a
+  required field in 2.0. It is deliberately not tagged `@deprecated`: on the
+  property that tag would strike through every call that passes `actor`, which
+  is the correct usage.
+- Nothing to change for channel-teams 0.26.1 or later, which already passes
+  `actor`. The service name and capability ref (`routinesIntegration@1`) are
+  unchanged, so no plugin manifest needs an edit.
+
 ## 1.19.1 — 2026-09-25
 
 Documentation only. No change to the exported type surface (#978).
