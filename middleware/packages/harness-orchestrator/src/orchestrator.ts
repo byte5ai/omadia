@@ -170,6 +170,11 @@ import {
   ensureWellFormedParams,
   type PrivacyTurnHandle,
 } from './privacyHandle.js';
+import {
+  createPrivacyEgressContinuation,
+  PrivacyEgressHandover,
+  type PrivacyEgressContinuation,
+} from './privacyEgress.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import {
   resolveDirectLineTarget,
@@ -1143,8 +1148,9 @@ export class PromptMaskBlockedError extends Error {
 }
 
 /** User-facing answer for a prompt-mask-blocked turn. Deliberately generic —
- *  it must not echo any detected value. */
-const PROMPT_MASK_BLOCKED_ANSWER =
+ *  it must not echo any detected value. Exported for the verifier wrapper,
+ *  which must not treat this refusal as a corrected answer. */
+export const PROMPT_MASK_BLOCKED_ANSWER =
   'This message could not be processed: privacy protection for your text ' +
   'could not be guaranteed (prompt masking failed), so it was not sent to ' +
   'the language model. Please try again or contact your operator.';
@@ -1272,6 +1278,21 @@ async function restorePromptForPersistence(
     );
     return text;
   }
+}
+
+/**
+ * {@link restorePromptForPersistence} for a turn's FINAL answer. Also keeps
+ * the wire variant (the answer exactly as the model wrote it, surrogates and
+ * all) on the turn context: a verifier-wrapped turn hands it to the verifier,
+ * which may see the turn's wire view only — never restored values.
+ */
+async function restoreTurnAnswer(
+  privacy: PrivacyTurnHandle | undefined,
+  answer: string,
+): Promise<string> {
+  const box = turnContext.current()?.wireAnswer;
+  if (box) box.value = answer;
+  return restorePromptForPersistence(privacy, answer);
 }
 
 /**
@@ -1457,6 +1478,28 @@ Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-E
     parts.push(input.extraSystemHint);
   }
   return parts.length > 0 ? parts.join('\n\n---\n\n') : undefined;
+}
+
+/**
+ * {@link composeExtraSystemHint} for the wire. The caller-supplied hint (a
+ * verifier correction on a retry, the screening marker) is LLM-bound text
+ * like the prompt, so it goes through the turn's map. The fresh-check prose
+ * does not: it is static, carries no user data, and masking it could only
+ * garble — or, on a residual-leak `blocked`, fail — a turn with no hint.
+ * Throws `PromptMaskBlockedError` like every other wire mask.
+ */
+async function composeWireExtraSystemHint(
+  privacy: PrivacyTurnHandle | undefined,
+  input: ChatTurnInput,
+): Promise<string | undefined> {
+  const hint = input.extraSystemHint;
+  if (hint === undefined || hint.trim().length === 0) {
+    return composeExtraSystemHint(input);
+  }
+  const wireHint = await maskPromptForWire(privacy, hint);
+  return composeExtraSystemHint(
+    wireHint === hint ? input : { ...input, extraSystemHint: wireHint },
+  );
 }
 
 /**
@@ -2203,6 +2246,12 @@ export class Orchestrator {
    * the public `ChatTurnInput` surface and entries are GC'd with the turn.
    */
   private readonly screeningReentries = new WeakSet<ChatTurnInput>();
+  /**
+   * Turns whose privacy finalisation the verifier wrapper defers until its
+   * own model requests are done (see `privacyEgress.ts`). Weakly keyed on
+   * the caller's input object, like `screeningReentries`.
+   */
+  private readonly privacyEgress = new PrivacyEgressHandover();
   private readonly nativeTools: NativeToolRegistry;
   /**
    * Per-turn scratchpad for the routine list smart-card emitted in-band by
@@ -3626,6 +3675,84 @@ export class Orchestrator {
     this.screeningReentries.add(input);
   }
 
+  /**
+   * Verifier wrapper hook: the NEXT turn run with this input object (via
+   * {@link runTurn} or {@link chatStream}) does not finalize its privacy
+   * state. It returns its result without a receipt and hands a
+   * {@link PrivacyEgressContinuation} over instead — collect it with
+   * {@link takePrivacyEgress} and finalize it once the verifier is done. The
+   * mark is one-shot (consumed when the turn starts); set it before every
+   * run. No effect without a privacy provider.
+   */
+  markPrivacyFinalizeHeld(input: ChatTurnInput): void {
+    this.privacyEgress.hold(input);
+  }
+
+  /** The continuation a held turn handed over, once. See
+   *  {@link markPrivacyFinalizeHeld}. */
+  takePrivacyEgress(input: ChatTurnInput): PrivacyEgressContinuation | undefined {
+    return this.privacyEgress.take(input);
+  }
+
+  /** True when a `privacy.redact@1` provider is installed right now. Lets the
+   *  verifier wrapper refuse to verify raw when no continuation came back. */
+  isPrivacyGuardActive(): boolean {
+    return this.privacyGuard?.() !== undefined;
+  }
+
+  /**
+   * Hand a held turn's privacy state to the verifier wrapper instead of
+   * finalizing it. The receipt's model attribution is taken NOW: the
+   * verifier runs for seconds, and the bounded attribution map could evict
+   * the entry before the receipt is persisted.
+   */
+  private stashPrivacyEgress(args: {
+    readonly callerInput: ChatTurnInput;
+    readonly handle: PrivacyTurnHandle;
+    readonly turnId: string;
+    readonly input: ChatTurnInput;
+    readonly wireAnswer: string | undefined;
+  }): void {
+    const ran = this.takeTurnAttribution(args.turnId);
+    this.privacyEgress.stash(
+      args.callerInput,
+      createPrivacyEgressContinuation({
+        handle: args.handle,
+        receiptId: args.turnId,
+        wireAnswer: args.wireAnswer,
+        settle: async () => {
+          try {
+            const receipt = await args.handle.finalize(args.input.userMessage);
+            if (receipt) {
+              await this.persistTurnReceiptWith(args.turnId, args.input, receipt, ran);
+            }
+            return receipt;
+          } catch (err) {
+            console.warn(
+              '[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:',
+              err,
+            );
+            return undefined;
+          }
+        },
+      }),
+    );
+  }
+
+  /**
+   * Drop a turn's privacy state on a path that neither finalized nor handed
+   * it over (a thrown turn, an abandoned stream). The receipt is discarded,
+   * as before; what matters is that surrogate maps and cached spans — real
+   * values — do not outlive the turn until restart.
+   */
+  private async dropPrivacyState(handle: PrivacyTurnHandle): Promise<void> {
+    try {
+      await handle.finalize();
+    } catch (err) {
+      console.warn('[orchestrator] privacy state drop failed:', err);
+    }
+  }
+
   private async screenInboundTurn(
     input: ChatTurnInput,
     opts: { readonly exempt: boolean },
@@ -3750,6 +3877,10 @@ export class Orchestrator {
 
   private async runTurnCore(input: ChatTurnInput): Promise<ChatTurnResult> {
     const turnId = randomUUID();
+    // Verifier hand-over, read on the CALLER's object before `input` is
+    // re-bound below (MCP envelope, screening gate). One-shot.
+    const callerInput = input;
+    const holdPrivacyFinalize = this.privacyEgress.consumeHold(callerInput);
     // W2-1 (#544) — an MCP input card's answer arrives as a machine envelope in
     // `userMessage`. Normalise it HERE, before anything downstream reads the
     // field, so the envelope never reaches the session log, memory, the KG, the
@@ -3862,6 +3993,8 @@ export class Orchestrator {
         // BY REFERENCE into every nested per-dispatch scope and a memory read
         // reaches the reader that assembles this turn's result.
         memoryFileRead: { value: false },
+        // The answer's wire variant, for a verifier hand-over.
+        wireAnswer: { value: undefined },
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -3900,7 +4033,7 @@ export class Orchestrator {
           ? { canvasSentinelSink: parent.canvasSentinelSink }
           : {}),
       },
-      async () => {
+      () => this.dropPrivacyStateOnThrow(privacyHandle, async () => {
         // W2-1 (#544) — forced replay of the parked MCP tool call, before the
         // model runs. Writes its outcome onto the live turn context.
         if (mcpInputReply) {
@@ -3919,6 +4052,7 @@ export class Orchestrator {
         const turnMemory = this.bindTurnMemory(input);
         const direct = await this.executeDirectLine(input, turnId, turnMemory);
         let result: ChatTurnResult;
+        let promptMaskBlocked = false;
         try {
           result = direct ?? (await this.chatInContext(input, turnId, turnMemory));
           // #445 — an ordinary turn is by definition an UNBOUND turn (a live
@@ -3934,16 +4068,19 @@ export class Orchestrator {
           if (err instanceof PromptMaskBlockedError) {
             console.error(`[orchestrator] ${err.message}`);
             result = { answer: PROMPT_MASK_BLOCKED_ANSWER, toolCalls: 0, iterations: 0 };
+            promptMaskBlocked = true;
           } else {
             throw err;
           }
         }
+        let serverRendered = false;
         // Privacy Shield v4 — when a v4_render_answer call produced the
         // answer this turn it is final and already safe (real values
         // materialized server-side from ground truth). Swap it in.
         if (privacyHandle) {
           const v4Rendered = await privacyHandle.takeRenderedAnswerV4();
           if (v4Rendered !== undefined) {
+            serverRendered = true;
             result = {
               ...result,
               answer: v4Rendered.text,
@@ -3961,6 +4098,15 @@ export class Orchestrator {
             };
           }
         }
+        // What the verifier may see: the answer exactly as this turn's model
+        // wrote it, recorded by the answer loop BEFORE it restored the text.
+        // Not for a server-rendered v4 answer (real values the model never
+        // saw), a Direct Line relay (restored inside executeDirectLine) or
+        // the privacy refusal. Nothing recorded ⇒ nothing to verify.
+        const verifierWireAnswer =
+          direct !== undefined || promptMaskBlocked || serverRendered
+            ? undefined
+            : turnContext.current()?.wireAnswer?.value;
         // #361 — restore prompt surrogates → real values over the final
         // answer (identity when the turn masked nothing). Must run BEFORE
         // finalize, which drops the turn's surrogate map.
@@ -3977,6 +4123,18 @@ export class Orchestrator {
             );
           }
         }
+        // Verifier-wrapped turn: its requests must run under this turn's map
+        // and land in this turn's receipt, so finalize is handed over.
+        if (privacyHandle && holdPrivacyFinalize) {
+          this.stashPrivacyEgress({
+            callerInput,
+            handle: privacyHandle,
+            turnId,
+            input,
+            wireAnswer: verifierWireAnswer,
+          });
+          return result;
+        }
         if (privacyHandle) {
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
@@ -3992,8 +4150,22 @@ export class Orchestrator {
           }
         }
         return result;
-      },
+      }),
     );
+  }
+
+  /** Run a turn body; a throw that escapes it never reached the finalize
+   *  block, so the turn's privacy state is dropped before rethrowing. */
+  private async dropPrivacyStateOnThrow<T>(
+    handle: PrivacyTurnHandle | undefined,
+    body: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await body();
+    } catch (err) {
+      if (handle) await this.dropPrivacyState(handle);
+      throw err;
+    }
   }
 
   /**
@@ -4101,11 +4273,30 @@ export class Orchestrator {
     input: ChatTurnInput,
     receipt: PrivacyReceipt,
   ): Promise<void> {
-    const store = this.turnReceiptStore?.();
     // Consume the attribution whether or not a store is wired: the entry has
     // no other reader and must not outlive the turn.
+    const ran = this.takeTurnAttribution(turnId);
+    await this.persistTurnReceiptWith(turnId, input, receipt, ran);
+  }
+
+  /** Read and drop a turn's attribution entry (see `turnAttribution`). */
+  private takeTurnAttribution(
+    turnId: string,
+  ): { model: string; provider: string; fallbackUsed: boolean } | undefined {
     const ran = this.turnAttribution.get(turnId);
     this.turnAttribution.delete(turnId);
+    return ran;
+  }
+
+  /** `persistTurnReceipt` with an attribution taken earlier — a turn whose
+   *  receipt is finalized after the verifier ran snapshots it at hand-over. */
+  private async persistTurnReceiptWith(
+    turnId: string,
+    input: ChatTurnInput,
+    receipt: PrivacyReceipt,
+    ran: { model: string; provider: string; fallbackUsed: boolean } | undefined,
+  ): Promise<void> {
+    const store = this.turnReceiptStore?.();
     if (!store) return;
     try {
       await store.record({
@@ -4859,7 +5050,12 @@ export class Orchestrator {
       privacyForPrompt,
       ingestedRawText,
     );
-    const effectiveExtraSystemHint = composeExtraSystemHint(input);
+    // The caller's hint (a verifier correction on a retry) is wire content:
+    // masked through the turn's map like the prompt. Fails closed.
+    const effectiveExtraSystemHint = await composeWireExtraSystemHint(
+      privacyForPrompt,
+      input,
+    );
     // Palaia Phase 8 (OB-77) — per-turn nudge counter (shared across all
     // tool-call iterations of this turn so NUDGE_MAX_PER_TURN is enforced).
     const nudgeCounter = createNudgeTurnCounter();
@@ -5134,7 +5330,7 @@ export class Orchestrator {
           // recall would re-surface fabricated surrogate IBANs/addresses as
           // if real. `answer` (the wire variant) stays in scope for the
           // LLM-bound extra passes below (card router, fact extraction).
-          const restoredAnswer = await restorePromptForPersistence(
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
@@ -5404,7 +5600,7 @@ export class Orchestrator {
           this.drainPendingRoutineList();
           const answer = textParts.join('\n\n').trim();
           // #361 — persisted + user-facing: restore surrogates → real values.
-          const restoredAnswer = await restorePromptForPersistence(
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
@@ -5457,7 +5653,7 @@ export class Orchestrator {
           this.drainPendingRoutineList();
           const card = toPendingMcpInputCard(pendingMcpInputCard);
           const answer = textParts.join('\n\n').trim();
-          const restoredAnswer = await restorePromptForPersistence(
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
@@ -5524,6 +5720,10 @@ export class Orchestrator {
     observer?: AskObserver,
   ): AsyncGenerator<ChatStreamEvent> {
     const turnId = randomUUID();
+    // Verifier hand-over — read on the CALLER's object before `input` is
+    // re-bound below; see `runTurnCore`. One-shot.
+    const callerInput = input;
+    const holdPrivacyFinalize = this.privacyEgress.consumeHold(callerInput);
     // W2-1 (#544) — mirror of `runTurn`: normalise the input-card envelope
     // before any downstream reader sees it. See the comment there.
     const mcpInputReply = parseMcpInputReply(input.userMessage);
@@ -5645,6 +5845,8 @@ export class Orchestrator {
       ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
       // W2-1 (#544) — see the matching `turnContext.run` above.
       sessionScope: sessionId,
+      // The answer's wire variant, for a verifier hand-over.
+      wireAnswer: { value: undefined },
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -5669,6 +5871,8 @@ export class Orchestrator {
         turnId,
         sessionId,
         mcpInputReply,
+        callerInput,
+        holdPrivacyFinalize,
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(observer ? { observer } : {}),
       }),
@@ -5686,10 +5890,29 @@ export class Orchestrator {
     readonly turnId: string;
     readonly sessionId: string;
     readonly mcpInputReply: McpInputReply | undefined;
+    /** The object the caller passed — the verifier hand-over key. */
+    readonly callerInput: ChatTurnInput;
+    /** Hand the privacy finalisation to the verifier wrapper. */
+    readonly holdPrivacyFinalize: boolean;
     readonly privacyHandle?: PrivacyTurnHandle;
     readonly observer?: AskObserver;
   }): AsyncGenerator<ChatStreamEvent> {
     const { input, turnId, sessionId, mcpInputReply, privacyHandle, observer } = args;
+    // Set once the turn's privacy state was finalized or handed over. A
+    // stream that ends otherwise (thrown, abandoned by the client) drops the
+    // state in `finally` — real values must not outlive the turn.
+    let privacySettled = false;
+    let promptMaskBlocked = false;
+    const handOver = (handle: PrivacyTurnHandle, wireAnswer: string | undefined): void => {
+      this.stashPrivacyEgress({
+        callerInput: args.callerInput,
+        handle,
+        turnId,
+        input,
+        wireAnswer,
+      });
+      privacySettled = true;
+    };
 
     this.applyTurnAuthContext(input);
     // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
@@ -5747,7 +5970,11 @@ export class Orchestrator {
             ? { directLineSession: direct.directLineSession }
             : {}),
         };
-        if (privacyHandle) {
+        if (privacyHandle && args.holdPrivacyFinalize) {
+          // A Direct Line relay is restored before it gets here: nothing the
+          // verifier may see, but the wrapper still owns the finalisation.
+          handOver(privacyHandle, undefined);
+        } else if (privacyHandle) {
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
@@ -5764,6 +5991,7 @@ export class Orchestrator {
               err,
             );
           }
+          privacySettled = true;
         }
         yield* this.toAnnotationEvents(
           await this.fireTurnHook(
@@ -5793,6 +6021,7 @@ export class Orchestrator {
         } catch (err) {
           if (err instanceof PromptMaskBlockedError) {
             console.error(`[orchestrator] ${err.message}`);
+            promptMaskBlocked = true;
             yield {
               type: 'done',
               answer: PROMPT_MASK_BLOCKED_ANSWER,
@@ -5844,6 +6073,11 @@ export class Orchestrator {
                     : {}),
                 }
               : event;
+          // What the verifier may see — see the buffered twin in runTurnCore.
+          const verifierWireAnswer =
+            v4Rendered !== undefined || promptMaskBlocked
+              ? undefined
+              : turnContext.current()?.wireAnswer?.value;
           // #361 — restore prompt surrogates → real values on the final
           // answer, before finalize drops the turn's surrogate map. Note:
           // streamed text deltas may transiently show a surrogate; the
@@ -5860,21 +6094,28 @@ export class Orchestrator {
               err,
             );
           }
-          try {
-            const receipt = await privacyHandle.finalize(input.userMessage);
-            if (receipt) {
-              await this.persistTurnReceipt(turnId, input, receipt);
-              // #1107 — surface the receipt-store key (== turnId) so an API
-              // caller can correlate this turn with `GET .../receipts/:id`.
-              // Emitted only inside `if (receipt)`, so the id appears exactly
-              // when a row was written.
-              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
+          if (args.holdPrivacyFinalize) {
+            // The wrapper verifies first, then finalizes and attaches the
+            // receipt to the `done` it re-emits.
+            handOver(privacyHandle, verifierWireAnswer);
+          } else {
+            try {
+              const receipt = await privacyHandle.finalize(input.userMessage);
+              if (receipt) {
+                await this.persistTurnReceipt(turnId, input, receipt);
+                // #1107 — surface the receipt-store key (== turnId) so an API
+                // caller can correlate this turn with `GET .../receipts/:id`.
+                // Emitted only inside `if (receipt)`, so the id appears exactly
+                // when a row was written.
+                doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
+              }
+            } catch (err) {
+              console.warn(
+                '[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:',
+                err,
+              );
             }
-          } catch (err) {
-            console.warn(
-              '[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:',
-              err,
-            );
+            privacySettled = true;
           }
           yield* this.toAnnotationEvents(
             await this.fireTurnHook(
@@ -5916,6 +6157,7 @@ export class Orchestrator {
     } finally {
       steeringBus.endTurn(sessionId);
       this.clearTurnAuthContext();
+      if (privacyHandle && !privacySettled) await this.dropPrivacyState(privacyHandle);
     }
   }
 
@@ -5969,7 +6211,12 @@ export class Orchestrator {
       privacyForPrompt,
       ingestedRawText,
     );
-    const effectiveExtraSystemHint = composeExtraSystemHint(input);
+    // The caller's hint (a verifier correction on a retry) is wire content:
+    // masked through the turn's map like the prompt. Fails closed.
+    const effectiveExtraSystemHint = await composeWireExtraSystemHint(
+      privacyForPrompt,
+      input,
+    );
     // Palaia Phase 8 (OB-77) — see chatInContextInner for rationale.
     const nudgeCounter = createNudgeTurnCounter();
     const nudgeTrace: Array<{
@@ -6325,7 +6572,7 @@ export class Orchestrator {
           // is persisted (session log, auto-promotion). `answer` (the wire
           // variant) stays in scope for the LLM-bound extra passes below
           // (card router, excerpt pass).
-          const restoredAnswer = await restorePromptForPersistence(
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
@@ -6635,7 +6882,7 @@ export class Orchestrator {
           this.drainPendingSlotCard();
           const answer = textParts.join('\n\n').trim();
           // #361 — persisted + user-facing: restore surrogates → real values.
-          const restoredAnswer = await restorePromptForPersistence(
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
@@ -6695,7 +6942,7 @@ export class Orchestrator {
           this.drainPendingSlotCard();
           const card = toPendingMcpInputCard(pendingMcpInputCard);
           const answer = textParts.join('\n\n').trim();
-          const restoredAnswer = await restorePromptForPersistence(
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
@@ -6815,7 +7062,7 @@ export class Orchestrator {
         // memory of it and could re-invoke the same tool, reintroducing the
         // duplicate-side-effect bug issue #506 exists to prevent. Same
         // call shape as the other sites; best-effort like all of them.
-        const restoredAnswer = await restorePromptForPersistence(
+        const restoredAnswer = await restoreTurnAnswer(
           privacyForPrompt,
           answer,
         );

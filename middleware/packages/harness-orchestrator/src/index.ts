@@ -471,7 +471,10 @@ export {
 // for the agent's own infra tools inside a turn and unacceptable for an
 // internet-facing caller — so the endpoint refuses to serve those names at all.
 export { createPrivacyTurnHandle } from './privacyHandle.js';
-export type { PrivacyTurnHandle } from './privacyHandle.js';
+export type { PrivacyTurnHandle, PromptMaskOptions } from './privacyHandle.js';
+// Verifier privacy hand-over: the continuation a held turn hands to the
+// answer-verifier wrapper (see privacyEgress.ts).
+export type { PrivacyEgressContinuation } from './privacyEgress.js';
 export { INTERN_EXEMPT_TOOLS, isInternExemptTool } from './privacyInternPolicy.js';
 export { LoopbackMcpServer } from './loopbackMcpServer.js';
 export type {

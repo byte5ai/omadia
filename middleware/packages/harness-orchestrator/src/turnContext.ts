@@ -271,6 +271,14 @@ export interface TurnContextValue {
    */
   memoryFileRead?: { value: boolean };
   /**
+   * The turn's final answer exactly as its model wrote it — BEFORE surrogate
+   * restore. Written where the answer loops restore their final answer, read
+   * once when a verifier-wrapped turn hands its privacy state over: the
+   * answer verifier may see only the turn's wire view, never restored values.
+   * Mutable holder for the same shallow-copy reason as {@link memoryFileRead}.
+   */
+  wireAnswer?: { value: string | undefined };
+  /**
    * #904 — the memory-tool handler bound to the turn that is currently
    * delegating to a sub-agent.
    *
