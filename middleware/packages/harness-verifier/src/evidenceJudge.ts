@@ -2,6 +2,7 @@ import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
 import { textMessage, toolCalls } from '@omadia/llm-provider';
 import type { ClaimVerdict, SoftClaim, VerifierPrivacy } from './claimTypes.js';
 import { MAX_CONTEXT_CHARS } from './claimExtractor.js';
+import { citedNodeId, judgeRequestParts, projectRequestParts } from './judgeRequest.js';
 
 /**
  * LLM-as-Judge for SoftClaims (names, qualitative statements) that can't
@@ -72,17 +73,9 @@ const DEFAULTS = {
 
 /** Per-snippet cap on the evidence text the judge sees. */
 const MAX_SNIPPET_CHARS = 1800;
-/** Tighter caps behind a Privacy Shield: they bound both what leaves the
- *  process and what the masking pass (including a C1 sidecar) must scan. */
-const PRIVACY_MAX_SNIPPETS = 3;
+/** Tighter cap behind a Privacy Shield (the snippet count is capped too, see
+ *  judgeRequest.ts): it bounds what leaves the process. */
 const PRIVACY_MAX_SNIPPET_CHARS = 1200;
-
-/**
- * Joins the parts of one judge request for a single projection call. Neither
- * character is a word character, so no detector span can grow across it; a
- * projection that returns a different number of parts is treated as blocked.
- */
-const PART_SEPARATOR = '\n\u001e\n';
 
 const TOOL_NAME = 'record_verdict';
 
@@ -121,26 +114,10 @@ type PrimitiveVerdict = 'verified' | 'unverified' | 'contradicted';
 
 interface JudgeVerdict {
   verdict: PrimitiveVerdict;
-  /** As parsed: the ref the judge cited. After `resolveCitation`: the node id
-   *  of the snippet printed under that ref, or absent. */
+  /** As parsed: the ref the judge cited. Once `judgeOnce` resolved it: the
+   *  node id of the snippet printed under that ref, or absent. */
   evidenceNodeId?: string;
   rationale?: string;
-}
-
-/** The variable parts of one judge request, before or after projection. */
-interface JudgeRequestParts {
-  readonly claimText: string;
-  readonly context: string;
-  readonly related: string;
-  readonly evidence: ReadonlyArray<{
-    /** What the request prints for the snippet, and so the only value a
-     *  verdict can cite for it: the node id without a shield, an opaque
-     *  handle behind one. Never projected. */
-    readonly ref: string;
-    readonly source: EvidenceSnippet['source'];
-    readonly title: string;
-    readonly content: string;
-  }>;
 }
 
 export class EvidenceJudge {
@@ -313,7 +290,14 @@ ${evidenceBlock}`;
 
     const parsed = parseVerdict(response);
     if (parsed === null) return null;
-    const verdict = resolveCitation(parsed, real, evidence);
+    // The judge cites a ref of THIS request; only the snippet printed under
+    // it can stand behind the verdict.
+    const nodeId = citedNodeId(parsed.evidenceNodeId, real, evidence);
+    const verdict: JudgeVerdict = {
+      verdict: parsed.verdict,
+      ...(nodeId !== undefined ? { evidenceNodeId: nodeId } : {}),
+      ...(parsed.rationale !== undefined ? { rationale: parsed.rationale } : {}),
+    };
     if (privacy === undefined) return { ...verdict, projected };
     return { ...(await this.restoreRationale(verdict, privacy)), projected };
   }
@@ -342,117 +326,6 @@ ${evidenceBlock}`;
 }
 
 // ---------------- helpers ----------------
-
-/**
- * The ref a shielded judge request prints for its snippet at `index`. Minted
- * per request, it names a position in that request and nothing else — a node
- * id can embed an external key or a channel user id, and the judge needs a
- * reference, not the key.
- */
-function evidenceHandle(index: number): string {
-  return `ev-${String(index + 1)}`;
-}
-
-/**
- * The variable parts of a judge request from REAL values. The CONTEXT line is
- * decided here, on real values, so projection cannot change whether it shows.
- * Behind a privacy shield the evidence is capped before anything is masked
- * and each snippet is named by its handle instead of its node id.
- */
-function judgeRequestParts(
-  claim: SoftClaim,
-  evidence: readonly EvidenceSnippet[],
-  shielded: boolean,
-): JudgeRequestParts {
-  const context =
-    claim.context && claim.context.trim().toLowerCase() !== claim.text.trim().toLowerCase()
-      ? claim.context
-      : '';
-  const snippets = shielded ? evidence.slice(0, PRIVACY_MAX_SNIPPETS) : evidence;
-  return {
-    claimText: claim.text,
-    context,
-    related: claim.relatedEntities.join(', '),
-    evidence: snippets.map((e, idx) => ({
-      ref: shielded ? evidenceHandle(idx) : e.nodeId,
-      source: e.source,
-      title: e.title ?? '',
-      content: e.content,
-    })),
-  };
-}
-
-/**
- * Project every variable part of one judge request through the turn's
- * surrogate map in ONE call: the claim, its context and the evidence share a
- * map, so a person is the same placeholder on both sides of the comparison,
- * and the masking pass runs once per request instead of once per field.
- * Besides each snippet's declared identity values, its node id is always
- * replaced wherever the request repeats it (RELATED, a `Graph-Node …` line, a
- * title that falls back to the id) — the detectors alone would pass a key
- * that is not shaped like an e-mail or an IBAN. Refs and source labels stay
- * as they are. Throws when the projection is blocked or came back with a
- * different structure; the caller then sends nothing.
- */
-async function projectRequestParts(
-  real: JudgeRequestParts,
-  evidence: readonly EvidenceSnippet[],
-  privacy: VerifierPrivacy,
-): Promise<{ parts: JudgeRequestParts; projected: boolean }> {
-  const flat = [
-    real.claimText,
-    real.context,
-    real.related,
-    ...real.evidence.flatMap((e) => [e.title, e.content]),
-  ];
-  const joined = flat.join(PART_SEPARATOR);
-  const identityValues = [
-    ...new Set(
-      evidence
-        .slice(0, real.evidence.length)
-        .flatMap((e) => [e.nodeId, ...(e.identityValues ?? [])]),
-    ),
-  ];
-  const masked = await privacy.projectForWire(joined, identityValues);
-  const out = masked.split(PART_SEPARATOR);
-  if (out.length !== flat.length) {
-    throw new Error('projection changed the structure of the judge request');
-  }
-  const at = (i: number): string => out[i] ?? '';
-  return {
-    projected: masked !== joined,
-    parts: {
-      claimText: at(0),
-      context: at(1),
-      related: at(2),
-      evidence: real.evidence.map((e, idx) => ({
-        ref: e.ref,
-        source: e.source,
-        title: at(3 + idx * 2),
-        content: at(4 + idx * 2),
-      })),
-    },
-  };
-}
-
-/**
- * Map the ref a verdict cites to the node id of the snippet printed under it
- * in the same request. A ref the request did not print resolves to nothing:
- * a verdict can only cite what its own request showed.
- */
-function resolveCitation(
-  verdict: JudgeVerdict,
-  parts: JudgeRequestParts,
-  evidence: readonly EvidenceSnippet[],
-): JudgeVerdict {
-  const out: JudgeVerdict = { verdict: verdict.verdict };
-  const cited = verdict.evidenceNodeId;
-  const idx = cited === undefined ? -1 : parts.evidence.findIndex((e) => e.ref === cited);
-  const nodeId = idx === -1 ? undefined : evidence[idx]?.nodeId;
-  if (nodeId !== undefined) out.evidenceNodeId = nodeId;
-  if (verdict.rationale !== undefined) out.rationale = verdict.rationale;
-  return out;
-}
 
 function parseVerdict(response: LlmResponse): JudgeVerdict | null {
   // Defensive: the contract guarantees `content` is an array, but keep the
