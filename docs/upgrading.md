@@ -331,6 +331,45 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.167.7 — framing, web-ui user, sandbox limits
+
+Three hardening changes an operator may notice. None needs action on a
+default install.
+
+- **Operator pages can no longer be framed.** Every operator page now sends
+  `Content-Security-Policy: frame-ancestors 'none'` and
+  `X-Frame-Options: DENY`. Plugin UIs and Teams tabs under `/p/*`, and
+  everything under `/bot-api/*`, are unchanged. If you embed operator pages in
+  another site (an intranet portal, a custom Teams tab pointing at `/chat`), set
+  `UI_FRAME_ANCESTORS` on the **web-ui** service to the allowed origins, with
+  the whole value in double quotes:
+
+  ```bash
+  UI_FRAME_ANCESTORS="'self' https://portal.example.com"
+  ```
+
+  It is read per request, so the published image picks it up on restart
+  without a rebuild.
+- **The web-ui container runs as `node` (uid 1000).** The shipped compose, Fly
+  and Render setups mount nothing into it, so nothing changes there. If you
+  mount a volume into the web-ui container yourself, make it writable for
+  uid 1000. The self-updater recreates the container with the new image's
+  user.
+- **Sandbox containers have ceilings.** With `sandbox_execute_enabled` or
+  `sandbox_publish_enabled` on, every container that runs agent code is capped
+  at 512 MiB (swap included), 1 CPU and 256 processes. A heavier job, such as
+  a large build, is now killed or throttled instead of competing with the
+  middleware for the host. Raise the orchestrator setup fields
+  `sandbox_memory_mb`, `sandbox_cpus` and `sandbox_pids_limit`, or set
+  `OMADIA_SANDBOX_MEMORY_MB`, `OMADIA_SANDBOX_CPUS` and
+  `OMADIA_SANDBOX_PIDS_LIMIT` on the middleware, within 6 to 1048576 MiB,
+  0.01 to 1024 CPUs and 1 to 4194304 processes. There is no "unlimited": a
+  value outside those ranges is ignored and the default applies, because
+  Docker would run some of them (such as 0.000001 CPUs) with no limit at all.
+  Existing persistent sandboxes get the limits the next time they are used;
+  apps published before the upgrade keep running without them until you
+  publish a new version.
+
 ## Upgrading to 0.115 or later — `CREDENTIAL_KEYCHAIN_KEY` is required
 
 > **Do this before pulling the image, or the update rolls back.**

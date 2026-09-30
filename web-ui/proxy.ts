@@ -5,6 +5,7 @@ import {
   PAIRING_DISCOVERY_HANDLER_PATH,
   PAIRING_DISCOVERY_WELL_KNOWN_PATH,
 } from './app/_lib/pairingDiscoveryPaths';
+import { applyOperatorUiSecurityHeaders } from './app/_lib/securityHeaders';
 
 const SESSION_COOKIE = 'omadia_session';
 
@@ -30,8 +31,17 @@ const SESSION_COOKIE = 'omadia_session';
  *     `requireAuth` is the authoritative check), so a stale/expired or
  *     malformed cookie bounces to `/login?return=<encoded original path>`
  *     instead of rendering a broken page that 401s on every API call.
+ *
+ * Every response on an operator route also carries the security headers from
+ * `app/_lib/securityHeaders.ts` (frame policy, nosniff, Referrer-Policy),
+ * set here per request so `UI_FRAME_ANCESTORS` works on a prebuilt image.
+ * `/p/*` and `/bot-api/*` are left untouched; that module explains why.
  */
-export function proxy(req: NextRequest) {
+export function proxy(req: NextRequest): NextResponse {
+  return applyOperatorUiSecurityHeaders(req.nextUrl.pathname, gateRequest(req));
+}
+
+function gateRequest(req: NextRequest): NextResponse {
   const { pathname, search } = req.nextUrl;
 
   if (isPublicPath(pathname)) {

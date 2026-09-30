@@ -36,6 +36,39 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — operator UI response headers, non-root web-ui image, sandbox container limits
+
+2026-09-30 — operator pages were served without a frame policy, nosniff or
+Referrer-Policy, the web-ui image ran `node server.js` as root, and the Docker
+containers behind `execute` and `publish` had no memory, CPU or process
+ceiling, so one runaway command competed with the middleware for the whole
+host. Operator pages now carry `Content-Security-Policy: frame-ancestors
+'none'; object-src 'none'; base-uri 'none'`, `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff` and `Referrer-Policy:
+strict-origin-when-cross-origin`. `web-ui/proxy.ts` sets them per request, so
+the new `UI_FRAME_ANCESTORS` variable works on a published image: it replaces
+`'none'` for deployments that embed operator pages and drops `X-Frame-Options`.
+`/p/*` and `/bot-api/*` stay untouched, because they carry the framed plugin
+UIs and previews whose middleware headers a proxy header would override. The
+web-ui image now runs as `USER node`.
+
+Every sandbox and publish container gets `--memory` and `--memory-swap`
+(512 MiB), `--cpus` (1) and `--pids-limit` (256) from one builder in
+`@omadia/sandbox`. Each value comes from the orchestrator setup fields
+`sandbox_memory_mb`, `sandbox_cpus` and `sandbox_pids_limit`, else from
+`OMADIA_SANDBOX_MEMORY_MB`, `OMADIA_SANDBOX_CPUS` and
+`OMADIA_SANDBOX_PIDS_LIMIT`, else the default. A value only counts inside its
+range (6 to 1048576 MiB, 0.01 to 1024 CPUs, 1 to 4194304 PIDs); `0`, junk
+and anything out of range fall back instead of meaning "unlimited". The
+ranges matter because Docker starts some positive values with no limit and
+no error: `--cpus 0.000001` or `--cpus 1e64` leave the container without a
+CPU quota, and a memory value of 2^43 MiB or more (or `1e+21m`) is recorded
+as no limit on arm64. An existing persistent sandbox gets the current limits
+through `docker update` when it is next re-attached, while a publish container
+created before this change keeps running without them until a new version
+replaces it. Details in `docs/security-architecture.md` §3b and §10h and in
+`docs/upgrading.md`.
+
 ### Fixed — pairing discovery answers 503 instead of claiming no sign-in is needed (#293)
 
 2026-09-30 — the pairing descriptor on the operator origin
