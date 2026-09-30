@@ -769,7 +769,9 @@ explicit here so a deployment can reason about them:
 
 At a minimum, your deployment vault holds:
 
-- Database connection string(s).
+- Database connection string(s). On the desktop app the kernel keeps its
+  first-boot DSN here too; it names the restricted `omadia_kernel` role and
+  carries that role's password (§8b).
 - Object-storage access key + secret.
 - HMAC signing secret for diagram URLs.
 - Upstream API tokens (one per integration).
@@ -793,7 +795,11 @@ itself and hands them to the kernel as env vars on every spawn:
   database, a separate trust domain.
 - The provider API keys entered in the setup wizard.
 
-All three live in `secrets.enc` in the data folder, encrypted at rest with
+The same file holds the embedded Postgres passwords (§8b): the bootstrap
+superuser's never leaves the shell, the kernel role's reaches the kernel only
+inside `DATABASE_URL`.
+
+All of these live in `secrets.enc` in the data folder, encrypted at rest with
 Electron `safeStorage` (Keychain on macOS, DPAPI on Windows, Secret Service on
 Linux). A packaged build refuses to write it in plaintext. Only an unpackaged
 dev run may, with a warning, and such a dev blob stays readable once OS
@@ -810,7 +816,8 @@ rules, in the Electron-free `secretsBlob.ts` and `secretsStore.ts`:
   `SecretsUnreadableError` and writes nothing. The stages are: unreadable
   (`read`), keychain refused (`decrypt`), no OS encryption in a packaged build
   (`encryption-unavailable`), not JSON (`parse`), and wrong fields (`shape`,
-  where both keys must base64-decode to 32 bytes, the kernel's own check). Boot
+  where both keys must base64-decode to 32 bytes, the kernel's own check, and
+  the database passwords, when present, must be 64 hex characters). Boot
   then stops at a dialog with advice for the failed stage
   (`secretsRecovery.ts`) and without "Re-run setup". A refused keychain is
   presented as "the file is most likely intact; allow access", never as
@@ -848,6 +855,83 @@ rules, in the Electron-free `secretsBlob.ts` and `secretsStore.ts`:
 **Starting over** is a manual step: move the whole data folder aside, or pick a
 different, empty folder in setup. Deleting only `secrets.enc` produces new keys
 next to the old kernel vault, which the kernel then cannot open.
+
+## 8b. Desktop embedded Postgres: SCRAM passwords and a restricted kernel role
+
+The desktop app runs its own PostgreSQL 17 cluster (`desktop/src/embeddedDb.ts`).
+It used to be initialised with `initdb -A trust`: any local process, under any
+OS user, that reached the loopback port could log in as the bootstrap superuser
+without a password, and the kernel's own `DATABASE_URL` named that superuser,
+which can run `COPY ... TO PROGRAM` as the desktop user.
+`desktop/src/embeddedDbAuth.ts` replaces that:
+
+- **Two roles, random SCRAM passwords.** `omadia`, the bootstrap superuser, is
+  used only by the shell (provisioning, extensions). `omadia_kernel` is what
+  the kernel connects as: it owns the `omadia` database and everything in it,
+  so the kernel's own migrations run unchanged, but it is `NOSUPERUSER
+  NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`. Both passwords are 32
+  random bytes (hex) in `secrets.enc` (§8a). The superuser's never leaves the
+  shell process. The kernel's reaches the kernel only inside `DATABASE_URL`,
+  under the same same-user environment boundary as `VAULT_KEY` (an accepted v1
+  limitation, `desktop/README.md`). Passwords reach the server as SCRAM
+  verifiers, so a failing `ALTER ROLE` cannot put one in the server log, which
+  the shell copies into its own.
+- **The shell owns `pg_hba.conf`.** Rules for exactly those two roles, all
+  `scram-sha-256`, no `trust`. The file is rewritten (temp file, rename)
+  whenever it differs, and the server starts with
+  `-c hba_file=<pgdata>/pg_hba.conf`, so `postgresql.auto.conf` cannot point it
+  elsewhere. The server listens on `127.0.0.1` with Unix sockets disabled, so
+  the verdict never depends on the client's OS identity: without the password,
+  nobody gets in.
+- **Extensions are created by the shell.** pgvector's control file is not
+  `trusted`, so a non-superuser cannot `CREATE EXTENSION vector`. The shell
+  creates `vector` and `pg_trgm` as superuser, and the kernel's own
+  `CREATE EXTENSION IF NOT EXISTS` then short-circuits before its privilege
+  check. An engine without pgvector's files (an unstaged dev tree) is logged
+  and tolerated.
+- **Ordering that prevents a lockout.** New passwords are written to
+  `secrets.enc` and read back before the cluster is created or touched. On a
+  cluster from the trust era the superuser password is set while trust still
+  admits the shell, and only then does `pg_hba.conf` require passwords. The
+  kernel password is set last, after its database, the extensions and the
+  ownership transfer, so an interrupted run leaves a kernel that cannot log in,
+  and the next start repeats it.
+- **Trust-era ownership.** Everything the old kernel created as superuser is
+  moved to `omadia_kernel` one kind at a time (schemas, relations, sequences,
+  types, routines; extension members stay), because Postgres refuses
+  `REASSIGN OWNED` for the bootstrap superuser
+  (`desktop/src/embeddedDbOwnership.ts`).
+- **The repair window, and why it exists.** When the cluster refuses the stored
+  superuser password (a lost or regenerated `secrets.enc`, a `pgdata` snapshot
+  restored without its secrets copy), the shell writes a single rule,
+  `host all omadia 127.0.0.1/32 trust`, restarts the server, sets the password
+  in one statement and puts the password-only rules back, on every path
+  including failures; if that fails, the server is stopped. The window is
+  logged at warn level and lasts from the restart to the reload, a fraction of
+  a second. Without it a lost secrets file would lock the local database for
+  good. With it, that case briefly reopens what every install had before, for
+  the superuser on IPv4 loopback only.
+- **Verification fails closed.** Every start ends with a check against the
+  running server: a random wrong password must be refused (`28P01`) for both
+  roles, retried for up to two seconds because `pg_reload_conf()` lands
+  asynchronously, and the kernel role must hold none of the privileged
+  attributes. Otherwise the start fails and no DSN is handed out. The two
+  refused attempts appear in the log as `FATAL`; that is the check.
+- **Rollback.** A build from before this change connects without a password
+  and cannot open a migrated cluster. The pre-update snapshot (§8a), taken
+  before the new version first starts, is the way back.
+- **The kernel vault's copy of the DSN.** The kernel froze its first-boot
+  `DATABASE_URL` into its vault (`database_url`, §8), so that copy now carries
+  the kernel role's password, encrypted with `VAULT_KEY`. On the desktop the
+  live `DATABASE_URL` wins (`OMADIA_EMBEDDED_DB=1`), so a copy left stale by a
+  password repair is never used.
+
+Tests: `desktop/test/embeddedDbAuth.test.mts` (orderings and fail-closed paths
+against a simulated cluster), `desktop/test/embeddedDb.integration.test.mts`
+(the real engine: passwordless and wrong-password clients refused, no
+`COPY ... TO PROGRAM` for the kernel role, the trust-era migration including
+ownership, the repair window; the desktop-apps workflow runs it with pgvector
+staged) and `desktop/test/secrets.test.mts` (persistence and read-back).
 
 ## 9. API-key authentication (`@omadia/api-key-auth`, issues #438 / #439)
 
@@ -1407,7 +1491,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       backup + temp file + rename write (§8a): a read, decrypt, parse or shape
       failure throws `SecretsUnreadableError` and never regenerates keys, and a
       key is cached only after its write succeeded.
+- [ ] A change to the desktop's embedded Postgres (`desktop/src/embeddedDb.ts`,
+      `embeddedDbAuth.ts`) adds no `trust` rule outside the credential repair
+      window, keeps the kernel's `DATABASE_URL` on the non-superuser
+      `omadia_kernel`, keeps the bootstrap password inside the shell, and keeps
+      the fail-closed verification (wrong password refused for both roles,
+      kernel role unprivileged) with its tests (§8b).
 
 ---
 
-*Last reviewed: 2026-09 (§8a desktop secret custody added; §10 added with issue #669).*
+*Last reviewed: 2026-09 (§8a desktop secret custody and §8b embedded Postgres authentication added; §10 added with issue #669).*

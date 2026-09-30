@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop database requires passwords; the kernel runs without superuser rights
+
+2026-09-30 — the desktop app's embedded PostgreSQL cluster was initialised with
+`initdb -A trust`. Any local process, under any OS user, that reached its
+loopback port could log in as the bootstrap superuser without a password, and
+the kernel's own `DATABASE_URL` named that superuser, which can run
+`COPY ... TO PROGRAM`. New clusters are now created with SCRAM-SHA-256
+authentication, and the shell owns `pg_hba.conf`: password-only rules for its
+two roles, no `trust` rule, `hba_file` pinned on the server's command line. The
+kernel connects as `omadia_kernel`, which owns the `omadia` database but is not
+a superuser. Both passwords are random, live in `secrets.enc`, and are read back
+from it before the cluster is touched. The shell creates the `vector` and
+`pg_trgm` extensions itself, because pgvector is not a trusted extension. Every
+start ends with a fail-closed check that a wrong password is refused and the
+kernel role holds no privilege (desktop/README.md § Database authentication,
+security-architecture §8b).
+
+An existing cluster is migrated on its first start: the superuser password is
+set while the old rules still admit the shell, then `pg_hba.conf` switches to
+passwords, and every object the old kernel created as superuser moves to the
+kernel role. When the cluster refuses the stored password (a lost
+`secrets.enc`, a snapshot restored without its secrets copy), the shell repairs
+it through a loopback-only trust rule for the superuser that lasts one
+statement, is logged at warn level and is closed on every path. A rollback to an
+earlier desktop build cannot open a migrated cluster, because that build
+connects without a password; restore the pre-update snapshot
+(`snapshots/pgdata-pre-<version>-<stamp>/` and its `.secrets.enc`) to go back.
+No new environment variable.
+
 ### Fixed — desktop app no longer replaces an unreadable secrets file with new keys
 
 2026-09-30 — the desktop app keeps `VAULT_KEY`, `CREDENTIAL_KEYCHAIN_KEY` and

@@ -3111,6 +3111,25 @@ security-architecture §8a). Bewusst offen:
   mit ihrem Snapshot-Ordner. Wer Snapshot-Ordner von Hand löscht, lässt die
   Kopie daneben liegen.
 
+### Desktop: Passwörter für die eingebettete Postgres — offene Punkte
+
+Die eingebettete PostgreSQL verlangt für jede Verbindung ein SCRAM-Passwort,
+der Kernel verbindet sich als `omadia_kernel` ohne Superuser-Rechte
+(`desktop/src/embeddedDbAuth.ts`, security-architecture §8b). Bewusst offen:
+
+- **Kernel-Passwort im Kindprozess-Environment.** Es steckt in `DATABASE_URL`
+  und ist damit für Prozesse desselben OS-Nutzers lesbar (`ps eww`), dieselbe
+  Grenze wie bei `VAULT_KEY`. Die Härtung wäre die Übergabe per stdin/fd.
+- **Migration und Laufzeit teilen sich eine Rolle.** `omadia_kernel` besitzt
+  die Datenbank und führt Kern- und Plugin-Migrationen aus, beim Boot und bei
+  jeder Plugin-Aktivierung. Eine reine DML-Rolle für die Laufzeit bräuchte im
+  Kernel eine zweite DSN für Migrationen.
+- **pgvector-Updates.** Die Extension gehört dem Superuser. Ein
+  `ALTER EXTENSION vector UPDATE` nach einem Engine-Update mit neuerer
+  pgvector-Version kann nur die Shell ausführen; heute führt es niemand aus.
+- **Windows-Neustart im Reparaturfenster.** Der Neustart beendet `postgres.exe`
+  hart (wie jeder Stop dort); die Datenbank läuft danach eine Crash-Recovery.
+
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
 Alles hier ist **nicht** umgesetzt. Vollständige Darstellung samt Codestellen:

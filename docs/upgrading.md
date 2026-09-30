@@ -175,6 +175,23 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Desktop app — the embedded database now requires passwords
+
+The first start of the desktop app after this update migrates its local
+PostgreSQL cluster from password-less `trust` rules to SCRAM passwords and moves
+the kernel to a role without superuser rights (`desktop/README.md` § Database
+authentication). Nothing to do beforehand. The start logs
+`migrating a trust-authenticated cluster to SCRAM passwords`.
+
+- **Rolling back** to an earlier desktop build: that build connects without a
+  password and cannot open the migrated cluster. Before starting it, restore
+  the pre-update snapshot the updater took: `snapshots/pgdata-pre-<version>-<stamp>/`
+  as `pgdata/`, and its `.secrets.enc` as `secrets.enc`.
+- **A snapshot restored without its `.secrets.enc`**, or a lost `secrets.enc`:
+  the next start re-provisions the database passwords through a brief
+  loopback-only trust window and logs it at warn level. The kernel-vault caveat
+  in `desktop/README.md` § Secrets and recovery still applies.
+
 ## Upgrading to 0.115 or later — `CREDENTIAL_KEYCHAIN_KEY` is required
 
 > **Do this before pulling the image, or the update rolls back.**

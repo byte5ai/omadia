@@ -2,7 +2,7 @@
 
 A native, no-Docker way to run the full omadia stack locally on macOS and Windows.
 The app bundles and supervises the existing omadia kernel and admin UI, and ships
-an **embedded Postgres + pgvector** engine (PGlite) so there is no database to
+a **bundled PostgreSQL 17 + pgvector** engine so there is no database to
 install. An onboarding wizard collects your AI provider key on first run.
 
 > Status: **first version (v1)**. Wires persistence + LLM + admin UI end to end.
@@ -14,10 +14,10 @@ install. An onboarding wizard collects your AI provider key on first run.
 
 ```
 Electron main
- ├─ embedded Postgres (PGlite + vector) exposed over the wire protocol on loopback
- ├─ kernel        ← forked from Electron-as-Node, DATABASE_URL → embedded engine
+ ├─ embedded PostgreSQL 17 + pgvector on loopback TCP, a SCRAM password for every connection
+ ├─ kernel        ← forked from Electron-as-Node, DATABASE_URL → embedded engine as omadia_kernel
  ├─ web-ui (Next) ← forked from Electron-as-Node, MIDDLEWARE_URL → kernel port
- ├─ vault key + keychain key + provider keys ← secrets.enc, OS keychain via Electron safeStorage
+ ├─ vault key + keychain key + provider keys + DB passwords ← secrets.enc, OS keychain via Electron safeStorage
  └─ tray · auto-update · onboarding wizard
 ```
 
@@ -149,10 +149,13 @@ A full adversarial review (Forge / codex, local) was run on this code. Resolved:
   concurrent queries in <10ms with no loss. Fix: the kernel's single `graphPool`
   now honours `GRAPH_POOL_MAX`, and the desktop app sets it to `1`. This is the
   seam (one env var) that makes the no-Docker DB work without forking the kernel.
-- **No real DB auth.** Verified: `pglite-socket` accepts any credentials. Security
-  therefore rests entirely on **loopback-only** binding. The kernel previously
-  bound `::` (all interfaces); it now honours `HOST`, and the desktop app sets
-  `HOST=127.0.0.1` so the local install is never reachable on the LAN.
+- **Database authentication.** The PGlite engine accepted any credentials, and
+  the native PostgreSQL that replaced it was first initialised with `trust`.
+  Now every connection needs a SCRAM password and the kernel connects as a role
+  without superuser rights; see [Database authentication](#database-authentication).
+  The server still binds loopback only. The kernel previously bound `::` (all
+  interfaces); it now honours `HOST`, and the desktop app sets `HOST=127.0.0.1`
+  so the local install is never reachable on the LAN.
 - **Setup is only marked boot-verified after a successful boot** (`completed`),
   so a failed first boot can't brick the next launch; a failed boot offers
   "Re-run setup" instead of a dead auto-boot loop. The exception is an
@@ -169,10 +172,12 @@ A full adversarial review (Forge / codex, local) was run on this code. Resolved:
 
 Accepted v1 limitations (tracked for a follow-up):
 
-- Secrets (`VAULT_KEY`, provider keys) are passed to the kernel via the child
+- Secrets (`VAULT_KEY`, provider keys, and the kernel role's database password
+  inside `DATABASE_URL`) are passed to the kernel via the child
   **environment**, readable by same-user processes (`ps eww`). A same-user
   attacker already has the data dir, so this is accepted for v1; hardening to a
-  stdin/fd handoff is a follow-up.
+  stdin/fd handoff is a follow-up. The database superuser's password is not in
+  that environment: it never leaves the shell.
 - Free-port selection has a small TOCTOU window (port released before the child
   binds). Rare on a local machine; surfaces as a boot-timeout, not corruption.
 - No app/tray icons shipped yet (Electron defaults used).
@@ -245,10 +250,10 @@ that names the problem.
 ## Secrets and recovery
 
 `secrets.enc` in the data folder holds the kernel's `VAULT_KEY` and
-`CREDENTIAL_KEYCHAIN_KEY` plus the provider API keys, encrypted with the OS
-keychain (`src/secrets.ts`). The kernel vault, stored credentials and encrypted
-dataset cells all depend on these keys, so the app treats the file as
-irreplaceable:
+`CREDENTIAL_KEYCHAIN_KEY`, the provider API keys and the two embedded-database
+passwords, encrypted with the OS keychain (`src/secrets.ts`). The kernel vault,
+stored credentials and encrypted dataset cells all depend on these keys, so the
+app treats the file as irreplaceable:
 
 - **New keys only for a missing file.** If `secrets.enc` exists but cannot be
   read, decrypted or parsed, the app leaves it untouched. Boot stops at a dialog
@@ -283,6 +288,51 @@ live file, so they help with a damaged file, not with a lost keychain entry.
 (keep it). The next start runs first-time setup with new keys. Deleting only
 `secrets.enc` is not enough, because the kernel vault in `platform-data/` would
 then no longer open.
+
+## Database authentication
+
+The embedded PostgreSQL 17 cluster asks every connection for a SCRAM-SHA-256
+password. It listens on `127.0.0.1` only, without a Unix socket, and its
+`pg_hba.conf` belongs to the shell (`src/embeddedDbAuth.ts`): password-only
+rules for exactly two roles, rewritten whenever the file differs, and the
+server starts with `hba_file` pinned to it on the command line. Whoever runs a
+client, under whichever OS account, gets nowhere without a password.
+
+| Role | Used by | May |
+|---|---|---|
+| `omadia` | the shell only (provisioning, extensions) | everything: it is the bootstrap superuser |
+| `omadia_kernel` | the kernel, via `DATABASE_URL` | own and change the `omadia` database and all it holds; no superuser, so no `COPY ... TO PROGRAM`, no server file access, no new roles or databases |
+
+Both passwords are random, stored in `secrets.enc`, and written and read back
+before a cluster is created or its authentication touched. The kernel gets only
+its own. The shell creates the `vector` and `pg_trgm` extensions itself,
+because pgvector is not a trusted extension and a non-superuser cannot create
+it.
+
+What a start does:
+
+- **Normal start:** the shell's `pg_hba.conf` is in place and the kernel role
+  logs in, so the shell only verifies: a wrong password is refused for both
+  roles, and the kernel role holds no privilege. The server logs those two
+  refused attempts as `FATAL: password authentication failed`. That is the
+  check, not a fault; a failed check stops the start instead.
+- **First start of a cluster created before passwords were required:** the
+  superuser gets its password while the old `trust` rules still let the shell
+  in, then `pg_hba.conf` switches to passwords, and `omadia_kernel` is created
+  and takes over the database and every object the kernel had created. Logged
+  at warn (`migrating a trust-authenticated cluster`).
+- **Stored password refused** (a lost or regenerated `secrets.enc`, a `pgdata`
+  snapshot restored without its `.secrets.enc`): the shell trusts the `omadia`
+  role on `127.0.0.1` just long enough to restart and set one password, then
+  requires passwords again. The window closes on every path, and the server is
+  stopped if it cannot be closed. Logged at warn (`trust window`).
+- **Dev tree without pgvector:** the shell logs that `vector` is not installed
+  and continues; the kernel's graph migration then fails as it always has there.
+
+**Going back to an older version:** a build from before passwords were required
+connects without one, so it cannot open a migrated cluster. Restore the
+pre-update snapshot (`snapshots/pgdata-pre-<version>-<stamp>/` as `pgdata/`,
+its `.secrets.enc` as `secrets.enc`); a later update migrates it again.
 
 ## Data + uninstall
 
