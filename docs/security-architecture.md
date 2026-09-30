@@ -1276,6 +1276,80 @@ race).
 
 ---
 
+## 10e. Post-login return URLs are same-origin paths only
+
+`/login` and `/setup` read a `?return=` value and navigate to it. A visitor
+who is already signed in is forwarded at once (`router.replace`). A password
+login and the first-admin setup end in `window.location.href = …`. The value
+also rides along on the hop from `/login` to `/setup`, and it goes into the
+OIDC start link (`/bot-api/v1/auth/login/<id>/start?return=…`). It comes from
+the URL, so whoever writes the link chooses it, and the navigation happens
+right after the operator typed a password.
+
+**Producers.** The app writes `?return=` in four places, always from the
+browser's own location: `web-ui/proxy.ts` (unauthenticated request),
+`_lib/api.ts` (a 401 in the browser), `_lib/authRedirect.ts` (a 401 during a
+server render) and `SessionWatcher` ("sign in again"). All four send the
+current page's path (`pathname`, plus `search` where they have it), never an
+absolute URL.
+
+**The rule.** Both pages pass the value through `sanitiseReturnPath`
+(`web-ui/app/_lib/returnPath.ts`). Anything that fails becomes `/`.
+
+1. At most 2048 characters, starting with exactly one `/`. `//host` is
+   protocol-relative, and the WHATWG parser reads `\` as `/` in http(s)
+   URLs, so `/\host` is the same thing.
+2. No C0 control character and no DEL. The parser drops TAB, LF and CR
+   before it parses, so `/<TAB>/host` becomes `//host`.
+3. Parse against a fixed base (`http://omadia.invalid`) and require the
+   result to stay on that base's origin. The base is a constant rather than
+   `window.location.origin`. After rules 1 and 2 the verdict is the same for
+   every http(s) origin, so the server render (no `window`) and the browser
+   agree, and the OIDC link hydrates with the href the server sent.
+4. Hand out only `pathname + search + hash`, and only if that passes rules 1
+   and 2 again. Dot segments collapse: `/..//host` stays on the base origin
+   but normalises to the path `//host`, which is protocol-relative once it is
+   used as a link.
+5. `/login` and `/setup` (also with a query, a fragment or a trailing slash)
+   become `/`, so a signed-in visitor cannot be sent back into the login page.
+
+A backslash further into the value stays. In the path the parser turns it
+into `/`, and in the query it is a literal character that `location.search`
+keeps, so the producers above can forward one.
+
+**Server side.** The middleware checks the value again for the OIDC round
+trip (`sanitiseReturnPath` in `middleware/src/routes/auth.ts`). It applies
+rules 1 and 2 without the length cap and returns `null` (drop the value)
+instead of `/`. It does not normalise, because its own redirects cannot leave
+the origin: the OIDC callback redirects to `publicBaseUrl + path`, and the
+back-compat `GET /api/v1/auth/login` puts the value into the web UI's
+`/login?return=`, where the rules above run. The web UI's proxy sends 401s
+straight to `/login`, so that back-compat route only serves old bookmarks and
+hand-made links. The password login never sends `return` to the server.
+
+**Desktop shell.** The desktop app loads the web UI from
+`http://127.0.0.1:<port>` (`desktop/src/supervisor.ts`). At the time of
+writing its window restricts no top-level navigation (no `will-navigate` or
+`setWindowOpenHandler` guard in `desktop/src`), so a return value that left
+the origin would replace the app window itself, with no address bar to show
+it. This check is what prevents that. A navigation allowlist in the shell is
+a second layer, not a replacement.
+
+**Not covered here.** Absolute redirect targets that the server supplies,
+such as the IdP end-session URL behind sign-out (`idpLogout.url` in
+`web-ui/app/_components/AuthBadge.tsx`), are a separate trust boundary. They
+come from provider configuration, not from the address bar.
+
+Tests: `web-ui/app/_lib/__tests__/returnPath.test.ts` (off-origin forms,
+normalisation, the "never resolves off-origin" invariant over several real
+origins, the auth-page guard), `returnPath.node.test.ts` (no `window`), the
+page tests `web-ui/app/login/__tests__/page.test.tsx` and
+`web-ui/app/setup/__tests__/page.test.tsx` (every navigation sink with a
+crafted value), and `middleware/test/auth/returnPath.test.ts` (both server
+routes and the OIDC callback).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1333,7 +1407,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
+- [ ] A page or route that navigates to a caller-supplied `return`/`next`
+      value passes it through `sanitiseReturnPath`
+      (`web-ui/app/_lib/returnPath.ts`), or, server-side, only ever appends
+      it to `publicBaseUrl` (§10e). Server-supplied absolute targets such as
+      IdP logout URLs are a separate boundary and not covered by this.
 
 ---
 
-*Last reviewed: 2026-08 (§10 added with issue #669).*
+*Last reviewed: 2026-09 (§10e added: same-origin return paths).*
