@@ -1104,8 +1104,10 @@ as a new one, never an unbounded one.
 **Renewal requires a currently valid session.** The route sits under the
 public `/api/v1/auth/*` prefix (`auth/publicPaths.ts`) because it
 authenticates itself: it calls `evaluateSessionToken`, the same single code
-path `requireAuth` and `ctx.operatorAuth` use, whitelist gate included. An
-expired cookie gets 401 `auth.invalid`. It can only be replaced by a login.
+path `requireAuth` and `ctx.operatorAuth` use, whitelist gate and
+server-side revocation (§10e) included. An expired cookie gets 401
+`auth.invalid`, a revoked one 401 `auth.revoked`; either can only be replaced
+by a login. A failed revocation lookup answers 503 `auth.unavailable`.
 
 **The principal is re-checked on every renewal, fail closed.**
 
@@ -1113,6 +1115,10 @@ expired cookie gets 401 `auth.invalid`. It can only be replaced by a login.
 - The `users` row (`provider`, `sub`) must exist and be `active`. This covers
   local users and Entra users alike (the OIDC callback upserts Entra rows, and
   admins can disable them).
+- That row must still vouch for the session: the same row (`uid`) at the same
+  session version (`sv`), §10e. With the guard wired the evaluation above has
+  already refused a revoked session; this re-check on the row the step reads
+  anyway keeps harnesses without the guard honest.
 - OIDC sessions are re-validated at the IdP through
   `OidcProvider.revalidateSession`. For Entra that redeems the refresh token
   kept in the vault (`RefreshStore`), then checks that the new id_token
@@ -1130,28 +1136,36 @@ uuid, `before`/`after` carry the old and new `exp` and `auth_time`). The row
 is written before the cookie is set. If the write fails, the error reaches
 Express as a 500 and no renewed cookie leaves the server.
 
-**Logout ends the Entra renewal chain.** `POST /logout` forgets the user's
-Entra refresh token. A cookie copied before the logout then fails the IdP
-re-check (no refresh token on file → denied) instead of renewing itself until
-the cap.
+**Logout ends the session on the server.** The marker is
+`users.session_version` (§10e); sign-out, an admin password reset and disabling
+the account move it, and deleting the row ends the sessions outright.
+`POST /logout` moves the user's version, so every copy of every session of
+that user is refused from the next request on, and cannot renew, because
+`/renew` runs the same evaluation. It also forgets the user's Entra refresh token, which ends the
+IdP side of the renewal chain. Both happen only when the presented cookie is
+itself still current: a revoked copy reaching the public `/logout` route gets
+its own cookie cleared and changes nothing server-side.
+
+Re-signing carries `sv`, `sid` and `uid` over together with `auth_time`: a
+renewed token belongs to the same sign-in of the same account version, so a
+later sign-out or reset ends it like the original.
 
 **Residual risks (accepted, documented).**
 
-- Local-password sessions have no server-side revocation store. A cookie
-  copied before logout stays valid for the rest of its window and can be
-  renewed until the cap, as long as the users row stays `active`. Before #965
-  that window was a hard 4h; now it is bounded by the cap. Disabling the user
-  stops the chain at the next renewal attempt.
-- The refresh token is keyed by email. If the same Entra user signs in again
-  after a logout, a still-valid copy of the *old* cookie could redeem the
-  *new* refresh token, bounded by the old cookie's own `auth_time + cap`.
 - Renewal only runs on an explicit click. Activity-based silent renewal is
   deliberately not implemented.
 
+Two earlier residuals are closed by the session version (§10e): a cookie
+copied before logout no longer stays valid for the rest of its window or
+renews up to the cap, and a copy of an *old* Entra cookie can no longer
+redeem the refresh token of the user's *next* sign-in (the refresh token is
+still keyed by email, but that old cookie is refused before any IdP call).
+Revocation's own residuals are listed in §10e.
+
 Tests: `middleware/test/auth/renewRoute.test.ts` (every refusal path, cap,
-legacy `iat` fallback, audit-before-cookie, logout forget),
-`middleware/test/auth/entraProviderRevalidate.test.ts` (denial vs. outage
-classification).
+legacy `iat` fallback, audit-before-cookie, logout forget, revoked and stale
+`sv` refusals), `middleware/test/auth/entraProviderRevalidate.test.ts`
+(denial vs. outage classification).
 
 ---
 
@@ -1240,10 +1254,15 @@ so no WebSocket is ever allocated for it. An unregistered path is `404`.
 - **Channel routes** (`register`, reached by plugins only through
   `CoreApi.registerWebSocket`) authenticate with `requireAuth`'s own
   `evaluateSessionToken`: same signing key, same Entra-whitelist gate, same
-  status mapping (`auth.not_whitelisted` → 403, anything else → 401). A
+  server-side revocation guard (§10e), same status mapping
+  (`auth.not_whitelisted` → 403, a revoked session → 401 plus one log line,
+  a failed revocation lookup → 503, anything else → 401). A
   deactivated channel answers `503`, and the active flag is checked again
   after the async cookie verification, so a deactivation during that window
-  cannot leak a socket past `deactivateChannel`.
+  cannot leak a socket past `deactivateChannel`. The check runs at the
+  upgrade only: a socket opened before its session was revoked stays open
+  (§10e residuals; `WebSocketRegistryDeps.sessions` is the seam for closing
+  it).
 - **Kernel routes** (`registerKernel`) bring their own authenticator. They
   are a kernel-only capability and are deliberately not on `CoreApi`, so no
   plugin can opt out of the session cookie. The authenticator's verdict maps
@@ -1273,6 +1292,108 @@ auth and caps, collisions, deactivation) and
 `middleware/test/webSocketRegistryHardening.test.ts` (503 on throw, deadline
 and junk result, raw status-line bytes, bounds, the deactivate-during-auth
 race).
+
+---
+
+## 10e. Server-side session revocation
+
+The admin session is a stateless JWT (§10b), so on its own the server cannot
+end one early. A per-user marker in the `users` table does:
+`users.session_version` (auth migration `0003_users_session_version.sql`,
+`INTEGER NOT NULL DEFAULT 0`). An integer on purpose, not a "revoked before"
+timestamp: `iat` has second granularity, so a timestamp marker either refuses
+a sign-in made in the same second as the sign-out or accepts a token minted
+just before it.
+
+**What a token carries.** Every sign-in mints `sv` (the row's
+`session_version` at that moment), `uid` (the row's id) and `sid` (a random id
+for this sign-in). Renewal carries all three over, like `auth_time`. The
+password path takes `sv` and `uid` from the same read that checked the
+password (`PasswordAuthSuccess.account`), so a reset that lands after that
+check still ends the new session; the OIDC callback takes them from the row it
+upserts (and refuses to mint for a disabled row), `/setup` from the row it
+creates. Tokens minted before these claims existed carry none of them: they
+read as version 0, which is where every existing row starts, so the upgrade
+signs nobody out, and they age out at the absolute cap (§10b).
+
+**Where it is checked.** `evaluateSessionToken` (`auth/requireAuth.ts`), after
+the signature and the whitelist gate, asks `SessionRevocationGuard.check`
+(`auth/sessionRevocation.ts`): one point read of `(provider, sub)` on the
+`users_provider_user_unique` index. The session stands only while the row
+exists, is `active`, is the row the token was minted for (`uid`, when present)
+and still has the token's `sv`. Every consumer inherits the check through that
+one function: `requireAuth` (all of `/api`, including plugin routes with
+`auth: 'session'`), `ctx.operatorAuth.hasValidSession`, the channel WebSocket
+upgrade (§10d) and `POST /renew`. `GET /me` runs the same check, so the UI's
+60 s heartbeat notices a revocation within a minute. There is no cache, so a
+revocation holds from the next request on, on every replica.
+
+**What ends sessions.**
+
+| Event | Mechanism | Scope |
+|---|---|---|
+| `POST /api/v1/auth/logout` | `session_version + 1` | every session of that user, every device |
+| Admin password reset | `session_version + 1` in the same UPDATE as the new hash | every session of that user |
+| Admin disables the user | `session_version + 1` in the same UPDATE as the status; a later re-enable does not revive old cookies | every session of that user |
+| Admin deletes the user | the row is gone; a re-created row has a new id, so `uid` keeps old cookies dead even though it starts at version 0 again | every session of that user |
+| Signing-key rotation (`sessionSigningKey.ts`) | every signature fails | every session of every user |
+
+The bump is `UserStore.update(id, { revokeSessions: true })`, always relative
+to the stored value, and always in the same statement as the change that
+causes it, so a password or status change and its revocation never land
+apart. Routes that revoke also call `SessionRevocation.announce`.
+
+**Status mapping.** Revoked → 401 `auth.revoked` (a raw 401 on a WebSocket
+upgrade, logged once, because that cookie outlived a sign-out or a reset). A
+failed lookup is an outage, not a verdict on the credential: 503
+`auth.unavailable`, a raw 503 on a WebSocket upgrade, and `false` from
+`hasValidSession`, which never throws. The web UI bounces to /login only on a
+401 and the SessionWatcher keeps its state on a 503, so a database blip does
+not sign operators out.
+
+**A stale cookie cannot sign anyone out.** `/api/v1/auth/*` is public, so a
+revoked copy of a cookie can still reach `/logout`. It gets its own cookie
+cleared and nothing else: the bump and the Entra refresh-token forget only
+happen when the presented cookie still passes the check. Otherwise a copied
+cookie could sign its owner out of every fresh session, again and again, until
+its own `exp`.
+
+**No Postgres, no check.** Without `graphPool` there is no `users` table and no
+login route (the auth router answers 503). The guard then stays unattached and
+passes every signature-valid session, and the boot log says so.
+
+**Residual risks (accepted, documented).**
+
+- Sign-out is per user, not per device. Signing out in one browser ends the
+  sessions on every other device as well. That includes a canvas client, whose
+  reconnect loop then gets the same raw 401 an expired cookie produces, until
+  it signs in again. A per-device sign-out would need a denylist keyed by
+  `sid`.
+- Connections that are already open are not closed on revocation: a live
+  channel WebSocket and the builder's SSE stream (`GET /drafts/:id/events`)
+  authenticate once, when they open. `SessionRevocation.onRevoked` (whose
+  sessions just ended) and `check` (re-evaluate held claims) are the seam for
+  closing them. The announcement is process-local: a revocation on another
+  replica, or one made directly in SQL, is never announced, so that follow-up
+  has to re-run `check` periodically as well.
+- A token minted before the claims existed has no `uid`. Until the cap it
+  would survive a delete-and-recreate of its row, since the new row starts at
+  version 0 again.
+- Every authenticated request, WebSocket upgrade and `hasValidSession` call
+  costs one point read on the shared pool. If that ever shows up in latency,
+  the follow-up is a short TTL cache that `announce` invalidates, and
+  "immediately" then means "within that TTL" across replicas.
+- An admin who resets their own password is signed out too (the UI bounces to
+  /login), consistent with "a reset ends every session of that user".
+
+Tests: `middleware/test/auth/sessionRevocation.test.ts` (guard, status
+mapping, outage path, `ctx.operatorAuth`),
+`middleware/test/auth/logoutRevokesSession.test.ts` (sign-in → copy cookie →
+sign-out → the copy gets 401 on `/api`, `/me` and `/renew`; stale-cookie
+logout; OIDC callback), `middleware/test/auth/userStoreSessionVersion.test.ts`
+and `.pg.test.ts` (the SQL and the migration against real Postgres),
+`middleware/test/auth/adminUsersRoute.test.ts` (reset, disable, re-enable,
+delete) and `middleware/test/webSocketRegistry.test.ts` (401/503 on upgrade).
 
 ---
 
@@ -1326,6 +1447,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `auth_time` over (never resets it) and respects the absolute cap; a new
       OIDC provider implements `revalidateSession` or its sessions cannot be
       renewed (§10b).
+- [ ] A new path that mints the session cookie stamps `sv` and `uid` from the
+      `users` row it verified (a re-mint carries `sv`, `sid` and `uid` over),
+      and a new session consumer decides through `evaluateSessionToken` with
+      the `sessions` guard, never `verifySession` alone (§10e).
+- [ ] A change to a `users` row's credential or status passes
+      `revokeSessions: true` in the same `update()` call and announces it via
+      `SessionRevocation.announce` (§10e).
 - [ ] A new native tool bound to shared/unscoped state (like memory) is routed
       through the caller's scoped accessor in `ctx.tools.invoke`, or denied
       there (§4, #909).

@@ -36,6 +36,44 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — sign-out, password reset, disable and delete end sessions on the server
+
+2026-09-30 — the admin session is a stateless JWT, and nothing on the server
+could end one early. Signing out only cleared the browser's cookie (Entra
+sessions also dropped their refresh token), an admin password reset only
+replaced the hash, and disabling or deleting a user took effect at the next
+renewal at the earliest. A copy of the cookie taken before any of these kept
+working until its own expiry and, while the row stayed `active`, could be
+renewed up to `AUTH_SESSION_MAX_LIFETIME_HOURS`. Every session token now
+carries the account's session version (`sv`), the id of the `users` row it was
+minted for (`uid`) and a random per-sign-in id (`sid`, not checked yet).
+`evaluateSessionToken`, the one verdict path behind `requireAuth`,
+`ctx.operatorAuth`, the channel WebSocket upgrade and `POST
+/api/v1/auth/renew`, re-reads that row (one indexed point read, no cache) and
+answers 401 `auth.revoked` once the row is gone, disabled, re-created or has
+moved its version on. `GET /api/v1/auth/me` runs the same check, so the UI's
+heartbeat shows the expired overlay within a minute. A failed lookup is an
+outage, not a verdict: 503 `auth.unavailable` (a raw 503 on a WebSocket
+upgrade, `false` from `hasValidSession`), so a database blip does not sign
+operators out.
+
+`POST /api/v1/auth/logout` now moves the version, which signs the user out on
+every device, not just in this browser. An admin password reset and disabling
+a user move it in the same UPDATE as the change itself; deleting the row needs
+no bump. A cookie that is already revoked changes nothing server-side when it
+reaches the public `/logout` route, so a stale copy cannot sign its owner out of
+their current session. The OIDC callback no longer mints a session for a
+disabled account, and an admin who resets their own password is signed out as
+well. Tokens minted before this change carry no `sv` and count as version 0,
+where every existing row starts, so the upgrade signs nobody out. Migration
+`auth/migrations/0003_users_session_version.sql` adds `users.session_version
+INTEGER NOT NULL DEFAULT 0`; it lives in the auth series because `users` is that
+series' own table (AGENTS.md, new SQL migrations), and it runs automatically at
+boot, including on the desktop app's embedded Postgres. WebSockets and the
+builder's SSE stream that are already open when a session is revoked stay open
+for now; `SessionRevocation.onRevoked` and `check` are the seam for closing
+them (`docs/security-architecture.md` §10e).
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
