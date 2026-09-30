@@ -16,10 +16,14 @@ import { MAX_CONTEXT_CHARS } from './claimExtractor.js';
  * history reuse) and only keep the contradiction if both agree. Single
  * Haiku calls are cheap; the double-check prevents one unlucky flip from
  * blocking a correct answer.
+ *
+ * A cited `evidence_node_id` is checked deterministically against the
+ * snippet set the judge was shown in that call; an id outside that set
+ * demotes the verdict to `unverified`, on the recheck call as well.
  */
 
 export interface EvidenceSnippet {
-  nodeId: string;               // stable id the judge references on contradict
+  nodeId: string;               // stable id the judge cites; citing any other id is rejected
   source: 'graph' | 'confluence' | 'odoo';
   content: string;              // <= ~2 kB per snippet
   title?: string;
@@ -50,6 +54,9 @@ const DEFAULTS = {
 };
 
 const TOOL_NAME = 'record_verdict';
+
+/** Reason for a verdict whose citation names no snippet the judge was shown. */
+const UNKNOWN_EVIDENCE_REASON = 'evidence_node_id not in evidence set';
 
 const toolSpec: ToolSpec = {
   name: TOOL_NAME,
@@ -119,40 +126,45 @@ export class EvidenceJudge {
     if (first === null) {
       return unverified(claim, 'judge returned no usable verdict');
     }
+    if (first.verdict === 'unverified') {
+      return unverified(claim, first.rationale ?? 'judge unverified');
+    }
+
+    // `parseVerdict` already demotes a citation outside the evidence set.
+    // Resolving it again here keeps that rule if the parser ever changes,
+    // before a recheck call is spent, and leaves the cited snippet as the
+    // only place `source` and `truth` can come from — never the claim's own
+    // `expectedSource`.
+    const sourceSnippet =
+      first.evidenceNodeId === undefined
+        ? undefined
+        : evidence.find((s) => s.nodeId === first.evidenceNodeId);
+    if (!sourceSnippet) {
+      return unverified(claim, UNKNOWN_EVIDENCE_REASON);
+    }
+    const source = sourceKind(sourceSnippet.source);
+
+    if (first.verdict === 'verified') {
+      return { status: 'verified', claim, source };
+    }
 
     // Double-check on contradicted: one shaky Haiku flip should not block a
-    // correct answer. We only confirm when the second call agrees.
-    if (first.verdict === 'contradicted') {
-      const second = await this.judgeOnce(claim, evidence);
-      if (second === null || second.verdict !== 'contradicted') {
-        this.log(
-          `[verifier/judge] contradiction not reproduced, downgrading to unverified claim=${claim.id}`,
-        );
-        return unverified(claim, 'judge contradiction not reproduced on recheck');
-      }
+    // correct answer. We only confirm when the second call agrees; a recheck
+    // citing an unknown id comes back `unverified` from the parser.
+    const second = await this.judgeOnce(claim, evidence);
+    if (second === null || second.verdict !== 'contradicted') {
+      this.log(
+        `[verifier/judge] contradiction not reproduced, downgrading to unverified claim=${claim.id}`,
+      );
+      return unverified(claim, 'judge contradiction not reproduced on recheck');
     }
-
-    const sourceSnippet = evidence.find((s) => s.nodeId === first.evidenceNodeId);
-    const source = sourceSnippet?.source ?? claim.expectedSource;
-
-    switch (first.verdict) {
-      case 'verified':
-        return {
-          status: 'verified',
-          claim,
-          source: sourceKind(source),
-        };
-      case 'contradicted':
-        return {
-          status: 'contradicted',
-          claim,
-          truth: first.rationale ?? sourceSnippet?.content ?? null,
-          source: sourceKind(source),
-          ...(first.rationale ? { detail: first.rationale } : {}),
-        };
-      case 'unverified':
-        return unverified(claim, first.rationale ?? 'judge unverified');
-    }
+    return {
+      status: 'contradicted',
+      claim,
+      truth: first.rationale ?? sourceSnippet.content,
+      source,
+      ...(first.rationale ? { detail: first.rationale } : {}),
+    };
   }
 
   async checkAll(claims: SoftClaim[]): Promise<ClaimVerdict[]> {
@@ -179,6 +191,8 @@ Rules:
 - Do NOT reward plausibility. If the evidence doesn't mention it, it's unverified — not verified.
 - When a CONTEXT line is present it is the single sentence the claim was cut from. Use it only to resolve what the claim refers to (its subject, tense); judge the CLAIM as meant in that sentence. Never base "contradicted" or "verified" on a fact that appears only in CONTEXT and not in CLAIM.`;
 
+    // The ids a verdict may cite: exactly the snippets printed below.
+    const knownIds: ReadonlySet<string> = new Set(evidence.map((e) => e.nodeId));
     const evidenceBlock = evidence
       .map(
         (e, idx) =>
@@ -212,13 +226,22 @@ ${evidenceBlock}`;
       return null;
     }
 
-    return parseVerdict(response);
+    return parseVerdict(response, knownIds, (cited) => {
+      // The cited id is model output: JSON-quoted so it stays on one line.
+      this.log(
+        `[verifier/judge] ${UNKNOWN_EVIDENCE_REASON}, downgrading to unverified claim=${claim.id} cited=${JSON.stringify(truncate(cited, 80))}`,
+      );
+    });
   }
 }
 
 // ---------------- helpers ----------------
 
-function parseVerdict(response: LlmResponse): {
+function parseVerdict(
+  response: LlmResponse,
+  knownIds: ReadonlySet<string>,
+  onUnknownId: (cited: string) => void,
+): {
   verdict: PrimitiveVerdict;
   evidenceNodeId?: string;
   rationale?: string;
@@ -235,9 +258,16 @@ function parseVerdict(response: LlmResponse): {
       typeof raw.evidence_node_id === 'string'
         ? raw.evidence_node_id.trim()
         : '';
+    const needsCitation = verdict === 'verified' || verdict === 'contradicted';
     // verified and contradicted MUST cite a node id — otherwise demote.
-    if ((verdict === 'verified' || verdict === 'contradicted') && !nodeId) {
+    if (needsCitation && !nodeId) {
       return { verdict: 'unverified', rationale: 'missing evidence_node_id' };
+    }
+    // ...and it must name a snippet this call was shown. Exact match on the
+    // trimmed string: ids are opaque, so no case-folding or prefix matching.
+    if (needsCitation && !knownIds.has(nodeId)) {
+      onUnknownId(nodeId);
+      return { verdict: 'unverified', rationale: UNKNOWN_EVIDENCE_REASON };
     }
     const rationale =
       typeof raw.rationale === 'string' ? raw.rationale.slice(0, 300) : '';
@@ -246,7 +276,8 @@ function parseVerdict(response: LlmResponse): {
       evidenceNodeId?: string;
       rationale?: string;
     } = { verdict };
-    if (nodeId) out.evidenceNodeId = nodeId;
+    // An unknown id never leaves the parser, not even on `unverified`.
+    if (nodeId && knownIds.has(nodeId)) out.evidenceNodeId = nodeId;
     if (rationale) out.rationale = rationale;
     return out;
   }
@@ -262,9 +293,13 @@ function unverified(claim: SoftClaim, reason: string): ClaimVerdict {
   return { status: 'unverified', claim, reason };
 }
 
-function sourceKind(
-  source: EvidenceSnippet['source'] | SoftClaim['expectedSource'],
-): 'odoo' | 'graph' {
+/**
+ * Maps the cited snippet's source onto the verdict's source. Only a snippet
+ * can supply it (never the claim's expectation). `ClaimSource` also knows
+ * 'confluence', but a confluence snippet is still recorded as 'graph' here —
+ * a long-standing mapping, kept as is.
+ */
+function sourceKind(source: EvidenceSnippet['source']): 'odoo' | 'graph' {
   return source === 'odoo' ? 'odoo' : 'graph';
 }
 
