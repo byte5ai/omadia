@@ -2977,7 +2977,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Eintrag in `scripts/copy-build-assets.mjs` + dieser CI-Schritt + der Pfad in
   `test/mcpDelegationBackfillMigration.pg.test.ts` (liest das Verzeichnis und nennt es noch
   „live migration series“); das Dockerfile kopiert es nicht.
-- **Desktop-Refresh (Electron 44.5.0, electron-builder 26.17.0): Release-Build vor dem Merge
+- **Desktop-Refresh (Electron 44.5.1, electron-builder 26.17.0): Release-Build vor dem Merge
   prüfen, Required Check erst danach.** `desktop` ist das dritte Bein der Audit-Matrix und
   `npm audit` dort bei 0. Ein Push auf `main` startet `auto-release.yml`, das die Installer im
   selben Lauf baut, signiert und samt Update-Feeds an ein Release hängt. Der erste echte Lauf von

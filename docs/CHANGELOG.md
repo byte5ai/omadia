@@ -46,7 +46,7 @@ kernel and the web-ui, run on it); js-yaml 4.2.0, which electron-updater uses to
 parse the update feed inside the installed app; and a critical tar plus
 node-gyp, cacache, make-fetch-happen, ip-address and builder-util-runtime in the
 build tree of electron-builder 25.1.8 and a direct `@electron/rebuild` 3.6.1
-pin. Electron moves to 44.5.0 (embedded Node 22.21.1 → 24.21.0; the desktop's
+pin. Electron moves to 44.5.1 (embedded Node 22.21.1 → 24.21.0; the desktop's
 `@types/node` follows it to 24), electron-builder to 26.17.0 — not the
 `latest`-tagged 26.15.3, whose NSIS installer silently skips every executable
 and native module at install time (electron-builder#9983) — and js-yaml to
