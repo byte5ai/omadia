@@ -2600,6 +2600,11 @@ DIAGRAM_MAX_SOURCE_BYTES=64000             # Quellcode-Cap
 DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
 # Object-storage (Tigris auf Fly, MinIO lokal — auto-provisioniert via `fly storage create`)
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Lokaler Attachment-Store ohne S3 (platform/attachmentStore.ts). Greift nur, wenn
+# die vier S3-Werte NICHT alle gesetzt sind; wird als `tigrisStore` veröffentlicht.
+# Die Desktop-App setzt ihn, wenn der Wizard-Schalter „Anhänge“ an ist.
+# GET /health → attachments.store: 's3' | 'filesystem' | 'none' (nie Pfad/Bucket).
+ATTACHMENT_STORE_DIR=/data/attachments     # Objekte unter sha256(key), 0700/0600, kein Ablauf
 # Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId
 CONDUCTOR_WEBHOOKS_ENABLED=true
 CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE=60   # Rate-Limit pro Endpoint (rolling minute)
@@ -3123,6 +3128,45 @@ Offen:
 - **Server-Redirects auf fremde Seiten** werden nicht blockiert. Das ist die
   akzeptierte Rest-Ausnahme aus §10e: Solche Seiten bekommen keine Bridge, und
   jeder Handler lehnt sie ab.
+
+### Desktop-Shell: Wizard-Schalter — Folgepunkte
+
+Seit 2026-09-30 gilt [`security-architecture.md` §10f](security-architecture.md):
+Ein Wizard-Schalter ändert die Kernel-Env oder existiert nicht. Übrig ist
+**Anhänge** (`ATTACHMENT_STORE_DIR` → lokaler `tigrisStore`, Readiness über
+`/health` → `attachments.store`, geprüft von `Supervisor.confirmCapabilities`).
+Semantisches Gedächtnis und Diagramme wurden aus dem Wizard entfernt, weil die
+Shell sie nicht einschalten kann. Offen:
+
+- **Semantisches Gedächtnis als echter Opt-in.** Darf nur mit Verdrahtung
+  zurück in den Wizard: Gewichte-Download aus der Shell heraus (heute nur über
+  die Admin-Route `POST /api/v1/admin/embedding-provider/local-model/fetch`,
+  also mit Operator-Session), danach Selbst-Reaktivierung des Adapters,
+  Neubewertung des Embedding-Gates und ein Readiness-Signal auf `/health`, das
+  die Shell prüft — plus ein `supervisorKernelEnv`-Test, der das pinnt.
+- **Diagramme** brauchen eine Owner-Entscheidung: gehosteter Renderer (ein
+  neuer Datenabfluss der Diagramm-Quellen an einen Dienst außerhalb des
+  Rechners) oder ein mitgelieferter Renderer (Kroki ist JVM-basiert und lässt
+  sich nicht bündeln). Selbst dann fehlt Speicher: `@omadia/diagrams` baut
+  einen eigenen S3-Client und nutzt den Kernel-Store nicht.
+- **Office- und Diagramm-Plugin auf den Kernel-Store umstellen.** Beide bauen
+  eigene S3-Clients aus ihrer Plugin-Config; mit dem Kernel-`tigrisStore`
+  liefen `create_xlsx`/`create_docx` auch auf dem Desktop.
+- **Ablauf für den lokalen Store.** S3-Buckets bekommen eine 90-Tage-Lifecycle-
+  Regel, `filesystemObjectStore.ts` löscht nichts.
+- **Schalter nach dem Setup ändern.** Es gibt keinen Einstellungs-Pfad; heute
+  nur „Setup erneut ausführen“ nach einem Boot-Fehler.
+- **Readiness sichtbar machen.** Die Prüfung schreibt heute nur eine Log-Zeile
+  (`[boot] attachments: …`, im Boot-Log des Wizards sichtbar). Eine Warnung
+  könnte zusätzlich in Tray oder Web-UI erscheinen.
+- **Wer schreibt in den Store?** Der Web-Chat hat keinen Datei-Upload. Heute
+  landen dort nur Dateien von Kanälen, die über den Kernel-Store persistieren
+  (Teams mit `TEAMS_ATTACHMENT_STORAGE_ENABLED=true`).
+- **Manuelle Prüfung auf paketierten Builds:** Wizard zeigt einen Schalter
+  plus Hinweis; `setup.json` enthält `capabilities: { attachments }`; das Log
+  zeigt `[boot] attachments: on, kept in the data folder on this computer`;
+  `GET http://127.0.0.1:8769/health` liefert `attachments.store: filesystem`;
+  `<Datenordner>/attachments` existiert mit 0700.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
