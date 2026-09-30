@@ -2977,10 +2977,37 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Eintrag in `scripts/copy-build-assets.mjs` + dieser CI-Schritt + der Pfad in
   `test/mcpDelegationBackfillMigration.pg.test.ts` (liest das Verzeichnis und nennt es noch
   „live migration series“); das Dockerfile kopiert es nicht.
-- **`desktop` in die Audit-Matrix aufnehmen.** Der `audit (high+critical block)`-Job prüft
-  nur `middleware` und `web-ui`; Dependabot deckt `desktop/` seit 2026-09-29 ab. Die Matrix
-  bekommt `desktop` zusammen mit dem Desktop-Dependency-Refresh (Electron, Builder-Toolchain),
-  der das Gate grün macht — danach den neuen Status-Check als Required eintragen.
+- **`audit (high+critical block) (desktop)` als Required Check eintragen (Admin).** Seit dem
+  Desktop-Dependency-Refresh (2026-09-30: Electron 44.5.0, electron-builder 26.17.0) ist
+  `desktop` das dritte Bein der Audit-Matrix und `npm audit` dort bei 0. Reihenfolge, sobald das
+  auf `main` liegt: (1) Packaged-App-Smoke auf macOS arm64 (Wizard → Kernel und Web-UI laufen →
+  Update-Check); (2) `desktop-apps.yml` per `workflow_dispatch` auf allen vier Targets, mit Blick
+  auf „Verify native modules load under the Electron ABI“, den Pre-warm-Schritt, der jetzt
+  `WIN_PUBLISHER_NAME` aus dem Azure-Zertifikat liest, und die Windows-Signaturprüfung gegen
+  `app-update.yml`; (3) den Kontext — am besten zusammen mit `desktop (typecheck + test)` — in
+  die Branch-Protection von `main` aufnehmen und per
+  `GET /repos/byte5ai/omadia/branches/main/protection/required_status_checks` prüfen.
+- **macOS 11/12 vor dem Electron-44-Update schützen.** Electron 44 braucht macOS 13
+  (`LSMinimumSystemVersion` 13.0). electron-builder schreibt für macOS kein
+  `minimumSystemVersion` in `latest-mac.yml`; eine Installation auf macOS 11/12 lädt das Update
+  also und startet danach nicht mehr. Weg: `desktop/scripts/merge-mac-update-feed.mjs` setzt
+  `minimumSystemVersion` (electron-updater vergleicht es mit `os.release()`, also der
+  Darwin-Version: macOS 13 = 22.x) plus Test — oder bewusst entscheiden, macOS 12 nicht mehr zu
+  bedienen. `docs/upgrading.md` beschreibt den Handgriff für Betroffene.
+- **Datenverzeichnis-Dialog ohne `defaultPath`** (`desktop/src/ipc.ts`): seit Electron 43 öffnet
+  `showOpenDialog` ohne `defaultPath` im Downloads-Ordner — für ein Postgres-Datenverzeichnis ein
+  schlechter Startpunkt. `defaultPath` auf das Home- oder das aktuelle Datenverzeichnis setzen.
+- **`test/graphBackfill.test.ts` ist zeitabhängig.** Zwei direkt nacheinander geloggte Turns
+  bekommen dieselbe Turn-ID, wenn sie in dieselbe Millisekunde fallen (`SessionLogger`,
+  millisekundengenaue Zeit); dann trägt der zweite rekonstruierte Turn die Entity des ersten. Im
+  warmen Prozess passiert das auf Node 22 und 24 fast immer. Grün ist der Test nur, weil der
+  kalte erste Aufruf meist über die Millisekunde hinaus dauert — unter Electron 44s Node 24 in
+  rund 15–25 % der Läufe nicht. Test mit festen `time`-Werten schreiben oder die Turn-ID
+  kollisionsfrei machen.
+- **Kleinkram aus dem Desktop-Refresh:** der Schritt „Allow git-https for git dependencies“ in
+  `desktop-apps.yml` ist tot (kein Lockfile zieht mehr eine git-Abhängigkeit); das leere
+  Root-`package-lock.json` ohne `package.json` kann weg; der Audit-Schritt installiert
+  `npm@latest` ungepinnt.
 - **Typecheck-Ratchet `test/` + `scripts/` (#573): 347 bekannte Fehler in 120 Dateien**
   (`middleware/test-typecheck-baseline.json`, Stand 2026-09-29). `npm run typecheck:test`
   blockt nur *neue* Fehler. Abbau: `npm run typecheck:test -- --report`, fixen,

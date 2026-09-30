@@ -474,6 +474,53 @@ registry handler (`src/platform/pluginContext.ts`):
   A new native tool bound to shared or unscoped state must be routed or denied
   the same way before it is registered.
 
+## 4a. Third-party npm dependencies: audit gate, Dependabot scope, the desktop runtime
+
+Plugins are operator-curated (§4); the npm dependencies of the kernel, the
+web-ui and the desktop shell are not, so they rest on automated controls and on
+one rule about what counts as a runtime.
+
+- **Audit gate.** The `audit (high+critical block)` job in
+  `.github/workflows/ci.yml` runs `npm audit --audit-level=high` in every
+  directory that has its own `package.json` and `package-lock.json`:
+  `desktop`, `middleware` and `web-ui`. Before it audits, every leg runs
+  `.github/scripts/audit-scope.test.mjs`, which fails when a lockfile directory
+  git tracks is missing from the matrix, or a leg names a directory without
+  one. The root `package-lock.json` is an empty stub with no
+  `package.json` beside it and is not a leg. Each leg reports its own
+  `audit (high+critical block) (<dir>)` status context, and each has to be a
+  required check on `main`: a context that is not required reports findings
+  but blocks nothing.
+- **A registry error is not a result.** The audit step gives the npm registry
+  three attempts and then fails the leg. Only the repository variable
+  `AUDIT_ALLOW_REGISTRY_OUTAGE`, set by an admin for a confirmed upstream
+  outage, downgrades that to a warning (§11). It is a GitHub Actions variable,
+  not an application setting, so it does not belong in
+  `middleware/.env.example`. Every run archives its report as the
+  `npm-audit-<dir>` workflow artifact.
+- **Dependabot** has an npm block for every audited directory (`/desktop`,
+  `/middleware`, `/web-ui`); a new package directory gets one together with its
+  audit leg. GitHub's repository-level alerting is not counted on as a
+  backstop: the audit gate and the weekly version updates are the controls,
+  which is why every audit leg has to be a required check.
+- **`electron` is a runtime, not a build tool.** It sits in the desktop's
+  `devDependencies` because electron-builder packages the installed binary, but
+  the app runs on it and the supervisor starts the kernel and the web-ui under
+  its Node (`ELECTRON_RUN_AS_NODE`, `desktop/src/supervisor.ts`). Its
+  advisories count like production ones, its majors are never ignored in
+  Dependabot (Electron only patches its three newest majors), and the desktop's
+  `@types/node` follows Electron's embedded Node (Node 24 for Electron 44), not
+  the Node 22 of the server image. The release build's "Verify native modules
+  load under the Electron ABI" step is the check that the middleware's native
+  modules still load under that Node.
+- **Windows update signatures.** electron-builder writes a `publisherName` into
+  the Windows app's `app-update.yml`; the release build reads it from the
+  certificate that signs the installer (Azure Trusted Signing), and
+  electron-updater refuses a downloaded update that is not Authenticode-signed
+  under that name. Apps installed from builds before electron-builder 26 carry
+  no `publisherName` and take their next update unchecked; every update after
+  that is checked.
+
 ## 5. Signed artefact URLs
 
 User-visible artefacts (rendered diagrams, attachments, exports) are stored
@@ -1339,7 +1386,15 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       for a confirmed upstream outage and must be removed as soon as the
       registry answers again. A PR merged while it was set has no dependency
       audit and needs one re-run afterwards.
+- [ ] A new directory with its own `package.json` + `package-lock.json` is a
+      leg of the `audit (high+critical block)` matrix, has an npm block in
+      `.github/dependabot.yml`, and its `(<dir>)` status context is required
+      on `main` (§4a). `audit-scope.test.mjs` catches a missing matrix leg;
+      the Dependabot block and the required check are on the reviewer.
+- [ ] An Electron major bump in `desktop/` moves `@types/node` to Electron's
+      embedded Node major in the same PR, and a release build of it has passed
+      "Verify native modules load under the Electron ABI" (§4a).
 
 ---
 
-*Last reviewed: 2026-08 (§10 added with issue #669).*
+*Last reviewed: 2026-09 (§4a added: npm dependency audit scope and the desktop runtime).*

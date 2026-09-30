@@ -173,6 +173,22 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Desktop app: macOS 13 or later from the Electron 44 build
+
+The desktop app's runtime moved from Electron 37 to Electron 44 (2026-09-30).
+Electron 44 does not run on macOS 12 or earlier, and the packaged app declares
+macOS 13 (Ventura) as its minimum.
+
+- **macOS 11 and 12:** auto-update still downloads the new version, which then
+  refuses to start. Decline the restart when the update prompt appears, or
+  update macOS to 13 or later first. An installation that has already updated
+  needs a macOS upgrade or a fresh install from the DMG of the last release
+  built on Electron 37.
+- **Windows:** nothing to do. From this build on, the app pins the publisher
+  name of its Authenticode signature and refuses an update that is not signed
+  under it. The update *to* this build is not checked yet; every later one is.
+- **Linux:** Electron 44 no longer supports the Unity desktop environment.
+
 ## Upgrading to 0.115 or later — `CREDENTIAL_KEYCHAIN_KEY` is required
 
 > **Do this before pulling the image, or the update rolls back.**
