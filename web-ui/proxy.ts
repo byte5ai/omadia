@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
+import {
+  PAIRING_DISCOVERY_HANDLER_PATH,
+  PAIRING_DISCOVERY_WELL_KNOWN_PATH,
+} from './app/_lib/pairingDiscoveryPaths';
+
 const SESSION_COOKIE = 'omadia_session';
 
 /**
@@ -16,6 +21,10 @@ const SESSION_COOKIE = 'omadia_session';
  *     UI itself + the login/logout/callback endpoints must be reachable
  *     without a session).
  *   - `/_next/*`, static assets, and Next's own route handlers pass through.
+ *   - The pairing-discovery descriptor (`/.well-known/omadia-ui` and its
+ *     rewrite target `/pairing-discovery`) passes through, exact match only.
+ *     A desktop client reads it before it has a session, and it carries
+ *     nothing the middleware does not already serve without one.
  *   - Everything else requires an `omadia_session` cookie carrying an
  *     unexpired JWT. We decode-only (no signature verify — backend's
  *     `requireAuth` is the authoritative check), so a stale/expired or
@@ -57,6 +66,16 @@ function isPublicPath(pathname: string): boolean {
   // answer 200 before the first user has logged in.
   if (pathname === '/health') return true;
   if (pathname === '/favicon.ico') return true;
+  // Pairing discovery (#293). A desktop client reads this descriptor before
+  // it has a session; the descriptor is what tells it where to sign in. It
+  // is not confidential: the middleware serves the same descriptor without
+  // auth (outside its `/api` gate), and the provider list inside it is
+  // already public here through `/bot-api/v1/auth/providers`. The proxy runs
+  // before the next.config.ts rewrite, so it sees the canonical path; the
+  // handler path is reachable directly as well. Exact match only, never a
+  // prefix: every other `/.well-known/*` path stays gated.
+  if (pathname === PAIRING_DISCOVERY_WELL_KNOWN_PATH) return true;
+  if (pathname === PAIRING_DISCOVERY_HANDLER_PATH) return true;
   // Plugin-served UI surfaces (Teams Tabs iframe these from the bot-app
   // shell; there is no omadia_session cookie in that context, only a
   // Teams SSO token in the iframe runtime). The next.config rewrite
