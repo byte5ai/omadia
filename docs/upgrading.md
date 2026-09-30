@@ -213,6 +213,30 @@ What that means for an instance installed before v0.115:
 Fresh installs via `render.yaml` or `fly/deploy.sh` generate the key
 themselves; only pre-v0.115 instances have to add it by hand.
 
+## Answer verifier behind the Privacy Shield — what operators notice
+
+Applies to instances that run both the privacy plugin and the answer verifier
+(`VERIFIER_ENABLED`). No configuration change and no migration; the behaviour
+changes on update:
+
+- **Streaming completion waits for the verifier.** The streamed text appears
+  as before, but the final `done` event — the chat's "finished" state and the
+  privacy receipt — arrives after the verifier's one to three model requests.
+  Heartbeats keep the connection open meanwhile. API clients that read the
+  receipt from `done` get it there as before, now including the verifier.
+- **More receipts.** A verified turn now always has a receipt row, even when
+  the verifier's requests were the only privacy-relevant event of the turn
+  (new field `verifierEgress`, shown as "Answer check" in the web UI).
+- **Fewer blocks and retries, never raw retries.** A contradiction the evidence
+  judge found on placeholder values shows as a disclaimer instead of blocking;
+  in enforce mode a correction retry is skipped (badge "failed") when its hint
+  would have to carry masked values. Server-rendered table answers and Direct
+  Line relays are no longer verified.
+- **Plugins built against `@omadia/plugin-api` < 1.20** keep working; the new
+  service methods are optional. A privacy provider that does not implement
+  `projectVerifierText` makes every evidence-judge request fail closed
+  (claims stay unverified).
+
 ## Upgrading to 0.3
 
 > Stub. Fill this in as part of the 0.3 release.

@@ -1551,6 +1551,32 @@ auth-gated **`GET /api/v1/operator/receipts`** (Liste, Composite-Keyset-Cursor
 Reaper mit Eager-Boot-Tick, Cutoff auf der DB-Uhr. Tests:
 `test/turnReceipts.test.ts`, `test/orchestrator/turnReceiptPersistence.test.ts`.
 
+#### Verifier-gewrappte Turns finalisieren erst nach dem Verifier
+
+Läuft ein Turn über `VerifierService` (Bundle `verifier@1` publiziert) und ist
+der Privacy Shield aktiv, finalisiert der Turn **nicht selbst**: Der Wrapper
+setzt vor jedem `runTurn`/`chatStream` `markPrivacyFinalizeHeld(input)`
+(One-Shot, gekeyt auf das Input-Objekt des Aufrufers), der Turn liefert sein
+Ergebnis ohne `privacyReceipt` und übergibt eine
+`PrivacyEgressContinuation` (`harness-orchestrator/src/privacyEgress.ts`),
+die der Wrapper mit `takePrivacyEgress(input)` abholt. Alle drei
+Finalize-Stellen übergeben (gepuffert, Streaming-`done`, Streaming-Direct-Line).
+Über `continuation.verifierPrivacy` laufen Extractor- und Judge-Requests unter
+der Surrogat-Map des Turns; danach ruft der Wrapper `finalize()` **genau
+einmal** pro Turn (`EgressLedger` in `verifierPrivacyGate.ts`, auch bei Fehlern
+und Client-Abbruch) — erst dann entstehen Receipt und `turn_receipts`-Zeile.
+Das Modell-Attribut wird bei der Übergabe gesichert (die 512er-FIFO
+`turnAttribution` könnte es sonst verdrängen). Der Receipt trägt die
+Verifier-Requests getrennt in `verifierEgress` (Anzahl + Span-Typen); ein Turn,
+dessen einzige Shield-Aktivität der Verifier war, bekommt dadurch ebenfalls
+eine Zeile. Beim Streaming hält der Wrapper `done` zurück, bis der innere
+Stream gedrained ist und der Verifier fertig ist, und sendet es dann mit
+`privacyReceipt` + `receiptId`, gefolgt vom `verifier`-Event. Ein Turn, der
+wirft, oder ein abgebrochener Stream verwirft seinen Privacy-State jetzt
+sofort (vorher blieb er bis zum Neustart im Speicher). Sicherheitsseite:
+`docs/security-architecture.md` §6e. Tests: `test/orchestratorPrivacyEgress.test.ts`,
+`test/verifierServicePrivacyEgress.test.ts`.
+
 #### API-Turn-Attribution + Korrelations-Id (#1107)
 
 Turns über `POST /api/public/v1/chat` trugen `channel = NULL` und der Caller
@@ -2967,6 +2993,21 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Verifier hinter dem Privacy Shield — Folgearbeiten
+
+Seit dem Privacy-Hand-over (Turn-Receipts, `security-architecture.md` §6e)
+laufen die Verifier-Requests unter der Surrogat-Map des Turns. Offen:
+- **Teams-Card:** `channel-teams` (eigenes Repo) rendert
+  `PrivacyReceipt.verifierEgress` noch nicht — das Feld wird ignoriert, bis die
+  Card eine "Antwortprüfung"-Zeile bekommt (Web-UI hat sie).
+- **Judge-Widersprüche hinter dem Shield:** ein `contradicted` des Judges auf
+  Platzhaltern wird bewusst zu `unverified` herabgestuft (Formatabweichungen
+  zwischen Claim und Evidenz würden sonst korrekte Antworten blocken). Ein
+  format-bewusster Vergleich (z. B. Datums-/Betrags-Normalisierung vor der
+  Maskierung) könnte weiche Widersprüche wieder blockierend machen.
+- **Ledger-Attribution:** die Verifier-Kostenzeilen können an
+  `continuation.receiptId` anknüpfen (siehe Cost-Ledger "Offen").
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
@@ -3852,7 +3893,10 @@ Orchestrator-Scope und übergibt eine eigene Turn-ID pro Lauf explizit — expli
 gewinnen immer.
 
 Offen: Verifier-Zeilen (laufen nach dem Turn-Scope) und `claude-cli-completion` bleiben
-NULL, bis der Orchestrator seine Ledger-Turn-ID nach außen gibt. ⚠️ Wie bei 0032:
+NULL, bis der Orchestrator seine Ledger-Turn-ID nach außen gibt. Für den Verifier
+liegt die Turn-ID inzwischen vor: die `PrivacyEgressContinuation` trägt sie als
+`receiptId`, solange der Verifier läuft — die Ledger-Attribution kann daran
+anknüpfen (Privacy-Hand-over, siehe Turn-Receipts). ⚠️ Wie bei 0032:
 Migration vor Deploy, sonst verwirft jeder Flush den ganzen Batch.
 
 ### Systemstatus: "Letzter Turn" (OM-100b, §3)

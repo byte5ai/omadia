@@ -77,6 +77,21 @@ NOT an on-wire token map (deleted for cause by #119/#126/#153).
 - **Transparency:** masked spans surface (type + detector only, PII-free)
   as `maskedPromptSpans` on the turn's `PrivacyReceipt`.
 
+### Answer-verifier requests (stage `verifier`)
+
+The answer verifier's post-turn model requests run under the same turn map
+(security-architecture §6e). `maskUserPrompt({ stage: 'verifier' })` masks
+under the operator's policy and books spans in `PrivacyReceipt.verifierEgress`
+(request count + span types), never in `maskedPromptSpans`; `preview: true`
+answers "would this text change?" without keeping anything.
+`projectVerifierText` projects verifier-composed text (claim + knowledge-graph
+evidence) regardless of `mask_user_prompt`: identity-shaped C0 spans, the
+operator deny-list, C1 when wired and caller-named identity values — dates and
+amounts stay, as in a v4 digest — and blocks when a real value equals a
+surrogate minted earlier in the turn. `countUnresolvedSurrogates` reports
+placeholders a model reworded so restore could not map them back
+(`src/verifierProjection.ts`).
+
 ## Canonical implementation path (resolved in #431)
 
 `src/service.ts` (**the** v4 service factory, `createPrivacyGuardService`)

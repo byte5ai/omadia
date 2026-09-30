@@ -166,7 +166,11 @@ gespeichert — ohne Graph-Sink, ohne User-Cluster-Vorbedingung. Ein Turn ohne
 Shield-Aktivität hinterlässt keine Zeile (#1081); ein fehlender Receipt heißt daher nie
 "diesen Turn gab es nicht". Agenten auf dem Claude-Abo-Provider (`claude-cli`) laufen über
 die CLI-Runtime, die keinen Privacy Shield installiert (Masking-Parität offen, #1087): ihre
-Turns werden weder maskiert noch interniert und schreiben nie einen Receipt. Der Receipt
+Turns werden weder maskiert noch interniert und schreiben nie einen Receipt. Ist der
+Antwort-Verifier aktiv, deckt derselbe Receipt auch dessen Modellanfragen ab (getrennt
+ausgewiesen als `verifierEgress`); er wird erst nach dem Verifier abgeschlossen, im
+Streaming kommt er daher mit dem `done`-Event nach der Prüfung (Sicherheitsseite:
+`docs/security-architecture.md` §6e). Der Receipt
 ist unter `/api/v1/operator/receipts` (auth-gated) sowie im Operator-UI abrufbar.
 Fehlschläge werden gezählt und protokolliert, nie still verworfen. **Seit #758 ist der
 Record hash-verkettet und checkpoint-signiert** (Migration `0041`: `entry_hash` über

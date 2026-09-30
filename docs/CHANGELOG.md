@@ -36,6 +36,38 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — answer-verifier requests run behind the Privacy Shield; the receipt is finalised after them
+
+2026-09-30 — with the privacy plugin installed and the answer verifier
+enabled, every turn the trigger router picked produced one to three extra model
+requests that bypassed the shield. The verifier ran after the orchestrator had
+restored the answer and finalised the turn, so its claim extractor got the
+unmasked prompt and the restored (or v4-rendered) answer, its evidence judge got
+raw knowledge-graph node content, and the enforce-mode retry put the re-queried
+truth into the system prompt verbatim. None of it reached the turn's receipt,
+which had already been written. A turn the verifier wraps now hands its privacy
+state over instead of finalising it: the extractor sees the turn's wire view
+(the prompt as masked for the turn, the answer as its model wrote it), the judge
+projects claim and evidence through the same surrogate map in one call — also
+with `mask_user_prompt` off — and the continuation finalises exactly once
+afterwards, so one receipt and one `turn_receipts` row cover the turn and the
+verifier (new receipt field `verifierEgress`, shown as "Answer check" on the web
+card). Server-rendered answers and Direct Line relays are not verified; with a
+shield installed but no privacy view handed over, nothing is verified raw.
+
+Behind the shield the correction retry carries no truth values and is withheld
+(badge `failed`) when masking would still alter its hint, and a still-blocked
+retry answer with unresolved placeholders is not returned. A contradiction the
+judge found on placeholder values is reported as `unverified` rather than
+blocking. On streaming turns `done` — which carries the receipt — now arrives
+after the verifier finished, so the chat's "thinking" state lasts until then
+(heartbeats keep the connection alive); the streamed text is unchanged. The
+caller-supplied system hint is masked like the prompt, and a turn that throws or
+a stream the client abandons now drops its privacy state instead of keeping it
+until restart. `@omadia/plugin-api` 1.20.0 (additive: mask `stage`/`preview`,
+`projectVerifierText`, `countUnresolvedSurrogates`, `verifierEgress`),
+`@omadia/plugin-privacy-guard` 0.6.0.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
