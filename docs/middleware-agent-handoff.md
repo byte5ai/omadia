@@ -1574,9 +1574,18 @@ Stream gedrained ist und der Verifier fertig ist, und sendet es dann mit
 `privacyReceipt` + `receiptId`, gefolgt vom `verifier`-Event. Ein Turn, der
 wirft, oder ein abgebrochener Stream verwirft seinen Privacy-State jetzt
 sofort (vorher blieb er bis zum Neustart im Speicher). Sicherheitsseite:
-`docs/security-architecture.md` §6e. Claims aus der Wire-Sicht stellt
+`docs/security-architecture.md` §6e. Die Wire-Sicht zeichnet der Turn selbst
+auf (`TurnContextValue.wireView`): den Prompt so, wie ihn das Modell bekam —
+eine MCP-Input-Card-Antwort also nur als Label, nie als Envelope mit den
+eingegebenen Werten — und die Antwort vor dem Restore. Der Extractor schickt
+genau das und maskiert es nicht erneut (`admitWireView` bucht den Request nur);
+`VerifierService` gibt der Pipeline auch als `userMessage` nie den Envelope
+(`modelFacingUserMessage`). Claims aus der Wire-Sicht stellt
 `harness-verifier/src/claimRestore.ts` serverseitig wieder her (Beträge/Daten
-aus Platzhaltern werden aus dem echten Literal neu gelesen). Tests:
+aus Platzhaltern werden aus dem echten Literal neu gelesen). Eine zweite
+Antwort mit ungelösten Platzhaltern (`countUnresolvedSurrogates`) ersetzt die
+erste nie — weder ein weiter blockierter Retry noch ein blockiertes Re-Sample
+nach einer Borderline-Antwort. Tests:
 `test/orchestratorPrivacyEgress.test.ts` (Übergabe),
 `test/verifierPrivacyEgressEndToEnd.test.ts` (Verifier um den echten
 Orchestrator), `test/verifierServicePrivacyEgress.test.ts` /

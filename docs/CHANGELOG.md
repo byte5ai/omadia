@@ -47,20 +47,23 @@ raw knowledge-graph node content, and the enforce-mode retry put the re-queried
 truth into the system prompt verbatim. None of it reached the turn's receipt,
 which had already been written. A turn the verifier wraps now hands its privacy
 state over instead of finalising it: the extractor sees the turn's wire view
-(the prompt as masked for the turn, the answer as its model wrote it; amounts
-and dates parsed from a placeholder are re-read from the real literal), the
-judge projects claim, evidence and node ids through the same surrogate map in
-one call — also with `mask_user_prompt` off — and the continuation finalises exactly once
+(the prompt exactly as the turn's model received it — an MCP input-card reply
+only as its label, never the envelope with the values typed for a third-party
+server — and the answer as its model wrote it; amounts and dates parsed from a
+placeholder are re-read from the real literal), the judge projects claim,
+evidence and node ids through the same surrogate map in one call — also with
+`mask_user_prompt` off — and the continuation finalises exactly once
 afterwards, so one receipt and one `turn_receipts` row cover the turn and the
 verifier (new receipt field `verifierEgress`, shown as "Answer check" on the web
 card). Server-rendered answers and Direct Line relays are not verified; with a
 shield installed but no privacy view handed over, nothing is verified raw.
 
 Behind the shield the correction retry carries no truth values and is withheld
-(badge `failed`) when masking would still alter its hint, and a still-blocked
-retry answer with unresolved placeholders is not returned. A contradiction the
-judge found on placeholder values is reported as `unverified` rather than
-blocking. On streaming turns `done` — which carries the receipt — now arrives
+(badge `failed`) when masking would still alter its hint, and a second answer
+with unresolved placeholders — a still-blocked retry, or a blocked re-sample
+taken over a borderline first answer — never replaces the first one. A
+contradiction the judge found on placeholder values is reported as `unverified`
+rather than blocking. On streaming turns `done` — which carries the receipt — now arrives
 after the verifier finished, so the chat's "thinking" state lasts until then
 (heartbeats keep the connection alive); the streamed text is unchanged. The
 caller-supplied system hint is masked like the prompt, and a turn that throws or

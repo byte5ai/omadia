@@ -642,10 +642,17 @@ written. They are now bound to the turn's own privacy handle:
   drops the surrogate map, dataset store and C1 cache and writes the
   `turn_receipts` row with the model attribution captured at hand-over. One
   receipt and one hash-chained row cover the turn and its verifier.
-- **What the verifier sees.** The extractor gets the turn's WIRE view: the
-  prompt masked under the turn's `mask_user_prompt` policy (identity when the
-  operator left it off — the turn's own model saw the same) and the answer as
-  the model wrote it, recorded before restore (`TurnContextValue.wireAnswer`).
+- **What the verifier sees.** The extractor gets the turn's WIRE view, as the
+  turn recorded it (`TurnContextValue.wireView`): the prompt exactly as the
+  turn's model received it — normalised (an MCP input-card reply is its label,
+  never the envelope with the values the user typed for a third-party server)
+  and masked under the turn's `mask_user_prompt` policy (as written when the
+  operator left it off — the turn's own model saw the same) — and the answer as
+  the model wrote it, before restore. The request is admitted through the view
+  (`admitWireView`, one verifier request in the receipt) but never masked a
+  second time, which would read the turn's placeholders as new values. The
+  pipeline's own `userMessage` (server-side checks; the extraction prompt when
+  no shield is installed) is the same normalised text, never the envelope.
   A server-rendered v4 answer (`answerSource: 'privacy-render'`, real values
   the model never saw), a Direct Line relay and the privacy refusal are never
   verified. Claims come back with placeholders and are restored server-side
@@ -679,10 +686,13 @@ written. They are now bound to the turn's own privacy handle:
   but carries no truth values and no value-bearing detail (`Δ=…`, the judge's
   rationale); when the turn's policy would still alter the hint, the retry is
   withheld (badge `failed`). The retry turn masks the caller-supplied hint like
-  its prompt (`composeWireExtraSystemHint`), and a still-blocked retry answer
-  that carries unresolved placeholders (`countUnresolvedSurrogates`) is not
-  returned — the first answer is. Without a shield the hint is unchanged: tool
-  results reach that model raw anyway.
+  its prompt (`composeWireExtraSystemHint`). A second answer that still carries
+  unresolved placeholders (`countUnresolvedSurrogates` — the model reworded one
+  and restore could not map it back) never replaces the first: neither a
+  still-blocked retry answer nor a blocked re-sample taken over a borderline
+  first answer, whether the retry then ran, failed or was withheld. The first
+  answer is shown with the badge the verdict earned (`failed`). Without a
+  shield the hint is unchanged: tool results reach that model raw anyway.
 - **Receipt.** Verifier spans are booked in `PrivacyReceipt.verifierEgress`
   (request count + span types), never in `maskedPromptSpans`; a turn whose
   only privacy-relevant event was the verifier still gets a receipt. On
@@ -1426,10 +1436,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       (§10c, #778).
 - [ ] A new model call made after `runTurn` / `chatStream` produced the
       answer (verifier stages, extractors, judges, any post-turn pass) sends
-      only what a `PrivacyEgressContinuation` view returns — never text handed
-      to a bare `LlmProvider` — and the continuation's `finalize` runs after
-      that call, exactly once, also on the error path (§6e). A new
-      finalize site in the orchestrator hands over when the turn was held.
+      only what a `PrivacyEgressContinuation` view holds or returns (the
+      turn's recorded wire view, a projection) — never the caller's own input
+      (it may still be an MCP input-card envelope) and never text handed to a
+      bare `LlmProvider` — and the continuation's `finalize` runs after that
+      call, exactly once, also on the error path (§6e). A new finalize site in
+      the orchestrator hands over when the turn was held.
 
 ---
 
