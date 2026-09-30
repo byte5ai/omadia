@@ -878,11 +878,12 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
   the shell copies into its own.
 - **The shell owns `pg_hba.conf`.** Rules for exactly those two roles, all
   `scram-sha-256`, no `trust`. The file is rewritten (temp file, rename)
-  whenever it differs, and the server starts with
-  `-c hba_file=<pgdata>/pg_hba.conf`, so `postgresql.auto.conf` cannot point it
-  elsewhere. The server listens on `127.0.0.1` with Unix sockets disabled, so
-  the verdict never depends on the client's OS identity: without the password,
-  nobody gets in.
+  whenever it differs, and only while the server is stopped, so a running
+  server never holds rules the shell did not write and no reload is ever
+  needed. The server starts with `-c hba_file=<pgdata>/pg_hba.conf`, so
+  `postgresql.auto.conf` cannot point it elsewhere. It listens on `127.0.0.1`
+  with Unix sockets disabled, so the verdict never depends on the client's OS
+  identity: without the password, nobody gets in.
 - **Extensions are created by the shell.** pgvector's control file is not
   `trusted`, so a non-superuser cannot `CREATE EXTENSION vector`. The shell
   creates `vector` and `pg_trgm` as superuser, and the kernel's own
@@ -891,32 +892,32 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
   and tolerated.
 - **Ordering that prevents a lockout.** New passwords are written to
   `secrets.enc` and read back before the cluster is created or touched. On a
-  cluster from the trust era the superuser password is set while trust still
-  admits the shell, and only then does `pg_hba.conf` require passwords. The
-  kernel password is set last, after its database, the extensions and the
-  ownership transfer, so an interrupted run leaves a kernel that cannot log in,
-  and the next start repeats it.
+  cluster from the trust era the superuser password is set first, and only
+  then does `pg_hba.conf` require passwords. The kernel password is set last,
+  after its database, the extensions and the ownership transfer, so an
+  interrupted run leaves a kernel that cannot log in, and the next start
+  repeats it.
+- **Password changes without a listener.** Whenever the superuser password
+  cannot be set over an authenticated connection, the shell sets it in
+  PostgreSQL's single-user mode (`postgres --single`) with the server stopped:
+  no port is open and no pg_hba.conf is consulted, and the session is the
+  bootstrap superuser by definition. That covers the trust-era migration, which
+  runs before the updated app ever starts the server, and a cluster that
+  refuses the stored password (a lost or regenerated `secrets.enc`, a `pgdata`
+  snapshot restored without its secrets copy): stop, single-user
+  `ALTER ROLE`, start. Both are logged at warn level. There is no moment in
+  which the running server accepts a connection without a password; a lost
+  secrets file still does not lock the local database for good.
 - **Trust-era ownership.** Everything the old kernel created as superuser is
   moved to `omadia_kernel` one kind at a time (schemas, relations, sequences,
   types, routines; extension members stay), because Postgres refuses
   `REASSIGN OWNED` for the bootstrap superuser
   (`desktop/src/embeddedDbOwnership.ts`).
-- **The repair window, and why it exists.** When the cluster refuses the stored
-  superuser password (a lost or regenerated `secrets.enc`, a `pgdata` snapshot
-  restored without its secrets copy), the shell writes a single rule,
-  `host all omadia 127.0.0.1/32 trust`, restarts the server, sets the password
-  in one statement and puts the password-only rules back, on every path
-  including failures; if that fails, the server is stopped. The window is
-  logged at warn level and lasts from the restart to the reload, a fraction of
-  a second. Without it a lost secrets file would lock the local database for
-  good. With it, that case briefly reopens what every install had before, for
-  the superuser on IPv4 loopback only.
 - **Verification fails closed.** Every start ends with a check against the
   running server: a random wrong password must be refused (`28P01`) for both
-  roles, retried for up to two seconds because `pg_reload_conf()` lands
-  asynchronously, and the kernel role must hold none of the privileged
-  attributes. Otherwise the start fails and no DSN is handed out. The two
-  refused attempts appear in the log as `FATAL`; that is the check.
+  roles, and the kernel role must hold none of the privileged attributes.
+  Otherwise the start fails, the server is stopped and no DSN is handed out.
+  The two refused attempts appear in the log as `FATAL`; that is the check.
 - **Rollback.** A build from before this change connects without a password
   and cannot open a migrated cluster. The pre-update snapshot (§8a), taken
   before the new version first starts, is the way back.
@@ -927,11 +928,13 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
   password repair is never used.
 
 Tests: `desktop/test/embeddedDbAuth.test.mts` (orderings and fail-closed paths
-against a simulated cluster), `desktop/test/embeddedDb.integration.test.mts`
-(the real engine: passwordless and wrong-password clients refused, no
+against a simulated cluster, including that every server start happens on the
+shell's rules), `desktop/test/embeddedDb.integration.test.mts` (the real
+engine: passwordless and wrong-password clients refused, no
 `COPY ... TO PROGRAM` for the kernel role, the trust-era migration including
-ownership, the repair window; the desktop-apps workflow runs it with pgvector
-staged) and `desktop/test/secrets.test.mts` (persistence and read-back).
+ownership, the single-user repair; the desktop-apps workflow runs it with
+pgvector staged) and `desktop/test/secrets.test.mts` (persistence and
+read-back).
 
 ## 9. API-key authentication (`@omadia/api-key-auth`, issues #438 / #439)
 
@@ -1492,11 +1495,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       failure throws `SecretsUnreadableError` and never regenerates keys, and a
       key is cached only after its write succeeded.
 - [ ] A change to the desktop's embedded Postgres (`desktop/src/embeddedDb.ts`,
-      `embeddedDbAuth.ts`) adds no `trust` rule outside the credential repair
-      window, keeps the kernel's `DATABASE_URL` on the non-superuser
-      `omadia_kernel`, keeps the bootstrap password inside the shell, and keeps
-      the fail-closed verification (wrong password refused for both roles,
-      kernel role unprivileged) with its tests (§8b).
+      `embeddedDbAuth.ts`) never writes a `trust` rule or rewrites pg_hba.conf
+      while the server runs (password repairs go through single-user mode),
+      keeps the kernel's `DATABASE_URL` on the non-superuser `omadia_kernel`,
+      keeps the bootstrap password inside the shell, and keeps the fail-closed
+      verification (wrong password refused for both roles, kernel role
+      unprivileged) with its tests (§8b).
 
 ---
 

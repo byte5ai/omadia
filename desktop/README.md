@@ -294,9 +294,10 @@ then no longer open.
 The embedded PostgreSQL 17 cluster asks every connection for a SCRAM-SHA-256
 password. It listens on `127.0.0.1` only, without a Unix socket, and its
 `pg_hba.conf` belongs to the shell (`src/embeddedDbAuth.ts`): password-only
-rules for exactly two roles, rewritten whenever the file differs, and the
-server starts with `hba_file` pinned to it on the command line. Whoever runs a
-client, under whichever OS account, gets nowhere without a password.
+rules for exactly two roles, rewritten whenever the file differs but only while
+the server is stopped, and the server starts with `hba_file` pinned to it on
+the command line. Whoever runs a client, under whichever OS account, gets
+nowhere without a password.
 
 | Role | Used by | May |
 |---|---|---|
@@ -316,16 +317,18 @@ What a start does:
   roles, and the kernel role holds no privilege. The server logs those two
   refused attempts as `FATAL: password authentication failed`. That is the
   check, not a fault; a failed check stops the start instead.
-- **First start of a cluster created before passwords were required:** the
-  superuser gets its password while the old `trust` rules still let the shell
-  in, then `pg_hba.conf` switches to passwords, and `omadia_kernel` is created
-  and takes over the database and every object the kernel had created. Logged
-  at warn (`migrating a trust-authenticated cluster`).
+- **First start of a cluster created before passwords were required:** before
+  the server starts, the superuser gets its password in PostgreSQL's
+  single-user mode (`postgres --single`, which opens no port), then
+  `pg_hba.conf` switches to passwords. Only then does the server listen, and
+  `omadia_kernel` is created and takes over the database and every object the
+  kernel had created. Logged at warn (`migrating a trust-authenticated
+  cluster`).
 - **Stored password refused** (a lost or regenerated `secrets.enc`, a `pgdata`
-  snapshot restored without its `.secrets.enc`): the shell trusts the `omadia`
-  role on `127.0.0.1` just long enough to restart and set one password, then
-  requires passwords again. The window closes on every path, and the server is
-  stopped if it cannot be closed. Logged at warn (`trust window`).
+  snapshot restored without its `.secrets.enc`): the shell stops the server,
+  sets the password in single-user mode and starts it again. Nothing listens
+  in between, so at no point does anyone get in without a password. Logged at
+  warn (`single-user mode`).
 - **Dev tree without pgvector:** the shell logs that `vector` is not installed
   and continues; the kernel's graph migration then fails as it always has there.
 

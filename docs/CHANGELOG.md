@@ -53,15 +53,17 @@ start ends with a fail-closed check that a wrong password is refused and the
 kernel role holds no privilege (desktop/README.md § Database authentication,
 security-architecture §8b).
 
-An existing cluster is migrated on its first start: the superuser password is
-set while the old rules still admit the shell, then `pg_hba.conf` switches to
-passwords, and every object the old kernel created as superuser moves to the
-kernel role. When the cluster refuses the stored password (a lost
-`secrets.enc`, a snapshot restored without its secrets copy), the shell repairs
-it through a loopback-only trust rule for the superuser that lasts one
-statement, is logged at warn level and is closed on every path. A rollback to an
-earlier desktop build cannot open a migrated cluster, because that build
-connects without a password; restore the pre-update snapshot
+An existing cluster is migrated before the updated app first starts it: the
+superuser password is set in PostgreSQL's single-user mode, which opens no
+port, then `pg_hba.conf` switches to passwords, and once the server runs,
+every object the old kernel created as superuser moves to the kernel role.
+When the cluster refuses the stored password (a lost `secrets.enc`, a snapshot
+restored without its secrets copy), the shell stops the server, sets the
+password the same way and starts it again, logged at warn level; pg_hba.conf
+is only ever rewritten while the server is stopped, so no running server
+accepts a connection without a password. A rollback to an earlier desktop
+build cannot open a migrated cluster, because that build connects without a
+password; restore the pre-update snapshot
 (`snapshots/pgdata-pre-<version>-<stamp>/` and its `.secrets.enc`) to go back.
 No new environment variable.
 

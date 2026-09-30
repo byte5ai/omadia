@@ -188,9 +188,9 @@ authentication). Nothing to do beforehand. The start logs
   the pre-update snapshot the updater took: `snapshots/pgdata-pre-<version>-<stamp>/`
   as `pgdata/`, and its `.secrets.enc` as `secrets.enc`.
 - **A snapshot restored without its `.secrets.enc`**, or a lost `secrets.enc`:
-  the next start re-provisions the database passwords through a brief
-  loopback-only trust window and logs it at warn level. The kernel-vault caveat
-  in `desktop/README.md` § Secrets and recovery still applies.
+  the next start re-provisions the database passwords with the server stopped
+  (single-user mode, no port open) and logs it at warn level. The kernel-vault
+  caveat in `desktop/README.md` § Secrets and recovery still applies.
 
 ## Upgrading to 0.115 or later — `CREDENTIAL_KEYCHAIN_KEY` is required
 

@@ -3127,8 +3127,9 @@ der Kernel verbindet sich als `omadia_kernel` ohne Superuser-Rechte
 - **pgvector-Updates.** Die Extension gehört dem Superuser. Ein
   `ALTER EXTENSION vector UPDATE` nach einem Engine-Update mit neuerer
   pgvector-Version kann nur die Shell ausführen; heute führt es niemand aus.
-- **Windows-Neustart im Reparaturfenster.** Der Neustart beendet `postgres.exe`
-  hart (wie jeder Stop dort); die Datenbank läuft danach eine Crash-Recovery.
+- **Windows-Stop vor der Passwort-Reparatur.** Die Reparatur im Single-User-Modus
+  braucht einen gestoppten Server; `postgres.exe` wird dafür hart beendet (wie
+  jeder Stop dort), der Single-User-Lauf macht danach eine Crash-Recovery.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
