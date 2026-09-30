@@ -7,6 +7,7 @@ import {
   isPasswordProvider,
   type AuthProvider,
   type AuthSuccess,
+  type VerifiedAccount,
 } from '../auth/providers/AuthProvider.js';
 import { hashPassword } from '../auth/passwordHasher.js';
 import {
@@ -14,13 +15,22 @@ import {
 } from '../auth/providers/LocalPasswordProvider.js';
 import { ENTRA_PROVIDER_ID } from '../auth/providers/EntraProvider.js';
 import type { ProviderRegistry } from '../auth/providerRegistry.js';
-import { SESSION_COOKIE } from '../auth/requireAuth.js';
+import {
+  applyRevocation,
+  SESSION_COOKIE,
+  sessionFailureStatus,
+} from '../auth/requireAuth.js';
 import {
   isSecureContext,
   SESSION_WINDOW_S,
   setSessionCookie,
 } from '../auth/sessionCookie.js';
-import { signSession } from '../auth/sessionJwt.js';
+import {
+  signSession,
+  verifySession,
+  type VerifiedSession,
+} from '../auth/sessionJwt.js';
+import type { SessionRevocation } from '../auth/sessionRevocation.js';
 import type { UserStore } from '../auth/userStore.js';
 import {
   encodeVerifiedRecord,
@@ -29,6 +39,7 @@ import {
   verifyProviderCredential,
 } from '../platform/providerCredentialVerifier.js';
 import type { SecretVault } from '../secrets/vault.js';
+import { endSessionsOnLogout } from './authLogout.js';
 import {
   createRenewHandler,
   renewableUntil,
@@ -102,6 +113,15 @@ interface AuthDeps {
    * never renew keep compiling; production wiring always passes it.
    */
   renewal?: SessionRenewalDeps;
+  /**
+   * Server-side session revocation (`auth/sessionRevocation.ts`) — the same
+   * guard `requireAuth` runs. `GET /me` and `POST /renew` refuse a revoked
+   * session with it, and `POST /logout` announces the revocation it makes.
+   * Optional so harnesses that never revoke keep compiling; production
+   * wiring always passes it. (The `/logout` version bump itself goes through
+   * `userStore` and does not depend on it.)
+   */
+  sessions?: SessionRevocation;
 }
 
 const PKCE_COOKIE = 'harness_auth_pkce';
@@ -116,7 +136,8 @@ const PKCE_COOKIE_MAX_AGE_S = 600;
  *   POST /api/v1/auth/login/:id        password-provider form submit
  *   GET  /api/v1/auth/login/:id/start  oidc-provider redirect to IdP
  *   GET  /api/v1/auth/login/:id/cb     oidc-provider callback handler
- *   POST /api/v1/auth/logout           clear cookie + optional IdP-logout
+ *   POST /api/v1/auth/logout           clear cookie, end every session of
+ *                                      the user, optional IdP-logout
  *   GET  /api/v1/auth/me               current session (or 401)
  *   POST /api/v1/auth/renew            extend a valid session ("I'm still
  *                                      here", #965; see ./authRenew.ts)
@@ -179,6 +200,9 @@ export function createAuthRouter(deps: AuthDeps): Router {
       req,
       res,
       success: result,
+      // The row the provider checked the password against — see
+      // `VerifiedAccount` for why this is not a second lookup.
+      account: result.account,
       provider,
       signingKey: deps.signingKey,
       ...(deps.resolveChannelIdentity
@@ -262,6 +286,16 @@ export function createAuthRouter(deps: AuthDeps): Router {
       email: result.email,
       displayName: result.displayName,
     });
+    // A disabled account gets no session — the password path refuses it in
+    // `LocalPasswordProvider.verify`. Every request would refuse the session
+    // anyway (server-side revocation), so minting one would only bounce the
+    // browser back through the IdP.
+    if (upserted.status !== 'active') {
+      res
+        .status(httpForAuthErrorCode('user_disabled'))
+        .send('auth.user_disabled: this account is disabled');
+      return;
+    }
     void deps.userStore.markLoginNow(upserted.id).catch(() => undefined);
 
     res.clearCookie(cookieName, { path: '/' });
@@ -269,6 +303,7 @@ export function createAuthRouter(deps: AuthDeps): Router {
       req,
       res,
       success: result,
+      account: { id: upserted.id, sessionVersion: upserted.sessionVersion },
       provider,
       signingKey: deps.signingKey,
       ...(deps.resolveChannelIdentity
@@ -305,37 +340,27 @@ export function createAuthRouter(deps: AuthDeps): Router {
 
   // ── POST /logout ─────────────────────────────────────────────────────────
   router.post('/logout', async (req: Request, res: Response) => {
-    const cookies = readCookies(req);
-    const token = cookies[SESSION_COOKIE];
-    let providerId: string | undefined;
-    let sessionEmail: string | undefined;
-    if (token) {
-      try {
-        const { verifySession } = await import('../auth/sessionJwt.js');
-        const claims = await verifySession(token, deps.signingKey);
-        providerId = claims.provider;
-        sessionEmail = claims.email;
-      } catch {
-        /* expired / malformed — still clear the cookie below */
-      }
-    }
-    // #965 — the Entra refresh token is what `/renew` redeems. Forgetting it
-    // here ends the renewal chain, so a copy of the cookie taken before the
-    // logout cannot keep extending itself through the IdP. Non-fatal: the
-    // logout itself must always succeed.
-    if (
-      providerId === ENTRA_PROVIDER_ID &&
-      sessionEmail &&
-      deps.renewal?.refreshStore
-    ) {
-      try {
-        await deps.renewal.refreshStore.forget(sessionEmail);
-      } catch (err) {
-        console.error(
-          '[auth] /logout: failed to forget the refresh token:',
-          err instanceof Error ? err.message : err,
-        );
-      }
+    const token = readCookies(req)[SESSION_COOKIE];
+    // Expired / malformed → no claims; the cookie is still cleared below.
+    const claims = token
+      ? await verifyQuietly(token, deps.signingKey)
+      : undefined;
+    const providerId = claims?.provider;
+    // Server-side sign-out: a current cookie moves the user's session version
+    // on, which ends every copy of every session of that user — the cookie
+    // this browser drops below included. Also forgets the Entra refresh token
+    // (#965). Never throws: the logout itself must always succeed.
+    if (claims) {
+      await endSessionsOnLogout(
+        {
+          userStore: deps.userStore,
+          ...(deps.sessions ? { sessions: deps.sessions } : {}),
+          ...(deps.renewal?.refreshStore
+            ? { refreshStore: deps.renewal.refreshStore }
+            : {}),
+        },
+        claims,
+      );
     }
     res.clearCookie(SESSION_COOKIE, { path: '/' });
     // Also clear the non-secret UI-prefs cookie (1-year max-age). On a shared
@@ -368,33 +393,45 @@ export function createAuthRouter(deps: AuthDeps): Router {
       res.status(401).json({ code: 'auth.missing', message: 'no session' });
       return;
     }
-    try {
-      const { verifySession } = await import('../auth/sessionJwt.js');
-      const claims = await verifySession(token, deps.signingKey);
-      res.json({
-        user: {
-          id: claims.sub,
-          email: claims.email,
-          display_name: claims.display_name,
-          role: claims.role,
-          provider: claims.provider,
-        },
-        // Expiry timestamps let the Admin UI render a visible countdown
-        // and a deliberate auto-logout instead of the session silently
-        // dying. `server_now` is the server clock at response time so the
-        // client can correct for clock skew rather than trusting its own.
-        // Both are Unix epoch SECONDS, matching the JWT `exp` convention.
-        expires_at: claims.exp,
-        server_now: Math.floor(Date.now() / 1000),
-        // #965 — end of the renewal chain (auth_time + cap), Unix epoch
-        // SECONDS, or null when renewal is not wired. Lets the watcher
-        // offer "sign in again" up front for the final window instead of
-        // an "I'm still here" click that is bound to be refused.
-        renewable_until: renewableUntil(claims.auth_time, deps.renewal),
-      });
-    } catch {
+    const claims = await verifyQuietly(token, deps.signingKey);
+    if (!claims) {
       res.status(401).json({ code: 'auth.invalid' });
+      return;
     }
+    // Server-side revocation. This is what the UI's 60s heartbeat sees: a
+    // revoked session answers 401 `auth.revoked` (→ the expired overlay), and
+    // a failed lookup 503 `auth.unavailable`, which the watcher treats as a
+    // transient error instead of signing the operator out.
+    if (deps.sessions) {
+      const verdict = await applyRevocation(claims, deps.sessions);
+      if (!verdict.ok) {
+        res
+          .status(sessionFailureStatus(verdict.code))
+          .json({ code: verdict.code, message: verdict.message });
+        return;
+      }
+    }
+    res.json({
+      user: {
+        id: claims.sub,
+        email: claims.email,
+        display_name: claims.display_name,
+        role: claims.role,
+        provider: claims.provider,
+      },
+      // Expiry timestamps let the Admin UI render a visible countdown
+      // and a deliberate auto-logout instead of the session silently
+      // dying. `server_now` is the server clock at response time so the
+      // client can correct for clock skew rather than trusting its own.
+      // Both are Unix epoch SECONDS, matching the JWT `exp` convention.
+      expires_at: claims.exp,
+      server_now: Math.floor(Date.now() / 1000),
+      // #965 — end of the renewal chain (auth_time + cap), Unix epoch
+      // SECONDS, or null when renewal is not wired. Lets the watcher
+      // offer "sign in again" up front for the final window instead of
+      // an "I'm still here" click that is bound to be refused.
+      renewable_until: renewableUntil(claims.auth_time, deps.renewal),
+    });
   });
 
   // ── POST /renew ("I'm still here", #965) ─────────────────────────────────
@@ -405,6 +442,7 @@ export function createAuthRouter(deps: AuthDeps): Router {
       userStore: deps.userStore,
       signingKey: deps.signingKey,
       ...(deps.renewal ? { renewal: deps.renewal } : {}),
+      ...(deps.sessions ? { sessions: deps.sessions } : {}),
     }),
   );
 
@@ -562,6 +600,7 @@ export function createAuthRouter(deps: AuthDeps): Router {
         email: user.email,
         displayName: user.displayName,
       },
+      account: { id: user.id, sessionVersion: user.sessionVersion },
       provider: { id: LOCAL_PROVIDER_ID, kind: 'password' },
       signingKey: deps.signingKey,
       ...(deps.resolveChannelIdentity
@@ -593,6 +632,18 @@ function readCookies(req: Request): Record<string, string> {
   return (
     (req as Request & { cookies?: Record<string, string> }).cookies ?? {}
   );
+}
+
+/** Verify a session token, or `undefined` when it is expired/malformed. */
+async function verifyQuietly(
+  token: string,
+  key: Uint8Array,
+): Promise<VerifiedSession | undefined> {
+  try {
+    return await verifySession(token, key);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Express 5 types `req.params[key]` as `string | string[] | undefined`
@@ -638,6 +689,12 @@ interface MintArgs {
   req: Request;
   res: Response;
   success: AuthSuccess;
+  /**
+   * The `users` row this session belongs to. Its id and `session_version`
+   * go into the token (`uid`, `sv`): moving the version (sign-out, password
+   * reset, disable) or replacing the row ends the session server-side.
+   */
+  account: VerifiedAccount;
   provider: { id: string; kind: 'password' | 'oidc' };
   signingKey: Uint8Array;
   /**
@@ -672,6 +729,9 @@ async function mintSessionAndSetCookie(args: MintArgs): Promise<void> {
       role: 'admin',
       provider: args.provider.id,
       ...(omadiaUserId ? { omadia_user_id: omadiaUserId } : {}),
+      sv: args.account.sessionVersion,
+      uid: args.account.id,
+      // `sid` (a fresh random id for this sign-in) is stamped by signSession.
     },
     args.signingKey,
     `${SESSION_WINDOW_S}s`,

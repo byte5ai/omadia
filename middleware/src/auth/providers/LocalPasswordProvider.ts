@@ -1,6 +1,6 @@
 import type { UserStore } from '../userStore.js';
 import { verifyPassword } from '../passwordHasher.js';
-import type { AuthResult, PasswordProvider } from './AuthProvider.js';
+import type { PasswordAuthResult, PasswordProvider } from './AuthProvider.js';
 
 /**
  * Local username+password authentication backed by the `users` table.
@@ -43,7 +43,7 @@ export class LocalPasswordProvider implements PasswordProvider {
 
   constructor(private readonly userStore: UserStore) {}
 
-  async verify(body: unknown): Promise<AuthResult> {
+  async verify(body: unknown): Promise<PasswordAuthResult> {
     const creds = readLoginBody(body);
     if (!creds) {
       return {
@@ -96,6 +96,8 @@ export class LocalPasswordProvider implements PasswordProvider {
       providerUserId: user.providerUserId,
       email: user.email,
       displayName: user.displayName || user.email,
+      // The row the hash was checked against — the session is minted for it.
+      account: { id: user.id, sessionVersion: user.sessionVersion },
     };
   }
 }

@@ -7,6 +7,7 @@ import express from 'express';
 import { AdminAuditLog, type AuditEntry } from '../../src/auth/adminAuditLog.js';
 import { LOCAL_PROVIDER_ID } from '../../src/auth/providers/LocalPasswordProvider.js';
 import { hashPassword } from '../../src/auth/passwordHasher.js';
+import type { RevokedPrincipal } from '../../src/auth/sessionRevocation.js';
 import type {
   CreateUserInput,
   UpdateUserInput,
@@ -30,6 +31,8 @@ import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 class InMemoryUserStore {
   rows: UserRecord[] = [];
+  /** Every `update` call, verbatim — the revocation must ride in the SAME call. */
+  patches: Array<{ id: string; patch: UpdateUserInput }> = [];
 
   async count(): Promise<number> {
     return this.rows.length;
@@ -81,6 +84,7 @@ class InMemoryUserStore {
     return row;
   }
   async update(id: string, patch: UpdateUserInput): Promise<UserRecord | null> {
+    this.patches.push({ id, patch });
     const idx = this.rows.findIndex((r) => r.id === id);
     if (idx === -1) return null;
     const cur = this.rows[idx]!;
@@ -90,6 +94,7 @@ class InMemoryUserStore {
       role: patch.role ?? cur.role,
       status: patch.status ?? cur.status,
       updatedAt: new Date(),
+      sessionVersion: cur.sessionVersion + (patch.revokeSessions ? 1 : 0),
     };
     this.rows[idx] = next;
     return next;
@@ -138,11 +143,14 @@ describe('/api/v1/admin/users router', () => {
   let store: InMemoryUserStore;
   let audit: InMemoryAuditLog;
   let session: ForgedSession | null;
+  /** Whose sessions the router announced as ended. */
+  let announced: RevokedPrincipal[];
 
   before(async () => {
     store = new InMemoryUserStore();
     audit = new InMemoryAuditLog();
     session = null;
+    announced = [];
 
     // Pre-seed an existing local admin so list/edit/delete tests have a
     // target without exercising create-side every time.
@@ -167,6 +175,11 @@ describe('/api/v1/admin/users router', () => {
       createAdminUsersRouter({
         userStore: store as unknown as UserStore,
         audit: audit as unknown as AdminAuditLog,
+        sessions: {
+          announce: (who) => {
+            announced.push(who);
+          },
+        },
       }),
     );
     server = await listenLoopback(app);
@@ -257,6 +270,10 @@ describe('/api/v1/admin/users router', () => {
     const body = (await res.json()) as { user: { display_name: string } };
     assert.equal(body.user.display_name, 'Renamed');
     assert.equal(audit.entries.at(-1)?.action, 'user.update');
+    // An unrelated profile edit leaves the user's sessions alone.
+    assert.equal(store.patches.at(-1)?.patch.revokeSessions, undefined);
+    assert.equal(store.rows.find((r) => r.id === target.id)?.sessionVersion, 0);
+    assert.deepEqual(announced, []);
   });
 
   it('PATCH /:id refuses to disable yourself with 409 self_lockout', async () => {
@@ -272,7 +289,7 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(body.code, 'admin_users.self_lockout');
   });
 
-  it('PATCH /:id allows disabling someone else', async () => {
+  it('PATCH /:id allows disabling someone else — and ends their sessions', async () => {
     setSession(adminSession());
     const other = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
@@ -283,11 +300,31 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 200);
     const body = (await res.json()) as { user: { status: string } };
     assert.equal(body.user.status, 'disabled');
+    assert.deepEqual(store.patches.at(-1)?.patch, { status: 'disabled', revokeSessions: true });
+    assert.equal(store.rows.find((r) => r.id === other.id)?.sessionVersion, 1);
+    assert.deepEqual(announced, [{ provider: LOCAL_PROVIDER_ID, sub: 'new@example.com' }]);
+  });
+
+  it('PATCH /:id re-enabling does not revoke (and cannot revive old cookies)', async () => {
+    setSession(adminSession());
+    const other = store.rows.find((r) => r.email === 'new@example.com')!;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'active' }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(store.patches.at(-1)?.patch, { status: 'active' });
+    // Still at the version the disable moved it to: cookies from before the
+    // disable stay dead after the re-enable.
+    assert.equal(store.rows.find((r) => r.id === other.id)?.sessionVersion, 1);
+    assert.equal(announced.length, 1);
   });
 
   it('POST /:id/reset-password updates the hash + audits without leaking material', async () => {
     setSession(adminSession());
     const before = audit.entries.length;
+    const patchesBefore = store.patches.length;
     const target = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(
       `${baseUrl}/api/v1/admin/users/${target.id}/reset-password`,
@@ -303,6 +340,16 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(last.action, 'user.reset_password');
     assert.equal(last.before, null);
     assert.equal(last.after, null);
+
+    // The new hash and the end of every session issued under the old one go
+    // out in ONE update call — they can never land apart.
+    const calls = store.patches.slice(patchesBefore);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.id, target.id);
+    assert.equal(calls[0]?.patch.revokeSessions, true);
+    assert.match(calls[0]?.patch.passwordHash ?? '', /^\$argon2id\$/);
+    assert.equal(store.rows.find((r) => r.id === target.id)?.sessionVersion, 2);
+    assert.deepEqual(announced.at(-1), { provider: LOCAL_PROVIDER_ID, sub: 'new@example.com' });
   });
 
   it('DELETE /:id refuses self-delete with 409', async () => {
@@ -317,11 +364,16 @@ describe('/api/v1/admin/users router', () => {
   it('DELETE /:id removes another user + audits', async () => {
     setSession(adminSession());
     const other = store.rows.find((r) => r.email === 'new@example.com')!;
+    const announcedBefore = announced.length;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
       method: 'DELETE',
     });
     assert.equal(res.status, 204);
     assert.equal(store.rows.find((r) => r.id === other.id), undefined);
     assert.equal(audit.entries.at(-1)?.action, 'user.delete');
+    // No bump possible (the row is gone) — its absence revokes; still announced.
+    assert.deepEqual(announced.slice(announcedBefore), [
+      { provider: LOCAL_PROVIDER_ID, sub: 'new@example.com' },
+    ]);
   });
 });
