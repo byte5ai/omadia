@@ -2,32 +2,52 @@
  * Password sign-in limiter (`POST /api/v1/auth/login/:id`) —
  * docs/security-architecture.md §10f.
  *
- * Every attempt passes three layers, in this order:
+ * Every attempt names its client by a key of one of three kinds
+ * (`LoginClientKind`), and the kind decides which layers apply:
  *
- *  1. client  — per client key, a CPU brake. A leaky bucket of FAILURES:
- *     a burst of `clientMaxFailures`, drained at `clientMaxFailures` per
- *     `clientWindowMs` (defaults: 100, one every 6 s). Full → 429 with a
- *     Retry-After of at most `clientMaxRetryAfterMs`. Pinned semantics: once
- *     full, the key gets one failure per drain step, never a long lock — behind
- *     a proxy this key may be shared by every browser of the deployment.
- *  2. account — per (account, client) PAIR, the guessing defence.
- *     `accountFreeFailures` free failures, then every further attempt waits
- *     `accountBaseBlockMs × 2^(failures − free)` after the last failure, capped
- *     at `accountMaxBlockMs`. Keyed by the pair, so a client only ever slows
- *     down its OWN attempts on an account: an attacker cannot lock the owner out
- *     from the owner's client (lockout-DoS). A success clears the pair; a pair
+ *   device   a genuine device cookie for the account: one browser that has
+ *            signed in to it before;
+ *   address  an address a trusted proxy vouched for (`xff:<n>`,
+ *            `header:<name>`): one client, or one NAT;
+ *   shared   the TCP peer — in every shipped topology a proxy that all
+ *            browsers behind it share.
+ *
+ * The layers, in this order:
+ *
+ *  1. client  — `address` keys only: a CPU brake per client. A leaky bucket
+ *     of FAILURES, a burst of `clientMaxFailures`, drained at
+ *     `clientMaxFailures` per `clientWindowMs` (defaults: 100, one every
+ *     6 s). Full → 429, each Retry-After at most `clientMaxRetryAfterMs`.
+ *     A sender that keeps the bucket full takes every drain step as it
+ *     opens, so whoever shares its key waits for as long as it keeps going.
+ *     For one address that is the price of a NAT; for the shared TCP peer
+ *     it would let one sender lock out every browser of the deployment, so
+ *     a `shared` key skips this layer. A `device` key only ever sees its own
+ *     account, where layer 2 is stricter, so it skips it too.
+ *  2. account — per (account, client) PAIR, every kind: the guessing
+ *     defence. `accountFreeFailures` free failures, then every further
+ *     attempt waits `accountBaseBlockMs × 2^(failures − free)` after the
+ *     last failure, capped at `accountMaxBlockMs`. A client only ever slows
+ *     down its OWN attempts on an account. A success clears the pair; a pair
  *     is forgotten `accountStateTtlMs` after its last failure. → 429.
- *  3. global  — process-wide argon2 capacity: at most `globalMaxInFlight`
+ *     Clients that share a key share its pairs: a sender that keeps failing
+ *     on one account keeps that account's pair shut for everyone on the key
+ *     who has no device cookie. That is inherent — it is the same bucket.
+ *  3. global  — process-wide argon2 capacity: `globalMaxInFlight`
  *     verifications at once and `globalMaxPerMinute` admitted attempts per
- *     minute (leaky bucket, so the Retry-After stays short). Only attempts
+ *     minute (leaky bucket, so the Retry-After stays short). `device`
+ *     attempts may use all of it; every other attempt stops
+ *     `globalDeviceReserveInFlight` slots and `globalDeviceReservePerMinute`
+ *     tokens short, so no amount of traffic from unknown browsers — however
+ *     many keys it comes from — turns a known browser away. Only attempts
  *     layers 1 and 2 admitted consume it, so a flood of cheap refusals can
  *     never turn into a deployment-wide 503. → 503.
  *
- * Counting happens at ADMISSION. An admitted attempt is pending on its client
- * and pair until the caller settles it, and a pending attempt counts as a
- * failure until then: N parallel requests cannot race past the free budget
- * between the check and the verdict. Once a pair's free budget is spent, it
- * gets one attempt at a time.
+ * Counting happens at ADMISSION. An admitted attempt is pending on its
+ * client and pair until the caller settles it, and a pending attempt counts
+ * as a failure until then: N parallel requests cannot race past the free
+ * budget between the check and the verdict. Once a pair's free budget is
+ * spent, it gets one attempt at a time.
  *
  * In-memory and per process, like the API-key limiter (§9): a restart clears
  * it, and N replicas multiply every ceiling by N. Memory is bounded — each map
@@ -48,9 +68,13 @@ const GLOBAL_REPORT_KEY = 'global';
 
 export type LoginLimitScope = 'client' | 'account' | 'global';
 
+/** What the client key is — see the header comment for what each kind means. */
+export type LoginClientKind = 'device' | 'address' | 'shared';
+
 export interface LoginKeys {
-  /** Who is asking: `clientAddressFor(...)`, or `device:<id>` for a valid device cookie. */
+  /** Who is asking: `clientAddressFor(...).key`, or `device:<id>` for a device cookie. */
   readonly clientKey: string;
+  readonly clientKind: LoginClientKind;
   /** What is being guessed: `loginAccountKey(providerId, accountId)`. */
   readonly accountKey: string;
 }
@@ -77,21 +101,22 @@ export interface LoginAttempt {
 }
 
 export type LoginAdmission =
-  | { readonly allowed: true; readonly attempt: LoginAttempt }
-  | LoginRefusal;
+  { readonly allowed: true; readonly attempt: LoginAttempt } | LoginRefusal;
 
 export interface LoginLimiterStats {
+  /** Tracked `address` keys (the only kind with client-layer state). */
   readonly clients: number;
   readonly pairs: number;
   readonly inFlight: number;
 }
 
 export interface LoginRateLimiter {
-  /** Run the three layers; on admission the attempt holds a global slot. */
+  /** Run the layers; on admission the attempt holds a global slot. */
   admit(keys: LoginKeys): LoginAdmission;
   /**
    * A bare global slot for other unauthenticated argon2 work (the first-user
-   * wizard's hash). Returns the release function, or null when saturated.
+   * wizard's hash), from the share of unknown browsers. Returns the release
+   * function, or null when saturated.
    */
   acquireSlot(): (() => void) | null;
   /** Forget every pair of this account — the operator unlock (reset / re-enable). */
@@ -111,7 +136,11 @@ export interface LoginLimiterConfig {
   readonly accountMaxBlockMs: number;
   readonly accountStateTtlMs: number;
   readonly globalMaxInFlight: number;
+  /** Of `globalMaxInFlight`, the slots only `device` attempts may take (none when it is 1). */
+  readonly globalDeviceReserveInFlight: number;
   readonly globalMaxPerMinute: number;
+  /** Of `globalMaxPerMinute`, the tokens only `device` attempts may take. */
+  readonly globalDeviceReservePerMinute: number;
   readonly maxTrackedKeys: number;
   readonly reportIntervalMs: number;
   readonly sweepIntervalMs: number;
@@ -126,7 +155,9 @@ export const DEFAULT_LOGIN_LIMITER_CONFIG: LoginLimiterConfig = Object.freeze({
   accountMaxBlockMs: 2 * MINUTE,
   accountStateTtlMs: 30 * MINUTE,
   globalMaxInFlight: 4,
+  globalDeviceReserveInFlight: 1,
   globalMaxPerMinute: 300,
+  globalDeviceReservePerMinute: 60,
   maxTrackedKeys: 10_000,
   reportIntervalMs: MINUTE,
   sweepIntervalMs: MINUTE,
@@ -176,6 +207,12 @@ interface Bucket {
   updatedAt: number;
 }
 
+/** The share of the global capacity one kind of client may fill. */
+interface Capacity {
+  readonly inFlight: number;
+  readonly perMinute: number;
+}
+
 /** A leaky bucket's level at `t`, draining `amount` per `windowMs`. */
 function drainedLevel(b: Bucket, t: number, amount: number, windowMs: number): number {
   return Math.max(0, b.level - ((t - b.updatedAt) * amount) / windowMs);
@@ -206,6 +243,15 @@ export function createLoginRateLimiter(
   const global = { level: 0, updatedAt: now(), inFlight: 0 };
   let lastSweepAt = now();
 
+  const knownBrowsers: Capacity = {
+    inFlight: config.globalMaxInFlight,
+    perMinute: config.globalMaxPerMinute,
+  };
+  const unknownBrowsers: Capacity = {
+    inFlight: Math.max(1, config.globalMaxInFlight - config.globalDeviceReserveInFlight),
+    perMinute: Math.max(1, config.globalMaxPerMinute - config.globalDeviceReservePerMinute),
+  };
+
   const clientLevel = (s: ClientState, t: number): number =>
     drainedLevel(s, t, config.clientMaxFailures, config.clientWindowMs);
   const globalLevel = (t: number): number =>
@@ -229,14 +275,19 @@ export function createLoginRateLimiter(
     return Math.max(0, s.lastFailureAt + blockMs - t);
   }
 
-  function globalWaitMs(t: number): number {
-    if (global.inFlight >= config.globalMaxInFlight) return SECOND;
-    const excess = globalLevel(t) + 1 - config.globalMaxPerMinute;
+  function globalWaitMs(t: number, capacity: Capacity): number {
+    if (global.inFlight >= capacity.inFlight) return SECOND;
+    const excess = globalLevel(t) + 1 - capacity.perMinute;
     if (excess <= EPSILON) return 0;
     return (excess * MINUTE) / config.globalMaxPerMinute;
   }
 
-  function refuse(scope: LoginLimitScope, clientKey: string, waitMs: number, t: number): LoginRefusal {
+  function refuse(
+    scope: LoginLimitScope,
+    clientKey: string,
+    waitMs: number,
+    t: number,
+  ): LoginRefusal {
     const reportKey = scope === 'global' ? GLOBAL_REPORT_KEY : `${scope}\n${clientKey}`;
     const last = reported.get(reportKey);
     const report = last === undefined || t - last >= config.reportIntervalMs;
@@ -284,12 +335,32 @@ export function createLoginRateLimiter(
     return s;
   }
 
+  function trackClient(key: string, existing: ClientState | undefined, t: number): ClientState {
+    if (!existing) makeRoom(clients, config.maxTrackedKeys, (s) => s.pending > 0);
+    const client = existing ?? { level: 0, updatedAt: t, pending: 0 };
+    touch(clients, key, client);
+    return client;
+  }
+
+  function trackPair(
+    pairKey: string,
+    accountKey: string,
+    existing: PairState | undefined,
+    t: number,
+  ): PairState {
+    if (!existing) makeRoom(pairs, config.maxTrackedKeys, (s) => s.pending > 0);
+    const pair = existing ?? { accountKey, failures: 0, lastFailureAt: t, pending: 0 };
+    touch(pairs, pairKey, pair);
+    return pair;
+  }
+
   function admit(keys: LoginKeys): LoginAdmission {
     const t = now();
     if (t - lastSweepAt >= config.sweepIntervalMs) sweep();
 
-    const existingClient = clients.get(keys.clientKey);
-    const cWait = clientWaitMs(existingClient, t);
+    const braked = keys.clientKind === 'address';
+    const existingClient = braked ? clients.get(keys.clientKey) : undefined;
+    const cWait = braked ? clientWaitMs(existingClient, t) : 0;
     if (cWait > 0) return refuse('client', keys.clientKey, cWait, t);
 
     const pairKey = JSON.stringify([keys.accountKey, keys.clientKey]);
@@ -297,21 +368,13 @@ export function createLoginRateLimiter(
     const pWait = pairWaitMs(existingPair, t);
     if (pWait > 0) return refuse('account', keys.clientKey, pWait, t);
 
-    const gWait = globalWaitMs(t);
+    const capacity = keys.clientKind === 'device' ? knownBrowsers : unknownBrowsers;
+    const gWait = globalWaitMs(t, capacity);
     if (gWait > 0) return refuse('global', keys.clientKey, gWait, t);
 
-    if (!existingClient) makeRoom(clients, config.maxTrackedKeys, (s) => s.pending > 0);
-    const client = existingClient ?? { level: 0, updatedAt: t, pending: 0 };
-    touch(clients, keys.clientKey, client);
-    if (!existingPair) makeRoom(pairs, config.maxTrackedKeys, (s) => s.pending > 0);
-    const pair = existingPair ?? {
-      accountKey: keys.accountKey,
-      failures: 0,
-      lastFailureAt: t,
-      pending: 0,
-    };
-    touch(pairs, pairKey, pair);
-    client.pending += 1;
+    const client = braked ? trackClient(keys.clientKey, existingClient, t) : undefined;
+    const pair = trackPair(pairKey, keys.accountKey, existingPair, t);
+    if (client) client.pending += 1;
     pair.pending += 1;
     const release = takeSlot(t);
 
@@ -321,15 +384,17 @@ export function createLoginRateLimiter(
       settled = true;
       release();
       const at = now();
-      client.pending -= 1;
+      if (client) client.pending -= 1;
       pair.pending -= 1;
       if (succeeded) {
         pair.failures = 0;
         if (pair.pending === 0 && pairs.get(pairKey) === pair) pairs.delete(pairKey);
         return;
       }
-      client.level = clientLevel(client, at) + 1;
-      client.updatedAt = at;
+      if (client) {
+        client.level = clientLevel(client, at) + 1;
+        client.updatedAt = at;
+      }
       pair.failures += 1;
       pair.lastFailureAt = at;
     };
@@ -343,7 +408,7 @@ export function createLoginRateLimiter(
     admit,
     acquireSlot(): (() => void) | null {
       const t = now();
-      return globalWaitMs(t) > 0 ? null : takeSlot(t);
+      return globalWaitMs(t, unknownBrowsers) > 0 ? null : takeSlot(t);
     },
     clearAccount(accountKey: string): void {
       for (const [key, s] of pairs) {

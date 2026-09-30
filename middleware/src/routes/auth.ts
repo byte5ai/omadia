@@ -33,6 +33,7 @@ import {
 import {
   createPasswordLoginHandler,
   defaultLoginGuard,
+  ensureLoginDeviceCookie,
   httpForAuthErrorCode,
   type LoginGuardDeps,
 } from './authLogin.js';
@@ -142,7 +143,8 @@ const PKCE_COOKIE_MAX_AGE_S = 600;
  *   GET  /api/v1/auth/login/:id/start  oidc-provider redirect to IdP
  *   GET  /api/v1/auth/login/:id/cb     oidc-provider callback handler
  *   POST /api/v1/auth/logout           clear cookie + optional IdP-logout
- *   GET  /api/v1/auth/me               current session (or 401)
+ *   GET  /api/v1/auth/me               current session (or 401); sets the
+ *                                      sign-in device cookie if missing
  *   POST /api/v1/auth/renew            extend a valid session ("I'm still
  *                                      here", #965; see ./authRenew.ts)
  *   POST /api/v1/auth/setup            first-user wizard (one-shot, setup
@@ -387,6 +389,8 @@ export function createAuthRouter(deps: AuthDeps): Router {
     try {
       const { verifySession } = await import('../auth/sessionJwt.js');
       const claims = await verifySession(token, deps.signingKey);
+      // A signed-in browser is a known device for the sign-in limiter (§10f).
+      ensureLoginDeviceCookie(req, res, { registry: deps.registry, devices }, claims);
       res.json({
         user: {
           id: claims.sub,

@@ -13,217 +13,30 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
-import cookieParser from 'cookie-parser';
-import express, { type Express } from 'express';
-
-import type { AuditEntryInput } from '../../src/auth/adminAuditLog.js';
 import {
   createLoginDeviceCookies,
   LOGIN_DEVICE_COOKIE,
   LOGIN_DEVICE_TTL_S,
 } from '../../src/auth/loginDeviceCookie.js';
-import {
-  createLoginRateLimiter,
-  DEFAULT_LOGIN_LIMITER_CONFIG,
-  type LoginLimiterConfig,
-  type LoginRateLimiter,
-} from '../../src/auth/loginRateLimiter.js';
-import { hashPassword } from '../../src/auth/passwordHasher.js';
+import { DEFAULT_LOGIN_LIMITER_CONFIG } from '../../src/auth/loginRateLimiter.js';
 import type { AuthResult, PasswordProvider } from '../../src/auth/providers/AuthProvider.js';
+import { LOCAL_PROVIDER_ID } from '../../src/auth/providers/LocalPasswordProvider.js';
+import { invoke } from '../_helpers/httpInvoke.js';
 import {
-  LOCAL_PROVIDER_ID,
-  LocalPasswordProvider,
-} from '../../src/auth/providers/LocalPasswordProvider.js';
-import { ProviderRegistry } from '../../src/auth/providerRegistry.js';
-import type {
-  CreateFirstAdminInput,
-  FirstAdminResult,
-  UserRecord,
-  UserStore,
-} from '../../src/auth/userStore.js';
-import type { ClientAddressPolicy } from '../../src/auth/clientAddress.js';
-import { createAuthRouter } from '../../src/routes/auth.js';
-import { invoke, type InvokeResult } from '../_helpers/httpInvoke.js';
-
-const SIGNING_KEY = new TextEncoder().encode('login-route-test-signing-key-'.repeat(3));
-const ADMIN = 'admin@example.com';
-const PASSWORD = 'correct horse battery staple';
-const SECOND = 1000;
-
-// ─── test doubles ──────────────────────────────────────────────────────────
-
-function userRecord(email: string, displayName: string): UserRecord {
-  const now = new Date();
-  return {
-    id: `mock-${email}`,
-    email,
-    provider: LOCAL_PROVIDER_ID,
-    providerUserId: email.toLowerCase(),
-    displayName,
-    role: 'admin',
-    status: 'active',
-    createdAt: now,
-    updatedAt: now,
-    lastLoginAt: null,
-  };
-}
-
-class InMemoryUserStore {
-  rows = new Map<string, UserRecord & { passwordHash: string }>();
-
-  async addLocalUser(email: string, plainPassword: string): Promise<void> {
-    const passwordHash = await hashPassword(plainPassword);
-    this.rows.set(email.toLowerCase(), { ...userRecord(email, email), passwordHash });
-  }
-
-  async findByEmailWithHash(provider: string, email: string): Promise<UserRecord | null> {
-    if (provider !== LOCAL_PROVIDER_ID) return null;
-    return this.rows.get(email.toLowerCase()) ?? null;
-  }
-
-  async markLoginNow(_id: string): Promise<void> {
-    /* fire-and-forget in the provider */
-  }
-
-  async count(): Promise<number> {
-    return this.rows.size;
-  }
-
-  async createFirstAdmin(input: CreateFirstAdminInput): Promise<FirstAdminResult> {
-    if (this.rows.size > 0) return { outcome: 'not_empty', totalUsers: this.rows.size };
-    const user = userRecord(input.email, input.displayName);
-    this.rows.set(input.email.toLowerCase(), { ...user, passwordHash: input.passwordHash });
-    return { outcome: 'created', user };
-  }
-}
-
-class FakeClock {
-  t = 1_800_000_000_000;
-  now = (): number => this.t;
-}
-
-/** Counts `verify` calls — the argon2 work a refusal must never reach. */
-function spyOnVerify(provider: PasswordProvider): { calls: number } {
-  const counter = { calls: 0 };
-  const original = provider.verify.bind(provider);
-  provider.verify = async (body: unknown): Promise<AuthResult> => {
-    counter.calls += 1;
-    return original(body);
-  };
-  return counter;
-}
-
-interface Harness {
-  app: Express;
-  store: InMemoryUserStore;
-  provider: PasswordProvider;
-  verifies: { calls: number };
-  limiter: LoginRateLimiter;
-  clock: FakeClock;
-  audit: AuditEntryInput[];
-}
-
-async function harness(
-  opts: {
-    config?: Partial<LoginLimiterConfig>;
-    clientAddress?: ClientAddressPolicy;
-    /** Build the router WITHOUT a `loginLimiter` dep (the always-on default). */
-    unwired?: boolean;
-    provider?: PasswordProvider;
-    emptyStore?: boolean;
-  } = {},
-): Promise<Harness> {
-  const store = new InMemoryUserStore();
-  if (!opts.emptyStore) await store.addLocalUser(ADMIN, PASSWORD);
-  const provider =
-    opts.provider ?? new LocalPasswordProvider(store as unknown as UserStore);
-  const verifies = spyOnVerify(provider);
-  const registry = new ProviderRegistry();
-  registry.replaceActive([provider]);
-  const clock = new FakeClock();
-  const limiter = createLoginRateLimiter(
-    { ...DEFAULT_LOGIN_LIMITER_CONFIG, ...opts.config },
-    clock.now,
-  );
-  const audit: AuditEntryInput[] = [];
-
-  const app = express();
-  app.use(express.json());
-  app.use(cookieParser());
-  app.use(
-    '/api/v1/auth',
-    createAuthRouter({
-      registry,
-      userStore: store as unknown as UserStore,
-      signingKey: SIGNING_KEY,
-      publicBaseUrl: 'https://omadia.example',
-      defaultReturnPath: '/',
-      setupAllowed: opts.emptyStore === true,
-      ...(opts.unwired
-        ? {}
-        : {
-            loginLimiter: {
-              limiter,
-              clientAddress: opts.clientAddress ?? { kind: 'socket' },
-              audit: {
-                record: async (entry: AuditEntryInput) => {
-                  audit.push(entry);
-                },
-              },
-            },
-          }),
-    }),
-  );
-  return { app, store, provider, verifies, limiter, clock, audit };
-}
-
-function login(
-  h: Harness,
-  body: unknown,
-  extra: { headers?: Record<string, string>; remoteAddress?: string } = {},
-): Promise<InvokeResult> {
-  return invoke(h.app, 'POST', `/api/v1/auth/login/${LOCAL_PROVIDER_ID}`, {
-    json: body,
-    ...(extra.headers ? { headers: extra.headers } : {}),
-    ...(extra.remoteAddress ? { remoteAddress: extra.remoteAddress } : {}),
-  });
-}
-
-const wrong = (email = ADMIN): unknown => ({ email, password: 'not the password' });
-const right = (email = ADMIN): unknown => ({ email, password: PASSWORD });
-
-/** Let the event loop run until `cond` holds (request bodies parse asynchronously). */
-async function until(cond: () => boolean): Promise<void> {
-  for (let i = 0; i < 200 && !cond(); i += 1) {
-    await new Promise((r) => setImmediate(r));
-  }
-  assert.ok(cond(), 'condition never became true');
-}
-
-function json(res: InvokeResult): Record<string, unknown> {
-  return JSON.parse(res.text) as Record<string, unknown>;
-}
-
-function setCookies(res: InvokeResult): string[] {
-  const raw = res.headers['set-cookie'];
-  if (raw === undefined) return [];
-  return Array.isArray(raw) ? raw.map(String) : [String(raw)];
-}
-
-function deviceCookieFrom(res: InvokeResult): string {
-  const cookie = setCookies(res).find((c) => c.startsWith(`${LOGIN_DEVICE_COOKIE}=`));
-  assert.ok(cookie, 'a successful sign-in sets the device cookie');
-  return cookie.split(';')[0] ?? '';
-}
-
-function assertRateLimited(res: InvokeResult): void {
-  assert.equal(res.status, 429);
-  const body = json(res);
-  assert.equal(body['code'], 'auth.rate_limited');
-  assert.equal(typeof body['retry_after_s'], 'number');
-  assert.equal(res.headers['retry-after'], String(body['retry_after_s']));
-  assert.deepEqual(setCookies(res), [], 'a refusal never sets a cookie');
-}
+  ADMIN,
+  assertBusy,
+  assertRateLimited,
+  deviceCookieFrom,
+  harness,
+  json,
+  login,
+  right,
+  SECOND,
+  setCookies,
+  SIGNING_KEY,
+  until,
+  wrong,
+} from './loginHarness.js';
 
 // ─── cases ─────────────────────────────────────────────────────────────────
 
@@ -273,27 +86,32 @@ describe('POST /login/:id — account layer', () => {
 });
 
 describe('POST /login/:id — client layer and provider lookup', () => {
+  // The client layer brakes an address a trusted edge vouched for; the shared
+  // TCP peer skips it (loginLockoutDos.test.ts).
+  const EDGE = { kind: 'header', name: 'fly-client-ip' } as const;
+  const from = { headers: { 'fly-client-ip': '203.0.113.50' } };
+
   it('unknown-email spam from one client trips the client layer', async () => {
-    const h = await harness({ config: { clientMaxFailures: 20 } });
+    const h = await harness({ clientAddress: EDGE, config: { clientMaxFailures: 20 } });
     for (let i = 0; i < 20; i += 1) {
-      const res = await login(h, wrong(`nobody${String(i)}@example.com`));
+      const res = await login(h, wrong(`nobody${String(i)}@example.com`), from);
       assert.equal(res.status, 401);
     }
-    const refused = await login(h, wrong('nobody-else@example.com'));
+    const refused = await login(h, wrong('nobody-else@example.com'), from);
     assertRateLimited(refused);
     assert.equal(h.verifies.calls, 20);
   });
 
   it('an unknown provider stays 404 and consumes no budget', async () => {
-    const h = await harness({ config: { clientMaxFailures: 3 } });
+    const h = await harness({ clientAddress: EDGE, config: { clientMaxFailures: 3 } });
     for (let i = 0; i < 10; i += 1) {
-      const res = await invoke(h.app, 'POST', '/api/v1/auth/login/nope', { json: wrong() });
+      const res = await invoke(h.app, 'POST', '/api/v1/auth/login/nope', { json: wrong(), ...from });
       assert.equal(res.status, 404);
     }
     for (let i = 0; i < 3; i += 1) {
-      assert.equal((await login(h, wrong(`u${String(i)}@example.com`))).status, 401);
+      assert.equal((await login(h, wrong(`u${String(i)}@example.com`), from)).status, 401);
     }
-    assertRateLimited(await login(h, wrong('u9@example.com')));
+    assertRateLimited(await login(h, wrong('u9@example.com'), from));
   });
 });
 
@@ -378,7 +196,10 @@ describe('POST /login/:id — lockout-DoS behind a shared client key', () => {
     assert.equal((await login(h, right(), { ...shared, headers: { cookie: genuine } })).status, 200);
   });
 
-  it('without a device cookie the block never outlasts the cap', async () => {
+  // What this does NOT show: that the owner gets in. A sender that keeps
+  // failing on the same pair renews each wait, so a cookie-less owner who
+  // shares the pair stays out while it keeps going (§10f residual risks).
+  it('on one pair, each wait stays within the 2-minute cap', async () => {
     const h = await harness();
     for (let i = 0; i < 40; i += 1) {
       const res = await login(h, wrong());
@@ -392,7 +213,7 @@ describe('POST /login/:id — lockout-DoS behind a shared client key', () => {
 });
 
 describe('POST /login/:id — global capacity', () => {
-  it('holds at most globalMaxInFlight verifications; the next caller gets 503 auth.busy', async () => {
+  it('holds at most the unreserved in-flight slots for unknown browsers; the next gets 503 auth.busy', async () => {
     const pending: Array<(r: AuthResult) => void> = [];
     const slow: PasswordProvider = {
       id: LOCAL_PROVIDER_ID,
@@ -404,17 +225,16 @@ describe('POST /login/:id — global capacity', () => {
         }),
     };
     const h = await harness({ provider: slow });
-    const max = DEFAULT_LOGIN_LIMITER_CONFIG.globalMaxInFlight;
+    const D = DEFAULT_LOGIN_LIMITER_CONFIG;
+    // One slot stays reserved for browsers with a device cookie
+    // (loginLockoutDos.test.ts shows one taking it).
+    const max = D.globalMaxInFlight - D.globalDeviceReserveInFlight;
     const inFlight = Array.from({ length: max }, (_, i) =>
       login(h, wrong(`p${String(i)}@example.com`), { remoteAddress: `203.0.113.${String(i)}` }),
     );
     await until(() => pending.length === max);
 
-    const busy = await login(h, wrong('p9@example.com'), { remoteAddress: '203.0.113.9' });
-    assert.equal(busy.status, 503);
-    assert.equal(json(busy)['code'], 'auth.busy');
-    assert.ok(Number(busy.headers['retry-after']) >= 1);
-    assert.deepEqual(setCookies(busy), []);
+    assertBusy(await login(h, wrong('p9@example.com'), { remoteAddress: '203.0.113.9' }));
 
     pending.shift()?.({ outcome: 'error', code: 'invalid_credentials', message: 'no' });
     assert.equal((await inFlight[0])?.status, 401);
@@ -483,10 +303,15 @@ describe('POST /setup — shares the capacity gate and hands out a device cookie
 });
 
 describe('configuration is discoverable', () => {
-  it('documents both knobs in .env.example', () => {
+  it('documents every knob in .env.example', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const envExample = readFileSync(join(here, '..', '..', '.env.example'), 'utf8');
-    assert.ok(envExample.includes('AUTH_LOGIN_CLIENT_ADDRESS'));
-    assert.ok(envExample.includes('AUTH_LOGIN_MAX_INFLIGHT'));
+    for (const knob of [
+      'AUTH_LOGIN_CLIENT_ADDRESS',
+      'AUTH_LOGIN_IPV6_PREFIX',
+      'AUTH_LOGIN_MAX_INFLIGHT',
+    ]) {
+      assert.ok(envExample.includes(knob), knob);
+    }
   });
 });

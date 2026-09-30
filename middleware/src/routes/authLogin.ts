@@ -3,6 +3,7 @@ import type { Request, RequestHandler, Response } from 'express';
 import type { AdminAuditLog } from '../auth/adminAuditLog.js';
 import {
   clientAddressFor,
+  DEFAULT_IPV6_PREFIX_BITS,
   describeClientAddressPolicy,
   parseClientAddressPolicy,
   type ClientAddressPolicy,
@@ -18,6 +19,7 @@ import {
   loginAccountKey,
   readLoginAccountId,
   type LoginAttempt,
+  type LoginKeys,
   type LoginRateLimiter,
   type LoginRefusal,
 } from '../auth/loginRateLimiter.js';
@@ -43,7 +45,10 @@ import type { ProviderRegistry } from '../auth/providerRegistry.js';
  *   4. success: session cookie plus a fresh device cookie for this account.
  *
  * The client key is the device id when the request carries a genuine device
- * cookie for THIS account, otherwise the `AUTH_LOGIN_CLIENT_ADDRESS` address.
+ * cookie for THIS account (kind `device`), otherwise the
+ * `AUTH_LOGIN_CLIENT_ADDRESS` address — `address` when a trusted hop vouched
+ * for it, `shared` when it is the TCP peer (the limiter header says why the
+ * kind matters).
  */
 
 /** Everything the limiter needs at the route. */
@@ -51,6 +56,8 @@ export interface LoginGuardDeps {
   limiter: LoginRateLimiter;
   /** Where the client address comes from (`AUTH_LOGIN_CLIENT_ADDRESS`). */
   clientAddress: ClientAddressPolicy;
+  /** IPv6 clients are keyed by this prefix (`AUTH_LOGIN_IPV6_PREFIX`, default /64). */
+  ipv6PrefixBits?: number;
   /** One `auth.login_rate_limited` row per refusal episode — never the account. */
   audit?: Pick<AdminAuditLog, 'record'>;
 }
@@ -69,6 +76,8 @@ export function createLoginGuard(opts: {
   clientAddress: string;
   /** `AUTH_LOGIN_MAX_INFLIGHT`. */
   maxInFlight: number;
+  /** `AUTH_LOGIN_IPV6_PREFIX`. */
+  ipv6PrefixBits?: number;
   audit?: Pick<AdminAuditLog, 'record'>;
   log?: (msg: string) => void;
 }): LoginGuardDeps {
@@ -79,10 +88,16 @@ export function createLoginGuard(opts: {
   const sweeper = setInterval(() => limiter.sweep(), DEFAULT_LOGIN_LIMITER_CONFIG.sweepIntervalMs);
   sweeper.unref();
   const clientAddress = parseClientAddressPolicy(opts.clientAddress);
+  const ipv6PrefixBits = opts.ipv6PrefixBits ?? DEFAULT_IPV6_PREFIX_BITS;
   (opts.log ?? ((m: string) => console.log(m)))(
-    `[auth] login rate limiter armed (client address=${describeClientAddressPolicy(clientAddress)}, max in-flight=${String(opts.maxInFlight)}; in-memory, per process)`,
+    `[auth] login rate limiter armed (client address=${describeClientAddressPolicy(clientAddress)}, IPv6 prefix=/${String(ipv6PrefixBits)}, max in-flight=${String(opts.maxInFlight)}; in-memory, per process)`,
   );
-  return { limiter, clientAddress, ...(opts.audit ? { audit: opts.audit } : {}) };
+  return {
+    limiter,
+    clientAddress,
+    ipv6PrefixBits,
+    ...(opts.audit ? { audit: opts.audit } : {}),
+  };
 }
 
 export interface PasswordLoginDeps {
@@ -110,15 +125,10 @@ export function createPasswordLoginHandler(deps: PasswordLoginDeps): RequestHand
       return;
     }
 
-    const accountKey = loginAccountKey(provider.id, readLoginAccountId(req.body));
-    const deviceId = deps.devices.deviceIdFor(readCookie(req, LOGIN_DEVICE_COOKIE), accountKey);
-    const clientKey = deviceId
-      ? `device:${deviceId}`
-      : clientAddressFor(req, deps.guard.clientAddress);
-
-    const admission = deps.guard.limiter.admit({ clientKey, accountKey });
+    const keys = loginKeysFor(req, provider.id, deps);
+    const admission = deps.guard.limiter.admit(keys);
     if (!admission.allowed) {
-      if (admission.report) reportRefusal(deps.guard, admission, clientKey, log);
+      if (admission.report) reportRefusal(deps.guard, admission, keys.clientKey, log);
       refuse(res, admission);
       return;
     }
@@ -130,9 +140,40 @@ export function createPasswordLoginHandler(deps: PasswordLoginDeps): RequestHand
     }
 
     await deps.signIn(req, res, result, provider);
-    setLoginDeviceCookie(req, res, deps.devices.mint(accountKey));
+    setLoginDeviceCookie(req, res, deps.devices.mint(keys.accountKey));
     res.json({ ok: true, user: userPayload(result, provider) });
   };
+}
+
+/** The limiter keys of a sign-in attempt: a genuine device cookie for THIS account, else the address. */
+function loginKeysFor(req: Request, providerId: string, deps: PasswordLoginDeps): LoginKeys {
+  const accountKey = loginAccountKey(providerId, readLoginAccountId(req.body));
+  const deviceId = deps.devices.deviceIdFor(readCookie(req, LOGIN_DEVICE_COOKIE), accountKey);
+  if (deviceId) return { clientKey: `device:${deviceId}`, clientKind: 'device', accountKey };
+  const address = clientAddressFor(req, deps.guard.clientAddress, deps.guard.ipv6PrefixBits);
+  return { clientKey: address.key, clientKind: address.shared ? 'shared' : 'address', accountKey };
+}
+
+/**
+ * For `GET /me`: a browser that holds a valid session for a password account
+ * is a known device of that account by definition. Give it the device cookie
+ * when it lacks a genuine one, so browsers that were signed in when the
+ * limiter shipped — and any that lost the cookie — get their own sign-in
+ * budget without waiting for their next password sign-in (§10f). The web-ui
+ * session watcher calls `/me` every minute. OIDC sessions get nothing: their
+ * sign-in never passes the limiter.
+ */
+export function ensureLoginDeviceCookie(
+  req: Request,
+  res: Response,
+  deps: { registry: Pick<ProviderRegistry, 'get'>; devices: LoginDeviceCookies },
+  session: { provider: string; email: string },
+): void {
+  const provider = deps.registry.get(session.provider);
+  if (!provider || !isPasswordProvider(provider)) return;
+  const accountKey = loginAccountKey(provider.id, session.email);
+  if (deps.devices.deviceIdFor(readCookie(req, LOGIN_DEVICE_COOKIE), accountKey)) return;
+  setLoginDeviceCookie(req, res, deps.devices.mint(accountKey));
 }
 
 /** Run `verify` inside an admitted attempt; only a success is not a failure. */
@@ -163,8 +204,8 @@ function refuse(res: Response, refusal: LoginRefusal): void {
 
 /**
  * One log line and one audit row per refusal episode. The client key is a
- * validated address, an IPv6 /64 or `device:<id>`, so it cannot forge a log
- * line; the account never appears (the same rule as `AuthError.message`).
+ * validated address, an IPv6 prefix or `device:<id>`, so it cannot forge a
+ * log line; the account never appears (the same rule as `AuthError.message`).
  */
 function reportRefusal(
   guard: LoginGuardDeps,

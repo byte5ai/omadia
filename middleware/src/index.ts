@@ -4680,6 +4680,7 @@ async function main(): Promise<void> {
     const loginGuard = createLoginGuard({
       clientAddress: config.AUTH_LOGIN_CLIENT_ADDRESS,
       maxInFlight: config.AUTH_LOGIN_MAX_INFLIGHT,
+      ipv6PrefixBits: config.AUTH_LOGIN_IPV6_PREFIX,
       audit: adminAudit,
     });
 

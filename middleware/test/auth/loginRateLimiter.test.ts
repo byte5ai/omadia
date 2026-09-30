@@ -14,6 +14,7 @@ import {
   loginAccountKey,
   readLoginAccountId,
   type LoginAdmission,
+  type LoginClientKind,
   type LoginKeys,
   type LoginLimiterConfig,
   type LoginRateLimiter,
@@ -39,8 +40,13 @@ function setup(overrides: Partial<LoginLimiterConfig> = {}): {
   return { limiter: createLoginRateLimiter({ ...D, ...overrides }, clock.now), clock };
 }
 
-function keys(clientKey: string, accountKey: string): LoginKeys {
-  return { clientKey, accountKey };
+/** An address a trusted proxy vouched for, unless said otherwise (see loginRateLimiterFairness.test.ts). */
+function keys(
+  clientKey: string,
+  accountKey: string,
+  clientKind: LoginClientKind = 'address',
+): LoginKeys {
+  return { clientKey, clientKind, accountKey };
 }
 
 /** Admit one attempt and settle it as a failure; asserts it was admitted. */
@@ -65,7 +71,9 @@ describe('defaults', () => {
     assert.equal(D.accountBaseBlockMs, SECOND);
     assert.equal(D.accountMaxBlockMs, 2 * MINUTE);
     assert.equal(D.globalMaxInFlight, 4);
+    assert.equal(D.globalDeviceReserveInFlight, 1);
     assert.equal(D.globalMaxPerMinute, 300);
+    assert.equal(D.globalDeviceReservePerMinute, 60);
     assert.equal(D.maxTrackedKeys, 10_000);
   });
 });
@@ -83,7 +91,10 @@ describe('client layer — a CPU brake per client key', () => {
     assert.ok(r.retryAfterS >= 1 && r.retryAfterS <= 15, `retryAfterS=${String(r.retryAfterS)}`);
   });
 
-  it('pinned semantics: once full, ONE failure per drain step (6 s) — never a 10-minute lock', () => {
+  // Each wait is short, but a sender that keeps the bucket full takes every
+  // step as it opens: whoever else shares the address (a NAT) waits as long
+  // as it keeps going. Hence the layer never brakes the shared TCP peer.
+  it('pinned semantics: once full, ONE failure per drain step (6 s), each wait at most 15 s', () => {
     const { limiter, clock } = setup();
     for (let i = 0; i < D.clientMaxFailures; i += 1) {
       failOnce(limiter, keys('203.0.113.1', `local:u${String(i)}@example.com`));
@@ -93,7 +104,7 @@ describe('client layer — a CPU brake per client key', () => {
     failOnce(limiter, keys('203.0.113.1', 'local:x@example.com'));
     // The bucket is full again, so the very next attempt waits one step...
     assert.equal(refusal(limiter.admit(keys('203.0.113.1', 'local:y@example.com'))).scope, 'client');
-    // ...and never longer than the cap, however long the attacker keeps going.
+    // ...and each wait is within the cap.
     clock.advance(16 * SECOND);
     assert.equal(limiter.admit(keys('203.0.113.1', 'local:y@example.com')).allowed, true);
   });
@@ -147,22 +158,25 @@ describe('account layer — per (account, client) pair backoff', () => {
     assert.equal(limiter.admit(keys('victim-client', victim)).allowed, true);
   });
 
-  it('shared client key (every browser behind one proxy): a device-keyed victim still gets in, others wait at most the cap', () => {
+  it('shared client key (every browser behind one proxy): the pair still backs off, a device-keyed victim gets in', () => {
     const { limiter, clock } = setup();
     const shared = '10.0.0.5';
     // An attacker behind the same proxy keeps the (victim, shared) pair hot.
     for (let round = 0; round < 20; round += 1) {
-      const a = limiter.admit(keys(shared, victim));
+      const a = limiter.admit(keys(shared, victim, 'shared'));
       if (a.allowed) a.attempt.fail();
       else clock.advance(a.retryAfterS * SECOND);
     }
     // Whatever the last round did, the attacker fails once more right now.
-    const last = limiter.admit(keys(shared, victim));
+    const last = limiter.admit(keys(shared, victim, 'shared'));
     if (last.allowed) last.attempt.fail();
-    const blocked = refusal(limiter.admit(keys(shared, victim)));
-    assert.ok(blocked.retryAfterS <= D.accountMaxBlockMs / SECOND, 'never longer than the cap');
+    // Each wait is within the cap, but the attacker renews it: a victim
+    // without a device cookie stays out while it keeps going (§10f residual).
+    const blocked = refusal(limiter.admit(keys(shared, victim, 'shared')));
+    assert.equal(blocked.scope, 'account');
+    assert.ok(blocked.retryAfterS <= D.accountMaxBlockMs / SECOND, 'each wait within the cap');
     // The victim's browser carries a device cookie for this account: its own key.
-    assert.equal(limiter.admit(keys('device:abc', victim)).allowed, true);
+    assert.equal(limiter.admit(keys('device:abc', victim, 'device')).allowed, true);
   });
 
   it('a success clears the pair but not the client layer', () => {
@@ -218,10 +232,11 @@ describe('account layer — per (account, client) pair backoff', () => {
 });
 
 describe('global layer — argon2 capacity', () => {
-  it('acquireSlot() refuses once globalMaxInFlight slots are held, and recovers on release', () => {
+  it('acquireSlot() refuses once the unreserved slots are held, and recovers on release', () => {
     const { limiter } = setup();
     const releases: Array<() => void> = [];
-    for (let i = 0; i < D.globalMaxInFlight; i += 1) {
+    // The wizard is an unknown browser: the device reserve is not its to take.
+    for (let i = 0; i < D.globalMaxInFlight - D.globalDeviceReserveInFlight; i += 1) {
       const r = limiter.acquireSlot();
       assert.ok(r);
       releases.push(r);
@@ -249,9 +264,9 @@ describe('global layer — argon2 capacity', () => {
     assert.equal(limiter.admit(keys('c2', 'local:b@example.com')).allowed, true);
   });
 
-  it('refuses the 301st admitted attempt within a minute', () => {
+  it('refuses unknown browsers past the unreserved part of the per-minute budget', () => {
     const { limiter, clock } = setup();
-    for (let i = 0; i < D.globalMaxPerMinute; i += 1) {
+    for (let i = 0; i < D.globalMaxPerMinute - D.globalDeviceReservePerMinute; i += 1) {
       failOnce(limiter, keys(`198.51.100.${String(i % 250)}-${String(i)}`, `local:g${String(i)}@x`));
     }
     const r = refusal(limiter.admit(keys('fresh-client', 'local:fresh@x')));
@@ -262,7 +277,7 @@ describe('global layer — argon2 capacity', () => {
   });
 
   it('attempts refused by the client or account layer never consume global budget', () => {
-    const { limiter } = setup({ globalMaxPerMinute: 10 });
+    const { limiter } = setup({ globalMaxPerMinute: 10, globalDeviceReservePerMinute: 0 });
     for (let i = 0; i < D.accountFreeFailures; i += 1) failOnce(limiter, keys('c1', 'local:v@x'));
     for (let i = 0; i < 500; i += 1) {
       assert.equal(refusal(limiter.admit(keys('c1', 'local:v@x'))).scope, 'account');

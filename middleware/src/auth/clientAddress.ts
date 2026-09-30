@@ -1,6 +1,7 @@
 /**
  * Which client a password sign-in attempt is charged to
- * (`AUTH_LOGIN_CLIENT_ADDRESS`, docs/security-architecture.md §10f).
+ * (`AUTH_LOGIN_CLIENT_ADDRESS`, `AUTH_LOGIN_IPV6_PREFIX`,
+ * docs/security-architecture.md §10f).
  *
  * Trust boundary: this never reads `req.ip` / `req.ips`. The app runs with
  * `trust proxy = true`, which makes `req.ip` the LEFT-most `X-Forwarded-For`
@@ -18,11 +19,17 @@
  *   header:<name>  a header a trusted edge SETS (overwrites), such as
  *                  `Fly-Client-IP`. Absent → the socket peer.
  *
+ * The result says whether the key is `shared`: the socket peer — the
+ * `socket` policy, or the fallback of the other two — is a proxy in every
+ * shipped topology (web-ui, the platform edge, loopback on the desktop), so
+ * the limiter must not brake it as if it were one client. An address a
+ * trusted hop vouched for is one client (or one NAT).
+ *
  * Whatever the policy yields must parse as an IP address (after stripping a
  * port, IPv6 brackets and the `::ffff:` prefix), or the socket peer is used:
  * junk strings can neither mint free keys nor reach a log line. IPv6 clients
- * are keyed by their /64 — one host controls its whole /64, so a per-address
- * key would let it rotate through 2^64 budgets.
+ * are keyed by a prefix, /64 by default — one host controls its whole /64,
+ * so a per-address key would let it rotate through 2^64 budgets.
  */
 
 import { isIP } from 'node:net';
@@ -34,11 +41,24 @@ export type ClientAddressPolicy =
   | { readonly kind: 'xff'; readonly trustedHops: number }
   | { readonly kind: 'header'; readonly name: string };
 
+/** The limiter's view of who is asking. */
+export interface ClientAddress {
+  /** A validated IPv4 address, an IPv6 prefix (`2001:db8:1:2::/64`) or `unknown`. */
+  readonly key: string;
+  /** True for the socket peer: a proxy that every client behind it shares. */
+  readonly shared: boolean;
+}
+
 /** The key when the socket has no address (an unconnected test socket). */
 export const UNKNOWN_CLIENT = 'unknown';
 
 /** Upper bound for `xff:<n>`: more trusted hops than this is a misconfiguration. */
 export const MAX_TRUSTED_HOPS = 8;
+
+/** `AUTH_LOGIN_IPV6_PREFIX`: IPv6 clients are keyed by this many leading bits. */
+export const DEFAULT_IPV6_PREFIX_BITS = 64;
+export const MIN_IPV6_PREFIX_BITS = 32;
+export const MAX_IPV6_PREFIX_BITS = 64;
 
 /** RFC 9110 token characters an operator plausibly uses in a header name. */
 const HEADER_NAME_RE = /^[A-Za-z0-9-]{1,64}$/;
@@ -46,6 +66,8 @@ const XFF_RE = /^xff:(\d)$/;
 const IPV4_WITH_PORT_RE = /^(\d{1,3}(?:\.\d{1,3}){3}):\d{1,5}$/;
 const BRACKETED_IPV6_RE = /^\[([^\]]+)\](?::\d{1,5})?$/;
 const IPV4_TAIL_RE = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+const GROUP_BITS = 16;
+const IPV6_GROUPS = 8;
 
 export function parseClientAddressPolicy(raw: string): ClientAddressPolicy {
   const value = raw.trim();
@@ -86,26 +108,41 @@ export function describeClientAddressPolicy(policy: ClientAddressPolicy): string
   }
 }
 
-/** The client key for this request under `policy`. Never `req.ip`. */
+/** The client this request is charged to under `policy`. Never `req.ip`. */
 export function clientAddressFor(
   req: Pick<Request, 'socket' | 'headers'>,
   policy: ClientAddressPolicy,
-): string {
-  const fallback = clientKeyFromAddress(req.socket.remoteAddress) ?? UNKNOWN_CLIENT;
+  ipv6PrefixBits: number = DEFAULT_IPV6_PREFIX_BITS,
+): ClientAddress {
+  const bits = clampPrefixBits(ipv6PrefixBits);
+  const peer: ClientAddress = {
+    key: clientKeyFromAddress(req.socket.remoteAddress, bits) ?? UNKNOWN_CLIENT,
+    shared: true,
+  };
+  const vouched = (raw: string | undefined): ClientAddress => {
+    const key = clientKeyFromAddress(raw, bits);
+    return key === null ? peer : { key, shared: false };
+  };
   switch (policy.kind) {
     case 'socket':
-      return fallback;
+      return peer;
     case 'xff': {
       const entries = headerValue(req, 'x-forwarded-for')
         .split(',')
         .map((entry) => entry.trim())
         .filter((entry) => entry.length > 0);
-      if (entries.length < policy.trustedHops) return fallback;
-      return clientKeyFromAddress(entries[entries.length - policy.trustedHops]) ?? fallback;
+      if (entries.length < policy.trustedHops) return peer;
+      return vouched(entries[entries.length - policy.trustedHops]);
     }
     case 'header':
-      return clientKeyFromAddress(headerValue(req, policy.name)) ?? fallback;
+      return vouched(headerValue(req, policy.name));
   }
+}
+
+/** The config schema enforces the range; this keeps a direct caller inside it too. */
+function clampPrefixBits(bits: number): number {
+  if (!Number.isFinite(bits)) return DEFAULT_IPV6_PREFIX_BITS;
+  return Math.min(MAX_IPV6_PREFIX_BITS, Math.max(MIN_IPV6_PREFIX_BITS, Math.trunc(bits)));
 }
 
 function headerValue(req: Pick<Request, 'headers'>, name: string): string {
@@ -114,8 +151,8 @@ function headerValue(req: Pick<Request, 'headers'>, name: string): string {
   return typeof value === 'string' ? value : '';
 }
 
-/** An address as a limiter key: validated IPv4, or the /64 of an IPv6. */
-function clientKeyFromAddress(raw: string | undefined): string | null {
+/** An address as a limiter key: validated IPv4, or the prefix of an IPv6. */
+function clientKeyFromAddress(raw: string | undefined, ipv6PrefixBits: number): string | null {
   if (raw === undefined) return null;
   let address = raw.trim();
   const bracketed = BRACKETED_IPV6_RE.exec(address);
@@ -129,14 +166,29 @@ function clientKeyFromAddress(raw: string | undefined): string | null {
     case 4:
       return address;
     case 6:
-      return ipv6Prefix64(address);
+      return ipv6Prefix(address, ipv6PrefixBits);
     default:
       return null;
   }
 }
 
-/** `2001:db8:aa:1::1` → `2001:db8:aa:1::/64`. Input is a valid IPv6 (isIP 6). */
-function ipv6Prefix64(address: string): string | null {
+/**
+ * `2001:db8:aa:1ff::1` at 64 → `2001:db8:aa:1ff::/64`, at 56 →
+ * `2001:db8:aa:100::/56`. Input is a valid IPv6 (isIP 6); bits in 32..64.
+ */
+function ipv6Prefix(address: string, bits: number): string | null {
+  const groups = ipv6Groups(address);
+  if (!groups) return null;
+  const kept = groups.slice(0, Math.ceil(bits / GROUP_BITS)).map((group, i) => {
+    const bitsLeft = bits - i * GROUP_BITS;
+    const mask = bitsLeft >= GROUP_BITS ? 0xffff : (0xffff << (GROUP_BITS - bitsLeft)) & 0xffff;
+    return (group & mask).toString(16);
+  });
+  return `${kept.join(':')}::/${String(bits)}`;
+}
+
+/** The eight 16-bit groups of a valid IPv6 address (zone dropped, IPv4 tail folded in). */
+function ipv6Groups(address: string): number[] | null {
   let text = address.split('%')[0]?.toLowerCase() ?? '';
   const v4 = IPV4_TAIL_RE.exec(text);
   if (v4) {
@@ -150,9 +202,8 @@ function ipv6Prefix64(address: string): string | null {
   const tail = halves.length > 1 && halves[1] ? halves[1].split(':') : [];
   const groups =
     halves.length > 1
-      ? [...head, ...Array<string>(8 - head.length - tail.length).fill('0'), ...tail]
+      ? [...head, ...Array<string>(IPV6_GROUPS - head.length - tail.length).fill('0'), ...tail]
       : head;
-  if (groups.length !== 8) return null;
-  const prefix = groups.slice(0, 4).map((g) => Number.parseInt(g, 16).toString(16));
-  return `${prefix.join(':')}::/64`;
+  if (groups.length !== IPV6_GROUPS) return null;
+  return groups.map((g) => Number.parseInt(g, 16));
 }
