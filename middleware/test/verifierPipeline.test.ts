@@ -586,8 +586,9 @@ describe('verifier/pipeline - anchored soft claims', () => {
 // the deterministic re-query keeps working on the REAL values server-side.
 describe('verifier/pipeline - privacy view', () => {
   const view: VerifierPrivacy = {
+    wireUserMessage: 'Wer ist Lukas Becker?',
     wireAnswer: 'Lukas Becker ist Senior Dev.',
-    maskForWire: async (t) => t,
+    admitWireView: async () => undefined,
     projectForWire: async (t) => t,
     restore: async (t) => t,
   };

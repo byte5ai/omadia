@@ -46,9 +46,10 @@ export interface ExtractInput {
   answer: string;
   /**
    * The turn's privacy view (see {@link VerifierPrivacy}). When present the
-   * model sees the turn's own wire view — the user message masked under the
-   * turn's policy and `privacy.wireAnswer` — and the returned claims are
-   * restored to real values here, server-side, before anything checks them.
+   * model sees the turn's own wire view — `privacy.wireUserMessage` and
+   * `privacy.wireAnswer`, never `userMessage` / `answer` above — and the
+   * returned claims are restored to real values here, server-side, before
+   * anything checks them.
    */
   privacy?: VerifierPrivacy;
 }
@@ -188,13 +189,14 @@ export class ClaimExtractor {
   async extract(input: ExtractInput): Promise<Claim[]> {
     const privacy = input.privacy;
     // Behind a Privacy Shield the model sees the turn's wire view only: the
-    // answer as the turn's model wrote it, the prompt as the turn masked it.
+    // answer as the turn's model wrote it, the prompt as the turn's model
+    // received it — never the caller's own text.
     const answer = (privacy ? privacy.wireAnswer : input.answer).trim();
     if (answer.length === 0) return [];
-    let userMessage = input.userMessage;
+    const userMessage = privacy ? privacy.wireUserMessage : input.userMessage;
     if (privacy) {
       try {
-        userMessage = await privacy.maskForWire(input.userMessage);
+        await privacy.admitWireView();
       } catch (err) {
         this.opts.log(
           `[claim-extractor] extraction skipped — prompt masking blocked: ${

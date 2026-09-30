@@ -171,12 +171,22 @@ export interface VerifierInput {
  * plugin), valid until the turn's receipt is finalised — which happens only
  * after the verifier finished.
  *
- * Contract for callers: text leaves the process only as the return value of
- * `maskForWire` / `projectForWire`, one call per outbound request (the turn
- * receipt counts each call as one verifier request). Both THROW when masking
- * is blocked; the caller must then send nothing.
+ * Contract for callers: text leaves the process only as the turn's wire view
+ * (`wireUserMessage`, `wireAnswer`) in a request admitted by `admitWireView`,
+ * or as the return value of `projectForWire` — one of these calls per
+ * outbound request (the turn receipt counts each call as one verifier
+ * request). Both THROW when the request cannot be admitted; the caller must
+ * then send nothing.
  */
 export interface VerifierPrivacy {
+  /**
+   * The user message exactly as the turn's model received it: normalised
+   * (an MCP input-card reply is its label, never the envelope with the values
+   * typed for a third-party server) and masked under the turn's prompt-mask
+   * policy (as written when the operator left `mask_user_prompt` off). The
+   * claim extractor sends this — never `VerifierInput.userMessage`.
+   */
+  readonly wireUserMessage: string;
   /**
    * The answer exactly as the turn's model produced it: before surrogate
    * restore, never a server-rendered answer holding values the model did not
@@ -184,11 +194,12 @@ export interface VerifierPrivacy {
    */
   readonly wireAnswer: string;
   /**
-   * Mask a real text under the turn's prompt-mask policy — the same
-   * detectors and map the turn used for its own prompt. Identity when the
-   * operator left `mask_user_prompt` off.
+   * Admit one request that carries the turn's wire view and static prose
+   * only. Nothing in it is masked again — the view already went through the
+   * turn's policy, and a second pass would read its placeholders as new
+   * values — but the request leaves the process and is counted.
    */
-  maskForWire(text: string): Promise<string>;
+  admitWireView(): Promise<void>;
   /**
    * Project a real, verifier-composed text (claim plus knowledge-graph
    * evidence) through the turn's surrogate map, whether or not

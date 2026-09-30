@@ -83,7 +83,9 @@ The answer verifier's post-turn model requests run under the same turn map
 (security-architecture §6e). `maskUserPrompt({ stage: 'verifier' })` masks
 under the operator's policy and books spans in `PrivacyReceipt.verifierEgress`
 (request count + span types), never in `maskedPromptSpans`; `preview: true`
-answers "would this text change?" without keeping anything.
+answers "would this text change?" without keeping anything. A request that
+carries only the turn's own wire view (the claim extraction) is admitted with an
+empty verifier-stage text: one request booked, nothing masked twice, no C1 call.
 `projectVerifierText` projects verifier-composed text (claim + knowledge-graph
 evidence) regardless of `mask_user_prompt`: identity-shaped C0 spans, the
 operator deny-list, C1 when wired and caller-named identity values — dates and

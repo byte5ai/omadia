@@ -396,6 +396,9 @@ export function createPrivacyGuardService(deps?: {
   ): Promise<{ readonly detector?: PromptPiiDetector; readonly degraded: boolean }> {
     const c1 = deps?.c1Detector;
     if (c1 === undefined) return { degraded: false };
+    // Nothing to detect — e.g. a verifier request that carries only the
+    // turn's wire view books itself with an empty text. No sidecar call.
+    if (text.trim().length === 0) return { degraded: false };
     if (c1FailedTurns.has(turnId)) {
       // C1 already failed once in THIS turn. A down sidecar is down for
       // every text, so retrying only buys another full timeout — a dozen

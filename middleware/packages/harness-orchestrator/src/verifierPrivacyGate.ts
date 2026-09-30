@@ -16,6 +16,8 @@
  *     no truth values, and is withheld when masking would still alter it.
  *   - {@link carriesUnresolvedPlaceholders}: whether a second answer (re-sample
  *     or retry) may replace the first one the user would otherwise see.
+ *   - {@link modelFacingUserMessage}: the prompt the pipeline gets — the one
+ *     the turn's model saw, never an MCP input-card envelope.
  */
 
 import type { ChatTurnInput, ChatTurnResult } from './orchestrator.js';
@@ -23,6 +25,7 @@ import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type { VerifierPrivacy, VerifierVerdict } from '@omadia/verifier';
 import { buildCorrectionPrompt } from '@omadia/verifier';
 
+import { mcpInputReplyLabel, parseMcpInputReply } from './mcp/pendingMcpInput.js';
 import type { PrivacyEgressContinuation } from './privacyEgress.js';
 
 /**
@@ -90,6 +93,19 @@ export class EgressLedger {
     if (egress !== undefined) this.open.add(egress);
     return egress;
   }
+}
+
+/**
+ * The caller's user message as the turn's model received it, before masking:
+ * an MCP input-card reply becomes its label (field names only), exactly as
+ * `runTurn` / `chatStream` normalise it. The envelope's values were typed for
+ * a third-party server and may be secrets, so the verifier pipeline never
+ * gets them — with a shield (server-side checks only) or without one (the
+ * extractor's request then carries this text).
+ */
+export function modelFacingUserMessage(userMessage: string): string {
+  const reply = parseMcpInputReply(userMessage);
+  return reply === undefined ? userMessage : mcpInputReplyLabel(reply);
 }
 
 /**

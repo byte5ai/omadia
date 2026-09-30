@@ -22,6 +22,7 @@ import type { PrivacyEgressContinuation } from './privacyEgress.js';
 import {
   EgressLedger,
   carriesUnresolvedPlaceholders,
+  modelFacingUserMessage,
   privacySafeCorrection,
   settleQuietly,
   verifierGate,
@@ -534,7 +535,8 @@ export class VerifierService implements ChatAgent {
     try {
       return await this.pipeline.verify({
         runId,
-        userMessage: input.userMessage,
+        // What the turn's model saw — never an MCP input-card envelope.
+        userMessage: modelFacingUserMessage(input.userMessage),
         answer,
         ...(domainToolsCalled ? { domainToolsCalled } : {}),
         ...(toolPostconditionViolations.length > 0

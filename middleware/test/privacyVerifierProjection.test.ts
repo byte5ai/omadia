@@ -53,6 +53,34 @@ describe('privacy-guard — verifier stage accounting', () => {
     );
   });
 
+  it('admits a wire-view request (empty text): one request, the map untouched, no C1 call', async () => {
+    // The claim extractor's request carries only the turn's wire view, which
+    // is never masked twice; it is admitted with an empty verifier-stage text.
+    let c1Calls = 0;
+    const svc = createPrivacyGuardService({
+      readConfig: (key: string) => (key === 'mask_user_prompt' ? 'on' : undefined),
+      c1Detector: {
+        id: 'c1-stub',
+        detect: async () => {
+          c1Calls += 1;
+          return [];
+        },
+      },
+    });
+    const turnMask = await svc.maskUserPrompt!({ ...TURN, text: `Bitte an ${MAIL} schreiben.` });
+    assert.equal(turnMask.outcome, 'masked');
+    const callsAfterTurn = c1Calls;
+
+    const admitted = await svc.maskUserPrompt!({ ...TURN, text: '', stage: 'verifier' });
+
+    assert.deepEqual(admitted, { outcome: 'masked', maskedText: '', spans: [], degraded: false });
+    assert.equal(c1Calls, callsAfterTurn, 'an empty text went to the C1 sidecar');
+    assert.equal(await svc.restorePromptPseudonyms!(TURN.turnId, turnMask.maskedText), `Bitte an ${MAIL} schreiben.`);
+    const receipt = await svc.finalizeTurn(TURN.turnId);
+    assert.deepEqual(receipt?.verifierEgress, { requests: 1, maskedSpans: [] });
+    assert.equal(receipt?.maskedPromptSpans?.length, 1);
+  });
+
   it('a preview changes nothing: no map entry, no receipt line', async () => {
     const svc = service(true);
     const preview = await svc.maskUserPrompt!({

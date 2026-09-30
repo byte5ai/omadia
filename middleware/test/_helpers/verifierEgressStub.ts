@@ -31,6 +31,8 @@ export interface RecordingContinuation extends PrivacyEgressContinuation {
 
 export interface ContinuationOpts {
   readonly wireAnswer?: string | undefined;
+  /** The prompt the turn's model received; defaults to the run's input. */
+  readonly wireUserMessage?: string;
   readonly maskWouldAlter?: boolean;
   readonly unresolved?: number;
 }
@@ -46,14 +48,19 @@ function receiptFor(n: number): PrivacyReceipt {
   };
 }
 
-function recordingContinuation(n: number, opts: ContinuationOpts): RecordingContinuation {
+function recordingContinuation(
+  n: number,
+  opts: ContinuationOpts,
+  input: ChatTurnInput,
+): RecordingContinuation {
   const receipt = receiptFor(n);
   const view: VerifierPrivacy | undefined =
     opts.wireAnswer === undefined
       ? undefined
       : {
+          wireUserMessage: opts.wireUserMessage ?? input.userMessage,
           wireAnswer: opts.wireAnswer,
-          maskForWire: async (t) => t,
+          admitWireView: async () => undefined,
           projectForWire: async (t) => t,
           restore: async (t) => t,
         };
@@ -99,6 +106,7 @@ export function stubOrchestrator(opts: {
     const c = recordingContinuation(
       index + 1,
       opts.continuation?.(index, result) ?? { wireAnswer: result.answer },
+      input,
     );
     state.continuations.push(c);
     stashed.set(input, c);

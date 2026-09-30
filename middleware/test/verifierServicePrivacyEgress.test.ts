@@ -324,6 +324,25 @@ describe('VerifierService.chat — privacy egress', () => {
     assert.equal(state.continuations[0]!.finalizeCalls, 1);
   });
 
+  it('hands the pipeline the label of an MCP input-card reply, never the envelope — shield or not', async () => {
+    const envelope =
+      '__mcp_input_reply__ {"correlationId":"x","inputResponses":{"password":"private-secret-value"}}';
+    for (const shield of [false, true]) {
+      const { orchestrator } = stubOrchestrator({
+        results: [turn('Rechnung INV/2026/0042 ist verbucht.')],
+        handOver: shield,
+        privacyActive: shield,
+      });
+      const { pipeline, inputs } = verdicts([APPROVED]);
+      const service = new VerifierService({ orchestrator, pipeline, enabled: true, mode: 'shadow', log: SILENT });
+
+      await service.chat({ userMessage: envelope });
+
+      assert.equal(inputs.length, 1);
+      assert.equal(inputs[0]!.userMessage, '[Eingaben übermittelt: password]', `shield=${String(shield)}`);
+    }
+  });
+
   it('without a shield the wrapper behaves as before (no hand-over, raw verification)', async () => {
     const { orchestrator, state } = stubOrchestrator({
       results: [turn('Die Rechnung RE-1 beträgt 100 €.')],

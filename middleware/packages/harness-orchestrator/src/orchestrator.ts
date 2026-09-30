@@ -174,6 +174,7 @@ import {
   createPrivacyEgressContinuation,
   PrivacyEgressHandover,
   type PrivacyEgressContinuation,
+  type TurnWireView,
 } from './privacyEgress.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import {
@@ -1281,6 +1282,23 @@ async function restorePromptForPersistence(
 }
 
 /**
+ * {@link maskPromptForWire} for the turn's user message. Also keeps the
+ * result on the turn context (`wireView`): a verifier-wrapped turn hands the
+ * verifier exactly this text — the prompt as the model received it — never
+ * the caller's raw message (an MCP input-card reply is still its envelope
+ * there, carrying the values the user typed for a third-party server).
+ */
+async function maskTurnPromptForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  userMessage: string,
+): Promise<string> {
+  const wire = await maskPromptForWire(privacy, userMessage);
+  const box = turnContext.current()?.wireView;
+  if (box) box.userMessage = wire;
+  return wire;
+}
+
+/**
  * {@link restorePromptForPersistence} for a turn's FINAL answer. Also keeps
  * the wire variant (the answer exactly as the model wrote it, surrogates and
  * all) on the turn context: a verifier-wrapped turn hands it to the verifier,
@@ -1290,9 +1308,16 @@ async function restoreTurnAnswer(
   privacy: PrivacyTurnHandle | undefined,
   answer: string,
 ): Promise<string> {
-  const box = turnContext.current()?.wireAnswer;
-  if (box) box.value = answer;
+  const box = turnContext.current()?.wireView;
+  if (box) box.answer = answer;
   return restorePromptForPersistence(privacy, answer);
+}
+
+/** The wire view this turn recorded — both halves, or nothing to verify. */
+function recordedWireView(): TurnWireView | undefined {
+  const box = turnContext.current()?.wireView;
+  if (box?.userMessage === undefined || box.answer === undefined) return undefined;
+  return { userMessage: box.userMessage, answer: box.answer };
 }
 
 /**
@@ -3711,7 +3736,8 @@ export class Orchestrator {
     readonly handle: PrivacyTurnHandle;
     readonly turnId: string;
     readonly input: ChatTurnInput;
-    readonly wireAnswer: string | undefined;
+    /** What the verifier may see; `undefined` ⇒ it verifies nothing. */
+    readonly wireView: TurnWireView | undefined;
   }): void {
     const ran = this.takeTurnAttribution(args.turnId);
     this.privacyEgress.stash(
@@ -3719,7 +3745,7 @@ export class Orchestrator {
       createPrivacyEgressContinuation({
         handle: args.handle,
         receiptId: args.turnId,
-        wireAnswer: args.wireAnswer,
+        wireView: args.wireView,
         settle: async () => {
           try {
             const receipt = await args.handle.finalize(args.input.userMessage);
@@ -3993,8 +4019,8 @@ export class Orchestrator {
         // BY REFERENCE into every nested per-dispatch scope and a memory read
         // reaches the reader that assembles this turn's result.
         memoryFileRead: { value: false },
-        // The answer's wire variant, for a verifier hand-over.
-        wireAnswer: { value: undefined },
+        // The turn's wire view (prompt + answer), for a verifier hand-over.
+        wireView: {},
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -4098,15 +4124,16 @@ export class Orchestrator {
             };
           }
         }
-        // What the verifier may see: the answer exactly as this turn's model
-        // wrote it, recorded by the answer loop BEFORE it restored the text.
-        // Not for a server-rendered v4 answer (real values the model never
-        // saw), a Direct Line relay (restored inside executeDirectLine) or
-        // the privacy refusal. Nothing recorded ⇒ nothing to verify.
-        const verifierWireAnswer =
+        // What the verifier may see: the prompt exactly as this turn's model
+        // received it and the answer exactly as it wrote it, recorded BEFORE
+        // the answer loop restored the text. Not for a server-rendered v4
+        // answer (real values the model never saw), a Direct Line relay
+        // (restored inside executeDirectLine) or the privacy refusal. Nothing
+        // recorded ⇒ nothing to verify.
+        const verifierWireView =
           direct !== undefined || promptMaskBlocked || serverRendered
             ? undefined
-            : turnContext.current()?.wireAnswer?.value;
+            : recordedWireView();
         // #361 — restore prompt surrogates → real values over the final
         // answer (identity when the turn masked nothing). Must run BEFORE
         // finalize, which drops the turn's surrogate map.
@@ -4131,7 +4158,7 @@ export class Orchestrator {
             handle: privacyHandle,
             turnId,
             input,
-            wireAnswer: verifierWireAnswer,
+            wireView: verifierWireView,
           });
           return result;
         }
@@ -5004,8 +5031,9 @@ export class Orchestrator {
     // otherwise). `input.userMessage` stays untouched for memory
     // persistence (sessionLogger / factExtractor) and receipt attribution.
     // Failure-closed: a `blocked` outcome throws and the turn fails.
+    // Recorded on the turn's wire view — the verifier sees this, nothing else.
     const privacyForPrompt = turnContext.current()?.privacyHandle;
-    const wireUserMessage = await maskPromptForWire(
+    const wireUserMessage = await maskTurnPromptForWire(
       privacyForPrompt,
       input.userMessage,
     );
@@ -5845,8 +5873,8 @@ export class Orchestrator {
       ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
       // W2-1 (#544) — see the matching `turnContext.run` above.
       sessionScope: sessionId,
-      // The answer's wire variant, for a verifier hand-over.
-      wireAnswer: { value: undefined },
+      // The turn's wire view (prompt + answer), for a verifier hand-over.
+      wireView: {},
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -5903,13 +5931,13 @@ export class Orchestrator {
     // state in `finally` — real values must not outlive the turn.
     let privacySettled = false;
     let promptMaskBlocked = false;
-    const handOver = (handle: PrivacyTurnHandle, wireAnswer: string | undefined): void => {
+    const handOver = (handle: PrivacyTurnHandle, wireView: TurnWireView | undefined): void => {
       this.stashPrivacyEgress({
         callerInput: args.callerInput,
         handle,
         turnId,
         input,
-        wireAnswer,
+        wireView,
       });
       privacySettled = true;
     };
@@ -6074,10 +6102,10 @@ export class Orchestrator {
                 }
               : event;
           // What the verifier may see — see the buffered twin in runTurnCore.
-          const verifierWireAnswer =
+          const verifierWireView =
             v4Rendered !== undefined || promptMaskBlocked
               ? undefined
-              : turnContext.current()?.wireAnswer?.value;
+              : recordedWireView();
           // #361 — restore prompt surrogates → real values on the final
           // answer, before finalize drops the turn's surrogate map. Note:
           // streamed text deltas may transiently show a surrogate; the
@@ -6097,7 +6125,7 @@ export class Orchestrator {
           if (args.holdPrivacyFinalize) {
             // The wrapper verifies first, then finalizes and attaches the
             // receipt to the `done` it re-emits.
-            handOver(privacyHandle, verifierWireAnswer);
+            handOver(privacyHandle, verifierWireView);
           } else {
             try {
               const receipt = await privacyHandle.finalize(input.userMessage);
@@ -6170,7 +6198,7 @@ export class Orchestrator {
     // #361 — wire-bound prompt masking; see chatInContextInner for the full
     // rationale. Same seam, streaming path.
     const privacyForPrompt = turnContext.current()?.privacyHandle;
-    const wireUserMessage = await maskPromptForWire(
+    const wireUserMessage = await maskTurnPromptForWire(
       privacyForPrompt,
       input.userMessage,
     );

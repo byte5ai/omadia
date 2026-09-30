@@ -145,18 +145,19 @@ describe('verifier/claimExtractor - privacy view', () => {
     return out;
   }
 
-  /** Stands in for the turn's surrogate map: masks real→surrogate, restores back. */
-  function fakePrivacy(opts: { blocked?: boolean } = {}): {
+  /** Stands in for the turn's surrogate map: the wire view carries the
+   *  surrogates the turn minted, restore maps them back. */
+  function fakePrivacy(opts: { blocked?: boolean; wireUserMessage?: string } = {}): {
     view: VerifierPrivacy;
-    maskCalls: () => number;
+    admitCalls: () => number;
   } {
-    let maskCalls = 0;
+    let admitCalls = 0;
     const view: VerifierPrivacy = {
+      wireUserMessage: opts.wireUserMessage ?? substitute(REAL_USER, 0),
       wireAnswer: substitute(REAL_ANSWER, 0),
-      async maskForWire(text: string): Promise<string> {
-        maskCalls += 1;
+      async admitWireView(): Promise<void> {
+        admitCalls += 1;
         if (opts.blocked === true) throw new Error('prompt masking blocked');
-        return substitute(text, 0);
       },
       async projectForWire(text: string): Promise<string> {
         return substitute(text, 0);
@@ -165,7 +166,7 @@ describe('verifier/claimExtractor - privacy view', () => {
         return substitute(text, 1);
       },
     };
-    return { view, maskCalls: () => maskCalls };
+    return { view, admitCalls: () => admitCalls };
   }
 
   function capturingLlm(claims: unknown[]): { llm: unknown; requests: unknown[] } {
@@ -227,6 +228,25 @@ describe('verifier/claimExtractor - privacy view', () => {
     );
   });
 
+  it('sends the prompt the turn’s model received, never the caller’s own text', async () => {
+    // An MCP input-card reply: the caller's text is the envelope with the
+    // values typed for a third-party server; the turn's model saw the label.
+    const envelope =
+      '__mcp_input_reply__ {"correlationId":"x","inputResponses":{"password":"private-secret-value"}}';
+    const { view, admitCalls } = fakePrivacy({ wireUserMessage: '[Eingaben übermittelt: password]' });
+    const { llm, requests } = capturingLlm([]);
+    const extractor = new ClaimExtractor({ llm: llm as never, log: () => undefined });
+
+    await extractor.extract({ userMessage: envelope, answer: REAL_ANSWER, privacy: view });
+
+    assert.equal(requests.length, 1);
+    const sent = JSON.stringify(requests[0]);
+    assert.equal(sent.includes('private-secret-value'), false, 'the caller’s text reached the request');
+    assert.equal(sent.includes('__mcp_input_reply__'), false);
+    assert.ok(sent.includes('[Eingaben übermittelt: password]'));
+    assert.equal(admitCalls(), 1, 'the request must be admitted (and counted) exactly once');
+  });
+
   it('drops a claim whose span only partially covers a surrogate', async () => {
     const { view } = fakePrivacy();
     const { llm } = capturingLlm([
@@ -255,8 +275,9 @@ describe('verifier/claimExtractor - privacy view', () => {
     const swap = (text: string, from: 0 | 1): string =>
       pairs.reduce((out, pair) => out.split(pair[from]).join(pair[from === 0 ? 1 : 0]), text);
     return {
+      wireUserMessage: 'Wie hoch ist das?',
       wireAnswer: swap(realAnswer, 0),
-      maskForWire: async (t) => swap(t, 0),
+      admitWireView: async () => undefined,
       projectForWire: async (t) => t,
       restore: async (t) => swap(t, 1),
     };
@@ -377,7 +398,7 @@ describe('verifier/claimExtractor - privacy view', () => {
   });
 
   it('blocked masking sends nothing and yields no claims', async () => {
-    const { view, maskCalls } = fakePrivacy({ blocked: true });
+    const { view, admitCalls } = fakePrivacy({ blocked: true });
     const { llm, requests } = capturingLlm([
       { text: 'in die IT-Abteilung', type: 'qualitative', expected_source: 'graph' },
     ]);
@@ -394,7 +415,7 @@ describe('verifier/claimExtractor - privacy view', () => {
       privacy: view,
     });
     assert.deepEqual(claims, []);
-    assert.equal(maskCalls(), 1);
+    assert.equal(admitCalls(), 1);
     assert.equal(requests.length, 0, 'the extractor called the model after masking was blocked');
     assert.ok(logs.some((l) => l.includes('prompt masking blocked')));
   });

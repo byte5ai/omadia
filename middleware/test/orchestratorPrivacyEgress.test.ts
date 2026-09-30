@@ -38,7 +38,8 @@ describe('orchestrator — privacy hand-over for the verifier (runTurn)', () => 
   it('a held turn keeps its privacy state until the continuation finalizes it, then persists once', async () => {
     const { service, finalizeCalls } = countingService();
     const recorded: TurnReceiptRecordInput[] = [];
-    const orch = buildOrch({ service, provider: echoingProvider(), recorded });
+    const modelRequests: string[] = [];
+    const orch = buildOrch({ service, provider: echoingProvider(modelRequests), recorded });
     const input: ChatTurnInput = {
       userMessage: `Bitte schreibe an ${RAW_EMAIL} heute`,
       sessionScope: 'sess-held',
@@ -60,12 +61,15 @@ describe('orchestrator — privacy hand-over for the verifier (runTurn)', () => 
     const view = egress.verifierPrivacy;
     assert.ok(view);
     // The verifier's view is the WIRE view: the model's own answer (surrogate)
-    // and the prompt as the turn masked it.
+    // and the prompt exactly as the model received it.
     assert.deepEqual(findIdentityLeaks(view.wireAnswer, [RAW_EMAIL]), []);
     assert.match(view.wireAnswer, SURROGATE_EMAIL);
-    const wireUser = await view.maskForWire(input.userMessage);
-    assert.deepEqual(findIdentityLeaks(wireUser, [RAW_EMAIL]), []);
+    assert.deepEqual(findIdentityLeaks(view.wireUserMessage, [RAW_EMAIL]), []);
+    assert.match(view.wireUserMessage, SURROGATE_EMAIL);
+    assert.ok(modelRequests[0]!.includes(view.wireUserMessage), 'not the prompt the model received');
     assert.equal(await view.restore(view.wireAnswer), result.answer);
+    // One verifier request (the extractor's) is admitted through the view.
+    await view.admitWireView();
 
     const receipt = await egress.finalize();
     assert.equal(finalizeCalls(), 1);
@@ -74,14 +78,36 @@ describe('orchestrator — privacy hand-over for the verifier (runTurn)', () => 
     assert.deepEqual(recorded[0]!.receipt, receipt);
     // Attribution captured at hand-over survives the deferred persist.
     assert.equal(recorded[0]!.model, 'test-model');
-    // Turn spans and verifier requests are booked apart.
+    // Turn spans and verifier requests are booked apart; admitting the wire
+    // view masked nothing new.
     assert.ok((receipt?.maskedPromptSpans ?? []).some((s) => s.type === 'email'));
     assert.equal(receipt?.verifierEgress?.requests, 1);
+    assert.deepEqual(receipt?.verifierEgress?.maskedSpans, []);
 
     // Idempotent: a second finalize neither re-finalizes nor re-persists.
     assert.deepEqual(await egress.finalize(), receipt);
     assert.equal(finalizeCalls(), 1);
     assert.equal(recorded.length, 1);
+  });
+
+  it('hands over an MCP input-card reply as the label its model saw, on both paths', async () => {
+    const envelope = `__mcp_input_reply__ ${JSON.stringify({
+      correlationId: 'x',
+      inputResponses: { password: 'private-secret-value' },
+    })}`;
+    for (const path of ['runTurn', 'chatStream'] as const) {
+      const { service } = countingService();
+      const orch = buildOrch({ service, provider: echoingProvider() });
+      const input = { userMessage: envelope, sessionScope: `sess-mcp-${path}` };
+
+      orch.markPrivacyFinalizeHeld(input);
+      if (path === 'runTurn') await orch.runTurn(input);
+      else await drain(orch.chatStream(input));
+
+      const egress = orch.takePrivacyEgress(input);
+      assert.equal(egress?.verifierPrivacy?.wireUserMessage, '[Eingaben übermittelt: password]', path);
+      await egress?.finalize();
+    }
   });
 
   it('an unheld turn finalizes itself exactly as before', async () => {

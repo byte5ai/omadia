@@ -29,6 +29,15 @@ export class VerifierEgressBlockedError extends Error {
   }
 }
 
+/** What a turn's model saw and wrote — recorded by the answer loops. */
+export interface TurnWireView {
+  /** The user message as the model received it: normalised (an MCP
+   *  input-card reply is its label) and masked under the turn's policy. */
+  readonly userMessage: string;
+  /** The final answer as the model wrote it, before surrogate restore. */
+  readonly answer: string;
+}
+
 export interface PrivacyEgressContinuation {
   /** The turn id — also the key of the turn's `turn_receipts` row. */
   readonly receiptId: string;
@@ -36,8 +45,8 @@ export interface PrivacyEgressContinuation {
    * The view the verifier sends through, bound to this turn's handle.
    * `undefined` when the turn's answer is not model prose the verifier may
    * see: a server-rendered v4 answer (real values its model never saw), a
-   * Direct Line relay (restored before it got here) or the privacy refusal.
-   * The wrapper then skips verification for this turn.
+   * Direct Line relay (restored before it got here), the privacy refusal, or
+   * a turn that recorded no wire view. The wrapper then skips verification.
    */
   readonly verifierPrivacy: VerifierPrivacy | undefined;
   /**
@@ -58,26 +67,28 @@ export interface PrivacyEgressContinuation {
 export function createPrivacyEgressContinuation(deps: {
   readonly handle: PrivacyTurnHandle;
   readonly receiptId: string;
-  /** Pre-restore answer, or `undefined` when the verifier must skip. */
-  readonly wireAnswer: string | undefined;
+  /** The turn's wire view, or `undefined` when the verifier must skip. */
+  readonly wireView: TurnWireView | undefined;
   /** Finalize the handle and persist the receipt. Must not throw. */
   readonly settle: () => Promise<PrivacyReceipt | undefined>;
 }): PrivacyEgressContinuation {
   const { handle } = deps;
   let settled: Promise<PrivacyReceipt | undefined> | undefined;
   const verifierPrivacy: VerifierPrivacy | undefined =
-    deps.wireAnswer === undefined
+    deps.wireView === undefined
       ? undefined
       : {
-          wireAnswer: deps.wireAnswer,
-          async maskForWire(text: string): Promise<string> {
-            // Always asks the service — also for an empty text — so every
-            // verifier request is counted in the receipt.
-            const result = await handle.maskUserPrompt(text, { stage: 'verifier' });
+          wireUserMessage: deps.wireView.userMessage,
+          wireAnswer: deps.wireView.answer,
+          async admitWireView(): Promise<void> {
+            // The wire view already went through the turn's policy, and a
+            // second pass would read its placeholders as new values — so
+            // nothing is masked. The request still leaves the process: a
+            // verifier-stage call over no new text books it in the receipt.
+            const result = await handle.maskUserPrompt('', { stage: 'verifier' });
             if (result.outcome === 'blocked') {
               throw new VerifierEgressBlockedError(result.reason);
             }
-            return result.outcome === 'masked' ? result.maskedText : text;
           },
           async projectForWire(
             text: string,

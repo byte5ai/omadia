@@ -208,6 +208,50 @@ describe('end to end — the verifier’s requests fall under the turn’s priva
   });
 });
 
+describe('end to end — an MCP input-card reply reaches the verifier only as its label', () => {
+  // The card answer arrives as a machine envelope whose values were typed for
+  // a third-party server — a password the prompt detectors do not recognise,
+  // an address they do. The turn's model sees only the label; so must the
+  // verifier, with prompt masking on or off.
+  const SECRET = 'private-secret-value';
+  const CONTACT = 'secret@example.com';
+  const ENVELOPE = `__mcp_input_reply__ ${JSON.stringify({
+    correlationId: 'x',
+    inputResponses: { password: SECRET, contact: CONTACT },
+  })}`;
+  const LABEL = '[Eingaben übermittelt: password, contact]';
+
+  function assertNoEnvelope(requests: readonly string[]): void {
+    assert.ok(requests.length > 0, 'the verifier did not run');
+    for (const request of requests) {
+      for (const part of [SECRET, CONTACT, '__mcp_input_reply__', 'inputResponses', 'correlationId']) {
+        assert.equal(request.includes(part), false, `"${part}" reached a verifier request`);
+      }
+    }
+    assert.ok(requests[0]!.includes(LABEL), 'the extraction request lacks the prompt the model saw');
+  }
+
+  for (const maskUserPrompt of [true, false]) {
+    it(`chat(), prompt masking ${maskUserPrompt ? 'on' : 'off'}`, async () => {
+      const requests: string[] = [];
+      const { agent } = wrapped({ requests, recorded: [], maskUserPrompt });
+
+      await agent.chat({ userMessage: ENVELOPE, sessionScope: `sess-e2e-mcp-${String(maskUserPrompt)}` });
+
+      assertNoEnvelope(requests);
+    });
+  }
+
+  it('chatStream()', async () => {
+    const requests: string[] = [];
+    const { agent } = wrapped({ requests, recorded: [], maskUserPrompt: false });
+
+    await drain(agent.chatStream({ userMessage: ENVELOPE, sessionScope: 'sess-e2e-mcp-s' }));
+
+    assertNoEnvelope(requests);
+  });
+});
+
 describe('end to end — where the verifier sends nothing', () => {
   it('a server-rendered answer is not verified; its receipt is still finalized and attached', async () => {
     const requests: string[] = [];

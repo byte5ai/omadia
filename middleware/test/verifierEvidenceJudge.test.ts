@@ -289,11 +289,11 @@ describe('verifier/evidenceJudge - privacy view', () => {
     });
     const turn = { sessionId: 's-judge', turnId: 't-judge' };
     return {
+      wireUserMessage: '',
       wireAnswer: '',
-      async maskForWire(text: string): Promise<string> {
-        const r = await service.maskUserPrompt!({ ...turn, text, stage: 'verifier' });
+      async admitWireView(): Promise<void> {
+        const r = await service.maskUserPrompt!({ ...turn, text: '', stage: 'verifier' });
         if (r.outcome === 'blocked') throw new Error(r.reason);
-        return r.outcome === 'masked' ? r.maskedText : text;
       },
       async projectForWire(text: string, identityValues: readonly string[]): Promise<string> {
         const r = await service.projectVerifierText!({ ...turn, text, identityValues });
@@ -358,8 +358,9 @@ describe('verifier/evidenceJudge - privacy view', () => {
       content: 'Graph-Node odoo:res.company:1 — employees=48',
     };
     const view: VerifierPrivacy = {
+      wireUserMessage: '',
       wireAnswer: '',
-      maskForWire: async (t) => t,
+      admitWireView: async () => undefined,
       projectForWire: async (t) => t,
       restore: async (t) => t.split('PLATZHALTER-NAME-9').join('Firma'),
     };
@@ -408,8 +409,9 @@ describe('verifier/evidenceJudge - privacy view', () => {
       },
     });
     const view: VerifierPrivacy = {
+      wireUserMessage: '',
       wireAnswer: '',
-      maskForWire: async () => {
+      admitWireView: async () => {
         throw new Error('blocked');
       },
       projectForWire: async () => {
