@@ -2820,6 +2820,16 @@ Genau ein `done` oder `error` schließt den Stream. Header:
 `Content-Type: application/x-ndjson; charset=utf-8`, `X-Accel-Buffering: no`
 (nginx-buffer-off).
 
+**Antwort-Verifier.** Ist `verifier@1` aktiv, folgt auf `done` noch genau ein
+`{ type: 'verifier'; summary }` (Status/Badge der Prüfung; die Web-UI wertet es
+derzeit nicht aus). Läuft zusätzlich der Privacy Shield, hält der Wrapper
+`done` zurück, bis der innere Stream gedrained und der Verifier fertig ist:
+`done` trägt dann — sofern der Turn einen hat — den vollständigen Receipt
+(`privacyReceipt` inkl. `verifierEgress`, `receiptId`), direkt danach kommt
+`verifier`. Text-Deltas
+laufen unverändert live, nur der Abschluss wartet (Heartbeats laufen weiter).
+Details: `docs/security-architecture.md` §6e.
+
 **Degradierter Turn (#1094).** Wirft ein Turn, *nachdem* mindestens ein
 Tool-Call bereits committet hat, bleibt das terminale Event bewusst `done` —
 ein `error` würde den committeten Seiteneffekt als gescheitert melden und den
