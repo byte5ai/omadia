@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { DockerSandboxBackend, _internal, type DockerSandboxBackendOptions } from '../../packages/harness-sandbox/src/dockerSandbox.js';
 import { resolveAgentComputerProfile } from '../../packages/harness-sandbox/src/agentComputerProfile.js';
 import type { DockerExec, DockerExecContext, DockerExecResult } from '../../packages/harness-sandbox/src/dockerExec.js';
+import type { Sandbox } from '../../packages/harness-sandbox/src/sandbox.js';
 
 /**
  * Resource ceilings of `DockerSandboxBackend` (see `resourceLimits.ts`), with
@@ -14,7 +15,8 @@ import type { DockerExec, DockerExecContext, DockerExecResult } from '../../pack
  *    `docker update` argv, their position before the image, and the
  *    update-before-start order on re-attach.
  *  - REAL-DOCKER tier (`SANDBOX_DOCKER_TEST=1`, opt-in): what the daemon
- *    recorded (`docker inspect`) and that the memory ceiling really kills an
+ *    recorded (`docker inspect`), the CPU quota the kernel enforces
+ *    (`cpu.max`, cgroup v2) and that the memory ceiling really kills an
  *    oversized allocation.
  */
 
@@ -156,6 +158,31 @@ describe('DockerSandboxBackend.provision — resource limits (stub)', () => {
     assert.match(logged[0]!, /docker update/);
     assert.ok(logged[0]!.includes(name));
   });
+
+  it('a CPU or memory value Docker would apply as no limit reaches neither docker run nor docker update', async () => {
+    for (const cpus of [0.000001, 1e-7, 1e64]) {
+      const args = await provisionFresh({ resourceLimits: { cpus, memoryMb: 1e21 } });
+      assert.equal(flagBeforeImage(args, '--cpus'), '1', `cpus ${String(cpus)} must fall back to the default`);
+      assert.equal(flagBeforeImage(args, '--memory'), '512m');
+    }
+
+    const name = _internal.containerNameFor('personal:limits-out-of-range');
+    const { exec, calls } = stubExec((ctx) => (ctx.args[0] === 'ps' ? ok(name) : ok()));
+    const backend = new DockerSandboxBackend({ execDocker: exec, resourceLimits: { cpus: 1e-7, memoryMb: 8796093022208 } });
+    await backend.provision({ scopeKey: 'personal:limits-out-of-range', profile: resolveAgentComputerProfile() });
+    assert.deepEqual(calls.find((c) => c.args[0] === 'update')?.args, [
+      'update',
+      '--memory',
+      '512m',
+      '--memory-swap',
+      '512m',
+      '--cpus',
+      '1',
+      '--pids-limit',
+      '256',
+      name,
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -179,6 +206,13 @@ function inspectLimits(name: string): string {
 }
 
 const DEFAULT_LIMITS_INSPECTED = '536870912 536870912 1000000000 256';
+
+/** The CFS quota the kernel enforces: `<quota µs | max> <period µs>` (cgroup v2). */
+async function cpuMax(sandbox: Sandbox): Promise<string> {
+  const result = await sandbox.run('cat /sys/fs/cgroup/cpu.max');
+  assert.equal(result.exitCode, 0, `cpu.max unreadable (this tier expects cgroup v2): ${result.stderr}`);
+  return result.stdout.trim();
+}
 
 describeIfDocker('DockerSandboxBackend — resource limits on a real daemon (SANDBOX_DOCKER_TEST=1)', () => {
   isolateLimitEnv();
@@ -237,5 +271,35 @@ describeIfDocker('DockerSandboxBackend — resource limits on a real daemon (SAN
 
     await new DockerSandboxBackend({ resourceLimits: { memoryMb: 1024 } }).provision({ scopeKey, profile });
     assert.equal(inspectLimits(sandbox.id), '1073741824 1073741824 1000000000 256');
+  });
+
+  it('a fractional CPU share becomes a real CFS quota', async () => {
+    const sandbox = await new DockerSandboxBackend({ resourceLimits: { cpus: 0.5 } }).provision({
+      scopeKey: `personal:limits-cpu-half-${String(Date.now())}`,
+      profile: resolveAgentComputerProfile(),
+    });
+    cleanup.push(sandbox.id);
+    assert.equal(inspectLimits(sandbox.id).split(' ')[2], '500000000');
+    assert.equal(await cpuMax(sandbox), '50000 100000');
+  });
+
+  it('a CPU value Docker would run without a quota gets the default quota instead', async () => {
+    for (const cpus of [0.000001, 1e-7, 1e64]) {
+      const sandbox = await new DockerSandboxBackend({ resourceLimits: { cpus } }).provision({
+        scopeKey: `personal:limits-cpu-${String(cpus)}-${String(Date.now())}`,
+        profile: resolveAgentComputerProfile(),
+      });
+      cleanup.push(sandbox.id);
+      assert.equal(await cpuMax(sandbox), '100000 100000', `cpus ${String(cpus)} must not leave the container without a quota`);
+    }
+  });
+
+  it('a memory value Docker would record as no limit gets the default ceiling instead', async () => {
+    const sandbox = await new DockerSandboxBackend({ resourceLimits: { memoryMb: 1e21 } }).provision({
+      scopeKey: `personal:limits-mem-huge-${String(Date.now())}`,
+      profile: resolveAgentComputerProfile(),
+    });
+    cleanup.push(sandbox.id);
+    assert.equal(inspectLimits(sandbox.id), DEFAULT_LIMITS_INSPECTED);
   });
 });

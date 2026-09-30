@@ -53,8 +53,9 @@ import type {
  * build, or under different limits) gets the current ones via `docker update`
  * before it is started again. That update is best-effort: a daemon that
  * refuses it is logged, and the container keeps the limits it has.
- * Same two-tier proof as egress: the stub tests assert the argv, the
- * real-Docker tier asserts what the daemon applied and that an oversized
+ * Same two-tier proof as egress (`dockerSandboxLimits.test.ts`): the stub
+ * tests assert the argv, the real-Docker tier asserts what the daemon and the
+ * kernel applied, including for out-of-range values, and that an oversized
  * allocation is killed.
  */
 export interface DockerSandboxBackendOptions {

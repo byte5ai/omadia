@@ -10,18 +10,21 @@
  * into `docker run` (and `docker update` on re-attach), never merely declared.
  *
  * Fail-closed like `DEFAULT_AGENT_COMPUTER_PROFILE`: there is deliberately no
- * "unlimited". Docker reads `0` as "no limit" for all three flags, so a value
- * that is not a positive number (0, negative, empty, junk) falls back to the
- * next source instead of reaching argv. An operator who needs more sets a
- * larger number.
+ * "unlimited". Docker reads `0` as "no limit" for all three flags, and it
+ * also applies no limit to some positive values (see
+ * `SANDBOX_RESOURCE_LIMIT_BOUNDS`). So only a number inside its field's range
+ * counts; anything else (0, negative, out of range, empty, junk) falls back
+ * to the next source instead of reaching argv. An operator who needs more
+ * sets a larger number within the range.
  */
 export interface SandboxResourceLimits {
   /** RAM ceiling in MiB. Also the RAM+swap ceiling (`--memory-swap`), so the
-   *  container cannot swap past it. A whole number. */
+   *  container cannot swap past it. A whole number from 6 to 1048576 (1 TiB). */
   readonly memoryMb: number;
-  /** CPU share (`--cpus`); fractions such as 0.5 are allowed. */
+  /** CPU share (`--cpus`) from 0.01 to 1024; fractions such as 0.5 are allowed. */
   readonly cpus: number;
-  /** Maximum number of processes and threads (`--pids-limit`). A whole number. */
+  /** Maximum number of processes and threads (`--pids-limit`). A whole number
+   *  from 1 to 4194304. */
   readonly pidsLimit: number;
 }
 
@@ -46,10 +49,45 @@ export const SANDBOX_RESOURCE_LIMIT_ENV_KEYS: Readonly<Record<keyof SandboxResou
     pidsLimit: 'OMADIA_SANDBOX_PIDS_LIMIT',
   });
 
+interface LimitRange {
+  readonly min: number;
+  readonly max: number;
+}
+
+/**
+ * The range in which Docker applies each value as a real ceiling. Outside it
+ * Docker refuses the container or, worse, starts it with no limit and no
+ * error (reproduced on Docker 29.4, cgroup v2):
+ *
+ * - `cpus` becomes a CFS quota of `cpus × 100000` µs per 100 ms period,
+ *   truncated to whole µs. Below 0.00001 the quota is 0, which runc writes as
+ *   `max`: unlimited. Below 0.01 the kernel refuses the sub-millisecond quota.
+ *   A huge value overflows the CLI's int64 nano-CPU count, and `1e64` wraps
+ *   to exactly 0: unlimited again. Docker itself refuses more CPUs than the
+ *   host has; 1024 only keeps the number finite.
+ * - `memoryMb`: Docker refuses less than 6 MiB. From 2^43 MiB the byte count
+ *   overflows int64, and `String(1e21)` is `1e+21`, which Docker parses as a
+ *   float; on arm64 both are recorded as no limit. 1 TiB is far below that.
+ * - `pidsLimit`: the kernel's `pids.max` takes at most 4194304
+ *   (`PID_MAX_LIMIT` on 64-bit Linux).
+ *
+ * Every value in range renders as plain digits, never in exponent notation.
+ */
+export const SANDBOX_RESOURCE_LIMIT_BOUNDS: Readonly<Record<keyof SandboxResourceLimits, LimitRange>> =
+  Object.freeze({
+    memoryMb: Object.freeze({ min: 6, max: 1_048_576 }),
+    cpus: Object.freeze({ min: 0.01, max: 1024 }),
+    pidsLimit: Object.freeze({ min: 1, max: 4_194_304 }),
+  });
+
+function inRange(value: number, range: LimitRange): boolean {
+  return value >= range.min && value <= range.max;
+}
+
 const IS_VALID: Readonly<Record<keyof SandboxResourceLimits, (value: number) => boolean>> = {
-  memoryMb: (value) => Number.isInteger(value) && value > 0,
-  cpus: (value) => Number.isFinite(value) && value > 0,
-  pidsLimit: (value) => Number.isInteger(value) && value > 0,
+  memoryMb: (value) => Number.isInteger(value) && inRange(value, SANDBOX_RESOURCE_LIMIT_BOUNDS.memoryMb),
+  cpus: (value) => inRange(value, SANDBOX_RESOURCE_LIMIT_BOUNDS.cpus),
+  pidsLimit: (value) => Number.isInteger(value) && inRange(value, SANDBOX_RESOURCE_LIMIT_BOUNDS.pidsLimit),
 };
 
 function parseLimit(raw: unknown, isValid: (value: number) => boolean): number | undefined {
@@ -88,7 +126,7 @@ export function resolveSandboxResourceLimits(
  * The flags for `docker run` and `docker update`. Every site that starts a
  * container for agent code goes through this builder, so a new site cannot
  * forget one flag. The input is re-validated: a hand-built `{ memoryMb: 0 }`
- * would otherwise tell Docker "no limit".
+ * or `{ cpus: 1e-7 }` would otherwise tell Docker "no limit".
  *
  * `--memory-swap` equals `--memory`: without it Docker lets the container
  * swap up to the same amount again, and `docker update` refuses to raise

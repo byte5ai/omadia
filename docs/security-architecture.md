@@ -396,10 +396,26 @@ Every `docker run` for agent code now carries three ceilings:
   reads the values once, passes them to both Docker paths and logs the
   effective limits at boot.
 - **Fail-closed, no "unlimited".** Docker reads `0` as "no limit" for all three
-  flags. A value that is not a positive number (a whole number for memory and
-  PIDs) counts as unset and falls through to the next source.
-  `dockerResourceLimitArgs()` re-validates its input, so a hand-built
-  `{ memoryMb: 0 }` cannot reach argv either.
+  flags, and it also starts some positive values with no limit and no error:
+  `--cpus` below 0.00001 truncates to a CFS quota of 0, which runc writes as
+  `cpu.max max`; `--cpus 1e64` overflows the CLI's int64 nano-CPU count and
+  wraps to 0; `--memory` from 2^43 MiB, or rendered as `1e+21m`, overflows
+  int64 and is recorded as no limit on arm64. So a value only counts inside
+  its field's range (`SANDBOX_RESOURCE_LIMIT_BOUNDS` in `resourceLimits.ts`):
+  - memory: a whole number of MiB from 6 (Docker refuses less) to 1048576,
+    i.e. 1 TiB, far below the overflow;
+  - CPUs: 0.01 (the smallest quota the kernel accepts) to 1024, which only
+    keeps the value finite, since Docker refuses more CPUs than the host has;
+  - PIDs: a whole number from 1 to 4194304, the most the kernel's `pids.max`
+    takes (`PID_MAX_LIMIT`).
+
+  Anything else (0, negative, out of range, empty, junk) counts as unset and
+  falls through to the next source, and every accepted value renders as plain
+  digits, never in exponent notation. `dockerResourceLimitArgs()` re-validates
+  its input, so a hand-built `{ memoryMb: 0 }` or `{ cpus: 1e-7 }` cannot
+  reach argv either. A value in range that Docker still refuses (more CPUs
+  than the host has, a CPU value with more than nine decimals) makes
+  `docker run` fail, which is closed as well.
 - **Swap is capped at the memory limit.** With `--memory` alone Docker allows
   the same amount again as swap, so "512 MiB" would have meant up to 1 GiB. It
   also makes raising the limit work: `docker update` refuses a `--memory` above
@@ -418,12 +434,14 @@ Every `docker run` for agent code now carries three ceilings:
 - **Host caveat.** On a host whose kernel lacks one of the cgroup controllers,
   `docker run` prints a warning and starts the container without that limit
   (exit 0), so an argv assertion cannot notice. The real-Docker test tier
-  (`SANDBOX_DOCKER_TEST=1`) checks `docker inspect` and that a 700 MB
-  allocation is killed; run it once on any new host type.
+  (`SANDBOX_DOCKER_TEST=1`) checks `docker inspect`, reads the enforced CPU
+  quota from `cpu.max` (cgroup v2) and checks that a 700 MB allocation is
+  killed; run it once on any new host type.
 
-Tests: `middleware/test/sandbox/resourceLimits.test.ts`,
-`middleware/test/sandbox/dockerSandbox.test.ts` (stub tier for argv and the
-update-before-start order, real tier for what the daemon applied),
+Tests: `middleware/test/sandbox/resourceLimits.test.ts` (ranges, fallback
+order, argv), `middleware/test/sandbox/dockerSandboxLimits.test.ts` (stub tier
+for argv and the update-before-start order, real tier for what the daemon and
+the kernel applied, including out-of-range values),
 `middleware/test/sandbox/sandboxLimitsConfig.test.ts` and
 `middleware/test/publish/dockerPublishRuntime.test.ts`.
 
@@ -1455,7 +1473,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       (§10c, #778).
 - [ ] A new `docker run` (or `docker update`) for agent code takes its limit
       flags from `dockerResourceLimitArgs()` in `@omadia/sandbox`, never its
-      own copy, and offers no way to switch a limit off (§3b).
+      own copy, and offers no way to switch a limit off. A new limit field
+      gets a range in `SANDBOX_RESOURCE_LIMIT_BOUNDS` that excludes every
+      value Docker would apply as no limit, checked on a real daemon (§3b).
 - [ ] A new surface that has to be framed lives under `/p/*` or `/bot-api/*`
       and sets its own `frame-ancestors`. The exemption in
       `web-ui/app/_lib/securityHeaders.ts` is not widened, and the operator-UI

@@ -48,6 +48,13 @@ describe('readSandboxResourceLimits', () => {
     assert.deepEqual(readSandboxResourceLimits(get, env), { memoryMb: 2048, cpus: 0.5, pidsLimit: 256 });
   });
 
+  it('a setting Docker would apply as no limit counts as unset, like junk', () => {
+    const get = configGetter({ sandbox_memory_mb: '1e21', sandbox_cpus: '0.000001', sandbox_pids_limit: '4194305' });
+    assert.deepEqual(readSandboxResourceLimits(get, {}), { memoryMb: 512, cpus: 1, pidsLimit: 256 });
+    const huge = configGetter({ sandbox_cpus: '1e64' });
+    assert.equal(readSandboxResourceLimits(huge, { OMADIA_SANDBOX_CPUS: '2' }).cpus, 2);
+  });
+
   it('describes the effective limits for the boot log', () => {
     assert.equal(
       describeSandboxResourceLimits({ memoryMb: 512, cpus: 1, pidsLimit: 256 }),

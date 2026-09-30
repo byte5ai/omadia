@@ -2557,17 +2557,21 @@ Orchestrator-Setup-Feld > ENV > Default. Die Setup-Felder sind Plugin-Konfigurat
 
 | Variable | Setup-Feld | Default | Wirkung |
 |---|---|---|---|
-| `OMADIA_SANDBOX_MEMORY_MB` | `sandbox_memory_mb` | `512` | `docker run --memory` **und** `--memory-swap` mit demselben Wert, in MiB: der Container kann nicht über die Grenze hinaus auslagern. |
-| `OMADIA_SANDBOX_CPUS` | `sandbox_cpus` | `1` | `--cpus`, Bruchteile erlaubt (`0.5`). |
-| `OMADIA_SANDBOX_PIDS_LIMIT` | `sandbox_pids_limit` | `256` | `--pids-limit`, Prozesse und Threads je Container. |
+| `OMADIA_SANDBOX_MEMORY_MB` | `sandbox_memory_mb` | `512` | `docker run --memory` **und** `--memory-swap` mit demselben Wert, in MiB, ganze Zahl von 6 bis 1048576 (1 TiB): der Container kann nicht über die Grenze hinaus auslagern. |
+| `OMADIA_SANDBOX_CPUS` | `sandbox_cpus` | `1` | `--cpus` von 0.01 bis 1024, Bruchteile erlaubt (`0.5`). |
+| `OMADIA_SANDBOX_PIDS_LIMIT` | `sandbox_pids_limit` | `256` | `--pids-limit`, ganze Zahl von 1 bis 4194304, Prozesse und Threads je Container. |
 
-Leer, `0`, negativ oder nicht numerisch zählt als nicht gesetzt; ein
-„unbegrenzt“ gibt es bewusst nicht, weil Docker `0` als „kein Limit“ liest. Neue
-Werte gelten für neu erstellte Container; eine bestehende persistente Sandbox
-bekommt sie beim nächsten Wiederanhängen per `docker update` (Best-Effort, ein
-Fehler landet im Log, der Container läuft mit seinen alten Limits weiter). Die
-wirksamen Werte stehen beim Boot in der Log-Zeile `sandbox_execute_enabled=true`
-bzw. `sandbox_publish_enabled=true`. Details: `docs/security-architecture.md` §3b.
+Leer, `0`, negativ, nicht numerisch oder außerhalb des Bereichs zählt als nicht
+gesetzt; ein „unbegrenzt“ gibt es bewusst nicht. Docker liest nicht nur `0` als
+„kein Limit“, sondern startet auch manche positiven Werte still ohne Limit
+(`--cpus 0.000001` oder `1e64`, `--memory` ab 2^43 MiB oder als `1e+21m` auf
+arm64); die Bereiche (`SANDBOX_RESOURCE_LIMIT_BOUNDS` in `resourceLimits.ts`)
+schließen genau diese Werte aus. Neue Werte gelten für neu erstellte Container;
+eine bestehende persistente Sandbox bekommt sie beim nächsten Wiederanhängen per
+`docker update` (Best-Effort, ein Fehler landet im Log, der Container läuft mit
+seinen alten Limits weiter). Die wirksamen Werte stehen beim Boot in der
+Log-Zeile `sandbox_execute_enabled=true` bzw. `sandbox_publish_enabled=true`.
+Details: `docs/security-architecture.md` §3b.
 
 ### Web-UI: Frame-Freigabe (`UI_FRAME_ANCESTORS`)
 

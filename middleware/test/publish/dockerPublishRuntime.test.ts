@@ -166,6 +166,14 @@ describe('DockerPublishRuntime.deploy — wiring (stub)', () => {
       assert.equal(flagBeforeImage(args, '--cpus'), '1');
       assert.equal(flagBeforeImage(args, '--pids-limit'), '32');
     });
+
+    it('a value Docker would apply as no limit never reaches the app container argv', async () => {
+      const args = await runArgsFor({ resourceLimits: { memoryMb: 1e21, cpus: 1e-7, pidsLimit: 4194305 } });
+      assert.equal(flagBeforeImage(args, '--memory'), '512m');
+      assert.equal(flagBeforeImage(args, '--memory-swap'), '512m');
+      assert.equal(flagBeforeImage(args, '--cpus'), '1');
+      assert.equal(flagBeforeImage(args, '--pids-limit'), '256');
+    });
   });
 
   it('surfaces a clear error when the container fails to start', async () => {

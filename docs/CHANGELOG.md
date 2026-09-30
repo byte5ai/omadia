@@ -57,11 +57,16 @@ Every sandbox and publish container gets `--memory` and `--memory-swap`
 `@omadia/sandbox`. Each value comes from the orchestrator setup fields
 `sandbox_memory_mb`, `sandbox_cpus` and `sandbox_pids_limit`, else from
 `OMADIA_SANDBOX_MEMORY_MB`, `OMADIA_SANDBOX_CPUS` and
-`OMADIA_SANDBOX_PIDS_LIMIT`, else the default; `0` or junk never means
-"unlimited". An existing persistent sandbox gets the current limits through
-`docker update` when it is next re-attached, while a publish container created
-before this change keeps running without them until a new version replaces
-it. Details in `docs/security-architecture.md` §3b and §10e and in
+`OMADIA_SANDBOX_PIDS_LIMIT`, else the default. A value only counts inside its
+range (6 to 1048576 MiB, 0.01 to 1024 CPUs, 1 to 4194304 PIDs); `0`, junk
+and anything out of range fall back instead of meaning "unlimited". The
+ranges matter because Docker starts some positive values with no limit and
+no error: `--cpus 0.000001` or `--cpus 1e64` leave the container without a
+CPU quota, and a memory value of 2^43 MiB or more (or `1e+21m`) is recorded
+as no limit on arm64. An existing persistent sandbox gets the current limits
+through `docker update` when it is next re-attached, while a publish container
+created before this change keeps running without them until a new version
+replaces it. Details in `docs/security-architecture.md` §3b and §10e and in
 `docs/upgrading.md`.
 
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)

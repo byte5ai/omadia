@@ -204,7 +204,10 @@ default install.
   middleware for the host. Raise the orchestrator setup fields
   `sandbox_memory_mb`, `sandbox_cpus` and `sandbox_pids_limit`, or set
   `OMADIA_SANDBOX_MEMORY_MB`, `OMADIA_SANDBOX_CPUS` and
-  `OMADIA_SANDBOX_PIDS_LIMIT` on the middleware. There is no "unlimited".
+  `OMADIA_SANDBOX_PIDS_LIMIT` on the middleware, within 6 to 1048576 MiB,
+  0.01 to 1024 CPUs and 1 to 4194304 processes. There is no "unlimited": a
+  value outside those ranges is ignored and the default applies, because
+  Docker would run some of them (such as 0.000001 CPUs) with no limit at all.
   Existing persistent sandboxes get the limits the next time they are used;
   apps published before the upgrade keep running without them until you
   publish a new version.
