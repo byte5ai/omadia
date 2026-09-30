@@ -17,6 +17,7 @@ import { prepareInstall } from './installPreflight';
 import { recordCheckFailed, recordCheckReachedFeed } from './updaterCheckHealth';
 import { fillPlaceholders, type ShellTranslate } from './shellStrings';
 import { shellLocale } from './shellLocale';
+import { decideNoUpdate, type HoldBack } from './updateHoldBack';
 
 /** Where a user is sent when the automatic path has given up. */
 const RELEASES_URL = 'https://github.com/byte5ai/omadia/releases';
@@ -153,10 +154,16 @@ export function initUpdater(): void {
     });
   });
   autoUpdater.on('update-not-available', (info) => {
-    log.info(`[updater] up to date: ${info.version}`);
     recordCheckReachedFeed();
-    if (!takeManualCheckPending()) return;
+    // Not always "up to date": electron-updater sends this same event, with the
+    // FEED's version, when the feed's minimumSystemVersion is above this OS.
+    const outcome = decideNoUpdate(info, takeManualCheckPending());
+    if (outcome.kind === 'silent') return;
     const t = shellT();
+    if (outcome.kind === 'heldBack') {
+      void showUpdaterDialog(holdBackDialog(t, outcome.holdBack, outcome.current));
+      return;
+    }
     void showUpdaterDialog({
       type: 'info',
       title: t('updater.upToDate.title', 'No update available'),
@@ -166,7 +173,7 @@ export function initUpdater(): void {
       ),
       detail: fillPlaceholders(
         t('updater.upToDate.detail', 'Current version: {version}'),
-        { version: info.version },
+        { version: outcome.current },
       ),
     });
   });
@@ -304,6 +311,43 @@ export async function checkForUpdatesManually(): Promise<void> {
       detail: String(err),
     });
   }
+}
+
+/**
+ * The feed has a release this computer's OS cannot run (`updateHoldBack.ts`):
+ * say which OS it needs, and that updates stop here — security fixes included —
+ * until the OS moves. Telling this user "you are up to date" is what hid it.
+ */
+function holdBackDialog(
+  t: ShellTranslate,
+  holdBack: HoldBack,
+  current: string,
+): MessageBoxOptions {
+  const message =
+    holdBack.macos === null
+      ? fillPlaceholders(
+          t(
+            'updater.osTooOld.messageGeneric',
+            "omadia {version} needs a newer version of this computer's operating system.",
+          ),
+          { version: holdBack.version },
+        )
+      : fillPlaceholders(
+          t('updater.osTooOld.message', 'omadia {version} needs macOS {macos} or later.'),
+          { version: holdBack.version, macos: holdBack.macos },
+        );
+  return {
+    type: 'warning',
+    title: t('updater.osTooOld.title', 'Update needs a newer operating system'),
+    message,
+    detail: fillPlaceholders(
+      t(
+        'updater.osTooOld.detail',
+        'This computer stays on omadia {current} and gets no further updates, security fixes included, until its operating system is updated. After that, omadia offers {version} on its own.',
+      ),
+      { current, version: holdBack.version },
+    ),
+  };
 }
 
 /**
