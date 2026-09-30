@@ -28,7 +28,7 @@ import type { RequestHandler } from 'express';
 import cookieParser from 'cookie-parser';
 import { config, parseRegistries } from './config.js';
 import { LLM_SETUP_HINT } from './llmSetupHint.js';
-import { createTigrisStore } from '@omadia/diagrams';
+import { attachmentStoreHealth, selectAttachmentStore } from './platform/attachmentStore.js';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
@@ -1926,39 +1926,21 @@ async function main(): Promise<void> {
   // (S+8 sub-commit 2b). Mirrors the post-activate consumption pattern used
   // by `memoryStore`, `microsoft365.graph`, `confluence.client`, etc.
 
-  // --- Diagram rendering (Kroki + Tigris/MinIO) ------------------------------
-  // Enabled when all four runtime deps are set in env. Missing any one? The
-  // middleware stays up, the tool is simply not registered. No half-wired mode.
-  // The render_diagram tool + /diagrams route are now contributed by the
-  // @omadia/diagrams plugin (middleware/packages/harness-diagrams).
-  // The kernel still needs a Tigris client for Teams-attachment serving —
-  // that's a separate consumer of the same bucket. Clients with different
-  // purposes; sharing the bucket means one set of AWS creds.
-  let diagramStoreForRouter: ReturnType<typeof createTigrisStore> | undefined;
-  const tigrisReady =
-    Boolean(config.BUCKET_NAME) &&
-    Boolean(config.AWS_ENDPOINT_URL_S3) &&
-    Boolean(config.AWS_ACCESS_KEY_ID) &&
-    Boolean(config.AWS_SECRET_ACCESS_KEY);
-  if (tigrisReady) {
-    diagramStoreForRouter = createTigrisStore({
-      endpoint: config.AWS_ENDPOINT_URL_S3!,
-      accessKeyId: config.AWS_ACCESS_KEY_ID!,
-      secretAccessKey: config.AWS_SECRET_ACCESS_KEY!,
-      bucket: config.BUCKET_NAME!,
-    });
+  // --- Attachment store (S3 / Tigris / MinIO, or a local directory) ---------
+  // The render_diagram tool + /diagrams route are contributed by the
+  // @omadia/diagrams plugin (middleware/packages/harness-diagrams), which
+  // builds its own S3 client. The kernel's store is a separate consumer of the
+  // same bucket: Teams-attachment persistence and the orchestrator's attachment
+  // reader. Without a bucket, ATTACHMENT_STORE_DIR selects a local directory
+  // (the desktop app's "Attachments" switch); see platform/attachmentStore.ts.
+  const attachmentStore = selectAttachmentStore(config);
+  if (attachmentStore.store) {
     // Phase 5B: publish so dynamic-imported channel plugins (Teams) can
     // late-resolve the attachment store via ctx.services.get('tigrisStore')
     // instead of constructor-injected Deps.
-    serviceRegistry.provide('tigrisStore', diagramStoreForRouter);
-    console.log(
-      `[middleware] tigris attachment store ready (bucket=${config.BUCKET_NAME!})`,
-    );
-  } else {
-    console.log(
-      '[middleware] tigris attachment store DISABLED (BUCKET_NAME / AWS_* not fully set)',
-    );
+    serviceRegistry.provide('tigrisStore', attachmentStore.store);
   }
+  console.log(attachmentStore.message);
 
   // enrich_company tool is now contributed by the Odoo integration plugin's
   // activate() via ctx.tools.register — construction moved in phase-2.2-iii.
@@ -3166,9 +3148,18 @@ async function main(): Promise<void> {
       // polls THIS field to decide whether the new image is actually serving,
       // and rolls the stack back when the requested version never appears.
       // Non-sensitive: a release tag that is public on GitHub anyway.
+      // `attachments` — which store backs `tigrisStore` ('s3' | 'filesystem' |
+      // 'none'), so a caller that asked for one (the desktop "Attachments"
+      // switch) can check it took. Backend only, never a bucket or a path.
       res
         .status(kg.pool === 'dead' ? 503 : 200)
-        .json({ status, version: appVersion.version, kg, disclosure });
+        .json({
+          status,
+          version: appVersion.version,
+          kg,
+          disclosure,
+          attachments: attachmentStoreHealth(attachmentStore),
+        });
     })();
   });
 
