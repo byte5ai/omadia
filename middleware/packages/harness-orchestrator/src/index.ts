@@ -473,6 +473,21 @@ export {
 export { createPrivacyTurnHandle } from './privacyHandle.js';
 export type { PrivacyTurnHandle } from './privacyHandle.js';
 export { INTERN_EXEMPT_TOOLS, isInternExemptTool } from './privacyInternPolicy.js';
+// Tool errors on their way to a model: the one helper every dispatch seam
+// routes a thrown exception or a returned `Error:` text through.
+export {
+  MAX_REDACTABLE_TOOL_ERROR_CHARS,
+  guardControlFlowResult,
+  looksExceptionShaped,
+  returnedToolErrorWithheldNotice,
+  thrownToolErrorForModel,
+  toolErrorRef,
+  withholdThrownToolError,
+} from './toolErrorRedaction.js';
+export type {
+  ThrownToolErrorOutcome,
+  ToolErrorWithholdReason,
+} from './toolErrorRedaction.js';
 export { LoopbackMcpServer } from './loopbackMcpServer.js';
 export type {
   LoopbackMcpServerDeps,

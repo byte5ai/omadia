@@ -43,6 +43,12 @@
  *
  * A fourth path — no privacy provider installed at all, so results flow through
  * unchanged — is closed in `PublicMcpServer` by refusing the call.
+ *
+ * Tool errors: a handler that THROWS gets the dispatcher's withheld notice
+ * (class name, sanitised code, the request id as log ref — `origin:
+ * 'dispatcher'`, so it is served as the error it is). A returned `Error:` text
+ * is never served: the gate answers tool-error redaction with `withheld`, and
+ * the result is refused like any other unmasked one.
  */
 
 import type { PrivacyTurnHandle } from '@omadia/orchestrator';
@@ -121,6 +127,35 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
      */
     checkBypass(): undefined {
       return undefined;
+    },
+
+    /**
+     * Pinned to `withheld`. The dispatcher runs a returned `Error:` text through
+     * this before handing it on; a redacted text still would not set `didMask`,
+     * so `assertMaskingCrossed` would discard it on this path anyway. Answering
+     * `withheld` makes that fail-closed outcome explicit (the dispatcher records
+     * it as such) and spends no detector — or C1 sidecar call — on text that is
+     * never served. Serving redacted error hints to API-key callers would be a
+     * separate decision.
+     */
+    async redactToolErrorText() {
+      return {
+        outcome: 'withheld' as const,
+        reason: 'the public MCP endpoint does not serve tool-error text',
+      };
+    },
+
+    /**
+     * Not forwarded. A public request is never finalized into a turn receipt, so
+     * an entry handed to the provider would sit in its per-turn state with
+     * nothing to drain it. This path's record of a failed call is its
+     * `mcp_call_log` row; the line below is PII-free (names and a byte count).
+     */
+    async recordToolError(input) {
+      console.log(
+        `[public-mcp] tool error ${input.outcome} tool=${input.toolName} ` +
+          `carrier=${input.carrier} bytes=${String(input.bytes)}`,
+      );
     },
   };
 

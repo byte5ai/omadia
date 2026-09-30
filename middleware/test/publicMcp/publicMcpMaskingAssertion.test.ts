@@ -302,9 +302,11 @@ describe('public MCP endpoint — the masking boundary must be CROSSED (W4)', ()
     assert.match(text, /\[email\]/);
   });
 
-  it('still serves a masked ERROR from a throwing tool', async (t) => {
+  it('still serves the withheld ERROR notice from a throwing tool', async (t) => {
     // Finding 1's fix and finding 2's assertion have to coexist: a throwing
-    // tool now DOES cross the boundary, so it must not be refused.
+    // tool's message is replaced by the dispatcher's own withheld notice
+    // (`origin: dispatcher`), so the error is served — not refused as
+    // unmasked content — and carries nothing of the message.
     const h = await start(
       options({
         dispatchers: {
@@ -322,7 +324,7 @@ describe('public MCP endpoint — the masking boundary must be CROSSED (W4)', ()
     );
     if (!h) return;
     const { payload } = await h.rpc(callToolRequest(TOOL), { token: KEY_TOKEN });
-    assert.match(rpcErrorMessage(payload) ?? '', /\[email\]/);
+    assert.match(rpcErrorMessage(payload) ?? '', /failed with Error \[ref /);
     assert.doesNotMatch(rpcErrorMessage(payload) ?? '', /sensitive\.person@customer\.example/);
   });
 

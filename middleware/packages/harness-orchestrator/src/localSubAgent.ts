@@ -8,6 +8,10 @@ import { appendLimitSignalNote, isControlFlowToolResult } from '@omadia/plugin-a
 import { streamMessageWithObserver } from './streaming.js';
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  guardControlFlowResult,
+  withholdThrownToolError,
+} from './toolErrorRedaction.js';
 import { buildDateHeader, turnContext } from './turnContext.js';
 
 // `LocalSubAgentTool` and `LocalSubAgentToolSpec` were inlined here
@@ -437,11 +441,30 @@ export class LocalSubAgent {
     // sub-agents inherit it from the parent orchestrator's turn scope.
     // Absent ⇒ no privacy provider installed and the result flows through.
     const privacy = turnContext.current()?.privacyHandle;
+    // A THROWING inner tool used to abort this whole sub-agent run, and the
+    // parent's domain-tool wrapper then re-wrapped the exception message as
+    // prose. Now the throw resolves as a tool result here, like it does in the
+    // parent loops since #1095: the message is withheld from this sub-agent's
+    // model (class name, code, log ref — `toolErrorRedaction.ts`), the
+    // sub-agent continues and can answer without the tool, and
+    // REPEAT_FAILURE_THRESHOLD bounds any retry loop. The notice is PII-free,
+    // so it skips the capture and privacy steps below.
+    let raw: Awaited<ReturnType<LocalSubAgentTool['handle']>>;
+    try {
+      raw = await tool.handle(input);
+    } catch (err) {
+      const withheld = await withholdThrownToolError({
+        toolName,
+        err,
+        privacy,
+        site: `sub-agent ${this.name}`,
+      });
+      return { output: withheld.text };
+    }
     // #130 — unwrap the structured tool-result union at the boundary so
     // every privacy / capture path downstream keeps seeing a plain string,
     // while we still surface the optional postcondition marker upward to
     // the observer (which the RunTraceCollector copies onto the trace).
-    const raw = await tool.handle(input);
     const rawOutput = typeof raw === 'string' ? raw : raw.output;
     const limitSignal = typeof raw === 'string' ? undefined : raw.limitSignal;
     // Plugin self-extension (Layer 1) — fold the runtime limit note into the
@@ -510,18 +533,28 @@ export class LocalSubAgent {
       }
       // #1097 — a guarded tool that returned control-flow prose (the `Error:`
       // tool-error convention, or an MCP auth prompt) must reach this
-      // sub-agent's model AS that text, not be interned. Interning it would (a) hide the failure
-      // behind a masked digest, so the sub-agent never learns the call failed
-      // and cannot act on the hint the error carries, and (b) register a
-      // renderable 1-row dataset that a later `v4_render_answer` materializes
-      // as if the error were data. Same guard, same position as the one on
-      // `Orchestrator.dispatchTool` and `ToolDispatchService.afterDispatch`:
-      // after the intern exemption and the operator bypass, before interning.
-      // The `is_error` flag on the tool_result block is derived from this very
-      // prefix (see `dispatch`'s caller), so passing it through keeps the
-      // string and the flag telling the same story.
+      // sub-agent's model AS that text, not be interned. Interning it would
+      // (a) hide the failure behind a masked digest, so the sub-agent never
+      // learns the call failed and cannot act on the hint the error carries,
+      // and (b) register a renderable 1-row dataset that a later
+      // `v4_render_answer` materializes as if the error were data. Same guard,
+      // same position as the one on `Orchestrator.dispatchTool` and
+      // `ToolDispatchService.afterDispatch`: after the intern exemption and the
+      // operator bypass, before interning. Not interned is not unchecked: the
+      // `Error:` text is redacted through the shield (or withheld whole) and
+      // receipted — `bridgeTool` hands plugin output straight here. The
+      // `is_error` flag on the tool_result block is derived from the prefix
+      // (see `dispatch`'s caller), and the redaction keeps it.
       if (isControlFlowToolResult(result)) {
-        return { output: result, ...(postcondition ? { postcondition } : {}) };
+        return {
+          output: await guardControlFlowResult({
+            toolName,
+            result,
+            privacy,
+            site: `sub-agent ${this.name}`,
+          }),
+          ...(postcondition ? { postcondition } : {}),
+        };
       }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.

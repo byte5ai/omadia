@@ -23,14 +23,21 @@
  * rebuild and this file could report GREEN over stale code.
  */
 
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import type { LlmProvider, LlmRequest, LlmResponse } from '@omadia/llm-provider';
+import type { PrivacyToolErrorRequest } from '@omadia/plugin-api';
 import type { PrivacyTurnHandle } from '../../packages/harness-orchestrator/src/privacyHandle.js';
 import { LocalSubAgent } from '../../packages/harness-orchestrator/src/localSubAgent.js';
+import { NativeToolRegistry } from '../../packages/harness-orchestrator/src/nativeToolRegistry.js';
+import { Orchestrator } from '../../packages/harness-orchestrator/src/orchestrator.js';
+import { createDomainTool } from '../../packages/harness-orchestrator/src/tools/domainQueryTool.js';
 import { turnContext } from '../../packages/harness-orchestrator/src/turnContext.js';
+import { createPrivacyGuardService } from '../../packages/harness-plugin-privacy-guard/src/index.js';
 
+const EMAIL = 'erika.mustermann@example.com';
+const THROWN_PII = `Fault: Invalid field 'x' on record {"email":"${EMAIL}"}`;
 const ERROR_RESULT =
   'Error: embeddings not configured — use `search_turns` for keyword-based search instead.';
 const OK_RESULT = '{"rows":[{"hit":"Nordwind"}]}';
@@ -119,8 +126,11 @@ function recordingProvider(responses: readonly LlmResponse[]): {
 /** A handle that WOULD wrap any interned result in a recognizable envelope —
  *  if interning ran, the sub-agent's `tool_result` carries the marker instead
  *  of the raw string. Nothing here is a no-op stub: the control test below
- *  proves the marker really does appear when interning is correct. */
-function markingPrivacyHandle(): PrivacyTurnHandle {
+ *  proves the marker really does appear when interning is correct, and the
+ *  tool-error redactor really replaces the e-mail. */
+function markingPrivacyHandle(
+  recorded: Array<Omit<PrivacyToolErrorRequest, 'turnId'>> = [],
+): PrivacyTurnHandle {
   return {
     async internToolResultV4({ toolName, rawResult }: { toolName: string; rawResult: string }) {
       return {
@@ -129,6 +139,17 @@ function markingPrivacyHandle(): PrivacyTurnHandle {
       };
     },
     async recordBypassedTool() {},
+    async recordToolError(entry: Omit<PrivacyToolErrorRequest, 'turnId'>) {
+      recorded.push(entry);
+    },
+    async redactToolErrorText({ text }: { text: string }) {
+      return {
+        outcome: 'redacted' as const,
+        text: text.replaceAll(EMAIL, '[masked:email]'),
+        spans: text.includes(EMAIL) ? [{ type: 'email', detector: 'c0-regex' }] : [],
+        degraded: false,
+      };
+    },
     checkBypass() {
       return undefined;
     },
@@ -153,7 +174,18 @@ function markingPrivacyHandle(): PrivacyTurnHandle {
   } as unknown as PrivacyTurnHandle;
 }
 
-function subAgentWith(provider: LlmProvider, toolName: string, result: string): LocalSubAgent {
+function subAgentWith(
+  provider: LlmProvider,
+  toolName: string,
+  result: string | (() => Promise<string>),
+): LocalSubAgent {
+  return subAgentWithTools(provider, [[toolName, result]]);
+}
+
+function subAgentWithTools(
+  provider: LlmProvider,
+  tools: ReadonlyArray<readonly [string, string | (() => Promise<string>)]>,
+): LocalSubAgent {
   return new LocalSubAgent({
     name: 'test',
     provider,
@@ -161,16 +193,14 @@ function subAgentWith(provider: LlmProvider, toolName: string, result: string): 
     maxTokens: 1024,
     maxIterations: 5,
     systemPrompt: 'you are a test',
-    tools: [
-      {
-        spec: {
-          name: toolName,
-          description: 'test tool',
-          input_schema: { type: 'object' as const, properties: {}, required: [] },
-        },
-        handle: async () => result,
+    tools: tools.map(([toolName, result]) => ({
+      spec: {
+        name: toolName,
+        description: 'test tool',
+        input_schema: { type: 'object' as const, properties: {}, required: [] },
       },
-    ],
+      handle: typeof result === 'string' ? async () => result : result,
+    })),
   } as ConstructorParameters<typeof LocalSubAgent>[0]);
 }
 
@@ -205,16 +235,18 @@ function toolResults(requests: readonly LlmRequest[]): ToolResultBlock[] {
   return out;
 }
 
-async function askGuarded(agent: LocalSubAgent, question: string): Promise<void> {
-  await turnContext.run(
+async function askGuarded(
+  agent: LocalSubAgent,
+  question: string,
+  handle: PrivacyTurnHandle = markingPrivacyHandle(),
+): Promise<string> {
+  return turnContext.run(
     {
       turnId: 'turn-1097',
       turnDate: '2026-09-22',
-      privacyHandle: markingPrivacyHandle(),
+      privacyHandle: handle,
     },
-    async () => {
-      await agent.ask(question);
-    },
+    async () => agent.ask(question),
   );
 }
 
@@ -287,5 +319,163 @@ describe('#1097 — sub-agent tool error result is not interned as a dataset', (
       'a non-error result must still be interned — otherwise the test above is vacuous',
     );
     assert.equal(results[0]?.isError, false, 'a successful result is not an error');
+  });
+
+  it('MUTATION CHECK — redacts PII out of a returned `Error:` text on the sub-agent wire', async () => {
+    const recorded: Array<Omit<PrivacyToolErrorRequest, 'turnId'>> = [];
+    const { provider, seen } = recordingProvider([
+      toolCallResponse('mail_send'),
+      textResponse('nicht zugestellt'),
+    ]);
+    const agent = subAgentWith(provider, 'mail_send', `Error: mailbox ${EMAIL} is over quota`);
+
+    await askGuarded(agent, 'Schick die Mail.', markingPrivacyHandle(recorded));
+
+    const results = toolResults(seen);
+    assert.equal(results[0]?.content, 'Error: mailbox [masked:email] is over quota');
+    assert.equal(results[0]?.isError, true);
+    assert.equal(recorded[0]?.carrier, 'returned');
+    assert.equal(recorded[0]?.outcome, 'redacted');
+  });
+});
+
+describe('sub-agent — a THROWING inner tool', () => {
+  beforeEach(() => {
+    mock.method(console, 'error', () => {});
+    mock.method(console, 'warn', () => {});
+  });
+  afterEach(() => {
+    mock.restoreAll();
+  });
+
+  it('withholds the message, flags is_error, and the sub-agent answers instead of aborting', async () => {
+    const recorded: Array<Omit<PrivacyToolErrorRequest, 'turnId'>> = [];
+    const { provider, seen } = recordingProvider([
+      toolCallResponse('odoo_search_partner'),
+      textResponse('Die Suche ist gerade nicht verfügbar.'),
+    ]);
+    const agent = subAgentWith(provider, 'odoo_search_partner', () =>
+      Promise.reject(new Error(THROWN_PII)),
+    );
+
+    const answer = await askGuarded(agent, 'Wer ist das?', markingPrivacyHandle(recorded));
+
+    assert.equal(answer, 'Die Suche ist gerade nicht verfügbar.', 'the run did not abort');
+    const results = toolResults(seen);
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.content.includes(EMAIL), false, 'the message reached the sub-agent model');
+    assert.match(
+      results[0]?.content ?? '',
+      /^Error: tool `odoo_search_partner` failed with Error \[ref turn-1097\]/,
+    );
+    assert.equal(results[0]?.isError, true);
+    assert.deepEqual(recorded, [
+      {
+        toolName: 'odoo_search_partner',
+        carrier: 'thrown',
+        outcome: 'withheld',
+        bytes: Buffer.byteLength(THROWN_PII),
+      },
+    ]);
+  });
+});
+
+/**
+ * The parent side of a domain tool, with the REAL privacy-guard service: once a
+ * sub-agent interned a dataset, the parent hands the sub-agent's narration on
+ * through `subAgentResultV4`, which concatenates it unchanged. So whatever the
+ * sub-agent answers with — including the text of a failure — must already be
+ * data-free when it leaves the domain tool.
+ */
+describe('sub-agent bridge — no tool error text reaches the parent model', () => {
+  beforeEach(() => {
+    mock.method(console, 'error', () => {});
+    mock.method(console, 'warn', () => {});
+    mock.method(console, 'log', () => {});
+  });
+  afterEach(() => {
+    mock.restoreAll();
+  });
+
+  const HR_ROWS = JSON.stringify([{ employee: 'Anna Rüsche', days: 30 }]);
+
+  function questionCall(): LlmResponse {
+    return {
+      content: [
+        { type: 'tool_call', id: 'use-hr', name: 'query_hr', input: { question: 'Urlaub?' } },
+      ],
+      finishReason: 'tool_calls',
+      providerFinishReason: 'tool_use',
+      model: 'test',
+      usage,
+    } as unknown as LlmResponse;
+  }
+
+  async function runParent(subAgent: LocalSubAgent): Promise<LlmRequest[]> {
+    const parent = recordingProvider([questionCall(), textResponse('fertig')]);
+    const orchestrator = new Orchestrator({
+      provider: parent.provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [
+        createDomainTool({
+          name: 'query_hr',
+          description: 'HR questions',
+          agent: subAgent,
+          domain: 'test.hr',
+        }),
+      ],
+      nativeToolRegistry: new NativeToolRegistry(),
+      privacyGuard: () => service,
+    } as ConstructorParameters<typeof Orchestrator>[0]);
+    const service = createPrivacyGuardService();
+    await orchestrator.runTurn({ userMessage: 'Wie viel Urlaub hat das Team?' });
+    return parent.seen;
+  }
+
+  it('an inner tool that throws after a dataset was interned', async () => {
+    const sub = recordingProvider([
+      toolCallResponse('hr_list'),
+      toolCallResponse('hr_detail'),
+      textResponse('Die Detailabfrage ist fehlgeschlagen.'),
+    ]);
+    const agent = subAgentWithTools(sub.provider, [
+      ['hr_list', HR_ROWS],
+      ['hr_detail', () => Promise.reject(new Error(THROWN_PII))],
+    ]);
+
+    const parentSeen = await runParent(agent);
+
+    const parentResults = toolResults(parentSeen);
+    assert.equal(parentResults.length, 1);
+    const handedOn = parentResults[0]?.content ?? '';
+    assert.match(handedOn, /A sub-agent fetched data/, 'the dataset bridge ran');
+    assert.equal(handedOn.includes(EMAIL), false, 'the thrown text reached the parent model');
+    assert.equal(handedOn.includes('Invalid field'), false);
+    assert.equal(handedOn.includes('Anna Rüsche'), false, 'the interned row stays server-side');
+  });
+
+  it("the sub-agent's own failure (a provider error) after a dataset was interned", async () => {
+    const failing = recordingProvider([toolCallResponse('hr_list')]);
+    const provider = {
+      ...failing.provider,
+      complete: async (req: LlmRequest) => {
+        if (failing.seen.length >= 1) throw new Error(`upstream rejected: ${EMAIL}`);
+        return failing.provider.complete(req);
+      },
+      stream: (req: LlmRequest) => {
+        if (failing.seen.length >= 1) throw new Error(`upstream rejected: ${EMAIL}`);
+        return failing.provider.stream(req);
+      },
+    } as unknown as LlmProvider;
+    const agent = subAgentWithTools(provider, [['hr_list', HR_ROWS]]);
+
+    const parentSeen = await runParent(agent);
+
+    const handedOn = toolResults(parentSeen)[0]?.content ?? '';
+    assert.match(handedOn, /A sub-agent fetched data/, 'the dataset bridge ran');
+    assert.equal(handedOn.includes(EMAIL), false, 'the failure text reached the parent model');
+    assert.match(handedOn, /tool `query_hr` failed with Error \[ref err_[0-9a-f]{12}\]/);
   });
 });

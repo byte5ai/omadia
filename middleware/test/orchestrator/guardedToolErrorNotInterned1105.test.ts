@@ -12,9 +12,15 @@
  *
  * This drives the REAL `Orchestrator` with a real (redacting) privacy handle
  * installed — the exact configuration in which a SUCCESSFUL result IS interned
- * — and asserts a fulfilled `Error:` result arrives at the model verbatim, with
- * no dataset digest wrapped around it. The second case is the control: an
- * ordinary result in the same setup still gets interned.
+ * — and asserts a fulfilled `Error:` result arrives at the model as an error,
+ * with no dataset digest wrapped around it. The control: an ordinary result in
+ * the same setup still gets interned.
+ *
+ * Not interned is not unchecked: the `Error:` text goes through the provider's
+ * tool-error redactor and is receipted. The stub below redacts for real (an
+ * e-mail becomes `[masked:email]`), so the mutation checks read the effect on
+ * the wire, not a call count. A PII-free hint passes the redactor unchanged,
+ * which is what keeps the #1097 self-correction reachable.
  */
 
 import { strict as assert } from 'node:assert';
@@ -22,8 +28,10 @@ import { describe, it } from 'node:test';
 
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
-import type { PrivacyGuardService } from '@omadia/plugin-api';
+import type { PrivacyGuardService, PrivacyToolErrorRequest } from '@omadia/plugin-api';
 import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
+
+const EMAIL = 'erika.mustermann@example.com';
 
 const ERROR_RESULT =
   'Error: routines are unavailable in this session because the user context did not reach the routines tool.';
@@ -98,8 +106,13 @@ function recordingProvider(responses: readonly LlmResponse[]): {
 
 /** A privacy service that WOULD wrap any interned result in a recognizable
  *  digest envelope. If interning ran, the model-visible tool_result carries the
- *  `«dataset:…»` marker instead of the raw string. */
-function markingPrivacyService(): PrivacyGuardService {
+ *  `«dataset:…»` marker instead of the raw string. Its tool-error redactor
+ *  really replaces the e-mail, and every receipt entry is recorded. Pass
+ *  `redactor: false` for a provider that predates tool-error redaction. */
+function markingPrivacyService(
+  recorded: PrivacyToolErrorRequest[] = [],
+  options: { readonly redactor?: boolean } = {},
+): PrivacyGuardService {
   return {
     async internToolResultV4(request: { toolName: string; rawResult: string }) {
       return {
@@ -108,6 +121,21 @@ function markingPrivacyService(): PrivacyGuardService {
       };
     },
     async recordBypassedTool() {},
+    async recordToolError(request: PrivacyToolErrorRequest) {
+      recorded.push(request);
+    },
+    ...(options.redactor === false
+      ? {}
+      : {
+          async redactToolErrorText({ text }: { text: string }) {
+            return {
+              outcome: 'redacted' as const,
+              text: text.replaceAll(EMAIL, '[masked:email]'),
+              spans: text.includes(EMAIL) ? [{ type: 'email', detector: 'c0-regex' }] : [],
+              degraded: false,
+            };
+          },
+        }),
     async runV4Tool() {
       return { resultText: '' };
     },
@@ -155,7 +183,11 @@ function toolResultTexts(messages: readonly unknown[][]): string[] {
   return out;
 }
 
-function orchestratorWith(provider: LlmProvider, registry: NativeToolRegistry): Orchestrator {
+function orchestratorWith(
+  provider: LlmProvider,
+  registry: NativeToolRegistry,
+  service: PrivacyGuardService = markingPrivacyService(),
+): Orchestrator {
   return new Orchestrator({
     provider,
     model: 'test',
@@ -163,12 +195,13 @@ function orchestratorWith(provider: LlmProvider, registry: NativeToolRegistry): 
     maxToolIterations: 3,
     domainTools: [],
     nativeToolRegistry: registry,
-    privacyGuard: () => markingPrivacyService(),
+    privacyGuard: () => service,
   } as ConstructorParameters<typeof Orchestrator>[0]);
 }
 
 describe('#1105 — guarded-tool error result is not interned as a dataset', () => {
-  it('hands a fulfilled `Error:` result to the model verbatim, not as a digest', async () => {
+  it('hands a PII-free `Error:` hint to the model unchanged, not as a digest — and receipts it', async () => {
+    const recorded: PrivacyToolErrorRequest[] = [];
     const { provider, seen } = recordingProvider([
       toolCallResponse('manage_routine'),
       textResponse('done'),
@@ -176,6 +209,7 @@ describe('#1105 — guarded-tool error result is not interned as a dataset', () 
     const orchestrator = orchestratorWith(
       provider,
       registryWith('manage_routine', () => Promise.resolve(ERROR_RESULT)),
+      markingPrivacyService(recorded),
     );
 
     await orchestrator.runTurn({ userMessage: 'Lege eine Routine an.' });
@@ -185,16 +219,96 @@ describe('#1105 — guarded-tool error result is not interned as a dataset', () 
     assert.equal(
       results[0],
       ERROR_RESULT,
-      'the model must see the raw error text so it knows the call failed',
+      'the model must see the hint so it knows the call failed and why',
     );
     assert.equal(
       results[0]?.includes('«dataset:'),
       false,
       'an error result must NOT be interned as a renderable dataset (that is the #1105 bug)',
     );
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0]?.carrier, 'returned');
+    assert.equal(recorded[0]?.outcome, 'redacted');
+    assert.equal(recorded[0]?.redactedSpans, undefined, 'nothing was masked in a PII-free hint');
   });
 
-  it('#1097 — hands an MCP auth prompt to the model verbatim, block intact', async () => {
+  it('MUTATION CHECK — redacts PII out of a returned `Error:` text before the model reads it', async () => {
+    const recorded: PrivacyToolErrorRequest[] = [];
+    const returned = `Error: mailbox ${EMAIL} is over quota — nothing was sent`;
+    const { provider, seen } = recordingProvider([
+      toolCallResponse('mail_send'),
+      textResponse('done'),
+    ]);
+    const orchestrator = orchestratorWith(
+      provider,
+      registryWith('mail_send', () => Promise.resolve(returned)),
+      markingPrivacyService(recorded),
+    );
+
+    await orchestrator.runTurn({ userMessage: 'go' });
+
+    const results = toolResultTexts(seen);
+    assert.equal(results[0], 'Error: mailbox [masked:email] is over quota — nothing was sent');
+    assert.deepEqual(recorded[0]?.redactedSpans, [{ type: 'email', detector: 'c0-regex' }]);
+  });
+
+  it('withholds an exception-shaped `Error:` text (a record echo) whole', async () => {
+    const recorded: PrivacyToolErrorRequest[] = [];
+    const { provider, seen } = recordingProvider([
+      toolCallResponse('odoo_write'),
+      textResponse('done'),
+    ]);
+    const orchestrator = orchestratorWith(
+      provider,
+      registryWith('odoo_write', () =>
+        Promise.resolve(`Error: Fault on record {"name":"Erika Mustermann","email":"${EMAIL}"}`),
+      ),
+      markingPrivacyService(recorded),
+    );
+
+    await orchestrator.runTurn({ userMessage: 'go' });
+
+    const text = toolResultTexts(seen)[0] ?? '';
+    assert.equal(text.includes('Erika Mustermann'), false, 'a name C0 cannot see must not survive');
+    assert.equal(text.includes(EMAIL), false);
+    assert.match(text, /^Error: tool `odoo_write` reported an error whose text looked like a raw/);
+    assert.equal(recorded[0]?.outcome, 'withheld');
+  });
+
+  it('fails CLOSED with a provider that cannot redact — but kernel refusals still pass', async () => {
+    const recorded: PrivacyToolErrorRequest[] = [];
+    const service = markingPrivacyService(recorded, { redactor: false });
+    const { provider, seen } = recordingProvider([
+      toolCallResponse('manage_routine'),
+      toolCallResponse('no_such_tool'),
+      textResponse('done'),
+    ]);
+    const orchestrator = orchestratorWith(
+      provider,
+      registryWith('manage_routine', () => Promise.resolve(`Error: mailbox ${EMAIL} is full`)),
+      service,
+    );
+
+    await orchestrator.runTurn({ userMessage: 'go' });
+
+    const results = toolResultTexts(seen);
+    const handlerError = results[0] ?? '';
+    assert.equal(handlerError.includes(EMAIL), false, 'unchecked text must not be forwarded');
+    assert.match(handlerError, /@omadia\/plugin-privacy-guard >= 0\.6\.0/);
+    assert.equal(
+      results.at(-1),
+      'Error: unknown tool `no_such_tool`.',
+      "the kernel's own refusal is PII-free by construction and reaches the model as it is",
+    );
+    assert.deepEqual(
+      recorded.map((e) => e.outcome),
+      ['withheld'],
+      'only the handler error is receipted; the kernel refusal is not a tool error',
+    );
+  });
+
+  it('#1097 — hands an MCP auth prompt to the model verbatim, block intact, receipted', async () => {
+    const recorded: PrivacyToolErrorRequest[] = [];
     const { provider, seen } = recordingProvider([
       toolCallResponse('mcp__Strava__list_activities'),
       textResponse('bitte verbinden'),
@@ -202,6 +316,7 @@ describe('#1105 — guarded-tool error result is not interned as a dataset', () 
     const orchestrator = orchestratorWith(
       provider,
       registryWith('mcp__Strava__list_activities', () => Promise.resolve(AUTH_PROMPT)),
+      markingPrivacyService(recorded),
     );
 
     await orchestrator.runTurn({ userMessage: 'Zeig meine Läufe.' });
@@ -217,6 +332,8 @@ describe('#1105 — guarded-tool error result is not interned as a dataset', () 
       results[0]?.includes('<mcp-auth-required'),
       'the machine block the Connect card is parsed from must survive the boundary',
     );
+    assert.equal(recorded[0]?.carrier, 'mcp_auth_prompt');
+    assert.equal(recorded[0]?.outcome, 'passed');
   });
 
   it('#1097 — a data result carrying the auth block in one cell IS still interned', async () => {

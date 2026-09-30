@@ -192,6 +192,12 @@ import type { NativeToolRegistry } from './nativeToolRegistry.js';
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
 import type { CliTurnCards } from './cliChatAgent.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  guardControlFlowResult,
+  thrownToolErrorForModel,
+  toolErrorRef,
+  withholdThrownToolError,
+} from './toolErrorRedaction.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
 import {
   type ModelRoutingConfig,
@@ -2024,6 +2030,16 @@ function toolDeadlineError(name: string, timeoutMs: number): string {
 const TOOL_DISPATCH_DISCARDED = '__omadia_tool_dispatch_discarded__';
 
 /**
+ * Per-dispatch provenance for a refusal `dispatchToolInner` authored itself
+ * (unavailable / not granted / unknown tool). Such text names only the tool
+ * and its plugin, so the tool-error redaction in `dispatchToolDeadlined` lets
+ * it through as it is — keyed on this box, never on the text's shape.
+ */
+interface KernelRefusalBox {
+  text?: string;
+}
+
+/**
  * Wrap a slot observer so sub-agent events emitted AFTER the deadline are
  * dropped. A sub-agent that keeps running past its abort would otherwise keep
  * pushing `sub_tool_use`/`sub_tool_result` events into a turn that already
@@ -2876,12 +2892,17 @@ export class Orchestrator {
     // covers both carriers — interning the prompt destroyed the card and left
     // the model narrating success over a masked digest.
     //
-    // Known limit (#1097): the text behind an MCP `Error:` prefix is the
-    // REMOTE server's own body, so this passthrough trusts foreign error
-    // text — the trade-off #1105 already made on the chat path, not a new one
-    // taken here.
+    // The text behind an MCP `Error:` prefix is the REMOTE server's own body,
+    // so it is not trusted: it goes through the same tool-error redaction as
+    // on the chat path (redacted, or withheld whole when it is a record dump),
+    // and the connect prompt is receipted — see `toolErrorRedaction.ts`.
     if (isControlFlowToolResult(rawResult)) {
-      return rawResult;
+      return guardControlFlowResult({
+        toolName: record.toolName,
+        result: rawResult,
+        privacy,
+        site: 'orchestrator.mcpInputReplay',
+      });
     }
     try {
       const v4 = await privacy.internToolResultV4({
@@ -4314,13 +4335,20 @@ export class Orchestrator {
         turnMemory,
       );
       // `createDomainTool.handle` does not throw on a sub-agent failure — it
-      // returns an `Error …` string. Treat that as a faithful failure too.
+      // returns the `Error:`-prefixed withheld notice — and `dispatchTool`
+      // resolves any other throw the same way. Treat both as a faithful
+      // failure too.
       status = /^error\b/i.test(verbatim.trimStart()) ? 'error' : 'success';
     } catch (err) {
-      // Faithful failure — never a cover-up or a hallucinated answer.
-      verbatim = `${candidate.label} could not respond: ${
-        err instanceof Error ? err.message : String(err)
-      }`;
+      // Backstop only: `dispatchTool` does not reject. Faithful failure —
+      // never a cover-up or a hallucinated answer — but no exception text in
+      // the segment the user sees and the session persists.
+      const ref = toolErrorRef();
+      console.error(
+        `[orchestrator.directLine:${tool.name}] dispatch rejected (ref=${ref}):`,
+        err,
+      );
+      verbatim = `${candidate.label} could not respond [ref ${ref}].`;
       status = 'error';
     }
     handle.finish({ durationMs: Date.now() - startedAt, status });
@@ -5287,7 +5315,16 @@ export class Orchestrator {
             output = r.value;
             isError = output.startsWith('Error:');
           } else {
-            output = `Error: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`;
+            // Unreachable by construction — `dispatchTool` never rejects; it
+            // resolves a handler exception as the withheld notice itself. Kept
+            // as a backstop that can never put an exception MESSAGE on the
+            // wire: class name, sanitised code and the log ref only.
+            const ref = toolErrorRef();
+            console.error(
+              `[orchestrator.toolLoop:${String(use.name)}] dispatch rejected (ref=${ref}) — message withheld from the model:`,
+              r.reason,
+            );
+            output = thrownToolErrorForModel(String(use.name), r.reason, ref);
             isError = true;
           }
           const durationMs = Date.now() - startedTimes[i]!;
@@ -6920,35 +6957,22 @@ export class Orchestrator {
     // non-streaming path builds from its `Promise.allSettled` rejections, and
     // the one this loop already reads (`output.startsWith('Error:')`).
     //
-    // The message stays RAW — no masking, no digesting. Same deliberate
-    // divergence from `ToolDispatchService` that the chat path fences in
-    // `test/orchestrator/chatPathToolErrorText.test.ts`: the reader here is the
-    // operator debugging their own tool, and the two chat paths must not drift
-    // apart again in the opposite direction.
-    //
-    // Known consequence, accepted for parity rather than overlooked: a THROWN
-    // message never passes the Privacy Shield (interning in
-    // `dispatchToolDeadlined` only ever sees a RETURNED string), so a driver
-    // error that quotes a row value ships that value to the provider and to
-    // the API caller. That is exactly what the non-streaming path has always
-    // done with the same rejection; narrowing it belongs in one change that
-    // moves BOTH paths, not in a fix that makes them disagree again. A handler
-    // that knows its errors carry data should catch and return its own
-    // data-free `Error:` prose — returned `Error:` strings also reach the
-    // model verbatim, un-interned (#1105, #1097).
+    // A handler exception no longer rejects at all: `dispatchTool` resolves it
+    // as the withheld tool-error notice (`toolErrorRedaction.ts`), so this
+    // catch is a backstop for a throw outside that choke point. It never puts
+    // the exception MESSAGE on the wire either — the text streamed as the
+    // `tool_result` event, sent to the provider and persisted in the session
+    // carries the class name, a sanitised code and the log ref.
     const promise = this.dispatchTool(use.name, use.input, observer, turnMemory).catch(
       (err: unknown) => {
-        // Settling the slot must not cost the operator the STACK. Before this
-        // catch existed, a throwing handler at least reached the turn's catch
-        // and was logged there with its stack; the model-facing string keeps
-        // only `message`, which for the reported trigger (a Postgres 22P02
-        // escaping `QueryDatasetTool.handle`) does not say which call site
-        // threw. Same shape as the deadline warning in `dispatchTool`.
-        console.warn(
-          `[orchestrator.prepareStreamSlot:${use.name}] dispatch rejected — settling the slot as a tool error; the turn continues:`,
+        // Settling the slot must not cost the operator the STACK: the full
+        // error goes to the log under the same ref the notice carries.
+        const ref = toolErrorRef();
+        console.error(
+          `[orchestrator.prepareStreamSlot:${use.name}] dispatch rejected (ref=${ref}) — settling the slot as a tool error; the turn continues:`,
           err,
         );
-        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+        return thrownToolErrorForModel(use.name, err, ref);
       },
     );
     return {
@@ -7038,17 +7062,13 @@ export class Orchestrator {
   }
 
   /**
-   * W0-2 — every tool dispatch runs under a per-tool deadline. Without it a
-   * single hung sub-agent (`domainQueryTool` awaits `agent.ask()` with no
-   * abort) blocks the entire `Promise.allSettled` batch for the whole turn.
-   *
-   * On timeout the slot resolves with a structured `Error:` string and the
-   * abandoned dispatch is marked aborted, so when it eventually settles its
-   * result is DISCARDED instead of being written into a turn that moved on
-   * (raw-result capture, privacy interning, KG ingestion, sub-events).
-   *
-   * The deadline is per tool, not per batch: sibling tools in the same
-   * `allSettled` keep running and resolve normally.
+   * The ONE choke point every tool dispatch passes through (the tool loops,
+   * the streaming slots, the direct-line relay). It never rejects: a handler
+   * exception — or any other throw beneath this point — resolves as the
+   * withheld tool-error notice (`toolErrorRedaction.ts`), so no caller ever
+   * folds an exception MESSAGE into a tool result again. The message is
+   * logged with the turn's correlation ref and receipted; the model sees the
+   * class name, a sanitised code and that ref.
    */
   private async dispatchTool(
     name: string,
@@ -7069,6 +7089,39 @@ export class Orchestrator {
      * exists to prevent, so it should be a compile error, not a test failure.
      * Callers with genuinely no binding pass an explicit `undefined`.
      */
+    turnMemory: TurnMemoryBinding | undefined,
+  ): Promise<string> {
+    try {
+      return await this.dispatchToolWithDeadline(name, input, observer, turnMemory);
+    } catch (err) {
+      const outcome = await withholdThrownToolError({
+        toolName: name,
+        err,
+        privacy: turnContext.current()?.privacyHandle,
+        site: 'orchestrator.dispatchTool',
+      });
+      return outcome.text;
+    }
+  }
+
+  /**
+   * W0-2 — every tool dispatch runs under a per-tool deadline. Without it a
+   * single hung sub-agent (`domainQueryTool` awaits `agent.ask()` with no
+   * abort) blocks the entire `Promise.allSettled` batch for the whole turn.
+   *
+   * On timeout the slot resolves with a structured `Error:` string and the
+   * abandoned dispatch is marked aborted, so when it eventually settles its
+   * result is DISCARDED instead of being written into a turn that moved on
+   * (raw-result capture, privacy interning, KG ingestion, sub-events).
+   *
+   * The deadline is per tool, not per batch: sibling tools in the same
+   * `allSettled` keep running and resolve normally.
+   */
+  private async dispatchToolWithDeadline(
+    name: string,
+    input: unknown,
+    observer: AskObserver | undefined,
+    /** Required position — see {@link Orchestrator.dispatchTool}. */
     turnMemory: TurnMemoryBinding | undefined,
   ): Promise<string> {
     // #575 — the audience floor's egress guard, at the ONE choke point every
@@ -7092,7 +7145,9 @@ export class Orchestrator {
     const timeoutMs = resolveToolDispatchTimeoutMs();
     if (timeoutMs === 0) {
       // Deadline explicitly disabled by the operator — legacy behaviour.
-      return this.dispatchToolDeadlined(name, input, observer, undefined, turnMemory);
+      // `return await`, not a bare `return`: a rejection must surface inside
+      // this frame so `dispatchTool`'s catch withholds its message.
+      return await this.dispatchToolDeadlined(name, input, observer, undefined, turnMemory);
     }
     const controller = new AbortController();
     const work = this.dispatchToolDeadlined(
@@ -7166,6 +7221,13 @@ export class Orchestrator {
     // so the extra scope would buy nothing and every guard-less dispatch stays
     // byte-identical to before. See `McpInputSentinelMint`.
     const mcpInputSentinelMint: McpInputSentinelMint = {};
+    // Provenance for the kernel's OWN refusals (`dispatchToolInner`: tool
+    // unavailable, not granted, unknown tool). They name only the tool and
+    // its plugin and carry no tool data, so they skip the tool-error
+    // redaction below: a provider that cannot redact must not blind the
+    // model to its own plumbing. Written only by `dispatchToolInner`, per
+    // dispatch, and compared by exact string — a handler cannot reach it.
+    const kernelRefusal: KernelRefusalBox = {};
     let result: string;
     if (
       privacy !== undefined &&
@@ -7186,7 +7248,7 @@ export class Orchestrator {
             ? { subAgentOwnerPluginId: domainToolAgentId }
             : {}),
         },
-        () => this.dispatchToolInner(name, input, observer, turnMemory),
+        () => this.dispatchToolInner(name, input, observer, turnMemory, kernelRefusal),
       );
     } else if (privacy !== undefined && ctx !== undefined) {
       // #570 — MCP tools reach dispatch as NATIVE tools (`mcpNativeHandler`),
@@ -7196,10 +7258,10 @@ export class Orchestrator {
       // context plus the receipt.
       result = await turnContext.run(
         { ...ctx, mcpInputSentinelMint },
-        () => this.dispatchToolInner(name, input, observer, turnMemory),
+        () => this.dispatchToolInner(name, input, observer, turnMemory, kernelRefusal),
       );
     } else {
-      result = await this.dispatchToolInner(name, input, observer, turnMemory);
+      result = await this.dispatchToolInner(name, input, observer, turnMemory, kernelRefusal);
     }
     // W0-2 — late-result firewall. The deadline already fired for this slot:
     // the turn took `toolDeadlineError` and moved on. Everything below this
@@ -7373,15 +7435,25 @@ export class Orchestrator {
       // #1105 / #1097 — a guarded tool that returned control-flow prose (the
       // orchestrator's `Error:` tool-error convention — the same prefix the
       // tool-result assembly reads to stamp `is_error` — or an MCP auth
-      // prompt) must reach the model AS that text, not be interned. Interning it would (a) hide the failure
-      // behind a masked digest so the model never learns the call failed, and
-      // (b) register a renderable 1-row dataset that a later `v4_render_answer`
-      // materializes as if the error were data — the divergence reported in
-      // #1105. Pass it through verbatim: the chat path already forwards tool
-      // errors unmasked (see chatPathToolErrorText.test.ts) and the downstream
-      // `is_error` flag is derived from this very prefix.
+      // prompt) must reach the model AS that text, not be interned. Interning
+      // it would (a) hide the failure behind a masked digest so the model
+      // never learns the call failed, and (b) register a renderable 1-row
+      // dataset that a later `v4_render_answer` materializes as if the error
+      // were data — the divergence reported in #1105.
+      //
+      // Not interned is not unchecked: the `Error:` text can quote the record
+      // a plugin wrapper or a remote MCP server failed on, so it goes through
+      // the shield's free-text redactor (or is withheld whole) and is
+      // receipted — see `toolErrorRedaction.ts`. The kernel's own refusals
+      // are PII-free by construction and pass as they are.
       if (isControlFlowToolResult(result)) {
-        return result;
+        if (result === kernelRefusal.text) return result;
+        return guardControlFlowResult({
+          toolName: name,
+          result,
+          privacy,
+          site: 'orchestrator.dispatchTool',
+        });
       }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
@@ -7533,7 +7605,13 @@ export class Orchestrator {
     observer: AskObserver | undefined,
     /** Required position — see {@link Orchestrator.dispatchTool}. */
     turnMemory: TurnMemoryBinding | undefined,
+    /** Receives the exact text of a kernel refusal this call returns. */
+    refusal?: KernelRefusalBox,
   ): Promise<string> {
+    const refuse = (text: string): string => {
+      if (refusal !== undefined) refusal.text = text;
+      return text;
+    };
     // Per-orchestrator memory isolation: when this Agent has a scoped
     // memory-tool handler, it MUST shadow the globally-registered `memory`
     // handler (which wraps the unscoped FilesystemMemoryStore). Checked
@@ -7561,7 +7639,9 @@ export class Orchestrator {
     if (name === MEMORY_TOOL_NAME && memoryHandler) {
       const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
       if (!this.isToolAvailable(memoryAgentId)) {
-        return `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`;
+        return refuse(
+          `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`,
+        );
       }
       const result = await memoryHandler.handle(input);
       // Arm the Fresh-Check gate only on a read that actually DELIVERED a file.
@@ -7587,7 +7667,9 @@ export class Orchestrator {
       // non-streaming dispatch loops key `is_error` off that prefix, and
       // both also fold a thrown rejection into the same convention (#1095).
       if (!this.isToolAvailable(reg.agentId)) {
-        return `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`;
+        return refuse(
+          `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`,
+        );
       }
       return reg.handler(input);
     }
@@ -7623,7 +7705,9 @@ export class Orchestrator {
       // Without this, a not-ready plugin's domain tool was still invocable
       // even though its native tools and promptDoc were already hidden.
       if (!this.isToolAvailable(domainTool.agentId)) {
-        return `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`;
+        return refuse(
+          `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`,
+        );
       }
       // THE AUTHORISATION GATE. Registration decides what this Agent is
       // OFFERED; this decides what it may actually DO, and only the second is
@@ -7638,7 +7722,7 @@ export class Orchestrator {
         console.warn(
           `[orchestrator] agent "${this.agentId}" attempted un-granted domain tool "${name}" — refused`,
         );
-        return `Error: tool \`${name}\` is not available to this agent.`;
+        return refuse(`Error: tool \`${name}\` is not available to this agent.`);
       }
       // #904 — publish THIS turn's scoped memory handler (`memoryHandler`
       // above: the turn-bound stack when one is bound, the build-time
@@ -7663,7 +7747,7 @@ export class Orchestrator {
         Promise.resolve(domainTool.handle(input, observer)),
       );
     }
-    return `Error: unknown tool \`${name}\`.`;
+    return refuse(`Error: unknown tool \`${name}\`.`);
   }
 
   /**
