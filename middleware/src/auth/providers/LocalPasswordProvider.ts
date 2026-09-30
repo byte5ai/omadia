@@ -11,15 +11,27 @@ import type { AuthResult, PasswordProvider } from './AuthProvider.js';
  * user-enumeration leaks (the timing channel is mitigated implicitly by
  * argon2's constant-time compare and a fixed-cost dummy hash on miss).
  *
+ * Attempt limits are not this class's job: `POST /login/:id` runs every
+ * call through the sign-in rate limiter first (routes/authLogin.ts,
+ * docs/security-architecture.md §10f) — per-client, per-(account, client)
+ * backoff instead of a hard lockout, plus a cap on concurrent argon2 runs.
+ *
  * Out-of-scope for V1 (per John-decision):
  *   - Self-service signup (admin provisions users via an admin endpoint)
  *   - Email-link password reset (admin-reset only)
- *   - Account-lockout after N failed tries (V1.x — needs a rate-limit
- *     service in front of /login first)
  */
 
 /** Provider-id used in the users table + AUTH_PROVIDERS env-var. */
 export const LOCAL_PROVIDER_ID = 'local';
+
+/**
+ * Longest password a sign-in attempt may carry. argon2's pre-hash is linear
+ * in the input and the JSON body limit is 10 MB, so an unbounded password is
+ * an unbounded cost per attempt. Longer ones are refused as
+ * `invalid_credentials` before the users-table lookup, so they never reach
+ * argon2 either.
+ */
+export const MAX_LOGIN_PASSWORD_LENGTH = 1024;
 
 interface LoginBody {
   email?: unknown;
@@ -31,6 +43,7 @@ function readLoginBody(body: unknown): { email: string; password: string } | nul
   const b = body as LoginBody;
   if (typeof b.email !== 'string' || b.email.length === 0) return null;
   if (typeof b.password !== 'string' || b.password.length === 0) return null;
+  if (b.password.length > MAX_LOGIN_PASSWORD_LENGTH) return null;
   // Trim email surroundings — passwords are taken as-is (whitespace is
   // legitimate password material).
   return { email: b.email.trim(), password: b.password };
@@ -49,7 +62,7 @@ export class LocalPasswordProvider implements PasswordProvider {
       return {
         outcome: 'error',
         code: 'invalid_credentials',
-        message: 'login body must contain non-empty email + password fields',
+        message: `login body must contain non-empty email + password fields (password at most ${String(MAX_LOGIN_PASSWORD_LENGTH)} characters)`,
       };
     }
 

@@ -5,6 +5,7 @@ import { hashPassword } from '../../src/auth/passwordHasher.js';
 import {
   LOCAL_PROVIDER_ID,
   LocalPasswordProvider,
+  MAX_LOGIN_PASSWORD_LENGTH,
 } from '../../src/auth/providers/LocalPasswordProvider.js';
 import type {
   CreateUserInput,
@@ -23,6 +24,8 @@ class InMemoryUserStore implements Pick<
   'findByEmailWithHash' | 'markLoginNow'
 > {
   private rows = new Map<string, UserRecord & { passwordHash: string | null }>();
+  /** How often the provider reached the users table. */
+  lookups = 0;
 
   async addLocalUser(opts: {
     email: string;
@@ -52,6 +55,7 @@ class InMemoryUserStore implements Pick<
     provider: string,
     email: string,
   ): Promise<UserRecord | null> {
+    this.lookups += 1;
     if (provider !== LOCAL_PROVIDER_ID) return null;
     const row = this.rows.get(email.toLowerCase());
     if (!row) return null;
@@ -143,5 +147,25 @@ describe('LocalPasswordProvider.verify', () => {
       assert.equal(r.providerUserId, 'admin@example.com');
       assert.equal(r.displayName, 'Admin User');
     }
+  });
+
+  it('refuses an over-long password before the lookup and before argon2', async () => {
+    // argon2's pre-hash is linear in the password length and the JSON body
+    // limit is 10 MB: the cap keeps a sign-in attempt's cost bounded.
+    assert.equal(MAX_LOGIN_PASSWORD_LENGTH, 1024);
+    const store = new InMemoryUserStore();
+    const longest = 'p'.repeat(MAX_LOGIN_PASSWORD_LENGTH);
+    await store.addLocalUser({ email: 'long@example.com', plainPassword: longest });
+
+    const tooLong = await provider(store).verify({
+      email: 'long@example.com',
+      password: `${longest}p`,
+    });
+    assert.equal(tooLong.outcome, 'error');
+    if (tooLong.outcome === 'error') assert.equal(tooLong.code, 'invalid_credentials');
+    assert.equal(store.lookups, 0, 'no users-table lookup, so no argon2 run either');
+
+    const atLimit = await provider(store).verify({ email: 'long@example.com', password: longest });
+    assert.equal(atLimit.outcome, 'success');
   });
 });

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import type { AdminAuditLog } from '../auth/adminAuditLog.js';
+import { loginAccountKey, type LoginRateLimiter } from '../auth/loginRateLimiter.js';
 import { hashPassword } from '../auth/passwordHasher.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
 import type { UserRecord, UserStore } from '../auth/userStore.js';
@@ -9,6 +10,13 @@ import type { UserRecord, UserStore } from '../auth/userStore.js';
 interface AdminUsersDeps {
   userStore: UserStore;
   audit: AdminAuditLog;
+  /**
+   * The password sign-in limiter (docs/security-architecture.md §10f). A
+   * password reset or a re-enable clears the account's backoff on every
+   * client — the operator's in-band unlock. Optional so harnesses without a
+   * limiter keep compiling; production passes the process-wide instance.
+   */
+  loginLimiter?: Pick<LoginRateLimiter, 'clearAccount'>;
 }
 
 /**
@@ -154,6 +162,9 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       before: toPublicUser(before),
       after: toPublicUser(updated),
     });
+    if (patch.status === 'active') {
+      deps.loginLimiter?.clearAccount(loginAccountKey(updated.provider, updated.email));
+    }
 
     res.json({ user: toPublicUser(updated) });
   });
@@ -182,6 +193,7 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     }
     const passwordHash = await hashPassword(password);
     await deps.userStore.update(id, { passwordHash });
+    deps.loginLimiter?.clearAccount(loginAccountKey(user.provider, user.email));
 
     await deps.audit.record({
       actor: { email: req.session?.email },

@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 
 import type { RegistryConfigEntry } from './api/registry-v1.js';
+import { isClientAddressPolicy } from './auth/clientAddress.js';
 import { SETUP_TOKEN_MAX_LENGTH, SETUP_TOKEN_MIN_LENGTH } from './auth/setupToken.js';
 
 // Resolve .env relative to this file so the server works from any CWD.
@@ -202,6 +203,24 @@ const ConfigSchema = z.object({
   // Lower bound 4 = the fixed login window (a smaller cap would be
   // meaningless); upper bound one week.
   AUTH_SESSION_MAX_LIFETIME_HOURS: z.coerce.number().min(4).max(168).default(12),
+  // Password sign-in rate limit (docs/security-architecture.md §10f): where
+  // the limiter takes a client's address from. `socket` = the TCP peer, which
+  // cannot be forged (default; behind a proxy every client shares the proxy's
+  // address). `xff:<n>` = the n-th X-Forwarded-For entry counted from the
+  // RIGHT — set n to the number of trusted proxies that APPEND to the header
+  // (Fly's edge: xff:1). `header:<name>` = a header the edge SETS, e.g.
+  // Fly-Client-IP. Never the left-most X-Forwarded-For entry, which the client
+  // writes. An empty value means the default.
+  AUTH_LOGIN_CLIENT_ADDRESS: z
+    .string()
+    .default('socket')
+    .transform((v) => (v.trim() === '' ? 'socket' : v.trim()))
+    .refine(isClientAddressPolicy, 'must be socket, xff:<1..8> or header:<name>'),
+  // Concurrent argon2 verifications password sign-in (and the setup wizard's
+  // hash) may run before further attempts get 503 auth.busy. Each needs
+  // 19 MiB and a libuv threadpool thread (UV_THREADPOOL_SIZE, default 4), so
+  // slots beyond the pool size only queue. 1..16: 16 × 19 MiB ≈ 300 MiB.
+  AUTH_LOGIN_MAX_INFLIGHT: z.coerce.number().int().min(1).max(16).default(4),
 
   // Friction-free desktop pairing (#293). The server owns the mapping
   // "human-facing URL → canvas transport URL"; these knobs let one config

@@ -39,7 +39,12 @@ export type AuditAction =
   // The first principal of an install came into being (setup wizard or the
   // ADMIN_BOOTSTRAP_* env seed). Written in the SAME transaction as the users
   // row, so an install can never have a first admin without this record.
-  | 'auth.first_admin_create';
+  | 'auth.first_admin_create'
+  // The password sign-in limiter refused a client (§10f). One row per refusal
+  // episode (the first refusal of a scope + client per minute), system actor;
+  // `target` is the client key, `after` the scope and Retry-After. Never the
+  // account that was tried.
+  | 'auth.login_rate_limited';
 
 export interface AuditActor {
   id?: string;

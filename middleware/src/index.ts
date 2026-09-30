@@ -252,6 +252,7 @@ import { BuilderModelRegistry } from './plugins/builder/modelRegistry.js';
 import { SlotTypecheckPipeline } from './plugins/builder/slotTypecheckPipeline.js';
 import { BuildQueue } from './plugins/builder/buildQueue.js';
 import { createAuthRouter } from './routes/auth.js';
+import { createLoginGuard } from './routes/authLogin.js';
 import {
   buildPairingDescriptor,
   CANVAS_WS_PATH,
@@ -4673,6 +4674,15 @@ async function main(): Promise<void> {
     // Surface the active providers to the public pairing descriptor (#293).
     pairingProviders = providerRegistry.summaries();
 
+    // Password sign-in limiter (docs/security-architecture.md §10f): one per
+    // process, shared by the login route, the setup wizard's argon2 slot and
+    // the admin unlock paths (reset password / re-enable).
+    const loginGuard = createLoginGuard({
+      clientAddress: config.AUTH_LOGIN_CLIENT_ADDRESS,
+      maxInFlight: config.AUTH_LOGIN_MAX_INFLIGHT,
+      audit: adminAudit,
+    });
+
     app.use(
       '/api/v1/auth',
       createAuthRouter({
@@ -4683,6 +4693,7 @@ async function main(): Promise<void> {
         defaultReturnPath: config.AUTH_DEFAULT_RETURN_PATH,
         setupAllowed: bootstrapResult.setupRequired,
         ...(setupToken.token !== undefined ? { setupToken: setupToken.token } : {}),
+        loginLimiter: loginGuard,
         // #965 — explicit session renewal ("I'm still here"): re-checks the
         // principal, audits every renewal, bounded by an absolute cap from
         // the original sign-in.
@@ -4768,7 +4779,11 @@ async function main(): Promise<void> {
     app.use(
       '/api/v1/admin/users',
       requireAuth,
-      createAdminUsersRouter({ userStore, audit: adminAudit }),
+      createAdminUsersRouter({
+        userStore,
+        audit: adminAudit,
+        loginLimiter: loginGuard.limiter,
+      }),
     );
     app.use(
       '/api/v1/admin/auth',

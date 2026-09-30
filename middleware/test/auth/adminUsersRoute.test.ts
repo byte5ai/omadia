@@ -137,11 +137,14 @@ describe('/api/v1/admin/users router', () => {
   let store: InMemoryUserStore;
   let audit: InMemoryAuditLog;
   let session: ForgedSession | null;
+  /** Account keys the router asked the sign-in limiter to forget (§10f unlock). */
+  let clearedAccounts: string[];
 
   before(async () => {
     store = new InMemoryUserStore();
     audit = new InMemoryAuditLog();
     session = null;
+    clearedAccounts = [];
 
     // Pre-seed an existing local admin so list/edit/delete tests have a
     // target without exercising create-side every time.
@@ -166,6 +169,11 @@ describe('/api/v1/admin/users router', () => {
       createAdminUsersRouter({
         userStore: store as unknown as UserStore,
         audit: audit as unknown as AdminAuditLog,
+        loginLimiter: {
+          clearAccount: (accountKey: string) => {
+            clearedAccounts.push(accountKey);
+          },
+        },
       }),
     );
     server = await listenLoopback(app);
@@ -256,6 +264,7 @@ describe('/api/v1/admin/users router', () => {
     const body = (await res.json()) as { user: { display_name: string } };
     assert.equal(body.user.display_name, 'Renamed');
     assert.equal(audit.entries.at(-1)?.action, 'user.update');
+    assert.deepEqual(clearedAccounts, [], 'a rename does not touch the sign-in limiter');
   });
 
   it('PATCH /:id refuses to disable yourself with 409 self_lockout', async () => {
@@ -282,6 +291,19 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 200);
     const body = (await res.json()) as { user: { status: string } };
     assert.equal(body.user.status, 'disabled');
+    assert.deepEqual(clearedAccounts, [], 'disabling is not an unlock');
+  });
+
+  it('PATCH /:id re-enabling a user clears their sign-in backoff (operator unlock)', async () => {
+    setSession(adminSession());
+    const other = store.rows.find((r) => r.email === 'new@example.com')!;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'active' }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(clearedAccounts, ['local:new@example.com']);
   });
 
   it('POST /:id/reset-password updates the hash + audits without leaking material', async () => {
@@ -302,6 +324,39 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(last.action, 'user.reset_password');
     assert.equal(last.before, null);
     assert.equal(last.after, null);
+    assert.equal(clearedAccounts.at(-1), 'local:new@example.com');
+  });
+
+  it('POST /:id/reset-password clears the backoff under the normalised (lower-cased) account key', async () => {
+    setSession(adminSession());
+    const mixed = await store.create({
+      email: 'Mixed.Case@Example.com',
+      provider: LOCAL_PROVIDER_ID,
+      providerUserId: 'mixed.case@example.com',
+      passwordHash: await hashPassword('seed-pass-2'),
+      displayName: 'Mixed',
+      role: 'admin',
+    });
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${mixed.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'pw-resetted-2' }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(clearedAccounts.at(-1), 'local:mixed.case@example.com');
+  });
+
+  it('POST /:id/reset-password with a too-short password does not unlock', async () => {
+    setSession(adminSession());
+    const cleared = clearedAccounts.length;
+    const target = store.rows.find((r) => r.email === 'new@example.com')!;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'short' }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(clearedAccounts.length, cleared);
   });
 
   it('DELETE /:id refuses self-delete with 409', async () => {
