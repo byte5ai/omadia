@@ -2996,6 +2996,18 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Locale-Schalter); Betreibern mit überwiegend niederländischen Nutzern bis dahin C1 mit
   aktivieren oder die C0-Lücke bei Adressen bewusst in Kauf nehmen.
 
+### Offene Punkte aus den Security-Härtungen (2026-09-30)
+
+- **Desktop-Navigationsschutz → §10e nachziehen.** Das Desktop-Fenster hat noch keinen
+  `will-navigate`-/`setWindowOpenHandler`-Schutz; die Return-Pfad-Prüfung (§10e) ist dort
+  heute die einzige Schicht. Sobald der Desktop-Trust-Boundary-Change landet, den Absatz „at
+  the time of writing“ in `docs/security-architecture.md` §10e auf „zweite Schicht“ umstellen.
+- **IdP-Logout-URL nicht allowlisted.** Die serverseitig gelieferte absolute End-Session-URL
+  (`idpLogout.url`, `web-ui/app/_components/AuthBadge.tsx`) wird ungeprüft angesteuert. Eigene
+  Vertrauensgrenze; Härtung z. B. per Allowlist der konfigurierten IdP-Hosts.
+- **`/login/:id/start` ohne Längenlimit für `return`.** Der Web-UI-Helper begrenzt auf 2048
+  Zeichen; ein direkter Link auf die Middleware-Route ist unbegrenzt (landet im OIDC-State-Cookie).
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration

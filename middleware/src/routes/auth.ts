@@ -145,10 +145,11 @@ export function createAuthRouter(deps: AuthDeps): Router {
     });
   });
 
-  // ── GET /login (back-compat for the Next edge middleware) ────────────────
+  // ── GET /login (back-compat for the legacy entry point) ──────────────────
   // The legacy Azure-flow used `GET /api/v1/auth/login` as the entry point.
-  // Edge-middleware in web-ui still redirects 401s there; we forward to
-  // the new web-ui `/login` page where the user picks a provider.
+  // The web UI's proxy now sends 401s straight to its own `/login`, so only
+  // old bookmarks and hand-made links still land here; we forward them to
+  // the web-ui `/login` page where the user picks a provider.
   router.get('/login', (req: Request, res: Response) => {
     const rawReturn =
       typeof req.query['return'] === 'string' ? req.query['return'] : undefined;
@@ -612,11 +613,36 @@ function pkceCookieNameFor(providerId: string): string {
   return `${PKCE_COOKIE}_${providerId}`;
 }
 
+/**
+ * Accept only a root-relative path whose host a browser cannot change;
+ * `null` means "drop it". Our own redirects append the value to
+ * `publicBaseUrl`, so they stay on this origin anyway, but `GET /login`
+ * copies it into the web UI's `/login?return=` link, and that link must not
+ * carry a value a browser resolves elsewhere:
+ *
+ *   - `//host` is protocol-relative, and the WHATWG parser reads `\` as `/`
+ *     in http(s) URLs, so `/\host` is the same thing;
+ *   - browsers drop TAB/LF/CR before parsing (`/<TAB>/host` is `//host`),
+ *     and no legitimate path carries any other C0 control or DEL.
+ *
+ * Same shape rule as the web UI's `app/_lib/returnPath.ts`, which also
+ * normalises; docs/security-architecture.md §10e.
+ */
 function sanitiseReturnPath(value: string | undefined): string | null {
   if (!value) return null;
-  if (!value.startsWith('/') || value.startsWith('//')) return null;
-  if (value.includes('\n') || value.includes('\r')) return null;
+  if (!value.startsWith('/')) return null;
+  if (value[1] === '/' || value[1] === '\\') return null;
+  if (hasControlChars(value)) return null;
   return value;
+}
+
+/** C0 controls (U+0000..U+001F) and DEL (U+007F). */
+function hasControlChars(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
 }
 
 function httpForAuthErrorCode(code: string): number {
