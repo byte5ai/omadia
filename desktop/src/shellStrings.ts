@@ -137,6 +137,15 @@ const DE: Dictionary = {
   'updater.upToDate.title': 'Kein Update verfügbar',
   'updater.upToDate.message': 'Du verwendest bereits die neueste Version von omadia.',
   'updater.upToDate.detail': 'Aktuelle Version: {version}',
+  // The feed has a release this OS is too old for (`updateHoldBack.ts`). The
+  // point of the text is the second sentence: updates, security fixes
+  // included, stop until the operating system is updated.
+  'updater.osTooOld.title': 'Update braucht ein neueres Betriebssystem',
+  'updater.osTooOld.message': 'omadia {version} braucht macOS {macos} oder neuer.',
+  'updater.osTooOld.messageGeneric':
+    'omadia {version} braucht eine neuere Version des Betriebssystems dieses Computers.',
+  'updater.osTooOld.detail':
+    'Dieser Computer bleibt bei omadia {current} und bekommt keine weiteren Updates, auch keine Sicherheitsupdates, bis sein Betriebssystem aktualisiert ist. Danach bietet omadia {version} von selbst an.',
   'updater.installFailed.title': 'Update konnte nicht angewendet werden',
   'updater.installFailed.message': 'omadia konnte {version} nicht installieren.',
   'updater.installFailed.detail':
