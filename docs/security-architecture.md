@@ -1337,8 +1337,11 @@ moment as `sessionExpiresAt`. The canvas client warns the user before it
 cookie is current: a renewed cookie opens a new socket with a new expiry, a
 401 on that upgrade means signing in again. On 4403 it stops.
 `@omadia/canvas-core` 0.2.0 implements this: 4401 reports `unauthenticated`,
-4403 reports `forbidden`, neither enters the backoff loop, the host renews or
-signs in and calls `connect()`, and a cookie provider (`cookie: () => string`)
+4403 reports `forbidden`, and neither enters the backoff loop. Only the host's
+next `connect()`, after it renewed or signed in, opens a socket again; a
+canvas switch in between only records which canvas that `connect()` resumes,
+since a reopen with the ended cookie is refused before the upgrade and looks
+like a network drop to the client. A cookie provider (`cookie: () => string`)
 supplies the current cookie on every connect.
 
 Kernel routes get none of this. Their principal is opaque to the registry, so
@@ -1361,7 +1364,8 @@ time), `middleware/test/auth/liveSocketRevocation.test.ts` (through the real
 routes: renewal keeps the socket, sign-out and disable close it),
 `middleware/test/uiChannelWebSocket.test.ts` (`sessionExpiresAt` in the ack,
 abort on close) and `middleware/packages/canvas-core/test/canvasSocketSession.test.ts`
-plus `canvasSocket.test.ts` (the client's close-code policy).
+plus `canvasSocket.test.ts` (the client's close-code policy, including a
+canvas switch after the session ended).
 
 ---
 

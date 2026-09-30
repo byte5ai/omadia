@@ -680,7 +680,11 @@ PR-11s `CoreApi.registerWebSocket` aufsetzend. Drei neue Module im Package
      anmelden), bei 4403 aufhören. `@omadia/canvas-core` 0.2.0 setzt das um:
      `CanvasSocket` meldet bei 4401 `unauthenticated`, bei 4403 `forbidden`,
      beides ohne Backoff-Schleife; der Host verlängert bzw. meldet neu an und
-     ruft `connect()`. `cookie` darf eine Funktion sein, die bei jedem Connect
+     ruft `connect()`. Bis dahin öffnet nichts anderes einen Socket:
+     `switchCanvas()` merkt sich nur die Canvas, die das nächste `connect()`
+     fortsetzt (ein Reopen mit dem beendeten Cookie scheitert schon vor dem
+     Upgrade und sähe für den Client wie ein Netzabbruch aus, also wieder
+     Backoff). `cookie` darf eine Funktion sein, die bei jedem Connect
      das aktuelle Cookie liefert. Der Stub-Server (`tools/stubServer.ts`) kann
      `sessionExpiresAt` senden und mit `closeSockets(4401 | 4403, …)` beide
      Closes simulieren.
@@ -3097,6 +3101,14 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   `ChannelSessionTracker` (`src/channels/channelSessionLifetime.ts`):
   `onRevoked` für diese Replica, periodisch `check` für alle anderen, weil
   `announce` prozesslokal ist.
+- **Canvas-Client nach verpasstem 4401.** `@omadia/canvas-core` hält nach
+  4401/4403 an; erst das nächste `connect()` öffnet wieder, `switchCanvas()`
+  nicht. Kommt der 4401 aber nie an (Gerät schläft über `exp` hinweg, Netz
+  reißt genau dann ab), sieht der Client nur 1006 und verbindet im Backoff mit
+  dem abgelaufenen Cookie neu. Das Upgrade scheitert mit 401, was im Browser
+  wieder als 1006 ankommt: bis zu alle 30 s ein Versuch, bis der User sich neu
+  anmeldet. Möglicher Fix: einen Close nach dem `sessionExpiresAt` des letzten
+  Acks wie 4401 behandeln, mit Toleranz für Uhrabweichung.
 - **Gerätegenaues Abmelden.** Abmelden gilt heute pro User (alle Geräte). Pro
   Gerät bräuchte eine Denylist auf `sid` samt Aufräumen nach `exp`.
 - **Cache nur bei Bedarf.** Ein Point-Read pro authentifiziertem Request. Wenn

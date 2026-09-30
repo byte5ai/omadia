@@ -155,6 +155,65 @@ describe('CanvasSocket — session close codes', () => {
     expect(h.sockets).toHaveLength(1);
   });
 
+  it.each([
+    { code: CLOSE_SESSION_FORBIDDEN, state: 'forbidden', reason: 'session revoked' },
+    { code: CLOSE_SESSION_EXPIRED, state: 'unauthenticated', reason: 'session expired' },
+  ] as const)(
+    'a canvas switch after $code opens nothing; the next connect() resumes that canvas',
+    ({ code, state, reason }) => {
+      const h = harness('omadia_session=a');
+      h.socket.connect();
+      h.last().accept();
+      h.last().serverClose(code, reason);
+      const ended = h.lastStatus();
+      expect(ended?.state).toBe(state);
+
+      // The same cookie would be refused before the upgrade, which reads as a
+      // network drop (1006) and would restart the backoff loop.
+      h.socket.switchCanvas('c2');
+      vi.advanceTimersByTime(120_000);
+      expect(h.sockets).toHaveLength(1);
+      expect(h.lastStatus()).toBe(ended);
+
+      // The host has a valid session again: connect() opens on the new canvas.
+      h.socket.connect();
+      expect(h.sockets).toHaveLength(2);
+      h.last().accept();
+      expect(JSON.parse(h.last().sent[0] ?? '{}')).toMatchObject({
+        type: 'handshake_select',
+        canvasSessionId: 'c2',
+      });
+    },
+  );
+
+  it("a session close that crosses the host's own close() still ends the session", () => {
+    const h = harness('omadia_session=a');
+    h.socket.connect();
+    h.last().accept();
+
+    // The host closes while the server's 4401 is already on the wire; the
+    // close event then carries the server's code.
+    h.socket.close();
+    h.last().serverClose(4401, 'session expired');
+    expect(h.lastStatus()?.state).toBe('unauthenticated');
+
+    h.socket.switchCanvas('c2');
+    vi.advanceTimersByTime(120_000);
+    expect(h.sockets).toHaveLength(1);
+  });
+
+  it('a canvas switch on a live session still reopens at once on the new canvas', () => {
+    const h = harness('omadia_session=a');
+    h.socket.connect();
+    h.last().accept();
+
+    h.socket.switchCanvas('c2');
+    expect(h.sockets).toHaveLength(2);
+    expect(h.lastStatus()).toEqual({ state: 'connecting' });
+    h.last().accept();
+    expect(JSON.parse(h.last().sent[0] ?? '{}')).toMatchObject({ canvasSessionId: 'c2' });
+  });
+
   it('a network drop still reconnects with backoff and the same cookie source', () => {
     const h = harness('omadia_session=a');
     h.socket.connect();

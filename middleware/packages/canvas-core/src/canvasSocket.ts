@@ -64,13 +64,20 @@ const BACKOFF_MS = [1000, 2000, 5000, 10_000, 30_000] as const;
  * The server ends a socket with its session: 4401 at expiry, 4403 on
  * revocation. Neither is retried with backoff — the same cookie would only be
  * refused — so the socket reports `unauthenticated` / `forbidden` and waits
- * for the host to re-authenticate and call `connect()` again. The `ready`
- * status carries `sessionExpiresAt` so the host can warn the user in time.
+ * for the host to re-authenticate and call `connect()` again. Nothing else
+ * reopens it meanwhile: `switchCanvas()` only records the canvas the next
+ * `connect()` resumes. The `ready` status carries `sessionExpiresAt` so the
+ * host can warn the user in time.
  */
 export class CanvasSocket {
   private ws: WsLike | null = null;
   private ready = false;
   private closedByUser = false;
+  /** Set by a 4401/4403 close, cleared only by `connect()`. The server ended
+   *  the session behind the cookie: a reopen with it is refused before the
+   *  upgrade, which reads as a network drop (1006) and would restart the
+   *  backoff loop. */
+  private sessionEnded = false;
   private attempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private resumeOverride: string | undefined;
@@ -82,6 +89,7 @@ export class CanvasSocket {
    *  `forbidden`, once the host has a valid session again. */
   connect(): void {
     this.closedByUser = false;
+    this.sessionEnded = false;
     // A reconnect already scheduled by the backoff would open a second socket.
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
@@ -117,8 +125,11 @@ export class CanvasSocket {
     this.ws?.close(1000, 'client shutdown');
   }
 
+  /** Re-handshake on `sessionId`. After `unauthenticated` / `forbidden` this
+   *  only records the canvas; the next `connect()` opens on it. */
   switchCanvas(sessionId: string): void {
     this.resumeOverride = sessionId;
+    if (this.sessionEnded) return;
     this.closedByUser = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
@@ -181,14 +192,13 @@ export class CanvasSocket {
       if (this.switching) {
         return;
       }
-      if (this.closedByUser) {
-        this.opts.onStatus({ state: 'disconnected' });
-        return;
-      }
       const { code, reason } = closeDetails(ev);
       if (code === CLOSE_SESSION_EXPIRED || code === CLOSE_SESSION_FORBIDDEN) {
         // The session ended, not the network: a retry with the same cookie
         // can only be refused. Stop until the host calls connect() again.
+        // Checked before closedByUser: the code is the server's verdict on
+        // the cookie even when the host was closing at the same moment.
+        this.sessionEnded = true;
         this.closedByUser = true;
         const expired = code === CLOSE_SESSION_EXPIRED;
         this.opts.onStatus({
@@ -196,6 +206,10 @@ export class CanvasSocket {
           closeCode: code,
           detail: reason || (expired ? 'session expired' : 'session revoked'),
         });
+        return;
+      }
+      if (this.closedByUser) {
+        this.opts.onStatus({ state: 'disconnected' });
         return;
       }
       const delay = BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)] as number;

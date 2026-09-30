@@ -62,9 +62,11 @@ signing out anywhere closes that user's canvas too. `handshake_ack` now carries
 `sessionExpiresAt` so the client can warn the user in time (renewal stays an
 explicit click). `@omadia/canvas-core` 0.2.0 stops reconnecting on 4401
 (`unauthenticated`) and 4403 (`forbidden`) instead of retrying a cookie that can
-only be refused, reads its cookie from an optional provider on every connect,
-reports `sessionExpiresAt` in its `ready` status, and its stub server can send
-the field and simulate both closes (`docs/security-architecture.md` §10d).
+only be refused (a canvas switch in that state waits for the host's next
+`connect()` as well), reads its cookie from an optional provider on every
+connect, reports `sessionExpiresAt` in its `ready` status, and its stub server
+can send the field and simulate both closes (`docs/security-architecture.md`
+§10d).
 
 ### Fixed — sign-out, password reset, disable and delete end sessions on the server
 
