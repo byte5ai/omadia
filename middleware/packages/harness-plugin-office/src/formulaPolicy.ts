@@ -29,11 +29,15 @@ import { OfficeUnsafeFormulaError } from './types.js';
  *     (`INDIRECT(A1)`), and a lexical check cannot see into it, so both are
  *     refused whatever their argument.
  * An export needs none of these, so the renderer refuses them rather than
- * writing them.
+ * writing them. Functions that only call the client vendor's own service
+ * (GOOGLEFINANCE, GOOGLETRANSLATE, STOCKHISTORY) stay allowed: none of them
+ * takes an address, so a formula cannot point one at a server of its choosing.
  *
  * The check is lexical. String literals are skipped: `"a|b"` or `"HYPERLINK"`
- * inside double quotes is text, not syntax. Quoted sheet names are skipped for
- * the function and DDE checks but inspected for path characters, because Excel
+ * inside double quotes is text, not syntax. That holds only while the functions
+ * that evaluate text (INDIRECT, DUMMYFUNCTION) stay refused, so taking one off
+ * the list reopens every check here. Quoted sheet names are skipped for the
+ * function and DDE checks but inspected for path characters, because Excel
  * forbids `\ / [ ]` in sheet names, so a quoted reference that contains one
  * names another file. An unterminated quote fails closed.
  */
