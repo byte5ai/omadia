@@ -177,5 +177,8 @@ volumes:
   postgres-data:
 
 networks:
+  # `omadia` is the application network: every service here and in the feature
+  # overlays. The update overlay adds a second, `internal` network,
+  # `omadia-control`, that only `updater` and `docker-socket-proxy` may join.
   omadia:
     driver: bridge

@@ -3008,6 +3008,44 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **`/login/:id/start` ohne Längenlimit für `return`.** Der Web-UI-Helper begrenzt auf 2048
   Zeichen; ein direkter Link auf die Middleware-Route ist unbegrenzt (landet im OIDC-State-Cookie).
 
+### Self-Update-Steuerungsebene: Vertrauensmodell und offene Härtung (#432 follow-up)
+
+Vertrauensmodell (Details: `docs/security-architecture.md` §10f): Wer den
+`docker-socket-proxy` erreicht, ist Host-Root. Seine Abschnitts-Flags filtern nur
+nach URL-Präfix, und `CONTAINERS`+`POST` reichen allein schon für einen
+privilegierten Container mit Host-Mounts. Die Grenze ist deshalb die
+Erreichbarkeit: Der Proxy hängt nur am `internal`-Netz `omadia-control` (ohne
+Bridge-Adresse auf dem Host, ohne IPv6), das außer ihm nur der `updater` betritt.
+Der Updater ist per Design root-äquivalent, und die Middleware hält sein Token.
+Jeder Code im Middleware-Prozess, In-Process-Plugins eingeschlossen, kann damit
+ein Update auf ein beliebiges Release-Tag anstoßen. Offen:
+
+- **Exakte Methoden-/Pfad-Allowlist und Loopback-Bind.** Eine eigene
+  `haproxy.cfg` im tecnativa-Image ließe nur die acht Calls durch, die der
+  Updater macht (Liste im Header von `docker-compose.update.yaml`), und könnte an
+  `127.0.0.1:2375` binden. Dann liefe der Proxy mit
+  `network_mode: service:updater` (`UPDATER_DOCKER_API=http://127.0.0.1:2375`,
+  `depends_on` umgedreht), und die Isolation hinge nicht mehr an der
+  Netzwerk-Implementierung der Runtime. Mit dem unveränderten Image 0.3.0 geht
+  das nicht: `BIND_CONFIG` setzt `docker-entrypoint.sh` selbst, es ist kein
+  Env-Schalter. Eine Quell-IP-ACL wäre kein Ersatz, denn OrbStack maskiert
+  netzübergreifenden Verkehr als Gateway-Adresse des Zielnetzes.
+- **Kein Downgrade über das Update-Token.** `POST /api/v1/admin/update`
+  (`routes/adminUpdate.ts`) lehnt nur das laufende Release ab, der Sidecar
+  (`config.mjs`, `TAG_RE`) prüft nur die Form des Tags. Ein
+  „nicht älter als laufend“-Gate (mit ausdrücklichem Operator-Override für echte
+  Rollbacks) fehlt.
+- **Control-Plane-Hostnamen im Plugin-Egress sperren.**
+  `extractOutboundAllowlist` (`platform/pluginContext.ts`) nimmt jeden String als
+  Host an, und die Static-Allow-List-Modi von `ctx.http` vertrauen benannten Hosts
+  ohne SSRF-Guard. `docker-socket-proxy` löst aus der Middleware nicht mehr auf;
+  `updater` bleibt erreichbar (Bearer-Token nötig). Ein hartes Deny für beide
+  Namen im Host-Matcher wäre billige Defense in Depth.
+- **Nicht geprüfte Runtimes.** Die Isolation des Control-Netzes ist auf
+  Stock-dockerd 20.10, 24, 27 und 29 (iptables) und auf OrbStack 29.4 geprüft,
+  nicht auf Rootless Docker, Podman oder Docker Desktop. Wer das Overlay dort
+  betreibt, führt den Check aus `docs/upgrading.md` aus.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration

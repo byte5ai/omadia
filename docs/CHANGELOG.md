@@ -36,6 +36,48 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Docker socket proxy moved to an internal control network (#432)
+
+2026-09-30 — with the opt-in self-update overlay, `docker-socket-proxy` sat on
+the shared `omadia` network next to the middleware, web-ui, postgres and every
+overlay sidecar. The proxy has no authentication, and the Engine calls an
+update needs are host-root-equivalent on their own, so who can reach the proxy,
+not its allowlist, decides who controls the host. The updater's bearer token,
+release-tag check and protected-service list guard only the updater's own API,
+and a direct call to the proxy skipped all three. The overlay now declares an
+internal network, `omadia-control`, that only the proxy and the updater join.
+The proxy has left `omadia`, so its name no longer resolves there. The new
+network has no host-side bridge address
+(`com.docker.network.bridge.inhibit_ipv4`) and no IPv6, so the proxy's address
+does not route from `omadia` either, including on runtimes such as OrbStack
+that do not firewall traffic between Docker networks. The updater keeps
+`omadia` for the middleware's calls and its own health gate. All 27 section
+flags of the pinned proxy image are now set explicitly: `VERSION` changes from
+1 to 0, and `EVENTS`, on by image default, is now 0 (the updater calls
+neither). The overlay header no longer claims that a compromised updater cannot
+read secrets or spawn a shell. It documents the proxy as root-equivalent and
+the network as the boundary (`docs/security-architecture.md` §10f).
+
+The updater is now the one route from `omadia` to the proxy, so its health
+gate no longer follows redirects. The probe used fetch's default
+`redirect: 'follow'` on a `/health` answer the middleware writes, and a
+redirect to `http://docker-socket-proxy:2375/…` made the updater send that GET
+onto `omadia-control`; a JSON 2xx from the Engine even passed the gate as an
+unstamped build. A 3xx now counts as not healthy and is noted once in the step
+trail (`sidecars/updater/test/health.test.mjs`).
+
+Existing overlay installs re-run
+`docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d`
+with both files, plus their other overlays. Compose creates `omadia-control`
+and recreates only `docker-socket-proxy` and `updater`; middleware, web-ui and
+data are untouched, and an update running at that moment is aborted.
+`docs/upgrading.md` has a check that first proves the updater reaches the
+proxy, then that the middleware and web-ui cannot, by name or by address. It
+ends in `PASS`, `FAIL` or `INCONCLUSIVE` with a matching exit code, and an
+error it cannot classify is inconclusive, never blocked.
+`middleware/test/composeUpdateOverlay.test.ts` guards the layout, and CI
+renders the merged overlay with `docker compose … config --quiet`.
+
 ### Fixed — /login and /setup only follow same-origin return paths
 
 2026-09-30 — after a password sign-in, and after the first administrator is
