@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { act, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -24,6 +25,22 @@ vi.mock('../../_lib/api', () => ({
   getSessionStatus: mockGetSessionStatus,
   renewSession: mockRenewSession,
 }));
+
+/**
+ * framer-motion's frame loop captures `requestAnimationFrame` when the module
+ * loads — jsdom's real one, not the fake timers installed in `beforeEach` — so
+ * whether an exit animation finishes inside a fake-time `flush()` depended on
+ * real wall-clock time and flaked on CI. This suite covers the state machine,
+ * not the animation: render AnimatePresence's children directly so a card
+ * leaves the DOM in the same commit that its phase ends.
+ */
+vi.mock('framer-motion', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('framer-motion')>();
+  return {
+    ...actual,
+    AnimatePresence: ({ children }: { children?: ReactNode }) => children ?? null,
+  };
+});
 
 const WARNING_TITLE = 'Sitzung läuft bald ab';
 const EXPIRED_TITLE = 'Sitzung abgelaufen';
@@ -175,7 +192,7 @@ describe('<SessionWatcher />', () => {
       expect(screen.getByText(WARNING_TITLE)).toBeInTheDocument();
 
       await click(STILL_HERE);
-      await flush(1_000); // renew resolves + the card's exit animation ends
+      await flush(1_000); // renew resolves; the card leaves in the same commit
 
       expect(mockRenewSession).toHaveBeenCalledTimes(1);
       expect(screen.queryByText(WARNING_TITLE)).not.toBeInTheDocument();
@@ -273,7 +290,6 @@ describe('<SessionWatcher />', () => {
     // The next heartbeat sees an expiry pushed out by a renewal elsewhere.
     mockAuthedSession(4 * HOUR_S);
     await flush(60_000);
-    await flush(1_000); // let the card's exit animation finish
     expect(screen.queryByText(WARNING_TITLE)).not.toBeInTheDocument();
 
     // …and the old expiry passes without an overlay.
