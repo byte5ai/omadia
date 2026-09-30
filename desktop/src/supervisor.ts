@@ -388,6 +388,14 @@ export class Supervisor extends EventEmitter {
       // Loopback-only. The kernel otherwise binds dual-stack `::` (all
       // interfaces), which would expose the local install on the LAN.
       HOST: '127.0.0.1',
+      // Tells the kernel it is the desktop app's own kernel. Together with the
+      // loopback HOST above — and only together with it — the first-user setup
+      // wizard opens without the operator setup token every server install
+      // needs: nothing off this machine can reach the kernel, and the person
+      // at the keyboard is the operator. Set after `...process.env` on
+      // purpose: this is a fact about how the shell runs the kernel, not a
+      // preference an inherited value may override.
+      OMADIA_DESKTOP_EMBEDDED: 'true',
       DATABASE_URL: this.db?.databaseUrl ?? '',
       // Signals the kernel that DATABASE_URL points at our embedded Postgres,
       // whose loopback port can change between launches (collision → new port).

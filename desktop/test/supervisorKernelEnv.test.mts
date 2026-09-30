@@ -60,6 +60,32 @@ describe('Supervisor.kernelEnv mDNS wiring (OM-70)', () => {
 });
 
 /**
+ * The first-user setup wizard needs an operator setup token on every kernel
+ * except the desktop app's own: the kernel skips the token only when it sees
+ * the supervisor's explicit flag AND a loopback bind. Losing either half here
+ * would put a token prompt in front of every fresh desktop install — or, for
+ * the bind, expose the wizard on the LAN.
+ */
+describe('Supervisor.kernelEnv first-user setup exemption', () => {
+  it('marks the kernel as the desktop kernel, bound to loopback', () => {
+    const env = kernelEnv();
+    assert.equal(env['OMADIA_DESKTOP_EMBEDDED'], 'true');
+    assert.equal(env['HOST'], '127.0.0.1');
+  });
+
+  it('is not overridden by an inherited value', () => {
+    const saved = process.env['OMADIA_DESKTOP_EMBEDDED'];
+    process.env['OMADIA_DESKTOP_EMBEDDED'] = 'false';
+    try {
+      assert.equal(kernelEnv()['OMADIA_DESKTOP_EMBEDDED'], 'true');
+    } finally {
+      if (saved === undefined) delete process.env['OMADIA_DESKTOP_EMBEDDED'];
+      else process.env['OMADIA_DESKTOP_EMBEDDED'] = saved;
+    }
+  });
+});
+
+/**
  * OM-90 — `/api/v1/auth/login` redirected to `http://localhost:3979/login`,
  * the kernel config's default `PUBLIC_BASE_URL`. Nothing in the desktop app
  * listens on 3979: the kernel binds 8769 and the web-ui gets a fresh port on
