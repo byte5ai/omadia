@@ -215,9 +215,10 @@ describe('verifier/claimExtractor - privacy view', () => {
     assert.equal(claims.length, 3);
     assert.equal(claims[0]!.text, `${REAL_NAME} wechselte am ${REAL_DATE} in die IT-Abteilung`);
     assert.deepEqual(claims[0]!.relatedEntities, ['odoo:hr.employee:7']);
-    // A string value that is itself a surrogate restores to the real literal.
+    // A string value that is itself a surrogate restores to the real literal,
+    // normalised to ISO like every extracted date.
     assert.equal(claims[1]!.text, REAL_DATE);
-    assert.equal(claims[1]!.value, REAL_DATE);
+    assert.equal(claims[1]!.value, '2023-03-01');
     // Context is cut from the REAL answer, so the judge gets real subjects
     // server-side (and projects them itself before anything leaves).
     assert.equal(
@@ -246,29 +247,103 @@ describe('verifier/claimExtractor - privacy view', () => {
     );
   });
 
-  it('drops a numeric value parsed from a span that carried a surrogate', async () => {
-    const pairs: ReadonlyArray<readonly [string, string]> = [['€72,000', '€10000']];
-    const realAnswer = 'Das Jahresgehalt beträgt €72,000.';
-    const view: VerifierPrivacy = {
-      wireAnswer: 'Das Jahresgehalt beträgt €10000.',
-      maskForWire: async (t) => t.split(pairs[0]![0]).join(pairs[0]![1]),
+  /** A view over literal [real, surrogate] pairs; the wire answer is derived. */
+  function swapView(
+    pairs: ReadonlyArray<readonly [string, string]>,
+    realAnswer: string,
+  ): VerifierPrivacy {
+    const swap = (text: string, from: 0 | 1): string =>
+      pairs.reduce((out, pair) => out.split(pair[from]).join(pair[from === 0 ? 1 : 0]), text);
+    return {
+      wireAnswer: swap(realAnswer, 0),
+      maskForWire: async (t) => swap(t, 0),
       projectForWire: async (t) => t,
-      restore: async (t) => t.split(pairs[0]![1]).join(pairs[0]![0]),
+      restore: async (t) => swap(t, 1),
     };
-    const { llm } = capturingLlm([
-      { text: '€10000', type: 'amount', expected_source: 'odoo', value: 10000, unit: '€' },
-    ]);
+  }
+
+  async function extractWith(
+    view: VerifierPrivacy,
+    realAnswer: string,
+    claims: unknown[],
+  ): Promise<Awaited<ReturnType<ClaimExtractor['extract']>>> {
+    const { llm } = capturingLlm(claims);
     const extractor = new ClaimExtractor({ llm: llm as never, log: () => undefined });
-    const claims = await extractor.extract({
-      userMessage: 'Wie hoch ist das Gehalt?',
-      answer: realAnswer,
-      privacy: view,
-    });
+    return extractor.extract({ userMessage: 'Wie hoch ist das?', answer: realAnswer, privacy: view });
+  }
+
+  it('re-derives an amount parsed from a placeholder from the real literal', async () => {
+    const realAnswer = 'Das Jahresgehalt beträgt €72,000.';
+    const view = swapView([['€72,000', '€10000']], realAnswer);
+    const claims = await extractWith(view, realAnswer, [
+      { text: '€10000', type: 'amount', expected_source: 'odoo', value: 10000, unit: '€' },
+      {
+        text: 'Jahresgehalt beträgt €10000',
+        type: 'aggregate',
+        expected_source: 'odoo',
+        value: 10000,
+      },
+    ]);
+    assert.deepEqual(
+      claims.map((c) => [c.text, c.value]),
+      [
+        // 10000 is the surrogate's number; the checker must compare the real
+        // 72,000 (English grouping, which a naive parse would read as 72).
+        ['€72,000', 72000],
+        ['Jahresgehalt beträgt €72,000', 72000],
+      ],
+    );
+  });
+
+  it('re-derives a date parsed from a placeholder, as ISO', async () => {
+    const realAnswer = 'Der Vertrag endet am 31.12.2026 regulär.';
+    const view = swapView([['31.12.2026', '05.05.1985']], realAnswer);
+    const claims = await extractWith(view, realAnswer, [
+      // The model normalised the surrogate date itself.
+      { text: 'endet am 05.05.1985', type: 'date', expected_source: 'odoo', value: '1985-05-05' },
+    ]);
     assert.equal(claims.length, 1);
-    assert.equal(claims[0]!.text, '€72,000');
-    // 10000 is the surrogate's number, not the real one: the deterministic
-    // checker must not compare it against Odoo.
+    assert.equal(claims[0]!.text, 'endet am 31.12.2026');
+    assert.equal(claims[0]!.value, '2026-12-31');
+  });
+
+  it('keeps a value the model read from a real literal next to a placeholder', async () => {
+    const realAnswer = 'Jana Beispielfrau erhielt €500 Prämie mit Rechnung INV/2026/0042.';
+    const view = swapView([['Jana Beispielfrau', 'Erika Musterfrau']], realAnswer);
+    const claims = await extractWith(view, realAnswer, [
+      { text: 'Erika Musterfrau erhielt €500', type: 'amount', expected_source: 'odoo', value: 500 },
+      {
+        text: 'Erika Musterfrau erhielt €500 Prämie mit Rechnung INV/2026/0042',
+        type: 'id',
+        expected_source: 'odoo',
+        value: 'INV/2026/0042',
+      },
+    ]);
+    assert.deepEqual(
+      claims.map((c) => c.value),
+      [500, 'INV/2026/0042'],
+    );
+  });
+
+  it('drops a value that cannot be tied to one real literal', async () => {
+    const realAnswer = 'Statt €72,000 sind es €80,000 für Jana Beispielfrau.';
+    const view = swapView(
+      [
+        ['€72,000', '€10000'],
+        ['Jana Beispielfrau', 'Erika Musterfrau'],
+      ],
+      realAnswer,
+    );
+    const claims = await extractWith(view, realAnswer, [
+      // Two amounts in the span: which one the value came from is a guess.
+      { text: 'Statt €10000 sind es €80,000', type: 'amount', expected_source: 'odoo', value: 80000 },
+      // A value that is only a fragment of a placeholder.
+      { text: 'für Erika Musterfrau', type: 'id', expected_source: 'odoo', value: 'Musterfrau' },
+    ]);
+    assert.equal(claims.length, 2);
     assert.equal(claims[0]!.value, undefined);
+    assert.equal(claims[1]!.text, 'für Jana Beispielfrau');
+    assert.equal(claims[1]!.value, undefined);
   });
 
   it('blocked masking sends nothing and yields no claims', async () => {

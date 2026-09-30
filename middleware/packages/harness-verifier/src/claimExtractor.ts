@@ -8,6 +8,7 @@ import type {
   OdooRecordRef,
   VerifierPrivacy,
 } from './claimTypes.js';
+import { restoreClaims } from './claimRestore.js';
 
 /**
  * Extracts structured factual claims from an orchestrator answer via a
@@ -256,7 +257,7 @@ ${truncate(answer, 6000)}`;
       }
     }
     const out = privacy
-      ? await restoreClaims(normalised, privacy, input.answer.trim())
+      ? await restoreClaims(normalised, privacy, input.answer.trim(), claimContext)
       : normalised;
     const dropped = normalised.length - out.length;
     this.opts.log(
@@ -277,81 +278,6 @@ ${truncate(answer, 6000)}`;
     }
     return out;
   }
-}
-
-/** Claim types whose `value` is parsed from the span (a number, a date). */
-const VALUE_DERIVED_TYPES: ReadonlySet<ClaimType> = new Set<ClaimType>([
-  'amount',
-  'date',
-  'aggregate',
-]);
-
-/**
- * Map claims extracted from the wire view back to real values, server-side.
- *
- * A claim is kept only when its restored text is still verbatim in the REAL
- * answer: a span that cut through a surrogate ("Musterfrau wechselte")
- * restores to nothing the user was shown, and checking it would compare a
- * placeholder against the source. Fewer checks, never a false contradiction.
- *
- * A `value` survives when it restores to a real literal itself, or when the
- * span carried no surrogate. Otherwise it was parsed from a placeholder
- * (the surrogate's number, a reformatted surrogate date) and is dropped; the
- * deterministic checker then reports `unverified` instead of comparing it.
- */
-async function restoreClaims(
-  claims: readonly Claim[],
-  privacy: VerifierPrivacy,
-  realAnswer: string,
-): Promise<Claim[]> {
-  const hay = realAnswer.toLowerCase();
-  const out: Claim[] = [];
-  for (const claim of claims) {
-    const text = await privacy.restore(claim.text);
-    if (!hay.includes(text.toLowerCase())) continue;
-    const touchedSurrogate = text !== claim.text;
-    const value = await restoreValue(claim, privacy, touchedSurrogate);
-    const context = claimContext(text, realAnswer);
-    const relatedEntities = await Promise.all(
-      claim.relatedEntities.map((entity) => privacy.restore(entity)),
-    );
-    const odooRecord = claim.odooRecord
-      ? {
-          ...claim.odooRecord,
-          ...(claim.odooRecord.ref !== undefined
-            ? { ref: await privacy.restore(claim.odooRecord.ref) }
-            : {}),
-        }
-      : undefined;
-    out.push({
-      id: claim.id,
-      text,
-      type: claim.type,
-      expectedSource: claim.expectedSource,
-      relatedEntities,
-      ...(value !== undefined ? { value } : {}),
-      ...(claim.unit !== undefined ? { unit: claim.unit } : {}),
-      ...(claim.aggregation !== undefined ? { aggregation: claim.aggregation } : {}),
-      ...(odooRecord ? { odooRecord } : {}),
-      ...(context ? { context } : {}),
-    });
-  }
-  return out;
-}
-
-async function restoreValue(
-  claim: Claim,
-  privacy: VerifierPrivacy,
-  touchedSurrogate: boolean,
-): Promise<number | string | undefined> {
-  const value = claim.value;
-  if (value === undefined) return undefined;
-  if (typeof value === 'string') {
-    const restored = await privacy.restore(value);
-    if (restored !== value) return restored;
-  }
-  if (touchedSurrogate && VALUE_DERIVED_TYPES.has(claim.type)) return undefined;
-  return value;
 }
 
 function shortSnippet(value: string, max = 300): string {

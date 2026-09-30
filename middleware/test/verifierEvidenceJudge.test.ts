@@ -422,4 +422,30 @@ describe('verifier/evidenceJudge - privacy view', () => {
     assert.equal(prompts.length, 0);
     assert.ok(logs.some((l) => l.includes('prompt masking blocked')));
   });
+
+  it('projects a node id that embeds an identity value and maps the cited id back', async () => {
+    // Ids of ingested records can carry an external key or a channel user id.
+    const nodeId = `mcp:contacts:${REAL_MAIL}`;
+    const keyed: EvidenceSnippet = {
+      nodeId,
+      source: 'odoo',
+      title: REAL_NAME,
+      content: `Graph-Node ${nodeId} — ${REAL_NAME} (department=IT)`,
+      identityValues: [REAL_NAME],
+    };
+    const { llm, prompts } = capturingJudge((prompt) => ({
+      verdict: 'verified',
+      // The judge can only cite the id it was shown.
+      evidence_node_id: /nodeId=([^,\]]+)/.exec(prompt)?.[1] ?? 'missing',
+      rationale: 'passt',
+    }));
+    const judge = new EvidenceJudge({ llm: llm as never, fetcher: stubFetcher([keyed]) });
+    const verdict = await judge.check(CLAIM, servicePrivacy(false));
+    assert.equal(prompts.length, 1);
+    assert.deepEqual(findIdentityLeaks(prompts[0], [REAL_NAME, REAL_MAIL]), []);
+    assert.equal(verdict.status, 'verified');
+    // Resolved through the restored id: the snippet's source, not the claim's
+    // expected source ('graph') a failed lookup falls back to.
+    if (verdict.status === 'verified') assert.equal(verdict.source, 'odoo');
+  });
 });

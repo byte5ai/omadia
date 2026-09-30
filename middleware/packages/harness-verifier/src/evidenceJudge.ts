@@ -301,19 +301,33 @@ ${evidenceBlock}`;
 
     const verdict = parseVerdict(response);
     if (verdict === null) return null;
-    if (privacy === undefined || verdict.rationale === undefined) {
-      return { ...verdict, projected };
+    if (privacy === undefined) return { ...verdict, projected };
+    return { ...(await this.restoreVerdict(verdict, privacy)), projected };
+  }
+
+  /**
+   * The judge argued over the projected request: map the node id it cites
+   * (so `check` finds the snippet) and its rationale (which `check` turns
+   * into truth / detail / reason) back to real values. A rationale that
+   * fails to restore is dropped rather than kept as placeholder text.
+   */
+  private async restoreVerdict(
+    verdict: JudgeVerdict,
+    privacy: VerifierPrivacy,
+  ): Promise<JudgeVerdict> {
+    const out: JudgeVerdict = { verdict: verdict.verdict };
+    const cited = verdict.evidenceNodeId;
+    if (cited !== undefined) {
+      out.evidenceNodeId = await privacy.restore(cited).catch(() => cited);
     }
-    // The rationale is the judge's prose over placeholders; `check` turns it
-    // into truth / detail / reason, so it is restored before it gets there.
-    // A failed restore drops it rather than keep placeholder text as truth.
-    const { rationale, ...rest } = verdict;
-    try {
-      return { ...rest, rationale: await privacy.restore(rationale), projected };
-    } catch (err) {
-      this.log(`[verifier/judge] rationale restore failed, dropped: ${errMsg(err)}`);
-      return { ...rest, projected };
+    if (verdict.rationale !== undefined) {
+      try {
+        out.rationale = await privacy.restore(verdict.rationale);
+      } catch (err) {
+        this.log(`[verifier/judge] rationale restore failed, dropped: ${errMsg(err)}`);
+      }
     }
+    return out;
   }
 }
 
@@ -352,8 +366,9 @@ function judgeRequestParts(
  * surrogate map in ONE call: the claim, its context and the evidence share a
  * map, so a person is the same placeholder on both sides of the comparison,
  * and the masking pass runs once per request instead of once per field.
- * Node ids and the source label stay as they are — structural references,
- * like the ids a v4 digest keeps. Throws when the projection is blocked or
+ * Node ids are projected too — an id can embed an external key or a channel
+ * user id — and the id the judge cites is restored afterwards; only the
+ * source label stays as it is. Throws when the projection is blocked or
  * came back with a different structure; the caller then sends nothing.
  */
 async function projectRequestParts(
@@ -365,7 +380,7 @@ async function projectRequestParts(
     real.claimText,
     real.context,
     real.related,
-    ...real.evidence.flatMap((e) => [e.title, e.content]),
+    ...real.evidence.flatMap((e) => [e.nodeId, e.title, e.content]),
   ];
   const joined = flat.join(PART_SEPARATOR);
   const identityValues = [
@@ -388,10 +403,10 @@ async function projectRequestParts(
       context: at(1),
       related: at(2),
       evidence: real.evidence.map((e, idx) => ({
-        nodeId: e.nodeId,
+        nodeId: at(3 + idx * 3),
         source: e.source,
-        title: at(3 + idx * 2),
-        content: at(4 + idx * 2),
+        title: at(4 + idx * 3),
+        content: at(5 + idx * 3),
       })),
     },
   };
