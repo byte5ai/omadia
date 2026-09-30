@@ -22,7 +22,9 @@ keys, and shifts in the plugin API.
    `CREDENTIAL_KEYCHAIN_KEY`.
 3. Pull the new image. Pin a release with `OMADIA_VERSION`, see the
    [README quickstart](../README.md#-quickstart).
-4. Restart with `docker compose up -d`.
+4. Restart with `docker compose up -d`. If you run overlays, pass the same
+   `-f` files you start the stack with; a plain `up` leaves their services
+   running as they were.
 5. Verify the admin UI comes up and an existing agent run still works.
 
 ## Updating from the Operator UI
@@ -85,14 +87,18 @@ every other overlay you normally use:
 docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d
 ```
 
-Compose creates `omadia-control` and recreates only `docker-socket-proxy` and
-`updater`. The middleware, web-ui and your data are not touched. An update
-that is running at that moment is aborted, because the updater keeps its job
-state in memory. A plain `docker compose up -d` without the overlay leaves the
-old proxy and updater running on `omadia` as orphans (compose only prints a
-warning), so the old exposure stays. Add `--remove-orphans` only when your
-`-f` list contains every overlay you run; otherwise it also removes the
-containers of the overlays you left out. Then run the check below.
+Compose creates `omadia-control` and recreates `docker-socket-proxy` and
+`updater`. Your data is not touched, and neither are the middleware and web-ui
+if compose started them on the release they run now. If Admin → Update
+installed that release, compose restarts them once, on the same images,
+because they still carry compose's configuration label from the previous
+release. An update that is running at that moment is aborted, because the
+updater keeps its job state in memory. A plain `docker compose up -d` without
+the overlay leaves the old proxy and updater running on `omadia` as orphans
+(compose only prints a warning), so the old exposure stays. Add
+`--remove-orphans` only when your `-f` list contains every overlay you run;
+otherwise it also removes the containers of the overlays you left out. Then
+run the check below.
 
 #### Checking the control network
 
@@ -331,11 +337,33 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
-## Upgrading past v0.167.7 — framing, web-ui user, sandbox limits
+## Upgrading past v0.167.7 — self-update overlay, framing, web-ui user, sandbox limits
 
-Three hardening changes an operator may notice. None needs action on a
-default install.
+Four hardening changes an operator may notice. None needs action on a
+default install. On an install that runs the self-update overlay
+(`docker-compose.update.yaml`), the first one does, and Admin → Update cannot
+apply it.
 
+- **The self-update overlay needs one `up` by hand.** The overlay now puts
+  `docker-socket-proxy` on its own internal network, `omadia-control`, and the
+  updater's health gate no longer follows redirects. Admin → Update cannot
+  apply either: the updater replaces the middleware and web-ui, never the
+  compose files, the proxy or itself. Until compose re-applies the overlay,
+  the proxy stays on `omadia`, where the middleware (plugins included), the
+  web-ui and every sidecar can reach it, and whatever reaches it controls the
+  host. Pull the new compose files, then run `up` with both files, plus
+  every other overlay you use:
+
+  ```bash
+  docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d
+  ```
+
+  On a manual upgrade, this is step 4 of the general steps. If you upgrade
+  through Admin → Update, run it by hand afterwards; it also restarts the
+  middleware and web-ui once, on the images they already run. Then run the
+  [control-network check](#checking-the-control-network): only `PASS` shows
+  that the proxy is out of reach. Details:
+  [Already running the overlay](#already-running-the-overlay).
 - **Operator pages can no longer be framed.** Every operator page now sends
   `Content-Security-Policy: frame-ancestors 'none'` and
   `X-Frame-Options: DENY`. Plugin UIs and Teams tabs under `/p/*`, and

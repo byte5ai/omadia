@@ -149,13 +149,17 @@ trail (`sidecars/updater/test/health.test.mjs`).
 
 Existing overlay installs re-run
 `docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d`
-with both files, plus their other overlays. Compose creates `omadia-control`
-and recreates only `docker-socket-proxy` and `updater`; middleware, web-ui and
-data are untouched, and an update running at that moment is aborted.
-`docs/upgrading.md` has a check that first proves the updater reaches the
-proxy, then that the middleware and web-ui cannot, by name or by address. It
-ends in `PASS`, `FAIL` or `INCONCLUSIVE` with a matching exit code, and an
-error it cannot classify is inconclusive, never blocked.
+with both files, plus their other overlays. Admin → Update cannot do this for
+them: the updater never replaces the compose files, the proxy or itself.
+Compose creates `omadia-control` and recreates `docker-socket-proxy` and
+`updater`. Data is untouched. If Admin → Update installed the running
+release, the middleware and web-ui restart once, on the same images, because
+they still carry compose's configuration label from the previous release. An
+update running at that moment is aborted. `docs/upgrading.md` lists this step
+in its upgrade notes for this release, and has a check that first proves the
+updater reaches the proxy, then that the middleware and web-ui cannot, by name
+or by address. It ends in `PASS`, `FAIL` or `INCONCLUSIVE` with a matching
+exit code, and an error it cannot classify is inconclusive, never blocked.
 `middleware/test/composeUpdateOverlay.test.ts` guards the layout, and CI
 renders the merged overlay with `docker compose … config --quiet`.
 
