@@ -344,8 +344,8 @@ working across it:
   `captureRoutineTurn` filed the routine under. channel-teams sends `actor`
   since 0.26.1; an older adapter gets the refusal on every card button. The
   contract type keeps `actor` optional so 1.x callers still compile — the
-  runtime refusal, not the type, is the protection — and makes it required
-  in plugin-api 2.0. The capability ref stays `routinesIntegration@1`.
+  runtime refusal, not the type, is the protection — and plugin-api 2.0 will
+  make it required. The capability ref stays `routinesIntegration@1`.
 
   `{ kind: 'operator' }` now has exactly one producer, the `requireAuth`-gated
   router in `routes/routines.ts`. `routineOperatorScope.test.ts` walks the
@@ -369,14 +369,14 @@ working across it:
 
   Reviewer note: the layer tests stub the store, so they prove the callers
   *pass* a scope, not that the store *uses* it. Measured — with the SQL
-  predicate removed from both statements, all 20 layer tests stayed green.
+  predicate removed from both statements, all 21 layer tests stayed green.
   `routineScoping.test.ts` therefore also drives the real `RoutineStore`
   against a recording pool and follows each `$n` the SQL names into its bound
   value, which is what makes a dropped predicate fail. Planted-omission
   results across `routineScoping.test.ts` and `routineOperatorScope.test.ts`
   (re-measured when the card fallback was removed): tool scope replaced by
   operator 5 red (four behavioural, plus the one-producer scan), store
-  predicate dropped 2 red, delete ordering flipped 1 red, card fallback chain
+  predicate dropped 2 red, delete ordering flipped 2 red, card fallback chain
   restored 7 red.
 - **Only advertised tools are dispatchable (#1015).** `tools/call` used to
   forward any name into `dispatch()`. The dispatchable set is wider than the

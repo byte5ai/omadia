@@ -630,6 +630,41 @@ describe('#1025 smart-card actions — the principal comes from the channel, or 
     assert.equal(getRefusedRoutineActionMetrics().calls, 0);
   });
 
+  it('an actor on a foreign routine id gets not-found for all four actions', async () => {
+    const h = makeHarness();
+    const foreign = h.store.seed(OTHER);
+    await h.runner.resumeRoutine(foreign.id, { kind: 'operator' });
+    const integ = integrationFor(h);
+    resetRefusedRoutineActionMetrics();
+
+    for (const action of ['pause', 'resume', 'trigger_now'] as const) {
+      await assert.rejects(
+        () => integ.handleRoutineAction({ action, id: foreign.id, actor: OWNER_ACTOR }),
+        RoutineNotFoundError,
+        `${action} on a foreign id must answer not-found`,
+      );
+    }
+    // `delete` answers with a sentence instead of throwing — the same one an
+    // id that does not exist gets, so the button is no existence oracle.
+    const onForeign = await integ.handleRoutineAction({
+      action: 'delete',
+      id: foreign.id,
+      actor: OWNER_ACTOR,
+    });
+    const onAbsent = await integ.handleRoutineAction({
+      action: 'delete',
+      id: '11111111-1111-4111-8111-111111111111',
+      actor: OWNER_ACTOR,
+    });
+    assert.equal(onForeign, onAbsent);
+
+    assert.equal(h.store.rows.get(foreign.id)?.status, 'active');
+    assert.equal(h.runs.length, 0);
+    assert.deepEqual(h.scheduler.unregistered, []);
+    // A usable actor that misses is a not-found, not a refusal.
+    assert.equal(getRefusedRoutineActionMetrics().calls, 0);
+  });
+
   it('lets an explicit actor act on their own routine', async () => {
     const h = makeHarness();
     const own = h.store.seed(OWNER);
