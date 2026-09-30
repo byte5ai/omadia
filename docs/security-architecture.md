@@ -1276,6 +1276,95 @@ race).
 
 ---
 
+## 10e. Desktop shell: the renderer bridge is origin- and phase-gated
+
+The desktop app (`desktop/`) shows everything in one `BrowserWindow` with one
+preload: the bundled first-run wizard and loading screen (`file:`), the
+loopback web UI after boot, and whatever a server redirect lands the window on
+(an IdP page during an in-window OIDC/Entra sign-in).
+`webPreferences.preload` is fixed per webContents, so a preload per phase
+would need a second window. Three layers keep the setup channels with the
+wizard, above all the recovery-key export, which returns the vault master key
+(`VAULT_KEY`):
+
+- **Main decides every call from the sender frame** (`desktop/src/ipcSender.ts`,
+  wired in `ipc.ts`). Each channel is registered through `guardedHandle` /
+  `guardedOn` with exactly one surface. `event.senderFrame` is read
+  synchronously on entry, because Electron answers null for it once the frame
+  has navigated. A frame that is null, destroyed, detached or unreadable is
+  refused, and so is any subframe.
+  - Setup channels (`testLlmKey`, `chooseDataDir`, `exportRecoveryKey`,
+    `complete`) answer only when two things hold. The frame URL must be the
+    bundled `dist/renderer/wizard.html`, compared as a file path against the
+    install (`fileURLToPath`, dot segments resolved, case-insensitive on
+    Windows). And the window navigator must show the `wizard` view, so the key
+    is out of reach once setup is over. The path rule matters on its own: the
+    navigator claims a view before its page has loaded, so the previous
+    document can still be on screen while `view === 'wizard'`.
+  - UI pings (`uiReady`, `uiLocale`) answer only the main frame at the running
+    web UI's exact origin, and nothing while no web UI serves.
+  - A refused invoke rejects with a fixed message; a refused event is dropped.
+    Both are logged without the URL's query or hash. Setup refusals log at warn
+    with the expected and the actual page, so a path mismatch in a packaged
+    build is diagnosable. UI refusals (routine after a stop or restart) log at
+    info.
+- **The preload exposes only the loaded document's surface**
+  (`desktop/src/bridgeSurface.ts`, `preload.ts`). The wizard gets the setup
+  methods and the boot stream, the loading screen the boot stream, the web UI
+  only `uiReady` and `setUiLocale`, and any other document no `window.omadia`
+  at all. This layer carries weight of its own: third-party plugin UIs run in
+  same-origin iframes of the web UI and can reach the bridge through
+  `window.parent.omadia`. Such a call leaves through the parent's bridge, so
+  Electron reports the MAIN frame with the web UI's origin, and no frame check
+  can tell it apart from the web UI. **The `app` surface must never carry a
+  method that returns or writes a secret.** The unused `getState` channel is
+  gone. `bridgeSurface.ts` is inlined into the sandboxed preload and stays
+  import-free; a test asserts the bundle requires nothing but `electron`.
+- **Navigation is fenced** (`navigationPolicy.ts`, `navigationGuards.ts`,
+  installed for every webContents from `app.on('web-contents-created')`
+  before the window exists).
+  - `will-navigate` (links, `window.location`, form posts): the current
+    document decides. From the web UI, the kernel or a bundled page, the
+    window stays on the app's own loopback origins (web UI and kernel). Any
+    other `http(s)` target is prevented and handed to the system browser.
+    Every other scheme is refused, `file:` included. From a foreign page (an
+    IdP reached by a redirect), `http(s)` targets stay in the window so the
+    IdP's own form posts and hops work; script, data and file targets are
+    still refused.
+  - `setWindowOpenHandler` decides by target. A same-app popup (attachment,
+    preview, download) opens as a sandboxed, context-isolated child without a
+    preload. Electron merges only security-related webPreferences from the
+    parent into such a child, never the preload, so the explicit flags are
+    belt and braces. `about:blank` and an empty `window.open()` are refused,
+    because Electron gives such a child the parent's webPreferences, preload
+    included. Any other web target is refused in the app and opened in the
+    system browser; any other scheme is just refused.
+    Chromium's implicit `noopener` already applies to `target="_blank"`, so a
+    missing `rel` attribute on such a link adds nothing here.
+  - `shell.openExternal` only ever receives `http:`/`https:` URLs. The logs
+    carry the target's origin, never the query (OAuth codes, `id_token_hint`).
+
+Accepted residual: server redirects (`will-redirect`) are deliberately not
+guarded, so the in-window OIDC/Entra sign-in keeps working (kernel 302 to the
+IdP, the IdP's own steps, the callback on the kernel origin). A foreign
+document reached that way, or by a navigation from such a document, can be
+shown in the window. It gets no bridge, and every handler refuses it. The
+IdP end-session hop after a sign-out starts from the web UI, so it now opens
+in the system browser, which has its own cookie store.
+
+Main → renderer pushes (`bootProgress`, `bootLog`) are not sender-checked:
+every boot path loads a bundled page first and streams only while it is up,
+and the navigation fence keeps foreign documents off screen meanwhile.
+
+Tests: `desktop/test/ipcSender.test.mts` (the rules, synthetic frames),
+`ipcRegistration.test.mts` (every channel driven through the real
+`registerIpc`, nothing written on a refusal), `bridgeSurface.test.mts`
+(surfaces, what the preload really exposes, the sandbox-safe bundle),
+`navigationPolicy.test.mts` (including: every URL the kernel sends the window
+back to is trusted) and `navigationGuards.test.mts`.
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1333,7 +1422,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
+- [ ] A new desktop IPC channel is registered through `guardedHandle` /
+      `guardedOn` with an explicit surface, never bare `ipcMain`. The `app`
+      surface (the web UI and every plugin iframe in it) gets no method that
+      returns or writes a secret. A new bundled page is classified in
+      `bridgeSurface.ts` and checked by path in `ipcSender.ts` instead of
+      widening the wizard surface (§10e).
 
 ---
 
-*Last reviewed: 2026-08 (§10 added with issue #669).*
+*Last reviewed: 2026-09 (§10e added: desktop renderer trust boundary).*

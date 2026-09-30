@@ -3080,6 +3080,50 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
 - **Electrons eigene `role:`-Menüeinträge** folgen der OS-Sprache; außerhalb
   unserer Reichweite, nur zu benennen.
 
+### Desktop-Shell: Trust-Boundary Renderer → Main
+
+Wizard, Ladeseite, Web-UI und bei In-Window-OIDC auch IdP-Seiten laufen im
+selben Fenster mit demselben Preload. Seit 2026-09-30 gilt, Begründung und
+Details in [`security-architecture.md` §10e](security-architecture.md):
+
+- **IPC:** Jeder Kanal wird in `desktop/src/ipc.ts` über
+  `guardedHandle`/`guardedOn` mit genau einer Surface registriert, nie direkt
+  über `ipcMain`. `desktop/src/ipcSender.ts` entscheidet pro Aufruf anhand von
+  `event.senderFrame`. Setup-Kanäle antworten nur dem gebündelten
+  `wizard.html` im Main-Frame (Pfadvergleich gegen die Installation), und nur
+  solange der Navigator `wizard` zeigt. UI-Pings antworten nur dem Origin der
+  laufenden Web-UI. `getState` ist entfernt.
+- **Preload:** `desktop/src/bridgeSurface.ts` gibt der Web-UI nur
+  `uiReady`/`setUiLocale`, fremden Seiten gar nichts. Plugin-iframes erreichen
+  die Bridge der Web-UI über `window.parent.omadia`. Deshalb darf die
+  `app`-Surface nie eine Methode bekommen, die ein Geheimnis liefert oder
+  schreibt.
+- **Navigation:** `desktop/src/navigationGuards.ts` hängt an jedem
+  webContents. Fremde Links und Popups gehen in den Systembrowser.
+  `file:`, `javascript:`, `data:` und `about:blank` werden abgelehnt.
+  Same-App-Popups öffnen sandboxed und ohne Preload. `will-redirect` bleibt
+  bewusst offen, damit der In-Window-Login per OIDC/Entra funktioniert.
+
+Offen:
+
+- **Manuelle Prüfung auf paketierten Builds (macOS und Windows)** vor dem
+  nächsten Desktop-Release. Den Wizard komplett durchlaufen: Reveal zeigt den
+  Key, Finish bootet. Im Log darf keine `[ipc] … refused`-Zeile zu
+  `wizard.html` stehen, sonst stimmt der Pfadvergleich (asar-Pfad,
+  Laufwerksbuchstabe) nicht. In der Web-UI muss
+  `Object.keys(window.omadia)` genau `uiReady` und `setUiLocale` liefern.
+  Plugin-Autor-Link, GitHub-Hilfe-Link und ein Link in einer Chat-Antwort
+  öffnen im Systembrowser. Ein Same-App-Popup hat kein `window.omadia`. Der
+  Entra-Login-Rundlauf klappt inklusive Passwort-POST.
+- **Abmelden einer OIDC-Sitzung:** Die IdP-End-Session-URL öffnet jetzt im
+  Systembrowser, der einen eigenen Cookie-Speicher hat. Die IdP-Sitzung im
+  App-Fenster bleibt also bestehen. Folgepunkt für die Web-UI: in
+  `web-ui/app/_components/AuthBadge.tsx` bei vorhandener Desktop-Bridge direkt
+  auf `/login` gehen statt den IdP-Hop zu versuchen.
+- **Server-Redirects auf fremde Seiten** werden nicht blockiert. Das ist die
+  akzeptierte Rest-Ausnahme aus §10e: Solche Seiten bekommen keine Bridge, und
+  jeder Handler lehnt sie ab.
+
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
 Alles hier ist **nicht** umgesetzt. Vollständige Darstellung samt Codestellen:

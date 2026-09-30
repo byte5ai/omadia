@@ -36,6 +36,33 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop: setup and recovery-key IPC no longer reachable from the web UI or foreign documents
+
+2026-09-30 — the desktop shell runs the first-run wizard, the loading screen
+and the web UI in one window with one preload, and every IPC handler answered
+whichever document was loaded. So the web UI, any same-origin plugin iframe in
+it (through `window.parent.omadia`) and any page the window had navigated to
+could call `exportRecoveryKey`, which returns the vault master key, or
+`complete`, which rewrites the data directory and the setup state. Main now
+checks each call against the frame that sent it. The setup channels answer
+only the bundled `wizard.html` in the main frame while the wizard is on
+screen, and the UI pings answer only the running web UI's origin. A vanished,
+destroyed or detached sender frame is refused. The preload also hands each
+document only its own methods: the web UI gets `uiReady` and `setUiLocale`,
+and foreign pages get no bridge. The unused `getState` channel is removed.
+See `docs/security-architecture.md` §10e.
+
+Navigation is now fenced for every window. Links and `window.open` to other
+sites (links in chat answers, plugin author pages, GitHub help) open in the
+system browser instead of replacing the app or spawning Electron windows.
+Same-app popups open sandboxed and without the bridge. `about:blank` popups
+and `file:`, `javascript:` and `data:` targets are refused. The in-window
+OIDC/Entra sign-in keeps working, because server redirects and the IdP's own
+steps stay in the window. One visible change: signing out of an OIDC session
+no longer shows the IdP logout page in the app window. That page opens in the
+system browser, and the app window moves to the sign-in page once the web UI
+notices the ended session (its next API call or session heartbeat).
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
