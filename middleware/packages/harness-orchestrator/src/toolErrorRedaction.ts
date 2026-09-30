@@ -134,6 +134,23 @@ function safeToken(value: string): string {
   return cleaned.length > 0 ? cleaned : 'unknown';
 }
 
+/** Placeholder for a thrown value `String()` cannot convert. */
+const UNPRINTABLE_THROWN_VALUE = '[unprintable thrown value]';
+
+/**
+ * The message of a caught value, for the byte count and the parity path.
+ * `String()` throws on a null-prototype object, and the helpers here must not
+ * throw from inside a seam's catch block.
+ */
+function messageOf(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  try {
+    return String(err);
+  } catch {
+    return UNPRINTABLE_THROWN_VALUE;
+  }
+}
+
 const WITHHOLD_CLAUSE: Readonly<Record<ToolErrorWithholdReason, string>> = {
   too_long: 'was too long to check for personal data',
   exception_shaped: 'looked like a raw exception or record dump',
@@ -207,7 +224,7 @@ export async function withholdThrownToolError(input: {
 }): Promise<ThrownToolErrorOutcome> {
   const { toolName, err, privacy, site } = input;
   const ref = input.ref !== undefined && input.ref !== '' ? input.ref : toolErrorRef();
-  const message = err instanceof Error ? err.message : String(err);
+  const message = messageOf(err);
   const withhold = privacy !== undefined && !isInternExemptTool(toolName);
   console.error(
     `[${site}:${toolName}] tool threw (ref=${ref})` +
@@ -285,6 +302,13 @@ export async function guardControlFlowResult(input: {
     return withhold('provider_unsupported');
   }
   if (redacted.outcome !== 'redacted') return withhold('redaction_failed');
+  // The provider is a plugin: a malformed answer is withheld like a failed
+  // one, never forwarded or allowed to throw out of the seam.
+  const { text, spans } = redacted as { readonly text: unknown; readonly spans: unknown };
+  if (typeof text !== 'string' || !Array.isArray(spans)) {
+    return withhold('redaction_failed');
+  }
+  const redactedSpans = spans as readonly PromptMaskedSpanInfo[];
   await recordSafely(
     privacy,
     {
@@ -292,11 +316,11 @@ export async function guardControlFlowResult(input: {
       carrier: 'returned',
       outcome: 'redacted',
       bytes,
-      ...(redacted.spans.length > 0 ? { redactedSpans: redacted.spans } : {}),
+      ...(redactedSpans.length > 0 ? { redactedSpans } : {}),
     },
     site,
   );
-  return `${TOOL_ERROR_PREFIX}${redacted.text}`;
+  return `${TOOL_ERROR_PREFIX}${text}`;
 }
 
 function logProviderGapOnce(): void {

@@ -79,11 +79,21 @@ function fakeHandle(
   } as unknown as PrivacyTurnHandle;
 }
 
+/** Like `console.error` itself, never throws on a value `String()` rejects. */
+function printable(value: unknown): string {
+  if (value instanceof Error) return value.message;
+  try {
+    return String(value);
+  } catch {
+    return '<unprintable>';
+  }
+}
+
 let errorLines: string[] = [];
 beforeEach(() => {
   errorLines = [];
   mock.method(console, 'error', (...args: unknown[]) => {
-    errorLines.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(' '));
+    errorLines.push(args.map(printable).join(' '));
   });
   mock.method(console, 'warn', () => {});
   resetToolErrorRedactionDiagnostics();
@@ -273,6 +283,21 @@ describe('guardControlFlowResult — returned `Error:` text', () => {
     }
   });
 
+  it('fails CLOSED on a malformed redaction answer instead of throwing', async () => {
+    const recorded: RecordedEntry[] = [];
+    const out = await guardControlFlowResult({
+      toolName: 'crm',
+      result: `Error: mailbox ${EMAIL} is over quota`,
+      privacy: fakeHandle(recorded, [], {
+        redact: () => ({ outcome: 'redacted' }) as unknown as PrivacyToolErrorRedactResult,
+      }),
+      site: 'test',
+    });
+    assert.equal(out.includes(EMAIL), false);
+    assert.match(out, /could not be checked for personal data/);
+    assert.equal(recorded[0]?.outcome, 'withheld');
+  });
+
   it('never fails the dispatch because the receipt write failed', async () => {
     const out = await guardControlFlowResult({
       toolName: 'crm',
@@ -368,6 +393,25 @@ describe('withholdThrownToolError', () => {
       formatRaw: (m) => m,
     });
     assert.equal(raw.text, err.message);
+  });
+
+  it('never throws for a thrown value String() cannot convert', async () => {
+    const unprintable = Object.create(null) as object;
+    const withheld = await withholdThrownToolError({
+      toolName: 't',
+      err: unprintable,
+      privacy: fakeHandle([], []),
+      site: 'test',
+      ref: 'r',
+    });
+    assert.match(withheld.text, /^Error: tool `t` failed with Error \[ref r\]/);
+    const parity = await withholdThrownToolError({
+      toolName: 't',
+      err: unprintable,
+      privacy: undefined,
+      site: 'test',
+    });
+    assert.equal(parity.text, 'Error: [unprintable thrown value]');
   });
 
   it('describes a non-Error throw without stringifying it into the notice', async () => {

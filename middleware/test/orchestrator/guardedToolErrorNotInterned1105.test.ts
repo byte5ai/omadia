@@ -10,17 +10,13 @@
  *       `v4_render_answer` materialized as if the error were data (a one-cell
  *       "table" containing the raw `Error:` string).
  *
- * This drives the REAL `Orchestrator` with a real (redacting) privacy handle
- * installed — the exact configuration in which a SUCCESSFUL result IS interned
- * — and asserts a fulfilled `Error:` result arrives at the model as an error,
- * with no dataset digest wrapped around it. The control: an ordinary result in
- * the same setup still gets interned.
- *
- * Not interned is not unchecked: the `Error:` text goes through the provider's
- * tool-error redactor and is receipted. The stub below redacts for real (an
- * e-mail becomes `[masked:email]`), so the mutation checks read the effect on
- * the wire, not a call count. A PII-free hint passes the redactor unchanged,
- * which is what keeps the #1097 self-correction reachable.
+ * This drives the REAL `Orchestrator` with a real (redacting) privacy handle —
+ * the configuration in which a SUCCESSFUL result IS interned (the control) —
+ * and asserts a fulfilled `Error:` result reaches the model as an error, with
+ * no dataset digest around it. Not interned is not unchecked: the text goes
+ * through the provider's tool-error redactor, which the stub below runs for
+ * real (an e-mail becomes `[masked:email]`), and is receipted. A PII-free hint
+ * passes unchanged, which keeps the #1097 self-correction reachable.
  */
 
 import { strict as assert } from 'node:assert';
@@ -226,10 +222,9 @@ describe('#1105 — guarded-tool error result is not interned as a dataset', () 
       false,
       'an error result must NOT be interned as a renderable dataset (that is the #1105 bug)',
     );
-    assert.equal(recorded.length, 1);
-    assert.equal(recorded[0]?.carrier, 'returned');
-    assert.equal(recorded[0]?.outcome, 'redacted');
-    assert.equal(recorded[0]?.redactedSpans, undefined, 'nothing was masked in a PII-free hint');
+    assert.deepEqual(recorded.map((e) => [e.carrier, e.outcome, e.redactedSpans]), [
+      ['returned', 'redacted', undefined], // receipted; nothing masked in a PII-free hint
+    ]);
   });
 
   it('MUTATION CHECK — redacts PII out of a returned `Error:` text before the model reads it', async () => {
