@@ -32,7 +32,9 @@ is redacted through the Privacy Shield, and both are receipted.
   `newToolErrorRef` and `toolErrorFromException` (`toolErrorNotice.ts`): the one
   way to turn a caught exception into a tool result — class name, sanitised
   code and a log reference, never the message. A tool wrapper that returned
-  `Error: ${err.message}` should call `toolErrorFromException` instead.
+  `Error: ${err.message}` should call `toolErrorFromException` instead. These
+  are runtime exports: a plugin ZIP that imports them resolves
+  `@omadia/plugin-api` from the host, so it needs a host at 1.20.0 or later.
 - **`RECEIPT_FIXTURE_TOOL_ERRORS`**, a receipt fixture for channel renderers.
 
 ### Documentation

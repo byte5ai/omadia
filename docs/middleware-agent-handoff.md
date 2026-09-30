@@ -1531,8 +1531,11 @@ Ein Turn persistiert seinen PII-freien `PrivacyReceipt` synchron nach
 der Privacy Shield in diesem Turn aktiv war**: `finalizeTurn()` in
 `harness-plugin-privacy-guard/src/service.ts` liefert nur dann einen Receipt,
 wenn der Turn ein Dataset interniert, einen Bypass oder die strukturierte
-Ausgabe eines angebundenen Tools protokolliert oder den Prompt maskiert hat
-(Letzteres nur bei mindestens einem erkannten PII-Span); der Orchestrator
+Ausgabe eines angebundenen Tools protokolliert, den Prompt maskiert
+(Letzteres nur bei mindestens einem erkannten PII-Span) oder einen Tool-Fehler
+behandelt hat (`toolErrors`: Exception-Text zurückgehalten, `Error:`-Text
+redigiert oder zurückgehalten, MCP-Connect-Prompt durchgereicht — siehe §11
+„Tool-Fehler an den Dispatch-Nähten“); der Orchestrator
 persistiert nur `if (receipt)`. Ein Turn ohne Shield-Aktivität (z. B. reine
 Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt;
 `mask_user_prompt` ist per Default ohnehin aus) schreibt weder eine Zeile
@@ -2874,8 +2877,10 @@ zusammen mit `answerSource: 'privacy-render'`, nie `false`, additiv/optional.
 Zweiter, unabhängiger Fix im selben Issue: ein Guarded-Tool, das einen prosaischen
 `Error:`-String **zurückgibt** (die `Error:`-Konvention, aus der auch `is_error`
 abgeleitet wird), wird an den Dispatch-Nähten nicht mehr als 1-Zeilen-Dataset
-interniert, sondern unverändert an das Modell durchgereicht — sonst sah das
-Modell den Fehler nie und ein späteres Render materialisierte ihn als Daten.
+interniert, sondern als Text an das Modell gegeben — sonst sah das Modell den
+Fehler nie und ein späteres Render materialisierte ihn als Daten. Nicht
+interniert heißt seit dem Tool-Error-Fix nicht ungeprüft (siehe den Absatz
+„Tool-Fehler an den Dispatch-Nähten“ unten).
 #1105 schloss die beiden Nähte seiner Repros (`Orchestrator.dispatchTool`,
 `ToolDispatchService.afterDispatch`), **#1097** die restlichen zwei:
 `LocalSubAgent.dispatch` (Fehler eines Tools *innerhalb* eines Sub-Agents) und
@@ -2901,11 +2906,54 @@ aus genau einer Control-Flow-Zelle), vom Orchestrator als
 `answerIsError: true` auf beide Antwortpfade gelegt (siehe §11-Kontrakt). Der
 **Shape-Classifier bleibt unverändert**: eine Ausnahme für 1×1-`Error:`-Skalare
 wäre ein Klartext-Kanal, weil Verben abgeleitete Datasets neu klassifizieren
-(`filter` + `select` verengen jede maskierte Spalte auf so einen Skalar). Die
-Maskierung **geworfener** Exceptions (`maskErrorText`) bleibt bewusst
-unberührt: diesen Text hat niemand saniert (ein ORM echot die
-Zeile, ein Treiber die gebundenen Parameter), das "Error-Strings enthalten
-konstruktionsbedingt keine PII"-Argument gilt nur für die Konvention.
+(`filter` + `select` verengen jede maskierte Spalte auf so einen Skalar).
+
+**Tool-Fehler an den Dispatch-Nähten.** Weder eine geworfene Exception noch ein
+zurückgegebener `Error:`-Text ist sanierter Text (ein ORM echot die Zeile, ein
+Treiber die gebundenen Parameter, ein Remote-MCP-Server seinen Fehler-Body).
+Deshalb laufen beide Träger an jeder Naht durch **einen** Helper,
+`toolErrorRedaction.ts` (`@omadia/orchestrator`), und die Politik folgt der
+Herkunft:
+- **Geworfen** (`withholdThrownToolError`): das Modell bekommt nur die
+  Withheld-Notice ``Error: tool `<name>` failed with <Klasse> (code <code>)
+  [ref <ref>] …`` — Klassenname und bereinigter Code (`describeThrownError`,
+  `@omadia/plugin-api`), nie die Message. `Orchestrator.dispatchTool` rejected
+  dafür nie mehr (auch nicht bei `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=0`); die
+  Rejection-Zweige beider Loops sind nur noch Backstops mit derselben Notice.
+  `ToolDispatchService.thrownResult` ersetzt das frühere `maskErrorText`
+  (das die Message als Dataset internierte) durch dieselbe Notice
+  (`origin: 'dispatcher'`), und `LocalSubAgent.dispatch` macht aus einem
+  werfenden inneren Tool ein `is_error`-Tool-Result, statt den Sub-Agent
+  abbrechen zu lassen.
+- **Zurückgegeben** (`guardControlFlowResult`): der Text hinter `Error:` geht
+  durch `redactToolErrorText` des Providers (C0-Identitätstypen ohne
+  `date`/`amount`, Deny-List #760, C1; irreversibel `[masked:<typ>]`, die
+  Surrogat-Map des Turns wird nicht erweitert). Zurückgehalten statt redigiert
+  wird er, wenn er nach Exception aussieht (JSON-/Dict-Zeilen-Echo,
+  Stacktrace, `Key (…)=(…)`), länger als 4096 Zeichen ist oder der Provider
+  ihn nicht prüfen kann.
+- **MCP-Connect-Prompt**: byte-identisch durchgereicht (kernel-authored,
+  Connect-Karte muss überleben), aber quittiert.
+Die Kernel-eigenen Absagen aus `dispatchToolInner` (Tool nicht verfügbar /
+nicht gegrantet / unbekannt) sind per Provenienz ausgenommen, nicht per Form.
+Jeder behandelte Fehler schreibt einen PII-freien Eintrag in
+`PrivacyReceipt.toolErrors` (`carrier`, `outcome`, Bytes, maskierte
+Span-Typen); die volle Fehlermeldung samt Stack steht einmal im Server-Log
+unter `ref=<ref>` — der Turn-Korrelations-Id (#641, dieselbe wie in
+`<turn-incomplete ref="…">`), der Request-Id des Dispatcher-Callers oder einem
+frischen `err_…`-Token. Das Log ist die einzige Stelle, an der ein Operator den
+Treibertext noch findet. Die In-Tree-Wrapper, die `Error: ${err.message}`
+lieferten (die drei Tool-Bridges über `bridgedToolError`, Web-Search,
+Diagramme, Discussion, Transkription, `manage_routine`, `query_dataset`, die
+Long-Running-Task-Handler, `createDomainTool`), geben nur noch selbst
+formulierte Meldungen im Klartext zurück und sonst `toolErrorFromException`.
+Ohne Privacy-Provider (und für intern-exempte Self-Tools) fließt der Text wie
+jedes andere Tool-Ergebnis roh — Parität; auf dem Abo-CLI-Pfad gibt es keinen
+Shield (#1087). Versions-Paarung: `redactToolErrorText` braucht
+`@omadia/plugin-privacy-guard` ≥ 0.6.0; mit einem älteren Provider hält der
+Kernel zurückgegebene `Error:`-Texte vollständig zurück und loggt das einmal
+pro Prozess. Details, Residuen und Reviewer-Regel:
+`docs/security-architecture.md` §6c und §11.
 
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
@@ -2966,6 +3014,32 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Tool-Fehler-Politik: offene Enden
+
+Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
+`docs/security-architecture.md` §6c):
+
+- **Channel-Renderer außerhalb dieses Repos** (Teams-/Telegram-Karten in
+  `omadia-channel-teams` / `omadia-channel-telegram`) kennen
+  `PrivacyReceipt.toolErrors` noch nicht. Das Feld ist additiv, sie ignorieren
+  es — zeigen die Einträge aber auch nicht. Die Web-UI zeigt sie.
+- **Hub-ZIPs von Web-Search, Diagrammen und Discussion** importieren jetzt
+  `toolErrorFromException` zur Laufzeit aus `@omadia/plugin-api` ≥ 1.20.0. Die
+  ZIPs sind flach und lösen die Plugin-API vom Host auf; ein aus diesem Stand
+  gebautes ZIP braucht also einen Host ab diesem Release, und `compat.core`
+  erzwingt das nicht. Vor dem nächsten Publish Version bumpen und die
+  Mindest-Host-Version im Release-Text nennen.
+- **Office-Plugin** (`officeTool.ts`) liefert bei einer unerwarteten Exception
+  weiter `Error: <message>`; die Naht redigiert oder hält zurück. Umstellung
+  auf `toolErrorFromException` zusammen mit der laufenden Office-Arbeit.
+- **Abo-CLI-Pfad** ohne Privacy Shield (#1087): beide Träger fließen dort roh.
+- **Connect-Prompt** nur am Präfix erkannt; ein typisiertes
+  Control-Flow-Ergebnis vom Produzenten wäre die dauerhafte Lösung (#1097).
+- **Geworfener Text** wird ganz zurückgehalten, nicht C0-redigiert. Wer den
+  Treiber-Hinweis zurück will, stellt in `withholdThrownToolError` auf
+  `redactToolErrorText` um (eine Stelle) — um den Preis von Namen, die C0
+  nicht erkennt.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 

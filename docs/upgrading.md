@@ -213,6 +213,33 @@ What that means for an instance installed before v0.115:
 Fresh installs via `render.yaml` or `fly/deploy.sh` generate the key
 themselves; only pre-v0.115 instances have to add it by hand.
 
+## Upgrading past 0.167.6 — tool errors are withheld or redacted
+
+Nothing to migrate: no schema change, no new variable. What an operator
+notices ([`security-architecture.md`](security-architecture.md) §6c has the
+full policy):
+
+- **Tool error text moved from the chat to the log.** When a tool throws, the
+  model and the chat's tool card now see
+  ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …``
+  instead of the driver or ORM message. The message, with its stack, is in the
+  middleware log under the same ref (`grep 'ref=<ref>'`); on the chat path the
+  ref is the turn's correlation id. A tool's *returned* `Error:` text still
+  reaches the model, with personal data masked as `[masked:<type>]`.
+- **The privacy guard pairs with this release.** The bundled
+  `@omadia/plugin-privacy-guard` is 0.6.0. If a 0.5.x copy was installed from
+  the Hub or as a ZIP upload, update it: an older provider cannot redact tool
+  error text, so the kernel withholds every returned `Error:` text entirely and
+  logs `does not implement redactToolErrorText` once per process.
+- **More receipt rows.** A turn whose only privacy-shield activity was a
+  failing tool now writes a receipt (`/operator/receipts`), reaped by
+  `RECEIPT_RETENTION_DAYS` as before.
+
+For plugin authors: a tool that catches an exception should return
+`toolErrorFromException(toolName, err)` (`@omadia/plugin-api` 1.20.0) instead
+of `Error: ${err.message}`. Only text the plugin authors itself belongs in an
+`Error:` result, and the dispatch seam redacts even that.
+
 ## Upgrading to 0.3
 
 > Stub. Fill this in as part of the 0.3 release.

@@ -587,25 +587,103 @@ a silent `fly secrets set`. Without any secret the import falls back to the old
 irreversible masking and says so in the `[dataset-imported]` fact, so the model
 does not promise real values in an export it cannot deliver.
 
-### 6c. Control-flow tool results pass the shield unmasked (#1105, #1097)
+### 6c. Tool errors: thrown text withheld, returned text redacted (#1105, #1097)
 
 A tool result that is control flow — the `Error:` tool-error convention, or an
-MCP auth prompt — reaches the model verbatim instead of being interned, so the
-model can read the hint and self-correct. Four seams apply it, each after the
-intern exemption and the operator bypass and before interning:
-`Orchestrator.dispatchTool`, `Orchestrator.guardReplayResult`,
-`ToolDispatchService.afterDispatch` and `LocalSubAgent.dispatch`. All four call
-one predicate, `isControlFlowToolResult` (`@omadia/plugin-api`), which is
-**prefix-anchored only**: `Error:` or the exact `🔒 The MCP server "` producer
-prefix. It never matches a substring, so a marker planted in one cell cannot
-unmask a multi-row result such as a decrypted `query_dataset` page (§6b).
-Known limits: remote MCP error
-bodies and `Error: ${err.message}` wrappers (`bridgeTool`) pass through as
-foreign or unsanitized text, matching the chat path's thrown-error policy; a
-passthrough writes no receipt entry. The shape classifier has **no**
-control-flow exemption — verbs re-classify derived datasets, so one would turn
-`filter` + `select` into a cleartext channel — and `ToolDispatchService`
-still masks a thrown exception's message even when it starts with `Error:`.
+MCP auth prompt — is not interned, so the model can read the hint and
+self-correct. Not interned is not unchecked: a tool error is not sanitized
+text. An ORM echoes the row it failed on, a driver the bound parameters, a
+remote MCP server whatever its error body quotes. Every seam that hands a tool
+result to a model therefore routes a tool error through one helper,
+`toolErrorRedaction.ts` (`@omadia/orchestrator`), and the policy follows where
+the text came from, not its shape:
+
+| Carrier | What the model reads | Receipt entry (`toolErrors`) |
+|---|---|---|
+| A handler **threw** | The withheld notice: ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …`` — class name and a sanitised code (`describeThrownError`, `@omadia/plugin-api`), never the message | `thrown` / `withheld` |
+| A handler **returned** an `Error:` string | The text after the prefix, run through the provider's `redactToolErrorText`: the C0 identity types (e-mail, IBAN, phone, address, id number — not `date` or `amount`, which are hints), the operator deny-list (#760) and C1, each span replaced irreversibly by `[masked:<type>]`. **Withheld** whole instead when the text is exception-shaped (a JSON or dict record echo, a stack trace, a Postgres `Key (…)=(…)` detail), longer than 4096 characters, or the provider cannot check it | `returned` / `redacted` (with span types) or `withheld` |
+| The MCP **connect prompt** (`🔒 The MCP server "…`) | Byte-identical: kernel-authored, and its connect URL and `<mcp-auth-required>` block must survive | `mcp_auth_prompt` / `passed` |
+
+The seams, each applying the helper after the intern exemption and the
+operator bypass and before interning:
+
+- `Orchestrator.dispatchTool` — the one choke point for both chat loops, the
+  streaming slots and the Direct-Line relay. It never rejects: a thrown error
+  resolves as the notice, also with the dispatch deadline disabled. The loops'
+  own rejection handlers are backstops that build the same notice.
+- `Orchestrator.dispatchToolDeadlined` and `Orchestrator.guardReplayResult`
+  (the returned carrier on the chat path and on MCP input replay).
+- `ToolDispatchService` (loopback and public dispatcher): `thrownResult` for a
+  throw — the same withheld notice, no longer an interned dataset — and
+  `afterDispatch` for a returned error.
+- `LocalSubAgent.dispatch`: both carriers. An inner tool throw becomes an
+  `is_error` tool result the sub-agent can answer around, bounded by its
+  repeat-failure guard, instead of aborting the sub-agent.
+
+The kernel's own refusals from `dispatchToolInner` (tool unavailable, not
+granted, unknown tool) name only the tool and its plugin; they are exempted by
+per-dispatch provenance, never by their shape, so a provider that cannot
+redact does not blind the model to its own plumbing.
+
+**Producers.** The in-tree wrappers that returned `Error: ${err.message}` keep
+only messages they author themselves (typed quota/auth/config errors, kernel
+refusals, a schema miss on the model's own input) and return the withheld
+notice for any other exception through `toolErrorFromException`
+(`@omadia/plugin-api`): the three platform tool bridges (`bridgedToolError`),
+web search, diagrams, discussion, transcription, `manage_routine`,
+`query_dataset`, the long-running task handlers and `createDomainTool`. The
+last one matters because `subAgentResultV4` hands a sub-agent's final text to
+the parent unchanged once the sub-agent interned a dataset. The seam is the
+backstop for every producer that still returns exception text: external
+plugins, the office plugin, remote MCP error bodies.
+
+**Diagnostics.** The full error — message, stack, cause — is logged once, at
+error level, under the notice's `ref`: the turn's correlation id on the chat
+and sub-agent paths (#641 — the id a degraded turn shows as
+`<turn-incomplete ref="…">`), the caller's request id on the dispatcher path
+when it sent one, otherwise a fresh `err_…` token. The server log is the only
+place the driver text can be recovered. Receipt entries are PII-free by
+contract: tool name, carrier, outcome, byte count, masked span types.
+
+**Provider pairing.** `redactToolErrorText` and `recordToolError` are optional
+members of `PrivacyGuardService` (`@omadia/plugin-api` 1.20.0). A provider
+older than `@omadia/plugin-privacy-guard` 0.6.0 lacks the redactor; the kernel
+then withholds every returned `Error:` text (fail closed) and says so once per
+process in the log. The public MCP gate (`createFailClosedPrivacyGate`)
+answers `redactToolErrorText` with `withheld`, so a returned error is refused
+as unmasked content by `assertMaskingCrossed`, while a thrown error's notice is
+dispatcher-authored (`origin: 'dispatcher'`) and served.
+
+**Residuals.**
+
+- Parity: without a privacy provider nothing is masked, tool results included,
+  so thrown and returned error text reaches the model raw. The same holds for
+  the intern-exempt self tools (`privacyInternPolicy.ts`), and for a returned
+  error of a plugin the operator set to bypass; a thrown message is withheld
+  even under bypass.
+- The subscription-CLI path has no Privacy Shield at all (§3a, #1087): its
+  loopback dispatcher runs without a privacy handle, so both carriers pass raw
+  there.
+- C0 detects no names; C1 does when it is configured. A returned error that
+  names a person in running prose (not in a record echo, which is withheld)
+  keeps the name without C1.
+- The connect prompt is recognized by its prefix only, so a remote result that
+  starts with that prefix passes the same way (#1097).
+- Two server-side sinks read the raw result before the seam:
+  `captureRawToolResult` (routine templates) and the MCP → Knowledge-Graph
+  ingest (#459), which stores a value-free byte count for a non-JSON error
+  unless the server is bypassed.
+- The run-trace `error` channel for turn-level failures is outside this policy.
+- One sub-agent failure can produce two receipt entries, one from the
+  sub-agent's seam and one from the parent's.
+
+The predicate every seam consults, `isControlFlowToolResult`
+(`@omadia/plugin-api`), is **prefix-anchored only**: `Error:` or the exact
+`🔒 The MCP server "` producer prefix. It never matches a substring, so a marker
+planted in one cell cannot unmask a multi-row result such as a decrypted
+`query_dataset` page (§6b). The shape classifier has **no** control-flow
+exemption — verbs re-classify derived datasets, so one would turn `filter` +
+`select` into a cleartext channel.
 
 ### 6d. `agents.privacy_profile` is not a Privacy Shield control (#978)
 
@@ -1333,7 +1411,14 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
+- [ ] A new tool-dispatch seam that hands a result to a model routes
+      control-flow text through `guardControlFlowResult` and never forwards a
+      thrown handler exception's message (`withholdThrownToolError`), both in
+      `toolErrorRedaction.ts` (§6c). A new tool wrapper that catches an
+      exception returns `toolErrorFromException(...)`, not
+      `Error: ${err.message}`; only a message the wrapper authors itself may
+      reach the model as text, and the seam still redacts it.
 
 ---
 
-*Last reviewed: 2026-08 (§10 added with issue #669).*
+*Last reviewed: 2026-09 (§6c rewritten: tool errors withheld or redacted at every dispatch seam).*

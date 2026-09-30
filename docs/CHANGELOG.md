@@ -36,6 +36,58 @@ changelog.
 
 ## [Unreleased]
 
+### Security — tool errors no longer reach the model or the chat stream raw
+
+2026-09-30 — a tool error reached the model, the streamed `tool_result` event
+and the persisted chat session verbatim on two routes. A handler that THREW had
+its message folded into `Error: ${err.message}` by both chat loops, the
+Direct-Line relay and, inside a sub-agent, by the domain-tool wrapper. A
+RETURNED `Error:` string — an MCP server's error body, or any wrapper that
+returned `Error: ${err.message}` — passed the four control-flow seams
+(#1105/#1097) un-interned and unchecked. Driver and ORM messages quote the row
+they failed on, and neither route wrote a receipt entry.
+
+Both carriers now go through one helper, `toolErrorRedaction.ts`
+(`@omadia/orchestrator`):
+
+- **Thrown text is withheld.** Under a privacy provider the model gets
+  ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …``
+  and the full error, stack included, is logged once under that ref — the
+  turn's correlation id, the same id a degraded turn shows as
+  `<turn-incomplete ref>`. **To recover a driver message, grep the middleware
+  log for `ref=<ref>`**: the chat tool card no longer shows it.
+  `Orchestrator.dispatchTool` no longer rejects (also with
+  `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=0`), an inner tool throw no longer aborts a
+  `LocalSubAgent` run, and `ToolDispatchService` uses the same notice instead of
+  interning the message as a one-row dataset.
+- **Returned `Error:` text is redacted** by the provider's new
+  `redactToolErrorText` (C0 identity types — dates and amounts stay readable —,
+  the operator deny-list and C1; irreversible `[masked:<type>]`), or withheld
+  whole when it looks like a record dump or a stack trace, is longer than 4096
+  characters, or cannot be checked. The MCP connect prompt passes unchanged; the
+  kernel's own refusals are exempt by provenance.
+- **In-tree wrappers** (the three tool bridges, web search, diagrams,
+  discussion, transcription, `manage_routine`, `query_dataset`, the
+  long-running task handlers, domain tools) keep only messages they author and
+  return the withheld notice for any other exception (`toolErrorFromException`).
+  A schema miss on the model's own input still comes back as a readable hint.
+- **Receipts.** Every handled error writes a `toolErrors` entry; a turn whose
+  only shield activity was a tool error now writes a receipt row. The web UI
+  receipt card lists the entries.
+
+Versions: `@omadia/plugin-api` 1.20.0 (additive) and
+`@omadia/plugin-privacy-guard` 0.6.0. Redaction needs the 0.6.0 provider; with
+an older one the kernel withholds every returned `Error:` text and logs that
+once per process. Without a privacy provider, and on the subscription-CLI path
+(#1087), error text still flows raw. Fences inverted or narrowed:
+`chatPathToolErrorText.test.ts` (asserted the raw e-mail on the wire),
+`streamToolRejection1095` and `streamingToolThrow1093` (asserted the raw driver
+text), `toolDispatchPrivacySeam.test.ts` and the public MCP privacy tests
+(asserted an interned digest of a thrown message), `queryDatasetTool.test.ts`
+and `manageRoutineTool.test.ts` (asserted the raw exception message). Details
+and residuals: `docs/security-architecture.md` §6c; upgrade note:
+`docs/upgrading.md`.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
