@@ -45,6 +45,7 @@ class InMemoryUserStore implements Pick<
       createdAt: now,
       updatedAt: now,
       lastLoginAt: null,
+      sessionVersion: 0,
     });
   }
 

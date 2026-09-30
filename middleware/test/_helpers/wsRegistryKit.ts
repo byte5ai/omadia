@@ -13,6 +13,10 @@ import { WebSocket } from 'ws';
 
 import { SESSION_COOKIE } from '../../src/auth/requireAuth.js';
 import { signSession } from '../../src/auth/sessionJwt.js';
+import {
+  SessionRevocationGuard,
+  type SessionAccount,
+} from '../../src/auth/sessionRevocation.js';
 import { EmailWhitelist } from '../../src/auth/whitelist.js';
 import {
   WebSocketRegistry,
@@ -26,7 +30,8 @@ export const KEY = new Uint8Array(64).fill(7);
 // Only this email is whitelisted — mirrors the requireAuth Entra gate.
 export const WHITELIST = new EmailWhitelist('allowed@example.com');
 
-export async function authCookie(): Promise<string> {
+/** A local session for `u1`; `sv`/`uid` pin the revocation claims. */
+export async function authCookie(opts: { sv?: number; uid?: string } = {}): Promise<string> {
   const token = await signSession(
     {
       sub: 'u1',
@@ -34,10 +39,31 @@ export async function authCookie(): Promise<string> {
       display_name: 'User One',
       provider: 'local',
       role: 'admin',
+      ...(opts.sv !== undefined ? { sv: opts.sv } : {}),
+      ...(opts.uid !== undefined ? { uid: opts.uid } : {}),
     },
     KEY,
   );
   return `${SESSION_COOKIE}=${token}`;
+}
+
+/**
+ * A server-side revocation guard over an in-memory account table keyed
+ * `<provider>:<sub>` — the WS suites' stand-in for the users table. Change
+ * `accounts` to revoke; make `fail` return true to simulate an outage.
+ */
+export function revocationGuard(
+  accounts: Map<string, SessionAccount>,
+  opts: { fail?: () => boolean } = {},
+): SessionRevocationGuard {
+  const guard = new SessionRevocationGuard(() => undefined);
+  guard.attach({
+    findByProviderUserId: async (provider, sub) => {
+      if (opts.fail?.()) throw new Error('users table unreachable');
+      return accounts.get(`${provider}:${sub}`) ?? null;
+    },
+  });
+  return guard;
 }
 
 export async function entraCookie(email: string): Promise<string> {

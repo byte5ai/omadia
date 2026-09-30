@@ -72,6 +72,7 @@ class InMemoryUserStore {
       createdAt: now,
       updatedAt: now,
       lastLoginAt: null,
+      sessionVersion: 0,
     };
     if (input.passwordHash !== undefined) {
       (row as UserRecord & { passwordHash?: string }).passwordHash = input.passwordHash;

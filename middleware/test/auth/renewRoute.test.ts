@@ -52,6 +52,7 @@ function user(overrides: Partial<UserRecord>): UserRecord {
     createdAt: now,
     updatedAt: now,
     lastLoginAt: null,
+    sessionVersion: 0,
     ...overrides,
   };
 }
