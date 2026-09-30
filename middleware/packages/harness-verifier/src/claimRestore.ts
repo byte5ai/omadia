@@ -17,7 +17,8 @@ import type { Claim, VerifierPrivacy } from './claimTypes.js';
  *     pools mint realistic amounts and dates). It is re-derived from the
  *     real literal the placeholder stands for, and dropped when that literal
  *     cannot be read unambiguously — the checker then reports `unverified`
- *     instead of comparing a placeholder against the source.
+ *     instead of comparing a placeholder against the source, and a claim
+ *     whose check would read the sentence instead is not checked at all.
  */
 
 /** The sentence of the real answer around a claim (`claimContext`). */
@@ -35,6 +36,9 @@ export async function restoreClaims(
     const text = await privacy.restore(claim.text);
     if (!hay.includes(text.toLowerCase())) continue;
     const value = await restoreValue(claim, text, privacy);
+    if (value === undefined && claim.value !== undefined && checksTextWithoutValue(claim)) {
+      continue;
+    }
     const context = contextOf(text, realAnswer);
     const relatedEntities = await Promise.all(
       claim.relatedEntities.map((entity) => privacy.restore(entity)),
@@ -61,6 +65,22 @@ export async function restoreClaims(
     });
   }
   return out;
+}
+
+/**
+ * Checks that read the claim's text when it carries no value: the date check
+ * parses the first date in it, the graph id check searches for it. Once a
+ * placeholder-derived value is dropped, that text is a restored sentence
+ * that may hold another literal, so such a claim is not checked at all —
+ * fewer checks, never a false contradiction.
+ */
+function checksTextWithoutValue(claim: Claim): boolean {
+  if (claim.type === 'date') return true;
+  return (
+    claim.type === 'id' &&
+    claim.expectedSource === 'graph' &&
+    claim.odooRecord?.ref === undefined
+  );
 }
 
 /**

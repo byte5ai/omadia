@@ -653,8 +653,9 @@ written. They are now bound to the turn's own privacy handle:
   placeholder is dropped, and an amount or date the model parsed from a
   placeholder is re-read from the real literal it stands for — dropped when no
   single literal can be tied to it, never compared as the placeholder's
-  value. The deterministic re-query and the graph lookup run on real values
-  and never leave the process.
+  value; a date or graph-id claim whose check would then read the whole
+  restored sentence is not checked at all. The deterministic re-query and the
+  graph lookup run on real values and never leave the process.
 - **Evidence is projected regardless of the flag.** The judge's claim,
   context and knowledge-graph evidence are projected in ONE call per request
   through the turn's surrogate map (`projectVerifierText`): identity-shaped C0

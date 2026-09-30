@@ -346,6 +346,36 @@ describe('verifier/claimExtractor - privacy view', () => {
     assert.equal(claims[1]!.value, undefined);
   });
 
+  it('does not check a claim whose check would read the restored sentence instead', async () => {
+    const realAnswer = 'Von 01.03.2023 bis 31.12.2026 bleibt Jana Beispielfrau im Team.';
+    const view = swapView(
+      [
+        ['31.12.2026', '05.05.1985'],
+        ['Jana Beispielfrau', 'Erika Musterfrau'],
+      ],
+      realAnswer,
+    );
+    const claims = await extractWith(view, realAnswer, [
+      // Two dates, one a placeholder: without a value the date check would
+      // parse the FIRST date of the sentence.
+      { text: 'Von 01.03.2023 bis 05.05.1985', type: 'date', expected_source: 'odoo', value: '1985-05-05' },
+      // A graph id check without a value searches for the whole sentence.
+      { text: 'bleibt Erika Musterfrau im Team', type: 'id', expected_source: 'graph', value: 'Musterfrau' },
+      // With a reference to search for, the claim stays checkable.
+      {
+        text: 'Erika Musterfrau im Team',
+        type: 'id',
+        expected_source: 'graph',
+        value: 'Musterfrau',
+        odoo_record: { model: 'hr.employee', ref: 'Erika Musterfrau' },
+      },
+    ]);
+    assert.deepEqual(
+      claims.map((c) => [c.text, c.value, c.odooRecord?.ref]),
+      [['Jana Beispielfrau im Team', undefined, 'Jana Beispielfrau']],
+    );
+  });
+
   it('blocked masking sends nothing and yields no claims', async () => {
     const { view, maskCalls } = fakePrivacy({ blocked: true });
     const { llm, requests } = capturingLlm([
