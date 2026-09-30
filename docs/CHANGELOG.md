@@ -36,6 +36,33 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — privacy v4 states the render-vs-export contract once, plainly (#1215)
+
+2026-09-30 — the `v4_render_answer` tool description said "ALWAYS end a data
+question with this call; never write the data table/list yourself". The digest
+the model receives with every dataset says the opposite for downloads
+("EXCEPTION — file/download: … do NOT use v4_render_answer"), and rule 14 of
+the orchestrator system prompt then had to override the tool description
+explicitly. A capitalised ALWAYS in a tool description over-triggers on the
+current Claude models, so the model reached for the inline render even when the
+user had asked for a file.
+
+The contract reached the model from three hand-maintained copies in the same
+turn — the tool description (`v4/toolDefs.ts`), the dataset digest
+(`v4/digest.ts`) and the sub-agent dataset hand-off header (`service.ts`) —
+and they had drifted: only two of the three named the export tool the model can
+actually call, and the third named none. Both halves now live once in
+`v4/promptText.ts` (`RENDER_CONTRACT`, `FILE_EXPORT_EXCEPTION`) and all three
+surfaces interpolate them, so a renamed export tool or a changed contract is
+one edit. The imperative is stated plainly rather than capitalised.
+
+The exception names `create_xlsx` only, not `create_docx`: the `datasetId`
+hand-off exists on xlsx sheets alone (`plugin-office/src/types.ts` —
+`XlsxToolSheetSchema`), so pointing a download at `create_docx` with a
+datasetId would not resolve. Model-facing strings only; no behaviour or schema
+change, no test touched (`privacyV4ToolDefs.test.ts` pins
+`RENDER_TOOL_SPEC.name`, never the description).
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no

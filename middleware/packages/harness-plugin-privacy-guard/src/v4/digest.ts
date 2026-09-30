@@ -22,6 +22,7 @@ import {
   type SafeSummary,
   type SafeType,
 } from './types.js';
+import { FILE_EXPORT_EXCEPTION, RENDER_CONTRACT } from './promptText.js';
 
 /** Below this row count, `safe-cleartext` values are inlined row-aligned in
  *  the Digest; at or above it, a summary is used instead (Digest invariant
@@ -135,16 +136,12 @@ export function digestToToolResultText(digest: Digest): string {
     '- To show masked values (names, e-mails, …) in the answer, INCLUDE',
     '  that column in v4_render_answer.columns — the server fills in the',
     '  real values for the user.',
-    '- The final data answer MUST be a v4_render_answer call. Never write',
-    '  the table/list yourself, never drop an identity column, and never',
-    '  tell the user the data is "filtered" or "cannot be shown" — they',
-    '  receive the real values, not "[masked]".',
-    '- EXCEPTION — file/download: if the user wants a downloadable FILE (an',
-    '  Excel/.xlsx export, a report document) rather than an inline answer,',
-    '  do NOT use v4_render_answer. Instead call the file-export tool (e.g.',
-    '  `create_xlsx`) and pass this `datasetId` — the server materializes the',
-    '  real rows into the file. Then reply with a short line like "Hier deine',
-    '  Excel-Datei:".',
+    `- ${RENDER_CONTRACT}`,
+    '  Never drop an identity column, and never tell the user the data is',
+    '  "filtered" or "cannot be shown" — they receive the real values, not',
+    '  "[masked]".',
+    `- EXCEPTION — file/download. ${FILE_EXPORT_EXCEPTION}`,
+    '  Then reply with a short line like "Hier deine Excel-Datei:".',
     '- Never invent or guess a masked value yourself.',
     '- aggregate/group keep only the key + aggregate columns; to keep a',
     '  name on aggregated rows, join the result back to a dataset that',
