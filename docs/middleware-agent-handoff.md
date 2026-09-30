@@ -2186,9 +2186,10 @@ dieser Reihenfolge:
    weder zum Body-Validieren noch zu argon2 noch zum Tabellen-Lock. Einen Header gibt
    es nicht.
 2. **`resolveSetupState`**, dasselbe Prädikat, das `GET /providers` als
-   `setup_required` meldet: 410 `auth.setup_disabled` (Boot hat kein Setup erlaubt,
-   Neustart öffnet den Wizard wieder), 410 `auth.setup_no_local_provider`, 410
-   `auth.setup_locked`.
+   `setup_required` meldet, in dieser Reihenfolge: 410
+   `auth.setup_no_local_provider`, 410 `auth.setup_locked` (es gibt Nutzer, egal was
+   der Boot entschieden hat, also wie bisher), 410 `auth.setup_disabled` (Tabelle
+   jetzt leer, beim Boot aber nicht; ein Neustart öffnet den Wizard wieder).
 3. Body-Validierung und optionaler Anthropic-Key-Ping (OB-61, unverändert), dann
    argon2 **außerhalb** des Locks.
 4. **`UserStore.createFirstAdmin`**: eine Transaktion mit `SET LOCAL lock_timeout =

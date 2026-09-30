@@ -201,9 +201,10 @@ Two behaviour changes worth knowing:
   `setup_token` JSON field. Without it the answer is 403
   `auth.setup_token_invalid`. There is no header variant.
 - **Emptying the `users` table does not reopen the wizard on the running
-  process any more.** A boot that found users answers 410
-  `auth.setup_disabled` until the middleware restarts. It used to create an
-  admin anyway. Restart, then open the wizard.
+  process any more.** A process that started with users answers 410
+  `auth.setup_locked` while any exist, as before, and 410
+  `auth.setup_disabled` once the table is empty, until the middleware
+  restarts. It used to create an admin anyway. Restart, then open the wizard.
 
 Parallel wizard submissions now create exactly one admin. A late one gets 410
 `auth.setup_locked`, and one that collides with a slow database gets 409

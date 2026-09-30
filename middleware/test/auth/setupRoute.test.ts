@@ -83,6 +83,24 @@ class InMemoryUserStore
     if (this.reportNotEmpty || this.rows.length > 0) {
       return { outcome: 'not_empty', totalUsers: Math.max(this.rows.length, 1) };
     }
+    return { outcome: 'created', user: this.pushAdmin(input) };
+  }
+
+  /** An admin that was already there when the process started — the state of
+   *  every restarted install. Bypasses `createFirstAdmin` and its counter. */
+  seedExistingAdmin(email: string): void {
+    this.pushAdmin({
+      email,
+      provider: 'local',
+      providerUserId: email.toLowerCase(),
+      displayName: email,
+      passwordHash: 'argon2-hash-never-checked-here',
+    });
+  }
+
+  private pushAdmin(
+    input: Omit<CreateFirstAdminInput, 'via'>,
+  ): UserRecord {
     const now = new Date();
     const user: UserRecord = {
       id: `mock-${String(this.rows.length + 1)}`,
@@ -97,7 +115,7 @@ class InMemoryUserStore
       lastLoginAt: null,
     };
     this.rows.push({ user, passwordHash: input.passwordHash });
-    return { outcome: 'created', user };
+    return user;
   }
 
   async markLoginNow(_id: string): Promise<void> {
@@ -567,7 +585,7 @@ async function stopHarness(h: Harness): Promise<void> {
 }
 
 describe('POST /api/v1/auth/setup — /providers and /setup answer from one predicate', () => {
-  it('setupAllowed=false: discovery says no setup AND the handler refuses (410 auth.setup_disabled)', async () => {
+  it('setupAllowed=false, table emptied since boot: discovery says no setup AND the handler refuses (410 auth.setup_disabled)', async () => {
     // The boot-time flag used to be read by /providers only. A users table
     // emptied after boot then advertised "no setup" while /setup still minted
     // an admin for whoever asked.
@@ -579,6 +597,27 @@ describe('POST /api/v1/auth/setup — /providers and /setup answer from one pred
       assert.equal(res.code, 'auth.setup_disabled');
       assert.equal(res.setCookie, null);
       assert.equal(h.store.rows.length, 0);
+      assert.equal(h.store.firstAdminCalls, 0, 'the handler must not reach the users-table lock');
+    } finally {
+      await stopHarness(h);
+    }
+  });
+
+  it('setupAllowed=false with a user present: 410 auth.setup_locked, not auth.setup_disabled', async () => {
+    // Every restart of an installed server boots with setupAllowed=false. While
+    // a user exists the answer must stay "setup already completed": scripts
+    // treat that code as done, the wizard sends the browser to /login on it,
+    // and a restart would change nothing, so "restart the middleware" would be
+    // wrong advice.
+    const h = await startHarness({ setupAllowed: false });
+    try {
+      h.store.seedExistingAdmin('existing-admin@example.com');
+      assert.equal((await getProviders(h)).setup_required, false);
+      const res = await postSetup(h, VALID_SETUP);
+      assert.equal(res.status, 410);
+      assert.equal(res.code, 'auth.setup_locked');
+      assert.equal(res.setCookie, null);
+      assert.equal(h.store.rows.length, 1);
       assert.equal(h.store.firstAdminCalls, 0, 'the handler must not reach the users-table lock');
     } finally {
       await stopHarness(h);

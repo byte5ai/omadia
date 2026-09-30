@@ -51,8 +51,9 @@ env seed uses the same path, so two replicas booting together no longer crash
 the loser on a unique violation. The first admin's creation is now audited
 (`auth.first_admin_create`) in the same transaction. `GET /providers` and the
 handler share one predicate: a boot that did not allow setup now answers 410
-`auth.setup_disabled` even if the users table is emptied later (restart to
-reopen the wizard), where it used to create an admin.
+`auth.setup_disabled` if the users table is emptied later (restart to
+reopen the wizard), where it used to create an admin. While users exist the
+answer stays 410 `auth.setup_locked`.
 
 The wizard also needs operator consent now. It accepts only the setup token
 (`setup_token` body field, else 403 `auth.setup_token_invalid`), checked

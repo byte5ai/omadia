@@ -1330,7 +1330,10 @@ path (410 `auth.setup_disabled` / `auth.setup_no_local_provider` /
 `/providers` alone. A users table emptied after boot, which only direct SQL
 can do because admins cannot delete themselves, then advertised "no setup"
 while `/setup` still minted an admin. Now the wizard stays closed until a
-restart re-evaluates it.
+restart re-evaluates it. The predicate counts users before it reads the flag,
+so an install that has users answers `locked` whatever its boot decided, as it
+always did. `disabled_at_boot` only covers a table that is empty now but was
+not at boot, the one case a restart changes.
 
 **Exactly one admin: `UserStore.createFirstAdmin`.** The old handler ran
 `count()` and then a plain INSERT on different pool connections, with an

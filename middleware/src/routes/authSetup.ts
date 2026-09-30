@@ -50,13 +50,21 @@ export interface SetupStateDeps {
 
 /**
  * The single predicate behind `/providers.setup_required` and the `/setup`
- * handler's fast path. Cheap checks first; the COUNT only runs when the boot
- * allowed setup and a local admin could actually sign in afterwards.
+ * handler's fast path.
+ *
+ * The COUNT runs before the boot flag is read. While users exist the answer is
+ * `locked` ("setup already completed") whatever this boot decided, so an
+ * install that is already set up keeps answering the way it always did: to a
+ * provisioning script, to a replica that started after setup finished, and to
+ * the wizard, which sends the browser to /login on that code.
+ * `disabled_at_boot` is left for the one case a restart changes: the table is
+ * empty now but was not when this process started (only direct SQL gets
+ * there, since an admin cannot delete themselves).
  */
 export async function resolveSetupState(deps: SetupStateDeps): Promise<SetupState> {
-  if (!deps.setupAllowed) return 'disabled_at_boot';
   if (!deps.registry.get(LOCAL_PROVIDER_ID)) return 'no_local_provider';
   if ((await deps.userStore.count()) > 0) return 'locked';
+  if (!deps.setupAllowed) return 'disabled_at_boot';
   return 'available';
 }
 
@@ -103,7 +111,7 @@ const STATE_REFUSALS: Record<Exclude<SetupState, 'available'>, { code: string; m
   disabled_at_boot: {
     code: 'auth.setup_disabled',
     message:
-      'setup is not available on this server start — the users table was not empty at boot; restart the middleware to re-evaluate',
+      'setup is not available on this server start — the users table was emptied after the middleware started; restart the middleware to reopen the wizard',
   },
   no_local_provider: {
     code: 'auth.setup_no_local_provider',

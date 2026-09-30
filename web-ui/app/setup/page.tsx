@@ -140,8 +140,9 @@ function SetupPageInner(): React.ReactElement {
       } else if (err instanceof ApiError && err.status === 409) {
         setSubmitError(t('setupInProgress'));
       } else if (err instanceof ApiError && err.status === 410 && err.code === 'auth.setup_disabled') {
-        // Closed for this server start, not finished: a login page would be
-        // a dead end, the restart is what reopens the wizard.
+        // Closed for this server start, not finished: the server sends this
+        // code only while the users table is empty, so a login page would be
+        // a dead end; the restart is what reopens the wizard.
         setSubmitError(t('setupDisabled'));
       } else if (err instanceof ApiError && err.status === 410) {
         setSubmitError(t('alreadyLocked'));

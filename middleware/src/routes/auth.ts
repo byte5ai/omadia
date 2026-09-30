@@ -39,11 +39,11 @@ interface AuthDeps {
   /**
    * Set when this boot detected an empty users-table without env-seed
    * values. `/providers` and `/setup` read it through the same predicate
-   * (`resolveSetupState` in ./authSetup.ts): false means the wizard is
-   * closed for this boot even if the table empties later — a restart
-   * re-evaluates it. When true, both still re-check `count() === 0` per call,
-   * and `/setup` creates the admin through the atomic
-   * `UserStore.createFirstAdmin`.
+   * (`resolveSetupState` in ./authSetup.ts), which counts users first: while
+   * any exist, both answer "setup already completed" whatever this flag says.
+   * False only matters once the table is empty again — the wizard stays
+   * closed for this boot and a restart re-evaluates it. `/setup` creates the
+   * admin through the atomic `UserStore.createFirstAdmin`.
    */
   setupAllowed: boolean;
   /**
@@ -136,7 +136,7 @@ export function createAuthRouter(deps: AuthDeps): Router {
   // ── GET /providers ───────────────────────────────────────────────────────
   router.get('/providers', async (_req: Request, res: Response) => {
     // `setup_required` is the SAME predicate the /setup handler enforces
-    // (boot-time flag, local provider active, users table empty now), so
+    // (local provider active, users table empty now, boot-time flag), so
     // the UI never offers a wizard the handler refuses — or the reverse.
     // `setup_token_required` mirrors the handler's first gate.
     const state = await resolveSetupState(deps);
