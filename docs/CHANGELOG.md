@@ -75,6 +75,18 @@ graph directory, the 347 allowed test-tree type errors of the typecheck
 ratchet, and the `nl` prompt-PII floor of 0.84 against the 0.97 release gate —
 are recorded in the handoff's §13 roadmap.
 
+### Fixed — SessionWatcher test no longer races framer-motion's exit animation
+
+2026-09-30 — `SessionWatcher.test.tsx` "drops a warning back to normal when
+another tab renewed" failed intermittently in CI (twice on 2026-09-28 on
+Dependabot branches, twice on 2026-09-30). framer-motion's frame loop captures
+`requestAnimationFrame` when the module loads — jsdom's real one, not the fake
+timers the suite installs — so whether the warning card's exit animation
+finished inside a fake-time `flush()` depended on real wall-clock time.
+Removing the one-second slack made the unchanged test fail deterministically.
+The suite now renders `AnimatePresence`'s children directly, so a card leaves
+the DOM in the same commit that its phase ends; the component is unchanged.
+
 ### Security — npm advisories in middleware and web-ui dependencies
 
 2026-09-30 — new advisories were published against packages both workspaces
