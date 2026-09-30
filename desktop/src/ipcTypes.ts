@@ -39,9 +39,12 @@ export interface WizardConfig {
   /** `subscription` stores no API key; Claude/Codex CLI is connected after boot. */
   provider: ApiKeyProvider | 'subscription';
   apiKey: string;
+  /**
+   * The capability switches, each of which the supervisor turns into kernel
+   * env (`capabilities.ts`). main checks the shape and persists only these
+   * fields, never the object as sent.
+   */
   capabilities: {
-    embeddings: boolean;
-    diagrams: boolean;
     attachments: boolean;
   };
   /** Optional custom data directory; null = use the default userData location. */

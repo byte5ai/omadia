@@ -56,17 +56,12 @@
         'omadia startet ohne API-Schlüssel. Verbinde deine Claude- oder Codex-CLI danach unter Admin → LLM-Zugang → Abos.',
       // step 2
       'caps.title': 'Optionale Funktionen',
-      'caps.lead':
-        'Das lässt sich später jederzeit ändern. Der Kern (Chat, Gedächtnis, Protokoll) funktioniert immer.',
+      'caps.lead': 'Der Kern (Chat, Gedächtnis, Protokoll) funktioniert immer.',
       'caps.attachments': 'Anhänge',
-      'caps.attachmentsHint': 'Hochgeladene Dateien lokal auf der Festplatte speichern.',
-      'caps.embeddings': 'Semantisches Gedächtnis',
-      'caps.embeddingsBadge': 'Vorschau',
-      'caps.embeddingsHint':
-        'Lokale Einbettungen zur Themen-Erkennung. Lädt beim ersten Einsatz ein kleines Modell herunter.',
-      'caps.diagrams': 'Diagramme',
-      'caps.diagramsBadge': 'braucht Netzwerk',
-      'caps.diagramsHint': 'Diagramme über den gehosteten omadia-Dienst rendern.',
+      'caps.attachmentsHint':
+        'Dateien, die omadia erreichen, etwa Anhänge aus verbundenen Kanälen, im Datenordner auf diesem Rechner aufbewahren.',
+      'caps.later':
+        'Semantisches Gedächtnis und Diagramme werden nicht hier eingeschaltet. Das semantische Gedächtnis lädt sein Modell unter Admin → Embedding-Provider herunter. Diagramme brauchen das Diagramm-Plugin, einen Kroki-Server und S3-kompatiblen Speicher.',
       // step 3
       'data.title': 'Wo soll omadia Daten speichern?',
       'data.lead': 'Datenbank, verschlüsselte Geheimnisse und Uploads liegen hier.',
