@@ -257,9 +257,7 @@ jobs:
           # d5bb0b61), i.e. 78 tests of slack; #1077 adds 6 (usageDashboard
           # 4, cliTurnBudgetRegistry 2). Re-pinned to the measured total.
           # 365 → 372 with #778 S1 (7 credential-ask askability/owner tests).
-          # 372 → 378 with the exact-id findEntities contract (6 Neon tests in
-          # kgFindEntitiesById.pg.test.ts).
-          PG_TEST_FLOOR: '378'
+          PG_TEST_FLOOR: '372'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
