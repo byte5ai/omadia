@@ -129,6 +129,27 @@ describe('privacy-guard — verifier evidence projection', () => {
     });
     assert.equal(result.outcome, 'blocked');
   });
+
+  it('concurrent projections of one turn mint distinct placeholders that all restore', async () => {
+    // The judge projects its requests in parallel, one per claim, through
+    // the one map of the turn.
+    const svc = service(false);
+    const people = ['Anna Beispiel', 'Bernd Muster', 'Clara Probe'];
+    const results = await Promise.all(
+      people.map((person) =>
+        svc.projectVerifierText!({ ...TURN, text: `Evidenz zu ${person} liegt vor`, identityValues: [person] }),
+      ),
+    );
+    const texts = results.map((r) => (r.outcome === 'masked' ? r.maskedText : ''));
+    const placeholders = texts.map((t) => /PLATZHALTER-NAME-\d+/.exec(t)?.[0]);
+    assert.equal(
+      new Set(placeholders).size,
+      people.length,
+      `two people share a placeholder: ${placeholders.join(', ')}`,
+    );
+    const restored = await svc.restorePromptPseudonyms!(TURN.turnId, texts.join(' | '));
+    assert.equal(restored, people.map((p) => `Evidenz zu ${p} liegt vor`).join(' | '));
+  });
 });
 
 describe('privacy-guard — unresolved surrogates', () => {

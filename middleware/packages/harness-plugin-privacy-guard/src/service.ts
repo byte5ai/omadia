@@ -70,6 +70,7 @@ import {
   createIdentityValuesDetector,
   hasSurrogateCollision,
 } from './verifierProjection.js';
+import { createTurnSerialQueue } from './turnSerialQueue.js';
 
 /**
  * Collect the identity-bearing string(s) of a single field VALUE into `out`
@@ -290,6 +291,14 @@ export function createPrivacyGuardService(deps?: {
   // ingested attachment tail) so surrogates stay stable; inverted over the
   // final answer by `restorePromptPseudonyms`; dropped by `finalizeTurn`.
   const promptMaskMaps = new Map<string, PseudonymMap>();
+  // A mask call reads the turn's map, awaits its detectors and writes the
+  // extended map back; two interleaved calls — the answer verifier's judge
+  // projects its requests in parallel — would both mint from the same base,
+  // hand the same placeholder to different values, and the later write would
+  // drop the earlier call's entries. So that read-modify-write runs one call
+  // at a time per turn (detection by the C1 sidecar still runs concurrently,
+  // before a call joins the queue).
+  const serialPerTurn = createTurnSerialQueue();
 
   // #979 / #980 — per-turn C1 state. TWO mechanisms, because the two things
   // being avoided have different keys.
@@ -431,23 +440,35 @@ export function createPrivacyGuardService(deps?: {
     }
   }
 
-  /**
-   * Substitute detected spans through the turn's map and enforce the
-   * post-mask invariant. Failure-closed: a residual real span, or the
-   * detection pass itself failing, is `blocked` — never a pass-through.
-   * `preview` computes the outcome without extending the map or booking
-   * anything, so a caller can ask "would this text change?" for free.
-   */
-  async function maskThroughTurnMap(args: {
+  interface MaskArgs {
     readonly turnId: string;
     readonly text: string;
     readonly detectors: readonly PromptPiiDetector[];
     readonly degraded: boolean;
     readonly stage: PrivacyEgressStage;
     readonly preview: boolean;
-  }): Promise<PrivacyPromptMaskResult> {
+    /** Refusal judged on the turn's map as it stands when this call's turn
+     *  in the queue comes; `undefined` lets the call proceed. */
+    readonly precheck?: (map: PseudonymMap | undefined) => PrivacyPromptMaskResult | undefined;
+  }
+
+  /**
+   * Substitute detected spans through the turn's map and enforce the
+   * post-mask invariant. Failure-closed: a residual real span, or the
+   * detection pass itself failing, is `blocked` — never a pass-through.
+   * `preview` computes the outcome without extending the map or booking
+   * anything, so a caller can ask "would this text change?" for free.
+   * Calls of one turn run one at a time (see `serialPerTurn`).
+   */
+  function maskThroughTurnMap(args: MaskArgs): Promise<PrivacyPromptMaskResult> {
+    return serialPerTurn(args.turnId, () => maskOnce(args));
+  }
+
+  async function maskOnce(args: MaskArgs): Promise<PrivacyPromptMaskResult> {
     const { turnId, text, detectors, degraded, stage, preview } = args;
     const label = stage === 'verifier' ? 'verifierMask' : 'promptMask';
+    const refused = args.precheck?.(promptMaskMaps.get(turnId));
+    if (refused !== undefined) return refused;
     try {
       const result = await maskPrompt(text, detectors, promptMaskMaps.get(turnId));
       // Post-mask invariant: no detected real value may survive in the
@@ -783,16 +804,6 @@ export function createPrivacyGuardService(deps?: {
     async projectVerifierText(
       request: PrivacyVerifierProjectionRequest,
     ): Promise<PrivacyPromptMaskResult> {
-      if (hasSurrogateCollision(request.text, promptMaskMaps.get(request.turnId))) {
-        console.error(
-          `[privacy-guard v4] verifierMaskBlocked turn=${request.turnId} ` +
-            'reason=surrogate-collision',
-        );
-        return {
-          outcome: 'blocked',
-          reason: 'a real value collides with a surrogate minted this turn',
-        };
-      }
       const detectors: PromptPiiDetector[] = [createBaselineIdentityDetector()];
       const customDetector = resolveCustomDetector(deps?.readConfig);
       if (customDetector) detectors.push(customDetector);
@@ -809,6 +820,17 @@ export function createPrivacyGuardService(deps?: {
         degraded: c1.degraded,
         stage: 'verifier',
         preview: false,
+        precheck: (map) => {
+          if (!hasSurrogateCollision(request.text, map)) return undefined;
+          console.error(
+            `[privacy-guard v4] verifierMaskBlocked turn=${request.turnId} ` +
+              'reason=surrogate-collision',
+          );
+          return {
+            outcome: 'blocked',
+            reason: 'a real value collides with a surrogate minted this turn',
+          };
+        },
       });
     },
 
