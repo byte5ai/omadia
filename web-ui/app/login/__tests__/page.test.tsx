@@ -188,12 +188,12 @@ describe('<LoginPage /> redirect on mount', () => {
 
 /**
  * `?return=` is chosen by whoever wrote the link. `mockSearchParamsGet`
- * returns decoded values, so `'/\t/evil.com'` is what the page sees for
- * `?return=%2F%09%2Fevil.com`. A browser reads `\` as `/` and drops the TAB,
- * so both crafted values below would load `https://evil.com/`.
+ * returns decoded values, so `'/\t/evil.example'` is what the page sees for
+ * `?return=%2F%09%2Fevil.example`. A browser reads `\` as `/` and drops the TAB,
+ * so both crafted values below would load `https://evil.example/`.
  */
 describe('<LoginPage /> only follows same-origin return paths', () => {
-  it.each(['/\\evil.com', '/\t/evil.com'])(
+  it.each(['/\\evil.example', '/\t/evil.example'])(
     'sends an authenticated visitor with ?return=%j to / instead of off-origin',
     async (crafted) => {
       givenReturn(crafted);
@@ -220,7 +220,7 @@ describe('<LoginPage /> only follows same-origin return paths', () => {
   );
 
   it('forwards the normalised value, not the raw one, on the hop to /setup', async () => {
-    givenReturn('/\\evil.com');
+    givenReturn('/\\evil.example');
     mockGetSessionStatus.mockImplementation(unauthedSession);
     mockGetAuthProviders.mockImplementation(setupRequired);
 
@@ -230,7 +230,7 @@ describe('<LoginPage /> only follows same-origin return paths', () => {
   });
 
   it('points the OIDC button at the sanitised path', async () => {
-    givenReturn('/\\evil.com');
+    givenReturn('/\\evil.example');
     mockGetSessionStatus.mockImplementation(unauthedSession);
     mockGetAuthProviders.mockImplementation(oidcProvider);
 
@@ -241,8 +241,8 @@ describe('<LoginPage /> only follows same-origin return paths', () => {
   });
 
   it.each([
-    ['/\\evil.com', '/'],
-    ['/\t/evil.com', '/'],
+    ['/\\evil.example', '/'],
+    ['/\t/evil.example', '/'],
     ['/chat?thread=42', '/chat?thread=42'],
   ])(
     'after a successful password login with ?return=%j navigates to %j',

@@ -13,10 +13,10 @@ import {
  *
  * A `startsWith('/')` check is not enough, because the browser normalises
  * first: the WHATWG URL parser reads `\` as `/` in http(s) URLs and drops
- * TAB/LF/CR before it parses, so `/\evil.com` and `/<TAB>/evil.com` look like
- * paths but load `https://evil.com/`. Dot segments are the other trap:
- * `/..//evil.com` resolves on the right origin, but its normalised path is
- * `//evil.com`, which is protocol-relative again once it is used as a link.
+ * TAB/LF/CR before it parses, so `/\evil.example` and `/<TAB>/evil.example` look like
+ * paths but load `https://evil.example/`. Dot segments are the other trap:
+ * `/..//evil.example` resolves on the right origin, but its normalised path is
+ * `//evil.example`, which is protocol-relative again once it is used as a link.
  */
 
 /** Origins the web UI is really served from: dev server, a deployment, the desktop shell. */
@@ -24,34 +24,34 @@ const ORIGINS = ['http://localhost:3000', 'https://omadia.example', 'http://127.
 
 /** Each of these resolves off-origin, runs script, or is not a root-relative path. */
 const HOSTILE = [
-  '//evil.com',
+  '//evil.example',
   '//evil',
-  '/\\evil.com',
+  '/\\evil.example',
   '/\\evil',
-  '/\\\\evil.com',
-  '/\\/evil.com',
-  '\\evil.com',
-  '\\\\evil.com',
-  '\\/evil.com',
-  '/\t/evil.com',
-  '/\n/evil.com',
-  '/\r/evil.com',
-  '/\t\\evil.com',
-  'https://evil.com/x',
+  '/\\\\evil.example',
+  '/\\/evil.example',
+  '\\evil.example',
+  '\\\\evil.example',
+  '\\/evil.example',
+  '/\t/evil.example',
+  '/\n/evil.example',
+  '/\r/evil.example',
+  '/\t\\evil.example',
+  'https://evil.example/x',
   'javascript:alert(1)',
   'JaVaScRiPt:alert(1)',
   'data:text/html,x',
-  'evil.com/chat',
+  'evil.example/chat',
   ' /chat',
   '/x\u0000y',
   '/x\u001by',
   '/x\u007fy',
-  '/..//evil.com',
-  '/.//evil.com',
-  '/%2e%2e//evil.com',
-  '/a/..//evil.com',
-  '/a/%2E%2E//evil.com',
-  '/./\\evil.com',
+  '/..//evil.example',
+  '/.//evil.example',
+  '/%2e%2e//evil.example',
+  '/a/..//evil.example',
+  '/a/%2E%2E//evil.example',
+  '/./\\evil.example',
 ];
 
 /** Values that must come back as a normalised same-origin path. */
@@ -63,7 +63,7 @@ const NORMALISED: ReadonlyArray<readonly [string, string]> = [
   ['/%2e%2e/x', '/x'],
   ['/admin/plugins?tab=a%20b', '/admin/plugins?tab=a%20b'],
   // A percent-encoded backslash is a literal path character, not a separator.
-  ['/%5Cevil.com', '/%5Cevil.com'],
+  ['/%5Cevil.example', '/%5Cevil.example'],
   // Past the leading slash a backslash is only a path separator ...
   ['/chat\\x', '/chat/x'],
   // ... and in the query a literal character that `location.search` keeps,
@@ -71,7 +71,7 @@ const NORMALISED: ReadonlyArray<readonly [string, string]> = [
   ['/chat?q=a\\b', '/chat?q=a\\b'],
   ['/a b', '/a%20b'],
   ['/chat?', '/chat'],
-  ['/@evil.com', '/@evil.com'],
+  ['/@evil.example', '/@evil.example'],
 ];
 
 function hasControlChar(value: string): boolean {
@@ -119,16 +119,16 @@ describe('sanitiseReturnPath', () => {
     const inputs = [
       ...HOSTILE,
       ...NORMALISED.map(([input]) => input),
-      '/%2F%2Fevil.com',
-      '/%09/evil.com',
-      '/.%2e//evil.com',
-      '/..\\\\evil.com',
-      '/:evil.com',
-      '/chat#\\evil.com',
-      '/chat?next=//evil.com',
-      '/ /evil.com',
-      '/　/evil.com',
-      '/／/evil.com',
+      '/%2F%2Fevil.example',
+      '/%09/evil.example',
+      '/.%2e//evil.example',
+      '/..\\\\evil.example',
+      '/:evil.example',
+      '/chat#\\evil.example',
+      '/chat?next=//evil.example',
+      '/ /evil.example',
+      '/　/evil.example',
+      '/／/evil.example',
       '/x y',
       '/a\ud800b',
       '/login/',
@@ -181,7 +181,7 @@ describe('sanitiseReturnPath', () => {
     ])('gives the same answer under %s', (_name, stub) => {
       if (stub) Object.defineProperty(window, 'location', { configurable: true, value: stub });
       expect(sanitiseReturnPath('/chat?thread=42')).toBe('/chat?thread=42');
-      expect(sanitiseReturnPath('/\\evil.com')).toBe('/');
+      expect(sanitiseReturnPath('/\\evil.example')).toBe('/');
     });
   });
 });

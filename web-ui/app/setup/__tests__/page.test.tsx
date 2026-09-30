@@ -9,8 +9,8 @@ import SetupPage from '../page';
  * `?return=`. That value comes from the URL, so the page sanitises it to a
  * same-origin path first (`_lib/returnPath.ts`). These tests pin where the
  * browser goes after a successful setup. `mockSearchParamsGet` returns
- * decoded values: `'/\t/evil.com'` is what the page sees for
- * `?return=%2F%09%2Fevil.com`.
+ * decoded values: `'/\t/evil.example'` is what the page sees for
+ * `?return=%2F%09%2Fevil.example`.
  */
 
 const { mockRouter, mockSearchParamsGet, mockGetAuthProviders, mockPostAuthSetup } =
@@ -83,8 +83,8 @@ afterEach(() => {
 
 describe('<SetupPage /> return path after the first admin is created', () => {
   it.each([
-    ['/\\evil.com', '/'],
-    ['/\t/evil.com', '/'],
+    ['/\\evil.example', '/'],
+    ['/\t/evil.example', '/'],
     ['/login?x=1', '/'],
     ['/admin/providers', '/admin/providers'],
     ['/chat?thread=42#c', '/chat?thread=42#c'],

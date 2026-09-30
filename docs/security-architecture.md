@@ -1408,11 +1408,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
 - [ ] A page or route that navigates to a caller-supplied `return`/`next`
-      value passes it through `sanitiseReturnPath`
-      (`web-ui/app/_lib/returnPath.ts`), or, server-side, only ever appends
-      it to `publicBaseUrl` (§10e). Server-supplied absolute targets such as
-      IdP logout URLs are a separate boundary and not covered by this.
-
+      value passes it through `sanitiseReturnPath` first — in the web UI the
+      helper in `web-ui/app/_lib/returnPath.ts`, server-side the one in
+      `middleware/src/routes/auth.ts` (exactly one leading `/`, no C0/DEL)
+      before the value is appended to `publicBaseUrl`. Appending an unchecked
+      value to the bare origin can change the host (§10e). Server-supplied
+      absolute targets such as IdP logout URLs are a separate boundary and not
+      covered by this.
 - [ ] The repository variable `AUDIT_ALLOW_REGISTRY_OUTAGE` is unset. It lets
       the required `audit (high+critical block)` check pass **without** an
       audit result while the npm registry is down; it is an admin-only bypass

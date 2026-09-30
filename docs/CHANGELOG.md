@@ -42,25 +42,24 @@ changelog.
 created, the web UI navigates to the page's `?return=` value; a visitor who is
 already signed in is forwarded to it straight away. Both pages accepted any
 value that started with `/` but not with `//`. Browsers normalise a URL before
-they follow it: they read `\` as `/` and drop TAB, LF and CR. So a link such as
-`/login?return=%2F%5Cexample.org` or `?return=%2F%09%2Fexample.org` passed the
-check and sent the operator to another site right after they had entered their
-password. Both pages now use one helper, `web-ui/app/_lib/returnPath.ts`. The
+they follow it: they read `\` as `/` and drop TAB, LF and CR, so values shaped
+like `/\host` or `/<TAB>/host` passed that check and still resolved to another
+origin. Both pages now use one helper, `web-ui/app/_lib/returnPath.ts`. The
 value must start with exactly one `/`, contain no control characters and be at
 most 2048 characters long. It is then parsed the way the browser will parse
 it, and only the normalised path, query and fragment are used, once they pass
 the same checks (dot segments would otherwise turn `/..//host` into `//host`).
 Anything else leads to `/`. The helper also sends `?return=/login?…`, `/login/`
-and `/setup` to `/`; the old guard caught only the exact string `/login`.
+and `/setup` to `/`; the old guard caught only the exact string `/login`, and
+return values that are auth pages or longer than 2048 characters now land on
+`/` as well. The app's own redirects to `/login` never produce such values.
 
 The middleware's own check for the OIDC round trip (`sanitiseReturnPath` in
 `middleware/src/routes/auth.ts`) now also rejects a `\` right after the leading
 `/` and every control character, so the back-compat `GET /api/v1/auth/login`
-no longer copies such a value into the `/login?return=` link it redirects to. Its own redirects already stayed on
-`publicBaseUrl`. Hand-made links whose `?return=` is an absolute URL (even on
-the same origin), an auth page or longer than 2048 characters now land on `/`;
-the app's own redirects to /login never produce such values. The rules are
-written up in `docs/security-architecture.md` §10e.
+no longer copies such a value into the `/login?return=` link it redirects to.
+Its own redirects already stayed on `publicBaseUrl`. The rules are written up
+in `docs/security-architecture.md` §10e.
 
 ### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
 

@@ -19,8 +19,8 @@ import { listenLoopback } from '../_helpers/listenLoopback.js';
  * and appends it to `publicBaseUrl` on the callback. Both sinks stay on this
  * origin, but the router must not copy a value into a first-party link that
  * a browser would resolve elsewhere: a browser reads `\` as `/` and drops
- * TAB/LF/CR before parsing, so `/\evil.com` and `/<TAB>/evil.com` both load
- * `https://evil.com/`. The web UI re-checks the value (`returnPath.ts`); this
+ * TAB/LF/CR before parsing, so `/\evil.example` and `/<TAB>/evil.example` both load
+ * `https://evil.example/`. The web UI re-checks the value (`returnPath.ts`); this
  * pins the server's own check.
  */
 
@@ -30,18 +30,18 @@ const PKCE_COOKIE = `harness_auth_pkce_${PROVIDER_ID}`;
 
 /** Dropped: resolves off-origin once a browser parses it, or is not a path. */
 const HOSTILE = [
-  '//evil.com',
-  '/\\evil.com',
-  '/\\/evil.com',
-  '/\t/evil.com',
-  '/\n/evil.com',
-  '/\r/evil.com',
+  '//evil.example',
+  '/\\evil.example',
+  '/\\/evil.example',
+  '/\t/evil.example',
+  '/\n/evil.example',
+  '/\r/evil.example',
   '/x\u0000y',
   '/x\u001by',
   '/x\u007fy',
-  'https://evil.com/',
+  'https://evil.example/',
   'javascript:alert(1)',
-  'evil.com',
+  'evil.example',
 ];
 
 /** Kept verbatim. A backslash past the leading slash cannot change the host. */

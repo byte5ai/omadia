@@ -8,12 +8,12 @@
  * `startsWith('/') && !startsWith('//')` is not enough, because the browser
  * normalises the value before it navigates:
  *
- *   - the WHATWG URL parser reads `\` as `/` in http(s) URLs, so `/\evil.com`
- *     is `//evil.com`, a different host;
+ *   - the WHATWG URL parser reads `\` as `/` in http(s) URLs, so `/\evil.example`
+ *     is `//evil.example`, a different host;
  *   - it drops TAB, LF and CR anywhere in the input first, so
- *     `/<TAB>/evil.com` is `//evil.com` as well;
- *   - dot segments collapse, so `/..//evil.com` normalises to the path
- *     `//evil.com`, which is protocol-relative again once used as a link.
+ *     `/<TAB>/evil.example` is `//evil.example` as well;
+ *   - dot segments collapse, so `/..//evil.example` normalises to the path
+ *     `//evil.example`, which is protocol-relative again once used as a link.
  *
  * `sanitiseReturnPath` checks the shape of the raw value, parses it the way
  * the browser will, and hands out only the normalised path + query +
@@ -39,7 +39,9 @@ export const DEFAULT_RETURN_PATH = '/';
  * Longest value accepted, checked before and after normalisation (the parser
  * percent-encodes, which can multiply the length). The app's own producers
  * send `pathname + search` of a real page, far below this; the cap bounds
- * what a hand-crafted link can push through the OIDC state cookie.
+ * what a hand-crafted `?return=` value can carry into the OIDC link this page
+ * renders. (A link straight to the middleware's `/login/:id/start` is not
+ * bounded by this helper — see docs/security-architecture.md §10e.)
  */
 export const MAX_RETURN_PATH_LENGTH = 2048;
 
@@ -80,7 +82,7 @@ export function sanitiseReturnPath(raw: unknown): string {
 
   const normalised = url.pathname + url.search + url.hash;
   // What we hand out must pass the check we applied on the way in: dot
-  // segments can turn `/..//evil.com` into `//evil.com`.
+  // segments can turn `/..//evil.example` into `//evil.example`.
   if (!hasSafeShape(normalised)) return DEFAULT_RETURN_PATH;
   if (AUTH_PAGE_PATHS.has(withoutTrailingSlashes(url.pathname))) {
     return DEFAULT_RETURN_PATH;

@@ -15,9 +15,9 @@ describe('sanitiseReturnPath without a window', () => {
     expect(sanitiseReturnPath('/chat?x=1')).toBe('/chat?x=1');
     expect(sanitiseReturnPath('/chat?thread=42#c')).toBe('/chat?thread=42#c');
     expect(sanitiseReturnPath('/a/../b')).toBe('/b');
-    expect(sanitiseReturnPath('/\\evil.com')).toBe('/');
-    expect(sanitiseReturnPath('/\t/evil.com')).toBe('/');
-    expect(sanitiseReturnPath('/..//evil.com')).toBe('/');
+    expect(sanitiseReturnPath('/\\evil.example')).toBe('/');
+    expect(sanitiseReturnPath('/\t/evil.example')).toBe('/');
+    expect(sanitiseReturnPath('/..//evil.example')).toBe('/');
     expect(sanitiseReturnPath('/login?x=1')).toBe('/');
     expect(sanitiseReturnPath(null)).toBe('/');
   });
@@ -27,9 +27,9 @@ describe('sanitiseReturnPath without a window', () => {
       '/chat',
       '/a/../b',
       '/%2e%2e/x',
-      '//evil.com',
-      'https://evil.com',
-      '/\\evil.com',
+      '//evil.example',
+      'https://evil.example',
+      '/\\evil.example',
       '/login',
       '',
     ]) {
