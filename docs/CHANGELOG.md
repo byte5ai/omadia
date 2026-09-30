@@ -58,14 +58,25 @@ neither). The overlay header no longer claims that a compromised updater cannot
 read secrets or spawn a shell. It documents the proxy as root-equivalent and
 the network as the boundary (`docs/security-architecture.md` §10e).
 
+The updater is now the one route from `omadia` to the proxy, so its health
+gate no longer follows redirects. The probe used fetch's default
+`redirect: 'follow'` on a `/health` answer the middleware writes, and a
+redirect to `http://docker-socket-proxy:2375/…` made the updater send that GET
+onto `omadia-control`; a JSON 2xx from the Engine even passed the gate as an
+unstamped build. A 3xx now counts as not healthy and is noted once in the step
+trail (`sidecars/updater/test/health.test.mjs`).
+
 Existing overlay installs re-run
 `docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d`
 with both files, plus their other overlays. Compose creates `omadia-control`
 and recreates only `docker-socket-proxy` and `updater`; middleware, web-ui and
 data are untouched, and an update running at that moment is aborted.
-`docs/upgrading.md` has a check that the middleware cannot reach the proxy by
-name or by address. `middleware/test/composeUpdateOverlay.test.ts` guards the
-layout, and CI renders the merged overlay with `docker compose … config --quiet`.
+`docs/upgrading.md` has a check that first proves the updater reaches the
+proxy, then that the middleware and web-ui cannot, by name or by address. It
+ends in `PASS`, `FAIL` or `INCONCLUSIVE` with a matching exit code, and an
+error it cannot classify is inconclusive, never blocked.
+`middleware/test/composeUpdateOverlay.test.ts` guards the layout, and CI
+renders the merged overlay with `docker compose … config --quiet`.
 
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 

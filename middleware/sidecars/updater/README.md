@@ -29,6 +29,7 @@ capability is isolated into this container:
 |---|---|
 | No Docker socket in an application container | The socket is mounted, read-only, into `docker-socket-proxy` alone; only this sidecar talks to the Engine, and only through that proxy |
 | The proxy is not reachable by application containers | `docker-socket-proxy` joins only `omadia-control`: an `internal` network without a host-side bridge address, which no service but this sidecar joins. From `omadia` its name does not resolve and its address does not route |
+| The middleware cannot relay a request to the proxy through this sidecar | The health gate reads the middleware's `/health` with redirects off: a 3xx counts as not healthy and its `Location` is never requested |
 | Not reachable from the internet or the browser | No `ports:` mapping — compose-network only |
 | This sidecar's API is not usable by other services on `omadia` | Shared bearer token, constant-time compared; refuses to start without one |
 | Cannot be aimed at an arbitrary image | Target must be a release tag (`vX.Y.Z`); floating tags are rejected |
@@ -89,7 +90,8 @@ decoded failure reason without parsing the English `steps` trail. A health
 gate `never_reachable` with `observedVersion: null` means the new image never
 answered `/health` at all — in practice almost always a boot-time failure of the
 new version (a newly required secret, see `docs/upgrading.md`), not a network
-problem.
+problem. A `/health` that answers with a redirect ends the same way, because
+the probe never follows one; the `steps` trail then says so.
 
 `POST /update` answers **before** the work starts, on purpose: the update
 recreates the middleware container that is waiting on the response, so holding

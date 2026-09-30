@@ -10,18 +10,28 @@
  * docker-compose.build.yaml), the version can never match; the gate then falls
  * back to plain reachability and says so in the step log, rather than failing
  * an update that actually worked.
+ *
+ * A redirect is never followed. The middleware writes the answer to this
+ * probe, and the updater also sits on `omadia-control`: following a `Location`
+ * would let the middleware aim one of the updater's requests at the Engine
+ * proxy (docs/security-architecture.md §10e). A 3xx counts as not healthy.
  */
 
 /**
  * @param {string} url
  * @param {number} timeoutMs
- * @returns {Promise<{ ok: boolean, version: string | null }>}
+ * @returns {Promise<{ ok: boolean, version: string | null, redirected?: boolean }>}
  */
 async function probe(url, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, timeoutMs);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    // 'manual' hands back the 3xx itself instead of requesting its Location.
+    const res = await fetch(url, { signal: controller.signal, redirect: 'manual' });
+    if (res.status >= 300 && res.status < 400) {
+      await res.body?.cancel();
+      return { ok: false, version: null, redirected: true };
+    }
     if (!res.ok) return { ok: false, version: null };
     const body = await res.json();
     const version =
@@ -68,9 +78,16 @@ export async function waitForHealthyVersion(opts) {
   const deadline = now() + timeoutMs;
   let sawReachable = false;
   let lastVersion = null;
+  let reportedRedirect = false;
 
   while (now() < deadline) {
     const result = await probeImpl(url, probeTimeoutMs);
+    // Once per gate: otherwise the only trace would be `never_reachable`,
+    // which points at a middleware that never came up.
+    if (result.redirected && !reportedRedirect) {
+      reportedRedirect = true;
+      log('health answered with a redirect, which is never followed; the gate keeps waiting');
+    }
     if (result.ok) {
       sawReachable = true;
       lastVersion = result.version;

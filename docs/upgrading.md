@@ -96,41 +96,126 @@ containers of the overlays you left out. Then run the check below.
 
 #### Checking the control network
 
-Run this after enabling the overlay, and again after any change to Docker or
-the host firewall:
+Run this in the project directory after enabling the overlay, and again after
+any change to Docker or the host firewall. If you start the stack with more
+`-f` files or a `-p` project name, add them to the `compose()` line. The check
+ends with one verdict and a matching exit code: `PASS` (0), `FAIL` (1) or
+`INCONCLUSIVE` (2).
 
-```bash
-PROXY=$(docker compose -f docker-compose.yaml -f docker-compose.update.yaml ps -q docker-socket-proxy)
-docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' "$PROXY"
-# → <project>_omadia-control   (one line: the proxy is on no other network)
+```sh
+sh -eu <<'CHECK'
+# Use the same -f files (and -p, if you use one) as for `up`.
+compose() { docker compose -f docker-compose.yaml -f docker-compose.update.yaml "$@"; }
+fail() { echo "FAIL: $*" >&2; exit 1; }
+unsure() { echo "INCONCLUSIVE: $*" >&2; exit 2; }
+one() { case $2 in '' | *[!0-9a-f]*) unsure "expected one running $1 container" ;; esac; }
 
-docker network inspect <project>_omadia-control --format '{{.Internal}} {{range .Containers}}{{.Name}} {{end}}'
-# → true <project>-docker-socket-proxy-1 <project>-updater-1   (in any order)
+# 1. One running container per service, in this compose project.
+PROXY=$(compose ps -q docker-socket-proxy) || unsure "docker compose failed; run this in the project directory"
+UPDATER=$(compose ps -q updater) || unsure "docker compose failed"
+MIDDLEWARE=$(compose ps -q middleware) || unsure "docker compose failed"
+one docker-socket-proxy "$PROXY"; one updater "$UPDATER"; one middleware "$MIDDLEWARE"
 
-# From the middleware, the proxy must be blocked by name AND by address.
-PROXY_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$PROXY")
-docker compose -f docker-compose.yaml -f docker-compose.update.yaml exec -e PROXY_IP="$PROXY_IP" middleware node -e '
-  for (const host of ["docker-socket-proxy", process.env.PROXY_IP])
-    fetch(`http://${host}:2375/_ping`, { signal: AbortSignal.timeout(4000) })
-      .then((r) => console.log(host, "REACHABLE", r.status))
-      .catch((e) => console.log(host, "blocked", e.cause?.code ?? e.name));'
-# → docker-socket-proxy blocked ENOTFOUND
-# → 172.19.0.1 blocked ECONNREFUSED   (a timeout or EHOSTUNREACH is fine too)
+# 2. The proxy is on the control network alone; that network is internal and
+#    has two members (the updater has to prove below that it is the other one).
+PROJECT=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$PROXY") ||
+  unsure "cannot inspect docker-socket-proxy"
+NET=$(docker network ls --format '{{.Name}}' --filter label=com.docker.compose.network=omadia-control \
+  --filter "label=com.docker.compose.project=$PROJECT") || unsure "cannot list networks"
+[ -n "$NET" ] || fail "project $PROJECT has no omadia-control network"
+PROXY_NETS=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' "$PROXY") ||
+  unsure "cannot inspect docker-socket-proxy"
+[ "$PROXY_NETS" = "$NET" ] || fail "docker-socket-proxy is not on $NET alone: $PROXY_NETS"
+NET_INFO=$(docker network inspect -f '{{.Internal}} {{len .Containers}}' "$NET") || unsure "cannot inspect $NET"
+[ "$NET_INFO" = "true 2" ] || fail "$NET must be internal with two members (internal, members: $NET_INFO)"
+
+# 3. The proxy's address on that network: exactly one dotted quad.
+PROXY_IP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$PROXY") ||
+  unsure "cannot read the proxy's address on $NET"
+case $PROXY_IP in
+  *[!0-9.]* | *.*.*.*.* | .* | *. | *..*) unsure "unexpected proxy address '$PROXY_IP'" ;;
+  *.*.*.*) ;;
+  *) unsure "unexpected proxy address '$PROXY_IP'" ;;
+esac
+
+# 4. Probe by name and by address. The probe exits 3 when the proxy answered
+#    where it must not, 4 when an outcome proves nothing either way.
+PROBE='
+const expectReach = process.env.EXPECT === "reach";
+const blockedBy = {
+  name: ["ENOTFOUND"],
+  address: ["TimeoutError", "EHOSTUNREACH", "ENETUNREACH", "ECONNREFUSED"],
+};
+const targets = [["name", "docker-socket-proxy"], ["address", process.env.PROXY_IP]];
+Promise.all(targets.map(([kind, host]) =>
+  fetch(`http://${host}:2375/_ping`, { signal: AbortSignal.timeout(4000) }).then(
+    (res) => ({ kind, host, seen: res.status }),
+    (err) => ({ kind, host, seen: String(err.cause?.code ?? err.name) }),
+  ),
+)).then((results) => {
+  let code = 0;
+  for (const { kind, host, seen } of results) {
+    const verdict = expectReach
+      ? (seen === 200 ? "reached" : "INCONCLUSIVE")
+      : typeof seen === "number" ? "REACHABLE"
+      : blockedBy[kind].includes(seen) ? "blocked" : "INCONCLUSIVE";
+    console.log(`  by ${kind} (${host}): ${verdict} [${seen}]`);
+    if (verdict === "REACHABLE") code = 3;
+    else if (verdict === "INCONCLUSIVE" && code === 0) code = 4;
+  }
+  process.exitCode = code;
+});'
+probe() {  # probe <service> <container> <reach|blocked>
+  echo "$1 -> docker-socket-proxy (expected: $3)"
+  rc=0
+  docker exec -e EXPECT="$3" -e PROXY_IP="$PROXY_IP" "$2" node -e "$PROBE" || rc=$?
+  case $rc in
+    0) ;;
+    3) fail "$1 reaches the proxy: this host does not isolate $NET" ;;
+    *) unsure "no clear answer from $1 (exit $rc); this is not a pass" ;;
+  esac
+}
+# The updater has to get through first; otherwise "blocked" below proves nothing.
+probe updater "$UPDATER" reach
+probe middleware "$MIDDLEWARE" blocked
+WEB_UI=$(compose ps -q web-ui) || WEB_UI=
+if [ -n "$WEB_UI" ]; then one web-ui "$WEB_UI"; probe web-ui "$WEB_UI" blocked; fi
+echo "PASS: only the updater reaches docker-socket-proxy ($PROXY_IP on $NET)"
+CHECK
 ```
 
-`REACHABLE` on either line means this host does not isolate the control
-network. Stop the two services
-(`docker compose -f docker-compose.yaml -f docker-compose.update.yaml stop docker-socket-proxy updater`)
-and find out why before you start them again; the runtimes checked so far are
-listed in [`security-architecture.md`](security-architecture.md) §10e. The
-`web-ui` container can run the same probe. The updater itself must still get
-through:
+On an isolated host the output looks like this (addresses differ):
 
-```bash
-docker compose -f docker-compose.yaml -f docker-compose.update.yaml exec updater node -e '
-  fetch("http://docker-socket-proxy:2375/_ping").then((r) => console.log("updater -> proxy", r.status));'
-# → updater -> proxy 200
+```text
+updater -> docker-socket-proxy (expected: reach)
+  by name (docker-socket-proxy): reached [200]
+  by address (172.19.0.2): reached [200]
+middleware -> docker-socket-proxy (expected: blocked)
+  by name (docker-socket-proxy): blocked [ENOTFOUND]
+  by address (172.19.0.2): blocked [TimeoutError]
+web-ui -> docker-socket-proxy (expected: blocked)
+  by name (docker-socket-proxy): blocked [ENOTFOUND]
+  by address (172.19.0.2): blocked [TimeoutError]
+PASS: only the updater reaches docker-socket-proxy (172.19.0.2 on <project>_omadia-control)
 ```
+
+Depending on the runtime, the address probe ends in `TimeoutError`,
+`EHOSTUNREACH`, `ENETUNREACH` or `ECONNREFUSED`. Those four, and `ENOTFOUND`
+for the name, are the only answers the check counts as blocked, and only after
+the updater has reached the proxy at the same name and address.
+
+- **FAIL**: the proxy answered the middleware or the web-ui, or the layout is
+  wrong (the proxy is on a second network, the control network is missing or
+  not `internal`, or it does not have exactly two members). Treat the host as
+  not isolating the control network. Stop the two services
+  (`docker compose -f docker-compose.yaml -f docker-compose.update.yaml stop docker-socket-proxy updater`)
+  and find out why before you start them again; the runtimes checked so far
+  are listed in [`security-architecture.md`](security-architecture.md) §10e.
+- **INCONCLUSIVE** is not a pass: the check could not tell. Typical causes are
+  running it outside the project directory or without your `-p`, a service
+  that is not running, an updater that cannot reach the proxy, or a probe
+  error that says nothing about isolation, such as a failing DNS server. Fix
+  the cause and run the check again.
 
 ### What the update does
 

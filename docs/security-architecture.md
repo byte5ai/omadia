@@ -1353,6 +1353,15 @@ and the address does not route.
   image repository, touch `postgres`, the updater or the proxy, or send any
   other Engine call. A not-older-than-running gate is on the roadmap
   (`docs/middleware-agent-handoff.md` §13).
+- Nor can they relay a request through the updater. Apart from the release
+  tag, the only middleware-written input the updater acts on is the `/health`
+  answer during the gate, and the health probe never follows a redirect
+  (`sidecars/updater/src/health.mjs`). A 3xx counts as not healthy and is
+  noted once in the step trail; its `Location`, for example
+  `http://docker-socket-proxy:2375/…`, is never requested. Before this, the
+  probe used fetch's default `redirect: 'follow'`, and a middleware answering
+  with such a redirect made the updater send GET requests onto
+  `omadia-control`.
 - `NETWORKS=1` stays on. `recreate.mjs` attaches a container's second and
   later networks only after stop + remove, so turning it off would strand a
   half-recreated middleware, and its rollback, on any stack that puts the
@@ -1361,10 +1370,14 @@ and the address does not route.
 **Assumptions.** The Docker daemon enforces all of the above. It was verified
 on stock dockerd and on OrbStack, not on rootless Docker, Podman or Docker
 Desktop, and a host firewall that rewrites Docker's chains can change it.
-Operators check their own host with the probe in `docs/upgrading.md`, by name
-and by address. The Fly.io engine has no proxy and no socket; it calls the
-Machines API with app-scoped deploy tokens, so this section does not apply
-there.
+Operators check their own host with the check in `docs/upgrading.md`. It
+first proves that the updater reaches the proxy by name and by address, then
+probes the same name and address from the middleware and the web-ui. It counts
+only a failed lookup (`ENOTFOUND`) or a refused, unroutable or timed-out
+connection as blocked, and reports any other error as `INCONCLUSIVE` with a
+non-zero exit, never as a pass. The Fly.io engine has no proxy and no socket;
+it calls the Machines API with app-scoped deploy tokens, so this section does
+not apply there.
 
 Tests: `middleware/test/composeUpdateOverlay.test.ts` reads every
 `docker-compose*.yaml` at the repo root. It asserts the network membership (as
@@ -1374,6 +1387,9 @@ ports and `network_mode` on the proxy, and the full flag list of the pinned
 image. CI also renders the merged overlay with
 `docker compose -f docker-compose.yaml -f docker-compose.update.yaml config --quiet`,
 which catches merge errors that a per-file parse cannot see.
+`middleware/sidecars/updater/test/health.test.mjs` answers the health probe
+with 301, 302, 303, 307 and 308 redirects to a stand-in Engine endpoint and
+asserts that the gate stays closed and the stand-in receives no request.
 
 ---
 
@@ -1439,6 +1455,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       that network `internal` with `inhibit_ipv4` set. A proxy image bump
       re-audits the full flag list. `composeUpdateOverlay.test.ts` stays
       green (§10e).
+- [ ] An updater change that reads an answer the middleware writes does not
+      follow redirects from it, as the health probe does not
+      (`health.test.mjs`, §10e).
 
 ---
 
