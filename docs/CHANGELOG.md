@@ -68,6 +68,15 @@ into a reference or a formula, and that text is invisible to the check and can
 be built from cell values. In a computed column, `{row}` may only follow a
 column letter, so a row number cannot complete a function name.
 
+The check reads the text the spreadsheet application reads. exceljs's XML
+encoder silently drops most control characters, and the file format lets
+formula text carry `_xHHHH_` escapes that a reader decodes, so such a formula
+could be checked as one text and stored as another. Both are now refused, by
+the input schema as well as by the renderer, and so are unpaired surrogates,
+U+FFFE and U+FFFF. Outside quotes a formula may only use letters, digits, plain
+spaces and the formula operators, on one line, and names are read the way
+Excel's grammar reads them (`?` and non-ASCII characters continue a name).
+
 Viewers that do not calculate (Quick Look, Teams and Outlook previews, Excel's
 Protected View) now show formula cells empty until the file is opened for
 editing. A generated workbook uploaded as a dataset without being saved in

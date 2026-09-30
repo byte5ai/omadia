@@ -1,4 +1,5 @@
 import { EXCEL_FUNCTIONS } from './formulaFunctions.js';
+import { describeCharacter, formulaTextReason } from './formulaText.js';
 import { OfficeUnsafeFormulaError } from './types.js';
 
 /**
@@ -64,6 +65,16 @@ import { OfficeUnsafeFormulaError } from './types.js';
  * function and DDE checks but inspected for path characters, because Excel
  * forbids `\ / [ ]` in sheet names, so a quoted reference that contains one
  * names another file. An unterminated quote fails closed.
+ *
+ * A lexical check is only sound if it reads the characters the application
+ * reads, and splits names where the application splits them. So, before
+ * anything else, `formulaText.ts` refuses text the file would not carry as
+ * written (characters exceljs drops or XML cannot hold, and the file format's
+ * `_xHHHH_` escape). Outside quotes, a formula may then only use the
+ * grammar's own characters (see OUTSIDE_GRAMMAR): no tab, line break, other
+ * space, invisible or look-alike character that one application could skip
+ * or read differently. Names are read by Excel's grammar, [MS-XLSX] 2.2.2
+ * (see NAME_TOKEN).
  */
 
 /** Functions that reach outside the workbook in at least one client, plus
@@ -126,12 +137,33 @@ function functionToken(names: readonly string[]): RegExp {
 const EXTERNAL_FUNCTION_TOKEN = functionToken(EXTERNAL_FUNCTIONS);
 const TEXT_EVALUATING_TOKEN = functionToken(TEXT_EVALUATING_FUNCTIONS);
 
-/** A name as the formula grammar reads one: a letter or `_`, then letters,
- *  digits, `_` and `.` (`STDEV.S`, `_xlfn.XLOOKUP`, `_xlpm.x`). Non-ASCII
- *  letters, combining marks and invisible format characters count as part of
- *  the name, so a localised or disguised name is read whole. A match never
- *  starts inside a longer name or right after a digit (`1E3`). */
-const NAME_TOKEN = /(?<![\p{L}\p{M}\p{N}\p{Cf}_.])[\p{L}_][\p{L}\p{M}\p{N}\p{Cf}_.]*/gu;
+/**
+ * What a formula may use outside quotes: the grammar's ASCII characters
+ * (letters, digits, the plain space and `_ . ? $ : ! , ; + - * / ^ & = < > %
+ * ( ) { } # @`, plus `[ ] | \`, which the checks below refuse with their own
+ * reason) and, beyond ASCII, letters, combining marks and digits. Everything
+ * else is refused: tabs and line breaks (the grammar's whitespace is the space
+ * and CR LF, and XML turns CR LF into LF), other spaces, invisible format
+ * characters and look-alike punctuation such as a full-width parenthesis.
+ */
+const OUTSIDE_GRAMMAR = /[^A-Za-z0-9 _.?$:!,;+\-*/^&=<>%(){}#@[\]|\\\p{L}\p{M}\p{N}]/u;
+
+function outsideGrammarReason(code: string): string | undefined {
+  const found = OUTSIDE_GRAMMAR.exec(code)?.[0];
+  if (found === undefined) return undefined;
+  return `it contains ${describeCharacter(found)} outside quotes, where a formula may only use names, numbers, operators and plain spaces, on one line`;
+}
+
+/** A name as Excel's formula grammar reads one ([MS-XLSX] 2.2.2): it starts
+ *  with a letter, `_` or any non-ASCII character and goes on with those,
+ *  digits, `.` and `?` (`STDEV.S`, `_xlfn.XLOOKUP`, `_xlpm.x`). Outside quotes
+ *  the only non-ASCII characters left are letters, marks and digits
+ *  (OUTSIDE_GRAMMAR), so a localised or disguised name is read whole, as the
+ *  application reads it. Invisible format characters count as part of a name
+ *  too, should one ever get past OUTSIDE_GRAMMAR. A match never starts inside
+ *  a longer name or at an ASCII digit (`1E3`). */
+const NAME_TOKEN =
+  /(?<![\p{L}\p{M}\p{N}\p{Cf}_.?])(?![0-9])[\p{L}\p{M}\p{N}\p{Cf}_][\p{L}\p{M}\p{N}\p{Cf}_.?]*/gu;
 
 /** Whitespace, then `(`: the name before it is called. */
 const OPENS_CALL = /\s*\(/y;
@@ -188,9 +220,9 @@ const PATH_SEPARATORS = /[\\/]/;
  * nothing may follow it that continues a name or opens a call.
  */
 const ROW_PLACEHOLDER = /\{row\}/g;
-const GLUED_BEFORE = /[\p{L}\p{M}\p{N}\p{Cf}_.$]+$/u;
+const GLUED_BEFORE = /[\p{L}\p{M}\p{N}\p{Cf}_.?$]+$/u;
 const COLUMN_PREFIX = /^\$?(?:[A-Za-z]{1,3}\$?)?$/;
-const CONTINUES_NAME_OR_CALL = /[\p{L}\p{M}\p{N}\p{Cf}_.]|\s*\(/uy;
+const CONTINUES_NAME_OR_CALL = /[\p{L}\p{M}\p{N}\p{Cf}_.?]|\s*\(/uy;
 
 function rowPlaceholderReason(code: string): string | undefined {
   for (const match of code.matchAll(ROW_PLACEHOLDER)) {
@@ -249,6 +281,8 @@ function lexFormula(formula: string): LexedFormula | undefined {
 const UNTERMINATED_QUOTE = 'it has an unterminated quote';
 
 function lexedFormulaReason(lexed: LexedFormula): string | undefined {
+  const outside = outsideGrammarReason(lexed.code);
+  if (outside !== undefined) return outside;
   const external = EXTERNAL_FUNCTION_TOKEN.exec(lexed.code)?.[1];
   if (external !== undefined) {
     return `it uses ${external.toUpperCase()}, which reaches outside the workbook`;
@@ -270,15 +304,22 @@ function lexedFormulaReason(lexed: LexedFormula): string | undefined {
 }
 
 /** Why a formula must not be written, or undefined when it only computes over
- *  cells of this workbook. */
+ *  cells of this workbook. The text check comes first: every later check
+ *  assumes the file carries exactly this text. */
 export function externalFormulaReason(formula: string): string | undefined {
+  const textReason = formulaTextReason(formula);
+  if (textReason !== undefined) return textReason;
   const lexed = lexFormula(formula);
   return lexed ? lexedFormulaReason(lexed) : UNTERMINATED_QUOTE;
 }
 
 /** {@link externalFormulaReason} for a computed column's template, which must
- *  also keep its `{row}` placeholder out of names and calls. */
+ *  also keep its `{row}` placeholder out of names and calls. `{row}` only
+ *  ever becomes digits, so a template whose text passes yields formulas whose
+ *  text passes. */
 export function computedColumnReason(template: string): string | undefined {
+  const textReason = formulaTextReason(template);
+  if (textReason !== undefined) return textReason;
   const lexed = lexFormula(template);
   if (!lexed) return UNTERMINATED_QUOTE;
   return lexedFormulaReason(lexed) ?? rowPlaceholderReason(lexed.code);

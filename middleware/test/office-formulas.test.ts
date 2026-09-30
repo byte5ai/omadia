@@ -19,6 +19,50 @@ const plainData: XlsxDescriptor = {
   sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A', type: 'number' }], rows: [{ a: 1 }, { a: 2 }] }],
 };
 
+/** Formulas the policy keeps: each only computes over this workbook. */
+const allowedFormulas: readonly string[] = [
+  'SUM(Data!B2:B3)',
+  "SUMIFS('Offene Posten'!E:E,'Offene Posten'!C:C,A2)",
+  "VLOOKUP(A2,'Offene Posten'!A:E,5,FALSE)",
+  "SUM('Jan:Dez'!B2)", // 3-D reference across sheets
+  "'It''s'!A1", // escaped quote inside a sheet name
+  'Image!A1', // a sheet that happens to be called Image
+  'IF(A1="WEBSERVICE(x)|[y]\\\\z","a","b")', // text inside a string literal
+  'IFERROR(A2/B2,0)', // `/` outside quotes divides; it is not a path
+  'YEAR(A2)&"-"&TEXT(MONTH(A2),"00")',
+  'sum(a2:a9)', // function names are case-insensitive
+  '_xlfn.XLOOKUP(A2,Data!A:A,Data!B:B)', // the future-function prefix
+  '_xlfn._xlws.SORT(A2:A9)', // the worksheet-only prefix
+  'GROUPBY(A2:A9,B2:B9,_xleta.SUM)', // a built-in passed as a value
+  'LET(x,SUM(A2:A9),x*2)', // a LET name used as a value, not called
+  'LOG10(A2)+ATAN2(1,1)*1E3', // digits inside names and exponents
+  'IF(A1="a\tb\nc",1,0)', // tab and line feed inside quotes are text
+  "SUM('Übersicht 2026'!B2:B9)+SUM(Übersicht!C2:C9)", // non-ASCII sheet names
+  'IF(A1<>"a&b",">","<")', // characters XML escapes come back unchanged
+  'IF(ISNA(A2),#N/A,A2)', // an error literal
+];
+
+/** Computed-column templates the policy keeps: `{row}` completes a reference. */
+const allowedTemplates: readonly string[] = [
+  'A{row}*2',
+  'SUM($A$2:$A${row})',
+  'IF(A{row}="x",1,0)',
+  'YEAR(A{row})&"-"&TEXT(MONTH(A{row}),"00")',
+];
+
+const XML_ENTITIES: Readonly<Record<string, string>> = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
+
+/** The formula text an application reads from cell `address`: the `<f>`
+ *  element's content with XML's escapes undone. */
+function storedFormula(sheetXml: string, address: string): string | undefined {
+  const raw = new RegExp(`<c r="${address}"[^>]*><f>([^<]*)</f>`).exec(sheetXml)?.[1];
+  return raw?.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-z]+);/g, (entity, name: string) => {
+    if (name.startsWith('#x')) return String.fromCodePoint(Number.parseInt(name.slice(2), 16));
+    if (name.startsWith('#')) return String.fromCodePoint(Number.parseInt(name.slice(1), 10));
+    return XML_ENTITIES[name] ?? entity;
+  });
+}
+
 describe('office xlsx formulas — no cached values, recalculation on open', () => {
   // A caller-supplied cache would be stored as if it were the computed figure.
   const cachedResultInput = {
@@ -195,6 +239,28 @@ describe('office formula policy — formulas stay inside the workbook', () => {
     ['_xludf.FETCH(A1)', 'a user-defined function', /add-in or user-defined function/],
     ['GROUPBY(A2:A9,B2:B9,_xleta.FETCH)', 'an unknown function passed as a value', /calls _xleta\.FETCH,/],
     ['LET(f,LAMBDA(x,x*2),f(A1))', 'a call through a LET name', /calls f,/],
+    // Text the file would not carry as written: exceljs drops these control
+    // characters, so the check would read a split name that is stored whole.
+    ['IMPORT\u0001TEXT(A1)', 'a control character inside a refused name', /control character U\+0001,/],
+    ['WEB\u007FSERVICE(A1)', 'DEL inside a refused name', /control character U\+007F,/],
+    ['HYPER\u000BLINK(A1,"x")', 'a vertical tab, which the check reads as a space', /control character U\+000B,/],
+    ['IF(A1="\u0002",1,0)', 'a control character inside a string literal', /control character U\+0002,/],
+    ['SUM(A1:A3)\r', 'a carriage return, which XML reads as a line feed', /control character U\+000D,/],
+    ['SUM(A1)&"\uD800"', 'an unpaired surrogate, stored as U+FFFD', /unpaired surrogate U\+D800,/],
+    ['SUM(A1)&"￿"', 'a character XML cannot carry', /U\+FFFF, which the file cannot carry/],
+    ['IF(A1="_x0022_",1,0)', "the file format's escape for a quote", /_x followed by a hexadecimal digit/],
+    ['SUM(_X0041_1:A3)', 'an escaped letter in a reference', /_x followed by a hexadecimal digit/],
+    // Outside quotes only the grammar's own characters, so that no character
+    // an application might skip or read differently can split a name.
+    ['SUM(A1:A3)\t+1', 'a tab outside quotes', /control character U\+0009 outside quotes/],
+    ['SUM(A1:A3)\n+1', 'a line break outside quotes', /control character U\+000A outside quotes/],
+    ['SUM(A1:A3) +1', 'a no-break space outside quotes', /U\+00A0 outside quotes/],
+    ['SUM（A1:A3）', 'a full-width parenthesis', /U\+FF08 outside quotes/],
+    ['WEB​SERVICE(A1)', 'an invisible character inside a refused name', /U\+200B outside quotes/],
+    ['SUM(A1)\u0085', 'a C1 control character outside quotes', /control character U\+0085 outside quotes/],
+    // Names are read as Excel's grammar reads them.
+    ['IMPORT?TEXT(A1)', 'a name that goes on past a question mark', /calls IMPORT\?TEXT,/],
+    ['٣SUM(A1)', 'a name that starts with a non-ASCII digit', /calls ٣SUM,/],
     // Fail closed.
     ['IF(A1="x', 'an unterminated string literal', /unterminated quote/],
   ];
@@ -240,6 +306,9 @@ describe('office formula policy — formulas stay inside the workbook', () => {
     ],
     ['LOG{row}(100)', 'a row number that completes a function name', /\{row\} placeholder/],
     ['FETCH{row}(A{row})', 'a row number glued to a longer name', /\{row\} placeholder/],
+    ['IMPORT\u0001TEXT(A{row})', 'a control character inside a refused name', /control character U\+0001,/],
+    ['"_x00{row}_"&A{row}', 'a row number that completes an escaped character', /_x followed by/],
+    ['A{row}\t*2', 'a tab outside quotes', /control character U\+0009 outside quotes/],
   ];
 
   for (const [template, why, reason] of rejectedTemplates) {
@@ -254,39 +323,87 @@ describe('office formula policy — formulas stay inside the workbook', () => {
   }
 
   it('keeps computed columns whose {row} completes a cell reference', async () => {
-    const allowed = [
-      'A{row}*2',
-      'SUM($A$2:$A${row})',
-      'IF(A{row}="x",1,0)',
-      'YEAR(A{row})&"-"&TEXT(MONTH(A{row}),"00")',
-    ];
-    for (const template of allowed) {
+    for (const template of allowedTemplates) {
       const result = await renderXlsx(computedColumn(template));
       assert.equal(result.rowsWritten, 2, template);
     }
   });
 
   it('keeps formulas that only compute over this workbook', async () => {
-    const allowed = [
-      'SUM(Data!B2:B3)',
-      "SUMIFS('Offene Posten'!E:E,'Offene Posten'!C:C,A2)",
-      "VLOOKUP(A2,'Offene Posten'!A:E,5,FALSE)",
-      "SUM('Jan:Dez'!B2)", // 3-D reference across sheets
-      "'It''s'!A1", // escaped quote inside a sheet name
-      'Image!A1', // a sheet that happens to be called Image
-      'IF(A1="WEBSERVICE(x)|[y]\\\\z","a","b")', // text inside a string literal
-      'IFERROR(A2/B2,0)', // `/` outside quotes divides; it is not a path
-      'YEAR(A2)&"-"&TEXT(MONTH(A2),"00")',
-      'sum(a2:a9)', // function names are case-insensitive
-      '_xlfn.XLOOKUP(A2,Data!A:A,Data!B:B)', // the future-function prefix
-      '_xlfn._xlws.SORT(A2:A9)', // the worksheet-only prefix
-      'GROUPBY(A2:A9,B2:B9,_xleta.SUM)', // a built-in passed as a value
-      'LET(x,SUM(A2:A9),x*2)', // a LET name used as a value, not called
-      'LOG10(A2)+ATAN2(1,1)*1E3', // digits inside names and exponents
-    ];
-    for (const formula of allowed) {
+    for (const formula of allowedFormulas) {
       const result = await renderXlsx(oneFormula(formula));
       assert.equal(result.rowsWritten, 1, formula);
+    }
+  });
+
+  it('stores every formula it accepts exactly as it was checked', async () => {
+    // The check reads the descriptor's text, the application reads the file's.
+    // exceljs drops some control characters on the way, which splits a name
+    // for the check (IS + TEXT) and joins it in the file (ISTEXT). Each probe
+    // below must be refused or stored verbatim, and every accepted formula
+    // and template is stored verbatim.
+    const probes = [...allowedFormulas];
+    for (let code = 0; code <= 0x1f; code += 1) probes.push(`IS${String.fromCharCode(code)}TEXT(A1)`);
+    probes.push('IS\u007FTEXT(A1)', 'IS\u0085TEXT(A1)', 'IS\uD800TEXT(A1)', 'IS￾TEXT(A1)');
+    let stored = 0;
+    for (const formula of probes) {
+      const result = await renderXlsx(oneFormula(formula)).catch((err: unknown) => {
+        assert.ok(err instanceof OfficeUnsafeFormulaError, `unexpected error for ${JSON.stringify(formula)}`);
+        return undefined;
+      });
+      if (!result) continue;
+      const sheet = (await unzipToText(result.buffer)).get('xl/worksheets/sheet1.xml') ?? '';
+      assert.equal(storedFormula(sheet, 'A2'), formula, `stored text of ${JSON.stringify(formula)}`);
+      stored += 1;
+    }
+    assert.equal(stored, allowedFormulas.length, 'only the accepted formulas are stored');
+
+    for (const template of [...allowedTemplates, 'IS\u0001TEXT(A{row})']) {
+      const result = await renderXlsx(computedColumn(template)).catch(() => undefined);
+      if (!result) continue;
+      const sheet = (await unzipToText(result.buffer)).get('xl/worksheets/sheet1.xml') ?? '';
+      for (const row of [2, 3]) {
+        const expected = template.replaceAll('{row}', String(row));
+        assert.equal(storedFormula(sheet, `B${String(row)}`), expected, `stored text of ${template}`);
+      }
+    }
+  });
+
+});
+
+describe('office formula text at the tool boundary', () => {
+  // The schema refuses text the file would not carry as written, before any
+  // row is resolved; the renderer checks the same again.
+  const issueAt = (input: unknown): { path: string; message: string } | undefined => {
+    const parsed = XlsxToolInputSchema.safeParse(input);
+    const issue = parsed.success ? undefined : parsed.error.issues[0];
+    return issue ? { path: issue.path.join('.'), message: issue.message } : undefined;
+  };
+
+  it('refuses a formula cell with a control character', () => {
+    const issue = issueAt({
+      sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A' }], rows: [{ a: { formula: 'IS\u0001TEXT(A1)' } }] }],
+    });
+    assert.equal(issue?.path, 'sheets.0.rows.0.a.formula');
+    assert.match(issue?.message ?? '', /^rejected: it contains the control character U\+0001,/);
+  });
+
+  it('refuses a computed column with DEL or an escaped character', () => {
+    for (const formula of ['A{row}\u007F', '"_x{row}_"&A{row}']) {
+      const issue = issueAt({
+        sheets: [
+          {
+            name: 'S',
+            columns: [
+              { key: 'a', header: 'A' },
+              { key: 'b', header: 'B', formula },
+            ],
+            rows: [{ a: 1 }],
+          },
+        ],
+      });
+      assert.equal(issue?.path, 'sheets.0.columns.1.formula', formula);
+      assert.match(issue?.message ?? '', /^rejected: /, formula);
     }
   });
 });

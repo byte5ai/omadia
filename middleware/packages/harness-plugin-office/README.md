@@ -130,6 +130,18 @@ before any byte is written: nothing is stored, and `create_xlsx` returns an
 Text inside a string literal does not count, and an unterminated quote is
 refused.
 
+A lexical check only works if it reads what the application reads, so it
+starts with the text (`src/formulaText.ts`). A formula is refused if it
+contains a character the file would not carry as written (exceljs drops most
+control characters on the way into the XML, and XML cannot hold an unpaired
+surrogate, U+FFFE or U+FFFF) or `_x` followed by a hexadecimal digit, the file
+format's escape for a single character. The input schema refuses the same, so
+the model gets the error before any dataset is resolved. Outside quotes a
+formula may only use letters, digits, plain spaces and operators, on one line:
+tabs, line breaks, other spaces and invisible or look-alike characters are
+refused there, while tab and line feed are fine inside quotes. Names are read
+as Excel's grammar reads them, so `?` and non-ASCII characters continue a name.
+
 ## Provenance metadata (AI Act Art. 50)
 
 Every generated file carries a **static, machine-readable provenance marker** in
@@ -155,7 +167,8 @@ deliberate, named limitation of the underlying library, not an omission.
 Standard tool-plugin shape: `src/` → compiled `dist/`. `xlsxRenderer.ts` /
 `docxRenderer.ts` render descriptors to bytes, `formulaPolicy.ts` refuses
 formulas that reach outside the workbook or call a function outside
-`formulaFunctions.ts` (Excel's catalogue), `officeService.ts` stores + signs,
+`formulaFunctions.ts` (Excel's catalogue), after `formulaText.ts` has refused
+formula text the file would not store as written, `officeService.ts` stores + signs,
 `provenance.ts` holds the static provenance constants, `signing.ts` the
 HMAC-signed `/documents` URLs.
 

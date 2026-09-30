@@ -550,6 +550,19 @@ from the descriptor.
   function name. `renderXlsx` throws `OfficeUnsafeFormulaError` before any byte
   is written, so nothing is stored or delivered. The check is lexical: string
   literals are skipped and an unterminated quote fails closed.
+
+  A lexical check only holds if it reads the text the application reads, so
+  it starts there (`formulaText.ts`). A formula is refused if it contains a
+  character the file would not carry as written (exceljs's XML encoder drops
+  most control characters, XML turns a carriage return into a line feed and
+  cannot hold an unpaired surrogate, U+FFFE or U+FFFF) or `_x` followed by a
+  hexadecimal digit, the file format's `_xHHHH_` escape, which a reader
+  decodes. The input schema refuses the same text before any dataset is
+  resolved, and the renderer checks it again. Outside quotes, a formula may
+  only use the grammar's own characters (letters, digits, the plain space and
+  the operators, on one line), and names are read by Excel's grammar
+  ([MS-XLSX] 2.2.2), so the check splits names exactly where the application
+  does.
 - **Dataset rows cannot become formulas.** Rows behind a `datasetId` go through
   `normalizeCell` (`officeTool.ts`), which passes primitives and JSON-stringifies
   every object and array, so a system of record cannot inject a formula or a
@@ -1404,7 +1417,8 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `assertFormulaStaysInWorkbook` for a cell,
       `assertComputedColumnStaysInWorkbook` for a template). A function added
       to `formulaFunctions.ts` has been checked to compute only over the
-      workbook. `office-formulas.test.ts` pins all of it, with rejected-formula
+      workbook. An exceljs upgrade re-checks which characters its XML encoder
+      changes against `formulaText.ts`. `office-formulas.test.ts` pins all of it, with rejected-formula
       rows for every refused function family and reference form.
 
 ---

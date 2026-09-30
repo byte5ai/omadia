@@ -3121,6 +3121,15 @@ Sperrliste. Sie ganz zu schließen bräuchte einen echten Formel-Parser mit
 LET/LAMBDA-Gültigkeitsbereichen. Damit ließen sich auch Aufrufe über LET-Namen
 (`f(A1)`) wieder erlauben, die heute abgelehnt werden.
 
+**exceljs-Upgrade: Zeichenliste nachziehen.** `formulaText.ts` lehnt genau die
+Zeichen ab, die exceljs 4.4 beim Schreiben verwirft (`utils.xmlEncode`:
+C0-Steuerzeichen außer Tab/LF/CR, dazu DEL) oder die XML nicht trägt. Ändert
+ein exceljs-Update den Encoder, muss die Liste mitziehen, sonst prüft die
+Policy wieder einen anderen Text, als in der Datei landet. Der Test „stores
+every formula it accepts exactly as it was checked“ in
+`office-formulas.test.ts` fällt dann auf, aber nur für die Zeichen, die er
+durchprobiert (alle C0-Zeichen, DEL, U+0085, ein Surrogat, U+FFFE).
+
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
 Alles hier ist **nicht** umgesetzt. Vollständige Darstellung samt Codestellen:

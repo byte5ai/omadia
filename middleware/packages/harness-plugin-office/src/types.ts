@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { formulaTextReason } from './formulaText.js';
 
 /**
  * Descriptor contracts for the office renderers.
@@ -20,6 +21,23 @@ export const MEDIA_TYPE = {
 // ---------------------------------------------------------------------------
 
 /**
+ * A formula string whose text reaches the file exactly as written: no
+ * character the writer drops or XML cannot carry, and no `_xHHHH_` escape
+ * (`formulaText.ts`). The renderer's formula policy checks the same again,
+ * together with everything else, before writing.
+ */
+function formulaTextSchema(maxLength: number) {
+  return z
+    .string()
+    .min(1)
+    .max(maxLength)
+    .superRefine((formula, ctx) => {
+      const reason = formulaTextReason(formula);
+      if (reason !== undefined) ctx.addIssue({ code: 'custom', message: `rejected: ${reason}` });
+    });
+}
+
+/**
  * A formula cell. The renderer writes `formula` verbatim as the cell's Excel
  * formula. Cross-sheet references work by writing the sheet name into the
  * formula, e.g. `SUMIFS('Offene Posten'!E:E, 'Offene Posten'!C:C, A2)`.
@@ -34,7 +52,7 @@ export const MEDIA_TYPE = {
  * loses it here (unknown keys are stripped) and the renderer ignores it too.
  */
 export const FormulaCellSchema = z.object({
-  formula: z.string().min(1).max(4000),
+  formula: formulaTextSchema(4000),
 });
 export type FormulaCell = z.infer<typeof FormulaCellSchema>;
 
@@ -90,7 +108,7 @@ export const ColumnSpecSchema = z.object({
    * are referenced by their Excel letter (A, B, C… in column order). Like a
    * formula cell, it is written without a cached value.
    */
-  formula: z.string().min(1).max(2000).optional(),
+  formula: formulaTextSchema(2000).optional(),
 });
 export type ColumnSpec = z.infer<typeof ColumnSpecSchema>;
 

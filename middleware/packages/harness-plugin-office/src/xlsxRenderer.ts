@@ -132,7 +132,9 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
 
     // A computed column's template is checked once, not per row: `{row}` only
     // ever becomes digits, and the check refuses a template in which those
-    // digits could extend a function name or open a call.
+    // digits could extend a function name or open a call. Both checks start
+    // with the formula's text (formulaText.ts), so what they read is what
+    // exceljs writes and the opening application reads.
     for (const col of sheet.columns) {
       if (col.formula) {
         assertComputedColumnStaysInWorkbook(

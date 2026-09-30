@@ -235,6 +235,41 @@ describe('office create_xlsx dataset mode (B3)', () => {
     assert.equal(tool.drain(), undefined, 'no attachment is produced');
     assert.equal(store.size, 0, 'nothing is stored');
   });
+
+  it('refuses a computed column whose text the file would not store as checked', async () => {
+    // exceljs drops this control character on the way into the file, so the
+    // check would read two names (IMPORT, TEXT) where the file holds one.
+    // The schema refuses it before the dataset is even resolved.
+    const store = new InMemoryStore();
+    let resolved = false;
+    const tool = new OfficeTool(makeService(store), 100_000, {
+      currentTurnId: () => 't',
+      getPrivacyResolver: () => () => {
+        resolved = true;
+        return { rowCount: 1, columns: [{ path: 'partner', type: 'text' }], rows: [{ partner: 'Acme GmbH' }] };
+      },
+      log: () => undefined,
+    });
+    const out = await tool.handleXlsx({
+      sheets: [
+        {
+          name: 'S',
+          columns: [
+            { key: 'partner', header: 'Partner' },
+            { key: 'lookup', header: 'Lookup', formula: 'IMPORT\u0001TEXT(A{row})' },
+          ],
+          datasetId: 'x',
+        },
+      ],
+    });
+    assert.match(
+      out,
+      /^Error: invalid create_xlsx input — sheets\.0\.columns\.1\.formula: rejected: it contains the control character U\+0001,/,
+    );
+    assert.equal(resolved, false, 'the dataset is never resolved');
+    assert.equal(tool.drain(), undefined, 'no attachment is produced');
+    assert.equal(store.size, 0, 'nothing is stored');
+  });
 });
 
 describe('office create_xlsx formula cells', () => {
