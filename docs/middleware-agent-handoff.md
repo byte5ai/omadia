@@ -3080,6 +3080,37 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
 - **Electrons eigene `role:`-Menüeinträge** folgen der OS-Sprache; außerhalb
   unserer Reichweite, nur zu benennen.
 
+### Desktop: Schlüsseldatei `secrets.enc` — offene Punkte
+
+Die Desktop-App erzeugt neue Schlüssel nur noch, wenn `secrets.enc` fehlt
+(ENOENT). Jede andere Lesestörung stoppt den Boot mit einem
+Wiederherstellungsdialog, und jedes Neuschreiben läuft über `.bak`, Temp-Datei
+und Rename (`desktop/src/secretsBlob.ts`, `secretsStore.ts`,
+security-architecture §8a). Bewusst offen:
+
+- **`platform-data/` im Pre-Update-Snapshot.** Der Snapshot enthält `pgdata/`
+  und `<snapshot>.secrets.enc`, aber nicht den Kernel-Tresor
+  `platform-data/vault.enc.json` und nicht `installed.json`. Ein Restore bringt
+  Datenbank und Schlüssel zurück, nicht den Tresorstand zum Snapshot-Zeitpunkt.
+- **Recovery-Key wieder einspielen.** `exportRecoveryKey` ist reine Anzeige. Es
+  gibt keinen Weg, einen gesicherten Schlüssel zu importieren, etwa nach
+  Verlust des Keychain-Eintrags oder beim Rechnerumzug. `.bak` und
+  Snapshot-Kopie sind mit demselben Keychain-Eintrag verschlüsselt und helfen
+  dort nicht.
+- **Bestätigter Neuanfang mit neuen Schlüsseln.** Der Fehlerdialog bietet
+  absichtlich keinen solchen Button, weil er auch bei einer bloß verweigerten
+  Keychain-Abfrage erscheint. Heute ist der Neuanfang ein manueller Schritt
+  (Datenordner beiseite verschieben). Ein eigener, bestätigter Weg außerhalb
+  dieses Dialogs wäre die Ergänzung, sinnvollerweise zusammen mit dem Import.
+- **Recovery-Key im Wizard erst nach der Ordnerwahl zeigen.** Der
+  Reveal-Button liest den Schlüssel aus `userData`, bevor `complete` den
+  gewählten Datenordner setzt (`ipc.ts`). Liegt dort schon eine `secrets.enc`,
+  gilt deren Schlüssel und nicht der angezeigte. Die Reparatur: den Override
+  zuerst anwenden oder den Schlüssel erst danach anzeigen.
+- **Verwaiste `.secrets.enc`-Kopien.** Das Pruning entfernt die Kopie zusammen
+  mit ihrem Snapshot-Ordner. Wer Snapshot-Ordner von Hand löscht, lässt die
+  Kopie daneben liegen.
+
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
 Alles hier ist **nicht** umgesetzt. Vollständige Darstellung samt Codestellen:

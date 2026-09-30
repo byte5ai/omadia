@@ -780,6 +780,75 @@ At a minimum, your deployment vault holds:
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
 
+## 8a. Desktop secret custody (`desktop/src/secrets.ts`)
+
+The desktop app has no deployment vault. It generates the kernel's master keys
+itself and hands them to the kernel as env vars on every spawn:
+
+- `VAULT_KEY` opens the kernel vault `platform-data/vault.enc.json` (session
+  signing key, skill-manifest signing key, plugin secrets) and is the HKDF root
+  for dataset link keys and cell encryption when no explicit secret is set
+  (§6a, §6b).
+- `CREDENTIAL_KEYCHAIN_KEY` encrypts the credential keychain rows in the
+  database, a separate trust domain.
+- The provider API keys entered in the setup wizard.
+
+All three live in `secrets.enc` in the data folder, encrypted at rest with
+Electron `safeStorage` (Keychain on macOS, DPAPI on Windows, Secret Service on
+Linux). A packaged build refuses to write it in plaintext. Only an unpackaged
+dev run may, with a warning, and such a dev blob stays readable once OS
+encryption becomes available.
+
+**Replacing this file with new keys loses the data.** With a different
+`VAULT_KEY` the kernel fails at boot on its own vault, and every §6a/§6b
+ciphertext becomes unreadable. A different `CREDENTIAL_KEYCHAIN_KEY` does the
+same to stored credentials. The recovery key the app shows is `VAULT_KEY`
+itself, and it is display-only: there is no import path yet (handoff §13). The
+rules, in the Electron-free `secretsBlob.ts` and `secretsStore.ts`:
+
+- **Only ENOENT creates keys.** Every other failure throws
+  `SecretsUnreadableError` and writes nothing. The stages are: unreadable
+  (`read`), keychain refused (`decrypt`), no OS encryption in a packaged build
+  (`encryption-unavailable`), not JSON (`parse`), and wrong fields (`shape`,
+  where both keys must base64-decode to 32 bytes, the kernel's own check). Boot
+  then stops at a dialog with advice for the failed stage
+  (`secretsRecovery.ts`) and without "Re-run setup". A refused keychain is
+  presented as "the file is most likely intact; allow access", never as
+  "restore or delete".
+- **Every rewrite is backup, temp file, rename.** `secrets.enc` is first copied
+  to `secrets.enc.bak`, with mode 0600 set explicitly, and a failed copy aborts
+  the rewrite. The new bytes go to `secrets.enc.tmp-<pid>-<uuid>` (exclusive
+  create, fsync), and a rename replaces the file. Leftover temp files are swept
+  after a successful read, never next to an unreadable file.
+- **Write before cache, re-read before rewrite.** A key reaches the kernel only
+  after it is on disk. A change re-reads the file it replaces, so a file that
+  became unreadable is surfaced, not overwritten.
+- **The cache belongs to one path.** When setup switches the data folder, an
+  existing `secrets.enc` there is adopted. Only a missing one receives the keys
+  already handed out, so the recovery key shown during setup stays the key in
+  use. A file that appears between the ENOENT read and the write is left alone
+  (`SecretsConflictError`).
+
+**Backups and their limits:**
+
+- `.bak` is one generation and sits next to the file, also inside a
+  cloud-synced data folder (only snapshots move to `userData`).
+- The pre-update snapshot (`updater.ts` → `dbSnapshot.ts`) copies `pgdata/`
+  and puts `secrets.enc` beside it as `<snapshot>.secrets.enc` (mode 0600).
+  Pruning removes both, and a failing secrets copy aborts the update like a
+  failing database copy.
+- `.bak` and the snapshot copy are encrypted with the same keychain item as the
+  live file. They protect against a damaged or rewritten file, not against a
+  lost keychain entry or a move to another machine.
+- **Documented gap:** `platform-data/` (the kernel vault `vault.enc.json`,
+  `installed.json`) is not part of the pre-update snapshot. Restoring `pgdata`
+  plus `secrets.enc` brings back the database and the keys for its
+  ciphertexts, not the kernel vault as it was at that time.
+
+**Starting over** is a manual step: move the whole data folder aside, or pick a
+different, empty folder in setup. Deleting only `secrets.enc` produces new keys
+next to the old kernel vault, which the kernel then cannot open.
+
 ## 9. API-key authentication (`@omadia/api-key-auth`, issues #438 / #439)
 
 API keys are omadia's **second authentication method**, alongside the
@@ -1333,7 +1402,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
+- [ ] A change to `desktop/src/secrets.ts` or its `secretsBlob.ts` /
+      `secretsStore.ts` core keeps the ENOENT-only creation rule and the
+      backup + temp file + rename write (§8a): a read, decrypt, parse or shape
+      failure throws `SecretsUnreadableError` and never regenerates keys, and a
+      key is cached only after its write succeeded.
 
 ---
 
-*Last reviewed: 2026-08 (§10 added with issue #669).*
+*Last reviewed: 2026-09 (§8a desktop secret custody added; §10 added with issue #669).*

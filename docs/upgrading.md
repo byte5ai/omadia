@@ -74,7 +74,9 @@ unavailable while its container is replaced.
 
 - **Compose only.** Fly.io and Kubernetes deployments update through their own
   pipelines — see [Updating a Fly.io deployment](#updating-a-flyio-deployment)
-  below. The desktop app updates itself via `electron-updater`.
+  below. The desktop app updates itself via `electron-updater` and snapshots
+  its embedded database together with its encrypted `secrets.enc` first (not
+  `platform-data/`); see `desktop/README.md` § Secrets and recovery.
 - **Postgres is never touched.** `pgvector/pgvector:pg17` owns your data
   volume and is on a hard-coded protected list.
 - **Rollback restores images, not the database.** Kernel migrations under

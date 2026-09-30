@@ -17,9 +17,14 @@ Electron main
  ├─ embedded Postgres (PGlite + vector) exposed over the wire protocol on loopback
  ├─ kernel        ← forked from Electron-as-Node, DATABASE_URL → embedded engine
  ├─ web-ui (Next) ← forked from Electron-as-Node, MIDDLEWARE_URL → kernel port
- ├─ vault key + provider keys ← OS keychain via Electron safeStorage
+ ├─ vault key + keychain key + provider keys ← secrets.enc, OS keychain via Electron safeStorage
  └─ tray · auto-update · onboarding wizard
 ```
+
+`secrets.enc` is rewritten atomically (backup to `secrets.enc.bak`, temp file,
+rename) and is created only when it is missing. The pre-update snapshot holds
+`pgdata` plus `secrets.enc`, not `platform-data/`. See
+[Secrets and recovery](#secrets-and-recovery).
 
 The kernel and UI are unmodified: the embedded DB speaks the Postgres wire
 protocol, so the kernel's normal `pg`/`DATABASE_URL` path connects to it and runs
@@ -150,7 +155,9 @@ A full adversarial review (Forge / codex, local) was run on this code. Resolved:
   `HOST=127.0.0.1` so the local install is never reachable on the LAN.
 - **Setup is only marked boot-verified after a successful boot** (`completed`),
   so a failed first boot can't brick the next launch; a failed boot offers
-  "Re-run setup" instead of a dead auto-boot loop.
+  "Re-run setup" instead of a dead auto-boot loop. The exception is an
+  unreadable `secrets.enc`: setup would hit the same file, so that dialog
+  explains the restore instead (see [Secrets and recovery](#secrets-and-recovery)).
 - **Lifecycle hardening:** single-flight start/restart/stop state machine,
   generation token so intentionally-killed children aren't misreported as crashes,
   real awaited child-exit (not a fixed 500ms), SIGTERM→SIGKILL escalation
@@ -158,6 +165,7 @@ A full adversarial review (Forge / codex, local) was run on this code. Resolved:
   **blocking quit** that flushes + closes the embedded DB before exit.
 - **Secrets fail closed:** if OS-backed encryption is unavailable, a packaged
   build refuses to store secrets in plaintext (matches the wizard's promise).
+  An existing secrets file that cannot be read is never replaced with new keys.
 
 Accepted v1 limitations (tracked for a follow-up):
 
@@ -233,6 +241,48 @@ the filter cannot see is bounded by `MAX_RECOVERY_ATTEMPTS`, because
 `render-process-gone` carries no URL to compare at all. There is deliberately
 **no automatic retry**: a reload loop against a dead stack is worse than a screen
 that names the problem.
+
+## Secrets and recovery
+
+`secrets.enc` in the data folder holds the kernel's `VAULT_KEY` and
+`CREDENTIAL_KEYCHAIN_KEY` plus the provider API keys, encrypted with the OS
+keychain (`src/secrets.ts`). The kernel vault, stored credentials and encrypted
+dataset cells all depend on these keys, so the app treats the file as
+irreplaceable:
+
+- **New keys only for a missing file.** If `secrets.enc` exists but cannot be
+  read, decrypted or parsed, the app leaves it untouched. Boot stops at a dialog
+  ("omadia cannot open its secrets file") with advice for the step that failed,
+  a *Show file* button and *Quit*. There is deliberately no *Re-run setup* and
+  no "start over" button: the dialog also appears when a keychain prompt was
+  merely denied.
+- **Atomic rewrites.** A change (setup, a new provider key, the one-time
+  migration that adds the credential keychain key) copies the file to
+  `secrets.enc.bak` first, writes a temp file and renames it into place. A crash
+  leaves the old file or the new one, never a torn one. The logic lives in the
+  Electron-free `src/secretsBlob.ts` and `src/secretsStore.ts`.
+- **Pre-update snapshot.** Before an update installs,
+  `snapshots/pgdata-pre-<version>-<stamp>/` receives the database and
+  `snapshots/pgdata-pre-<version>-<stamp>.secrets.enc` the secrets file.
+  `platform-data/` (the kernel vault, installed plugins) is not included. When
+  the data folder is cloud-synced, `snapshots/` lives under the app-data
+  directory instead.
+
+What to do when the dialog appears:
+
+| The dialog says | Typical cause | What to do |
+|---|---|---|
+| the keychain did not unlock it | a denied keychain prompt, a changed app signature, a locked Linux keyring | The file is most likely intact. Start again and allow access (macOS: *Always Allow*). Do not delete the file. |
+| encryption is unavailable | no Secret Service keyring on Linux | Start gnome-keyring or another libsecret provider, then start again. |
+| it could not be read | file permissions, a disconnected drive | Restore access to the file or reconnect the drive. |
+| the file is damaged | a torn or hand-edited file | Quit, replace `secrets.enc` with `secrets.enc.bak` or the newest `*.secrets.enc` in the snapshots folder, start again. |
+
+`.bak` and the snapshot copies are encrypted with the same keychain entry as the
+live file, so they help with a damaged file, not with a lost keychain entry.
+**Starting over** is a manual step: quit and move the whole data folder aside
+(keep it). The next start runs first-time setup with new keys. Deleting only
+`secrets.enc` is not enough, because the kernel vault in `platform-data/` would
+then no longer open.
 
 ## Data + uninstall
 
