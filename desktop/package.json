@@ -33,7 +33,7 @@
     "pg": "^8.13.0"
   },
   "devDependencies": {
-    "@electron/rebuild": "3.6.1",
+    "@electron/rebuild": "4.2.0",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.11.10",
     "electron": "^37.2.0",
