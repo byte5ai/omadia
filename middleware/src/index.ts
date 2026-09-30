@@ -320,6 +320,7 @@ import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
 } from './auth/platformSettings.js';
+import { initSetupToken, PgSetupTokenStore } from './auth/setupToken.js';
 import { createAdminUsersRouter } from './routes/adminUsers.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
@@ -4605,6 +4606,18 @@ async function main(): Promise<void> {
       bootstrapDisplayName: config.ADMIN_BOOTSTRAP_DISPLAY_NAME,
       log: (m) => console.log(m),
     });
+    // Operator authorisation for the /setup wizard (auth/setupToken.ts):
+    // ADMIN_SETUP_TOKEN, else a generated token shared via platform_settings
+    // and printed once per boot. Only the desktop kernel on a loopback bind is
+    // exempt.
+    const setupToken = await initSetupToken({
+      configured: config.ADMIN_SETUP_TOKEN,
+      setupRequired: bootstrapResult.setupRequired,
+      desktopEmbedded: config.OMADIA_DESKTOP_EMBEDDED,
+      host: config.HOST,
+      store: new PgSetupTokenStore(graphPool),
+      log: (m) => console.log(m),
+    });
 
     const requestedProviders = parseAuthProvidersEnv(config.AUTH_PROVIDERS);
     // OB-50: env-var becomes the **whitelist** (catalog of allowed
@@ -4669,6 +4682,7 @@ async function main(): Promise<void> {
         publicBaseUrl: config.PUBLIC_BASE_URL,
         defaultReturnPath: config.AUTH_DEFAULT_RETURN_PATH,
         setupAllowed: bootstrapResult.setupRequired,
+        ...(setupToken.token !== undefined ? { setupToken: setupToken.token } : {}),
         // #965 — explicit session renewal ("I'm still here"): re-checks the
         // principal, audits every renewal, bounded by an absolute cap from
         // the original sign-in.
