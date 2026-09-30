@@ -36,6 +36,31 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — routine card buttons act only for the user who clicked them (#1029 follow-up)
+
+2026-09-30 — the routine smart-card handler (`RoutinesIntegration.handleRoutineAction`)
+still carried the interim fallback from #1029: when a channel sent a card click
+without an `actor` and no turn context was active, the action ran unscoped. A
+missing principal therefore widened rights instead of narrowing them — pause,
+resume, delete and "Jetzt auslösen" could act on any tenant's routine by id, and a
+manual trigger delivered into that routine's own conversation. Such a click is now
+refused with `RoutineActorRequiredError` before any routine is read, and so is an
+actor with a blank tenant or user id. The turn context is no longer consulted on
+this path: card clicks arrive out-of-band, so a context there could only be one
+leaked forward from an earlier turn. `{ kind: 'operator' }` now has a single
+producer, the `requireAuth`-gated `/api/v1/routines` router, and a new structural
+test (`routineOperatorScope.test.ts`) fails on a second one. The counter that
+tracked unscoped runs now counts refusals (`refusedRoutineActionMetrics`) and is
+expected to stay at zero.
+
+The Teams channel plugin has sent `actor` since 0.26.1. An installation still on an
+older channel-teams gets "Keine Benutzeridentität für diese Karten-Aktion
+übermittelt …" on every routine card button until the plugin is updated; routines
+keep firing, and the Operator UI's Routines page still manages them (see
+`docs/upgrading.md`). `@omadia/plugin-api` 1.19.2 documents the rule: `actor` stays
+optional in the type so 1.x callers compile, is required at runtime, and becomes a
+required field in 2.0.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no

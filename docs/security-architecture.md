@@ -320,23 +320,43 @@ working across it:
   the gate is "any valid operator session", not "operators-only" as an
   earlier draft of this entry claimed.
 
-  **The card path needed a different answer (#1029).** Scoping the smart-card
-  handler from the turn context alone would have broken all four buttons in
-  production. The Teams adapter dispatches card clicks out-of-band —
-  `handleMessage` takes the routine branch and returns before
+  **The card path takes its principal from the channel, or refuses (#1029).**
+  Scoping the smart-card handler from the turn context alone would have broken
+  all four buttons in production. The Teams adapter dispatches card clicks
+  out-of-band — `handleMessage` takes the routine branch and returns before
   `runOrchestratorTurn`, so `captureRoutineTurn` never fires and the context
-  is always absent there. Refusing on absence is an outage, not a safe
-  default. The contract therefore takes an optional `actor` from the channel,
-  with documented precedence: explicit `actor`, then the turn context, then
-  UNSCOPED as before #1025 — counted by `unscopedActionMetrics` and logged at
-  error level naming the action and id. A hole you can see beats scoping to
-  nobody, and the counter is what tells an operator the adapter-side fix has
-  shipped: the count stops rising and the fallback can be deleted. Teams
-  already holds both fields on the activity (tenant id and
-  `from.aadObjectId`); passing them is the adapter-side follow-up.
+  is always absent there. #1029 therefore added an `actor` to the contract
+  (the tenant and user of the activity behind the click), but as an interim
+  kept a fallback chain: explicit `actor`, then the turn context, then
+  UNSCOPED as before #1025. That last step meant a missing principal widened
+  rights to operator level, for any adapter that did not send `actor`.
 
-  The test for that path deliberately does NOT wrap the call in
-  `routineTurnContext.run`. That wrapper is what made the first version pass
+  The fallback chain is gone. `handleRoutineAction` scopes by `actor` and by
+  nothing else (`routineCardActor.ts`): an absent actor, a blank tenant or
+  user id, or anything that is not a pair of strings is refused with
+  `RoutineActorRequiredError` before any row is read, and counted by
+  `refusedRoutineActionMetrics` with an error-level log naming the action and
+  id — expected to stay at zero. The turn context is not consulted either: on
+  an out-of-band path a context can only be one that `enterWith` leaked
+  forward from an earlier turn (#1016), which would attribute the click to
+  whoever spoke last. Blankness is judged on the trimmed value, but the scope
+  carries the values verbatim, because they must equal what
+  `captureRoutineTurn` filed the routine under. channel-teams sends `actor`
+  since 0.26.1; an older adapter gets the refusal on every card button. The
+  contract type keeps `actor` optional so 1.x callers still compile — the
+  runtime refusal, not the type, is the protection — and makes it required
+  in plugin-api 2.0. The capability ref stays `routinesIntegration@1`.
+
+  `{ kind: 'operator' }` now has exactly one producer, the `requireAuth`-gated
+  router in `routes/routines.ts`. `routineOperatorScope.test.ts` walks the
+  AST of `src/` and fails on a second object literal of that shape, and pins
+  that the router is mounted behind `requireAuth` with no path under it on the
+  `publicPaths` list — the list `requireAuth` itself consults before it
+  enforces anything.
+
+  The card-path tests deliberately do NOT wrap the call in
+  `routineTurnContext.run`, except the one proving a captured context does not
+  substitute for `actor`. That wrapper is what made the first #1029 suite pass
   while production would have answered "routines are unavailable in this
   session" on every click.
 
@@ -349,11 +369,15 @@ working across it:
 
   Reviewer note: the layer tests stub the store, so they prove the callers
   *pass* a scope, not that the store *uses* it. Measured — with the SQL
-  predicate removed, all 14 layer tests stayed green. `routineScoping.test.ts`
-  therefore also drives the real `RoutineStore` against a recording pool and
-  follows each `$n` the SQL names into its bound value, which is what makes a
-  dropped predicate fail. Planted-omission results: tool scope dropped 2 red,
-  store predicate dropped 1 red, delete ordering flipped 1 red.
+  predicate removed from both statements, all 20 layer tests stayed green.
+  `routineScoping.test.ts` therefore also drives the real `RoutineStore`
+  against a recording pool and follows each `$n` the SQL names into its bound
+  value, which is what makes a dropped predicate fail. Planted-omission
+  results across `routineScoping.test.ts` and `routineOperatorScope.test.ts`
+  (re-measured when the card fallback was removed): tool scope replaced by
+  operator 5 red (four behavioural, plus the one-producer scan), store
+  predicate dropped 2 red, delete ordering flipped 1 red, card fallback chain
+  restored 7 red.
 - **Only advertised tools are dispatchable (#1015).** `tools/call` used to
   forward any name into `dispatch()`. The dispatchable set is wider than the
   advertised one — handler-only registrations stay dispatchable but
@@ -1333,6 +1357,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
+- [ ] A kernel service a channel can call takes its principal as an explicit
+      argument and refuses when it is missing or blank. It never falls back
+      to `{ kind: 'operator' }`, nor to a turn context the call did not run
+      in. Cross-tenant routine scope has one producer, the
+      `requireAuth`-gated operator router, and `routineOperatorScope.test.ts`
+      fails on a second (§3, #1025/#1029).
 
 ---
 

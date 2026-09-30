@@ -213,6 +213,23 @@ What that means for an instance installed before v0.115:
 Fresh installs via `render.yaml` or `fly/deploy.sh` generate the key
 themselves; only pre-v0.115 instances have to add it by hand.
 
+## Upgrading past v0.167.5 — routine card buttons need channel-teams 0.26.1 or later
+
+The buttons on a routine card in Teams (Pausieren, Aktivieren, Löschen, Jetzt
+auslösen) now act only for the user who clicked them, and the middleware refuses
+a click whose channel plugin does not say who that was. The Teams channel plugin
+(`@omadia/channel-teams`) sends that identity since **0.26.1**.
+
+- With channel-teams 0.26.1 or later, nothing changes.
+- With an older channel-teams, every routine card button answers *"Konnte die
+  Routine nicht …: Keine Benutzeridentität für diese Karten-Aktion übermittelt …"*
+  until the plugin is updated. Update it from the Hub before or right after the
+  middleware. Routines keep firing on schedule in the meantime, and the Operator
+  UI's Routines page can still pause, resume and delete them.
+- Each refused click is logged at error level as `[security] REFUSED routine card
+  action …`. If those lines keep appearing after the update, some channel plugin
+  still sends clicks without the user's identity.
+
 ## Upgrading to 0.3
 
 > Stub. Fill this in as part of the 0.3 release.

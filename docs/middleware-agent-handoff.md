@@ -2967,6 +2967,23 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Routine-Karten: identitätslose Klicks schon im Teams-Adapter ablehnen (#1029 follow-up)
+
+Seit 2026-09-30 lehnt der Kernel `RoutinesIntegration.handleRoutineAction` ohne
+verwendbaren `actor` ab (`RoutineActorRequiredError`, `routineCardActor.ts`) — kein
+Rückfall mehr auf den Turn-Kontext oder auf `{ kind: 'operator' }`. channel-teams
+schickt `actor` seit 0.26.1, lässt ihn aber ganz weg, wenn `tenantId` oder die
+User-ID fehlt, und ruft den Kernel trotzdem. Dann sieht der Nutzer die generische
+Kernel-Absage, und im Log steht eine `[security] REFUSED …`-Zeile, obwohl nur der
+Adapter falsch konfiguriert ist. Offen:
+
+- **channel-teams:** den Klick in diesem Fall selbst ablehnen, mit eigener Meldung,
+  statt ohne `actor` weiterzureichen. Die Adapter-Tests, die das Weglassen von
+  `actor` festschreiben, gehen mit. Release + Hub-Publish.
+- **plugin-api 2.0:** `actor` im Typ zur Pflicht machen (heute nur zur Laufzeit,
+  damit 1.x-Aufrufer kompilieren). Der Capability-Ref `routinesIntegration@1`
+  bleibt davon unberührt.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
