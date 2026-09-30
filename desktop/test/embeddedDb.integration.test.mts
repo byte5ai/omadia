@@ -367,6 +367,75 @@ describe('embedded Postgres authentication (real engine)', { skip, timeout: 240_
     }
   });
 
+  it('a kernel that redirects search_path and plants a shadow function is still contained', async () => {
+    assert.ok(await stopEmbeddedDb());
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omadia-search-path-'));
+    scratch.push(root);
+    setDataDirOverride(root);
+    __resetSecretsCacheForTests();
+    const syntheticKey = (fill: number): string => Buffer.alloc(32, fill).toString('base64');
+    fs.writeFileSync(
+      path.join(root, 'secrets.enc'),
+      JSON.stringify({ vaultKey: syntheticKey(3), credentialKeychainKey: syntheticKey(4), providerKeys: {} }),
+      { mode: 0o600 },
+    );
+    const dataDir = path.join(root, 'pgdata');
+    execFileSync(initdb, ['-D', dataDir, '-U', 'omadia', '-A', 'trust', '-E', 'UTF8', '--locale=C'], { stdio: 'pipe' });
+    const legacy = await startByHand(dataDir);
+    handStarted = legacy.proc;
+    await runAs(legacy.port, 'postgres', 'CREATE DATABASE omadia OWNER omadia');
+    // A trust-era kernel ran as the bootstrap superuser. Before the migration it
+    // leaves a schema it owns (so the ownership transfer has a row to process),
+    // points the database's search_path at a schema it controls, and plants a
+    // function there whose name the transfer would otherwise call. A function
+    // runs with the caller's rights, so were the shell to reach this one, its
+    // body would run as the shell. Synthetic; harmless if it never runs.
+    await runAs(
+      legacy.port,
+      'omadia',
+      `CREATE SCHEMA legacy_schema;
+       CREATE TABLE legacy_schema.item (id int);
+       ALTER DATABASE omadia SET search_path = public, pg_catalog;
+       CREATE FUNCTION public.format(text, name) RETURNS text LANGUAGE plpgsql AS $shadow$
+         BEGIN
+           EXECUTE 'GRANT pg_execute_server_program TO omadia_kernel';
+           RETURN pg_catalog.format($1, $2);
+         END
+       $shadow$;`,
+    );
+    await stopByHand(legacy.proc);
+    handStarted = null;
+
+    // The migration runs the shell's provisioning as superuser inside the
+    // kernel-owned database. It must not honour the redirected search_path, so
+    // the shadow function never runs and grants the kernel nothing.
+    const db = await startEmbeddedDb();
+    await assertPasswordsRequired(db.port, dataDir);
+
+    const creds = storedCredentials();
+    const memberships = await runAs(
+      db.port,
+      'omadia',
+      'SELECT r.rolname AS role FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid ' +
+        "WHERE m.member = 'omadia_kernel'::regrole ORDER BY role",
+      creds.superuserPassword,
+    );
+    assert.deepEqual(memberships.rows, [], 'the shadow function did not run as the shell: no membership granted');
+
+    const kernel = new pg.Client({ connectionString: db.databaseUrl });
+    await kernel.connect();
+    try {
+      const role = await kernel.query('SELECT rolsuper FROM pg_roles WHERE rolname = current_user');
+      assert.deepEqual(role.rows, [{ rolsuper: false }]);
+      await assert.rejects(
+        kernel.query("COPY (SELECT 1) TO PROGRAM 'true'"),
+        (err: { code?: string }) => err.code === '42501',
+      );
+    } finally {
+      await kernel.end();
+    }
+  });
+
   it('an unreadable secrets file stops the start before a cluster exists', async () => {
     assert.ok(await stopEmbeddedDb());
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omadia-unreadable-'));

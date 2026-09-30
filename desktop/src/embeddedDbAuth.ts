@@ -19,6 +19,16 @@ import type { EmbeddedDbCredentials } from './secretsBlob';
  * write: every rule asks for a SCRAM password, whichever local process or OS
  * user is asking. The server starts with `hba_file` pinned to that file.
  *
+ * The shell's own sessions treat the kernel-owned database as hostile. Every
+ * connection pins `search_path = pg_catalog, pg_temp` as a startup option
+ * (`embeddedDb.ts`), which outranks any `ALTER DATABASE`/`ALTER ROLE ... SET`
+ * the database owner left behind, and the ownership transfer schema-qualifies
+ * its calls (`embeddedDbOwnership.ts`), so a superuser statement the shell runs
+ * there cannot be redirected to a function the kernel planted. Verification is
+ * the backstop: the kernel role must not only lack the privileged attributes
+ * but hold no role memberships either, since a membership (in a predefined role
+ * such as pg_execute_server_program) restores a capability without setting one.
+ *
  * `ensureClusterAuth` is driven by the state of the cluster, never by a flag,
  * so a restored snapshot or a regenerated `secrets.enc` repairs itself:
  *   - steady state: the shell's pg_hba.conf and a kernel login that works.
@@ -358,8 +368,27 @@ function privilegeProblem(attributes: RoleAttributes | null): string | null {
 }
 
 /**
+ * Roles the kernel role is a member of. It must be a member of none: a
+ * membership (for example in a predefined role such as
+ * `pg_execute_server_program` or `pg_read_server_files`) restores a capability
+ * the restricted role is meant to lack, and it does not show up in the role's
+ * own attributes. The catalogs are schema-qualified so the check does not
+ * depend on the session's search_path.
+ */
+async function roleMemberships(client: AuthClient): Promise<string[]> {
+  const result = await client.query(
+    'SELECT r.rolname AS role FROM pg_catalog.pg_auth_members m ' +
+      'JOIN pg_catalog.pg_roles r ON r.oid = m.roleid ' +
+      'WHERE m.member = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user) ' +
+      'ORDER BY r.rolname',
+  );
+  return result.rows.map((row) => String(row['role']));
+}
+
+/**
  * Fail closed: the running server must refuse a wrong password for both roles,
- * and the kernel role must log in with its password and hold no privilege.
+ * and the kernel role must log in with its password, hold no privileged
+ * attribute, and be a member of no role.
  */
 async function verifyClusterAuth(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<void> {
   io.info('[db] checking that wrong passwords are refused (the server logs these attempts as FATAL; expected)');
@@ -369,6 +398,13 @@ async function verifyClusterAuth(io: DbAuthIo, creds: EmbeddedDbCredentials): Pr
   try {
     const problem = privilegeProblem(await roleAttributes(kernel));
     if (problem !== null) throw new Error(`[db] refusing to start the kernel: ${problem}`);
+    const memberships = await roleMemberships(kernel);
+    if (memberships.length > 0) {
+      throw new Error(
+        `[db] refusing to start the kernel: the ${DB_KERNEL_ROLE} role is a member of ${memberships.join(', ')} ` +
+          '(a role membership can restore a capability the restricted role must not have)',
+      );
+    }
   } finally {
     await kernel.end();
   }

@@ -43,6 +43,18 @@ import {
 
 const exe = (name: string): string => (process.platform === 'win32' ? `${name}.exe` : name);
 
+/**
+ * The search_path every maintenance connection the shell opens runs with. It
+ * is sent as a startup option, which outranks any `ALTER DATABASE ... SET
+ * search_path` or `ALTER ROLE ... SET search_path` a role that owns the kernel
+ * database may have set. So the shell's own statements — and any function they
+ * call unqualified — resolve against `pg_catalog`, never a schema the kernel
+ * controls, even while the shell is connected as the superuser to the
+ * kernel-owned database (provisioning, the ownership transfer, extensions).
+ * `pg_temp` is named last so nothing in it is searched before `pg_catalog`.
+ */
+const SHELL_SEARCH_PATH_OPTION = '-c search_path=pg_catalog,pg_temp';
+
 export interface EmbeddedDb {
   /** DATABASE_URL the kernel should use to reach this engine. */
   databaseUrl: string;
@@ -218,6 +230,7 @@ async function waitForReady(port: number, superuserPassword: string, timeoutMs =
       user: DB_SUPERUSER,
       password: superuserPassword,
       database: 'postgres',
+      options: SHELL_SEARCH_PATH_OPTION,
       connectionTimeoutMillis: 3000,
     });
     try {
@@ -318,6 +331,10 @@ async function connectClient(port: number, options: ConnectOptions): Promise<Aut
     user: options.user,
     password: options.password,
     database: options.database,
+    // Every shell session pins its search_path, so a superuser connection into
+    // the kernel-owned database cannot be steered onto kernel-controlled
+    // schemas (see SHELL_SEARCH_PATH_OPTION).
+    options: SHELL_SEARCH_PATH_OPTION,
     connectionTimeoutMillis: 5_000,
   });
   // A connection the server drops later (a stop) must not surface as an

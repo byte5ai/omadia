@@ -3115,7 +3115,21 @@ security-architecture §8a). Bewusst offen:
 
 Die eingebettete PostgreSQL verlangt für jede Verbindung ein SCRAM-Passwort,
 der Kernel verbindet sich als `omadia_kernel` ohne Superuser-Rechte
-(`desktop/src/embeddedDbAuth.ts`, security-architecture §8b). Bewusst offen:
+(`desktop/src/embeddedDbAuth.ts`, security-architecture §8b). Weil
+`omadia_kernel` seine Datenbank besitzt, behandelt die Shell diese Datenbank
+als nicht vertrauenswürdig: Jede Wartungsverbindung pinnt einen festen
+`search_path` (Systemkataloge zuerst, überstimmt `ALTER DATABASE/ROLE ... SET`),
+der Ownership-Transfer schema-qualifiziert seine Aufrufe (`pg_catalog.format`)
+und pinnt den `search_path` zusätzlich selbst
+(`desktop/src/embeddedDbOwnership.ts`). Die Verifikation lehnt die Kernel-Rolle
+außerdem ab, wenn sie Mitglied irgendeiner Rolle ist. Bewusst offen:
+
+- **Mitgliedschaft schlägt fehl statt sich zu reparieren.** Erhält
+  `omadia_kernel` je eine Rollen-Mitgliedschaft (heute nur über die geschlossene
+  Umleitung erreichbar, oder ein künftiges Feature, das bewusst eine vergibt),
+  bricht der Start ab statt sie zu entziehen; der Rückweg ist der
+  Pre-Update-Snapshot (§8a). Ein `REVOKE` aller Mitgliedschaften im Provisioning
+  wäre die selbstheilende Alternative, falls das je nötig wird.
 
 - **Kernel-Passwort im Kindprozess-Environment.** Es steckt in `DATABASE_URL`
   und ist damit für Prozesse desselben OS-Nutzers lesbar (`ps eww`), dieselbe

@@ -913,11 +913,24 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
   types, routines; extension members stay), because Postgres refuses
   `REASSIGN OWNED` for the bootstrap superuser
   (`desktop/src/embeddedDbOwnership.ts`).
+- **Superuser sessions treat the database as untrusted.** `omadia_kernel` owns
+  the `omadia` database, so it can set a per-database `search_path` and create
+  objects in schemas it controls (for example a function whose name a shell
+  statement would otherwise call unqualified). Every connection the shell opens
+  therefore pins `search_path = pg_catalog, pg_temp` as a startup option, which
+  outranks any `ALTER DATABASE`/`ALTER ROLE ... SET`, and the ownership
+  transfer both schema-qualifies its calls (`pg_catalog.format`) and pins its
+  own search_path (`desktop/src/embeddedDbOwnership.ts`). A statement the shell
+  runs there as the superuser cannot be redirected onto an object the owner
+  planted.
 - **Verification fails closed.** Every start ends with a check against the
   running server: a random wrong password must be refused (`28P01`) for both
-  roles, and the kernel role must hold none of the privileged attributes.
-  Otherwise the start fails, the server is stopped and no DSN is handed out.
-  The two refused attempts appear in the log as `FATAL`; that is the check.
+  roles, and the kernel role must hold none of the privileged attributes and be
+  a member of no role — a membership (say in a predefined role such as
+  `pg_execute_server_program`) would restore a capability without setting an
+  attribute. Otherwise the start fails, the server is stopped and no DSN is
+  handed out. The two refused attempts appear in the log as `FATAL`; that is
+  the check.
 - **Rollback.** A build from before this change connects without a password
   and cannot open a migrated cluster. The pre-update snapshot (§8a), taken
   before the new version first starts, is the way back.
@@ -929,11 +942,14 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
 
 Tests: `desktop/test/embeddedDbAuth.test.mts` (orderings and fail-closed paths
 against a simulated cluster, including that every server start happens on the
-shell's rules), `desktop/test/embeddedDb.integration.test.mts` (the real
-engine: passwordless and wrong-password clients refused, no
-`COPY ... TO PROGRAM` for the kernel role, the trust-era migration including
-ownership, the single-user repair; the desktop-apps workflow runs it with
-pgvector staged) and `desktop/test/secrets.test.mts` (persistence and
+shell's rules, that the ownership transfer schema-qualifies its calls and pins
+its own search_path, and that a kernel role carrying a role membership is
+refused), `desktop/test/embeddedDb.integration.test.mts` (the real engine:
+passwordless and wrong-password clients refused, no `COPY ... TO PROGRAM` for
+the kernel role, the trust-era migration including ownership, the single-user
+repair, and a kernel that redirects the database `search_path` and plants a
+shadow function still contained after migration; the desktop-apps workflow runs
+it with pgvector staged) and `desktop/test/secrets.test.mts` (persistence and
 read-back).
 
 ## 9. API-key authentication (`@omadia/api-key-auth`, issues #438 / #439)
@@ -1495,13 +1511,15 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       failure throws `SecretsUnreadableError` and never regenerates keys, and a
       key is cached only after its write succeeded.
 - [ ] A change to the desktop's embedded Postgres (`desktop/src/embeddedDb.ts`,
-      `embeddedDbAuth.ts`) never writes a `trust` rule or rewrites pg_hba.conf
-      while the server runs (password repairs go through single-user mode),
-      keeps the kernel's `DATABASE_URL` on the non-superuser `omadia_kernel`,
-      keeps the bootstrap password inside the shell, and keeps the fail-closed
-      verification (wrong password refused for both roles, kernel role
-      unprivileged) with its tests (§8b).
+      `embeddedDbAuth.ts`, `embeddedDbOwnership.ts`) never writes a `trust` rule
+      or rewrites pg_hba.conf while the server runs (password repairs go through
+      single-user mode), keeps the kernel's `DATABASE_URL` on the non-superuser
+      `omadia_kernel`, keeps the bootstrap password inside the shell, pins the
+      shell's `search_path` (system catalogs first) on every maintenance
+      connection and schema-qualifies the ownership transfer, and keeps the
+      fail-closed verification (wrong password refused for both roles, the
+      kernel role unprivileged and a member of no role) with its tests (§8b).
 
 ---
 
-*Last reviewed: 2026-09 (§8a desktop secret custody and §8b embedded Postgres authentication added; §10 added with issue #669).*
+*Last reviewed: 2026-09 (§8a desktop secret custody and §8b embedded Postgres authentication added, §8b hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10 added with issue #669).*

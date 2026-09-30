@@ -310,6 +310,14 @@ its own. The shell creates the `vector` and `pg_trgm` extensions itself,
 because pgvector is not a trusted extension and a non-superuser cannot create
 it.
 
+`omadia_kernel` owns its database, so the shell treats that database as
+untrusted when it connects there as the superuser: every maintenance connection
+pins a fixed `search_path` (system catalogs first) and the ownership transfer
+schema-qualifies its calls, so a statement the shell runs cannot be redirected
+onto an object the owning role planted. The start-up check also refuses the
+kernel role a `DATABASE_URL` if it has gained a role membership, which could
+otherwise restore a capability the restricted role is meant to lack.
+
 What a start does:
 
 - **Normal start:** the shell's `pg_hba.conf` is in place and the kernel role

@@ -67,6 +67,19 @@ password; restore the pre-update snapshot
 (`snapshots/pgdata-pre-<version>-<stamp>/` and its `.secrets.enc`) to go back.
 No new environment variable.
 
+The shell's own maintenance sessions treat the kernel-owned database as
+untrusted. Because `omadia_kernel` owns that database, it can set a
+per-database `search_path` and create objects in schemas it controls; left
+unchecked, a statement the shell runs there as the superuser could resolve an
+unqualified call to one of those objects and run it with the shell's rights.
+Every connection the shell opens now pins a fixed `search_path` (system
+catalogs first) as a startup option, which outranks any per-database or
+per-role default, and the ownership transfer schema-qualifies every call and
+pins its own search_path as well. The start-up verification is the backstop: it
+refuses the kernel role a database URL unless it holds none of the privileged
+attributes and is a member of no role, because a role membership can restore a
+capability without setting an attribute.
+
 ### Fixed — desktop app no longer replaces an unreadable secrets file with new keys
 
 2026-09-30 — the desktop app keeps `VAULT_KEY`, `CREDENTIAL_KEYCHAIN_KEY` and

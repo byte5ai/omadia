@@ -14,6 +14,13 @@
  * follows its range. Tables go before the sequence pass because an identity
  * sequence cannot be moved on its own. Idempotent: a second run finds nothing
  * left to move.
+ *
+ * The block runs as the shell's superuser inside the kernel-owned database, so
+ * it treats that database as hostile: it pins its own search_path to
+ * pg_catalog first and calls only schema-qualified `pg_catalog.format`, so the
+ * database owner cannot make an unqualified call resolve to a function it
+ * planted and have it run with the shell's rights. The connection is pinned the
+ * same way (`embeddedDb.ts`), so the two defences are independent.
  */
 
 /** Role names are interpolated into SQL, so only plain identifiers are accepted. */
@@ -29,9 +36,15 @@ export function transferOwnershipSql(from: string, to: string): string {
   assertPlainIdentifier(to);
   return `DO $transfer$
 DECLARE
-  boot oid := '${from}'::regrole;
+  boot oid;
   obj record;
 BEGIN
+  -- Pin the search_path before resolving any name in this block, so a role
+  -- that owns this database cannot make an unqualified call (or a cast's type
+  -- lookup) resolve to something it planted in a schema it controls. Set
+  -- transaction-locally; it reverts when the block returns.
+  PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+  boot := '${from}'::regrole;
   FOR obj IN
     SELECT n.oid, n.nspname FROM pg_namespace n
     WHERE n.nspowner = boot
@@ -40,7 +53,7 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM pg_depend d
         WHERE d.classid = 'pg_namespace'::regclass AND d.objid = n.oid AND d.deptype = 'e')
   LOOP
-    EXECUTE format('ALTER SCHEMA %I OWNER TO ${to}', obj.nspname);
+    EXECUTE pg_catalog.format('ALTER SCHEMA %I OWNER TO ${to}', obj.nspname);
   END LOOP;
 
   FOR obj IN
@@ -50,7 +63,7 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM pg_depend d
         WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
   LOOP
-    EXECUTE format('ALTER %s %s OWNER TO ${to}',
+    EXECUTE pg_catalog.format('ALTER %s %s OWNER TO ${to}',
       CASE obj.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'
         WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END,
       obj.oid::regclass);
@@ -63,7 +76,7 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM pg_depend d
         WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype IN ('e', 'i'))
   LOOP
-    EXECUTE format('ALTER SEQUENCE %s OWNER TO ${to}', obj.oid::regclass);
+    EXECUTE pg_catalog.format('ALTER SEQUENCE %s OWNER TO ${to}', obj.oid::regclass);
   END LOOP;
 
   FOR obj IN
@@ -75,7 +88,7 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM pg_depend d
         WHERE d.classid = 'pg_type'::regclass AND d.objid = t.oid AND d.deptype = 'e')
   LOOP
-    EXECUTE format('ALTER %s %s OWNER TO ${to}',
+    EXECUTE pg_catalog.format('ALTER %s %s OWNER TO ${to}',
       CASE obj.typtype WHEN 'd' THEN 'DOMAIN' ELSE 'TYPE' END, obj.oid::regtype);
   END LOOP;
 
@@ -86,7 +99,7 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM pg_depend d
         WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
   LOOP
-    EXECUTE format('ALTER ROUTINE %s OWNER TO ${to}', obj.oid::regprocedure);
+    EXECUTE pg_catalog.format('ALTER ROUTINE %s OWNER TO ${to}', obj.oid::regprocedure);
   END LOOP;
 END
 $transfer$`;

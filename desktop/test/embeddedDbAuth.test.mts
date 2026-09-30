@@ -27,6 +27,7 @@ import {
   renderHba,
   scramVerifier,
 } from '../src/embeddedDbAuth.ts';
+import { transferOwnershipSql } from '../src/embeddedDbOwnership.ts';
 import { FakeCluster, type FakeClusterOptions } from './helpers/fakePgCluster.mts';
 
 /** Obviously synthetic 64-hex passwords, the shape `secrets.ts` generates. */
@@ -331,6 +332,14 @@ describe('ensureClusterAuth — the verification fails closed', () => {
     const cluster = freshCluster({ kernelReports: { rolsuper: true } });
     await assert.rejects(ensureClusterAuth(cluster, CREDS), /superuser/);
   });
+
+  it('refuses a kernel role that has gained a role membership', async () => {
+    // A membership (here in a predefined role) restores a capability without
+    // setting any of the privileged attributes, so the attribute check alone
+    // would pass. Verification must still refuse to hand out a DSN.
+    const cluster = provisionedCluster({ kernelMemberships: ['pg_execute_server_program'] });
+    await assert.rejects(ensureClusterAuth(cluster, CREDS), /member of pg_execute_server_program/);
+  });
 });
 
 describe('ensureClusterAuth — steady state', () => {
@@ -391,5 +400,28 @@ describe('ensureClusterAuth — extensions', () => {
     const cluster = freshCluster({ failOn: /^CREATE EXTENSION IF NOT EXISTS vector/ });
     await assert.rejects(ensureClusterAuth(cluster, CREDS), /synthetic failure: extension vector/);
     assert.equal(cluster.accepts('omadia_kernel', CREDS.kernelPassword), false);
+  });
+});
+
+describe('transferOwnershipSql — the ownership transfer resists a hostile search_path', () => {
+  // The transfer runs as the shell's superuser inside the kernel-owned
+  // database. If a call there resolved through the database's search_path, the
+  // owning role could shadow it with a function of its own and have that run
+  // with the shell's rights. So every call is schema-qualified and the block
+  // pins its own search_path before it resolves any name.
+  const sql = transferOwnershipSql(DB_SUPERUSER, 'omadia_kernel');
+
+  it('calls only pg_catalog.format, never an unqualified format()', () => {
+    assert.ok(sql.includes('pg_catalog.format('), 'the transfer calls pg_catalog.format');
+    // An unqualified format( — one not preceded by a dot or word character —
+    // could resolve to a planted public.format.
+    assert.equal(/[^.\w]format\s*\(/.test(sql), false, `unqualified format() in:\n${sql}`);
+  });
+
+  it('pins its search_path to pg_catalog before it resolves the bootstrap role', () => {
+    const pin = sql.indexOf("set_config('search_path', 'pg_catalog, pg_temp', true)");
+    const cast = sql.indexOf('::regrole');
+    assert.notEqual(pin, -1, 'the block pins its search_path');
+    assert.ok(pin < cast, 'the search_path is pinned before the first type-name cast');
   });
 });

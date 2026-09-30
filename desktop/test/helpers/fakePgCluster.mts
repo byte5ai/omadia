@@ -68,6 +68,8 @@ export interface FakeClusterOptions {
   readonly kernelReports?: Partial<RoleAttributes>;
   /** Attributes the kernel role reports until its attributes are ALTERed (drift). */
   readonly kernelReportsUntilAltered?: Partial<RoleAttributes>;
+  /** Roles the kernel role reports being a member of (a membership should never be present). */
+  readonly kernelMemberships?: readonly string[];
 }
 
 /** The pg errors the state machine tells apart carry their SQLSTATE in `code`. */
@@ -116,6 +118,7 @@ function statementLabel(sql: string): string {
     [/^CREATE EXTENSION IF NOT EXISTS (\w+)/, (m) => `extension ${m[1]}`],
     [/^DO \$transfer\$/, () => 'transfer ownership'],
     [/^SELECT rolsuper/, () => 'attributes?'],
+    [/pg_auth_members/, () => 'memberships?'],
   ];
   for (const [pattern, name] of rules) {
     const m = pattern.exec(text);
@@ -291,6 +294,10 @@ export class FakeCluster implements DbAuthIo {
           ? { ...role.attributes, ...this.drift, ...this.options.kernelReports }
           : role.attributes;
       return { rows: [{ ...reported }] };
+    }
+    if (/pg_auth_members/.test(sql)) {
+      const memberships = user === 'omadia_kernel' ? (this.options.kernelMemberships ?? []) : [];
+      return { rows: memberships.map((role) => ({ role })) };
     }
     return { rows: [] };
   }
