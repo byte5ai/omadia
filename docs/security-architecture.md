@@ -515,13 +515,20 @@ from the descriptor.
   `calcPr fullCalcOnLoad="1"`. Clients that do not calculate (previews, Excel's
   Protected View, `data_only` readers) show the cell empty, which is the
   intended failure mode.
-- **Formulas stay inside the workbook.** Because the client recalculates on
-  open, `formulaPolicy.ts` refuses any formula that uses `WEBSERVICE`, `IMAGE`,
-  `HYPERLINK`, `RTD`, `CALL` or `REGISTER.ID`, a DDE reference
-  (`app|topic!item`), or a reference to another file (`[n]…`, or a quoted name
-  containing `\ / [ ]`). `renderXlsx` throws `OfficeUnsafeFormulaError` before
-  any byte is written, so nothing is stored or delivered. The check is lexical:
-  string literals are skipped and an unterminated quote fails closed.
+- **Formulas stay inside the workbook.** The client recalculates on open, and
+  Excel, LibreOffice and Google Sheets each have functions that reach outside
+  the file. `formulaPolicy.ts` refuses any formula that uses one of them:
+  `WEBSERVICE`, `FILTERXML`, `IMAGE`, Google Sheets' `IMPORTDATA`,
+  `IMPORTXML`, `IMPORTHTML`, `IMPORTFEED` and `IMPORTRANGE`, `HYPERLINK`,
+  `RTD`, `CALL`, `REGISTER`, `REGISTER.ID` or LibreOffice's `DDE`. It also
+  refuses a DDE reference (`app|topic!item`) and a reference to another file
+  (`[n]…`, `[book.xlsx]…`, a `\` outside quotes, or a quoted name containing
+  `\ / [ ]`). `INDIRECT` and `__xludf.DUMMYFUNCTION` are refused whatever
+  their argument, because they turn text into a reference or a formula, and
+  that text can be assembled from cell values where no lexical check sees it.
+  `renderXlsx` throws `OfficeUnsafeFormulaError` before any byte is written, so
+  nothing is stored or delivered. The check is lexical: string literals are
+  skipped and an unterminated quote fails closed.
 - **Dataset rows cannot become formulas.** Rows behind a `datasetId` go through
   `normalizeCell` (`officeTool.ts`), which passes primitives and JSON-stringifies
   every object and array, so a system of record cannot inject a formula or a
@@ -1373,7 +1380,8 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] A new cell or value path in `@omadia/plugin-office` stores no
       caller-supplied formula result (formula cells are `{ formula }` only) and
       runs every formula through `assertFormulaStaysInWorkbook` (§5a).
-      `office.test.ts` pins both.
+      `office-formulas.test.ts` pins both, with one rejected-formula row per
+      refused function or reference form.
 
 ---
 

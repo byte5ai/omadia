@@ -73,14 +73,27 @@ cells show depends on where the file is opened:
 ### Formulas stay inside the workbook
 
 Because the file asks to be recalculated, a formula that can reach outside it
-would do so as soon as someone opens the export. `renderXlsx` therefore refuses
-any formula that uses `WEBSERVICE`, `IMAGE`, `HYPERLINK`, `RTD`, `CALL` or
-`REGISTER.ID`, a DDE reference (`cmd|' /C calc'!A0`), or a reference to another
-file (`[1]Sheet!A1`, `'C:\dir\[book.xlsx]Sheet'!A1`). It throws
-`OfficeUnsafeFormulaError`, which names the cell or computed column, before any
-byte is written: nothing is stored, and `create_xlsx` returns an `Error:` the
-model can act on. The check in `src/formulaPolicy.ts` is lexical. Text inside a
-string literal does not count, and an unterminated quote is refused.
+would do so as soon as someone opens the export, and Excel, LibreOffice and
+Google Sheets all recalculate an `.xlsx`. `renderXlsx` therefore refuses a
+formula that contains any of these:
+
+- a function that fetches a URL or unpacks what was fetched: `WEBSERVICE`,
+  `FILTERXML`, `IMAGE`, and Google Sheets' `IMPORTDATA`, `IMPORTXML`,
+  `IMPORTHTML`, `IMPORTFEED` and `IMPORTRANGE`
+- `HYPERLINK`, and the COM and DLL calls `RTD`, `CALL`, `REGISTER` and
+  `REGISTER.ID`
+- DDE, as a reference (`cmd|' /C calc'!A0`) or as LibreOffice's `DDE` function
+- a reference to another file (`[1]Sheet!A1`, `[book.xlsx]Sheet!A1`,
+  `'C:\dir\[book.xlsx]Sheet'!A1`, `\\host\share\book.xlsx!Name`)
+- `INDIRECT` or `__xludf.DUMMYFUNCTION`, whatever the argument. Both turn text
+  into a reference or a formula, and that text can be built from cell values
+  where the check cannot see it.
+
+It throws `OfficeUnsafeFormulaError`, which names the cell or computed column,
+before any byte is written: nothing is stored, and `create_xlsx` returns an
+`Error:` the model can act on. The check in `src/formulaPolicy.ts` is lexical.
+Text inside a string literal does not count, and an unterminated quote is
+refused.
 
 ## Provenance metadata (AI Act Art. 50)
 
@@ -121,7 +134,8 @@ clean, committed tree. Publish steps: `docs/creating-plugins.md` §8
 
 ## Tests
 
-Central suite: `middleware/test/office.test.ts` (and `office-dataset.test.ts`).
+Central suite: `middleware/test/office.test.ts`, with `office-formulas.test.ts`
+(formula storage and the formula policy) and `office-dataset.test.ts`.
 Provenance is verified by reading the properties back out of the produced file
 (ExcelJS load for `.xlsx`, `yauzl` unzip of `docProps/*.xml` for `.docx`), not by
 trusting the renderer input. Formula cells are checked the same way: the tests

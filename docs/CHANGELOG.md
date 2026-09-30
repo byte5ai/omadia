@@ -45,12 +45,20 @@ by anyone, and every viewer that does not recalculate showed it as the figure.
 The input schema now has no `result` field (a sent one is stripped), the
 renderer writes formula cells as `<f>` without `<v>`, and a workbook that holds
 a formula sets `fullCalcOnLoad`, so the spreadsheet application computes each
-value when it opens the file. Formulas that would reach outside the workbook
-(`WEBSERVICE`, `IMAGE`, `HYPERLINK`, `RTD`, `CALL`, `REGISTER.ID`, DDE,
-references to other files) are refused with `OfficeUnsafeFormulaError` before
-anything is stored. The tool description now asks for English function names
-(`SUMIFS`), which is what a recalculating Excel understands, and the README no
-longer claims a server-side spreadsheet engine.
+value when it opens the file. The tool description now asks for English
+function names (`SUMIFS`), which is what a recalculating Excel understands, and
+the README no longer claims a server-side spreadsheet engine.
+
+Because Excel, LibreOffice and Google Sheets all recalculate such a file, a
+formula that reaches outside the workbook is refused with
+`OfficeUnsafeFormulaError` before anything is stored. That covers URL fetches
+(`WEBSERVICE`, `FILTERXML`, `IMAGE`, and Google Sheets' `IMPORTDATA`,
+`IMPORTXML`, `IMPORTHTML`, `IMPORTFEED` and `IMPORTRANGE`), `HYPERLINK`, COM
+and DLL calls (`RTD`, `CALL`, `REGISTER`, `REGISTER.ID`), DDE as a function and
+as an `app|topic!item` reference, and references to another file by index, name
+or path, quoted or not. `INDIRECT` and `__xludf.DUMMYFUNCTION` are refused
+whatever their argument. Both turn text into a reference or a formula, and that
+text is invisible to the check and can be built from cell values.
 
 Viewers that do not calculate (Quick Look, Teams and Outlook previews, Excel's
 Protected View) now show formula cells empty until the file is opened for

