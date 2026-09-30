@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { ClaimExtractor, claimContext } from '@omadia/verifier';
+import { ClaimExtractor, claimContext, type VerifierPrivacy } from '@omadia/verifier';
+import { findIdentityLeaks } from '@omadia/plugin-privacy-guard/dist/v4/onTheWire.js';
 
 // --- Stubs ---------------------------------------------------------------
 
@@ -118,5 +119,186 @@ describe('verifier/claimExtractor - extract', () => {
       'Anna Müller wechselte am 01.03.2023 in die IT-Abteilung [ref:n_emp_anna].',
     );
     assert.equal(claims[1]!.context, undefined);
+  });
+});
+
+// The turn behind a Privacy Shield put surrogates on the wire; the verifier's
+// extraction request must see exactly that view, and the claims it returns
+// must be restored to real values server-side before anything checks them.
+describe('verifier/claimExtractor - privacy view', () => {
+  // Not the ANSWER fixture above: its name also appears in the extractor's
+  // static system prompt, and the leak check covers the whole request.
+  const REAL_NAME = 'Jana Beispielfrau';
+  const REAL_DATE = '01.03.2023';
+  const SURROGATE_NAME = 'Erika Musterfrau';
+  const SURROGATE_DATE = '05.05.1985';
+  const REAL_ANSWER = `${REAL_NAME} wechselte am ${REAL_DATE} in die IT-Abteilung [ref:n_emp_jana]. Sie leitet dort das Team. Fragen? Gern!`;
+  const PAIRS: ReadonlyArray<readonly [string, string]> = [
+    [REAL_NAME, SURROGATE_NAME],
+    [REAL_DATE, SURROGATE_DATE],
+  ];
+  const REAL_USER = `Seit wann arbeitet ${REAL_NAME} in der IT?`;
+
+  function substitute(text: string, from: 0 | 1): string {
+    let out = text;
+    for (const pair of PAIRS) out = out.split(pair[from]).join(pair[from === 0 ? 1 : 0]);
+    return out;
+  }
+
+  /** Stands in for the turn's surrogate map: masks real→surrogate, restores back. */
+  function fakePrivacy(opts: { blocked?: boolean } = {}): {
+    view: VerifierPrivacy;
+    maskCalls: () => number;
+  } {
+    let maskCalls = 0;
+    const view: VerifierPrivacy = {
+      wireAnswer: substitute(REAL_ANSWER, 0),
+      async maskForWire(text: string): Promise<string> {
+        maskCalls += 1;
+        if (opts.blocked === true) throw new Error('prompt masking blocked');
+        return substitute(text, 0);
+      },
+      async projectForWire(text: string): Promise<string> {
+        return substitute(text, 0);
+      },
+      async restore(text: string): Promise<string> {
+        return substitute(text, 1);
+      },
+    };
+    return { view, maskCalls: () => maskCalls };
+  }
+
+  function capturingLlm(claims: unknown[]): { llm: unknown; requests: unknown[] } {
+    const requests: unknown[] = [];
+    return {
+      requests,
+      llm: {
+        complete(req: unknown): Promise<{ content: unknown[] }> {
+          requests.push(req);
+          return Promise.resolve({
+            content: [
+              { type: 'tool_call', name: 'record_claims', id: 'toolu_x', input: { claims } },
+            ],
+          });
+        },
+      },
+    };
+  }
+
+  it('sends only the masked view and restores the returned claims', async () => {
+    const { view } = fakePrivacy();
+    const { llm, requests } = capturingLlm([
+      {
+        text: `${SURROGATE_NAME} wechselte am ${SURROGATE_DATE} in die IT-Abteilung`,
+        type: 'qualitative',
+        expected_source: 'graph',
+        related_entities: ['odoo:hr.employee:7'],
+      },
+      { text: SURROGATE_DATE, type: 'date', expected_source: 'odoo', value: SURROGATE_DATE },
+      { text: 'in die IT-Abteilung', type: 'qualitative', expected_source: 'graph' },
+    ]);
+    const extractor = new ClaimExtractor({ llm: llm as never, log: () => undefined });
+    const claims = await extractor.extract({
+      userMessage: REAL_USER,
+      answer: REAL_ANSWER,
+      privacy: view,
+    });
+
+    assert.equal(requests.length, 1);
+    assert.deepEqual(
+      findIdentityLeaks(requests[0], [REAL_NAME, REAL_DATE]),
+      [],
+      'a real value reached the extraction request',
+    );
+    assert.match(JSON.stringify(requests[0]), new RegExp(SURROGATE_NAME));
+
+    assert.equal(claims.length, 3);
+    assert.equal(claims[0]!.text, `${REAL_NAME} wechselte am ${REAL_DATE} in die IT-Abteilung`);
+    assert.deepEqual(claims[0]!.relatedEntities, ['odoo:hr.employee:7']);
+    // A string value that is itself a surrogate restores to the real literal.
+    assert.equal(claims[1]!.text, REAL_DATE);
+    assert.equal(claims[1]!.value, REAL_DATE);
+    // Context is cut from the REAL answer, so the judge gets real subjects
+    // server-side (and projects them itself before anything leaves).
+    assert.equal(
+      claims[2]!.context,
+      `${REAL_NAME} wechselte am ${REAL_DATE} in die IT-Abteilung [ref:n_emp_jana].`,
+    );
+  });
+
+  it('drops a claim whose span only partially covers a surrogate', async () => {
+    const { view } = fakePrivacy();
+    const { llm } = capturingLlm([
+      // "Musterfrau wechselte" is in the wire answer, but restore cannot map a
+      // fragment of a surrogate — it would reach the checker as a fake value.
+      { text: 'Musterfrau wechselte', type: 'name', expected_source: 'graph' },
+      { text: 'in die IT-Abteilung', type: 'qualitative', expected_source: 'graph' },
+    ]);
+    const extractor = new ClaimExtractor({ llm: llm as never, log: () => undefined });
+    const claims = await extractor.extract({
+      userMessage: REAL_USER,
+      answer: REAL_ANSWER,
+      privacy: view,
+    });
+    assert.deepEqual(
+      claims.map((c) => c.text),
+      ['in die IT-Abteilung'],
+    );
+  });
+
+  it('drops a numeric value parsed from a span that carried a surrogate', async () => {
+    const pairs: ReadonlyArray<readonly [string, string]> = [['€72,000', '€10000']];
+    const realAnswer = 'Das Jahresgehalt beträgt €72,000.';
+    const view: VerifierPrivacy = {
+      wireAnswer: 'Das Jahresgehalt beträgt €10000.',
+      maskForWire: async (t) => t.split(pairs[0]![0]).join(pairs[0]![1]),
+      projectForWire: async (t) => t,
+      restore: async (t) => t.split(pairs[0]![1]).join(pairs[0]![0]),
+    };
+    const { llm } = capturingLlm([
+      { text: '€10000', type: 'amount', expected_source: 'odoo', value: 10000, unit: '€' },
+    ]);
+    const extractor = new ClaimExtractor({ llm: llm as never, log: () => undefined });
+    const claims = await extractor.extract({
+      userMessage: 'Wie hoch ist das Gehalt?',
+      answer: realAnswer,
+      privacy: view,
+    });
+    assert.equal(claims.length, 1);
+    assert.equal(claims[0]!.text, '€72,000');
+    // 10000 is the surrogate's number, not the real one: the deterministic
+    // checker must not compare it against Odoo.
+    assert.equal(claims[0]!.value, undefined);
+  });
+
+  it('blocked masking sends nothing and yields no claims', async () => {
+    const { view, maskCalls } = fakePrivacy({ blocked: true });
+    const { llm, requests } = capturingLlm([
+      { text: 'in die IT-Abteilung', type: 'qualitative', expected_source: 'graph' },
+    ]);
+    const logs: string[] = [];
+    const extractor = new ClaimExtractor({
+      llm: llm as never,
+      log: (m: string) => {
+        logs.push(m);
+      },
+    });
+    const claims = await extractor.extract({
+      userMessage: REAL_USER,
+      answer: REAL_ANSWER,
+      privacy: view,
+    });
+    assert.deepEqual(claims, []);
+    assert.equal(maskCalls(), 1);
+    assert.equal(requests.length, 0, 'the extractor called the model after masking was blocked');
+    assert.ok(logs.some((l) => l.includes('prompt masking blocked')));
+  });
+
+  it('without a privacy view the request carries the answer unchanged (no shield installed)', async () => {
+    const { llm, requests } = capturingLlm([]);
+    const extractor = new ClaimExtractor({ llm: llm as never, log: () => undefined });
+    await extractor.extract({ userMessage: REAL_USER, answer: REAL_ANSWER });
+    assert.equal(requests.length, 1);
+    assert.notDeepEqual(findIdentityLeaks(requests[0], [REAL_NAME]), []);
   });
 });

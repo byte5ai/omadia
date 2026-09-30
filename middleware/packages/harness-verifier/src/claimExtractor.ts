@@ -6,6 +6,7 @@ import type {
   ClaimSource,
   ClaimType,
   OdooRecordRef,
+  VerifierPrivacy,
 } from './claimTypes.js';
 
 /**
@@ -42,6 +43,13 @@ export interface ClaimExtractorOptions {
 export interface ExtractInput {
   userMessage: string;
   answer: string;
+  /**
+   * The turn's privacy view (see {@link VerifierPrivacy}). When present the
+   * model sees the turn's own wire view — the user message masked under the
+   * turn's policy and `privacy.wireAnswer` — and the returned claims are
+   * restored to real values here, server-side, before anything checks them.
+   */
+  privacy?: VerifierPrivacy;
 }
 
 const DEFAULTS = {
@@ -177,8 +185,24 @@ export class ClaimExtractor {
    * error (network, parse, validation).
    */
   async extract(input: ExtractInput): Promise<Claim[]> {
-    const answer = input.answer.trim();
+    const privacy = input.privacy;
+    // Behind a Privacy Shield the model sees the turn's wire view only: the
+    // answer as the turn's model wrote it, the prompt as the turn masked it.
+    const answer = (privacy ? privacy.wireAnswer : input.answer).trim();
     if (answer.length === 0) return [];
+    let userMessage = input.userMessage;
+    if (privacy) {
+      try {
+        userMessage = await privacy.maskForWire(input.userMessage);
+      } catch (err) {
+        this.opts.log(
+          `[claim-extractor] extraction skipped — prompt masking blocked: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return [];
+      }
+    }
 
     const system = `You are a claim extractor. Given an assistant answer (in German or English), list EVERY factual claim it makes. A claim is any concrete, verifiable assertion: monetary amounts, record references, dates, named entities, totals.
 
@@ -193,7 +217,7 @@ Strict rules:
 - Return at most ${String(this.opts.maxClaims)} claims via the ${TOOL_NAME} tool.`;
 
     const user = `USER MESSAGE:
-${truncate(input.userMessage, 2000)}
+${truncate(userMessage, 2000)}
 
 ASSISTANT ANSWER:
 ${truncate(answer, 6000)}`;
@@ -221,31 +245,113 @@ ${truncate(answer, 6000)}`;
       return [];
     }
 
-    const out: Claim[] = [];
+    const normalised: Claim[] = [];
     let idx = 0;
     for (const raw of rawClaims.slice(0, this.opts.maxClaims)) {
+      // Verbatim guard against the text the model actually saw.
       const claim = normaliseClaim(raw, idx, answer);
       if (claim) {
-        out.push(claim);
+        normalised.push(claim);
         idx += 1;
       }
     }
+    const out = privacy
+      ? await restoreClaims(normalised, privacy, input.answer.trim())
+      : normalised;
+    const dropped = normalised.length - out.length;
     this.opts.log(
-      `[claim-extractor] extracted=${String(out.length)} raw=${String(rawClaims.length)}`,
+      `[claim-extractor] extracted=${String(out.length)} raw=${String(rawClaims.length)}${
+        dropped > 0 ? ` droppedOnRestore=${String(dropped)}` : ''
+      }`,
     );
     // Diagnostic: when the extractor returns zero claims even though the
     // trigger router fired, we want to see WHY. Log the first 300 chars
     // of the answer + user message — that's enough to tell whether the
     // bot was honest ("I cannot answer") or Haiku under-extracted a
-    // valid numeric response. Safe to log: the answer already landed in
-    // session_logger / graph, no new PII surface.
+    // valid numeric response. Logs the wire view (what the model saw), so
+    // this line carries no more than the extraction request did.
     if (rawClaims.length === 0) {
       this.opts.log(
-        `[claim-extractor] zero-raw diag user="${shortSnippet(input.userMessage, 200)}" answerLen=${String(answer.length)} answerHead="${shortSnippet(answer, 400)}" answerTail="${shortSnippet(tail(answer, 400), 400)}"`,
+        `[claim-extractor] zero-raw diag user="${shortSnippet(userMessage, 200)}" answerLen=${String(answer.length)} answerHead="${shortSnippet(answer, 400)}" answerTail="${shortSnippet(tail(answer, 400), 400)}"`,
       );
     }
     return out;
   }
+}
+
+/** Claim types whose `value` is parsed from the span (a number, a date). */
+const VALUE_DERIVED_TYPES: ReadonlySet<ClaimType> = new Set<ClaimType>([
+  'amount',
+  'date',
+  'aggregate',
+]);
+
+/**
+ * Map claims extracted from the wire view back to real values, server-side.
+ *
+ * A claim is kept only when its restored text is still verbatim in the REAL
+ * answer: a span that cut through a surrogate ("Musterfrau wechselte")
+ * restores to nothing the user was shown, and checking it would compare a
+ * placeholder against the source. Fewer checks, never a false contradiction.
+ *
+ * A `value` survives when it restores to a real literal itself, or when the
+ * span carried no surrogate. Otherwise it was parsed from a placeholder
+ * (the surrogate's number, a reformatted surrogate date) and is dropped; the
+ * deterministic checker then reports `unverified` instead of comparing it.
+ */
+async function restoreClaims(
+  claims: readonly Claim[],
+  privacy: VerifierPrivacy,
+  realAnswer: string,
+): Promise<Claim[]> {
+  const hay = realAnswer.toLowerCase();
+  const out: Claim[] = [];
+  for (const claim of claims) {
+    const text = await privacy.restore(claim.text);
+    if (!hay.includes(text.toLowerCase())) continue;
+    const touchedSurrogate = text !== claim.text;
+    const value = await restoreValue(claim, privacy, touchedSurrogate);
+    const context = claimContext(text, realAnswer);
+    const relatedEntities = await Promise.all(
+      claim.relatedEntities.map((entity) => privacy.restore(entity)),
+    );
+    const odooRecord = claim.odooRecord
+      ? {
+          ...claim.odooRecord,
+          ...(claim.odooRecord.ref !== undefined
+            ? { ref: await privacy.restore(claim.odooRecord.ref) }
+            : {}),
+        }
+      : undefined;
+    out.push({
+      id: claim.id,
+      text,
+      type: claim.type,
+      expectedSource: claim.expectedSource,
+      relatedEntities,
+      ...(value !== undefined ? { value } : {}),
+      ...(claim.unit !== undefined ? { unit: claim.unit } : {}),
+      ...(claim.aggregation !== undefined ? { aggregation: claim.aggregation } : {}),
+      ...(odooRecord ? { odooRecord } : {}),
+      ...(context ? { context } : {}),
+    });
+  }
+  return out;
+}
+
+async function restoreValue(
+  claim: Claim,
+  privacy: VerifierPrivacy,
+  touchedSurrogate: boolean,
+): Promise<number | string | undefined> {
+  const value = claim.value;
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') {
+    const restored = await privacy.restore(value);
+    if (restored !== value) return restored;
+  }
+  if (touchedSurrogate && VALUE_DERIVED_TYPES.has(claim.type)) return undefined;
+  return value;
 }
 
 function shortSnippet(value: string, max = 300): string {
