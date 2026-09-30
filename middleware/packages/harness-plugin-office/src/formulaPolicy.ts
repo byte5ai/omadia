@@ -45,9 +45,14 @@ const EXTERNAL_FUNCTION_TOKEN = new RegExp(
   'i',
 );
 
-/** Characters Excel forbids in sheet names; inside a quoted reference they can
- *  only belong to a path or a workbook name, i.e. another file. */
-const PATH_CHARS = /[\\/[\]]/;
+/** `[n]Sheet!A1` / `[book.xlsx]Sheet!A1` point at another workbook and
+ *  `Table1[Col]` at a table; the renderer creates neither. Excel forbids
+ *  brackets in sheet names, so they count inside quotes as well. */
+const BRACKETS = /[[\]]/;
+
+/** Path separators, also forbidden in sheet names: inside a quoted reference
+ *  they can only belong to the path of another file. */
+const PATH_SEPARATORS = /[\\/]/;
 
 interface LexedFormula {
   /** The formula with string literals and quoted sheet names blanked out. */
@@ -104,8 +109,11 @@ export function externalFormulaReason(formula: string): string | undefined {
   if (lexed.code.includes('|')) {
     return 'it contains a DDE reference (`|`), which starts another program';
   }
-  if (/[[\]]/.test(lexed.code) || lexed.quotedNames.some((name) => PATH_CHARS.test(name))) {
-    return 'it references another file';
+  if (BRACKETS.test(lexed.code) || lexed.quotedNames.some((name) => BRACKETS.test(name))) {
+    return 'it uses a bracketed reference (another workbook or a table)';
+  }
+  if (lexed.quotedNames.some((name) => PATH_SEPARATORS.test(name))) {
+    return 'it references another file by its path';
   }
   return undefined;
 }

