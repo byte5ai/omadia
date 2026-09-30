@@ -498,6 +498,43 @@ kernel keeps the session gate in front, fail-closed. What the link buys is
 what it always bought: whoever holds it can fetch that one object until it
 expires; there is no per-tenant or per-session authorisation on top.
 
+## 5a. Office exports: formula cells carry no caller-supplied value
+
+`create_xlsx` (`@omadia/plugin-office`) writes descriptor formulas into the
+workbook verbatim, and omadia evaluates none of them: exceljs only serialises,
+and no formula engine is installed. The rule that follows is that whatever a
+formula cell displays must come from the application that computes it, never
+from the descriptor.
+
+- **No cached value.** `FormulaCellSchema` has no `result` field, and Zod
+  strips one a caller sends anyway. `renderXlsx` reduces every formula cell to
+  `{ formula }` before exceljs sees it (`coerce`) and writes `{ formula }` again
+  when it sets the cell, so a direct caller that smuggles a `result` past the
+  type still gets `<f>` without `<v>`.
+- **Recalculation on open.** A workbook with at least one formula sets
+  `calcPr fullCalcOnLoad="1"`. Clients that do not calculate (previews, Excel's
+  Protected View, `data_only` readers) show the cell empty, which is the
+  intended failure mode.
+- **Formulas stay inside the workbook.** Because the client recalculates on
+  open, `formulaPolicy.ts` refuses any formula that uses `WEBSERVICE`, `IMAGE`,
+  `HYPERLINK`, `RTD`, `CALL` or `REGISTER.ID`, a DDE reference
+  (`app|topic!item`), or a reference to another file (`[n]…`, or a quoted name
+  containing `\ / [ ]`). `renderXlsx` throws `OfficeUnsafeFormulaError` before
+  any byte is written, so nothing is stored or delivered. The check is lexical:
+  string literals are skipped and an unterminated quote fails closed.
+- **Dataset rows cannot become formulas.** Rows behind a `datasetId` go through
+  `normalizeCell` (`officeTool.ts`), which passes primitives and JSON-stringifies
+  every object and array, so a system of record cannot inject a formula or a
+  cached value. The dataset guarantees elsewhere in this document (the
+  `query_dataset` table in §6b) and in the orchestrator prompt are unchanged:
+  `create_xlsx` still resolves those rows server-side, and they never pass
+  through the model.
+- **No server-side engine, by decision.** HyperFormula is GPL/commercial and
+  excluded. Evaluation with an MIT engine is a roadmap item
+  (`middleware-agent-handoff.md` §13). Any engine would have to match Excel's
+  semantics exactly, because a wrong `<v>` under omadia's name is the defect
+  this section closes.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation
@@ -1333,7 +1370,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
+- [ ] A new cell or value path in `@omadia/plugin-office` stores no
+      caller-supplied formula result (formula cells are `{ formula }` only) and
+      runs every formula through `assertFormulaStaysInWorkbook` (§5a).
+      `office.test.ts` pins both.
 
 ---
 
-*Last reviewed: 2026-08 (§10 added with issue #669).*
+*Last reviewed: 2026-09 (§5a added: office formula cells).*

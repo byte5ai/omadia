@@ -36,6 +36,32 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — create_xlsx no longer stores model-supplied formula results
+
+2026-09-30 — a formula cell in `create_xlsx` accepted a `result` and stored it
+as the cell's cached value, so a workbook could hold the formula `1+1` showing
+999. Nothing on the server evaluates formulas, so that number was never computed
+by anyone, and every viewer that does not recalculate showed it as the figure.
+The input schema now has no `result` field (a sent one is stripped), the
+renderer writes formula cells as `<f>` without `<v>`, and a workbook that holds
+a formula sets `fullCalcOnLoad`, so the spreadsheet application computes each
+value when it opens the file. Formulas that would reach outside the workbook
+(`WEBSERVICE`, `IMAGE`, `HYPERLINK`, `RTD`, `CALL`, `REGISTER.ID`, DDE,
+references to other files) are refused with `OfficeUnsafeFormulaError` before
+anything is stored. The tool description now asks for English function names
+(`SUMIFS`), which is what a recalculating Excel understands, and the README no
+longer claims a server-side spreadsheet engine.
+
+Viewers that do not calculate (Quick Look, Teams and Outlook previews, Excel's
+Protected View) now show formula cells empty until the file is opened for
+editing. A generated workbook uploaded as a dataset without being saved in
+Excel first imports those cells as empty strings, because the importer reads
+cached results. Both are deliberate: an empty cell beats a number nobody
+computed. `@omadia/plugin-office` 0.1.4 ships as the bundled built-in with the
+middleware, so the fix is live with the next deploy. The Hub ZIP only matters
+for installations that took the plugin from the Hub. Server-side evaluation
+with an MIT-licensed engine is on the roadmap (handoff §13).
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no

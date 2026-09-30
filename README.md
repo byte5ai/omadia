@@ -142,7 +142,7 @@ three rows are why teams choose it; the rest is the groundwork done properly.
 |---|---|
 | 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw tool results stay behind a data-plane boundary; the LLM sees only an identity-free digest. `guarded` by default, with `bypass`/`per_tool` opt-in and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Real data can run through omadia without running through the model. |
 | ✅&nbsp;**Answer&nbsp;verification** | A verifier checks each answer's claims against the run's own sources and records a verdict (`approved` / `approved_with_disclaimer`) before it reaches the channel. |
-| 🧮&nbsp;**Computed,&nbsp;not&nbsp;guessed** | Office and Excel output comes from a real spreadsheet engine, server-side, over real rows (`datasetId`). The figures are calculated by that engine rather than produced by the model. |
+| 🧮&nbsp;**Excel&nbsp;from&nbsp;real&nbsp;rows** | `create_xlsx` writes the real rows behind a `datasetId` into the workbook server-side, so they never pass through the model, and adds sums and pivots as Excel formulas. omadia runs no spreadsheet engine of its own: the workbook asks the spreadsheet application to recalculate when it opens the file, and that application computes every formula result. |
 | 🧾&nbsp;**A&nbsp;receipt&nbsp;for&nbsp;every&nbsp;action** | Every agent run carries a full per-run trace and call-stack viewer: every step, tool call, and decision, replayable. Privacy receipts (`/operator/receipts`) are separate and are written only for turns in which the privacy shield acted. |
 | 👥&nbsp;**Multiplayer&nbsp;by&nbsp;design** | Agents run in your team's shared channels (Slack, Teams, Telegram, Discord), so several people work with them in one context, not a private one-on-one chatbot. |
 | 🤖&nbsp;**Agent&nbsp;teams,&nbsp;not&nbsp;one&nbsp;chatbot** | An orchestrator routes each turn to the right specialist plugin agent. Channels, integrations, tools, and capability providers sit behind one stable API. |
@@ -242,10 +242,14 @@ answer:
   its claims against the run's sources and emits a verdict (`approved`,
   `approved_with_disclaimer`, or `blocked`). A borderline verdict attaches a
   disclaimer instead of silently shipping an unsupported claim.
-- **Office compute (computed, not guessed)**: numbers in `.xlsx` / `.docx` output
-  come from a real spreadsheet engine over real rows, rather than the model's
-  token stream. When a specialist agent returns a `datasetId`, the rows are
-  resolved server-side and never pass through the model.
+- **Office files from real rows**: when a specialist agent returns a
+  `datasetId`, `create_xlsx` resolves the rows server-side and writes them into
+  the workbook without passing them through the model. Sums and pivots go in as
+  Excel formulas, and omadia does not evaluate them. A formula cell carries no
+  cached result, and the workbook asks the spreadsheet application to
+  recalculate on open, so the application that opens the file computes every
+  figure. A formula that would reach outside the workbook is refused. `.docx`
+  output is laid out from the text the model writes and computes nothing.
 
 ### Optional features
 

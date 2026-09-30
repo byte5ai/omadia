@@ -10,7 +10,7 @@ metadata.
 
 | Surface | What it does |
 |---|---|
-| `create_xlsx` (native tool) | Descriptor → workbook with typed columns, number formats, cross-sheet + per-row formulas. |
+| `create_xlsx` (native tool) | Descriptor → workbook with typed columns, number formats, cross-sheet + per-row formulas. Formulas are stored without cached values and computed by the application that opens the file (see [Formulas](#formulas)). |
 | `create_docx` (native tool) | Descriptor → document with headings, paragraphs, bullets, tables. |
 
 ## Determinism
@@ -31,6 +31,56 @@ years apart are identical, so the cache genuinely hits. The determinism tests
 prove this by **advancing** a mocked clock between two renders and asserting the
 bytes are unchanged; a cache-path test asserts the second render is a cache hit
 and is stored exactly once. Nothing turn-scoped ever enters a file.
+
+## Formulas
+
+A formula cell (`{ "formula": "SUMIFS(…)" }`) and a computed column
+(`columns[].formula` with its `{row}` placeholder) are written verbatim into the
+cell's `<f>` element, cross-sheet references included. The server has no
+spreadsheet engine. exceljs serialises formulas and computes nothing, and the
+package ships no evaluator: HyperFormula is GPL/commercial and therefore out,
+and server-side evaluation with an MIT engine is a roadmap item
+(`docs/middleware-agent-handoff.md` §13).
+
+- **No cached values.** A formula cell is stored as `<f>` without `<v>`. The
+  input schema has no `result` field (one that is sent anyway is stripped), and
+  the renderer drops it again before exceljs sees the cell, so a number the
+  model supplies can never show up as a formula's value.
+- **Recalculation on open.** A workbook that holds at least one formula sets
+  `<calcPr fullCalcOnLoad="1"/>`. Excel recalculates it on open and therefore
+  asks to save changes on close. Plain data exports keep a clean `calcPr`.
+- **English grammar.** `<f>` holds the file format's syntax in every locale:
+  English function names (`SUMIFS`) and `,` between arguments. A German name
+  such as `SUMMEWENNS` shows up as `#NAME?`. TEXT date codes such as `"YYYY"`
+  are read in the opening application's language, which is why the prompt
+  builds month keys from `YEAR`/`MONTH`.
+- **Dataset rows stay data.** Rows behind a `datasetId` pass through
+  `normalizeCell` (`officeTool.ts`), which JSON-stringifies every object and
+  array, so a system of record can never contribute a formula or a cached value.
+
+An empty cell is the intended result wherever nothing calculates. What formula
+cells show depends on where the file is opened:
+
+| Opened in | Formula cells show |
+|---|---|
+| Excel with editing enabled | computed values |
+| Excel Protected View (typical for a file downloaded from Teams or a browser) | possibly empty until *Enable Editing* |
+| LibreOffice Calc | whatever *Tools ▸ Options ▸ LibreOffice Calc ▸ Formula ▸ Recalculation on File Load* says; set it to *Always recalculate* if cells stay empty |
+| Quick Look, Teams and Outlook previews | empty, because previews do not calculate |
+| openpyxl with `data_only=True`, pandas | `None` / `NaN` |
+| omadia's dataset upload (`datasetImportXlsx.ts`) | empty strings, unless the file was saved in Excel first, since the importer reads cached results |
+
+### Formulas stay inside the workbook
+
+Because the file asks to be recalculated, a formula that can reach outside it
+would do so as soon as someone opens the export. `renderXlsx` therefore refuses
+any formula that uses `WEBSERVICE`, `IMAGE`, `HYPERLINK`, `RTD`, `CALL` or
+`REGISTER.ID`, a DDE reference (`cmd|' /C calc'!A0`), or a reference to another
+file (`[1]Sheet!A1`, `'C:\dir\[book.xlsx]Sheet'!A1`). It throws
+`OfficeUnsafeFormulaError`, which names the cell or computed column, before any
+byte is written: nothing is stored, and `create_xlsx` returns an `Error:` the
+model can act on. The check in `src/formulaPolicy.ts` is lexical. Text inside a
+string literal does not count, and an unterminated quote is refused.
 
 ## Provenance metadata (AI Act Art. 50)
 
@@ -55,7 +105,8 @@ deliberate, named limitation of the underlying library, not an omission.
 ## Layout
 
 Standard tool-plugin shape: `src/` → compiled `dist/`. `xlsxRenderer.ts` /
-`docxRenderer.ts` render descriptors to bytes, `officeService.ts` stores + signs,
+`docxRenderer.ts` render descriptors to bytes, `formulaPolicy.ts` refuses
+formulas that reach outside the workbook, `officeService.ts` stores + signs,
 `provenance.ts` holds the static provenance constants, `signing.ts` the
 HMAC-signed `/documents` URLs.
 
@@ -73,4 +124,6 @@ clean, committed tree. Publish steps: `docs/creating-plugins.md` §8
 Central suite: `middleware/test/office.test.ts` (and `office-dataset.test.ts`).
 Provenance is verified by reading the properties back out of the produced file
 (ExcelJS load for `.xlsx`, `yauzl` unzip of `docProps/*.xml` for `.docx`), not by
-trusting the renderer input.
+trusting the renderer input. Formula cells are checked the same way: the tests
+read `xl/worksheets/sheet1.xml` and `xl/workbook.xml` back out of the workbook to
+prove there is no `<v>` next to a formula and that `fullCalcOnLoad` is set.

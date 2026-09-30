@@ -3080,6 +3080,33 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
 - **Electrons eigene `role:`-Menüeinträge** folgen der OS-Sprache; außerhalb
   unserer Reichweite, nur zu benennen.
 
+### Formeln in `create_xlsx` server-seitig auswerten (Option A, zurückgestellt)
+
+Seit `@omadia/plugin-office` 0.1.4 schreibt `create_xlsx` Formeln ohne
+gecachten Wert und setzt `fullCalcOnLoad`. Die Zahlen rechnet die Anwendung,
+die die Datei öffnet (`security-architecture.md` §5a). Vorschauen ohne
+Rechenwerk (Quick Look, Teams/Outlook, Excels Protected View) zeigen
+Formelzellen deshalb leer, und ein ungespeichert hochgeladener Export landet
+mit leeren Formelzellen im Dataset-Import. Option A wäre eine echte
+server-seitige Auswertung, die den `<v>`-Wert selbst schreibt. Aufwand L,
+bewusst zurückgestellt:
+
+- **Engine nur MIT-lizenziert.** Geprüft (Stand 2026-09): `fast-formula-parser`
+  (Sheet-Referenzen über `onCell`/`onRange`, rund 280 Funktionen, seit 2021
+  ohne Pflege), `xlsx-calc` (braucht ein SheetJS-Workbook, Teilmenge der
+  Funktionen), `@formulajs/formulajs` (nur Funktionen, kein Parser).
+  `hot-formula-parser` kennt keine Sheets und scheidet für die
+  Cross-Sheet-Pivots aus. **HyperFormula ist GPL/kommerziell und kommt nicht
+  in Frage.**
+- **Adapter exceljs → Engine**: Spaltenbuchstaben, Datums-Serials,
+  `{row}`-Vorlagen und eine Regel für nicht unterstützte Funktionen (dann
+  keinen `<v>` schreiben, sondern wie heute die Anwendung rechnen lassen).
+- **Semantik-Treue**: Jede Abweichung zwischen Engine und Excel schriebe einen
+  falschen `<v>` unter omadias Namen, also genau den Fehler, den 0.1.4
+  beseitigt hat. Ohne Differenztests gegen echtes Excel nicht ausrollen.
+- **Formel-Policy bleibt**: `formulaPolicy.ts` (kein `WEBSERVICE`, `HYPERLINK`,
+  DDE, keine Verweise auf andere Dateien) gilt unabhängig davon, wer rechnet.
+
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
 Alles hier ist **nicht** umgesetzt. Vollständige Darstellung samt Codestellen:
