@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Security — npm advisories in middleware and web-ui dependencies
+
+2026-09-30 — new advisories were published against packages both workspaces
+resolve, so the required `audit (high+critical block)` check failed on every
+branch. The `overrides` pins for `brace-expansion` (both workspaces,
+5.0.9 → 5.0.12: three high-severity advisories on quadratic and recursive
+expansion) and `fast-uri` (middleware, 3.1.7 → 3.1.8) cannot be moved by
+`npm audit fix`, so they are raised by hand. `npm audit fix` then refreshed,
+within the existing semver ranges:
+
+- middleware — `hono` 4.12.32 → 4.13.11, `multer` 2.3.0 → 2.4.0, `qs`
+  6.15.3 → 6.16.0, `ip-address` 10.3.1 → 10.7.2, `minimatch` 10.2.5 → 10.2.6;
+  the no longer needed `concat-stream`, `buffer-from` and `typedarray` drop out.
+- web-ui — `undici` 7.29.0 → 7.30.0, `typescript-eslint` and every
+  `@typescript-eslint/*` package 8.65.0 → 8.71.0, `eslint-config-next` and
+  `@next/eslint-plugin-next` 16.3.5 → 16.3.7, `@eslint/eslintrc` 3.3.6 → 3.3.7.
+
+The lockfile's stale workspace entry for `packages/plugin-api` (1.13.0) now
+matches its `package.json` (1.19.1). Both workspaces are free of
+high/critical advisories again. The remaining moderate findings (`uuid` via
+`exceljs`/`botbuilder`, `dompurify` via `monaco-editor`) need breaking
+upgrades and are left for their own changes.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
