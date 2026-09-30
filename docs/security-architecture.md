@@ -520,6 +520,16 @@ one rule about what counts as a runtime.
   under that name. Apps installed from builds before electron-builder 26 carry
   no `publisherName` and take their next update unchecked; every update after
   that is checked.
+- **macOS update floor.** electron-builder writes no macOS minimum into
+  `latest-mac.yml`, so `desktop/scripts/merge-mac-update-feed.mjs` adds
+  `minimumSystemVersion` to the merged feed. It is the Darwin kernel version
+  (`22.0.0` for macOS 13, Electron 44's minimum), because electron-updater
+  compares it with `os.release()`; a product version such as `13.0` fails its
+  semver parse and lets every Mac update. Macs below the floor are told there is
+  no update and keep the version they run. `desktop/buildResources/afterPack.js`
+  fails every mac build whose packaged `LSMinimumSystemVersion` does not match
+  the floor, so an Electron major that raises the minimum cannot reach Macs it
+  does not start on.
 
 ## 5. Signed artefact URLs
 
@@ -1392,8 +1402,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       on `main` (§4a). `audit-scope.test.mjs` catches a missing matrix leg;
       the Dependabot block and the required check are on the reviewer.
 - [ ] An Electron major bump in `desktop/` moves `@types/node` to Electron's
-      embedded Node major in the same PR, and a release build of it has passed
-      "Verify native modules load under the Electron ABI" (§4a).
+      embedded Node major in the same PR. Before it merges, a `desktop-apps.yml`
+      dispatch build of the PR branch (throwaway tag) has passed on all four
+      targets, including "Verify native modules load under the Electron ABI"
+      and afterPack's check of the macOS update floor (§4a): a push to `main`
+      releases through that same workflow.
 
 ---
 

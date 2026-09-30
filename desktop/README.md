@@ -191,6 +191,13 @@ Consequences worth knowing before touching this:
   users with no matching file, or pushes every Apple Silicon user onto Rosetta.
   The mac jobs therefore **hold back** that file and the `mac-update-feed` job
   merges both (`scripts/merge-mac-update-feed.mjs`, covered by `npm test`).
+- The merged feed also declares `minimumSystemVersion`: the macOS minimum of the
+  packaged Electron, written as the Darwin kernel version electron-updater
+  compares with `os.release()` (`22.0.0` = macOS 13). Macs below it are not
+  offered the update and keep the version they run. `buildResources/afterPack.js`
+  fails the build when the packaged app's `LSMinimumSystemVersion` no longer
+  matches `MACOS_MINIMUM` in that script — after an Electron major, update the
+  constant, not the check.
 - `stage-runtime.mjs` follows `process.arch`, so it needs no changes — but
   anything that hardcodes `darwin-arm64` does. The pgvector CI step now derives
   the architecture and asserts the resulting `vector.dylib` really is that

@@ -2977,23 +2977,29 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Eintrag in `scripts/copy-build-assets.mjs` + dieser CI-Schritt + der Pfad in
   `test/mcpDelegationBackfillMigration.pg.test.ts` (liest das Verzeichnis und nennt es noch
   „live migration series“); das Dockerfile kopiert es nicht.
-- **`audit (high+critical block) (desktop)` als Required Check eintragen (Admin).** Seit dem
-  Desktop-Dependency-Refresh (2026-09-30: Electron 44.5.0, electron-builder 26.17.0) ist
-  `desktop` das dritte Bein der Audit-Matrix und `npm audit` dort bei 0. Reihenfolge, sobald das
-  auf `main` liegt: (1) Packaged-App-Smoke auf macOS arm64 (Wizard → Kernel und Web-UI laufen →
-  Update-Check); (2) `desktop-apps.yml` per `workflow_dispatch` auf allen vier Targets, mit Blick
-  auf „Verify native modules load under the Electron ABI“, den Pre-warm-Schritt, der jetzt
-  `WIN_PUBLISHER_NAME` aus dem Azure-Zertifikat liest, und die Windows-Signaturprüfung gegen
-  `app-update.yml`; (3) den Kontext — am besten zusammen mit `desktop (typecheck + test)` — in
-  die Branch-Protection von `main` aufnehmen und per
-  `GET /repos/byte5ai/omadia/branches/main/protection/required_status_checks` prüfen.
-- **macOS 11/12 vor dem Electron-44-Update schützen.** Electron 44 braucht macOS 13
-  (`LSMinimumSystemVersion` 13.0). electron-builder schreibt für macOS kein
-  `minimumSystemVersion` in `latest-mac.yml`; eine Installation auf macOS 11/12 lädt das Update
-  also und startet danach nicht mehr. Weg: `desktop/scripts/merge-mac-update-feed.mjs` setzt
-  `minimumSystemVersion` (electron-updater vergleicht es mit `os.release()`, also der
-  Darwin-Version: macOS 13 = 22.x) plus Test — oder bewusst entscheiden, macOS 12 nicht mehr zu
-  bedienen. `docs/upgrading.md` beschreibt den Handgriff für Betroffene.
+- **Desktop-Refresh (Electron 44.5.0, electron-builder 26.17.0): Release-Build vor dem Merge
+  prüfen, Required Check erst danach.** `desktop` ist das dritte Bein der Audit-Matrix und
+  `npm audit` dort bei 0. Ein Push auf `main` startet `auto-release.yml`, das die Installer im
+  selben Lauf baut, signiert und samt Update-Feeds an ein Release hängt. Der erste echte Lauf von
+  sieben Electron-Majors, des macOS-Signatur-Umwegs unter electron-builder 26, des Azure-
+  `publisherName` und des `minimumSystemVersion`-Felds in `latest-mac.yml` darf deshalb kein
+  User-Release sein.
+  **Vor dem Merge**, Run-IDs in den PR: (1) einen Wegwerf-Tag auf den Branch-Head setzen und
+  pushen (semver, z. B. `v0.0.0-desktop-refresh.1`; kein Workflow startet auf Tag-Pushes) und
+  `desktop-apps.yml` per `workflow_dispatch` vom Branch mit `tag=<Wegwerf-Tag>` und
+  `notarize=false` starten. Ohne Release zu diesem Tag lädt der Lauf nichts hoch. Alle vier
+  Targets müssen grün sein; genau hinsehen bei „Verify native modules load under the Electron
+  ABI“, bei afterPack (prüft jetzt `LSMinimumSystemVersion` gegen den Feed-Floor), beim
+  Pre-warm-Schritt, der `WIN_PUBLISHER_NAME` aus dem Azure-Zertifikat liest, bei der
+  Windows-Signaturprüfung gegen `app-update.yml` und beim Job `mac-update-feed` (das gemergte
+  `latest-mac.yml` trägt `minimumSystemVersion: 22.0.0`). (2) Die arm64-App aus diesem Lauf
+  einmal starten, auf einem Mac ohne produktive omadia-Installation (gleiches Datenverzeichnis):
+  Wizard → Kernel und Web-UI laufen → Update-Check. Nicht notarisiert, also Rechtsklick →
+  Öffnen; der Update-Check findet das aktuelle Release, den Neustart ablehnen. Danach den
+  Wegwerf-Tag löschen.
+  **Nach dem Merge** (Admin): (3) den Kontext `audit (high+critical block) (desktop)`, am besten
+  zusammen mit `desktop (typecheck + test)`, in die Branch-Protection von `main` aufnehmen und
+  per `GET /repos/byte5ai/omadia/branches/main/protection/required_status_checks` prüfen.
 - **Datenverzeichnis-Dialog ohne `defaultPath`** (`desktop/src/ipc.ts`): seit Electron 43 öffnet
   `showOpenDialog` ohne `defaultPath` im Downloads-Ordner — für ein Postgres-Datenverzeichnis ein
   schlechter Startpunkt. `defaultPath` auf das Home- oder das aktuelle Datenverzeichnis setzen.

@@ -179,11 +179,11 @@ The desktop app's runtime moved from Electron 37 to Electron 44 (2026-09-30).
 Electron 44 does not run on macOS 12 or earlier, and the packaged app declares
 macOS 13 (Ventura) as its minimum.
 
-- **macOS 11 and 12:** auto-update still downloads the new version, which then
-  refuses to start. Decline the restart when the update prompt appears, or
-  update macOS to 13 or later first. An installation that has already updated
-  needs a macOS upgrade or a fresh install from the DMG of the last release
-  built on Electron 37.
+- **macOS 11 and 12:** the update feed declares macOS 13 as its minimum, so
+  these Macs are no longer offered updates. The app keeps running the last
+  release built on Electron 37, and "Check for Updates…" reports it as up to
+  date. Updating macOS to 13 or later brings the next update. An app installed
+  by hand from a newer DMG does not start on macOS 11 or 12.
 - **Windows:** nothing to do. From this build on, the app pins the publisher
   name of its Authenticode signature and refuses an update that is not signed
   under it. The update *to* this build is not checked yet; every later one is.

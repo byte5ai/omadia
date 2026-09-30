@@ -56,16 +56,28 @@ now reports 0, `desktop` is the third leg of the audit matrix, and
 directory is missing from it (`docs/security-architecture.md` §4a).
 
 What changes with it: the desktop app needs macOS 13 or later (Electron 44
-dropped macOS 12, see `docs/upgrading.md`). electron-builder 26 requires
-`win.azureSignOptions.publisherName`; the release workflow reads it from the
-signing certificate, and because it also lands in the Windows app's
-`app-update.yml`, installed Windows apps now refuse updates that are not
-Authenticode-signed under that name. The recovery-key copy awaits the now
-asynchronous `clipboard.writeText`, and `npm install` no longer downloads the
-Electron binary (it is fetched on first run). Still open (handoff §13): a
-packaged-app launch smoke and a release-workflow dispatch build, then an admin
-adds the `audit (high+critical block) (desktop)` context to `main`'s required
-checks.
+dropped macOS 12, see `docs/upgrading.md`). electron-builder writes no macOS
+minimum into `latest-mac.yml`, so the merged feed now declares
+`minimumSystemVersion: 22.0.0`, the Darwin kernel of macOS 13, which is what
+electron-updater compares with `os.release()`. macOS 11 and 12 installs are
+therefore not offered the Electron 44 build and keep the version they run,
+instead of installing an update that does not start; `afterPack` fails every
+mac build whose packaged `LSMinimumSystemVersion` no longer matches that floor.
+electron-builder 26 requires `win.azureSignOptions.publisherName`; the release
+workflow reads it from the signing certificate, and because it also lands in
+the Windows app's `app-update.yml`, installed Windows apps now refuse updates
+that are not Authenticode-signed under that name. Electron 44's
+`clipboard.writeText` returns a promise that can reject: a failed recovery-key
+copy is now logged and shows the key again to write down, where it would
+otherwise have ended the boot of a running app in the boot-failure dialog.
+`npm install` no longer downloads the Electron binary (it is fetched on first
+run). Before this merges, a `desktop-apps.yml` dispatch build of the branch
+(throwaway tag, `notarize=false`) has to pass on all four targets and its arm64
+app has to start (wizard, kernel and web-ui up, update check): a push to `main`
+releases through the same workflow, so its first run must not be a
+user-facing release. After the merge an admin adds the
+`audit (high+critical block) (desktop)` context to `main`'s required checks
+(handoff §13).
 
 ### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
 
