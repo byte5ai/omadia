@@ -36,6 +36,45 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
+
+2026-09-29 — the `audit (high+critical block)` step treated an npm registry
+outage ("audit endpoint returned an error") as a pass, so an unknown audit
+state was indistinguishable from a clean one. It now gets three attempts (two
+retries, 20 s then 40 s backoff), each registry fetch capped at 60 s, and then
+fails. For a confirmed upstream outage an admin can set the repository
+variable `AUDIT_ALLOW_REGISTRY_OUTAGE=true`, which downgrades that to a
+warning until the registry is back (reviewer checklist,
+`docs/security-architecture.md` §11). Every run archives `audit-report.json`
+as a workflow artifact for 30 days; the upload overwrites on a re-run, so
+"Re-run failed jobs" cannot turn the required check red by itself. Dependabot
+gets a `/desktop` npm block — the Electron shell had no dependency updates at
+all, and `electron` is a devDependency that ships as the runtime, so its
+patch/minor releases stay out of the tooling group. Adding `desktop` to the
+audit matrix is tracked in the handoff's §13 and lands with the desktop
+dependency refresh that makes it pass. Local audit working files under
+`docs/audits/` are git-ignored.
+
+### Changed — CI schema gate covers every live SQL migration series (#1239)
+
+2026-09-29 — the `schema (migrations on pgvector)` job listed six migration
+domains and named three as "still uncovered". Two of them are live and are
+now applied and re-applied by the job: `middleware/src/conductor/migrations`
+(11 files, applied at boot through the `_conductor_migrations` ledger) and
+`middleware/packages/harness-memory-postgres/src/migrations` (1 file,
+`_memory_migrations`). The third, `middleware/src/services/graph/migrations`,
+is read by no runtime migrator — its four files are byte-identical copies of
+knowledge-graph-neon 0002/0004/0012/0013 — so applying it would only turn
+files that never run in production green. Instead a new step fails the job if
+that directory holds anything but those four copies, which closes the trap
+that stranded a migration there before (#875). A local reproduction of the
+job (every live file applied twice against a throwaway pgvector 16) exposed
+no latent schema defect. `AGENTS.md` no longer names that directory as an
+example for subsystem migrations. The remaining debts — deleting the inert
+graph directory, the 347 allowed test-tree type errors of the typecheck
+ratchet, and the `nl` prompt-PII floor of 0.84 against the 0.97 release gate —
+are recorded in the handoff's §13 roadmap.
+
 ### Fixed — SessionWatcher test no longer races framer-motion's exit animation
 
 2026-09-30 — `SessionWatcher.test.tsx` "drops a warning back to normal when

@@ -1333,6 +1333,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
+- [ ] The repository variable `AUDIT_ALLOW_REGISTRY_OUTAGE` is unset. It lets
+      the required `audit (high+critical block)` check pass **without** an
+      audit result while the npm registry is down; it is an admin-only bypass
+      for a confirmed upstream outage and must be removed as soon as the
+      registry answers again. A PR merged while it was set has no dependency
+      audit and needs one re-run afterwards.
 
 ---
 

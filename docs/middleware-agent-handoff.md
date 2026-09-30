@@ -2967,6 +2967,35 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### CI-Schulden aus dem Security-Review (2026-09-29)
+
+- **`middleware/src/services/graph/migrations/` löschen** — 4 Dateien, byte-identisch mit
+  KG-neon 0002/0004/0012/0013; kein Runner liest sie (die Graph-Migrationen laufen über die
+  `harness-knowledge-graph-neon`-Serie; #875 hat die dort gestrandete 0009 gerettet). Seit
+  2026-09-29 schlägt der `schema`-Job fehl, sobald dort etwas anderes liegt als diese vier
+  Kopien (Schritt „Inert legacy graph migrations stay inert“). Löschen = Verzeichnis +
+  Eintrag in `scripts/copy-build-assets.mjs` + dieser CI-Schritt + der Pfad in
+  `test/mcpDelegationBackfillMigration.pg.test.ts` (liest das Verzeichnis und nennt es noch
+  „live migration series“); das Dockerfile kopiert es nicht.
+- **`desktop` in die Audit-Matrix aufnehmen.** Der `audit (high+critical block)`-Job prüft
+  nur `middleware` und `web-ui`; Dependabot deckt `desktop/` seit 2026-09-29 ab. Die Matrix
+  bekommt `desktop` zusammen mit dem Desktop-Dependency-Refresh (Electron, Builder-Toolchain),
+  der das Gate grün macht — danach den neuen Status-Check als Required eintragen.
+- **Typecheck-Ratchet `test/` + `scripts/` (#573): 347 bekannte Fehler in 120 Dateien**
+  (`middleware/test-typecheck-baseline.json`, Stand 2026-09-29). `npm run typecheck:test`
+  blockt nur *neue* Fehler. Abbau: `npm run typecheck:test -- --report`, fixen,
+  `-- --update` senkt die Baseline (nie erhöhen). Ziel: leere Baseline, dann den Ratchet
+  durch ein hartes `tsc -p test/tsconfig.json` ersetzen, wie `desktop` es mit
+  `typecheck:test` schon tut.
+- **Prompt-PII C0, Locale `nl`: strukturierter Recall 88,2 % statt 0,97.** Der Floor in
+  `packages/harness-plugin-privacy-guard/src/validation/ci-baseline.json` steht für `nl` auf
+  0.84 (de/en/es/fr/it: 0.97). Ursachen: NL-Adressen (`straat`/`gracht`/`plein`, Postcode
+  `1016 AZ`) ohne C0-Muster und bewusst ungepatterte BSN. Wege: NL-Adressmuster in C0, oder
+  `nl` nur mit C1-Sidecar freigeben (`c0+c1` laut `validation/README.md` 89,0 % / 100 %).
+  Floor anheben, sobald die Zahl steigt. `mask_user_prompt` ist ein globaler Schalter (kein
+  Locale-Schalter); Betreibern mit überwiegend niederländischen Nutzern bis dahin C1 mit
+  aktivieren oder die C0-Lücke bei Adressen bewusst in Kauf nehmen.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
