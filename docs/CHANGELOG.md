@@ -36,6 +36,54 @@ changelog.
 
 ## [Unreleased]
 
+### Security — answer-verifier verdicts are evidence-bound: `skipped` / `unavailable` are no longer `approved`
+
+2026-09-30 — the answer verifier reported five situations in which it checked
+nothing as `approved` with an empty claim list: an answer without a trigger
+signal, an extractor that threw, an extractor that returned no claims,
+extracted claims that fit no checker, and a pipeline that threw. The badge
+mapping turned each of them into `verified`, and that is what the trailing
+`verifier` stream event told stream clients and what `verifier_verdicts`
+recorded. Connector badges were already held back by a claim-count check, which
+also kept the internal `corrected` badge of a retry whose own verification
+failed off Teams. Verdicts are now bound to evidence: `approved` requires at
+least one checked claim, all of them verified (its claim list is typed
+non-empty); nothing checkable is `skipped` (reason `no_trigger`, `no_claims` or
+`no_checkable_claims`), and a verifier that could not run is `unavailable`
+(reason `extractor_error` or `pipeline_error`). Badges are derived under an
+evidence gate (`hasVerificationEvidence`), so even an injected pipeline that
+returns `approved` over zero claims yields `unverified`, and a retry earns
+`corrected` only when the retry itself was checked. Contradictions found
+without extraction (tool postconditions, missing citations, failure replay)
+still block on every path, and `skipped` / `unavailable` never trigger the
+paid borderline resample.
+
+What clients see: the `verifier` event on `/api/chat/stream` and on the public
+API-key stream can now carry `summary.status` `skipped` / `unavailable`,
+`summary.badge` `unverified` / `unavailable` and a `summary.reason` code. The
+reason is a closed code set, never an error message. Clients that switch
+exhaustively on these fields must handle the new values, and anything other
+than `verified` / `partial` / `corrected` / `failed` with `claimCount > 0` must
+not be shown as a check. The connector wire type `SemanticAnswer.verifier` is
+unchanged: `toSemanticAnswer` is the single badge gate, and Teams / Telegram
+get no badge for `skipped` / `unavailable` turns, so those plugin repositories
+need no release. Code that switches on `@omadia/verifier`'s
+`VerifierVerdict['status']` stops compiling until it handles the two new
+statuses — deliberately. The web chat previously dropped the `verifier` event
+and had no answer-verifier badge at all; it now shows a footer chip that is
+green only for a verified answer with checked claims, neutral for "not
+verified" and "verification unavailable" (the tooltip names the reason), amber
+for partly verified and red for a contradiction (new `chat.verifier.*` keys in
+en and de).
+
+Operators: `verifier_verdicts.status` now stores `skipped` / `unavailable` as
+their own values (free `TEXT` column, no migration), so the share of
+`approved` rows drops — small talk and outages no longer count as clean turns.
+Ad-hoc SQL or dashboards that read `status = 'approved'` as "clean turn" need a
+second look. No new environment variable. The golden corpus file
+`approve.jsonl` is now `skipped.jsonl` and expects `skipped`. Details:
+`docs/security-architecture.md` §7c.
+
 ### Fixed — /login and /setup only follow same-origin return paths
 
 2026-09-30 — after a password sign-in, and after the first administrator is

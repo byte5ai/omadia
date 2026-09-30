@@ -89,9 +89,40 @@ export type ClaimVerdict =
     }
   | { status: 'unverified'; claim: Claim; reason: string };
 
-/** Aggregated result the orchestrator consumes. */
+/** A claim list that holds at least one checked claim. */
+export type NonEmptyClaimVerdicts = [ClaimVerdict, ...ClaimVerdict[]];
+
+/**
+ * Why the verifier ran but checked nothing:
+ *  - `no_trigger`          — the answer has no signal the verifier checks
+ *                            (amount, date, reference, …); nothing was extracted.
+ *  - `no_claims`           — the trigger fired but the extractor found no claim.
+ *  - `no_checkable_claims` — claims were extracted, but none fits a checker
+ *                            (e.g. an amount whose source is unknown).
+ */
+export type VerifierSkipReason = 'no_trigger' | 'no_claims' | 'no_checkable_claims';
+
+/**
+ * Why the verifier could not run. A closed code on purpose: the reason is
+ * forwarded on the stream `verifier` event to API clients, so it never carries
+ * an error message — that stays in the log line where the error is caught.
+ */
+export type VerifierUnavailableReason = 'extractor_error' | 'pipeline_error';
+
+/**
+ * Aggregated result the orchestrator consumes. Bound to evidence:
+ *  - `approved` — at least one claim was checked and every one is `verified`
+ *    (the claim list is typed non-empty, so an empty `approved` cannot be
+ *    built).
+ *  - `approved_with_disclaimer` / `blocked` — claims were checked; some stayed
+ *    unconfirmed / at least one was contradicted.
+ *  - `skipped` — the verifier ran but had nothing it could check.
+ *  - `unavailable` — the verifier could not run.
+ * `skipped` and `unavailable` are not a pass: they carry no evidence and
+ * never map to a `verified` or `corrected` badge.
+ */
 export type VerifierVerdict =
-  | { status: 'approved'; claims: ClaimVerdict[]; latencyMs: number }
+  | { status: 'approved'; claims: NonEmptyClaimVerdicts; latencyMs: number }
   | {
       status: 'approved_with_disclaimer';
       claims: ClaimVerdict[];
@@ -102,6 +133,18 @@ export type VerifierVerdict =
       status: 'blocked';
       claims: ClaimVerdict[];
       contradictions: ClaimVerdict[];   // only those with status === 'contradicted'
+      latencyMs: number;
+    }
+  | {
+      status: 'skipped';
+      reason: VerifierSkipReason;
+      claims: ClaimVerdict[];           // always empty
+      latencyMs: number;
+    }
+  | {
+      status: 'unavailable';
+      reason: VerifierUnavailableReason;
+      claims: ClaimVerdict[];           // always empty
       latencyMs: number;
     };
 
@@ -155,12 +198,18 @@ export interface VerifierInput {
   knowledgeGraphToolsCalled?: boolean;
 }
 
-/** Badge used by the Teams card to communicate verifier status. */
+/**
+ * Badge on the verifier summary. Connectors (Teams card) only ever receive
+ * the first four — `toSemanticAnswer` forwards a badge only for a summary
+ * with checked claims, so `unverified` / `unavailable` render as no badge.
+ */
 export type VerifierBadge =
   | 'verified'            // ✓ verified
   | 'partial'             // ⚠ partially confirmed
   | 'corrected'           // ↻ corrected (after a successful retry)
-  | 'failed';             // blocked + retry still failed
+  | 'failed'              // blocked + retry still failed
+  | 'unverified'          // nothing checkable — no verification happened
+  | 'unavailable';        // the verifier could not run
 
 /**
  * Narrow a generic Claim into a HardClaim when it qualifies for the
@@ -171,9 +220,31 @@ export type VerifierBadge =
  * contradictions but at least one claim remained `unverified`. Today this
  * is exactly `approved_with_disclaimer`. The gate keeps the predicate
  * encapsulated so the VerifierService and tests share one definition.
+ * `skipped` / `unavailable` are never borderline: a resample is a second paid
+ * orchestrator turn, and nothing checkable is not uncertainty.
  */
 export function isBorderlineVerdict(verdict: VerifierVerdict): boolean {
   return verdict.status === 'approved_with_disclaimer';
+}
+
+/**
+ * True only when the verdict rests on at least one claim the verifier
+ * actually checked: `approved`, `approved_with_disclaimer` or `blocked` with a
+ * non-empty claim list. `skipped` and `unavailable` never carry evidence.
+ * Whatever derives a badge from a verdict gates on this rather than on the
+ * status alone — the pipeline is injected, so the invariant is re-checked
+ * where the verification signal is produced.
+ */
+export function hasVerificationEvidence(verdict: VerifierVerdict): boolean {
+  switch (verdict.status) {
+    case 'approved':
+    case 'approved_with_disclaimer':
+    case 'blocked':
+      return verdict.claims.length > 0;
+    case 'skipped':
+    case 'unavailable':
+      return false;
+  }
 }
 
 export function isHardClaim(claim: Claim): claim is HardClaim {

@@ -1641,6 +1641,27 @@
       "bucketFallback": "Fallback",
       "providerFallback": "Fallback model",
       "providerFallbackTooltip": "The primary model was unavailable — this answer came from the agent's fallback ({model} on {provider})."
+    },
+    "verifier": {
+      "label": {
+        "verified": "Answer verified",
+        "partial": "Partly verified",
+        "corrected": "Answer corrected",
+        "failed": "Contradiction found",
+        "unverified": "Not verified",
+        "unavailable": "Verification unavailable"
+      },
+      "hint": {
+        "verified": "The verifier checked {count, plural, one {# claim} other {# claims}} in this answer against the sources and confirmed all of them.",
+        "partial": "No claim contradicts the sources, but {count, plural, one {# claim} other {# claims}} could not be confirmed.",
+        "corrected": "The first answer contradicted the sources; this corrected answer passed the check.",
+        "failed": "{count, plural, one {# claim contradicts} other {# claims contradict}} the sources.",
+        "unverified": "Not checked: the verifier found nothing in this answer it could check.",
+        "noTrigger": "Not checked: the answer contains no figures, dates or references the verifier checks.",
+        "noClaims": "Not checked: the verifier found no factual claims in this answer.",
+        "noCheckableClaims": "Not checked: none of the claims in this answer can be checked against a source.",
+        "unavailable": "The verifier could not run for this answer, so nothing was checked."
+      }
     }
   },
   "privacyReceipt": {

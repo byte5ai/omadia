@@ -78,7 +78,7 @@ const SILENT_LOG = (): void => {
 // --- Tests ---------------------------------------------------------------
 
 describe('verifier/pipeline', () => {
-  it('approves smalltalk without triggering extractor', async () => {
+  it('skips smalltalk without triggering extractor (skipped, never approved)', async () => {
     let called = false;
     const extractor = {
       extract(): Promise<Claim[]> {
@@ -105,7 +105,8 @@ describe('verifier/pipeline', () => {
       userMessage: 'Hallo',
       answer: 'Hallo, wie kann ich helfen?',
     });
-    assert.equal(verdict.status, 'approved');
+    assert.equal(verdict.status, 'skipped');
+    if (verdict.status === 'skipped') assert.equal(verdict.reason, 'no_trigger');
     assert.equal(called, false);
   });
 
@@ -185,7 +186,7 @@ describe('verifier/pipeline', () => {
     }
   });
 
-  it('approves when extractor returns no claims (trigger fired but nothing structured)', async () => {
+  it('skips when extractor returns no claims (trigger fired but nothing structured)', async () => {
     const pipeline = new VerifierPipeline({
       extractor: stubExtractor([]),
       deterministic: stubDeterministic(() => ({
@@ -205,7 +206,8 @@ describe('verifier/pipeline', () => {
       userMessage: 'was?',
       answer: 'Die Rechnung beträgt 1.234,56 €.',
     });
-    assert.equal(verdict.status, 'approved');
+    assert.equal(verdict.status, 'skipped');
+    if (verdict.status === 'skipped') assert.equal(verdict.reason, 'no_claims');
   });
 
   it('blocks odoo-amount claim when the turn never called an odoo tool (context-replay)', async () => {
@@ -305,7 +307,7 @@ describe('verifier/pipeline', () => {
     assert.equal(verdict.status, 'approved');
   });
 
-  it('tolerates extractor throwing', async () => {
+  it('tolerates extractor throwing — reports unavailable, never approved', async () => {
     const pipeline = new VerifierPipeline({
       extractor: {
         extract(): Promise<Claim[]> {
@@ -329,7 +331,8 @@ describe('verifier/pipeline', () => {
       userMessage: 'was?',
       answer: 'Die Rechnung beträgt 1.234,56 €.',
     });
-    assert.equal(verdict.status, 'approved');
+    assert.equal(verdict.status, 'unavailable');
+    if (verdict.status === 'unavailable') assert.equal(verdict.reason, 'extractor_error');
   });
 
   // #130 — postcondition violation flips the verdict to blocked even when
@@ -570,12 +573,16 @@ describe('verifier/pipeline - anchored soft claims', () => {
       judge: stubJudge((c) => ({ status: 'verified', claim: c, source: 'graph' })),
       log: SILENT_LOG,
     });
+    // The date fires the trigger, so the extractor and the judge really run —
+    // without a trigger signal the verdict would be `skipped` and
+    // `existsCalls === 0` would hold vacuously.
     const verdict = await pipeline.verify({
       runId: 'r_plain',
       userMessage: 'wer?',
-      answer: 'John Doe ist Senior Dev.',
+      answer: 'John Doe ist seit 12.03.2020 Senior Dev.',
     });
     assert.equal(existsCalls, 0);
     assert.equal(verdict.status, 'approved');
+    assert.equal(verdict.claims.length, 1);
   });
 });

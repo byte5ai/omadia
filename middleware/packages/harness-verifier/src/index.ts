@@ -43,6 +43,7 @@ export type {
 export {
   SOFT_ANCHOR_REF_FIELDS,
   hasOdooRecordAnchor,
+  hasVerificationEvidence,
   isBorderlineVerdict,
   isHardClaim,
   isSoftClaim,
@@ -54,10 +55,13 @@ export type {
   ClaimType,
   ClaimVerdict,
   HardClaim,
+  NonEmptyClaimVerdicts,
   OdooRecordRef,
   SoftClaim,
   VerifierBadge,
   VerifierInput,
+  VerifierSkipReason,
+  VerifierUnavailableReason,
   VerifierVerdict,
 } from './claimTypes.js';
 

@@ -2,6 +2,7 @@ import type {
   ChatTurnResult,
   PendingMcpInputCard,
   RunTracePayload,
+  VerifierResultSummary,
 } from './chatAgent.js';
 import type {
   AgentConsultation,
@@ -14,6 +15,48 @@ import {
   applyAiDisclosure,
   type ApplyAiDisclosureContext,
 } from './aiDisclosure.js';
+
+/**
+ * True when a verifier summary rests on at least one checked claim:
+ * `approved` / `approved_with_disclaimer` / `blocked` with `claimCount > 0`.
+ * `skipped` and `unavailable` never do. Any consumer that renders a
+ * verification signal from a `VerifierResultSummary` gates on this.
+ */
+export function verifierSummaryHasEvidence(summary: VerifierResultSummary): boolean {
+  switch (summary.status) {
+    case 'approved':
+    case 'approved_with_disclaimer':
+    case 'blocked':
+      return summary.claimCount > 0;
+    case 'skipped':
+    case 'unavailable':
+      return false;
+  }
+}
+
+/** Narrows a summary badge to the connector wire union (`outgoing.ts`). */
+function isConnectorBadge(
+  badge: VerifierResultSummary['badge'],
+): badge is VerifierBadge['status'] {
+  switch (badge) {
+    case 'verified':
+    case 'partial':
+    case 'corrected':
+    case 'failed':
+      return true;
+    case 'unverified':
+    case 'unavailable':
+      return false;
+  }
+}
+
+/** The connector badge for a turn, or undefined when nothing was checked. */
+function connectorVerifierBadge(
+  summary: VerifierResultSummary | undefined,
+): VerifierBadge | undefined {
+  if (!summary || !verifierSummaryHasEvidence(summary)) return undefined;
+  return isConnectorBadge(summary.badge) ? { status: summary.badge } : undefined;
+}
 
 /**
  * #332 Layer 1 — plain-text fallback footer for connectors without rich-card
@@ -203,13 +246,13 @@ export function toSemanticAnswer(
   }
 
   // The badge is only an honest signal when the verifier actually CHECKED
-  // something: with zero extracted claims (small talk, greetings) — and on the
-  // pipeline-failure fallback, which reports `approved` with an empty claim
-  // list — a "✓ geprüft" chip would assert a verification that never happened.
-  const verifier: VerifierBadge | undefined =
-    r.verifier && r.verifier.claimCount > 0
-      ? { status: r.verifier.badge }
-      : undefined;
+  // something. `skipped` (small talk, greetings, nothing checkable) and
+  // `unavailable` (extractor or pipeline failure) carry no evidence, and their
+  // `unverified` / `unavailable` badges have no value in the connector wire
+  // union: a "✓ geprüft" chip — or any chip — would assert a verification that
+  // never happened. Connectors get no badge for them. This is the single
+  // badge gate for every connector (Teams card, Telegram, …).
+  const verifier = connectorVerifierBadge(r.verifier);
 
   // #332 Layer 1 — curate a tamper-evident consulted-agents footer from the
   // deterministic run-trace. This is the ONLY sub-agent signal Teams/Telegram

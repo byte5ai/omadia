@@ -1641,6 +1641,27 @@
       "bucketFallback": "Fallback",
       "providerFallback": "Fallback-Modell",
       "providerFallbackTooltip": "Das primäre Modell war nicht verfügbar — diese Antwort kam vom Fallback des Agenten ({model} bei {provider})."
+    },
+    "verifier": {
+      "label": {
+        "verified": "Antwort geprüft",
+        "partial": "Teilweise geprüft",
+        "corrected": "Antwort korrigiert",
+        "failed": "Widerspruch gefunden",
+        "unverified": "Nicht geprüft",
+        "unavailable": "Prüfung nicht verfügbar"
+      },
+      "hint": {
+        "verified": "Der Verifier hat {count, plural, one {# Aussage} other {# Aussagen}} dieser Antwort gegen die Quellen geprüft und alle bestätigt.",
+        "partial": "Keine Aussage widerspricht den Quellen, aber {count, plural, one {# Aussage konnte} other {# Aussagen konnten}} nicht bestätigt werden.",
+        "corrected": "Die erste Antwort widersprach den Quellen; diese korrigierte Antwort hat die Prüfung bestanden.",
+        "failed": "{count, plural, one {# Aussage widerspricht} other {# Aussagen widersprechen}} den Quellen.",
+        "unverified": "Nicht geprüft: Der Verifier hat in dieser Antwort nichts Prüfbares gefunden.",
+        "noTrigger": "Nicht geprüft: Die Antwort enthält keine Beträge, Daten oder Referenzen, die der Verifier prüft.",
+        "noClaims": "Nicht geprüft: Der Verifier hat in dieser Antwort keine Faktenaussagen gefunden.",
+        "noCheckableClaims": "Nicht geprüft: Keine Aussage dieser Antwort lässt sich gegen eine Quelle prüfen.",
+        "unavailable": "Der Verifier konnte für diese Antwort nicht laufen, es wurde nichts geprüft."
+      }
     }
   },
   "privacyReceipt": {

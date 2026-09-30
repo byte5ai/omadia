@@ -238,19 +238,21 @@ describe('goldenModel/buildVerifierRunOnce (synthetic paths, key-free)', () => {
     // `knowledgeGraphToolsCalled`, the block-above case would silently pass for
     // the wrong reason and this control would still be green — the two together
     // pin the wiring. The answer trips no trigger signal, so extraction is
-    // skipped and the stub `complete` is never called.
+    // skipped and the stub `complete` is never called — which makes the
+    // verdict `skipped` (nothing was checked), not `approved`.
     const entry: GoldenEntry = {
       id: 'ok',
       userMessage: 'Ist die Aufgabe erledigt?',
       answer: 'Alles erledigt [ref:n1].',
       trace: { knowledgeGraphToolsCalled: true },
-      expected: { status: 'approved' },
+      expected: { status: 'skipped' },
     };
     let calls = 0;
     const r = await buildVerifierRunOnce(stubProvider(() => {
       calls += 1;
     }), 'stub-model')(entry);
     assert.notEqual(r.status, 'blocked');
+    assert.equal(r.status, 'skipped');
     assert.equal(calls, 0);
   });
 

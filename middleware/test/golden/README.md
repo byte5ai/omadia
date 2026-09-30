@@ -11,12 +11,18 @@ behaviour (LLM weakness #13, version drift) fails here instead of shipping.
 The assertion target is **not** the raw model string — it is the verifier
 verdict *class*, which is stable despite generation stochasticity:
 
-- `approved` — via trigger-skip **or** (v2) a deterministic-verified hard claim
+- `approved` — only via (v2) a deterministic-verified hard claim: at least one
+  checked claim, every one verified
 - `approved_with_disclaimer` (the borderline path, `isBorderlineVerdict`)
 - `blocked` — via a judge contradiction, a deterministic contradiction (v2), or
   the two synthetic claim paths:
   - `tool_postcondition` (#130)
   - `citation_missing` (#131)
+- `skipped` — the trigger-skip path: no hard signal, so nothing was extracted
+  or checked. Not a pass, and not `approved`.
+
+`unavailable` (the extractor failed) is a live verdict but never an expected
+class: a sample that lands there fails its entry.
 
 Each corpus entry is a frozen `(userMessage, answer, trace fields, fixture
 evidence, fixture Odoo records, expected status)` tuple run through a **real**
@@ -32,12 +38,12 @@ not just the class, via `expected.via`:
 - `deterministic-verified` — an Odoo re-query CONFIRMED a hard claim (→ approved).
 - `deterministic-contradicted` — an Odoo re-query REFUTED a hard claim (→ blocked).
 
-This exists because the class alone is not enough for the deterministic
-`approved` case: a triggering answer whose extractor returns **zero** claims
-also lands in `approved`, so `status: "approved"` on its own would pass for the
-wrong reason and hide a checker regression. `via` requires a decided-class
-sample to also carry a hard-claim verdict of the required kind — a soft (judge)
-or synthetic contradiction, or an empty extraction, does not satisfy it.
+This exists because the class alone was not enough for the deterministic
+`approved` case: a triggering answer whose extractor returned **zero** claims
+used to land in `approved` too. Verdicts are evidence-bound now — that case is
+`skipped` — but `via` still pins WHICH checker confirmed the claim: it requires
+a decided-class sample to also carry a hard-claim verdict of the required kind,
+so a soft (judge) or synthetic verdict does not satisfy it.
 
 ## Scope: v1, v2, and what is still open
 
@@ -51,7 +57,8 @@ claim).
 - **v1 (#129):** verifier-stage eval with `DeterministicChecker({})` — no reader,
   so every hard claim resolved `unverified` and the checker's verified/
   contradicted branches had zero coverage. `approved` was reachable **only** via
-  trigger-skip (no hard signal → extraction skipped).
+  trigger-skip (no hard signal → extraction skipped) — a path that is `skipped`
+  now, since `approved` requires a checked claim.
 - **v2 (#639), Gaps 1 & 2 — done (this):** a `FixtureOdooReader` injected into
   `DeterministicChecker` lets a corpus entry declare frozen Odoo records the
   checker re-queries. This adds:
@@ -130,7 +137,7 @@ on `pull_request`, forks never attempt to run it.
 ## Adding a corpus entry (do this when you ship a new agent type or verdict path)
 
 1. Pick the file under `corpus/` that matches the **expected verdict class**
-   (`approve.jsonl`, `approved-deterministic.jsonl`, `disclaimer.jsonl`,
+   (`skipped.jsonl`, `approved-deterministic.jsonl`, `disclaimer.jsonl`,
    `blocked-citation.jsonl`, `blocked-tool-postcondition.jsonl`,
    `blocked-contradiction.jsonl`, `blocked-deterministic-contradiction.jsonl`),
    or add a new `*.jsonl` file for a new class. Every `.jsonl` in `corpus/` is
@@ -161,7 +168,7 @@ on `pull_request`, forks never attempt to run it.
        ]
      },
      "expected": {
-       "status": "blocked",               // required: approved | approved_with_disclaimer | blocked
+       "status": "blocked",               // required: approved | approved_with_disclaimer | blocked | skipped
        "via": "deterministic-contradicted" // optional (v2): deterministic-verified | deterministic-contradicted
      }
    }
@@ -181,9 +188,9 @@ on `pull_request`, forks never attempt to run it.
    `2026-04-19`), an accounting ref (`INV/2026/0042`), a percentage, or a
    duration (`12 Urlaubstage`) — an aggregate keyword next to a 3+ digit number
    also counts. **A soft/qualitative claim alone never triggers.** If the answer
-   has no signal, `verify()` skips extraction and returns `approved` *before the
+   has no signal, `verify()` skips extraction and returns `skipped` *before the
    judge runs* — so a `disclaimer`/`contradiction` fixture whose answer lacks a
-   signal silently resolves to `approved` and fails. Every judge-dependent
+   signal silently resolves to `skipped` and fails. Every judge-dependent
    fixture in this corpus therefore embeds a date or an amount in the answer;
    keep that up. (Verify with the trigger check pattern used in review, or just
    run `eval:golden`.)
@@ -201,8 +208,9 @@ on `pull_request`, forks never attempt to run it.
      that **explicitly** states something incompatible (the judge only
      contradicts on explicit conflict); a contradiction dominates the co-extracted
      `unverified` hard claim, so the verdict is `blocked`.
-   - `approved` via **trigger-skip** needs an answer with **no** hard signal, so
-     extraction is skipped (`approve.jsonl`).
+   - `skipped` (**trigger-skip**) needs an answer with **no** hard signal, so
+     extraction is skipped (`skipped.jsonl`). It is never `approved`: nothing
+     was checked.
    - `approved` via **deterministic-verified** (v2) and `blocked` via
      **deterministic-contradicted** (v2) both need: a hard signal (use an
      **accounting ref** like `INV/2026/0042` — it triggers without forcing a
@@ -215,8 +223,9 @@ on `pull_request`, forks never attempt to run it.
      branch, do it in `goldenModel.test.ts` with a scripted extractor stub rather
      than a live corpus entry — the live model does not reliably fill `value`.
      Always assert `via`, never the class alone: a `deterministic-verified` entry
-     that asserts only `status: "approved"` would silently pass on an empty
-     extraction and hide the very regression it guards.
+     that asserts only `status: "approved"` would pass on a judge-only
+     confirmation and hide the very checker regression it guards. (An empty
+     extraction no longer passes — it is `skipped`.)
    - **`deterministic-verified` needs a soft-claim guard.** Clean `approved`
      requires **every** extracted claim to be non-`unverified`, and a triggering
      answer means the extractor ran. Beside the hard claim the model may

@@ -65,9 +65,36 @@ describe('buildCorrectionPrompt — postcondition', () => {
   it('returns undefined for non-blocked verdicts', () => {
     const verdict: VerifierVerdict = {
       status: 'approved',
-      claims: [],
+      claims: [
+        {
+          status: 'verified',
+          claim: {
+            id: 'c_1',
+            text: '1.234,56 €',
+            type: 'amount',
+            expectedSource: 'odoo',
+            relatedEntities: [],
+          },
+          source: 'odoo',
+        },
+      ],
       latencyMs: 0,
     };
     assert.equal(buildCorrectionPrompt(verdict), undefined);
+    // Nothing checked is not a contradiction to correct either.
+    const skipped: VerifierVerdict = {
+      status: 'skipped',
+      reason: 'no_trigger',
+      claims: [],
+      latencyMs: 0,
+    };
+    const unavailable: VerifierVerdict = {
+      status: 'unavailable',
+      reason: 'extractor_error',
+      claims: [],
+      latencyMs: 0,
+    };
+    assert.equal(buildCorrectionPrompt(skipped), undefined);
+    assert.equal(buildCorrectionPrompt(unavailable), undefined);
   });
 });

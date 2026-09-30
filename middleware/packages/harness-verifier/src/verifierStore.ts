@@ -45,6 +45,14 @@ export class VerifierStore {
     const contradictions =
       verdict.status === 'blocked' ? verdict.contradictions : [];
     const unverifiedCount = countUnverified(verdict);
+    // `skipped` / `unavailable` persist as their own status (the column is
+    // free TEXT), so calibration queries can tell an outage from a clean run.
+    // The run id links the row to the failure logged where it happened.
+    if (verdict.status === 'unavailable') {
+      this.log(
+        `[verifier/store] unavailable run=${input.runId} reason=${verdict.reason}`,
+      );
+    }
 
     try {
       await this.pool.query(
@@ -128,9 +136,16 @@ function countByClass(verdicts: readonly ClaimVerdict[]): {
 }
 
 function countUnverified(verdict: VerifierVerdict): number {
-  if (verdict.status === 'approved_with_disclaimer') return verdict.unverified.length;
-  if (verdict.status === 'approved') return 0;
-  return verdict.claims.filter((v) => v.status === 'unverified').length;
+  switch (verdict.status) {
+    case 'approved_with_disclaimer':
+      return verdict.unverified.length;
+    case 'approved':
+    case 'skipped':
+    case 'unavailable':
+      return 0;
+    case 'blocked':
+      return verdict.claims.filter((v) => v.status === 'unverified').length;
+  }
 }
 
 function formatValue(v: unknown): string | null {

@@ -239,3 +239,37 @@ describe('applyStreamEvent — degraded turns (#1094)', () => {
     expect(folded?.content).toBe('the authoritative answer');
   });
 });
+
+/**
+ * The answer verifier emits one `verifier` event AFTER `done` (only when it is
+ * enabled). The fold used to drop it (`default: return m`), so the web chat had
+ * no way to show what the verifier concluded — or that it checked nothing. It
+ * now lands on the message for `<VerifierBadge>`.
+ */
+describe('applyStreamEvent — verifier summary', () => {
+  it('folds the trailing verifier event into the pending message', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'verifier',
+      summary: {
+        badge: 'unavailable',
+        status: 'unavailable',
+        reason: 'pipeline_error',
+        claimCount: 0,
+        contradictionCount: 0,
+        unverifiedCount: 0,
+        retryCount: 0,
+        latencyMs: 0,
+        mode: 'shadow',
+      },
+    });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.verifier?.status).toBe('unavailable');
+    expect(next.messages[1]?.verifier?.reason).toBe('pipeline_error');
+    // Metadata, not content: the answer text is left alone.
+    expect(next.messages[1]?.content).toBe('so far');
+    expect(next.messages[0]?.verifier).toBeUndefined();
+  });
+});

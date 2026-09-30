@@ -41,14 +41,36 @@ describe('toSemanticAnswer — verifier badge gate', () => {
     assert.equal(sa.verifier, undefined);
   });
 
-  it('suppresses the pipeline-failure fallback (approved with empty claim list)', () => {
-    // verifierService returns `{ status: 'approved', claims: [] }` when the
-    // pipeline throws — that must never render as "✓ Antwort geprüft".
+  it('suppresses a pipeline failure (unavailable, nothing checked)', () => {
+    // verifierService reports a pipeline that threw as `unavailable` — that
+    // must never render as "✓ Antwort geprüft", nor as any other chip.
     const sa = toSemanticAnswer({
       ...base,
-      verifier: verifierSummary({ claimCount: 0, latencyMs: 0 }),
+      verifier: verifierSummary({
+        badge: 'unavailable',
+        status: 'unavailable',
+        reason: 'pipeline_error',
+        claimCount: 0,
+        latencyMs: 0,
+      }),
     });
     assert.equal(sa.verifier, undefined);
+  });
+
+  it('never forwards the unverified / unavailable badges to a connector', () => {
+    for (const summary of [
+      verifierSummary({ badge: 'unverified', status: 'skipped', reason: 'no_trigger', claimCount: 0 }),
+      verifierSummary({ badge: 'unavailable', status: 'unavailable', reason: 'extractor_error', claimCount: 0 }),
+      // Defensive: the gate is not a claim count alone. A summary claiming
+      // checked claims but carrying a no-evidence badge or status still gets
+      // no chip — the connector wire union has no value for it.
+      verifierSummary({ badge: 'unverified', status: 'skipped', claimCount: 3 }),
+      verifierSummary({ badge: 'verified', status: 'skipped', claimCount: 3 }),
+      verifierSummary({ badge: 'verified', status: 'unavailable', claimCount: 3 }),
+    ]) {
+      const sa = toSemanticAnswer({ ...base, verifier: summary });
+      assert.equal(sa.verifier, undefined, `${summary.status}/${summary.badge}`);
+    }
   });
 
   it('keeps corrected/failed badges as long as claims were checked', () => {
@@ -57,6 +79,11 @@ describe('toSemanticAnswer — verifier badge gate', () => {
       verifier: verifierSummary({ badge: 'corrected', retryCount: 1 }),
     });
     assert.deepEqual(sa.verifier, { status: 'corrected' });
+    const failed = toSemanticAnswer({
+      ...base,
+      verifier: verifierSummary({ badge: 'failed', status: 'blocked', contradictionCount: 1 }),
+    });
+    assert.deepEqual(failed.verifier, { status: 'failed' });
   });
 });
 

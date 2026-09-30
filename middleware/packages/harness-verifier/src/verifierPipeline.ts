@@ -2,8 +2,10 @@ import type {
   Claim,
   ClaimVerdict,
   HardClaim,
+  NonEmptyClaimVerdicts,
   SoftClaim,
   VerifierInput,
+  VerifierSkipReason,
   VerifierVerdict,
 } from './claimTypes.js';
 import { hasOdooRecordAnchor, isHardClaim, isSoftClaim } from './claimTypes.js';
@@ -25,10 +27,16 @@ import { shouldTriggerVerifier } from './triggerRouter.js';
  *                            └─► EvidenceJudge        (remaining soft claims)
  *                            → aggregate → VerifierVerdict
  *
- * Never throws. On any failure below the API level the pipeline returns
- * an `approved` verdict — the trigger router decided the answer was worth
- * checking, so a silent extractor failure shouldn't stop the user from
- * seeing the reply. The caller logs the empty-claim case as telemetry.
+ * Never throws, and the verdict is bound to evidence:
+ *   - `approved` ⇒ at least one claim was checked and every checked claim is
+ *     `verified` (the claim list is typed non-empty).
+ *   - `skipped` — the pipeline ran but had nothing it could check: no trigger
+ *     signal, no extracted claim, or no claim any checker accepts.
+ *   - `unavailable` — the extractor failed, so nothing was checked.
+ * A failure never stops the user from seeing the reply, but it is never
+ * reported as a pass either. Contradictions found without extraction
+ * (failure replay, tool postconditions, missing citations) still block on
+ * every one of these paths.
  */
 
 export interface VerifierPipelineOptions {
@@ -90,7 +98,7 @@ export class VerifierPipeline {
     const trigger = shouldTriggerVerifier(input.answer);
     if (!trigger.shouldVerify) {
       // Only the synthetic (no-extraction-needed) verdicts matter here.
-      return aggregate(synthetic, started);
+      return aggregate(synthetic, started, 'no_trigger');
     }
 
     let claims: Claim[];
@@ -101,14 +109,24 @@ export class VerifierPipeline {
       });
     } catch (err) {
       this.log(`[verifier/pipeline] extractor FAIL: ${errMsg(err)}`);
-      return aggregate(synthetic, started);
+      // Synthetic contradictions need no extraction and still block. Without
+      // one, nothing was checked: the verifier could not run. The reason is a
+      // code — the message stays in the log line above.
+      return isNonEmpty(synthetic)
+        ? aggregateChecked(synthetic, started)
+        : {
+            status: 'unavailable',
+            reason: 'extractor_error',
+            claims: [],
+            latencyMs: Date.now() - started,
+          };
     }
 
     if (claims.length === 0) {
       this.log(
         `[verifier/pipeline] no claims extracted (trigger=${trigger.reasons.join(',')})`,
       );
-      return aggregate(synthetic, started);
+      return aggregate(synthetic, started, 'no_claims');
     }
 
     const { hard, soft } = classify(claims);
@@ -144,7 +162,8 @@ export class VerifierPipeline {
       ...hardVerdicts,
       ...softVerdicts,
     ];
-    return aggregate(all, started);
+    // Empty here means `classify` dropped every extracted claim.
+    return aggregate(all, started, 'no_checkable_claims');
   }
 
   /**
@@ -315,8 +334,29 @@ function classify(claims: readonly Claim[]): {
   return { hard, soft };
 }
 
+/**
+ * Verdict for a list of claim verdicts. An empty list means nothing was
+ * checked, which is `skipped` with the caller's reason — never `approved`.
+ */
 function aggregate(
   verdicts: ClaimVerdict[],
+  startedAt: number,
+  whenEmpty: VerifierSkipReason,
+): VerifierVerdict {
+  if (!isNonEmpty(verdicts)) {
+    return {
+      status: 'skipped',
+      reason: whenEmpty,
+      claims: [],
+      latencyMs: Date.now() - startedAt,
+    };
+  }
+  return aggregateChecked(verdicts, startedAt);
+}
+
+/** Verdict over at least one checked claim: blocked, disclaimer or approved. */
+function aggregateChecked(
+  verdicts: NonEmptyClaimVerdicts,
   startedAt: number,
 ): VerifierVerdict {
   const latencyMs = Date.now() - startedAt;
@@ -339,15 +379,12 @@ function aggregate(
       latencyMs,
     };
   }
-  return approved(verdicts, startedAt);
+  // Non-empty, nothing contradicted, nothing unverified: every claim verified.
+  return { status: 'approved', claims: verdicts, latencyMs };
 }
 
-function approved(claims: ClaimVerdict[], startedAt: number): VerifierVerdict {
-  return {
-    status: 'approved',
-    claims,
-    latencyMs: Date.now() - startedAt,
-  };
+function isNonEmpty(verdicts: ClaimVerdict[]): verdicts is NonEmptyClaimVerdicts {
+  return verdicts.length > 0;
 }
 
 function errMsg(err: unknown): string {

@@ -213,6 +213,29 @@ What that means for an instance installed before v0.115:
 Fresh installs via `render.yaml` or `fly/deploy.sh` generate the key
 themselves; only pre-v0.115 instances have to add it by hand.
 
+## Answer verifier: `skipped` and `unavailable` verdicts (releases after 2026-09-30)
+
+No configuration step: no new environment variable, no migration. It matters
+only if the verifier is enabled (`VERIFIER_ENABLED=true`) and something reads
+its results:
+
+- **SQL on `verifier_verdicts`.** `status` now also holds `skipped` (nothing
+  checkable in the answer) and `unavailable` (the verifier could not run).
+  Both used to be stored as `approved`, so the share of `approved` rows drops.
+  A dashboard or query that reads `status = 'approved'` as "clean turn" is now
+  correct, but its numbers change.
+- **Clients of the `verifier` stream event** (`/api/chat/stream`, public API
+  keys). `summary.status` can be `skipped` / `unavailable`, `summary.badge`
+  `unverified` / `unavailable`, and a `summary.reason` code appears. Show a
+  result as checked only for `verified` / `partial` / `corrected` / `failed`
+  with `claimCount > 0`.
+- **Plugins built against `@omadia/verifier` types.** A `switch` over
+  `VerifierVerdict['status']` must handle the two new statuses before it
+  compiles again.
+
+Teams and Telegram need nothing: they keep receiving only the four badges they
+know and show no badge for the new states.
+
 ## Upgrading to 0.3
 
 > Stub. Fill this in as part of the 0.3 release.

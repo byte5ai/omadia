@@ -2781,12 +2781,39 @@ type ChatStreamEvent =
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; output: string; durationMs: number; isError?: boolean }
   | { type: 'done'; answer: string; toolCalls: number; iterations: number }
+  | { type: 'verifier'; summary: VerifierResultSummary } // nur mit aktivem Verifier, nach `done`
   | { type: 'error'; message: string }
 ```
 
-Genau ein `done` oder `error` schließt den Stream. Header:
+Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
+`done` noch genau ein `verifier`-Event (siehe unten). Header:
 `Content-Type: application/x-ndjson; charset=utf-8`, `X-Accel-Buffering: no`
 (nginx-buffer-off).
+
+**Verifier-Event (`verifier`).** `summary` ist ein `VerifierResultSummary`
+(`@omadia/channel-sdk`). Die Werte sind an Evidenz gebunden:
+
+- `status`: `approved` | `approved_with_disclaimer` | `blocked` — es wurden
+  Claims geprüft; `skipped` — der Verifier lief, fand aber nichts Prüfbares;
+  `unavailable` — der Verifier konnte nicht laufen (Extractor- oder
+  Pipeline-Fehler). `approved` heißt: mindestens ein Claim geprüft, alle
+  `verified`.
+- `badge`: `verified` | `partial` | `corrected` | `failed` bei geprüften
+  Claims, sonst `unverified` (zu `skipped`) bzw. `unavailable`.
+- `reason`: nur bei `skipped` (`no_trigger` | `no_claims` |
+  `no_checkable_claims`) und `unavailable` (`extractor_error` |
+  `pipeline_error`). Geschlossener Code-Satz, nie eine Fehlermeldung — die
+  bleibt in der Logzeile, wo der Fehler gefangen wird.
+
+Das Event geht unverändert über `/api/chat/stream` und den Public-API-Key-Stream
+(`chatRouter.ts`) raus. Ein Connector-Badge entsteht daraus nur über
+`toSemanticAnswer` und nur bei Evidenz (`verifierSummaryHasEvidence`); der
+Wire-Typ `SemanticAnswer.verifier` bleibt `verified | partial | corrected |
+failed`, `skipped`/`unavailable` ergeben dort kein Badge. Der Web-Chat zeigt das
+Event als Footer-Chip (`VerifierBadge`, Keys `chat.verifier.*`), grün nur für
+ein belegtes `verified`. Der Omadia-UI-Channel verwirft das Event weiterhin
+(`omadia-ui-channel/src/protocol.ts`). Zustands-Tabelle und Regeln:
+`docs/security-architecture.md` §7c.
 
 **Degradierter Turn (#1094).** Wirft ein Turn, *nachdem* mindestens ein
 Tool-Call bereits committet hat, bleibt das terminale Event bewusst `done` —
@@ -2827,7 +2854,10 @@ degradiert markiert und darf von keinem Consumer als Antwort gerendert werden:
   und `correlationId` bleiben am Event.
 - Ein degradierter Turn zählt **nicht** als „letzter Turn ok" im Operator-Health
   (`routes/chat.ts`), **nicht** als `ok` im Public-API-Key-Audit
-  (`chatRouter.ts`), und der Verifier überspringt ihn (keine Claims).
+  (`chatRouter.ts`), und der Verifier überspringt ihn im Stream ganz (kein
+  `verifier`-Event, `VerifierService.chatStream`). Der nicht-streamende Pfad
+  (`VerifierService.chat` → `runTurn`) sieht nie einen degradierten Turn: dort
+  wirft der Turn weiter, bevor der Verifier läuft.
 
 **Contract-Erweiterung — AI-Act-Kennzeichnung (Epic #642).** Der Ausgangs-Contract
 trägt die KI-Kennzeichnung zusätzlich zum Antworttext:
@@ -3120,6 +3150,33 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   `navigator.language` zu lesen.
 - **Electrons eigene `role:`-Menüeinträge** folgen der OS-Sprache; außerhalb
   unserer Reichweite, nur zu benennen.
+
+### Answer-Verifier: offene Punkte nach den evidenzgebundenen Verdicts (2026-09-30)
+
+- **Connector-Chip für `skipped` / `unavailable` — Produktentscheidung.** Teams
+  und Telegram bekommen für diese Turns bewusst **kein** Badge; der Wire-Typ
+  `SemanticAnswer.verifier` blieb unverändert, damit die Connector-Repos kein
+  Release brauchen. Ein expliziter „nicht geprüft"- / „Prüfung nicht
+  verfügbar"-Chip hieße: Union in `outgoing.ts` erweitern, `teamsCard.ts`
+  (`verifierChip`) nachziehen, beide Connector-Repos releasen — und ein
+  neutrales Badge auf jedem Small-Talk-Turn. Der Web-Chat zeigt beide Zustände
+  bereits (`VerifierBadge`).
+- **`CHECK`-Constraint auf `verifier_verdicts.status`.** Das Vokabular ist
+  jetzt geschlossen (`approved`, `approved_with_disclaimer`, `blocked`,
+  `skipped`, `unavailable`); eine Migration in der KG-neon-Serie könnte es
+  festschreiben. Heute freie `TEXT`-Spalte ohne Leser im Repo.
+- **Golden-Eval einmal beaufsichtigt laufen lassen.** `skipped.jsonl` (vorher
+  `approve.jsonl`) erwartet jetzt `skipped`. Ein Sample, dessen Extraktion leer
+  bleibt, landet nun in `skipped` statt still in `approved` — ein erster roter
+  Lauf von `npm run eval:golden` ist zu untersuchen, nicht wegzuwinken.
+- **Verifier-Aufzählung in der README-Feature-Tabelle.** Die Zeile
+  „Answer verification" nennt nur `approved` / `approved_with_disclaimer` und
+  „each answer"; beim nächsten Abgleich der README-Aussagen mit dem erzwungenen
+  Verhalten auf `skipped` / `unavailable` erweitern.
+- **Verdict-Zustand im Server-Mirror.** Der Chat-Mirror (`MessageSchema`,
+  `routes/chatSessions.ts`) verwirft `Message.verifier`; ein Mirror-Restore
+  zeigt deshalb keinen Verifier-Chip (nur ein lokaler Reload). Nachziehen,
+  falls der Chip auch geräteübergreifend sichtbar sein soll.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

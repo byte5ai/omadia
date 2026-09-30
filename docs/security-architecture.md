@@ -702,6 +702,62 @@ tail-truncated table can never report green (`empty_chain_with_history`,
 verify`, signed export + zero-dependency offline verifier — see
 `docs/provenance-verification.md`.
 
+## 7c. Answer-verifier verdicts and badges are evidence-bound
+
+The answer verifier (`@omadia/verifier`, wrapped by `VerifierService` in
+`@omadia/orchestrator`) puts a trust signal on a turn: a verdict, and from it
+a badge. A badge that says "verified" is a statement about the answer, so it
+may only follow from claims the verifier actually checked. Five paths check
+nothing: the answer carries no trigger signal, the extractor throws, the
+extractor returns no claims, no extracted claim fits a checker, or the
+pipeline itself throws. None of them is a pass.
+
+**Invariant.** `approved` ⇒ at least one claim was checked and every checked
+claim is `verified`. The `approved` variant's claim list is typed non-empty
+(`NonEmptyClaimVerdicts`), and the pipeline's aggregate returns `skipped` for
+an empty list.
+
+| Verdict status | Meaning | Summary badge | Connector badge | Web chat chip |
+|---|---|---|---|---|
+| `approved` | ≥ 1 claim checked, all verified | `verified` | verified | green |
+| `approved_with_disclaimer` | checked, none contradicted, ≥ 1 unconfirmed | `partial` | partial | amber |
+| `blocked` | checked, ≥ 1 contradicted | `failed` (after a retry: `corrected` / `failed`) | failed / corrected | red / blue |
+| `skipped` — `no_trigger`, `no_claims`, `no_checkable_claims` | ran, nothing checkable | `unverified` | none | neutral "not verified" |
+| `unavailable` — `extractor_error`, `pipeline_error` | could not run | `unavailable` | none | neutral "unavailable" |
+
+- **Badges are derived under the evidence gate, not from the status alone.**
+  `badgeFor` (`verifierService.ts`) checks `hasVerificationEvidence()`. The
+  pipeline is injected (`verifier@1`), so a pipeline that returns `approved`
+  over zero claims still yields `unverified`. A correction retry earns
+  `corrected` only when the retry's own verdict has evidence.
+- **`toSemanticAnswer` is the single connector badge gate.** It forwards a
+  badge only when `verifierSummaryHasEvidence()` holds and the badge is in the
+  unchanged wire union `verified | partial | corrected | failed`
+  (`SemanticAnswer.verifier`). Connectors (Teams card, Telegram) need no
+  change: a `skipped` or `unavailable` turn renders no chip there.
+- **The stream event carries every state.** The trailing `verifier` event is
+  forwarded verbatim by `/api/chat/stream` and by the public API-key stream,
+  so its `status` / `badge` can be `skipped` / `unverified` and
+  `unavailable`. Its `reason` is a closed code set, never an error message:
+  the message stays in the log line where the failure is caught. The web chat
+  renders the event as a footer chip (`web-ui/app/_components/chat/VerifierBadge.tsx`),
+  green only for an evidenced `verified`, and applies the same rule to a
+  summary restored from local storage.
+- **`skipped` / `unavailable` never buy a resample or a retry.**
+  `isBorderlineVerdict` stays `approved_with_disclaimer`-only; a resample is a
+  second paid orchestrator turn.
+- **Telemetry keeps the distinction.** `verifier_verdicts.status` stores
+  `skipped` / `unavailable` as their own values (free `TEXT` column, no
+  migration), so a calibration query no longer counts an outage as a clean
+  turn. No code in the repository reads the table.
+
+Tests: `middleware/test/verifierPipelineStates.test.ts`,
+`middleware/test/verifierServiceStates.test.ts`,
+`middleware/test/semanticAnswerGates.test.ts`,
+`middleware/test/channelApi/chatRouterVerifierStates.test.ts`,
+`web-ui/app/_lib/__tests__/verifierBadge.test.ts` and
+`web-ui/app/_components/chat/__tests__/VerifierBadge.test.tsx`.
+
 ## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
 
 Three properties of the human-approval gate are security decisions, made
@@ -1403,6 +1459,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] A new native tool bound to shared/unscoped state (like memory) is routed
       through the caller's scoped accessor in `ctx.tools.invoke`, or denied
       there (§4, #909).
+- [ ] A new consumer of `VerifierVerdict` or `VerifierResultSummary` shows
+      `verified` or `corrected` only when there is evidence behind it:
+      `hasVerificationEvidence()` for a verdict, `verifierSummaryHasEvidence()`
+      (status `approved` / `approved_with_disclaimer` / `blocked` and
+      `claimCount > 0`) for a summary. `skipped` and `unavailable` never map to
+      a green badge, and a verifier `reason` stays a closed code (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it

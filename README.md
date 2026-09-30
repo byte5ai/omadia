@@ -241,7 +241,9 @@ answer:
 - **Answer verification**: before a turn's answer is returned, the verifier checks
   its claims against the run's sources and emits a verdict (`approved`,
   `approved_with_disclaimer`, or `blocked`). A borderline verdict attaches a
-  disclaimer instead of silently shipping an unsupported claim.
+  disclaimer instead of silently shipping an unsupported claim. An answer with
+  nothing checkable is `skipped` and a verifier that could not run is
+  `unavailable`; neither is reported as `approved` or shown as verified.
 - **Office compute (computed, not guessed)**: numbers in `.xlsx` / `.docx` output
   come from a real spreadsheet engine over real rows, rather than the model's
   token stream. When a specialist agent returns a `datasetId`, the rows are

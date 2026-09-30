@@ -118,7 +118,9 @@ describe('verifier/pipeline — citation enforcement (#131)', () => {
     }
   });
 
-  it('approves when KG was called and the answer carries [ref:nodeId]', async () => {
+  it('KG called, citation present, no trigger signal → skipped/no_trigger (not approved)', async () => {
+    // The citation check passes, but the answer carries no signal the
+    // verifier checks, so nothing was verified — that is `skipped`, not a pass.
     const pipeline = makePipeline();
     const verdict = await pipeline.verify({
       runId: 'r_cite_b',
@@ -126,7 +128,24 @@ describe('verifier/pipeline — citation enforcement (#131)', () => {
       answer: 'Foo is a senior developer [ref:n_user_42].',
       knowledgeGraphToolsCalled: true,
     });
+    assert.equal(verdict.status, 'skipped');
+    if (verdict.status === 'skipped') assert.equal(verdict.reason, 'no_trigger');
+  });
+
+  it('KG called, citation present, trigger fires and the claim verifies → approved', async () => {
+    const pipeline = makePipeline();
+    const verdict = await pipeline.verify({
+      runId: 'r_cite_b2',
+      userMessage: 'Wie hoch ist die Rechnung?',
+      answer: 'Die Rechnung beträgt 1.234,56 € [ref:n_invoice_42].',
+      knowledgeGraphToolsCalled: true,
+    });
     assert.equal(verdict.status, 'approved');
+    assert.equal(verdict.claims.length, 1);
+    assert.ok(
+      verdict.claims.every((c) => c.claim.type !== 'citation_missing'),
+      'a present citation must not produce a citation_missing claim',
+    );
   });
 
   it('approves when the turn never called the knowledge graph', async () => {

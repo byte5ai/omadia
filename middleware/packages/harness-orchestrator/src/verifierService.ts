@@ -16,7 +16,11 @@ import type {
   VerifierStore,
   VerifierVerdict,
 } from '@omadia/verifier';
-import { buildCorrectionPrompt, isBorderlineVerdict } from '@omadia/verifier';
+import {
+  buildCorrectionPrompt,
+  hasVerificationEvidence,
+  isBorderlineVerdict,
+} from '@omadia/verifier';
 import type { TurnHookRunner } from './turnHooks.js';
 
 /**
@@ -25,6 +29,7 @@ import type { TurnHookRunner } from './turnHooks.js';
  *   user turn → orchestrator.chat → verifier.verify
  *                                   ├─ approved              → return
  *                                   ├─ approved_with_disclaimer → return + disclaimer badge
+ *                                   ├─ skipped / unavailable → return, no badge
  *                                   └─ blocked (enforce only)
  *                                        → inject correction into system hint
  *                                        → orchestrator.chat (retry, max 1x)
@@ -35,9 +40,10 @@ import type { TurnHookRunner } from './turnHooks.js';
  * That's how we calibrate the trigger router and extractor in production
  * without risking UX regressions.
  *
- * Errors in the verifier itself never surface to the user — we always fall
- * back to returning the original orchestrator reply. The failure mode the
- * user experiences is "verifier didn't help", not "verifier broke my bot".
+ * Errors in the verifier itself never block the user — we always fall back
+ * to returning the original orchestrator reply. They surface as
+ * `unavailable`, never as `approved`: "the verifier could not check" must
+ * not read as "the verifier checked and found nothing wrong".
  */
 
 export interface VerifierServiceOptions {
@@ -238,6 +244,9 @@ export class VerifierService implements ChatAgent {
     // samples landing on the same disclaimer ⇒ keep. Disagreement ⇒ take
     // the more conservative reading (blocked wins). Bounded at
     // `maxResamples` per turn (default 1) so cost stays predictable.
+    // `skipped` / `unavailable` must never trigger this paid resample —
+    // `isBorderlineVerdict` stays disclaimer-only, or every small-talk turn
+    // would run twice.
     let effectiveResult = firstResult;
     let effectiveVerdict = firstVerdict;
     if (
@@ -317,8 +326,9 @@ export class VerifierService implements ChatAgent {
     // reflects whichever verdict actually tripped. We log both for telemetry.
     void this.persist(runId, input, secondVerdict, 1);
 
-    // Compute the user-facing badge: `corrected` when retry fixed it,
-    // `failed` when it did not.
+    // Compute the user-facing badge: `corrected` when the retry was checked
+    // and fixed it, `failed` when it did not, `unverified` / `unavailable`
+    // (no connector badge) when the retry could not be checked.
     const badge = mergeBadges(effectiveVerdict, secondVerdict);
     return toSemanticAnswer(
       withVerifier(secondResult, {
@@ -408,8 +418,11 @@ export class VerifierService implements ChatAgent {
       });
     } catch (err) {
       this.log(`[verifier/service] pipeline FAIL: ${errMsg(err)}`);
+      // Nothing was checked. The reason is a closed code: this verdict is
+      // summarised onto the stream, the message stays in the log line above.
       return {
-        status: 'approved',
+        status: 'unavailable',
+        reason: 'pipeline_error',
         claims: [],
         latencyMs: 0,
       };
@@ -465,6 +478,9 @@ function summarise(
   return {
     badge: badgeFor(verdict, retryCount),
     status: verdict.status,
+    ...(verdict.status === 'skipped' || verdict.status === 'unavailable'
+      ? { reason: verdict.reason }
+      : {}),
     claimCount: verdict.claims.length,
     contradictionCount,
     unverifiedCount,
@@ -474,10 +490,20 @@ function summarise(
   };
 }
 
-function badgeFor(
+/**
+ * Badge for one verdict, bound to evidence: a verdict without a checked claim
+ * is `unverified` (or `unavailable` when the verifier could not run), whatever
+ * status it carries. The pipeline is injected, so this does not rely on it
+ * never returning `approved` over zero claims.
+ */
+export function badgeFor(
   verdict: VerifierVerdict,
   retryCount: number,
 ): VerifierBadge {
+  if (verdict.status === 'unavailable') return 'unavailable';
+  if (verdict.status === 'skipped' || !hasVerificationEvidence(verdict)) {
+    return 'unverified';
+  }
   if (retryCount > 0) {
     // Retry already happened — outcome defines badge.
     return verdict.status === 'blocked' ? 'failed' : 'corrected';
@@ -492,13 +518,18 @@ function badgeFor(
   }
 }
 
-function mergeBadges(
+/**
+ * Badge after the correction retry. `corrected` / `failed` describe a retry
+ * that followed a blocked first pass, and the retry's own verdict decides:
+ * `corrected` needs a second pass that checked claims without a
+ * contradiction, so a retry whose verification was skipped or unavailable is
+ * never `corrected`.
+ */
+export function mergeBadges(
   first: VerifierVerdict,
   second: VerifierVerdict,
 ): VerifierBadge {
-  if (first.status === 'blocked' && second.status !== 'blocked') return 'corrected';
-  if (first.status === 'blocked' && second.status === 'blocked') return 'failed';
-  return badgeFor(second, 1);
+  return badgeFor(second, first.status === 'blocked' ? 1 : 0);
 }
 
 function errMsg(err: unknown): string {
@@ -613,8 +644,8 @@ function extractPostconditionViolations(
  * 3. Second sample relaxed to `approved` → keep first. Two contradictory
  *    samples + one finding stuff we didn't is exactly the noise signal
  *    that the disclaimer exists to communicate; don't upgrade.
- * 4. Second sample also borderline (fell back to safeVerify's
- *    `approved` fallback after a pipeline error) → keep first.
+ * 4. Second sample checked nothing — `skipped`, or `unavailable` (safeVerify's
+ *    result after a pipeline error) → keep first; it adds no signal.
  *
  * `takeSecond` is true only when we propagate the second sample's
  * orchestrator result onward (its answer string is what the LLM
@@ -627,7 +658,7 @@ export function mergeBorderlineVerdicts(
   if (second.status === 'blocked') {
     return { verdict: second, takeSecond: true };
   }
-  // Anything else (approved, approved_with_disclaimer): trust the first
-  // sample's disclaimer signal.
+  // Anything else (approved, approved_with_disclaimer, skipped,
+  // unavailable): trust the first sample's disclaimer signal.
   return { verdict: first, takeSecond: false };
 }
