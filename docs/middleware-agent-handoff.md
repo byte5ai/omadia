@@ -3104,8 +3104,22 @@ bewusst zurückgestellt:
 - **Semantik-Treue**: Jede Abweichung zwischen Engine und Excel schriebe einen
   falschen `<v>` unter omadias Namen, also genau den Fehler, den 0.1.4
   beseitigt hat. Ohne Differenztests gegen echtes Excel nicht ausrollen.
-- **Formel-Policy bleibt**: `formulaPolicy.ts` (kein `WEBSERVICE`, `HYPERLINK`,
-  DDE, keine Verweise auf andere Dateien) gilt unabhängig davon, wer rechnet.
+- **Formel-Policy bleibt**: `formulaPolicy.ts` (nur Excels eigene Funktionen
+  aus `formulaFunctions.ts`; kein `WEBSERVICE`, `IMPORTTEXT`/`IMPORTCSV`,
+  `HYPERLINK`, DDE, keine Verweise auf andere Dateien) gilt unabhängig davon,
+  wer rechnet.
+
+**Funktionskatalog pflegen.** `formulaFunctions.ts` ist Microsofts Liste
+„Excel functions (alphabetical)“ vom 2026-09-30, wörtlich übernommen. Was
+Excel danach dazubekommt, lehnt `create_xlsx` ab, bis es jemand aufnimmt
+(Fail-closed, so fielen `IMPORTTEXT`/`IMPORTCSV` auf). Vor dem Aufnehmen
+prüfen, ob die Funktion nur über Zellen der Arbeitsmappe rechnet; greift sie
+auf Netz, Dateien, Dienste oder andere Programme zu, gehört sie stattdessen
+nach `EXTERNAL_FUNCTIONS`. Offen: Nackte, nicht aufgerufene Namen (LET-Namen
+oder eine Funktion als Wert ohne `_xleta.`) prüft die Policy nur gegen die
+Sperrliste. Sie ganz zu schließen bräuchte einen echten Formel-Parser mit
+LET/LAMBDA-Gültigkeitsbereichen. Damit ließen sich auch Aufrufe über LET-Namen
+(`f(A1)`) wieder erlauben, die heute abgelehnt werden.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

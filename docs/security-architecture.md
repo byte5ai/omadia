@@ -517,18 +517,39 @@ from the descriptor.
   intended failure mode.
 - **Formulas stay inside the workbook.** The client recalculates on open, and
   Excel, LibreOffice and Google Sheets each have functions that reach outside
-  the file. `formulaPolicy.ts` refuses any formula that uses one of them:
-  `WEBSERVICE`, `FILTERXML`, `IMAGE`, Google Sheets' `IMPORTDATA`,
-  `IMPORTXML`, `IMPORTHTML`, `IMPORTFEED` and `IMPORTRANGE`, `HYPERLINK`,
-  `RTD`, `CALL`, `REGISTER`, `REGISTER.ID` or LibreOffice's `DDE`. It also
-  refuses a DDE reference (`app|topic!item`) and a reference to another file
-  (`[n]…`, `[book.xlsx]…`, a `\` outside quotes, or a quoted name containing
-  `\ / [ ]`). `INDIRECT` and `__xludf.DUMMYFUNCTION` are refused whatever
-  their argument, because they turn text into a reference or a formula, and
-  that text can be assembled from cell values where no lexical check sees it.
-  `renderXlsx` throws `OfficeUnsafeFormulaError` before any byte is written, so
-  nothing is stored or delivered. The check is lexical: string literals are
-  skipped and an unterminated quote fails closed.
+  the file. `formulaPolicy.ts` checks every formula in two layers, so that a
+  way out nobody has listed still fails closed:
+  - *Allowlist.* A formula may only call Excel's own worksheet functions by
+    their English names (`formulaFunctions.ts`, Microsoft's alphabetical
+    catalogue as of 2026-09-30), less the refused ones below. Everything else
+    is refused: `_xll.`/`_xludf.` add-in and user-defined functions in any
+    position, Excel 4 macro functions such as `EVALUATE`, other applications'
+    functions, localised names, calls through LET or LAMBDA names, and every
+    function Excel adds later until it has been reviewed (`IMPORTTEXT` and
+    `IMPORTCSV`, which read local files and URLs, were such additions). A
+    function passed as a value (`_xleta.NAME`) is checked like a call. A bare
+    name that is not called is checked against the refused names only. What
+    it could still reach is a function the user's own Excel has loaded (a
+    VBA macro or add-in passed by a guessed name), and an export cannot
+    supply one.
+  - *Refused by name, called or not:* `WEBSERVICE`, `FILTERXML`, `IMAGE`,
+    Google Sheets' `IMPORTDATA`, `IMPORTXML`, `IMPORTHTML`, `IMPORTFEED` and
+    `IMPORTRANGE`, `IMPORTTEXT` and `IMPORTCSV`, the vendor services
+    `STOCKHISTORY`, `TRANSLATE`, `DETECTLANGUAGE`, `GOOGLEFINANCE` and
+    `GOOGLETRANSLATE`, the `CUBE…` functions, `HYPERLINK`, `RTD`, `CALL`,
+    `REGISTER`, `REGISTER.ID` and LibreOffice's `DDE`. A DDE reference
+    (`app|topic!item`) and a reference to another file (`[n]…`,
+    `[book.xlsx]…`, a `\` outside quotes, or a quoted name containing
+    `\ / [ ]`) are refused as well. `INDIRECT` and `__xludf.DUMMYFUNCTION` are
+    refused whatever their argument, because they turn text into a reference
+    or a formula, and that text can be assembled from cell values where no
+    lexical check sees it.
+
+  A computed column is checked once as a template. Its `{row}` placeholder may
+  only follow a column letter or stand alone, so a row number cannot complete a
+  function name. `renderXlsx` throws `OfficeUnsafeFormulaError` before any byte
+  is written, so nothing is stored or delivered. The check is lexical: string
+  literals are skipped and an unterminated quote fails closed.
 - **Dataset rows cannot become formulas.** Rows behind a `datasetId` go through
   `normalizeCell` (`officeTool.ts`), which passes primitives and JSON-stringifies
   every object and array, so a system of record cannot inject a formula or a
@@ -1379,9 +1400,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       (§10c, #778).
 - [ ] A new cell or value path in `@omadia/plugin-office` stores no
       caller-supplied formula result (formula cells are `{ formula }` only) and
-      runs every formula through `assertFormulaStaysInWorkbook` (§5a).
-      `office-formulas.test.ts` pins both, with one rejected-formula row per
-      refused function or reference form.
+      runs every formula through the formula policy (`formulaPolicy.ts`, §5a:
+      `assertFormulaStaysInWorkbook` for a cell,
+      `assertComputedColumnStaysInWorkbook` for a template). A function added
+      to `formulaFunctions.ts` has been checked to compute only over the
+      workbook. `office-formulas.test.ts` pins all of it, with rejected-formula
+      rows for every refused function family and reference form.
 
 ---
 

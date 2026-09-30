@@ -48,16 +48,25 @@ a formula sets `fullCalcOnLoad`, so the spreadsheet application computes each
 value when it opens the file. The tool description now asks for English
 function names (`SUMIFS`), which is what a recalculating Excel understands.
 
-Because Excel, LibreOffice and Google Sheets all recalculate such a file, a
-formula that reaches outside the workbook is refused with
-`OfficeUnsafeFormulaError` before anything is stored. That covers URL fetches
-(`WEBSERVICE`, `FILTERXML`, `IMAGE`, and Google Sheets' `IMPORTDATA`,
-`IMPORTXML`, `IMPORTHTML`, `IMPORTFEED` and `IMPORTRANGE`), `HYPERLINK`, COM
-and DLL calls (`RTD`, `CALL`, `REGISTER`, `REGISTER.ID`), DDE as a function and
-as an `app|topic!item` reference, and references to another file by index, name
-or path, quoted or not. `INDIRECT` and `__xludf.DUMMYFUNCTION` are refused
-whatever their argument. Both turn text into a reference or a formula, and that
-text is invisible to the check and can be built from cell values.
+Because Excel, LibreOffice and Google Sheets all recalculate such a file, every
+formula is checked before anything is stored, and a refused one fails with
+`OfficeUnsafeFormulaError`. A formula may only call Excel's own worksheet
+functions by their English names, from Microsoft's catalogue. Add-in and
+user-defined functions (`_xll.`, `_xludf.`), Excel 4 macro functions, other
+applications' functions, localised names and anything Excel adds later are
+refused until someone reviews them, so a new way out fails closed. Known ways
+out are also refused by name wherever they appear: URL fetches (`WEBSERVICE`,
+`FILTERXML`, `IMAGE`, and Google Sheets' `IMPORTDATA`, `IMPORTXML`,
+`IMPORTHTML`, `IMPORTFEED` and `IMPORTRANGE`), `IMPORTTEXT` and `IMPORTCSV`
+(local files, UNC paths and URLs), vendor services (`STOCKHISTORY`,
+`TRANSLATE`, `DETECTLANGUAGE`, `GOOGLEFINANCE`, `GOOGLETRANSLATE`), the `CUBE`
+functions, `HYPERLINK`, COM and DLL calls (`RTD`, `CALL`, `REGISTER`,
+`REGISTER.ID`), DDE as a function and as an `app|topic!item` reference, and
+references to another file by index, name or path, quoted or not. `INDIRECT`
+and `__xludf.DUMMYFUNCTION` are refused whatever their argument. Both turn text
+into a reference or a formula, and that text is invisible to the check and can
+be built from cell values. In a computed column, `{row}` may only follow a
+column letter, so a row number cannot complete a function name.
 
 Viewers that do not calculate (Quick Look, Teams and Outlook previews, Excel's
 Protected View) now show formula cells empty until the file is opened for

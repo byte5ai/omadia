@@ -73,13 +73,44 @@ cells show depends on where the file is opened:
 ### Formulas stay inside the workbook
 
 Because the file asks to be recalculated, a formula that can reach outside it
-would do so as soon as someone opens the export, and Excel, LibreOffice and
-Google Sheets all recalculate an `.xlsx`. `renderXlsx` therefore refuses a
-formula that contains any of these:
+would do so as soon as someone opens the export (or refreshes its data), and
+Excel, LibreOffice and Google Sheets all recalculate an `.xlsx`. `renderXlsx`
+checks every formula in two layers, so that a way out nobody has listed still
+fails closed.
+
+**Only Excel's own functions.** A formula may call a function only if it is on
+Microsoft's list of Excel worksheet functions (`src/formulaFunctions.ts`,
+copied from Microsoft's alphabetical catalogue on 2026-09-30) and not refused
+below. Names are matched in English, with or without the file format's
+`_xlfn.`/`_xlws.` prefixes. Everything else is refused, whatever it does:
+
+- add-in and user-defined functions (`_xll.…`, `_xludf.…`), in any position
+- Excel 4 macro functions such as `EVALUATE`, and functions only Google Sheets
+  or LibreOffice have
+- localised names such as `SUMMEWENNS`, and look-alikes in other scripts
+- functions Excel adds later, until someone checks them and adds them to the
+  list. `IMPORTTEXT` and `IMPORTCSV` are two such additions.
+- a call through a LET or LAMBDA name (`f(A1)`). The check cannot tell it apart
+  from an add-in function with the same name.
+
+A function passed as a value in the file format's spelling
+(`GROUPBY(…, _xleta.SUM)`) is checked like a call. A bare name that is not
+called (a LET name, or `SUM` passed to `GROUPBY` without the prefix) is only
+checked against the refused names. What it could still reach is a function the
+user's own Excel has loaded, such as a VBA macro, and an export cannot supply
+one.
+
+**Known ways out, refused by name.** These are refused wherever they appear,
+also when passed as a value (`LET(f, WEBSERVICE, …)`), and the error names
+them:
 
 - a function that fetches a URL or unpacks what was fetched: `WEBSERVICE`,
   `FILTERXML`, `IMAGE`, and Google Sheets' `IMPORTDATA`, `IMPORTXML`,
   `IMPORTHTML`, `IMPORTFEED` and `IMPORTRANGE`
+- `IMPORTTEXT` and `IMPORTCSV`, which read a local file, a UNC path or a URL
+- functions that send cell data to the vendor's service or query a server:
+  `STOCKHISTORY`, `TRANSLATE`, `DETECTLANGUAGE`, Google Sheets'
+  `GOOGLEFINANCE` and `GOOGLETRANSLATE`, and the `CUBE…` functions
 - `HYPERLINK`, and the COM and DLL calls `RTD`, `CALL`, `REGISTER` and
   `REGISTER.ID`
 - DDE, as a reference (`cmd|' /C calc'!A0`) or as LibreOffice's `DDE` function
@@ -88,6 +119,10 @@ formula that contains any of these:
 - `INDIRECT` or `__xludf.DUMMYFUNCTION`, whatever the argument. Both turn text
   into a reference or a formula, and that text can be built from cell values
   where the check cannot see it.
+
+A computed column is checked once, as a template. Its `{row}` placeholder may
+only follow a column letter (`A{row}`, `$B${row}`) or stand on its own, so the
+row number can never become part of a function name.
 
 It throws `OfficeUnsafeFormulaError`, which names the cell or computed column,
 before any byte is written: nothing is stored, and `create_xlsx` returns an
@@ -119,7 +154,8 @@ deliberate, named limitation of the underlying library, not an omission.
 
 Standard tool-plugin shape: `src/` → compiled `dist/`. `xlsxRenderer.ts` /
 `docxRenderer.ts` render descriptors to bytes, `formulaPolicy.ts` refuses
-formulas that reach outside the workbook, `officeService.ts` stores + signs,
+formulas that reach outside the workbook or call a function outside
+`formulaFunctions.ts` (Excel's catalogue), `officeService.ts` stores + signs,
 `provenance.ts` holds the static provenance constants, `signing.ts` the
 HMAC-signed `/documents` URLs.
 
