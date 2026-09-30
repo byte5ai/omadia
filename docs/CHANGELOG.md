@@ -51,6 +51,14 @@ runtime. Adding `desktop` to the audit matrix itself lands together with the
 dependency refresh that makes it pass. Local security-audit reports under
 `docs/audits/` are git-ignored.
 
+The first run of the tightened gate on this branch caught real findings that
+had appeared since the last `main` run: the `overrides` blocks in
+`middleware/package.json` and `web-ui/package.json` pinned `brace-expansion`
+to `5.0.9` (three new high-severity advisories, fixed in 5.0.12) and
+`fast-uri` to `3.1.7` (moderate, fixed in 3.1.8). `npm audit fix` cannot move
+a pinned override, so the pins are lifted to the fixed versions; both
+workspaces are now free of high/critical advisories.
+
 ### Changed — CI schema gate applies every SQL migration series, twice
 
 2026-09-29 — the `schema (migrations on pgvector)` job listed six migration
