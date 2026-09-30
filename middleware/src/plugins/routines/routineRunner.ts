@@ -82,10 +82,15 @@ export const MIN_RUN_INTERVAL_MS = 60_000;
  * `{ kind: 'operator' }` instead of an omission that reads like an
  * oversight.
  *
- *   - `channel-user` — an end user acting through a channel turn. Scoped to
- *     the (tenant, userId) the turn context carries.
+ *   - `channel-user` — an end user acting through a channel. Scoped to the
+ *     (tenant, userId) the turn context carries (`manage_routine`) or the
+ *     smart-card click's `actor` names (`handleRoutineAction`).
  *   - `operator`     — the authenticated operator surface, deliberately
- *     cross-tenant (see the routes' own `requireAuth` rationale).
+ *     cross-tenant (see the routes' own `requireAuth` rationale). Built by
+ *     `routes/routines.ts` only, and never as a fallback for a missing
+ *     principal: a door that cannot name one refuses instead
+ *     (`RoutineActorRequiredError`). `test/routineOperatorScope.test.ts`
+ *     fails if a second producer appears.
  */
 export type RoutineActorScope =
   | ({ kind: 'channel-user' } & RoutineOwner)

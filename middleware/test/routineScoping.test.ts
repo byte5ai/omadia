@@ -27,10 +27,11 @@ import type {
 } from '../src/plugins/routines/routineStore.js';
 import type { RoutineRunsStore } from '../src/plugins/routines/routineRunsStore.js';
 import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
+import { RoutineActorRequiredError } from '../src/plugins/routines/routineCardActor.js';
 import {
-  getUnscopedRoutineActionMetrics,
-  resetUnscopedRoutineActionMetrics,
-} from '../src/plugins/routines/unscopedActionMetrics.js';
+  getRefusedRoutineActionMetrics,
+  resetRefusedRoutineActionMetrics,
+} from '../src/plugins/routines/refusedRoutineActionMetrics.js';
 
 /**
  * #1025 — `manage_routine` resolved the turn context for `create` and
@@ -80,6 +81,12 @@ function matchesOwner(row: Routine, owner?: RoutineOwner): boolean {
 /** Store stub whose owner predicate mirrors the scoped SQL. */
 class ScopedStoreStub {
   readonly rows = new Map<string, Routine>();
+  /**
+   * The `owner` every scoped mutation (`setStatus`, `delete`) received, in
+   * call order. `undefined` is the unscoped, cross-tenant statement — the
+   * card-path tests assert it never shows up here.
+   */
+  readonly owners: Array<RoutineOwner | undefined> = [];
   private seq = 1;
 
   /**
@@ -151,6 +158,7 @@ class ScopedStoreStub {
     status: RoutineStatus,
     owner?: RoutineOwner,
   ): Promise<Routine | null> {
+    this.owners.push(owner);
     const row = this.rows.get(id);
     if (!row || !matchesOwner(row, owner)) return null;
     const updated: Routine = { ...row, status, updatedAt: new Date() };
@@ -159,6 +167,7 @@ class ScopedStoreStub {
   }
 
   async delete(id: string, owner?: RoutineOwner): Promise<boolean> {
+    this.owners.push(owner);
     const row = this.rows.get(id);
     if (!row || !matchesOwner(row, owner)) return false;
     return this.rows.delete(id);
@@ -452,7 +461,21 @@ describe('#1025 routineStore — the owner predicate is in the SQL, not just the
   });
 });
 
-describe('#1025 smart-card actions — the second door is scoped as well', () => {
+/**
+ * THE CARD PATH. The Teams adapter dispatches card clicks out-of-band
+ * (`handleMessage` returns before `runOrchestratorTurn`, so
+ * `captureRoutineTurn` never fires) and the card payload carries only the
+ * routine id. So the principal is the channel's `actor` or nothing — and
+ * nothing is a refusal. #1029 briefly let "nothing" run UNSCOPED, which meant
+ * a missing principal widened rights to operator level; these tests pin the
+ * opposite.
+ *
+ * Most tests here are deliberately NOT wrapped in `routineTurnContext.run`,
+ * because production never is: the wrapper is what made the first #1029
+ * suite pass while all four buttons would have failed in the field. The one
+ * that IS wrapped proves a context found on this path is ignored.
+ */
+describe('#1025 smart-card actions — the principal comes from the channel, or the click is refused', () => {
   function integrationFor(h: Harness) {
     return createRoutinesIntegration({
       store: h.store as unknown as RoutineStore,
@@ -460,58 +483,135 @@ describe('#1025 smart-card actions — the second door is scoped as well', () =>
     } as unknown as RoutinesHandle);
   }
 
-  it('scopes from the turn context when the click lands inside a captured turn', async () => {
-    const h = makeHarness();
-    const foreign = h.store.seed(OTHER);
-    const integ = integrationFor(h);
+  const OWNER_ACTOR = { tenant: OWNER.tenant, userId: OWNER.userId };
 
-    await routineTurnContext.run(OWNER_CTX, async () => {
-      await assert.rejects(
-        () => integ.handleRoutineAction({ action: 'pause', id: foreign.id }),
-        RoutineNotFoundError,
-      );
-    });
-    assert.equal(h.store.rows.get(foreign.id)?.status, 'active');
-  });
-
-  /**
-   * #1029 — THE CARD PATH. Deliberately NOT wrapped in
-   * `routineTurnContext.run`: the Teams adapter dispatches card clicks
-   * out-of-band (`handleMessage` returns before `runOrchestratorTurn`, so
-   * `captureRoutineTurn` never fires), which means production always
-   * arrives here with no context and no actor. The wrapper is exactly what
-   * made the first version of this suite pass while all four buttons would
-   * have answered "routines are unavailable in this session".
-   */
-  it('proceeds UNSCOPED and records it when the card supplies neither actor nor context', async () => {
+  it('refuses when the card supplies no actor: the row is untouched and the refusal is counted', async () => {
     const h = makeHarness();
     const own = h.store.seed(OWNER);
     const integ = integrationFor(h);
-    resetUnscopedRoutineActionMetrics();
+    resetRefusedRoutineActionMetrics();
     // Honest precondition: `enter()` uses `enterWith`, which has no scope
     // exit, so a leaked value from another test would silently turn this
     // into the ALS case and prove nothing.
     assert.equal(routineTurnContext.current(), undefined);
 
-    const out = await integ.handleRoutineAction({
-      action: 'pause',
-      id: own.id,
-    });
+    await assert.rejects(
+      () => integ.handleRoutineAction({ action: 'pause', id: own.id }),
+      RoutineActorRequiredError,
+    );
 
-    // The action goes through — refusing here is an outage, not a default.
-    assert.match(out, /pausiert/);
-    assert.equal(h.store.rows.get(own.id)?.status, 'paused');
-    // And the hole is observable rather than silent.
-    const metrics = getUnscopedRoutineActionMetrics();
+    assert.equal(h.store.rows.get(own.id)?.status, 'active');
+    // Refused, and visibly so: an operator can tell an outdated adapter is
+    // still sending identity-less clicks.
+    const metrics = getRefusedRoutineActionMetrics();
     assert.equal(metrics.calls, 1);
     assert.equal(metrics.byAction['pause'], 1);
+  });
+
+  it('a missing actor never widens to operator: a foreign routine survives all four actions', async () => {
+    const h = makeHarness();
+    const foreign = h.store.seed(OTHER);
+    // Armed in the scheduler, so a cross-tenant pause or delete would show
+    // up as an unregistration.
+    await h.runner.resumeRoutine(foreign.id, { kind: 'operator' });
+    const integ = integrationFor(h);
+    resetRefusedRoutineActionMetrics();
+    assert.equal(routineTurnContext.current(), undefined);
+
+    for (const action of ['pause', 'resume', 'trigger_now', 'delete'] as const) {
+      await assert.rejects(
+        () => integ.handleRoutineAction({ action, id: foreign.id }),
+        RoutineActorRequiredError,
+        `${action} without an actor must be refused`,
+      );
+    }
+
+    assert.equal(h.store.rows.get(foreign.id)?.status, 'active');
+    // The decisive one: a manual run delivers into the routine's OWN
+    // conversationRef, i.e. into the other tenant's conversation.
+    assert.equal(h.runs.length, 0);
+    assert.deepEqual(h.scheduler.unregistered, []);
+    assert.equal(h.scheduler.registered.has(foreign.id), true);
+    assert.equal(getRefusedRoutineActionMetrics().calls, 4);
+  });
+
+  it('a blank actor half is refused, not scoped to a partial principal', async () => {
+    const h = makeHarness();
+    const own = h.store.seed(OWNER);
+    const integ = integrationFor(h);
+    resetRefusedRoutineActionMetrics();
+
+    // A blank tenant is not a tenant (the same rule `CoreApi` applies to
+    // `turn.tenantId`), and a whitespace user id is not a user.
+    for (const actor of [
+      { tenant: '', userId: OWNER.userId },
+      { tenant: OWNER.tenant, userId: '   ' },
+    ]) {
+      await assert.rejects(
+        () => integ.handleRoutineAction({ action: 'pause', id: own.id, actor }),
+        RoutineActorRequiredError,
+      );
+    }
+
+    assert.equal(h.store.rows.get(own.id)?.status, 'active');
+    assert.equal(getRefusedRoutineActionMetrics().calls, 2);
+  });
+
+  it('a malformed actor from an untyped caller is refused', async () => {
+    // The contract types `actor` as two strings, but a channel plugin built
+    // against an older contract — or plain JavaScript — can send anything.
+    const h = makeHarness();
+    const own = h.store.seed(OWNER);
+    const untyped = integrationFor(h) as unknown as {
+      handleRoutineAction(input: Record<string, unknown>): Promise<string>;
+    };
+    resetRefusedRoutineActionMetrics();
+
+    const malformed: unknown[] = [
+      null,
+      OWNER.userId,
+      {},
+      { tenant: 42, userId: OWNER.userId },
+      { tenant: OWNER.tenant, userId: [OWNER.userId] },
+    ];
+    for (const actor of malformed) {
+      await assert.rejects(
+        () => untyped.handleRoutineAction({ action: 'pause', id: own.id, actor }),
+        RoutineActorRequiredError,
+        `actor ${JSON.stringify(actor)} must be refused`,
+      );
+    }
+
+    assert.equal(h.store.rows.get(own.id)?.status, 'active');
+    assert.equal(getRefusedRoutineActionMetrics().calls, malformed.length);
+  });
+
+  it('a captured turn context does not substitute for the actor', async () => {
+    const h = makeHarness();
+    const own = h.store.seed(OWNER);
+    const integ = integrationFor(h);
+    resetRefusedRoutineActionMetrics();
+
+    // Even the OWNER's own context, on the OWNER's own routine. A card click
+    // is dispatched out-of-band, so a context found on this path can only be
+    // one `enterWith` leaked forward from an earlier turn (#1016) — possibly
+    // someone else's. It says nothing about who clicked.
+    await routineTurnContext.run(OWNER_CTX, async () => {
+      await assert.rejects(
+        () => integ.handleRoutineAction({ action: 'pause', id: own.id }),
+        RoutineActorRequiredError,
+      );
+    });
+
+    assert.equal(h.store.rows.get(own.id)?.status, 'active');
+    assert.equal(getRefusedRoutineActionMetrics().calls, 1);
   });
 
   it('scopes from an explicit actor, with no turn context in play', async () => {
     const h = makeHarness();
     const foreign = h.store.seed(OTHER);
     const integ = integrationFor(h);
-    resetUnscopedRoutineActionMetrics();
+    resetRefusedRoutineActionMetrics();
     assert.equal(routineTurnContext.current(), undefined);
 
     // OWNER clicks a card carrying ANOTHER tenant's routine id.
@@ -520,43 +620,104 @@ describe('#1025 smart-card actions — the second door is scoped as well', () =>
         integ.handleRoutineAction({
           action: 'pause',
           id: foreign.id,
-          actor: { tenant: OWNER.tenant, userId: OWNER.userId },
+          actor: OWNER_ACTOR,
         }),
       RoutineNotFoundError,
     );
 
     assert.equal(h.store.rows.get(foreign.id)?.status, 'active');
-    // Scoped, so nothing was recorded as unscoped.
-    assert.equal(getUnscopedRoutineActionMetrics().calls, 0);
+    // A scoped miss is a not-found, not a refusal: the actor was usable.
+    assert.equal(getRefusedRoutineActionMetrics().calls, 0);
   });
 
   it('lets an explicit actor act on their own routine', async () => {
     const h = makeHarness();
     const own = h.store.seed(OWNER);
     const integ = integrationFor(h);
-    resetUnscopedRoutineActionMetrics();
+    resetRefusedRoutineActionMetrics();
 
     const out = await integ.handleRoutineAction({
       action: 'delete',
       id: own.id,
-      actor: { tenant: OWNER.tenant, userId: OWNER.userId },
+      actor: OWNER_ACTOR,
     });
 
     assert.equal(out, 'Routine gelöscht.');
     assert.equal(h.store.rows.has(own.id), false);
-    assert.equal(getUnscopedRoutineActionMetrics().calls, 0);
+    assert.equal(getRefusedRoutineActionMetrics().calls, 0);
   });
 
-  it('lets the turn owner act on their own routine via the context', async () => {
+  it('the explicit actor is decisive even inside another user\'s captured turn', async () => {
+    const h = makeHarness();
+    const own = h.store.seed(OWNER);
+    const foreign = h.store.seed(OTHER);
+    const integ = integrationFor(h);
+    const otherCtx: ManageRoutineContext = {
+      ...OWNER_CTX,
+      tenant: OTHER.tenant,
+      userId: OTHER.userId,
+    };
+
+    await routineTurnContext.run(otherCtx, async () => {
+      // OWNER's click acts on OWNER's routine…
+      const out = await integ.handleRoutineAction({
+        action: 'pause',
+        id: own.id,
+        actor: OWNER_ACTOR,
+      });
+      assert.match(out, /pausiert/);
+      // …and not on the routine of whoever the (stale) context names.
+      await assert.rejects(
+        () =>
+          integ.handleRoutineAction({
+            action: 'pause',
+            id: foreign.id,
+            actor: OWNER_ACTOR,
+          }),
+        RoutineNotFoundError,
+      );
+    });
+
+    assert.equal(h.store.rows.get(own.id)?.status, 'paused');
+    assert.equal(h.store.rows.get(foreign.id)?.status, 'active');
+  });
+
+  it('the card path never reaches the store without an owner', async () => {
     const h = makeHarness();
     const own = h.store.seed(OWNER);
     const integ = integrationFor(h);
 
-    const out = await routineTurnContext.run(OWNER_CTX, () =>
-      integ.handleRoutineAction({ action: 'pause', id: own.id }),
-    );
+    await integ.handleRoutineAction({ action: 'pause', id: own.id, actor: OWNER_ACTOR });
+    await integ.handleRoutineAction({ action: 'resume', id: own.id, actor: OWNER_ACTOR });
+    await integ.handleRoutineAction({ action: 'delete', id: own.id, actor: OWNER_ACTOR });
+    assert.deepEqual(h.store.owners, [OWNER, OWNER, OWNER]);
 
-    assert.match(out, /pausiert/);
-    assert.equal(h.store.rows.get(own.id)?.status, 'paused');
+    const next = h.store.seed(OWNER);
+    await assert.rejects(
+      () => integ.handleRoutineAction({ action: 'delete', id: next.id }),
+      RoutineActorRequiredError,
+    );
+    // Refused before the store is touched at all — not even with an owner,
+    // and above all not with `undefined`, the unscoped statement.
+    assert.equal(h.store.owners.length, 3);
+    assert.equal(h.store.rows.has(next.id), true);
+  });
+});
+
+describe('RoutineActorRequiredError — the refusal text is a user-facing contract', () => {
+  it('carries the German sentence the Teams adapter renders verbatim', () => {
+    const err = new RoutineActorRequiredError('trigger_now');
+
+    assert.ok(err instanceof Error);
+    assert.equal(err.name, 'RoutineActorRequiredError');
+    assert.equal(err.action, 'trigger_now');
+    // Rendered after `Konnte die Routine nicht <verb>: ` — one sentence, no
+    // trailing newline, and it names what has to be updated.
+    assert.equal(
+      err.message,
+      'Keine Benutzeridentität für diese Karten-Aktion übermittelt — der ' +
+        'Kanal-Adapter muss Mandant und Benutzer des Klicks mitgeben ' +
+        '(Teams-Plugin ab 0.26.1).',
+    );
   });
 });
