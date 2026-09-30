@@ -167,7 +167,7 @@ describe('showSecretsUnreadable', () => {
     await showSecretsUnreadable(
       fakeWindow(),
       t,
-      { ...SECRETS_FAILURE, stage: 'parse', reason: 'Unexpected end of JSON input' },
+      { ...SECRETS_FAILURE, stage: 'parse', reason: 'not valid JSON at position 57' },
       '/log',
       () => {},
     );

@@ -304,6 +304,47 @@ describe('readSecretsBlob — only ENOENT means "no blob yet"', () => {
   });
 });
 
+describe('readSecretsBlob — a parse failure never quotes the decrypted text', () => {
+  // V8's SyntaxError quotes about ten characters on each side of the error,
+  // and here that text is the decrypted blob. The reason, the message and the
+  // cause reach the log, the setup wizard and the recovery dialog.
+  const SECRET = Buffer.alloc(32, 0xca).toString('base64');
+  const cutOff = `{"vaultKey":"${SECRET}`;
+  const damaged = [
+    ['a damaged quote right before the vault key', `{"vaultKey":é${SECRET}","providerKeys":{}}`, 'not valid JSON'],
+    ['a damaged quote right before a provider key', `{"vaultKey":"${VAULT_KEY}","providerKeys":{"X":é${SECRET}"}}`, 'not valid JSON'],
+    // V8 reports this one by position, after its own wording: the number is kept.
+    ['a file cut off inside a key', cutOff, `not valid JSON at position ${cutOff.length}`],
+  ] as const;
+  const sources = [
+    ['encrypted', PACKAGED, codec(), (text: string) => codec().encrypt(text)],
+    ['dev plaintext', DEV, codec({ available: false }), (text: string) => Buffer.from(text, 'utf8')],
+  ] as const;
+
+  /** A run of four characters of SECRET inside `text`, or null. Shorter runs are everyday letters. */
+  function leakedRun(text: string): string | null {
+    for (let i = 0; i + 4 <= SECRET.length; i += 1) {
+      if (text.includes(SECRET.slice(i, i + 4))) return SECRET.slice(i, i + 4);
+    }
+    return null;
+  }
+
+  for (const [label, text, reason] of damaged) {
+    for (const [source, options, readCodec, stored] of sources) {
+      it(`${label} (${source}): nothing of it in the message, reason, cause chain or log`, () => {
+        const { io, logs } = recorder({ files: { [FILE]: stored(text) } });
+        const err = assertUnreadable(() => readSecretsBlob(io, readCodec, FILE, options), 'parse');
+        const surfaces = [err.message, err.reason, ...logs];
+        for (let link: unknown = err.cause; link != null; link = (link as { cause?: unknown }).cause) {
+          surfaces.push(String(link));
+        }
+        for (const surface of surfaces) assert.equal(leakedRun(surface), null, surface);
+        assert.equal(err.reason, reason);
+      });
+    }
+  }
+});
+
 describe('writeSecretsBlob — backup, temp file, rename', () => {
   it('backs up the live file, writes a temp file, then renames it into place', () => {
     const before = encrypted({ vaultKey: VAULT_KEY, providerKeys: {} });
