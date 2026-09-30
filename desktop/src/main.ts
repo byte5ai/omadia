@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, shell } from 'electron';
 import { installApplicationMenu } from './menu';
 import path from 'node:path';
 import { Supervisor, setActiveSupervisor, BootProgress } from './supervisor';
@@ -36,13 +36,14 @@ import { maybeRemindRecoveryKey, showRecoveryKeyAction } from './recoveryKeyActi
 import { createUiReadyGate } from './uiReadyGate';
 import { showAppPage } from './appPageBoot';
 import { resolveAppIconPath } from './icons';
+import { LOADING_PAGE, WIZARD_PAGE } from './bridgeSurface';
+import { installNavigationGuards } from './navigationGuards';
+import { originOf, trustedTargetsFor, type TrustedTargets } from './navigationPolicy';
 
 // Stable app identity so userData resolves to ".../omadia" in both dev and
 // packaged builds (in dev the Electron CLI would otherwise name it "Electron").
 app.setName('omadia');
 
-const LOADING_PAGE = 'loading.html';
-const WIZARD_PAGE = 'wizard.html';
 /** Marks a wizard load as following a crash, so the reset to step 0 is explained. */
 const RECOVERED_HASH = 'recovered';
 
@@ -75,8 +76,23 @@ const uiReadyGate = createUiReadyGate(UI_READY_FALLBACK_MS);
  */
 let t: ShellTranslate = (_key, fallback) => fallback;
 
+/** The bundled wizard and loading pages: the only `file:` documents the window shows. */
+function rendererDir(): string {
+  return path.join(app.getAppPath(), 'dist', 'renderer');
+}
+
 function rendererPath(file: string): string {
-  return path.join(app.getAppPath(), 'dist', 'renderer', file);
+  return path.join(rendererDir(), file);
+}
+
+/** The web UI's origin while it is serving; null before the first boot and after a stop. */
+function uiOrigin(): string | null {
+  return originOf(supervisor?.getUiUrl() ?? null);
+}
+
+/** Where a window may navigate in place: the kernel and, once it is up, the web UI. */
+function trustedTargets(): TrustedTargets {
+  return trustedTargetsFor(Supervisor.kernelOrigin(), supervisor?.getUiUrl() ?? null);
 }
 
 /**
@@ -309,6 +325,13 @@ function trayActions(): TrayActions {
  * Doubles as the supervisor's `progress` listener and as the way a recovery
  * explains itself, because both are literally "tell the renderer where the boot
  * stands" — they were two identical functions until this was noticed.
+ *
+ * Unlike renderer → main calls, these pushes are not sender-checked, and need
+ * not be: every boot path loads a bundled page first (`loadRenderer` with
+ * LOADING_PAGE or WIZARD_PAGE) and streams only while it is up, those pages
+ * carry no links and never navigate themselves, and the navigation guards
+ * keep any page-initiated move from the app's own documents on the app's own
+ * origins. So no foreign document can be on screen while the boot streams.
  */
 function sendBootProgress(p: BootProgress): void {
   if (win && !win.isDestroyed()) win.webContents.send(CH.bootProgress, p);
@@ -440,6 +463,11 @@ async function onReady(): Promise<void> {
     onUiLocale: (locale) => {
       if (shellLocale.setUiLocale(locale)) installApplicationMenu(menuActions, t);
     },
+    // Who may call which channel (ipcSender.ts): setup only from the bundled
+    // wizard while it is on screen, UI pings only from the web UI's origin.
+    currentView,
+    appOrigin: uiOrigin,
+    rendererDir: rendererDir(),
   });
 
   initUpdater();
@@ -462,6 +490,17 @@ if (!gotLock) {
       win.show();
       win.focus();
     }
+  });
+
+  // Navigation and popup guards for every webContents: the main window and any
+  // child it opens. Registered before the window exists, so nothing loads
+  // unguarded (see navigationGuards.ts).
+  app.on('web-contents-created', (_event, contents) => {
+    installNavigationGuards(contents, {
+      trusted: trustedTargets,
+      openExternal: (url) => shell.openExternal(url),
+      log,
+    });
   });
 
   app.whenReady().then(onReady).catch((err) => {

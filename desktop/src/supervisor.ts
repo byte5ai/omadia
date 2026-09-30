@@ -133,6 +133,16 @@ export class Supervisor extends EventEmitter {
   private static readonly KERNEL_PORT = 8769;
 
   /**
+   * The kernel's browser-facing origin. The app window may navigate to it in
+   * place (`navigationPolicy.ts`): the Entra sign-in callback
+   * (`AUTH_REDIRECT_URI`) and signed diagram URLs (`DIAGRAM_PUBLIC_BASE_URL`)
+   * live there.
+   */
+  static kernelOrigin(): string {
+    return `http://127.0.0.1:${Supervisor.KERNEL_PORT}`;
+  }
+
+  /**
    * Rounds the settle loop may take before it gives up waiting.
    *
    * It cannot spin today: a new operation can only come from start() or

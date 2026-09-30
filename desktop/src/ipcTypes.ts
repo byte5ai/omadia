@@ -1,7 +1,10 @@
-/** Shared IPC channel names + payload types between main and the wizard renderer. */
+/**
+ * Shared IPC channel names + payload types between main and the renderer
+ * pages. Which document may use which channel is decided per call in
+ * `ipcSender.ts` (setup channels: the bundled wizard; UI pings: the web UI).
+ */
 
 export const CH = {
-  getState: 'omadia:getState',
   testLlmKey: 'omadia:testLlmKey',
   chooseDataDir: 'omadia:chooseDataDir',
   complete: 'omadia:complete',
@@ -18,12 +21,6 @@ export const CH = {
 export interface BootLogLine {
   level: 'INFO' | 'WARN' | 'ERROR';
   msg: string;
-}
-
-export interface AppState {
-  setupComplete: boolean;
-  encryptionAvailable: boolean;
-  version: string;
 }
 
 export type ApiKeyProvider = 'anthropic' | 'openai';
