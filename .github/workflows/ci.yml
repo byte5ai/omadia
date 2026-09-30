@@ -406,13 +406,22 @@ jobs:
       # cross-domain FKs and no extension dependencies, so its position
       # in this list is not load-bearing.
       #
-      # Still uncovered (each needs its own audit before enabling):
-      # middleware/src/conductor/migrations,
-      # middleware/src/services/graph/migrations,
-      # middleware/packages/harness-memory-postgres/src/migrations.
+      # Every series a runtime migrator applies is listed here (2026-09-29).
+      # `middleware/src/conductor/migrations` (`_conductor_migrations` ledger)
+      # and `harness-memory-postgres/src/migrations` (`_memory_migrations`)
+      # are self-contained: no cross-domain FKs, no extensions.
+      # `middleware/src/services/graph/migrations` is applied by NOTHING at
+      # runtime (graph migrations live in the knowledge-graph-neon series; its
+      # four files are byte-identical copies of neon 0002/0004/0012/0013) and
+      # MUST follow the neon domain because its 0002 alters graph_nodes, which
+      # neon 0001 creates. It stays in the gate until the directory is deleted
+      # (handoff §13).
       MIGRATION_DOMAINS: |
         middleware/migrations
+        middleware/src/conductor/migrations
         middleware/packages/harness-knowledge-graph-neon/src/migrations
+        middleware/src/services/graph/migrations
+        middleware/packages/harness-memory-postgres/src/migrations
         middleware/src/auth/migrations
         middleware/src/plugins/routines/migrations
         middleware/src/profileSnapshots/migrations

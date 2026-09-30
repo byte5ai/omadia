@@ -51,6 +51,23 @@ runtime. Adding `desktop` to the audit matrix itself lands together with the
 dependency refresh that makes it pass. Local security-audit reports under
 `docs/audits/` are git-ignored.
 
+### Changed — CI schema gate applies every SQL migration series, twice
+
+2026-09-29 — the `schema (migrations on pgvector)` job listed six migration
+domains and named three as "still uncovered": `middleware/src/conductor/
+migrations` (11 files, applied at boot through the `_conductor_migrations`
+ledger), `middleware/packages/harness-memory-postgres/src/migrations` (1 file,
+`_memory_migrations`) and `middleware/src/services/graph/migrations` (4 files
+that no runner reads — byte-identical copies of the knowledge-graph-neon
+0002/0004/0012/0013). All three are now applied and re-applied by the job; the
+legacy graph directory is ordered behind the neon domain because its 0002
+alters `graph_nodes`, which neon 0001 creates. The local reproduction (nine
+domains, every file applied twice against a throwaway pgvector 16) exposed no
+latent schema defect. The remaining debts — deleting the inert graph
+directory, the 347 allowed test-tree type errors of the typecheck ratchet, and
+the `nl` prompt-PII floor of 0.84 against the 0.97 release gate — are recorded
+in the handoff's §13 roadmap so they stay visible.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no

@@ -2967,6 +2967,27 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### CI-Schulden aus dem Security-Review (2026-09-29)
+
+- **`middleware/src/services/graph/migrations/` löschen** — 4 Dateien, byte-identisch mit
+  KG-neon 0002/0004/0012/0013; kein Runner liest sie (die Graph-Migrationen laufen über die
+  `harness-knowledge-graph-neon`-Serie; #875 hat die dort gestrandete 0009 gerettet). Seit
+  2026-09-29 läuft das Verzeichnis im `schema`-Job hinter der neon-Serie mit, damit nichts
+  unbemerkt darin landet. Löschen = Verzeichnis + Eintrag in `scripts/copy-build-assets.mjs`
+  + Zeile in `MIGRATION_DOMAINS` (`.github/workflows/ci.yml`); das Dockerfile kopiert es nicht.
+- **Typecheck-Ratchet `test/` + `scripts/` (#573): 347 bekannte Fehler in 120 Dateien**
+  (`middleware/test-typecheck-baseline.json`, Stand 2026-09-29). `npm run typecheck:test`
+  blockt nur *neue* Fehler. Abbau: `npm run typecheck:test -- --report`, fixen,
+  `-- --update` senkt die Baseline (nie erhöhen). Ziel: leere Baseline, dann den Ratchet
+  durch ein hartes `tsc -p test/tsconfig.json` ersetzen, wie `desktop` es mit
+  `typecheck:test` schon tut.
+- **Prompt-PII C0, Locale `nl`: strukturierter Recall 88,2 % statt 0,97.** Der Floor in
+  `packages/harness-plugin-privacy-guard/src/validation/ci-baseline.json` steht für `nl` auf
+  0.84 (de/en/es/fr/it: 0.97). Ursachen: NL-Adressen (`straat`/`gracht`/`plein`, Postcode
+  `1016 AZ`) ohne C0-Muster und bewusst ungepatterte BSN. Wege: NL-Adressmuster in C0, oder
+  `nl` nur mit C1-Sidecar freigeben (`c0+c1` laut `validation/README.md` 89,0 % / 100 %).
+  Floor anheben, sobald die Zahl steigt; `mask_user_prompt` für `nl` bleibt bis dahin aus.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
