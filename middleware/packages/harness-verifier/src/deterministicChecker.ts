@@ -372,8 +372,11 @@ export class DeterministicChecker {
    * substring match on "42" would also accept 142, 420 or "Halle 42"), and
    * the hit's identity is re-checked, because a graph provider built before
    * `FindEntitiesOptions.id` ignores the option and returns any record of
-   * the model. A miss stays `contradicted`, as for a missing ref: the
-   * extractor declared the graph the source of this claim.
+   * the model. A miss leaves the claim `unverified`: no other record stands
+   * in for the named one, and the graph is a periodically synced partial
+   * mirror, so a record missing from it is not thereby shown to be false —
+   * a `contradicted` verdict would feed the retry a "record not found" that
+   * may be wrong.
    */
   private async checkGraphRecord(
     claim: HardClaim,
@@ -383,7 +386,7 @@ export class DeterministicChecker {
     const hits = await this.graph!.findEntities({ model, id, limit: 1 });
     const record: RecordHandle = { model, id: String(id) };
     if (!hits.some((hit) => matchesRecord(hit, record))) {
-      return contradicted(claim, null, `no ${model} with id ${String(id)} in graph`);
+      return unverified(claim, `no ${model} with id ${String(id)} in graph`);
     }
     return verified(claim, 'graph');
   }

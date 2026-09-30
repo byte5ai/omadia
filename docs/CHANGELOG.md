@@ -61,9 +61,9 @@ contradict it. Model-wide samples (for a bare `hr.department` handle) and the
 name search remain for claims without an id and are labelled as search results
 in the judge prompt; the judge is told, and `EvidenceJudge` enforces, that a
 verdict citing another record of a pinned model is demoted to `unverified`.
-`DeterministicChecker` checks an `odooRecord.id` against the graph by exact id;
-a miss there stays `contradicted`, as for a missing reference, although the
-graph is a periodically synced partial mirror (see
+`DeterministicChecker` checks an `odooRecord.id` against the graph by exact id
+and leaves a miss `unverified` as well: the graph is a periodically synced
+partial mirror, so a record missing from it is not shown to be false (see
 `docs/security-architecture.md` §3b). Shadow-mode verdict metrics recorded
 before this change are not comparable with those after it: id-anchored claims
 about records outside the graph move from spurious `verified`/`contradicted`

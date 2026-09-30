@@ -354,15 +354,17 @@ describe('verifier/deterministicChecker - graph', () => {
     assert.equal(calls[0]?.model, 'res.partner');
   });
 
-  it('contradicts an id claim whose record is not in the graph', async () => {
+  it('leaves an id claim unverified when its record is not in the graph', async () => {
+    // The graph is a partial mirror: a record missing from it is not shown
+    // to be false, so the claim stays unverified instead of being refuted.
     const graph = recordingGraph([], () => []);
     const checker = new DeterministicChecker({ graph });
 
     const verdict = await checker.check(partnerIdClaim);
 
-    assert.equal(verdict.status, 'contradicted');
-    if (verdict.status === 'contradicted') {
-      assert.match(verdict.detail ?? '', /no res\.partner with id 42 in graph/);
+    assert.equal(verdict.status, 'unverified');
+    if (verdict.status === 'unverified') {
+      assert.match(verdict.reason, /no res\.partner with id 42 in graph/);
     }
   });
 
@@ -376,7 +378,7 @@ describe('verifier/deterministicChecker - graph', () => {
 
     const verdict = await checker.check(partnerIdClaim);
 
-    assert.equal(verdict.status, 'contradicted');
+    assert.equal(verdict.status, 'unverified');
   });
 });
 

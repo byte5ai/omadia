@@ -2401,7 +2401,8 @@ Entity-Handle mit ID (`odoo:hr.employee:7`, `hr.employee:7`) exakt auf und
 prüft Modell/ID/System des Treffers nach; ein Claim mit so einem Handle
 bekommt nur diese Datensätze (kein Modell-Sample, keine Namenssuche), fehlt
 der Datensatz, bleibt der Claim `unverified`. `DeterministicChecker.checkGraph`
-prüft `odooRecord.id` exakt (Miss bleibt `contradicted`). `EvidenceJudge`
+prüft `odooRecord.id` exakt; ein Miss ist dort ebenfalls `unverified` (der
+Graph ist ein Teil-Spiegel, fehlend heißt nicht falsch). `EvidenceJudge`
 stuft ein Verdikt, das einen anderen Datensatz eines gepinnten Modells zitiert,
 auf `unverified` herab. Nur `OdooEntity`/`ConfluencePage` — Plugin-Namespaces
 (`PluginEntity`) sind über `findEntities` nicht erreichbar. Begründung und

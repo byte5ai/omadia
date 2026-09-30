@@ -411,12 +411,14 @@ extractor attaches entity handles to each claim (`related_entities`:
 
 The deterministic checker applies the same primitive: `checkGraph` looks an
 `odooRecord.id` up by exact id and re-checks the hit (it used to substring-match
-the claim value, so "42" was also satisfied by 142 or "Halle 42"). A miss there
-stays `contradicted`, as for a missing document reference, because the
-extractor declared the graph the source of that claim. The graph is a partial
-mirror of Odoo master data, synced periodically, so in enforce mode an answer
-about a record created since the last sync is blocked and retried rather than
-released with a disclaimer — a known trade-off, not an oversight.
+the claim value, so "42" was also satisfied by 142 or "Halle 42"). A miss leaves
+that claim `unverified` too. The graph is a partial mirror of Odoo master data,
+synced periodically, so a record missing from it is not shown to be false; a
+`contradicted` verdict would hand the correction retry a "record not found"
+together with the instruction not to re-check it, which is wrong for any record
+created since the last sync. The substring path for claims without an id (a
+document reference or name) is unchanged and still reports a miss as
+`contradicted`.
 
 Why a filter on `findEntities` rather than a node-by-id read: two-part handles
 (`hr.employee:7`) carry no `system`, so an external-id read of
