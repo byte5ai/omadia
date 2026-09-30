@@ -28,6 +28,7 @@ import {
   showRestartRefused,
   showSupersededBoot,
 } from '../src/shellDialogs.ts';
+import { onLog, type LogLevel } from '../src/log.ts';
 import type { ShellTranslate } from '../src/shellStrings.ts';
 
 const t: ShellTranslate = (_key, fallback) => fallback;
@@ -102,12 +103,32 @@ describe('shellDialogs choices', () => {
     assert.equal(__lastClipboardText(), 'KEY-COPY-ME');
   });
 
-  // Electron 44 turned clipboard.writeText into a promise. A dropped promise
-  // would report the copy as done and leave the rejection unhandled.
-  it('showRecoveryKey reports a failed copy instead of dropping it', async () => {
+  // Electron 44 turned clipboard.writeText into a promise that can reject (a
+  // Linux session without a clipboard, for one). The key dialog runs inside the
+  // boot sequence, where a rejection reads as a failed boot, so a failed copy
+  // must resolve — and the user, who believes the key is on the clipboard, has
+  // to be told it is not and shown the key again.
+  it('showRecoveryKey survives a failed copy and shows the key again', async () => {
     nextResponse = 0;
     __failNextClipboardWrite(new Error('clipboard unavailable'));
-    await assert.rejects(showRecoveryKey(fakeWindow(), t, 'KEY-X'), /clipboard unavailable/);
+    const logged: Array<{ level: LogLevel; msg: string }> = [];
+    const unsubscribe = onLog((level, msg) => logged.push({ level, msg }));
+    try {
+      await showRecoveryKey(fakeWindow(), t, 'KEY-X');
+    } finally {
+      unsubscribe();
+    }
+
+    assert.equal(calls.length, 2, 'the key dialog, then the copy-failed note');
+    const note = calls[1]!.args[1] as { title?: string; detail?: string };
+    assert.match(note.title ?? '', /copy/i);
+    assert.match(note.detail ?? '', /KEY-X/, 'the note repeats the key so it can be written down');
+    assert.notEqual(__lastClipboardText(), 'KEY-X', 'the key never reached the clipboard');
+
+    const errors = logged.filter((line) => line.level === 'ERROR');
+    assert.equal(errors.length, 1);
+    assert.match(errors[0]!.msg, /clipboard unavailable/);
+    assert.doesNotMatch(errors[0]!.msg, /KEY-X/, 'the log is attached to bug reports; the key stays out');
   });
 
   it('showBootFailure maps the buttons to rerun-setup / quit', async () => {

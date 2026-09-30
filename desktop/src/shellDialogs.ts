@@ -14,6 +14,8 @@
  * locale) and no dialog can silently fall back to English.
  */
 import { BrowserWindow, clipboard, dialog, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron';
+import { describeError } from './bootFailure';
+import { log } from './log';
 import { fillPlaceholders, type ShellTranslate } from './shellStrings';
 
 /**
@@ -161,9 +163,47 @@ export async function showRecoveryKey(
     defaultId: 0,
     cancelId: 1,
   });
-  // Electron 44 made the clipboard writers async (W3C Clipboard API shape);
-  // awaiting keeps a failed copy from surfacing as an unhandled rejection.
-  if (response === 0) await clipboard.writeText(key);
+  if (response !== 0) return;
+  // Electron 44's clipboard writers return promises (W3C Clipboard API shape)
+  // that can reject, e.g. on a Linux session without a clipboard. This dialog
+  // runs inside the boot sequence (the reminder that `showAppPage` awaits),
+  // where a rejection is reported as a failed boot of a working app, and from
+  // the Help menu, where nothing awaits it. So the failure ends here: logged,
+  // and the user, who now believes the key is on the clipboard, is told it is
+  // not.
+  try {
+    await clipboard.writeText(key);
+  } catch (err) {
+    // Never the key itself: this log is what users attach to bug reports.
+    log.error(`[main] could not copy the recovery key to the clipboard: ${describeError(err)}`);
+    await showRecoveryKeyCopyFailed(win, t, key);
+  }
+}
+
+/**
+ * The copy button did not copy. The key dialog has closed by then, so this note
+ * carries the key again for the user to write down.
+ */
+async function showRecoveryKeyCopyFailed(
+  win: BrowserWindow,
+  t: ShellTranslate,
+  key: string,
+): Promise<void> {
+  await messageBox(win, {
+    type: 'warning',
+    title: t('recovery.copyFailed.title', 'Copy failed'),
+    message: t(
+      'recovery.copyFailed.message',
+      'The recovery key was not copied to the clipboard.',
+    ),
+    detail: fillPlaceholders(
+      t('recovery.copyFailed.detail', 'Write it down now and keep it somewhere safe:\n\n{key}'),
+      { key },
+    ),
+    buttons: [t('recovery.close', 'Close')],
+    defaultId: 0,
+    cancelId: 0,
+  });
 }
 
 export async function showRecoveryKeyUnavailable(
