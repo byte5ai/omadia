@@ -36,6 +36,38 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — password sign-in is rate-limited
+
+2026-09-30 — `POST /api/v1/auth/login/:providerId` ran a full argon2id
+verification (19 MiB) for every attempt, an unknown email included, and
+nothing counted attempts: passwords could be guessed online without limit, and
+any caller could drive unbounded argon2 work. Every attempt now passes three
+limits first. Per client, a burst of 100 failures and then one every 6 s. Per
+account and client, five free failures and then a wait that doubles from 1 s
+to at most 2 minutes, cleared by a successful sign-in, an admin password reset
+or a re-enable. Process-wide, `AUTH_LOGIN_MAX_INFLIGHT` (new, default 4)
+concurrent verifications and 300 admitted attempts per minute. A refusal
+answers 429 `auth.rate_limited` or 503 `auth.busy` with `Retry-After` and
+`retry_after_s`, never reaches argon2, and the login page shows a localized
+"wait N seconds". Attempts are counted when they are admitted, so parallel
+requests cannot race past the budget. The first-user wizard's hash takes the
+same capacity slot, and a sign-in password over 1024 characters is refused
+before the user lookup.
+
+The account limit is keyed per (account, client), so another client's wrong
+guesses cannot lock an operator out. Every browser behind the web-ui proxy
+shares one address, so a browser that signed in before carries a signed,
+account-bound device cookie (`omadia_login_device`) that gives it a budget of
+its own. The client address comes from the new `AUTH_LOGIN_CLIENT_ADDRESS`:
+`socket` (default, the TCP peer), `xff:<n>` (the n-th `X-Forwarded-For` entry
+from the right; `xff:1` behind Fly's edge) or `header:<name>`. `req.ip`, which
+`trust proxy` takes from the client-written left-most entry, is never used.
+The first refusal per client and minute is logged and audited
+(`auth.login_rate_limited`, without the account). The limiter lives in memory
+per process: a restart clears it, which is also the unlock when no admin
+session is at hand, and N replicas multiply every ceiling by N. See
+`docs/security-architecture.md` §10f and `docs/upgrading.md`.
+
 ### Fixed — first-user setup creates exactly one admin and needs the operator's setup token
 
 2026-09-30 — `POST /api/v1/auth/setup` checked `userStore.count()` and then

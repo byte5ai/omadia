@@ -173,6 +173,34 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past 0.167.5 — password sign-in is rate-limited
+
+**Nothing to do for most installs.** The defaults are safe on every shipped
+topology. What changes for operators:
+
+- **Refusals instead of endless tries.** After five wrong passwords for one
+  account from one client, further attempts wait (1 s, doubling, at most
+  2 minutes) and answer 429 `auth.rate_limited`. A busy server answers 503
+  `auth.busy`. Both carry `Retry-After`; scripted sign-ins
+  (`curl … /api/v1/auth/login/local`) should honour it.
+- **Unlocking an account.** A successful sign-in, an admin's password reset or
+  re-enabling the user clears the wait. When no admin session is available,
+  restart the middleware: the limiter lives in memory and a restart clears it.
+- **A new cookie.** A successful sign-in (and the first-user wizard) sets
+  `omadia_login_device`, which gives that browser its own sign-in budget for
+  the account. It authenticates nothing and survives logout.
+- **Passwords over 1024 characters can no longer sign in.** Setting one
+  through the admin UI still works, so reset such a password to a shorter one.
+
+**Behind a proxy that appends to `X-Forwarded-For`** (Fly.io's edge), every
+client reaches the middleware from the proxy's address by default. Set
+`AUTH_LOGIN_CLIENT_ADDRESS=xff:1` (or `header:Fly-Client-IP`) so the limiter
+sees the real client, after checking once that a forged `X-Forwarded-For` from
+outside does not change what the middleware sees. Leave the default `socket`
+on the docker-compose stack: the web-ui proxy forwards the browser's header
+unchanged, so it is not a trusted hop. `AUTH_LOGIN_MAX_INFLIGHT` (default 4)
+bounds concurrent argon2 runs; see `middleware/.env.example`.
+
 ## Upgrading past 0.167.5 — the first-user wizard asks for a setup token
 
 **Nothing to do on an instance that already has an admin.** The change only

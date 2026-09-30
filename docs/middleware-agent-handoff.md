@@ -2227,6 +2227,60 @@ Postgres `test/auth/userStoreFirstAdmin.pg.test.ts` und
 `web-ui/app/setup/__tests__/page.test.tsx`; Desktop
 `desktop/test/supervisorKernelEnv.test.mts`.
 
+### Passwort-Anmeldung mit Rate-Limit (`POST /api/v1/auth/login/:providerId`)
+
+Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` und
+`/setup`), der Limiter in `auth/loginRateLimiter.ts`. Reihenfolge, das Billigste zuerst:
+
+1. Unbekannter oder Nicht-Passwort-Provider → 404 `auth.unknown_provider`, ohne Budget
+   und ohne argon2.
+2. **Limiter** mit drei Schichten, nacheinander:
+   - **Client** (Client-Key): Leaky Bucket über Fehlversuche, Burst 100, danach einer
+     pro 6 s. Voll → 429 `auth.rate_limited`, Retry-After höchstens 15 s.
+   - **Konto × Client** (Paar): 5 freie Fehlversuche, dann Wartezeit
+     1 s × 2^(Fehlversuche − 5) ab dem letzten, gedeckelt auf 2 min → 429. Ein Erfolg
+     löscht das Paar, 30 min nach dem letzten Fehlversuch wird es vergessen.
+   - **Global**: höchstens `AUTH_LOGIN_MAX_INFLIGHT` argon2-Läufe gleichzeitig und 300
+     zugelassene Versuche pro Minute → 503 `auth.busy`. Verbraucht nur, was die ersten
+     beiden Schichten zugelassen haben.
+
+   Jede Ablehnung trägt `Retry-After` und `retry_after_s`, setzt kein Cookie und ruft
+   `verify` nicht auf. Gezählt wird bei der Zulassung: Ein laufender Versuch zählt bis
+   zum Ergebnis als Fehlversuch, parallele Anfragen überholen das Budget also nicht.
+3. `provider.verify` (argon2) im zugelassenen Versuch. Alles außer Erfolg ist ein
+   Fehlversuch, auch ein Throw. Der globale Slot wird im `finally` frei.
+4. Erfolg: Session-Cookie plus ein frisches **Geräte-Cookie** `omadia_login_device`
+   (`auth/loginDeviceCookie.ts`): `v1.<id>.<exp>.<tag>`, HMAC über Konto, id und Ablauf
+   mit einem aus dem Session-Signing-Key abgeleiteten Schlüssel, an genau ein Konto
+   gebunden, ein Jahr gültig, HttpOnly/SameSite=Lax/Path=/. Bringt ein Browser ein
+   gültiges Geräte-Cookie für **dieses** Konto mit, ist sein Client-Key `device:<id>`
+   statt der Adresse. Hinter dem web-ui-Proxy teilen sich sonst alle Browser eine
+   Adresse, und die Fehlversuche eines Angreifers würden den Operator mit bremsen.
+
+Der Client-Key kommt aus `AUTH_LOGIN_CLIENT_ADDRESS` (`auth/clientAddress.ts`): `socket`
+(Default), `xff:<n>` (n-ter `X-Forwarded-For`-Eintrag von **rechts**) oder
+`header:<name>`, nie `req.ip`. Der Wert muss eine IP sein, sonst gilt der Socket-Peer.
+IPv6 zählt pro /64.
+
+Weitere Stellen: `/setup` holt sich für seinen argon2-Hash einen globalen Slot
+(`acquireSlot()`, sonst 503 `auth.busy`) und setzt nach Erfolg ebenfalls das
+Geräte-Cookie. Admin-Passwort-Reset und Reaktivierung (`PATCH status: 'active'`) in
+`routes/adminUsers.ts` rufen `clearAccount`. `LocalPasswordProvider` lehnt Passwörter
+über 1024 Zeichen vor dem Users-Lookup ab. Die erste Ablehnung pro (Schicht, Client)
+und Minute schreibt eine Logzeile und eine Audit-Zeile `auth.login_rate_limited`, beide
+ohne das Konto. Boot-Wiring: `createLoginGuard` in `index.ts`, ein Limiter pro Prozess
+mit Sweep-Intervall, derselbe für Auth-Router und Admin-Users-Router. Ein Auth-Router
+ohne `loginLimiter`-Dep baut sich einen eigenen mit Defaults. Die Login-Seite zeigt für
+beide Codes „bitte N Sekunden warten“ (`login.tooManyAttempts`).
+
+Sicherheitsbegründung und Restrisiken (u. a. in-memory pro Prozess, Replicas
+multiplizieren die Grenzen): `docs/security-architecture.md` §10f. Konfiguration: §10
+„Anmelde-Rate-Limit“.
+
+Tests: `test/auth/loginRateLimiter.test.ts`, `test/auth/clientAddress.test.ts`,
+`test/auth/loginRoute.test.ts`, `test/auth/adminUsersRoute.test.ts`,
+`test/auth/localPasswordProvider.test.ts`; UI `web-ui/app/login/__tests__/page.test.tsx`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -2588,6 +2642,17 @@ Siehe §3 „Ersteinrichtung `POST /api/v1/auth/setup`“ und `docs/security-arc
 | `OMADIA_DESKTOP_EMBEDDED` | `true`/`false`, Default `false`. Setzt **nur** der Supervisor der Desktop-App. Zusammen mit einer Loopback-`HOST` braucht der Wizard kein Token. Allein wirkt der Schalter nicht, und `HOST=127.0.0.1` ohne ihn auch nicht (Reverse-Proxy auf demselben Host). Nicht auf Servern setzen. |
 | `HOST` | Bind-Adresse des Kernels, Default `::`. Für die Setup-Token-Ausnahme zählt nur eine literale Loopback-Adresse (`127.0.0.0/8`, `::1`, `::ffff:127.x`), kein `localhost`. |
 | `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD`, `ADMIN_BOOTSTRAP_DISPLAY_NAME` | Deklarativer Seed statt Wizard: Ist die `users`-Tabelle beim Boot leer und sind E-Mail und Passwort (mindestens 8 Zeichen) gesetzt, legt der Boot diesen Admin über `createFirstAdmin` an. Der Wizard bleibt dann zu. Ungültige Werte loggen den Grund und fallen auf den Wizard zurück. |
+
+### Anmelde-Rate-Limit
+
+Siehe §3 „Passwort-Anmeldung mit Rate-Limit“ und `docs/security-architecture.md` §10f.
+Die Schwellen der drei Schichten sind Konstanten in `auth/loginRateLimiter.ts`, nur die
+zwei Einsatz-Fakten sind konfigurierbar.
+
+| Variable | Wirkung |
+|---|---|
+| `AUTH_LOGIN_CLIENT_ADDRESS` | Woher der Limiter die Client-Adresse nimmt. `socket` (Default): der TCP-Peer, nicht fälschbar; hinter einem Proxy teilen sich alle Clients dessen Adresse, das Geräte-Cookie trennt wiederkehrende Operatoren. `xff:<n>` (1..8): der n-te `X-Forwarded-For`-Eintrag von **rechts**, n = Zahl der vertrauenswürdigen Proxies davor, die an den Header **anhängen**. Fly.io: `xff:1` (die Edge hängt den Client an, web-ui erreicht die Middleware über `.internal` ohne weiteren Hop; ein `.flycast`-Ziel bräuchte `xff:2`); vorher einmal mit gefälschtem Header prüfen. `header:<name>`: ein Header, den die Edge **setzt** (`Fly-Client-IP`, `CF-Connecting-IP`), genau eine Adresse. Nie der linke `X-Forwarded-For`-Eintrag, den schreibt der Client. Im Compose-Stack beim Default bleiben: Der web-ui-Proxy reicht den Header des Browsers unverändert durch, Next.js füllt ihn nur, wenn er fehlt. Ungültiger Wert → Config-Fehler beim Boot, leerer Wert = Default. |
+| `AUTH_LOGIN_MAX_INFLIGHT` | Gleichzeitige argon2-Läufe (Anmeldung und Setup-Hash), danach 503 `auth.busy`. Default `4`, erlaubt `1`–`16`. Jeder Lauf braucht 19 MiB und einen Thread des libuv-Pools (`UV_THREADPOOL_SIZE`, Default 4); mehr Slots als Pool-Threads stehen nur Schlange. 16 × 19 MiB ≈ 300 MiB. |
 
 ### Test-Schalter (nicht von der Middleware gelesen)
 
@@ -3034,13 +3099,30 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ### Ersteinrichtung: was nach Setup-Token und atomarem Admin offen ist
 
-- **Rate-Limit auf `POST /api/v1/auth/setup`.** Das Token hält Unbefugte vor argon2
-  und dem Tabellen-Lock. Wer das Token hat, und jeder Prozess auf dem Desktop-Loopback,
-  löst pro Anfrage aber weiterhin einen argon2id-Lauf aus (19 MiB, t=2). Der
-  Login-Rate-Limiter sollte `/setup` mit abdecken.
+- **Setup-Token-Fehlversuche pro Client zählen.** Der argon2-Hash von `/setup` läuft
+  inzwischen im globalen Slot des Anmelde-Limiters (§10f), mehr als
+  `AUTH_LOGIN_MAX_INFLIGHT` parallele Hashes gibt es also nicht. Falsche Tokens zählt
+  der Limiter nicht: Ein generiertes Token hat 192 Bit, ein selbst gesetztes aber nur
+  mindestens 16 Zeichen.
 - **Token vorab erzeugen in `fly/deploy.sh` und `render.yaml`.** Heute holt der
   Operator das generierte Token aus `fly logs` bzw. dem Render-Log. Ein beim Deploy
   erzeugtes `ADMIN_SETUP_TOKEN`, wie schon `VAULT_KEY`, würde den Schritt sparen.
+
+### Anmelde-Rate-Limit: was offen ist
+
+- **Verteilter Limiter (Redis oder Postgres), sobald die Middleware mit mehr als einer
+  Replica läuft.** Heute zählt jeder Prozess für sich, N Replicas vervielfachen jede
+  Grenze (§10f, wie beim API-Key-Limiter in §9).
+- **Fly: `AUTH_LOGIN_CLIENT_ADDRESS=xff:1` in `fly/middleware.fly.toml` setzen**, nachdem
+  ein Request mit gefälschtem `X-Forwarded-For` gegen die Live-App gezeigt hat, dass die
+  Edge den Client anhängt. Bis dahin sieht der Limiter auf Fly nur die Adressen von Edge
+  und web-ui, und nur das Geräte-Cookie trennt die Operatoren.
+- **Passwort-Obergrenze auch beim Setzen.** Setup-Wizard und Admin-Formulare prüfen nur
+  die Mindestlänge. Ein dort gesetztes Passwort über 1024 Zeichen kann sich nicht
+  anmelden.
+- **`user_disabled` vor der Passwortprüfung.** `LocalPasswordProvider` antwortet für ein
+  deaktiviertes Konto mit `auth.user_disabled`, bevor es das Passwort prüft. Der Status
+  eines Kontos ist damit ohne Passwort ablesbar.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 

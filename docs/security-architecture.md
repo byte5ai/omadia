@@ -1023,7 +1023,9 @@ Confirmed empirically against a deployment under our control: uncredentialed
    It reads `req.socket.remoteAddress`, never `X-Forwarded-For` — `trust proxy`
    is on, so a guard on `req.ip` would be defeated by a header. Leave it off in
    containerised setups, where the Next.js server proxies from a container
-   address.
+   address. The password sign-in limiter (§10f) keys clients on the same rule:
+   the socket peer by default, and a forwarded address only from a configured
+   number of trusted hops counted from the right, never `req.ip`.
 
 **Operating guidance.** `DEV_ENDPOINTS_ENABLED` is dev scaffolding: leave it off
 on deployed environments. It is no longer a security boundary on its own — but
@@ -1371,8 +1373,12 @@ logs a skip.
   row is deleted then. Operators who object set `ADMIN_SETUP_TOKEN`.
 - Anyone who can read the logs or the database can complete setup first.
   Both already imply control of the deployment.
-- A token holder can still make the server run argon2 once per request. There
-  is no rate limit on `/setup` yet. The token keeps unauthorised callers out.
+- A token holder can still make the server run argon2 once per request. The
+  hash takes a slot of the sign-in limiter's global capacity (§10f), so
+  parallel requests cannot run more argon2 at once than
+  `AUTH_LOGIN_MAX_INFLIGHT` allows (503 `auth.busy` beyond it). Token guesses
+  are not counted per client: the token is compared before anything else, and
+  a generated one carries 192 bits. The token keeps unauthorised callers out.
 - A desktop kernel on loopback accepts the wizard from any local process.
   That is the desktop trust model: the local user is the operator.
 
@@ -1385,6 +1391,182 @@ Postgres), and against real Postgres
 race, uncommitted-OIDC seam, lock timeout, audit row, shared token store) and
 `middleware/test/auth/setupRouteConcurrency.pg.test.ts` (N parallel HTTP
 requests → one 200, the rest 410).
+
+---
+
+## 10f. Password sign-in rate limiting
+
+`POST /api/v1/auth/login/:providerId` sits under the public `/api/v1/auth/*`
+prefix, and every well-formed attempt costs a full argon2id verification
+(19 MiB, t=2), an unknown email included (the dummy-hash path). Nothing used to
+count attempts: anyone who could reach the route could guess passwords online
+without limit and drive unbounded argon2 work. The route now runs every attempt
+through `auth/loginRateLimiter.ts` (wired in `routes/authLogin.ts`) before
+`provider.verify` is called.
+
+**Three layers, checked in this order.**
+
+1. **Client**: a CPU brake per client key. A leaky bucket of failures, a burst
+   of 100, then one failure every 6 s (100 per 10 min). Full → 429
+   `auth.rate_limited` with a Retry-After of at most 15 s. Once full, the key
+   gets one failure per drain step, never a long lock. Behind a proxy this key
+   may be shared by every browser of the deployment, and a long lock would be a
+   deployment-wide lockout any anonymous caller could renew.
+2. **Account**: per (account, client) *pair*, the guessing defence. Five free
+   failures, then each further attempt waits 1 s × 2^(failures − 5) after the
+   last failure, capped at 2 minutes (429 `auth.rate_limited`). A success
+   clears the pair, and a pair is forgotten 30 minutes after its last failure.
+   One client therefore gets about 30 guesses per hour against one account.
+3. **Global**: process-wide argon2 capacity. At most `AUTH_LOGIN_MAX_INFLIGHT`
+   (default 4) verifications at once and 300 admitted attempts per minute (a
+   leaky bucket, so Retry-After stays at 1 s). Over either → 503 `auth.busy`:
+   server saturation, not client misbehaviour. Only attempts the first two
+   layers admitted consume it, so a flood of cheap refusals cannot turn into a
+   deployment-wide 503.
+
+A refused attempt never reaches `verify`. There is no argon2 work, and no
+answer that tells a right password from a wrong one while the pair is blocked.
+A refusal never sets a cookie. It carries `Retry-After` and `retry_after_s`,
+and the login page turns both codes into a localized "wait N seconds" message.
+
+**Counting at admission.** An admitted attempt is pending on its client and its
+pair until it settles, and a pending attempt counts as a failure. N parallel
+requests cannot all pass the check before the first verdict lands, and once a
+pair's free budget is spent it gets one attempt at a time. Anything but a
+successful sign-in is a failure, a `verify` that throws included. The global
+slot is released in a `finally`.
+
+**Lockout-DoS: the pair key and the device cookie.** A per-account lock is a
+gift to an attacker. A few wrong passwords lock the real operator out, and on a
+single-admin install the unlock path (an admin session) is exactly what the
+attack denies. Keying the backoff on the pair means a client only ever slows
+down its own attempts. That alone does not help when everybody shares one
+client key, and that is the default topology: the browser talks to the web-ui
+`/bot-api` proxy, so the middleware sees the web-ui's address for every
+browser. A browser that has signed in to an account before therefore carries a
+device cookie (`omadia_login_device`, `auth/loginDeviceCookie.ts`, the OWASP
+device-cookie pattern), and for that account the limiter keys it by the
+cookie's device id instead of the address:
+
+- The value is `v1.<id>.<exp>.<tag>`, an HMAC-SHA256 over account, id and
+  expiry under a key derived from the session signing key for this purpose
+  only.
+- It is bound to one account and lives one year. It is HttpOnly, SameSite=Lax,
+  Path=/ and Secure behind TLS, like the session cookie.
+- Every successful password sign-in mints a fresh one, and so does the
+  first-user wizard. It survives logout.
+- It authenticates nothing: it only picks a rate-limit bucket. A forged,
+  expired or foreign cookie falls back to the address key.
+
+The operator's own browser is never inside an attacker's budget. A first-time
+browser on a shared key can be slowed by a NAT-mate to one attempt per
+2 minutes at worst. An admin's password reset or re-enable
+(`routes/adminUsers.ts`) clears every pair of that account.
+
+**The client key under `trust proxy`.** `app.set('trust proxy', true)` makes
+`req.ip` the left-most `X-Forwarded-For` entry, which the client writes. The
+limiter never reads `req.ip` (the same rule as §10's loopback gate).
+`AUTH_LOGIN_CLIENT_ADDRESS` (`auth/clientAddress.ts`) chooses the key:
+
+- `socket` (default): the TCP peer, which cannot be forged. It is the only
+  honest key when no proxy in front of the middleware appends to
+  `X-Forwarded-For`. That covers the docker-compose stack and the desktop app.
+  The web-ui proxy forwards the browser's header verbatim, and Next.js 16 fills
+  it in with the socket peer only when it is absent (`x-forwarded-for ??= …`).
+  A forged value and a real one are indistinguishable there, which is why that
+  hop is not trusted.
+- `xff:<n>`: the n-th entry counted from the **right**, the address the
+  outermost of n trusted, appending proxies saw. Entries further left are never
+  read, so a forged left-most value does not change the bucket (tested). Fewer
+  than n entries fall back to the socket. On Fly the edge proxy appends the
+  client, and web-ui reaches the middleware over `.internal` without another
+  hop (`fly/deploy.sh`), so `xff:1` is right for the direct and the proxied
+  path. A `.flycast` target would add a hop and need `xff:2`. This rests on
+  Fly's documented behaviour, not on a probe from this repo: send one forged
+  `X-Forwarded-For` before relying on it. A wrong n on a path without that
+  many honest hops lets a client pick its own key. The account and global
+  layers still hold, so the failure mode is "weaker", never "open".
+- `header:<name>`: a header a trusted edge sets and overwrites
+  (`Fly-Client-IP`, `CF-Connecting-IP`). It must hold exactly one address.
+
+Whatever the policy yields must parse as an IP address once a port, IPv6
+brackets and the `::ffff:` prefix are stripped, or the socket peer is used, so
+junk can neither mint free keys nor reach the log. IPv6 clients are keyed by
+their /64: a single host controls its whole /64 and could otherwise rotate
+through 2^64 budgets. On Fly, `socket` yields coarse keys (the edge's or the
+web-ui's address); until `xff:1` is set, the device cookie is what keeps
+operators apart there.
+
+**Observability.** The first refusal of a (scope, client) per minute, and of
+the global scope per minute overall, writes one log line
+(`[auth] login refused (<scope> limit) client=<key> retry_after_s=<n>`) and one
+`admin_audit` row (`auth.login_rate_limited`, system actor, target
+`login-client:<key>` or `login:capacity`). Neither contains the account that
+was tried. It is per episode rather than per request, so a refusal flood cannot
+become a log or database write flood.
+
+**Other argon2 on the public prefix.** The first-user wizard's hash takes a
+global slot through `acquireSlot()` (503 `auth.busy` when none is free, §10e).
+Its setup token is compared before anything else and is not counted per
+client. An over-long password (more than 1024 characters) is refused as
+`invalid_credentials` before the users-table lookup: argon2's pre-hash is
+linear in the input, and the JSON body limit is 10 MB.
+
+**Configuration.** `AUTH_LOGIN_CLIENT_ADDRESS` (`socket` | `xff:1..8` |
+`header:<name>`; a bad value stops the boot with a config error) and
+`AUTH_LOGIN_MAX_INFLIGHT` (1..16, default 4). Each slot is 19 MiB of argon2
+memory and a libuv threadpool thread (`UV_THREADPOOL_SIZE`, default 4), so
+more slots than pool threads only queue. The thresholds of the three layers are
+constants in `loginRateLimiter.ts`. The boot logs
+`[auth] login rate limiter armed (client address=…, max in-flight=…)`. A router
+built without the limiter dependency builds its own with the defaults, so a
+forgotten wiring cannot switch it off.
+
+**Residual risks (accepted, documented).**
+
+- **In-memory and per process.** A restart clears every counter. With N
+  middleware replicas each one enforces its own limits, so every ceiling is N
+  times the configured value. It is the same accepted trade-off as the API-key
+  limiter (§9). The shipped Fly deployment (`fly/deploy.sh`) runs one
+  middleware machine. A shared limiter (Redis or Postgres) is on the roadmap
+  for when the middleware runs more than one replica.
+- **A restart is the out-of-band unlock.** If the only admin is slowed down and
+  has no device cookie, restarting the middleware (the Fly machine, the compose
+  service, or quitting the desktop app) clears all limiter state. It needs no
+  admin session.
+- **Distributed guessing.** The account layer is per (account, client). An
+  attacker with many client keys (a botnet, under `xff:<n>`) gets a budget per
+  key, and the global layer (300 per minute) is the ceiling. A per-account
+  ceiling across all clients would bring back the lockout-DoS the pair key
+  avoids.
+- **Shared keys.** Under `socket` behind a proxy, and on the desktop app (every
+  local sign-in comes from `127.0.0.1`), all first-time browsers share one
+  client key and one pair per account. A mistyping desktop user meets the pair
+  backoff (2 minutes at most) and has a device cookie after the first
+  successful sign-in.
+- **Key-table pressure.** Each map holds at most 10,000 keys, least recently
+  used out first. An attacker cycling random emails evicts older pairs and
+  weakens the pair layer for those accounts. The client and global layers are
+  unaffected.
+- **The global cap cuts both ways.** An attacker holding every argon2 slot
+  makes other sign-ins answer 503 for the length of one verification. It is
+  bounded by the client layer and configurable through
+  `AUTH_LOGIN_MAX_INFLIGHT`.
+- **Password-setting paths accept longer passwords than sign-in does.** The
+  wizard and the admin user forms enforce a minimum only, so a password over
+  1024 characters set there could not sign in.
+
+Tests: `middleware/test/auth/loginRateLimiter.test.ts` (every layer with a fake
+clock, the pinned client semantics, counting at admission, a global budget that
+refusals leave alone, the report flag, memory bounds, sweep, `clearAccount`),
+`middleware/test/auth/clientAddress.test.ts` (policies, the forged left-most
+entry, fallbacks, IPv6 /64), `middleware/test/auth/loginRoute.test.ts` (429 and
+503 with Retry-After and no cookie, no `verify` while blocked, the always-on
+default, address policies through the router, the device cookie on a shared
+key including forged, expired and foreign cookies, one audit row per episode,
+the wizard's capacity slot), `middleware/test/auth/adminUsersRoute.test.ts`
+(reset and re-enable unlock), `middleware/test/auth/localPasswordProvider.test.ts`
+(the length cap), `web-ui/app/login/__tests__/page.test.tsx`.
 
 ---
 
@@ -1452,7 +1634,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       Anything that skips the setup token keys on boot configuration (the
       desktop flag plus a loopback bind), never on a request header or
       `PUBLIC_BASE_URL` (§10e).
+- [ ] Any public route that checks a password or another guessable secret
+      runs through the sign-in limiter (`loginRateLimiter`, §10f), and any
+      argon2 work reachable without a session takes a global slot
+      (`acquireSlot()`). A client key comes from `clientAddressFor`, never
+      from `req.ip`.
 
 ---
 
-*Last reviewed: 2026-08 (§10 added with issue #669).*
+*Last reviewed: 2026-09 (§10f password sign-in rate limiting added; §10
+added with issue #669).*
