@@ -33,11 +33,10 @@
     "pg": "^8.13.0"
   },
   "devDependencies": {
-    "@electron/rebuild": "3.6.1",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.11.10",
     "electron": "^37.2.0",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^26.17.0",
     "esbuild": "^0.28.0",
     "typescript": "^5.7.2"
   }

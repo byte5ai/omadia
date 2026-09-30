@@ -90,9 +90,10 @@ off by default; set the `CSC_*` / `APPLE_*` env vars and flip `notarize: true` i
 `.github/workflows/desktop-apps.yml` builds + signs the installers for **macOS,
 Windows and Linux** and uploads them to the Release that triggered it (separate
 from the GHCR image pipeline so neither blocks the other). Per OS it builds the
-middleware + web-ui, rebuilds the middleware's native modules for Electron's ABI
-(`@electron/rebuild` — electron-builder does the app's own deps but not the
-staged `extraResources`), stages the runtime, then runs electron-builder.
+middleware + web-ui, checks that the middleware's native modules (better-sqlite3,
+argon2, sharp — all N-API prebuilds) load under Electron's own Node the way the
+supervisor runs the kernel (`ELECTRON_RUN_AS_NODE`; no Electron-ABI rebuild is
+needed or done), stages the runtime, then runs electron-builder.
 
 Signing is **fail-soft** — without secrets it still ships installers (ad-hoc on
 macOS):
@@ -111,7 +112,10 @@ macOS):
   natively via `win.azureSignOptions` and installs the `TrustedSigning`
   PowerShell module itself; the workflow passes the three account coordinates on
   the CLI so no byte5-specific value is baked into the repo. No hardware token,
-  runs on GitHub-hosted runners.
+  runs on GitHub-hosted runners. The publisher name electron-builder 26 also
+  requires is read from the signing certificate during the build and pinned into
+  the app's `app-update.yml`, so an installed Windows app only accepts updates
+  that are Authenticode-signed under that name.
 - **Windows — legacy Authenticode `.p12`**: `WINDOWS_CSC_LINK_BASE64`,
   `WINDOWS_CSC_KEY_PASSWORD`. Only usable with certificates issued **before
   2023-06-01**. Since then the CA/Browser Forum requires every code-signing
