@@ -101,20 +101,20 @@ async function startRealEmbeddedDb(): Promise<EmbeddedDb> {
   }
 
   const port = await stableDbPort();
-  log.info(`[db] starting embedded Postgres on 127.0.0.1:${port}…`);
-  current = { proc: spawnServer(dataDir, port), port };
 
   try {
-    await waitForReady(port, creds.superuserPassword);
+    // Puts pg_hba.conf and the bootstrap password in order with the server
+    // stopped, then starts it through the IO port, then verifies.
     await ensureClusterAuth(realDbAuthIo(dataDir, port, creds.superuserPassword), creds);
   } catch (err) {
-    // Deliberate cleanup of a server that failed to come ready — mark it so the
-    // exit handler reports the original failure, not a spurious "exited
-    // unexpectedly". This also ends any trust window a failed credential repair
-    // could not close itself: no server keeps running on rules nobody checked.
+    // Deliberate cleanup of a server that failed to come ready or failed the
+    // verification — mark it so the exit handler reports the original failure,
+    // not a spurious "exited unexpectedly". No server keeps running on rules
+    // nobody checked.
     stopping = true;
     try {
-      if (current) await stopProc(current.proc);
+      const proc = runningProc();
+      if (proc !== null) await stopProc(proc);
     } finally {
       current = null;
       stopping = false;
@@ -124,6 +124,15 @@ async function startRealEmbeddedDb(): Promise<EmbeddedDb> {
 
   log.info(`[db] embedded Postgres ready on 127.0.0.1:${port}`);
   return toHandle(port, creds.kernelPassword);
+}
+
+/**
+ * The server process `ensureClusterAuth` may have started or replaced. A
+ * function, not a read of `current` inline: TypeScript would keep the
+ * narrowing from the early return above across that call.
+ */
+function runningProc(): ChildProcess | null {
+  return current?.proc ?? null;
 }
 
 /**
@@ -226,14 +235,16 @@ async function waitForReady(port: number, superuserPassword: string, timeoutMs =
   throw new Error(`embedded Postgres did not become ready in ${timeoutMs}ms (${lastErr})`);
 }
 
-/**
- * Stop the server and start it again on the same port, so it reads
- * pg_hba.conf afresh. The credential repair needs this: while the shell cannot
- * log in, nothing can ask the server for a reload.
- */
-async function restartServer(dataDir: string, port: number, superuserPassword: string): Promise<void> {
+async function startServer(dataDir: string, port: number, superuserPassword: string): Promise<void> {
+  if (current !== null) throw new Error('embedded Postgres is already running');
+  log.info(`[db] starting embedded Postgres on 127.0.0.1:${port}…`);
+  current = { proc: spawnServer(dataDir, port), port };
+  await waitForReady(port, superuserPassword);
+}
+
+async function stopServer(): Promise<void> {
   const running = current;
-  if (running === null) throw new Error('embedded Postgres is not running');
+  if (running === null) return;
   stopping = true;
   let exited: boolean;
   try {
@@ -241,13 +252,41 @@ async function restartServer(dataDir: string, port: number, superuserPassword: s
   } finally {
     stopping = false;
   }
-  if (!exited) throw new Error('embedded Postgres did not stop for the restart');
-  log.info(`[db] restarting embedded Postgres on 127.0.0.1:${port}…`);
-  current = { proc: spawnServer(dataDir, port), port };
-  await waitForReady(port, superuserPassword);
+  if (!exited) throw new Error('embedded Postgres did not stop');
 }
 
-/** The running cluster behind `embeddedDbAuth.ts`'s port. */
+/** Single-user mode must finish well within a boot; it normally takes well under a second. */
+const SINGLE_USER_TIMEOUT_MS = 120_000;
+
+/**
+ * One statement in single-user mode (`postgres --single`), which opens no
+ * listener, reads no pg_hba.conf and runs as the bootstrap superuser. It needs
+ * the server stopped, and with `exit_on_error` a failing statement exits
+ * non-zero.
+ */
+function runSingleUser(dataDir: string, statement: string): void {
+  if (current !== null) throw new Error('single-user mode needs the embedded Postgres stopped');
+  try {
+    execFileSync(
+      pgBin('postgres'),
+      ['--single', '-D', dataDir, '-c', 'exit_on_error=on', 'postgres'],
+      { cwd: pgNativeDir(), input: `${statement}\n`, stdio: 'pipe', timeout: SINGLE_USER_TIMEOUT_MS },
+    );
+  } catch (err) {
+    // Only the server's own verdict: the statement (a SCRAM verifier) and the
+    // rest of its output stay out of the message.
+    const stderr = String((err as { stderr?: unknown }).stderr ?? '');
+    const verdict = stderr.split('\n').filter((line) => /\b(FATAL|ERROR|PANIC):/.test(line)).join(' | ');
+    const status = (err as { status?: unknown }).status;
+    throw new Error(`[db] single-user mode failed (exit ${String(status)}): ${verdict || errorMessage(err)}`);
+  }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** The cluster behind `embeddedDbAuth.ts`'s port. */
 function realDbAuthIo(dataDir: string, port: number, superuserPassword: string): DbAuthIo {
   const hbaFile = path.join(dataDir, 'pg_hba.conf');
   return {
@@ -259,10 +298,14 @@ function realDbAuthIo(dataDir: string, port: number, superuserPassword: string):
         throw err;
       }
     },
-    writeHba: async (text) => writeFileAtomic(hbaFile, text),
+    writeHba: async (text) => {
+      if (current !== null) throw new Error('pg_hba.conf is only rewritten while the embedded Postgres is stopped');
+      writeFileAtomic(hbaFile, text);
+    },
+    runSingleUser: async (statement) => runSingleUser(dataDir, statement),
+    startServer: () => startServer(dataDir, port, superuserPassword),
+    stopServer: () => stopServer(),
     connect: (options) => connectClient(port, options),
-    restartServer: () => restartServer(dataDir, port, superuserPassword),
-    sleep: (ms) => delay(ms),
     info: (message) => log.info(message),
     warn: (message) => log.warn(message),
   };
@@ -277,7 +320,7 @@ async function connectClient(port: number, options: ConnectOptions): Promise<Aut
     database: options.database,
     connectionTimeoutMillis: 5_000,
   });
-  // A connection the server drops later (a restart) must not surface as an
+  // A connection the server drops later (a stop) must not surface as an
   // unhandled 'error' event.
   client.on('error', (err) => log.warn(`[db] connection as ${options.user} dropped: ${err.message}`));
   try {
@@ -288,7 +331,6 @@ async function connectClient(port: number, options: ConnectOptions): Promise<Aut
   }
   return {
     query: async (sql, params) => ({ rows: (await client.query(sql, params ? [...params] : undefined)).rows }),
-    escapeLiteral: (value) => client.escapeLiteral(value),
     end: () => client.end(),
   };
 }

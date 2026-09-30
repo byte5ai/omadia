@@ -14,24 +14,24 @@ import type { EmbeddedDbCredentials } from './secretsBlob';
  *     it is not a superuser: no `COPY ... TO PROGRAM`, no server file access,
  *     no roles, no databases.
  *
- * pg_hba.conf belongs to the shell: it is rewritten to `renderHba('scram')`
- * whenever it differs, and the server is started with `hba_file` pinned to it.
- * Every rule asks for a SCRAM password, so the server's verdict does not
- * depend on which local process or OS user is asking.
+ * pg_hba.conf belongs to the shell and is only ever written while the server
+ * is stopped, so the running server never holds rules the shell did not
+ * write: every rule asks for a SCRAM password, whichever local process or OS
+ * user is asking. The server starts with `hba_file` pinned to that file.
  *
  * `ensureClusterAuth` is driven by the state of the cluster, never by a flag,
  * so a restored snapshot or a regenerated `secrets.enc` repairs itself:
  *   - steady state: the shell's pg_hba.conf and a kernel login that works.
  *     Only the verification runs.
  *   - trust era (clusters initialised with `-A trust` before this module
- *     existed): the bootstrap password is set while trust still admits the
- *     shell, THEN pg_hba.conf asks for passwords. Setting it after the switch
+ *     existed): before the server starts, the bootstrap password is set in
+ *     single-user mode, THEN pg_hba.conf asks for passwords. The other order
  *     would lock the shell out of its own cluster.
  *   - passwords the cluster no longer accepts (lost `secrets.enc`, a snapshot
- *     restored without its secrets): a trust window for the bootstrap role on
- *     IPv4 loopback, restart, set its password, close the window. The window
- *     holds exactly that one statement and is closed on every path; without it
- *     a lost secrets file would brick the local database.
+ *     restored without its secrets): the server is stopped, the password is
+ *     set in single-user mode, and the server starts again. Single-user mode
+ *     (`postgres --single`) has no listener and no pg_hba.conf, so the repair
+ *     never lets anyone in without a password, not even for a moment.
  *
  * Provisioning sets the kernel's password last, so a run that fails half way
  * leaves a kernel that cannot log in, and the next start provisions again
@@ -52,46 +52,28 @@ const ADMIN_DATABASE = 'postgres';
 const INVALID_PASSWORD = '28P01';
 const INVALID_AUTHORIZATION = '28000';
 
-/**
- * How long the verification waits for a pg_hba.conf reload to land. A reload
- * is asynchronous (SIGHUP): a backend forked before the postmaster re-read the
- * file still applies the old rules.
- */
-const VERIFY_ATTEMPTS = 20;
-const VERIFY_RETRY_MS = 100;
-
 /** The extensions the kernel's migrations create. pgvector is untrusted: only a superuser may. */
 const EXTENSIONS = ['vector', 'pg_trgm'] as const;
 
 /** The kernel role's attributes; INHERIT so PG15+'s implicit pg_database_owner grants CREATE on `public`. */
 const KERNEL_ROLE_ATTRIBUTES = 'LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS';
 
-const HBA_HEADER = [
-  '# Written by the omadia desktop shell (desktop/src/embeddedDbAuth.ts) on every',
-  '# start; local edits are replaced. Every rule requires a SCRAM password.',
-  '# TYPE  DATABASE  USER                  ADDRESS        METHOD',
-];
+/** What a SCRAM verifier consists of: safe inside a SQL literal and on a single line. */
+const VERIFIER_CHARACTERS = /^[A-Za-z0-9+/=$:-]+$/;
 
-const HBA_SCRAM = [
-  ...HBA_HEADER,
+const HBA_RULES = [
+  '# Written by the omadia desktop shell (desktop/src/embeddedDbAuth.ts) while the',
+  '# server is stopped; local edits are replaced. Every rule requires a SCRAM password.',
+  '# TYPE  DATABASE  USER                  ADDRESS        METHOD',
   `local   all       ${DB_SUPERUSER},${DB_KERNEL_ROLE}                  scram-sha-256`,
   `host    all       ${DB_SUPERUSER},${DB_KERNEL_ROLE}  127.0.0.1/32   scram-sha-256`,
   `host    all       ${DB_SUPERUSER},${DB_KERNEL_ROLE}  ::1/128        scram-sha-256`,
   '',
 ].join('\n');
 
-const HBA_RECOVERY = [
-  '# Temporary: the omadia desktop shell is re-provisioning lost database',
-  '# credentials. Replaced with password-only rules within seconds.',
-  `host    all       ${DB_SUPERUSER}                 127.0.0.1/32   trust`,
-  '',
-].join('\n');
-
-export type HbaRendering = 'scram' | 'recovery';
-
-/** The shell's pg_hba.conf: password-only rules, or the recovery window's single trust rule. */
-export function renderHba(rendering: HbaRendering): string {
-  return rendering === 'scram' ? HBA_SCRAM : HBA_RECOVERY;
+/** The shell's pg_hba.conf: password-only rules for its two roles, nothing else. */
+export function renderHba(): string {
+  return HBA_RULES;
 }
 
 export type HbaMode = 'scram' | 'trust' | 'unknown';
@@ -135,6 +117,17 @@ export function scramVerifier(password: string, salt = crypto.randomBytes(16), i
   );
 }
 
+/**
+ * `ALTER ROLE <role> WITH PASSWORD '<verifier>'` on one line, built without a
+ * connection because single-user mode has none; the verifier's alphabet is
+ * checked so nothing can break out of the literal or the line.
+ */
+export function passwordStatement(role: string, password: string): string {
+  const verifier = scramVerifier(password);
+  if (!VERIFIER_CHARACTERS.test(verifier)) throw new Error('[db] unexpected characters in a SCRAM verifier');
+  return `ALTER ROLE ${role} WITH PASSWORD '${verifier}'`;
+}
+
 /** The SQLSTATE pg attaches to a server error, if any. */
 export function sqlState(err: unknown): string | undefined {
   const code = (err as { code?: unknown } | null)?.code;
@@ -157,46 +150,77 @@ export interface QueryResult {
 
 export interface AuthClient {
   query(sql: string, params?: readonly unknown[]): Promise<QueryResult>;
-  escapeLiteral(value: string): string;
   end(): Promise<void>;
 }
 
 export interface ConnectOptions {
   readonly user: string;
-  /** Omitted only inside the recovery window, where trust admits the bootstrap role. */
-  readonly password?: string;
+  readonly password: string;
   readonly database: string;
 }
 
 export interface DbAuthIo {
   /** pg_hba.conf as it is on disk; null when it cannot be found. */
   readHba(): string | null;
-  /** Replace pg_hba.conf atomically. */
+  /** Replace pg_hba.conf atomically. Only called while the server is stopped. */
   writeHba(text: string): Promise<void>;
+  /**
+   * Run one statement in single-user mode (`postgres --single`): no listener,
+   * no pg_hba.conf, the bootstrap superuser. The server must be stopped.
+   */
+  runSingleUser(statement: string): Promise<void>;
+  /** Start the server; resolves once it answers on its loopback port. */
+  startServer(): Promise<void>;
+  /** Stop the server; resolves once it has exited. */
+  stopServer(): Promise<void>;
   /** A loopback connection; rejects with pg's error (SQLSTATE in `code`). */
   connect(options: ConnectOptions): Promise<AuthClient>;
-  /** Stop and start the server so it reads pg_hba.conf again; resolves once it accepts connections. */
-  restartServer(): Promise<void>;
-  sleep(ms: number): Promise<void>;
   info(message: string): void;
   warn(message: string): void;
 }
 
 /**
- * Bring the running cluster to the two-role, password-only state and verify
- * it. Rejects rather than let a DSN be handed out while the verification
+ * Start the cluster in the two-role, password-only state and verify it.
+ * Called with the server stopped: pg_hba.conf and the bootstrap password are
+ * put in order first, and only then does `io.startServer()` let the server
+ * listen. Rejects rather than let a DSN be handed out while the verification
  * fails: a wrong password must be refused, and the kernel role must not be
  * privileged.
  */
 export async function ensureClusterAuth(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<void> {
-  const hba = io.readHba();
-  if (hba === renderHba('scram') && (await kernelRoleIsCurrent(io, creds))) {
+  await adoptShellHba(io, creds);
+  await io.startServer();
+  if (await kernelRoleIsCurrent(io, creds)) {
     await verifyClusterAuth(io, creds);
     return;
   }
-  await secureBootstrapRole(io, creds, hbaMode(hba));
+  await ensureBootstrapLogin(io, creds);
   await provisionKernelRole(io, creds);
   await verifyClusterAuth(io, creds);
+}
+
+/**
+ * With the server stopped, make pg_hba.conf the shell's. Rules that did not ask
+ * for a password (trust era, or rules this shell did not write) may have let
+ * the shell in without checking one, so the bootstrap password is set first,
+ * in single-user mode, and only then are the password-only rules written. If
+ * setting it fails, the old rules stay and the start fails; nothing is locked
+ * out.
+ */
+async function adoptShellHba(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<void> {
+  const hba = io.readHba();
+  if (hba === renderHba()) return;
+  const mode = hbaMode(hba);
+  if (mode !== 'scram') {
+    io.warn(
+      mode === 'trust'
+        ? '[db] migrating a trust-authenticated cluster to SCRAM passwords before it starts'
+        : '[db] replacing a pg_hba.conf this shell did not write before the server starts',
+    );
+    await io.runSingleUser(passwordStatement(DB_SUPERUSER, creds.superuserPassword));
+  }
+  await io.writeHba(renderHba());
+  io.info('[db] pg_hba.conf requires a SCRAM password for every connection');
 }
 
 /** The kernel logs in with the stored password and is still a restricted role. */
@@ -218,96 +242,36 @@ async function kernelRoleIsCurrent(io: DbAuthIo, creds: EmbeddedDbCredentials): 
 }
 
 /**
- * Postcondition: the bootstrap role's password is the stored one, pg_hba.conf
- * is the shell's, and the running server has been told to reload it.
+ * The shell must be able to log in as the bootstrap role. When the cluster
+ * refuses the stored password, the server is stopped and the password set in
+ * single-user mode, which accepts no connection at all meanwhile.
  */
-async function secureBootstrapRole(io: DbAuthIo, creds: EmbeddedDbCredentials, mode: HbaMode): Promise<void> {
-  const admin = await connectAsBootstrap(io, creds);
-  if (admin === null) {
-    await reprovisionThroughTrustWindow(io, creds);
-    return;
+async function ensureBootstrapLogin(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<void> {
+  if (await bootstrapLoginWorks(io, creds)) return;
+  io.warn(
+    '[db] the stored database password was refused; setting it again with the server stopped ' +
+      '(single-user mode, no connections accepted meanwhile)',
+  );
+  await io.stopServer();
+  await io.runSingleUser(passwordStatement(DB_SUPERUSER, creds.superuserPassword));
+  await io.startServer();
+  if (!(await bootstrapLoginWorks(io, creds))) {
+    throw new Error('[db] the embedded Postgres still refuses the stored password after resetting it');
   }
-  try {
-    if (mode !== 'scram') {
-      // Trust (or rules this shell did not write) may have admitted us without
-      // looking at the password: set it while we are still let in, and only
-      // then stop trusting. On failure the old rules stay, not a lockout.
-      io.warn(
-        mode === 'trust'
-          ? '[db] migrating a trust-authenticated cluster to SCRAM passwords'
-          : '[db] replacing a pg_hba.conf this shell did not write with SCRAM rules',
-      );
-      await setPassword(admin, DB_SUPERUSER, creds.superuserPassword);
-    }
-    if (io.readHba() !== renderHba('scram')) await adoptScramHba(io, admin);
-  } finally {
-    await admin.end();
-  }
+  io.warn('[db] database password re-provisioned');
 }
 
-/** A superuser session with the stored password, or null when the server refuses it. */
-async function connectAsBootstrap(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<AuthClient | null> {
+/** Whether the server accepts the stored bootstrap password; other failures throw. */
+async function bootstrapLoginWorks(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<boolean> {
+  let admin: AuthClient;
   try {
-    return await io.connect({ user: DB_SUPERUSER, password: creds.superuserPassword, database: ADMIN_DATABASE });
+    admin = await io.connect({ user: DB_SUPERUSER, password: creds.superuserPassword, database: ADMIN_DATABASE });
   } catch (err) {
-    if (isAuthFailure(err)) return null;
+    if (isAuthFailure(err)) return false;
     throw err;
   }
-}
-
-async function adoptScramHba(io: DbAuthIo, admin: AuthClient): Promise<void> {
-  await io.writeHba(renderHba('scram'));
-  await admin.query('SELECT pg_reload_conf()');
-  io.info('[db] pg_hba.conf now requires a SCRAM password for every connection');
-}
-
-async function setPassword(client: AuthClient, role: string, password: string): Promise<void> {
-  await client.query(`ALTER ROLE ${role} WITH PASSWORD ${client.escapeLiteral(scramVerifier(password))}`);
-}
-
-/**
- * The shell cannot authenticate: trust the bootstrap role on IPv4 loopback,
- * restart, set its password, and close the window again, on every path.
- */
-async function reprovisionThroughTrustWindow(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<void> {
-  io.warn(
-    '[db] the stored database password was refused; re-provisioning it through a temporary ' +
-      `loopback-only trust window for the "${DB_SUPERUSER}" role`,
-  );
-  await io.writeHba(renderHba('recovery'));
-  let admin: AuthClient | null = null;
-  let failure: unknown = null;
-  try {
-    await io.restartServer();
-    admin = await io.connect({ user: DB_SUPERUSER, database: ADMIN_DATABASE });
-    await setPassword(admin, DB_SUPERUSER, creds.superuserPassword);
-  } catch (err) {
-    failure = err;
-  }
-  try {
-    await closeTrustWindow(io, admin);
-  } catch (closeErr) {
-    // The original failure is the one to report. A window that could not be
-    // closed is not left open: the caller stops the server on any rejection.
-    if (failure === null) throw closeErr;
-    io.warn(`[db] could not close the trust window cleanly: ${errorText(closeErr)}`);
-  }
-  if (failure !== null) throw failure;
-}
-
-async function closeTrustWindow(io: DbAuthIo, admin: AuthClient | null): Promise<void> {
-  await io.writeHba(renderHba('scram'));
-  if (admin === null) {
-    // No session to request a reload through: a restart reads the file again.
-    await io.restartServer();
-  } else {
-    try {
-      await admin.query('SELECT pg_reload_conf()');
-    } finally {
-      await admin.end();
-    }
-  }
-  io.warn('[db] trust window closed; pg_hba.conf requires SCRAM passwords again');
+  await admin.end();
+  return true;
 }
 
 /**
@@ -342,7 +306,7 @@ async function provisionKernelRole(io: DbAuthIo, creds: EmbeddedDbCredentials): 
       await createExtension(io, inKernelDb, extension);
     }
     await inKernelDb.query(transferOwnershipSql(DB_SUPERUSER, DB_KERNEL_ROLE));
-    await setPassword(inKernelDb, DB_KERNEL_ROLE, creds.kernelPassword);
+    await inKernelDb.query(passwordStatement(DB_KERNEL_ROLE, creds.kernelPassword));
   } finally {
     await inKernelDb.end();
   }
@@ -411,18 +375,15 @@ async function verifyClusterAuth(io: DbAuthIo, creds: EmbeddedDbCredentials): Pr
 }
 
 async function expectWrongPasswordRefused(io: DbAuthIo, user: string, database: string): Promise<void> {
-  let outcome = '';
-  for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt += 1) {
-    const wrong = crypto.randomBytes(24).toString('hex');
-    try {
-      const client = await io.connect({ user, password: wrong, database });
-      await client.end();
-      outcome = 'a wrong password was accepted';
-    } catch (err) {
-      if (sqlState(err) === INVALID_PASSWORD) return;
-      outcome = errorText(err);
-    }
-    if (attempt < VERIFY_ATTEMPTS) await io.sleep(VERIFY_RETRY_MS);
+  const wrong = crypto.randomBytes(24).toString('hex');
+  let outcome: string;
+  try {
+    const client = await io.connect({ user, password: wrong, database });
+    await client.end();
+    outcome = 'a wrong password was accepted';
+  } catch (err) {
+    if (sqlState(err) === INVALID_PASSWORD) return;
+    outcome = errorText(err);
   }
   throw new Error(
     `[db] refusing to start the kernel: the embedded Postgres did not refuse a wrong password for "${user}" (${outcome})`,

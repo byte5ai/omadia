@@ -288,7 +288,7 @@ describe('embedded Postgres authentication (real engine)', { skip, timeout: 240_
     );
   });
 
-  it('lost credentials are re-provisioned through a logged loopback trust window', async () => {
+  it('lost credentials are re-provisioned with the server stopped, and logged', async () => {
     const previous = storedCredentials();
     assert.ok(await stopEmbeddedDb());
     for (const file of [secretsFile(), `${secretsFile()}.bak`]) fs.rmSync(file, { force: true });
@@ -299,8 +299,8 @@ describe('embedded Postgres authentication (real engine)', { skip, timeout: 240_
     const current = storedCredentials();
     assert.notEqual(current.kernelPassword, previous.kernelPassword);
     assert.ok(
-      logLines.some((line) => line.startsWith('WARN') && line.includes('trust window')),
-      `the window is logged at warn:\n${logLines.join('\n')}`,
+      logLines.some((line) => line.startsWith('WARN') && line.includes('single-user mode')),
+      `the repair is logged at warn:\n${logLines.join('\n')}`,
     );
     const dataDir = path.join(path.dirname(secretsFile()), 'pgdata');
     await assertPasswordsRequired(db.port, dataDir);

@@ -1,13 +1,14 @@
 /**
  * A scripted stand-in for the embedded Postgres behind `DbAuthIo`, so the
  * credential state machine in `embeddedDbAuth.ts` can be driven through the
- * cluster states it has to handle (fresh, trust-era, lost credentials) and its
+ * cluster states it has to handle (fresh, trust era, lost credentials) and its
  * ordering asserted, the way `dbSnapshot.test.mts` records its IO port.
  *
- * It models only what the state machine can observe: which pg_hba.conf the
- * server has loaded (a reload lands only after `staleConnects` further
- * connections, the race a real SIGHUP has), which roles exist with which SCRAM
- * verifier, which databases exist and which extensions can be created.
+ * It models only what the state machine can observe: whether the server runs,
+ * which pg_hba.conf it loaded when it started (the call log labels every
+ * start with it), which roles exist with which SCRAM verifier, which databases
+ * exist and which extensions can be created. Single-user mode, like the real
+ * one, refuses to run while the server does.
  */
 import {
   renderHba,
@@ -48,7 +49,7 @@ interface FakeRole {
 }
 
 export interface FakeClusterOptions {
-  /** pg_hba.conf on disk; the server has loaded it at start. */
+  /** pg_hba.conf on disk; the server loads it when it starts. */
   readonly hba: string | null;
   /** The bootstrap role's password; null means none is set (a trust-era cluster). */
   readonly superuserPassword: string | null;
@@ -57,12 +58,12 @@ export interface FakeClusterOptions {
   readonly databases?: readonly string[];
   /** Extensions whose control file is installed; default: vector and pg_trgm. */
   readonly extensions?: readonly string[];
-  /** Connections that still see the previous rules after a reload. */
-  readonly staleConnects?: number;
-  /** A statement matching this throws (also settable later, see `failOn`). */
+  /** A statement matching this throws, online or in single-user mode (see `failOn`). */
   readonly failOn?: RegExp;
-  /** restartServer() throws. */
-  readonly restartFails?: boolean;
+  /** The start with this number (1-based) fails, as a server that does not come up. */
+  readonly failStart?: number;
+  /** The running server lets everyone in without a password, whatever pg_hba.conf says. */
+  readonly ignoresHba?: boolean;
   /** Attributes the kernel role reports, whatever was ALTERed. */
   readonly kernelReports?: Partial<RoleAttributes>;
   /** Attributes the kernel role reports until its attributes are ALTERed (drift). */
@@ -74,11 +75,9 @@ export function sqlError(code: string, message: string, detail?: string): Error 
   return Object.assign(new Error(message), { code, detail });
 }
 
-/** Which of the shell's renderings a pg_hba.conf text is, for the call log. */
+/** Whether a pg_hba.conf text is the shell's rendering, for the call log. */
 export function hbaLabel(text: string | null): string {
-  if (text === renderHba('scram')) return 'scram';
-  if (text === renderHba('recovery')) return 'recovery';
-  return 'other';
+  return text === renderHba() ? 'scram' : 'other';
 }
 
 function verifierMatches(verifier: string, password: string): boolean {
@@ -89,7 +88,7 @@ function verifierMatches(verifier: string, password: string): boolean {
   return scramVerifier(password, salt, iterations) === verifier;
 }
 
-/** The auth method the first matching host line gives `user`, or null. */
+/** The auth method the first matching IPv4 host line gives `user`, or null. */
 function methodFor(hba: string | null, user: string): string | null {
   for (const raw of (hba ?? '').split('\n')) {
     const line = raw.trim();
@@ -116,7 +115,6 @@ function statementLabel(sql: string): string {
     [/^ALTER DATABASE (\w+) OWNER TO (\w+)/, (m) => `alter database ${m[1]} owner ${m[2]}`],
     [/^CREATE EXTENSION IF NOT EXISTS (\w+)/, (m) => `extension ${m[1]}`],
     [/^DO \$transfer\$/, () => 'transfer ownership'],
-    [/^SELECT pg_reload_conf\(\)/, () => 'reload'],
     [/^SELECT rolsuper/, () => 'attributes?'],
   ];
   for (const [pattern, name] of rules) {
@@ -132,9 +130,10 @@ export class FakeCluster implements DbAuthIo {
   hbaOnDisk: string | null;
   /** A statement matching this throws; a test may clear it to let a retry through. */
   failOn: RegExp | undefined;
+  running = false;
+  private loaded: string | null = null;
+  private starts = 0;
   private drift: Partial<RoleAttributes>;
-  private loaded: string | null;
-  private pending: { hba: string | null; stale: number } | null = null;
   private readonly roles = new Map<string, FakeRole>();
   private readonly databases: Set<string>;
   private readonly extensions: Set<string>;
@@ -145,7 +144,6 @@ export class FakeCluster implements DbAuthIo {
     this.hbaOnDisk = options.hba;
     this.failOn = options.failOn;
     this.drift = options.kernelReportsUntilAltered ?? {};
-    this.loaded = options.hba;
     this.databases = new Set(['postgres', 'template1', ...(options.databases ?? [])]);
     this.extensions = new Set(options.extensions ?? ['vector', 'pg_trgm']);
     this.roles.set('omadia', {
@@ -167,15 +165,7 @@ export class FakeCluster implements DbAuthIo {
     return role !== undefined && role.verifier !== null && verifierMatches(role.verifier, password);
   }
 
-  hasRole(user: string): boolean {
-    return this.roles.has(user);
-  }
-
-  hasDatabase(name: string): boolean {
-    return this.databases.has(name);
-  }
-
-  /** Just the SQL statements, labelled, in order. */
+  /** Just the SQL statements, labelled `user@database: statement`, in order. */
   statements(): string[] {
     return this.calls.filter((call) => call.startsWith('sql ')).map((call) => call.slice(4));
   }
@@ -187,18 +177,29 @@ export class FakeCluster implements DbAuthIo {
 
   async writeHba(text: string): Promise<void> {
     this.calls.push(`writeHba(${hbaLabel(text)})`);
+    if (this.running) throw new Error('synthetic: pg_hba.conf written while the server runs');
     this.hbaOnDisk = text;
   }
 
-  async restartServer(): Promise<void> {
-    this.calls.push('restartServer');
-    if (this.options.restartFails) throw new Error('synthetic: postgres did not come back');
-    this.loaded = this.hbaOnDisk;
-    this.pending = null;
+  async runSingleUser(statement: string): Promise<void> {
+    this.calls.push(`singleUser: ${statementLabel(statement)}`);
+    if (this.running) throw new Error('synthetic: lock file "postmaster.pid" already exists');
+    if (this.failOn?.test(statement.trim())) throw new Error(`synthetic failure: ${statementLabel(statement)}`);
+    this.execute('omadia', statement.trim(), []);
   }
 
-  async sleep(): Promise<void> {
-    this.calls.push('sleep');
+  async startServer(): Promise<void> {
+    this.starts += 1;
+    this.calls.push(`startServer(${hbaLabel(this.hbaOnDisk)})`);
+    if (this.running) throw new Error('synthetic: already running');
+    if (this.starts === this.options.failStart) throw new Error('synthetic: postgres did not come back');
+    this.loaded = this.hbaOnDisk;
+    this.running = true;
+  }
+
+  async stopServer(): Promise<void> {
+    this.calls.push('stopServer');
+    this.running = false;
   }
 
   info(message: string): void {
@@ -210,18 +211,15 @@ export class FakeCluster implements DbAuthIo {
   }
 
   async connect(options: ConnectOptions): Promise<AuthClient> {
-    const how = options.password === undefined ? ', no password' : '';
-    this.calls.push(`connect(${options.user}@${options.database}${how})`);
-    const method = methodFor(this.rulesForNextConnection(), options.user);
+    this.calls.push(`connect(${options.user}@${options.database})`);
+    if (!this.running) throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1'), { code: 'ECONNREFUSED' });
+    const method = this.options.ignoresHba ? 'trust' : methodFor(this.loaded, options.user);
     if (method === null) {
       throw sqlError('28000', `no pg_hba.conf entry for host "127.0.0.1", user "${options.user}"`);
     }
     const role = this.roles.get(options.user);
     if (method === 'trust') {
       if (role === undefined) throw sqlError('28000', `role "${options.user}" does not exist`);
-    } else if (options.password === undefined) {
-      // What pg does when the server asks for SCRAM and it has no password.
-      throw new Error('SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string');
     } else if (!this.accepts(options.user, options.password)) {
       throw sqlError('28P01', `password authentication failed for user "${options.user}"`);
     }
@@ -229,18 +227,6 @@ export class FakeCluster implements DbAuthIo {
       throw sqlError('3D000', `database "${options.database}" does not exist`);
     }
     return this.client(options.user, options.database);
-  }
-
-  private rulesForNextConnection(): string | null {
-    if (this.pending !== null) {
-      if (this.pending.stale > 0) {
-        this.pending.stale -= 1;
-        return this.loaded;
-      }
-      this.loaded = this.pending.hba;
-      this.pending = null;
-    }
-    return this.loaded;
   }
 
   private client(user: string, database: string): AuthClient {
@@ -252,7 +238,6 @@ export class FakeCluster implements DbAuthIo {
         if (this.failOn?.test(sql.trim())) throw new Error(`synthetic failure: ${statementLabel(sql)}`);
         return this.execute(user, sql.trim(), params ?? []);
       },
-      escapeLiteral: (value: string): string => `'${value.replace(/'/g, "''")}'`,
       end: async (): Promise<void> => {
         open = false;
       },
@@ -297,10 +282,6 @@ export class FakeCluster implements DbAuthIo {
         `extension "${extension[1]}" is not available`,
         `Could not open extension control file "/synthetic/${extension[1]}.control": No such file or directory.`,
       );
-    }
-    if (/^SELECT pg_reload_conf\(\)/.test(sql)) {
-      this.pending = { hba: this.hbaOnDisk, stale: this.options.staleConnects ?? 0 };
-      return { rows: [{ pg_reload_conf: true }] };
     }
     if (/^SELECT rolsuper/.test(sql)) {
       const role = this.roles.get(user);

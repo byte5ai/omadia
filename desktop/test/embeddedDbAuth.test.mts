@@ -7,11 +7,12 @@
  * password. Now pg_hba.conf asks for SCRAM passwords, the kernel gets a
  * restricted role, and the three states a cluster can be found in are each
  * brought there: fresh from initdb, left over from the trust era, and holding
- * passwords the shell no longer has. The orderings are the point: the
- * bootstrap password is set before pg_hba.conf stops trusting (otherwise the
- * shell locks itself out), a trust window the shell opens holds one statement
- * and is closed on every path, and the kernel's password is set last, so a
- * half-finished run cannot pass for a finished one.
+ * passwords the shell no longer has. The orderings are the point: the server
+ * never starts with rules the shell did not write, the bootstrap password is
+ * set before pg_hba.conf stops trusting (otherwise the shell locks itself
+ * out), a lost password is reset with the server stopped (single-user mode, no
+ * listener), and the kernel's password is set last, so a half-finished run
+ * cannot pass for a finished one.
  */
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -22,6 +23,7 @@ import {
   ensureClusterAuth,
   hbaMode,
   kernelDatabaseUrl,
+  passwordStatement,
   renderHba,
   scramVerifier,
 } from '../src/embeddedDbAuth.ts';
@@ -63,27 +65,18 @@ function activeLines(text: string): string[] {
 
 /** A cluster exactly as initdb --auth=scram-sha-256 leaves it. */
 function freshCluster(extra: Partial<FakeClusterOptions> = {}): FakeCluster {
-  return new FakeCluster({
-    hba: initdbHba('scram-sha-256'),
-    superuserPassword: CREDS.superuserPassword,
-    ...extra,
-  });
+  return new FakeCluster({ hba: initdbHba('scram-sha-256'), superuserPassword: CREDS.superuserPassword, ...extra });
 }
 
 /** A cluster from before SCRAM: initdb -A trust, a kernel that ran as superuser. */
 function trustEraCluster(extra: Partial<FakeClusterOptions> = {}): FakeCluster {
-  return new FakeCluster({
-    hba: initdbHba('trust'),
-    superuserPassword: null,
-    databases: ['omadia'],
-    ...extra,
-  });
+  return new FakeCluster({ hba: initdbHba('trust'), superuserPassword: null, databases: ['omadia'], ...extra });
 }
 
 /** A provisioned cluster whose passwords the shell no longer has (lost or regenerated secrets.enc). */
 function strangerCluster(extra: Partial<FakeClusterOptions> = {}): FakeCluster {
   return new FakeCluster({
-    hba: renderHba('scram'),
+    hba: renderHba(),
     superuserPassword: OLD.superuserPassword,
     kernelRole: { password: OLD.kernelPassword },
     databases: ['omadia'],
@@ -94,7 +87,7 @@ function strangerCluster(extra: Partial<FakeClusterOptions> = {}): FakeCluster {
 /** A cluster as this module leaves it. */
 function provisionedCluster(extra: Partial<FakeClusterOptions> = {}): FakeCluster {
   return new FakeCluster({
-    hba: renderHba('scram'),
+    hba: renderHba(),
     superuserPassword: CREDS.superuserPassword,
     kernelRole: { password: CREDS.kernelPassword },
     databases: ['omadia'],
@@ -102,7 +95,7 @@ function provisionedCluster(extra: Partial<FakeClusterOptions> = {}): FakeCluste
   });
 }
 
-/** Index of the first call matching `pattern`, asserting it exists. */
+/** Index of the first call matching `pattern` at or after `from`, asserting it exists. */
 function indexOf(calls: readonly string[], pattern: string | RegExp, from = 0): number {
   const index = calls.findIndex(
     (call, i) => i >= from && (typeof pattern === 'string' ? call === pattern : pattern.test(call)),
@@ -118,12 +111,25 @@ function assertInOrder(calls: readonly string[], patterns: ReadonlyArray<string 
   }
 }
 
+/** The server never listens with rules the shell did not write. */
+function assertEveryStartWithShellRules(cluster: FakeCluster): void {
+  const starts = cluster.calls.filter((call) => call.startsWith('startServer('));
+  assert.ok(starts.length > 0, 'the server was started');
+  assert.deepEqual(
+    starts.filter((call) => call !== 'startServer(scram)'),
+    [],
+    `every start uses the shell's password-only rules; got ${starts.join(', ')}`,
+  );
+}
+
 const warnings = (cluster: FakeCluster): string[] => cluster.logs.filter((line) => line.startsWith('warn:'));
 const hbaWrites = (cluster: FakeCluster): string[] => cluster.calls.filter((call) => call.startsWith('writeHba('));
+const singleUserRuns = (cluster: FakeCluster): string[] =>
+  cluster.calls.filter((call) => call.startsWith('singleUser: '));
 
-describe('pg_hba.conf renderings', () => {
-  it('the SCRAM rendering has no trust rule and admits only the two roles, by password', () => {
-    const lines = activeLines(renderHba('scram'));
+describe('pg_hba.conf rendering', () => {
+  it('has no trust rule and admits only the two roles, by password', () => {
+    const lines = activeLines(renderHba());
     assert.ok(lines.length > 0);
     for (const line of lines) {
       const tokens = line.split(/\s+/);
@@ -133,19 +139,13 @@ describe('pg_hba.conf renderings', () => {
     }
     assert.ok(lines.some((line) => line.includes('127.0.0.1/32')));
     assert.ok(lines.some((line) => line.includes('::1/128')));
-    assert.equal(hbaMode(renderHba('scram')), 'scram');
+    assert.equal(hbaMode(renderHba()), 'scram');
   });
 
-  it('the recovery rendering trusts the bootstrap role over IPv4 loopback and nothing else', () => {
-    const rules = activeLines(renderHba('recovery')).map((line) => line.split(/\s+/));
-    assert.deepEqual(rules, [['host', 'all', 'omadia', '127.0.0.1/32', 'trust']]);
-    assert.equal(hbaMode(renderHba('recovery')), 'trust');
-  });
-
-  it("classifies by the rules, not by the comments that mention trust", () => {
+  it('is classified by its rules, not by the comments that mention trust', () => {
     assert.equal(hbaMode(initdbHba('scram-sha-256')), 'scram');
     assert.equal(hbaMode(initdbHba('trust')), 'trust');
-    assert.equal(hbaMode(`${renderHba('scram')}host all omadia 127.0.0.1/32 trust\n`), 'trust');
+    assert.equal(hbaMode(`${renderHba()}host all omadia 127.0.0.1/32 trust\n`), 'trust');
     assert.equal(hbaMode(initdbHba('md5')), 'unknown');
     assert.equal(hbaMode('# only a comment\n\n'), 'unknown');
     assert.equal(hbaMode('this is not a pg_hba.conf'), 'unknown');
@@ -168,8 +168,8 @@ describe('kernelDatabaseUrl', () => {
   });
 });
 
-describe('scramVerifier', () => {
-  it('derives the keys of the RFC 7677 example exchange', () => {
+describe('scramVerifier and passwordStatement', () => {
+  it('derive the keys of the RFC 7677 example exchange', () => {
     // RFC 7677 §3: user "user", password "pencil", this salt, 4096 iterations.
     const salt = Buffer.from('W22ZaJ0SNY7soEsUEjb6gQ==', 'base64');
     const verifier = scramVerifier('pencil', salt, 4096);
@@ -193,22 +193,26 @@ describe('scramVerifier', () => {
     assert.deepEqual(crypto.createHash('sha256').update(clientKey).digest(), storedKey);
   });
 
-  it('salts every verifier freshly and never contains the password', () => {
+  it('salt every verifier freshly and never carry the password', () => {
     const first = scramVerifier(CREDS.kernelPassword);
     const second = scramVerifier(CREDS.kernelPassword);
     assert.notEqual(first, second);
-    for (const verifier of [first, second]) {
-      assert.match(verifier, /^SCRAM-SHA-256\$4096:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/);
-      assert.ok(!verifier.includes(CREDS.kernelPassword));
+    const statement = passwordStatement('omadia_kernel', CREDS.kernelPassword);
+    for (const text of [first, second, statement]) {
+      assert.ok(!text.includes(CREDS.kernelPassword));
     }
+    // Single-user mode reads one statement per line.
+    assert.match(statement, /^ALTER ROLE omadia_kernel WITH PASSWORD 'SCRAM-SHA-256\$4096:[A-Za-z0-9+/=$:]+'$/);
   });
 });
 
 describe('ensureClusterAuth — a cluster fresh from initdb', () => {
-  it('creates the restricted role, its database and the extensions, without a restart', async () => {
+  it('adopts the shell rules before the server starts, then creates the restricted role, its database and extensions', async () => {
     const cluster = freshCluster();
     await ensureClusterAuth(cluster, CREDS);
 
+    assertInOrder(cluster.calls, ['writeHba(scram)', 'startServer(scram)']);
+    assert.deepEqual(singleUserRuns(cluster), [], 'initdb already set the bootstrap password');
     const statements = cluster.statements();
     const createRole = statements.find((s) => s.startsWith('omadia@postgres: create role omadia_kernel'));
     assert.ok(createRole, statements.join('\n'));
@@ -223,9 +227,7 @@ describe('ensureClusterAuth — a cluster fresh from initdb', () => {
     // and the kernel's own CREATE EXTENSION IF NOT EXISTS then finds it.
     assert.ok(statements.includes('omadia@omadia: extension vector'));
     assert.ok(statements.includes('omadia@omadia: extension pg_trgm'));
-    assert.ok(!cluster.calls.includes('restartServer'));
-    assert.equal(hbaWrites(cluster).at(-1), 'writeHba(scram)');
-    assert.equal(cluster.hbaOnDisk, renderHba('scram'));
+    assert.equal(cluster.hbaOnDisk, renderHba());
     assert.ok(cluster.accepts('omadia_kernel', CREDS.kernelPassword));
     assert.deepEqual(warnings(cluster), [], 'a fresh cluster is not a migration');
   });
@@ -245,8 +247,8 @@ describe('ensureClusterAuth — a cluster fresh from initdb', () => {
     const cluster = freshCluster({ failOn: /^CREATE DATABASE/ });
     await assert.rejects(ensureClusterAuth(cluster, CREDS), /synthetic failure/);
     assert.equal(cluster.accepts('omadia_kernel', CREDS.kernelPassword), false);
-    assert.equal(cluster.hbaOnDisk, renderHba('scram'), 'the shell-owned hba is in place either way');
 
+    await cluster.stopServer(); // what embeddedDb.ts does with a start that failed
     cluster.failOn = undefined;
     cluster.calls.length = 0;
     await ensureClusterAuth(cluster, CREDS);
@@ -256,85 +258,73 @@ describe('ensureClusterAuth — a cluster fresh from initdb', () => {
 });
 
 describe('ensureClusterAuth — a cluster from the trust era', () => {
-  it('sets the bootstrap password before pg_hba.conf stops trusting, then provisions', async () => {
+  it('sets the bootstrap password in single-user mode, then the shell rules, before the server listens', async () => {
     const cluster = trustEraCluster();
     await ensureClusterAuth(cluster, CREDS);
     assertInOrder(cluster.calls, [
-      'sql omadia@postgres: password(omadia)',
+      'singleUser: password(omadia)',
       'writeHba(scram)',
-      'sql omadia@postgres: reload',
+      'startServer(scram)',
       /create role omadia_kernel/,
       'sql omadia@postgres: alter database omadia owner omadia_kernel',
       'sql omadia@omadia: transfer ownership',
       'sql omadia@omadia: password(omadia_kernel)',
-      /^connect\(omadia_kernel@omadia\)$/,
+      'connect(omadia_kernel@omadia)',
     ]);
-    assert.ok(!cluster.calls.includes('restartServer'), 'trust admits the shell; no window is needed');
+    assertEveryStartWithShellRules(cluster);
     assert.ok(cluster.accepts('omadia', CREDS.superuserPassword));
-    assert.equal(cluster.hbaOnDisk, renderHba('scram'));
-    assert.ok(warnings(cluster).some((line) => /trust/.test(line)), 'the migration is logged');
+    assert.equal(cluster.hbaOnDisk, renderHba());
+    assert.ok(warnings(cluster).some((line) => /trust-authenticated/.test(line)), 'the migration is logged');
   });
 
-  it('keeps the trust-era rules when the bootstrap password cannot be set, instead of locking the shell out', async () => {
+  it('keeps the trust-era rules and never starts when the bootstrap password cannot be set', async () => {
     const cluster = trustEraCluster({ failOn: /^ALTER ROLE omadia WITH PASSWORD/ });
-    await assert.rejects(ensureClusterAuth(cluster, CREDS), /synthetic failure/);
+    await assert.rejects(ensureClusterAuth(cluster, CREDS), /synthetic failure: password\(omadia\)/);
     assert.deepEqual(hbaWrites(cluster), []);
+    assert.ok(!cluster.calls.some((call) => call.startsWith('startServer(')), 'a trust cluster is never started');
   });
 });
 
 describe('ensureClusterAuth — passwords the cluster no longer accepts', () => {
-  it('opens a loopback trust window for the bootstrap role, sets one password in it, and closes it', async () => {
+  it('stops the server and sets the password in single-user mode, so nobody gets in without one meanwhile', async () => {
     const cluster = strangerCluster();
     await ensureClusterAuth(cluster, CREDS);
-
-    const open = indexOf(cluster.calls, 'writeHba(recovery)');
-    const close = indexOf(cluster.calls, 'writeHba(scram)', open);
     assertInOrder(cluster.calls, [
+      'startServer(scram)',
       'connect(omadia@postgres)',
-      'writeHba(recovery)',
-      'restartServer',
-      'connect(omadia@postgres, no password)',
-      'sql omadia@postgres: password(omadia)',
-      'writeHba(scram)',
-      'sql omadia@postgres: reload',
+      'stopServer',
+      'singleUser: password(omadia)',
+      'startServer(scram)',
+      'connect(omadia@postgres)',
+      'sql omadia@omadia: password(omadia_kernel)',
     ]);
-    const inWindow = cluster.calls.slice(open, close).filter((call) => call.startsWith('sql '));
-    assert.deepEqual(inWindow, ['sql omadia@postgres: password(omadia)'], 'the window holds one statement');
-
-    assert.ok(warnings(cluster).some((line) => /trust window/.test(line)), 'the window is logged at warn');
-    assert.equal(cluster.hbaOnDisk, renderHba('scram'));
+    assert.deepEqual(hbaWrites(cluster), [], 'the rules were the shell\'s all along');
+    assertEveryStartWithShellRules(cluster);
+    assert.ok(warnings(cluster).some((line) => /single-user/.test(line)), 'the repair is logged at warn');
     assert.ok(cluster.accepts('omadia', CREDS.superuserPassword));
     assert.ok(cluster.accepts('omadia_kernel', CREDS.kernelPassword));
     assert.equal(cluster.accepts('omadia_kernel', OLD.kernelPassword), false);
   });
 
-  it('closes the window when setting the password fails, and reports that failure', async () => {
+  it('reports a failing single-user run and leaves the server stopped', async () => {
     const cluster = strangerCluster({ failOn: /^ALTER ROLE omadia WITH PASSWORD/ });
     await assert.rejects(ensureClusterAuth(cluster, CREDS), /synthetic failure: password\(omadia\)/);
-    assert.equal(hbaWrites(cluster).at(-1), 'writeHba(scram)');
-    assertInOrder(cluster.calls, ['writeHba(recovery)', 'writeHba(scram)', 'sql omadia@postgres: reload']);
-    assert.equal(cluster.hbaOnDisk, renderHba('scram'));
+    assert.equal(cluster.running, false);
+    assert.equal(cluster.calls.at(-1), 'singleUser: password(omadia)');
   });
 
-  it('closes the window on disk when the server does not come back', async () => {
-    const cluster = strangerCluster({ restartFails: true });
+  it('reports a server that does not come back', async () => {
+    const cluster = strangerCluster({ failStart: 2 });
     await assert.rejects(ensureClusterAuth(cluster, CREDS), /did not come back/);
-    assert.equal(cluster.hbaOnDisk, renderHba('scram'));
+    assert.equal(cluster.running, false);
   });
 });
 
 describe('ensureClusterAuth — the verification fails closed', () => {
-  it('refuses to finish while a wrong password is still accepted', async () => {
-    // The reload never lands: every later connection still sees trust.
-    const cluster = trustEraCluster({ staleConnects: 10_000 });
+  it('refuses to finish while the running server accepts a wrong password', async () => {
+    // A server that does not apply the shell's rules, whatever the file says.
+    const cluster = freshCluster({ ignoresHba: true });
     await assert.rejects(ensureClusterAuth(cluster, CREDS), /wrong password/);
-    assert.ok(cluster.calls.filter((call) => call === 'sleep').length > 0, 'it waited for the reload first');
-  });
-
-  it('waits out a reload that lands a few connections late', async () => {
-    const cluster = trustEraCluster({ staleConnects: 3 });
-    await ensureClusterAuth(cluster, CREDS);
-    assert.ok(cluster.calls.includes('sleep'));
   });
 
   it('refuses a kernel role that reports superuser', async () => {
@@ -344,11 +334,12 @@ describe('ensureClusterAuth — the verification fails closed', () => {
 });
 
 describe('ensureClusterAuth — steady state', () => {
-  it('only verifies when the hba is the shell\'s and the kernel logs in', async () => {
+  it("only verifies when the rules are the shell's and the kernel logs in", async () => {
     const cluster = provisionedCluster();
     await ensureClusterAuth(cluster, CREDS);
     assert.deepEqual(hbaWrites(cluster), []);
-    assert.ok(!cluster.calls.includes('restartServer'));
+    assert.deepEqual(singleUserRuns(cluster), []);
+    assert.deepEqual(cluster.calls.filter((call) => call.startsWith('startServer(')), ['startServer(scram)']);
     assert.deepEqual(
       cluster.statements().filter((s) => s.startsWith('omadia@')),
       [],
@@ -366,7 +357,7 @@ describe('ensureClusterAuth — steady state', () => {
     );
   });
 
-  it('adopts the shell-owned hba over initdb\'s, without resetting passwords or warning', async () => {
+  it("replaces initdb's rules with the shell's without resetting passwords or warning", async () => {
     const cluster = new FakeCluster({
       hba: initdbHba('scram-sha-256'),
       superuserPassword: CREDS.superuserPassword,
@@ -374,19 +365,17 @@ describe('ensureClusterAuth — steady state', () => {
       databases: ['omadia'],
     });
     await ensureClusterAuth(cluster, CREDS);
-    assert.equal(cluster.hbaOnDisk, renderHba('scram'));
-    assert.ok(!cluster.statements().includes('omadia@postgres: password(omadia)'));
+    assertInOrder(cluster.calls, ['writeHba(scram)', 'startServer(scram)']);
+    assert.deepEqual(singleUserRuns(cluster), []);
     assert.deepEqual(warnings(cluster), []);
   });
 
-  it('treats a foreign hba like an unverified one: password first, then the shell-owned rules', async () => {
-    const cluster = new FakeCluster({
-      hba: initdbHba('md5'),
-      superuserPassword: CREDS.superuserPassword,
-      databases: ['omadia'],
-    });
-    await ensureClusterAuth(cluster, CREDS);
-    assertInOrder(cluster.calls, ['sql omadia@postgres: password(omadia)', 'writeHba(scram)', 'sql omadia@postgres: reload']);
+  it('treats rules it did not write like unverified ones: password first, then its own rules', async () => {
+    for (const hba of [initdbHba('md5'), null]) {
+      const cluster = new FakeCluster({ hba, superuserPassword: CREDS.superuserPassword, databases: ['omadia'] });
+      await ensureClusterAuth(cluster, CREDS);
+      assertInOrder(cluster.calls, ['singleUser: password(omadia)', 'writeHba(scram)', 'startServer(scram)']);
+    }
   });
 });
 
