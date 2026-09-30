@@ -36,7 +36,7 @@ changelog.
 
 ## [Unreleased]
 
-### Fixed — create_xlsx no longer stores model-supplied formula results
+### Fixed — create_xlsx no longer persists model-supplied formula results; workbooks with formulas request a full recalculation on open
 
 2026-09-30 — a formula cell in `create_xlsx` accepted a `result` and stored it
 as the cell's cached value, so a workbook could hold the formula `1+1` showing
@@ -46,8 +46,7 @@ The input schema now has no `result` field (a sent one is stripped), the
 renderer writes formula cells as `<f>` without `<v>`, and a workbook that holds
 a formula sets `fullCalcOnLoad`, so the spreadsheet application computes each
 value when it opens the file. The tool description now asks for English
-function names (`SUMIFS`), which is what a recalculating Excel understands, and
-the README no longer claims a server-side spreadsheet engine.
+function names (`SUMIFS`), which is what a recalculating Excel understands.
 
 Because Excel, LibreOffice and Google Sheets all recalculate such a file, a
 formula that reaches outside the workbook is refused with
@@ -69,6 +68,18 @@ computed. `@omadia/plugin-office` 0.1.4 ships as the bundled built-in with the
 middleware, so the fix is live with the next deploy. The Hub ZIP only matters
 for installations that took the plugin from the Hub. Server-side evaluation
 with an MIT-licensed engine is on the roadmap (handoff §13).
+
+### Changed — README no longer claims a server-side spreadsheet engine
+
+2026-09-30 — the root README said Office and Excel output came from "a real
+spreadsheet engine, server-side" and that the figures were "calculated by that
+engine rather than produced by the model". omadia has no such engine. The
+feature row "Computed, not guessed" is now called "Excel from real rows", and
+both it and the Office bullet describe what `create_xlsx` does. It writes the
+rows behind a `datasetId` into the workbook server-side, so they never pass
+through the model, and adds sums and pivots as Excel formulas that the
+spreadsheet application computes when it opens the file. `.docx` output
+computes nothing, and the bullet says so.
 
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
