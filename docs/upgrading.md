@@ -181,9 +181,14 @@ macOS 13 (Ventura) as its minimum.
 
 - **macOS 11 and 12:** the update feed declares macOS 13 as its minimum, so
   these Macs are no longer offered updates. The app keeps running the last
-  release built on Electron 37, and "Check for Updates…" reports it as up to
-  date. Updating macOS to 13 or later brings the next update. An app installed
-  by hand from a newer DMG does not start on macOS 11 or 12.
+  release built on Electron 37, which gets no further Electron security fixes.
+  That release is the first whose updater says so: once at startup when the
+  first Electron 44 release appears, and on every "Check for Updates…"
+  ("omadia X needs macOS 13 or later"). An app still on an older release
+  reports "already on the latest version" instead, because its updater
+  predates the notice; install the last Electron 37 release by hand to get it.
+  Updating macOS to 13 or later brings the next update. An app installed by
+  hand from a newer DMG does not start on macOS 11 or 12.
 - **Windows:** nothing to do. From this build on, the app pins the publisher
   name of its Authenticode signature and refuses an update that is not signed
   under it. The update *to* this build is not checked yet; every later one is.

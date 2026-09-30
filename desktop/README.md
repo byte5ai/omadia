@@ -198,6 +198,14 @@ Consequences worth knowing before touching this:
   fails the build when the packaged app's `LSMinimumSystemVersion` no longer
   matches `MACOS_MINIMUM` in that script — after an Electron major, update the
   constant, not the check.
+- electron-updater reports such a Mac with the same `update-not-available`
+  event, and the same feed version, as a current one. `src/updateHoldBack.ts`
+  tells the two apart, so the app says which macOS the release needs instead of
+  "already on the latest version" (once per floor at startup, and on every
+  manual check). Its Darwin → macOS table is the inverse of the one in the feed
+  script; `test/updateHoldBack.test.mts` fails when they disagree. Only builds
+  that carry this handler can say it, so a floor that leaves Macs behind has to
+  ship after a release those Macs can still install.
 - `stage-runtime.mjs` follows `process.arch`, so it needs no changes — but
   anything that hardcodes `darwin-arm64` does. The pgvector CI step now derives
   the architecture and asserts the resulting `vector.dylib` really is that

@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop updater: an update the OS is too old for is no longer "up to date"
+
+2026-09-30 — electron-updater withholds an update whose feed declares a
+`minimumSystemVersion` above `os.release()`, and then reports
+`update-not-available` with the feed's version: the same event a current
+install gets. The desktop app answered it with "You're already on the latest
+version of omadia" and filled "Current version" from the feed. Once the
+Electron 44 build puts a macOS 13 floor into the macOS update feed, a macOS 11
+or 12 install would have been told it is current, shown the release it cannot
+install as its own version, and left on Electron 37 with no hint that updates,
+security fixes included, had stopped. `desktop/src/updateHoldBack.ts` now tells the two apart.
+"Check for Updates…" names the installed version when the app is current, and
+otherwise warns that omadia X needs macOS 13 or later and that this computer
+gets no further updates until its operating system is updated; the silent
+startup check says the same once per floor (`updater-hold-back.json` in
+userData). The version comparison follows semver's strict grammar and is tested
+against electron-updater's own OS check. Nothing in it depends on Electron 44,
+so it ships first, in a release still built on Electron 37: an install only
+gets the new handler by updating to a build that carries it, and a macOS 11/12
+install that never takes that release keeps reporting "up to date"
+(`docs/upgrading.md`).
+
 ### Fixed — desktop dependencies refreshed to Electron 44 and electron-builder 26; `desktop` joins the CI audit
 
 2026-09-30 — `desktop/` has its own lockfile but had no leg in the
@@ -61,8 +83,9 @@ minimum into `latest-mac.yml`, so the merged feed now declares
 `minimumSystemVersion: 22.0.0`, the Darwin kernel of macOS 13, which is what
 electron-updater compares with `os.release()`. macOS 11 and 12 installs are
 therefore not offered the Electron 44 build and keep the version they run,
-instead of installing an update that does not start; `afterPack` fails every
-mac build whose packaged `LSMinimumSystemVersion` no longer matches that floor.
+instead of installing an update that does not start, and are told so rather
+than reported current (entry above); `afterPack` fails every mac build whose
+packaged `LSMinimumSystemVersion` no longer matches that floor.
 electron-builder 26 requires `win.azureSignOptions.publisherName`; the release
 workflow reads it from the signing certificate, and because it also lands in
 the Windows app's `app-update.yml`, installed Windows apps now refuse updates
@@ -75,9 +98,16 @@ run). Before this merges, a `desktop-apps.yml` dispatch build of the branch
 (throwaway tag, `notarize=false`) has to pass on all four targets and its arm64
 app has to start (wizard, kernel and web-ui up, update check): a push to `main`
 releases through the same workflow, so its first run must not be a
-user-facing release. After the merge an admin adds the
-`audit (high+critical block) (desktop)` context to `main`'s required checks
-(handoff §13).
+user-facing release. That build is also installed over the current release on
+macOS, Windows and Linux, and `secrets.enc` has to come through byte-identical
+with the same recovery key: the runtime that decrypts it moves from Electron
+37's `safeStorage` to Electron 44's, and today a file the app cannot decrypt is
+replaced with new keys, which loses the vault, the credential keychain and the
+provider keys. Two changes therefore land on `main` first, each with its own
+release: the updater fix above, as the last Electron 37 release, and the fix
+that keeps an unreadable `secrets.enc` and stops the app instead of re-keying
+it. After the merge an admin adds the `audit (high+critical block) (desktop)`
+context to `main`'s required checks (handoff §13).
 
 ### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
 

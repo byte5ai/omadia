@@ -525,11 +525,21 @@ one rule about what counts as a runtime.
   `minimumSystemVersion` to the merged feed. It is the Darwin kernel version
   (`22.0.0` for macOS 13, Electron 44's minimum), because electron-updater
   compares it with `os.release()`; a product version such as `13.0` fails its
-  semver parse and lets every Mac update. Macs below the floor are told there is
-  no update and keep the version they run. `desktop/buildResources/afterPack.js`
+  semver parse and lets every Mac update. Macs below the floor are not offered
+  the update and keep the version they run. `desktop/buildResources/afterPack.js`
   fails every mac build whose packaged `LSMinimumSystemVersion` does not match
   the floor, so an Electron major that raises the minimum cannot reach Macs it
   does not start on.
+- **A held-back Mac is told, not reported current.** electron-updater answers
+  a feed above the OS floor with the same `update-not-available` event, and
+  the same feed version, as a current install. `desktop/src/updateHoldBack.ts`
+  tells the two apart: the user learns which macOS the release needs and that
+  updates, security fixes included, stop until the OS is updated — once per
+  floor at startup, and on every "Check for Updates…". Those Macs stay on the
+  last Electron 37 build, a runtime without further Electron security fixes; an
+  OS update is the only remedy. Only builds that carry the handler can say
+  this, so a raised floor ships its message first, in a release the held-back
+  OS can still install (for macOS 13, the last Electron 37 release).
 
 ## 5. Signed artefact URLs
 
@@ -1406,7 +1416,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       dispatch build of the PR branch (throwaway tag) has passed on all four
       targets, including "Verify native modules load under the Electron ABI"
       and afterPack's check of the macOS update floor (§4a): a push to `main`
-      releases through that same workflow.
+      releases through that same workflow. That build has also been installed
+      over the current release on macOS, Windows and Linux with `secrets.enc`
+      left byte-identical: the new runtime's `safeStorage` decrypts the vault
+      key, and a runtime that cannot must stop the app, never re-key it.
 
 ---
 

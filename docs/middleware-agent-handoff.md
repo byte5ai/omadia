@@ -2984,6 +2984,25 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   sieben Electron-Majors, des macOS-Signatur-Umwegs unter electron-builder 26, des Azure-
   `publisherName` und des `minimumSystemVersion`-Felds in `latest-mac.yml` darf deshalb kein
   User-Release sein.
+  **Vorher auf `main`**, jeweils eigener PR mit eigenem Auto-Release: (0a) **Brücken-Release.**
+  Der Commit „fix(desktop): say when an update needs a newer macOS“ (`updateHoldBack.ts`, die
+  `update-not-available`-Behandlung in `updater.ts`, Strings, Tests) hängt nicht an Electron 44;
+  auf `main` gecherry-pickt bestehen Typecheck, `typecheck:test`, alle Tests und `npm run build`
+  auf dem Electron-37-Baum. Als eigenen `fix(desktop)`-PR mergen (CHANGELOG-Eintrag „desktop
+  updater: an update the OS is too old for …“ mitnehmen); sein Release ist das letzte auf
+  Electron 37. Nur Installationen mit diesem Release sagen auf macOS 11/12 „omadia X braucht
+  macOS 13“ — der alte Handler meldet den Hold-back als „bereits aktuell“ und zeigt die
+  Feed-Version als eigene. Diesen Branch erst mergen, wenn das Brücken-Release veröffentlicht
+  (kein Draft) ist; wie lange man danach wartet, ist eine Produktentscheidung, denn jede
+  macOS-11/12-Installation, die es bis dahin nicht installiert hat, meldet weiter „aktuell“.
+  (0b) **Secrets-Fix.** Heute erzeugt `desktop/src/secrets.ts` bei einer `secrets.enc`, die
+  sich nicht entschlüsseln lässt, neue Schlüssel und überschreibt die Datei: Tresor,
+  Credential-Keychain und Provider-Keys wären unwiederbringlich weg. Dieser Branch tauscht das
+  Electron, dessen `safeStorage` die Datei entschlüsselt (37 → 44; laut Electrons
+  Breaking-Changes-Liste ohne `safeStorage`-Änderung in 38–44, aber ungetestet). Der Fix
+  „fix: keep an unreadable desktop secrets file instead of re-keying“ (samt `secrets.enc` im
+  Pre-Update-Snapshot) muss vor dem ersten Electron-44-Release auf `main` sein, damit ein
+  fehlgeschlagenes Entschlüsseln die App anhält statt neu zu verschlüsseln.
   **Vor dem Merge**, Run-IDs in den PR: (1) einen Wegwerf-Tag auf den Branch-Head setzen und
   pushen (semver, z. B. `v0.0.0-desktop-refresh.1`; kein Workflow startet auf Tag-Pushes) und
   `desktop-apps.yml` per `workflow_dispatch` vom Branch mit `tag=<Wegwerf-Tag>` und
@@ -2995,11 +3014,31 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   `latest-mac.yml` trägt `minimumSystemVersion: 22.0.0`). (2) Die arm64-App aus diesem Lauf
   einmal starten, auf einem Mac ohne produktive omadia-Installation (gleiches Datenverzeichnis):
   Wizard → Kernel und Web-UI laufen → Update-Check. Nicht notarisiert, also Rechtsklick →
-  Öffnen; der Update-Check findet das aktuelle Release, den Neustart ablehnen. Danach den
-  Wegwerf-Tag löschen.
+  Öffnen; der Update-Check findet das aktuelle Release, den Neustart ablehnen. (2b)
+  **Upgrade-Lauf je Plattform** — macOS arm64, Windows x64, Linux-AppImage mit
+  gnome-keyring/libsecret —, jeweils auf einem Rechner oder Benutzerkonto ohne produktive
+  omadia-Installation: das aktuelle Release (Electron 37) installieren, Einrichtung abschließen,
+  einen Provider-Key speichern; dann `sha256` von `secrets.enc` (macOS
+  `~/Library/Application Support/omadia/`, Windows `%APPDATA%\omadia\`, Linux
+  `~/.config/omadia/`, sofern kein eigener Datenordner gewählt wurde) und den Schlüssel aus
+  Hilfe → „Wiederherstellungsschlüssel anzeigen…“ notieren. Den Build aus (1) darüber
+  installieren und starten. Bestanden: kein Boot-Fehler-Dialog, Kernel und Web-UI laufen, der
+  gespeicherte Provider-Key funktioniert, `secrets.enc` hat denselben Hash, der
+  Wiederherstellungsschlüssel ist derselbe, und `logs/omadia-desktop.log` im userData-Ordner
+  enthält kein `[secrets] failed to read secrets file`. Fragt macOS beim ersten Start nach dem
+  Schlüsselbund, passt die Code-Signatur des Builds nicht mehr zu der des Releases; das träfe
+  jede Installation beim Update und zählt als Fehlschlag. Schlägt etwas davon fehl: nicht
+  mergen. Danach den Wegwerf-Tag löschen.
   **Nach dem Merge** (Admin): (3) den Kontext `audit (high+critical block) (desktop)`, am besten
   zusammen mit `desktop (typecheck + test)`, in die Branch-Protection von `main` aufnehmen und
   per `GET /repos/byte5ai/omadia/branches/main/protection/required_status_checks` prüfen.
+- **Synchrones `safeStorage` endet mit Electron 46.** Electron 45 markiert
+  `safeStorage.isEncryptionAvailable`/`encryptString`/`decryptString` als deprecated, Electron 46
+  entfernt sie zusammen mit Chromiums synchronem OSCrypt-Backend (Electron
+  `docs/breaking-changes.md`). `desktop/src/secrets.ts` nutzt genau diese drei. Vor dem Sprung
+  auf 46 auf `isAsyncEncryptionAvailable`/`encryptStringAsync`/`decryptStringAsync` umstellen
+  (laut Electron dieselben Key-Stores, alte `secrets.enc` bleibt lesbar) und den Upgrade-Lauf
+  (2b) oben wiederholen. Dependabot ignoriert Electron-Majors nicht, der Bump-PR kommt also.
 - **Datenverzeichnis-Dialog ohne `defaultPath`** (`desktop/src/ipc.ts`): seit Electron 43 öffnet
   `showOpenDialog` ohne `defaultPath` im Downloads-Ordner — für ein Postgres-Datenverzeichnis ein
   schlechter Startpunkt. `defaultPath` auf das Home- oder das aktuelle Datenverzeichnis setzen.
