@@ -3,13 +3,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { secretsFile, snapshotDir } from './paths';
 import { log } from './log';
-import type { SecretsBlob, SecretsCodec, SecretsIo } from './secretsBlob';
+import type { EmbeddedDbCredentials, SecretsBlob, SecretsCodec, SecretsIo } from './secretsBlob';
 import { createSecretsStore } from './secretsStore';
 
 /**
  * Secret custody for the desktop app.
  *
- * Three kinds of secrets live here:
+ * Four kinds of secrets live here:
  *   1. The kernel vault master key (`VAULT_KEY`). The kernel encrypts its own
  *      secrets store with this 32-byte key and, in production mode, refuses to
  *      boot without it. We generate it once and hand it back to the kernel as an
@@ -18,6 +18,9 @@ import { createSecretsStore } from './secretsStore';
  *      trust domain the kernel also requires in production.
  *   3. Provider API keys (e.g. ANTHROPIC_API_KEY) entered in the onboarding
  *      wizard, so first boot is useful and later boots don't re-prompt.
+ *   4. The embedded Postgres passwords (`embeddedDbAuth.ts`): the bootstrap
+ *      superuser's, which never leaves this process, and the restricted kernel
+ *      role's, which reaches the kernel only inside its DATABASE_URL.
  *
  * Everything is encrypted at rest with Electron `safeStorage`, which is backed by
  * the OS keychain/credential store (Keychain on macOS, DPAPI on Windows). This is
@@ -108,6 +111,51 @@ export function credentialKeychainKey(): string {
     store.update(withCredentialKeychainKey).credentialKeychainKey;
   if (!key) throw new Error('[secrets] credential keychain key missing after migration');
   return key;
+}
+
+/** 32 random bytes as hex: URL-safe in a DSN and needs no quoting anywhere. */
+function generateDbPassword(): string {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function withEmbeddedDbCredentials(current: SecretsBlob): SecretsBlob {
+  return current.embeddedDb
+    ? current
+    : {
+        ...current,
+        embeddedDb: { superuserPassword: generateDbPassword(), kernelPassword: generateDbPassword() },
+      };
+}
+
+function sameCredentials(a: EmbeddedDbCredentials | undefined, b: EmbeddedDbCredentials): boolean {
+  return a?.superuserPassword === b.superuserPassword && a.kernelPassword === b.kernelPassword;
+}
+
+/**
+ * The embedded Postgres passwords, created on first use (a fresh install and a
+ * blob from before they existed take the same path).
+ *
+ * New ones are read back from the file before they are returned: the caller
+ * provisions the cluster with them next, and a password the cluster holds but
+ * `secrets.enc` does not would lock the shell out of its own database. An
+ * unreadable file throws `SecretsUnreadableError` like every other accessor.
+ */
+export function embeddedDbCredentials(): EmbeddedDbCredentials {
+  const loaded = store.load().embeddedDb;
+  if (loaded) return { ...loaded };
+
+  const written = store.update(withEmbeddedDbCredentials).embeddedDb;
+  const durable = store.reread()?.embeddedDb;
+  if (durable === undefined || !sameCredentials(written, durable)) {
+    // The cache now holds values the file does not: drop it, so a retry
+    // starts from the file instead of handing them out.
+    store.reset();
+    throw new Error(
+      '[secrets] the embedded database credentials did not read back from secrets.enc; ' +
+        'the database was not provisioned with them',
+    );
+  }
+  return { ...durable };
 }
 
 /** Store a provider API key (encrypted). */

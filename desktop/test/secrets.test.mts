@@ -23,6 +23,7 @@ import {
   __resetSecretsCacheForTests,
   allProviderKeys,
   credentialKeychainKey,
+  embeddedDbCredentials,
   exportRecoveryKey,
   getProviderKey,
   setProviderKey,
@@ -33,6 +34,7 @@ interface StoredBlob {
   vaultKey: string;
   credentialKeychainKey?: string;
   providerKeys: Record<string, string>;
+  embeddedDb?: { superuserPassword: string; kernelPassword: string };
 }
 
 const userData = app.getPath('userData');
@@ -96,6 +98,7 @@ const ACCESSORS: ReadonlyArray<readonly [string, () => unknown]> = [
   ['exportRecoveryKey()', () => exportRecoveryKey()],
   ['allProviderKeys()', () => allProviderKeys()],
   ['setProviderKey()', () => setProviderKey('ANTHROPIC_API_KEY', 'synthetic-provider-key')],
+  ['embeddedDbCredentials()', () => embeddedDbCredentials()],
 ];
 
 beforeEach(() => {
@@ -252,5 +255,78 @@ describe('secrets.ts — a data-dir change during setup', () => {
     const key = vaultKey();
     assert.equal(readBlob(path.join(empty, 'secrets.enc')).vaultKey, key);
     assert.deepEqual(fs.readFileSync(damagedFile), damaged, 'the old file stays exactly as it was');
+  });
+});
+
+/**
+ * The embedded Postgres passwords (the bootstrap superuser's, the kernel
+ * role's) live in the same blob. They are created lazily, like the credential
+ * keychain key, and read back from the file before the database is
+ * provisioned with them: a password the cluster knows but `secrets.enc` does
+ * not would lock the shell out of its own database.
+ */
+describe('secrets.ts — embedded database credentials', () => {
+  const HEX64 = /^[0-9a-f]{64}$/;
+
+  it('generates two distinct random passwords once and persists them', () => {
+    const creds = embeddedDbCredentials();
+    assert.match(creds.superuserPassword, HEX64);
+    assert.match(creds.kernelPassword, HEX64);
+    assert.notEqual(creds.superuserPassword, creds.kernelPassword);
+    assert.deepEqual(readBlob(secretsFile()).embeddedDb, creds);
+    assert.deepEqual(embeddedDbCredentials(), creds, 'the second call returns the same values');
+    __resetSecretsCacheForTests();
+    assert.deepEqual(embeddedDbCredentials(), creds, 'and so does a fresh read of the file');
+  });
+
+  it('adds them to an existing blob once, keeping every other key', () => {
+    const file = secretsFile();
+    const before = writeBlob(file, FULL);
+    const creds = embeddedDbCredentials();
+    const stored = readBlob(file);
+    assert.deepEqual(stored.embeddedDb, creds);
+    assert.equal(stored.vaultKey, FULL.vaultKey);
+    assert.equal(stored.credentialKeychainKey, FULL.credentialKeychainKey);
+    assert.deepEqual(stored.providerKeys, FULL.providerKeys);
+    assert.deepEqual(fs.readFileSync(`${file}.bak`), before, 'the rewrite kept a backup');
+
+    const afterFirst = fs.readFileSync(file);
+    embeddedDbCredentials();
+    assert.deepEqual(fs.readFileSync(file), afterFirst, 'a second call does not write again');
+  });
+
+  it('returns stored credentials unchanged and does not rewrite the file', () => {
+    const file = secretsFile();
+    const stored = { superuserPassword: 'a'.repeat(64), kernelPassword: 'b'.repeat(64) };
+    const bytes = writeBlob(file, { ...FULL, embeddedDb: stored });
+    assert.deepEqual(embeddedDbCredentials(), stored);
+    assert.deepEqual(fs.readFileSync(file), bytes);
+  });
+
+  it('refuses credentials that do not read back from the file', () => {
+    // A codec that loses the field on the way back: the write went through,
+    // but the file does not hold what the database would be provisioned with.
+    const encode = (plain: string): Buffer =>
+      Buffer.from(`enc:${Buffer.from(plain, 'utf8').toString('base64')}`);
+    __setSafeStorage({
+      isEncryptionAvailable: () => true,
+      encryptString: encode,
+      decryptString: (cipher: Buffer) => {
+        const plain = Buffer.from(cipher.toString('utf8').slice(4), 'base64').toString('utf8');
+        const { embeddedDb: _dropped, ...rest } = JSON.parse(plain) as StoredBlob;
+        return JSON.stringify(rest);
+      },
+    });
+    writeRaw(secretsFile(), encode(JSON.stringify(FULL)).toString('utf8'));
+    assert.throws(() => embeddedDbCredentials(), /read back/);
+    assert.throws(() => embeddedDbCredentials(), /read back/, 'and the cache does not serve them later');
+  });
+
+  it('never leave the shell through the recovery key', () => {
+    const creds = embeddedDbCredentials();
+    const recovery = exportRecoveryKey();
+    assert.equal(recovery, readBlob(secretsFile()).vaultKey);
+    assert.ok(!recovery.includes(creds.superuserPassword));
+    assert.ok(!recovery.includes(creds.kernelPassword));
   });
 });
