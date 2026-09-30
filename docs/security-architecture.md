@@ -1413,6 +1413,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       it to `publicBaseUrl` (§10e). Server-supplied absolute targets such as
       IdP logout URLs are a separate boundary and not covered by this.
 
+- [ ] The repository variable `AUDIT_ALLOW_REGISTRY_OUTAGE` is unset. It lets
+      the required `audit (high+critical block)` check pass **without** an
+      audit result while the npm registry is down; it is an admin-only bypass
+      for a confirmed upstream outage and must be removed as soon as the
+      registry answers again. A PR merged while it was set has no dependency
+      audit and needs one re-run afterwards.
+
 ---
 
 *Last reviewed: 2026-09 (§10e added: same-origin return paths).*

@@ -62,6 +62,80 @@ the same origin), an auth page or longer than 2048 characters now land on `/`;
 the app's own redirects to /login never produce such values. The rules are
 written up in `docs/security-architecture.md` §10e.
 
+### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
+
+2026-09-29 — the `audit (high+critical block)` step treated an npm registry
+outage ("audit endpoint returned an error") as a pass, so an unknown audit
+state was indistinguishable from a clean one. It now gets three attempts (two
+retries, 20 s then 40 s backoff), each registry fetch capped at 60 s, and then
+fails. For a confirmed upstream outage an admin can set the repository
+variable `AUDIT_ALLOW_REGISTRY_OUTAGE=true`, which downgrades that to a
+warning until the registry is back (reviewer checklist,
+`docs/security-architecture.md` §11). Every run archives `audit-report.json`
+as a workflow artifact for 30 days; the upload overwrites on a re-run, so
+"Re-run failed jobs" cannot turn the required check red by itself. Dependabot
+gets a `/desktop` npm block — the Electron shell had no dependency updates at
+all, and `electron` is a devDependency that ships as the runtime, so its
+patch/minor releases stay out of the tooling group. Adding `desktop` to the
+audit matrix is tracked in the handoff's §13 and lands with the desktop
+dependency refresh that makes it pass. Local audit working files under
+`docs/audits/` are git-ignored.
+
+### Changed — CI schema gate covers every live SQL migration series (#1239)
+
+2026-09-29 — the `schema (migrations on pgvector)` job listed six migration
+domains and named three as "still uncovered". Two of them are live and are
+now applied and re-applied by the job: `middleware/src/conductor/migrations`
+(11 files, applied at boot through the `_conductor_migrations` ledger) and
+`middleware/packages/harness-memory-postgres/src/migrations` (1 file,
+`_memory_migrations`). The third, `middleware/src/services/graph/migrations`,
+is read by no runtime migrator — its four files are byte-identical copies of
+knowledge-graph-neon 0002/0004/0012/0013 — so applying it would only turn
+files that never run in production green. Instead a new step fails the job if
+that directory holds anything but those four copies, which closes the trap
+that stranded a migration there before (#875). A local reproduction of the
+job (every live file applied twice against a throwaway pgvector 16) exposed
+no latent schema defect. `AGENTS.md` no longer names that directory as an
+example for subsystem migrations. The remaining debts — deleting the inert
+graph directory, the 347 allowed test-tree type errors of the typecheck
+ratchet, and the `nl` prompt-PII floor of 0.84 against the 0.97 release gate —
+are recorded in the handoff's §13 roadmap.
+
+### Fixed — SessionWatcher test no longer races framer-motion's exit animation
+
+2026-09-30 — `SessionWatcher.test.tsx` "drops a warning back to normal when
+another tab renewed" failed intermittently in CI (twice on 2026-09-28 on
+Dependabot branches, twice on 2026-09-30). framer-motion's frame loop captures
+`requestAnimationFrame` when the module loads — jsdom's real one, not the fake
+timers the suite installs — so whether the warning card's exit animation
+finished inside a fake-time `flush()` depended on real wall-clock time.
+Removing the one-second slack made the unchanged test fail deterministically.
+The suite now renders `AnimatePresence`'s children directly, so a card leaves
+the DOM in the same commit that its phase ends; the component is unchanged.
+
+### Security — npm advisories in middleware and web-ui dependencies
+
+2026-09-30 — new advisories were published against packages both workspaces
+resolve, so the required `audit (high+critical block)` check failed on every
+branch. The `overrides` pins for `brace-expansion` (both workspaces,
+5.0.9 → 5.0.12: three high-severity advisories on quadratic and recursive
+expansion) and `fast-uri` (middleware, 3.1.7 → 3.1.8) cannot be moved by
+`npm audit fix`, so they are raised by hand. `npm audit fix` then refreshed,
+within the existing semver ranges:
+
+- middleware — `hono` 4.12.32 → 4.13.11, `multer` 2.3.0 → 2.4.0, `qs`
+  6.15.3 → 6.16.0, `ip-address` 10.3.1 → 10.7.2, `minimatch` 10.2.5 → 10.2.6;
+  the no longer needed `concat-stream`, `buffer-from` and `typedarray` drop out.
+- web-ui — `undici` 7.29.0 → 7.30.0, `typescript-eslint` and every
+  `@typescript-eslint/*` package 8.65.0 → 8.71.0, `eslint-config-next` and
+  `@next/eslint-plugin-next` 16.3.5 → 16.3.7, `@eslint/eslintrc` 3.3.6 → 3.3.7.
+
+The lockfile's stale workspace entry for `packages/plugin-api` (1.13.0) now
+matches its `package.json` (1.19.1). Both workspaces are free of
+high/critical advisories again. The remaining moderate findings (`uuid` via
+`exceljs`/`botbuilder`, `dompurify` via `monaco-editor`) need breaking
+upgrades and are left for their own changes.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
@@ -2200,7 +2274,6 @@ Not reproduced and deliberately left open: the setup-wizard overwrite (#930) is
 plausible from the code and matches the observed timing, but provoking the race
 would have required a build that still started.
 
-
 ---
 
 ## Hand-written notes awaiting a mirror refresh (2026-07-06 to 2026-08-28)
@@ -2335,7 +2408,6 @@ Two consequences worth knowing:
 
 Unchanged and still true: the `claude-cli` provider never constructs the
 `Orchestrator`, so `context_memory` remains inert there (#899).
-
 
 ### Added — team uninstall for provisioned agent identities (#900, part of #860)
 
@@ -2830,7 +2902,6 @@ shallow copy of the turn store.
   an empty box: the panel renders nothing when the listing is empty, and treats a
   pre-feature kernel's 501 exactly like "feature not present". Real load errors stay visible.
 
-
 ### Changed — facilitation panel readability + tick nudge discipline (#330 round 4 follow-up)
 
 - The "Laufende Facilitations" card is structured now: conversation line, goal as title, the
@@ -2840,7 +2911,6 @@ shallow copy of the turn store.
 - The assess tick's prompt carries an explicit nudge discipline: nudge ONLY when the progress
   log has not moved since the previous tick — an actively working group needs no impulse, and
   a second facilitator voice mid-conversation reads as a duplicate bot.
-
 
 ### Added — Admin lens + stop for running facilitations (#330 round 4)
 
@@ -2855,7 +2925,6 @@ shallow copy of the turn store.
   idempotent, refuses non-ephemeral workflows.
 - Conductor page: new "Laufende Facilitations" panel with the overview and a confirmed
   Stop & remove action (en+de).
-
 
 ### Added — channel directory entries can carry resolved member names
 
@@ -2966,7 +3035,6 @@ shallow copy of the turn store.
 - Agent steps now carry a structured verdict: the LAST fenced ```json block of an agent answer becomes `stepResult.data` (mirror of the action-step's `data`; size-capped, tolerant — a missing verdict just keeps the bounded loop going). The bundled `facilitation` pattern is **v2**: hourly assess tick (moderate → wait PT1H → moderate, max 24 rounds) that routes a met DoD to the initiator's confirmation and exhausted rounds to the abort report.
 - `conductorEphemeralRuns.poke(runId)` early-fires a run's open timer await ("the group is done — don't wait out the interval").
 - New deny-by-default kernel service **`conversationSend`** (+ channel-SDK seam `registerConversationSendProvider`, plugin-api **1.9.0**): conversation-addressed proactive send — the Facilitator's stall-nudges post INTO the group, distinct from targetedSend's user-addressed DMs. First-registrant ownership per channel type, named unreachable outcomes, never a throw.
-
 
 ### Added — zero-touch Facilitator setup: agent provisioning, invite-guarded auto-bind, scoped role assignments (#330 C2a)
 
@@ -3109,7 +3177,6 @@ shallow copy of the turn store.
 - `@omadia/plugin-api` **1.3.0** (additive): `SqlAccessor.seedLedger` (optional, so
   a plugin still activates against a 1.2.0 core), `LedgerSeedEntry`,
   `SeedLedgerOptions`, `LedgerSeedReport`.
-
 
 ### Removed — Dev Platform moved to byte5ai/omadia-dev-platform (install via Hub/ZIP) (#470 C10)
 
@@ -3774,7 +3841,6 @@ shallow copy of the turn store.
 - Removed 23 now-dead `await once('listening')` waits that followed a
   converted site. The helper already resolves after `listening`, so a second
   wait could never fire — it hung 12 files to the 120s test timeout.
-
 
 ### Added — the public MCP endpoint serves MRTR to 2026-07-28 clients (#700)
 

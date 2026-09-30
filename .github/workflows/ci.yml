@@ -406,19 +406,45 @@ jobs:
       # cross-domain FKs and no extension dependencies, so its position
       # in this list is not load-bearing.
       #
-      # Still uncovered (each needs its own audit before enabling):
-      # middleware/src/conductor/migrations,
-      # middleware/src/services/graph/migrations,
-      # middleware/packages/harness-memory-postgres/src/migrations.
+      # Every series a runtime migrator applies is listed here (2026-09-29).
+      # `middleware/src/conductor/migrations` (`_conductor_migrations` ledger)
+      # and `harness-memory-postgres/src/migrations` (`_memory_migrations`)
+      # are self-contained: no cross-domain FKs, no extensions.
+      #
+      # `middleware/src/services/graph/migrations` is deliberately NOT listed:
+      # no runtime migrator reads it (graph migrations live in the
+      # knowledge-graph-neon series), so applying it here would turn a file
+      # nobody runs in production green. The step below instead fails if that
+      # directory holds anything but its four byte-identical copies of neon
+      # 0002/0004/0012/0013 (handoff §13 tracks deleting it).
       MIGRATION_DOMAINS: |
         middleware/migrations
+        middleware/src/conductor/migrations
         middleware/packages/harness-knowledge-graph-neon/src/migrations
+        middleware/packages/harness-memory-postgres/src/migrations
         middleware/src/auth/migrations
         middleware/src/plugins/routines/migrations
         middleware/src/profileSnapshots/migrations
         middleware/src/profileStorage/migrations
     steps:
       - uses: actions/checkout@v7
+
+      - name: Inert legacy graph migrations stay inert
+        run: |
+          set -euo pipefail
+          legacy=middleware/src/services/graph/migrations
+          neon=middleware/packages/harness-knowledge-graph-neon/src/migrations
+          for f in "$legacy"/*.sql; do
+            match=""
+            for g in "$neon"/*.sql; do
+              if cmp -s "$f" "$g"; then match="$g"; break; fi
+            done
+            if [ -z "$match" ]; then
+              echo "::error file=$f::$f is not a byte-identical copy of a knowledge-graph-neon migration. No runtime migrator reads $legacy -- add graph migrations to $neon instead."
+              exit 1
+            fi
+            echo "✓ $(basename "$f") == $(basename "$match") (inert duplicate)"
+          done
 
       - name: Enable pgvector extension
         run: |
@@ -488,29 +514,68 @@ jobs:
         run: npm ci --include=optional --no-audit --no-fund
 
       - name: npm audit (--audit-level=high)
-        # npm's registry audit backend is currently broken for every npm CLI
-        # version we could test (2026-07-26): npm 10.x's legacy "quick audit"
-        # endpoint 400s with "Invalid package tree" (reproduces even against a
-        # pristine, untouched lockfile), and npm 11.x/12.x's newer bulk-advisory
-        # endpoint fails to gzip-decode its own response. Both are upstream
-        # infra failures, not real audit results -- npm's error handler always
-        # prints "audit endpoint returned an error" for these, distinct from a
-        # genuine "vulnerabilities found" failure. Treat only the latter as
-        # blocking so this gate doesn't wedge every PR on an upstream outage.
+        # npm's registry audit backend has had long outages (2026-07-26: npm
+        # 10.x's legacy "quick audit" endpoint 400ed with "Invalid package tree"
+        # even against a pristine lockfile; 11.x/12.x failed to gzip-decode the
+        # bulk-advisory response). npm reports those as "audit endpoint returned
+        # an error", distinct from a genuine "vulnerabilities found" exit.
+        #
+        # Until 2026-09-29 that path was treated as a PASS, which made an unknown
+        # audit state indistinguishable from a clean one. Now the registry gets
+        # three attempts (two retries, 20 s then 40 s backoff) and the job then
+        # FAILS: an outage is not a result. Each registry fetch is capped at 60 s
+        # with one npm-internal retry, so a hanging endpoint surfaces as an
+        # endpoint error inside the loop instead of running into the job's
+        # `timeout-minutes` (a cancellation). For a confirmed, ongoing upstream
+        # outage an admin sets the repository variable
+        # AUDIT_ALLOW_REGISTRY_OUTAGE=true, which downgrades the failure to a
+        # warning; unset it once the registry is back (security-architecture §11).
+        env:
+          AUDIT_ALLOW_REGISTRY_OUTAGE: ${{ vars.AUDIT_ALLOW_REGISTRY_OUTAGE }}
         run: |
           npm install -g npm@latest
-          set +e
-          npm audit --audit-level=high --json >audit-report.json 2>audit-stderr.log
-          exit_code=$?
-          set -e
-          if [ $exit_code -eq 0 ]; then
-            exit 0
-          fi
-          if grep -q 'audit endpoint returned an error' audit-stderr.log; then
-            echo "::warning::npm audit endpoint is erroring upstream (registry-side) -- treating as non-blocking, not a real result"
-            cat audit-stderr.log
-            exit 0
-          fi
+          attempt=0
+          while :; do
+            attempt=$((attempt + 1))
+            set +e
+            npm audit --audit-level=high --json --fetch-timeout=60000 --fetch-retries=1 \
+              >audit-report.json 2>audit-stderr.log
+            exit_code=$?
+            set -e
+            if [ "$exit_code" -eq 0 ]; then
+              exit 0
+            fi
+            if ! grep -q 'audit endpoint returned an error' audit-stderr.log; then
+              # A real result: high/critical findings (or a hard CLI error).
+              cat audit-stderr.log
+              cat audit-report.json
+              exit "$exit_code"
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              break
+            fi
+            echo "::warning::npm audit endpoint error (attempt $attempt/3) -- retrying in $((attempt * 20))s"
+            sleep $((attempt * 20))
+          done
           cat audit-stderr.log
-          cat audit-report.json
-          exit $exit_code
+          if [ "$AUDIT_ALLOW_REGISTRY_OUTAGE" = "true" ]; then
+            echo "::warning::npm audit endpoint still erroring after 3 attempts; AUDIT_ALLOW_REGISTRY_OUTAGE=true -- passing WITHOUT an audit result"
+            exit 0
+          fi
+          echo "::error::npm audit endpoint still erroring after 3 attempts. An unknown audit state is not a clean result; set the repository variable AUDIT_ALLOW_REGISTRY_OUTAGE=true only for a confirmed upstream outage."
+          exit 1
+
+      - name: Archive audit report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-audit-${{ matrix.workspace }}
+          path: |
+            ${{ matrix.workspace }}/audit-report.json
+            ${{ matrix.workspace }}/audit-stderr.log
+          if-no-files-found: ignore
+          retention-days: 30
+          # Artifact names are unique per run, not per attempt: without this, a
+          # "Re-run failed jobs" after an upload fails here with a conflict and
+          # keeps the required audit check red (same fix as desktop-apps.yml).
+          overwrite: true
