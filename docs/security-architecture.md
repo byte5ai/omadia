@@ -562,7 +562,8 @@ from the descriptor.
   only use the grammar's own characters (letters, digits, the plain space and
   the operators, on one line), and names are read by Excel's grammar
   ([MS-XLSX] 2.2.2), so the check splits names exactly where the application
-  does.
+  does. The `{row}` check reads only the characters just before each
+  placeholder, so checking a template takes time linear in its length.
 - **Dataset rows cannot become formulas.** Rows behind a `datasetId` go through
   `normalizeCell` (`officeTool.ts`), which passes primitives and JSON-stringifies
   every object and array, so a system of record cannot inject a formula or a

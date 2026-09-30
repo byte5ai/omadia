@@ -75,7 +75,10 @@ could be checked as one text and stored as another. Both are now refused, by
 the input schema as well as by the renderer, and so are unpaired surrogates,
 U+FFFE and U+FFFF. Outside quotes a formula may only use letters, digits, plain
 spaces and the formula operators, on one line, and names are read the way
-Excel's grammar reads them (`?` and non-ASCII characters continue a name).
+Excel's grammar reads them (`?` and non-ASCII characters continue a name). The
+`{row}` check now reads only the characters just before each placeholder: it
+used to rescan the template for every placeholder, so a long template cost a
+noticeable amount of CPU per computed column.
 
 Viewers that do not calculate (Quick Look, Teams and Outlook previews, Excel's
 Protected View) now show formula cells empty until the file is opened for

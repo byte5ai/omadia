@@ -218,15 +218,24 @@ const PATH_SEPARATORS = /[\\/]/;
  * digits cannot become part of a function name, so `{row}` may complete a
  * column reference (`A{row}`, `$B${row}`) or stand alone (`{row}:{row}`), and
  * nothing may follow it that continues a name or opens a call.
+ *
+ * Only the few characters right before a placeholder are read. The longest
+ * column prefix is five characters (`$XFD$`), and twelve UTF-16 units always
+ * hold at least six characters, so a run of name characters glued to the
+ * placeholder is seen to be too long without scanning the formula back to its
+ * start. (Scanning the whole prefix for every placeholder cost time
+ * quadratic in the formula's length.)
  */
 const ROW_PLACEHOLDER = /\{row\}/g;
+const PREFIX_WINDOW = 12;
 const GLUED_BEFORE = /[\p{L}\p{M}\p{N}\p{Cf}_.?$]+$/u;
 const COLUMN_PREFIX = /^\$?(?:[A-Za-z]{1,3}\$?)?$/;
 const CONTINUES_NAME_OR_CALL = /[\p{L}\p{M}\p{N}\p{Cf}_.?]|\s*\(/uy;
 
 function rowPlaceholderReason(code: string): string | undefined {
   for (const match of code.matchAll(ROW_PLACEHOLDER)) {
-    const before = GLUED_BEFORE.exec(code.slice(0, match.index))?.[0] ?? '';
+    const window = code.slice(Math.max(0, match.index - PREFIX_WINDOW), match.index);
+    const before = GLUED_BEFORE.exec(window)?.[0] ?? '';
     CONTINUES_NAME_OR_CALL.lastIndex = match.index + match[0].length;
     if (!COLUMN_PREFIX.test(before) || CONTINUES_NAME_OR_CALL.test(code)) {
       return 'its {row} placeholder is not part of a cell reference; write it after a column letter (A{row}) or on its own';

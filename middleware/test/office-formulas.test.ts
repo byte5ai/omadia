@@ -6,6 +6,7 @@ import {
   XlsxToolInputSchema,
   type XlsxDescriptor,
 } from '@omadia/plugin-office';
+import { computedColumnReason } from '@omadia/plugin-office/dist/formulaPolicy.js';
 import { unzipToText } from './_helpers/unzipToText.js';
 
 // omadia evaluates no formulas. A formula cell's displayed value has to come
@@ -369,6 +370,23 @@ describe('office formula policy — formulas stay inside the workbook', () => {
     }
   });
 
+  it('checks a computed column in time linear in its length', () => {
+    // A long run of name characters followed by many standalone placeholders,
+    // at the schema's 2000-character cap. Reading the whole text before every
+    // placeholder made this take around a tenth of a second or more.
+    let template = `${'A'.repeat(1333)}+`;
+    while (template.length + '{row}+{row}'.length <= 2000) template += '{row}+';
+    template += '{row}';
+    assert.ok(template.length <= 2000, 'within the schema cap');
+    assert.equal(computedColumnReason(template), undefined, 'the template is allowed');
+    let fastest = Number.POSITIVE_INFINITY;
+    for (let run = 0; run < 5; run += 1) {
+      const started = performance.now();
+      computedColumnReason(template);
+      fastest = Math.min(fastest, performance.now() - started);
+    }
+    assert.ok(fastest < 50, `checking took ${fastest.toFixed(1)} ms`);
+  });
 });
 
 describe('office formula text at the tool boundary', () => {
