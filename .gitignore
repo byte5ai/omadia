@@ -158,8 +158,7 @@ docs/softgarden-agent-evaluation.md
 docs/diagrams.md
 docs/graph-deployment.md
 docs/harness-platform/
-# Local security-audit reports and their evidence (internal findings, retest
-# checklists). They are worked off through ordinary PRs and never published.
+# Local, untracked audit working files.
 docs/audits/
 
 # ─── Smoke scripts (internal validation harness, not part of public API) ──

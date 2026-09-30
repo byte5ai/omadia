@@ -410,17 +410,17 @@ jobs:
       # `middleware/src/conductor/migrations` (`_conductor_migrations` ledger)
       # and `harness-memory-postgres/src/migrations` (`_memory_migrations`)
       # are self-contained: no cross-domain FKs, no extensions.
-      # `middleware/src/services/graph/migrations` is applied by NOTHING at
-      # runtime (graph migrations live in the knowledge-graph-neon series; its
-      # four files are byte-identical copies of neon 0002/0004/0012/0013) and
-      # MUST follow the neon domain because its 0002 alters graph_nodes, which
-      # neon 0001 creates. It stays in the gate until the directory is deleted
-      # (handoff §13).
+      #
+      # `middleware/src/services/graph/migrations` is deliberately NOT listed:
+      # no runtime migrator reads it (graph migrations live in the
+      # knowledge-graph-neon series), so applying it here would turn a file
+      # nobody runs in production green. The step below instead fails if that
+      # directory holds anything but its four byte-identical copies of neon
+      # 0002/0004/0012/0013 (handoff §13 tracks deleting it).
       MIGRATION_DOMAINS: |
         middleware/migrations
         middleware/src/conductor/migrations
         middleware/packages/harness-knowledge-graph-neon/src/migrations
-        middleware/src/services/graph/migrations
         middleware/packages/harness-memory-postgres/src/migrations
         middleware/src/auth/migrations
         middleware/src/plugins/routines/migrations
@@ -428,6 +428,23 @@ jobs:
         middleware/src/profileStorage/migrations
     steps:
       - uses: actions/checkout@v7
+
+      - name: Inert legacy graph migrations stay inert
+        run: |
+          set -euo pipefail
+          legacy=middleware/src/services/graph/migrations
+          neon=middleware/packages/harness-knowledge-graph-neon/src/migrations
+          for f in "$legacy"/*.sql; do
+            match=""
+            for g in "$neon"/*.sql; do
+              if cmp -s "$f" "$g"; then match="$g"; break; fi
+            done
+            if [ -z "$match" ]; then
+              echo "::error file=$f::$f is not a byte-identical copy of a knowledge-graph-neon migration. No runtime migrator reads $legacy -- add graph migrations to $neon instead."
+              exit 1
+            fi
+            echo "✓ $(basename "$f") == $(basename "$match") (inert duplicate)"
+          done
 
       - name: Enable pgvector extension
         run: |
@@ -504,11 +521,15 @@ jobs:
         # an error", distinct from a genuine "vulnerabilities found" exit.
         #
         # Until 2026-09-29 that path was treated as a PASS, which made an unknown
-        # audit state indistinguishable from a clean one. Now the registry is
-        # retried three times with backoff and the job then FAILS: an outage is
-        # not a result. For a confirmed, ongoing upstream outage an admin sets
-        # the repository variable AUDIT_ALLOW_REGISTRY_OUTAGE=true, which
-        # downgrades the failure to a warning; unset it once the registry is back.
+        # audit state indistinguishable from a clean one. Now the registry gets
+        # three attempts (two retries, 20 s then 40 s backoff) and the job then
+        # FAILS: an outage is not a result. Each registry fetch is capped at 60 s
+        # with one npm-internal retry, so a hanging endpoint surfaces as an
+        # endpoint error inside the loop instead of running into the job's
+        # `timeout-minutes` (a cancellation). For a confirmed, ongoing upstream
+        # outage an admin sets the repository variable
+        # AUDIT_ALLOW_REGISTRY_OUTAGE=true, which downgrades the failure to a
+        # warning; unset it once the registry is back (security-architecture §11).
         env:
           AUDIT_ALLOW_REGISTRY_OUTAGE: ${{ vars.AUDIT_ALLOW_REGISTRY_OUTAGE }}
         run: |
@@ -517,7 +538,8 @@ jobs:
           while :; do
             attempt=$((attempt + 1))
             set +e
-            npm audit --audit-level=high --json >audit-report.json 2>audit-stderr.log
+            npm audit --audit-level=high --json --fetch-timeout=60000 --fetch-retries=1 \
+              >audit-report.json 2>audit-stderr.log
             exit_code=$?
             set -e
             if [ "$exit_code" -eq 0 ]; then
@@ -553,3 +575,7 @@ jobs:
             ${{ matrix.workspace }}/audit-stderr.log
           if-no-files-found: ignore
           retention-days: 30
+          # Artifact names are unique per run, not per attempt: without this, a
+          # "Re-run failed jobs" after an upload fails here with a conflict and
+          # keeps the required audit check red (same fix as desktop-apps.yml).
+          overwrite: true

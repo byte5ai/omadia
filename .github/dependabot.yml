@@ -113,12 +113,17 @@ updates:
         applies-to: 'version-updates'
         dependency-type: 'development'
         update-types: ['patch', 'minor']
+        # electron is a devDependency but it IS the shipped runtime: keep its
+        # patch/minor security releases out of the tooling group, so a broken
+        # esbuild or electron-builder bump can never hold one back.
+        exclude-patterns: ['electron']
       runtime-patches:
         applies-to: 'version-updates'
         dependency-type: 'production'
         update-types: ['patch']
     ignore:
-      # Same Node 22 LTS lock as middleware and web-ui (see the blocks above).
+      # @types/node tracks the runtime major (Node 22 LTS), as in the /web-ui
+      # block above; typescript 7.x is the Go-native rewrite (see /middleware).
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
       - dependency-name: 'typescript'

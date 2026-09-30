@@ -36,45 +36,44 @@ changelog.
 
 ## [Unreleased]
 
-### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/`
+### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
 
 2026-09-29 — the `audit (high+critical block)` step treated an npm registry
 outage ("audit endpoint returned an error") as a pass, so an unknown audit
-state was indistinguishable from a clean one. It now retries the registry
-three times with backoff and then fails; for a confirmed upstream outage an
-admin can set the repository variable `AUDIT_ALLOW_REGISTRY_OUTAGE=true`,
-which downgrades that to a warning until the registry is back. The
-`audit-report.json` of every run is archived as a workflow artifact for 30
-days. Dependabot gets a `/desktop` npm block — the Electron shell had no
-dependency updates at all, and `electron` is a devDependency that ships as the
-runtime. Adding `desktop` to the audit matrix itself lands together with the
-dependency refresh that makes it pass. Local security-audit reports under
+state was indistinguishable from a clean one. It now gets three attempts (two
+retries, 20 s then 40 s backoff), each registry fetch capped at 60 s, and then
+fails. For a confirmed upstream outage an admin can set the repository
+variable `AUDIT_ALLOW_REGISTRY_OUTAGE=true`, which downgrades that to a
+warning until the registry is back (reviewer checklist,
+`docs/security-architecture.md` §11). Every run archives `audit-report.json`
+as a workflow artifact for 30 days; the upload overwrites on a re-run, so
+"Re-run failed jobs" cannot turn the required check red by itself. Dependabot
+gets a `/desktop` npm block — the Electron shell had no dependency updates at
+all, and `electron` is a devDependency that ships as the runtime, so its
+patch/minor releases stay out of the tooling group. Adding `desktop` to the
+audit matrix is tracked in the handoff's §13 and lands with the desktop
+dependency refresh that makes it pass. Local audit working files under
 `docs/audits/` are git-ignored.
 
-The first run of the tightened gate on this branch caught real findings that
-had appeared since the last `main` run: the `overrides` blocks in
-`middleware/package.json` and `web-ui/package.json` pinned `brace-expansion`
-to `5.0.9` (three new high-severity advisories, fixed in 5.0.12) and
-`fast-uri` to `3.1.7` (moderate, fixed in 3.1.8). `npm audit fix` cannot move
-a pinned override, so the pins are lifted to the fixed versions; both
-workspaces are now free of high/critical advisories.
-
-### Changed — CI schema gate applies every SQL migration series, twice
+### Changed — CI schema gate covers every live SQL migration series (#1239)
 
 2026-09-29 — the `schema (migrations on pgvector)` job listed six migration
-domains and named three as "still uncovered": `middleware/src/conductor/
-migrations` (11 files, applied at boot through the `_conductor_migrations`
-ledger), `middleware/packages/harness-memory-postgres/src/migrations` (1 file,
-`_memory_migrations`) and `middleware/src/services/graph/migrations` (4 files
-that no runner reads — byte-identical copies of the knowledge-graph-neon
-0002/0004/0012/0013). All three are now applied and re-applied by the job; the
-legacy graph directory is ordered behind the neon domain because its 0002
-alters `graph_nodes`, which neon 0001 creates. The local reproduction (nine
-domains, every file applied twice against a throwaway pgvector 16) exposed no
-latent schema defect. The remaining debts — deleting the inert graph
-directory, the 347 allowed test-tree type errors of the typecheck ratchet, and
-the `nl` prompt-PII floor of 0.84 against the 0.97 release gate — are recorded
-in the handoff's §13 roadmap so they stay visible.
+domains and named three as "still uncovered". Two of them are live and are
+now applied and re-applied by the job: `middleware/src/conductor/migrations`
+(11 files, applied at boot through the `_conductor_migrations` ledger) and
+`middleware/packages/harness-memory-postgres/src/migrations` (1 file,
+`_memory_migrations`). The third, `middleware/src/services/graph/migrations`,
+is read by no runtime migrator — its four files are byte-identical copies of
+knowledge-graph-neon 0002/0004/0012/0013 — so applying it would only turn
+files that never run in production green. Instead a new step fails the job if
+that directory holds anything but those four copies, which closes the trap
+that stranded a migration there before (#875). A local reproduction of the
+job (every live file applied twice against a throwaway pgvector 16) exposed
+no latent schema defect. `AGENTS.md` no longer names that directory as an
+example for subsystem migrations. The remaining debts — deleting the inert
+graph directory, the 347 allowed test-tree type errors of the typecheck
+ratchet, and the `nl` prompt-PII floor of 0.84 against the 0.97 release gate —
+are recorded in the handoff's §13 roadmap.
 
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
