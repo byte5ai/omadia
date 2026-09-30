@@ -350,14 +350,15 @@ async function provisionKernelRole(io: DbAuthIo, creds: EmbeddedDbCredentials): 
 
 /**
  * `CREATE EXTENSION IF NOT EXISTS` as superuser, so the kernel's own
- * statement finds the extension and skips before its privilege check. An
- * engine without the extension's files (a dev tree without pgvector staged) is
- * logged and tolerated: the kernel migration that needs it fails exactly as it
- * would have anyway.
+ * statement finds the extension and skips before its privilege check. Pinned
+ * to `public`, where the kernel role's search_path finds it, rather than left
+ * to the superuser's `"$user"` schema. An engine without the extension's files
+ * (a dev tree without pgvector staged) is logged and tolerated: the kernel
+ * migration that needs it fails exactly as it would have anyway.
  */
 async function createExtension(io: DbAuthIo, client: AuthClient, extension: string): Promise<void> {
   try {
-    await client.query(`CREATE EXTENSION IF NOT EXISTS ${extension}`);
+    await client.query(`CREATE EXTENSION IF NOT EXISTS ${extension} SCHEMA public`);
   } catch (err) {
     const detail = `${errorText(err)} ${String((err as { detail?: unknown } | null)?.detail ?? '')}`;
     const unavailable = (sqlState(err) === '0A000' || sqlState(err) === '58P01') && /control file/i.test(detail);
