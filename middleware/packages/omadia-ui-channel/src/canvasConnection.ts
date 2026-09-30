@@ -81,6 +81,11 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * The socket is already authenticated by the kernel WebSocketRegistry (PR-11);
  * `session` is the verified identity. Turns are serialised per connection so
  * their surface frames never interleave.
+ *
+ * The kernel also ends the socket with its session (4401 at `exp`, 4403 on
+ * revocation). On close the turn still running is aborted and nothing queued
+ * behind it starts: the session that asked for it may be the reason the socket
+ * closed. The ack tells the client `session.expiresAt` as `sessionExpiresAt`.
  */
 export function handleCanvasSocket(
   socket: ChannelSocket,
@@ -106,6 +111,9 @@ export function handleCanvasSocket(
     if (phase === 'closed') return;
     socket.send(JSON.stringify(msg));
   };
+  // A call, not an inline comparison: `phase` changes in the close callback
+  // while a turn awaits, which TypeScript's narrowing cannot see.
+  const isClosed = (): boolean => phase === 'closed';
 
   // notifications (omadia-ui#15): sink registered once the handshake
   // completes; disposed on close so the router never pushes into a dead socket.
@@ -113,6 +121,9 @@ export function handleCanvasSocket(
 
   socket.onClose(() => {
     phase = 'closed';
+    // Stop the orchestrator turn still running for this socket; turns queued
+    // behind it see `closed` and never start.
+    activeTurn?.abort();
     disposeNotificationSink?.();
     disposeNotificationSink = undefined;
   });
@@ -176,6 +187,9 @@ export function handleCanvasSocket(
         type: 'handshake_ack',
         handshakeId,
         canvasSessionId,
+        ...(typeof session.expiresAt === 'number'
+          ? { sessionExpiresAt: session.expiresAt }
+          : {}),
       };
       send(ack);
       phase = 'ready';
@@ -341,6 +355,8 @@ export function handleCanvasSocket(
   }
 
   async function runTurn(turn: IncomingTurn, turnId: string): Promise<void> {
+    // Queued behind a turn that was still running when the socket closed.
+    if (isClosed()) return;
     let terminated = false;
     // turn_abort (omadia-ui#13): race the stream against the abort signal so
     // the abort takes effect IMMEDIATELY, not on the next event. Already-sent
@@ -364,7 +380,11 @@ export function handleCanvasSocket(
         }
         if (r.done) break;
         const ev = r.value;
-        if (phase === 'closed') return;
+        if (phase === 'closed') {
+          // Closed between two events: unwind the generator like an abort.
+          void it.return?.().catch(() => {});
+          return;
+        }
         if (SURFACE_EVENT_TYPES.has(ev.type)) {
           send(ev); // forward the surface_* event 1:1
         } else if (ev.type === 'text_delta') {
