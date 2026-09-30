@@ -189,6 +189,14 @@ No action needed; this section is about behaviour you will notice.
   authenticated request now reads the user's row. While that read fails, API
   calls answer 503 `auth.unavailable` and the UI keeps you signed in and
   retries; it does not bounce you to the login page.
+- **Open canvas connections end with the session.** The desktop canvas
+  WebSocket is closed with code 4401 when the cookie that opened it expires
+  (at most 4 hours after sign-in or the last renewal) and with 4403 when the
+  session is revoked; an open socket is re-checked every 60 seconds. Clients
+  built on `@omadia/canvas-core` 0.2.0 or later stop and ask to renew or sign
+  in; older clients keep reconnecting into a 401 until the user signs in
+  again. Renewing the session in the browser does not extend a socket that is
+  already open: the client reconnects with the renewed cookie.
 - Rotating the session signing key is still the lever for signing out *every*
   user at once.
 

@@ -1150,6 +1150,12 @@ Re-signing carries `sv`, `sid` and `uid` over together with `auth_time`: a
 renewed token belongs to the same sign-in of the same account version, so a
 later sign-out or reset ends it like the original.
 
+**A renewal extends the cookie, not an open WebSocket.** A channel socket
+stays bound to the token that opened it and is closed with 4401 at that
+token's `exp` (§10d). The client reconnects with its renewed cookie. Because
+renewal never moves the session version, a renewal does not close the sockets
+opened before it.
+
 **Residual risks (accepted, documented).**
 
 - Renewal only runs on an explicit click. Activity-based silent renewal is
@@ -1259,10 +1265,9 @@ so no WebSocket is ever allocated for it. An unregistered path is `404`.
   a failed revocation lookup → 503, anything else → 401). A
   deactivated channel answers `503`, and the active flag is checked again
   after the async cookie verification, so a deactivation during that window
-  cannot leak a socket past `deactivateChannel`. The check runs at the
-  upgrade only: a socket opened before its session was revoked stays open
-  (§10e residuals; `WebSocketRegistryDeps.sessions` is the seam for closing
-  it).
+  cannot leak a socket past `deactivateChannel`. The upgrade is not the last
+  check: the socket lives no longer than its session (see "Session lifetime
+  after the upgrade" below).
 - **Kernel routes** (`registerKernel`) bring their own authenticator. They
   are a kernel-only capability and are deliberately not on `CoreApi`, so no
   plugin can opt out of the session cookie. The authenticator's verdict maps
@@ -1284,14 +1289,79 @@ so no WebSocket is ever allocated for it. An unregistered path is `404`.
   has an `'error'` listener, so a hostile frame cannot raise an uncaught
   exception.
 
-Out of scope here and owned by W1-2: the satellite tunnel's credential (API
-key plus signed challenge) and its revocation of live sockets.
+**Session lifetime after the upgrade.** A channel socket stays authorised
+exactly as long as the session that opened it.
+`middleware/src/channels/channelSessionLifetime.ts` owns every accepted
+channel socket:
+
+- **Expiry.** The registry keeps the token and its `exp` for each socket. The
+  plugin handler never gets the token: it gets the claims (with `expiresAt`),
+  and the session cookie is stripped from `socket.request.headers`. At `exp`
+  the socket is closed with **4401** `session expired`. A token without `exp`,
+  or one that expired between the upgrade check and the handshake, is closed
+  with 4401 before the handler runs. A frame that arrives after `exp` is
+  dropped even when the timer runs late.
+- **Revocation on this replica.** A route that revokes calls
+  `SessionRevocation.announce` (§10e). The registry listens and closes that
+  user's sockets at once with **4403** `session revoked`.
+  `WebSocketRegistry.closeSessions(match)` is the same lever for any other
+  kernel path.
+- **Revocation on every replica.** The announcement is process-local, so the
+  guarantee across replicas (and for a revocation made directly in SQL) is the
+  periodic re-check. Every `WS_SESSION_RECHECK_MS` (60 s, the admin UI's
+  heartbeat cadence) one sweep re-runs `evaluateSessionToken`, the verdict path
+  HTTP uses, for every live socket. A revoked session closes with 4403
+  `session revoked`, a de-whitelisted Entra identity with 4403 `session
+  forbidden`, a token that no longer verifies with 4401. A failed account
+  lookup (`auth.unavailable`) is an outage, not a verdict: the socket stays,
+  still bounded by its `exp`. A revoked session therefore loses its sockets at
+  once on the replica that revoked it and within 60 s on every other. A check
+  that is still running is never started a second time for the same socket.
+- **After the close.** No further frame reaches the handler and its sends are
+  dropped, even while the peer is still acknowledging the close. The
+  handler's `onClose` fires at once: the canvas channel aborts the turn still
+  running for that socket and starts nothing that was queued behind it.
+
+The two close codes follow what the client should do next, not the HTTP
+status: an expired session can be replaced by a renewal the client may already
+hold (4401, like 401), a revoked one only by a new sign-in (4403, although the
+revoked cookie itself gets 401 `auth.revoked` on HTTP). Channel deactivation
+still closes with `1001`.
+
+**Re-authentication and reconnect.** A socket is bound to the token that
+opened it. `POST /api/v1/auth/renew` extends the cookie, never an open socket,
+and renewal never moves the session version, so the re-check keeps finding
+the pre-renew token current until its own `exp`. `handshake_ack` carries that
+moment as `sessionExpiresAt`. The canvas client warns the user before it
+(renewal stays an explicit click, §10b). On 4401 it reconnects with whatever
+cookie is current: a renewed cookie opens a new socket with a new expiry, a
+401 on that upgrade means signing in again. On 4403 it stops.
+`@omadia/canvas-core` 0.2.0 implements this: 4401 reports `unauthenticated`,
+4403 reports `forbidden`, neither enters the backoff loop, the host renews or
+signs in and calls `connect()`, and a cookie provider (`cookie: () => string`)
+supplies the current cookie on every connect.
+
+Kernel routes get none of this. Their principal is opaque to the registry, so
+a kernel route whose credential can expire or be revoked must close its own
+sockets. The satellite tunnel's credential (API key plus signed challenge) and
+its revocation of live sockets are owned by W1-2.
 
 Tests: `middleware/test/webSocketRegistry.test.ts` (exact statuses, per-route
-auth and caps, collisions, deactivation) and
+auth and caps, collisions, deactivation),
 `middleware/test/webSocketRegistryHardening.test.ts` (503 on throw, deadline
-and junk result, raw status-line bytes, bounds, the deactivate-during-auth
-race).
+and junk result, raw status-line bytes, bounds including
+`channelSessionRecheckMs`, the deactivate-during-auth race),
+`middleware/test/webSocketRegistrySession.test.ts` (expiry close, tokens
+without `exp` or expired during the upgrade, claims without the token,
+`closeSessions`, announced and re-checked revocation, whitelist withdrawal, an
+outage keeps the socket, no timer or re-check after a close or a
+deactivation), `middleware/test/channelSessionTracker.test.ts` (exactly at
+`exp`, a late timer, the setTimeout ceiling, verdict mapping, one check at a
+time), `middleware/test/auth/liveSocketRevocation.test.ts` (through the real
+routes: renewal keeps the socket, sign-out and disable close it),
+`middleware/test/uiChannelWebSocket.test.ts` (`sessionExpiresAt` in the ack,
+abort on close) and `middleware/packages/canvas-core/test/canvasSocketSession.test.ts`
+plus `canvasSocket.test.ts` (the client's close-code policy).
 
 ---
 
@@ -1324,7 +1394,8 @@ exists, is `active`, is the row the token was minted for (`uid`, when present)
 and still has the token's `sv`. Every consumer inherits the check through that
 one function: `requireAuth` (all of `/api`, including plugin routes with
 `auth: 'session'`), `ctx.operatorAuth.hasValidSession`, the channel WebSocket
-upgrade (§10d) and `POST /renew`. `GET /me` runs the same check, so the UI's
+upgrade, the periodic re-check of open channel sockets (§10d) and `POST
+/renew`. `GET /me` runs the same check, so the UI's
 60 s heartbeat notices a revocation within a minute. There is no cache, so a
 revocation holds from the next request on, on every replica.
 
@@ -1341,7 +1412,8 @@ revocation holds from the next request on, on every replica.
 The bump is `UserStore.update(id, { revokeSessions: true })`, always relative
 to the stored value, and always in the same statement as the change that
 causes it, so a password or status change and its revocation never land
-apart. Routes that revoke also call `SessionRevocation.announce`.
+apart. Routes that revoke also call `SessionRevocation.announce`, which closes
+that user's open channel WebSockets on this replica at once (§10d).
 
 **Status mapping.** Revoked → 401 `auth.revoked` (a raw 401 on a WebSocket
 upgrade, logged once, because that cookie outlived a sign-out or a reset). A
@@ -1365,24 +1437,26 @@ passes every signature-valid session, and the boot log says so.
 **Residual risks (accepted, documented).**
 
 - Sign-out is per user, not per device. Signing out in one browser ends the
-  sessions on every other device as well. That includes a canvas client, whose
-  reconnect loop then gets the same raw 401 an expired cookie produces, until
-  it signs in again. A per-device sign-out would need a denylist keyed by
-  `sid`.
-- Connections that are already open are not closed on revocation: a live
-  channel WebSocket and the builder's SSE stream (`GET /drafts/:id/events`)
-  authenticate once, when they open. `SessionRevocation.onRevoked` (whose
-  sessions just ended) and `check` (re-evaluate held claims) are the seam for
-  closing them. The announcement is process-local: a revocation on another
-  replica, or one made directly in SQL, is never announced, so that follow-up
-  has to re-run `check` periodically as well.
+  sessions on every other device as well. That includes a canvas client: its
+  socket is closed with 4403, and `@omadia/canvas-core` 0.2.0 then stops and
+  reports `forbidden` until the user signs in again (older clients keep
+  reconnecting into the raw 401 an expired cookie produces). A per-device
+  sign-out would need a denylist keyed by `sid`.
+- The builder's SSE stream (`GET /drafts/:id/events`) still authenticates
+  once, when it opens, and stays open after a revocation. Channel WebSockets
+  no longer do: they close at once on the replica that revoked and within the
+  60 s re-check on every other (§10d). The stream can use the same two
+  levers: `SessionRevocation.onRevoked` for this replica and a periodic
+  `check` for the rest, since the announcement is process-local.
 - A token minted before the claims existed has no `uid`. Until the cap it
   would survive a delete-and-recreate of its row, since the new row starts at
   version 0 again.
 - Every authenticated request, WebSocket upgrade and `hasValidSession` call
-  costs one point read on the shared pool. If that ever shows up in latency,
-  the follow-up is a short TTL cache that `announce` invalidates, and
-  "immediately" then means "within that TTL" across replicas.
+  costs one point read on the shared pool, and so does every live channel
+  WebSocket once per re-check (60 s). If that ever shows up in latency, the
+  follow-up is a short TTL cache that `announce` invalidates. Its TTL must stay
+  below the re-check interval, and "immediately" then means "within that TTL"
+  across replicas.
 - An admin who resets their own password is signed out too (the UI bounces to
   /login), consistent with "a reset ends every session of that user".
 
@@ -1393,7 +1467,9 @@ sign-out → the copy gets 401 on `/api`, `/me` and `/renew`; stale-cookie
 logout; OIDC callback), `middleware/test/auth/userStoreSessionVersion.test.ts`
 and `.pg.test.ts` (the SQL and the migration against real Postgres),
 `middleware/test/auth/adminUsersRoute.test.ts` (reset, disable, re-enable,
-delete) and `middleware/test/webSocketRegistry.test.ts` (401/503 on upgrade).
+delete), `middleware/test/webSocketRegistry.test.ts` (401/503 on upgrade) and,
+for sockets that are already open, `middleware/test/webSocketRegistrySession.test.ts`
+and `middleware/test/auth/liveSocketRevocation.test.ts` (§10d).
 
 ---
 
@@ -1442,7 +1518,14 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `CoreApi`. Plugins always get session-cookie and whitelist auth via
       `CoreApi.registerWebSocket`. The authenticator rejects before the `101`
       (raw 401/403; a throw or missed deadline is a fail-closed 503), and the
-      route sets an explicit, bounded `maxPayload` (§10c).
+      route sets an explicit, bounded `maxPayload` (§10d).
+- [ ] A new WebSocket consumer relies on the registry for its session
+      lifetime and does not re-implement it: a channel handler caches no
+      authorisation beyond its socket, never receives or reconstructs the
+      session token, and stops its work in `onClose` (the kernel closes with
+      4401 at `exp` and 4403 on revocation). A new `registerKernel` caller
+      states how its own credential's expiry and revocation close its sockets,
+      because the registry closes none of them (§10d).
 - [ ] A new path that mints or re-mints the session cookie carries
       `auth_time` over (never resets it) and respects the absolute cap; a new
       OIDC provider implements `revalidateSession` or its sessions cannot be
