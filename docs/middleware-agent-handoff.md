@@ -3209,6 +3209,13 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **`user_disabled` vor der Passwortprüfung.** `LocalPasswordProvider` antwortet für ein
   deaktiviertes Konto mit `auth.user_disabled`, bevor es das Passwort prüft. Der Status
   eines Kontos ist damit ohne Passwort ablesbar.
+- **Session-Sperre bei Passwort-Reset: an die geprüfte Epoche binden.** Ein Reset beendet
+  bestehende Sessions bisher nicht (`auth/requireAuth.ts`: der serverseitige
+  Revoke-Store steht aus). Wer das nachrüstet, darf eine Session nicht allein nach ihrem
+  Ausstellungszeitpunkt beurteilen: Eine Anmeldung, die noch gegen den alten Hash prüft,
+  während der Reset landet, stellt ihre Session erst danach aus. Das Geräte-Cookie hängt
+  deshalb an der Epoche, die die Anmeldung geprüft hat (`AuthSuccess.credentialEpoch`,
+  §10f); eine Session-Sperre braucht dieselbe Bindung.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
