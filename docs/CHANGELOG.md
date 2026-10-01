@@ -80,25 +80,23 @@ refuses the kernel role a database URL unless it holds none of the privileged
 attributes and is a member of no role, because a role membership can restore a
 capability without setting an attribute.
 
-The shell also no longer trusts whatever answers where its server should be.
-It used to poll the loopback port with the superuser password, take an
-authentication error for "up", and send its passwords with a client that
-answers a cleartext request, so another local user holding that port while the
-server was stopped could collect them or pose as the cluster. On macOS and
-Linux the server now listens only on a Unix socket in an owner-only directory
-under the app data folder (a private temp directory when that path is too long
-for a socket), with no TCP listener; the kernel's `DATABASE_URL` names that
-socket. On every platform the shell's connections accept SCRAM-SHA-256 and
-nothing else, so no password is sent to a server that asks for anything less
-and a server that cannot prove it holds the verifier is refused. Readiness is
-read from the server's own `postmaster.pid`, without credentials; the first
-login after every start must report this cluster's data directory before the
-kernel's password is offered; and the server is re-confirmed before
-provisioning, before the verification and before the kernel gets its DSN.
-Windows keeps loopback TCP: another local user who takes the port while the
-server is stopped fails the boot instead of learning a password, and the
-kernel's own pools are not yet SCRAM-only (desktop/README.md § Database
-authentication).
+Passwords alone would not keep another local user out of the picture: while
+the server is stopped, someone else could take its loopback port and ask the
+connecting client for a password, or pose as the cluster. So on macOS and
+Linux the server no longer listens on TCP at all, only on a Unix socket in an
+owner-only directory under the app data folder (a private temp directory when
+that path is too long for a socket), and the kernel's `DATABASE_URL` names that
+socket. On every platform the shell's own connections accept SCRAM-SHA-256 and
+nothing else, so no password goes to a server that asks for anything less, and
+a server that cannot prove it holds the verifier is refused. The shell counts
+the server as started when its `postmaster.pid` names the process the shell
+spawned, a check that needs no credentials; the first login after every start
+must report this cluster's data directory before the kernel's password is
+offered; and the server is re-confirmed before provisioning, before the
+verification and before the kernel gets its DSN. Windows keeps loopback TCP:
+another local user who takes the port while the server is stopped fails the
+boot instead of learning a password, and the kernel's own pools are not yet
+SCRAM-only (desktop/README.md § Database authentication).
 
 ### Fixed — desktop updater: an update the OS is too old for is no longer "up to date"
 
