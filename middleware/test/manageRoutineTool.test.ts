@@ -1,5 +1,7 @@
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
+
+import { JobValidationError } from '@omadia/plugin-api';
 
 import {
   ManageRoutineTool,
@@ -320,15 +322,38 @@ describe('ManageRoutineTool — error mapping', () => {
     assert.match(result, /^Error: routine '00000000-0000-0000-0000-000000000000' not found/);
   });
 
-  it('returns Error: <message> for unexpected Error instances (e.g. JobValidationError)', async () => {
+  it('returns Error: <message> for a JobValidationError (the cron hint about the model input)', async () => {
     const { runner } = stubRunner({
       createImpl: async () => {
-        throw new Error('cron expression is invalid: foo');
+        throw new JobValidationError('cron expression is invalid: foo');
       },
     });
     const tool = new ManageRoutineTool({ runner, resolveContext: () => ctx });
     const result = await tool.handle(baseArgs);
     assert.match(result, /^Error: cron expression is invalid/);
+  });
+
+  it('withholds the text of any other exception (a store failure quoting a row)', async () => {
+    const EMAIL = 'erika.mustermann@example.com';
+    const { runner } = stubRunner({
+      createImpl: async () => {
+        throw Object.assign(
+          new Error(`duplicate key value: Key (target_email)=(${EMAIL}) already exists`),
+          { code: '23505' },
+        );
+      },
+    });
+    const tool = new ManageRoutineTool({ runner, resolveContext: () => ctx });
+    const errorLog = mock.method(console, 'error', () => {});
+    let result: string;
+    try {
+      result = await tool.handle(baseArgs);
+    } finally {
+      errorLog.mock.restore();
+    }
+    assert.equal(result.includes(EMAIL), false, `the store's text reached the model: ${result}`);
+    assert.match(result, /^Error: tool `manage_routine` failed with Error \(code 23505\) \[ref /);
+    assert.equal(errorLog.mock.callCount(), 1, 'the full error goes to the server log');
   });
 });
 

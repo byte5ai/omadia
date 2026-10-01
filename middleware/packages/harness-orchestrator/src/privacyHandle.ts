@@ -15,7 +15,11 @@ import type {
   PrivacyPromptMaskResult,
   PrivacyReceipt,
   PrivacyRenderedAnswer,
+  PrivacyToolErrorRedactResult,
   PrivacyV4ToolSpec,
+  PromptMaskedSpanInfo,
+  ToolErrorCarrier,
+  ToolErrorOutcome,
 } from '@omadia/plugin-api';
 
 export interface PrivacyTurnHandle {
@@ -51,6 +55,28 @@ export interface PrivacyTurnHandle {
    * so a sub-agent's inner tool calls honor the same per-plugin setting.
    */
   checkBypass(toolName: string): { readonly pluginId: string } | undefined;
+  /**
+   * Record a tool error a dispatch seam withheld, redacted or passed this
+   * turn; drained into the receipt's `toolErrors`. A no-op when the provider
+   * predates the contract. PII-free input only.
+   */
+  recordToolError(input: {
+    readonly toolName: string;
+    readonly carrier: ToolErrorCarrier;
+    readonly outcome: ToolErrorOutcome;
+    readonly bytes: number;
+    readonly redactedSpans?: readonly PromptMaskedSpanInfo[];
+  }): Promise<void>;
+  /**
+   * Redact a returned `Error:` text (the part after the prefix) through the
+   * provider's free-text detectors. `undefined` when the provider predates the
+   * contract — the caller must then fail CLOSED (withhold), never forward the
+   * text unchecked. See `toolErrorRedaction.ts`.
+   */
+  redactToolErrorText(input: {
+    readonly toolName: string;
+    readonly text: string;
+  }): Promise<PrivacyToolErrorRedactResult | undefined>;
   /**
    * Run a v4 verb tool or the terminal render tool the LLM called; returns
    * the `tool_result` text.
@@ -109,6 +135,16 @@ export interface PrivacyTurnHandle {
    * when the turn interned no tool results.
    */
   finalize(turnInput?: string): Promise<PrivacyReceipt | undefined>;
+  /**
+   * The handle for code running INSIDE a tool call this handle guards: a
+   * domain tool's sub-agent model loop, a plugin tool that asks a sub-agent, a
+   * dispatcher the handler calls. `ToolDispatchService` installs it as the
+   * ambient `turnContext.privacyHandle` while the handler runs. Absent ⇒ the
+   * handle itself. A wrapper that keeps per-result bookkeeping (the public MCP
+   * gate's positive `masked()` signal) returns a variant that guards the same
+   * way without counting toward the outer result.
+   */
+  forNestedCalls?(): PrivacyTurnHandle;
 }
 
 export function createPrivacyTurnHandle(deps: {
@@ -148,6 +184,31 @@ export function createPrivacyTurnHandle(deps: {
 
     checkBypass(toolName) {
       return deps.resolveBypass?.(toolName);
+    },
+
+    async recordToolError(input) {
+      // Optional on the service contract — a provider that predates it simply
+      // writes no receipt entry.
+      if (deps.service.recordToolError === undefined) return;
+      await deps.service.recordToolError({
+        turnId: deps.turnId,
+        toolName: input.toolName,
+        carrier: input.carrier,
+        outcome: input.outcome,
+        bytes: input.bytes,
+        ...(input.redactedSpans !== undefined ? { redactedSpans: input.redactedSpans } : {}),
+      });
+    },
+
+    async redactToolErrorText(input) {
+      // Optional on the service contract. `undefined` makes the caller
+      // withhold — the failure-closed direction.
+      if (deps.service.redactToolErrorText === undefined) return undefined;
+      return deps.service.redactToolErrorText({
+        turnId: deps.turnId,
+        toolName: input.toolName,
+        text: input.text,
+      });
     },
 
     async runV4Tool(input) {

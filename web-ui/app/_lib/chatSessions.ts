@@ -245,6 +245,31 @@ export interface PrivacyReceipt {
    * when no connected tool emitted structured output. PII-free.
    */
   structuredPayloads?: readonly StructuredPayloadEntry[];
+  /**
+   * Tool errors a dispatch seam handled this turn: an exception's text
+   * withheld, a returned error text redacted (or withheld), or an MCP connect
+   * prompt passed. Absent / empty when no tool failed. PII-free: tool name,
+   * carrier, outcome, byte count and masked span TYPES only.
+   */
+  toolErrors?: readonly ToolErrorEntry[];
+}
+
+/** How a tool error reached the dispatch seam. Mirrors `ToolErrorCarrier`. */
+export type ToolErrorCarrier = 'thrown' | 'returned' | 'mcp_auth_prompt';
+
+/** What the seam let reach the model. Mirrors `ToolErrorOutcome`. */
+export type ToolErrorOutcome = 'withheld' | 'redacted' | 'passed';
+
+/** One entry in `PrivacyReceipt.toolErrors`. Mirrors `ToolErrorEntry` from
+ *  `@omadia/plugin-api`. PII-free. */
+export interface ToolErrorEntry {
+  toolName: string;
+  carrier: ToolErrorCarrier;
+  outcome: ToolErrorOutcome;
+  /** Byte length of the ORIGINAL error text. */
+  bytes: number;
+  /** Span types masked in a `redacted` text. */
+  redactedSpans?: readonly PromptMaskedSpanInfo[];
 }
 
 /**

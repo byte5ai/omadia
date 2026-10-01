@@ -328,6 +328,60 @@ its results:
 Teams and Telegram need nothing: they keep receiving only the four badges they
 know and show no badge for turns without evidence.
 
+## Upgrading past 0.167.6 — tool errors are withheld or redacted
+
+Nothing to migrate: no schema change, no new variable. What an operator
+notices ([`security-architecture.md`](security-architecture.md) §6c has the
+full policy):
+
+- **Tool error text moved from the chat to the log.** When a tool throws, the
+  model and the chat's tool card now see
+  ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …``
+  instead of the driver or ORM message. The message, with its stack, is in the
+  middleware log under the same ref (`grep 'ref=<ref>'`); on the chat path the
+  ref is the turn's correlation id. A tool's *returned* `Error:` text still
+  reaches the model, with personal data masked as `[masked:<type>]`, unless it
+  looks like a record dump or a stack trace; then it is withheld and logged the
+  same way. A failed `web_search` or `render_diagram` call shows the provider
+  or diagram kind, the HTTP status and a ref; the upstream response and a
+  connection error are in the log under that ref.
+- **The privacy guard pairs with this release.** The bundled
+  `@omadia/plugin-privacy-guard` implements tool-error redaction without a
+  version bump of its own, so an older copy installed from the Hub or as a ZIP
+  upload carries the same 0.5.0. If the middleware log shows
+  `does not implement redactToolErrorText` (once per process), such a copy is
+  active: it cannot redact tool error text, so the kernel withholds every
+  returned `Error:` text entirely. Update that copy to the current build.
+- **More receipt rows.** A turn whose only privacy-shield activity was a
+  failing tool now writes a receipt (`/operator/receipts`), reaped by
+  `RECEIPT_RETENTION_DAYS` as before.
+- **A sub-agent does not repeat a call that ended in an exception.** The call
+  may have taken effect before it failed, so a second identical call (same
+  tool, same input) in the same sub-agent run gets
+  ``Error: tool `<name>` was not called: …`` instead of running. A run trace
+  shows that refusal where it used to show a second attempt.
+- **Public MCP: a domain tool's sub-agent now works on masked data.** When an
+  API key calls an `ask_<agent>` tool, that agent's sub-agent runs under the
+  call's privacy gate: its model reads masked tool results and withheld error
+  notices, as it does in chat, where before it read them in clear. Answers to
+  API-key callers can differ from before. Nothing to configure.
+
+For plugin authors: a tool that catches an exception should return
+`toolErrorFromException(toolName, err)` (`@omadia/plugin-api` 1.20.0) instead
+of `Error: ${err.message}`. Only text the plugin authors itself belongs in an
+`Error:` result, and the dispatch seam redacts even that. A typed error class
+of your own does not make its message authored text: keep a caught exception
+on `cause` and an upstream response body on a separate field, and build the
+`Error:` result from typed fields such as an HTTP status. The withheld notice
+tells the model the call's outcome is unknown, and a sub-agent will not repeat
+a call that ended with it; a tool whose failure is safe to retry (a read that
+timed out) can return an `Error:` hint it writes itself instead. A tool that
+returns an MCP connect prompt it wrote itself (text starting
+`🔒 The MCP server "`) now has it interned like any other result: only the
+prompt `McpManager` produced in the same dispatch reaches the model unchanged.
+To surface one, call the MCP server through `ctx.mcp` and return its answer as
+it is.
+
 ## Upgrading to 0.3
 
 > Stub. Fill this in as part of the 0.3 release.

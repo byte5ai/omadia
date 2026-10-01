@@ -32,18 +32,21 @@ export function createKrokiClient(options: KrokiClientOptions): KrokiClient {
           signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (err) {
-        throw new DiagramRenderError(
-          `Kroki request failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        // A transport failure (refused, DNS, timeout). The exception's text
+        // is not ours to put in a message: it rides as `cause`, for the log.
+        throw new DiagramRenderError(`Kroki ${kind}/png request failed`, undefined, undefined, {
+          cause: err,
+        });
       }
 
       if (!response.ok) {
-        // Body is typically a short HTML/text error from Kroki — capture a
-        // bounded prefix for debugging but never the raw source.
+        // Body is typically a short HTML/text error from Kroki that quotes
+        // the source back — a bounded prefix goes to `body` for the log,
+        // never into the message.
         const bodyText = await response.text().catch(() => '');
         const preview = bodyText.slice(0, 500);
         throw new DiagramRenderError(
-          `Kroki ${kind}/png responded ${String(response.status)}: ${preview}`,
+          `Kroki ${kind}/png responded ${String(response.status)}`,
           response.status,
           preview,
         );
@@ -52,8 +55,9 @@ export function createKrokiClient(options: KrokiClientOptions): KrokiClient {
       const contentType = response.headers.get('content-type') ?? '';
       if (!contentType.includes('image/png')) {
         throw new DiagramRenderError(
-          `Kroki returned unexpected content-type "${contentType}" for ${kind}/png`,
+          `Kroki ${kind}/png answered with a non-PNG content type`,
           response.status,
+          `content-type: ${contentType.slice(0, 200)}`,
         );
       }
 

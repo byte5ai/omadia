@@ -1543,8 +1543,11 @@ Ein Turn persistiert seinen PII-freien `PrivacyReceipt` synchron nach
 der Privacy Shield in diesem Turn aktiv war**: `finalizeTurn()` in
 `harness-plugin-privacy-guard/src/service.ts` liefert nur dann einen Receipt,
 wenn der Turn ein Dataset interniert, einen Bypass oder die strukturierte
-Ausgabe eines angebundenen Tools protokolliert oder den Prompt maskiert hat
-(Letzteres nur bei mindestens einem erkannten PII-Span); der Orchestrator
+Ausgabe eines angebundenen Tools protokolliert, den Prompt maskiert
+(Letzteres nur bei mindestens einem erkannten PII-Span) oder einen Tool-Fehler
+behandelt hat (`toolErrors`: Exception-Text zurückgehalten, `Error:`-Text
+redigiert oder zurückgehalten, MCP-Connect-Prompt durchgereicht — siehe §11
+„Tool-Fehler an den Dispatch-Nähten“); der Orchestrator
 persistiert nur `if (receipt)`. Ein Turn ohne Shield-Aktivität (z. B. reine
 Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt;
 `mask_user_prompt` ist per Default ohnehin aus) schreibt weder eine Zeile
@@ -3012,8 +3015,10 @@ zusammen mit `answerSource: 'privacy-render'` oder (immer) mit
 Zweiter, unabhängiger Fix im selben Issue: ein Guarded-Tool, das einen prosaischen
 `Error:`-String **zurückgibt** (die `Error:`-Konvention, aus der auch `is_error`
 abgeleitet wird), wird an den Dispatch-Nähten nicht mehr als 1-Zeilen-Dataset
-interniert, sondern unverändert an das Modell durchgereicht — sonst sah das
-Modell den Fehler nie und ein späteres Render materialisierte ihn als Daten.
+interniert, sondern als Text an das Modell gegeben — sonst sah das Modell den
+Fehler nie und ein späteres Render materialisierte ihn als Daten. Nicht
+interniert heißt seit dem Tool-Error-Fix nicht ungeprüft (siehe den Absatz
+„Tool-Fehler an den Dispatch-Nähten“ unten).
 #1105 schloss die beiden Nähte seiner Repros (`Orchestrator.dispatchTool`,
 `ToolDispatchService.afterDispatch`), **#1097** die restlichen zwei:
 `LocalSubAgent.dispatch` (Fehler eines Tools *innerhalb* eines Sub-Agents) und
@@ -3021,17 +3026,25 @@ Modell den Fehler nie und ein späteres Render materialisierte ihn als Daten.
 `McpManager` wirft nie, er liefert einen `Error: …`-String). Alle vier Guards
 sitzen an derselben Stelle: nach Intern-Exemption-Allowlist und Operator-Bypass,
 vor dem Internieren — und konsultieren **ein** Prädikat,
-`isControlFlowToolResult` (`@omadia/plugin-api`, `toolControlFlowText.ts`).
+`isGuardedControlFlowResult` (`toolErrorRedaction.ts`).
 
 Das Prädikat deckt zwei Träger ab, denn der `Error:`-Präfix allein war zu eng:
-den **MCP-Auth-Prompt** (verankert auf das exakte Produzenten-Präfix
-`🔒 The MCP server "`, ggf. mit dem `<mcp-auth-required>`-Block, aus dem die
-Chat-UI die Connect-Karte baut) liefert `McpManager.handleFailure`
-statt eines rohen Fehlers, sobald ein Call auth-förmig scheitert (Alltagsfall:
-abgelaufenes OAuth-Token auf einer geparkten MCP-Input-Karte). Interniert ging
-die Connect-Karte verloren und das Modell erzählte Erfolg über einem Digest.
-Das Prädikat prüft **nur Präfixe**, nie Teilstrings: ein Marker in einer
+den **MCP-Auth-Prompt** (`🔒 The MCP server "…`, ggf. mit dem
+`<mcp-auth-required>`-Block, aus dem die Chat-UI die Connect-Karte baut) liefert
+`McpManager.handleFailure` statt eines rohen Fehlers, sobald ein Call
+auth-förmig scheitert (Alltagsfall: abgelaufenes OAuth-Token auf einer
+geparkten MCP-Input-Karte). Interniert ging die Connect-Karte verloren und das
+Modell erzählte Erfolg über einem Digest. Erkannt wird der Prompt **per
+Provenienz, nicht am Präfix**: jede Naht öffnet um genau einen Dispatch eine
+`McpAuthPromptMint` (`mcp/mcpAuthPromptMint.ts`, eigener AsyncLocalStorage, weil
+der Dispatcher ohne Turn läuft und Skill-Bindung wie `ctx.mcp` den Turn-Store
+neu bauen), `handleFailure` trägt den zurückgegebenen Prompt dort ein, und nur
+ein byte-gleiches Ergebnis zählt. Text, der bloß so anfängt (ein
+Remote-Textblock, eine Datenzelle am Anfang eines Ergebnisses), ist Tool-Datum
+und wird interniert. Das Prädikat prüft nie Teilstrings: ein Marker in einer
 Datenzelle darf kein mehrzeiliges Ergebnis entmaskieren.
+`isControlFlowToolResult` (`@omadia/plugin-api`) klassifiziert weiter nur am
+Präfix; an den Nähten entscheidet es nichts mehr.
 
 Ein **gerenderter Fehler** wird als solcher markiert —
 `PrivacyRenderedAnswer.isError` (entschieden an der Quell-Zelle: ein Dataset
@@ -3039,11 +3052,90 @@ aus genau einer Control-Flow-Zelle), vom Orchestrator als
 `answerIsError: true` auf beide Antwortpfade gelegt (siehe §11-Kontrakt). Der
 **Shape-Classifier bleibt unverändert**: eine Ausnahme für 1×1-`Error:`-Skalare
 wäre ein Klartext-Kanal, weil Verben abgeleitete Datasets neu klassifizieren
-(`filter` + `select` verengen jede maskierte Spalte auf so einen Skalar). Die
-Maskierung **geworfener** Exceptions (`maskErrorText`) bleibt bewusst
-unberührt: diesen Text hat niemand saniert (ein ORM echot die
-Zeile, ein Treiber die gebundenen Parameter), das "Error-Strings enthalten
-konstruktionsbedingt keine PII"-Argument gilt nur für die Konvention.
+(`filter` + `select` verengen jede maskierte Spalte auf so einen Skalar).
+
+**Tool-Fehler an den Dispatch-Nähten.** Weder eine geworfene Exception noch ein
+zurückgegebener `Error:`-Text ist sanierter Text (ein ORM echot die Zeile, ein
+Treiber die gebundenen Parameter, ein Remote-MCP-Server seinen Fehler-Body).
+Deshalb laufen beide Träger an jeder Naht durch **einen** Helper,
+`toolErrorRedaction.ts` (`@omadia/orchestrator`), und die Politik folgt der
+Herkunft:
+- **Geworfen** (`withholdThrownToolError`): das Modell bekommt nur die
+  Withheld-Notice ``Error: tool `<name>` failed with <Klasse> (code <code>)
+  [ref <ref>] …`` — Klassenname und bereinigter Code (`describeThrownError`,
+  `@omadia/plugin-api`), nie die Message. `Orchestrator.dispatchTool` rejected
+  dafür nie mehr (auch nicht bei `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=0`); die
+  Rejection-Zweige beider Loops sind nur noch Backstops mit derselben Notice.
+  `ToolDispatchService.thrownResult` ersetzt das frühere `maskErrorText`
+  (das die Message als Dataset internierte) durch dieselbe Notice
+  (`origin: 'dispatcher'`), und `LocalSubAgent.dispatch` macht aus einem
+  werfenden inneren Tool ein `is_error`-Tool-Result, statt den Sub-Agent
+  abbrechen zu lassen. Der Aufruf kann vor der Exception schon gewirkt haben
+  (Write committet, Antwort läuft in den Timeout): die Notice sagt dem
+  Modell, dass der Ausgang unbekannt ist, und der Sub-Agent verweigert für den
+  Rest des Laufs eine identische Wiederholung (gleiches Tool, gleicher
+  kanonischer Input; `subAgentUnknownOutcome.ts`) — auch ohne
+  Privacy-Provider und auch dann, wenn eine Tool-Bridge die Exception selbst
+  gefangen und die Notice zurückgegeben hat (`isWithheldToolErrorNotice`,
+  Erkennung an der Form; wer sie imitiert, blockiert nur die eigene
+  Wiederholung). Anderer Input und ein Retry nach einem gewöhnlichen
+  zurückgegebenen `Error:`-Hinweis laufen weiter.
+- **Zurückgegeben** (`guardControlFlowResult`): der Text hinter `Error:` geht
+  durch `redactToolErrorText` des Providers (C0-Identitätstypen ohne
+  `date`/`amount`, Deny-List #760, C1; irreversibel `[masked:<typ>]`, die
+  Surrogat-Map des Turns wird nicht erweitert). Zurückgehalten statt redigiert
+  wird er, wenn er nach Exception aussieht (Zeilen-Echo als JSON, Python-Dict
+  oder JS-Objekt/`Map`, wie `util.inspect`, `console.log` und `%o` es
+  drucken; Datensatz mit Keyword-Feldern wie Dataclass, Kotlin/Lombok,
+  Java-Record oder Java-`Map`, oder mit Gos `Key:value`-Feldern; Stacktrace;
+  Postgres-`DETAIL:`-Zeile, `Failing row contains (…)` oder `Key (…)=(…)`,
+  wie psycopg und Odoos JSON-RPC-Fehler sie tragen), länger als 4096 Zeichen
+  ist oder der Provider ihn nicht prüfen kann.
+- **MCP-Connect-Prompt**: byte-identisch durchgereicht (Connect-Karte muss
+  überleben) und quittiert — aber nur der Text, den `McpManager` im selben
+  Dispatch erzeugt hat; alles andere mit diesem Präfix wird interniert. Der
+  Tool-Call eines Sub-Agents ist Teil des Eltern-Dispatches: sein Prompt wird
+  in beiden Mints eingetragen, die Eltern-Naht reicht eine Sub-Agent-Antwort
+  durch, die ihn byte-gleich wiederholt, und behandelt jede andere wie eine
+  normale Sub-Agent-Antwort.
+Die Kernel-eigenen Absagen aus `dispatchToolInner` (Tool nicht verfügbar /
+nicht gegrantet / unbekannt) sind per Provenienz ausgenommen, nicht per Form.
+Jeder behandelte Fehler schreibt einen PII-freien Eintrag in
+`PrivacyReceipt.toolErrors` (`carrier`, `outcome`, Bytes, maskierte
+Span-Typen); die volle Fehlermeldung samt Stack steht einmal im Server-Log
+unter `ref=<ref>` — der Turn-Korrelations-Id (#641, dieselbe wie in
+`<turn-incomplete ref="…">`), der Request-Id des Dispatcher-Callers oder einem
+frischen `err_…`-Token. Das Log ist die einzige Stelle, an der ein Operator den
+Treibertext noch findet. Die In-Tree-Wrapper, die `Error: ${err.message}`
+lieferten (die drei Tool-Bridges über `bridgedToolError`, Web-Search,
+Diagramme, Discussion, Transkription, `manage_routine`, `query_dataset`, die
+Long-Running-Task-Handler, `createDomainTool`), geben nur noch selbst
+formulierte Meldungen im Klartext zurück und sonst `toolErrorFromException`.
+Ein typisierter Fehler zählt nur dann als selbst formuliert, wenn nichts
+Fremdes in seiner Message steckt: Web-Search-Provider und Kroki-Client legen
+die gefangene Transport-Exception auf `cause` und den Upstream-Body auf
+`body`, und `web_search` / `render_diagram` bauen ihr Ergebnis nur aus
+Provider-Id bzw. Diagramm-Art und HTTP-Status, nie aus der Message; der Rest
+steht unter der Ref im Log.
+Auf dem **öffentlichen MCP-Endpunkt** läuft jeder Tool-Handler mit dem
+Privacy-Handle des Dispatches als ambientem `turnContext.privacyHandle`
+(`runHandlerInPrivacyScope`): der Sub-Agent eines Domain-Tools bekommt
+die verschachtelte Gate-Variante (`PrivacyTurnHandle.forNestedCalls`),
+interniert damit seine inneren Ergebnisse und sieht innere Fehler nur als
+Withheld-Notice. Diese Maskierung zählt nicht für `masked()` des
+Call-Ergebnisses, ein Fehlschlag darin verwirft den Call. Ohne Handle läuft
+dort kein Handler (`requirePrivacyHandle`; ein Dispatcher ohne `withPrivacy`
+wird vor dem Dispatch abgewiesen). Vorher fand der Sub-Agent dort keinen
+Handle, und sein Provider bekam innere Daten und Fehlertexte im Klartext.
+Ohne Privacy-Provider (und für intern-exempte Self-Tools) fließt der Text wie
+jedes andere Tool-Ergebnis roh — Parität; auf dem Abo-CLI-Pfad gibt es keinen
+Shield (#1087). Versions-Paarung nach Fähigkeit, nicht nach Nummer: der
+gebündelte `@omadia/plugin-privacy-guard` implementiert `redactToolErrorText`
+ohne eigene Versionsanhebung (weiter 0.5.0, Anhebung offen, §13); ein
+Provider ohne die Methode lässt den Kernel zurückgegebene `Error:`-Texte
+vollständig zurückhalten, und das Log meldet einmal pro Prozess
+`does not implement redactToolErrorText`. Details, Residuen und Reviewer-Regel:
+`docs/security-architecture.md` §6c und §11.
 
 **Kontrakt-Erweiterung — Verifier-Gate im Stream (`VERIFIER_MODE=enforce`).**
 `shadow` bleibt der unveränderte Pass-through: alle Events wie erzeugt, danach
@@ -3237,6 +3329,95 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Vertrauensgrenze; Härtung z. B. per Allowlist der konfigurierten IdP-Hosts.
 - **`/login/:id/start` ohne Längenlimit für `return`.** Der Web-UI-Helper begrenzt auf 2048
   Zeichen; ein direkter Link auf die Middleware-Route ist unbegrenzt (landet im OIDC-State-Cookie).
+
+### Tool-Fehler-Politik: offene Enden
+
+Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
+`docs/security-architecture.md` §6c):
+
+- **Channel-Renderer außerhalb dieses Repos** (Teams-/Telegram-Karten in
+  `omadia-channel-teams` / `omadia-channel-telegram`) kennen
+  `PrivacyReceipt.toolErrors` noch nicht. Das Feld ist additiv, sie ignorieren
+  es — zeigen die Einträge aber auch nicht. Die Web-UI zeigt sie.
+- **Hub-ZIPs von Web-Search, Diagrammen und Discussion** importieren jetzt
+  `toolErrorFromException` (Web-Search und Diagramme auch `newToolErrorRef`)
+  zur Laufzeit aus `@omadia/plugin-api` ≥ 1.20.0. Die
+  ZIPs sind flach und lösen die Plugin-API vom Host auf; ein aus diesem Stand
+  gebautes ZIP braucht also einen Host ab diesem Release, und `compat.core`
+  erzwingt das nicht. Vor dem nächsten Publish Version bumpen und die
+  Mindest-Host-Version im Release-Text nennen.
+- **Versionsnummer von `@omadia/plugin-privacy-guard`**: das Paket hat
+  `redactToolErrorText` / `recordToolError` bekommen, steht aber weiter auf
+  0.5.0. Die Anhebung (0.6.0) muss `package.json`, `manifest.yaml` und den
+  Workspace-Eintrag in `middleware/package-lock.json` gemeinsam ändern
+  (`pluginPackageVersions.test.ts` prüft alle drei), gehört also in eine
+  Änderung, die das Lockfile anfassen darf. Die Paarungstexte (Manifest,
+  `docs/security-architecture.md` §6c, `docs/upgrading.md`, die Diagnose in
+  `toolErrorRedaction.ts`) nennen die Fähigkeit statt einer Nummer und bleiben
+  dabei richtig, denn 0.5.0 bleibt mehrdeutig; nach der Anhebung kann man
+  ergänzen, dass jeder Build ab 0.6.0 die Methode hat.
+- **Office-Plugin** (`officeTool.ts`) liefert bei einer unerwarteten Exception
+  weiter `Error: <message>`; die Naht redigiert oder hält zurück. Umstellung
+  auf `toolErrorFromException` zusammen mit der laufenden Office-Arbeit.
+- **Abo-CLI-Pfad** ohne Privacy Shield (#1087): beide Träger fließen dort roh.
+- **Öffentlicher MCP-Endpunkt, Sub-Agent:** das Gate redigiert keine
+  Tool-Fehler, also sieht der Sub-Agent eines Domain-Tools innere
+  `Error:`-Texte nur als Withheld-Notice und kann sich nicht am Hinweis
+  korrigieren. Redigierte Hinweise dort zuzulassen wäre eine eigene
+  Entscheidung: C1-Kosten und Per-Turn-State im Provider für einen Request, der
+  nie finalisiert wird. Außerdem fehlt dem öffentlichen Dispatcher die
+  Sub-Agent-Dataset-Brücke (`subAgentResultV4`); die Antwort des Sub-Agents
+  wird dort erneut als Datum interniert.
+- **Plugin-eigene Modellaufrufe (`ctx.llm`)** laufen auf keinem Einstiegspfad
+  durch den Privacy Shield, im Chat so wenig wie am öffentlichen Endpunkt: der
+  Accessor (`createLlmAccessor`, `platform/pluginContext.ts`) liest keinen
+  Privacy-Handle, ein Plugin-Tool, das Daten holt und selbst ein Modell fragt,
+  schickt sie, wie es sie zusammengebaut hat. Über den Shield geht nur das
+  Ergebnis des Tools. Eine Prompt-Maskierung für diese Aufrufe (nach dem
+  Muster von `maskUserPrompt`) wäre eine eigene Entscheidung.
+- **Connect-Prompt** wird per Provenienz erkannt (`McpAuthPromptMint`), nicht
+  mehr am Präfix. Offen: paraphrasiert ein Sub-Agent den Prompt, statt ihn
+  byte-gleich weiterzugeben, wird seine Antwort an der Eltern-Naht interniert
+  (sofern er kein Dataset interniert hat) und die Connect-Karte fehlt in der
+  Antwort. Ein typisiertes Control-Flow-Ergebnis statt Prosa wäre die
+  dauerhafte Lösung.
+- **Geworfener Text** wird ganz zurückgehalten, nicht C0-redigiert. Wer den
+  Treiber-Hinweis zurück will, stellt in `withholdThrownToolError` auf
+  `redactToolErrorText` um (eine Stelle) — um den Preis von Namen, die C0
+  nicht erkennt.
+- **Wiederholung nach einer Exception:** nur `LocalSubAgent` verweigert die
+  identische Wiederholung eines Aufrufs, der mit einer Exception endete
+  (`subAgentUnknownOutcome.ts`). Die Eltern-Loops und der Abo-CLI-Sub-Agent
+  (dessen Schleife der `claude`-CLI besitzt) blockieren keine Wiederholung;
+  den Hinweis der Notice liest ihr Modell nur dort, wo es die Notice liest
+  (ohne Privacy-Provider kommt ein direkter Throw roh an). Kein Pfad
+  blockiert eine Wiederholung mit anderem Input oder nach einem
+  zurückgegebenen Fehler mit ebenso unbekanntem Ausgang
+  (MCP-Request-Timeout). `LocalSubAgentTool` trägt keine
+  Write-Capability-Metadaten, deshalb gilt die Sperre für Lese- wie
+  Schreib-Tools. Ein Write genau einmal auszuführen braucht diese Metadaten
+  plus Idempotenz-Key (wie `ToolDispatchService` sie für das MCP-`exactlyOnce`
+  setzt) — gehört zur Write-Idempotenz-Arbeit am Sub-Agent-Pfad.
+- **Exception-Formen ohne C1:** positionale Datensatz-Dumps
+  (`Partner(42, 'Jane Doe')`, Gos `%v`) und `name=…`-Paare außerhalb eines
+  Datensatzes erkennt `looksExceptionShaped` nicht; ein Name darin geht ohne
+  C1 an das Modell. Jedes weitere Muster kostet Hinweise, die heute lesbar
+  bleiben — vor einer Erweiterung die Negativliste in
+  `toolErrorExceptionShape.test.ts` prüfen.
+
+### MRTR-Sentinel über Skill-Bindung und `ctx.mcp` (#570 follow-up)
+
+Die skill-gebundenen MCP-Tools (`subAgentToolHydration.ts`, Domain-Tools des
+Orchestrators) und der Plugin-Accessor `ctx.mcp.callTool` (`pluginContext.ts`)
+rufen den `McpManager` in einem `turnContext.run(...)` mit **neu gebautem**
+Store auf und reichen nur ausgewählte Felder weiter. `mcpInputSentinelMint`
+gehört nicht dazu: parkt ein solcher Call eine `input_required`-Karte, schreibt
+`parkInputRequired` keine Provenienz, und `dispatchToolDeadlined` interniert
+den Sentinel bei aktivem Privacy Shield — die Karte erscheint nicht. Befund aus
+der Code-Lektüre beim Connect-Prompt-Fix, nicht per Test reproduziert. Der
+Connect-Prompt hat deshalb einen eigenen AsyncLocalStorage
+(`McpAuthPromptMint`); für den Sentinel reicht dasselbe oder die Weitergabe des
+Felds in beiden Re-Scopes.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
