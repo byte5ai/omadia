@@ -13,6 +13,10 @@ import type {
   ChatTurnResult,
 } from '../packages/harness-channel-sdk/src/chatAgent.js';
 import type { SemanticAnswer } from '../packages/harness-channel-sdk/src/outgoing.js';
+import {
+  PROMPT_MASK_BLOCKED_ANSWER,
+  SECURITY_QUARANTINE_NOTICE,
+} from '../packages/harness-orchestrator/src/orchestrator.js';
 import { mergePrivacyReceipts } from '../packages/harness-orchestrator/src/requestReceipts.js';
 import { VerifierService } from '../packages/harness-orchestrator/src/verifierService.js';
 import {
@@ -430,4 +434,34 @@ describe('VerifierService.chat — privacy egress', () => {
     assert.equal(state.continuations.length, 0);
     assert.equal(answer.verifier?.status, 'verified');
   });
+});
+
+// The privacy refusal and the screening quarantine are notices the server
+// composed for a turn whose model never ran: `enforce` releases them without
+// a verdict, as it releases the other control-flow results — withholding them
+// behind the fact-check notice would hide why the turn failed.
+describe('VerifierService.chat (enforce) — server-composed notices', () => {
+  for (const [label, notice] of [
+    ['privacy refusal', PROMPT_MASK_BLOCKED_ANSWER],
+    ['screening quarantine', SECURITY_QUARANTINE_NOTICE],
+  ] as const) {
+    it(`releases the ${label} unverified and still finalizes the turn once`, async () => {
+      const { orchestrator, state } = stubOrchestrator({
+        results: [turn(notice)],
+        handOver: true,
+        privacyActive: true,
+        continuation: () => ({ wireAnswer: undefined }),
+      });
+      const { pipeline, inputs } = verdicts([APPROVED]);
+      const service = new VerifierService({ orchestrator, pipeline, enabled: true, mode: 'enforce', log: SILENT });
+
+      const answer = await service.chat({ userMessage: 'frage' });
+
+      assert.equal(answer.text, notice);
+      assert.equal(answer.answerSource, undefined, 'the notice was withheld');
+      assert.equal(inputs.length, 0, 'the notice was sent to the verifier');
+      assert.equal(state.continuations[0]!.finalizeCalls, 1);
+      assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
+    });
+  }
 });

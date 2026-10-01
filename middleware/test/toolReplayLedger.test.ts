@@ -256,6 +256,30 @@ describe('ToolReplayLedger — the request’s attachment ingestion', () => {
     await ledger.ingestAttachmentsOnce(c.ingest, NONE);
     assert.equal(c.calls(), 2);
   });
+
+  it('is single-flight: a caller that arrives while the import runs awaits the same one', async () => {
+    const ledger = new ToolReplayLedger();
+    let release: () => void = () => undefined;
+    let calls = 0;
+    const slow = () => {
+      calls += 1;
+      return new Promise<{ text: string }>((resolve) => {
+        release = () => resolve({ text: `ingested ${String(calls)}` });
+      });
+    };
+    const first = ledger.ingestAttachmentsOnce(slow, NONE);
+    const concurrent = ledger.ingestAttachmentsOnce(slow, NONE);
+    ledger.beginReentry();
+    const reentry = ledger.ingestAttachmentsOnce(slow, NONE);
+    release();
+    assert.deepEqual(await Promise.all([first, concurrent, reentry]), [
+      { text: 'ingested 1' },
+      { text: 'ingested 1' },
+      { text: 'ingested 1' },
+    ]);
+    assert.equal(calls, 1, 'the uploads were imported twice');
+    assert.equal(ledger.abortedTool, undefined);
+  });
 });
 
 const receipt = (over: Partial<PrivacyReceipt> = {}): PrivacyReceipt => ({
@@ -289,6 +313,20 @@ describe('RequestReceipts — one receipt for one request', () => {
       bypassedTools: [bypass],
       toolErrors: [toolError],
     });
+  });
+
+  it('sums the verifier’s requests over the passes: each pass’s are requests of their own', () => {
+    const span = { type: 'email', detector: 'c0' };
+    const merged = mergePrivacyReceipts([
+      receipt({ verifierEgress: { requests: 2, maskedSpans: [span] } }),
+      receipt(),
+      receipt({ verifierEgress: { requests: 3, maskedSpans: [span, { type: 'iban', detector: 'c0' }] } }),
+    ]);
+    assert.deepEqual(merged?.verifierEgress, {
+      requests: 5,
+      maskedSpans: [span, { type: 'iban', detector: 'c0' }],
+    });
+    assert.equal(mergePrivacyReceipts([receipt(), receipt()])?.verifierEgress, undefined);
   });
 
   it('commits the merged receipt once, through the first pass that offered to own the row', async () => {
