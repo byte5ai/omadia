@@ -339,6 +339,31 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.167.11 — desktop app: database passwords, no TCP port on macOS and Linux
+
+On macOS and Linux the desktop app's embedded database no longer listens on a
+TCP port, and on every platform it now requires passwords. Existing installs
+migrate on their first start after the update: the local PostgreSQL cluster
+moves from password-less `trust` rules to SCRAM passwords, and the kernel to a
+role without superuser rights (`desktop/README.md` § Database authentication).
+Nothing to do beforehand. The log of that start says so:
+`[db] migrating a trust-authenticated cluster to SCRAM passwords before it starts`.
+
+- **No database port on macOS and Linux.** The embedded server now listens
+  only on a Unix socket in `<app data>/pg-socket` (owner-only; a private
+  temporary directory when that path is too long for a socket), not on
+  `127.0.0.1`. A local tool that used to reach it over TCP has to use the
+  socket directory as its host, and it needs a password like any client.
+  Windows keeps `127.0.0.1`.
+- **Rolling back** to an earlier desktop build: that build connects without a
+  password and cannot open the migrated cluster. Before starting it, restore
+  the pre-update snapshot the updater took: `snapshots/pgdata-pre-<version>-<stamp>/`
+  as `pgdata/`, and its `.secrets.enc` as `secrets.enc`.
+- **A snapshot restored without its `.secrets.enc`**, or a lost `secrets.enc`:
+  the next start re-provisions the database passwords with the server stopped
+  (single-user mode, no port open) and logs it at warn level. The kernel-vault
+  caveat in `desktop/README.md` § Secrets and recovery still applies.
+
 ## Upgrading past v0.167.10 — password sign-in is rate-limited
 
 **Nothing to do for most installs.** The defaults are safe on every shipped

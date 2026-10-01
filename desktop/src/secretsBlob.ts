@@ -28,8 +28,23 @@ export const SECRETS_FILE_MODE = 0o600;
 /** The kernel base64-decodes both keys and requires exactly 32 bytes. */
 const KEY_BYTES = 32;
 
+/** Embedded-database passwords are 32 random bytes as lowercase hex. */
+const DB_PASSWORD_PATTERN = /^[0-9a-f]{64}$/;
+
 /** Temp files are `<file>.tmp-<pid>-<uuid>`, the kernel vault's own scheme. */
 const TEMP_MARKER = '.tmp-';
+
+/**
+ * The embedded Postgres passwords (`embeddedDbAuth.ts`). Both stay in the
+ * shell process: the kernel receives only the kernel role's, inside its
+ * DATABASE_URL, and never the bootstrap superuser's.
+ */
+export interface EmbeddedDbCredentials {
+  /** The bootstrap superuser `omadia`: provisioning and migrations of the cluster itself. */
+  readonly superuserPassword: string;
+  /** The restricted runtime role `omadia_kernel` the kernel connects as. */
+  readonly kernelPassword: string;
+}
 
 export interface SecretsBlob {
   /** base64 of 32 random bytes: the kernel's VAULT_KEY value. */
@@ -44,6 +59,12 @@ export interface SecretsBlob {
   readonly credentialKeychainKey?: string;
   /** provider key id -> value, e.g. { ANTHROPIC_API_KEY: "..." }. */
   readonly providerKeys: Readonly<Record<string, string>>;
+  /**
+   * The embedded Postgres passwords. Optional for the same reason as
+   * `credentialKeychainKey`: `secrets.ts` adds them on first use, so a blob
+   * from before they existed and a fresh one take the same path.
+   */
+  readonly embeddedDb?: EmbeddedDbCredentials;
 }
 
 export interface SecretsIo {
@@ -311,12 +332,29 @@ function shapeProblem(value: unknown): string | null {
   if (Object.values(providerKeys).some((entry) => typeof entry !== 'string')) {
     return 'providerKeys holds a value that is not a string';
   }
+  return embeddedDbProblem(value['embeddedDb']);
+}
+
+function isDbPassword(value: unknown): boolean {
+  return typeof value === 'string' && DB_PASSWORD_PATTERN.test(value);
+}
+
+function embeddedDbProblem(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (!isPlainObject(value)) return 'embeddedDb is not an object';
+  if (!isDbPassword(value['superuserPassword']) || !isDbPassword(value['kernelPassword'])) {
+    return 'embeddedDb does not hold two 64-character hex passwords';
+  }
   return null;
 }
 
 /** Frozen, and fields a newer version may have added are kept for the next rewrite. */
 function freeze(blob: SecretsBlob): SecretsBlob {
-  return Object.freeze({ ...blob, providerKeys: Object.freeze({ ...blob.providerKeys }) });
+  return Object.freeze({
+    ...blob,
+    providerKeys: Object.freeze({ ...blob.providerKeys }),
+    ...(blob.embeddedDb === undefined ? {} : { embeddedDb: Object.freeze({ ...blob.embeddedDb }) }),
+  });
 }
 
 export type SecretsWriteMode = 'create' | 'replace';

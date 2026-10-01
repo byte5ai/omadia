@@ -33,6 +33,8 @@ const SNAPSHOTS = '/data/snapshots';
 /** Obviously synthetic 32-byte keys, base64 like the real ones. */
 const VAULT_KEY = Buffer.alloc(32, 7).toString('base64');
 const KEYCHAIN_KEY = Buffer.alloc(32, 9).toString('base64');
+/** An obviously synthetic embedded-database password: 64 hex characters. */
+const DB_PASSWORD = 'c'.repeat(64);
 
 const BLOB: SecretsBlob = {
   vaultKey: VAULT_KEY,
@@ -229,6 +231,15 @@ describe('readSecretsBlob — only ENOENT means "no blob yet"', () => {
     ['a malformed credentialKeychainKey', { vaultKey: VAULT_KEY, credentialKeychainKey: 'short', providerKeys: {} }],
     ['missing providerKeys', { vaultKey: VAULT_KEY }],
     ['a non-string provider key', { vaultKey: VAULT_KEY, providerKeys: { X: 1 } }],
+    ['an embeddedDb that is not an object', { vaultKey: VAULT_KEY, providerKeys: {}, embeddedDb: 'x' }],
+    [
+      'an embeddedDb password that is not 64 hex characters',
+      { vaultKey: VAULT_KEY, providerKeys: {}, embeddedDb: { superuserPassword: 'short', kernelPassword: DB_PASSWORD } },
+    ],
+    [
+      'an embeddedDb without the kernel password',
+      { vaultKey: VAULT_KEY, providerKeys: {}, embeddedDb: { superuserPassword: DB_PASSWORD } },
+    ],
     ['an array', [VAULT_KEY]],
     ['null', null],
   ];
@@ -257,6 +268,14 @@ describe('readSecretsBlob — only ENOENT means "no blob yet"', () => {
     const blob = readSecretsBlob(io, codec(), FILE, PACKAGED);
     assert.deepEqual(blob, stored);
     assertNoWrites(calls);
+  });
+
+  it('accepts a blob with embedded database credentials, frozen like the rest', () => {
+    const stored = { ...BLOB, embeddedDb: { superuserPassword: DB_PASSWORD, kernelPassword: 'd'.repeat(64) } };
+    const { io } = recorder({ files: { [FILE]: encrypted(stored) } });
+    const blob = readSecretsBlob(io, codec(), FILE, PACKAGED);
+    assert.deepEqual(blob, stored);
+    assert.ok(Object.isFrozen(blob?.embeddedDb));
   });
 
   it('accepts a legacy blob without credentialKeychainKey', () => {

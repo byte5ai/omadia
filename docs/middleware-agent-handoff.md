@@ -3774,6 +3774,67 @@ security-architecture §8a). Bewusst offen:
   mit ihrem Snapshot-Ordner. Wer Snapshot-Ordner von Hand löscht, lässt die
   Kopie daneben liegen.
 
+### Desktop: Passwörter für die eingebettete Postgres — offene Punkte
+
+Die eingebettete PostgreSQL verlangt für jede Verbindung ein SCRAM-Passwort,
+der Kernel verbindet sich als `omadia_kernel` ohne Superuser-Rechte
+(`desktop/src/embeddedDbAuth.ts`, security-architecture §8b). Weil
+`omadia_kernel` seine Datenbank besitzt, behandelt die Shell diese Datenbank
+als nicht vertrauenswürdig: Jede Wartungsverbindung pinnt einen festen
+`search_path` (Systemkataloge zuerst, überstimmt `ALTER DATABASE/ROLE ... SET`),
+der Ownership-Transfer schema-qualifiziert seine Aufrufe (`pg_catalog.format`)
+und pinnt den `search_path` zusätzlich selbst
+(`desktop/src/embeddedDbOwnership.ts`). Die Verifikation lehnt die Kernel-Rolle
+außerdem ab, wenn sie Mitglied irgendeiner Rolle ist.
+
+Unter macOS und Linux lauscht der Server nur auf einem Unix-Socket in
+`<userData>/pg-socket` (0700, Eigentümer geprüft; bei zu langem Pfad ein
+privates Temp-Verzeichnis pro Start), ohne TCP; die `DATABASE_URL` des Kernels
+nennt das Socket-Verzeichnis als Host (`desktop/src/embeddedDbEndpoint.ts`).
+Die Shell verbindet sich nur per SCRAM (`desktop/src/scramOnlyConnect.ts`:
+Klartext-, MD5- oder Login ohne SCRAM-Austausch wird abgelehnt, bevor ein
+Passwort rausgeht). "Bereit" heißt: `postmaster.pid` nennt den gestarteten
+Prozess mit Status `ready`, ohne Zugangsdaten; danach muss der erste
+Superuser-Login das eigene `data_directory` melden, bevor das Kernel-Passwort
+irgendwohin geht. Bewusst offen:
+
+- **Windows: Kernel-Pools sind nicht SCRAM-only.** Windows bleibt auf
+  `127.0.0.1`. Die Shell-Verbindungen sind dort geschützt, die Pools des
+  Kernels (`createNeonPool`, `coreMigrations`) nutzen aber einen normalen
+  pg-Client. Stirbt der Server, während der Kernel läuft, und bindet ein
+  anderer lokaler Nutzer den Port vor dem nächsten Reconnect, könnte er das
+  Kernel-Passwort im Klartext anfordern. Optionen: ein SCRAM-only-Client für
+  die Kernel-Pools (`new Pool({ Client })`, aktiv bei `OMADIA_EMBEDDED_DB=1`),
+  ein bei jedem Start neu gesetztes Kernel-Passwort, oder auch unter Windows
+  ein Unix-Socket (PostgreSQL ab 13 kann AF_UNIX unter Windows 10 1803+) in
+  einem Verzeichnis mit Nutzer-ACL.
+- **Windows: Port-Besetzung bricht den Start ab.** Zwischen Portwahl und
+  Serverstart sowie während einer Single-User-Reparatur ist der Port frei;
+  ein anderer lokaler Nutzer, der ihn dann bindet, bekommt kein Passwort, lässt
+  aber den Boot scheitern (der nächste Start wählt einen freien Port). Ein
+  automatischer Neuversuch mit neuem Port wäre die Ergänzung.
+
+- **Mitgliedschaft schlägt fehl statt sich zu reparieren.** Erhält
+  `omadia_kernel` je eine Rollen-Mitgliedschaft (heute nur über die geschlossene
+  Umleitung erreichbar, oder ein künftiges Feature, das bewusst eine vergibt),
+  bricht der Start ab statt sie zu entziehen; der Rückweg ist der
+  Pre-Update-Snapshot (§8a). Ein `REVOKE` aller Mitgliedschaften im Provisioning
+  wäre die selbstheilende Alternative, falls das je nötig wird.
+
+- **Kernel-Passwort im Kindprozess-Environment.** Es steckt in `DATABASE_URL`
+  und ist damit für Prozesse desselben OS-Nutzers lesbar (`ps eww`), dieselbe
+  Grenze wie bei `VAULT_KEY`. Die Härtung wäre die Übergabe per stdin/fd.
+- **Migration und Laufzeit teilen sich eine Rolle.** `omadia_kernel` besitzt
+  die Datenbank und führt Kern- und Plugin-Migrationen aus, beim Boot und bei
+  jeder Plugin-Aktivierung. Eine reine DML-Rolle für die Laufzeit bräuchte im
+  Kernel eine zweite DSN für Migrationen.
+- **pgvector-Updates.** Die Extension gehört dem Superuser. Ein
+  `ALTER EXTENSION vector UPDATE` nach einem Engine-Update mit neuerer
+  pgvector-Version kann nur die Shell ausführen; heute führt es niemand aus.
+- **Windows-Stop vor der Passwort-Reparatur.** Die Reparatur im Single-User-Modus
+  braucht einen gestoppten Server; `postgres.exe` wird dafür hart beendet (wie
+  jeder Stop dort), der Single-User-Lauf macht danach eine Crash-Recovery.
+
 ### Desktop-Shell: Trust-Boundary Renderer → Main
 
 Wizard, Ladeseite, Web-UI und bei In-Window-OIDC auch IdP-Seiten laufen im

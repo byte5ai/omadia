@@ -382,6 +382,23 @@ jobs:
           Copy-Item "$env:RUNNER_TEMP\pgvector\sql\vector--*.sql" "$native\share\extension\" -Force
           Write-Host "✓ pgvector built + staged into the embedded PG17 engine (windows-x64)"
 
+      # The embedded Postgres asks every connection for a SCRAM password and the
+      # kernel runs as a role without superuser rights, so pgvector (an
+      # untrusted extension) has to be created by the shell before the
+      # kernel's first migration. This runs that on the engine about to ship,
+      # with the pgvector files just staged: fresh install, trust-era
+      # migration, credential repair, and the kernel's real
+      # 0001_graph_init.sql as the kernel role. OMADIA_EMBEDDED_PG_IT=require
+      # turns a missing engine or pgvector into a failure instead of a skip.
+      # Not on Windows: GitHub's Windows runners are elevated administrators,
+      # and postgres.exe refuses to start under an administrative account.
+      - name: Embedded Postgres authentication with pgvector (integration)
+        if: matrix.os != 'windows-latest'
+        working-directory: desktop
+        env:
+          OMADIA_EMBEDDED_PG_IT: require
+        run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./test/helpers/stub-electron.mjs --test test/embeddedDb.integration.test.mts
+
       - name: Stage runtime (middleware + web-ui + Postgres → desktop/runtime)
         working-directory: desktop
         run: npm run stage

@@ -36,6 +36,68 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop database requires passwords; the kernel runs without superuser rights
+
+2026-09-30 — the desktop app's embedded PostgreSQL cluster was initialised with
+`initdb -A trust`. Any local process, under any OS user, that reached its
+loopback port could log in as the bootstrap superuser without a password, and
+the kernel's own `DATABASE_URL` named that superuser, which can run
+`COPY ... TO PROGRAM`. New clusters are now created with SCRAM-SHA-256
+authentication, and the shell owns `pg_hba.conf`: password-only rules for its
+two roles, no `trust` rule, `hba_file` pinned on the server's command line. The
+kernel connects as `omadia_kernel`, which owns the `omadia` database but is not
+a superuser. Both passwords are random, live in `secrets.enc`, and are read back
+from it before the cluster is touched. The shell creates the `vector` and
+`pg_trgm` extensions itself, because pgvector is not a trusted extension. Every
+start ends with a fail-closed check that a wrong password is refused and the
+kernel role holds no privilege (desktop/README.md § Database authentication,
+security-architecture §8b).
+
+An existing cluster is migrated before the updated app first starts it: the
+superuser password is set in PostgreSQL's single-user mode, which opens no
+port, then `pg_hba.conf` switches to passwords, and once the server runs,
+every object the old kernel created as superuser moves to the kernel role.
+When the cluster refuses the stored password (a lost `secrets.enc`, a snapshot
+restored without its secrets copy), the shell stops the server, sets the
+password the same way and starts it again, logged at warn level; pg_hba.conf
+is only ever rewritten while the server is stopped, so no running server
+accepts a connection without a password. A rollback to an earlier desktop
+build cannot open a migrated cluster, because that build connects without a
+password; restore the pre-update snapshot
+(`snapshots/pgdata-pre-<version>-<stamp>/` and its `.secrets.enc`) to go back.
+No new environment variable.
+
+The shell's own maintenance sessions treat the kernel-owned database as
+untrusted. Because `omadia_kernel` owns that database, it can set a
+per-database `search_path` and create objects in schemas it controls; left
+unchecked, a statement the shell runs there as the superuser could resolve an
+unqualified call to one of those objects and run it with the shell's rights.
+Every connection the shell opens now pins a fixed `search_path` (system
+catalogs first) as a startup option, which outranks any per-database or
+per-role default, and the ownership transfer schema-qualifies every call and
+pins its own search_path as well. The start-up verification is the backstop: it
+refuses the kernel role a database URL unless it holds none of the privileged
+attributes and is a member of no role, because a role membership can restore a
+capability without setting an attribute.
+
+Passwords alone would not keep another local user out of the picture: while
+the server is stopped, someone else could take its loopback port and ask the
+connecting client for a password, or pose as the cluster. So on macOS and
+Linux the server no longer listens on TCP at all, only on a Unix socket in an
+owner-only directory under the app data folder (a private temp directory when
+that path is too long for a socket), and the kernel's `DATABASE_URL` names that
+socket. On every platform the shell's own connections accept SCRAM-SHA-256 and
+nothing else, so no password goes to a server that asks for anything less, and
+a server that cannot prove it holds the verifier is refused. The shell counts
+the server as started when its `postmaster.pid` names the process the shell
+spawned, a check that needs no credentials; the first login after every start
+must report this cluster's data directory before the kernel's password is
+offered; and the server is re-confirmed before provisioning, before the
+verification and before the kernel gets its DSN. Windows keeps loopback TCP:
+another local user who takes the port while the server is stopped fails the
+boot instead of learning a password, and the kernel's own pools are not yet
+SCRAM-only (desktop/README.md § Database authentication).
+
 ### Fixed — password sign-in is rate-limited
 
 2026-09-30 — `POST /api/v1/auth/login/:providerId` ran a full argon2id
