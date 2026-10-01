@@ -243,12 +243,21 @@ in `enforce` mode; `shadow` and a disabled verifier behave as before.
   seeds it, like every `VERIFIER_*` variable, only when the plugin is
   installed for the first time; on an existing install set the field in the
   plugin's settings.
-- **One record per message.** A re-entry no longer writes its own session-log
-  row, fact extraction, turn-hook events or `turn_receipts` row. A message has
-  one receipt row, written once after the last pass, whose receipt covers
-  every pass; the delivered answer carries that receipt and the stream's
-  `done.receiptId` names the row. When a retry's answer is delivered, the
-  session log still holds the first run's answer.
+- **One record per message — the delivered answer.** A re-entry no longer
+  writes its own session-log row, fact extraction, turn-hook events or
+  `turn_receipts` row. When a message can be re-entered, its session-log row
+  (with the knowledge-graph turn, fact extraction, an auto-promoted memory
+  and `onAfterTurn`) is written once, right after the verdict, for the answer
+  that goes out — a delivered retry's or resample's, not the first run's — or
+  for the answer the final verdict withheld; the stream's `done.turnId` names
+  that row, so "save as memory" saves the delivered answer. It still lands
+  before the answer goes out. A message has one receipt row, written once
+  after the last pass, whose receipt covers every pass; the delivered answer
+  carries that receipt and the stream's `done.receiptId` names the row.
+- **Long-running tasks are unaffected by a re-entry.** A task started with a
+  `<tool>_start` tool (for example a deferred sub-agent) keeps running its
+  own tool calls while the verifier re-enters the message; it no longer ends
+  as `failed` or abandons the retry because of it.
 - **A failed write is not repeated.** Independent of the verifier, the
   orchestrator's own tool loops and a subscription-CLI sub-agent no longer
   repeat a write call (same tool, same input) that ended in an exception

@@ -2229,13 +2229,36 @@ Jetzt erzeugt ein Wiedereintritt nur die Antwort neu:
   Wiedereintritt neu ausgeführt (`rerun`), seine inneren Calls werden
   abgespielt und im neuen Scope neu interniert; sonst wird das Ergebnis samt
   Sub-Agent-Events (Trace, Postconditions) abgespielt.
-- **Eine Anfrage, ein Datensatz.** Ein Wiedereintritt schreibt kein
-  Session-Log, keine Fact-Extraction, feuert keine Turn-Hooks, ingestiert kein
+- **Eine Anfrage, ein Datensatz — der gelieferte.** Ein Wiedereintritt feuert
+  keine Per-Call-Hooks (`onBeforeTurn`, `onAfterToolCall`), ingestiert kein
   MCP-Ergebnis erneut in den KG und bucht keinen Bypass erneut. Der Trace
-  markiert abgespielte Calls mit `replayed` (plugin-api 1.21.0). Die Receipts
-  aller Läufe sammelt `ledger.receipts` (`requestReceipts.ts`); geliefert wird
-  das gemergte Receipt, und genau **eine** `turn_receipts`-Zeile wird nach dem
-  letzten Lauf geschrieben (`receiptId` im Stream).
+  markiert abgespielte Calls mit `replayed` (plugin-api 1.21.0).
+  Commit-on-Delivery (`requestTurnRecord.ts`): Solange ein Request-Ledger
+  gebunden ist (`defersTurnRecord`), schreibt **kein** Lauf — auch nicht der
+  erste — Session-Log/Fact-Extraction/Auto-Promotion oder feuert
+  `onAfterTurn`; jeder Lauf bietet seine Zeile an (`TurnRecordWriter`,
+  `turnRecordWriter.ts`: `recordRow` / `offerRow` →
+  `ledger.turnRecord.offer(pass, …)`) und notiert seine Antwort
+  (`Orchestrator.afterTurn` → `noteAnswer`). Der Verifier committet nach dem
+  Urteil den gelieferten Lauf (bei Zurückhalten den, über den das Endurteil
+  ging): `asRequestResult` / `finishRequestDone` →
+  `turnRecord.commit(pass)`; `prepareReentry` liefert die Pass-Nummer. Die
+  Zeile trägt die Entities aller Läufe, wird im Turn-Scope ihres Laufs
+  geschrieben (`AsyncLocalStorage.snapshot()`, wegen Usage-Attribution),
+  danach `onAfterTurn` im Hook-Kontext des ersten Laufs (der Plan-Runner
+  hängt dort); `onVerifierBlocked` wartet auf den Commit
+  (`afterRequestRecord`), damit er wie vorher nach `onAfterTurn` kommt.
+  `done.turnId` nennt die committete Zeile. Ohne Lieferung committet das
+  `finally` den ersten Lauf. Die Receipts aller Läufe sammelt
+  `ledger.receipts` (`requestReceipts.ts`); geliefert wird das gemergte
+  Receipt, und genau **eine** `turn_receipts`-Zeile wird nach dem letzten
+  Lauf geschrieben (`receiptId` im Stream).
+- **Abgekoppelte Arbeit.** Der Runner eines langlaufenden Tasks
+  (`<tool>_start`, `tasks/longRunningTool.ts`) startet unter
+  `runDetachedFromRequestLedger` mit eigenem turn-lokalem Ledger: er läuft
+  nach dem Turn weiter, auch während eines Wiedereintritts, und darf weder
+  gegen den Replay-Modus der Anfrage laufen (Miss → Task `failed`,
+  Wiedereintritt abgebrochen) noch deren Rohergebnisse am Leben halten.
 - **Wiederholungssperre.** Unabhängig vom Verifier verweigert jede Naht die
   identische Wiederholung eines Write-Calls, dessen Ausgang unbekannt ist
   (geworfen oder Withheld-Notiz), für die ganze Anfrage — damit auch in den
@@ -2246,8 +2269,10 @@ Schalter: `verifier_resample_on_borderline` (§10). Sicherheitsbegründung,
 Grenzen und Reviewer-Regeln: `docs/security-architecture.md` §7c und §11.
 Tests: `test/toolReplayLedger.test.ts`, `test/toolReplaySeams.test.ts`,
 `test/verifierServiceWriteSafety.test.ts`, `test/verifierStreamRetry.test.ts`,
-`test/verifierReentryRecords.test.ts`, `test/verifierSubAgentReplay.test.ts`,
-`test/verifierResampleKillSwitch.test.ts`,
+`test/verifierReentryRecords.test.ts`, `test/verifierDeliveredTurnRecord.test.ts`,
+`test/requestTurnRecord.test.ts`,
+`test/verifierSubAgentReplay.test.ts`, `test/verifierResampleKillSwitch.test.ts`,
+`test/longRunningTaskReplayLedger.test.ts`,
 `test/orchestrator/parentLoopThrownCallRepeat.test.ts`.
 
 ## 4. Migration Managed Agents → Lokal
@@ -3268,7 +3293,10 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   zweimal), hält den Retry genauso und liefert nach dessen Urteil; nur seine
   Lebenszeichen (ein zweites `iteration_start`) gehen vorher raus. Ein
   abgebrochener oder gescheiterter Retry bleibt intern, dann gilt die Notiz
-  zum ersten Lauf. `VerifierService.chat` (`/api/chat`, Scheduler, Conductor)
+  zum ersten Lauf. `done.turnId` nennt die Session-Log-Zeile des gelieferten
+  Laufs (Commit-on-Delivery, §3); `onAfterTurn`-Annotationen kommen mit der
+  freigegebenen Antwort direkt vor ihr. `VerifierService.chat` (`/api/chat`,
+  Scheduler, Conductor)
   hat Retry und Borderline-Resample und liefert bei einem nicht freigegebenen
   Endurteil dieselbe Notiz als `SemanticAnswer` (`answerSource`/
   `answerIsError` gesetzt, Anhänge und Karten entfernt).
@@ -3288,8 +3316,9 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
 - **Nicht abgedeckt:** der Abo-CLI-Runtime (`claude-cli`; `buildOrchestrator`
   gibt den `CliChatAgent` vor dem Verifier-Wrapper zurück) und Routinen (der
   Routine-Runner ruft `runTurn` auf dem rohen Orchestrator). Persistenz
-  (Session-Log, KG-Turn, Auto-Promotion) passiert vor `done`, also auch für
-  eine zurückgehaltene Antwort.
+  (Session-Log, KG-Turn, Auto-Promotion) passiert vor `done` — mit
+  Request-Ledger erst nach dem Urteil, für den Lauf, über den es ging —, also
+  auch für eine zurückgehaltene Antwort.
 
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
@@ -3480,12 +3509,15 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
 Stand nach „Wiedereintritte führen kein Tool erneut aus“ (§3,
 `docs/security-architecture.md` §7c):
 
-- **Session-Log hält die erste Antwort.** Ein Wiedereintritt schreibt nichts
-  Eigenes; wird die Antwort eines Retry/Resample geliefert, stehen im
-  Session-Log, in der Fact-Extraction und im KG-Turn trotzdem die des ersten
-  Laufs (bei `enforce` ggf. eine zurückgehaltene). Lösung wäre ein
-  Commit-on-Delivery: Persistenz erst nach dem Urteil, für den gelieferten
-  Lauf — größerer Umbau von `chatInContextInner`/`chatStreamInner`.
+- **Erledigt: Session-Log hält die gelieferte Antwort.** Commit-on-Delivery
+  (§3, `requestTurnRecord.ts`) schreibt die eine Zeile der Anfrage nach dem
+  Urteil für den gelieferten Lauf. Offen bleibt nur, was der Commit für eine
+  **zurückgehaltene** Antwort schreibt: die Antwort des Laufs, über den das
+  Endurteil ging (Punkt „Zurückgehaltene Antwort wird trotzdem persistiert“
+  unten) — der Commit kennt das Urteil jetzt, ein Marker statt der Antwort
+  wäre dort einzuhängen. Eine Anfrage mit Request-Ledger, die nie committet
+  wird (Aufrufer ohne `finally`), verliert ihre Zeile; beide bestehenden
+  Binder committen auf jedem Pfad.
 - **Kein positives Read-only im Plugin-Vertrag.** Auf einem Wiedereintritt
   dürfen nur Kernel-Lese-Tools neu laufen; jeder Plugin-, MCP-, Domain- und
   Sub-Agent-Call, den der erste Lauf nicht machte, bricht ab — auch reine
@@ -3515,7 +3547,11 @@ Stand nach „Wiedereintritte führen kein Tool erneut aus“ (§3,
   `turn_receipts`-Zeile. Randfall.
 - **Abgespielte Status-Abfragen.** Ein `_status` eines langlaufenden
   Sub-Agent-Tasks wird im Wiedereintritt mit dem Stand des ersten Laufs
-  abgespielt — gewollt (gleiche Evidenz), aber kein Live-Stand.
+  abgespielt — gewollt (gleiche Evidenz), aber kein Live-Stand. Der Runner
+  selbst läuft seit `runDetachedFromRequestLedger` auf eigenem Ledger; er
+  erbt aber weiterhin den übrigen Turn-Kontext des Dispatches (Privacy-Handle,
+  Sinks — `describeDeferredPrivacyPosture`). Andere abgekoppelte Arbeit, die
+  später Tool-Handler ruft, muss denselben Weg nehmen (Security §11).
 - **Screening-Marker bleibt am Input.** `markScreeningReentry` setzt einen
   WeakSet-Eintrag auf das Input-Objekt, der nach der Anfrage bleibt (anders
   als der Ledger, der freigegeben wird). Ein Aufrufer, der dasselbe Objekt für
@@ -3790,9 +3826,11 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   schreibt Session-Log, KG-Turn und ggf. die Auto-Promotion vor `done`; die
   zurückgehaltene Antwort landet so im Kontext späterer Turns, und ihre
   `autoPromotedMkId` wird nicht ausgeliefert (der Web-Chat bietet kein
-  Verwerfen an). Nach dem #1094-Muster einen Marker statt der Antwort
-  persistieren oder Persistenz und Promotion in `enforce` bis zum Urteil
-  zurückstellen.
+  Verwerfen an). Mit Request-Ledger (Retry oder Resample möglich) ist die
+  Persistenz schon bis nach dem Urteil zurückgestellt (Commit-on-Delivery,
+  §3); dort nach dem #1094-Muster einen Marker statt der Antwort committen
+  und die Promotion auslassen. Ohne Ledger (`VERIFIER_MAX_RETRIES=0` ohne
+  Resample, Canvas-Stream) schreibt der Turn weiterhin vor dem Urteil.
 - **Zurückgehaltener Turn zeigt nicht, welche Tools liefen.** Tool-Trace und
   Tool-Ergebnisse fallen mit der Antwort weg; der Web-Chat zeigt nur die
   Anzahl (`tools=N`). Hat ein Schreib-Tool committet, sollte die Notiz es nennen

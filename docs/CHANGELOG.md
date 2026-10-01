@@ -70,15 +70,32 @@ first run's privacy scope runs again, with its inner calls replayed and
 interned afresh, so the dataset bridge still carries real rows; a re-entry of
 an MCP input-card answer is abandoned before the parked call could run again.
 
-A re-entry belongs to the same request: it writes no session-log row and no
-fact extraction, fires no turn hook, ingests no replayed MCP result into the
-Knowledge Graph and records no bypass again. Its run trace keeps every
-replayed call, flagged `replayed` (`RunToolCall.replayed`,
-`RunAgentInvocation.replayed` — `@omadia/plugin-api` 1.21.0). The request's
-privacy receipt is ONE row, written once after the last pass, that merges
-every pass (counts of the largest pass, lists united, an entry every pass
-recorded listed once); the delivered answer carries that receipt, and on the
-stream `done.receiptId` names that row.
+A re-entry belongs to the same request: it fires no per-call turn hook,
+ingests no replayed MCP result into the Knowledge Graph and records no bypass
+again. Its run trace keeps every replayed call, flagged `replayed`
+(`RunToolCall.replayed`, `RunAgentInvocation.replayed` — `@omadia/plugin-api`
+1.21.0). The request also has ONE record, and it holds the answer the user
+got: no pass — the first run included — writes its session-log row while the
+verifier may still re-enter; each offers it to the request's ledger, and the
+verifier writes the row of the pass it delivers once it has decided
+(commit-on-delivery). A delivered correction retry or resample is therefore
+what the session log, the Knowledge-Graph turn, the next turn's verbatim
+context, fact extraction, an auto-promoted memory and `onAfterTurn` see, and
+the stream's `done.turnId` names its row, so saving the answer as a memory
+saves the delivered one. A withheld answer records the pass its final verdict
+was about. The row carries the entities of every pass, its writes run in the
+turn scope of the pass that produced it, and `onAfterTurn` runs once, in the
+first run's hook context, with `onVerifierBlocked` after it as before. A
+re-entry now also sees the same conversation history as the first run (the
+first answer is no longer in it). The request's privacy receipt is ONE row,
+written once after the last pass, that merges every pass (counts of the
+largest pass, lists united, an entry every pass recorded listed once); the
+delivered answer carries that receipt, and on the stream `done.receiptId`
+names that row. A long-running task started in the request runs its own tool
+calls outside the request's ledger: its detached runner used to inherit the
+ledger, so once the verifier re-entered the request every later call of the
+background task was refused as a miss — failing the task and abandoning the
+re-entry running at that moment — or handed a first-run result.
 
 With the ledger in place the `enforce` stream retries a contradiction once
 as well (`/api/chat/stream`, the public API-key stream, a channel that streams
@@ -103,13 +120,15 @@ What operators notice: a correction retry or resample that would need a
 write the first run did not make is abandoned, so `corrected` badges can get
 rarer on turns that wrote something; the verifier logs
 `retry abandoned` / `resample abandoned` with the run id and the tool. A
-request has one receipt row instead of one per pass, and a retry's answer is
-not written to the session log (the first run's is). `shadow` mode, a
-disabled verifier and turns that cannot be re-entered persist exactly as
-before. Tests: `toolReplayLedger.test.ts`, `toolReplaySeams.test.ts`,
+request has one receipt row and one session-log row instead of one per pass,
+both written after the verdict when the request can be re-entered.
+`shadow` mode, a disabled verifier and turns that cannot be re-entered persist
+exactly as before. Tests: `toolReplayLedger.test.ts`, `toolReplaySeams.test.ts`,
 `verifierServiceWriteSafety.test.ts`, `verifierStreamRetry.test.ts`,
-`verifierReentryRecords.test.ts`, `verifierSubAgentReplay.test.ts`,
-`verifierResampleKillSwitch.test.ts`,
+`verifierReentryRecords.test.ts`, `verifierDeliveredTurnRecord.test.ts`,
+`requestTurnRecord.test.ts`,
+`verifierSubAgentReplay.test.ts`, `verifierResampleKillSwitch.test.ts`,
+`longRunningTaskReplayLedger.test.ts`,
 `orchestrator/parentLoopThrownCallRepeat.test.ts`. Details:
 `docs/security-architecture.md` §7c; upgrade note: `docs/upgrading.md`.
 
@@ -212,8 +231,10 @@ or `skipped` with reason `no_trigger` / `no_claims`, is the share of answers
 Not covered: the subscription-CLI runtime (`claude-cli` provider) never passes
 through the verifier wrapper, and proactive routines call the raw
 orchestrator, so `VERIFIER_MODE` changes neither. A withheld answer is still
-written to the session log and the knowledge graph before the verdict and can
-be auto-promoted to memory. What a released turn carries besides its answer —
+written to the session log and the knowledge graph — before the verdict, or
+right after it when the request can be re-entered (commit-on-delivery, see
+the entry above) — and can be auto-promoted to memory. What a released turn
+carries besides its answer —
 tool output, surfaces, the canvas skeleton's own text — is released on the
 verdict about the answer, not checked itself. Details:
 `docs/security-architecture.md` §7c, upgrade notes in `docs/upgrading.md`.

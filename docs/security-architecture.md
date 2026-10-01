@@ -1176,12 +1176,12 @@ not `failed`), so the evidence rules above hold for withheld answers too.
     has no effect on CLI-backed agents;
   - proactive routines: the routine runner calls `runTurn` on the raw
     orchestrator, so routine output is neither verified nor gated;
-  - persistence: the orchestrator writes the turn (session log,
-    knowledge-graph turn node, a possible auto-promoted memory) before `done`,
-    so a withheld answer is stored and can reach a later turn's context — the
-    gate acts on delivery only. A re-entry writes nothing of its own, so the
-    stored answer is the first run's even when a retry's answer is
-    delivered;
+  - persistence: the turn is written (session log, knowledge-graph turn
+    node, a possible auto-promoted memory) before `done` — inside the turn
+    when no re-entry can follow, otherwise right after the verdict, for the
+    pass whose verdict decided (commit-on-delivery, next subsection) — so a
+    withheld answer is stored and can reach a later turn's context; the gate
+    acts on delivery only;
   - what a released turn carries besides its answer is not checked itself:
     the verdict is about `done.answer`, and tool output, sub-agent traffic,
     nudges, annotations, surfaces and the canvas skeleton's own text go out
@@ -1273,16 +1273,40 @@ subscription-CLI sub-agent's loopback dispatch).
   seam and interned in the re-entry's scope, and an inner call the first run
   did not make abandons the re-entry. Any other domain-tool result — and every
   result without a privacy guard — is replayed as it is.
-- **One request, one record.** A re-entry writes no session-log row and no
-  fact extraction, fires no turn hook (`onBeforeTurn`, `onAfterToolCall`,
-  `onAfterTurn`), ingests no replayed MCP result into the Knowledge Graph and
-  records no bypass again. Its run trace keeps every replayed call, flagged
-  `replayed`. Every pass's privacy receipt goes to the ledger
-  (`requestReceipts.ts`): the delivered answer carries the merge (counts of
-  the largest pass, lists united), and the request has ONE `turn_receipts`
-  row, written once with that merged receipt under the turn id of the first
-  pass that had a receipt; `done.receiptId` names it. An abandoned pass's
-  receipt is merged too: its model saw the replayed results.
+- **One request, one record — the delivered one.** A re-entry fires no
+  per-call turn hook (`onBeforeTurn`, `onAfterToolCall`), ingests no replayed
+  MCP result into the Knowledge Graph and records no bypass again. Its run
+  trace keeps every replayed call, flagged `replayed`. The request's record
+  is written once, for the answer the user got (commit-on-delivery,
+  `requestTurnRecord.ts`): while a request ledger is bound, no pass — the
+  first run included — writes its session-log row or fires `onAfterTurn`;
+  each offers the row to `ledger.turnRecord` and notes its answer, and the
+  verifier commits the pass it delivers, or for a withheld answer the pass
+  its final verdict was about. The commit writes that pass's row with the
+  entities of every pass, inside that pass's turn scope (usage attribution,
+  identity), then fact extraction and auto-promotion over it, then the
+  request's `onAfterTurn` in the first run's hook context;
+  `onVerifierBlocked` waits for the commit, so it still follows
+  `onAfterTurn`. The stream's `done.turnId` names the committed row, which
+  is what save-as-memory promotes. Before, the first run wrote its row as
+  soon as it ended, so a delivered retry left the contradicted first answer
+  in the session log, the next turn's context and the extracted facts. A
+  re-entry no longer sees its own request's first answer in its history.
+  Every pass's privacy receipt goes to the ledger (`requestReceipts.ts`): the
+  delivered answer carries the merge (counts of the largest pass, lists
+  united), and the request has ONE `turn_receipts` row, written once with
+  that merged receipt under the turn id of the first pass that had a
+  receipt; `done.receiptId` names it. An abandoned pass's receipt is merged
+  too: its model saw the replayed results.
+- **Detached work keeps out of the request.** A long-running task's runner
+  (`<tool>_start`, e.g. a deferred sub-agent) keeps working after the turn —
+  in `enforce` also while the verifier re-enters the request — so it starts
+  under `runDetachedFromRequestLedger` with a turn-local ledger of its own:
+  its inner calls execute, only an identical repeat of a call whose outcome
+  is unknown is refused, within the task. Inheriting the request's ledger,
+  every call it made after `beginReentry()` was refused as a miss (failing
+  the task and abandoning the running re-entry) or handed a first-run
+  result, and the request's raw results stayed alive with the runner.
 - **No repeat of an unknown outcome.** Every turn carries a ledger — a
   turn-local one that keeps no results when no verifier bound one. A call
   whose handler threw, or whose wrapper returned the withheld exception
@@ -1314,7 +1338,11 @@ returned errors replayed through the shield),
 `middleware/test/verifierStreamRetry.test.ts`,
 `middleware/test/verifierReentryRecords.test.ts` (trace flag, hooks, session
 log, the one receipt row, Knowledge-Graph ingestion),
-`middleware/test/verifierSubAgentReplay.test.ts`,
+`middleware/test/verifierDeliveredTurnRecord.test.ts` (the delivered pass's
+row, facts, `onAfterTurn` and `done.turnId`; withheld and abandoned
+re-entries; the pass's turn scope), `middleware/test/requestTurnRecord.test.ts`,
+`middleware/test/longRunningTaskReplayLedger.test.ts` (a detached task runner
+across a re-entry), `middleware/test/verifierSubAgentReplay.test.ts`,
 `middleware/test/verifierResampleKillSwitch.test.ts` and
 `middleware/test/orchestrator/parentLoopThrownCallRepeat.test.ts`.
 
@@ -2114,15 +2142,27 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       record only what the turn used. It reports `readOnly` only for a tool it
       KNOWS cannot change data — never because `writeCapabilities` is missing.
       A new `turnContext.run(...)` re-scope around a handler spreads the
-      current context (`{ ...ctx }`), so the ledger survives (§7c).
+      current context (`{ ...ctx }`), so the ledger survives (§7c). Work that
+      outlives the turn — a detached runner, a timer — must NOT keep the
+      request's ledger: it starts under `runDetachedFromRequestLedger`.
 - [ ] A new caller that re-enters a turn (another sample, another retry)
       binds a `ToolReplayLedger` to the request before the first run, calls
-      `beginReentry()` and re-binds before every re-entry, treats
-      `ToolReplayAbortError` as "keep the first answer", and commits
+      `beginReentry()` and re-binds before every re-entry (keeping the pass
+      number it returns), treats `ToolReplayAbortError` as "keep the first
+      answer", commits `ledger.turnRecord` for the pass it delivers — on
+      every exit path, the first pass when it delivers nothing — commits
       `ledger.receipts` once and releases the binding when the request is
       over (`verifierReentry.ts`). A re-entry without a ledger runs every tool
-      again.
+      again; a request that never commits its record loses its session-log
+      row.
+- [ ] A new place that writes a turn's record (session-log row, fact
+      extraction, auto-promotion, `onAfterTurn`) goes through
+      `TurnRecordWriter` (`recordRow`, `offerRow`) and
+      `Orchestrator.afterTurn`, so a pass a verifier may re-enter offers it
+      instead of writing it (commit-on-delivery, §7c); a signal that must
+      follow the request's `onAfterTurn` waits for the commit
+      (`afterRequestRecord`).
 
 ---
 
-*Last reviewed: 2026-10 (§7c: a verifier re-entry replays the first run's tool results through a per-request ledger and never runs a tool twice, the `enforce` stream retries a contradiction, a request has one receipt row, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception).*
+*Last reviewed: 2026-10 (§7c: a verifier re-entry replays the first run's tool results through a per-request ledger and never runs a tool twice, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception).*
