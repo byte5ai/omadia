@@ -494,6 +494,7 @@ apply it.
   Existing persistent sandboxes get the limits the next time they are used;
   apps published before the upgrade keep running without them until you
   publish a new version.
+
 ## Upgrading to 0.115 or later — `CREDENTIAL_KEYCHAIN_KEY` is required
 
 > **Do this before pulling the image, or the update rolls back.**

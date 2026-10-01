@@ -148,7 +148,7 @@ function stubEntra(): OidcProvider {
     id: 'entra',
     displayName: 'Entra',
     kind: 'oidc',
-    beginLogin: () => Promise.resolve({ redirectUrl: 'http://idp', pendingState: '{}' }),
+    beginLogin: () => Promise.resolve({ redirectUrl: 'http://idp.invalid', pendingState: '{}' }),
     handleCallback: () =>
       Promise.resolve({
         outcome: 'success',

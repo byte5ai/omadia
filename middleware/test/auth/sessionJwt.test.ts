@@ -20,7 +20,7 @@ describe('sessionJwt — verifySession surfaces JWT timestamps', () => {
     const token = await signSession(
       {
         sub: 'u1',
-        email: 'admin@example.de',
+        email: 'admin@example.com',
         display_name: 'Admin Example',
         role: 'admin',
         provider: 'entra',
@@ -32,7 +32,7 @@ describe('sessionJwt — verifySession surfaces JWT timestamps', () => {
     const verified = await verifySession(token, KEY);
 
     assert.equal(verified.sub, 'u1');
-    assert.equal(verified.email, 'admin@example.de');
+    assert.equal(verified.email, 'admin@example.com');
     assert.equal(verified.provider, 'entra');
 
     assert.equal(typeof verified.exp, 'number');
@@ -53,7 +53,7 @@ describe('sessionJwt — verifySession surfaces JWT timestamps', () => {
 describe('sessionJwt — auth_time (#965)', () => {
   const BASE = {
     sub: 'u1',
-    email: 'admin@example.de',
+    email: 'admin@example.com',
     display_name: 'Admin Example',
     role: 'admin' as const,
     provider: 'local',
@@ -103,7 +103,7 @@ describe('sessionJwt — auth_time (#965)', () => {
 describe('sessionJwt — revocation claims (sv, sid, uid)', () => {
   const BASE = {
     sub: 'u1',
-    email: 'admin@example.de',
+    email: 'admin@example.com',
     display_name: 'Admin Example',
     role: 'admin' as const,
     provider: 'local',
