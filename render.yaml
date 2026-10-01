@@ -52,6 +52,13 @@ services:
       # plugin packages on the disk below instead of the image layer.
       - key: PLATFORM_DATA_DIR
         value: /data
+      # Password sign-in limiter: AUTH_LOGIN_CLIENT_ADDRESS is left at its
+      # default `socket` (docs/upgrading.md, middleware/.env.example). web-ui
+      # reaches the middleware through its public URL, so a browser's request
+      # passes more proxies than one sent to the middleware directly, and no
+      # single `xff:<n>` picks the browser's address on both paths. Every
+      # browser then shares one key, which the limiter treats as shared;
+      # browsers that have signed in before keep a budget of their own.
     disk:
       name: omadia-data
       mountPath: /data
