@@ -695,9 +695,9 @@ export interface PrivacyGuardService {
    * lets the receipt report `identityValuesOnWire`: personal-identity values
    * the user named themselves. Returns `undefined` when the shield did
    * nothing this turn — no dataset interned, no bypass, no structured
-   * output, no masked prompt span, no tool error handled (nothing to
-   * report). Idempotent — a second call with the same `turnId` returns
-   * `undefined`.
+   * output, no masked prompt span, no answer-verifier request, no tool error
+   * handled (nothing to report). Idempotent — a second call with the same
+   * `turnId` returns `undefined`.
    */
   finalizeTurn(
     turnId: string,

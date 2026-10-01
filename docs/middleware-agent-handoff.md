@@ -3489,10 +3489,9 @@ wird vor dem Dispatch abgewiesen). Vorher fand der Sub-Agent dort keinen
 Handle, und sein Provider bekam innere Daten und Fehlertexte im Klartext.
 Ohne Privacy-Provider (und für intern-exempte Self-Tools) fließt der Text wie
 jedes andere Tool-Ergebnis roh — Parität; auf dem Abo-CLI-Pfad gibt es keinen
-Shield (#1087). Versions-Paarung nach Fähigkeit, nicht nach Nummer: der
-gebündelte `@omadia/plugin-privacy-guard` implementiert `redactToolErrorText`
-ohne eigene Versionsanhebung (weiter 0.5.0, Anhebung offen, §13); ein
-Provider ohne die Methode lässt den Kernel zurückgegebene `Error:`-Texte
+Shield (#1087). Versions-Paarung: der gebündelte
+`@omadia/plugin-privacy-guard` implementiert `redactToolErrorText` ab 0.6.0.
+Ein Provider ohne die Methode lässt den Kernel zurückgegebene `Error:`-Texte
 vollständig zurückhalten, und das Log meldet einmal pro Prozess
 `does not implement redactToolErrorText`. Details, Residuen und Reviewer-Regel:
 `docs/security-architecture.md` §6c und §11.
@@ -3825,23 +3824,13 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   `omadia-channel-teams` / `omadia-channel-telegram`) kennen
   `PrivacyReceipt.toolErrors` noch nicht. Das Feld ist additiv, sie ignorieren
   es — zeigen die Einträge aber auch nicht. Die Web-UI zeigt sie.
-- **Hub-ZIPs von Web-Search, Diagrammen und Discussion** importieren jetzt
-  `toolErrorFromException` (Web-Search und Diagramme auch `newToolErrorRef`)
-  zur Laufzeit aus `@omadia/plugin-api` ≥ 1.20.0. Die
-  ZIPs sind flach und lösen die Plugin-API vom Host auf; ein aus diesem Stand
-  gebautes ZIP braucht also einen Host ab diesem Release, und `compat.core`
-  erzwingt das nicht. Vor dem nächsten Publish Version bumpen und die
-  Mindest-Host-Version im Release-Text nennen.
-- **Versionsnummer von `@omadia/plugin-privacy-guard`**: das Paket hat
-  `redactToolErrorText` / `recordToolError` bekommen, steht aber weiter auf
-  0.5.0. Die Anhebung (0.6.0) muss `package.json`, `manifest.yaml` und den
-  Workspace-Eintrag in `middleware/package-lock.json` gemeinsam ändern
-  (`pluginPackageVersions.test.ts` prüft alle drei), gehört also in eine
-  Änderung, die das Lockfile anfassen darf. Die Paarungstexte (Manifest,
-  `docs/security-architecture.md` §6c, `docs/upgrading.md`, die Diagnose in
-  `toolErrorRedaction.ts`) nennen die Fähigkeit statt einer Nummer und bleiben
-  dabei richtig, denn 0.5.0 bleibt mehrdeutig; nach der Anhebung kann man
-  ergänzen, dass jeder Build ab 0.6.0 die Methode hat.
+- **Laufzeit-Abhängigkeit der Tool-Plugins**: Web-Search, Diagramme und
+  Discussion (je 0.2.0) importieren `toolErrorFromException` (Web-Search und
+  Diagramme auch `newToolErrorRef`) zur Laufzeit aus `@omadia/plugin-api`
+  ≥ 1.20.0. Gebündelt passt das immer. Ein Build für einen älteren Host lädt
+  dort nicht, und `compat.core` erzwingt nichts. Ein Hub-ZIP gibt es nur für
+  Web-Search, der Publish ist offen (siehe „Hub-Publish der
+  In-Tree-Plugins“).
 - **Office-Plugin** (`officeTool.ts`) liefert bei einer unerwarteten Exception
   weiter `Error: <message>`; die Naht redigiert oder hält zurück. Umstellung
   auf `toolErrorFromException` offen. Die eigenen Fehler des Plugins
@@ -3896,6 +3885,28 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   C1 an das Modell. Jedes weitere Muster kostet Hinweise, die heute lesbar
   bleiben — vor einer Erweiterung die Negativliste in
   `toolErrorExceptionShape.test.ts` prüfen.
+
+### Hub-Publish der In-Tree-Plugins (#1075)
+
+Nur `@omadia/plugin-office` und `@omadia/plugin-web-search` gehen aus
+`middleware/packages/` auch auf den Hub (`docs/creating-plugins.md` §8). Der
+Hub serviert office 0.1.2 und web-search 0.1.0 (`registry/index.json`, Stand
+2026-10-01). Das Repo steht bei office 0.1.4 (Formeln ohne gecachtes Ergebnis,
+Formel-Policy) und web-search 0.2.0 (Tool-Fehler über
+`toolErrorFromException`). Beide Publishes sind offen, und `docs/upgrading.md`
+verspricht Hub-Installationen office 0.1.4 erst mit diesem Schritt.
+
+- **Mindest-Host im Release-Text.** Web-Search 0.2.0 importiert zur Laufzeit
+  aus `@omadia/plugin-api` ≥ 1.20.0. Das ZIP ist flach und löst die Plugin-API
+  vom Host auf, ein älterer Host lädt es also nicht.
+- **Vorher messen.** `latest_version` aus dem Index lesen, ein Plugin nach dem
+  anderen publizieren, nie `?overwrite=true`, danach den Index pollen
+  (`docs/creating-plugins.md` §8, dort auch Bundled-ID-Ablehnung und toter
+  Update-Badge).
+- **Nicht auf dem Hub:** Privacy Guard (0.6.0), Diagramme und Discussion (je
+  0.2.0) laufen nur gebündelt. Ein ZIP mit ihrer ID lehnt der Upload ab
+  (`package.id_conflict_bundled`), außer mit
+  `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`.
 
 ### MRTR-Sentinel über Skill-Bindung und `ctx.mcp` (#570 follow-up)
 

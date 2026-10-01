@@ -902,14 +902,15 @@ place the driver text can be recovered. Receipt entries are PII-free by
 contract: tool name, carrier, outcome, byte count, masked span types.
 
 **Provider pairing.** `redactToolErrorText` and `recordToolError` are optional
-members of `PrivacyGuardService` (`@omadia/plugin-api` 1.20.0). The pairing is
-by capability, not by package version: the bundled
-`@omadia/plugin-privacy-guard` implements both, but it gained them without a
-version bump of its own, so a build with them and an older copy without them
-(from the Hub or a ZIP upload) both carry 0.5.0. A provider without the
-redactor makes the kernel withhold every returned `Error:` text (fail closed)
-and log `does not implement redactToolErrorText` once per process; that line,
-not the version, tells the two builds apart. The public MCP gate
+members of `PrivacyGuardService` (`@omadia/plugin-api` 1.20.0). The bundled
+`@omadia/plugin-privacy-guard` implements both from 0.6.0 on, together with
+the verifier's members (§6e). The plugin is not on the Hub, and a ZIP that
+claims its id is refused (`package.id_conflict_bundled`) unless the operator
+set `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`. A provider without the redactor is
+therefore an older copy someone put in place of the bundled one on purpose,
+or another `privacy.redact@1` provider. It makes the kernel withhold every
+returned `Error:` text (fail closed) and log `does not implement
+redactToolErrorText` once per process. The public MCP gate
 (`createFailClosedPrivacyGate`) answers `redactToolErrorText` with `withheld`,
 so a returned error is refused as unmasked content by `assertMaskingCrossed`,
 while a thrown error's notice is dispatcher-authored (`origin: 'dispatcher'`)
@@ -1046,7 +1047,10 @@ written. They are now bound to the turn's own privacy handle:
 - **Fail closed.** A blocked mask or projection sends nothing (the stage
   returns no claims / `unverified`). With a shield installed but no
   continuation handed back, the wrapper does not verify at all. A provider
-  without `projectVerifierText` blocks every judge request.
+  without `projectVerifierText` blocks every judge request. One without
+  `countUnresolvedSurrogates` reports no placeholders, so the check under
+  **Correction retry** never keeps a second answer back. The bundled privacy
+  guard implements both from 0.6.0 on.
 - **Correction retry.** Behind a shield the hint names the contradicted claims
   but carries no truth values and no value-bearing detail (`Δ=…`, the judge's
   rationale); when the turn's policy would still alter the hint, the retry is
@@ -3373,4 +3377,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*
+*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*

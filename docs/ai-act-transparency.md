@@ -161,7 +161,9 @@ und begründet in #684; jeder Ausfall wird seitdem gezählt und protokolliert.
 **Seit #757 gibt es daneben einen persistierten Per-Turn-Receipt** (`turn_receipts`,
 Migration `0039`): der PII-freie Privacy-Receipt jedes abgeschlossenen Turns, in dem der
 Privacy Shield aktiv war (Dataset interniert, Bypass protokolliert, strukturierte
-Tool-Ausgabe protokolliert oder Prompt maskiert), wird auf dem Postgres-Backend synchron
+Tool-Ausgabe protokolliert, Prompt maskiert, Text eines Tool-Fehlers zurückgehalten oder
+redigiert, oder eine Modellanfrage des Antwort-Verifiers unter der Privacy-Sicht des Turns
+gestellt), wird auf dem Postgres-Backend synchron
 gespeichert — ohne Graph-Sink, ohne User-Cluster-Vorbedingung. Ein Turn ohne
 Shield-Aktivität hinterlässt keine Zeile (#1081); ein fehlender Receipt heißt daher nie
 "diesen Turn gab es nicht". Agenten auf dem Claude-Abo-Provider (`claude-cli`) laufen über
@@ -170,8 +172,11 @@ Turns werden weder maskiert noch interniert und schreiben nie einen Receipt. Ist
 Antwort-Verifier aktiv, deckt derselbe Receipt auch dessen Modellanfragen ab (getrennt
 ausgewiesen als `verifierEgress`); er wird erst nach dem Verifier abgeschlossen, im
 Streaming kommt er daher mit dem `done`-Event nach der Prüfung (Sicherheitsseite:
-`docs/security-architecture.md` §6e). Der Receipt
-ist unter `/api/v1/operator/receipts` (auth-gated) sowie im Operator-UI abrufbar.
+`docs/security-architecture.md` §6e). Jeden behandelten Tool-Fehler führt der Receipt unter
+`toolErrors`: Tool-Name, Träger (geworfene Exception, zurückgegebener `Error:`-Text,
+MCP-Connect-Prompt), Ergebnis (zurückgehalten, redigiert, durchgereicht), Bytezahl und die
+Typen maskierter Spans. Den Fehlertext selbst enthält er nie (Sicherheitsseite: §6c). Der
+Receipt ist unter `/api/v1/operator/receipts` (auth-gated) sowie im Operator-UI abrufbar.
 Fehlschläge werden gezählt und protokolliert, nie still verworfen. **Seit #758 ist der
 Record hash-verkettet und checkpoint-signiert** (Migration `0041`: `entry_hash` über
 `prev_hash` verkettet, Ed25519-Checkpoints mit Schlüssel außerhalb der DB, optionaler

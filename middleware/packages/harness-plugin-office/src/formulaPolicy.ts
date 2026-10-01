@@ -45,8 +45,7 @@ import { OfficeUnsafeFormulaError } from './types.js';
  *    - HYPERLINK turns cell data into a link a user may click.
  *    - RTD, CALL, REGISTER and REGISTER.ID talk to COM servers and DLLs.
  *    - DDE asks the client to talk to another program, as a reference
- *      (`app|topic!item`, e.g. `cmd|' /C calc'!A0`) and as LibreOffice's DDE
- *      function.
+ *      (`app|topic!item`) and as LibreOffice's DDE function.
  *    - External references (`[1]Sheet!A1`, `[book.xlsx]Sheet!A1`,
  *      `'C:\dir\[book.xlsx]Sheet'!A1`, `\\host\share\book.xlsx!Name`) make the
  *      client open another file, over the network for UNC and URL paths.

@@ -495,7 +495,7 @@ export class ToolDispatchService {
    * `afterDispatch` runs only on the success path. Handler exceptions are not
    * sanitized strings: an ORM echoes the failing row, a driver echoes the bound
    * query parameters. `Fault: Invalid field 'x' on record {'id':42,'name':'Jane
-   * Doe','email':'jane@acme.de'}` is a perfectly ordinary Odoo error.
+   * Doe','email':'jane@example.com'}` is a perfectly ordinary Odoo error.
    *
    * ─── The policy: withheld, as on the chat path ──────────────────────────────
    *

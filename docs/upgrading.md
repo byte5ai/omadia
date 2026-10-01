@@ -409,14 +409,18 @@ it is.
 
 ### The privacy guard pairs with this release
 
-The bundled `@omadia/plugin-privacy-guard` implements tool-error redaction and
-the verifier's evidence projection without a version bump of its own, so an
-older copy installed from the Hub or as a ZIP upload carries the same 0.5.0.
-Such a copy can do neither: the kernel then withholds every returned `Error:`
-text entirely, and every evidence-judge request fails closed (claims stay
-unverified). If the middleware log shows `does not implement
-redactToolErrorText` (once per process), such a copy is active; update it to
-the current build. Plugins built against `@omadia/plugin-api` < 1.20 keep
+Tool-error redaction and the verifier's evidence projection need
+`@omadia/plugin-privacy-guard` 0.6.0, which ships bundled with this release, so
+a standard install has nothing to do. The plugin is not on the Hub, and a ZIP
+with its id is refused unless `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1` is set. An
+older copy is therefore only active where someone put it in place of the
+bundled one. With such a copy, or with another `privacy.redact@1` provider that
+lacks the new methods, the kernel withholds every returned `Error:` text
+entirely, every evidence-judge request fails closed (claims stay unverified),
+and a second answer whose placeholders the model reworded is no longer held
+back. The middleware log then shows `does not implement redactToolErrorText`
+once per process. Replace that copy with 0.6.0 or later, or remove it so the
+bundled one runs. Plugins built against `@omadia/plugin-api` < 1.20 keep
 working: the new service methods are optional.
 
 ### Excel exports: the application that opens the file computes the formulas
@@ -438,8 +442,9 @@ itself, and a `result` the model sends with a formula is ignored.
   `SUMMEWENNS`, or a reference to another file makes the call fail: no file is
   written, and the tool answers with an `Error:` naming the cell and the
   reason, so the model can correct the formula.
-- An installation that runs a Hub copy of the plugin gets this with that
-  copy's update to 0.1.4.
+- An installation that runs a Hub copy of the plugin gets this once 0.1.4 is
+  published to the Hub. That publish is a separate step and still open
+  (handoff §13).
 
 ## Upgrading past v0.167.10 — password sign-in is rate-limited
 

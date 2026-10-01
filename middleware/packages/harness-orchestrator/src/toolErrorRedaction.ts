@@ -86,9 +86,9 @@ export type ToolErrorWithholdReason =
 
 /**
  * The contract whose `redactToolErrorText` returned-error redaction needs.
- * The diagnostics name the capability, not a package version:
- * `@omadia/plugin-privacy-guard` gained the method without a version bump of
- * its own, so builds with and without it both carry 0.5.0.
+ * The model-facing notice names the contract rather than a package: the
+ * installed `privacy.redact@1` provider need not be the bundled
+ * `@omadia/plugin-privacy-guard`, which implements it from 0.6.0 on.
  */
 const REQUIRED_CONTRACT = '@omadia/plugin-api 1.20.0';
 
@@ -421,6 +421,6 @@ function logProviderGapOnce(): void {
     '[orchestrator] the installed privacy.redact@1 provider does not implement ' +
       'redactToolErrorText — returned `Error:` tool results are WITHHELD from the ' +
       `model until a provider that implements it (${REQUIRED_CONTRACT} contract) is ` +
-      'installed, such as the bundled @omadia/plugin-privacy-guard (logged once per process).',
+      'installed, such as the bundled @omadia/plugin-privacy-guard 0.6.0 or later (logged once per process).',
   );
 }

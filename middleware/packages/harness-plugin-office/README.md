@@ -124,7 +124,7 @@ them:
   `GOOGLEFINANCE` and `GOOGLETRANSLATE`, and the `CUBE…` functions
 - `HYPERLINK`, and the COM and DLL calls `RTD`, `CALL`, `REGISTER` and
   `REGISTER.ID`
-- DDE, as a reference (`cmd|' /C calc'!A0`) or as LibreOffice's `DDE` function
+- DDE, as a reference (`app|topic!item`) or as LibreOffice's `DDE` function
 - a reference to another file (`[1]Sheet!A1`, `[book.xlsx]Sheet!A1`,
   `'C:\dir\[book.xlsx]Sheet'!A1`, `\\host\share\book.xlsx!Name`)
 - `INDIRECT` or `__xludf.DUMMYFUNCTION`, whatever the argument. Both turn text

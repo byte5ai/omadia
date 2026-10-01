@@ -212,8 +212,9 @@ describe('office formula policy — formulas stay inside the workbook', () => {
     ['REGISTER("kernel32","GetTickCount","J")', 'a DLL registration', /uses REGISTER,/],
     ['REGISTER.ID("kernel32","GetTickCount","J")', 'a DLL registration by id', /uses REGISTER\.ID,/],
     // DDE, as a reference and as LibreOffice's function.
-    ["cmd|' /C calc'!A0", 'a DDE command reference', /DDE reference/],
-    ['DDE("cmd","/c calc","x")', "LibreOffice's DDE function", /uses DDE,/],
+    ['app|topic!item', 'a DDE reference', /DDE reference/],
+    ["app|'topic'!item", 'a DDE reference with a quoted topic', /DDE reference/],
+    ['DDE("app","topic","item")', "LibreOffice's DDE function", /uses DDE,/],
     // Text that becomes a reference or a formula when the client calculates.
     ['INDIRECT("[1]Sheet1!A1")', 'an external reference hidden in a string', /uses INDIRECT,/],
     ['SUM(INDIRECT(A1))', 'a reference read from a cell', /uses INDIRECT,/],

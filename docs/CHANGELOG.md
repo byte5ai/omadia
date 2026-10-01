@@ -193,12 +193,14 @@ Both carriers now go through one helper, `toolErrorRedaction.ts`
   refuses a dispatcher that cannot receive it before dispatch instead of after.
   Proven against a real sub-agent in `publicMcpSubAgentPrivacy.test.ts`.
 
-Versions: `@omadia/plugin-api` 1.20.0 (additive). `@omadia/plugin-privacy-guard`
-implements the two new members without a version bump of its own, so a build
-with them and an older copy without them both carry 0.5.0. Redaction needs a
-provider that implements `redactToolErrorText`; with one that does not, the
-kernel withholds every returned `Error:` text and logs `does not implement
-redactToolErrorText` once per process, which is how to tell the two apart.
+Versions: `@omadia/plugin-api` 1.20.0 (additive) and
+`@omadia/plugin-privacy-guard` 0.6.0, which implements the new members. With a
+provider that lacks `redactToolErrorText`, the kernel withholds every returned
+`Error:` text and logs `does not implement redactToolErrorText` once per
+process. `@omadia/plugin-web-search`, `@omadia/diagrams` and
+`@omadia/plugin-discussion` move to 0.2.0: they now import
+`toolErrorFromException` from `@omadia/plugin-api` at runtime, so a build of
+them needs a host at plugin-api 1.20.0 or later.
 Without a privacy provider, and on the subscription-CLI path (#1087), error
 text still flows raw. Fences inverted or narrowed:
 `chatPathToolErrorText.test.ts` (asserted the raw e-mail on the wire),
@@ -252,8 +254,8 @@ after the verifier finished, so the chat's "thinking" state lasts until then
 caller-supplied system hint is masked like the prompt, and a turn that throws or
 a stream the client abandons now drops its privacy state instead of keeping it
 until restart. `@omadia/plugin-api` 1.20.0 (additive: mask `stage`/`preview`,
-`projectVerifierText`, `countUnresolvedSurrogates`, `verifierEgress`); the
-in-tree privacy-guard plugin implements them without a version change.
+`projectVerifierText`, `countUnresolvedSurrogates`, `verifierEgress`), and
+`@omadia/plugin-privacy-guard` 0.6.0 implements them.
 
 ### Fixed — password sign-in is rate-limited
 

@@ -289,8 +289,8 @@ describe('guardControlFlowResult — returned `Error:` text', () => {
       site: 'test',
     });
     assert.equal(first.includes(EMAIL), false);
-    // By capability, not by package version: builds with and without the
-    // redactor both carry @omadia/plugin-privacy-guard 0.5.0.
+    // The notice names the contract, since the provider need not be the
+    // bundled privacy guard (which implements the redactor from 0.6.0 on).
     assert.match(first, /it lacks redactToolErrorText from the @omadia\/plugin-api 1\.20\.0 contract/);
     assert.equal(recorded.length, 2);
     assert.ok(recorded.every((e) => e.outcome === 'withheld' && e.carrier === 'returned'));
