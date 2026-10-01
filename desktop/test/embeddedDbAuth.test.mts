@@ -17,6 +17,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import crypto from 'node:crypto';
+import pg from 'pg';
 
 import {
   DB_SUPERUSER,
@@ -158,7 +159,7 @@ describe('pg_hba.conf rendering', () => {
 describe('kernelDatabaseUrl', () => {
   it('names the restricted role on 127.0.0.1 and URL-encodes the password', () => {
     const password = 'p@ss:/?#word';
-    const url = new URL(kernelDatabaseUrl(54_321, password));
+    const url = new URL(kernelDatabaseUrl({ host: '127.0.0.1', port: 54_321 }, password));
     assert.equal(url.protocol, 'postgresql:');
     assert.equal(url.username, 'omadia_kernel');
     assert.notEqual(url.username, DB_SUPERUSER);
@@ -166,6 +167,18 @@ describe('kernelDatabaseUrl', () => {
     assert.equal(url.hostname, '127.0.0.1');
     assert.equal(url.port, '54321');
     assert.equal(url.pathname, '/omadia');
+  });
+
+  it('puts a socket directory in as a percent-encoded host, the form pg reads as a Unix socket', () => {
+    const dir = '/Users/synthetic user,+x/Library/Application Support/omadia/pg-socket';
+    const dsn = kernelDatabaseUrl({ host: dir, port: 54_321 }, '2'.repeat(64));
+    // What the kernel's pools do with DATABASE_URL (`new Pool({ connectionString })`).
+    const client = new pg.Client({ connectionString: dsn });
+    assert.equal(client.host, dir, 'pg connects to <host>/.s.PGSQL.<port> when the host is a path');
+    assert.equal(client.port, 54_321);
+    assert.equal(client.user, 'omadia_kernel');
+    assert.equal(client.database, 'omadia');
+    assert.equal(client.password, '2'.repeat(64));
   });
 });
 
@@ -351,8 +364,8 @@ describe('ensureClusterAuth — steady state', () => {
     assert.deepEqual(cluster.calls.filter((call) => call.startsWith('startServer(')), ['startServer(scram)']);
     assert.deepEqual(
       cluster.statements().filter((s) => s.startsWith('omadia@')),
-      [],
-      'no superuser session on a normal start',
+      ['omadia@postgres: data directory?'],
+      'the superuser only proves the server is this cluster on a normal start',
     );
     assert.deepEqual(warnings(cluster), []);
   });

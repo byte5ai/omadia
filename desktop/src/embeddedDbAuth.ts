@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import { transferOwnershipSql } from './embeddedDbOwnership';
+import type { DbEndpoint } from './embeddedDbEndpoint';
+import { isScramRefusal } from './scramOnlyConnect';
 import type { EmbeddedDbCredentials } from './secretsBlob';
 
 /**
@@ -19,6 +21,15 @@ import type { EmbeddedDbCredentials } from './secretsBlob';
  * write: every rule asks for a SCRAM password, whichever local process or OS
  * user is asking. The server starts with `hba_file` pinned to that file.
  *
+ * The shell believes a server only after it has proven itself. Every shell
+ * connection authenticates with SCRAM and nothing else (the IO's `connect`,
+ * `scramOnlyConnect.ts`), which sends no password and has the server prove it
+ * holds the verifier. The first connection after every start is the bootstrap
+ * role's, and it must also report this cluster's data directory; only then
+ * does a kernel password go anywhere. Before provisioning and before the
+ * verification, the IO confirms that the server it started still runs and
+ * still holds the endpoint (`confirmServing`).
+ *
  * The shell's own sessions treat the kernel-owned database as hostile. Every
  * connection pins `search_path = pg_catalog, pg_temp` as a startup option
  * (`embeddedDb.ts`), which outranks any `ALTER DATABASE`/`ALTER ROLE ... SET`
@@ -31,8 +42,8 @@ import type { EmbeddedDbCredentials } from './secretsBlob';
  *
  * `ensureClusterAuth` is driven by the state of the cluster, never by a flag,
  * so a restored snapshot or a regenerated `secrets.enc` repairs itself:
- *   - steady state: the shell's pg_hba.conf and a kernel login that works.
- *     Only the verification runs.
+ *   - steady state: the shell's pg_hba.conf, a shell login that finds this
+ *     cluster and a kernel login that works. Only the verification runs.
  *   - trust era (clusters initialised with `-A trust` before this module
  *     existed): before the server starts, the bootstrap password is set in
  *     single-user mode, THEN pg_hba.conf asks for passwords. The other order
@@ -104,9 +115,16 @@ export function hbaMode(content: string | null): HbaMode {
   return rules.every((tokens) => tokens.includes('scram-sha-256')) ? 'scram' : 'unknown';
 }
 
-/** The DSN the kernel gets: the restricted role, loopback only. */
-export function kernelDatabaseUrl(port: number, password: string): string {
-  return `postgresql://${DB_KERNEL_ROLE}:${encodeURIComponent(password)}@127.0.0.1:${port}/${DB_NAME}`;
+/**
+ * The DSN the kernel gets: the restricted role, at the server's endpoint. A
+ * socket directory goes in percent-encoded as the host, the form libpq and
+ * pg-connection-string both read as a Unix socket.
+ */
+export function kernelDatabaseUrl(endpoint: Pick<DbEndpoint, 'host' | 'port'>, password: string): string {
+  return (
+    `postgresql://${DB_KERNEL_ROLE}:${encodeURIComponent(password)}` +
+    `@${encodeURIComponent(endpoint.host)}:${endpoint.port}/${DB_NAME}`
+  );
 }
 
 /**
@@ -179,11 +197,22 @@ export interface DbAuthIo {
    * no pg_hba.conf, the bootstrap superuser. The server must be stopped.
    */
   runSingleUser(statement: string): Promise<void>;
-  /** Start the server; resolves once it answers on its loopback port. */
+  /**
+   * Start the server; resolves once the server's own postmaster.pid shows the
+   * process just started serving the expected endpoint. Sends no credentials.
+   */
   startServer(): Promise<void>;
   /** Stop the server; resolves once it has exited. */
   stopServer(): Promise<void>;
-  /** A loopback connection; rejects with pg's error (SQLSTATE in `code`). */
+  /** Rejects unless the server this IO started still runs and still holds its endpoint. */
+  confirmServing(): Promise<void>;
+  /** Whether a `data_directory` the server reports is this cluster's. */
+  isClusterDirectory(reported: string): boolean;
+  /**
+   * A connection that authenticates with SCRAM-SHA-256 only; rejects with
+   * pg's error (SQLSTATE in `code`) or, when the server asks for anything
+   * else, before any password is sent, with `scramOnlyConnect`'s refusal.
+   */
   connect(options: ConnectOptions): Promise<AuthClient>;
   info(message: string): void;
   warn(message: string): void;
@@ -194,18 +223,17 @@ export interface DbAuthIo {
  * Called with the server stopped: pg_hba.conf and the bootstrap password are
  * put in order first, and only then does `io.startServer()` let the server
  * listen. Rejects rather than let a DSN be handed out while the verification
- * fails: a wrong password must be refused, and the kernel role must not be
- * privileged.
+ * fails: the server must prove it is this cluster, a wrong password must be
+ * refused, and the kernel role must not be privileged.
  */
 export async function ensureClusterAuth(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<void> {
   await adoptShellHba(io, creds);
   await io.startServer();
-  if (await kernelRoleIsCurrent(io, creds)) {
-    await verifyClusterAuth(io, creds);
-    return;
+  await ensureShellLogin(io, creds);
+  if (!(await kernelRoleIsCurrent(io, creds))) {
+    await io.confirmServing();
+    await provisionKernelRole(io, creds);
   }
-  await ensureBootstrapLogin(io, creds);
-  await provisionKernelRole(io, creds);
   await verifyClusterAuth(io, creds);
 }
 
@@ -233,12 +261,16 @@ async function adoptShellHba(io: DbAuthIo, creds: EmbeddedDbCredentials): Promis
   io.info('[db] pg_hba.conf requires a SCRAM password for every connection');
 }
 
-/** The kernel logs in with the stored password and is still a restricted role. */
+/**
+ * The kernel logs in with the stored password and is still a restricted role.
+ * Asked only after the shell's own login proved the server is this cluster.
+ */
 async function kernelRoleIsCurrent(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<boolean> {
   let kernel: AuthClient;
   try {
     kernel = await io.connect({ user: DB_KERNEL_ROLE, password: creds.kernelPassword, database: DB_NAME });
   } catch (err) {
+    if (isScramRefusal(err)) throw err;
     io.info(`[db] the kernel role cannot log in yet (${errorText(err)}); provisioning`);
     return false;
   }
@@ -252,12 +284,15 @@ async function kernelRoleIsCurrent(io: DbAuthIo, creds: EmbeddedDbCredentials): 
 }
 
 /**
- * The shell must be able to log in as the bootstrap role. When the cluster
- * refuses the stored password, the server is stopped and the password set in
- * single-user mode, which accepts no connection at all meanwhile.
+ * The readiness that counts: an authenticated round-trip as the bootstrap role
+ * (SCRAM, so the server proved it holds the verifier) to a server that reports
+ * this cluster's data directory. When the server refuses the stored password,
+ * it is stopped and the password set in single-user mode, which accepts no
+ * connection at all meanwhile; after the restart the login must succeed. An
+ * authentication error is never taken as "ready".
  */
-async function ensureBootstrapLogin(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<void> {
-  if (await bootstrapLoginWorks(io, creds)) return;
+async function ensureShellLogin(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<void> {
+  if (await shellLoginWorks(io, creds)) return;
   io.warn(
     '[db] the stored database password was refused; setting it again with the server stopped ' +
       '(single-user mode, no connections accepted meanwhile)',
@@ -265,14 +300,18 @@ async function ensureBootstrapLogin(io: DbAuthIo, creds: EmbeddedDbCredentials):
   await io.stopServer();
   await io.runSingleUser(passwordStatement(DB_SUPERUSER, creds.superuserPassword));
   await io.startServer();
-  if (!(await bootstrapLoginWorks(io, creds))) {
+  if (!(await shellLoginWorks(io, creds))) {
     throw new Error('[db] the embedded Postgres still refuses the stored password after resetting it');
   }
   io.warn('[db] database password re-provisioned');
 }
 
-/** Whether the server accepts the stored bootstrap password; other failures throw. */
-async function bootstrapLoginWorks(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<boolean> {
+/**
+ * Whether the server accepts the stored bootstrap password. A server that
+ * accepts it but reports another data directory is not this cluster, and any
+ * failure other than a refused password throws.
+ */
+async function shellLoginWorks(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<boolean> {
   let admin: AuthClient;
   try {
     admin = await io.connect({ user: DB_SUPERUSER, password: creds.superuserPassword, database: ADMIN_DATABASE });
@@ -280,7 +319,18 @@ async function bootstrapLoginWorks(io: DbAuthIo, creds: EmbeddedDbCredentials): 
     if (isAuthFailure(err)) return false;
     throw err;
   }
-  await admin.end();
+  try {
+    const result = await admin.query('SHOW data_directory');
+    const reported = String(result.rows[0]?.['data_directory'] ?? '');
+    if (!io.isClusterDirectory(reported)) {
+      throw new Error(
+        `[db] refusing to use the embedded Postgres: the server reports the data directory ${JSON.stringify(reported)}, ` +
+          'not this cluster',
+      );
+    }
+  } finally {
+    await admin.end();
+  }
   return true;
 }
 
@@ -391,6 +441,7 @@ async function roleMemberships(client: AuthClient): Promise<string[]> {
  * attribute, and be a member of no role.
  */
 async function verifyClusterAuth(io: DbAuthIo, creds: EmbeddedDbCredentials): Promise<void> {
+  await io.confirmServing();
   io.info('[db] checking that wrong passwords are refused (the server logs these attempts as FATAL; expected)');
   await expectWrongPasswordRefused(io, DB_KERNEL_ROLE, DB_NAME);
   await expectWrongPasswordRefused(io, DB_SUPERUSER, ADMIN_DATABASE);

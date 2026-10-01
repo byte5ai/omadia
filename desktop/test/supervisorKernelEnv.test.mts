@@ -153,7 +153,8 @@ describe('Supervisor.kernelEnv database credentials', () => {
     const creds = embeddedDbCredentials();
     const supervisor = new Supervisor();
     const db: EmbeddedDb = {
-      databaseUrl: kernelDatabaseUrl(54_321, creds.kernelPassword),
+      // On macOS/Linux the host is the server's private socket directory.
+      databaseUrl: kernelDatabaseUrl({ host: '/synthetic/omadia/pg-socket', port: 54_321 }, creds.kernelPassword),
       port: 54_321,
       stop: async () => true,
     };

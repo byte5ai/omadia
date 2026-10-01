@@ -9,7 +9,9 @@
  * superuser. With SCRAM rules in pg_hba.conf the server's verdict no longer
  * depends on who the client is: a client without the password is refused,
  * whichever OS account it runs under, and the DSN the kernel gets names a
- * role that cannot run `COPY ... TO PROGRAM`.
+ * role that cannot run `COPY ... TO PROGRAM`. On macOS and Linux the server
+ * also no longer listens on TCP: its socket sits in a directory only the
+ * desktop user can enter, and the kernel's DSN points there.
  *
  * Skipped when the engine is not installed or when running as root (initdb
  * refuses root). The dev engine ships no pgvector, so the assertions about it
@@ -80,9 +82,22 @@ function hbaRules(dataDir: string): string[] {
 
 type Attempt = { ok: true } | { ok: false; code: string | undefined; message: string };
 
+/** A socket directory (macOS/Linux) or 127.0.0.1 (Windows, and the hand-started trust-era server). */
+interface Endpoint {
+  host: string;
+  port: number;
+}
+
+/** Where the kernel's DSN points, read the way pg reads it. */
+function endpointOf(db: EmbeddedDb): Endpoint {
+  const url = new URL(db.databaseUrl);
+  return { host: decodeURIComponent(url.hostname), port: Number(url.port) };
+}
+
 /** One connection attempt; `password` undefined means the client has none. */
-async function attempt(port: number, user: string, password: string | undefined, database: string): Promise<Attempt> {
-  const client = new pg.Client({ host: '127.0.0.1', port, user, password, database, connectionTimeoutMillis: 5_000 });
+async function attempt(at: Endpoint, user: string, password: string | undefined, database: string): Promise<Attempt> {
+  const { host, port } = at;
+  const client = new pg.Client({ host, port, user, password, database, connectionTimeoutMillis: 5_000 });
   try {
     await client.connect();
     return { ok: true };
@@ -98,14 +113,14 @@ async function attempt(port: number, user: string, password: string | undefined,
  * pg refuses SCRAM without a password on the client side, so the passwordless
  * cases accept either refusal; a wrong password must be the server's 28P01.
  */
-async function assertPasswordsRequired(port: number, dataDir: string): Promise<void> {
+async function assertPasswordsRequired(at: Endpoint, dataDir: string): Promise<void> {
   for (const [user, database] of [
     ['omadia', 'postgres'],
     ['omadia_kernel', 'omadia'],
   ] as const) {
-    const passwordless = await attempt(port, user, undefined, database);
+    const passwordless = await attempt(at, user, undefined, database);
     assert.equal(passwordless.ok, false, `${user} must not connect without a password`);
-    const wrong = await attempt(port, user, 'synthetic-wrong-password', database);
+    const wrong = await attempt(at, user, 'synthetic-wrong-password', database);
     assert.equal(wrong.ok, false, `${user} must not connect with a wrong password`);
     assert.equal(wrong.ok ? undefined : wrong.code, '28P01', `${user}: wrong password → 28P01`);
   }
@@ -118,12 +133,33 @@ async function assertPasswordsRequired(port: number, dataDir: string): Promise<v
   );
 }
 
+/**
+ * macOS/Linux: the DSN names a socket in a directory only this OS user can
+ * enter, and the server has no TCP listener at all. Windows: loopback TCP.
+ */
+async function assertPrivateEndpoint(at: Endpoint): Promise<void> {
+  if (process.platform === 'win32') {
+    assert.equal(at.host, '127.0.0.1');
+    return;
+  }
+  assert.ok(path.isAbsolute(at.host), `the kernel's DSN names a socket directory, not ${at.host}`);
+  const dir = fs.lstatSync(at.host);
+  assert.ok(dir.isDirectory() && !dir.isSymbolicLink());
+  assert.equal(dir.mode & 0o777, 0o700, 'only the desktop user can enter the socket directory');
+  assert.equal(dir.uid, process.getuid?.());
+  assert.ok(fs.statSync(path.join(at.host, `.s.PGSQL.${at.port}`)).isSocket());
+  const tcp = await attempt({ host: '127.0.0.1', port: at.port }, 'omadia', 'synthetic-wrong-password', 'postgres');
+  assert.equal(tcp.ok ? 'connected' : tcp.code, 'ECONNREFUSED', 'nothing listens on loopback TCP');
+  const listen = await runAs(at, 'postgres', 'SHOW listen_addresses', storedCredentials().superuserPassword);
+  assert.deepEqual(listen.rows, [{ listen_addresses: '' }]);
+}
+
 /** What the kernel can and cannot do with the DSN it is handed. */
 async function assertKernelRole(db: EmbeddedDb): Promise<void> {
   const creds = storedCredentials();
   const url = new URL(db.databaseUrl);
   assert.equal(url.username, 'omadia_kernel');
-  assert.equal(url.hostname, '127.0.0.1');
+  assert.equal(endpointOf(db).port, db.port);
   assert.equal(decodeURIComponent(url.password), creds.kernelPassword);
   assert.ok(!db.databaseUrl.includes(creds.superuserPassword), 'the bootstrap password never leaves the shell');
 
@@ -154,17 +190,17 @@ async function assertKernelRole(db: EmbeddedDb): Promise<void> {
   }
 }
 
-/** A Postgres started by hand, the way the trust-era build ran it. */
-async function startByHand(dataDir: string): Promise<{ proc: ChildProcess; port: number }> {
-  const port = await findFreePort('127.0.0.1');
+/** A Postgres started by hand, the way the trust-era build ran it: loopback TCP. */
+async function startByHand(dataDir: string): Promise<{ proc: ChildProcess; at: Endpoint }> {
+  const at = { host: '127.0.0.1', port: await findFreePort('127.0.0.1') };
   const proc = spawn(
     postgresBin,
-    ['-D', dataDir, '-p', String(port), '-c', 'listen_addresses=127.0.0.1', '-c', 'unix_socket_directories='],
+    ['-D', dataDir, '-p', String(at.port), '-c', 'listen_addresses=127.0.0.1', '-c', 'unix_socket_directories='],
     { cwd: nativeDir, stdio: 'ignore' },
   );
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if ((await attempt(port, 'omadia', undefined, 'postgres')).ok) return { proc, port };
+    if ((await attempt(at, 'omadia', undefined, 'postgres')).ok) return { proc, at };
     await delay(200);
   }
   proc.kill('SIGKILL');
@@ -178,8 +214,8 @@ async function stopByHand(proc: ChildProcess): Promise<void> {
   await exited;
 }
 
-async function runAs(port: number, database: string, sql: string, password?: string): Promise<pg.QueryResult> {
-  const client = new pg.Client({ host: '127.0.0.1', port, user: 'omadia', password, database });
+async function runAs(at: Endpoint, database: string, sql: string, password?: string): Promise<pg.QueryResult> {
+  const client = new pg.Client({ host: at.host, port: at.port, user: 'omadia', password, database });
   await client.connect();
   try {
     return await client.query(sql);
@@ -271,8 +307,9 @@ describe('embedded Postgres authentication (real engine)', { skip, timeout: 240_
   it('a fresh install requires passwords and hands the kernel a restricted role', async () => {
     const db = await startEmbeddedDb();
     const dataDir = path.join(path.dirname(secretsFile()), 'pgdata');
-    await assertPasswordsRequired(db.port, dataDir);
+    await assertPasswordsRequired(endpointOf(db), dataDir);
     await assertKernelRole(db);
+    await assertPrivateEndpoint(endpointOf(db));
     firstDsn = db.databaseUrl;
   });
 
@@ -280,7 +317,10 @@ describe('embedded Postgres authentication (real engine)', { skip, timeout: 240_
     assert.ok(await stopEmbeddedDb());
     logLines.length = 0;
     const db = await startEmbeddedDb();
-    assert.equal(db.databaseUrl, firstDsn);
+    // Everything but the host: a socket directory under a too-long app data
+    // path is a fresh private temp directory per start.
+    const [now, first] = [new URL(db.databaseUrl), new URL(firstDsn)];
+    assert.deepEqual([now.username, now.password, now.port, now.pathname], [first.username, first.password, first.port, first.pathname]);
     assert.deepEqual(
       logLines.filter((line) => line.startsWith('WARN') && line.includes('[db]')),
       [],
@@ -303,9 +343,9 @@ describe('embedded Postgres authentication (real engine)', { skip, timeout: 240_
       `the repair is logged at warn:\n${logLines.join('\n')}`,
     );
     const dataDir = path.join(path.dirname(secretsFile()), 'pgdata');
-    await assertPasswordsRequired(db.port, dataDir);
-    assert.equal((await attempt(db.port, 'omadia_kernel', previous.kernelPassword, 'omadia')).ok, false);
-    assert.equal((await attempt(db.port, 'omadia', previous.superuserPassword, 'postgres')).ok, false);
+    await assertPasswordsRequired(endpointOf(db), dataDir);
+    assert.equal((await attempt(endpointOf(db), 'omadia_kernel', previous.kernelPassword, 'omadia')).ok, false);
+    assert.equal((await attempt(endpointOf(db), 'omadia', previous.superuserPassword, 'postgres')).ok, false);
     await assertKernelRole(db);
   });
 
@@ -326,24 +366,24 @@ describe('embedded Postgres authentication (real engine)', { skip, timeout: 240_
     execFileSync(initdb, ['-D', dataDir, '-U', 'omadia', '-A', 'trust', '-E', 'UTF8', '--locale=C'], { stdio: 'pipe' });
     const legacy = await startByHand(dataDir);
     handStarted = legacy.proc;
-    await runAs(legacy.port, 'postgres', 'CREATE DATABASE omadia OWNER omadia');
-    await runAs(legacy.port, 'omadia', TRUST_ERA_OBJECTS);
+    await runAs(legacy.at, 'postgres', 'CREATE DATABASE omadia OWNER omadia');
+    await runAs(legacy.at, 'omadia', TRUST_ERA_OBJECTS);
     if (vectorShipped) {
-      await runAs(legacy.port, 'omadia', 'CREATE EXTENSION vector; CREATE TABLE legacy_vectors (v vector(3))');
+      await runAs(legacy.at, 'omadia', 'CREATE EXTENSION vector; CREATE TABLE legacy_vectors (v vector(3))');
     }
     await stopByHand(legacy.proc);
     handStarted = null;
 
     const db = await startEmbeddedDb();
-    await assertPasswordsRequired(db.port, dataDir);
+    await assertPasswordsRequired(endpointOf(db), dataDir);
     await assertKernelRole(db);
     // A rollback to a build from before this change connects with exactly this
     // passwordless DSN. It is refused; the pre-update snapshot is the way back.
-    const rollback = await attempt(db.port, 'omadia', undefined, 'omadia');
+    const rollback = await attempt(endpointOf(db), 'omadia', undefined, 'omadia');
     assert.equal(rollback.ok, false, 'a pre-change build cannot connect to a migrated cluster');
 
     const creds = storedCredentials();
-    const leftovers = await runAs(db.port, 'omadia', OWNED_BY_BOOTSTRAP, creds.superuserPassword);
+    const leftovers = await runAs(endpointOf(db), 'omadia', OWNED_BY_BOOTSTRAP, creds.superuserPassword);
     assert.deepEqual(leftovers.rows, [], 'nothing the kernel uses is still owned by the superuser');
 
     // Owning is what the kernel's later migrations need: alter, not just read.
@@ -383,7 +423,7 @@ describe('embedded Postgres authentication (real engine)', { skip, timeout: 240_
     execFileSync(initdb, ['-D', dataDir, '-U', 'omadia', '-A', 'trust', '-E', 'UTF8', '--locale=C'], { stdio: 'pipe' });
     const legacy = await startByHand(dataDir);
     handStarted = legacy.proc;
-    await runAs(legacy.port, 'postgres', 'CREATE DATABASE omadia OWNER omadia');
+    await runAs(legacy.at, 'postgres', 'CREATE DATABASE omadia OWNER omadia');
     // A trust-era kernel ran as the bootstrap superuser. Before the migration it
     // leaves a schema it owns (so the ownership transfer has a row to process),
     // points the database's search_path at a schema it controls, and plants a
@@ -391,7 +431,7 @@ describe('embedded Postgres authentication (real engine)', { skip, timeout: 240_
     // runs with the caller's rights, so were the shell to reach this one, its
     // body would run as the shell. Synthetic; harmless if it never runs.
     await runAs(
-      legacy.port,
+      legacy.at,
       'omadia',
       `CREATE SCHEMA legacy_schema;
        CREATE TABLE legacy_schema.item (id int);
@@ -410,11 +450,11 @@ describe('embedded Postgres authentication (real engine)', { skip, timeout: 240_
     // kernel-owned database. It must not honour the redirected search_path, so
     // the shadow function never runs and grants the kernel nothing.
     const db = await startEmbeddedDb();
-    await assertPasswordsRequired(db.port, dataDir);
+    await assertPasswordsRequired(endpointOf(db), dataDir);
 
     const creds = storedCredentials();
     const memberships = await runAs(
-      db.port,
+      endpointOf(db),
       'omadia',
       'SELECT r.rolname AS role FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid ' +
         "WHERE m.member = 'omadia_kernel'::regrole ORDER BY role",

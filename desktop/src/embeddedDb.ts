@@ -1,23 +1,31 @@
-import { spawn, ChildProcess, execFileSync } from 'node:child_process';
-import { Client } from 'pg';
-import crypto from 'node:crypto';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { embeddedDbDir, dataRoot, runtimeIsDev } from './paths';
+import { embeddedDbDir, dataRoot, dbSocketParentDir } from './paths';
 import { findFreePort, isPortFree } from './ports';
 import { log } from './log';
 import { embeddedDbCredentials } from './secrets';
 import {
-  DB_SUPERUSER,
   ensureClusterAuth,
-  isAuthFailure,
   kernelDatabaseUrl,
   type AuthClient,
   type ConnectOptions,
   type DbAuthIo,
 } from './embeddedDbAuth';
+import {
+  chooseSocketDir,
+  describeEndpoint,
+  LOOPBACK_ADDRESS,
+  parsePostmasterPid,
+  samePath,
+  servingMismatch,
+  type DbEndpoint,
+  type PostmasterState,
+  type SocketDir,
+} from './embeddedDbEndpoint';
+import { initCluster, pgBin, pgNativeDir, runSingleUser, serverArgs, writeFileAtomic } from './embeddedDbEngine';
+import { connectScramOnly } from './scramOnlyConnect';
 
 /**
  * The embedded database engine: a REAL, bundled PostgreSQL 17 + pgvector.
@@ -26,22 +34,19 @@ import {
  * protocol via pglite-socket. That worked for builds/boot but the WASM engine
  * crashed (`RuntimeError: unreachable`) under the kernel's real query load, and
  * pglite-socket is single-connection. A native Postgres removes both problems:
- * full SQL compatibility (no WASM traps) and real connection pooling.
+ * full SQL compatibility (no WASM traps) and real connection pooling. The
+ * binaries and the steps that run without a server live in
+ * `embeddedDbEngine.ts`.
  *
- * The Postgres server binaries (initdb/postgres) + pgvector ship with the app
- * (dev: the @embedded-postgres platform package in node_modules; packaged: staged
- * to `resourcesPath/omadia-pg` as extraResources, so they're executable on disk
- * — never trapped inside the asar archive). We drive initdb/postgres directly
- * rather than via the embedded-postgres wrapper, which is asar-unaware.
- *
- * The server listens on loopback TCP only, and every connection needs a SCRAM
- * password (`embeddedDbAuth.ts`): the bootstrap superuser `omadia` is the
- * shell's alone, and the kernel connects as the restricted `omadia_kernel`.
- * Both passwords live in `secrets.enc`. No GRAPH_POOL_MAX=1 cap needed — real
- * Postgres pools normally.
+ * On macOS and Linux the server listens only on a Unix socket in a directory
+ * no other OS user can enter; on Windows on loopback TCP
+ * (`embeddedDbEndpoint.ts`). Every connection needs a SCRAM password
+ * (`embeddedDbAuth.ts`): the bootstrap superuser `omadia` is the shell's
+ * alone, and the kernel connects as the restricted `omadia_kernel`. Both
+ * passwords live in `secrets.enc`. The shell's own connections accept SCRAM
+ * and nothing else (`scramOnlyConnect.ts`), and the shell treats the server as
+ * ready only once its postmaster.pid names the process the shell started.
  */
-
-const exe = (name: string): string => (process.platform === 'win32' ? `${name}.exe` : name);
 
 /**
  * The search_path every maintenance connection the shell opens runs with. It
@@ -55,10 +60,14 @@ const exe = (name: string): string => (process.platform === 'win32' ? `${name}.e
  */
 const SHELL_SEARCH_PATH_OPTION = '-c search_path=pg_catalog,pg_temp';
 
+/** How long a start may take until postmaster.pid reports the server ready. */
+const READY_TIMEOUT_MS = 30_000;
+const READY_POLL_MS = 150;
+
 export interface EmbeddedDb {
   /** DATABASE_URL the kernel should use to reach this engine. */
   databaseUrl: string;
-  /** The bound loopback port. */
+  /** The server's port; on macOS/Linux it only names the socket file. */
   port: number;
   /**
    * Stop the Postgres server. Resolves true only when the process is confirmed
@@ -68,31 +77,15 @@ export interface EmbeddedDb {
   stop(): Promise<boolean>;
 }
 
-let current: { proc: ChildProcess; port: number } | null = null;
+let current: { proc: ChildProcess; endpoint: DbEndpoint } | null = null;
 // Set while we are deliberately shutting the server down, so the `exit` handler
 // (registered at spawn) does not misreport an intentional stop as a crash.
 let stopping = false;
-
-/** @embedded-postgres package name for this platform (win32 → windows). */
-function pgPlatform(): string {
-  const platform = process.platform === 'win32' ? 'windows' : process.platform;
-  return `${platform}-${process.arch}`;
-}
-
-/** The staged Postgres "native" dir (contains bin/, lib/, share/). */
-function pgNativeDir(): string {
-  if (runtimeIsDev) {
-    return path.join(__dirname, '..', 'node_modules', '@embedded-postgres', pgPlatform(), 'native');
-  }
-  return path.join(process.resourcesPath, 'omadia-pg');
-}
-
-function pgBin(name: string): string {
-  return path.join(pgNativeDir(), 'bin', exe(name));
-}
+/** The socket directory of the current start; a temporary one goes with the server. */
+let socketDir: SocketDir | null = null;
 
 async function startRealEmbeddedDb(): Promise<EmbeddedDb> {
-  if (current) return toHandle(current.port, embeddedDbCredentials().kernelPassword);
+  if (current) return toHandle(current.endpoint, embeddedDbCredentials().kernelPassword);
 
   const dataDir = embeddedDbDir();
   if (!fs.existsSync(pgBin('postgres'))) {
@@ -112,30 +105,35 @@ async function startRealEmbeddedDb(): Promise<EmbeddedDb> {
     initCluster(dataDir, creds.superuserPassword);
   }
 
-  const port = await stableDbPort();
+  const endpoint = await dbEndpoint();
 
   try {
     // Puts pg_hba.conf and the bootstrap password in order with the server
     // stopped, then starts it through the IO port, then verifies.
-    await ensureClusterAuth(realDbAuthIo(dataDir, port, creds.superuserPassword), creds);
+    await ensureClusterAuth(realDbAuthIo(dataDir, endpoint), creds);
+    // The DSN goes out only while the server this shell started still holds
+    // the endpoint it was verified on.
+    confirmServing(dataDir);
   } catch (err) {
     // Deliberate cleanup of a server that failed to come ready or failed the
     // verification — mark it so the exit handler reports the original failure,
     // not a spurious "exited unexpectedly". No server keeps running on rules
     // nobody checked.
     stopping = true;
+    let gone = true;
     try {
       const proc = runningProc();
-      if (proc !== null) await stopProc(proc);
+      if (proc !== null) gone = await stopProc(proc);
     } finally {
       current = null;
       stopping = false;
+      if (gone) releaseSocketDir();
     }
     throw err;
   }
 
-  log.info(`[db] embedded Postgres ready on 127.0.0.1:${port}`);
-  return toHandle(port, creds.kernelPassword);
+  log.info(`[db] embedded Postgres ready (${describeEndpoint(endpoint)})`);
+  return toHandle(endpoint, creds.kernelPassword);
 }
 
 /**
@@ -148,59 +146,41 @@ function runningProc(): ChildProcess | null {
 }
 
 /**
- * First run: a cluster that asks for a SCRAM password from its first second,
- * with the bootstrap superuser's password already set. Locale C avoids the
- * "no suitable text search config for UTF-8 locale" initdb warning.
+ * Where this start's server listens: a private socket directory on macOS and
+ * Linux, loopback TCP on Windows. The port is stable either way; on a socket
+ * it only names the socket file.
  */
-function initCluster(dataDir: string, superuserPassword: string): void {
-  log.info('[db] initialising embedded Postgres cluster (SCRAM authentication)…');
-  // initdb reads the password from a file, since argv would show it in `ps`.
-  // A fresh private temp dir, never the data folder (which may be
-  // cloud-synced), and gone again whatever initdb does.
-  const pwDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omadia-initdb-'));
-  try {
-    const pwFile = path.join(pwDir, 'pwfile');
-    fs.writeFileSync(pwFile, `${superuserPassword}\n`, { mode: 0o600, flag: 'wx' });
-    execFileSync(
-      pgBin('initdb'),
-      [
-        '-D', dataDir,
-        '-U', DB_SUPERUSER,
-        '--auth=scram-sha-256',
-        `--pwfile=${pwFile}`,
-        '-E', 'UTF8',
-        '--locale=C',
-      ],
-      { stdio: 'pipe' },
-    );
-  } finally {
-    fs.rmSync(pwDir, { recursive: true, force: true });
+async function dbEndpoint(): Promise<DbEndpoint> {
+  // A temporary directory left by a server that is gone (a crash) is not reused.
+  releaseSocketDir();
+  const port = await stableDbPort();
+  if (process.platform === 'win32') return { transport: 'tcp', host: LOOPBACK_ADDRESS, port };
+  const chosen = chooseSocketDir(dbSocketParentDir(), port);
+  if (chosen.temporary) {
+    log.info(`[db] using a private temporary socket directory (${chosen.reason ?? 'no reason given'})`);
   }
+  socketDir = chosen;
+  return { transport: 'socket', host: chosen.dir, port };
 }
 
-/**
- * Start the server bound to loopback TCP only (unix sockets disabled — avoids
- * the ~107-char socket-path limit under long userData paths and is moot on
- * Windows). `hba_file` is pinned on the command line, which nothing in
- * postgresql.conf or postgresql.auto.conf can override, so the rules in force
- * are always the ones the shell writes. PG locates its share/lib relative to
- * the binary.
- */
-function spawnServer(dataDir: string, port: number): ChildProcess {
-  const proc = spawn(
-    pgBin('postgres'),
-    [
-      '-D', dataDir,
-      '-p', String(port),
-      '-c', 'listen_addresses=127.0.0.1',
-      '-c', 'unix_socket_directories=',
-      '-c', `hba_file=${path.join(dataDir, 'pg_hba.conf')}`,
-      '-c', 'fsync=on',
-    ],
-    { cwd: pgNativeDir(), stdio: ['ignore', 'pipe', 'pipe'] },
-  );
+function releaseSocketDir(): void {
+  const dir = socketDir;
+  socketDir = null;
+  if (dir?.temporary) fs.rmSync(dir.dir, { recursive: true, force: true });
+}
+
+function spawnServer(dataDir: string, endpoint: DbEndpoint): ChildProcess {
+  // PG locates its share/lib relative to the binary.
+  const proc = spawn(pgBin('postgres'), serverArgs(dataDir, endpoint), {
+    cwd: pgNativeDir(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   proc.stdout?.on('data', (d: Buffer) => log.info(`[postgres] ${d.toString().trimEnd()}`));
   proc.stderr?.on('data', (d: Buffer) => log.info(`[postgres] ${d.toString().trimEnd()}`));
+  proc.on('error', (err) => {
+    log.warn(`[db] could not run the embedded Postgres: ${err.message}`);
+    if (current && current.proc === proc) current = null;
+  });
   proc.on('exit', (code, signal) => {
     if (current && current.proc === proc) {
       if (!stopping) {
@@ -212,47 +192,57 @@ function spawnServer(dataDir: string, port: number): ChildProcess {
   return proc;
 }
 
-/**
- * Poll until the server answers. An authentication verdict is an answer: the
- * server is up, and whether the stored password still fits is
- * `ensureClusterAuth`'s question (it repairs what does not).
- */
-async function waitForReady(port: number, superuserPassword: string, timeoutMs = 30_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr = '';
-  while (Date.now() < deadline) {
-    if (!current || current.proc.exitCode !== null) {
-      throw new Error('embedded Postgres exited before becoming ready');
-    }
-    const client = new Client({
-      host: '127.0.0.1',
-      port,
-      user: DB_SUPERUSER,
-      password: superuserPassword,
-      database: 'postgres',
-      options: SHELL_SEARCH_PATH_OPTION,
-      connectionTimeoutMillis: 3000,
-    });
-    try {
-      await client.connect();
-      await client.query('SELECT 1');
-      await client.end();
-      return;
-    } catch (err) {
-      await client.end().catch(() => {});
-      if (isAuthFailure(err)) return;
-      lastErr = err instanceof Error ? err.message : String(err);
-    }
-    await delay(400);
-  }
-  throw new Error(`embedded Postgres did not become ready in ${timeoutMs}ms (${lastErr})`);
+function isAlive(proc: ChildProcess): boolean {
+  return proc.exitCode === null && proc.signalCode === null;
 }
 
-async function startServer(dataDir: string, port: number, superuserPassword: string): Promise<void> {
+function readPostmasterState(dataDir: string): PostmasterState | null {
+  try {
+    return parsePostmasterPid(fs.readFileSync(path.join(dataDir, 'postmaster.pid'), 'utf8'));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/** Why the server this shell started does not (or no longer) serve its endpoint, or null. */
+function servingProblem(dataDir: string): string | null {
+  const running = current;
+  if (running === null || !isAlive(running.proc)) return 'the embedded Postgres this shell started is not running';
+  return servingMismatch(readPostmasterState(dataDir), running.proc.pid, running.endpoint);
+}
+
+/**
+ * Poll the server's own postmaster.pid until it shows the process just started
+ * serving its endpoint. No connection, so no credential goes to whatever might
+ * answer there; an authenticated round-trip follows in `ensureClusterAuth`.
+ */
+async function waitUntilServing(dataDir: string, timeoutMs = READY_TIMEOUT_MS): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let last = 'postmaster.pid not written yet';
+  while (Date.now() < deadline) {
+    const running = current;
+    if (running === null || !isAlive(running.proc)) {
+      throw new Error('embedded Postgres exited before becoming ready');
+    }
+    const problem = servingProblem(dataDir);
+    if (problem === null) return;
+    last = problem;
+    await delay(READY_POLL_MS);
+  }
+  throw new Error(`embedded Postgres did not become ready in ${timeoutMs}ms (${last})`);
+}
+
+function confirmServing(dataDir: string): void {
+  const problem = servingProblem(dataDir);
+  if (problem !== null) throw new Error(`[db] the embedded Postgres no longer serves its endpoint: ${problem}`);
+}
+
+async function startServer(dataDir: string, endpoint: DbEndpoint): Promise<void> {
   if (current !== null) throw new Error('embedded Postgres is already running');
-  log.info(`[db] starting embedded Postgres on 127.0.0.1:${port}…`);
-  current = { proc: spawnServer(dataDir, port), port };
-  await waitForReady(port, superuserPassword);
+  log.info(`[db] starting embedded Postgres (${describeEndpoint(endpoint)})…`);
+  current = { proc: spawnServer(dataDir, endpoint), endpoint };
+  await waitUntilServing(dataDir);
 }
 
 async function stopServer(): Promise<void> {
@@ -268,39 +258,8 @@ async function stopServer(): Promise<void> {
   if (!exited) throw new Error('embedded Postgres did not stop');
 }
 
-/** Single-user mode must finish well within a boot; it normally takes well under a second. */
-const SINGLE_USER_TIMEOUT_MS = 120_000;
-
-/**
- * One statement in single-user mode (`postgres --single`), which opens no
- * listener, reads no pg_hba.conf and runs as the bootstrap superuser. It needs
- * the server stopped, and with `exit_on_error` a failing statement exits
- * non-zero.
- */
-function runSingleUser(dataDir: string, statement: string): void {
-  if (current !== null) throw new Error('single-user mode needs the embedded Postgres stopped');
-  try {
-    execFileSync(
-      pgBin('postgres'),
-      ['--single', '-D', dataDir, '-c', 'exit_on_error=on', 'postgres'],
-      { cwd: pgNativeDir(), input: `${statement}\n`, stdio: 'pipe', timeout: SINGLE_USER_TIMEOUT_MS },
-    );
-  } catch (err) {
-    // Only the server's own verdict: the statement (a SCRAM verifier) and the
-    // rest of its output stay out of the message.
-    const stderr = String((err as { stderr?: unknown }).stderr ?? '');
-    const verdict = stderr.split('\n').filter((line) => /\b(FATAL|ERROR|PANIC):/.test(line)).join(' | ');
-    const status = (err as { status?: unknown }).status;
-    throw new Error(`[db] single-user mode failed (exit ${String(status)}): ${verdict || errorMessage(err)}`);
-  }
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /** The cluster behind `embeddedDbAuth.ts`'s port. */
-function realDbAuthIo(dataDir: string, port: number, superuserPassword: string): DbAuthIo {
+function realDbAuthIo(dataDir: string, endpoint: DbEndpoint): DbAuthIo {
   const hbaFile = path.join(dataDir, 'pg_hba.conf');
   return {
     readHba: () => {
@@ -315,70 +274,51 @@ function realDbAuthIo(dataDir: string, port: number, superuserPassword: string):
       if (current !== null) throw new Error('pg_hba.conf is only rewritten while the embedded Postgres is stopped');
       writeFileAtomic(hbaFile, text);
     },
-    runSingleUser: async (statement) => runSingleUser(dataDir, statement),
-    startServer: () => startServer(dataDir, port, superuserPassword),
+    runSingleUser: async (statement) => {
+      if (current !== null) throw new Error('single-user mode needs the embedded Postgres stopped');
+      runSingleUser(dataDir, statement);
+    },
+    startServer: () => startServer(dataDir, endpoint),
     stopServer: () => stopServer(),
-    connect: (options) => connectClient(port, options),
+    confirmServing: async () => confirmServing(dataDir),
+    isClusterDirectory: (reported) => samePath(reported, dataDir),
+    connect: (options) => connectShellClient(endpoint, options),
     info: (message) => log.info(message),
     warn: (message) => log.warn(message),
   };
 }
 
-async function connectClient(port: number, options: ConnectOptions): Promise<AuthClient> {
-  const client = new Client({
-    host: '127.0.0.1',
-    port,
+/**
+ * A shell connection to the embedded Postgres: SCRAM-SHA-256 only, so no
+ * password reaches whatever answers the endpoint and a server that cannot
+ * prove it holds the verifier is refused, and the search_path pinned (see
+ * SHELL_SEARCH_PATH_OPTION). Exported for tests.
+ */
+export async function connectShellClient(endpoint: DbEndpoint, options: ConnectOptions): Promise<AuthClient> {
+  const client = await connectScramOnly({
+    host: endpoint.host,
+    port: endpoint.port,
     user: options.user,
     password: options.password,
     database: options.database,
-    // Every shell session pins its search_path, so a superuser connection into
-    // the kernel-owned database cannot be steered onto kernel-controlled
-    // schemas (see SHELL_SEARCH_PATH_OPTION).
     options: SHELL_SEARCH_PATH_OPTION,
     connectionTimeoutMillis: 5_000,
   });
   // A connection the server drops later (a stop) must not surface as an
   // unhandled 'error' event.
   client.on('error', (err) => log.warn(`[db] connection as ${options.user} dropped: ${err.message}`));
-  try {
-    await client.connect();
-  } catch (err) {
-    await client.end().catch(() => {});
-    throw err;
-  }
   return {
     query: async (sql, params) => ({ rows: (await client.query(sql, params ? [...params] : undefined)).rows }),
     end: () => client.end(),
   };
 }
 
-/**
- * Temp file, flushed, renamed over the target: a crash leaves the old rules or
- * the new ones, never a torn pg_hba.conf the server refuses to start with.
- */
-function writeFileAtomic(file: string, text: string): void {
-  const tmp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  const fd = fs.openSync(tmp, 'wx', 0o600);
-  try {
-    fs.writeFileSync(fd, text);
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  try {
-    fs.renameSync(tmp, file);
-  } catch (err) {
-    fs.rmSync(tmp, { force: true });
-    throw err;
-  }
-}
-
-function toHandle(port: number, kernelPassword: string): EmbeddedDb {
+function toHandle(endpoint: DbEndpoint, kernelPassword: string): EmbeddedDb {
   return {
     // The restricted kernel role. The bootstrap superuser's password never
     // leaves this process.
-    databaseUrl: kernelDatabaseUrl(port, kernelPassword),
-    port,
+    databaseUrl: kernelDatabaseUrl(endpoint, kernelPassword),
+    port: endpoint.port,
     async stop() {
       return stopEmbeddedDb();
     },
@@ -429,13 +369,19 @@ function stopProc(proc: ChildProcess): Promise<boolean> {
  * survived the app quit (#927). Reaping from module state closes that window.
  */
 async function stopRealEmbeddedDb(): Promise<boolean> {
-  if (!current) return true;
+  if (!current) {
+    releaseSocketDir();
+    return true;
+  }
   stopping = true;
+  let gone = false;
   try {
-    return await stopProc(current.proc);
+    gone = await stopProc(current.proc);
+    return gone;
   } finally {
     current = null;
     stopping = false;
+    if (gone) releaseSocketDir();
   }
 }
 
@@ -444,9 +390,10 @@ function isRealEmbeddedDbRunning(): boolean {
 }
 
 /**
- * STABLE loopback port, persisted across restarts. The kernel records its
- * `database_url` (port included) in its config store on first boot and that
- * persisted value wins on later boots — so the port must not drift.
+ * STABLE port, persisted across restarts. The kernel records its
+ * `database_url` (port included) in its config store on first boot; on the
+ * desktop the live DATABASE_URL wins over that copy, but a stable port keeps
+ * the two from drifting apart needlessly.
  */
 async function stableDbPort(): Promise<number> {
   const file = path.join(dataRoot(), 'db-port.txt');
@@ -461,7 +408,7 @@ async function stableDbPort(): Promise<number> {
   if (stored !== null) {
     log.warn(`[db] stored port ${stored} busy; picking a new one`);
   }
-  const port = await findFreePort('127.0.0.1');
+  const port = await findFreePort(LOOPBACK_ADDRESS);
   fs.writeFileSync(file, String(port), 'utf8');
   return port;
 }

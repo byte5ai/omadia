@@ -7,8 +7,9 @@
  * It models only what the state machine can observe: whether the server runs,
  * which pg_hba.conf it loaded when it started (the call log labels every
  * start with it), which roles exist with which SCRAM verifier, which databases
- * exist and which extensions can be created. Single-user mode, like the real
- * one, refuses to run while the server does.
+ * exist and which extensions can be created, which data directory the server
+ * reports and whether it still serves its endpoint. Single-user mode, like the
+ * real one, refuses to run while the server does.
  */
 import {
   renderHba,
@@ -18,6 +19,10 @@ import {
   type DbAuthIo,
   type QueryResult,
 } from '../../src/embeddedDbAuth.ts';
+import { ScramRequiredError } from '../../src/scramOnlyConnect.ts';
+
+/** The data directory of the cluster the shell started, in this simulation. */
+export const FAKE_DATA_DIR = '/synthetic/omadia/pgdata';
 
 export interface RoleAttributes {
   rolsuper: boolean;
@@ -70,6 +75,12 @@ export interface FakeClusterOptions {
   readonly kernelReportsUntilAltered?: Partial<RoleAttributes>;
   /** Roles the kernel role reports being a member of (a membership should never be present). */
   readonly kernelMemberships?: readonly string[];
+  /** What `SHOW data_directory` answers; default FAKE_DATA_DIR, i.e. this cluster. */
+  readonly reportsDataDirectory?: string;
+  /** Connections as these roles fail the way a non-SCRAM server makes the guard fail them. */
+  readonly refusesScramFor?: readonly string[];
+  /** The server the shell started no longer holds its endpoint: every `confirmServing` rejects. */
+  readonly notServing?: boolean;
 }
 
 /** The pg errors the state machine tells apart carry their SQLSTATE in `code`. */
@@ -119,6 +130,7 @@ function statementLabel(sql: string): string {
     [/^DO \$transfer\$/, () => 'transfer ownership'],
     [/^SELECT rolsuper/, () => 'attributes?'],
     [/pg_auth_members/, () => 'memberships?'],
+    [/^SHOW data_directory$/, () => 'data directory?'],
   ];
   for (const [pattern, name] of rules) {
     const m = pattern.exec(text);
@@ -205,6 +217,16 @@ export class FakeCluster implements DbAuthIo {
     this.running = false;
   }
 
+  async confirmServing(): Promise<void> {
+    this.calls.push('confirmServing');
+    if (!this.running) throw new Error('synthetic: the server is not running');
+    if (this.options.notServing) throw new Error('synthetic: postmaster.pid names another process');
+  }
+
+  isClusterDirectory(reported: string): boolean {
+    return reported === FAKE_DATA_DIR;
+  }
+
   info(message: string): void {
     this.logs.push(`info: ${message}`);
   }
@@ -216,6 +238,9 @@ export class FakeCluster implements DbAuthIo {
   async connect(options: ConnectOptions): Promise<AuthClient> {
     this.calls.push(`connect(${options.user}@${options.database})`);
     if (!this.running) throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1'), { code: 'ECONNREFUSED' });
+    if (this.options.refusesScramFor?.includes(options.user)) {
+      throw new ScramRequiredError('synthetic: the server asked for the password in cleartext');
+    }
     const method = this.options.ignoresHba ? 'trust' : methodFor(this.loaded, options.user);
     if (method === null) {
       throw sqlError('28000', `no pg_hba.conf entry for host "127.0.0.1", user "${options.user}"`);
@@ -298,6 +323,12 @@ export class FakeCluster implements DbAuthIo {
     if (/pg_auth_members/.test(sql)) {
       const memberships = user === 'omadia_kernel' ? (this.options.kernelMemberships ?? []) : [];
       return { rows: memberships.map((role) => ({ role })) };
+    }
+    if (/^SHOW data_directory$/.test(sql)) {
+      if (!this.roles.get(user)?.attributes.rolsuper) {
+        throw sqlError('42501', 'permission denied to examine "data_directory"');
+      }
+      return { rows: [{ data_directory: this.options.reportsDataDirectory ?? FAKE_DATA_DIR }] };
     }
     return { rows: [] };
   }

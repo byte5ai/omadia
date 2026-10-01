@@ -86,6 +86,16 @@ export function embeddedDbDir(): string {
 }
 
 /**
+ * Where the embedded Postgres' private socket directory goes (macOS/Linux,
+ * see `embeddedDbEndpoint.ts`). `userData`, never the chosen data folder: that
+ * one may be cloud-synced (#934), and a sync client has no business with a
+ * socket (some cannot hold one at all).
+ */
+export function dbSocketParentDir(): string {
+  return app.getPath('userData');
+}
+
+/**
  * Where the keyless embedding adapter keeps its model weights (OM-97).
  *
  * NOT under the middleware tree: the adapter's old default was
