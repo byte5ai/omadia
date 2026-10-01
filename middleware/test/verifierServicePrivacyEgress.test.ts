@@ -1,8 +1,10 @@
 /**
  * VerifierService.chat binds its model requests to the privacy view of the
  * turn it verifies and finalizes that turn's privacy state only afterwards —
- * exactly once per turn, on success, on failure and on every retry path.
- * The streaming side lives in verifierServiceStreamPrivacyEgress.test.ts.
+ * exactly once per turn, on success, on failure and on every retry path. A
+ * pass that throws closes itself, and its receipt still lands in the
+ * request's one row. The streaming side lives in
+ * verifierServiceStreamPrivacyEgress.test.ts.
  */
 
 import { strict as assert } from 'node:assert';
@@ -331,6 +333,30 @@ describe('VerifierService.chat — privacy egress', () => {
     assert.equal(state.runs.length, 2);
     assert.equal(answer.verifier?.status, 'failed');
     assert.equal(state.continuations[0]!.finalizeCalls, 1);
+    // The retry that threw closed itself; its receipt is in the request's
+    // receipt and in the one row, which the first pass owns.
+    assert.equal(state.undelivered.length, 1);
+    const merged = mergePrivacyReceipts([state.undelivered[0]!, state.continuations[0]!.receipt]);
+    assert.deepEqual(answer.privacyReceipt, merged);
+    assert.deepEqual(state.rows, [merged]);
+  });
+
+  it('a first run that throws still leaves the request one row with its receipt', async () => {
+    const { orchestrator, state } = stubOrchestrator({
+      results: [turn('Die Rechnung ist offen.')],
+      handOver: true,
+      privacyActive: true,
+      throwOnRun: 0,
+    });
+    const { pipeline, inputs } = verdicts([APPROVED]);
+    const service = new VerifierService({ orchestrator, pipeline, enabled: true, mode: 'enforce', log: SILENT });
+
+    await assert.rejects(service.chat({ userMessage: 'frage' }), /turn failed/);
+
+    assert.equal(inputs.length, 0);
+    assert.equal(state.continuations.length, 0);
+    assert.equal(state.undelivered.length, 1);
+    assert.deepEqual(state.rows, state.undelivered);
   });
 
   it('fails closed: a shield without a handed-over view means no verification', async () => {

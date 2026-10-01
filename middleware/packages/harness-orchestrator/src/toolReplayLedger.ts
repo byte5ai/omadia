@@ -43,6 +43,12 @@
  * is refused (`refuse-repeat`). Every turn carries a ledger for that, also
  * when no verifier is installed; such a turn-local ledger keeps no results.
  *
+ * Below the seams, while a request ledger is bound, each seam runs its
+ * handler through {@link runHandlerAtMostOnce}: no call beneath it is re-sent
+ * by its transport (the MCP client's retry after a transient failure, which
+ * cannot tell "never executed" from "executed, reply lost") — a re-send this
+ * ledger, which sees one handler call, could not stop.
+ *
  * A request ledger also holds the request's record (`requestTurnRecord.ts`):
  * its passes offer their session-log row there, and the verifier writes the
  * row of the pass it delivers. It keeps the first run's attachment ingestion
@@ -75,7 +81,7 @@
  */
 
 import type { AskObserver } from './tools/domainQueryTool.js';
-import { fingerprintToolInput } from './toolIdempotency.js';
+import { fingerprintToolInput, runSendingEachCallOnce } from './toolIdempotency.js';
 import { REENTRY_ABANDONED } from './reentryAbandonment.js';
 import { RequestReceipts } from './requestReceipts.js';
 import { RequestTurnRecord } from './requestTurnRecord.js';
@@ -352,6 +358,24 @@ export class ToolReplayLedger {
     if (this.#mode === 'record') this.#unknown.add(key);
     else this.#reentryUnknown.add(key);
   }
+}
+
+/**
+ * Runs one seam's tool handler (`Orchestrator.dispatchToolDeadlined`,
+ * `LocalSubAgent.dispatch`, `ToolDispatchService.invoke`, the MCP input-card
+ * replay). Inside a request a verifier bound a ledger to (`retainsResults`),
+ * every call beneath the handler is sent at most once
+ * (`runSendingEachCallOnce`, `toolIdempotency.ts`): the MCP client does not
+ * re-send a call after a transient transport failure, which cannot tell
+ * "never executed" from "executed, reply lost" — a retry would run a write a
+ * second time below this ledger, which sees one handler call. Any other turn
+ * runs the handler as it is.
+ */
+export function runHandlerAtMostOnce<T>(
+  ledger: ToolReplayLedger | undefined,
+  handler: () => Promise<T>,
+): Promise<T> {
+  return ledger?.retainsResults === true ? runSendingEachCallOnce(handler) : handler();
 }
 
 /**

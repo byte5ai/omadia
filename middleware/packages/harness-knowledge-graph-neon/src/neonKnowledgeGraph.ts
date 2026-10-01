@@ -5166,7 +5166,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const limit = Math.max(1, Math.min(opts.limit ?? 25, 200));
     const model = opts.model.trim();
     if (model.length === 0) return [];
-    // Exact-id identity (plugin-api 1.20.0). `->>` yields text for a JSON
+    // Exact-id identity (plugin-api 1.21.0). `->>` yields text for a JSON
     // number and a JSON string alike, so '7' matches an id stored as 7 or
     // "7". An empty id names no record.
     const idFilter = opts.id === undefined ? null : String(opts.id).trim();

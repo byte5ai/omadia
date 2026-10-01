@@ -30,6 +30,10 @@
  *   out-of-tree plugins, so threading a key through it as a parameter is not an
  *   option; ambient propagation is the same trick the privacy handle already
  *   uses via `turnContext`.
+ * - {@link runSendingEachCallOnce} / {@link sendsEachCallOnce} — the same
+ *   layer-1 suppression without a key, for the chat path: a verifier's request
+ *   ledger (`toolReplayLedger.ts`) holds its request to one execution per
+ *   write, and the dispatch seams publish it while that ledger is bound.
  *
  * ## What the guarantee actually is — and is NOT
  *
@@ -74,9 +78,10 @@ export const DEFAULT_IDEMPOTENCY_MAX_ENTRIES = 1000;
 /**
  * The active idempotency scope, readable by any layer below the dispatcher.
  *
- * `exactlyOnce` is the ONLY signal `McpManager.callTool` uses to suppress its
- * transient retry. It is set by the dispatcher exclusively for write-capable
- * tools, so read tools keep the flaky-proxy retry mitigation unchanged.
+ * `exactlyOnce` is one of the two signals `McpManager.callTool` uses to
+ * suppress its transient retry (the other is {@link sendsEachCallOnce}). It is
+ * set by the dispatcher exclusively for write-capable tools, so read tools
+ * keep the flaky-proxy retry mitigation there.
  */
 export interface ToolIdempotencyScope {
   readonly key: string;
@@ -102,6 +107,33 @@ export function runWithIdempotencyScope<T>(
   fn: () => T,
 ): T {
   return scopeStorage.run(scope, fn);
+}
+
+/**
+ * At-most-once delivery without an idempotency key: every call made beneath
+ * {@link runSendingEachCallOnce} is sent once, and a layer that cannot tell
+ * "failed before executing" from "executed, reply lost" does not retry it —
+ * `McpManager.callTool` honours it like `exactlyOnce`. No key is advertised:
+ * nothing here identifies one logical call, so a server-side dedupe could not
+ * use one.
+ *
+ * Published by the tool-dispatch seams around a handler while a verifier's
+ * request ledger is bound (`toolReplayLedger.ts`, `runHandlerAtMostOnce`):
+ * that request runs each write at most once, it counts every MCP tool as a
+ * write, and the ledger sees one handler call however often the transport
+ * re-sent it. Its own AsyncLocalStorage, so it survives the turn-context
+ * re-scopes of the skill-binding and plugin `ctx.mcp` paths.
+ */
+const sendOnceStorage = new AsyncLocalStorage<true>();
+
+/** Run `fn` with every call beneath it sent at most once. */
+export function runSendingEachCallOnce<T>(fn: () => T): T {
+  return sendOnceStorage.run(true, fn);
+}
+
+/** True inside {@link runSendingEachCallOnce}. */
+export function sendsEachCallOnce(): boolean {
+  return sendOnceStorage.getStore() === true;
 }
 
 /** The stored outcome of a deduplicated dispatch. */

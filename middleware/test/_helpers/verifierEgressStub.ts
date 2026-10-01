@@ -3,7 +3,9 @@
  * implements `markPrivacyFinalizeHeld` / `takePrivacyEgress` /
  * `isPrivacyGuardActive` with recording continuations, so a test pins the
  * wrapper's side of the contract: which view reaches the pipeline, when
- * `done` is emitted, and how often each turn is finalized.
+ * `done` is emitted, and how often each turn is finalized. Like the real
+ * orchestrator, a pass that throws or whose stream ends before `done` hands
+ * nothing over and settles its own receipt (`closeUndeliveredPass`).
  */
 
 import { strict as assert } from 'node:assert';
@@ -93,10 +95,25 @@ function recordingContinuation(
   return c;
 }
 
+/** The receipt a pass that never handed over settles itself (run index
+ *  `run`); its verb names the run, so a merged receipt shows it. */
+export function undeliveredReceipt(run: number): PrivacyReceipt {
+  return {
+    datasetsInterned: 0,
+    fieldsMasked: 0,
+    fieldsCleartext: 0,
+    verbsExecuted: [`undelivered-run-${String(run)}`],
+    pseudonymProjectionUsed: false,
+  };
+}
+
 export interface StubState {
   readonly marks: ChatTurnInput[];
   readonly runs: ChatTurnInput[];
   readonly continuations: RecordingContinuation[];
+  /** The receipts of passes that threw or ended before `done`, settled by
+   *  the orchestrator itself (only with `privacyActive`). */
+  readonly undelivered: PrivacyReceipt[];
   /** The receipt rows written (`turn_receipts`): one per request. */
   readonly rows: PrivacyReceipt[];
   streamClosed: boolean;
@@ -116,7 +133,36 @@ export function stubOrchestrator(opts: {
   const held = new WeakSet<object>();
   const stashed = new WeakMap<object, RecordingContinuation>();
   const ledgers = new WeakMap<object, ToolReplayLedger>();
-  const state: StubState = { marks: [], runs: [], continuations: [], rows: [], streamClosed: false };
+  const state: StubState = {
+    marks: [],
+    runs: [],
+    continuations: [],
+    undelivered: [],
+    rows: [],
+    streamClosed: false,
+  };
+  /** A pass that ended without handing over closes itself, like the real
+   *  orchestrator: its receipt is the turn's own row, or joins the bound
+   *  request's — a re-entry's without offering to own the row. */
+  const closeUndelivered = (input: ChatTurnInput, run: number): void => {
+    held.delete(input);
+    if (opts.privacyActive !== true) return;
+    const receipt = undeliveredReceipt(run);
+    state.undelivered.push(receipt);
+    const ledger = ledgers.get(input);
+    if (ledger === undefined) {
+      state.rows.push(receipt);
+    } else if (ledger.mode === 'replay') {
+      ledger.receipts.add(receipt);
+    } else {
+      ledger.receipts.add(receipt, {
+        rowId: `turn-undelivered-${String(run)}`,
+        write: async (merged) => {
+          state.rows.push(merged);
+        },
+      });
+    }
+  };
   const handOver = (input: ChatTurnInput, result: ChatTurnResult): void => {
     if (!held.delete(input) || opts.handOver !== true) return;
     const index = state.continuations.length;
@@ -152,23 +198,30 @@ export function stubOrchestrator(opts: {
     async runTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
       const index = state.runs.length;
       state.runs.push(input);
-      if (opts.throwOnRun === index) throw new Error('turn failed');
+      if (opts.throwOnRun === index) {
+        closeUndelivered(input, index);
+        throw new Error('turn failed');
+      }
       const result = opts.results?.[index] ?? opts.results?.[opts.results.length - 1];
       assert.ok(result, 'stub has no scripted result');
       handOver(input, result);
       return result;
     },
     async *chatStream(input: ChatTurnInput): AsyncGenerator<ChatStreamEvent> {
+      const index = state.runs.length;
       state.runs.push(input);
+      let reachedDone = false;
       try {
         for (const event of opts.stream ?? []) {
           if (event.type === 'done') {
             handOver(input, { answer: event.answer, toolCalls: 0, iterations: 0 });
+            reachedDone = true;
           }
           await Promise.resolve();
           yield event;
         }
       } finally {
+        if (!reachedDone) closeUndelivered(input, index);
         state.streamClosed = true;
       }
     },

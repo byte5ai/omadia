@@ -2099,7 +2099,7 @@ export interface FindEntitiesOptions {
    * the id as `nameContains` would also match `17`, `70` and every display
    * name containing it. Combinable with `nameContains` (both must hold).
    *
-   * @since 1.20.0
+   * @since 1.21.0
    */
   id?: string | number;
   /**

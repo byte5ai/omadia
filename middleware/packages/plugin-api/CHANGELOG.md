@@ -20,14 +20,23 @@ into a substring search.
 - **`RunToolCall.replayed?: boolean`** and **`RunAgentInvocation.replayed?: boolean`**:
   set on the trace of an answer-verifier re-entry (a borderline resample or a
   correction retry) for every call whose first-run result was handed back
-  instead of the tool running again. Absent on every call that ran. A
-  consumer that counts tool executions from a trace skips the flagged
-  entries; the session logger never writes a re-entry's trace, so the
-  Knowledge Graph does not see the flag today.
+  instead of the tool running again. Absent on every call that ran in that
+  pass. A request records one trace, the delivered pass's
+  (commit-on-delivery): when the verifier delivers a re-entry, the session
+  log writes that pass's trace, and the first run's — where the flagged calls
+  actually ran — is not recorded. So a flagged entry stands for an execution
+  of the request, not of its pass, and its `durationMs` is the replay's, not
+  the tool's. Counting a request's executions from its recorded trace counts
+  the flagged entries too, and is a lower bound: a first-run call the
+  re-entry did not repeat is in no recorded trace. The Knowledge Graph does
+  not keep the flag yet — both bundled backends write a flagged call as an
+  ordinary `ToolCall` / `AgentInvocation` node (follow-up in
+  `docs/middleware-agent-handoff.md` §13).
 - **`FindEntitiesOptions.id?: string | number`** — exact match on the node's
   `props.id` (Odoo record id, Confluence page id), compared as strings after
-  trimming, so `7` and `'7'` address the same record. An absent or empty id
-  returns `[]`, never another record of the model; combinable with
+  trimming, so `7` and `'7'` address the same record. An id that is not in
+  the graph, or an empty id, returns `[]`, never another record of the model;
+  without `id` the search stays model-wide, as before. Combinable with
   `nameContains` (both must hold). Both in-tree backends implement it. The
   answer verifier resolves every id-bearing entity handle through it and
   re-checks `props.model`/`props.id` on the result, so a provider that ignores

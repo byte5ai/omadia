@@ -2676,7 +2676,12 @@ Jetzt erzeugt ein Wiedereintritt nur die Antwort neu:
   `finally` den ersten Lauf. Die Receipts aller Läufe sammelt
   `ledger.receipts` (`requestReceipts.ts`); geliefert wird das gemergte
   Receipt, und genau **eine** `turn_receipts`-Zeile wird nach dem letzten
-  Lauf geschrieben (`receiptId` im Stream).
+  Lauf geschrieben (`receiptId` im Stream). Ein Lauf, der wirft oder dessen
+  Stream vor `done` endet (`error`, Client weg), übergibt nichts; der
+  Orchestrator schließt ihn selbst (`closeUndeliveredPass`) und behält sein
+  Receipt — in der Zeile der Anfrage (ein Wiedereintritt, ohne die Zeile vom
+  ersten Lauf zu übernehmen) oder ohne Request-Ledger als eigene Zeile.
+  Vorher wurde es verworfen.
 - **Abgekoppelte Arbeit.** Der Runner eines langlaufenden Tasks
   (`<tool>_start`, `tasks/longRunningTool.ts`) startet unter
   `runDetachedFromRequestLedger` mit eigenem turn-lokalem Ledger: er läuft
@@ -2717,11 +2722,19 @@ Jetzt erzeugt ein Wiedereintritt nur die Antwort neu:
   (KG mandantenweit, Odoo-Reader des Plugins), nicht mit den Grants des Users.
   Abbruchgründe ohne Tool tragen Namen (`REENTRY_ABANDONED`,
   `describeAbandonment`, `reentryAbandonment.ts`), die Log-Zeilen nennen sie.
-- **Grenzen unterhalb des Ledgers.** Der MCP-Transport-Retry
-  (`mcp/mcpClient.ts`; auf dem Chat-Pfad ohne `exactlyOnce`-Scope) und der
-  Interning-Fail-open (wirft `internToolResultV4`, geht das Rohergebnis ans
-  Modell, außer bei `query_dataset`) gelten im ersten Lauf wie im
-  Wiedereintritt — offene Punkte in §13.
+- **Unterhalb des Ledgers.** Solange ein Request-Ledger gebunden ist, läuft
+  der Handler jeder Naht über `runHandlerAtMostOnce` (`toolReplayLedger.ts`,
+  auch der MCP-Input-Card-Replay): das Signal `sendsEachCallOnce`
+  (`toolIdempotency.ts`, eigener AsyncLocalStorage — übersteht die Re-Scopes
+  von Skill-Bindung und `ctx.mcp`) lässt `McpManager.callTool` nur einen
+  Versuch machen, also keinen Transport-Retry nach einem transienten Fehler,
+  der „ausgeführt, Antwort verloren“ nicht von „nie ausgeführt“
+  unterscheiden kann. Turns ohne Request-Ledger behalten den einen Retry
+  (#542; offener Punkt in §13). Wirft `internToolResultV4`, geben alle Nähte
+  (Orchestrator-Dispatch, `LocalSubAgent`, `ToolDispatchService`,
+  MCP-Input-Card-Replay) die Notiz `internFailedNotice`
+  (`privacyInternPolicy.ts`) statt des Rohergebnisses ans Modell, im ersten
+  Lauf wie im Wiedereintritt; `query_dataset` behält seinen eigenen Text.
 
 Schalter: `verifier_resample_on_borderline` (§10). Sicherheitsbegründung,
 Grenzen und Reviewer-Regeln: `docs/security-architecture.md` §7c und §11.
@@ -2734,7 +2747,9 @@ Tests: `test/toolReplayLedger.test.ts`, `test/toolReplaySeams.test.ts`,
 `test/orchestrator/parentLoopThrownCallRepeat.test.ts`,
 `test/verifierReentryAttachments.test.ts`,
 `test/verifierCorrectionHintPrivacy.test.ts`,
-`test/correctionPromptEvidence.test.ts`.
+`test/correctionPromptEvidence.test.ts`, `test/mcpWriteIdempotency.test.ts`,
+`test/orchestrator/internFailureFailsClosed.test.ts`,
+`test/orchestratorPrivacyEgress.test.ts`.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -4363,10 +4378,15 @@ Stand nach „Wiedereintritte führen kein Tool erneut aus“ (§3,
   fehlendem `expectedTurnToolUse` wird angewiesen, aber nicht daran gehindert,
   einen erfolgreichen Write zu wiederholen; der Ledger zeichnet im ersten
   Lauf nur auf. Ein „replay-or-execute“-Modus für diesen Spawn wäre der Fix.
-- **Request-Receipt eines abgebrochenen Laufs.** Ein abgebrochener
-  Wiedereintritt übernimmt nie die Zeile; hatte nur er ein Receipt (der erste
-  Lauf keins), trägt die gelieferte Notiz das Receipt, aber es entsteht keine
-  `turn_receipts`-Zeile. Randfall.
+- **Request-Receipt eines abgebrochenen Laufs.** Ein abgebrochener,
+  geworfener oder vom Client verlassener Wiedereintritt übernimmt nie die
+  Zeile (`closeAbandonedReentry`, `closeUndeliveredPass`); hatte nur er ein
+  Receipt (der erste Lauf keins), trägt die gelieferte Notiz das Receipt,
+  aber es entsteht keine `turn_receipts`-Zeile. Randfall. Ebenso offen: auf
+  `chat()` finalisiert `EgressLedger.settleAll` die übergebenen Läufe
+  parallel, die Zeile gehört dann dem, der zuerst fertig ist — meist der erste
+  Lauf, aber nicht garantiert (auf dem Stream finalisiert `StreamPasses` der
+  Reihe nach). Niemand liest die Zeilen-ID auf `chat()`.
 - **Abgespielte Status-Abfragen.** Ein `_status` eines langlaufenden
   Sub-Agent-Tasks wird im Wiedereintritt mit dem Stand des ersten Laufs
   abgespielt — gewollt (gleiche Evidenz), aber kein Live-Stand. Der Runner
@@ -4430,27 +4450,54 @@ Stand nach „Wiedereintritte führen kein Tool erneut aus“ (§3,
   (Scan, Screenshot) verlässt den Prozess damit unmaskiert, im ersten Lauf
   wie im Wiedereintritt. Offen: Bild-Anhänge unter aktivem Shield nur nach
   Policy zulassen (abschaltbar, oder OCR plus Maskierung statt Vision).
-- **MCP-Transport-Retry außerhalb von `exactlyOnce`.** `McpManager.callTool`
-  wiederholt einen Call nach einem transienten Transportfehler einmal
-  (`MCP_CALL_MAX_ATTEMPTS = 2`, `mcp/mcpClient.ts`); ein transienter Fehler
-  unterscheidet „nie ausgeführt“ nicht von „ausgeführt, Antwort verloren“.
-  Nur ein `exactlyOnce`-Idempotenz-Scope unterdrückt den Retry, und den
-  setzt allein `ToolDispatchService` für ein write-fähiges Tool mit
-  Idempotenz-Key — heute bringt nur der öffentliche MCP-Endpunkt einen mit
-  (`_meta.idempotencyKey` des Clients). Der Chat-Pfad
-  (`Orchestrator.dispatchToolDeadlined`) setzt keinen: ein MCP-Write, dessen
-  Antwort verloren ging, kann innerhalb eines Laufs zweimal ausgeführt
-  werden, und der Ledger sieht nur das Ergebnis des zweiten Versuchs. Fix:
-  write-fähige MCP-Tools auch im Chat-Pfad unter einem Idempotenz-Key der
-  Anfrage dispatchen — braucht Write-Metadaten (Punkt „Kein positives
-  Read-only im Plugin-Vertrag“).
-- **Interning-Fail-open.** Wirft `privacy.internToolResultV4`, schickt
-  `dispatchTool` das Rohergebnis ans Modell — alle Tools außer
-  `query_dataset`, das seine Zeilen zurückhält; ebenso der
-  MCP-Input-Card-Replay (`mcpInputReplay`) —, im ersten Lauf wie im
-  Wiedereintritt. Fail-closed für alle Tools (wie bei `query_dataset`) wäre
-  die strengere Wahl und kostet Antworten, sobald der Privacy-Provider hakt;
-  eine Entscheidung dazu steht aus.
+- **MCP-Transport-Retry in Turns ohne Request-Ledger.** Bei gebundenem
+  Request-Ledger sendet jede Naht jeden Call nur einmal
+  (`runHandlerAtMostOnce` → `sendsEachCallOnce`, §3). Turns ohne
+  Request-Ledger — `shadow`, Verifier aus, `enforce` ohne erlaubten
+  Wiedereintritt, Canvas-Stream — behalten den einen Retry
+  (`MCP_CALL_MAX_ATTEMPTS = 2`, `mcp/mcpClient.ts`): dort kann
+  ein MCP-Write, dessen Antwort verloren ging, zweimal laufen. Bewusst so
+  gelassen (#542: der Retry fängt einen wackligen gehosteten Proxy ab, für
+  Lesezugriffe harmlos). Fix: Write-Metadaten für MCP-Tools (Punkt „Kein
+  positives Read-only im Plugin-Vertrag“) oder die Ein-Versuch-Regel für
+  jeden Chat-Turn. Daneben: ein transienter MCP-Fehler kommt als
+  `Error:`-Text zurück (`handleFailure` wirft nicht), markiert den Call also
+  nicht als „Ausgang unbekannt“ — das Modell darf denselben Write erneut
+  aufrufen.
+- **Erledigt: Interning fail-closed.** Wirft `privacy.internToolResultV4`,
+  bekommt das Modell an jeder Naht die Notiz `internFailedNotice` (Call lief,
+  Ergebnis zurückgehalten, nicht erneut aufrufen) statt des Rohergebnisses —
+  im ersten Lauf wie im Wiedereintritt; `query_dataset` behält seinen Text.
+  Kostet Antworten, sobald der Privacy-Provider hakt (Log:
+  `privacy.internToolResultV4 threw — result WITHHELD`). Ein Receipt-Eintrag
+  für den zurückgehaltenen Inhalt fehlt noch — es ging nichts raus, aber der
+  Turn-Receipt zeigt den Ausfall nicht.
+- **`replayed` erreicht den Knowledge Graph nicht.** Liefert der Verifier
+  einen Wiedereintritt, schreibt das Session-Log dessen Trace
+  (Commit-on-Delivery); beide KG-Backends legen pro Trace-Eintrag einen
+  `ToolCall`-/`AgentInvocation`-Knoten an und lassen `replayed` fallen
+  (`neonKnowledgeGraph.ts`, `writeToolCall`). Abgespielte Calls stehen dort
+  wie Ausführungen dieses Laufs, mit der Dauer des Replays; der Trace des
+  ersten Laufs, in dem sie wirklich liefen, wird nicht geschrieben. Fix:
+  `replayed` als Knoten-Property in beiden Backends mitschreiben (JSONB, keine
+  SQL-Migration) — plugin-api 1.21.0 dokumentiert die Lücke.
+- **Canvas-Skelett-Komposition umgeht die Privacy-Grenze.** Vor dem
+  geschützten Turn schickt der ui-orchestrator `input.userMessage` (oder die
+  serialisierte Aktion) über den LLM-Accessor des Plugins an das
+  Kompositionsmodell (`composition.ts`, `composeSkeleton`;
+  `pluginContext.ts`) — ohne das Prompt-Masking des Turns. `verdictHold.ts`
+  regelt nur, wann das Skelett ausgeliefert wird, nicht, was an den Provider
+  geht. Mit `mask_user_prompt` an verlässt der Nutzertext den Prozess damit
+  unmaskiert. Fix (eigener Fix, außerhalb dieses Bündels): Komposition über
+  die Privacy-Sicht des Turns führen, oder bei aktivem Shield das
+  deterministische Fallback-Skelett nehmen.
+- **Kalibrierung vor `enforce`: verborgene Antworten haben keine Zeile.**
+  `verifier_verdicts.reason` (KG-Migration 0034) macht `skipped`-Gründe
+  abfragbar (`docs/upgrading.md`). `shadow` schreibt aber keine Zeile für eine
+  Antwort, die der Verifier hinter dem Shield nicht sehen darf (Render,
+  Direct-Line-Relay) — `enforce` hält jede davon zurück. Gezählt werden kann
+  nur über die Log-Zeile `verification skipped run=…`. Fix: in `shadow` eine
+  `unavailable`/`privacy_shield`-Zeile schreiben, ohne zu prüfen.
 
 ### MRTR-Sentinel über Skill-Bindung und `ctx.mcp` (#570 follow-up)
 

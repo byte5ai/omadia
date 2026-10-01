@@ -5,14 +5,14 @@ import type { EntityIngest, KnowledgeGraph } from '@omadia/plugin-api';
 
 /**
  * Backend-agnostic contract for the exact-id lookup `findEntities({ id })`
- * (plugin-api 1.20.0). The verifier resolves an entity handle such as
+ * (plugin-api 1.21.0). The verifier resolves an entity handle such as
  * `hr.employee:7` through it, so every backend must treat `id` as an
  * identity, never as a search:
  *
  *  - exactly the record whose `props.id` equals the id, compared as strings
  *    after trimming, so `7`, `'7'` and `' 7 '` all address it;
- *  - an absent id, an id of another model, or an empty id returns `[]` —
- *    never a neighbouring record;
+ *  - an id that is not in the graph, an id of another model, or an empty
+ *    id returns `[]` — never a neighbouring record;
  *  - `id` narrows `nameContains` (both must hold), it never widens it;
  *  - only Odoo/Confluence entity nodes are covered, like the rest of
  *    `findEntities`; plugin-namespaced entities are out of reach.
@@ -93,7 +93,7 @@ export function runFindEntitiesByIdContract(
         ]);
       }));
 
-    it('returns nothing for an absent id, an id of another model, or an empty id', (t) =>
+    it('returns nothing for an id not in the graph, an id of another model, or an empty id', (t) =>
       withGraph(t, async (kg) => {
         assert.deepEqual(await ids(kg, { model: 'res.partner', id: 999 }), []);
         assert.deepEqual(await ids(kg, { model: 'hr.department', id: 7 }), []);

@@ -45,7 +45,7 @@ export interface OdooReader {
 export interface GraphReader {
   findEntities(opts: {
     model: string;
-    /** Exact source-system id (`FindEntitiesOptions.id`, plugin-api 1.20.0). */
+    /** Exact source-system id (`FindEntitiesOptions.id`, plugin-api 1.21.0). */
     id?: string | number;
     nameContains?: string;
     limit?: number;

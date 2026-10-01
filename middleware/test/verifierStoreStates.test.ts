@@ -2,7 +2,9 @@
  * `verifier_verdicts` keeps the distinction the verdict makes: a turn with
  * nothing checkable and a verifier outage persist as `skipped` /
  * `unavailable`, never as `approved`, so a calibration query can tell an
- * outage from a clean run. No database — a recording pool stands in.
+ * outage from a clean run — and with their reason, so it can tell what
+ * `enforce` would deliver (`skipped` only for `no_trigger` / `no_claims`).
+ * No database — a recording pool stands in.
  */
 
 import { describe, it } from 'node:test';
@@ -40,6 +42,7 @@ const STATUS = 3;
 const CLAIM_COUNT = 4;
 const CONTRADICTION_COUNT = 7;
 const UNVERIFIED_COUNT = 8;
+const REASON = 12;
 
 async function persisted(verdict: VerifierVerdict): Promise<{ row: unknown[]; queries: number; logs: string[] }> {
   const { store, queries, logs } = recordingStore();
@@ -63,10 +66,18 @@ describe('VerifierStore — skipped / unavailable rows', () => {
       latencyMs: 3,
     });
     assert.equal(row[STATUS], 'skipped');
+    assert.equal(row[REASON], 'no_trigger');
     assert.equal(row[CLAIM_COUNT], 0);
     assert.equal(row[CONTRADICTION_COUNT], 0);
     assert.equal(row[UNVERIFIED_COUNT], 0);
     assert.equal(queries, 1, 'no contradiction rows');
+  });
+
+  it('keeps the reason that decides what `enforce` would deliver', async () => {
+    for (const reason of ['no_trigger', 'no_claims', 'no_checkable_claims', 'incomplete_coverage'] as const) {
+      const { row } = await persisted({ status: 'skipped', reason, claims: [], latencyMs: 1 });
+      assert.equal(row[REASON], reason);
+    }
   });
 
   it('persists an unavailable verdict as unavailable and logs the run with its code', async () => {
@@ -77,6 +88,7 @@ describe('VerifierStore — skipped / unavailable rows', () => {
       latencyMs: 0,
     });
     assert.equal(row[STATUS], 'unavailable');
+    assert.equal(row[REASON], 'extractor_error');
     assert.equal(row[UNVERIFIED_COUNT], 0);
     assert.ok(
       logs.some((l) => l === '[verifier/store] unavailable run=run-1 reason=extractor_error'),
@@ -111,5 +123,6 @@ describe('VerifierStore — counts come from the claims, not the status', () => 
     });
     assert.equal(row[CLAIM_COUNT], 2);
     assert.equal(row[UNVERIFIED_COUNT], 1);
+    assert.equal(row[REASON], null, 'only skipped / unavailable rows carry a reason');
   });
 });

@@ -10,7 +10,9 @@
  *     masked prompt) — never a real value, never a server-rendered answer;
  *   - a caller-supplied system hint (the verifier's correction) reaches the
  *     model only masked, and a blocked mask refuses the turn;
- *   - a thrown or abandoned turn drops its privacy state;
+ *   - a thrown or abandoned turn drops its privacy state and keeps its
+ *     receipt: its own row, or under a request ledger the request's one row
+ *     (a re-entry's receipt joins it without taking the row);
  *   - the streaming paths (model turn, Direct Line) hand over the same way.
  *
  * The verifier wrapped around this, end to end: verifierPrivacyEgressEndToEnd.
@@ -19,8 +21,8 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
-import { createDomainTool, type ChatTurnInput } from '@omadia/orchestrator';
+import type { LlmProvider, LlmRequest, LlmResponse } from '@omadia/llm-provider';
+import { ToolReplayLedger, createDomainTool, type ChatTurnInput } from '@omadia/orchestrator';
 import type { PrivacyGuardService, TurnReceiptRecordInput } from '@omadia/plugin-api';
 import { findIdentityLeaks } from '@omadia/plugin-privacy-guard/dist/v4/onTheWire.js';
 
@@ -33,6 +35,34 @@ import {
   drain,
   echoingProvider,
 } from './_helpers/privacyEgressHarness.js';
+
+/** The echoing model for its first `answers` buffered calls, then a provider
+ *  that fails — after the turn sent its (masked) prompt. */
+function failingProvider(answers = 0): LlmProvider {
+  const echoing = echoingProvider();
+  let calls = 0;
+  return {
+    ...echoing,
+    complete: async (req: LlmRequest): Promise<LlmResponse> => {
+      calls += 1;
+      if (calls > answers) throw new Error('provider down');
+      return echoing.complete(req);
+    },
+  } as unknown as LlmProvider;
+}
+
+/** The counting privacy service whose every receipt names its turn, so a
+ *  request's merged receipt shows which passes it covers. */
+function passTaggingService(): PrivacyGuardService {
+  const { service } = countingService();
+  return {
+    ...service,
+    finalizeTurn: async (turnId, turnInput) => {
+      const receipt = await service.finalizeTurn(turnId, turnInput);
+      return receipt && { ...receipt, verbsExecuted: [`pass:${turnId}`] };
+    },
+  };
+}
 
 describe('orchestrator — privacy hand-over for the verifier (runTurn)', () => {
   it('a held turn keeps its privacy state until the continuation finalizes it, then persists once', async () => {
@@ -208,20 +238,64 @@ describe('orchestrator — privacy hand-over for the verifier (runTurn)', () => 
     assert.match(result.answer, /privacy protection for your text/);
   });
 
-  it('a turn that throws drops its privacy state instead of keeping it until restart', async () => {
+  it('a turn that throws drops its privacy state and keeps its receipt', async () => {
     const { service, finalizeCalls } = countingService();
-    const failing = {
-      ...echoingProvider(),
-      complete: async (): Promise<LlmResponse> => {
-        throw new Error('provider down');
-      },
-    } as unknown as LlmProvider;
-    const orch = buildOrch({ service, provider: failing });
+    const recorded: TurnReceiptRecordInput[] = [];
+    const orch = buildOrch({ service, provider: failingProvider(), recorded });
 
     await assert.rejects(
       orch.runTurn({ userMessage: `Bitte schreibe an ${RAW_EMAIL} heute`, sessionScope: 'sess-throw' }),
     );
     assert.equal(finalizeCalls(), 1);
+    // The prompt was masked and sent before the provider failed: the receipt
+    // says so, and it is persisted like a delivered turn's.
+    assert.equal(recorded.length, 1);
+    assert.ok((recorded[0]!.receipt.maskedPromptSpans ?? []).some((s) => s.type === 'email'));
+  });
+
+  it('under a request ledger, a first run that throws owns the request’s row', async () => {
+    const { service } = countingService();
+    const recorded: TurnReceiptRecordInput[] = [];
+    const orch = buildOrch({ service, provider: failingProvider(), recorded });
+    const input = { userMessage: `Bitte schreibe an ${RAW_EMAIL} heute`, sessionScope: 'sess-throw-bound' };
+    const ledger = new ToolReplayLedger();
+    const release = orch.bindToolReplayLedger(input, ledger);
+
+    await assert.rejects(orch.runTurn(input));
+    release();
+
+    assert.equal(recorded.length, 0, 'the binder writes the request’s row, not the pass');
+    assert.ok(ledger.receipts.rowId, 'the first run offered to own the row');
+    await ledger.receipts.commit();
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0]!.turnId, ledger.receipts.rowId);
+    assert.ok((recorded[0]!.receipt.maskedPromptSpans ?? []).some((s) => s.type === 'email'));
+  });
+
+  it('a re-entry that throws joins the request’s receipt without taking its row', async () => {
+    const recorded: TurnReceiptRecordInput[] = [];
+    const orch = buildOrch({ service: passTaggingService(), provider: failingProvider(1), recorded });
+    const input = { userMessage: `Bitte schreibe an ${RAW_EMAIL} heute`, sessionScope: 'sess-reentry-throw' };
+    const ledger = new ToolReplayLedger();
+    const release = orch.bindToolReplayLedger(input, ledger);
+
+    // Held like under `enforce`: the first run's receipt joins the request's
+    // only when its verifier finalizes it — after the re-entry.
+    orch.markPrivacyFinalizeHeld(input);
+    await orch.runTurn(input);
+    const first = orch.takePrivacyEgress(input);
+    assert.ok(first);
+    ledger.beginReentry();
+    await assert.rejects(orch.runTurn(input));
+    assert.equal(ledger.receipts.rowId, undefined, 'the re-entry that threw took the row');
+    await first.finalize();
+    release();
+
+    assert.equal(ledger.receipts.rowId, first.receiptId, 'the first run owns the row');
+    assert.equal(ledger.receipts.merged()?.verbsExecuted.length, 2, 'both passes are in the receipt');
+    await ledger.receipts.commit();
+    assert.equal(recorded.length, 1);
+    assert.deepEqual(recorded[0]!.receipt, ledger.receipts.merged());
   });
 });
 
@@ -280,9 +354,10 @@ describe('orchestrator — privacy hand-over for the verifier (chatStream)', () 
     assert.equal(recorded.length, 1);
   });
 
-  it('a stream abandoned before done drops its privacy state', async () => {
+  it('a stream abandoned before done drops its privacy state and keeps its receipt', async () => {
     const { service, finalizeCalls } = countingService();
-    const orch = buildOrch({ service, provider: echoingProvider() });
+    const recorded: TurnReceiptRecordInput[] = [];
+    const orch = buildOrch({ service, provider: echoingProvider(), recorded });
 
     for await (const event of orch.chatStream({
       userMessage: `Bitte schreibe an ${RAW_EMAIL} heute`,
@@ -292,5 +367,33 @@ describe('orchestrator — privacy hand-over for the verifier (chatStream)', () 
     }
 
     assert.equal(finalizeCalls(), 1);
+    assert.equal(recorded.length, 1, 'the masked prompt went out: the receipt is persisted');
+    assert.ok((recorded[0]!.receipt.maskedPromptSpans ?? []).some((s) => s.type === 'email'));
+  });
+
+  it('a stream re-entry the client leaves joins the request’s receipt without taking its row', async () => {
+    const recorded: TurnReceiptRecordInput[] = [];
+    const orch = buildOrch({ service: passTaggingService(), provider: echoingProvider(), recorded });
+    const input = { userMessage: `Bitte schreibe an ${RAW_EMAIL} heute`, sessionScope: 'sess-abandon-bound' };
+    const ledger = new ToolReplayLedger();
+    const release = orch.bindToolReplayLedger(input, ledger);
+
+    orch.markPrivacyFinalizeHeld(input);
+    await drain(orch.chatStream(input));
+    const first = orch.takePrivacyEgress(input);
+    assert.ok(first);
+    ledger.beginReentry();
+    for await (const event of orch.chatStream(input)) {
+      if (event.type === 'text_delta') break;
+    }
+    assert.equal(ledger.receipts.rowId, undefined, 'the abandoned re-entry took the row');
+    await first.finalize();
+    release();
+
+    assert.equal(ledger.receipts.rowId, first.receiptId, 'the first run owns the row');
+    await ledger.receipts.commit();
+    assert.equal(recorded.length, 1, 'one row for the request');
+    assert.equal(recorded[0]!.turnId, first.receiptId);
+    assert.equal(recorded[0]!.receipt.verbsExecuted.length, 2, 'both passes are in the row');
   });
 });

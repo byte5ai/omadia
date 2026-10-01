@@ -169,6 +169,7 @@ import {
   describeAbandonment,
   replayMissNotice,
   replaySubEvents,
+  runHandlerAtMostOnce,
   type ToolReplayRecord,
 } from './toolReplayLedger.js';
 import {
@@ -209,7 +210,7 @@ import type { NativeToolRegistry } from './nativeToolRegistry.js';
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
 import type { CliTurnCards } from './cliChatAgent.js';
-import { isInternExemptTool } from './privacyInternPolicy.js';
+import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import {
   guardControlFlowResult,
   isGuardedControlFlowResult,
@@ -785,7 +786,8 @@ export interface OrchestratorOptions {
    * shape as `privacyGuard` (the kernel provides the service once its pg
    * pool resolves; a per-turn lookup needs no restart). When present, every
    * receipt `finalizeTurn` emits is ALSO persisted before the `done` event
-   * is considered flushed; persistence failure is logged + counted by the
+   * is considered flushed — the receipt of a turn that threw or whose stream
+   * ended before `done` too; persistence failure is logged + counted by the
    * store, never fails the turn. Absent ⇒ receipts stay ephemeral
    * (pre-#757 behaviour: UI-only).
    */
@@ -1684,6 +1686,20 @@ const DEFAULT_ASSISTANT_IDENTITY =
 interface TurnMemoryBinding {
   readonly handler: MemoryToolHandler | undefined;
   readonly contextBound: boolean;
+}
+
+/**
+ * A pass that ends without finalizing or handing its privacy state over — it
+ * threw, or its stream ended before `done` — and what is needed to close it
+ * (`Orchestrator.closeUndeliveredPass`).
+ */
+interface UndeliveredPass {
+  readonly handle: PrivacyTurnHandle;
+  readonly turnId: string;
+  /** The turn's input after normalisation and the screening gate. */
+  readonly input: ChatTurnInput;
+  /** The ledger a verifier bound to the request, if one did. */
+  readonly boundLedger: ToolReplayLedger | undefined;
 }
 
 /**
@@ -2958,8 +2974,10 @@ export class Orchestrator {
     const authPromptMint = new McpAuthPromptMint();
     let result: string | undefined;
     try {
-      result = await runWithMcpAuthPromptMint(authPromptMint, () =>
-        replayer.replay(record, reply.inputResponses),
+      result = await runHandlerAtMostOnce(turnContext.current()?.toolReplayLedger, () =>
+        runWithMcpAuthPromptMint(authPromptMint, () =>
+          replayer.replay(record, reply.inputResponses),
+        ),
       );
     } catch (err) {
       console.error(
@@ -3076,11 +3094,12 @@ export class Orchestrator {
       });
       return v4.digestText;
     } catch (err) {
+      // Fail closed, like every dispatch seam (`internFailedNotice`).
       console.warn(
-        `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.internToolResultV4 threw — sending raw replay result:`,
+        `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.internToolResultV4 threw — replay result WITHHELD:`,
         err,
       );
-      return rawResult;
+      return internFailedNotice(record.toolName);
     }
   }
 
@@ -3881,17 +3900,33 @@ export class Orchestrator {
   }
 
   /**
-   * Drop a turn's privacy state on a path that neither finalized nor handed
-   * it over (a thrown turn, an abandoned stream). The receipt is discarded,
-   * as before; what matters is that surrogate maps and cached spans — real
-   * values — do not outlive the turn until restart.
+   * Closes a pass that neither finalized nor handed its privacy state over:
+   * it threw, or its stream ended before `done` (an `error`, or a client
+   * that left). Finalizing drops the surrogate map and cached spans — real
+   * values must not outlive the turn — and drains the receipt of what the
+   * pass did put on the wire. That receipt is kept like a delivered pass's
+   * (`settleTurnReceipt`): the turn's own row, or the request's one row when
+   * a verifier bound a ledger. A re-entry's receipt joins that row without
+   * offering to own it, as an abandoned re-entry's does
+   * (`closeAbandonedReentry`): the first run's continuation is often
+   * finalized later, and the first run keeps the row.
    */
-  private async dropPrivacyState(handle: PrivacyTurnHandle): Promise<void> {
+  private async closeUndeliveredPass(pass: UndeliveredPass): Promise<void> {
+    const { handle, turnId, input, boundLedger } = pass;
+    const ran = this.takeTurnAttribution(turnId);
+    let receipt: PrivacyReceipt | undefined;
     try {
-      await handle.finalize();
+      receipt = await handle.finalize(input.userMessage);
     } catch (err) {
-      console.warn('[orchestrator] privacy state drop failed:', err);
+      console.warn('[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:', err);
+      return;
     }
+    if (receipt === undefined) return;
+    if (boundLedger?.mode === 'replay') {
+      boundLedger.receipts.add(receipt);
+      return;
+    }
+    await this.settleTurnReceipt(turnId, input, receipt, boundLedger, ran);
   }
 
   /**
@@ -4166,6 +4201,11 @@ export class Orchestrator {
       (input.channelIdentity
         ? turnOwner.authSubjectKey || resolvedOmadiaUserId
         : undefined);
+    // What a throw out of the turn body closes (`closePassOnThrow`). `input`
+    // is final here: normalised and through the screening gate.
+    const undeliveredPass: UndeliveredPass | undefined = privacyHandle
+      ? { handle: privacyHandle, turnId, input, boundLedger }
+      : undefined;
 
     return turnContext.run(
       {
@@ -4226,7 +4266,7 @@ export class Orchestrator {
           : {}),
         toolReplayLedger,
       },
-      () => this.dropPrivacyStateOnThrow(privacyHandle, async () => {
+      () => this.closePassOnThrow(undeliveredPass, async () => {
         // W2-1 (#544) — forced replay of the parked MCP tool call, before the
         // model runs. Writes its outcome onto the live turn context.
         if (mcpInputReply) {
@@ -4281,7 +4321,7 @@ export class Orchestrator {
         // miss (post-batch), but a direct-line dispatch and a sub-agent loop
         // fold the refusal into an answer of their own — this catches those.
         // The pass's privacy scope is closed here, exactly once: the abort
-        // below is not dropped again by `dropPrivacyStateOnThrow`.
+        // below is not closed again by `closePassOnThrow`.
         if (result === undefined || toolReplayLedger.abortedTool !== undefined) {
           await this.closeAbandonedReentry(toolReplayLedger, privacyHandle, turnId, input);
           throw new ToolReplayAbortError(toolReplayLedger.abortedTool ?? 'unknown');
@@ -4376,17 +4416,18 @@ export class Orchestrator {
   }
 
   /** Run a turn body; a throw that escapes it never reached the finalize
-   *  block, so the turn's privacy state is dropped before rethrowing. An
-   *  abandoned verifier re-entry is the exception: it closed its privacy
-   *  scope itself, once, before throwing (`closeAbandonedReentry`). */
-  private async dropPrivacyStateOnThrow<T>(
-    handle: PrivacyTurnHandle | undefined,
+   *  block, so the pass is closed before rethrowing — its privacy state
+   *  dropped, its receipt kept (`closeUndeliveredPass`). An abandoned
+   *  verifier re-entry is the exception: it closed its privacy scope
+   *  itself, once, before throwing (`closeAbandonedReentry`). */
+  private async closePassOnThrow<T>(
+    pass: UndeliveredPass | undefined,
     body: () => Promise<T>,
   ): Promise<T> {
     try {
       return await body();
     } catch (err) {
-      if (handle && !(err instanceof ToolReplayAbortError)) await this.dropPrivacyState(handle);
+      if (pass && !(err instanceof ToolReplayAbortError)) await this.closeUndeliveredPass(pass);
       throw err;
     }
   }
@@ -6663,7 +6704,11 @@ export class Orchestrator {
     } finally {
       steeringBus.endTurn(sessionId);
       this.clearTurnAuthContext();
-      if (privacyHandle && !privacySettled) await this.dropPrivacyState(privacyHandle);
+      // A stream that ended without `done` (an `error`, a throw, a client
+      // that left) closes its pass here: state dropped, receipt kept.
+      if (privacyHandle && !privacySettled) {
+        await this.closeUndeliveredPass({ handle: privacyHandle, turnId, input, boundLedger });
+      }
     }
   }
 
@@ -8063,7 +8108,9 @@ export class Orchestrator {
       }
     } else {
       try {
-        result = await execute();
+        // Inside a request a verifier may re-enter, no call beneath the
+        // handler is re-sent by its transport (`runHandlerAtMostOnce`).
+        result = await runHandlerAtMostOnce(ledger, execute);
       } catch (err) {
         if (tracked && deadlineSignal?.aborted !== true) {
           tracked.record('orchestrator', name, input, { kind: 'rejection', error: err });
@@ -8298,21 +8345,19 @@ export class Orchestrator {
         });
         return v4.digestText;
       } catch (err) {
-        // `query_dataset` returned REAL cell values precisely because this
-        // interning was about to happen (see QueryDatasetTool). If it did
-        // not, those values must not fall through to the model: fail closed
-        // for this one tool. Every other tool keeps the historical fail-open.
-        if (name === QUERY_DATASET_TOOL_NAME) {
-          console.warn(
-            `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — rows WITHHELD (real cell values never bypass the shield):`,
-            err,
-          );
-          return 'Error: the privacy boundary could not intern this dataset page — its rows were withheld. Retry; if it persists, tell the user the dataset is temporarily unavailable.';
-        }
+        // Fail closed for every tool: a result the boundary could not intern
+        // never reaches the model raw — on a re-entry's replay neither, so a
+        // result the first pass protected stays protected. `query_dataset`
+        // returned REAL cell values precisely because this interning was
+        // about to happen (see QueryDatasetTool); it keeps its own notice,
+        // since retrying a page read is safe.
         console.warn(
-          `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — sending raw result:`,
+          `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — result WITHHELD (it never bypasses the shield):`,
           err,
         );
+        return name === QUERY_DATASET_TOOL_NAME
+          ? 'Error: the privacy boundary could not intern this dataset page — its rows were withheld. Retry; if it persists, tell the user the dataset is temporarily unavailable.'
+          : internFailedNotice(name);
       }
     }
     return result;

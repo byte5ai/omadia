@@ -2871,7 +2871,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
 
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 25, 200));
-    // Exact-id identity (plugin-api 1.20.0): string-compared, so a numeric
+    // Exact-id identity (plugin-api 1.21.0): string-compared, so a numeric
     // and a string id address the same record. An empty id names no record.
     const idFilter = opts.id === undefined ? undefined : String(opts.id).trim();
     if (idFilter !== undefined && idFilter.length === 0) return [];

@@ -11,10 +11,10 @@
  * closed and what is still deliberately orchestrator-only.
  */
 
-import { isInternExemptTool } from './privacyInternPolicy.js';
+import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import { isWithheldToolErrorNotice, isWriteCapableTool } from '@omadia/plugin-api';
 import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
-import { replayMissNotice } from './toolReplayLedger.js';
+import { replayMissNotice, runHandlerAtMostOnce } from './toolReplayLedger.js';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import {
   guardControlFlowResult,
@@ -45,7 +45,8 @@ import type { ToolIdempotencyStore } from './toolIdempotency.js';
  *  - `'dispatcher'` — produced by this service itself: its own guards (unknown
  *                     tool, plugin not ready), and the withheld notice it puts
  *                     in place of a thrown exception's message (tool name,
- *                     exception class name, sanitised code, log ref). Never
+ *                     exception class name, sanitised code, log ref) or of a
+ *                     result the privacy boundary could not intern. Never
  *                     tool data, so there is nothing for masking to have
  *                     crossed.
  *
@@ -73,6 +74,11 @@ export interface ToolDispatchResult {
    * cannot tell whether the mutation committed.
    */
   readonly replayed?: boolean;
+}
+
+/** Handler-authored content that went through the post-dispatch pipeline. */
+function fromTool(content: string): ToolDispatchResult {
+  return { content, origin: 'tool' };
 }
 
 export interface DispatchableToolSpec {
@@ -399,8 +405,10 @@ export class ToolDispatchService {
       raw =
         replay?.kind === 'result'
           ? (replay.value as string)
-          : await runWithMcpAuthPromptMint(authPromptMint, () =>
-              runHandlerInPrivacyScope(privacy, handler),
+          : await runHandlerAtMostOnce(ledger, () =>
+              runWithMcpAuthPromptMint(authPromptMint, () =>
+                runHandlerInPrivacyScope(privacy, handler),
+              ),
             );
     } catch (error) {
       if (replay === undefined) ledger?.record('dispatch', name, input, { kind: 'rejection', error });
@@ -411,10 +419,7 @@ export class ToolDispatchService {
       if (isWithheldToolErrorNotice(raw)) ledger?.noteUnknownOutcome(name, input);
     }
     try {
-      return {
-        content: await this.afterDispatch(name, raw, authPromptMint, options, replay !== undefined),
-        origin: 'tool',
-      };
+      return await this.afterDispatch(name, raw, authPromptMint, options, replay !== undefined);
     } catch (error) {
       return this.thrownResult(name, error, options);
     }
@@ -428,7 +433,8 @@ export class ToolDispatchService {
    *   1. raw capture — trace/audit consumers must see ground truth
    *   2. intern-exemption — the agent's own infra tools are never masked
    *   3. operator bypass (+ receipt entry) — explicit opt-out stays auditable
-   *   4. intern — the caller receives the identity-free digest
+   *   4. intern — the caller receives the identity-free digest, or, when
+   *      interning throws, the kernel's withheld notice (fail closed)
    */
   private async afterDispatch(
     name: string,
@@ -438,7 +444,7 @@ export class ToolDispatchService {
     options?: ToolDispatchOptions,
     /** A verifier re-entry handed back the first run's result. */
     replayed = false,
-  ): Promise<string> {
+  ): Promise<ToolDispatchResult> {
     const capture = this.deps.captureRawToolResult;
     if (capture !== undefined && typeof result === 'string') {
       try {
@@ -452,13 +458,13 @@ export class ToolDispatchService {
     }
 
     const privacy = this.privacyHandle();
-    if (privacy === undefined || typeof result !== 'string') return result;
+    if (privacy === undefined || typeof result !== 'string') return fromTool(result);
 
     // Interning-exemption: the agent's own infrastructure/self tools (memory,
     // stored-process CRUD, self-produced meta output) are never interned —
     // masking them blinds the agent to its own operational state. Same
     // auditable allowlist the orchestrator uses.
-    if (isInternExemptTool(name)) return result;
+    if (isInternExemptTool(name)) return fromTool(result);
 
     // Operator-owned per-plugin bypass (Slice 2.5). Raw passthrough, but the
     // receipt entry keeps it transparent.
@@ -480,7 +486,7 @@ export class ToolDispatchService {
           );
         }
       }
-      return result;
+      return fromTool(result);
     }
 
     // #1105 / #1097 — fulfilled control-flow prose (the `Error:` convention,
@@ -494,31 +500,32 @@ export class ToolDispatchService {
     // provenance; text that merely starts like it is interned below. Thrown
     // exceptions take `thrownResult`.
     if (isGuardedControlFlowResult(result, authPromptMint)) {
-      return guardControlFlowResult({
-        toolName: name,
-        result,
-        privacy,
-        site: 'toolDispatchService',
-        authPromptMint,
-      });
+      return fromTool(
+        await guardControlFlowResult({
+          toolName: name,
+          result,
+          privacy,
+          site: 'toolDispatchService',
+          authPromptMint,
+        }),
+      );
     }
     try {
       const v4 = await privacy.internToolResultV4({
         toolName: name,
         rawResult: result,
       });
-      return v4.digestText;
+      return fromTool(v4.digestText);
     } catch (err) {
-      // Fail-OPEN, matching `Orchestrator.dispatchToolDeadlined` exactly. This is
-      // parity, not an endorsement: for a PUBLIC endpoint a masking failure that
-      // emits raw rows is a leak, and a fail-CLOSED policy for untrusted callers
-      // is worth its own decision (#542) — but making this path stricter than the
-      // chat path would be a silent behaviour change beyond closing the seam.
+      // Fail CLOSED, like `Orchestrator.dispatchToolDeadlined` and every other
+      // seam (`internFailedNotice`): the caller gets the kernel's withheld
+      // notice, never the raw result. The public MCP endpoint's privacy gate
+      // refuses such a call on its own as well (`publicMcpPrivacy.ts`).
       console.warn(
-        `[toolDispatchService:${name}] privacy.internToolResultV4 threw — sending raw result:`,
+        `[toolDispatchService:${name}] privacy.internToolResultV4 threw — result WITHHELD:`,
         err,
       );
-      return result;
+      return { content: internFailedNotice(name), isError: true, origin: 'dispatcher' };
     }
   }
 

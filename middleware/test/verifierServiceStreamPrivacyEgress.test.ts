@@ -5,7 +5,8 @@
  * once, also when the client walks away or the verifier fails. Without a
  * shield, `done` goes out before verification, as it always did. In
  * `enforce` every pass — the correction retry too — is verified through its
- * own view, and the request carries one merged receipt.
+ * own view, and the request carries one merged receipt; a pass the client
+ * leaves before its `done` closes itself, and its receipt is in that row.
  */
 
 import { strict as assert } from 'node:assert';
@@ -258,7 +259,7 @@ describe('VerifierService.chatStream (enforce) — privacy egress', () => {
     assert.deepEqual(state.rows, [merged]);
   });
 
-  it('a client that leaves during the retry still finalizes the first pass once and writes one row', async () => {
+  it('a client that leaves during the retry finalizes the first pass once and writes one row with both passes', async () => {
     const { orchestrator, state } = stubOrchestrator({
       stream: [ITERATION, DELTA, DONE],
       handOver: true,
@@ -278,7 +279,30 @@ describe('VerifierService.chatStream (enforce) — privacy egress', () => {
     assert.equal(state.runs.length, 2);
     assert.equal(state.continuations.length, 1, 'the retry never reached its done');
     assert.equal(state.continuations[0]!.finalizeCalls, 1);
-    assert.deepEqual(state.rows, [state.continuations[0]!.receipt]);
+    // The retry closed itself when the client left; its receipt joined the
+    // request's before the row was written, and the first pass owns the row.
+    assert.equal(state.undelivered.length, 1);
+    assert.deepEqual(state.rows, [
+      mergePrivacyReceipts([state.undelivered[0]!, state.continuations[0]!.receipt]),
+    ]);
+  });
+
+  it('a client that leaves before the first done still gets the request one row', async () => {
+    const { orchestrator, state } = stubOrchestrator({
+      stream: [ITERATION, DELTA, DONE],
+      handOver: true,
+      privacyActive: true,
+    });
+    const { pipeline, inputs } = verdicts([APPROVED]);
+    const service = new VerifierService({ orchestrator, pipeline, enabled: true, mode: 'enforce', log: SILENT });
+
+    const events = await collect(service.chatStream({ userMessage: 'frage' }), 'iteration_start');
+
+    assert.deepEqual(events.map((e) => e.type), ['iteration_start']);
+    assert.equal(inputs.length, 0);
+    assert.equal(state.continuations.length, 0);
+    assert.deepEqual(state.rows, state.undelivered, 'the first pass owns the request’s row');
+    assert.equal(state.rows.length, 1);
   });
 });
 

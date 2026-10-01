@@ -49,7 +49,13 @@ and now work as one design:
   once afterwards, also when the request errors, a re-entry is abandoned or
   the client leaves. A request that can be re-entered keeps one
   `turn_receipts` row with every pass's receipt merged in, the verifier's
-  request counts summed over the passes.
+  request counts summed over the passes. A pass that throws or whose stream
+  ends before `done` hands nothing over; the orchestrator finalises it
+  itself and keeps its receipt — in the request's row (a re-entry's without
+  taking the row from the first run), or as the turn's own row when no
+  verifier can re-enter it. Such receipts used to be dropped, so a retry that
+  failed or that the client left was missing from the request's row, and a
+  request whose first run failed had no row at all.
 - Behind the shield the claim extractor reads the turn's wire view, so the
   extraction window and the verbatim guard apply to the text the model saw.
   A claim that cannot be mapped back onto the answer the user saw is no
@@ -76,10 +82,21 @@ and now work as one design:
   carries another one, and the uploads' import is single-flight across
   passes.
 - The write-once guarantee is scoped to verifier re-entries: a resample or a
-  retry executes no write. Two layers below the replay ledger are named as
-  known exceptions in `docs/security-architecture.md` §7c — the MCP client's
-  transport retry on the chat path and the privacy guard's interning
-  fail-open — with follow-ups in `docs/middleware-agent-handoff.md` §13.
+  retry executes no write. Below the replay ledger, while a request ledger
+  is bound, every dispatch seam now runs its handler sending each call once
+  (`runHandlerAtMostOnce`), so the MCP client no longer re-sends a call after
+  a transient transport failure — a reply lost after the server executed a
+  write used to run it twice; turns without a request ledger keep that retry
+  (#542). And for every turn, a tool result the Privacy Shield cannot intern
+  is withheld at every seam (the orchestrator's dispatch, `LocalSubAgent`,
+  `ToolDispatchService`, the MCP input-card replay) with a notice that the
+  call ran, where the raw result used to reach the model — on a re-entry
+  also a result the first run had interned. `query_dataset` keeps its own
+  notice.
+- `verifier_verdicts` gains a nullable `reason` column (knowledge-graph
+  migration `0034_verifier_verdict_reason`) holding the closed reason code
+  of a `skipped` or `unavailable` verdict, so the share of answers `enforce`
+  would deliver can be read from `shadow` rows (`docs/upgrading.md`).
 
 `@omadia/plugin-api` 1.21.0 carries the additive API these changes need
 (`RunToolCall.replayed`, `RunAgentInvocation.replayed`,
@@ -257,7 +274,8 @@ claim. A request has one receipt row and one session-log row instead of one
 per pass, both written after the verdict when the request can be re-entered,
 and one dataset per uploaded file, imported by the first run.
 `shadow` mode, a disabled verifier and turns that cannot be re-entered persist
-exactly as before. Tests: `toolReplayLedger.test.ts`, `toolReplaySeams.test.ts`,
+as before, except that a turn that fails now keeps its receipt row too (see the
+first entry above). Tests: `toolReplayLedger.test.ts`, `toolReplaySeams.test.ts`,
 `verifierServiceWriteSafety.test.ts`, `verifierStreamRetry.test.ts`,
 `verifierReentryRecords.test.ts`, `verifierDeliveredTurnRecord.test.ts`,
 `requestTurnRecord.test.ts`,
@@ -360,9 +378,12 @@ confirmed answers and answers without checkable claims. An answer longer than
 the 6000 characters the claim extractor reads is never `approved` and is
 therefore always withheld, as is one with a claim no checker takes, and, with
 Privacy Shield v4 rendering active, every answer the shield renders. Run
-`shadow` first: the share of `verifier_verdicts` rows with status `approved`,
-or `skipped` with reason `no_trigger` / `no_claims`, is the share of answers
-`enforce` would deliver.
+`shadow` first: of the answers `shadow` verified, `enforce` delivers the
+`verifier_verdicts` rows with status `approved` and the `skipped` rows whose
+reason is `no_trigger` or `no_claims` (the `reason` column arrived with the
+combined entry above; the query is in `docs/upgrading.md`). `shadow` writes
+no row for an answer the verifier may not see behind the shield, all of
+which `enforce` withholds; they show in the log as `verification skipped`.
 
 Not covered: the subscription-CLI runtime (`claude-cli` provider) never passes
 through the verifier wrapper, and proactive routines call the raw

@@ -341,12 +341,15 @@ bump: it holds the data volume, exactly as with the compose stack.
 
 ## Upgrading past v0.167.13 — answer verifier: honest verdicts, `enforce` withholds what it could not confirm, re-entries replay tool results
 
-No migration and no schema change. One new, optional setting
+One additive schema change, applied at startup: knowledge-graph migration
+`0034_verifier_verdict_reason` adds a nullable `reason` column to
+`verifier_verdicts`. One new, optional setting
 (`verifier_resample_on_borderline`). Everything here applies only when the
 answer verifier is enabled (`VERIFIER_ENABLED=true`, or the
 `verifier_enabled` setup field of `@omadia/verifier`); withholding, the
 stream retry and the tool replay only in `enforce` mode (`VERIFIER_MODE`, or
-`verifier_mode`). [`security-architecture.md`](security-architecture.md)
+`verifier_mode`). The last section is the exception: it applies to every
+turn behind the Privacy Shield. [`security-architecture.md`](security-architecture.md)
 §6e and §7c have the full policy.
 
 ### Verdicts say what was checked (all modes)
@@ -362,7 +365,11 @@ stream retry and the tool replay only in `enforce` mode (`VERIFIER_MODE`, or
   coverage entries counted in `unverified_count`, which now always counts
   every unverified claim of the row. A dashboard or query that reads
   `status = 'approved'` as "clean turn" is now correct, but its numbers
-  change.
+  change. The new `reason` column holds the closed reason code of a
+  `skipped` row (`no_trigger`, `no_claims`, `no_checkable_claims`,
+  `incomplete_coverage`) and of an `unavailable` row (`extractor_error`,
+  `pipeline_error`, `privacy_shield`); it is NULL on every other row and on
+  rows written before the upgrade.
 - **Fewer confirmed claims from the evidence judge.** A judge verdict counts
   only when it cites an evidence snippet its own request showed, and a claim
   about one specific record is checked against exactly that record: a record
@@ -427,10 +434,29 @@ know and show no badge for turns without evidence.
   answer, an answer whose claims no checker takes, and a turn in which the
   verifier could not run. An answer longer than the 6000 characters the
   claim extractor reads is never fully covered and is therefore always
-  withheld. Before switching, run `shadow` and compare: the share of
-  `verifier_verdicts` rows with status `approved`, or `skipped` with reason
-  `no_trigger` / `no_claims`, is the share of answers `enforce` would
-  deliver.
+  withheld. Before switching, run `shadow` and compare. Of the answers
+  `shadow` verified, `enforce` delivers the rows with status `approved` and
+  the `skipped` rows whose reason is `no_trigger` or `no_claims`. Count only
+  rows written since this upgrade — an older `skipped` row has no reason:
+
+  ```sql
+  SELECT count(*) FILTER (
+           WHERE status = 'approved'
+              OR (status = 'skipped' AND reason IN ('no_trigger', 'no_claims'))
+         ) AS delivered,
+         count(*) AS verified
+    FROM verifier_verdicts
+   WHERE mode = 'shadow' AND created_at >= '<upgrade time>';
+  ```
+
+  Two things the rows do not show. Behind the Privacy Shield, `shadow` writes
+  no row for an answer the verifier may not see — one the shield rendered
+  server-side, or a turn that handed over no privacy view, such as a Direct
+  Line relay — and `enforce` withholds every one of them; each such turn logs
+  `[verifier/service] verification skipped run=<id>: <reason>`, so add their
+  number to `verified`. And `shadow` runs no correction retry, so a
+  contradicted answer `enforce` would correct counts as withheld here: the
+  share is a lower bound in that respect.
 - **Privacy Shield v4 rendering and `enforce` do not combine.** An answer the
   shield renders server-side holds real values the model never saw, so it is
   never sent to the verifier; `enforce` withholds it (summary `unavailable`,
@@ -539,15 +565,42 @@ know and show no badge for turns without evidence.
   repeat a write call (same tool, same input) that ended in an exception
   within the same message; the model gets a notice that the outcome is
   unknown. Sub-agents already behaved this way.
+- **An MCP call is sent once per message the verifier may re-enter.** The
+  MCP client used to re-send a call once after a transient transport
+  failure, which cannot tell "never executed" from "executed, reply lost" —
+  so a write could run twice below the replay. Inside a message the verifier
+  may re-enter — in `enforce` with the correction retry allowed (on `chat()`
+  also with only the resample), on the stream not on canvas turns — it now
+  sends each call once: a lost reply reaches the model as the MCP error, and
+  the model decides whether to ask again. Other turns keep the one retry.
 - **What the replay does not cover.** It holds for one message in one
   process: a new message, a retried HTTP call or another instance runs its
-  tools again. Below the replay, the MCP client still retries a call once
-  after a transient transport failure on the chat path, and a tool result
-  the privacy shield fails to intern still reaches the model raw; both are
-  tracked as open points in `docs/middleware-agent-handoff.md` §13.
+  tools again. A tool result the Privacy Shield fails to intern no longer
+  reaches the model raw, on a re-entry neither (next section).
 - **API clients and plugins** reading run traces see `replayed: true` on
   `RunToolCall` / `RunAgentInvocation` entries a re-entry handed back
   (`@omadia/plugin-api` 1.21.0, additive).
+
+### Behind the Privacy Shield, every turn: an uninternable result is withheld, a failed turn keeps its receipt
+
+- **A tool result the shield cannot intern is withheld.** When interning a
+  tool result throws (`internToolResultV4` in the privacy provider), the
+  model used to get the raw result — for every tool but `query_dataset`.
+  Every seam now hands it a short error notice instead, saying that the call
+  ran and its result was withheld: the chat path, a sub-agent's inner calls,
+  the subscription-CLI loopback dispatcher and the MCP input-card replay. A
+  privacy provider that fails on every result now costs answers instead of
+  sending rows to the model provider: expect turns that tell the user a
+  result is temporarily unavailable, and the log line
+  `privacy.internToolResultV4 threw — result WITHHELD`. The public MCP
+  endpoint already refused such a call and is unchanged.
+- **A turn that fails or that the client leaves keeps its receipt.** A turn
+  that throws, or whose stream ends before `done` (an error, or a client that
+  disconnects), used to drop its privacy receipt while freeing its privacy
+  state. It now writes the receipt to `turn_receipts` like any turn — or, in
+  a message the verifier may re-enter, merges it into the message's one row,
+  which the first run owns. Expect receipt rows for failed and abandoned
+  turns; no `done` event names them.
 
 ## Upgrading past v0.167.12 — desktop app: database passwords, no TCP port on macOS and Linux
 

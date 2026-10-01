@@ -24,9 +24,11 @@ import type {
   McpInputReplayer,
   PendingMcpInputStore,
 } from '../packages/harness-orchestrator/src/mcp/pendingMcpInput.js';
+import { LocalSubAgent } from '../packages/harness-orchestrator/src/localSubAgent.js';
 import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import { Orchestrator } from '../packages/harness-orchestrator/src/orchestrator.js';
 import { ToolDispatchService } from '../packages/harness-orchestrator/src/toolDispatchService.js';
+import { sendsEachCallOnce } from '../packages/harness-orchestrator/src/toolIdempotency.js';
 import {
   ToolReplayAbortError,
   ToolReplayLedger,
@@ -205,5 +207,102 @@ describe('the orchestrator abandons a re-entry it cannot replay', () => {
     await orchestrator.runTurn(REQUEST);
 
     assert.equal(ticket.inputs.length, 2, 'two requests, two writes');
+  });
+});
+
+/**
+ * While a request ledger is bound, every seam runs its handler sending each
+ * call beneath it once (`runHandlerAtMostOnce`): the MCP client then does not
+ * re-send a call after a transient failure — a re-send the ledger, which sees
+ * one handler call, could not stop. `mcpWriteIdempotency.test.ts` drives the
+ * real transport; here each seam's handler reads the signal it runs under.
+ */
+describe('a seam sends each call once only while a request ledger is bound', () => {
+  function probeRegistry(seen: boolean[]): NativeToolRegistry {
+    const registry = new NativeToolRegistry();
+    registry.register('probe_send_once', {
+      handler: () => {
+        seen.push(sendsEachCallOnce());
+        return Promise.resolve('ok');
+      },
+      spec: {
+        name: 'probe_send_once',
+        description: 'reads the send-once signal (test)',
+        input_schema: { type: 'object' as const, properties: {}, required: [] },
+      } as never,
+      domain: 'test.probe',
+    });
+    return registry;
+  }
+
+  it('the orchestrator’s dispatch', async () => {
+    const seen: boolean[] = [];
+    const model = scriptedModel([
+      toolCalls(['probe_send_once', {}]),
+      text('fertig'),
+      toolCalls(['probe_send_once', {}]),
+      text('fertig'),
+    ]);
+    const orchestrator = new Orchestrator({
+      provider: model.provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: probeRegistry(seen),
+    });
+    const bound = { ...REQUEST };
+    const release = orchestrator.bindToolReplayLedger(bound, new ToolReplayLedger());
+
+    await orchestrator.runTurn(bound);
+    release();
+    await orchestrator.runTurn({ ...REQUEST });
+
+    assert.deepEqual(seen, [true, false], 'bound request, then a turn-local ledger');
+  });
+
+  it('`ToolDispatchService` under the ambient ledger', async () => {
+    const seen: boolean[] = [];
+    const dispatch = new ToolDispatchService({ nativeTools: probeRegistry(seen) });
+
+    await inTurn(new ToolReplayLedger(), () => dispatch.dispatch('probe_send_once', {}));
+    await inTurn(new ToolReplayLedger({ retainResults: false }), () =>
+      dispatch.dispatch('probe_send_once', {}),
+    );
+    await inTurn(undefined, () => dispatch.dispatch('probe_send_once', {}));
+
+    assert.deepEqual(seen, [true, false, false]);
+  });
+
+  it('a `LocalSubAgent`’s inner calls', async () => {
+    const seen: boolean[] = [];
+    const run = () => [toolCalls(['probe_send_once', {}]), text('fertig')];
+    const model = scriptedModel([...run(), ...run()]);
+    const agent = new LocalSubAgent({
+      name: 'probe',
+      provider: model.provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxIterations: 3,
+      systemPrompt: 'test',
+      tools: [
+        {
+          spec: {
+            name: 'probe_send_once',
+            description: 'reads the send-once signal (test)',
+            input_schema: { type: 'object' as const, properties: {}, required: [] },
+          },
+          handle: () => {
+            seen.push(sendsEachCallOnce());
+            return Promise.resolve('ok');
+          },
+        },
+      ],
+    } as ConstructorParameters<typeof LocalSubAgent>[0]);
+
+    await inTurn(new ToolReplayLedger(), () => agent.ask('Frage'));
+    await inTurn(new ToolReplayLedger({ retainResults: false }), () => agent.ask('Frage'));
+
+    assert.deepEqual(seen, [true, false]);
   });
 });

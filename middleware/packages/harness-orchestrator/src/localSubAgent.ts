@@ -8,7 +8,7 @@ import { appendLimitSignalNote, isWithheldToolErrorNotice } from '@omadia/plugin
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import { streamMessageWithObserver } from './streaming.js';
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
-import { isInternExemptTool } from './privacyInternPolicy.js';
+import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import {
   UnknownOutcomeCalls,
   refusedRepeat,
@@ -19,7 +19,11 @@ import {
   isGuardedControlFlowResult,
   withholdThrownToolError,
 } from './toolErrorRedaction.js';
-import { ToolReplayAbortError, replayMissNotice } from './toolReplayLedger.js';
+import {
+  ToolReplayAbortError,
+  replayMissNotice,
+  runHandlerAtMostOnce,
+} from './toolReplayLedger.js';
 import { buildDateHeader, turnContext } from './turnContext.js';
 
 // `LocalSubAgentTool` and `LocalSubAgentToolSpec` were inlined here
@@ -492,7 +496,9 @@ export class LocalSubAgent {
       raw =
         replay?.kind === 'result'
           ? (replay.value as Awaited<ReturnType<LocalSubAgentTool['handle']>>)
-          : await runWithMcpAuthPromptMint(authPromptMint, () => tool.handle(input));
+          : await runHandlerAtMostOnce(ledger, () =>
+              runWithMcpAuthPromptMint(authPromptMint, () => tool.handle(input)),
+            );
     } catch (err) {
       if (replay === undefined) ledger?.record(seam, toolName, input, { kind: 'rejection', error: err });
       const withheld = await withholdThrownToolError({
@@ -639,10 +645,13 @@ export class LocalSubAgent {
           ...carried,
         };
       } catch (err) {
+        // Fail closed, like the parent's dispatch (`internFailedNotice`):
+        // this sub-agent's model never reads the raw result.
         console.warn(
-          `[sub-agent ${this.name}] privacy.internToolResultV4 threw on '${toolName}' — sending raw result:`,
+          `[sub-agent ${this.name}] privacy.internToolResultV4 threw on '${toolName}' — result WITHHELD:`,
           err,
         );
+        return { output: internFailedNotice(toolName), ...carried };
       }
     }
     return { output: result, ...carried };

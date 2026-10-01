@@ -27,6 +27,7 @@ import { afterEach, describe, it } from 'node:test';
 import type {
   KnowledgeGraph,
   NativeToolAttachment,
+  PrivacyGuardService,
   TurnReceiptRecordInput,
 } from '@omadia/plugin-api';
 
@@ -182,6 +183,93 @@ describe('a verifier re-entry records as part of the same request', () => {
     assert.deepEqual(row?.bypassedTools?.map((b) => b.toolName), ['lookup_partner']);
     assert.ok((row?.datasetsInterned ?? 0) >= 1, 'the interned result is accounted for');
     assert.deepEqual(sa.privacyReceipt, row, 'the delivered answer carries the request’s receipt');
+  });
+});
+
+/**
+ * `maskingPrivacy` whose every receipt names its turn in `verbsExecuted`, so
+ * the request's merged receipt shows which passes it covers.
+ */
+function passTaggingPrivacy(): { service: PrivacyGuardService; finalized: string[] } {
+  const inner = maskingPrivacy();
+  const service = {
+    ...inner.service,
+    async finalizeTurn(turnId: string, turnInput?: string) {
+      const receipt = await inner.service.finalizeTurn(turnId, turnInput);
+      return receipt === undefined ? undefined : { ...receipt, verbsExecuted: [`pass:${turnId}`] };
+    },
+  } as PrivacyGuardService;
+  return { service, finalized: inner.finalized };
+}
+
+function receiptRows(rows: TurnReceiptRecordInput[]): Partial<OrchestratorOptions> {
+  return {
+    turnReceiptStore: () => ({
+      record(entry: TurnReceiptRecordInput) {
+        rows.push(entry);
+        return Promise.resolve();
+      },
+    }),
+  } as Partial<OrchestratorOptions>;
+}
+
+describe('a pass that never delivers keeps its receipt in the request’s row', () => {
+  // The retry replays the first run's write (its model saw the result again,
+  // so the shield acted in that pass), then fails before it has an answer.
+  const retryThatFails = () => [
+    toolCalls(['create_invoice', INVOICE]),
+    text(CONTRADICTED_ANSWER),
+    toolCalls(['create_invoice', INVOICE]),
+  ];
+
+  it('MUTATION CHECK: a correction retry that throws on chat()', async () => {
+    const rows: TurnReceiptRecordInput[] = [];
+    const privacy = passTaggingPrivacy();
+    const t = verifiedTurn({
+      registry: invoiceRegistry(),
+      responses: retryThatFails(),
+      verdicts: [blocked()],
+      orchestrator: { privacyGuard: () => privacy.service, ...receiptRows(rows) },
+    });
+
+    const sa = await t.service.chat(REQUEST);
+
+    assert.equal(t.model.requests.length, 4, 'the retry ran and failed on its second model call');
+    assert.equal(privacy.finalized.length, 2, 'both passes finalized their privacy state');
+    assert.equal(rows.length, 1, 'one receipt row for one request');
+    assert.deepEqual(
+      new Set(rows[0]?.receipt.verbsExecuted),
+      new Set(privacy.finalized.map((id) => `pass:${id}`)),
+      'the failed retry’s receipt is in the request’s row',
+    );
+    assert.deepEqual(sa.privacyReceipt, rows[0]?.receipt);
+  });
+
+  it('MUTATION CHECK: a stream retry the client leaves', async () => {
+    const rows: TurnReceiptRecordInput[] = [];
+    const privacy = passTaggingPrivacy();
+    const t = verifiedTurn({
+      registry: invoiceRegistry(),
+      responses: [...retryThatFails(), text(ANSWER)],
+      verdicts: [blocked(), approved()],
+      orchestrator: { privacyGuard: () => privacy.service, ...receiptRows(rows) },
+    });
+
+    // Iterations 0 and 1 are the first run's, 2 and 3 the retry's: the
+    // client leaves once the retry replayed the write.
+    let iterations = 0;
+    for await (const event of t.service.chatStream(REQUEST)) {
+      if (event.type === 'iteration_start') iterations += 1;
+      if (iterations === 4) break;
+    }
+
+    assert.equal(privacy.finalized.length, 2, 'both passes finalized their privacy state');
+    assert.equal(rows.length, 1, 'one receipt row for one request');
+    assert.deepEqual(
+      new Set(rows[0]?.receipt.verbsExecuted),
+      new Set(privacy.finalized.map((id) => `pass:${id}`)),
+      'the abandoned retry’s receipt is in the request’s row',
+    );
   });
 });
 

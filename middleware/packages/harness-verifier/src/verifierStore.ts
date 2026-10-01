@@ -6,9 +6,10 @@ import type {
 } from './claimTypes.js';
 
 /**
- * Thin persistence layer for the verifier's telemetry tables (migration
- * 0007). Inserts are fire-and-forget from the orchestrator's point of
- * view: a failing write logs on stderr but never blocks the reply.
+ * Thin persistence layer for the verifier's telemetry tables (knowledge-graph
+ * migrations 0012 and 0034). Inserts are fire-and-forget from the
+ * orchestrator's point of view: a failing write logs on stderr but never
+ * blocks the reply.
  */
 
 export interface VerifierStoreOptions {
@@ -46,8 +47,11 @@ export class VerifierStore {
       verdict.status === 'blocked' ? verdict.contradictions : [];
     const unverifiedCount = countUnverified(verdict);
     // `skipped` / `unavailable` persist as their own status (the column is
-    // free TEXT), so calibration queries can tell an outage from a clean run.
-    // The run id links the row to the failure logged where it happened.
+    // free TEXT), so calibration queries can tell an outage from a clean run,
+    // and with their reason: `enforce` delivers a `skipped` answer only for
+    // `no_trigger` / `no_claims`. The run id links the row to the failure
+    // logged where it happened.
+    const reason = verdictReason(verdict);
     if (verdict.status === 'unavailable') {
       this.log(
         `[verifier/store] unavailable run=${input.runId} reason=${verdict.reason}`,
@@ -59,8 +63,8 @@ export class VerifierStore {
         `INSERT INTO verifier_verdicts
            (tenant, run_id, agent, status, claim_count, hard_count,
             soft_count, contradiction_count, unverified_count, retry_count,
-            latency_ms, mode)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+            latency_ms, mode, reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [
           this.tenant,
           input.runId,
@@ -74,6 +78,7 @@ export class VerifierStore {
           retryCount,
           verdict.latencyMs,
           mode,
+          reason,
         ],
       );
     } catch (err) {
@@ -117,6 +122,14 @@ export class VerifierStore {
 }
 
 // --- helpers --------------------------------------------------------------
+
+/** The closed reason code of a `skipped` / `unavailable` verdict; `null` for
+ *  every other status. */
+function verdictReason(verdict: VerifierVerdict): string | null {
+  return verdict.status === 'skipped' || verdict.status === 'unavailable'
+    ? verdict.reason
+    : null;
+}
 
 function countByClass(verdicts: readonly ClaimVerdict[]): {
   hard: number;
