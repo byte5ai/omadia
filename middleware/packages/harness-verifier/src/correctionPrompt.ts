@@ -2,9 +2,21 @@ import type { ClaimVerdict, VerifierVerdict } from './claimTypes.js';
 
 /**
  * Produces a correction hint appended to the orchestrator's system prompt
- * for a retry after the verifier blocked the first answer. The hint lists
- * every contradicted claim with the actual value we measured, so the
- * orchestrator can reformulate without re-running the same hallucination.
+ * for a retry after the verifier blocked the first answer. The hint names
+ * every contradicted claim and the kind of correction it needs, so the
+ * orchestrator can reformulate without repeating them.
+ *
+ * It carries nothing the verifier found out itself — no `truth`, no `detail`
+ * (measured values, knowledge-graph snippets, lookup details, a
+ * postcondition's schema issues). The checks run with the verifier's own
+ * access (a tenant-wide knowledge-graph lookup, the verifier plugin's Odoo
+ * reader), not with the grants of the user whose turn they check, and the
+ * hint goes to that turn's model and from there into an answer for that
+ * user. What remains is the claims — the answer's own words — the tool names
+ * and call ids of the turn's own trace, and fixed text. The orchestrator
+ * masks the hint through the turn's prompt map before it reaches the model,
+ * like the user's message (#361): the claims are cut from the restored
+ * answer.
  *
  * Deliberately German — matches the orchestrator's primary response
  * language; switching languages mid-prompt confuses the model.
@@ -68,11 +80,11 @@ export function buildCorrectionPrompt(
     sections.push(
       '## Falsche / widerlegte Daten',
       '',
-      'Die folgenden Aussagen wurden durch Re-Query widerlegt. Formuliere die Antwort neu und nutze ausschließlich die verifizierten Werte. Falls eine Angabe unklar bleibt, sag das ehrlich statt zu raten.',
+      'Eine unabhängige Prüfung gegen die Quelle hat die folgenden Aussagen deiner Antwort widerlegt. Wiederhole sie nicht. Formuliere die Antwort neu und stütze jede Angabe ausschließlich auf die Tool-Ergebnisse dieses Turns; belegen sie eine Angabe nicht, lass sie weg oder sag ehrlich, dass sie sich nicht bestätigen ließ — rate nicht.',
       '',
       ...dataItems.map(formatContradiction),
       '',
-      'Wichtig: Führe für diese Widersprüche KEINE erneuten Tool-Calls aus, um sie zu "prüfen" — die Werte oben stammen bereits aus einer unabhängigen Re-Query gegen die Quelle. Nutze sie direkt.',
+      'Wichtig: Führe für diese Widersprüche KEINE erneuten Tool-Calls aus, um sie zu "prüfen" — die Prüfung gegen die Quelle ist bereits gelaufen.',
     );
   }
 
@@ -97,27 +109,14 @@ function isReplay(v: ClaimVerdict): boolean {
 function formatPostcondition(v: ClaimVerdict): string {
   if (v.status !== 'contradicted') return '';
   // claim.id format: `c_postcond_<callId>` — strip the prefix for display.
+  // The issues stay out: they are read off the tool's raw output.
   const callId = v.claim.id.replace(/^c_postcond_/, '');
-  const detail = v.detail ? ` — Issues: ${v.detail}` : '';
-  return `- ${v.claim.text} (callId=${callId})${detail}`;
+  return `- ${v.claim.text} (callId=${callId})`;
 }
 
+/** A contradicted claim in its own words — never the truth or detail the
+ *  check produced (see the module comment). */
 function formatContradiction(v: ClaimVerdict): string {
   if (v.status !== 'contradicted') return '';
-  const truthStr = formatTruth(v.truth);
-  const detail = v.detail ? ` — ${v.detail}` : '';
-  return `- Behauptet: "${v.claim.text}" → Tatsächlich: ${truthStr}${detail}`;
-}
-
-function formatTruth(truth: unknown): string {
-  if (truth === null || truth === undefined) return '(Eintrag nicht gefunden)';
-  if (typeof truth === 'number') return String(truth);
-  if (typeof truth === 'string') {
-    return truth.length <= 200 ? truth : `${truth.slice(0, 200)}…`;
-  }
-  try {
-    return JSON.stringify(truth);
-  } catch {
-    return String(truth);
-  }
+  return `- "${v.claim.text}"`;
 }
