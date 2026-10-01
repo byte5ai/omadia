@@ -439,9 +439,11 @@ export class LocalSubAgent {
     if (!tool) return { output: `Error: unknown tool \`${toolName}\`.` };
 
     // Privacy Shield v4 — Data-Plane Boundary for sub-agent inner calls.
-    // The privacy handle is threaded through `turnContext.privacyHandle`;
-    // sub-agents inherit it from the parent orchestrator's turn scope.
-    // Absent ⇒ no privacy provider installed and the result flows through.
+    // The privacy handle is threaded through `turnContext.privacyHandle`:
+    // sub-agents inherit it from the parent orchestrator's turn scope, or from
+    // the dispatcher that ran their domain tool outside a turn (the public MCP
+    // endpoint's per-call gate — `handlerPrivacyScope.ts`). Absent ⇒ no
+    // privacy provider installed and the result flows through.
     const privacy = turnContext.current()?.privacyHandle;
     // A THROWING inner tool used to abort this whole sub-agent run, and the
     // parent's domain-tool wrapper then re-wrapped the exception message as

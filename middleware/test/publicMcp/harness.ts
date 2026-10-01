@@ -56,7 +56,7 @@ import {
   type PublicMcpKeyBindingStore,
 } from '../../src/mcp/publicMcpKeyBindings.js';
 import { PUBLIC_MCP_PATH } from '../../src/mcp/publicMcpPath.js';
-import { mountPublicMcp } from '../../src/mcp/wirePublicMcp.js';
+import { mountPublicMcp, type WirePublicMcpDeps } from '../../src/mcp/wirePublicMcp.js';
 import type {
   PublicMcpAuditEntry,
   PublicMcpDispatcher,
@@ -338,6 +338,9 @@ export interface HarnessOptions {
   readonly audit?: PublicMcpAuditEntry[];
   readonly toolTimeoutMs?: number;
   readonly maxConcurrentCalls?: number;
+  /** Extra `mountPublicMcp` deps, spread last. With `getRegistry` set, the
+   *  PRODUCTION dispatcher resolver runs instead of `dispatchers`. */
+  readonly wire?: Partial<WirePublicMcpDeps>;
 }
 
 export interface Harness {
@@ -393,12 +396,15 @@ export async function startHarness(opts: HarnessOptions): Promise<Harness> {
       createInMemoryPublicMcpKeyBindingStore(
         opts.bindingRows as Parameters<typeof createInMemoryPublicMcpKeyBindingStore>[0],
       ),
-    resolveDispatcher: (agentId) => opts.dispatchers[agentId],
+    ...(opts.wire?.getRegistry
+      ? {}
+      : { resolveDispatcher: (agentId: string) => opts.dispatchers[agentId] }),
     ...(audit ? { audit: (entry: PublicMcpAuditEntry) => audit.push(entry) } : {}),
     ...(opts.toolTimeoutMs !== undefined ? { toolTimeoutMs: opts.toolTimeoutMs } : {}),
     ...(opts.maxConcurrentCalls !== undefined
       ? { maxConcurrentCalls: opts.maxConcurrentCalls }
       : {}),
+    ...opts.wire,
   });
 
   const server: Server = createServer(app);

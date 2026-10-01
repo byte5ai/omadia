@@ -135,6 +135,16 @@ export interface PrivacyTurnHandle {
    * when the turn interned no tool results.
    */
   finalize(turnInput?: string): Promise<PrivacyReceipt | undefined>;
+  /**
+   * The handle for code running INSIDE a tool call this handle guards: a
+   * domain tool's sub-agent model loop, a plugin tool that asks a sub-agent, a
+   * dispatcher the handler calls. `ToolDispatchService` installs it as the
+   * ambient `turnContext.privacyHandle` while the handler runs. Absent ⇒ the
+   * handle itself. A wrapper that keeps per-result bookkeeping (the public MCP
+   * gate's positive `masked()` signal) returns a variant that guards the same
+   * way without counting toward the outer result.
+   */
+  forNestedCalls?(): PrivacyTurnHandle;
 }
 
 export function createPrivacyTurnHandle(deps: {

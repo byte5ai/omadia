@@ -182,7 +182,9 @@ describe('public MCP endpoint — the masking boundary must be CROSSED (W4)', ()
   it('refuses when the dispatcher never installs the handle at all (no `withPrivacy`)', async (t) => {
     // The `withPrivacy` escape hatch is optional in the TYPE. A host that omits
     // it while masking is required cannot mask, so every call must be refused
-    // rather than silently served raw.
+    // rather than silently served raw — and refused BEFORE the tool runs, or a
+    // sub-agent beneath it would already have sent the data to its model.
+    let dispatched = 0;
     const noWithPrivacy = {
       listDispatchableToolSpecs: () => [
         {
@@ -192,7 +194,10 @@ describe('public MCP endpoint — the masking boundary must be CROSSED (W4)', ()
         },
       ],
       isWriteCapable: () => false,
-      dispatch: () => Promise.resolve({ content: RAW_RESULT, origin: 'tool' as const }),
+      dispatch: () => {
+        dispatched += 1;
+        return Promise.resolve({ content: RAW_RESULT, origin: 'tool' as const });
+      },
     } as unknown as PublicMcpDispatcher;
 
     const h = await start(options({ dispatchers: { sales: noWithPrivacy } }), t);
@@ -201,6 +206,7 @@ describe('public MCP endpoint — the masking boundary must be CROSSED (W4)', ()
     const body = await res.text();
     assert.doesNotMatch(body, /sensitive\.person@customer\.example/);
     assert.match(body, /privacy masking did not run/);
+    assert.equal(dispatched, 0, 'the tool ran although the guard could not reach it');
   });
 
   it('audits a skipped boundary distinctly from a FAILED one', async (t) => {

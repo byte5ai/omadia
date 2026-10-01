@@ -25,6 +25,7 @@ import type { DomainTool } from './tools/domainQueryTool.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import { sortByToolName } from './toolOrdering.js';
 import { turnContext } from './turnContext.js';
+import { runHandlerInPrivacyScope } from './handlerPrivacyScope.js';
 import { runWithDispatchCaller } from './toolCallerContext.js';
 import { runWithIdempotencyScope } from './toolIdempotency.js';
 import type { ToolIdempotencyStore } from './toolIdempotency.js';
@@ -186,8 +187,20 @@ export class ToolDispatchService {
        * a host that DOES dispatch from inside a turn still inherits that turn's
        * handle. Absent from both ⇒ no privacy provider installed and results flow
        * through unchanged, matching the orchestrator.
+       *
+       * The handle also guards what runs INSIDE a handler — see
+       * `handlerPrivacyScope.ts`.
        */
       readonly privacy?: () => PrivacyTurnHandle | undefined;
+      /**
+       * Run no tool handler without a privacy handle. With none resolvable at
+       * dispatch time the call answers with a dispatcher-authored notice and
+       * no handler runs, so nothing beneath it (a sub-agent's model loop) can
+       * reach a model unguarded. The public MCP endpoint sets this whenever
+       * masking is required; the loopback and CLI dispatchers leave it off
+       * (parity: no provider installed ⇒ nothing is masked).
+       */
+      readonly requirePrivacyHandle?: boolean;
       /**
        * #542 prerequisite — raw-result capture (the orchestrator's Phase C.2
        * `captureRawToolResult`). Receives the tool result BEFORE masking, so a
@@ -321,18 +334,7 @@ export class ToolDispatchService {
           origin: 'dispatcher',
         };
       }
-      try {
-        // One mint per dispatch: a connect prompt the MCP manager produces
-        // while this handler runs is recorded in it (`mcpAuthPromptMint.ts`).
-        const authPromptMint = new McpAuthPromptMint();
-        const raw = await runWithMcpAuthPromptMint(authPromptMint, () => nativeHandler(input));
-        return {
-          content: await this.afterDispatch(name, raw, authPromptMint, options),
-          origin: 'tool',
-        };
-      } catch (error) {
-        return this.thrownResult(name, error, options);
-      }
+      return this.invoke(name, () => nativeHandler(input), options);
     }
 
     const domainTool = this.domainTools().find((t) => t.name === name);
@@ -347,19 +349,45 @@ export class ToolDispatchService {
           origin: 'dispatcher',
         };
       }
-      try {
-        const authPromptMint = new McpAuthPromptMint();
-        const raw = await runWithMcpAuthPromptMint(authPromptMint, () => domainTool.handle(input));
-        return {
-          content: await this.afterDispatch(name, raw, authPromptMint, options),
-          origin: 'tool',
-        };
-      } catch (error) {
-        return this.thrownResult(name, error, options);
-      }
+      return this.invoke(name, () => domainTool.handle(input), options);
     }
 
     return { content: `Error: unknown tool \`${name}\`.`, isError: true, origin: 'dispatcher' };
+  }
+
+  /** One handler run, native or domain: the same steps for both branches. */
+  private async invoke(
+    name: string,
+    handler: () => Promise<string>,
+    options?: ToolDispatchOptions,
+  ): Promise<ToolDispatchResult> {
+    const privacy = this.privacyHandle();
+    if (privacy === undefined && this.deps.requirePrivacyHandle === true) {
+      console.error(
+        `[toolDispatchService:${name}] no privacy handle for this dispatch — refused before the handler ran`,
+      );
+      return {
+        content: `Error: tool \`${name}\` was not run: no privacy guard is active for this call.`,
+        isError: true,
+        origin: 'dispatcher',
+      };
+    }
+    try {
+      // One mint per dispatch: a connect prompt the MCP manager produces
+      // while this handler runs is recorded in it (`mcpAuthPromptMint.ts`).
+      const authPromptMint = new McpAuthPromptMint();
+      // The handler runs with this dispatch's handle as the ambient one, so a
+      // sub-agent model loop inside it is guarded too (`handlerPrivacyScope.ts`).
+      const raw = await runWithMcpAuthPromptMint(authPromptMint, () =>
+        runHandlerInPrivacyScope(privacy, handler),
+      );
+      return {
+        content: await this.afterDispatch(name, raw, authPromptMint, options),
+        origin: 'tool',
+      };
+    } catch (error) {
+      return this.thrownResult(name, error, options);
+    }
   }
 
   /**
@@ -591,6 +619,12 @@ export class ToolDispatchService {
 // Every result also carries `origin`, so a consumer can tell handler-authored
 // content (must have been masked) from this service's own text (its refusals and
 // the withheld notice — nothing to mask).
+//
+// CLOSED: what runs INSIDE a handler. The handler runs with the dispatch's
+// handle as the ambient `turnContext.privacyHandle`
+// (`runHandlerInPrivacyScope`), so a domain tool's `LocalSubAgent` masks its
+// inner results and tool errors before its own model sees them, as on the chat
+// path; `requirePrivacyHandle` runs no handler when no handle resolves.
 //
 // STILL ORCHESTRATOR-ONLY, because each needs turn-scoped state this path has no
 // access to (an unconditional copy would throw or silently no-op):
