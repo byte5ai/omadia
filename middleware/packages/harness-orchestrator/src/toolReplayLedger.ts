@@ -43,6 +43,9 @@
  * is refused (`refuse-repeat`). Every turn carries a ledger for that, also
  * when no verifier is installed; such a turn-local ledger keeps no results.
  *
+ * Work that outlives the request — a long-running task's detached runner —
+ * runs on a turn-local ledger of its own ({@link runDetachedFromRequestLedger}).
+ *
  * ## What it does NOT guarantee
  *
  *  - **One process, one request.** The ledger is an in-memory object that
@@ -68,6 +71,7 @@
 import type { AskObserver } from './tools/domainQueryTool.js';
 import { fingerprintToolInput } from './toolIdempotency.js';
 import { RequestReceipts } from './requestReceipts.js';
+import { turnContext } from './turnContext.js';
 
 /** Where a handler runs: the orchestrator's dispatch, one sub-agent's inner
  *  loop, or the standalone dispatcher (loopback MCP / CLI sub-agents). */
@@ -313,6 +317,29 @@ export class ToolReplayLedger {
     if (this.#mode === 'record') this.#unknown.add(key);
     else this.#reentryUnknown.add(key);
   }
+}
+
+/**
+ * Runs `fn` — work started inside a turn that outlives it, like a
+ * long-running task's detached runner — on a turn-local ledger of its own
+ * instead of the ledger of the request that started it.
+ *
+ * Everything else of the turn context carries over unchanged. Only the ledger
+ * must not: the runner keeps working after the request's first run, also
+ * while the verifier re-enters the request, and a request ledger in replay
+ * mode would refuse the runner's calls as misses outside the first run (and
+ * abandon the re-entry running at that moment) or hand them first-run
+ * results. The runner would also keep the request's raw results alive for as
+ * long as it runs. Its own ledger still refuses an identical repeat of a call
+ * whose outcome is unknown, within the task.
+ */
+export function runDetachedFromRequestLedger<T>(fn: () => Promise<T>): Promise<T> {
+  const ctx = turnContext.current();
+  if (ctx?.toolReplayLedger === undefined) return fn();
+  return turnContext.run(
+    { ...ctx, toolReplayLedger: new ToolReplayLedger({ retainResults: false }) },
+    fn,
+  );
 }
 
 function callKey(toolName: string, fingerprint: string): string {

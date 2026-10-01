@@ -299,7 +299,9 @@ export interface TurnContextValue {
    * the handler runs — `Orchestrator.dispatchToolDeadlined`,
    * `LocalSubAgent.dispatch`, `ToolDispatchService.invoke` — so a re-entry
    * replays the first run's results and nothing repeats a call whose outcome
-   * is unknown. Carried into every nested scope by the `{ ...ctx }` spread;
+   * is unknown. Carried into every nested scope by the `{ ...ctx }` spread —
+   * but not into work that outlives the turn (a long-running task's runner),
+   * which gets a ledger of its own (`runDetachedFromRequestLedger`);
    * undefined outside a turn (the public MCP endpoint), where every dispatch
    * executes as before. Holds raw handler results: never log or persist it.
    */

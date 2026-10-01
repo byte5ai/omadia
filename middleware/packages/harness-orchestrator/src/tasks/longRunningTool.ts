@@ -54,6 +54,7 @@ import {
   type TerminalTaskPatch,
 } from './taskTypes.js';
 import { currentDispatchCaller } from '../toolCallerContext.js';
+import { runDetachedFromRequestLedger } from '../toolReplayLedger.js';
 import { turnContext } from '../turnContext.js';
 
 /**
@@ -524,7 +525,10 @@ export function defineLongRunningTool(
   }
 
   function startRunner(taskId: string): void {
-    const run = claimAndRun(taskId)
+    // The runner outlives the request that started it — in `enforce` it also
+    // runs while the verifier re-enters that request — so it decides its tool
+    // calls on a ledger of its own, never on the request's replay ledger.
+    const run = runDetachedFromRequestLedger(() => claimAndRun(taskId))
       .then(() => undefined)
       .catch((err: unknown) => {
         onRunnerError(err, taskId);

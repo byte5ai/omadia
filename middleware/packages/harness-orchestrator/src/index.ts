@@ -464,6 +464,7 @@ export {
   ToolReplayAbortError,
   ToolReplayLedger,
   replayMissNotice,
+  runDetachedFromRequestLedger,
 } from './toolReplayLedger.js';
 export type {
   ToolReplayDecision,
