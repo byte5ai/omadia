@@ -74,8 +74,12 @@ describe('auth router ?return= handling', () => {
     };
     const registry = new ProviderRegistry();
     registry.replaceActive([oidc]);
+    // The callback mints a session only for an active row and stamps the
+    // row's id and session version into it (server-side revocation), so the
+    // stub returns what a real upsert returns for an enabled account.
     const userStore = {
-      upsertOidcIdentity: () => Promise.resolve({ id: 'row-1' }),
+      upsertOidcIdentity: () =>
+        Promise.resolve({ id: 'row-1', status: 'active', sessionVersion: 0 }),
       markLoginNow: () => Promise.resolve(),
     };
 
