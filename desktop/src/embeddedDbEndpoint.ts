@@ -11,11 +11,11 @@ import path from 'node:path';
  * user can connect to the server, and none can put a listener of their own
  * where the shell and the kernel connect.
  *
- * Windows: loopback TCP, the transport its Postgres build offers there. Another
- * local user could bind the port while the server is stopped (between port
- * selection and start, or during a single-user repair). The server then fails
- * to start, and the shell, which authenticates every connection with SCRAM
- * only (`scramOnlyConnect.ts`), never hands that listener a password.
+ * Windows: loopback TCP. Another local user could bind the port while the
+ * server is stopped (between port selection and start, or during a single-user
+ * repair). The server then fails to start, and the shell, which authenticates
+ * every connection with SCRAM only (`scramOnlyConnect.ts`), never hands that
+ * listener a password.
  *
  * On both, "ready" is read from the server's own `postmaster.pid`: the process
  * the shell spawned, on the expected port and socket directory or address,

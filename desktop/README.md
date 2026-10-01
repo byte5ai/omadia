@@ -367,7 +367,8 @@ Where it listens (`src/embeddedDbEndpoint.ts`):
   home directory) or cannot be made private, the socket goes into a fresh
   private directory under the OS temp folder instead, one per start. It is
   never the chosen data folder, which may be cloud-synced.
-- **Windows:** on `127.0.0.1`, the transport its Postgres build offers.
+- **Windows:** on `127.0.0.1`. A socket there too is a follow-up (see the
+  end of this section).
 
 How the shell knows the server is its own: the server counts as started once
 its own `postmaster.pid` names the process the shell spawned, on the expected
@@ -438,7 +439,8 @@ port); the shell's SCRAM-only logins hand that listener no password, and its
 connections use a stock pg client, though: if the server stops while the
 kernel runs and another user binds the port before the kernel reconnects,
 that listener could ask the kernel for its password in cleartext. Closing that
-is a follow-up (`docs/middleware-agent-handoff.md` §13). macOS and Linux are
+is a follow-up: a SCRAM-only client for the kernel's pools, or a private socket
+on Windows too (`docs/middleware-agent-handoff.md` §13). macOS and Linux are
 not affected: the private socket directory has room for no one else's
 listener.
 
