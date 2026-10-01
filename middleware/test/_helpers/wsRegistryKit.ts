@@ -10,6 +10,7 @@ import { strict as assert } from 'node:assert';
 import { once } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { WebSocket } from 'ws';
 
@@ -92,18 +93,26 @@ export class MutableWhitelist extends EmailWhitelist {
  * `<provider>:<sub>` — the WS suites' stand-in for the users table. Change
  * `accounts` to revoke; make `fail` return true to simulate an outage;
  * `onLookup` sees every account read (i.e. every session check) and may
- * delay it (`await` inside) to hold a check open.
+ * delay it (`await` inside) to hold a check open. `afterRead` runs once the
+ * row has been read but before the check answers, i.e. while the verdict is
+ * already decided and still on its way.
  */
 export function revocationGuard(
   accounts: Map<string, SessionAccount>,
-  opts: { fail?: () => boolean; onLookup?: () => void | Promise<void> } = {},
+  opts: {
+    fail?: () => boolean;
+    onLookup?: () => void | Promise<void>;
+    afterRead?: () => void | Promise<void>;
+  } = {},
 ): SessionRevocationGuard {
   const guard = new SessionRevocationGuard(() => undefined);
   guard.attach({
     findByProviderUserId: async (provider, sub) => {
       await opts.onLookup?.();
       if (opts.fail?.()) throw new Error('users table unreachable');
-      return accounts.get(`${provider}:${sub}`) ?? null;
+      const row = accounts.get(`${provider}:${sub}`) ?? null;
+      await opts.afterRead?.();
+      return row;
     },
   });
   return guard;
@@ -189,6 +198,17 @@ export async function closeInfo(
 ): Promise<{ code: number; reason: string; at: number }> {
   const [code, reason] = (await once(ws, 'close')) as [number, Buffer];
   return { code, reason: reason.toString(), at: Date.now() };
+}
+
+/** Close code + reason, or a failure once `ms` pass without a close. */
+export async function closeWithin(
+  ws: WebSocket,
+  ms: number,
+): Promise<{ code: number; reason: string; at: number }> {
+  const timer = sleep(ms).then(() => {
+    throw new Error(`socket still open ${String(ms)} ms later`);
+  });
+  return Promise.race([closeInfo(ws), timer]);
 }
 
 /**

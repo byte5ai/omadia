@@ -11,72 +11,41 @@
  *   - re-check verdicts map to close codes, an outage keeps the socket, and a
  *     slow check is never started twice.
  *
- * The real-socket behaviour lives in `webSocketRegistrySession.test.ts`.
+ * The per-frame gate lives in `channelSessionFrameGate.test.ts`, the
+ * real-socket behaviour in `webSocketRegistrySession.test.ts` and
+ * `webSocketRegistryFrameGate.test.ts`.
  */
 
 import { strict as assert } from 'node:assert';
-import { EventEmitter } from 'node:events';
-import type { IncomingMessage } from 'node:http';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 
 import type { WebSocket } from 'ws';
 
 import type { SessionEvaluation } from '../src/auth/requireAuth.js';
-import type { VerifiedSession } from '../src/auth/sessionJwt.js';
+import { ChannelSessionTracker } from '../src/channels/channelSessionLifetime.js';
 import {
-  ChannelSessionTracker,
-  type AuthenticatedChannelSession,
-} from '../src/channels/channelSessionLifetime.js';
+  FakeWs,
+  NOW_MS,
+  NOW_S,
+  OK,
+  REQ,
+  session,
+  settle,
+} from './_helpers/channelSessionFakes.js';
 
-const NOW_MS = 1_800_000_000_000;
-const NOW_S = NOW_MS / 1000;
 const HOUR_MS = 3_600_000;
 const MAX_TIMER_MS = 2 ** 31 - 1;
-
-/** The slice of a `ws` socket the tracker touches. */
-class FakeWs extends EventEmitter {
-  readyState = 1; // OPEN
-  closedWith: { code?: number; reason?: string } | undefined;
-
-  send(): void {
-    /* frames to the peer are not under test here */
-  }
-
-  close(code?: number, reason?: string): void {
-    if (this.readyState !== 1) return;
-    this.readyState = 2; // CLOSING
-    this.closedWith = { code, reason };
-  }
-
-  /** The peer went away (its close frame arrived, or the TCP socket ended). */
-  finishClose(): void {
-    this.readyState = 3; // CLOSED
-    this.emit('close', this.closedWith?.code ?? 1005, Buffer.alloc(0));
-  }
-}
-
-const REQ = { url: '/canvas', headers: {} } as unknown as IncomingMessage;
-const OK: SessionEvaluation = { ok: true, claims: {} as VerifiedSession };
-
-function session(expiresAt: number, sub = 'u1'): AuthenticatedChannelSession {
-  return {
-    token: `token-of-${sub}`,
-    expiresAt,
-    claims: {
-      subject: sub,
-      email: `${sub}@example.com`,
-      displayName: sub,
-      provider: 'local',
-      expiresAt,
-    },
-  };
-}
 
 function tracker(
   evaluate: (token: string) => Promise<SessionEvaluation> = () => Promise.resolve(OK),
   recheckMs = HOUR_MS,
+  checkTimeoutMs?: number,
 ): ChannelSessionTracker {
-  return new ChannelSessionTracker({ evaluate, recheckMs });
+  return new ChannelSessionTracker({
+    evaluate,
+    recheckMs,
+    ...(checkTimeoutMs !== undefined ? { checkTimeoutMs } : {}),
+  });
 }
 
 function accept(t: ChannelSessionTracker, expiresAt: number, seen: string[] = []): FakeWs {
@@ -84,11 +53,6 @@ function accept(t: ChannelSessionTracker, expiresAt: number, seen: string[] = []
   const socket = t.accept(ws as unknown as WebSocket, REQ, 'ch', session(expiresAt));
   socket?.onMessage((m) => seen.push(m));
   return ws;
-}
-
-/** Let the tracker's promise continuations run (the mocked clock stays put). */
-async function settle(): Promise<void> {
-  for (let i = 0; i < 5; i += 1) await Promise.resolve();
 }
 
 beforeEach(() => {
@@ -199,10 +163,16 @@ describe('ChannelSessionTracker — periodic re-check', () => {
   it('never starts a second check while one is still pending', async () => {
     let checks = 0;
     const ws = accept(
-      tracker(() => {
-        checks += 1;
-        return new Promise<SessionEvaluation>(() => undefined);
-      }, RECHECK_MS),
+      // Deadline beyond the window watched here; the deadline itself is
+      // covered in channelSessionFrameGate.test.ts.
+      tracker(
+        () => {
+          checks += 1;
+          return new Promise<SessionEvaluation>(() => undefined);
+        },
+        RECHECK_MS,
+        10 * RECHECK_MS,
+      ),
       NOW_S + 4 * 3600,
     );
     mock.timers.tick(RECHECK_MS);

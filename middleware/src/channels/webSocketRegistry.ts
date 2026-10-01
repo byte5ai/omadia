@@ -5,25 +5,22 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import type { ChannelSocketHandler, ChannelSessionClaims } from '@omadia/channel-sdk';
 
-import { SESSION_COOKIE, evaluateSessionToken } from '../auth/requireAuth.js';
-import {
-  SESSION_CHECK_UNAVAILABLE_CODE,
-  SESSION_REVOKED_CODE,
-  type SessionRevocation,
-} from '../auth/sessionRevocation.js';
+import { evaluateSessionToken } from '../auth/requireAuth.js';
+import type { SessionRevocation } from '../auth/sessionRevocation.js';
 import type { EmailWhitelist } from '../auth/whitelist.js';
 
+import { authenticateChannelSession } from './channelSessionAuth.js';
 import {
   ChannelSessionTracker,
   MAX_TIMER_MS,
+  WS_SESSION_CHECK_TIMEOUT_MS,
+  WS_SESSION_FRAME_RECHECK_MS,
   WS_SESSION_RECHECK_MS,
-  type AuthenticatedChannelSession,
   type SessionRevokeReason,
 } from './channelSessionLifetime.js';
 import {
   authenticateBeforeHandshake,
   rejectUpgrade as reject,
-  type WebSocketAuthResult,
   type WebSocketAuthenticator,
 } from './webSocketUpgradeAuth.js';
 
@@ -31,6 +28,8 @@ export type { WebSocketAuthResult, WebSocketAuthenticator } from './webSocketUpg
 export {
   WS_CLOSE_SESSION_EXPIRED,
   WS_CLOSE_SESSION_FORBIDDEN,
+  WS_SESSION_CHECK_TIMEOUT_MS,
+  WS_SESSION_FRAME_RECHECK_MS,
   WS_SESSION_RECHECK_MS,
 } from './channelSessionLifetime.js';
 
@@ -64,9 +63,12 @@ export {
  * A channel socket then lives no longer than its session
  * (`channelSessionLifetime.ts`): closed with 4401 at the token's `exp`, with
  * 4403 when the session is revoked — at once when the revocation is announced
- * on this replica, within {@link WS_SESSION_RECHECK_MS} through the periodic
- * re-check otherwise. Kernel routes own their principal and therefore their
- * lifetime: the registry enforces none for them.
+ * on this replica, otherwise before the socket's next frame is handled (a
+ * frame needs a verdict at most {@link WS_SESSION_FRAME_RECHECK_MS} old) and,
+ * for a socket that sends nothing, within {@link WS_SESSION_RECHECK_MS}. While
+ * the session cannot be checked, frames are withheld from the handler. Kernel
+ * routes own their principal and therefore their lifetime: the registry
+ * enforces none for them.
  *
  * Every accepted socket carries an `'error'` listener: `ws` emits `'error'` on
  * any protocol violation from the peer (including a frame above the route's
@@ -168,10 +170,11 @@ export interface WebSocketRegistryDeps {
    * raw 401, and one whose account could not be read with a raw 503.
    *
    * It also ends sockets that are ALREADY open: `onRevoked` closes that user's
-   * channel sockets at once (4403), and the periodic re-check runs `check`
-   * again for every live socket, which is what reaches a revocation made on
-   * another replica (the announcement is process-local). Optional so test
-   * harnesses without a users table keep the signature-only verdict.
+   * channel sockets at once (4403), and `check` runs again before a frame
+   * whose verdict is too old and on the idle-socket sweep, which is what
+   * reaches a revocation made on another replica (the announcement is
+   * process-local). Optional so test harnesses without a users table keep the
+   * signature-only verdict.
    */
   sessions?: SessionRevocation;
   /**
@@ -185,6 +188,20 @@ export interface WebSocketRegistryDeps {
    * A positive integer that setTimeout honours.
    */
   channelSessionRecheckMs?: number;
+  /**
+   * Oldest session verdict an inbound channel frame may ride on, in ms
+   * between the start of its check and the frame's arrival; an older one is
+   * re-checked first while the frame waits. 0 checks every frame. Defaults to
+   * {@link WS_SESSION_FRAME_RECHECK_MS}; production passes the env value
+   * `WS_SESSION_FRAME_RECHECK_MS`.
+   */
+  channelFrameRecheckMs?: number;
+  /**
+   * Deadline for one session check of a live channel socket, in ms. Defaults
+   * to {@link WS_SESSION_CHECK_TIMEOUT_MS}; injectable so tests can use a
+   * short one. A positive integer that setTimeout honours.
+   */
+  channelSessionCheckTimeoutMs?: number;
 }
 
 export class WebSocketRegistry {
@@ -198,13 +215,20 @@ export class WebSocketRegistry {
 
   constructor(private readonly deps: WebSocketRegistryDeps) {
     const maxPayload = deps.channelMaxPayloadBytes ?? CHANNEL_WS_MAX_PAYLOAD_BYTES;
-    assertBoundedPositiveInteger('channelMaxPayloadBytes', maxPayload, WS_MAX_PAYLOAD_LIMIT_BYTES);
+    assertBoundedInteger('channelMaxPayloadBytes', maxPayload, WS_MAX_PAYLOAD_LIMIT_BYTES);
     const recheckMs = deps.channelSessionRecheckMs ?? WS_SESSION_RECHECK_MS;
-    assertBoundedPositiveInteger('channelSessionRecheckMs', recheckMs, MAX_TIMER_MS);
+    assertBoundedInteger('channelSessionRecheckMs', recheckMs, MAX_TIMER_MS);
+    const frameRecheckMs = deps.channelFrameRecheckMs ?? WS_SESSION_FRAME_RECHECK_MS;
+    // 0 is allowed: it means "check before every frame".
+    assertBoundedInteger('channelFrameRecheckMs', frameRecheckMs, MAX_TIMER_MS, 0);
+    const checkTimeoutMs = deps.channelSessionCheckTimeoutMs ?? WS_SESSION_CHECK_TIMEOUT_MS;
+    assertBoundedInteger('channelSessionCheckTimeoutMs', checkTimeoutMs, MAX_TIMER_MS);
     this.channelWss = createServer(maxPayload);
     this.channelSessions = new ChannelSessionTracker({
       evaluate: (token) => evaluateSessionToken(token, deps),
       recheckMs,
+      frameRecheckMs,
+      checkTimeoutMs,
       ...(deps.sessions ? { revocations: deps.sessions } : {}),
     });
   }
@@ -244,9 +268,9 @@ export class WebSocketRegistry {
         existing.kind === 'kernel' ? 'a kernel route' : `channel '${existing.channelId}'`;
       throw new Error(`websocket path '${path}' already owned by ${owner}`);
     }
-    assertBoundedPositiveInteger('maxPayload', route.maxPayload, WS_MAX_PAYLOAD_LIMIT_BYTES);
+    assertBoundedInteger('maxPayload', route.maxPayload, WS_MAX_PAYLOAD_LIMIT_BYTES);
     const authTimeoutMs = route.authTimeoutMs ?? KERNEL_WS_AUTH_TIMEOUT_MS;
-    assertBoundedPositiveInteger('authTimeoutMs', authTimeoutMs, MAX_TIMER_MS);
+    assertBoundedInteger('authTimeoutMs', authTimeoutMs, MAX_TIMER_MS);
     const { authenticate, handler } = route;
     this.routes.set(path, {
       kind: 'kernel',
@@ -338,8 +362,11 @@ export class WebSocketRegistry {
       reject(socket, 503);
       return;
     }
+    // Before the check: a revocation announced while it runs finds no socket
+    // to close yet, so `accept` looks for one itself.
+    const mark = this.channelSessions.mark();
     const auth = await authenticateBeforeHandshake(
-      (r) => this.authenticateSession(r),
+      (r) => authenticateChannelSession(r, this.deps),
       req,
       socket,
       route.path,
@@ -354,9 +381,16 @@ export class WebSocketRegistry {
 
     this.channelWss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
       trackSocket(ws, undefined, `${route.path} (channel=${route.channelId})`);
-      const channelSocket = this.channelSessions.accept(ws, req, route.channelId, auth.principal);
-      // Expired while the upgrade was being checked (or no `exp` at all): the
-      // socket is already closed with 4401 and the handler never sees it.
+      const channelSocket = this.channelSessions.accept(
+        ws,
+        req,
+        route.channelId,
+        auth.principal,
+        mark,
+      );
+      // Expired (or no `exp` at all, 4401) or revoked on this replica (4403)
+      // while the upgrade was being checked: already closed, and the handler
+      // never sees it.
       if (!channelSocket) return;
       route.handler(channelSocket, { ...auth.principal.claims });
     });
@@ -389,57 +423,6 @@ export class WebSocketRegistry {
       route.handler(ws, req, auth.principal);
     });
   }
-
-  /**
-   * The channel-route authenticator: `requireAuth`'s own session evaluation
-   * (same signing key, same Entra whitelist gate, same revocation guard), so
-   * the WS upgrade and the HTTP gate cannot drift. Status mapping matches
-   * `requireAuth`: `auth.not_whitelisted` → 403, a failed revocation lookup →
-   * 503 (thrown, so `authenticateBeforeHandshake` answers it as the outage it
-   * is), everything else → 401. The raw upgrade request has no cookie-parser
-   * middleware in front of it, so the header is parsed by hand.
-   *
-   * The principal keeps the token and its `exp` for the session tracker; the
-   * handler later gets `claims` only.
-   */
-  private async authenticateSession(
-    req: IncomingMessage,
-  ): Promise<WebSocketAuthResult<AuthenticatedChannelSession>> {
-    const token = sessionTokenFromCookie(req.headers.cookie);
-    // No cookie is routine (a reconnecting signed-out tab) and stays unlogged.
-    if (token === undefined) return { ok: false, status: 401 };
-    const result = await evaluateSessionToken(token, this.deps);
-    if (!result.ok) {
-      if (result.code === SESSION_CHECK_UNAVAILABLE_CODE) {
-        throw new Error('session revocation lookup unavailable');
-      }
-      // Missing/expired cookies are routine (a reconnecting logged-out tab)
-      // and stay unlogged. A de-whitelisted identity is worth a log line, and
-      // so is a revoked session: that cookie outlived a sign-out or a reset.
-      if (result.code === 'auth.not_whitelisted') {
-        return { ok: false, status: 403, message: result.code };
-      }
-      return result.code === SESSION_REVOKED_CODE
-        ? { ok: false, status: 401, message: result.code }
-        : { ok: false, status: 401 };
-    }
-    const verified = result.claims;
-    return {
-      ok: true,
-      principal: {
-        token,
-        expiresAt: verified.exp,
-        claims: {
-          subject: verified.sub,
-          email: verified.email,
-          displayName: verified.display_name,
-          provider: verified.provider,
-          ...(verified.omadia_user_id ? { omadiaUserId: verified.omadia_user_id } : {}),
-          expiresAt: verified.exp,
-        },
-      },
-    };
-  }
 }
 
 /** Track a live socket for its owner and make every peer error non-fatal. */
@@ -459,11 +442,11 @@ function createServer(maxPayload: number): WebSocketServer {
   return new WebSocketServer({ noServer: true, maxPayload, clientTracking: false });
 }
 
-function assertBoundedPositiveInteger(name: string, value: number, max: number): void {
-  if (!Number.isSafeInteger(value) || value <= 0 || value > max) {
-    throw new Error(
-      `websocket ${name} must be a positive integer <= ${String(max)}, got ${String(value)}`,
-    );
+/** An integer in `min..max` (`min` 1 by default: a positive integer). */
+function assertBoundedInteger(name: string, value: number, max: number, min = 1): void {
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    const kind = min === 0 ? 'a non-negative integer' : 'a positive integer';
+    throw new Error(`websocket ${name} must be ${kind} <= ${String(max)}, got ${String(value)}`);
   }
 }
 
@@ -472,23 +455,4 @@ function pathFromUrl(url: string | undefined): string | null {
   if (!url) return null;
   const q = url.indexOf('?');
   return q === -1 ? url : url.slice(0, q);
-}
-
-/** Extract the session cookie value from a raw `Cookie` header. */
-function sessionTokenFromCookie(cookieHeader: string | undefined): string | undefined {
-  if (!cookieHeader) return undefined;
-  for (const part of cookieHeader.split(';')) {
-    const eq = part.indexOf('=');
-    if (eq === -1) continue;
-    if (part.slice(0, eq).trim() === SESSION_COOKIE) {
-      const raw = part.slice(eq + 1).trim();
-      try {
-        return decodeURIComponent(raw);
-      } catch {
-        // A malformed %-escape is not a token we minted; verification rejects it.
-        return raw;
-      }
-    }
-  }
-  return undefined;
 }

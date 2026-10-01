@@ -10,10 +10,11 @@
  *   - a revocation announced on this replica closes that user's sockets at
  *     once (4403), and `closeSessions(match)` closes a principal's sockets on
  *     demand; frames that arrive after that never reach the handler;
- *   - the periodic re-check through `evaluateSessionToken`, the guarantee
- *     across replicas, closes a socket whose account moved its session
- *     version on or whose Entra identity left the whitelist (4403), and keeps
- *     a valid socket open, database outage or not;
+ *   - the periodic re-check through `evaluateSessionToken` closes an idle
+ *     socket whose account moved its session version on or whose Entra
+ *     identity left the whitelist (4403) and keeps a valid socket open; while
+ *     the account cannot be read, frames are withheld but the socket stays
+ *     (the per-frame check across replicas: `webSocketRegistryFrameGate.test.ts`);
  *   - a close by the client or by `deactivateChannel` (1001) stops the
  *     socket's expiry timer and its re-checks.
  *
@@ -47,7 +48,7 @@ import {
   MutableWhitelist,
   authCookie,
   closeClient,
-  closeInfo,
+  closeWithin,
   echo,
   entraCookie,
   openClient,
@@ -59,17 +60,6 @@ import {
 } from './_helpers/wsRegistryKit.js';
 
 const SLOW = { timeout: 15_000 } as const;
-
-/** Close code + reason, or a failure once `ms` pass without a close. */
-async function closeWithin(
-  ws: WebSocket,
-  ms: number,
-): Promise<{ code: number; reason: string; at: number }> {
-  const timer = sleep(ms).then(() => {
-    throw new Error(`socket still open ${String(ms)} ms later`);
-  });
-  return Promise.race([closeInfo(ws), timer]);
-}
 
 /** Echo handler that records every frame it was handed. */
 function echoHandler(seen: string[] = []): (socket: ChannelSocket) => void {
@@ -208,7 +198,7 @@ describe('WebSocketRegistry — a channel socket ends with its session', () => {
     });
   });
 
-  it('keeps a valid socket open across re-checks, and an outage is not a verdict', SLOW, async () => {
+  it('keeps a valid socket open across re-checks; an outage withholds frames but keeps the socket', SLOW, async () => {
     const accounts = new Map([['local:u1', account('row-u1')]]);
     let failing = false;
     let lookups = 0;
@@ -219,7 +209,8 @@ describe('WebSocketRegistry — a channel socket ends with its session', () => {
       },
     });
     await withServer({ sessions, channelSessionRecheckMs: 25 }, async (rs) => {
-      rs.registry.register('ch.valid', '/valid', echoHandler());
+      const seen: string[] = [];
+      rs.registry.register('ch.valid', '/valid', echoHandler(seen));
       const ws = await openClient(`${rs.base}/valid`, {
         cookie: await authCookie({ sv: 0, uid: 'row-u1' }),
       });
@@ -231,10 +222,17 @@ describe('WebSocketRegistry — a channel socket ends with its session', () => {
       failing = true;
       try {
         await sleep(250);
-        assert.equal(await echo(ws, 'through the outage'), 'through the outage');
+        // The sweep could not check the session, so no verdict stands: the
+        // frame is withheld (like HTTP's 503), and the socket is not closed.
+        ws.send('during the outage');
+        await sleep(150);
+        assert.equal(ws.readyState, WebSocket.OPEN, 'an outage is not a verdict');
       } finally {
         failing = false;
       }
+      // The next reply is this frame's: the withheld one was never handled.
+      assert.equal(await echo(ws, 'after the outage'), 'after the outage');
+      assert.deepEqual(seen, ['still here', 'after the outage']);
       await closeClient(ws);
     });
   });

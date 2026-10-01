@@ -203,4 +203,28 @@ describe('WebSocketRegistry — route option bounds', () => {
       () => new WebSocketRegistry({ signingKey: KEY, whitelist: WHITELIST, channelSessionRecheckMs: 1 }),
     );
   });
+
+  it('channelFrameRecheckMs must be a non-negative integer (0 checks every frame)', () => {
+    for (const channelFrameRecheckMs of [-1, 1.5, Number.NaN, 2 ** 31]) {
+      assert.throws(
+        () => new WebSocketRegistry({ signingKey: KEY, whitelist: WHITELIST, channelFrameRecheckMs }),
+        /channelFrameRecheckMs/,
+      );
+    }
+    for (const channelFrameRecheckMs of [0, 5_000]) {
+      assert.doesNotThrow(
+        () => new WebSocketRegistry({ signingKey: KEY, whitelist: WHITELIST, channelFrameRecheckMs }),
+      );
+    }
+  });
+
+  it('channelSessionCheckTimeoutMs must be a positive integer setTimeout honours', () => {
+    for (const channelSessionCheckTimeoutMs of [0, -1, 1.5, Number.NaN, 2 ** 31]) {
+      assert.throws(
+        () =>
+          new WebSocketRegistry({ signingKey: KEY, whitelist: WHITELIST, channelSessionCheckTimeoutMs }),
+        /channelSessionCheckTimeoutMs/,
+      );
+    }
+  });
 });

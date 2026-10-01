@@ -184,6 +184,17 @@ const ConfigSchema = z.object({
   // Lower bound 4 = the fixed login window (a smaller cap would be
   // meaningless); upper bound one week.
   AUTH_SESSION_MAX_LIFETIME_HOURS: z.coerce.number().min(4).max(168).default(12),
+  // Channel WebSockets (canvas): a frame reaches its plugin only on a session
+  // check that started at most this many ms before the frame arrived; an
+  // older verdict is re-checked first (one users-row read) while the frame
+  // waits. This bounds how long a revocation made on another replica takes to
+  // stop an open socket. 0 = check before every frame; at most 60 s, the
+  // idle-socket sweep. An empty value means the default, not 0 (coercion
+  // would read "" as 0).
+  WS_SESSION_FRAME_RECHECK_MS: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.coerce.number().int().min(0).max(60_000).default(5_000),
+  ),
 
   // Friction-free desktop pairing (#293). The server owns the mapping
   // "human-facing URL → canvas transport URL"; these knobs let one config
