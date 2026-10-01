@@ -117,15 +117,14 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  # Default artifact name is "${productName} Setup ${version}.${ext}" — the
-  # space breaks Azure Trusted Signing: electron-builder invokes
-  # `Invoke-TrustedSigning -Files <path>` without quoting the path, so
-  # signtool sees the path truncated at the first space and fails with
-  # "File not found". No spaces sidesteps the bug entirely.
-  # It is also load-bearing for Windows auto-update: latest.yml's `url` (and
-  # electron-updater's request) use the dash form, while GitHub stores a
-  # spaced upload as `omadia.Setup.X.exe` — the feed then 404s. Keep this name
-  # even if a future electron-builder quotes `-Files`.
+  # Default artifact name is "${productName} Setup ${version}.${ext}". The
+  # space broke Azure Trusted Signing up to electron-builder 25, which passed
+  # `Invoke-TrustedSigning -Files <path>` unquoted, so signtool saw the path
+  # truncated at the first space and failed with "File not found" (26 quotes
+  # every argument).
+  # The name is still load-bearing for Windows auto-update: latest.yml's `url`
+  # (and electron-updater's request) use the dash form, while GitHub stores a
+  # spaced upload as `omadia.Setup.X.exe` — the feed then 404s. Keep it.
   artifactName: ${productName}-Setup-${version}.${ext}
 
 linux:

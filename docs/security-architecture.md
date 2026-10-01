@@ -549,6 +549,73 @@ registry handler (`src/platform/pluginContext.ts`):
   A new native tool bound to shared or unscoped state must be routed or denied
   the same way before it is registered.
 
+## 4a. Third-party npm dependencies: audit gate, Dependabot scope, the desktop runtime
+
+Plugins are operator-curated (§4); the npm dependencies of the kernel, the
+web-ui and the desktop shell are not, so they rest on automated controls and on
+one rule about what counts as a runtime.
+
+- **Audit gate.** The `audit (high+critical block)` job in
+  `.github/workflows/ci.yml` runs `npm audit --audit-level=high` in every
+  directory that has its own `package.json` and `package-lock.json`:
+  `desktop`, `middleware` and `web-ui`. Before it audits, every leg runs
+  `.github/scripts/audit-scope.test.mjs`, which fails when a lockfile directory
+  git tracks is missing from the matrix, or a leg names a directory without
+  one. The root `package-lock.json` is an empty stub with no
+  `package.json` beside it and is not a leg. Each leg reports its own
+  `audit (high+critical block) (<dir>)` status context, and each has to be a
+  required check on `main`: a context that is not required reports findings
+  but blocks nothing.
+- **A registry error is not a result.** The audit step gives the npm registry
+  three attempts and then fails the leg. Only the repository variable
+  `AUDIT_ALLOW_REGISTRY_OUTAGE`, set by an admin for a confirmed upstream
+  outage, downgrades that to a warning (§11). It is a GitHub Actions variable,
+  not an application setting, so it does not belong in
+  `middleware/.env.example`. Every run archives its report as the
+  `npm-audit-<dir>` workflow artifact.
+- **Dependabot** has an npm block for every audited directory (`/desktop`,
+  `/middleware`, `/web-ui`); a new package directory gets one together with its
+  audit leg. GitHub's repository-level alerting is not counted on as a
+  backstop: the audit gate and the weekly version updates are the controls,
+  which is why every audit leg has to be a required check.
+- **`electron` is a runtime, not a build tool.** It sits in the desktop's
+  `devDependencies` because electron-builder packages the installed binary, but
+  the app runs on it and the supervisor starts the kernel and the web-ui under
+  its Node (`ELECTRON_RUN_AS_NODE`, `desktop/src/supervisor.ts`). Its
+  advisories count like production ones, its majors are never ignored in
+  Dependabot (Electron only patches its three newest majors), and the desktop's
+  `@types/node` follows Electron's embedded Node (Node 24 for Electron 44), not
+  the Node 22 of the server image. The release build's "Verify native modules
+  load under the Electron ABI" step is the check that the middleware's native
+  modules still load under that Node.
+- **Windows update signatures.** electron-builder writes a `publisherName` into
+  the Windows app's `app-update.yml`; the release build reads it from the
+  certificate that signs the installer (Azure Trusted Signing), and
+  electron-updater refuses a downloaded update that is not Authenticode-signed
+  under that name. Apps installed from builds before electron-builder 26 carry
+  no `publisherName` and take their next update unchecked; every update after
+  that is checked.
+- **macOS update floor.** electron-builder writes no macOS minimum into
+  `latest-mac.yml`, so `desktop/scripts/merge-mac-update-feed.mjs` adds
+  `minimumSystemVersion` to the merged feed. It is the Darwin kernel version
+  (`22.0.0` for macOS 13, Electron 44's minimum), because electron-updater
+  compares it with `os.release()`; a product version such as `13.0` fails its
+  semver parse and lets every Mac update. Macs below the floor are not offered
+  the update and keep the version they run. `desktop/buildResources/afterPack.js`
+  fails every mac build whose packaged `LSMinimumSystemVersion` does not match
+  the floor, so an Electron major that raises the minimum cannot reach Macs it
+  does not start on.
+- **A held-back Mac is told, not reported current.** electron-updater answers
+  a feed above the OS floor with the same `update-not-available` event, and
+  the same feed version, as a current install. `desktop/src/updateHoldBack.ts`
+  tells the two apart: the user learns which macOS the release needs and that
+  updates, security fixes included, stop until the OS is updated — once per
+  floor at startup, and on every "Check for Updates…". Those Macs stay on the
+  last Electron 37 build, a runtime without further Electron security fixes; an
+  OS update is the only remedy. Only builds that carry the handler can say
+  this, so a raised floor ships its message first, in a release the held-back
+  OS can still install (for macOS 13, the last Electron 37 release).
+
 ## 5. Signed artefact URLs
 
 User-visible artefacts (rendered diagrams, attachments, exports) are stored
@@ -2049,7 +2116,21 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       preference (§10j).
 - [ ] A store that maps caller-supplied keys onto the filesystem derives the
       path from a digest of the key, never from the key's text (§10j).
+- [ ] A new directory with its own `package.json` + `package-lock.json` is a
+      leg of the `audit (high+critical block)` matrix, has an npm block in
+      `.github/dependabot.yml`, and its `(<dir>)` status context is required
+      on `main` (§4a). `audit-scope.test.mjs` catches a missing matrix leg;
+      the Dependabot block and the required check are on the reviewer.
+- [ ] An Electron major bump in `desktop/` moves `@types/node` to Electron's
+      embedded Node major in the same PR. Before it merges, a `desktop-apps.yml`
+      dispatch build of the PR branch (throwaway tag) has passed on all four
+      targets, including "Verify native modules load under the Electron ABI"
+      and afterPack's check of the macOS update floor (§4a): a push to `main`
+      releases through that same workflow. That build has also been installed
+      over the current release on macOS, Windows and Linux with `secrets.enc`
+      left byte-identical: the new runtime's `safeStorage` decrypts the vault
+      key, and a runtime that cannot must stop the app, never re-key it.
 
 ---
 
-*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches).*
+*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §4a added: npm dependency audit scope and the desktop runtime).*

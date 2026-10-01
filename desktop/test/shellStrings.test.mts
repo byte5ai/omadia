@@ -176,6 +176,19 @@ describe('the new shell dialogs are translated', () => {
     assert.doesNotMatch(filled, /\{logFile\}/);
   });
 
+  it('translates the copy-failed note and keeps the key in it', () => {
+    // The note exists to put the key back on screen after a failed copy; a
+    // translation that drops {key} would show the warning without the key.
+    for (const key of ['recovery.copyFailed.title', 'recovery.copyFailed.message']) {
+      assert.notEqual(t(key, 'UNTRANSLATED'), 'UNTRANSLATED', `${key} is missing`);
+    }
+    const filled = fillPlaceholders(t('recovery.copyFailed.detail', 'UNTRANSLATED'), {
+      key: 'KEY-1234',
+    });
+    assert.match(filled, /KEY-1234/);
+    assert.doesNotMatch(filled, /UNTRANSLATED|\{key\}/);
+  });
+
   it('promises no automatic reload, in either language', () => {
     // The German for this key once said "omadia versucht, sie neu zu laden"
     // while the code deliberately does not retry, and the English fallback said

@@ -98,9 +98,10 @@ off by default; set the `CSC_*` / `APPLE_*` env vars and flip `notarize: true` i
 `.github/workflows/desktop-apps.yml` builds + signs the installers for **macOS,
 Windows and Linux** and uploads them to the Release that triggered it (separate
 from the GHCR image pipeline so neither blocks the other). Per OS it builds the
-middleware + web-ui, rebuilds the middleware's native modules for Electron's ABI
-(`@electron/rebuild` — electron-builder does the app's own deps but not the
-staged `extraResources`), stages the runtime, then runs electron-builder.
+middleware + web-ui, checks that the middleware's native modules (better-sqlite3,
+argon2, sharp — all N-API prebuilds) load under Electron's own Node the way the
+supervisor runs the kernel (`ELECTRON_RUN_AS_NODE`; no Electron-ABI rebuild is
+needed or done), stages the runtime, then runs electron-builder.
 
 Signing is **fail-soft** — without secrets it still ships installers (ad-hoc on
 macOS):
@@ -119,7 +120,10 @@ macOS):
   natively via `win.azureSignOptions` and installs the `TrustedSigning`
   PowerShell module itself; the workflow passes the three account coordinates on
   the CLI so no byte5-specific value is baked into the repo. No hardware token,
-  runs on GitHub-hosted runners.
+  runs on GitHub-hosted runners. The publisher name electron-builder 26 also
+  requires is read from the signing certificate during the build and pinned into
+  the app's `app-update.yml`, so an installed Windows app only accepts updates
+  that are Authenticode-signed under that name.
 - **Windows — legacy Authenticode `.p12`**: `WINDOWS_CSC_LINK_BASE64`,
   `WINDOWS_CSC_KEY_PASSWORD`. Only usable with certificates issued **before
   2023-06-01**. Since then the CA/Browser Forum requires every code-signing
@@ -198,6 +202,21 @@ Consequences worth knowing before touching this:
   users with no matching file, or pushes every Apple Silicon user onto Rosetta.
   The mac jobs therefore **hold back** that file and the `mac-update-feed` job
   merges both (`scripts/merge-mac-update-feed.mjs`, covered by `npm test`).
+- The merged feed also declares `minimumSystemVersion`: the macOS minimum of the
+  packaged Electron, written as the Darwin kernel version electron-updater
+  compares with `os.release()` (`22.0.0` = macOS 13). Macs below it are not
+  offered the update and keep the version they run. `buildResources/afterPack.js`
+  fails the build when the packaged app's `LSMinimumSystemVersion` no longer
+  matches `MACOS_MINIMUM` in that script — after an Electron major, update the
+  constant, not the check.
+- electron-updater reports such a Mac with the same `update-not-available`
+  event, and the same feed version, as a current one. `src/updateHoldBack.ts`
+  tells the two apart, so the app says which macOS the release needs instead of
+  "already on the latest version" (once per floor at startup, and on every
+  manual check). Its Darwin → macOS table is the inverse of the one in the feed
+  script; `test/updateHoldBack.test.mts` fails when they disagree. Only builds
+  that carry this handler can say it, so a floor that leaves Macs behind has to
+  ship after a release those Macs can still install.
 - `stage-runtime.mjs` follows `process.arch`, so it needs no changes — but
   anything that hardcodes `darwin-arm64` does. The pgvector CI step now derives
   the architecture and asserts the resulting `vector.dylib` really is that
