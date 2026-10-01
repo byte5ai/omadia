@@ -3,9 +3,11 @@
  * trigger signal, an extractor that fails, zero extracted claims, claims no
  * checker accepts — and none of them may come back `approved`. They are
  * `skipped` (ran, nothing checkable) or `unavailable` (could not run), each
- * with a closed reason code. `approved` needs at least one checked claim, all
- * of them verified. The last block drives the production `ClaimExtractor`, so
- * an LLM outage is proven to land in `unavailable`, not in `skipped`.
+ * with a closed reason code. `approved` needs every extracted claim checked
+ * and verified: a claim no checker takes stays in the verdict as unchecked,
+ * so an answer checked only in part is never `approved`. The last block
+ * drives the production `ClaimExtractor`, so an LLM outage, a truncated
+ * response and a malformed one are proven to land in `unavailable`.
  */
 
 import { describe, it } from 'node:test';
@@ -14,6 +16,7 @@ import { strict as assert } from 'node:assert';
 import {
   ClaimExtractor,
   VerifierPipeline,
+  isBorderlineVerdict,
   type Claim,
   type ClaimExtractorOptions,
   type ClaimVerdict,
@@ -59,7 +62,7 @@ interface Harness {
 /** Pipeline whose extractor yields `claims` (or rejects with `fail`) and whose
  *  checkers verify every claim they are handed — so any non-`approved` result
  *  below comes from the pipeline's own classification, not a checker verdict. */
-function harness(opts: { claims?: Claim[]; fail?: Error }): Harness {
+function harness(opts: { claims?: Claim[]; fail?: Error; maxClaims?: number }): Harness {
   let extractCalls = 0;
   let checked = 0;
   const logs: string[] = [];
@@ -79,6 +82,7 @@ function harness(opts: { claims?: Claim[]; fail?: Error }): Harness {
     extractor,
     deterministic: { checkAll: verifyAll } as unknown as DeterministicChecker,
     judge: { checkAll: verifyAll } as unknown as EvidenceJudge,
+    ...(opts.maxClaims !== undefined ? { maxClaims: opts.maxClaims } : {}),
     log: (msg) => {
       logs.push(msg);
     },
@@ -210,12 +214,64 @@ describe('verifier/pipeline — evidence-bound verdict states', () => {
   });
 });
 
+/** The cause an `unverified` claim verdict carries; undefined otherwise. */
+function causeOf(verdict: VerifierVerdict, claimId: string): unknown {
+  const found = verdict.claims.find((c) => c.claim.id === claimId);
+  return found?.status === 'unverified' ? found.cause : undefined;
+}
+
+describe('verifier/pipeline — an answer checked only in part is never approved', () => {
+  // An amount whose source no checker queries: classify() cannot route it.
+  const policyAmount = hardClaim({
+    id: 'c_policy',
+    text: '5.000 €',
+    value: 5000,
+    expectedSource: 'confluence',
+  });
+  const MIXED_ANSWER = 'Laut Richtlinie beträgt das Budget 5.000 €; die Rechnung beträgt 1.234,56 €.';
+
+  it('a claim no checker accepts stays in the verdict, so the rest verifying is not approved', async () => {
+    const h = harness({ claims: [hardClaim(), policyAmount] });
+    const verdict = await h.pipeline.verify(input(MIXED_ANSWER));
+    assert.equal(h.checkedClaims(), 1, 'only the Odoo amount reaches a checker');
+    assert.equal(verdict.status, 'approved_with_disclaimer');
+    assert.equal(verdict.claims.length, 2, 'the unchecked claim is not dropped');
+    assert.equal(causeOf(verdict, 'c_policy'), 'not_checked');
+    // A second sample cannot make the claim checkable: no paid resample.
+    assert.equal(isBorderlineVerdict(verdict), false);
+  });
+
+  it('claims beyond the claim cap are not checked and stay in the verdict', async () => {
+    const credit = hardClaim({ id: 'c_credit', text: '99,00 €', value: 99 });
+    const h = harness({ claims: [hardClaim(), credit], maxClaims: 1 });
+    const verdict = await h.pipeline.verify(
+      input('Die Rechnung beträgt 1.234,56 €, die Gutschrift 99,00 €.'),
+    );
+    assert.equal(h.checkedClaims(), 1, 'the cap bounds the checks');
+    assert.equal(verdict.status, 'approved_with_disclaimer');
+    assert.equal(causeOf(verdict, 'c_credit'), 'not_checked');
+  });
+
+  it('an unchecked claim does not use up a slot under the cap', async () => {
+    const h = harness({ claims: [policyAmount, hardClaim()], maxClaims: 1 });
+    const verdict = await h.pipeline.verify(input(MIXED_ANSWER));
+    assert.equal(h.checkedClaims(), 1, 'the Odoo amount is still checked');
+    assert.equal(causeOf(verdict, 'c_h'), undefined);
+    assert.equal(verdict.claims.find((c) => c.claim.id === 'c_h')?.status, 'verified');
+  });
+});
+
 /**
  * The production `ClaimExtractor` over a scripted LLM `complete()`: the
  * pipeline meets the extractor's own failure handling, not a stub that throws.
- * No claim reaches a checker on these paths, so the checkers reject if called.
+ * By default no claim may reach a checker on these paths, so the checkers
+ * reject if called; `verify-all` lets a claim that does get through verify,
+ * which makes a wrongly accepted extraction show up as `approved`.
  */
-function realExtractorPipeline(complete: () => Promise<unknown>): {
+function realExtractorPipeline(
+  complete: () => Promise<unknown>,
+  checkers: 'unreachable' | 'verify-all' = 'unreachable',
+): {
   pipeline: VerifierPipeline;
   logs: string[];
 } {
@@ -223,19 +279,28 @@ function realExtractorPipeline(complete: () => Promise<unknown>): {
   const log = (msg: string): void => {
     logs.push(msg);
   };
-  const unreachable = (): Promise<ClaimVerdict[]> =>
-    Promise.reject(new Error('no claim may reach a checker on this path'));
+  const checkAll =
+    checkers === 'unreachable'
+      ? (): Promise<ClaimVerdict[]> =>
+          Promise.reject(new Error('no claim may reach a checker on this path'))
+      : (claims: Claim[]): Promise<ClaimVerdict[]> =>
+          Promise.resolve(
+            claims.map((c): ClaimVerdict => ({ status: 'verified', claim: c, source: 'odoo' })),
+          );
   const pipeline = new VerifierPipeline({
     extractor: new ClaimExtractor({
       llm: { complete } as unknown as ClaimExtractorOptions['llm'],
       log,
     }),
-    deterministic: { checkAll: unreachable } as unknown as DeterministicChecker,
-    judge: { checkAll: unreachable } as unknown as EvidenceJudge,
+    deterministic: { checkAll } as unknown as DeterministicChecker,
+    judge: { checkAll } as unknown as EvidenceJudge,
     log,
   });
   return { pipeline, logs };
 }
+
+/** A well-formed `record_claims` entry whose text is in TRIGGERING_ANSWER. */
+const RAW_AMOUNT = { text: '1.234,56 €', type: 'amount', expected_source: 'odoo', value: 1234.56 };
 
 function recordClaimsCall(input: unknown): unknown {
   return {
@@ -292,5 +357,35 @@ describe('verifier/pipeline — the production extractor reports an outage as un
     const verdict = await pipeline.verify(input(TRIGGERING_ANSWER));
     assert.equal(verdict.status, 'skipped');
     assert.equal(reasonOf(verdict), 'no_claims');
+  });
+
+  it('a response cut off at the token limit → unavailable, even when its claims verify', async () => {
+    // The truncated call holds one complete claim; the rest of the answer was
+    // never extracted, so verifying that one claim is no reason to approve.
+    for (const claims of [[RAW_AMOUNT], []]) {
+      const { pipeline } = realExtractorPipeline(
+        () =>
+          Promise.resolve({
+            ...(recordClaimsCall({ claims }) as object),
+            finishReason: 'max_tokens',
+          }),
+        'verify-all',
+      );
+      const verdict = await pipeline.verify(input(TRIGGERING_ANSWER));
+      assert.equal(verdict.status, 'unavailable', `${String(claims.length)} claim(s)`);
+      assert.equal(reasonOf(verdict), 'extractor_error');
+    }
+  });
+
+  it('an entry that breaks the record_claims schema → unavailable, not skipped/no_claims', async () => {
+    for (const claims of [[{}], [RAW_AMOUNT, { text: '1.234,56 €', type: 'amount' }]]) {
+      const { pipeline } = realExtractorPipeline(
+        () => Promise.resolve(recordClaimsCall({ claims })),
+        'verify-all',
+      );
+      const verdict = await pipeline.verify(input(TRIGGERING_ANSWER));
+      assert.equal(verdict.status, 'unavailable', JSON.stringify(claims));
+      assert.equal(reasonOf(verdict), 'extractor_error');
+    }
   });
 });

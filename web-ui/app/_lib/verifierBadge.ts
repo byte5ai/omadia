@@ -1,13 +1,16 @@
 /**
  * Maps an answer-verifier summary to what the chat may claim about the answer.
  *
- * The rule is the one `toSemanticAnswer` applies for connectors: only a
- * summary with checked claims (`approved` / `approved_with_disclaimer` /
- * `blocked` and `claimCount > 0`) is evidence. Green is reserved for an
- * evidenced `verified`. `skipped` turns (nothing checkable) and an
- * `unavailable` verifier get their own neutral states — they are never shown
- * as a check. A summary restored from local storage is untrusted input, so
- * the mapping validates rather than assumes its shape.
+ * The rule is the one `toSemanticAnswer` applies for connectors: a summary is
+ * evidence only when a check settled a claim — a contradicted claim for
+ * `blocked`, a confirmed one for `approved` / `approved_with_disclaimer`
+ * (confirmed = `claimCount - contradictionCount - unverifiedCount`). The chip
+ * never claims more than the counts back: green needs an `approved` summary
+ * whose every claim was confirmed. `skipped` turns (nothing checkable), a
+ * verifier that could not run, and checks that confirmed nothing get their own
+ * neutral states — they are never shown as a check. A summary restored from
+ * local storage is untrusted input, so the mapping validates rather than
+ * assumes its shape.
  */
 
 export type VerifierBadgeState =
@@ -25,13 +28,17 @@ export type VerifierBadgeHint =
   | VerifierBadgeState
   | 'noTrigger'
   | 'noClaims'
-  | 'noCheckableClaims';
+  | 'noCheckableClaims'
+  | 'noneConfirmed'
+  | 'checkFailed'
+  | 'partialUnchecked';
 
 export interface VerifierBadgeView {
   state: VerifierBadgeState;
   tone: VerifierBadgeTone;
   hint: VerifierBadgeHint;
-  /** The count the hint names: checked, unconfirmed or contradicted claims. */
+  /** The count the hint names: checked, unconfirmed, unchecked or
+   *  contradicted claims. */
   count: number;
 }
 
@@ -60,35 +67,60 @@ function unverified(reason: unknown): VerifierBadgeView {
 export function verifierBadgeView(summary: unknown): VerifierBadgeView | null {
   if (typeof summary !== 'object' || summary === null) return null;
   const s = summary as Record<string, unknown>;
-  if (s['status'] === 'unavailable' || s['badge'] === 'unavailable') {
-    return { state: 'unavailable', tone: 'neutral', hint: 'unavailable', count: 0 };
-  }
   const claimCount = countOf(s['claimCount']);
-  if (!EVIDENCED_STATUSES.has(s['status']) || claimCount === 0) {
-    return unverified(s['reason']);
+  const checkedClaims = EVIDENCED_STATUSES.has(s['status']) && claimCount > 0;
+  if (s['status'] === 'unavailable' || s['badge'] === 'unavailable') {
+    // The verifier could not run, or it ran and every check failed.
+    return {
+      state: 'unavailable',
+      tone: 'neutral',
+      hint: checkedClaims ? 'checkFailed' : 'unavailable',
+      count: 0,
+    };
+  }
+  if (!checkedClaims) return unverified(s['reason']);
+  return checkedView(s, claimCount);
+}
+
+/** A summary over checked claims: its badge, capped by what the counts back. */
+function checkedView(s: Record<string, unknown>, claimCount: number): VerifierBadgeView {
+  const contradicted = countOf(s['contradictionCount']);
+  const unconfirmed = countOf(s['unverifiedCount']);
+  const confirmed = Math.max(0, claimCount - contradicted - unconfirmed);
+  const blocked = s['status'] === 'blocked';
+  if (blocked ? contradicted === 0 : confirmed === 0) {
+    // Claims were checked, but no check settled one.
+    return { state: 'unverified', tone: 'neutral', hint: 'noneConfirmed', count: claimCount };
   }
   switch (s['badge']) {
     case 'verified':
-      return s['status'] === 'approved'
-        ? { state: 'verified', tone: 'success', hint: 'verified', count: claimCount }
-        : unverified(undefined);
+      if (s['status'] === 'approved' && confirmed === claimCount) {
+        return { state: 'verified', tone: 'success', hint: 'verified', count: claimCount };
+      }
+      break;
     case 'partial':
-      return {
-        state: 'partial',
-        tone: 'warning',
-        hint: 'partial',
-        count: countOf(s['unverifiedCount']),
-      };
+      if (!blocked && contradicted === 0) {
+        return partialView(unconfirmed, countOf(s['uncheckedCount']));
+      }
+      break;
     case 'corrected':
-      return { state: 'corrected', tone: 'info', hint: 'corrected', count: claimCount };
+      if (!blocked && contradicted === 0) {
+        return { state: 'corrected', tone: 'info', hint: 'corrected', count: claimCount };
+      }
+      break;
     case 'failed':
-      return {
-        state: 'failed',
-        tone: 'danger',
-        hint: 'failed',
-        count: countOf(s['contradictionCount']),
-      };
-    default:
-      return unverified(undefined);
+      if (contradicted > 0) {
+        return { state: 'failed', tone: 'danger', hint: 'failed', count: contradicted };
+      }
+      break;
   }
+  return unverified(undefined);
+}
+
+/** Partly confirmed. When every unconfirmed claim is one no check ran on,
+ *  the hint says so instead of "could not be confirmed". */
+function partialView(unconfirmed: number, unchecked: number): VerifierBadgeView {
+  return unchecked > 0 && unchecked === unconfirmed
+    ? { state: 'partial', tone: 'warning', hint: 'partialUnchecked', count: unchecked }
+    : { state: 'partial', tone: 'warning', hint: 'partial', count: unconfirmed };
 }

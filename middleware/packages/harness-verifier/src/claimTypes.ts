@@ -77,6 +77,20 @@ export interface SoftClaim extends Claim {
   type: 'name' | 'qualitative';
 }
 
+/**
+ * Why a claim stayed `unverified`, where that is more than "checked, not
+ * confirmed" (which carries no cause):
+ *  - `not_checked`  — no check ran: no checker accepts the claim (an amount,
+ *                     id, date or aggregate whose source is neither Odoo nor
+ *                     the graph), or it lies beyond the per-answer claim cap.
+ *  - `check_failed` — a check ran and could not finish: the re-query, the
+ *                     evidence fetch or the judge call failed.
+ * Neither is evidence. A claim nobody checked still counts against the
+ * answer's coverage, which is why it stays in the verdict instead of being
+ * dropped.
+ */
+export type UnverifiedCause = 'not_checked' | 'check_failed';
+
 /** Outcome for a single claim after checking. */
 export type ClaimVerdict =
   | { status: 'verified'; claim: Claim; source: ClaimSource }
@@ -87,7 +101,7 @@ export type ClaimVerdict =
       source: ClaimSource;
       detail?: string;
     }
-  | { status: 'unverified'; claim: Claim; reason: string };
+  | { status: 'unverified'; claim: Claim; reason: string; cause?: UnverifiedCause };
 
 /** A claim list that holds at least one checked claim. */
 export type NonEmptyClaimVerdicts = [ClaimVerdict, ...ClaimVerdict[]];
@@ -111,15 +125,19 @@ export type VerifierUnavailableReason = 'extractor_error' | 'pipeline_error';
 
 /**
  * Aggregated result the orchestrator consumes. Bound to evidence:
- *  - `approved` — at least one claim was checked and every one is `verified`
- *    (the claim list is typed non-empty, so an empty `approved` cannot be
- *    built).
- *  - `approved_with_disclaimer` / `blocked` — claims were checked; some stayed
- *    unconfirmed / at least one was contradicted.
+ *  - `approved` — every extracted claim was checked and is `verified`, at
+ *    least one (the claim list is typed non-empty, so an empty `approved`
+ *    cannot be built).
+ *  - `approved_with_disclaimer` — nothing contradicted, at least one claim
+ *    not confirmed: checked without confirmation, failed in its checker, or
+ *    never checked (`cause: 'not_checked'`). An answer checked only in part
+ *    lands here, never in `approved`.
+ *  - `blocked` — at least one claim was contradicted.
  *  - `skipped` — the verifier ran but had nothing it could check.
  *  - `unavailable` — the verifier could not run.
  * `skipped` and `unavailable` are not a pass: they carry no evidence and
- * never map to a `verified` or `corrected` badge.
+ * never map to a `verified` or `corrected` badge. Nor does a verdict whose
+ * claims all stayed unverified — see `hasVerificationEvidence`.
  */
 export type VerifierVerdict =
   | { status: 'approved'; claims: NonEmptyClaimVerdicts; latencyMs: number }
@@ -201,52 +219,63 @@ export interface VerifierInput {
 /**
  * Badge on the verifier summary. Connectors (Teams card) only ever receive
  * the first four — `toSemanticAnswer` forwards a badge only for a summary
- * with checked claims, so `unverified` / `unavailable` render as no badge.
+ * whose counts back it, so `unverified` / `unavailable` render as no badge.
  */
 export type VerifierBadge =
-  | 'verified'            // ✓ verified
+  | 'verified'            // ✓ verified — every claim confirmed
   | 'partial'             // ⚠ partially confirmed
   | 'corrected'           // ↻ corrected (after a successful retry)
   | 'failed'              // blocked + retry still failed
-  | 'unverified'          // nothing checkable — no verification happened
-  | 'unavailable';        // the verifier could not run
+  | 'unverified'          // no claim confirmed — nothing checkable, or no check confirmed one
+  | 'unavailable';        // the verifier could not run, or every check failed
 
 /**
- * Narrow a generic Claim into a HardClaim when it qualifies for the
- * deterministic checker. Pure predicate; no I/O.
- */
-/**
- * #132 — a verdict is "borderline" when the verifier produced no
- * contradictions but at least one claim remained `unverified`. Today this
- * is exactly `approved_with_disclaimer`. The gate keeps the predicate
- * encapsulated so the VerifierService and tests share one definition.
- * `skipped` / `unavailable` are never borderline: a resample is a second paid
- * orchestrator turn, and nothing checkable is not uncertainty.
+ * #132 — a verdict is "borderline" when the verifier found no contradiction,
+ * confirmed at least one claim and could not confirm another one it did try
+ * to check. Only then can a second sample add signal. Not borderline:
+ *  - a disclaimer whose unconfirmed claims were all `not_checked` — a second
+ *    sample cannot make them checkable;
+ *  - a disclaimer without a single verified claim — it confirms nothing and
+ *    is badged `unverified` / `unavailable`, not `partial`;
+ *  - `skipped` / `unavailable` — nothing checkable is not uncertainty.
+ * A resample is a second paid orchestrator turn, so the gate stays narrow.
+ * The VerifierService and tests share this one definition.
  */
 export function isBorderlineVerdict(verdict: VerifierVerdict): boolean {
-  return verdict.status === 'approved_with_disclaimer';
+  if (verdict.status !== 'approved_with_disclaimer') return false;
+  return (
+    verdict.claims.some((c) => c.status === 'verified') &&
+    verdict.claims.some((c) => c.status === 'unverified' && c.cause !== 'not_checked')
+  );
 }
 
 /**
- * True only when the verdict rests on at least one claim the verifier
- * actually checked: `approved`, `approved_with_disclaimer` or `blocked` with a
- * non-empty claim list. `skipped` and `unavailable` never carry evidence.
+ * True only when a check settled at least one claim: a `blocked` verdict
+ * needs a contradicted claim, `approved` / `approved_with_disclaimer` a
+ * verified one. Claims that stayed `unverified` — not checked, failed in
+ * their checker, or without confirming evidence — are no evidence, so a
+ * verdict made of them alone has none; `skipped` and `unavailable` never do.
  * Whatever derives a badge from a verdict gates on this rather than on the
- * status alone — the pipeline is injected, so the invariant is re-checked
- * where the verification signal is produced.
+ * status alone — the pipeline is injected, so the rule is re-checked where
+ * the verification signal is produced.
  */
 export function hasVerificationEvidence(verdict: VerifierVerdict): boolean {
   switch (verdict.status) {
     case 'approved':
     case 'approved_with_disclaimer':
+      return verdict.claims.some((c) => c.status === 'verified');
     case 'blocked':
-      return verdict.claims.length > 0;
+      return verdict.claims.some((c) => c.status === 'contradicted');
     case 'skipped':
     case 'unavailable':
       return false;
   }
 }
 
+/**
+ * Narrow a generic Claim into a HardClaim when it qualifies for the
+ * deterministic checker. Pure predicate; no I/O.
+ */
 export function isHardClaim(claim: Claim): claim is HardClaim {
   if (claim.expectedSource !== 'odoo' && claim.expectedSource !== 'graph') {
     return false;

@@ -2,9 +2,13 @@
  * What `VerifierService` reports for a turn is bound to evidence:
  *   - a pipeline that throws is `unavailable` (badge `unavailable`), with a
  *     closed reason code and no error text on the stream event;
- *   - a verdict without checked claims never earns `verified` or `corrected`,
- *     whatever status the (injected) pipeline put on it;
- *   - `skipped` / `unavailable` never buy a paid resample or a retry.
+ *   - a verdict that confirmed no claim never earns `verified`, `partial` or
+ *     `corrected`, whatever status the (injected) pipeline put on it — it is
+ *     `unverified`, or `unavailable` when every check failed;
+ *   - `verified` needs every claim confirmed; a claim nobody checked keeps
+ *     the badge at `partial` and is counted on the summary;
+ *   - `skipped` / `unavailable`, and verdicts that confirmed nothing or whose
+ *     doubt is only unchecked claims, never buy a paid resample.
  */
 
 import { describe, it } from 'node:test';
@@ -70,6 +74,37 @@ const unavailable = (): VerifierVerdict => ({
  *  injected one could still send it, so the badge mapper must not trust it. */
 const approvedWithoutClaims = (): VerifierVerdict =>
   ({ status: 'approved', claims: [], latencyMs: 0 }) as unknown as VerifierVerdict;
+
+const NOT_CHECKED: ClaimVerdict = {
+  status: 'unverified',
+  claim: { ...AMOUNT, id: 'c_2', expectedSource: 'confluence' },
+  reason: 'no checker',
+  cause: 'not_checked',
+};
+const CHECK_FAILED: ClaimVerdict = {
+  status: 'unverified',
+  claim: AMOUNT,
+  reason: 're-query error',
+  cause: 'check_failed',
+};
+const disclaimer = (claims: ClaimVerdict[]): VerifierVerdict => ({
+  status: 'approved_with_disclaimer',
+  claims,
+  unverified: claims.filter((c) => c.status === 'unverified'),
+  latencyMs: 1,
+});
+/** Checked, but the sources confirmed none of the claims. */
+const noneConfirmed = (): VerifierVerdict => disclaimer([UNVERIFIED, UNVERIFIED]);
+/** Every check failed, e.g. the Odoo re-query timed out. */
+const allChecksFailed = (): VerifierVerdict => disclaimer([CHECK_FAILED, CHECK_FAILED]);
+/** One claim verified, one no checker accepts. */
+const partlyChecked = (): VerifierVerdict => disclaimer([VERIFIED, NOT_CHECKED]);
+/** An injected `approved` that holds an unconfirmed claim. */
+const approvedOverUnverified = (): VerifierVerdict => ({
+  status: 'approved',
+  claims: [VERIFIED, UNVERIFIED],
+  latencyMs: 1,
+});
 
 const ANSWER = 'Die Rechnung beträgt 1.234,56 €.';
 
@@ -139,6 +174,15 @@ describe('VerifierService.chatStream — verifier event states', () => {
     assert.equal(summary.claimCount, 1);
     assert.equal(summary.reason, undefined);
   });
+
+  it('a partly checked verdict is partial and counts the claims nobody checked', async () => {
+    const { summary } = await streamVerifier(() => Promise.resolve(partlyChecked()));
+    assert.ok(summary);
+    assert.equal(summary.badge, 'partial');
+    assert.equal(summary.claimCount, 2);
+    assert.equal(summary.unverifiedCount, 1);
+    assert.equal(summary.uncheckedCount, 1);
+  });
 });
 
 describe('badgeFor — evidence-bound', () => {
@@ -154,6 +198,22 @@ describe('badgeFor — evidence-bound', () => {
     assert.equal(badgeFor(approvedWithoutClaims(), 0), 'unverified');
     assert.equal(badgeFor(approvedWithoutClaims(), 1), 'unverified');
   });
+
+  it('a verdict that confirmed no claim is not partial', () => {
+    assert.equal(badgeFor(noneConfirmed(), 0), 'unverified');
+    assert.equal(badgeFor(allChecksFailed(), 0), 'unavailable');
+  });
+
+  it('verified needs every claim confirmed', () => {
+    assert.equal(badgeFor(approvedOverUnverified(), 0), 'partial');
+    assert.equal(badgeFor(partlyChecked(), 0), 'partial');
+  });
+
+  it('a contradicted claim is failed, whatever status an injected verdict carries', () => {
+    const inconsistent = disclaimer([VERIFIED, CONTRADICTED]);
+    assert.equal(badgeFor(inconsistent, 0), 'failed');
+    assert.equal(badgeFor(inconsistent, 1), 'failed', 'never corrected');
+  });
 });
 
 describe('mergeBadges — the retry badge needs evidence from the retry', () => {
@@ -167,6 +227,11 @@ describe('mergeBadges — the retry badge needs evidence from the retry', () => 
     assert.equal(mergeBadges(blocked(), unavailable()), 'unavailable');
     assert.equal(mergeBadges(blocked(), skipped()), 'unverified');
     assert.equal(mergeBadges(blocked(), approvedWithoutClaims()), 'unverified');
+  });
+
+  it('a retry that confirmed no claim is never corrected', () => {
+    assert.equal(mergeBadges(blocked(), noneConfirmed()), 'unverified');
+    assert.equal(mergeBadges(blocked(), allChecksFailed()), 'unavailable');
   });
 });
 
@@ -225,5 +290,27 @@ describe('VerifierService.chat — no resample or retry without evidence', () =>
   it('control: a blocked turn whose retry verifies is badged corrected', async () => {
     const r = await chatOnce([blocked(), approved()]);
     assert.deepEqual(r.sa.verifier, { status: 'corrected' });
+  });
+
+  it('a blocked turn whose retry confirmed no claim is not badged corrected', async () => {
+    for (const retry of [noneConfirmed(), allChecksFailed()]) {
+      const r = await chatOnce([blocked(), retry]);
+      assert.equal(r.runTurns, 2, 'one retry after the block');
+      assert.equal(r.sa.verifier, undefined);
+    }
+  });
+
+  it('a first verdict that confirmed nothing is not partial and buys no resample', async () => {
+    for (const first of [noneConfirmed(), allChecksFailed()]) {
+      const r = await chatOnce([first]);
+      assert.equal(r.runTurns, 1);
+      assert.equal(r.sa.verifier, undefined);
+    }
+  });
+
+  it('a partly checkable answer is partial and buys no resample', async () => {
+    const r = await chatOnce([partlyChecked()]);
+    assert.equal(r.runTurns, 1, 'a second sample cannot make the claim checkable');
+    assert.deepEqual(r.sa.verifier, { status: 'partial' });
   });
 });

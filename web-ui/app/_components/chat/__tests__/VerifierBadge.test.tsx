@@ -54,6 +54,39 @@ describe('<VerifierBadge>', () => {
     expect(chip.getAttribute('data-verifier-state')).toBe('unavailable');
   });
 
+  it('renders an answer checked only in part as amber, naming the unchecked claims', () => {
+    renderWithIntl(
+      <VerifierBadge
+        summary={summary({
+          badge: 'partial',
+          status: 'approved_with_disclaimer',
+          unverifiedCount: 1,
+          uncheckedCount: 1,
+        })}
+      />,
+    );
+    const chip = screen.getByText('Partly verified');
+    expect(chip.className).not.toContain(GREEN);
+    expect(chip.getAttribute('title')).toMatch(/1 claim .*could not be checked/);
+  });
+
+  it('renders a retry that confirmed no claim as "not verified", not as corrected', () => {
+    renderWithIntl(
+      <VerifierBadge
+        summary={summary({
+          badge: 'unverified',
+          status: 'approved_with_disclaimer',
+          claimCount: 2,
+          unverifiedCount: 2,
+          retryCount: 1,
+        })}
+      />,
+    );
+    const chip = screen.getByText('Not verified');
+    expect(chip.getAttribute('data-verifier-state')).toBe('unverified');
+    expect(chip.getAttribute('title')).toMatch(/could not confirm any/);
+  });
+
   it('does not turn a claim-less "verified" into a green chip', () => {
     renderWithIntl(<VerifierBadge summary={summary({ claimCount: 0 })} />);
     const chip = screen.getByText('Not verified');

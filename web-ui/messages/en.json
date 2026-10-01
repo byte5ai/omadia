@@ -1654,13 +1654,16 @@
       "hint": {
         "verified": "The verifier checked {count, plural, one {# claim} other {# claims}} in this answer against the sources and confirmed all of them.",
         "partial": "No claim contradicts the sources, but {count, plural, one {# claim} other {# claims}} could not be confirmed.",
+        "partialUnchecked": "The verifier confirmed the other claims, but {count, plural, one {# claim} other {# claims}} in this answer could not be checked.",
         "corrected": "The first answer contradicted the sources; this corrected answer passed the check.",
         "failed": "{count, plural, one {# claim contradicts} other {# claims contradict}} the sources.",
-        "unverified": "Not checked: the verifier found nothing in this answer it could check.",
+        "unverified": "Not verified: no check confirmed this answer.",
+        "noneConfirmed": "Not verified: the verifier checked {count, plural, one {# claim} other {# claims}} in this answer but could not confirm any.",
         "noTrigger": "Not checked: the answer contains no figures, dates or references the verifier checks.",
         "noClaims": "Not checked: the verifier found no factual claims in this answer.",
         "noCheckableClaims": "Not checked: none of the claims in this answer can be checked against a source.",
-        "unavailable": "The verifier could not run for this answer, so nothing was checked."
+        "unavailable": "The verifier could not run for this answer, so nothing was checked.",
+        "checkFailed": "The verifier's checks failed for this answer, so no claim was confirmed."
       }
     }
   },

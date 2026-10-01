@@ -2796,25 +2796,47 @@ Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
 - `status`: `approved` | `approved_with_disclaimer` | `blocked` — es wurden
   Claims geprüft; `skipped` — der Verifier lief, fand aber nichts Prüfbares;
   `unavailable` — der Verifier konnte nicht laufen (Extractor- oder
-  Pipeline-Fehler). `approved` heißt: mindestens ein Claim geprüft, alle
-  `verified`. Der `ClaimExtractor` wirft, wenn der LLM-Call scheitert oder
-  die Antwort keinen verwertbaren `record_claims`-Call trägt, statt eine leere
-  Claim-Liste zu liefern: ein Ausfall landet so in `unavailable`
-  (`extractor_error`), nie in `skipped` (`no_claims`).
-- `badge`: `verified` | `partial` | `corrected` | `failed` bei geprüften
-  Claims, sonst `unverified` (zu `skipped`) bzw. `unavailable`.
+  Pipeline-Fehler). `approved` heißt: jeder extrahierte Claim geprüft und
+  `verified`, mindestens einer. Ein Claim, den kein Checker nimmt (Betrag,
+  Datum, ID oder Summe mit Quelle weder Odoo noch Graph) oder der über dem
+  Claim-Limit pro Antwort liegt (`VERIFIER_MAX_CLAIMS`, greift jetzt in der
+  Pipeline statt im Extractor), bleibt als `unverified` mit
+  `cause: 'not_checked'` im Verdict — eine nur teilweise prüfbare Antwort ist
+  damit `approved_with_disclaimer`, nie `approved`. Der `ClaimExtractor` wirft,
+  wenn der LLM-Call scheitert, die Antwort am Token-Limit abgeschnitten ist
+  (`finishReason: 'max_tokens'`), sie keinen verwertbaren `record_claims`-Call
+  trägt oder ein Eintrag das Schema verletzt, statt eine leere oder halbe
+  Claim-Liste zu liefern: das landet in `unavailable` (`extractor_error`), nie
+  in `skipped` (`no_claims`) oder `approved`.
+- `badge`: braucht einen Check, der einen Claim entschieden hat
+  (`hasVerificationEvidence`): `verified` nur, wenn jeder Claim bestätigt ist;
+  `partial` bei mindestens einem bestätigten und einem offenen Claim;
+  `corrected` nach einem Retry, dessen eigene Prüfung einen Claim bestätigt
+  und keinen Widerspruch gefunden hat; `failed` bei einem Widerspruch. Ohne
+  bestätigten Claim ist das Badge `unverified` — auch bei `status`
+  `approved_with_disclaimer`, wenn die Quellen schwiegen — bzw. `unavailable`,
+  wenn die Prüfung jedes Claims scheiterte (Re-Query oder Judge-Call
+  fehlgeschlagen, `cause: 'check_failed'`) oder der Verifier nicht lief.
 - `reason`: nur bei `skipped` (`no_trigger` | `no_claims` |
   `no_checkable_claims`) und `unavailable` (`extractor_error` |
   `pipeline_error`). Geschlossener Code-Satz, nie eine Fehlermeldung — die
   bleibt in der Logzeile, wo der Fehler gefangen wird.
+- `uncheckedCount`: Claims, auf denen keine Prüfung lief (`not_checked`); in
+  `unverifiedCount` mitgezählt. Bestätigte Claims sind `claimCount -
+  contradictionCount - unverifiedCount`.
 
 Das Event geht unverändert über `/api/chat/stream` und den Public-API-Key-Stream
 (`chatRouter.ts`) raus. Ein Connector-Badge entsteht daraus nur über
-`toSemanticAnswer` und nur bei Evidenz (`verifierSummaryHasEvidence`); der
-Wire-Typ `SemanticAnswer.verifier` bleibt `verified | partial | corrected |
-failed`, `skipped`/`unavailable` ergeben dort kein Badge. Der Web-Chat zeigt das
+`toSemanticAnswer` und nur, wenn die Zähler das Badge tragen
+(`verifierSummaryHasEvidence`, `verified` nur bei lauter bestätigten Claims);
+der Wire-Typ `SemanticAnswer.verifier` bleibt `verified | partial | corrected |
+failed`, Turns ohne Evidenz ergeben dort kein Badge. Der Web-Chat zeigt das
 Event als Footer-Chip (`VerifierBadge`, Keys `chat.verifier.*`), grün nur für
-ein belegtes `verified`. Der Omadia-UI-Channel verwirft das Event weiterhin
+ein `verified` mit lauter bestätigten Claims, der Tooltip nennt nicht geprüfte
+Claims. Der Borderline-Resample (#132) läuft nur, wenn ein Verdict Claims
+bestätigt und ein geprüfter Claim offen bleibt — nicht bei `skipped` /
+`unavailable`, nicht ohne bestätigten Claim und nicht, wenn nur `not_checked`
+offen ist. Der Omadia-UI-Channel verwirft das Event weiterhin
 (`omadia-ui-channel/src/protocol.ts`). Zustands-Tabelle und Regeln:
 `docs/security-architecture.md` §7c.
 
@@ -3170,8 +3192,11 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   festschreiben. Heute freie `TEXT`-Spalte ohne Leser im Repo.
 - **Golden-Eval einmal beaufsichtigt laufen lassen.** `skipped.jsonl` (vorher
   `approve.jsonl`) erwartet jetzt `skipped`. Ein Sample, dessen Extraktion leer
-  bleibt, landet nun in `skipped` statt still in `approved` — ein erster roter
-  Lauf von `npm run eval:golden` ist zu untersuchen, nicht wegzuwinken.
+  bleibt, landet nun in `skipped` statt still in `approved`; extrahiert das
+  Modell neben einem geprüften Claim einen, den kein Checker nimmt, landet ein
+  `approved`-Eintrag jetzt in `approved_with_disclaimer`; eine am Token-Limit
+  abgeschnittene oder schemawidrige Extraktion in `unavailable` — ein erster
+  roter Lauf von `npm run eval:golden` ist zu untersuchen, nicht wegzuwinken.
 - **Verifier-Aufzählung in der README-Feature-Tabelle.** Die Zeile
   „Answer verification" nennt nur `approved` / `approved_with_disclaimer` und
   „each answer"; beim nächsten Abgleich der README-Aussagen mit dem erzwungenen
@@ -3180,16 +3205,34 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   `routes/chatSessions.ts`) verwirft `Message.verifier`; ein Mirror-Restore
   zeigt deshalb keinen Verifier-Chip (nur ein lokaler Reload). Nachziehen,
   falls der Chip auch geräteübergreifend sichtbar sein soll.
-- **Judge-Ausfall erscheint als `partial`.** Der `ClaimExtractor` meldet einen
-  Ausfall inzwischen als `unavailable`; der `EvidenceJudge` macht aus einem
-  gescheiterten LLM-Call pro Claim weiter ein `unverified`. Fällt der Judge
-  für alle Soft-Claims aus, wird das Verdict `approved_with_disclaimer`: Badge
-  `partial` („Partly verified", obwohl nichts bestätigt wurde), und im
-  Enforce-Modus stößt `isBorderlineVerdict` den bezahlten Resample (#132) an.
-  Nie grün, also kein Evidenz-Leck, aber für Kalibrierung und Kosten
-  unscharf. Offen: `approved_with_disclaimer` ohne einen einzigen `verified`
-  Claim eigens kennzeichnen oder einen Judge-Totalausfall als `unavailable`
-  werten.
+- **Abdeckung nur im Log, nicht in `verifier_verdicts`.** Die Tabelle hat keine
+  Spalte für nicht geprüfte (`not_checked`) oder gescheiterte
+  (`check_failed`) Claims; beide zählen dort in `unverified_count`. Eine
+  Kalibrierungs-Abfrage trennt „nicht geprüft" und „Check gescheitert" von
+  „geprüft, nicht bestätigt" heute nur über die Logzeilen
+  (`[verifier/pipeline] … not checked`, `[verifier/deterministic] FAIL`,
+  `[verifier/judge] API FAIL`). Eine Migration mit eigenen Zählern wäre der
+  saubere Weg; der Stream (`uncheckedCount`) hat die Zahl bereits.
+- **Konfigurationslücken zählen als „geprüft, nicht bestätigt".** Ein Claim,
+  den der `DeterministicChecker` mangels Odoo-/Graph-Reader oder bekanntem
+  Feld nicht prüfen kann („no odoo reader configured", „no amount field for
+  …"), trägt keine `cause`. Das Badge bleibt ehrlich (ohne bestätigten Claim
+  `unverified`, nie grün), der Tooltip sagt aber „geprüft, keine bestätigt"
+  statt „nicht geprüft", und neben einem bestätigten Claim stößt so ein Claim
+  den Borderline-Resample an. Offen: solche Fälle als `not_checked` markieren.
+- **Schemawidriger Eintrag kippt die ganze Extraktion.** Ein `record_claims`-
+  Eintrag ohne Text, mit unbekanntem Typ oder unbekannter Quelle macht die
+  Extraktion zu `unavailable`, auch wenn die übrigen Einträge lesbar wären —
+  konservativ, weil sich ein unlesbarer Eintrag nicht als Claim im Verdict
+  halten lässt. Häufen sich im Shadow-Betrieb die Logzeilen „… entries do not
+  match the schema", die lesbaren Einträge prüfen und die unlesbaren als
+  Abdeckungslücke zählen.
+- **Resample bei gescheitertem Check neben bestätigtem Claim.** Ein Verdict mit
+  einem bestätigten und einem `check_failed`-Claim gilt weiter als
+  Borderline und kauft einen zweiten Orchestrator-Turn (#132), weil ein
+  transienter Fehler beim zweiten Sample verschwinden kann. Solange ein Resample
+  Schreib-Tools erneut ausführen kann (offener Punkt zu Verifier-Retries ohne
+  Write-Replay), ist das gegen die Kosten neu abzuwägen.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

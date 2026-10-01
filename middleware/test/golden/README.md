@@ -11,9 +11,11 @@ behaviour (LLM weakness #13, version drift) fails here instead of shipping.
 The assertion target is **not** the raw model string — it is the verifier
 verdict *class*, which is stable despite generation stochasticity:
 
-- `approved` — only via (v2) a deterministic-verified hard claim: at least one
-  checked claim, every one verified
-- `approved_with_disclaimer` (the borderline path, `isBorderlineVerdict`)
+- `approved` — only via (v2) a deterministic-verified hard claim: every
+  extracted claim checked and verified, at least one
+- `approved_with_disclaimer` — nothing contradicted, at least one claim not
+  confirmed or not checked (only one that also confirmed a claim is the
+  borderline path, `isBorderlineVerdict`)
 - `blocked` — via a judge contradiction, a deterministic contradiction (v2), or
   the two synthetic claim paths:
   - `tool_postcondition` (#130)
@@ -234,9 +236,12 @@ on `pull_request`, forks never attempt to run it.
      `approved_with_disclaimer` and the entry FAILS for a reason you never
      controlled. So a `deterministic-verified` entry should also carry an
      `evidence` snippet that confirms the qualitative reading (it is simply never
-     fetched if no soft claim is emitted). A `deterministic-contradicted` entry
-     needs no such guard — a contradiction dominates the aggregate regardless of
-     any co-extracted `unverified` claim.
+     fetched if no soft claim is emitted). A co-extracted amount, date, id or
+     total whose source is neither Odoo nor the graph has the same effect: no
+     checker takes it, so it stays in the verdict as not checked. Keep the
+     answer free of figures that do not come from the fixture. A
+     `deterministic-contradicted` entry needs no such guard — a contradiction
+     dominates the aggregate regardless of any co-extracted `unverified` claim.
 5. Lines starting with `#` and blank lines are ignored — use them for section
    headers.
 6. Validate the shape without spending tokens: `npm test` runs the parser over

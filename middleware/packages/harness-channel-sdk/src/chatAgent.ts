@@ -282,11 +282,14 @@ export type VerifierSummaryReason =
  * Compact verifier summary attached to `ChatTurnResult` and the streaming
  * `verifier` event.
  *
- * Only `approved` / `approved_with_disclaimer` / `blocked` with
- * `claimCount > 0` rest on checked claims. `skipped` (badge `unverified`) and
- * `unavailable` (badge `unavailable`) carry no evidence, and a consumer must
- * never render them as a check — see `verifierSummaryHasEvidence`.
- * `toSemanticAnswer` forwards a connector badge only for evidenced summaries.
+ * A summary is evidence only when a check settled a claim: a contradicted
+ * claim for `blocked`, a verified one for `approved` /
+ * `approved_with_disclaimer` (verified = `claimCount - contradictionCount -
+ * unverifiedCount`). `skipped` (badge `unverified`), `unavailable` (badge
+ * `unavailable`) and summaries whose claims all stayed unverified carry none,
+ * and a consumer must never render them as a check — see
+ * `verifierSummaryHasEvidence`. `toSemanticAnswer` forwards a connector badge
+ * only when the counts back it.
  */
 export interface VerifierResultSummary {
   badge: 'verified' | 'partial' | 'corrected' | 'failed' | 'unverified' | 'unavailable';
@@ -295,7 +298,15 @@ export interface VerifierResultSummary {
   reason?: VerifierSummaryReason;
   claimCount: number;
   contradictionCount: number;
+  /** Claims not confirmed: checked without confirmation, failed in their
+   *  checker, or never checked. */
   unverifiedCount: number;
+  /**
+   * Of `unverifiedCount`, the claims no check ran on: no checker accepts them
+   * (e.g. an amount whose source is neither Odoo nor the graph) or they lie
+   * beyond the per-answer claim cap. Optional for summaries built without it.
+   */
+  uncheckedCount?: number;
   retryCount: number;
   latencyMs: number;
   mode: 'shadow' | 'enforce';

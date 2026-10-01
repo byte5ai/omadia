@@ -251,10 +251,13 @@ export interface PrivacyReceipt {
  * Answer-verifier summary for a turn — the `summary` of the stream's trailing
  * `verifier` event. Mirrors `VerifierResultSummary` from `@omadia/channel-sdk`.
  *
- * Only `approved` / `approved_with_disclaimer` / `blocked` with
- * `claimCount > 0` rest on checked claims. `skipped` (badge `unverified`:
- * nothing checkable) and `unavailable` (the verifier could not run) carry no
- * evidence. `<VerifierBadge>` renders green only for an evidenced `verified`.
+ * A summary is evidence only when a check settled a claim: a contradicted
+ * claim for `blocked`, a confirmed one for `approved` /
+ * `approved_with_disclaimer` (confirmed = `claimCount - contradictionCount -
+ * unverifiedCount`). `skipped` (badge `unverified`: nothing checkable),
+ * `unavailable` (the verifier could not run) and checks that confirmed nothing
+ * carry none. `<VerifierBadge>` renders green only for a `verified` summary
+ * whose every claim was confirmed.
  */
 export interface VerifierSummary {
   badge: 'verified' | 'partial' | 'corrected' | 'failed' | 'unverified' | 'unavailable';
@@ -269,6 +272,9 @@ export interface VerifierSummary {
   claimCount: number;
   contradictionCount: number;
   unverifiedCount: number;
+  /** Of `unverifiedCount`, the claims no check ran on (no checker for them,
+   *  or over the per-answer cap). */
+  uncheckedCount?: number;
   retryCount: number;
   latencyMs: number;
   mode: 'shadow' | 'enforce';

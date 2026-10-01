@@ -85,6 +85,37 @@ describe('toSemanticAnswer — verifier badge gate', () => {
     });
     assert.deepEqual(failed.verifier, { status: 'failed' });
   });
+
+  it('forwards partial for an answer checked only in part', () => {
+    const sa = toSemanticAnswer({
+      ...base,
+      verifier: verifierSummary({
+        badge: 'partial',
+        status: 'approved_with_disclaimer',
+        unverifiedCount: 1,
+        uncheckedCount: 1,
+      }),
+    });
+    assert.deepEqual(sa.verifier, { status: 'partial' });
+  });
+
+  it('never forwards a badge the summary counts do not back', () => {
+    for (const summary of [
+      // Green needs every claim confirmed on an approved verdict.
+      verifierSummary({ badge: 'verified', unverifiedCount: 1 }),
+      verifierSummary({ badge: 'verified', status: 'approved_with_disclaimer', unverifiedCount: 1 }),
+      // Claims were checked, but none was confirmed.
+      verifierSummary({ badge: 'partial', status: 'approved_with_disclaimer', unverifiedCount: 2 }),
+      verifierSummary({ badge: 'corrected', status: 'approved_with_disclaimer', unverifiedCount: 2, retryCount: 1 }),
+      // Blocked without a contradiction settles nothing.
+      verifierSummary({ badge: 'failed', status: 'blocked', unverifiedCount: 2 }),
+      // A corrected answer is not still contradicted.
+      verifierSummary({ badge: 'corrected', status: 'blocked', contradictionCount: 1, retryCount: 1 }),
+    ]) {
+      const sa = toSemanticAnswer({ ...base, verifier: summary });
+      assert.equal(sa.verifier, undefined, JSON.stringify(summary));
+    }
+  });
 });
 
 describe('toSemanticAnswer — memoryUsed forwarding', () => {

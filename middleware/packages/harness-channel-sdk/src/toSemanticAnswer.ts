@@ -16,9 +16,16 @@ import {
   type ApplyAiDisclosureContext,
 } from './aiDisclosure.js';
 
+/** Claims the verifier confirmed: every claim it neither found contradicted
+ *  nor left unconfirmed. */
+function confirmedClaims(summary: VerifierResultSummary): number {
+  return Math.max(0, summary.claimCount - summary.contradictionCount - summary.unverifiedCount);
+}
+
 /**
- * True when a verifier summary rests on at least one checked claim:
- * `approved` / `approved_with_disclaimer` / `blocked` with `claimCount > 0`.
+ * True when a check settled at least one claim of the summary: a contradicted
+ * claim for `blocked`, a confirmed one for `approved` /
+ * `approved_with_disclaimer`. A summary whose claims all stayed unconfirmed,
  * `skipped` and `unavailable` never do. Any consumer that renders a
  * verification signal from a `VerifierResultSummary` gates on this.
  */
@@ -26,11 +33,32 @@ export function verifierSummaryHasEvidence(summary: VerifierResultSummary): bool
   switch (summary.status) {
     case 'approved':
     case 'approved_with_disclaimer':
+      return confirmedClaims(summary) > 0;
     case 'blocked':
-      return summary.claimCount > 0;
+      return summary.contradictionCount > 0;
     case 'skipped':
     case 'unavailable':
       return false;
+  }
+}
+
+/**
+ * Whether the summary's counts back the badge it carries, beyond having
+ * evidence at all: `verified` needs every claim confirmed on an `approved`
+ * summary, `partial` and `corrected` an answer that is not contradicted.
+ */
+function countsBackBadge(
+  summary: VerifierResultSummary,
+  badge: VerifierBadge['status'],
+): boolean {
+  switch (badge) {
+    case 'verified':
+      return summary.status === 'approved' && confirmedClaims(summary) === summary.claimCount;
+    case 'partial':
+    case 'corrected':
+      return summary.status !== 'blocked' && summary.contradictionCount === 0;
+    case 'failed':
+      return summary.contradictionCount > 0;
   }
 }
 
@@ -50,12 +78,15 @@ function isConnectorBadge(
   }
 }
 
-/** The connector badge for a turn, or undefined when nothing was checked. */
+/** The connector badge for a turn, or undefined when no check settled a
+ *  claim or the counts do not back the badge. */
 function connectorVerifierBadge(
   summary: VerifierResultSummary | undefined,
 ): VerifierBadge | undefined {
   if (!summary || !verifierSummaryHasEvidence(summary)) return undefined;
-  return isConnectorBadge(summary.badge) ? { status: summary.badge } : undefined;
+  const { badge } = summary;
+  if (!isConnectorBadge(badge) || !countsBackBadge(summary, badge)) return undefined;
+  return { status: badge };
 }
 
 /**
@@ -245,13 +276,15 @@ export function toSemanticAnswer(
     };
   }
 
-  // The badge is only an honest signal when the verifier actually CHECKED
-  // something. `skipped` (small talk, greetings, nothing checkable) and
-  // `unavailable` (extractor or pipeline failure) carry no evidence, and their
-  // `unverified` / `unavailable` badges have no value in the connector wire
-  // union: a "✓ geprüft" chip — or any chip — would assert a verification that
-  // never happened. Connectors get no badge for them. This is the single
-  // badge gate for every connector (Teams card, Telegram, …).
+  // The badge is only an honest signal when a check actually SETTLED a claim.
+  // `skipped` (small talk, greetings, nothing checkable), `unavailable`
+  // (extractor or pipeline failure) and checks that confirmed nothing carry no
+  // evidence, and their `unverified` / `unavailable` badges have no value in
+  // the connector wire union: a "✓ geprüft" chip — or any chip — would assert
+  // a verification that never happened. Connectors get no badge for them, and
+  // none whose summary counts do not back it (green needs every claim
+  // confirmed). This is the single badge gate for every connector (Teams card,
+  // Telegram, …).
   const verifier = connectorVerifierBadge(r.verifier);
 
   // #332 Layer 1 — curate a tamper-evident consulted-agents footer from the

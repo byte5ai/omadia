@@ -28,11 +28,15 @@ import { shouldTriggerVerifier } from './triggerRouter.js';
  *                            → aggregate → VerifierVerdict
  *
  * Never throws, and the verdict is bound to evidence:
- *   - `approved` ⇒ at least one claim was checked and every checked claim is
- *     `verified` (the claim list is typed non-empty).
+ *   - `approved` ⇒ every extracted claim was checked and is `verified`, at
+ *     least one (the claim list is typed non-empty).
+ *   - A claim no checker accepts, or one beyond the per-answer cap, stays in
+ *     the verdict as `unverified` / `not_checked`: an answer checked only in
+ *     part is `approved_with_disclaimer`, never `approved`.
  *   - `skipped` — the pipeline ran but had nothing it could check: no trigger
  *     signal, no extracted claim, or no claim any checker accepts.
- *   - `unavailable` — the extractor failed, so nothing was checked.
+ *   - `unavailable` — the extraction failed or did not finish (see
+ *     `ClaimExtractor.extract`), so nothing was checked.
  * A failure never stops the user from seeing the reply, but it is never
  * reported as a pass either. Contradictions found without extraction
  * (failure replay, tool postconditions, missing citations) still block on
@@ -43,19 +47,33 @@ export interface VerifierPipelineOptions {
   extractor: ClaimExtractor;
   deterministic: DeterministicChecker;
   judge: EvidenceJudge;
+  /**
+   * Most claims handed to a checker per answer — each one is a re-query or a
+   * judge call. Claims beyond it stay in the verdict as `unverified` /
+   * `not_checked`, so the cap bounds cost without hiding part of the answer.
+   * Default 20.
+   */
+  maxClaims?: number;
   log?: (msg: string) => void;
 }
+
+const DEFAULT_MAX_CLAIMS = 20;
 
 export class VerifierPipeline {
   private readonly extractor: ClaimExtractor;
   private readonly deterministic: DeterministicChecker;
   private readonly judge: EvidenceJudge;
+  private readonly maxClaims: number;
   private readonly log: (msg: string) => void;
 
   constructor(opts: VerifierPipelineOptions) {
     this.extractor = opts.extractor;
     this.deterministic = opts.deterministic;
     this.judge = opts.judge;
+    this.maxClaims =
+      typeof opts.maxClaims === 'number' && Number.isFinite(opts.maxClaims)
+        ? Math.max(0, Math.floor(opts.maxClaims))
+        : DEFAULT_MAX_CLAIMS;
     this.log =
       opts.log ??
       ((msg: string): void => {
@@ -129,7 +147,12 @@ export class VerifierPipeline {
       return aggregate(synthetic, started, 'no_claims');
     }
 
-    const { hard, soft } = classify(claims);
+    const { hard, soft, notChecked } = classify(claims, this.maxClaims);
+    if (notChecked.length > 0) {
+      this.log(
+        `[verifier/pipeline] ${String(notChecked.length)} claim(s) not checked (no checker accepts them, or over the cap of ${String(this.maxClaims)})`,
+      );
+    }
 
     // Pre-check: any hard claim that needs Odoo re-query but whose turn
     // never called a `query_odoo_*` tool is a **replay / hallucination**.
@@ -156,14 +179,21 @@ export class VerifierPipeline {
       this.checkSoftClaims(soft, hard),
     ]);
 
-    const all: ClaimVerdict[] = [
+    const checked: ClaimVerdict[] = [
       ...synthetic,
       ...traceVerdicts,
       ...hardVerdicts,
       ...softVerdicts,
     ];
-    // Empty here means `classify` dropped every extracted claim.
-    return aggregate(all, started, 'no_checkable_claims');
+    // Claims no checker took stay in the verdict as `unverified` /
+    // `not_checked`, so an answer checked only in part is never `approved`.
+    // When nothing was checked at all — no extracted claim fits a checker and
+    // no synthetic contradiction exists — the verdict is `skipped`.
+    return aggregate(
+      checked.length > 0 ? [...checked, ...notChecked] : [],
+      started,
+      'no_checkable_claims',
+    );
   }
 
   /**
@@ -316,22 +346,45 @@ function anchorKey(claim: Claim): string {
   return '';
 }
 
-function classify(claims: readonly Claim[]): {
+/**
+ * Route each claim to the checker that can verify it. At most `maxClaims`
+ * claims reach a checker. Claims that fit no checker (e.g. an amount whose
+ * source is unknown or Confluence — we won't invent a way to check them), and
+ * checkable claims beyond the cap, come back as `unverified` / `not_checked`
+ * verdicts: kept in the verdict rather than dropped, so they count against
+ * the answer's coverage.
+ */
+function classify(
+  claims: readonly Claim[],
+  maxClaims: number,
+): {
   hard: HardClaim[];
   soft: SoftClaim[];
+  notChecked: ClaimVerdict[];
 } {
   const hard: HardClaim[] = [];
   const soft: SoftClaim[] = [];
+  const notChecked: ClaimVerdict[] = [];
   for (const c of claims) {
-    if (isHardClaim(c)) {
+    if (!isHardClaim(c) && !isSoftClaim(c)) {
+      notChecked.push(
+        notCheckedVerdict(c, `no checker for a ${c.type} claim from ${c.expectedSource}`),
+      );
+    } else if (hard.length + soft.length >= maxClaims) {
+      notChecked.push(
+        notCheckedVerdict(c, `over the cap of ${String(maxClaims)} checked claims per answer`),
+      );
+    } else if (isHardClaim(c)) {
       hard.push(c);
     } else if (isSoftClaim(c)) {
       soft.push(c);
     }
-    // Claims that fit neither (e.g. amount claim with expectedSource=unknown)
-    // are silently dropped — we won't invent a way to check them.
   }
-  return { hard, soft };
+  return { hard, soft, notChecked };
+}
+
+function notCheckedVerdict(claim: Claim, reason: string): ClaimVerdict {
+  return { status: 'unverified', claim, reason, cause: 'not_checked' };
 }
 
 /**

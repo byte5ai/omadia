@@ -222,19 +222,32 @@ its results:
 - **SQL on `verifier_verdicts`.** `status` now also holds `skipped` (nothing
   checkable in the answer) and `unavailable` (the verifier could not run).
   Both used to be stored as `approved`, so the share of `approved` rows drops.
-  A dashboard or query that reads `status = 'approved'` as "clean turn" is now
-  correct, but its numbers change.
+  It drops further because an answer the verifier could check only in part
+  (a claim no checker accepts, or one beyond `VERIFIER_MAX_CLAIMS`) is now
+  `approved_with_disclaimer`, its unchecked claims counted in
+  `unverified_count`. A dashboard or query that reads `status = 'approved'` as
+  "clean turn" is now correct, but its numbers change.
 - **Clients of the `verifier` stream event** (`/api/chat/stream`, public API
   keys). `summary.status` can be `skipped` / `unavailable`, `summary.badge`
-  `unverified` / `unavailable`, and a `summary.reason` code appears. Show a
-  result as checked only for `verified` / `partial` / `corrected` / `failed`
-  with `claimCount > 0`.
+  `unverified` / `unavailable`, and a `summary.reason` code and
+  `summary.uncheckedCount` appear. The badge is `unverified` or
+  `unavailable` whenever no claim was confirmed or contradicted — also on an
+  `approved_with_disclaimer` status — so key on the badge, not on the
+  status. Show a result as checked only for `verified` / `partial` /
+  `corrected` / `failed` with `claimCount > 0`.
+- **`VERIFIER_MAX_CLAIMS`** keeps its value and default (20) but now caps how
+  many claims are checked per answer. Claims beyond it are no longer dropped;
+  they are reported as not checked, which keeps the answer at "partly
+  verified".
 - **Plugins built against `@omadia/verifier` types.** A `switch` over
   `VerifierVerdict['status']` must handle the two new statuses before it
-  compiles again.
+  compiles again. An `unverified` claim verdict may carry
+  `cause: 'not_checked' | 'check_failed'`, and `ClaimExtractor.extract` now
+  returns every valid claim instead of cutting the list at `maxClaims`; pass
+  `maxClaims` to `VerifierPipeline` to cap the checks.
 
 Teams and Telegram need nothing: they keep receiving only the four badges they
-know and show no badge for the new states.
+know and show no badge for turns without evidence.
 
 ## Upgrading to 0.3
 

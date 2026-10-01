@@ -103,13 +103,17 @@ export class EvidenceJudge {
       });
   }
 
-  /** Check one SoftClaim. Always resolves; never throws. */
+  /**
+   * Check one SoftClaim. Always resolves; never throws. A fetch or judge call
+   * that fails is `unverified` with `cause: 'check_failed'`; evidence that
+   * does not settle the claim is plain `unverified`.
+   */
   async check(claim: SoftClaim): Promise<ClaimVerdict> {
     let evidence: EvidenceSnippet[];
     try {
       evidence = await this.fetcher.fetch(claim);
     } catch (err) {
-      return unverified(claim, `evidence fetch failed: ${errMsg(err)}`);
+      return checkFailed(claim, `evidence fetch failed: ${errMsg(err)}`);
     }
     if (evidence.length === 0) {
       return unverified(claim, 'no evidence available');
@@ -117,7 +121,8 @@ export class EvidenceJudge {
 
     const first = await this.judgeOnce(claim, evidence);
     if (first === null) {
-      return unverified(claim, 'judge returned no usable verdict');
+      // The call failed or came back without a readable verdict.
+      return checkFailed(claim, 'judge returned no usable verdict');
     }
 
     // Double-check on contradicted: one shaky Haiku flip should not block a
@@ -260,6 +265,10 @@ function normaliseVerdict(v: unknown): PrimitiveVerdict | null {
 
 function unverified(claim: SoftClaim, reason: string): ClaimVerdict {
   return { status: 'unverified', claim, reason };
+}
+
+function checkFailed(claim: SoftClaim, reason: string): ClaimVerdict {
+  return { status: 'unverified', claim, reason, cause: 'check_failed' };
 }
 
 function sourceKind(

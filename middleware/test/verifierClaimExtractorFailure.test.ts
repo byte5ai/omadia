@@ -2,9 +2,10 @@
  * `ClaimExtractor.extract` keeps a failed extraction apart from an empty one.
  *
  * An empty result means "the answer holds no claim"; the pipeline reports it
- * as `skipped`. An extraction that could not run must reject instead, so the
- * pipeline reports `unavailable`: an outage is not a clean zero-claim run.
- * The pipeline side of this contract is pinned in
+ * as `skipped`. An extraction that could not run, or did not finish, must
+ * reject instead, so the pipeline reports `unavailable`: an outage, a
+ * response cut off at the token limit or a malformed one is not a clean
+ * zero-claim run. The pipeline side of this contract is pinned in
  * `verifierPipelineStates.test.ts`.
  */
 
@@ -13,13 +14,17 @@ import { strict as assert } from 'node:assert';
 
 import { ClaimExtractor } from '@omadia/verifier';
 
-function extractorOver(complete: () => Promise<unknown>): {
+function extractorOver(
+  complete: () => Promise<unknown>,
+  opts: { maxClaims?: number } = {},
+): {
   extractor: ClaimExtractor;
   logs: string[];
 } {
   const logs: string[] = [];
   const extractor = new ClaimExtractor({
     llm: { complete } as never,
+    ...opts,
     log: (msg) => {
       logs.push(msg);
     },
@@ -37,6 +42,9 @@ const INPUT = {
   userMessage: 'Wie hoch ist die Rechnung?',
   answer: 'Die Rechnung beträgt 1.234,56 €.',
 };
+
+/** A well-formed entry whose text is in INPUT.answer. */
+const AMOUNT = { text: '1.234,56 €', type: 'amount', expected_source: 'odoo' };
 
 describe('verifier/claimExtractor - failed extraction vs. empty result', () => {
   it('rejects when the LLM call fails, and still logs the failure', async () => {
@@ -109,5 +117,55 @@ describe('verifier/claimExtractor - failed extraction vs. empty result', () => {
     });
     assert.deepEqual(await extractor.extract({ userMessage: 'Hallo', answer: '   ' }), []);
     assert.equal(calls, 0);
+  });
+
+  it('rejects a response cut off at the token limit, even with a complete claim in it', async () => {
+    for (const claims of [[AMOUNT], []]) {
+      const { extractor, logs } = extractorOver(() =>
+        Promise.resolve({
+          ...(recordClaimsCall({ claims }) as object),
+          finishReason: 'max_tokens',
+        }),
+      );
+      await assert.rejects(extractor.extract(INPUT), /truncated/, `${String(claims.length)} claim(s)`);
+      assert.ok(logs.some((l) => l.includes('truncated')), JSON.stringify(logs));
+    }
+  });
+
+  it('rejects when an entry breaks the record_claims schema', async () => {
+    const broken: Array<[string, unknown[]]> = [
+      ['empty entry', [{}]],
+      ['not an object', ['1.234,56 €']],
+      ['unknown type', [{ ...AMOUNT, type: 'currency' }]],
+      ['missing source', [{ text: '1.234,56 €', type: 'amount' }]],
+      ['a valid entry next to a broken one', [AMOUNT, { type: 'amount', expected_source: 'odoo' }]],
+    ];
+    for (const [name, claims] of broken) {
+      const { extractor, logs } = extractorOver(() => Promise.resolve(recordClaimsCall({ claims })));
+      await assert.rejects(extractor.extract(INPUT), /schema/, name);
+      assert.ok(logs.some((l) => l.includes('schema')), `${name}: ${JSON.stringify(logs)}`);
+    }
+  });
+
+  it('returns every valid claim beyond maxClaims: the pipeline decides what it checks', async () => {
+    // Cutting here would make the rest of the answer vanish without a trace;
+    // the pipeline keeps claims over its cap in the verdict as not checked.
+    const { extractor } = extractorOver(
+      () =>
+        Promise.resolve(
+          recordClaimsCall({
+            claims: [AMOUNT, { text: '99,00 €', type: 'amount', expected_source: 'odoo' }],
+          }),
+        ),
+      { maxClaims: 1 },
+    );
+    const claims = await extractor.extract({
+      userMessage: 'Und die Gutschrift?',
+      answer: 'Die Rechnung beträgt 1.234,56 €, die Gutschrift 99,00 €.',
+    });
+    assert.deepEqual(
+      claims.map((c) => c.text),
+      ['1.234,56 €', '99,00 €'],
+    );
   });
 });

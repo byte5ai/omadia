@@ -99,6 +99,46 @@ describe('verifierBadgeView — distinct states', () => {
     ).toEqual({ state: 'failed', tone: 'danger', hint: 'failed', count: 2 });
   });
 
+  it('an answer checked only in part is partial and says how many claims were not checked', () => {
+    expect(
+      verifierBadgeView(
+        summary({
+          badge: 'partial',
+          status: 'approved_with_disclaimer',
+          claimCount: 3,
+          unverifiedCount: 1,
+          uncheckedCount: 1,
+        }),
+      ),
+    ).toEqual({ state: 'partial', tone: 'warning', hint: 'partialUnchecked', count: 1 });
+  });
+
+  it('claims checked but none confirmed are "not verified", or unavailable when every check failed', () => {
+    const checked = { status: 'approved_with_disclaimer', claimCount: 2, unverifiedCount: 2 } as const;
+    expect(verifierBadgeView(summary({ ...checked, badge: 'unverified' }))).toEqual({
+      state: 'unverified',
+      tone: 'neutral',
+      hint: 'noneConfirmed',
+      count: 2,
+    });
+    expect(verifierBadgeView(summary({ ...checked, badge: 'unavailable' }))).toMatchObject({
+      state: 'unavailable',
+      tone: 'neutral',
+      hint: 'checkFailed',
+    });
+  });
+
+  it('never shows more than the counts back', () => {
+    // Green needs every claim confirmed on an approved summary.
+    expect(verifierBadgeView(summary({ unverifiedCount: 1 }))?.tone).not.toBe('success');
+    // Partial or corrected need at least one confirmed claim.
+    const noneConfirmed = { status: 'approved_with_disclaimer', claimCount: 2, unverifiedCount: 2 } as const;
+    expect(verifierBadgeView(summary({ ...noneConfirmed, badge: 'partial' }))?.state).toBe('unverified');
+    expect(
+      verifierBadgeView(summary({ ...noneConfirmed, badge: 'corrected', retryCount: 1 }))?.state,
+    ).toBe('unverified');
+  });
+
   it('returns null when there is no summary, and never green for a malformed one', () => {
     expect(verifierBadgeView(undefined)).toBeNull();
     expect(verifierBadgeView(null)).toBeNull();

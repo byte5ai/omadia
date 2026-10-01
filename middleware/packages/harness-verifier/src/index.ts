@@ -58,6 +58,7 @@ export type {
   NonEmptyClaimVerdicts,
   OdooRecordRef,
   SoftClaim,
+  UnverifiedCause,
   VerifierBadge,
   VerifierInput,
   VerifierSkipReason,

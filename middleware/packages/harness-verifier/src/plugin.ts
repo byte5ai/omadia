@@ -212,10 +212,14 @@ export async function activate(
     fetcher,
     model,
   });
+  // The extractor asks the model for at most `maxClaims`; the pipeline checks
+  // at most `maxClaims` and keeps any further claim in the verdict as not
+  // checked, so the cap never hides part of the answer.
   const pipeline = new VerifierPipeline({
     extractor,
     deterministic,
     judge,
+    maxClaims,
   });
   const store = graphPool
     ? new VerifierStore({ pool: graphPool, tenant })

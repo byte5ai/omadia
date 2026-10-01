@@ -56,13 +56,27 @@ function unavailable(): VerifierVerdict {
   return { status: 'unavailable', reason: 'pipeline_error', claims: [], latencyMs: 0 };
 }
 
-function borderline(): VerifierVerdict {
+function unverifiedClaim(cause?: 'not_checked' | 'check_failed'): ClaimVerdict {
+  return {
+    status: 'unverified',
+    claim: { ...VERIFIED_CLAIM.claim, id: 'c_2' },
+    reason: 'no evidence',
+    ...(cause ? { cause } : {}),
+  };
+}
+
+function disclaimer(claims: ClaimVerdict[]): VerifierVerdict {
   return {
     status: 'approved_with_disclaimer',
-    claims: [],
-    unverified: [],
+    claims,
+    unverified: claims.filter((c) => c.status === 'unverified'),
     latencyMs: 0,
   };
+}
+
+/** One claim confirmed, one checked without confirmation. */
+function borderline(): VerifierVerdict {
+  return disclaimer([VERIFIED_CLAIM, unverifiedClaim()]);
 }
 
 function blocked(): VerifierVerdict {
@@ -75,7 +89,7 @@ function blocked(): VerifierVerdict {
 }
 
 describe('isBorderlineVerdict', () => {
-  it('returns true only for approved_with_disclaimer', () => {
+  it('returns true only for a disclaimer that confirmed a claim and doubts another', () => {
     assert.equal(isBorderlineVerdict(approved()), false);
     assert.equal(isBorderlineVerdict(borderline()), true);
     assert.equal(isBorderlineVerdict(blocked()), false);
@@ -84,6 +98,22 @@ describe('isBorderlineVerdict', () => {
     // buy one — otherwise every small-talk turn would run twice.
     assert.equal(isBorderlineVerdict(skipped()), false);
     assert.equal(isBorderlineVerdict(unavailable()), false);
+  });
+
+  it('a disclaimer that confirmed nothing, or doubts only unchecked claims, is not borderline', () => {
+    // Nothing confirmed: badged `unverified`, not `partial` — no resample.
+    assert.equal(isBorderlineVerdict(disclaimer([unverifiedClaim(), unverifiedClaim()])), false);
+    assert.equal(isBorderlineVerdict(disclaimer([unverifiedClaim('check_failed')])), false);
+    // A second sample cannot make a claim checkable that no checker accepts.
+    assert.equal(
+      isBorderlineVerdict(disclaimer([VERIFIED_CLAIM, unverifiedClaim('not_checked')])),
+      false,
+    );
+    // A failed check next to a confirmed claim may clear on a second sample.
+    assert.equal(
+      isBorderlineVerdict(disclaimer([VERIFIED_CLAIM, unverifiedClaim('check_failed')])),
+      true,
+    );
   });
 });
 
