@@ -2888,17 +2888,25 @@ interniert heißt seit dem Tool-Error-Fix nicht ungeprüft (siehe den Absatz
 `McpManager` wirft nie, er liefert einen `Error: …`-String). Alle vier Guards
 sitzen an derselben Stelle: nach Intern-Exemption-Allowlist und Operator-Bypass,
 vor dem Internieren — und konsultieren **ein** Prädikat,
-`isControlFlowToolResult` (`@omadia/plugin-api`, `toolControlFlowText.ts`).
+`isGuardedControlFlowResult` (`toolErrorRedaction.ts`).
 
 Das Prädikat deckt zwei Träger ab, denn der `Error:`-Präfix allein war zu eng:
-den **MCP-Auth-Prompt** (verankert auf das exakte Produzenten-Präfix
-`🔒 The MCP server "`, ggf. mit dem `<mcp-auth-required>`-Block, aus dem die
-Chat-UI die Connect-Karte baut) liefert `McpManager.handleFailure`
-statt eines rohen Fehlers, sobald ein Call auth-förmig scheitert (Alltagsfall:
-abgelaufenes OAuth-Token auf einer geparkten MCP-Input-Karte). Interniert ging
-die Connect-Karte verloren und das Modell erzählte Erfolg über einem Digest.
-Das Prädikat prüft **nur Präfixe**, nie Teilstrings: ein Marker in einer
+den **MCP-Auth-Prompt** (`🔒 The MCP server "…`, ggf. mit dem
+`<mcp-auth-required>`-Block, aus dem die Chat-UI die Connect-Karte baut) liefert
+`McpManager.handleFailure` statt eines rohen Fehlers, sobald ein Call
+auth-förmig scheitert (Alltagsfall: abgelaufenes OAuth-Token auf einer
+geparkten MCP-Input-Karte). Interniert ging die Connect-Karte verloren und das
+Modell erzählte Erfolg über einem Digest. Erkannt wird der Prompt **per
+Provenienz, nicht am Präfix**: jede Naht öffnet um genau einen Dispatch eine
+`McpAuthPromptMint` (`mcp/mcpAuthPromptMint.ts`, eigener AsyncLocalStorage, weil
+der Dispatcher ohne Turn läuft und Skill-Bindung wie `ctx.mcp` den Turn-Store
+neu bauen), `handleFailure` trägt den zurückgegebenen Prompt dort ein, und nur
+ein byte-gleiches Ergebnis zählt. Text, der bloß so anfängt (ein
+Remote-Textblock, eine Datenzelle am Anfang eines Ergebnisses), ist Tool-Datum
+und wird interniert. Das Prädikat prüft nie Teilstrings: ein Marker in einer
 Datenzelle darf kein mehrzeiliges Ergebnis entmaskieren.
+`isControlFlowToolResult` (`@omadia/plugin-api`) klassifiziert weiter nur am
+Präfix; an den Nähten entscheidet es nichts mehr.
 
 Ein **gerenderter Fehler** wird als solcher markiert —
 `PrivacyRenderedAnswer.isError` (entschieden an der Quell-Zelle: ein Dataset
@@ -2933,8 +2941,13 @@ Herkunft:
   oder JS-Objekt/`Map`, wie `util.inspect`, `console.log` und `%o` es
   drucken; Stacktrace; `Key (…)=(…)`), länger als 4096 Zeichen ist oder der
   Provider ihn nicht prüfen kann.
-- **MCP-Connect-Prompt**: byte-identisch durchgereicht (kernel-authored,
-  Connect-Karte muss überleben), aber quittiert.
+- **MCP-Connect-Prompt**: byte-identisch durchgereicht (Connect-Karte muss
+  überleben) und quittiert — aber nur der Text, den `McpManager` im selben
+  Dispatch erzeugt hat; alles andere mit diesem Präfix wird interniert. Der
+  Tool-Call eines Sub-Agents ist Teil des Eltern-Dispatches: sein Prompt wird
+  in beiden Mints eingetragen, die Eltern-Naht reicht eine Sub-Agent-Antwort
+  durch, die ihn byte-gleich wiederholt, und behandelt jede andere wie eine
+  normale Sub-Agent-Antwort.
 Die Kernel-eigenen Absagen aus `dispatchToolInner` (Tool nicht verfügbar /
 nicht gegrantet / unbekannt) sind per Provenienz ausgenommen, nicht per Form.
 Jeder behandelte Fehler schreibt einen PII-freien Eintrag in
@@ -3035,12 +3048,30 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   weiter `Error: <message>`; die Naht redigiert oder hält zurück. Umstellung
   auf `toolErrorFromException` zusammen mit der laufenden Office-Arbeit.
 - **Abo-CLI-Pfad** ohne Privacy Shield (#1087): beide Träger fließen dort roh.
-- **Connect-Prompt** nur am Präfix erkannt; ein typisiertes
-  Control-Flow-Ergebnis vom Produzenten wäre die dauerhafte Lösung (#1097).
+- **Connect-Prompt** wird per Provenienz erkannt (`McpAuthPromptMint`), nicht
+  mehr am Präfix. Offen: paraphrasiert ein Sub-Agent den Prompt, statt ihn
+  byte-gleich weiterzugeben, wird seine Antwort an der Eltern-Naht interniert
+  (sofern er kein Dataset interniert hat) und die Connect-Karte fehlt in der
+  Antwort. Ein typisiertes Control-Flow-Ergebnis statt Prosa wäre die
+  dauerhafte Lösung.
 - **Geworfener Text** wird ganz zurückgehalten, nicht C0-redigiert. Wer den
   Treiber-Hinweis zurück will, stellt in `withholdThrownToolError` auf
   `redactToolErrorText` um (eine Stelle) — um den Preis von Namen, die C0
   nicht erkennt.
+
+### MRTR-Sentinel über Skill-Bindung und `ctx.mcp` (#570 follow-up)
+
+Die skill-gebundenen MCP-Tools (`subAgentToolHydration.ts`, Domain-Tools des
+Orchestrators) und der Plugin-Accessor `ctx.mcp.callTool` (`pluginContext.ts`)
+rufen den `McpManager` in einem `turnContext.run(...)` mit **neu gebautem**
+Store auf und reichen nur ausgewählte Felder weiter. `mcpInputSentinelMint`
+gehört nicht dazu: parkt ein solcher Call eine `input_required`-Karte, schreibt
+`parkInputRequired` keine Provenienz, und `dispatchToolDeadlined` interniert
+den Sentinel bei aktivem Privacy Shield — die Karte erscheint nicht. Befund aus
+der Code-Lektüre beim Connect-Prompt-Fix, nicht per Test reproduziert. Der
+Connect-Prompt hat deshalb einen eigenen AsyncLocalStorage
+(`McpAuthPromptMint`); für den Sentinel reicht dasselbe oder die Weitergabe des
+Felds in beiden Re-Scopes.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 

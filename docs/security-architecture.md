@@ -589,12 +589,12 @@ does not promise real values in an export it cannot deliver.
 
 ### 6c. Tool errors: thrown text withheld, returned text redacted (#1105, #1097)
 
-A tool result that is control flow — the `Error:` tool-error convention, or an
-MCP auth prompt — is not interned, so the model can read the hint and
-self-correct. Not interned is not unchecked: a tool error is not sanitized
-text. An ORM echoes the row it failed on, a driver the bound parameters, a
-remote MCP server whatever its error body quotes. Every seam that hands a tool
-result to a model therefore routes a tool error through one helper,
+A tool result that is control flow — the `Error:` tool-error convention, or the
+MCP connect prompt the kernel produced — is not interned, so the model can read
+the hint and self-correct. Not interned is not unchecked: a tool error is not
+sanitized text. An ORM echoes the row it failed on, a driver the bound
+parameters, a remote MCP server whatever its error body quotes. Every seam that
+hands a tool result to a model therefore routes a tool error through one helper,
 `toolErrorRedaction.ts` (`@omadia/orchestrator`), and the policy follows where
 the text came from, not its shape:
 
@@ -602,7 +602,7 @@ the text came from, not its shape:
 |---|---|---|
 | A handler **threw** | The withheld notice: ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …`` — class name and a sanitised code (`describeThrownError`, `@omadia/plugin-api`), never the message | `thrown` / `withheld` |
 | A handler **returned** an `Error:` string | The text after the prefix, run through the provider's `redactToolErrorText`: the C0 identity types (e-mail, IBAN, phone, address, id number — not `date` or `amount`, which are hints), the operator deny-list (#760) and C1, each span replaced irreversibly by `[masked:<type>]`. **Withheld** whole instead when the text is exception-shaped (a record echo as JSON, as a Python dict, or as a JavaScript object or `Map` the way `util.inspect`, `console.log` and `%o` print it; a stack trace; a Postgres `Key (…)=(…)` detail), longer than 4096 characters, or the provider cannot check it | `returned` / `redacted` (with span types) or `withheld` |
-| The MCP **connect prompt** (`🔒 The MCP server "…`) | Byte-identical: kernel-authored, and its connect URL and `<mcp-auth-required>` block must survive | `mcp_auth_prompt` / `passed` |
+| The MCP **connect prompt** (`🔒 The MCP server "…`) that `McpManager.handleFailure` produced **in the same dispatch** | Byte-identical: its connect URL and `<mcp-auth-required>` block must survive. Recognised by per-dispatch provenance, never by its prefix: any other text that starts like the prompt is tool data and is interned | `mcp_auth_prompt` / `passed` |
 
 The seams, each applying the helper after the intern exemption and the
 operator bypass and before interning:
@@ -624,6 +624,24 @@ The kernel's own refusals from `dispatchToolInner` (tool unavailable, not
 granted, unknown tool) name only the tool and its plugin; they are exempted by
 per-dispatch provenance, never by their shape, so a provider that cannot
 redact does not blind the model to its own plumbing.
+
+**Connect-prompt provenance.** The connect prompt is exempted the same way.
+Each seam opens an `McpAuthPromptMint` (`mcp/mcpAuthPromptMint.ts`) around one
+dispatch: a chat-path tool call, an MCP input replay, a `ToolDispatchService`
+call, a sub-agent's tool call. `McpManager.handleFailure` records the exact
+prompt it returns into the open dispatch's mint and every mint around it (a
+sub-agent's tool call is part of the parent's dispatch; sibling dispatches
+never share one), and the seam asks `isGuardedControlFlowResult(result, mint)`:
+the `Error:` prefix, or a result equal byte for byte to a prompt recorded in
+that dispatch. A remote server can
+put the prefix at the start of a text block (`renderToolResult` passes those
+through verbatim); it cannot write the mint, and a result equal to a recorded
+prompt carries nothing the prompt did not. Any other text that starts like the
+prompt is tool data and is interned, and `guardControlFlowResult`, if handed
+one anyway, applies the returned-error policy. The mint has its own
+`AsyncLocalStorage` rather than a turn-context field: the standalone
+dispatcher runs outside a turn, and the skill-binding and plugin `ctx.mcp`
+paths re-scope the turn context with a rebuilt store.
 
 **Producers.** The in-tree wrappers that returned `Error: ${err.message}` keep
 only messages they author themselves (typed quota/auth/config errors, kernel
@@ -670,8 +688,12 @@ dispatcher-authored (`origin: 'dispatcher'`) and served.
   `name=…` pairs) or bare keys whose values are unquoted words
   (`{Name:Jane Doe}`). A record echo in one of the shapes in the table is
   withheld whole.
-- The connect prompt is recognized by its prefix only, so a remote result that
-  starts with that prefix passes the same way (#1097).
+- A connect prompt produced by a sub-agent's tool call passes the parent seam
+  as control flow only when the sub-agent's answer repeats it byte for byte.
+  Any other answer takes the ordinary sub-agent path: interned, or bridged
+  with the datasets the sub-agent interned. On the interned path a Connect
+  block inside a paraphrased answer does not reach the final answer the chat
+  UI scans for it.
 - Two server-side sinks read the raw result before the seam:
   `captureRawToolResult` (routine templates) and the MCP → Knowledge-Graph
   ingest (#459), which stores a value-free byte count for a non-JSON error
@@ -680,13 +702,16 @@ dispatcher-authored (`origin: 'dispatcher'`) and served.
 - One sub-agent failure can produce two receipt entries, one from the
   sub-agent's seam and one from the parent's.
 
-The predicate every seam consults, `isControlFlowToolResult`
-(`@omadia/plugin-api`), is **prefix-anchored only**: `Error:` or the exact
-`🔒 The MCP server "` producer prefix. It never matches a substring, so a marker
-planted in one cell cannot unmask a multi-row result such as a decrypted
-`query_dataset` page (§6b). The shape classifier has **no** control-flow
-exemption — verbs re-classify derived datasets, so one would turn `filter` +
-`select` into a cleartext channel.
+The predicate every seam consults, `isGuardedControlFlowResult`
+(`toolErrorRedaction.ts`), is **anchored**: the `Error:` prefix, or a whole
+result equal to a connect prompt minted in that dispatch. It never matches a
+substring, so a marker planted in one cell cannot unmask a multi-row result
+such as a decrypted `query_dataset` page (§6b). `isControlFlowToolResult`
+(`@omadia/plugin-api`) still classifies by prefix alone, and no seam decides
+with it; the privacy guard uses it only to flag a rendered one-cell dataset as
+a failure. The shape classifier has **no** control-flow exemption — verbs
+re-classify derived datasets, so one would turn `filter` + `select` into a
+cleartext channel.
 
 ### 6d. `agents.privacy_profile` is not a Privacy Shield control (#978)
 
@@ -1414,14 +1439,18 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
-- [ ] A new tool-dispatch seam that hands a result to a model routes
-      control-flow text through `guardControlFlowResult` and never forwards a
-      thrown handler exception's message (`withholdThrownToolError`), both in
-      `toolErrorRedaction.ts` (§6c). A new tool wrapper that catches an
+- [ ] A new tool-dispatch seam that hands a result to a model opens an
+      `McpAuthPromptMint` around the dispatch, decides with
+      `isGuardedControlFlowResult(result, mint)`, routes that text through
+      `guardControlFlowResult` with the same mint, and never forwards a
+      thrown handler exception's message (`withholdThrownToolError`); see
+      `toolErrorRedaction.ts` and `mcp/mcpAuthPromptMint.ts` (§6c). No seam
+      passes a result because of its prefix alone. A new tool wrapper that
+      catches an
       exception returns `toolErrorFromException(...)`, not
       `Error: ${err.message}`; only a message the wrapper authors itself may
       reach the model as text, and the seam still redacts it.
 
 ---
 
-*Last reviewed: 2026-09 (§6c rewritten: tool errors withheld or redacted at every dispatch seam).*
+*Last reviewed: 2026-10 (§6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix).*

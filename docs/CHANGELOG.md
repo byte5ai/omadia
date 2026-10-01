@@ -65,8 +65,15 @@ Both carriers now go through one helper, `toolErrorRedaction.ts`
   the operator deny-list and C1; irreversible `[masked:<type>]`), or withheld
   whole when it looks like a record dump (JSON, a Python dict, or a JavaScript
   object or `Map` as `util.inspect` and `%o` print it) or a stack trace, is
-  longer than 4096 characters, or cannot be checked. The MCP connect prompt
-  passes unchanged; the kernel's own refusals are exempt by provenance.
+  longer than 4096 characters, or cannot be checked. The kernel's own refusals
+  are exempt by per-dispatch provenance.
+- **The MCP connect prompt passes on provenance, not on its prefix.** It still
+  reaches the model unchanged, but only the exact text `McpManager` produced in
+  the same dispatch (`McpAuthPromptMint`). Before, any result that merely
+  started with the prompt's prefix skipped interning and redaction for all of
+  its text and was receipted as a connect prompt. A remote MCP server can put
+  that prefix at the start of a text block, so such text is now interned like
+  any other tool result.
 - **In-tree wrappers** (the three tool bridges, web search, diagrams,
   discussion, transcription, `manage_routine`, `query_dataset`, the
   long-running task handlers, domain tools) keep only messages they author and
@@ -85,9 +92,12 @@ once per process. Without a privacy provider, and on the subscription-CLI path
 `streamToolRejection1095` and `streamingToolThrow1093` (asserted the raw driver
 text), `toolDispatchPrivacySeam.test.ts` and the public MCP privacy tests
 (asserted an interned digest of a thrown message), `queryDatasetTool.test.ts`
-and `manageRoutineTool.test.ts` (asserted the raw exception message). Details
-and residuals: `docs/security-architecture.md` §6c; upgrade note:
-`docs/upgrading.md`.
+and `manageRoutineTool.test.ts` (asserted the raw exception message), and the
+connect-prompt cases of `guardedToolErrorNotInterned1105`,
+`toolDispatchPrivacySeam` and `subAgentToolErrorNotInterned1097` (asserted that
+prompt text a handler returned itself passed verbatim; the producer-driven
+cases are in `mcpAuthPromptProvenance.test.ts`). Details and residuals:
+`docs/security-architecture.md` §6c; upgrade note: `docs/upgrading.md`.
 
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 

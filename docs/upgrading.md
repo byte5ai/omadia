@@ -240,7 +240,11 @@ full policy):
 For plugin authors: a tool that catches an exception should return
 `toolErrorFromException(toolName, err)` (`@omadia/plugin-api` 1.20.0) instead
 of `Error: ${err.message}`. Only text the plugin authors itself belongs in an
-`Error:` result, and the dispatch seam redacts even that.
+`Error:` result, and the dispatch seam redacts even that. A tool that returns
+an MCP connect prompt it wrote itself (text starting `🔒 The MCP server "`) now
+has it interned like any other result: only the prompt `McpManager` produced in
+the same dispatch reaches the model unchanged. To surface one, call the MCP
+server through `ctx.mcp` and return its answer as it is.
 
 ## Upgrading to 0.3
 
