@@ -4161,6 +4161,64 @@ Shell sie nicht einschalten kann. Offen:
   `GET http://127.0.0.1:8769/health` liefert `attachments.store: filesystem`;
   `<Datenordner>/attachments` existiert mit 0700.
 
+### Formeln in `create_xlsx` server-seitig auswerten (Option A, zurückgestellt)
+
+Seit `@omadia/plugin-office` 0.1.4 schreibt `create_xlsx` Formeln ohne
+gecachten Wert und setzt `fullCalcOnLoad`. Die Zahlen rechnet die Anwendung,
+die die Datei öffnet (`security-architecture.md` §5a). Vorschauen ohne
+Rechenwerk (Quick Look, Teams/Outlook, Excels Protected View) zeigen
+Formelzellen deshalb leer, und ein ungespeichert hochgeladener Export landet
+mit leeren Formelzellen im Dataset-Import. Option A wäre eine echte
+server-seitige Auswertung, die den `<v>`-Wert selbst schreibt. Aufwand L,
+bewusst zurückgestellt:
+
+- **Engine nur MIT-lizenziert.** Geprüft (Stand 2026-09): `fast-formula-parser`
+  (Sheet-Referenzen über `onCell`/`onRange`, rund 280 Funktionen, seit 2021
+  ohne Pflege), `xlsx-calc` (braucht ein SheetJS-Workbook, Teilmenge der
+  Funktionen), `@formulajs/formulajs` (nur Funktionen, kein Parser).
+  `hot-formula-parser` kennt keine Sheets und scheidet für die
+  Cross-Sheet-Pivots aus. **HyperFormula ist GPL/kommerziell und kommt nicht
+  in Frage.**
+- **Adapter exceljs → Engine**: Spaltenbuchstaben, Datums-Serials,
+  `{row}`-Vorlagen und eine Regel für nicht unterstützte Funktionen (dann
+  keinen `<v>` schreiben, sondern wie heute die Anwendung rechnen lassen).
+- **Semantik-Treue**: Jede Abweichung zwischen Engine und Excel schriebe einen
+  falschen `<v>` unter omadias Namen, also genau den Fehler, den 0.1.4
+  beseitigt hat. Ohne Differenztests gegen echtes Excel nicht ausrollen.
+- **Formel-Policy bleibt**: `formulaPolicy.ts` (nur Excels eigene Funktionen
+  aus `formulaFunctions.ts`; kein `WEBSERVICE`, `IMPORTTEXT`/`IMPORTCSV`,
+  `HYPERLINK`, DDE, keine Verweise auf andere Dateien) gilt unabhängig davon,
+  wer rechnet.
+
+**Funktionskatalog pflegen.** `formulaFunctions.ts` ist Microsofts Liste
+„Excel functions (alphabetical)“ vom 2026-09-30, wörtlich übernommen. Was
+Excel danach dazubekommt, lehnt `create_xlsx` ab, bis es jemand aufnimmt
+(Fail-closed, so fielen `IMPORTTEXT`/`IMPORTCSV` auf). Vor dem Aufnehmen
+prüfen, ob die Funktion nur über Zellen der Arbeitsmappe rechnet; greift sie
+auf Netz, Dateien, Dienste oder andere Programme zu, gehört sie stattdessen
+nach `EXTERNAL_FUNCTIONS`. Offen: Nackte, nicht aufgerufene Namen (LET-Namen
+oder eine Funktion als Wert ohne `_xleta.`) prüft die Policy nur gegen die
+Sperrliste. Sie ganz zu schließen bräuchte einen echten Formel-Parser mit
+LET/LAMBDA-Gültigkeitsbereichen. Damit ließen sich auch Aufrufe über LET-Namen
+(`f(A1)`) wieder erlauben, die heute abgelehnt werden.
+
+**exceljs-Upgrade: Zeichenliste nachziehen.** `formulaText.ts` lehnt genau die
+Zeichen ab, die exceljs 4.4 beim Schreiben verwirft (`utils.xmlEncode`:
+C0-Steuerzeichen außer Tab/LF/CR, dazu DEL) oder die XML nicht trägt. Ändert
+ein exceljs-Update den Encoder, muss die Liste mitziehen, sonst prüft die
+Policy wieder einen anderen Text, als in der Datei landet. Der Test „stores
+every formula it accepts exactly as it was checked“ in
+`office-formulas.test.ts` fällt dann auf, aber nur für die Zeichen, die er
+durchprobiert (alle C0-Zeichen, DEL, U+0085, ein Surrogat, U+FFFE).
+Ebenso die Wert-Erkennung (`Value.getType` in `lib/doc/cell.js`): exceljs
+liest jedes Objekt nach seiner Form (`formula`/`sharedFormula` → Formel samt
+`result` als Cache, `{ text, hyperlink }` → Link), deshalb reicht
+`renderXlsx` nur Text, Zahlen, Booleans, `null`, selbst erzeugte Dates und
+neu gebaute `{ formula }` durch (`cellValueOf`, Header nur als Text). Liest
+ein Update einen dieser Werte anders, etwa Text mit führendem `=` als Formel,
+umgeht er die Policy. `office-cell-values.test.ts` prüft die abgelehnten
+Objektformen und dass solcher Text Text bleibt.
+
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
 Alles hier ist **nicht** umgesetzt. Vollständige Darstellung samt Codestellen:

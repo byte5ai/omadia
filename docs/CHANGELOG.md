@@ -36,6 +36,85 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — create_xlsx no longer persists model-supplied formula results; workbooks with formulas request a full recalculation on open
+
+2026-09-30 — a formula cell in `create_xlsx` accepted a `result` and stored it
+as the cell's cached value, so a workbook could hold the formula `1+1` showing
+999. Nothing on the server evaluates formulas, so that number was never computed
+by anyone, and every viewer that does not recalculate showed it as the figure.
+The input schema now has no `result` field (a sent one is stripped), the
+renderer writes formula cells as `<f>` without `<v>`, and a workbook that holds
+a formula sets `fullCalcOnLoad`, so the spreadsheet application computes each
+value when it opens the file. The tool description now asks for English
+function names (`SUMIFS`), which is what a recalculating Excel understands.
+
+Because Excel, LibreOffice and Google Sheets all recalculate such a file, every
+formula is checked before anything is stored, and a refused one fails with
+`OfficeUnsafeFormulaError`. A formula may only call Excel's own worksheet
+functions by their English names, from Microsoft's catalogue. Add-in and
+user-defined functions (`_xll.`, `_xludf.`), Excel 4 macro functions, other
+applications' functions, localised names and anything Excel adds later are
+refused until someone reviews them, so a new way out fails closed. Known ways
+out are also refused by name wherever they appear: URL fetches (`WEBSERVICE`,
+`FILTERXML`, `IMAGE`, and Google Sheets' `IMPORTDATA`, `IMPORTXML`,
+`IMPORTHTML`, `IMPORTFEED` and `IMPORTRANGE`), `IMPORTTEXT` and `IMPORTCSV`
+(local files, UNC paths and URLs), vendor services (`STOCKHISTORY`,
+`TRANSLATE`, `DETECTLANGUAGE`, `GOOGLEFINANCE`, `GOOGLETRANSLATE`), the `CUBE`
+functions, `HYPERLINK`, COM and DLL calls (`RTD`, `CALL`, `REGISTER`,
+`REGISTER.ID`), DDE as a function and as an `app|topic!item` reference, and
+references to another file by index, name or path, quoted or not. `INDIRECT`
+and `__xludf.DUMMYFUNCTION` are refused whatever their argument. Both turn text
+into a reference or a formula, and that text is invisible to the check and can
+be built from cell values. In a computed column, `{row}` may only follow a
+column letter, so a row number cannot complete a function name.
+
+The check reads the text the spreadsheet application reads. exceljs's XML
+encoder silently drops most control characters, and the file format lets
+formula text carry `_xHHHH_` escapes that a reader decodes, so such a formula
+could be checked as one text and stored as another. Both are now refused, by
+the input schema as well as by the renderer, and so are unpaired surrogates,
+U+FFFE and U+FFFF. Outside quotes a formula may only use letters, digits, plain
+spaces and the formula operators, on one line, and names are read the way
+Excel's grammar reads them (`?` and non-ASCII characters continue a name). The
+`{row}` check now reads only the characters just before each placeholder: it
+used to rescan the template for every placeholder, so a long template cost a
+noticeable amount of CPU per computed column.
+
+None of this relies on the input schema any more. `renderXlsx` is exported,
+and exceljs decides what a cell is from the shape of the value, so a
+descriptor handed to it directly could still store a cached value through a
+shared formula, write a formula the check never read because it was not a
+string, or add an external link, and a column header could do the same. The
+renderer now takes only text, numbers, booleans, `null` and a formula cell
+with a non-empty formula string as a cell value, and refuses any other cell
+value, a header that is not text and a computed-column formula that is not
+text with `OfficeRenderError`. `create_xlsx` itself was not exposed, because
+its input schema already refused these shapes. A column whose key a row lacks
+is now empty even when the key names a property every JavaScript object
+inherits, such as `constructor`; rendering used to fail there.
+
+Viewers that do not calculate (Quick Look, Teams and Outlook previews, Excel's
+Protected View) now show formula cells empty until the file is opened for
+editing. A generated workbook uploaded as a dataset without being saved in
+Excel first imports those cells as empty strings, because the importer reads
+cached results. Both are deliberate: an empty cell beats a number nobody
+computed. `@omadia/plugin-office` 0.1.4 ships as the bundled built-in with the
+middleware, so the fix is live with the next deploy. The Hub ZIP only matters
+for installations that took the plugin from the Hub. Server-side evaluation
+with an MIT-licensed engine is on the roadmap (handoff §13).
+
+### Changed — README no longer claims a server-side spreadsheet engine
+
+2026-09-30 — the root README said Office and Excel output came from "a real
+spreadsheet engine, server-side" and that the figures were "calculated by that
+engine rather than produced by the model". omadia has no such engine. The
+feature row "Computed, not guessed" is now called "Excel from real rows", and
+both it and the Office bullet describe what `create_xlsx` does. It writes the
+rows behind a `datasetId` into the workbook server-side, so they never pass
+through the model, and adds sums and pivots as Excel formulas that the
+spreadsheet application computes when it opens the file. `.docx` output
+computes nothing, and the bullet says so.
+
 ### Security — tool errors no longer reach the model or the chat stream raw
 
 2026-09-30 — a tool error reached the model, the streamed `tool_result` event

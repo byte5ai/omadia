@@ -604,6 +604,94 @@ kernel keeps the session gate in front, fail-closed. What the link buys is
 what it always bought: whoever holds it can fetch that one object until it
 expires; there is no per-tenant or per-session authorisation on top.
 
+## 5a. Office exports: formula cells carry no caller-supplied value
+
+`create_xlsx` (`@omadia/plugin-office`) writes descriptor formulas into the
+workbook verbatim, and omadia evaluates none of them: exceljs only serialises,
+and no formula engine is installed. The rule that follows is that whatever a
+formula cell displays must come from the application that computes it, never
+from the descriptor.
+
+- **No cached value.** `FormulaCellSchema` has no `result` field, and Zod
+  strips one a caller sends anyway. `renderXlsx` is exported, so it does not
+  rely on the schema. exceljs decides what a cell is from the shape of the
+  value: any object with a truthy `formula` or `sharedFormula` is a formula,
+  with its `result` as the cached value, and `{ text, hyperlink }` is an
+  external link. The renderer therefore takes only text, numbers, booleans,
+  `null` and `{ formula }` rebuilt from a non-empty formula string as a cell
+  value (`cellValueOf`, which reads only a row's own keys; a date column turns
+  its text into a date), and writes `{ formula }` again when it sets the cell.
+  Any other cell value, a column header that is not text (exceljs writes
+  headers like cell values) and a computed-column formula that is not text
+  fail with `OfficeRenderError` before exceljs sees them. A direct caller that
+  gets past the type therefore gets an error, never a `<v>` next to an `<f>`,
+  a link, or a formula the policy below has not read.
+- **Recalculation on open.** A workbook with at least one formula sets
+  `calcPr fullCalcOnLoad="1"`. Clients that do not calculate (previews, Excel's
+  Protected View, `data_only` readers) show the cell empty, which is the
+  intended failure mode.
+- **Formulas stay inside the workbook.** The client recalculates on open, and
+  Excel, LibreOffice and Google Sheets each have functions that reach outside
+  the file. `formulaPolicy.ts` checks every formula in two layers, so that a
+  way out nobody has listed still fails closed:
+  - *Allowlist.* A formula may only call Excel's own worksheet functions by
+    their English names (`formulaFunctions.ts`, Microsoft's alphabetical
+    catalogue as of 2026-09-30), less the refused ones below. Everything else
+    is refused: `_xll.`/`_xludf.` add-in and user-defined functions in any
+    position, Excel 4 macro functions such as `EVALUATE`, other applications'
+    functions, localised names, calls through LET or LAMBDA names, and every
+    function Excel adds later until it has been reviewed (`IMPORTTEXT` and
+    `IMPORTCSV`, which read local files and URLs, were such additions). A
+    function passed as a value (`_xleta.NAME`) is checked like a call. A bare
+    name that is not called is checked against the refused names only. What
+    it could still reach is a function the user's own Excel has loaded (a
+    VBA macro or add-in passed by a guessed name), and an export cannot
+    supply one.
+  - *Refused by name, called or not:* `WEBSERVICE`, `FILTERXML`, `IMAGE`,
+    Google Sheets' `IMPORTDATA`, `IMPORTXML`, `IMPORTHTML`, `IMPORTFEED` and
+    `IMPORTRANGE`, `IMPORTTEXT` and `IMPORTCSV`, the vendor services
+    `STOCKHISTORY`, `TRANSLATE`, `DETECTLANGUAGE`, `GOOGLEFINANCE` and
+    `GOOGLETRANSLATE`, the `CUBE…` functions, `HYPERLINK`, `RTD`, `CALL`,
+    `REGISTER`, `REGISTER.ID` and LibreOffice's `DDE`. A DDE reference
+    (`app|topic!item`) and a reference to another file (`[n]…`,
+    `[book.xlsx]…`, a `\` outside quotes, or a quoted name containing
+    `\ / [ ]`) are refused as well. `INDIRECT` and `__xludf.DUMMYFUNCTION` are
+    refused whatever their argument, because they turn text into a reference
+    or a formula, and that text can be assembled from cell values where no
+    lexical check sees it.
+
+  A computed column is checked once as a template. Its `{row}` placeholder may
+  only follow a column letter or stand alone, so a row number cannot complete a
+  function name. `renderXlsx` throws `OfficeUnsafeFormulaError` before any byte
+  is written, so nothing is stored or delivered. The check is lexical: string
+  literals are skipped and an unterminated quote fails closed.
+
+  A lexical check only holds if it reads the text the application reads, so
+  it starts there (`formulaText.ts`). A formula is refused if it contains a
+  character the file would not carry as written (exceljs's XML encoder drops
+  most control characters, XML turns a carriage return into a line feed and
+  cannot hold an unpaired surrogate, U+FFFE or U+FFFF) or `_x` followed by a
+  hexadecimal digit, the file format's `_xHHHH_` escape, which a reader
+  decodes. The input schema refuses the same text before any dataset is
+  resolved, and the renderer checks it again. Outside quotes, a formula may
+  only use the grammar's own characters (letters, digits, the plain space and
+  the operators, on one line), and names are read by Excel's grammar
+  ([MS-XLSX] 2.2.2), so the check splits names exactly where the application
+  does. The `{row}` check reads only the characters just before each
+  placeholder, so checking a template takes time linear in its length.
+- **Dataset rows cannot become formulas.** Rows behind a `datasetId` go through
+  `normalizeCell` (`officeTool.ts`), which passes primitives and JSON-stringifies
+  every object and array, so a system of record cannot inject a formula or a
+  cached value. The dataset guarantees elsewhere in this document (the
+  `query_dataset` table in §6b) and in the orchestrator prompt are unchanged:
+  `create_xlsx` still resolves those rows server-side, and they never pass
+  through the model.
+- **No server-side engine, by decision.** HyperFormula is GPL/commercial and
+  excluded. Evaluation with an MIT engine is a roadmap item
+  (`middleware-agent-handoff.md` §13). Any engine would have to match Excel's
+  semantics exactly, because a wrong `<v>` under omadia's name is the defect
+  this section closes.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation
@@ -3270,7 +3358,19 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       without the guard; a host that requires masking runs no handler without
       a handle (`requirePrivacyHandle`). A new `turnContext.run(...)` re-scope
       on that path carries `privacyHandle` over (§6c).
+- [ ] A new cell or value path in `@omadia/plugin-office` stores no
+      caller-supplied formula result (formula cells are `{ formula }` only),
+      passes no caller-supplied object to exceljs, header included (exceljs
+      reads any object by its shape, §5a; a formula cell is rebuilt as
+      `{ formula }`; `office-cell-values.test.ts` pins it), and runs every
+      formula through the formula policy (`formulaPolicy.ts`, §5a:
+      `assertFormulaStaysInWorkbook` for a cell,
+      `assertComputedColumnStaysInWorkbook` for a template). A function added
+      to `formulaFunctions.ts` has been checked to compute only over the
+      workbook. An exceljs upgrade re-checks which characters its XML encoder
+      changes against `formulaText.ts`. `office-formulas.test.ts` pins all of it, with rejected-formula
+      rows for every refused function family and reference form.
 
 ---
 
-*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception).*
+*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*

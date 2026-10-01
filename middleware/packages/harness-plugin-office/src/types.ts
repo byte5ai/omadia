@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { formulaTextReason } from './formulaText.js';
 
 /**
  * Descriptor contracts for the office renderers.
@@ -20,15 +21,38 @@ export const MEDIA_TYPE = {
 // ---------------------------------------------------------------------------
 
 /**
- * A formula cell. The renderer writes `{ formula }` as a real Excel formula
- * (exceljs computes on open). Cross-sheet references work by writing the sheet
- * name into the formula, e.g. `SUMMEWENNS('Offene Posten'!C:C, 'Offene
- * Posten'!E:E, A2)`. An optional `result` provides a cached value some viewers
- * show before recompute.
+ * A formula string whose text reaches the file exactly as written: no
+ * character the writer drops or XML cannot carry, and no `_xHHHH_` escape
+ * (`formulaText.ts`). The renderer's formula policy checks the same again,
+ * together with everything else, before writing.
+ */
+function formulaTextSchema(maxLength: number) {
+  return z
+    .string()
+    .min(1)
+    .max(maxLength)
+    .superRefine((formula, ctx) => {
+      const reason = formulaTextReason(formula);
+      if (reason !== undefined) ctx.addIssue({ code: 'custom', message: `rejected: ${reason}` });
+    });
+}
+
+/**
+ * A formula cell. The renderer writes `formula` verbatim as the cell's Excel
+ * formula. Cross-sheet references work by writing the sheet name into the
+ * formula, e.g. `SUMIFS('Offene Posten'!E:E, 'Offene Posten'!C:C, A2)`.
+ * Formulas use the file format's grammar: English function names and `,`
+ * between arguments, whatever language the spreadsheet application runs in.
+ *
+ * Nothing on the server evaluates a formula (exceljs only serialises it), and
+ * the cell carries no cached value: the workbook asks the opening application
+ * to recalculate on load, and that application computes what is displayed.
+ * There is deliberately no `result` field. A caller-supplied cache would be
+ * stored as if it were the computed figure; an input that still sends one
+ * loses it here (unknown keys are stripped) and the renderer ignores it too.
  */
 export const FormulaCellSchema = z.object({
-  formula: z.string().min(1).max(4000),
-  result: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  formula: formulaTextSchema(4000),
 });
 export type FormulaCell = z.infer<typeof FormulaCellSchema>;
 
@@ -78,10 +102,13 @@ export const ColumnSpecSchema = z.object({
    * value is NOT read from the row/dataset — every data row gets this formula,
    * with the placeholder `{row}` replaced by that row's Excel row number. This
    * is what lets a DATASET sheet carry a helper column, e.g. a "Monat" column
-   * `formula: 'TEXT(C{row},"YYYY-MM")'` (C = the date column's letter). Other
-   * columns are referenced by their Excel letter (A, B, C… in column order).
+   * `formula: 'YEAR(C{row})&"-"&TEXT(MONTH(C{row}),"00")'` (C = the date
+   * column's letter; built from YEAR/MONTH because TEXT date codes such as
+   * "YYYY" are read in the opening application's language). Other columns
+   * are referenced by their Excel letter (A, B, C… in column order). Like a
+   * formula cell, it is written without a cached value.
    */
-  formula: z.string().min(1).max(2000).optional(),
+  formula: formulaTextSchema(2000).optional(),
 });
 export type ColumnSpec = z.infer<typeof ColumnSpecSchema>;
 
@@ -238,6 +265,26 @@ export class OfficeRenderError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'OfficeRenderError';
+  }
+}
+
+/**
+ * A descriptor formula the formula policy refuses (`formulaPolicy.ts`): one
+ * that would reach outside the workbook (the network, another program or
+ * another file), or one that calls a function other than Excel's own. Thrown
+ * before any byte is written, so nothing is stored or delivered.
+ */
+export class OfficeUnsafeFormulaError extends OfficeRenderError {
+  constructor(
+    /** Where the formula sits, e.g. `sheet "Pivot", cell B2`. */
+    public readonly location: string,
+    /** Why it was refused, phrased for the caller (and the model). */
+    public readonly reason: string,
+  ) {
+    super(
+      `formula in ${location} rejected: ${reason}. Formulas may only compute over cells of this workbook.`,
+    );
+    this.name = 'OfficeUnsafeFormulaError';
   }
 }
 
