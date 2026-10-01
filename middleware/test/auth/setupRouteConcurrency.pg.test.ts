@@ -34,6 +34,10 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { Pool } from 'pg';
 
+import {
+  createLoginRateLimiter,
+  DEFAULT_LOGIN_LIMITER_CONFIG,
+} from '../../src/auth/loginRateLimiter.js';
 import { LocalPasswordProvider } from '../../src/auth/providers/LocalPasswordProvider.js';
 import { ProviderRegistry } from '../../src/auth/providerRegistry.js';
 import { UserStore } from '../../src/auth/userStore.js';
@@ -105,6 +109,16 @@ describe('POST /api/v1/auth/setup under concurrency (real Postgres)', { skip: !p
         publicBaseUrl: 'http://localhost',
         defaultReturnPath: '/',
         setupAllowed: true,
+        // The wizard's hash takes a slot of the sign-in limiter's argon2
+        // capacity (§10m). Give it room for all N, so every request reaches
+        // the race this suite is about instead of an early 503 auth.busy.
+        loginLimiter: {
+          limiter: createLoginRateLimiter({
+            ...DEFAULT_LOGIN_LIMITER_CONFIG,
+            globalMaxInFlight: N + DEFAULT_LOGIN_LIMITER_CONFIG.globalDeviceReserveInFlight,
+          }),
+          clientAddress: { kind: 'socket' },
+        },
       }),
     );
     const server = await listenLoopback(app);

@@ -1,6 +1,8 @@
 import { providerApiKeyVaultKey } from '@omadia/llm-provider';
 import type { Request, RequestHandler, Response } from 'express';
 
+import { credentialEpoch } from '../auth/loginDevices.js';
+import type { LoginRateLimiter } from '../auth/loginRateLimiter.js';
 import { hashPassword } from '../auth/passwordHasher.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
 import type { ProviderRegistry } from '../auth/providerRegistry.js';
@@ -70,6 +72,10 @@ export async function resolveSetupState(deps: SetupStateDeps): Promise<SetupStat
 
 export interface SetupRouteDeps extends SetupStateDeps {
   userStore: Pick<UserStore, 'count' | 'createFirstAdmin' | 'markLoginNow'>;
+  /** The sign-in limiter's global argon2 capacity (§10m). The wizard's hash
+   *  takes a slot like a login does, so parallel setup requests cannot run
+   *  more argon2 at once than `AUTH_LOGIN_MAX_INFLIGHT` allows. */
+  loginCapacity: Pick<LoginRateLimiter, 'acquireSlot'>;
   /** Operator setup token; undefined = this boot has no token gate (desktop
    *  kernel on loopback, or no wizard at all). */
   setupToken?: string;
@@ -78,8 +84,9 @@ export interface SetupRouteDeps extends SetupStateDeps {
   reactivate?: (agentId: string) => Promise<void>;
   anthropicKeyConsumers?: readonly string[];
   /** Mints the session cookie for the admin just created (the auth router
-   *  owns session minting). */
-  signIn: (req: Request, res: Response, user: UserRecord) => Promise<void>;
+   *  owns session minting), and its device cookie under `epoch`: the
+   *  credential epoch of the row and hash this request wrote (§10m). */
+  signIn: (req: Request, res: Response, user: UserRecord, epoch: string) => Promise<void>;
   log?: (msg: string) => void;
 }
 
@@ -102,6 +109,9 @@ function readSetupBody(req: Request): SetupBody {
     anthropicApiKey: str(body['anthropic_api_key']).trim(),
   };
 }
+
+/** A saturated argon2 capacity frees a slot within the time of one hash. */
+const BUSY_RETRY_AFTER_S = 1;
 
 function refuse(res: Response, status: number, code: string, message: string): void {
   res.status(status).json({ code, message });
@@ -252,8 +262,24 @@ export function createSetupHandler(deps: SetupRouteDeps): RequestHandler {
     }
 
     // Hash OUTSIDE the lock: argon2 takes tens of milliseconds, the locked
-    // section only a few.
-    const passwordHash = await hashPassword(body.password);
+    // section only a few. The hash holds a slot of the sign-in limiter's
+    // global capacity, released whatever the hash does.
+    const release = deps.loginCapacity.acquireSlot();
+    if (!release) {
+      res.set('Retry-After', String(BUSY_RETRY_AFTER_S));
+      res.status(503).json({
+        code: 'auth.busy',
+        retry_after_s: BUSY_RETRY_AFTER_S,
+        message: 'the server is busy verifying other sign-ins — try again in a moment',
+      });
+      return;
+    }
+    let passwordHash: string;
+    try {
+      passwordHash = await hashPassword(body.password);
+    } finally {
+      release();
+    }
 
     // 3. The atomic create.
     let result: FirstAdminResult;
@@ -290,8 +316,9 @@ export function createSetupHandler(deps: SetupRouteDeps): RequestHandler {
     }
 
     // Auto-login the freshly-created admin so the operator lands inside the
-    // UI without a second round-trip.
-    await deps.signIn(req, res, user);
+    // UI without a second round-trip. Its device cookie is bound to the
+    // password this request set, never to one read back later.
+    await deps.signIn(req, res, user, credentialEpoch({ id: user.id, passwordHash }));
     void deps.userStore.markLoginNow(user.id).catch(() => undefined);
 
     res.json({

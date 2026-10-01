@@ -1197,7 +1197,10 @@ Confirmed empirically against a deployment under our control: uncredentialed
    It reads `req.socket.remoteAddress`, never `X-Forwarded-For` — `trust proxy`
    is on, so a guard on `req.ip` would be defeated by a header. Leave it off in
    containerised setups, where the Next.js server proxies from a container
-   address.
+   address. The password sign-in limiter (§10m) keys clients on the same rule:
+   the socket peer by default, and a forwarded address only from a configured
+   number of trusted hops counted from the right or from a header the edge
+   sets, never `req.ip`.
 
 **Operating guidance.** `DEV_ENDPOINTS_ENABLED` is dev scaffolding: leave it off
 on deployed environments. It is no longer a security boundary on its own — but
@@ -2347,8 +2350,12 @@ logs a skip.
   row is deleted then. Operators who object set `ADMIN_SETUP_TOKEN`.
 - Anyone who can read the logs or the database can complete setup first.
   Both already imply control of the deployment.
-- A token holder can still make the server run argon2 once per request. There
-  is no rate limit on `/setup` yet. The token keeps unauthorised callers out.
+- A token holder can still make the server run argon2 once per request. The
+  hash takes a slot of the sign-in limiter's global capacity (§10m), so
+  parallel requests cannot run more argon2 at once than
+  `AUTH_LOGIN_MAX_INFLIGHT` allows (503 `auth.busy` beyond it). Token guesses
+  are not counted per client: the token is compared before anything else, and
+  a generated one carries 192 bits. The token keeps unauthorised callers out.
 - A desktop kernel on loopback accepts the wizard from any local process.
   That is the desktop trust model: the local user is the operator.
 
@@ -2361,6 +2368,424 @@ Postgres), and against real Postgres
 race, uncommitted-OIDC seam, lock timeout, audit row, shared token store) and
 `middleware/test/auth/setupRouteConcurrency.pg.test.ts` (N parallel HTTP
 requests → one 200, the rest 410).
+
+---
+
+## 10m. Password sign-in rate limiting
+
+`POST /api/v1/auth/login/:providerId` sits under the public `/api/v1/auth/*`
+prefix, and every well-formed attempt costs a full argon2id verification
+(19 MiB, t=2), an unknown email included (the dummy-hash path). Nothing used to
+count attempts: anyone who could reach the route could guess passwords online
+without limit and drive unbounded argon2 work. The route now runs every attempt
+through `auth/loginRateLimiter.ts` (wired in `routes/authLogin.ts`) before
+`provider.verify` is called.
+
+**Three kinds of client key.** Every attempt names its client, and the kind
+of key decides which layers apply:
+
+- `device`: the browser carries a genuine device cookie for this account,
+  minted by a password sign-in to it that checked its current password (see
+  below), so it is one of the browsers that have signed in to the account.
+- `address`: an address a trusted proxy or edge vouched for
+  (`AUTH_LOGIN_CLIENT_ADDRESS=xff:<n>` or `header:<name>`). That is one
+  client, or one NAT.
+- `shared`: the TCP peer, under the default `socket` policy or as the
+  fallback of the other two. In every shipped topology it is a proxy that all
+  browsers behind it share: the web-ui container in compose, web-ui's or the
+  edge's address on Fly and Render, loopback on the desktop.
+
+**Three layers, checked in this order.**
+
+1. **Client** (`address` keys only): a CPU brake per client address. A leaky
+   bucket of failures, a burst of 100, then one failure every 6 s (100 per
+   10 min). Full → 429 `auth.rate_limited`, each Retry-After at most 15 s. A
+   sender that keeps the bucket full takes every step as it opens, so whoever
+   shares its address waits for as long as it keeps going. For one address
+   that is the price of sharing a NAT with the sender. For a `shared` key it
+   would let any anonymous sender lock out every browser of the deployment,
+   so a shared key skips this layer. A `device` key skips it too: it only ever
+   sees its own account, where the account layer is stricter.
+2. **Account**: per (account, client) *pair*, every kind, the guessing
+   defence. Five free failures, then each further attempt waits
+   1 s × 2^(failures − 5) after the last failure, capped at 2 minutes (429
+   `auth.rate_limited`). A success clears the pair, and a pair is forgotten
+   30 minutes after its last failure. The account is the typed address,
+   folded at least as coarsely as the users table matches it (*The account
+   key* below), so no other spelling of an address opens a second budget.
+   One client therefore gets about 30 guesses per hour against one account.
+   All `device` keys of one account count as one client here, the account's
+   known browsers: a second device id buys no second budget.
+3. **Global**: process-wide argon2 capacity. At most `AUTH_LOGIN_MAX_INFLIGHT`
+   (default 4) verifications at once, and a leaky bucket of admitted attempts
+   that drains 300 per minute (so Retry-After stays at 1 s). Attempts without
+   a device cookie may hold 3 of the 4 slots and fill the bucket to 240. The
+   last slot and the last 60 are headroom that only `device` attempts can
+   take, so however hard unknown browsers push, a known browser finds room.
+   What one account's known browsers can take of that headroom is what
+   their one pair admits: five attempts, then one per wait, however many
+   device cookies they hold. Over the limit → 503 `auth.busy`: server
+   saturation, not client misbehaviour. Only attempts the first two layers
+   admitted consume it, so a flood of cheap refusals cannot turn into a
+   deployment-wide 503.
+
+A refused attempt never reaches `verify`. There is no argon2 work, and no
+answer that tells a right password from a wrong one while the pair is blocked.
+A refusal never sets a cookie. It carries `Retry-After` and `retry_after_s`,
+and the login page turns both codes into a localized "wait N seconds" message.
+
+**Counting at admission.** An admitted attempt is pending on its client and its
+pair until it settles, and a pending attempt counts as a failure. N parallel
+requests cannot all pass the check before the first verdict lands, and once a
+pair's free budget is spent it gets one attempt at a time. Anything but a
+successful sign-in is a failure, a `verify` that throws included. The global
+slot is released in a `finally`.
+
+**The account key.** The users table matches a sign-in by
+`LOWER(email) = LOWER($input)` under the database's collation, and Postgres
+lower-cases differently from JavaScript. On the shipped databases (libc
+en_US.UTF-8, the builtin C.UTF-8 provider) `LOWER()` turns a capital dotted
+İ (U+0130) into a plain i and every capital sigma into σ, where
+`toLowerCase()` gives an i with a combining dot and, at the end of a word, ς.
+A key built with `toLowerCase()` would give each such spelling of an address
+a budget of its own, 2^k of them for an address with k i's. The key
+(`loginAccountKey` in `auth/loginAccount.ts`) folds further than any
+`LOWER()`: compatibility decomposition (NFKD), combining marks dropped, lower
+case, then the dotless ı and the final ς folded to i and σ. Every spelling
+the users table treats as one account is one key. A unit test checks that
+against the `LOWER()` variants collations apply (libc, builtin, ICU, Turkish,
+Lithuanian, C), and `loginAccountFold.pg.test.ts` against Postgres itself.
+Coarser is safe:
+accounts whose addresses fold together only share their limiter state (a
+residual risk below). `LocalPasswordProvider` holds the other end: an attempt
+signs in only to an account whose stored address folds to the key it was
+counted under. Whatever a collation or a newer Unicode version matches beyond
+the fold therefore cannot sign in on a budget of its own.
+
+**Lockout-DoS.** A per-account lock is a gift to an attacker. A few wrong
+passwords lock the real operator out, and on a single-admin install the unlock
+path (an admin session) is exactly what the attack denies. Three mechanisms
+answer it, and the two paragraphs after them say what they leave open.
+
+- *The pair key.* The backoff is per (account, client), so a client only ever
+  slows down its own attempts on an account.
+- *No client brake on a shared key.* Under `socket` the middleware sees one
+  address for every browser behind the web-ui `/bot-api` proxy. Were that
+  address braked as one client, an anonymous sender could fill it with 100
+  failures on made-up emails and then take each 6-second step as it opened.
+  Every browser without a device cookie would get 429 for as long as the
+  sender kept going. A shared key therefore meets only the account and global
+  layers. What bounds a sender there is the global capacity, and exhausting
+  it is a sustained argon2 load that answers 503, not a cheap lock.
+- *The device cookie.* A browser that has signed in to an account carries a
+  device cookie (`omadia_login_device`, `auth/loginDeviceCookie.ts` and
+  `auth/loginDevices.ts`, the OWASP device-cookie pattern). For that account
+  the limiter counts it among the account's known browsers (kind `device`)
+  instead of keying it by the address. The known browsers of an account
+  share one pair of their own and the reserved headroom in the global
+  capacity, so no other client's guesses or floods turn them away, however
+  many addresses they come from. Only their own failures, and genuine
+  overload by other known browsers, can.
+  - Only a successful password sign-in mints one, with a fresh id, once per
+    sign-in, and so does the first-user wizard, which sets the password. A
+    session alone does not: `GET /me` and `/renew` set none. Holding one
+    therefore takes the account's password. The cookie survives logout.
+  - It is bound to the account the sign-in VERIFIED, never to the address as
+    typed: to that account's stored address and to the password that
+    sign-in checked. It lives one year and is HttpOnly, SameSite=Lax, Path=/
+    and Secure behind TLS, like the session cookie.
+  - The value is `v3.<id>.<exp>.<ep>.<tag>`. `ep` fingerprints the credential
+    epoch the sign-in checked: SHA-256 over the users row id and the password
+    hash the provider compared the password with (`AuthSuccess.credentialEpoch`;
+    for the wizard, the row and hash it just wrote). Never an epoch read after
+    that comparison: a reset that lands while a sign-in with the old password
+    is being verified would otherwise bind that sign-in's cookie to the new
+    password, which it never proved. The session the same sign-in mints is
+    bound the same way: its `sv` comes from the row the password was checked
+    against (§10k), so such a reset ends that session too. `tag` is an
+    HMAC-SHA256 over the
+    account's device key (its stored address with ASCII letters lower-cased,
+    `loginDeviceAccountKey`), the id, the expiry and `ep`. The tag and
+    fingerprint keys are derived from the session signing key, one per
+    purpose. The device key is a separate identity from the limiter's
+    account key: that one lumps spellings of different accounts together on
+    purpose, and one account's cookie would then count for another. `v2`
+    cookies, bound to the address as typed, no longer read.
+  - A request counts as a known browser when the address it names has the
+    cookie's device key, and the users-table lookup of that key lands on an
+    active row whose epoch is the one the cookie was minted under. The
+    device key lower-cases ASCII letters only, so that lookup lands where
+    the lookup of the typed address lands (a residual risk below names the
+    collations where a capital I is the exception). A spelling that differs
+    from the stored address beyond ASCII case names no known browser and
+    falls back to the address key.
+  - Revocation needs no per-device state. A password reset writes a new hash
+    (argon2 salts are random), so every cookie minted before it is stale,
+    and so is the cookie of a sign-in still being verified against the old
+    hash when the reset lands: only a sign-in that checked the new password
+    mints a current one. A disabled account has no epoch while it stays
+    disabled, a deleted one has none, and a re-created one gets a new row
+    id. A stale cookie is an unknown browser and falls back to the address
+    key. The admin routes that create, reset, disable, re-enable or delete
+    an account drop its cached epoch, so this process stops honouring the
+    old one at once.
+  - Checking the epoch is a users-table lookup. It runs only for a cookie
+    whose tag checks out, one at a time per device key, and is cached per
+    device key for 10 seconds, so a stream of requests carrying one stale
+    cookie is not a stream of queries, however many arrive at once. A failed
+    lookup counts the browser as unknown and is logged at most once a
+    minute; it never fails a sign-in.
+  - It authenticates nothing: it only picks a rate-limit bucket. A forged,
+    expired, foreign or stale cookie falls back to the address key.
+  - Rotating the session signing key revokes every device cookie at once,
+    because their keys are derived from it. It also ends every session. The
+    key is the vault entry `core:auth/session_signing_key`; the middleware
+    generates a new one at start when the entry is missing. There is no
+    tooling for that yet (handoff §13).
+
+*What stays open.* Clients that share a key share its pairs. Under `socket`,
+any sender that reaches the middleware through web-ui arrives on the shared
+address. It can fail on one account once per 2-minute wait and keep that
+account's pair shut for every browser without a device cookie for it, such as
+a first sign-in on a new browser or one whose cookies were cleared. Nothing that runs before argon2 can tell that browser from the
+sender. The ways out are a browser that has been signed in to the account, an
+admin's password reset or re-enable (`routes/adminUsers.ts` clears every pair
+of that account), a restart, or a client address that tells clients apart
+(`xff:<n>` or `header:<name>` below; the shipped Fly configuration sets one).
+
+The known browsers of an account share their pair too. Whoever holds a
+current device cookie for it can make the account's other known browsers
+wait, one wrong guess per 2-minute wait. Getting one takes a successful
+password sign-in to the account, so that is someone who knows its password.
+However many cookies such a holder collects, they are one budget. A password
+reset makes them stale, a sign-in that was still checking the old password
+when the reset landed gets only a stale one, and a session from before the
+reset gets no new one. Re-enabling an account without a reset lets its
+earlier cookies count again, which gives their holders nothing: each of them
+signed in with that same, unchanged password. Reset the password to end them
+for good.
+
+**The client key under `trust proxy`.** `app.set('trust proxy', true)` makes
+`req.ip` the left-most `X-Forwarded-For` entry, which the client writes. The
+limiter never reads `req.ip` (the same rule as §10's loopback gate).
+`AUTH_LOGIN_CLIENT_ADDRESS` (`auth/clientAddress.ts`) chooses the key:
+
+- `socket` (default): the TCP peer, which cannot be forged, and always a
+  `shared` key. It is the right choice when nothing in front of the web-ui
+  adds the client's address: the desktop app, and the compose stack reached
+  directly. The web-ui proxy forwards the browser's `X-Forwarded-For`
+  verbatim, and Next.js 16 fills it in with the socket peer only when it is
+  absent (`x-forwarded-for ??= …`). A forged value and a real one are
+  indistinguishable there, which is why that hop is not trusted on its own.
+- `xff:<n>`: the n-th entry counted from the **right**, the address the
+  outermost of n trusted proxies that each append the client's address saw.
+  Entries further left are never read, so a forged left-most value does not
+  change the bucket (tested). Fewer than n entries fall back to the socket
+  (shared). It fits a compose stack behind a reverse proxy that appends on
+  every request (Caddy and Traefik by default, nginx with
+  `$proxy_add_x_forwarded_for`): `xff:1`, provided nothing reaches web-ui
+  around that proxy. A wrong n on a path without that many honest hops lets a
+  client pick its own key, and then only the global layer is left against
+  guessing (*A key the client can choose* below).
+- `header:<name>`: a header a trusted edge sets and overwrites. It must hold
+  exactly one address. **On Fly.io this is the setting:
+  `header:Fly-Client-IP`**, and `fly/middleware.fly.toml` sets it. Fly
+  documents the right-most `X-Forwarded-For` entry as the app's own shared or
+  dedicated IP address, so `xff:1` would give every client the same key
+  there. It documents `Fly-Client-IP` as the client's address as its proxy
+  saw it, but not whether the proxy replaces a value the client sent. A
+  probe on 2026-10-01 says it does. `debug.fly.dev`, a public Fly app that
+  echoes the request headers it receives, was sent a made-up
+  `Fly-Client-IP` over HTTP/1.1 and HTTP/2: as one value, as a list, as two
+  header lines and with a lower-case name. Every time the app received one
+  such header, holding the sender's real address, while a made-up
+  `X-Forwarded-For` arrived unchanged in the left-most place. That is
+  observed behaviour, not a documented guarantee, and no omadia deployment
+  has been probed end to end yet (handoff §13). web-ui reaches the
+  middleware over `.internal` without another proxy hop (`fly/deploy.sh`)
+  and forwards the header, so the direct and the proxied path both carry
+  it. **That holds only while web-ui's `MIDDLEWARE_URL` stays on
+  `.internal`.** A `.flycast` address would route web-ui's requests
+  through Fly Proxy, which would most likely set the header to the address
+  it accepted the connection from: web-ui's own. Every browser behind
+  web-ui would then arrive as one vouched address, and the client layer
+  would brake them as one client: a single sender failing on made-up
+  emails could hold every one of them without a device cookie at 429.
+  Behind Cloudflare use `header:CF-Connecting-IP`, but only if the app
+  cannot be reached around Cloudflare.
+
+Whatever the policy yields must parse as an IP address once a port, IPv6
+brackets and the `::ffff:` prefix are stripped, or the socket peer is used, so
+junk can neither mint free keys nor reach the log. IPv6 clients are keyed by a
+prefix `AUTH_LOGIN_IPV6_PREFIX` bits long (32..64, default 64): a single host
+controls its whole /64 and could otherwise rotate through 2^64 budgets. A /64
+per key still leaves the holder of an allocation many keys: a /56 is 256 of
+them and a /48 65,536, and tunnel brokers hand out /48s for free. Each key
+opens with its own client burst. 56 or 48 folds such an allocation into one
+key, but also lumps together unrelated clients that share one (a carrier, a
+hosting provider's range). The global reserve keeps known browsers safe from a
+key-rich sender either way.
+
+**A key the client can choose.** A wrong `xff:<n>`, a header the edge passes
+through instead of overwriting, or a path that reaches web-ui or the
+middleware around the trusted hop lets a client name its own address: any
+valid IP it makes up, a new one for every attempt if it likes. Each new key
+is a fresh client bucket and a fresh pair with five free failures, so neither
+the client nor the account layer slows it down. Against one account only the
+global layer is left. It lets attempts without a device cookie through at up
+to 300 a minute per process, after a first burst of 240, where one client
+with a fixed key gets about 30 an hour. On Fly that is what a forgeable
+`Fly-Client-IP` would mean; the probe above found the edge overwriting it.
+`socket` cannot fail this way and is the safe choice when unsure.
+
+**Observability.** The first refusal of a (scope, client) per minute, and of
+the global scope per minute overall, writes one log line
+(`[auth] login refused (<scope> limit) client=<key> retry_after_s=<n>`) and one
+`admin_audit` row (`auth.login_rate_limited`, system actor, target
+`login-client:<key>` or `login:capacity`). Neither contains the account that
+was tried. It is per episode rather than per request, so a refusal flood cannot
+become a log or database write flood.
+
+**Other argon2 on the public prefix.** The first-user wizard's hash takes a
+global slot through `acquireSlot()`, from the share of browsers without a
+device cookie (503 `auth.busy` when none is free, §10l).
+Its setup token is compared before anything else and is not counted per
+client. An over-long password (more than 1024 characters) is refused as
+`invalid_credentials` before the users-table lookup: argon2's pre-hash is
+linear in the input, and the JSON body limit is 10 MB.
+
+**Configuration.** `AUTH_LOGIN_CLIENT_ADDRESS` (`socket` | `xff:1..8` |
+`header:<name>`; a bad value stops the boot with a config error),
+`AUTH_LOGIN_IPV6_PREFIX` (32..64, default 64) and `AUTH_LOGIN_MAX_INFLIGHT`
+(1..16, default 4; with 1 there is no slot to reserve). Each slot is 19 MiB of
+argon2 memory and a libuv threadpool thread (`UV_THREADPOOL_SIZE`, default 4),
+so more slots than pool threads only queue. The thresholds of the three layers
+and the device reserve are constants in `loginRateLimiter.ts`. The boot logs
+`[auth] login rate limiter armed (client address=…, IPv6 prefix=/…, max
+in-flight=…)`. A router built without the limiter dependency builds its own
+with the defaults, so a forgotten wiring cannot switch it off.
+
+**Residual risks (accepted, documented).**
+
+- **In-memory and per process.** A restart clears every counter. With N
+  middleware replicas each one enforces its own limits, so every ceiling is N
+  times the configured value. It is the same accepted trade-off as the API-key
+  limiter (§9). The shipped Fly deployment (`fly/deploy.sh`) runs one
+  middleware machine. A shared limiter (Redis or Postgres) is on the roadmap
+  for when the middleware runs more than one replica.
+- **A restart is the out-of-band unlock.** If the only admin is slowed down and
+  has no device cookie, restarting the middleware (the Fly machine, the compose
+  service, or quitting the desktop app) clears all limiter state. It needs no
+  admin session.
+- **A shared pair.** Clients on one key share its pairs: under `socket` every
+  browser behind the web-ui proxy, under `xff`/`header` a NAT, on the desktop
+  app every local sign-in (`127.0.0.1`). A sender that keeps failing on one
+  account, one wrong guess per 2-minute wait, keeps that pair shut for
+  browsers without a device cookie for the account. Known browsers are
+  unaffected, and so is every other account. A real fix needs per-browser
+  attribution through web-ui, which its Next.js proxy cannot give: it cannot
+  see the browser's socket address when a header is present. A mistyping
+  desktop user meets the same backoff (2 minutes at most) and has a device
+  cookie after the first successful sign-in.
+- **A shared client address under `xff`/`header`.** Behind one NAT, a sender
+  that keeps the address's client bucket full makes colleagues without a
+  device cookie wait for as long as it keeps going. It has to sit behind that
+  NAT to do so.
+- **Global saturation.** A sender that keeps more than 300 admitted attempts
+  per minute coming makes other browsers without a device cookie answer 503
+  while it keeps going. It can do that from the shared key alone, which has
+  no client brake, or from many addresses: a few in the first minute, since
+  each opens with a burst of 100, then about 30 at 10 per minute each. It
+  pays with a sustained argon2 load the caps bound, and known browsers keep
+  their headroom: device cookies count only while their account's password
+  is current, and one account's cookies share one pair, so a pile of them
+  cannot take it either.
+- **A current device cookie is one more client, never more.** Whoever holds
+  one for an account (it takes a sign-in with the account's password)
+  shares the account's known-browser pair. While it keeps failing, the
+  owner's known browsers wait too (2 minutes at most per wait), and it gets
+  one budget per account however many cookies it collected. A password reset
+  makes every earlier cookie stale, also the one a sign-in with the old
+  password gets while the reset lands, and only a sign-in that checked the
+  new password mints another.
+  Re-enabling an account without a reset lets its earlier cookies count
+  again, all of them minted with that unchanged password. Rotating the
+  session signing key ends all device cookies and all sessions at once.
+- **Accounts that fold together share their limiter state.** Two accounts
+  whose addresses differ only in what the account key folds away (accents,
+  compatibility forms, a combining dot, a dotless ı) share every pair, the
+  known-browser pair included: failures on one count against the other, and
+  a known browser of one can make the other's known browsers wait. Real
+  addresses rarely differ like that, and it shrinks the guessing budget
+  rather than growing it. The same goes for a collation that lower-cases a
+  capital I its own way (Turkish and Azerbaijani make it the dotless ı,
+  Lithuanian adds a dot before an accent above): there the lookup of an
+  address's device key (with a plain i) can land on another account of the
+  same fold than the typed address does. The shipped databases use none of
+  them.
+- **Distributed guessing.** The account layer is per (account, client). An
+  attacker with many client keys (a botnet, an IPv6 allocation under
+  `xff`/`header`) gets a budget per key, and the global layer is the
+  ceiling. A client that can choose its key (*A key the client can choose*
+  above) is the extreme case, with a fresh budget for every attempt. A
+  per-account ceiling across all clients would bring back the lockout-DoS
+  the pair key avoids.
+- **Key-table pressure.** Each map holds at most 10,000 keys, least recently
+  used out first. An attacker cycling random emails evicts older pairs and
+  weakens the pair layer for those accounts. The client and global layers are
+  unaffected.
+- **Password-setting paths accept longer passwords than sign-in does.** The
+  wizard and the admin user forms enforce a minimum only, so a password over
+  1024 characters set there could not sign in.
+
+Tests: `middleware/test/auth/loginRateLimiter.test.ts` (every layer with a fake
+clock, the pinned client semantics, counting at admission, a global budget that
+refusals leave alone, the report flag, memory bounds, sweep, `clearAccount`),
+`middleware/test/auth/loginRateLimiterFairness.test.ts` (a sender on the shared
+key never refuses another account's attempt while it keeps going, and the
+global capacity is what bounds it; device keys skip the client layer, and
+all device ids of one account share one pair and take at most its free
+budget of the reserve; many client keys fill the capacity for unknown
+browsers while a device-keyed attempt still gets in; the reserved in-flight
+slot),
+`middleware/test/auth/loginAccount.test.ts` (the account key per character
+Postgres folds differently, and against every simulated `LOWER()` over a
+corpus of spellings; the device key),
+`middleware/test/auth/loginAccountAliases.test.ts` (through the router, over a
+table that matches like Postgres: one budget for every spelling of an
+address, 2^k spellings included; a sign-in to one account under another
+spelling mints no known browser of a second account),
+`middleware/test/auth/loginAccountFold.pg.test.ts` (the same against real
+Postgres, the real `UserStore` and router, and a reset that lands while a
+sign-in is being verified),
+`middleware/test/auth/loginDevices.test.ts` (the v3 cookie, the epoch it is
+bound to, minting for the verified account under the epoch it checked
+without a lookup and checking by device key, a fresh id per sign-in, the
+cached single-flight lookup and `forget`, a failing lookup),
+`middleware/test/auth/loginDeviceRevocation.test.ts` (through the routers: a
+session alone mints no cookie; more device ids buy no more guesses or
+capacity; after a reset, a disable or a delete through the admin routes,
+earlier cookies are the address key again; a sign-in that checked the old
+password while a reset landed gets no cookie that counts),
+`middleware/test/auth/clientAddress.test.ts` (policies, the forged left-most
+entry, fallbacks and the `shared` flag, Fly's right-most app address, IPv6
+prefixes), `middleware/test/auth/loginRoute.test.ts` (429 and 503 with
+Retry-After and no cookie, no `verify` while blocked, the always-on default,
+address policies through the router, the device cookie on a shared key
+including forged, expired, foreign, stale and old-format cookies, one audit
+row per episode, the wizard's capacity slot and its device cookie),
+`middleware/test/auth/loginLockoutDos.test.ts`
+(through the router: one sender cannot stop other users on the shared key; a
+device-cookie holder gets in while the capacity for unknown browsers is
+exhausted from the shared key or from many IPv6 /64s;
+`AUTH_LOGIN_IPV6_PREFIX=48`),
+`middleware/test/auth/adminUsersRoute.test.ts` (reset and re-enable unlock
+under the account key; create, reset, status change and delete drop the
+cached device epoch under the device key),
+`middleware/test/auth/localPasswordProvider.test.ts` (the length cap; no
+sign-in to an account whose address folds to another key; a success reports
+the epoch of the hash it compared, even when a reset lands meanwhile),
+`web-ui/app/login/__tests__/page.test.tsx`.
 
 ---
 
@@ -2509,7 +2934,21 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       in. Cross-tenant routine scope has one producer, the
       `requireAuth`-gated operator router, and `routineOperatorScope.test.ts`
       fails on a second (§3, #1025/#1029).
+- [ ] Any public route that checks a password or another guessable secret
+      runs through the sign-in limiter (`loginRateLimiter`, §10m), and any
+      argon2 work reachable without a session takes a global slot
+      (`acquireSlot()`). A client key comes from `clientAddressFor`, never
+      from `req.ip`, and a key it marks `shared` (the TCP peer) is never
+      braked as if it were one client. A per-account limit keys the
+      account at least as coarsely as the users table matches it
+      (`loginAccountKey`), never by a JavaScript lower-case of the typed
+      value. Anything that earns a browser its own sign-in budget, like the
+      device cookie, is bound to the account the sign-in verified (its
+      stored address, never the typed one) and to the credentials that
+      sign-in checked (never ones read after the check), is issued only by
+      a sign-in that proved the password, at most once per sign-in, and
+      shares one budget per account however many of it a client holds.
 
 ---
 
-*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup).*
+*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key).*

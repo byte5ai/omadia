@@ -339,6 +339,91 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.167.10 — password sign-in is rate-limited
+
+**Nothing to do for most installs.** The defaults are safe on every shipped
+topology. What changes for operators:
+
+- **The defaults.** `AUTH_LOGIN_CLIENT_ADDRESS=socket`: the limiter keys a
+  client by the TCP peer, which nobody can forge. Behind a reverse proxy that
+  peer is the proxy, so every browser shares one address bucket; the limiter
+  knows that and never brakes such a shared address as one client. When a
+  proxy in front appends the client's address to `X-Forwarded-For`, set
+  `xff:<n>`, n being the number of trusted hops counted from the right. On
+  Fly.io the setting is `header:Fly-Client-IP`, not `xff:1` (see below).
+  `AUTH_LOGIN_MAX_INFLIGHT=4` concurrent argon2 runs and 300 attempts a minute
+  are the global capacity; beyond it the server answers 503 `auth.busy`.
+- **Refusals instead of endless tries.** After five wrong passwords for one
+  account from one client, further attempts wait (1 s, doubling, at most
+  2 minutes) and answer 429 `auth.rate_limited`. A busy server answers 503
+  `auth.busy`. Both carry `Retry-After`; scripted sign-ins
+  (`curl … /api/v1/auth/login/local`) should honour it. Every spelling of an
+  address counts as that one account: letter case, accents and the like
+  open no second budget.
+- **Known devices are not locked out.** A browser that has signed in to an
+  account with its password is one of that account's known devices. Wrong
+  guesses and floods from clients that have not signed in to the account use
+  up neither its sign-in budget nor its reserved share of the capacity, so it
+  still signs in with the correct password while they are refused.
+- **Unlocking an account.** A successful sign-in, an admin's password reset or
+  re-enabling the user clears the wait. When no admin session is available,
+  restart the middleware: the limiter lives in memory and a restart clears it.
+- **A new cookie.** A successful password sign-in (and the first-user
+  wizard) sets `omadia_login_device`, once per sign-in, for the account that
+  signed in. It makes that browser one of the account's known browsers: they
+  share a sign-in budget of their own and a reserved share of the sign-in
+  capacity. A session alone does not set it, so browsers that are signed in
+  when the new version starts become known browsers at their next password
+  sign-in. It authenticates nothing and survives logout. It is tied to the
+  password its sign-in checked: after a password reset, a disable or a
+  delete it no longer counts, not even when that sign-in was still being
+  checked as the reset landed, and only a sign-in with the current password
+  sets one that counts. Rotating the session signing key (the vault entry
+  `core:auth/session_signing_key`) ends every such cookie and every session
+  at once.
+- **The first-user wizard shares the capacity.** Its password hash takes a
+  slot of the same global capacity, so it can answer 503 `auth.busy` too;
+  retrying after `Retry-After` is enough.
+- **Passwords over 1024 characters can no longer sign in.** Setting one
+  through the admin UI still works, so reset such a password to a shorter one.
+
+**Fly.io.** Every client reaches the middleware from Fly's proxy or from
+web-ui, so by default they all share one address. The limiter then relies on
+the device cookie alone to keep operators apart. Key clients by the address
+Fly's edge sets instead: `AUTH_LOGIN_CLIENT_ADDRESS=header:Fly-Client-IP`.
+Not `xff:1`: Fly puts the app's own IP address right-most in
+`X-Forwarded-For`, which would give every client the same key.
+`fly/middleware.fly.toml` now sets it, so a `fly deploy --config
+fly/middleware.fly.toml` picks it up. The one-click updater only swaps the
+image and keeps the old settings; there, set the variable once with
+`fly secrets set AUTH_LOGIN_CLIENT_ADDRESS=header:Fly-Client-IP --app
+<middleware-app>`. This holds only while web-ui's `MIDDLEWARE_URL` points
+at the middleware's `.internal` address, as `fly/deploy.sh` sets it. Through
+a `.flycast` address, Fly's proxy would most likely set the header to
+web-ui's own address, and every browser behind web-ui would share one client
+key (`docs/security-architecture.md` §10m).
+
+**Render.** The blueprint (`render.yaml`) keeps the default `socket`. web-ui
+reaches the middleware through the middleware's public URL, so a request
+through web-ui passes more proxies than one sent to the middleware directly,
+and no single `xff:<n>` picks the browser's address on both paths. Under
+`socket` every browser shares one key, which the limiter treats as shared;
+known devices keep their own budget.
+
+**docker-compose.** Keep the default `socket` unless every request reaches
+web-ui through a reverse proxy that appends the client's address to
+`X-Forwarded-For` (Caddy and Traefik do by default, nginx with
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`). Then
+`xff:1` keys clients by their own address. To check it, send six wrong
+sign-ins through the proxy with a made-up `X-Forwarded-For` value: the
+`[auth] login refused` log line must name your real address. On its own, the
+web-ui proxy forwards the browser's header unchanged, so it is not a trusted
+hop.
+
+`AUTH_LOGIN_IPV6_PREFIX` (default 64) sets how much of an IPv6 address counts
+as one client, and `AUTH_LOGIN_MAX_INFLIGHT` (default 4) bounds concurrent
+argon2 runs; see `middleware/.env.example`.
+
 ## Upgrading past v0.167.9 — sessions, canvas sockets, setup token, routine card buttons
 
 Four hardening changes an operator may notice. Two can need action: an

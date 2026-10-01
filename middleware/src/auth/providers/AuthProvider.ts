@@ -19,6 +19,16 @@ export interface AuthSuccess {
   /** Optional refresh-token to persist into the vault for later renew.
    *  Local auth never returns one; OIDC providers do. */
   refreshToken?: string;
+  /**
+   * Password providers only: the credential epoch this verification checked
+   * (`credentialEpoch` in `auth/loginDevices.ts` of the users row and the
+   * hash the password was compared with). The sign-in limiter's device
+   * cookie is minted under it (docs/security-architecture.md §10m), never
+   * under an epoch read afterwards, so a password reset that lands while the
+   * verification runs leaves that cookie stale. Absent → no device cookie.
+   * Never logged and never part of a response.
+   */
+  credentialEpoch?: string;
 }
 
 export interface AuthError {

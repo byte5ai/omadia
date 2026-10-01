@@ -928,6 +928,7 @@
     "submit": "Anmelden",
     "submitting": "Anmeldung läuft…",
     "incorrectCredentials": "E-Mail oder Passwort ist falsch.",
+    "tooManyAttempts": "Zu viele Anmeldeversuche. Bitte {seconds, plural, one {# Sekunde} other {# Sekunden}} warten und erneut versuchen.",
     "or": "oder",
     "continueWith": "Weiter mit {provider}"
   },
