@@ -5,6 +5,7 @@ import type {
   Orchestrator,
 } from './orchestrator.js';
 import { ToolReplayAbortError, ToolReplayLedger } from './toolReplayLedger.js';
+import type { FinishedDone } from './verifierDelivery.js';
 
 /**
  * How `VerifierService` re-enters a turn — borderline resample, correction
@@ -17,13 +18,21 @@ import { ToolReplayAbortError, ToolReplayLedger } from './toolReplayLedger.js';
  * twice, a call the first run did not make runs only when it is a kernel
  * read, and a re-entry that needs any other call is abandoned — the
  * orchestrator throws `ToolReplayAbortError` (buffered) or ends the stream
- * with an error the service never forwards. The first run also keeps the
- * request's persistence: a re-entry writes no session-log row, fires no turn
- * hook and leaves its privacy receipt with the ledger, which the service
- * merges into the delivered answer and writes as the request's one row.
+ * with an error the service never forwards.
+ *
+ * The request has ONE record, and it holds the answer the user got
+ * (commit-on-delivery, `requestTurnRecord.ts`): every pass — the first run
+ * included — offers its session-log row and its `onAfterTurn` answer to the
+ * ledger instead of writing them, and leaves its privacy receipt there. Once
+ * the service decided which pass it delivers, it commits that pass's record
+ * (for a withheld answer: the pass its final verdict was about) and the
+ * request's one receipt row (`asRequestResult`, `finishRequestDone`).
  */
 
 type DoneEvent = Extract<ChatStreamEvent, { type: 'done' }>;
+
+/** The first run of a request; its re-entries are passes 1, 2, … */
+export const FIRST_PASS = 0;
 
 /** When a request may be re-entered at all. */
 export interface ReentryPolicy {
@@ -67,13 +76,14 @@ export function bindRequestLedger(
 /**
  * Starts one re-entry of the request with `input` (the same object for a
  * resample, a new one carrying the correction hint for a retry — pass it on
- * to `runTurn` / `chatStream` unchanged).
+ * to `runTurn` / `chatStream` unchanged). Returns the pass the re-entry runs
+ * as: the one to commit when its answer is the one delivered.
  */
 export function prepareReentry(
   orchestrator: Orchestrator,
   input: ChatTurnInput,
   ledger: ToolReplayLedger,
-): void {
+): number {
   ledger.beginReentry();
   // A retry's input is the service's own object, dropped with the request;
   // a resample re-binds the request's input, released by the caller.
@@ -81,6 +91,22 @@ export function prepareReentry(
   // #579 — the re-entry re-runs an already-screened user turn; the inbound
   // gate does not screen or audit it a second time.
   orchestrator.markScreeningReentry(input);
+  return ledger.pass;
+}
+
+/**
+ * Runs `fn` once the request's record is committed — at once without a
+ * ledger, where the turn recorded itself already. For a signal that must
+ * follow the request's `onAfterTurn`, as it followed the first run's before
+ * commit-on-delivery: `onVerifierBlocked` marks the plan step the turn's
+ * `onAfterTurn` finished.
+ */
+export function afterRequestRecord(ledger: ToolReplayLedger | undefined, fn: () => void): void {
+  if (ledger === undefined) {
+    fn();
+    return;
+  }
+  void ledger.turnRecord.whenCommitted().then(fn);
 }
 
 /** The log line for a re-entry that needed a call outside the first run. */
@@ -102,34 +128,53 @@ export function reentryFailureLine(
   return `[verifier/service] ${kind} FAIL: ${err instanceof Error ? err.message : String(err)}`;
 }
 
-/** The delivered turn carrying the request's receipt: every pass merged. */
-export function asRequestResult(
+/**
+ * The delivered turn as the request's: the record of `pass` — the pass that
+ * produced `result` — committed and its Turn id on the result, every pass's
+ * receipt merged in. Unchanged without a ledger (the turn recorded itself).
+ */
+export async function asRequestResult(
   result: ChatTurnResult,
+  pass: number,
   ledger: ToolReplayLedger | undefined,
-): ChatTurnResult {
-  const receipt = ledger?.receipts.merged();
-  return receipt ? { ...result, privacyReceipt: receipt } : result;
+): Promise<ChatTurnResult> {
+  if (ledger === undefined) return result;
+  const committed = await ledger.turnRecord.commit(pass);
+  const receipt = ledger.receipts.merged();
+  return {
+    ...result,
+    ...(committed.turnId !== undefined ? { turnId: committed.turnId } : {}),
+    ...(receipt ? { privacyReceipt: receipt } : {}),
+  };
 }
 
 /**
- * The stream's outgoing `done` as the request: the merged receipt, the key of
- * the request's receipt row and the persisted turn (both from the first run
- * when a re-entry's answer goes out). The row is written first, so the key
- * resolves the moment a consumer sees it.
+ * The stream's outgoing `done` as the request: the record of `pass` — the
+ * pass `done` came from — committed, with its Turn id and auto-promoted
+ * memory on `done` and the events the commit produced (the request's
+ * `onAfterTurn` annotations, Knowledge-Graph insert pulses) to go out before
+ * it; plus the merged receipt and the key of the request's receipt row. Both
+ * rows are written first, so the keys resolve the moment a consumer sees them.
  */
 export async function finishRequestDone(
   done: DoneEvent,
-  firstDone: DoneEvent | undefined,
+  pass: number,
   ledger: ToolReplayLedger,
-): Promise<DoneEvent> {
+): Promise<FinishedDone> {
+  const committed = await ledger.turnRecord.commit(pass);
   const receipt = ledger.receipts.merged();
   const receiptId = ledger.receipts.rowId;
-  const turnId = done.turnId ?? firstDone?.turnId;
   await ledger.receipts.commit();
   return {
-    ...done,
-    ...(receipt ? { privacyReceipt: receipt } : {}),
-    ...(receiptId !== undefined ? { receiptId } : {}),
-    ...(turnId ? { turnId } : {}),
+    done: {
+      ...done,
+      ...(receipt ? { privacyReceipt: receipt } : {}),
+      ...(receiptId !== undefined ? { receiptId } : {}),
+      ...(committed.turnId !== undefined ? { turnId: committed.turnId } : {}),
+      ...(committed.autoPromotedMkId !== undefined
+        ? { autoPromotedMkId: committed.autoPromotedMkId }
+        : {}),
+    },
+    events: committed.events,
   };
 }

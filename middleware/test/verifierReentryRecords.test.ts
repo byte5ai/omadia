@@ -9,7 +9,9 @@
  * into the Knowledge Graph a second time and persisted a receipt row per run.
  * Now a re-entry:
  *  - keeps every replayed call in the run trace, flagged `replayed`;
- *  - fires no turn hook and writes no session-log row of its own;
+ *  - fires no per-call turn hook of its own; the request's session-log row
+ *    and `onAfterTurn` are written once, for the delivered pass
+ *    (commit-on-delivery — `verifierDeliveredTurnRecord.test.ts` covers it);
  *  - ingests nothing into the Knowledge Graph for a replayed call;
  *  - persists no receipt row of its own — the request has ONE row, written
  *    once, whose receipt covers every pass (the egress of the resample and the
@@ -49,6 +51,7 @@ import { approved, blocked } from './_helpers/verifierVerdictFixtures.js';
 const INVOICE = { customer: 'K-1001', amount: 1200, currency: 'EUR' };
 const CREATED = 'Rechnung INV/2026/0042 über 1.200 EUR angelegt.';
 const ANSWER = 'Die Rechnung INV/2026/0042 über 1.200 EUR ist angelegt.';
+const CONTRADICTED_ANSWER = 'Die Rechnung INV/2026/0042 über 1.250 EUR ist angelegt.';
 
 const twoRuns = () => [
   toolCalls(['create_invoice', INVOICE]),
@@ -97,10 +100,12 @@ describe('a verifier re-entry records as part of the same request', () => {
     const sa = await t.service.chat(REQUEST);
 
     assert.deepEqual(sa.verifier, { status: 'corrected' }, 'the retry ran and was delivered');
-    assert.deepEqual(points, ['onBeforeTurn', 'onAfterToolCall', 'onAfterTurn']);
+    // The block is recorded after the request's onAfterTurn, as it was after
+    // the first run's: the plan-runner marks the step onAfterTurn finished.
+    assert.deepEqual(points, ['onBeforeTurn', 'onAfterToolCall', 'onAfterTurn', 'onVerifierBlocked']);
   });
 
-  it('the session log records the request once', async () => {
+  it('the session log records the request once, with the delivered answer', async () => {
     const logged: string[] = [];
     const sessionLogger = {
       log(entry: { assistantAnswer: string }) {
@@ -110,15 +115,22 @@ describe('a verifier re-entry records as part of the same request', () => {
     } as unknown as SessionLogger;
     const t = verifiedTurn({
       registry: invoiceRegistry(),
-      responses: twoRuns(),
+      // The first answer is contradicted; the retry's is delivered.
+      responses: [
+        toolCalls(['create_invoice', INVOICE]),
+        text(CONTRADICTED_ANSWER),
+        toolCalls(['create_invoice', INVOICE]),
+        text(ANSWER),
+      ],
       verdicts: [blocked(), approved()],
       orchestrator: { sessionLogger },
     });
 
-    await t.service.chat(REQUEST);
+    const sa = await t.service.chat(REQUEST);
 
     assert.equal(t.model.requests.length, 4, 'the retry ran');
-    assert.equal(logged.length, 1, 'one session-log row for one request');
+    assert.deepEqual(sa.verifier, { status: 'corrected' });
+    assert.deepEqual(logged, [ANSWER], 'one row, holding the answer the user got');
   });
 
   it('one receipt row per request, and the delivered answer carries the receipt of every pass', async () => {

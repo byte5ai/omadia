@@ -472,6 +472,13 @@ export type {
   ToolReplaySeam,
 } from './toolReplayLedger.js';
 export { RequestReceipts, mergePrivacyReceipts } from './requestReceipts.js';
+export { RequestTurnRecord } from './requestTurnRecord.js';
+export type {
+  CommittedTurn,
+  RequestAfterTurn,
+  TurnRecordDraft,
+  WrittenTurn,
+} from './requestTurnRecord.js';
 export {
   currentDispatchCaller,
   runWithDispatchCaller,

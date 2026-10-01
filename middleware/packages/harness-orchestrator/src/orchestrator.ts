@@ -210,6 +210,7 @@ import {
   withholdThrownToolError,
 } from './toolErrorRedaction.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
+import { TurnRecordWriter, type TurnFacts, type TurnRow } from './turnRecordWriter.js';
 import {
   type ModelRoutingConfig,
   type RoutingBucket,
@@ -2165,6 +2166,9 @@ export class Orchestrator {
   private readonly audienceRoleSources: RoleSourceRegistry;
   private readonly sessionBriefing: SessionBriefingService | undefined;
   private readonly factExtractor: FactExtractor | undefined;
+  /** Writes a turn's session-log row and fact extraction — now, or offered to
+   *  the request's record while a verifier may re-enter it (commit-on-delivery). */
+  private readonly turnRecords: TurnRecordWriter;
   /** #133 E0 — optional side-channel turn-hook runner (see OrchestratorOptions). */
   private readonly turnHookRegistry: TurnHookRunner | undefined;
   private readonly askUserChoiceTool: AskUserChoiceTool | undefined;
@@ -2368,6 +2372,10 @@ export class Orchestrator {
     this.securityScreener = options.securityScreener;
     this.securityAuditSink = options.securityAuditSink;
     this.sessionLogger = options.sessionLogger;
+    this.turnRecords = new TurnRecordWriter({
+      sessionLogger: options.sessionLogger,
+      factExtractor: options.factExtractor,
+    });
     this.entityRefBus = options.entityRefBus;
     this.contextRetriever = options.contextRetriever;
     this.audienceGrants = options.audienceGrants;
@@ -3717,10 +3725,13 @@ export class Orchestrator {
    * A turn whose input carries a ledger records its tool results into it (the
    * first run) or replays them (a re-entry, after `beginReentry()`): no tool a
    * re-entry calls runs twice, and a re-entry that needs a call outside the
-   * first run is abandoned with {@link ToolReplayAbortError}. A re-entry also
-   * writes no session-log row and fires no turn hook of its own. Its privacy
-   * receipt goes to `ledger.receipts` instead of a row of its own: the binder
-   * owns the request and must `ledger.receipts.commit()` once it delivered.
+   * first run is abandoned with {@link ToolReplayAbortError}. A re-entry fires
+   * no per-call turn hook of its own. The binder owns the request's record:
+   * every pass — the first run included — offers its session-log row and its
+   * `onAfterTurn` answer to `ledger.turnRecord` instead of writing them, and
+   * its privacy receipt to `ledger.receipts`; once it delivered, the binder
+   * calls `ledger.turnRecord.commit(pass)` for the pass it delivers and
+   * `ledger.receipts.commit()` (commit-on-delivery, `requestTurnRecord.ts`).
    *
    * Returns a function that removes the binding — call it when the request is
    * over, so an input object a caller reuses never meets a stale ledger.
@@ -4036,6 +4047,9 @@ export class Orchestrator {
         // inbound-screening gate above have both already re-bound it, so the
         // origin the binding is derived from is the origin the turn ran with.
         const turnMemory = this.bindTurnMemory(input);
+        // Commit-on-delivery: the request's `onAfterTurn` runs in the first
+        // run's hook context, whichever pass the verifier delivers.
+        this.bindRequestAfterTurn(boundLedger, turnId, input);
         const direct = await this.executeDirectLine(input, turnId, turnMemory);
         let result: ChatTurnResult | undefined;
         try {
@@ -4181,9 +4195,91 @@ export class Orchestrator {
   }
 
   /** True while a verifier re-entry runs: the request's first run already
-   *  persisted it (session log, fact extraction) and fired its turn hooks. */
+   *  fired its turn hooks, and its record is the verifier's to commit. */
   private isReentryPass(): boolean {
     return turnContext.current()?.toolReplayLedger?.mode === 'replay';
+  }
+
+  /**
+   * #361 — the direct-line fact-extraction prompt: both texts masked through
+   * the turn's prompt map (a direct-line turn masked nothing up to here),
+   * with the restorer snapshot that turns extracted facts back into real
+   * values. Undefined without a fact extractor, or when masking is `blocked`
+   * — extraction is then skipped (audited) rather than sent unmasked; the
+   * user-visible answer is unaffected.
+   */
+  private async directLineFacts(
+    privacy: PrivacyTurnHandle | undefined,
+    userMessage: string,
+    answer: string,
+  ): Promise<TurnFacts | undefined> {
+    if (!this.factExtractor) return undefined;
+    try {
+      const maskedUserMessage = await maskPromptForWire(privacy, userMessage);
+      const maskedAnswer = await maskPromptForWire(privacy, answer);
+      const restoreFacts = privacy?.snapshotPromptRestorer();
+      return {
+        userMessage: maskedUserMessage,
+        assistantAnswer: maskedAnswer,
+        ...(restoreFacts ? { restoreFacts } : {}),
+      };
+    } catch (err) {
+      if (!(err instanceof PromptMaskBlockedError)) throw err;
+      console.error(
+        `[orchestrator] direct-line fact extraction skipped — prompt masking blocked: ${err.message}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * `onAfterTurn` for this pass's answer — or, while the record is deferred
+   * (commit-on-delivery, `requestTurnRecord.ts`), notes the answer: the
+   * verifier's commit fires the request's `onAfterTurn` once, for the pass it
+   * delivers ({@link bindRequestAfterTurn}).
+   */
+  private async afterTurn(
+    turnId: string,
+    input: ChatTurnInput,
+    answer: string,
+    turnExternalId: string | undefined,
+  ): Promise<TurnAnnotation[]> {
+    const ledger = this.turnRecords.deferringLedger();
+    if (ledger !== undefined) {
+      ledger.turnRecord.noteAnswer(ledger.pass, answer);
+      return [];
+    }
+    return this.fireTurnHook(
+      'onAfterTurn',
+      turnId,
+      input,
+      { assistantAnswer: answer, ...(turnExternalId ? { turnExternalId } : {}) },
+      2000,
+    );
+  }
+
+  /**
+   * Binds the request's `onAfterTurn` to the first run's hook context — the
+   * plan-runner keyed what `onBeforeTurn` materialised on this turn id — when
+   * the request's record is deferred to the verifier.
+   */
+  private bindRequestAfterTurn(
+    ledger: ToolReplayLedger | undefined,
+    turnId: string,
+    input: ChatTurnInput,
+  ): void {
+    if (ledger?.defersTurnRecord !== true || ledger.mode !== 'record') return;
+    ledger.turnRecord.bindAfterTurn(async (answer, turnExternalId) =>
+      this.toAnnotationEvents(
+        await this.runTurnHook(
+          'onAfterTurn',
+          turnId,
+          input,
+          { assistantAnswer: answer, ...(turnExternalId ? { turnExternalId } : {}) },
+          2000,
+        ),
+      ),
+    );
   }
 
   /**
@@ -4667,63 +4763,41 @@ export class Orchestrator {
     // through the SAME session logger as a normal turn, so the orchestrator
     // sees it on later turns (memory, cross-session recall, KG continuity) —
     // not only via the channel's own prior-turn buffer. Best-effort: a logging
-    // failure must never swallow the already-captured answer.
-    let persistedTurnId: string | undefined;
-    if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
-      try {
-        const logged = await this.sessionLogger.log({
-          scope: input.sessionScope,
-          userMessage: input.userMessage,
-          assistantAnswer: answer,
-          toolCalls: 1,
-          iterations: 1,
-          ...(input.userId ? { userId: input.userId } : {}),
-          runTrace,
-        });
-        persistedTurnId = logged.turnExternalId;
-      } catch (err) {
-        console.error(
-          '[orchestrator] direct-line session log failed (continuing):',
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
-
+    // failure must never swallow the already-captured answer. While a verifier
+    // may re-enter the request, the row is offered instead and written for the
+    // pass it delivers (`requestTurnRecord.ts`).
+    //
     // Fact extraction parity (#332 review follow-up): a direct-line turn skips
     // chatInContext*, so without this the KG would never learn from a delegated
     // answer. Fire-and-forget against Haiku, after the session log lands so the
     // Fact → Turn edge has an anchor. Never awaited; entityRefs are empty (the
     // relay issues no orchestrator-level tool calls of its own).
-    // #361 — the extraction prompt is LLM-bound, so a direct-line turn (which
-    // never masked anything up to here) masks both texts through the turn map
-    // first; the extracted facts are restored to real values before ingest.
-    // Fail closed on `blocked`: skip fact extraction (audited) rather than
-    // send an unmasked prompt — the user-visible answer is unaffected.
-    if (this.factExtractor && persistedTurnId) {
-      try {
-        const maskedUserMessage = await maskPromptForWire(
-          privacyForPrompt,
-          input.userMessage,
-        );
-        const maskedAnswer = await maskPromptForWire(privacyForPrompt, answer);
-        const restoreFacts = privacyForPrompt?.snapshotPromptRestorer();
-        void this.factExtractor.extractAndIngest({
-          turnId: persistedTurnId,
-          userMessage: maskedUserMessage,
-          assistantAnswer: maskedAnswer,
-          entityRefs: [],
-          ...(restoreFacts ? { restoreFacts } : {}),
+    let persistedTurnId: string | undefined;
+    if (this.sessionLogger && input.sessionScope) {
+      const entry = {
+        scope: input.sessionScope,
+        userMessage: input.userMessage,
+        assistantAnswer: answer,
+        toolCalls: 1,
+        iterations: 1,
+        ...(input.userId ? { userId: input.userId } : {}),
+        runTrace,
+      };
+      const ledger = this.turnRecords.deferringLedger();
+      if (ledger !== undefined) {
+        // Masked now: the prompt map belongs to this pass and ends with it.
+        const facts = await this.directLineFacts(privacyForPrompt, input.userMessage, answer);
+        this.turnRecords.offerRow(ledger, { entry, entityRefs: [] }, 'direct-line answer', (turnId, refs) => {
+          this.turnRecords.startFactExtraction(turnId, facts, refs);
+          return Promise.resolve({});
         });
-      } catch (err) {
-        if (err instanceof PromptMaskBlockedError) {
-          console.error(
-            '[orchestrator] direct-line fact extraction skipped — ' +
-              `prompt masking blocked: ${err.message}`,
-          );
-        } else {
-          throw err;
-        }
+      } else {
+        persistedTurnId = await this.turnRecords.writeRow(entry, 'direct-line answer');
       }
+    }
+    if (this.factExtractor && persistedTurnId) {
+      const facts = await this.directLineFacts(privacyForPrompt, input.userMessage, answer);
+      this.turnRecords.startFactExtraction(persistedTurnId, facts, []);
     }
 
     return {
@@ -4910,11 +4984,28 @@ export class Orchestrator {
   }
 
   /**
-   * Fire a turn-hook side-channel (#133 E0). No-op when no runner is
-   * injected. Never throws — the runner swallows hook errors, and we add a
-   * defensive try/catch so a misbehaving runner cannot abort the turn.
+   * Fire a turn-hook side-channel (#133 E0) for this pass. A verifier
+   * re-entry is the same user turn: its first run fired every hook already (a
+   * plan, a step update), so it fires none — the request's `onAfterTurn` is
+   * fired once, by the verifier's commit ({@link afterTurn}).
    */
   private async fireTurnHook(
+    point: TurnHookPoint,
+    turnId: string,
+    input: ChatTurnInput,
+    payload: TurnHookPayload,
+    timeoutMs?: number,
+  ): Promise<TurnAnnotation[]> {
+    if (this.isReentryPass()) return [];
+    return this.runTurnHook(point, turnId, input, payload, timeoutMs);
+  }
+
+  /**
+   * Run a turn hook (#133 E0). No-op when no runner is injected. Never
+   * throws — the runner swallows hook errors, and we add a defensive
+   * try/catch so a misbehaving runner cannot abort the turn.
+   */
+  private async runTurnHook(
     point: TurnHookPoint,
     turnId: string,
     input: ChatTurnInput,
@@ -4931,9 +5022,6 @@ export class Orchestrator {
   ): Promise<TurnAnnotation[]> {
     const runner = this.turnHookRegistry;
     if (!runner) return [];
-    // A verifier re-entry is the same user turn: its first run fired every
-    // hook already (a plan, a step update, a turn record), so it fires none.
-    if (this.isReentryPass()) return [];
     const onFail = (err: unknown): TurnAnnotation[] => {
       console.error(
         `[orchestrator] turn-hook ${point} runner threw (continuing):`,
@@ -4996,18 +5084,9 @@ export class Orchestrator {
     this.applyTurnAuthContext(input);
     try {
       const result = await this.chatInContextInner(input, turnId, turnMemory);
-      await this.fireTurnHook(
-        'onAfterTurn',
-        turnId,
-        input,
-        {
-          assistantAnswer: result.answer,
-          // #133 (E8) — surface the persisted Turn node id so observers can
-          // link to the graph Turn (plan-runner PLAN_OF). Absent if the log failed.
-          ...(result.turnId ? { turnExternalId: result.turnId } : {}),
-        },
-        2000,
-      );
+      // #133 (E8) — the persisted Turn node id lets observers link to the
+      // graph Turn (plan-runner PLAN_OF). Absent if the log failed.
+      await this.afterTurn(turnId, input, result.answer, result.turnId);
       return result;
     } finally {
       this.clearTurnAuthContext();
@@ -5439,38 +5518,26 @@ export class Orchestrator {
           );
           // Hoisted so the return payload can carry the KG turn id back to
           // the chat UI (powers the save-as-memory affordance). Stays
-          // undefined when session-logging is disabled or threw.
+          // undefined when session-logging is disabled or threw, and while
+          // the row is offered to the request's record instead (a verifier
+          // writes it for the pass it delivers, `requestTurnRecord.ts`).
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
+          if (this.sessionLogger && input.sessionScope) {
             // Await the log write: previous fire-and-forget let follow-ups
             // race ahead of the session persisting their prior turn, so the
             // verbatim tail came back empty and the bot "forgot" the last
             // chart / answer. The write is fast (~sub-second against Neon);
             // the latency cost is worth the retrieval guarantee.
             const entityRefs = entityCollection?.drain() ?? [];
-            const answerForGraph = appendToolDigest(
-              restoredAnswer,
-              attachments,
-              fileAttachments,
-            );
-            try {
-              const logged = await this.sessionLogger.log({
-                scope: input.sessionScope,
-                userMessage: input.userMessage,
-                assistantAnswer: answerForGraph,
-                toolCalls,
-                iterations,
-                entityRefs,
-                ...(input.userId ? { userId: input.userId } : {}),
-                ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with answer):',
-                err instanceof Error ? err.message : err,
-              );
-            }
+            const entry = {
+              scope: input.sessionScope,
+              userMessage: input.userMessage,
+              assistantAnswer: appendToolDigest(restoredAnswer, attachments, fileAttachments),
+              toolCalls,
+              iterations,
+              ...(input.userId ? { userId: input.userId } : {}),
+              ...(runTrace ? { runTrace } : {}),
+            };
             // Fact extraction: fire-and-forget against Haiku, after the
             // session log lands in the graph (so the Fact → Turn
             // DERIVED_FROM edge finds its anchor). Never awaited — a slow
@@ -5479,19 +5546,26 @@ export class Orchestrator {
             // MASKED wire variants; the extracted facts are restored to
             // real values before ingest via the snapshot restorer (which
             // stays valid after finalize drops the live map).
-            if (this.factExtractor && persistedTurnId) {
+            const facts = (): TurnFacts => {
               const restoreFacts = privacyForPrompt?.snapshotPromptRestorer();
-              void this.factExtractor.extractAndIngest({
-                turnId: persistedTurnId,
+              return {
                 userMessage: wireUserMessage,
-                assistantAnswer: appendToolDigest(
-                  answer,
-                  attachments,
-                  fileAttachments,
-                ),
-                entityRefs,
+                assistantAnswer: appendToolDigest(answer, attachments, fileAttachments),
                 ...(restoreFacts ? { restoreFacts } : {}),
+              };
+            };
+            const ledger = this.turnRecords.deferringLedger();
+            if (ledger !== undefined) {
+              const passFacts = this.factExtractor ? facts() : undefined;
+              this.turnRecords.offerRow(ledger, { entry, entityRefs }, 'answer', (turnId, refs) => {
+                this.turnRecords.startFactExtraction(turnId, passFacts, refs);
+                return Promise.resolve({});
               });
+            } else {
+              persistedTurnId = await this.turnRecords.writeRow({ ...entry, entityRefs }, 'answer');
+              if (this.factExtractor && persistedTurnId) {
+                this.turnRecords.startFactExtraction(persistedTurnId, facts(), entityRefs);
+              }
             }
           }
           // Non-interleaving providers (Mistral/OpenAI-compatible) emit card
@@ -5727,29 +5801,25 @@ export class Orchestrator {
             status: 'success',
           });
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
-            const entityRefs = entityCollection?.drain() ?? [];
+          if (this.sessionLogger && input.sessionScope) {
             const loggedAnswer = restoredAnswer.length > 0
               ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
               : `[Rückfrage] ${pendingUserChoice.question}`;
-            try {
-              const logged = await this.sessionLogger.log({
-                scope: input.sessionScope,
-                userMessage: input.userMessage,
-                assistantAnswer: loggedAnswer,
-                toolCalls,
-                iterations,
-                entityRefs,
-                ...(input.userId ? { userId: input.userId } : {}),
-                ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with choice card):',
-                err instanceof Error ? err.message : err,
-              );
-            }
+            persistedTurnId = await this.turnRecords.recordRow(
+              {
+                entry: {
+                  scope: input.sessionScope,
+                  userMessage: input.userMessage,
+                  assistantAnswer: loggedAnswer,
+                  toolCalls,
+                  iterations,
+                  ...(input.userId ? { userId: input.userId } : {}),
+                  ...(runTrace ? { runTrace } : {}),
+                },
+                entityRefs: entityCollection?.drain() ?? [],
+              },
+              'choice card',
+            );
           }
           return {
             answer: restoredAnswer,
@@ -5780,27 +5850,22 @@ export class Orchestrator {
             status: 'success',
           });
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
-            const entityRefs = entityCollection?.drain() ?? [];
-            const loggedAnswer = mcpInputCardLogLine(restoredAnswer, card);
-            try {
-              const logged = await this.sessionLogger.log({
-                scope: input.sessionScope,
-                userMessage: input.userMessage,
-                assistantAnswer: loggedAnswer,
-                toolCalls,
-                iterations,
-                entityRefs,
-                ...(input.userId ? { userId: input.userId } : {}),
-                ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with MCP input card):',
-                err instanceof Error ? err.message : err,
-              );
-            }
+          if (this.sessionLogger && input.sessionScope) {
+            persistedTurnId = await this.turnRecords.recordRow(
+              {
+                entry: {
+                  scope: input.sessionScope,
+                  userMessage: input.userMessage,
+                  assistantAnswer: mcpInputCardLogLine(restoredAnswer, card),
+                  toolCalls,
+                  iterations,
+                  ...(input.userId ? { userId: input.userId } : {}),
+                  ...(runTrace ? { runTrace } : {}),
+                },
+                entityRefs: entityCollection?.drain() ?? [],
+              },
+              'MCP input card',
+            );
           }
           return {
             answer: restoredAnswer,
@@ -6022,6 +6087,8 @@ export class Orchestrator {
     const { toolReplayLedger, boundLedger } = args;
 
     this.applyTurnAuthContext(input);
+    // Commit-on-delivery — mirror of `runTurnCore`.
+    this.bindRequestAfterTurn(boundLedger, turnId, input);
     // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
     if (mcpInputReply) {
       await this.applyMcpInputReplay(mcpInputReply, input, turnId);
@@ -6107,19 +6174,10 @@ export class Orchestrator {
             );
           }
         }
+        // Parity with the normal done branch — graph-linking observers
+        // (#133 E8) need the persisted Turn id on direct-line turns too.
         yield* this.toAnnotationEvents(
-          await this.fireTurnHook(
-            'onAfterTurn',
-            turnId,
-            input,
-            {
-              assistantAnswer: doneEvent.answer,
-              // Parity with the normal done branch — graph-linking observers
-              // (#133 E8) need the persisted Turn id on direct-line turns too.
-              ...(doneEvent.turnId ? { turnExternalId: doneEvent.turnId } : {}),
-            },
-            2000,
-          ),
+          await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
         );
         yield this.discloseDoneEvent(doneEvent, input);
         return;
@@ -6233,34 +6291,16 @@ export class Orchestrator {
               err,
             );
           }
+          // #133 (E8) — persisted Turn node id for graph-linking observers.
           yield* this.toAnnotationEvents(
-            await this.fireTurnHook(
-              'onAfterTurn',
-              turnId,
-              input,
-              {
-                assistantAnswer: doneEvent.answer,
-                // #133 (E8) — persisted Turn node id for graph-linking observers.
-                ...(doneEvent.turnId ? { turnExternalId: doneEvent.turnId } : {}),
-              },
-              2000,
-            ),
+            await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
           );
           yield this.discloseDoneEvent(doneEvent, input);
           continue;
         }
         if (event.type === 'done') {
           yield* this.toAnnotationEvents(
-            await this.fireTurnHook(
-              'onAfterTurn',
-              turnId,
-              input,
-              {
-                assistantAnswer: event.answer,
-                ...(event.turnId ? { turnExternalId: event.turnId } : {}),
-              },
-              2000,
-            ),
+            await this.afterTurn(turnId, input, event.answer, event.turnId),
           );
           // #644 — fold the disclosure at the boundary, AFTER the hook (which
           // records the raw answer, matching the non-streaming path where
@@ -6686,34 +6726,34 @@ export class Orchestrator {
             privacyForPrompt,
             answer,
           );
+          // See chat(): we await the session log so the next turn's
+          // verbatim-tail retrieval can see this turn. Streaming callers
+          // are already committed to waiting for the final `done` event,
+          // so the extra ~sub-second is paid by the client already. While a
+          // verifier may re-enter the request, the row is offered to the
+          // request's record further down instead — once the excerpt its
+          // auto-promotion needs is known — and written for the pass the
+          // verifier delivers (`requestTurnRecord.ts`).
+          const deferring = this.turnRecords.deferringLedger();
+          let row: TurnRow | undefined;
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
-            const entityRefs = entityCollection?.drain() ?? [];
-            // See chat(): we await the session log so the next turn's
-            // verbatim-tail retrieval can see this turn. Streaming callers
-            // are already committed to waiting for the final `done` event,
-            // so the extra ~sub-second is paid by the client already.
-            const answerForGraph = appendToolDigest(
-              restoredAnswer,
-              attachments,
-              fileAttachments,
-            );
-            try {
-              const logged = await this.sessionLogger.log({
+          if (this.sessionLogger && input.sessionScope) {
+            row = {
+              entry: {
                 scope: input.sessionScope,
                 userMessage: input.userMessage,
-                assistantAnswer: answerForGraph,
+                assistantAnswer: appendToolDigest(restoredAnswer, attachments, fileAttachments),
                 toolCalls,
                 iterations,
-                entityRefs,
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with answer):',
-                err instanceof Error ? err.message : err,
+              },
+              entityRefs: entityCollection?.drain() ?? [],
+            };
+            if (deferring === undefined) {
+              persistedTurnId = await this.turnRecords.writeRow(
+                { ...row.entry, entityRefs: row.entityRefs },
+                'answer',
               );
             }
           }
@@ -6751,11 +6791,27 @@ export class Orchestrator {
             privacyForPrompt,
             await this.maybeExtractExcerpt(wireUserMessage, answer),
           );
+          if (deferring !== undefined && row !== undefined) {
+            // Promotion follows the row, so it is the delivered pass's too.
+            this.turnRecords.offerRow(deferring, row, 'answer', async (turnId) => {
+              const mkId = await this.maybePromoteTurn({
+                turnId,
+                userId: input.userId,
+                palaiaExcerpt,
+                fallbackAssistantAnswer: restoredAnswer,
+              });
+              return {
+                ...(mkId ? { autoPromotedMkId: mkId } : {}),
+                events: await this.toKgInsertAnnotationEvents(mkId),
+              };
+            });
+          }
           // Slice 4b/4c — auto-promotion. Awaited so the resulting
           // mkId rides the same `done` event and the UI can render an
           // inline banner immediately. No-op (returns undefined fast)
           // when autoPromote is off / capture-scorer disabled /
-          // threshold not met / required handles missing.
+          // threshold not met / required handles missing — and while the
+          // row is deferred (no turn id yet; the commit promotes).
           const autoPromotedMkId = await this.maybePromoteTurn({
             turnId: persistedTurnId,
             userId: input.userId,
@@ -7009,29 +7065,25 @@ export class Orchestrator {
             status: 'success',
           });
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
-            const entityRefs = entityCollection?.drain() ?? [];
+          if (this.sessionLogger && input.sessionScope) {
             const loggedAnswer = restoredAnswer.length > 0
               ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
               : `[Rückfrage] ${pendingUserChoice.question}`;
-            try {
-              const logged = await this.sessionLogger.log({
-                scope: input.sessionScope,
-                userMessage: input.userMessage,
-                assistantAnswer: loggedAnswer,
-                toolCalls,
-                iterations,
-                entityRefs,
-                ...(input.userId ? { userId: input.userId } : {}),
-                ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with choice card):',
-                err instanceof Error ? err.message : err,
-              );
-            }
+            persistedTurnId = await this.turnRecords.recordRow(
+              {
+                entry: {
+                  scope: input.sessionScope,
+                  userMessage: input.userMessage,
+                  assistantAnswer: loggedAnswer,
+                  toolCalls,
+                  iterations,
+                  ...(input.userId ? { userId: input.userId } : {}),
+                  ...(runTrace ? { runTrace } : {}),
+                },
+                entityRefs: entityCollection?.drain() ?? [],
+              },
+              'choice card',
+            );
           }
           const choiceAgentsConsulted = deriveAgentsConsulted(runTrace);
           yield {
@@ -7069,27 +7121,22 @@ export class Orchestrator {
             status: 'success',
           });
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
-            const entityRefs = entityCollection?.drain() ?? [];
-            const loggedAnswer = mcpInputCardLogLine(restoredAnswer, card);
-            try {
-              const logged = await this.sessionLogger.log({
-                scope: input.sessionScope,
-                userMessage: input.userMessage,
-                assistantAnswer: loggedAnswer,
-                toolCalls,
-                iterations,
-                entityRefs,
-                ...(input.userId ? { userId: input.userId } : {}),
-                ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with MCP input card):',
-                err instanceof Error ? err.message : err,
-              );
-            }
+          if (this.sessionLogger && input.sessionScope) {
+            persistedTurnId = await this.turnRecords.recordRow(
+              {
+                entry: {
+                  scope: input.sessionScope,
+                  userMessage: input.userMessage,
+                  assistantAnswer: mcpInputCardLogLine(restoredAnswer, card),
+                  toolCalls,
+                  iterations,
+                  ...(input.userId ? { userId: input.userId } : {}),
+                  ...(runTrace ? { runTrace } : {}),
+                },
+                entityRefs: entityCollection?.drain() ?? [],
+              },
+              'MCP input card',
+            );
           }
           const mcpAgentsConsulted = deriveAgentsConsulted(runTrace);
           yield {
@@ -7198,26 +7245,22 @@ export class Orchestrator {
           error: err instanceof Error ? err.message : String(err),
         });
         let persistedTurnId: string | undefined;
-        if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
-          const entityRefs = entityCollection?.drain() ?? [];
-          try {
-            const logged = await this.sessionLogger.log({
-              scope: input.sessionScope,
-              userMessage: input.userMessage,
-              assistantAnswer: restoredAnswer,
-              toolCalls,
-              iterations,
-              entityRefs,
-              ...(input.userId ? { userId: input.userId } : {}),
-              ...(runTrace ? { runTrace } : {}),
-            });
-            persistedTurnId = logged.turnExternalId;
-          } catch (logErr) {
-            console.error(
-              '[orchestrator] session log failed (continuing with emergency done):',
-              logErr instanceof Error ? logErr.message : logErr,
-            );
-          }
+        if (this.sessionLogger && input.sessionScope) {
+          persistedTurnId = await this.turnRecords.recordRow(
+            {
+              entry: {
+                scope: input.sessionScope,
+                userMessage: input.userMessage,
+                assistantAnswer: restoredAnswer,
+                toolCalls,
+                iterations,
+                ...(input.userId ? { userId: input.userId } : {}),
+                ...(runTrace ? { runTrace } : {}),
+              },
+              entityRefs: entityCollection?.drain() ?? [],
+            },
+            'emergency done',
+          );
         }
         yield {
           type: 'done',

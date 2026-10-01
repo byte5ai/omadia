@@ -43,8 +43,11 @@
  * is refused (`refuse-repeat`). Every turn carries a ledger for that, also
  * when no verifier is installed; such a turn-local ledger keeps no results.
  *
- * Work that outlives the request — a long-running task's detached runner —
- * runs on a turn-local ledger of its own ({@link runDetachedFromRequestLedger}).
+ * A request ledger also holds the request's record (`requestTurnRecord.ts`):
+ * its passes offer their session-log row there, and the verifier writes the
+ * row of the pass it delivers. Work that outlives the request — a
+ * long-running task's detached runner — runs on a turn-local ledger of its
+ * own ({@link runDetachedFromRequestLedger}).
  *
  * ## What it does NOT guarantee
  *
@@ -71,6 +74,7 @@
 import type { AskObserver } from './tools/domainQueryTool.js';
 import { fingerprintToolInput } from './toolIdempotency.js';
 import { RequestReceipts } from './requestReceipts.js';
+import { RequestTurnRecord } from './requestTurnRecord.js';
 import { turnContext } from './turnContext.js';
 
 /** Where a handler runs: the orchestrator's dispatch, one sub-agent's inner
@@ -173,6 +177,8 @@ export class ToolReplayAbortError extends Error {
 export class ToolReplayLedger {
   readonly #retainResults: boolean;
   #mode: 'record' | 'replay' = 'record';
+  /** 0 for the first run, +1 per `beginReentry()`. */
+  #pass = 0;
   readonly #entries = new Map<string, ToolReplayRecord[]>();
   readonly #cursors = new Map<string, number>();
   /** Calls whose outcome is unknown, from the first run (kept for the request). */
@@ -188,6 +194,9 @@ export class ToolReplayLedger {
   readonly #attachmentsHandedOut = new Set<string>();
   /** The request's privacy receipts, one per pass (`requestReceipts.ts`). */
   readonly receipts = new RequestReceipts();
+  /** The request's recorded turn: the row of the pass the verifier delivers
+   *  (`requestTurnRecord.ts`). Used only while {@link defersTurnRecord}. */
+  readonly turnRecord = new RequestTurnRecord();
 
   constructor(options: ToolReplayLedgerOptions = {}) {
     this.#retainResults = options.retainResults ?? true;
@@ -198,8 +207,23 @@ export class ToolReplayLedger {
     return this.#mode;
   }
 
+  /** The pass running now: 0 for the first run, then 1, 2, … per re-entry. */
+  get pass(): number {
+    return this.#pass;
+  }
+
   /** Whether first-run results are kept (false for a turn-local ledger). */
   get retainsResults(): boolean {
+    return this.#retainResults;
+  }
+
+  /**
+   * True for a request ledger — the one a verifier binds to a request it may
+   * re-enter: each pass offers its record to {@link turnRecord} instead of
+   * writing it, and the verifier commits the pass it delivers. False for a
+   * turn-local ledger, whose turn writes its record itself.
+   */
+  get defersTurnRecord(): boolean {
     return this.#retainResults;
   }
 
@@ -211,6 +235,7 @@ export class ToolReplayLedger {
   /** Starts a re-entry: replay from the top of the first run. */
   beginReentry(): void {
     this.#mode = 'replay';
+    this.#pass += 1;
     this.#cursors.clear();
     this.#reentryUnknown.clear();
     this.#replayedTools.clear();

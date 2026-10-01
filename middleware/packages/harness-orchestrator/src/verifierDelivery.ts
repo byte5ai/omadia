@@ -300,18 +300,21 @@ function withoutFoldedDisclosure(answer: string, disclosure: AiDisclosure | unde
  * build), so the discarded response is in the deltas but not in
  * `done.answer`. The delta leaves out the disclosure block a first turn folds
  * into `answer` — disclosures never go out as a delta. A held `done` other
- * than the terminal one is dropped.
+ * than the terminal one is dropped. The events finishing the request
+ * produced (`FinishedDone.events`) go out right before the text.
  */
 function* releasedTurn(
   held: readonly ChatStreamEvent[],
   terminal: DoneEvent,
-  released: DoneEvent,
+  released: FinishedDone,
 ): Generator<ChatStreamEvent> {
   for (const event of held) {
     if (event === terminal) {
-      const text = withoutFoldedDisclosure(released.answer, released.aiDisclosure);
+      yield* released.events;
+      const { done } = released;
+      const text = withoutFoldedDisclosure(done.answer, done.aiDisclosure);
       if (text.length > 0) yield { type: 'text_delta', text };
-      yield released;
+      yield done;
     } else if (event.type !== 'text_delta' && event.type !== 'done') {
       yield event;
     }
@@ -369,9 +372,21 @@ export interface EnforcedRetry {
   judge(done: DoneEvent | undefined): Promise<EnforcedVerdict & { readonly useRetry: boolean }>;
 }
 
-/** Adds the request's record to the `done` that goes out (the receipt of
- *  every pass, the persisted turn) once nothing else can change it. */
-export type FinishDone = (done: DoneEvent) => Promise<DoneEvent>;
+/** A terminal `done` with the request's record on it, and the events that
+ *  recording produced — released with the answer, dropped with a withheld
+ *  one. */
+export interface FinishedDone {
+  readonly done: DoneEvent;
+  readonly events: readonly ChatStreamEvent[];
+}
+
+/**
+ * Adds the request's record to the `done` that goes out (the receipt of
+ * every pass, the persisted turn) once nothing else can change it.
+ * `fromRetry` says which turn `done` came from: the first one, or the
+ * correction retry whose verdict is delivered.
+ */
+export type FinishDone = (done: DoneEvent, fromRetry: boolean) => Promise<FinishedDone>;
 
 interface HeldTurn {
   readonly held: ChatStreamEvent[];
@@ -420,7 +435,7 @@ function judgeableAnswer(turn: HeldTurn): DoneEvent | undefined {
   return done;
 }
 
-const asIs: FinishDone = (done) => Promise.resolve(done);
+const asIs: FinishDone = (done) => Promise.resolve({ done, events: [] });
 
 /** `enforce`: the delivery gate described in the module comment. */
 export async function* enforcedVerifiedStream(
@@ -433,13 +448,14 @@ export async function* enforcedVerifiedStream(
   if (first.failed || first.terminal === undefined) return;
   let held = first.held;
   let terminal = first.terminal;
+  let fromRetry = false;
   if (isDeliberateSilence(terminal.answer)) {
     // Silence carries nothing: not the text or tool traffic that led to it.
-    yield await finishDone(terminal);
+    yield (await finishDone(terminal, fromRetry)).done;
     return;
   }
   if (releasesWithoutVerification(terminal)) {
-    yield* releasedTurn(held, terminal, await finishDone(terminal));
+    yield* releasedTurn(held, terminal, await finishDone(terminal, fromRetry));
     return;
   }
   let outcome: EnforcedVerdict = await verify(terminal);
@@ -451,13 +467,15 @@ export async function* enforcedVerifiedStream(
     if (judged.useRetry && answer !== undefined) {
       held = second.held;
       terminal = answer;
+      fromRetry = true;
     }
   }
   const { summary, releases } = outcome;
   if (releases) {
-    yield* releasedTurn(held, terminal, await finishDone({ ...terminal, verifier: summary }));
+    yield* releasedTurn(held, terminal, await finishDone({ ...terminal, verifier: summary }, fromRetry));
   } else {
-    const withheld = withheldDone(await finishDone(terminal), summary, operatorLocale);
+    const finished = await finishDone(terminal, fromRetry);
+    const withheld = withheldDone(finished.done, summary, operatorLocale);
     yield { type: 'text_delta', text: withheld.notice };
     yield withheld.done;
   }

@@ -27,8 +27,10 @@ import {
 import { enforcedVerifierStream } from './verifierEnforceStream.js';
 import { VerifierJudge } from './verifierJudge.js';
 import {
+  afterRequestRecord,
   asRequestResult,
   bindRequestLedger,
+  FIRST_PASS,
   prepareReentry,
   reentryFailureLine,
   type ReentryPolicy,
@@ -75,7 +77,10 @@ export {
  * made is replayed from the request's ledger, a call it did not make runs
  * only when it is a kernel read, and a re-entry that needs any other call is
  * abandoned before it runs — the first answer stands (a retry's then keeps
- * its `failed` badge). Canvas turns are not retried on the stream.
+ * its `failed` badge). Canvas turns are not retried on the stream. What the
+ * request records — its one session-log row, fact extraction, `onAfterTurn`
+ * — is the delivered pass's, written once the service decided
+ * (commit-on-delivery, `requestTurnRecord.ts`).
  *
  * A failing verifier surfaces as `unavailable`, never as `approved`: "the
  * verifier could not check" must not read as "the verifier checked and found
@@ -237,7 +242,11 @@ export class VerifierService implements ChatAgent {
     try {
       return await this.chatVerified(runId, input, request?.ledger);
     } finally {
-      // The request's ONE receipt row, with every pass's receipt merged in.
+      // Delivery committed the delivered pass's record already; a request
+      // that ended without delivering keeps its first run's record, as
+      // before commit-on-delivery. Then the ONE receipt row, every pass's
+      // receipt merged in.
+      await request?.ledger.turnRecord.commit(FIRST_PASS);
       await request?.ledger.receipts.commit();
       request?.release();
     }
@@ -259,7 +268,7 @@ export class VerifierService implements ChatAgent {
       firstResult.pendingUserChoice ||
       (this.mode === 'enforce' && releasesWithoutVerification(firstResult))
     ) {
-      return toSemanticAnswer(asRequestResult(firstResult, ledger));
+      return toSemanticAnswer(await asRequestResult(firstResult, FIRST_PASS, ledger));
     }
     const firstVerdict = await this.judge.verdictFor(runId, input, firstResult);
 
@@ -281,7 +290,9 @@ export class VerifierService implements ChatAgent {
     // nothing, and one whose doubt is only claims no checker takes must never
     // trigger this paid resample: a second sample cannot add evidence there,
     // and otherwise every small-talk turn would run twice.
-    let effectiveResult = firstResult;
+    // The result the effective verdict is about, and the pass that produced
+    // it — the pass whose record the request keeps if it goes out.
+    let effective: PassResult = { result: firstResult, pass: FIRST_PASS };
     let effectiveVerdict = firstVerdict;
     if (
       ledger !== undefined &&
@@ -291,22 +302,26 @@ export class VerifierService implements ChatAgent {
     ) {
       const merged = await this.tryResample(runId, input, firstVerdict, ledger);
       if (merged) {
-        effectiveResult = merged.result ?? firstResult;
+        effective = merged.second ?? effective;
         effectiveVerdict = merged.verdict;
       }
     }
 
     // Enforce mode: only contradictions trigger a retry — a correction hint
     // needs something to correct. Every other verdict is delivered or
-    // withheld as it stands (`deliverEnforced`).
+    // withheld as it stands (`deliverEnforced`). The block is recorded on
+    // the turn's plan once the request's record (its `onAfterTurn`) is in.
     if (effectiveVerdict.status === 'blocked') {
-      this.fireVerifierBlocked(input, effectiveVerdict);
+      const blockedVerdict = effectiveVerdict;
+      afterRequestRecord(ledger, () => {
+        this.fireVerifierBlocked(input, blockedVerdict);
+      });
     }
-    const deliverWithoutRetry = (): SemanticAnswer => {
+    const deliverWithoutRetry = (): Promise<SemanticAnswer> => {
       void this.judge.persist(runId, input, effectiveVerdict, 0);
       return this.deliverEnforced(
         runId,
-        effectiveResult,
+        effective,
         effectiveVerdict,
         summarise(effectiveVerdict, 0, this.mode),
         ledger,
@@ -329,16 +344,16 @@ export class VerifierService implements ChatAgent {
       ...input,
       extraSystemHint: correction,
     };
-    let secondResult: ChatTurnResult;
+    let retry: PassResult;
     try {
-      prepareReentry(this.orchestrator, retryInput, ledger);
-      secondResult = await this.orchestrator.runTurn(retryInput);
+      const pass = prepareReentry(this.orchestrator, retryInput, ledger);
+      retry = { result: await this.orchestrator.runTurn(retryInput), pass };
     } catch (err) {
       this.log(reentryFailureLine('retry', runId, err));
       return deliverWithoutRetry();
     }
 
-    const secondVerdict = await this.judge.verdictFor(runId, input, secondResult);
+    const secondVerdict = await this.judge.verdictFor(runId, input, retry.result);
 
     // Merge: persist ONE row with the final retry count; contradictions table
     // reflects whichever verdict actually tripped. We log both for telemetry.
@@ -351,7 +366,7 @@ export class VerifierService implements ChatAgent {
     const badge = mergeBadges(effectiveVerdict, secondVerdict);
     return this.deliverEnforced(
       runId,
-      secondResult,
+      retry,
       secondVerdict,
       { ...summarise(secondVerdict, 1, this.mode), badge },
       ledger,
@@ -362,16 +377,17 @@ export class VerifierService implements ChatAgent {
    * `enforce` delivery on the non-streaming path: the answer with its
    * summary when the verdict releases it, the withheld-answer notice in its
    * place otherwise — the same rule as the stream (`verifierDelivery.ts`).
-   * Either carries the request's receipt: every pass merged.
+   * Either is the request's: the record of the pass the verdict is about,
+   * committed (commit-on-delivery), and every pass's receipt merged.
    */
-  private deliverEnforced(
+  private async deliverEnforced(
     runId: string,
-    result: ChatTurnResult,
+    effective: PassResult,
     verdict: VerifierVerdict,
     summary: VerifierResultSummary,
     ledger: ToolReplayLedger | undefined,
-  ): SemanticAnswer {
-    const delivered = asRequestResult(result, ledger);
+  ): Promise<SemanticAnswer> {
+    const delivered = await asRequestResult(effective.result, effective.pass, ledger);
     if (verdictReleasesAnswer(verdict)) {
       return toSemanticAnswer(withVerifier(delivered, summary));
     }
@@ -387,10 +403,10 @@ export class VerifierService implements ChatAgent {
    * and the caller keeps `firstVerdict` as the effective verdict —
    * re-sampling is best-effort.
    *
-   * Returns `{ verdict, result }` where `result` is the second sample's
-   * orchestrator result iff the merge decided to keep it; `undefined`
-   * means "keep firstResult". The caller plugs both straight into the
-   * existing persist + correction-retry path.
+   * Returns `{ verdict, second }` where `second` is the second sample's
+   * orchestrator result and pass iff the merge decided to keep it;
+   * `undefined` means "keep the first result". The caller plugs both
+   * straight into the existing persist + correction-retry path.
    */
   private async tryResample(
     runId: string,
@@ -399,23 +415,23 @@ export class VerifierService implements ChatAgent {
     ledger: ToolReplayLedger,
   ): Promise<{
     verdict: VerifierVerdict;
-    result?: ChatTurnResult;
+    second?: PassResult;
   } | undefined> {
     this.log(`[verifier/service] borderline resample run=${runId}`);
-    let secondResult: ChatTurnResult;
+    let second: PassResult;
     try {
-      prepareReentry(this.orchestrator, input, ledger);
-      secondResult = await this.orchestrator.runTurn(input);
+      const pass = prepareReentry(this.orchestrator, input, ledger);
+      second = { result: await this.orchestrator.runTurn(input), pass };
     } catch (err) {
       this.log(reentryFailureLine('resample', runId, err));
       return undefined;
     }
-    if (secondResult.pendingUserChoice) {
+    if (second.result.pendingUserChoice) {
       // Second sample punted to a clarification card — keep the first
       // verdict, the user-facing answer didn't change.
       return undefined;
     }
-    const secondVerdict = await this.judge.verdictFor(runId, input, secondResult);
+    const secondVerdict = await this.judge.verdictFor(runId, input, second.result);
     const merged = mergeBorderlineVerdicts(firstVerdict, secondVerdict);
     this.log(
       `[verifier/service] resample merge run=${runId} first=${firstVerdict.status} second=${secondVerdict.status} → ${merged.verdict.status}${
@@ -424,7 +440,13 @@ export class VerifierService implements ChatAgent {
     );
     return {
       verdict: merged.verdict,
-      ...(merged.takeSecond ? { result: secondResult } : {}),
+      ...(merged.takeSecond ? { second } : {}),
     };
   }
+}
+
+/** A turn result and the pass of the request that produced it. */
+interface PassResult {
+  readonly result: ChatTurnResult;
+  readonly pass: number;
 }

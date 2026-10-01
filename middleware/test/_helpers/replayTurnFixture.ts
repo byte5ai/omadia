@@ -246,6 +246,7 @@ export function verifiedTurn(options: VerifiedTurnOptions): VerifiedTurn {
     },
   } as unknown as VerifierStore;
   const logs: string[] = [];
+  const turnHookRegistry = options.orchestrator?.turnHookRegistry;
   const service = new VerifierService({
     orchestrator,
     pipeline,
@@ -256,6 +257,8 @@ export function verifiedTurn(options: VerifiedTurnOptions): VerifiedTurn {
     ...(options.resampleOnBorderline !== undefined
       ? { resampleOnBorderline: options.resampleOnBorderline }
       : {}),
+    // One hook runner for both, as `buildOrchestrator` wires it.
+    ...(turnHookRegistry ? { turnHookRegistry } : {}),
     log: (line: string) => {
       logs.push(line);
     },

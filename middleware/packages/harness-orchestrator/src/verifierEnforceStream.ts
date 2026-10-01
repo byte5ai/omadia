@@ -11,15 +11,15 @@ import {
 } from './verifierDelivery.js';
 import type { VerifierJudge } from './verifierJudge.js';
 import {
+  afterRequestRecord,
   bindRequestLedger,
   finishRequestDone,
+  FIRST_PASS,
   prepareReentry,
   reentryAbandonedLine,
   type ReentryPolicy,
 } from './verifierReentry.js';
 import { mergeBadges, summarise } from './verifierVerdicts.js';
-
-type DoneEvent = Extract<ChatStreamEvent, { type: 'done' }>;
 
 /** What the `enforce` stream needs from `VerifierService`. */
 export interface EnforceStreamHost {
@@ -39,7 +39,10 @@ export interface EnforceStreamHost {
  * a tool again (`verifierReentry.ts`) — and is held and judged by the same
  * release rule. Canvas turns are not retried (`bindRequestLedger`). Exactly
  * one verdict row is stored per request: the retry's, or the first one when
- * no retry ran or the retry produced no answer to judge.
+ * no retry ran or the retry produced no answer to judge. The request's
+ * record (session-log row, `onAfterTurn`) is the delivered turn's: the
+ * retry's when its answer goes out or is withheld on its own verdict, the
+ * first turn's otherwise.
  */
 export async function* enforcedVerifierStream(
   host: EnforceStreamHost,
@@ -49,28 +52,37 @@ export async function* enforcedVerifierStream(
 ): AsyncGenerator<ChatStreamEvent> {
   const request = bindRequestLedger(host.orchestrator, input, host.policy, 'stream');
   const ledger = request?.ledger;
-  let firstDone: DoneEvent | undefined;
+  let retryPass = FIRST_PASS;
   try {
     yield* enforcedVerifiedStream(
       host.orchestrator.chatStream(input, observer),
       async (done) => {
-        firstDone = done;
         const verdict = await host.judge.verdictFor(runId, input, done);
-        // #133 (E6) — record the block on this turn's plan.
-        if (verdict.status === 'blocked') host.fireVerifierBlocked(input, verdict);
+        // #133 (E6) — record the block on this turn's plan, once the
+        // request's record (its `onAfterTurn`) is in.
+        if (verdict.status === 'blocked') {
+          afterRequestRecord(ledger, () => {
+            host.fireVerifierBlocked(input, verdict);
+          });
+        }
         const retry = ledger
           ? streamRetry(host, runId, input, observer, ledger, verdict)
           : undefined;
+        if (retry) retryPass = retry.pass;
         return retry
           ? { summary: summarise(verdict, 0, 'enforce'), releases: false, retry }
           : deliver(host, runId, input, verdict, 0);
       },
       host.locale,
-      ledger ? (done) => finishRequestDone(done, firstDone, ledger) : undefined,
+      ledger
+        ? (done, fromRetry) => finishRequestDone(done, fromRetry ? retryPass : FIRST_PASS, ledger)
+        : undefined,
     );
   } finally {
-    // Normally written before the final `done`; a consumer that stopped
-    // reading early still gets the request's receipt row.
+    // Normally written before the final `done`. A consumer that stopped
+    // reading early still gets the request's receipt row and — as before
+    // commit-on-delivery — the first turn's record.
+    await ledger?.turnRecord.commit(FIRST_PASS);
     await ledger?.receipts.commit();
     request?.release();
   }
@@ -107,7 +119,7 @@ function streamRetry(
   observer: ChatStreamObserver | undefined,
   ledger: ToolReplayLedger,
   first: VerifierVerdict,
-): EnforcedRetry | undefined {
+): (EnforcedRetry & { readonly pass: number }) | undefined {
   if (first.status !== 'blocked' || host.policy.maxRetries <= 0) return undefined;
   const correction = buildCorrectionPrompt(first);
   if (!correction) return undefined;
@@ -115,8 +127,9 @@ function streamRetry(
     `[verifier/service] retry run=${runId} contradictions=${String(first.contradictions.length)} (stream)`,
   );
   const retryInput: ChatTurnInput = { ...input, extraSystemHint: correction };
-  prepareReentry(host.orchestrator, retryInput, ledger);
+  const pass = prepareReentry(host.orchestrator, retryInput, ledger);
   return {
+    pass,
     stream: host.orchestrator.chatStream(retryInput, observer),
     judge: async (done) => {
       const abandoned = ledger.abortedTool;
