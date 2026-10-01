@@ -8,7 +8,12 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import type { ChatTurnInput } from '../packages/harness-channel-sdk/src/chatAgent.js';
+import type {
+  ChatTurnInput,
+  ChatTurnResult,
+} from '../packages/harness-channel-sdk/src/chatAgent.js';
+import type { SemanticAnswer } from '../packages/harness-channel-sdk/src/outgoing.js';
+import { mergePrivacyReceipts } from '../packages/harness-orchestrator/src/requestReceipts.js';
 import { VerifierService } from '../packages/harness-orchestrator/src/verifierService.js';
 import {
   APPROVED,
@@ -21,6 +26,40 @@ import {
   turn,
   verdicts,
 } from './_helpers/verifierEgressStub.js';
+
+/**
+ * A turn whose run trace names the pass it ran as. The delivered pass then
+ * shows up as the consulted agent — also on a withheld answer, which keeps
+ * the delivered pass's run trace.
+ */
+function passTurn(answer: string, pass: number): ChatTurnResult {
+  return turn(answer, {
+    runTrace: {
+      scope: 'test',
+      startedAt: '2026-10-01T00:00:00Z',
+      finishedAt: '2026-10-01T00:00:01Z',
+      durationMs: 1,
+      status: 'success',
+      iterations: 1,
+      orchestratorToolCalls: [],
+      agentInvocations: [
+        {
+          index: 0,
+          agentName: 'pass_marker',
+          agentId: `pass-${String(pass)}`,
+          durationMs: 1,
+          subIterations: 1,
+          status: 'success',
+          toolCalls: [],
+        },
+      ],
+    },
+  });
+}
+
+function deliveredPass(answer: SemanticAnswer): string | undefined {
+  return answer.agentsConsulted?.[0]?.agentId;
+}
 
 describe('VerifierService.chat — privacy egress', () => {
   it('verifies through the turn’s privacy view, then finalizes once and attaches that receipt', async () => {
@@ -61,7 +100,13 @@ describe('VerifierService.chat — privacy egress', () => {
       [1, 1, 1],
     );
     assert.equal(answer.text.startsWith('drei'), true);
-    assert.deepEqual(answer.privacyReceipt, state.continuations[2]!.receipt);
+    // ONE receipt for the request: every pass's, each finalized after the
+    // verifier — so it counts the verifier's requests of all three — and
+    // one row written for it.
+    const merged = mergePrivacyReceipts(state.continuations.map((c) => c.receipt));
+    assert.deepEqual(answer.privacyReceipt, merged);
+    assert.equal(merged?.verifierEgress?.requests, 1 + 2 + 3);
+    assert.deepEqual(state.rows, [merged]);
   });
 
   for (const mode of ['shadow', 'enforce'] as const) {
@@ -132,7 +177,7 @@ describe('VerifierService.chat — privacy egress', () => {
 
   it('never returns a still-blocked retry answer that carries unresolved placeholders', async () => {
     const { orchestrator, state } = stubOrchestrator({
-      results: [turn('Erste Antwort.'), turn('Zweite Antwort mit Platzhalter.')],
+      results: [passTurn('Erste Antwort.', 0), passTurn('Zweite Antwort mit Platzhalter.', 1)],
       handOver: true,
       privacyActive: true,
       continuation: (i, r) => ({ wireAnswer: r.answer, unresolved: i === 1 ? 1 : 0 }),
@@ -150,12 +195,17 @@ describe('VerifierService.chat — privacy egress', () => {
     const answer = await service.chat({ userMessage: 'frage' });
 
     assert.equal(state.runs.length, 2);
-    // Still blocked: `enforce` withholds the answer. The request is the first
-    // turn's — never the retry's, whose text would show a fake value.
+    // The retry answer would show a fake value, so it is not judged and the
+    // first verdict stands: `enforce` withholds the answer, and the request
+    // delivered is the first turn's — never the retry's.
     assert.equal(answer.answerSource, 'verifier-blocked');
     assert.equal(answer.text.includes('Platzhalter'), false, 'the retry answer was shown');
     assert.equal(answer.verifier?.status, 'failed');
-    assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
+    assert.equal(deliveredPass(answer), 'pass-0');
+    assert.deepEqual(
+      answer.privacyReceipt,
+      mergePrivacyReceipts(state.continuations.map((c) => c.receipt)),
+    );
     assert.deepEqual(
       state.continuations.map((c) => c.finalizeCalls),
       [1, 1],
@@ -179,7 +229,11 @@ describe('VerifierService.chat — privacy egress', () => {
       readonly maxRetries?: number;
     }): { service: VerifierService; state: ReturnType<typeof stubOrchestrator>['state'] } {
       const { orchestrator, state } = stubOrchestrator({
-        results: [turn(FIRST), turn(RESAMPLE), turn('Dritte Antwort 10.000 €.')],
+        results: [
+          passTurn(FIRST, 0),
+          passTurn(RESAMPLE, 1),
+          passTurn('Dritte Antwort 10.000 €.', 2),
+        ],
         handOver: true,
         privacyActive: true,
         continuation: (i, r) => ({
@@ -209,7 +263,7 @@ describe('VerifierService.chat — privacy egress', () => {
       assert.equal(answer.answerSource, 'verifier-blocked');
       assert.equal(answer.text.includes(RESAMPLE), false, 'the re-sample with a placeholder was shown');
       assert.equal(answer.verifier?.status, 'failed');
-      assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
+      assert.equal(deliveredPass(answer), 'pass-0');
       assert.deepEqual(state.continuations.map((c) => c.finalizeCalls), [1, 1]);
     });
 
@@ -222,7 +276,7 @@ describe('VerifierService.chat — privacy egress', () => {
       assert.equal(answer.answerSource, 'verifier-blocked');
       assert.equal(answer.text.includes(RESAMPLE), false, 'the re-sample with a placeholder was shown');
       assert.equal(answer.verifier?.status, 'failed');
-      assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
+      assert.equal(deliveredPass(answer), 'pass-0');
     });
 
     it('is not shown when the retry is still blocked with placeholders too', async () => {
@@ -234,8 +288,9 @@ describe('VerifierService.chat — privacy egress', () => {
       assert.equal(answer.answerSource, 'verifier-blocked');
       assert.equal(answer.text.includes('10.000'), false, 'an answer with a placeholder was shown');
       assert.equal(answer.verifier?.status, 'failed');
-      assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
+      assert.equal(deliveredPass(answer), 'pass-0');
       assert.deepEqual(state.continuations.map((c) => c.finalizeCalls), [1, 1, 1]);
+      assert.equal(state.rows.length, 1, 'one receipt row for the request');
     });
 
     it('control: a re-sample whose placeholders all resolved still replaces the first answer', async () => {
@@ -246,7 +301,7 @@ describe('VerifierService.chat — privacy egress', () => {
       // Withheld as blocked, but the delivered request is the re-sample's.
       assert.equal(answer.answerSource, 'verifier-blocked');
       assert.equal(answer.verifier?.status, 'failed');
-      assert.deepEqual(answer.privacyReceipt, state.continuations[1]!.receipt);
+      assert.equal(deliveredPass(answer), 'pass-1');
     });
   });
 

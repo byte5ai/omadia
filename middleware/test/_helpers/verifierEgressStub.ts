@@ -23,6 +23,7 @@ import type {
 } from '../../packages/harness-channel-sdk/src/chatAgent.js';
 import type { Orchestrator } from '../../packages/harness-orchestrator/src/orchestrator.js';
 import type { PrivacyEgressContinuation } from '../../packages/harness-orchestrator/src/privacyEgress.js';
+import type { ToolReplayLedger } from '../../packages/harness-orchestrator/src/toolReplayLedger.js';
 
 export interface RecordingContinuation extends PrivacyEgressContinuation {
   finalizeCalls: number;
@@ -52,6 +53,10 @@ function recordingContinuation(
   n: number,
   opts: ContinuationOpts,
   input: ChatTurnInput,
+  /** Like the real orchestrator: a bound request ledger collects the
+   *  receipt, and the first pass to offer owns the request's one row. */
+  ledger: ToolReplayLedger | undefined,
+  rows: PrivacyReceipt[],
 ): RecordingContinuation {
   const receipt = receiptFor(n);
   const view: VerifierPrivacy | undefined =
@@ -73,6 +78,15 @@ function recordingContinuation(
     countUnresolvedSurrogates: async () => opts.unresolved ?? 0,
     finalize: async () => {
       c.finalizeCalls += 1;
+      if (ledger === undefined) rows.push(receipt);
+      else {
+        ledger.receipts.add(receipt, {
+          rowId: c.receiptId,
+          write: async (merged) => {
+            rows.push(merged);
+          },
+        });
+      }
       return receipt;
     },
   };
@@ -83,6 +97,8 @@ export interface StubState {
   readonly marks: ChatTurnInput[];
   readonly runs: ChatTurnInput[];
   readonly continuations: RecordingContinuation[];
+  /** The receipt rows written (`turn_receipts`): one per request. */
+  readonly rows: PrivacyReceipt[];
   streamClosed: boolean;
 }
 
@@ -99,7 +115,8 @@ export function stubOrchestrator(opts: {
 }): { orchestrator: Orchestrator; state: StubState } {
   const held = new WeakSet<object>();
   const stashed = new WeakMap<object, RecordingContinuation>();
-  const state: StubState = { marks: [], runs: [], continuations: [], streamClosed: false };
+  const ledgers = new WeakMap<object, ToolReplayLedger>();
+  const state: StubState = { marks: [], runs: [], continuations: [], rows: [], streamClosed: false };
   const handOver = (input: ChatTurnInput, result: ChatTurnResult): void => {
     if (!held.delete(input) || opts.handOver !== true) return;
     const index = state.continuations.length;
@@ -107,6 +124,8 @@ export function stubOrchestrator(opts: {
       index + 1,
       opts.continuation?.(index, result) ?? { wireAnswer: result.answer },
       input,
+      ledgers.get(input),
+      state.rows,
     );
     state.continuations.push(c);
     stashed.set(input, c);
@@ -114,6 +133,12 @@ export function stubOrchestrator(opts: {
   const orchestrator = {
     agentId: 'default',
     markScreeningReentry(): void {},
+    bindToolReplayLedger(input: ChatTurnInput, ledger: ToolReplayLedger): () => void {
+      ledgers.set(input, ledger);
+      return () => {
+        if (ledgers.get(input) === ledger) ledgers.delete(input);
+      };
+    },
     markPrivacyFinalizeHeld(input: ChatTurnInput): void {
       state.marks.push(input);
       held.add(input);

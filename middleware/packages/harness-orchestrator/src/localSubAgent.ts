@@ -19,6 +19,7 @@ import {
   isGuardedControlFlowResult,
   withholdThrownToolError,
 } from './toolErrorRedaction.js';
+import { ToolReplayAbortError, replayMissNotice } from './toolReplayLedger.js';
 import { buildDateHeader, turnContext } from './turnContext.js';
 
 // `LocalSubAgentTool` and `LocalSubAgentToolSpec` were inlined here
@@ -358,7 +359,7 @@ export class LocalSubAgent {
           const toolName = String(use.name);
           const inputHash = canonicalHash(use.input);
           const started = Date.now();
-          const { output, postcondition, outcomeUnknown } = unknownOutcome.has(
+          const { output, postcondition, outcomeUnknown, replayed } = unknownOutcome.has(
             toolName,
             inputHash,
           )
@@ -377,6 +378,7 @@ export class LocalSubAgent {
               durationMs: elapsed,
               isError,
               ...(postcondition ? { postcondition } : {}),
+              ...(replayed === true ? { replayed: true } : {}),
             });
           } catch (err) {
             console.warn(`[sub-agent ${this.name}] observer.onSubToolResult threw:`, err);
@@ -389,6 +391,12 @@ export class LocalSubAgent {
           });
           recentToolCalls.push({ name: toolName, inputHash, isError });
         }
+        // A verifier re-entry that needed an inner call outside the first run
+        // is abandoned (`toolReplayLedger.ts`): stop here rather than pay a
+        // model call to answer around the refusal. The parent's checks end
+        // the re-entry either way.
+        const abandoned = turnContext.current()?.toolReplayLedger?.abortedTool;
+        if (abandoned !== undefined) throw new ToolReplayAbortError(abandoned);
         messages.push({ role: 'user', content: toolResults });
 
         // Detect "stuck": last N tool calls all matched on (name, input)
@@ -466,18 +474,40 @@ export class LocalSubAgent {
     // inner call (the parent dispatch's mint records it too), so only that
     // exact text skips interning below (`mcpAuthPromptMint.ts`).
     const authPromptMint = new McpAuthPromptMint();
+    // The request's tool replay ledger (`toolReplayLedger.ts`), asked before
+    // the inner handler runs. Inner tools declare nothing, so on a verifier
+    // re-entry every call outside the first run counts as a write: refused,
+    // and the whole re-entry is abandoned (the parent checks the shared flag).
+    // A repeat of a call whose outcome is unknown is refused in every pass,
+    // across sub-agent runs of the same request.
+    const ledger = turnContext.current()?.toolReplayLedger;
+    const seam = `subagent:${this.name}` as const;
+    const decision = ledger?.decide(seam, toolName, input, { readOnly: false });
+    if (decision?.action === 'refuse-repeat') return refusedRepeat(this.name, toolName);
+    if (decision?.action === 'refuse-miss') return { output: replayMissNotice(toolName) };
+    const replay = decision?.action === 'replay' ? decision.record : undefined;
     let raw: Awaited<ReturnType<LocalSubAgentTool['handle']>>;
     try {
-      raw = await runWithMcpAuthPromptMint(authPromptMint, () => tool.handle(input));
+      if (replay?.kind === 'rejection') throw replay.error;
+      raw =
+        replay?.kind === 'result'
+          ? (replay.value as Awaited<ReturnType<LocalSubAgentTool['handle']>>)
+          : await runWithMcpAuthPromptMint(authPromptMint, () => tool.handle(input));
     } catch (err) {
+      if (replay === undefined) ledger?.record(seam, toolName, input, { kind: 'rejection', error: err });
       const withheld = await withholdThrownToolError({
         toolName,
         err,
         privacy,
         site: `sub-agent ${this.name}`,
       });
-      return { output: withheld.text, outcomeUnknown: true };
+      return {
+        output: withheld.text,
+        outcomeUnknown: true,
+        ...(replay !== undefined ? { replayed: true as const } : {}),
+      };
     }
+    if (replay === undefined) ledger?.record(seam, toolName, input, { kind: 'result', value: raw });
     // #130 — unwrap the structured tool-result union at the boundary so
     // every privacy / capture path downstream keeps seeing a plain string,
     // while we still surface the optional postcondition marker upward to
@@ -495,7 +525,11 @@ export class LocalSubAgent {
     const carried = {
       ...(postcondition ? { postcondition } : {}),
       ...(isWithheldToolErrorNotice(rawOutput) ? { outcomeUnknown: true as const } : {}),
+      ...(replay !== undefined ? { replayed: true as const } : {}),
     };
+    if (replay === undefined && isWithheldToolErrorNotice(rawOutput)) {
+      ledger?.noteUnknownOutcome(toolName, input);
+    }
     // Phase C.2 — Raw tool-result capture (parallel to orchestrator.dispatchTool).
     // Sub-agent tool calls also feed routine templates, so the capture
     // hook must fire here too. Absent callback ⇒ no capture.
@@ -528,18 +562,21 @@ export class LocalSubAgent {
       if (bypass !== undefined) {
         const flag = turnContext.current()?.subAgentBypassFlag;
         if (flag) flag.value = true;
-        try {
-          await privacy.recordBypassedTool({
-            toolName,
-            pluginId: bypass.pluginId,
-            reason: 'operator_setting',
-            bytes: Buffer.byteLength(result, 'utf8'),
-          });
-        } catch (err) {
-          console.warn(
-            `[sub-agent ${this.name}] privacy.recordBypassedTool threw on '${toolName}' — bypass still applied:`,
-            err,
-          );
+        // A replayed bypass is on the first run's receipt already.
+        if (replay === undefined) {
+          try {
+            await privacy.recordBypassedTool({
+              toolName,
+              pluginId: bypass.pluginId,
+              reason: 'operator_setting',
+              bytes: Buffer.byteLength(result, 'utf8'),
+            });
+          } catch (err) {
+            console.warn(
+              `[sub-agent ${this.name}] privacy.recordBypassedTool threw on '${toolName}' — bypass still applied:`,
+              err,
+            );
+          }
         }
         return { output: result, ...carried };
       }

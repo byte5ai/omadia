@@ -12,7 +12,9 @@
  */
 
 import { isInternExemptTool } from './privacyInternPolicy.js';
-import { isWriteCapableTool } from '@omadia/plugin-api';
+import { isWithheldToolErrorNotice, isWriteCapableTool } from '@omadia/plugin-api';
+import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
+import { replayMissNotice } from './toolReplayLedger.js';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import {
   guardControlFlowResult,
@@ -334,7 +336,7 @@ export class ToolDispatchService {
           origin: 'dispatcher',
         };
       }
-      return this.invoke(name, () => nativeHandler(input), options);
+      return this.invoke(name, input, () => nativeHandler(input), options);
     }
 
     const domainTool = this.domainTools().find((t) => t.name === name);
@@ -349,7 +351,7 @@ export class ToolDispatchService {
           origin: 'dispatcher',
         };
       }
-      return this.invoke(name, () => domainTool.handle(input), options);
+      return this.invoke(name, input, () => domainTool.handle(input), options);
     }
 
     return { content: `Error: unknown tool \`${name}\`.`, isError: true, origin: 'dispatcher' };
@@ -358,6 +360,7 @@ export class ToolDispatchService {
   /** One handler run, native or domain: the same steps for both branches. */
   private async invoke(
     name: string,
+    input: unknown,
     handler: () => Promise<string>,
     options?: ToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
@@ -372,17 +375,44 @@ export class ToolDispatchService {
         origin: 'dispatcher',
       };
     }
+    // The request's tool replay ledger, from the AMBIENT turn context only —
+    // a CLI sub-agent's loopback calls run in the snapshot of the parent's
+    // dispatch scope, the public MCP endpoint runs outside any turn and sees
+    // none (`toolReplayLedger.ts`). Nothing on this path is known read-only.
+    const ledger = turnContext.current()?.toolReplayLedger;
+    const decision = ledger?.decide('dispatch', name, input, { readOnly: false });
+    if (decision?.action === 'refuse-repeat') {
+      return { content: repeatRefusedNotice(name), isError: true, origin: 'dispatcher' };
+    }
+    if (decision?.action === 'refuse-miss') {
+      return { content: replayMissNotice(name), isError: true, origin: 'dispatcher' };
+    }
+    const replay = decision?.action === 'replay' ? decision.record : undefined;
+    // One mint per dispatch: a connect prompt the MCP manager produces
+    // while this handler runs is recorded in it (`mcpAuthPromptMint.ts`).
+    const authPromptMint = new McpAuthPromptMint();
+    let raw: string;
     try {
-      // One mint per dispatch: a connect prompt the MCP manager produces
-      // while this handler runs is recorded in it (`mcpAuthPromptMint.ts`).
-      const authPromptMint = new McpAuthPromptMint();
+      if (replay?.kind === 'rejection') throw replay.error;
       // The handler runs with this dispatch's handle as the ambient one, so a
       // sub-agent model loop inside it is guarded too (`handlerPrivacyScope.ts`).
-      const raw = await runWithMcpAuthPromptMint(authPromptMint, () =>
-        runHandlerInPrivacyScope(privacy, handler),
-      );
+      raw =
+        replay?.kind === 'result'
+          ? (replay.value as string)
+          : await runWithMcpAuthPromptMint(authPromptMint, () =>
+              runHandlerInPrivacyScope(privacy, handler),
+            );
+    } catch (error) {
+      if (replay === undefined) ledger?.record('dispatch', name, input, { kind: 'rejection', error });
+      return this.thrownResult(name, error, options);
+    }
+    if (replay === undefined) {
+      ledger?.record('dispatch', name, input, { kind: 'result', value: raw });
+      if (isWithheldToolErrorNotice(raw)) ledger?.noteUnknownOutcome(name, input);
+    }
+    try {
       return {
-        content: await this.afterDispatch(name, raw, authPromptMint, options),
+        content: await this.afterDispatch(name, raw, authPromptMint, options, replay !== undefined),
         origin: 'tool',
       };
     } catch (error) {
@@ -406,6 +436,8 @@ export class ToolDispatchService {
     /** The connect prompts the MCP manager produced in this dispatch. */
     authPromptMint: McpAuthPromptMint,
     options?: ToolDispatchOptions,
+    /** A verifier re-entry handed back the first run's result. */
+    replayed = false,
   ): Promise<string> {
     const capture = this.deps.captureRawToolResult;
     if (capture !== undefined && typeof result === 'string') {
@@ -432,18 +464,21 @@ export class ToolDispatchService {
     // receipt entry keeps it transparent.
     const bypass = privacy.checkBypass(name);
     if (bypass !== undefined) {
-      try {
-        await privacy.recordBypassedTool({
-          toolName: name,
-          pluginId: bypass.pluginId,
-          reason: 'operator_setting',
-          bytes: Buffer.byteLength(result, 'utf8'),
-        });
-      } catch (err) {
-        console.warn(
-          `[toolDispatchService:${name}] privacy.recordBypassedTool threw — bypass still applied:`,
-          err,
-        );
+      // A replayed bypass is on the first run's receipt already.
+      if (!replayed) {
+        try {
+          await privacy.recordBypassedTool({
+            toolName: name,
+            pluginId: bypass.pluginId,
+            reason: 'operator_setting',
+            bytes: Buffer.byteLength(result, 'utf8'),
+          });
+        } catch (err) {
+          console.warn(
+            `[toolDispatchService:${name}] privacy.recordBypassedTool threw — bypass still applied:`,
+            err,
+          );
+        }
       }
       return result;
     }
@@ -625,6 +660,18 @@ export class ToolDispatchService {
 // (`runHandlerInPrivacyScope`), so a domain tool's `LocalSubAgent` masks its
 // inner results and tool errors before its own model sees them, as on the chat
 // path; `requirePrivacyHandle` runs no handler when no handle resolves.
+//
+// KEPT IN SYNC: the request's tool replay ledger (`toolReplayLedger.ts`).
+// `invoke` asks the AMBIENT `turnContext.toolReplayLedger` before the handler
+// runs, exactly like `Orchestrator.dispatchToolDeadlined` and
+// `LocalSubAgent.dispatch`: a verifier re-entry replays the first run's
+// outcome (a thrown handler as the same rejection, through `thrownResult`), a
+// call outside the first run is refused, and an identical repeat of a call
+// whose outcome is unknown is refused in every pass. Nothing on this path is
+// known read-only. A CLI sub-agent's loopback calls run in the snapshot of the
+// parent's dispatch scope and see the ledger; the public MCP endpoint and the
+// top-level CLI chat agent run outside any orchestrator turn and see none, so
+// they dispatch exactly as before.
 //
 // STILL ORCHESTRATOR-ONLY, because each needs turn-scoped state this path has no
 // access to (an unconditional copy would throw or silently no-op):

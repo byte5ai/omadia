@@ -2597,6 +2597,119 @@ vergleicht), `test/auth/adminUsersRoute.test.ts`, `test/auth/localPasswordProvid
 Postgres `test/auth/loginAccountFold.pg.test.ts`; UI
 `web-ui/app/login/__tests__/page.test.tsx`.
 
+### Replay-Ledger: ein Tool läuft pro Anfrage höchstens einmal (Verifier-Wiedereintritt)
+
+`VerifierService` betritt in `enforce` einen Turn erneut — Borderline-Resample
+(`chat()`), Correction-Retry (`chat()` und Stream, nicht bei Canvas-Turns).
+Früher war jeder Wiedereintritt ein kompletter neuer Turn, der alle Tools des
+Modells wieder ausführte; ein Write lief so zwei- bis dreimal pro Nachricht.
+Jetzt erzeugt ein Wiedereintritt nur die Antwort neu:
+
+- **Bindung.** `bindRequestLedger` (`verifierReentry.ts`) legt vor dem ersten
+  Lauf einen `ToolReplayLedger` (`toolReplayLedger.ts`) an und bindet ihn per
+  `Orchestrator.bindToolReplayLedger(input, ledger)` an das Input-Objekt
+  (WeakMap, wie `markScreeningReentry`; Rückgabe ist die Freigabe am Ende der
+  Anfrage). `runTurnCore`/`chatStream` lesen ihn in der **ersten** Zeile, vor
+  dem Umbinden von `input`, und legen ihn als `turnContext.toolReplayLedger`
+  ab. Ohne Bindung bekommt jeder Turn einen turn-lokalen Ledger ohne
+  Ergebnisse (nur für die Wiederholungssperre unten).
+- **Nähte.** `dispatchToolDeadlined` (Orchestrator), `LocalSubAgent.dispatch`
+  (`subagent:<name>`) und `ToolDispatchService.invoke` (`dispatch`, CLI-Sub-
+  Agent über den Loopback-Snapshot) fragen `decide()` vor dem Handler: im
+  ersten Lauf `execute` + `record()` (Rohergebnis nach der Deadline-Firewall
+  oder die geworfene Exception), im Wiedereintritt `replay` über Cursor pro
+  (Naht, Tool, kanonischer Input), die `beginReentry()` zurücksetzt — Resample
+  und Retry spielen also beide Lauf 1 ab. Fehlt ein Call: nur Kernel-Lese-
+  Tools (`replayClassOf`: KG-Abfrage, `query_dataset`, `read_attachment`,
+  `find_free_slots`, Roster, Memory-`view`) laufen frisch, alles andere wird
+  mit `replayMissNotice` verweigert und setzt `abortedTool`. Was ein Tool im
+  ersten Lauf über seinen Attachment-Sink abgab (Diagramm, Office-Datei),
+  hält der Ledger fest (`drainAttachments` → `recordAttachments`) und gibt es
+  für im Wiedereintritt abgespielte Tools einmal pro Lauf zurück — bei einem
+  Replay bleibt der Sink ja leer.
+- **Abbruch.** Post-Batch-Check in beiden Tool-Loops und im `LocalSubAgent`,
+  dazu der autoritative Check am Ende von `runTurnCore` bzw. am Terminal-Event
+  im Stream (fängt Direct-Line und gefaltete Sub-Agent-Antworten).
+  `ToolReplayAbortError` → Resample behält die erste Antwort, Retry hält sie
+  mit `failed` zurück. MCP-Input-Card-Antworten und aufgezeichnete
+  MRTR-Sentinels/Connect-Prompts sind nicht abspielbar → Abbruch.
+- **Sub-Agent unter Privacy Shield.** Hat ein Domain-Tool-Dispatch Datasets
+  gebrückt oder ein Bypass-Tool genutzt, wird der Sub-Agent im
+  Wiedereintritt neu ausgeführt (`rerun`), seine inneren Calls werden
+  abgespielt und im neuen Scope neu interniert; sonst wird das Ergebnis samt
+  Sub-Agent-Events (Trace, Postconditions) abgespielt.
+- **Eine Anfrage, ein Datensatz — der gelieferte.** Ein Wiedereintritt feuert
+  keine Per-Call-Hooks (`onBeforeTurn`, `onAfterToolCall`), ingestiert kein
+  MCP-Ergebnis erneut in den KG und bucht keinen Bypass erneut. Der Trace
+  markiert abgespielte Calls mit `replayed` (plugin-api 1.21.0).
+  Commit-on-Delivery (`requestTurnRecord.ts`): Solange ein Request-Ledger
+  gebunden ist (`defersTurnRecord`), schreibt **kein** Lauf — auch nicht der
+  erste — Session-Log/Fact-Extraction/Auto-Promotion oder feuert
+  `onAfterTurn`; jeder Lauf bietet seine Zeile an (`TurnRecordWriter`,
+  `turnRecordWriter.ts`: `recordRow` / `offerRow` →
+  `ledger.turnRecord.offer(pass, …)`) und notiert seine Antwort
+  (`Orchestrator.afterTurn` → `noteAnswer`). Der Verifier committet nach dem
+  Urteil den gelieferten Lauf (bei Zurückhalten den, über den das Endurteil
+  ging): `asRequestResult` / `finishRequestDone` →
+  `turnRecord.commit(pass)`; `prepareReentry` liefert die Pass-Nummer. Die
+  Zeile trägt die Entities aller Läufe, wird im Turn-Scope ihres Laufs
+  geschrieben (`AsyncLocalStorage.snapshot()`, wegen Usage-Attribution),
+  danach `onAfterTurn` im Hook-Kontext des ersten Laufs (der Plan-Runner
+  hängt dort); `onVerifierBlocked` wartet auf den Commit
+  (`afterRequestRecord`), damit er wie vorher nach `onAfterTurn` kommt.
+  `done.turnId` nennt die committete Zeile. Ohne Lieferung committet das
+  `finally` den ersten Lauf. Die Receipts aller Läufe sammelt
+  `ledger.receipts` (`requestReceipts.ts`); geliefert wird das gemergte
+  Receipt, und genau **eine** `turn_receipts`-Zeile wird nach dem letzten
+  Lauf geschrieben (`receiptId` im Stream).
+- **Abgekoppelte Arbeit.** Der Runner eines langlaufenden Tasks
+  (`<tool>_start`, `tasks/longRunningTool.ts`) startet unter
+  `runDetachedFromRequestLedger` mit eigenem turn-lokalem Ledger: er läuft
+  nach dem Turn weiter, auch während eines Wiedereintritts, und darf weder
+  gegen den Replay-Modus der Anfrage laufen (Miss → Task `failed`,
+  Wiedereintritt abgebrochen) noch deren Rohergebnisse am Leben halten.
+- **Wiederholungssperre.** Unabhängig vom Verifier verweigert jede Naht die
+  identische Wiederholung eines Write-Calls, dessen Ausgang unbekannt ist
+  (geworfen oder Withheld-Notiz), für die ganze Anfrage — damit auch in den
+  Eltern-Loops und beim CLI-Sub-Agent (offener Punkt aus der
+  Tool-Fehler-Politik, §13).
+- **Uploads einmal pro Anfrage.** `ingestAttachments` läuft vor dem Modell und
+  außerhalb des Tool-Dispatch; ein CSV/XLSX wird dabei per
+  `importTabularDataset` → `KnowledgeGraph.ingestDataset` als **neues**
+  Dataset angelegt (kein Dedupe). Beide Pfade rufen deshalb
+  `ingestAttachmentsForPass` → `ledger.ingestAttachmentsOnce`: Lauf 1
+  ingestiert und hält das Ergebnis (Text/`[dataset-imported]`-Blöcke **vor**
+  dem Masking, Bild-Blöcke), jeder Wiedereintritt bekommt genau das zurück
+  und maskiert es über seine eigene Prompt-Map — gleiche `dataset_id` wie in
+  den abgespielten Tool-Ergebnissen. Findet ein Wiedereintritt nichts,
+  bricht er vor dem Modellaufruf ab (`REENTRY_ABANDONED.attachmentsNotRecorded`).
+- **Correction-Hint = Wire-Inhalt.** `wireExtraSystemHint` maskiert den
+  `extraSystemHint` des Aufrufers über die Prompt-Map des Laufs wie die
+  User-Nachricht (gleiche Surrogate, Spans im Receipt → `maskedPromptSpans`
+  im gemergten Request-Receipt); der Fresh-Check-Text des Kernels bleibt
+  unmaskiert. `PromptMaskBlockedError` in einem Wiedereintritt bricht ihn ab
+  (`REENTRY_ABANDONED.promptMaskBlocked`) statt die Privacy-Fehlerantwort zu
+  liefern; der erste Lauf behält sein Verhalten. `buildCorrectionPrompt`
+  (`@omadia/verifier`) nennt nur noch die Claims (Wortlaut der Antwort),
+  Call-IDs und feste Anweisungen — kein `truth`, kein `detail`, keine
+  Postcondition-Issues: die Evidenz holt der Verifier mit eigenem Zugriff
+  (KG mandantenweit, Odoo-Reader des Plugins), nicht mit den Grants des Users.
+  Abbruchgründe ohne Tool tragen Namen (`REENTRY_ABANDONED`,
+  `describeAbandonment`, `reentryAbandonment.ts`), die Log-Zeilen nennen sie.
+
+Schalter: `verifier_resample_on_borderline` (§10). Sicherheitsbegründung,
+Grenzen und Reviewer-Regeln: `docs/security-architecture.md` §7c und §11.
+Tests: `test/toolReplayLedger.test.ts`, `test/toolReplaySeams.test.ts`,
+`test/verifierServiceWriteSafety.test.ts`, `test/verifierStreamRetry.test.ts`,
+`test/verifierReentryRecords.test.ts`, `test/verifierDeliveredTurnRecord.test.ts`,
+`test/requestTurnRecord.test.ts`,
+`test/verifierSubAgentReplay.test.ts`, `test/verifierResampleKillSwitch.test.ts`,
+`test/longRunningTaskReplayLedger.test.ts`,
+`test/orchestrator/parentLoopThrownCallRepeat.test.ts`,
+`test/verifierReentryAttachments.test.ts`,
+`test/verifierCorrectionHintPrivacy.test.ts`,
+`test/correctionPromptEvidence.test.ts`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -3055,7 +3168,8 @@ Setup-Felder, nicht mehr die Env.
 | `VERIFIER_MODEL` / `verifier_model` | Modell für Claim-Extraktion und Evidence-Judge. |
 | `VERIFIER_MAX_CLAIMS` / `verifier_max_claims` | Höchstzahl geprüfter Claims pro Antwort, Default `20`. |
 | `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Relative Betragstoleranz, Default `0.01`. |
-| `VERIFIER_MAX_RETRIES` / `verifier_max_retries` | Correction-Retries nach einem Widerspruch in `enforce`, nur auf dem nicht-streamenden Pfad (Teams, Telegram, `/api/chat`); Default `1`, max `2`. Der Stream versucht keinen Retry. |
+| `VERIFIER_MAX_RETRIES` / `verifier_max_retries` | Correction-Retry nach einem Widerspruch in `enforce`, auf `chat()` (`/api/chat`, Scheduler, Conductor) und im Stream (nicht bei Canvas-Turns); `0` schaltet ihn ab. Default `1`, max `2`. Der Retry führt kein Tool erneut aus (Replay-Ledger, §3 und Security §7c). |
+| `VERIFIER_RESAMPLE_ON_BORDERLINE` / `verifier_resample_on_borderline` | `false` schaltet in `enforce` die zweite Stichprobe für Grenzfall-Antworten ab (nur `chat()`); jeder andere Wert lässt sie an. Default `true`. Die Stichprobe führt kein Tool erneut aus. Wie alle `VERIFIER_*` nur beim ersten Boot übernommen. |
 
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 
@@ -3699,11 +3813,19 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   zurückgehalten, auf Stream und `chat()`, dort auch für Resample und Retry.
   Ein zurückgehaltener `degraded`-Turn behält `degraded`, `committedTools`
   und `correlationId`.
-- **Kein Retry im Stream** — ein Retry führt die Tools des Turns erneut aus.
-  `VerifierService.chat` (Teams, Telegram, `/api/chat`) behält Retry und
-  Resample und liefert bei einem nicht freigegebenen Endurteil dieselbe Notiz
-  als `SemanticAnswer` (`answerSource`/`answerIsError` gesetzt, Anhänge und
-  Karten entfernt).
+- **Ein Correction-Retry im Stream** (seit dem Replay-Ledger, §3) — außer bei
+  Canvas-Turns. Bei `blocked` betritt der Wrapper den Turn erneut mit
+  Correction-Hint über den Tool-Ergebnissen des ersten Laufs (kein Tool läuft
+  zweimal), hält den Retry genauso und liefert nach dessen Urteil; nur seine
+  Lebenszeichen (ein zweites `iteration_start`) gehen vorher raus. Ein
+  abgebrochener oder gescheiterter Retry bleibt intern, dann gilt die Notiz
+  zum ersten Lauf. `done.turnId` nennt die Session-Log-Zeile des gelieferten
+  Laufs (Commit-on-Delivery, §3); `onAfterTurn`-Annotationen kommen mit der
+  freigegebenen Antwort direkt vor ihr. `VerifierService.chat` (`/api/chat`,
+  Scheduler, Conductor)
+  hat Retry und Borderline-Resample und liefert bei einem nicht freigegebenen
+  Endurteil dieselbe Notiz als `SemanticAnswer` (`answerSource`/
+  `answerIsError` gesetzt, Anhänge und Karten entfernt).
 - Ein zurückgehaltener Turn zählt als `ok` (Operator-Health in `routes/chat.ts`,
   API-Key-Audit in `chatRouter.ts`) — eine Policy-Entscheidung, kein Fehler;
   außer er ist zugleich `degraded`, dann bleibt er ein Fehler.
@@ -3720,8 +3842,9 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
 - **Nicht abgedeckt:** der Abo-CLI-Runtime (`claude-cli`; `buildOrchestrator`
   gibt den `CliChatAgent` vor dem Verifier-Wrapper zurück) und Routinen (der
   Routine-Runner ruft `runTurn` auf dem rohen Orchestrator). Persistenz
-  (Session-Log, KG-Turn, Auto-Promotion) passiert vor `done`, also auch für
-  eine zurückgehaltene Antwort.
+  (Session-Log, KG-Turn, Auto-Promotion) passiert vor `done` — mit
+  Request-Ledger erst nach dem Urteil, für den Lauf, über den es ging —, also
+  auch für eine zurückgehaltene Antwort.
 
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
@@ -4099,19 +4222,21 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   Treiber-Hinweis zurück will, stellt in `withholdThrownToolError` auf
   `redactToolErrorText` um (eine Stelle) — um den Preis von Namen, die C0
   nicht erkennt.
-- **Wiederholung nach einer Exception:** nur `LocalSubAgent` verweigert die
-  identische Wiederholung eines Aufrufs, der mit einer Exception endete
-  (`subAgentUnknownOutcome.ts`). Die Eltern-Loops und der Abo-CLI-Sub-Agent
-  (dessen Schleife der `claude`-CLI besitzt) blockieren keine Wiederholung;
-  den Hinweis der Notice liest ihr Modell nur dort, wo es die Notice liest
-  (ohne Privacy-Provider kommt ein direkter Throw roh an). Kein Pfad
-  blockiert eine Wiederholung mit anderem Input oder nach einem
-  zurückgegebenen Fehler mit ebenso unbekanntem Ausgang
-  (MCP-Request-Timeout). `LocalSubAgentTool` trägt keine
-  Write-Capability-Metadaten, deshalb gilt die Sperre für Lese- wie
-  Schreib-Tools. Ein Write genau einmal auszuführen braucht diese Metadaten
-  plus Idempotenz-Key (wie `ToolDispatchService` sie für das MCP-`exactlyOnce`
-  setzt) — gehört zur Write-Idempotenz-Arbeit am Sub-Agent-Pfad.
+- **Wiederholung nach einer Exception:** seit dem Replay-Ledger (§3)
+  verweigern innerhalb derselben Anfrage auch die Eltern-Loops (gepuffert und
+  Stream) und der Abo-CLI-Sub-Agent (über die `dispatch`-Naht seines
+  Loopback-Snapshots) die identische Wiederholung eines Write-Calls, der mit
+  einer Exception oder der Withheld-Notiz endete — nahtübergreifend,
+  `LocalSubAgent` behält zusätzlich seine Sperre pro Lauf. Offen bleibt:
+  (a) der **Haupt**-Abo-CLI-Agent (`CliChatAgent` als Chat-Agent) läuft ohne
+  Orchestrator-Turn und hat keinen Ledger, dort sperrt nichts; (b) zwei
+  identische Calls im **selben** parallelen Batch laufen beide, die Sperre
+  greift erst für Calls, die nach dem Throw entschieden werden; (c) nach
+  einem Dispatch-Deadline-Timeout oder einem zurückgegebenen Fehler mit
+  ebenso unbekanntem Ausgang (MCP-Request-Timeout) wird nicht gesperrt;
+  (d) eine Wiederholung mit anderem Input läuft. Ein Write genau einmal
+  auszuführen braucht dafür Write-Metadaten plus Idempotenz-Key (wie
+  `ToolDispatchService` sie für das MCP-`exactlyOnce` setzt).
 - **Exception-Formen ohne C1:** positionale Datensatz-Dumps
   (`Partner(42, 'Jane Doe')`, Gos `%v`) und `name=…`-Paare außerhalb eines
   Datensatzes erkennt `looksExceptionShaped` nicht; ein Name darin geht ohne
@@ -4140,6 +4265,88 @@ verspricht Hub-Installationen office 0.1.4 erst mit diesem Schritt.
   0.2.0) laufen nur gebündelt. Ein ZIP mit ihrer ID lehnt der Upload ab
   (`package.id_conflict_bundled`), außer mit
   `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`.
+
+### Verifier-Wiedereintritt (Replay-Ledger): offene Enden
+
+Stand nach „Wiedereintritte führen kein Tool erneut aus“ (§3,
+`docs/security-architecture.md` §7c):
+
+- **Erledigt: Session-Log hält die gelieferte Antwort.** Commit-on-Delivery
+  (§3, `requestTurnRecord.ts`) schreibt die eine Zeile der Anfrage nach dem
+  Urteil für den gelieferten Lauf. Offen bleibt nur, was der Commit für eine
+  **zurückgehaltene** Antwort schreibt: die Antwort des Laufs, über den das
+  Endurteil ging (Punkt „Zurückgehaltene Antwort wird trotzdem persistiert“
+  unten) — der Commit kennt das Urteil jetzt, ein Marker statt der Antwort
+  wäre dort einzuhängen. Eine Anfrage mit Request-Ledger, die nie committet
+  wird (Aufrufer ohne `finally`), verliert ihre Zeile; beide bestehenden
+  Binder committen auf jedem Pfad.
+- **Kein positives Read-only im Plugin-Vertrag.** Auf einem Wiedereintritt
+  dürfen nur Kernel-Lese-Tools neu laufen; jeder Plugin-, MCP-, Domain- und
+  Sub-Agent-Call, den der erste Lauf nicht machte, bricht ab — auch reine
+  Lesezugriffe. Eine `readOnly`-Deklaration auf `NativeToolRegistration`,
+  `DomainTool` und `LocalSubAgentTool` (dort fehlt auch ein
+  `writeCapabilities`-Träger) würde mehr Wiedereintritte zu Ende laufen
+  lassen. Fehlendes `writeCapabilities` darf dafür NICHT reichen.
+- **Correction-Retry auf Write-Turns bricht oft ab.** `traceMissingCallVerdict`
+  blockiert jede harte Odoo-Aussage ohne `query_odoo_*`/`odoo_execute`-Call;
+  nennt eine Antwort den gerade angelegten Datensatz, folgt der Retry, und
+  ein neu formulierter Write-Payload bricht ihn ab (`failed`). Prüfen, ob
+  write-fähige Plugin-Tools als Evidenz zählen sollen.
+- **Exakter Input.** Ein Wiedereintritt trifft den aufgezeichneten Call nur
+  bei identischem kanonischem Input (Schlüsselreihenfolge egal). Bewusst kein
+  Fuzzy-Matching — das würde einen anderen Write ausführen.
+- **Canvas-Turns ohne Stream-Retry.** Der Canvas-Composer ordnet
+  Roh-Sentinels per Tool-Name (FIFO) zu; ein Retry, der Calls umsortiert,
+  könnte eine Surface mit dem falschen Ergebnis bauen. Für Canvas-Turns
+  bleibt es beim Zurückhalten ohne Retry, bis die Zuordnung per Call-ID läuft.
+- **Abo-CLI-Sub-Agent: Obligation-Re-Prompt.** Der zweite CLI-Spawn bei
+  fehlendem `expectedTurnToolUse` wird angewiesen, aber nicht daran gehindert,
+  einen erfolgreichen Write zu wiederholen; der Ledger zeichnet im ersten
+  Lauf nur auf. Ein „replay-or-execute“-Modus für diesen Spawn wäre der Fix.
+- **Request-Receipt eines abgebrochenen Laufs.** Ein abgebrochener
+  Wiedereintritt übernimmt nie die Zeile; hatte nur er ein Receipt (der erste
+  Lauf keins), trägt die gelieferte Notiz das Receipt, aber es entsteht keine
+  `turn_receipts`-Zeile. Randfall.
+- **Abgespielte Status-Abfragen.** Ein `_status` eines langlaufenden
+  Sub-Agent-Tasks wird im Wiedereintritt mit dem Stand des ersten Laufs
+  abgespielt — gewollt (gleiche Evidenz), aber kein Live-Stand. Der Runner
+  selbst läuft seit `runDetachedFromRequestLedger` auf eigenem Ledger; er
+  erbt aber weiterhin den übrigen Turn-Kontext des Dispatches (Privacy-Handle,
+  Sinks — `describeDeferredPrivacyPosture`). Andere abgekoppelte Arbeit, die
+  später Tool-Handler ruft, muss denselben Weg nehmen (Security §11).
+- **Screening-Marker bleibt am Input.** `markScreeningReentry` setzt einen
+  WeakSet-Eintrag auf das Input-Objekt, der nach der Anfrage bleibt (anders
+  als der Ledger, der freigegeben wird). Ein Aufrufer, der dasselbe Objekt für
+  eine neue Nachricht wiederverwendet, umginge das Inbound-Screening. Kein
+  bekannter Aufrufer tut das; Freigabe analog zum Ledger wäre billig.
+- **Verifier-Evidenz wird mandantenweit geholt.** `GraphEvidenceFetcher`
+  (`findEntities` nach Modell und Name, inkl. der `res.partner`/
+  `hr.employee`-Namensproben) und der deterministische Odoo-Re-Query laufen
+  ohne User-Identität und Grants. Seit dem Fix verlässt ihr Inhalt den
+  Verifier nicht mehr Richtung Turn (kein `truth`/`detail` im
+  Correction-Hint, die Summary trägt nur Zähler); er geht aber an das
+  Judge-Modell und in `verifier_contradictions`. Bevor Evidenz je wieder an
+  ein Turn-Modell oder einen User geht: Abruf auf den aufgelösten User und
+  seine Grants beschränken, ohne beides fail-closed.
+- **Retry ohne Messwert.** Der Correction-Retry korrigiert nur noch aus den
+  (abgespielten) Tool-Ergebnissen des Turns; einen Wert, den nur der
+  Verifier kannte, kann er nicht übernehmen. Erwartung: weniger
+  `corrected`, mehr zurückgehaltene Antworten — `corrected`-Rate vor/nach
+  messen.
+- **Hint-Texte passen nicht zum Replay.** Postcondition- und Replay-Abschnitt
+  von `buildCorrectionPrompt` verlangen einen neuen Tool-Call; im
+  Wiedereintritt wird jeder Call außerhalb des ersten Laufs (außer
+  Kernel-Lesern) abgelehnt und der Retry abgebrochen. Texte an die
+  Replay-Realität anpassen oder für diese Fälle keinen Retry starten.
+- **Masking-Grenze des Hints.** Er wird mit denselben Detektoren maskiert
+  wie die Nachricht: was keiner erkennt (Namen ohne C1, freie Beträge ohne
+  Währung …), geht wie in der Nachricht ans Modell; mit `mask_user_prompt`
+  aus (Default) wird nichts maskiert. Die Claims sind Wortlaut der Antwort.
+- **Nudge-State pro Lauf.** `applyNudgePipeline` läuft auch nach
+  abgespielten Tool-Batches eines Wiedereintritts und kann
+  `recordEmission` erneut schreiben (kein User-Write; Cooldown/Statistik).
+  Prüfen, ob ein Wiedereintritt (`isReentryPass()`) die Emission
+  überspringen soll.
 
 ### MRTR-Sentinel über Skill-Bindung und `ctx.mcp` (#570 follow-up)
 
@@ -4676,9 +4883,11 @@ Objektformen und dass solcher Text Text bleibt.
   schreibt Session-Log, KG-Turn und ggf. die Auto-Promotion vor `done`; die
   zurückgehaltene Antwort landet so im Kontext späterer Turns, und ihre
   `autoPromotedMkId` wird nicht ausgeliefert (der Web-Chat bietet kein
-  Verwerfen an). Nach dem #1094-Muster einen Marker statt der Antwort
-  persistieren oder Persistenz und Promotion in `enforce` bis zum Urteil
-  zurückstellen.
+  Verwerfen an). Mit Request-Ledger (Retry oder Resample möglich) ist die
+  Persistenz schon bis nach dem Urteil zurückgestellt (Commit-on-Delivery,
+  §3); dort nach dem #1094-Muster einen Marker statt der Antwort committen
+  und die Promotion auslassen. Ohne Ledger (`VERIFIER_MAX_RETRIES=0` ohne
+  Resample, Canvas-Stream) schreibt der Turn weiterhin vor dem Urteil.
 - **Zurückgehaltener Turn zeigt nicht, welche Tools liefen.** Tool-Trace und
   Tool-Ergebnisse fallen mit der Antwort weg; der Web-Chat zeigt nur die
   Anzahl (`tools=N`). Hat ein Schreib-Tool committet, sollte die Notiz es nennen
@@ -4716,7 +4925,9 @@ Objektformen und dass solcher Text Text bleibt.
 - **Borderline-Resample in `enforce chat()`.** Ein Borderline-Verdict ist
   `approved_with_disclaimer` und wird zurückgehalten; der bezahlte Resample
   ändert daran nur etwas, wenn er auf `blocked` eskaliert und der Retry dann
-  korrigiert. Kosten gegen Nutzen neu abwägen (zusammen mit Write-Replay).
+  korrigiert. Kosten gegen Nutzen neu abwägen. Seit dem Replay-Ledger führt er
+  kein Tool mehr erneut aus, und `verifier_resample_on_borderline=false`
+  schaltet ihn ab.
 - **Abo-CLI-Runtime und Routinen ohne Verifier.** `VERIFIER_MODE` wirkt weder
   auf `claude-cli`-Agenten (der `CliChatAgent` wird vor dem Wrapper
   zurückgegeben) noch auf Routinen (`runTurn` auf dem rohen Orchestrator).

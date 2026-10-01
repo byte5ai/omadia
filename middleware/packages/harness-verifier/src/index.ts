@@ -81,7 +81,6 @@ export type { BoundVerdict } from './verdictBinding.js';
 
 // correctionPrompt
 export { buildCorrectionPrompt } from './correctionPrompt.js';
-export type { CorrectionPromptOptions } from './correctionPrompt.js';
 
 // DeterministicChecker
 export { DeterministicChecker } from './deterministicChecker.js';

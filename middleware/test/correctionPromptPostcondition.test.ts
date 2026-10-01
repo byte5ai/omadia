@@ -11,7 +11,9 @@ import {
 // match its declared schema. This is parallel to the existing replay/
 // data sections but with its own remediation: re-call the tool with
 // corrected args (or pick a different tool) instead of restating the
-// already-measured value.
+// already-measured value. The section names the call, not the schema
+// issues: they are read off the tool's raw output, and the hint reaches
+// the model outside the Privacy Shield's data plane.
 
 function postconditionVerdict(callId: string, issues: string[]): ClaimVerdict {
   return {
@@ -49,7 +51,12 @@ describe('buildCorrectionPrompt — postcondition', () => {
     assert.ok(prompt, 'prompt should be returned for blocked verdict');
     assert.match(prompt, /## Tool-Output nicht spec-konform/);
     assert.match(prompt, /callId=call_a/);
-    assert.match(prompt, /expected array, received object/);
+    assert.match(prompt, /Tool 'list_products' returned a value/);
+    assert.equal(
+      prompt.includes('expected array, received object'),
+      false,
+      'the schema issues stay out of the hint',
+    );
   });
 
   it('keeps postcondition items out of the data/replay sections', () => {

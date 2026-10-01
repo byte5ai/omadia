@@ -35,6 +35,10 @@ async function enforcedWire(verdict: VerifierVerdict): Promise<Record<string, un
   const apiKeys = createApiKeyStore(secrets);
   const orchestrator = {
     agentId: 'default',
+    // A contradiction buys one correction retry over the first run's results;
+    // the scripted turn runs no tools and answers the same again.
+    markScreeningReentry: (): void => undefined,
+    bindToolReplayLedger: () => () => undefined,
     async *chatStream(): AsyncGenerator<ChatStreamEvent> {
       await Promise.resolve();
       yield { type: 'iteration_start', iteration: 1 };
@@ -93,9 +97,11 @@ describe('channelApi/chatRouter — enforce-mode verifier on the public stream',
     assert.equal(done['answerSource'], 'verifier-blocked');
     assert.equal(done['answerIsError'], true);
     assert.deepEqual(done['provenance'], { aiGenerated: true }, 'the route still stamps provenance');
+    // The contradiction bought one correction retry (contradicted again);
+    // only its liveness event reaches the wire.
     assert.deepEqual(
       events.map((e) => e['type']),
-      ['iteration_start', 'text_delta', 'done', 'verifier'],
+      ['iteration_start', 'iteration_start', 'text_delta', 'done', 'verifier'],
     );
   });
 

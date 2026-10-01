@@ -602,9 +602,14 @@ const ConfigSchema = z.object({
   //               input card (and the answer it rides on) or a
   //               turn-incomplete notice go out unchecked; an answer Privacy
   //               Shield rendered is never verified and is withheld. A
-  //               contradiction first triggers one correction retry, on the
-  //               non-streaming path only. The subscription-CLI runtime and
-  //               routines are not wrapped by the verifier.
+  //               contradiction first triggers one correction retry (on the
+  //               stream too, except canvas turns); a borderline answer draws
+  //               a second sample on the non-streaming path. Neither runs a
+  //               tool again: the turn's tool results are replayed. The
+  //               subscription-CLI runtime and routines are not wrapped by
+  //               the verifier.
+  // VERIFIER_RESAMPLE_ON_BORDERLINE=false switches that second sample off
+  // (seeded into the plugin config on first boot only, like the others).
   // Leave OFF in production until the shadow-mode metrics are clean.
   VERIFIER_ENABLED: z
     .enum(['true', 'false'])
@@ -615,6 +620,10 @@ const ConfigSchema = z.object({
   VERIFIER_MAX_CLAIMS: z.coerce.number().int().positive().default(20),
   VERIFIER_AMOUNT_TOLERANCE: z.coerce.number().nonnegative().default(0.01),
   VERIFIER_MAX_RETRIES: z.coerce.number().int().min(0).max(2).default(1),
+  VERIFIER_RESAMPLE_ON_BORDERLINE: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(true),
 
   // Package upload (phases 1–5 of the zip-upload roadmap). Default OFF —
   // only flipped on once admin UI + security review are through.

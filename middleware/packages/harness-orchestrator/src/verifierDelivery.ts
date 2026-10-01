@@ -12,7 +12,7 @@ import type {
   ChatTurnResult,
   VerifierResultSummary,
 } from './orchestrator.js';
-import { PROMPT_MASK_BLOCKED_ANSWER } from './orchestrator.js';
+import { PROMPT_MASK_BLOCKED_ANSWER, SECURITY_QUARANTINE_NOTICE } from './orchestrator.js';
 
 /**
  * Delivery policy of the answer-verifier wrapper (`VerifierService`): what a
@@ -52,6 +52,12 @@ import { PROMPT_MASK_BLOCKED_ANSWER } from './orchestrator.js';
  *    `done` and nothing else ({@link isDeliberateSilence}).
  *  - A turn that fails (an `error` event, or no `done`) releases nothing it
  *    held; the `error` itself goes out.
+ *  - A contradiction may buy one correction retry ({@link EnforcedRetry}):
+ *    the service re-enters the turn over the first run's tool results (no
+ *    tool runs twice, `toolReplayLedger.ts`), the retry is held the same way,
+ *    and its verdict decides by the same rule. Nothing of the first turn is
+ *    released once a retry ran; a retry that fails or is abandoned stays
+ *    internal and the first turn is withheld.
  */
 
 type DoneEvent = Extract<ChatStreamEvent, { type: 'done' }>;
@@ -90,6 +96,9 @@ export interface ControlFlowTurn {
   readonly pendingSlotCard?: unknown;
   readonly pendingOAuthConsent?: boolean;
   readonly degraded?: true;
+  /** The turn's AI disclosure; a streamed `done` folds its block into
+   *  `answer` on the first turn of a scope. */
+  readonly aiDisclosure?: AiDisclosure;
 }
 
 /**
@@ -107,12 +116,12 @@ export function isDeliberateSilence(answer: string): boolean {
  * Turns `enforce` releases without a verdict. A choice card, an MCP input
  * form, a slot picker and an OAuth consent prompt ask the user for input; a
  * degraded turn's answer is the server-composed turn-incomplete notice; the
- * privacy refusal (`PROMPT_MASK_BLOCKED_ANSWER`) is the server-composed
- * notice of a turn whose prompt could not be masked, so its model never ran;
- * a bare NO_REPLY is the agent's deliberate silence, which a withheld-answer
- * notice would break.
+ * privacy refusal (`PROMPT_MASK_BLOCKED_ANSWER`) and the inbound screening
+ * quarantine (`SECURITY_QUARANTINE_NOTICE`) are server-composed notices of a
+ * turn whose model never ran; a bare NO_REPLY is the agent's deliberate
+ * silence, which a withheld-answer notice would break.
  *
- * Only the last three are sure to state no fact. A card rides on whatever
+ * Only the last four are sure to state no fact. A card rides on whatever
  * answer its turn produced: the text the model wrote before a choice card or
  * an MCP input form ended the turn, and for a slot picker, an OAuth consent
  * prompt or a choice card the card-router pass attached, a complete answer —
@@ -130,9 +139,16 @@ export function releasesWithoutVerification(turn: ControlFlowTurn): boolean {
     Boolean(turn.pendingSlotCard) ||
     turn.pendingOAuthConsent === true ||
     (turn.degraded === true && turn.answerSource !== 'privacy-render') ||
-    turn.answer === PROMPT_MASK_BLOCKED_ANSWER ||
+    isServerNotice(turn) ||
     isDeliberateSilence(turn.answer)
   );
+}
+
+/** The privacy refusal or the screening quarantine as the whole answer — the
+ *  disclosure block a stream folds into a first turn's `done` set aside. */
+function isServerNotice(turn: ControlFlowTurn): boolean {
+  const text = withoutFoldedDisclosure(turn.answer, turn.aiDisclosure);
+  return text === PROMPT_MASK_BLOCKED_ANSWER || text === SECURITY_QUARANTINE_NOTICE;
 }
 
 /**
@@ -295,18 +311,21 @@ function withoutFoldedDisclosure(answer: string, disclosure: AiDisclosure | unde
  * build), so the discarded response is in the deltas but not in
  * `done.answer`. The delta leaves out the disclosure block a first turn folds
  * into `answer` — disclosures never go out as a delta. A held `done` other
- * than the terminal one is dropped.
+ * than the terminal one is dropped. The events finishing the request
+ * produced (`FinishedDone.events`) go out right before the text.
  */
 function* releasedTurn(
   held: readonly ChatStreamEvent[],
   terminal: DoneEvent,
-  released: DoneEvent,
+  released: FinishedDone,
 ): Generator<ChatStreamEvent> {
   for (const event of held) {
     if (event === terminal) {
-      const text = withoutFoldedDisclosure(released.answer, released.aiDisclosure);
+      yield* released.events;
+      const { done } = released;
+      const text = withoutFoldedDisclosure(done.answer, done.aiDisclosure);
       if (text.length > 0) yield { type: 'text_delta', text };
-      yield released;
+      yield done;
     } else if (event.type !== 'text_delta' && event.type !== 'done') {
       yield event;
     }
@@ -364,15 +383,95 @@ export async function* shadowVerifiedStream(
 export interface EnforcedVerdict {
   readonly summary: VerifierResultSummary;
   readonly releases: boolean;
+  /**
+   * A correction re-entry to run instead of delivering this verdict. Its
+   * stream is held exactly like the first turn's — liveness passes, nothing
+   * else — and replaces the first turn when its verdict is delivered.
+   */
+  readonly retry?: EnforcedRetry;
 }
 
 /**
- * Adds what only exists once the verdict is in to the `done` that goes out —
- * behind a Privacy Shield the turn's receipt, finalized after the verifier.
+ * The stream's correction retry (`VerifierService`). It re-generates the
+ * answer over the first run's tool results (`toolReplayLedger.ts`), so it
+ * runs no tool twice; the release rule above decides what goes out.
  */
-export type FinishDone = (done: DoneEvent) => Promise<DoneEvent>;
+export interface EnforcedRetry {
+  readonly stream: AsyncIterable<ChatStreamEvent>;
+  /**
+   * The verdict to deliver once the re-entry drained. `done` is the
+   * re-entry's answer, or `undefined` when it produced none worth judging
+   * (it failed, was abandoned, or ended in a control-flow terminal); then the
+   * verdict is the first turn's and `useRetry` is false.
+   */
+  judge(done: DoneEvent | undefined): Promise<EnforcedVerdict & { readonly useRetry: boolean }>;
+}
 
-const asIs: FinishDone = (done) => Promise.resolve(done);
+/** A terminal `done` with the request's record on it, and the events that
+ *  recording produced — released with the answer, dropped with a withheld
+ *  one. */
+export interface FinishedDone {
+  readonly done: DoneEvent;
+  readonly events: readonly ChatStreamEvent[];
+}
+
+/**
+ * Adds the request's record to the `done` that goes out (the receipt of
+ * every pass, the persisted turn) once nothing else can change it — behind
+ * a Privacy Shield after every pass was finalized, so the receipt also
+ * covers the verifier's requests. `fromRetry` says which turn `done` came
+ * from: the first one, or the correction retry whose verdict is delivered.
+ */
+export type FinishDone = (done: DoneEvent, fromRetry: boolean) => Promise<FinishedDone>;
+
+interface HeldTurn {
+  readonly held: ChatStreamEvent[];
+  readonly terminal: DoneEvent | undefined;
+  readonly failed: boolean;
+}
+
+/**
+ * Drains one turn: liveness events pass, everything else is held. The first
+ * turn's `error` goes out as it arrives; a re-entry's error — or exception —
+ * stays internal, the first turn's outcome is delivered instead.
+ */
+async function* holdTurn(
+  base: AsyncIterable<ChatStreamEvent>,
+  reentry: boolean,
+): AsyncGenerator<ChatStreamEvent, HeldTurn> {
+  const held: ChatStreamEvent[] = [];
+  let terminal: DoneEvent | undefined;
+  let failed = false;
+  try {
+    // Drained to the end even after the terminal event, as before: the
+    // orchestrator's generator finishes its own work only when it is drained.
+    for await (const event of base) {
+      if (passesBeforeVerdict(event)) {
+        yield event;
+      } else if (event.type === 'error') {
+        failed = true;
+        if (!reentry) yield event;
+      } else if (!failed) {
+        if (event.type === 'done') terminal = event;
+        held.push(event);
+      }
+    }
+  } catch (err) {
+    if (!reentry) throw err;
+    failed = true;
+  }
+  return { held, terminal, failed };
+}
+
+/** A re-entry's answer worth a verdict: not failed, and an ordinary answer. */
+function judgeableAnswer(turn: HeldTurn): DoneEvent | undefined {
+  const done = turn.terminal;
+  if (turn.failed || done === undefined) return undefined;
+  if (isDeliberateSilence(done.answer) || releasesWithoutVerification(done)) return undefined;
+  return done;
+}
+
+const asIs: FinishDone = (done) => Promise.resolve({ done, events: [] });
 
 /** `enforce`: the delivery gate described in the module comment. */
 export async function* enforcedVerifiedStream(
@@ -381,37 +480,38 @@ export async function* enforcedVerifiedStream(
   operatorLocale: string | undefined,
   finishDone: FinishDone = asIs,
 ): AsyncGenerator<ChatStreamEvent> {
-  const held: ChatStreamEvent[] = [];
-  let terminal: DoneEvent | undefined;
-  let failed = false;
-  // Drained to the end even after the terminal event, as before: the
-  // orchestrator's generator finishes its own work only when it is drained.
-  for await (const event of base) {
-    if (passesBeforeVerdict(event)) {
-      yield event;
-    } else if (event.type === 'error') {
-      failed = true;
-      yield event;
-    } else if (!failed) {
-      if (event.type === 'done') terminal = event;
-      held.push(event);
-    }
-  }
-  if (failed || terminal === undefined) return;
+  const first = yield* holdTurn(base, false);
+  if (first.failed || first.terminal === undefined) return;
+  let held = first.held;
+  let terminal = first.terminal;
+  let fromRetry = false;
   if (isDeliberateSilence(terminal.answer)) {
     // Silence carries nothing: not the text or tool traffic that led to it.
-    yield await finishDone(terminal);
+    yield (await finishDone(terminal, fromRetry)).done;
     return;
   }
   if (releasesWithoutVerification(terminal)) {
-    yield* releasedTurn(held, terminal, await finishDone(terminal));
+    yield* releasedTurn(held, terminal, await finishDone(terminal, fromRetry));
     return;
   }
-  const { summary, releases } = await verify(terminal);
+  let outcome: EnforcedVerdict = await verify(terminal);
+  if (outcome.retry) {
+    const second = yield* holdTurn(outcome.retry.stream, true);
+    const answer = judgeableAnswer(second);
+    const judged = await outcome.retry.judge(answer);
+    outcome = judged;
+    if (judged.useRetry && answer !== undefined) {
+      held = second.held;
+      terminal = answer;
+      fromRetry = true;
+    }
+  }
+  const { summary, releases } = outcome;
   if (releases) {
-    yield* releasedTurn(held, terminal, await finishDone({ ...terminal, verifier: summary }));
+    yield* releasedTurn(held, terminal, await finishDone({ ...terminal, verifier: summary }, fromRetry));
   } else {
-    const withheld = withheldDone(await finishDone(terminal), summary, operatorLocale);
+    const finished = await finishDone(terminal, fromRetry);
+    const withheld = withheldDone(finished.done, summary, operatorLocale);
     yield { type: 'text_delta', text: withheld.notice };
     yield withheld.done;
   }

@@ -21,6 +21,10 @@ export interface AskObserver {
     postcondition?: {
       issues: readonly string[];
     };
+    /** The call did not run in this pass: a verifier re-entry handed back
+     *  the first run's result (`toolReplayLedger.ts`). RunTraceCollector
+     *  copies it onto the RunToolCall. */
+    replayed?: boolean;
   }): void;
   onIterationPhase?(ev: {
     iteration: number;

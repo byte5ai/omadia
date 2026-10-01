@@ -219,6 +219,10 @@ export interface RunToolCall {
   postcondition?: {
     issues: readonly string[];
   };
+  /** The call did not run in this pass: a verifier re-entry (resample or
+   *  correction retry) handed back the first run's result. Structural copy
+   *  of KG-side `RunToolCall.replayed`. Absent on every call that ran. */
+  replayed?: boolean;
 }
 
 /** Per-sub-agent invocation entry in a run trace. */
@@ -235,6 +239,9 @@ export interface RunAgentInvocation {
   subIterations: number;
   status: RunStatus;
   toolCalls: RunToolCall[];
+  /** The sub-agent did not run in this pass: a verifier re-entry handed back
+   *  the first run's answer and inner calls (see `RunToolCall.replayed`). */
+  replayed?: boolean;
 }
 
 /**
@@ -386,7 +393,9 @@ export interface ChatTurnInput {
    * Free-form addendum injected into the system prompt for this turn only.
    * Currently used by the answer-verifier's retry path to hand back a
    * correction hint after contradictions were detected. Callers that don't
-   * need it simply omit.
+   * need it simply omit. It is wire content like `userMessage`: the
+   * orchestrator masks it through the turn's prompt map before the model
+   * sees it, and a turn whose hint cannot be masked fails closed.
    */
   extraSystemHint?: string;
   /**

@@ -1732,6 +1732,10 @@ export interface RunToolCall {
   postcondition?: {
     issues: readonly string[];
   };
+  /** The call did not run in this pass: a verifier re-entry (borderline
+   * resample, correction retry) handed back the first run's result instead
+   * of executing the tool again. Absent on every call that ran. */
+  replayed?: boolean;
 }
 
 export interface RunAgentInvocation {
@@ -1747,6 +1751,9 @@ export interface RunAgentInvocation {
   subIterations: number;
   status: RunStatus;
   toolCalls: RunToolCall[];
+  /** The sub-agent did not run in this pass: a verifier re-entry handed back
+   *  the first run's answer and inner calls (see `RunToolCall.replayed`). */
+  replayed?: boolean;
 }
 
 /**

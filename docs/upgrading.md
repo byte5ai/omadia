@@ -766,6 +766,75 @@ What that means for an instance installed before v0.115:
 Fresh installs via `render.yaml` or `fly/deploy.sh` generate the key
 themselves; only pre-v0.115 instances have to add it by hand.
 
+## Answer verifier: a re-entry never runs a tool twice (releases after 2026-10-01)
+
+No migration. One new, optional setting. It matters only if the verifier runs
+in `enforce` mode; `shadow` and a disabled verifier behave as before.
+
+- **Resample and correction retry re-generate the answer only.** A borderline
+  resample and a correction retry used to run the whole turn again, tools
+  included, so a write could run two or three times for one message. They now
+  replay the first run's tool results instead. When the re-sampled model
+  wants a call the first run did not make, it runs only if it is one of the
+  kernel's own reads; any other call — every plugin, MCP, specialist-agent and
+  sub-agent tool — ends the re-entry: a resample keeps the first answer, a
+  retry withholds it with the `failed` badge. Expect fewer `corrected` badges
+  on turns that wrote something, and the log lines
+  `[verifier/service] retry abandoned run=…` / `resample abandoned run=…`
+  naming the tool.
+- **The stream retries a contradiction too.** Every stream consumer —
+  `/api/chat/stream`, the public API-key stream, a channel that streams its
+  turns — now gets one correction retry on a contradiction (canvas turns do
+  not); `chat()` callers had it already. Nothing reaches the client before the
+  final verdict, as before; a client sees a second `iteration_start` while the
+  retry runs, and a contradicted turn takes up to twice as long before its
+  answer or the notice arrives. `VERIFIER_MAX_RETRIES=0` (or the
+  `verifier_max_retries` field) switches the retry off on both paths.
+- **Switching the resample off.** The new setup field
+  `verifier_resample_on_borderline` of `@omadia/verifier` turns the borderline
+  resample off with `false` (default `true`). `VERIFIER_RESAMPLE_ON_BORDERLINE`
+  seeds it, like every `VERIFIER_*` variable, only when the plugin is
+  installed for the first time; on an existing install set the field in the
+  plugin's settings.
+- **One record per message — the delivered answer.** A re-entry no longer
+  writes its own session-log row, fact extraction, turn-hook events or
+  `turn_receipts` row. When a message can be re-entered, its session-log row
+  (with the knowledge-graph turn, fact extraction, an auto-promoted memory
+  and `onAfterTurn`) is written once, right after the verdict, for the answer
+  that goes out — a delivered retry's or resample's, not the first run's — or
+  for the answer the final verdict withheld; the stream's `done.turnId` names
+  that row, so "save as memory" saves the delivered answer. It still lands
+  before the answer goes out. A message has one receipt row, written once
+  after the last pass, whose receipt covers every pass; the delivered answer
+  carries that receipt and the stream's `done.receiptId` names the row.
+- **An upload is imported once per message.** A CSV or XLSX attached to a
+  message that the verifier re-enters used to become a new dataset on every
+  pass (two or three per file). The re-entry now reuses the first run's
+  import and its dataset id. Datasets an earlier release created twice for
+  one message stay; their owner can delete the extra copies through
+  `DELETE /api/v1/datasets/:id`.
+- **The correction hint is masked and names the claims only.** With
+  `mask_user_prompt` on, the retry's correction hint is masked like the
+  user's message (its masked spans show on the turn's privacy receipt), and
+  a retry whose hint cannot be masked is abandoned — the first answer is
+  withheld with the `failed` badge and the log says why. The hint no longer
+  passes the value the verifier measured, or any other evidence it fetched,
+  to the model: the retry corrects from the turn's own tool results or says
+  that a claim could not be confirmed, so a retry that used to copy the
+  verified figure may now be withheld instead.
+- **Long-running tasks are unaffected by a re-entry.** A task started with a
+  `<tool>_start` tool (for example a deferred sub-agent) keeps running its
+  own tool calls while the verifier re-enters the message; it no longer ends
+  as `failed` or abandons the retry because of it.
+- **A failed write is not repeated.** Independent of the verifier, the
+  orchestrator's own tool loops and a subscription-CLI sub-agent no longer
+  repeat a write call (same tool, same input) that ended in an exception
+  within the same message; the model gets a notice that the outcome is
+  unknown. Sub-agents already behaved this way.
+- **API clients and plugins** reading run traces see `replayed: true` on
+  `RunToolCall` / `RunAgentInvocation` entries a re-entry handed back
+  (`@omadia/plugin-api` 1.21.0, additive).
+
 ## Answer verifier: `enforce` withholds what it could not confirm (releases after 2026-10-01)
 
 No configuration step: no new environment variable, no migration. It matters
@@ -805,8 +874,9 @@ fields of `@omadia/verifier`); `shadow` behaves exactly as before.
   clients a read timeout that covers a full turn plus verification.
 - **Teams and Telegram** now show the notice instead of an answer that is
   still contradicted after the correction retry (previously delivered with a
-  "contradiction found" badge). The retry itself is unchanged and runs only on
-  this non-streaming path; `VERIFIER_MAX_RETRIES` keeps its default of 1. An
+  "contradiction found" badge). The retry itself is unchanged on this
+  non-streaming path (the stream runs it too since the section above);
+  `VERIFIER_MAX_RETRIES` keeps its default of 1. An
   answer that ends with `NO_REPLY` after other text is checked like any
   answer; when the verifier withholds it, the channel posts the notice
   instead of staying silent.

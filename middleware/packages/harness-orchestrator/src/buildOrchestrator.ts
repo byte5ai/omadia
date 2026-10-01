@@ -962,6 +962,11 @@ export function buildOrchestratorForAgent(
       enabled: true,
       mode: deps.verifierBundle.mode,
       maxRetries: deps.verifierBundle.maxRetries,
+      // The operator's switch for the borderline resample
+      // (`verifier_resample_on_borderline`); absent → the service default (on).
+      ...(deps.verifierBundle.resampleOnBorderline !== undefined
+        ? { resampleOnBorderline: deps.verifierBundle.resampleOnBorderline }
+        : {}),
       ...(deps.turnHookRegistry
         ? { turnHookRegistry: deps.turnHookRegistry }
         : {}),

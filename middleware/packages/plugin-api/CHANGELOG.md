@@ -8,6 +8,20 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.21.0 — 2026-10-01
+
+Additive. A run trace can now say that a call did not run in its pass.
+
+### Added
+
+- **`RunToolCall.replayed?: boolean`** and **`RunAgentInvocation.replayed?: boolean`**:
+  set on the trace of an answer-verifier re-entry (a borderline resample or a
+  correction retry) for every call whose first-run result was handed back
+  instead of the tool running again. Absent on every call that ran. A
+  consumer that counts tool executions from a trace skips the flagged
+  entries; the session logger never writes a re-entry's trace, so the
+  Knowledge Graph does not see the flag today.
+
 ## 1.20.0 — 2026-10-01
 
 Additive. Two Privacy Shield seams gain optional contract members. The answer
