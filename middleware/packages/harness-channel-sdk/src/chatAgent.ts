@@ -313,9 +313,10 @@ export interface VerifierResultSummary {
   /**
    * Of `uncheckedCount`, entries that stand for a part of the answer the claim
    * extraction did not cover rather than for one claim: text beyond the
-   * extractor's window, or claims the model left out once its list reached
-   * the request limit. Any such entry means the answer was not checked in
-   * full. Optional for summaries built without it.
+   * extractor's window, claims the model left out once its list reached the
+   * request limit, or claims it returned that are not in the answer as
+   * written. Any such entry means the answer was not checked in full.
+   * Optional for summaries built without it.
    */
   uncoveredCount?: number;
   retryCount: number;

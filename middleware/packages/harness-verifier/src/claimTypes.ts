@@ -88,14 +88,23 @@ export interface SoftClaim extends Claim {
  *    sends to the model; claims in the rest were never looked for.
  *  - `claim_list_full`      — the model returned as many claims as it was
  *    asked for at most, so it may have left further claims out.
+ *  - `claims_not_in_answer` — the model returned a well-formed claim whose
+ *    text is not in the answer, even with case and whitespace set aside (a
+ *    paraphrase, or a subject stitched in from elsewhere in the sentence).
+ *    The verbatim guard keeps it from the checkers, so whatever part of the
+ *    answer it stood for was not checked.
  */
-export type ExtractionGap = 'answer_beyond_window' | 'claim_list_full';
+export type ExtractionGap =
+  | 'answer_beyond_window'
+  | 'claim_list_full'
+  | 'claims_not_in_answer';
 
 /**
  * What a claim extraction found and what it did not cover. `gaps` is empty
- * only when the model saw the whole answer and its claim list was not cut at
- * the request limit; otherwise the result is incomplete and the pipeline
- * keeps every gap in the verdict as not checked.
+ * only when the model saw the whole answer, its claim list was not cut at the
+ * request limit and every claim it returned quotes the answer; otherwise the
+ * result is incomplete and the pipeline keeps every gap in the verdict as not
+ * checked.
  */
 export interface ClaimExtraction {
   claims: Claim[];

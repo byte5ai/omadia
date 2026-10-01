@@ -2796,9 +2796,14 @@ Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
 - `status`: `approved` | `approved_with_disclaimer` | `blocked` — es wurden
   Claims geprüft; `skipped` — der Verifier lief, fand aber nichts Prüfbares;
   `unavailable` — der Verifier konnte nicht laufen (Extractor- oder
-  Pipeline-Fehler). `approved` heißt: die Extraktion hat die ganze Antwort
-  erfasst, und jeder extrahierte Claim ist geprüft und `verified`, mindestens
-  einer. Ein Claim, den kein Checker nimmt (Betrag, Datum, ID oder Summe mit
+  Pipeline-Fehler). `approved` heißt: die Extraktion meldet keine Lücke (das
+  Modell hat die ganze Antwort gesehen, seine Liste blieb unter dem
+  Anfrage-Limit, alle `record_claims`-Calls wurden gelesen und jeder
+  zurückgegebene Claim steht in der Antwort), und jeder extrahierte Claim ist
+  geprüft und `verified`, mindestens einer. Einen Claim, den das Modell unter
+  dem Limit gar nicht auflistet, sieht keine Prüfung — `approved` heißt also
+  „nichts bekannt Ungeprüftes“, nicht „die Antwort enthält sonst nichts“. Ein
+  Claim, den kein Checker nimmt (Betrag, Datum, ID oder Summe mit
   Quelle weder Odoo noch Graph) oder der über dem Claim-Limit pro Antwort
   liegt (`VERIFIER_MAX_CLAIMS`, greift in der Pipeline), bleibt als
   `unverified` mit `cause: 'not_checked'` im Verdict — eine nur teilweise
@@ -2806,15 +2811,25 @@ Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
   Ebenso, was die Extraktion nicht erfasst hat: Der `ClaimExtractor` liest
   die ersten 6000 Zeichen der Antwort (`EXTRACTION_WINDOW_CHARS`) und bittet
   das Modell um höchstens `VERIFIER_MAX_CLAIMS + 1` Claims; Text jenseits des
-  Fensters und eine bis zu diesem Limit gefüllte Liste (das Modell hat dann
-  womöglich Claims ausgelassen) meldet er in `ClaimExtraction.gaps`, und die
+  Fensters, eine bis zu diesem Limit gefüllte Liste (das Modell hat dann
+  womöglich Claims ausgelassen) und Claims, die nicht in der Antwort stehen
+  (`claims_not_in_answer`), meldet er in `ClaimExtraction.gaps`, und die
   Pipeline hält jede Lücke als `not_checked`-Eintrag (Claim-Typ
-  `coverage_gap`) im Verdict. Fand die Extraktion im gelesenen Teil nichts
-  Prüfbares, ist das Verdict `skipped` mit `incomplete_coverage`. Der
+  `coverage_gap`) im Verdict. Der Verbatim-Guard vergleicht ohne Rücksicht
+  auf Groß-/Kleinschreibung und lässt jede Whitespace-Folge auf jede andere
+  passen (ein Zeilenumbruch, den das Modell als Leerzeichen schreibt, zählt
+  als Zitat; der Claim trägt dann den Wortlaut der Antwort). Was dann noch
+  nicht passt — eine Umschreibung oder ein aus einem anderen Satzteil
+  hineingezogenes Subjekt — geht an keinen Checker, verschwindet aber nicht
+  mehr spurlos, sondern ist die Lücke `claims_not_in_answer`. Der Extractor
+  liest jeden `record_claims`-Call einer Modellantwort, nicht nur den ersten.
+  Fand die Extraktion im erfassten Teil nichts Prüfbares, ist das Verdict
+  `skipped` mit `incomplete_coverage`. Der
   `ClaimExtractor` wirft, wenn der LLM-Call scheitert, die Antwort am
   Token-Limit abgeschnitten ist (`finishReason: 'max_tokens'`), sie keinen
-  verwertbaren `record_claims`-Call trägt oder ein Eintrag das Schema
-  verletzt, statt eine leere oder halbe Claim-Liste zu liefern: das landet in
+  verwertbaren `record_claims`-Call trägt (keinen, oder einen ohne
+  `claims`-Array) oder ein Eintrag das Schema verletzt, statt eine leere oder
+  halbe Claim-Liste zu liefern: das landet in
   `unavailable` (`extractor_error`), nie in `skipped` (`no_claims`) oder
   `approved`.
 - `badge`: braucht einen Check, der einen Claim entschieden hat
@@ -3207,10 +3222,22 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
 - **Golden-Eval einmal beaufsichtigt laufen lassen.** `skipped.jsonl` (vorher
   `approve.jsonl`) erwartet jetzt `skipped`. Ein Sample, dessen Extraktion leer
   bleibt, landet nun in `skipped` statt still in `approved`; extrahiert das
-  Modell neben einem geprüften Claim einen, den kein Checker nimmt, landet ein
-  `approved`-Eintrag jetzt in `approved_with_disclaimer`; eine am Token-Limit
-  abgeschnittene oder schemawidrige Extraktion in `unavailable` — ein erster
-  roter Lauf von `npm run eval:golden` ist zu untersuchen, nicht wegzuwinken.
+  Modell neben einem geprüften Claim einen, den kein Checker nimmt, oder einen,
+  der nicht wörtlich in der Antwort steht (Umschreibung, hineingezogenes
+  Subjekt — `claims_not_in_answer`), landet ein `approved`-Eintrag jetzt in
+  `approved_with_disclaimer`; eine am Token-Limit abgeschnittene oder
+  schemawidrige Extraktion in `unavailable` — ein erster roter Lauf von
+  `npm run eval:golden` ist zu untersuchen, nicht wegzuwinken.
+- **Nicht gelistete Claims bleiben unsichtbar.** Der Verifier prüft, was das
+  Extraktionsmodell auflistet. Lässt es unter dem Anfrage-Limit einen Claim
+  weg, hinterlässt das keine Spur; `approved` heißt deshalb „keine bekannte
+  Lücke", nicht „die Antwort enthält sonst nichts" (so auch in
+  `docs/security-architecture.md` §7c). Denkbar: die starken Signale des
+  Trigger-Routers (Beträge, Daten, Referenzen) deterministisch gegen die
+  extrahierten Claims abgleichen und ein Signal ohne Claim als Lücke melden,
+  oder ein Pflichtfeld im `record_claims`-Schema, in dem das Modell
+  Vollständigkeit bestätigt. Heute beobachtet nur die Golden-Eval, ob das
+  Modell die entscheidenden Claims findet.
 - **Verifier-Aufzählung in der README-Feature-Tabelle.** Die Zeile
   „Answer verification" nennt nur `approved` / `approved_with_disclaimer` und
   „each answer"; beim nächsten Abgleich der README-Aussagen mit dem erzwungenen
@@ -3254,6 +3281,14 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   Fensterweise Extraktion (überlappende Fenster, Dubletten zusammenführen, ein
   LLM-Call je Fenster, bis die Claim-Liste voll ist) würde sie voll prüfbar
   machen; die Lücke bliebe nur für Text jenseits des letzten Fensters.
+- **Verbatim-Guard und Markdown.** Der Guard (`verbatimSpan.ts`) toleriert
+  Groß-/Kleinschreibung und Whitespace, aber keine Auszeichnung: zitiert das
+  Modell „Die Gutschrift beträgt 2.000,00 €" aus einer Antwort mit
+  `**2.000,00 €**`, ist das die Lücke `claims_not_in_answer` und die Antwort
+  höchstens `partial` — ehrlich, aber womöglich häufig. Im Shadow-Betrieb die
+  Logzeilen `[claim-extractor] … not_in_answer=` beobachten; ist Markdown die
+  Hauptursache, Emphasis-Zeichen (`*`, `_`, Backtick) zwischen den Wörtern
+  gezielt überspringen, statt den Guard allgemein zu lockern.
 - **Token-Budget der Extraktion an das Claim-Limit koppeln.** Der
   `record_claims`-Call hat `maxTokens: 1024`. Eine Liste nahe am Limit
   (`VERIFIER_MAX_CLAIMS + 1` Einträge) kann daran abreißen und endet dann als

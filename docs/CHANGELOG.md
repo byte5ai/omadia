@@ -46,8 +46,10 @@ mapping turned each of them into `verified`, and that is what the trailing
 `verifier` stream event told stream clients and what `verifier_verdicts`
 recorded. Connector badges were already held back by a claim-count check, which
 also kept the internal `corrected` badge of a retry whose own verification
-failed off Teams. Verdicts are now bound to evidence: `approved` requires
-the claim extraction to cover the whole answer and every extracted claim to be
+failed off Teams. Verdicts are now bound to evidence: `approved` requires a
+claim extraction without a coverage gap — the model read the whole answer, its
+list stayed below the request limit, every `record_claims` call was read and
+every claim it returned is in the answer — and every extracted claim to be
 checked and verified, at least one (its claim list is typed non-empty);
 nothing checkable is `skipped` (reason `no_trigger`, `no_claims`,
 `no_checkable_claims` or `incomplete_coverage`), and a verifier that could not
@@ -57,17 +59,28 @@ checker accepts (an amount, date, id or total whose source is neither Odoo nor
 the knowledge graph) and a claim beyond the per-answer cap were dropped without
 a trace, the extractor told the model to return no more claims than the cap
 (so a model that kept to it left the rest out before the pipeline saw them),
-and it read only the first 6000 characters of the answer; the rest verifying
-gave `approved` / `verified`. Such claims now stay in the verdict as unverified
-(`cause: 'not_checked'`), and the extraction reports what it did not cover: it
-asks the model for one claim more than `VERIFIER_MAX_CLAIMS`, treats a list
-that reaches that limit as possibly incomplete, and names answer text beyond
-its window. Each such gap becomes a `not_checked` coverage entry (claim type
-`coverage_gap`), so the answer is `approved_with_disclaimer` and badged
-`partial`, or `skipped` / `incomplete_coverage` when nothing in the part it
-read could be checked. `VERIFIER_MAX_CLAIMS` bounds how many claims are
-checked. The claim extractor used to turn its own failures (an LLM error, a
-response without a usable `record_claims` call) into an empty claim list, and
+it read only the first 6000 characters of the answer, its verbatim guard
+dropped a well-formed claim whose text is not in the answer as written (a line
+break the model wrote as a space, a subject stitched in from elsewhere in the
+sentence), and it read only the first `record_claims` call of a response; the
+rest verifying gave `approved` / `verified`. Such claims now stay in the
+verdict as unverified (`cause: 'not_checked'`), and the extraction reports
+what it did not cover: it asks the model for one claim more than
+`VERIFIER_MAX_CLAIMS`, treats a list that reaches that limit as possibly
+incomplete, names answer text beyond its window, and reports claims that are
+not in the answer (`claims_not_in_answer`). Each such gap becomes a
+`not_checked` coverage entry (claim type `coverage_gap`), so the answer is
+`approved_with_disclaimer` and badged `partial`, or `skipped` /
+`incomplete_coverage` when nothing in the part it covered could be checked.
+The verbatim guard now lets any run of whitespace match any other, so a claim
+the model re-wrapped is checked instead of dropped, and the extractor reads
+every `record_claims` call of a response. The verifier still sees only the
+claims its extraction model lists: a claim the model leaves out of a list
+below the limit leaves no trace, so `verified` means every claim found was
+confirmed and the extraction is not known to be incomplete.
+`VERIFIER_MAX_CLAIMS` bounds how many claims are checked. The claim extractor
+used to turn its own failures (an LLM error, a response without a usable
+`record_claims` call) into an empty claim list, and
 it accepted a response cut off at the token limit and dropped malformed
 entries, so an extractor outage or a partial extraction could still read as
 `skipped` / `no_claims` or even `approved`; it now rejects in each case, and
@@ -111,7 +124,9 @@ plugin repositories need no release. Code that switches on `@omadia/verifier`'s
 statuses — deliberately. `ClaimExtractor.extract` now resolves
 `{ claims, gaps }` (`ClaimExtraction`) instead of a claim list, and no longer
 cuts its result at `maxClaims`; the pipeline applies the cap and turns the gaps
-into coverage entries. The web chat previously dropped the `verifier` event and
+into coverage entries. A claim's `text` is now the span of the answer it
+quotes, which can differ from the model's text in case and whitespace. The web
+chat previously dropped the `verifier` event and
 had no answer-verifier badge at all; it now shows a footer chip that is green
 only for a verified answer whose every claim was confirmed, blue for a
 corrected answer under the same condition, neutral for "not verified" and

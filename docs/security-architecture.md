@@ -712,21 +712,25 @@ nothing: the answer carries no trigger signal, the extractor fails, the
 extractor returns no claims, no extracted claim fits a checker, or the
 pipeline itself throws. None of them is a pass.
 
-**Invariant.** `approved` ⇒ the claim extraction covered the whole answer,
-and every extracted claim was checked and is `verified`, at least one. The
-`approved` variant's claim list is typed non-empty (`NonEmptyClaimVerdicts`),
-the pipeline's aggregate returns `skipped` for an empty list, and whatever the
-pipeline did not check stays in the verdict as `unverified`
-(`cause: 'not_checked'`) instead of being dropped: a claim no checker takes, a
-claim over the cap, and a `coverage_gap` entry for each part of the answer the
-extraction did not cover. A badge other than `unverified` / `unavailable`
-needs a check that settled a claim (`hasVerificationEvidence`): a confirmed
-claim for `verified` / `partial` / `corrected`, a contradicted one for
-`failed`; `verified` and `corrected` need every claim confirmed.
+**Invariant.** `approved` ⇒ the claim extraction reported no coverage gap,
+and every extracted claim was checked and is `verified`, at least one. No
+coverage gap means: the extraction model read the whole answer, its claim
+list stayed below the request limit, every `record_claims` call in its
+response was read, and every claim it returned quotes the answer (case and
+whitespace aside). The `approved` variant's claim list is typed non-empty
+(`NonEmptyClaimVerdicts`), the pipeline's aggregate returns `skipped` for an
+empty list, and whatever the pipeline did not check stays in the verdict as
+`unverified` (`cause: 'not_checked'`) instead of being dropped: a claim no
+checker takes, a claim over the cap, and a `coverage_gap` entry for each part
+of the answer the extraction did not cover. A badge other than `unverified` /
+`unavailable` needs a check that settled a claim (`hasVerificationEvidence`):
+a confirmed claim for `verified` / `partial` / `corrected`, a contradicted one
+for `failed`; `verified` and `corrected` need every claim confirmed. What the
+invariant cannot cover — a claim the model never lists — is stated below.
 
 | Verdict status | Meaning | Summary badge | Connector badge | Web chat chip |
 |---|---|---|---|---|
-| `approved` | whole answer covered, every claim checked and verified | `verified` | verified | green |
+| `approved` | no coverage gap, every claim checked and verified | `verified` | verified | green |
 | `approved_with_disclaimer`, ≥ 1 claim verified | none contradicted, ≥ 1 unconfirmed, not checked, or part of the answer not covered | `partial` | partial | amber |
 | `approved_with_disclaimer`, no claim verified | none contradicted, nothing confirmed | `unverified`; `unavailable` when every check that ran failed | none | neutral |
 | `blocked` | ≥ 1 claim contradicted | `failed` | failed | red |
@@ -739,29 +743,53 @@ claim for `verified` / `partial` / `corrected`, a contradicted one for
   rejects when the LLM call fails, the response was cut off at the token
   limit (`finishReason: 'max_tokens'` — the claims array may parse but is not
   the whole answer), the response carries no usable `record_claims` call
-  (none, or one without a `claims` array), or an entry breaks the
+  (none, or any one of them without a `claims` array), or an entry breaks the
   `record_claims` schema (no text, unknown type or source); the pipeline maps
   the rejection to `unavailable` / `extractor_error`. It resolves no claims
-  only when the model reported none, or none survived the verbatim guard,
-  which is `skipped` / `no_claims` (or `incomplete_coverage`, below). No
-  extraction failure comes back as an empty or partial result, so an outage
-  never reads as a clean run.
-- **Coverage is explicit.** An extraction that by design reads only part of
-  the answer says so. The extractor sends the model the first 6000 characters
-  of the answer (`EXTRACTION_WINDOW_CHARS`) and asks for at most
+  and no gap only when the model reported none, which is `skipped` /
+  `no_claims`; when none of the claims it returned is in the answer, the
+  result carries a coverage gap, and without any other finding the verdict
+  is `skipped` / `incomplete_coverage` (below). No extraction failure comes
+  back as an empty or partial result, so an outage never reads as a clean
+  run.
+- **Coverage is explicit.** An extraction that covers only part of the
+  answer says so. The extractor sends the model the first 6000 characters of
+  the answer (`EXTRACTION_WINDOW_CHARS`) and asks for at most
   `VERIFIER_MAX_CLAIMS + 1` claims; its result names what it did not cover
-  (`ClaimExtraction.gaps`): `answer_beyond_window` for a longer answer, and
+  (`ClaimExtraction.gaps`): `answer_beyond_window` for a longer answer;
   `claim_list_full` when the model's list reached that limit — a model that
   keeps to the limit may have left claims out, so a full list never passes
   for a complete one, while an answer with exactly `VERIFIER_MAX_CLAIMS`
-  claims still gets its whole list. The pipeline adds one `not_checked`
-  verdict over a synthetic `coverage_gap` claim per gap, so a long answer, or
-  one with more claims than the cap, is `approved_with_disclaimer` /
-  `partial` at best. When nothing in the covered part could be checked, the
-  verdict is `skipped` with reason `incomplete_coverage` rather than
-  `no_claims`, which would say more than was looked at. The summary counts
-  the entries as `uncoveredCount`, and the web chat's tooltip says the
-  verifier did not check all of the answer.
+  claims still gets its whole list; and `claims_not_in_answer` when the model
+  returned a well-formed claim that is not in the answer. The pipeline adds
+  one `not_checked` verdict over a synthetic `coverage_gap` claim per gap, so
+  such an answer is `approved_with_disclaimer` / `partial` at best. When
+  nothing in the covered part could be checked, the verdict is `skipped` with
+  reason `incomplete_coverage` rather than `no_claims`, which would say more
+  than was looked at. The summary counts the entries as `uncoveredCount`, and
+  the web chat's tooltip says the verifier did not check all of the answer.
+- **The verbatim guard reports what it keeps out.** A claim must quote the
+  answer: the guard compares case-insensitively and lets any run of whitespace
+  match any other (a line break the model writes as a space, a non-breaking
+  space written as a plain one), and the claim then carries the answer's own
+  span. A claim that quotes nothing — a paraphrase, or a subject stitched in
+  from elsewhere in the sentence — never reaches a checker, since a check on
+  text the answer does not hold proves nothing about the answer. Dropping it
+  silently would let the rest verifying make the answer `approved`, so the
+  part of the answer it stood for is reported as the `claims_not_in_answer`
+  gap. Likewise every `record_claims` call in the response is read: a model
+  that splits its list over several calls gets every part checked, where
+  reading only the first call would leave the rest unchecked without a
+  trace.
+- **What no check can see.** The verifier checks the claims its extraction
+  model lists. A claim the model leaves out of a list that stays below the
+  request limit leaves no trace in the response, so `approved` / `verified`
+  says that every claim the extraction found was confirmed and nothing marks
+  the extraction as incomplete — not that the answer holds no further claim.
+  How reliably the model lists every claim is a property of the model and
+  its prompt (which asks for every claim, in order); the golden-set eval
+  (`middleware/test/golden/`) runs the real extractor over known answers and
+  fails when the pinned model stops finding a claim that decides the verdict.
 - **A claim nobody checked still counts.** A claim no checker accepts (an
   amount, id, date or aggregate whose source is neither Odoo nor the graph)
   and a claim beyond the per-answer cap (`VERIFIER_MAX_CLAIMS`, applied by
@@ -816,6 +844,10 @@ response, and answers checked only in part),
 `middleware/test/verifierExtractionCoverage.test.ts` (the production
 extractor and pipeline over a model that keeps to the claim limit: an answer
 longer than the window, and one with more claims than the cap),
+`middleware/test/verifierExtractionVerbatim.test.ts` (claims whose text
+differs from the answer — whitespace drift, a stitched subject — and a list
+split over several `record_claims` calls, through the extractor, pipeline,
+badge and service),
 `middleware/test/verifierClaimExtractorFailure.test.ts`,
 `middleware/test/verifierServiceStates.test.ts`,
 `middleware/test/verifierServiceResample.test.ts`,
@@ -1547,7 +1579,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       window, a limit on how many claims a model may list) reports what it
       left out, and the pipeline keeps it in the verdict as `not_checked`. A
       prompt never tells a model to stop at a limit unless a list that
-      reaches the limit is recorded as possibly incomplete (§7c).
+      reaches the limit is recorded as possibly incomplete. A guard that
+      keeps model output from the checkers (the verbatim guard) reports what
+      it kept out as a gap instead of dropping it, and a model response is
+      read in full — every tool call, not the first one (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it

@@ -1663,7 +1663,7 @@
         "noTrigger": "Not checked: the answer contains no figures, dates or references the verifier checks.",
         "noClaims": "Not checked: the verifier found no factual claims in this answer.",
         "noCheckableClaims": "Not checked: none of the claims in this answer can be checked against a source.",
-        "incompleteCoverage": "Not checked: the verifier read only part of this answer and found nothing it could check there.",
+        "incompleteCoverage": "Not checked: the verifier covered only part of this answer and found nothing it could check there.",
         "unavailable": "The verifier could not run for this answer, so nothing was checked.",
         "checkFailed": "The verifier's checks failed for this answer, so no claim was confirmed."
       }

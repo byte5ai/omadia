@@ -7,7 +7,9 @@
  * outage, a response cut off at the token limit or a malformed one is not a
  * clean zero-claim run. The pipeline side of this contract is pinned in
  * `verifierPipelineStates.test.ts`; what an extraction reports as not covered
- * (its `gaps`) in `verifierExtractionCoverage.test.ts`.
+ * (its `gaps`) in `verifierExtractionCoverage.test.ts` and, for claims that
+ * are not in the answer and lists split over several calls,
+ * `verifierExtractionVerbatim.test.ts`.
  */
 
 import { describe, it } from 'node:test';
@@ -102,15 +104,21 @@ describe('verifier/claimExtractor - failed extraction vs. empty result', () => {
     assert.deepEqual(await extractor.extract(INPUT), NOTHING);
   });
 
-  it('resolves no claims when every returned claim fails the verbatim guard', async () => {
-    const { extractor } = extractorOver(() =>
+  it('resolves no claims but a gap when every returned claim fails the verbatim guard', async () => {
+    // The guard keeps a claim the answer does not hold from the checkers, but
+    // the model listed something: the result is not "the answer holds no claim".
+    const { extractor, logs } = extractorOver(() =>
       Promise.resolve(
         recordClaimsCall({
           claims: [{ text: '9.999,00 €', type: 'amount', expected_source: 'odoo' }],
         }),
       ),
     );
-    assert.deepEqual(await extractor.extract(INPUT), NOTHING);
+    assert.deepEqual(await extractor.extract(INPUT), {
+      claims: [],
+      gaps: ['claims_not_in_answer'],
+    });
+    assert.ok(logs.some((l) => l.includes('not_in_answer=1')), JSON.stringify(logs));
   });
 
   it('resolves no claims for an empty answer without calling the model', async () => {
@@ -178,7 +186,7 @@ describe('verifier/claimExtractor - failed extraction vs. empty result', () => {
 
   it('a list cut at the request limit is a gap even when the verbatim guard drops entries', async () => {
     // The model stopped listing at the limit either way; what the guard drops
-    // afterwards does not make the list complete.
+    // afterwards does not make the list complete — and is a gap of its own.
     const { extractor } = extractorOver(
       () =>
         Promise.resolve(
@@ -189,7 +197,7 @@ describe('verifier/claimExtractor - failed extraction vs. empty result', () => {
       { maxClaims: 1 },
     );
     const { claims, gaps } = await extractor.extract(INPUT);
-    assert.equal(claims.length, 1, 'the claim that is not in the answer is dropped');
-    assert.deepEqual(gaps, ['claim_list_full']);
+    assert.equal(claims.length, 1, 'the claim that is not in the answer never reaches a checker');
+    assert.deepEqual(gaps, ['claim_list_full', 'claims_not_in_answer']);
   });
 });

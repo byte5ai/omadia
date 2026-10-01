@@ -20,6 +20,8 @@ const GAP_REASONS: Readonly<Record<ExtractionGap, string>> = {
   answer_beyond_window: 'answer text beyond the extraction window was not checked',
   claim_list_full:
     'the extraction listed as many claims as it asks for, so claims it left out were not checked',
+  claims_not_in_answer:
+    'the extraction returned claims that are not in the answer as written, so the part of the answer they stood for was not checked',
 };
 
 /** One `not_checked` coverage verdict per gap, in the order reported. */
@@ -43,8 +45,8 @@ export function coverageVerdicts(gaps: readonly ExtractionGap[]): ClaimVerdict[]
 
 /**
  * The skip reason when nothing was checked. With a coverage gap the
- * extraction only looked at part of the answer, so "no claims" / "no
- * checkable claims" would say more than was looked at.
+ * extraction did not cover the whole answer, so "no claims" / "no checkable
+ * claims" would say more than was looked at.
  */
 export function skipReason(
   whenCovered: VerifierSkipReason,

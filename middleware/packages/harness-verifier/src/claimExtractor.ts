@@ -10,6 +10,7 @@ import type {
   ExtractionGap,
   OdooRecordRef,
 } from './claimTypes.js';
+import { verbatimSpans } from './verbatimSpan.js';
 
 /**
  * Extracts structured factual claims from an orchestrator answer via a
@@ -17,27 +18,34 @@ import type {
  * the model is forced into a JSON-shaped response and cannot ramble.
  *
  * Design choices:
- *  - One call per answer. The extractor is NOT recursive.
+ *  - One LLM call per answer. The extractor is NOT recursive. The claims of
+ *    every `record_claims` call in the response are read, in order: a model
+ *    that splits its list over several calls gets every part checked.
  *  - The model MUST only return claims whose text appears verbatim in the
- *    answer; we police this client-side by rejecting any claim whose
- *    `text` is not a substring. This is our primary anti-hallucination
- *    guard on the extractor itself (ironic but necessary).
+ *    answer; we police this client-side (`verbatimSpans`): a claim must quote
+ *    the answer, case and whitespace set aside, and carries the quoted span
+ *    of the answer as its text. This is our primary anti-hallucination guard
+ *    on the extractor itself (ironic but necessary). A claim that quotes
+ *    nothing never reaches a checker, but it is not dropped without a trace
+ *    either: the part of the answer it stood for was not checked, which the
+ *    result reports as the `claims_not_in_answer` gap.
  *  - A failed extraction is not an empty one. When the LLM call fails, the
  *    response was cut off at the token limit, it carries no usable
- *    `record_claims` call, or an entry breaks the `record_claims` schema,
- *    `extract` logs and rejects, and the pipeline reports the verifier as
- *    `unavailable`. An empty list means the model found no claim (or none
- *    survived the verbatim guard), which the pipeline reports as `skipped`.
- *    Returning [] — or the readable part of a broken response — on a
- *    failure would make an outage look like a clean, complete run.
+ *    `record_claims` call (none, or one of them without a `claims` array), or
+ *    an entry breaks the `record_claims` schema, `extract` logs and rejects,
+ *    and the pipeline reports the verifier as `unavailable`. An empty list
+ *    without gaps means the model found no claim, which the pipeline reports
+ *    as `skipped`. Returning [] — or the readable part of a broken response
+ *    — on a failure would make an outage look like a clean, complete run.
  *  - Coverage is explicit. The model sees the first
  *    `EXTRACTION_WINDOW_CHARS` characters of the answer and is asked for at
  *    most `maxClaims + 1` claims. The result names what the extraction did
- *    not cover (`ClaimExtraction.gaps`): text beyond the window, and a list
- *    that reached the request limit, since the model may have left claims
- *    out. The pipeline keeps each gap in the verdict as not checked, so an
- *    answer read only in part is at most partly verified. No valid claim is
- *    cut here; the pipeline decides how many it checks.
+ *    not cover (`ClaimExtraction.gaps`): text beyond the window, a list that
+ *    reached the request limit, since the model may have left claims out,
+ *    and claims that are not in the answer. The pipeline keeps each gap in
+ *    the verdict as not checked, so an answer covered only in part is at
+ *    most partly verified. No valid claim is cut here; the pipeline decides
+ *    how many it checks.
  */
 
 /** Characters of the answer the extractor sends to the model. Claims in the
@@ -206,9 +214,11 @@ export class ClaimExtractor {
    * is nothing to extract: an empty answer, or a model that reports no claim
    * (with the gaps that still apply). Rejects when extraction could not run
    * or did not finish: the LLM call failed, the response was cut off at the
-   * token limit, it carries no usable `record_claims` call, or an entry
-   * breaks the `record_claims` schema. A well-formed claim whose text is not
-   * in the answer is dropped (the anti-hallucination guard), not an error.
+   * token limit, it carries no `record_claims` call or one of them has no
+   * `claims` array, or an entry breaks the `record_claims` schema. A
+   * well-formed claim whose text is not in the answer is kept from the
+   * checkers (the anti-hallucination guard) and reported as the
+   * `claims_not_in_answer` gap, not as an error.
    */
   async extract(input: ExtractInput): Promise<ClaimExtraction> {
     const answer = input.answer.trim();
@@ -261,12 +271,15 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
     }
     const rawClaims = read.claims;
 
+    const spanOf = verbatimSpans(answer);
     const out: Claim[] = [];
     let malformed = 0;
+    let notInAnswer = 0;
     for (const raw of rawClaims) {
-      const claim = normaliseClaim(raw, out.length, answer);
+      const claim = normaliseClaim(raw, out.length, answer, spanOf);
       if (claim === 'malformed') malformed += 1;
-      else if (claim !== 'not_verbatim') out.push(claim);
+      else if (claim === 'not_verbatim') notInAnswer += 1;
+      else out.push(claim);
     }
     if (malformed > 0) {
       // A broken entry is a claim we cannot read, not one the answer lacks:
@@ -276,9 +289,16 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
       this.opts.log(`[claim-extractor] ${problem}`);
       throw new Error(`claim extraction failed: ${problem}`);
     }
-    const gaps = coverageGaps(answer.length, rawClaims.length, requestLimit);
+    const gaps = coverageGaps({
+      answerLength: answer.length,
+      rawClaimCount: rawClaims.length,
+      requestLimit,
+      notInAnswer,
+    });
     this.opts.log(
       `[claim-extractor] extracted=${String(out.length)} raw=${String(rawClaims.length)}${
+        read.calls > 1 ? ` calls=${String(read.calls)}` : ''
+      }${notInAnswer > 0 ? ` not_in_answer=${String(notInAnswer)}` : ''}${
         gaps.length > 0 ? ` gaps=${gaps.join(',')}` : ''
       }`,
     );
@@ -299,17 +319,20 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
 
 /**
  * What an extraction did not cover: answer text beyond the window the model
- * saw, and a raw list that reached the request limit — counted before the
- * verbatim guard, since the model stopped listing either way.
+ * saw; a raw list that reached the request limit — counted before the
+ * verbatim guard, since the model stopped listing either way; and claims the
+ * guard kept from the checkers because the answer does not hold them.
  */
-function coverageGaps(
-  answerLength: number,
-  rawClaimCount: number,
-  requestLimit: number,
-): ExtractionGap[] {
+function coverageGaps(extraction: {
+  answerLength: number;
+  rawClaimCount: number;
+  requestLimit: number;
+  notInAnswer: number;
+}): ExtractionGap[] {
   const gaps: ExtractionGap[] = [];
-  if (answerLength > EXTRACTION_WINDOW_CHARS) gaps.push('answer_beyond_window');
-  if (rawClaimCount >= requestLimit) gaps.push('claim_list_full');
+  if (extraction.answerLength > EXTRACTION_WINDOW_CHARS) gaps.push('answer_beyond_window');
+  if (extraction.rawClaimCount >= extraction.requestLimit) gaps.push('claim_list_full');
+  if (extraction.notInAnswer > 0) gaps.push('claims_not_in_answer');
   return gaps;
 }
 
@@ -323,30 +346,31 @@ function tail(value: string, max: number): string {
 }
 
 /**
- * The claims of the forced `record_claims` call, or why the response has none
- * to read: it was cut off at the token limit, it holds no such call, or the
- * call has no `claims` array. Each is a failed extraction, which is not the
- * same as a call that lists no claims.
+ * The claims of every `record_claims` call in the response, in order, or why
+ * the response has none to read: it was cut off at the token limit, it holds
+ * no such call, or one of them has no `claims` array. Each is a failed
+ * extraction, which is not the same as a call that lists no claims. A model
+ * may split its list over several calls; reading only the first would drop
+ * the rest without a trace.
  */
 function readToolClaims(
   response: LlmResponse,
-): { ok: true; claims: unknown[] } | { ok: false; problem: string } {
+): { ok: true; claims: unknown[]; calls: number } | { ok: false; problem: string } {
   // A call cut off at the token limit can still parse into a claims array —
   // just not the whole one: the rest of the answer was never extracted.
   if (response.finishReason === 'max_tokens') {
     return { ok: false, problem: 'response truncated at the token limit' };
   }
   // Defensive: the contract guarantees `content` is an array.
-  if (Array.isArray(response.content)) {
-    for (const call of toolCalls(response.content)) {
-      if (call.name !== TOOL_NAME) continue;
-      const input = call.input as { claims?: unknown } | null | undefined;
-      return input && Array.isArray(input.claims)
-        ? { ok: true, claims: input.claims }
-        : { ok: false, problem: `${TOOL_NAME} call without a claims array` };
-    }
+  const lists = (Array.isArray(response.content) ? toolCalls(response.content) : [])
+    .filter((call) => call.name === TOOL_NAME)
+    .map((call) => (call.input as { claims?: unknown } | null | undefined)?.claims);
+  if (lists.length === 0) return { ok: false, problem: 'no tool_use block in response' };
+  // One unreadable call makes the whole list partial, like a broken entry.
+  if (!lists.every((claims): claims is unknown[] => Array.isArray(claims))) {
+    return { ok: false, problem: `${TOOL_NAME} call without a claims array` };
   }
-  return { ok: false, problem: 'no tool_use block in response' };
+  return { ok: true, claims: lists.flat(), calls: lists.length };
 }
 
 /**
@@ -354,25 +378,28 @@ function readToolClaims(
  * required fields — a non-empty `text`, a known `type`, a known
  * `expected_source` — is `'malformed'`: a failed extraction, never a claim to
  * drop quietly. A well-formed entry whose text is not in the answer is
- * `'not_verbatim'`: the anti-hallucination guard drops it. Optional fields
- * that do not parse are left out of the claim.
+ * `'not_verbatim'`: the anti-hallucination guard keeps it from the checkers,
+ * and the caller reports it as a coverage gap. Optional fields that do not
+ * parse are left out of the claim.
  */
 function normaliseClaim(
   raw: unknown,
   idx: number,
   answer: string,
+  spanOf: (claimText: string) => string | undefined,
 ): Claim | 'malformed' | 'not_verbatim' {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'malformed';
   const r = raw as RawClaim;
 
-  const text = asShortString(r.text, 300);
+  const quoted = asShortString(r.text, 300);
   const type = asEnum<ClaimType>(r.type, CLAIM_TYPES);
   const expectedSource = asEnum<ClaimSource>(r.expected_source, CLAIM_SOURCES);
-  if (!text || !type || !expectedSource) return 'malformed';
+  if (!quoted || !type || !expectedSource) return 'malformed';
 
-  // Anti-hallucination: reject claims that don't literally appear in the
-  // answer. Case-insensitive to tolerate title-casing drift.
-  if (!answer.toLowerCase().includes(text.toLowerCase())) return 'not_verbatim';
+  // Anti-hallucination: a claim must quote the answer. Case and whitespace
+  // drift are tolerated; the claim then carries the span of the answer.
+  const text = spanOf(quoted);
+  if (text === undefined) return 'not_verbatim';
 
   const claim: Claim = {
     id: `c_${String(idx + 1).padStart(3, '0')}`,

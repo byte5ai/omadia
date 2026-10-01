@@ -1663,7 +1663,7 @@
         "noTrigger": "Nicht geprüft: Die Antwort enthält keine Beträge, Daten oder Referenzen, die der Verifier prüft.",
         "noClaims": "Nicht geprüft: Der Verifier hat in dieser Antwort keine Faktenaussagen gefunden.",
         "noCheckableClaims": "Nicht geprüft: Keine Aussage dieser Antwort lässt sich gegen eine Quelle prüfen.",
-        "incompleteCoverage": "Nicht geprüft: Der Verifier hat nur einen Teil dieser Antwort gelesen und darin nichts Prüfbares gefunden.",
+        "incompleteCoverage": "Nicht geprüft: Der Verifier hat nur einen Teil dieser Antwort erfasst und darin nichts Prüfbares gefunden.",
         "unavailable": "Der Verifier konnte für diese Antwort nicht laufen, es wurde nichts geprüft.",
         "checkFailed": "Die Prüfungen des Verifiers sind für diese Antwort fehlgeschlagen, es wurde keine Aussage bestätigt."
       }

@@ -223,8 +223,9 @@ its results:
   checkable in the answer) and `unavailable` (the verifier could not run).
   Both used to be stored as `approved`, so the share of `approved` rows drops.
   It drops further because an answer the verifier could check only in part
-  (a claim no checker accepts, more claims than `VERIFIER_MAX_CLAIMS`, or an
-  answer longer than the 6000 characters the claim extractor reads) is now
+  (a claim no checker accepts, more claims than `VERIFIER_MAX_CLAIMS`, an
+  answer longer than the 6000 characters the claim extractor reads, or a
+  claim the extraction returned that is not in the answer) is now
   `approved_with_disclaimer`, its unchecked claims and coverage entries
   counted in `unverified_count`. A dashboard or query that reads
   `status = 'approved'` as "clean turn" is now correct, but its numbers
@@ -250,8 +251,12 @@ its results:
   `cause: 'not_checked' | 'check_failed'`, and a claim may have the synthetic
   type `coverage_gap`. `ClaimExtractor.extract` now resolves
   `{ claims, gaps }` instead of a claim list, returns every valid claim
-  instead of cutting the list at `maxClaims`, and names in `gaps` what it did
-  not cover; give `VerifierPipeline` the same `maxClaims` to cap the checks.
+  instead of cutting the list at `maxClaims`, reads every `record_claims`
+  call of the model's response, and names in `gaps` what it did not cover —
+  including claims that are not in the answer (`claims_not_in_answer`), which
+  it used to drop without a trace. A claim's `text` is the span of the answer
+  it quotes (case and whitespace may differ from the model's text). Give
+  `VerifierPipeline` the same `maxClaims` to cap the checks.
 
 Teams and Telegram need nothing: they keep receiving only the four badges they
 know and show no badge for turns without evidence.
