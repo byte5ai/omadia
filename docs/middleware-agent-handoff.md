@@ -3844,7 +3844,13 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   ergänzen, dass jeder Build ab 0.6.0 die Methode hat.
 - **Office-Plugin** (`officeTool.ts`) liefert bei einer unerwarteten Exception
   weiter `Error: <message>`; die Naht redigiert oder hält zurück. Umstellung
-  auf `toolErrorFromException` zusammen mit der laufenden Office-Arbeit.
+  auf `toolErrorFromException` offen. Die eigenen Fehler des Plugins
+  (`OfficeUnsafeFormulaError`, `OfficeRenderError`,
+  `OfficePostconditionError`) sind selbst formuliert und müssen lesbar bleiben:
+  ihre Absage nennt Zelle und Grund, damit das Modell die Formel korrigiert,
+  und die Naht lässt sie heute unverändert durch. Ausnahme: Die Schema-Absage
+  für ein Steuerzeichen (`… control character U+0001 …`) kommt als
+  `U[masked:phone]` beim Modell an, weil C0 `+0001` als Telefonnummer liest.
 - **Abo-CLI-Pfad** ohne Privacy Shield (#1087): beide Träger fließen dort roh.
 - **Öffentlicher MCP-Endpunkt, Sub-Agent:** das Gate redigiert keine
   Tool-Fehler, also sieht der Sub-Agent eines Domain-Tools innere
