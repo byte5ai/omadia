@@ -1222,7 +1222,10 @@ resample turned up a contradiction and the retry followed. The invariant now
 is: **a user-initiated write executes at most once per request**, on every
 path a verifier re-entry takes (`chat()`, the stream, channel dispatch) and in
 every loop beneath it (the orchestrator's tool loops, `LocalSubAgent`, a
-subscription-CLI sub-agent's loopback dispatch).
+subscription-CLI sub-agent's loopback dispatch) — the dataset import of the
+request's uploads included. And a re-entry sends the model nothing the
+first run's privacy rules would have kept from it: its correction hint is
+masked like the user's message and carries no verifier evidence.
 
 - **The replay ledger.** `VerifierService` binds a per-request
   `ToolReplayLedger` (`harness-orchestrator/src/toolReplayLedger.ts`) to the
@@ -1248,6 +1251,42 @@ subscription-CLI sub-agent's loopback dispatch).
   file — handed over through its attachment sink, which a replay does not
   fill) is handed back with it, so a delivered retry carries the same file,
   built once.
+- **Uploads are ingested once.** Before the model runs, a turn reads the
+  request's uploads, and a tabular one (CSV, XLSX) is imported as a dataset —
+  `ingestAttachments` → `importTabularDataset` →
+  `KnowledgeGraph.ingestDataset`, an insert with no dedupe. That happens
+  outside tool dispatch, so the ledger keeps it separately
+  (`ToolReplayLedger.ingestAttachmentsOnce`): the first run's ingestion — the
+  extracted text and `[dataset-imported]` blocks before masking, the image
+  blocks — goes to every re-entry, masked through the re-entry's own prompt
+  map. The file is fetched and imported once, and a re-entry's model sees
+  the dataset ids the replayed first-run results refer to. A re-entry that
+  finds no first-run ingestion to reuse is abandoned before the model runs.
+- **The correction hint is wire content.** The retry's hint quotes the
+  contradicted claims, and claims are cut from the answer after the #361
+  restore — they hold the real values the prompt mask kept from the model.
+  So the orchestrator masks a caller's `extraSystemHint` through the pass's
+  prompt map like the user's message (`wireExtraSystemHint`, both paths):
+  the same surrogates, restored in the delivered answer; its masked spans on
+  the pass's receipt and so on the request's merged receipt
+  (`maskedPromptSpans`); and failure-closed — a re-entry whose prompt cannot
+  be masked is abandoned instead of answered with the privacy error, and the
+  first answer's verdict decides. The kernel's fresh-check text is not
+  masked.
+- **No verifier evidence in the hint.** The checks fetch their evidence with
+  the verifier's own access, not with the grants of the user whose turn they
+  check: the graph evidence fetcher looks entities up tenant-wide by model
+  and name (`res.partner` and `hr.employee` name probes included), the
+  deterministic checker re-queries Odoo through the verifier plugin's reader.
+  The hint goes to that user's turn model, so `buildCorrectionPrompt` puts
+  nothing of it there — no `truth`, no `detail`, not a postcondition's schema
+  issues (read off the tool's raw output). It names the claims (the answer's
+  own words), the call ids of the turn's own trace and fixed instructions;
+  the retry corrects from the turn's own tool results, which it replays, or
+  says that a claim could not be confirmed. Evidence content stays with the
+  verifier: its judge model and the `verifier_contradictions` table (operator
+  database; no route reads it). The retrieval itself stays tenant-wide
+  (handoff §13).
 - **What may run, what ends the re-entry.** A call the first run did not make
   runs only when the orchestrator knows its tool cannot change data — the
   kernel's `query_knowledge_graph`, `query_dataset`, `read_attachment`,
@@ -1264,7 +1303,9 @@ subscription-CLI sub-agent's loopback dispatch).
   `failed` badge. A recorded MCP input sentinel or connect prompt is not
   replayable (its provenance exists only in the dispatch that produced it),
   and a re-entry of an MCP input-card answer is abandoned before the parked,
-  take-once call could run again.
+  take-once call could run again. So is a re-entry whose prompt cannot be
+  masked, and one with no first-run upload ingestion to reuse (above); the
+  log names the reason (`REENTRY_ABANDONED`, `describeAbandonment`).
 - **Sub-agents under Privacy Shield.** A sub-agent's answer is prose over the
   datasets it interned in the first run's privacy scope, which ended with
   that run. When a domain-tool dispatch bridged such datasets, or ran a
@@ -1327,7 +1368,11 @@ differently is abandoned rather than matched loosely. A turn without a
 verifier still runs two identical SUCCESSFUL calls twice (first-run behaviour
 is unchanged), and a subscription-CLI sub-agent's obligation re-prompt (a
 second CLI spawn inside one request) is only told, not prevented, not to
-repeat a write that succeeded. The open points are in handoff §13.
+repeat a write that succeeded. The correction hint is masked with the same
+detectors as the user's message, so a value no detector recognises reaches
+the model as it does in the message; with prompt masking off (the
+default) nothing is masked, but the hint still carries no verifier evidence.
+The open points are in handoff §13.
 
 Tests: `middleware/test/toolReplayLedger.test.ts`,
 `middleware/test/toolReplaySeams.test.ts` (the standalone dispatcher with and
@@ -1343,8 +1388,14 @@ row, facts, `onAfterTurn` and `done.turnId`; withheld and abandoned
 re-entries; the pass's turn scope), `middleware/test/requestTurnRecord.test.ts`,
 `middleware/test/longRunningTaskReplayLedger.test.ts` (a detached task runner
 across a re-entry), `middleware/test/verifierSubAgentReplay.test.ts`,
-`middleware/test/verifierResampleKillSwitch.test.ts` and
-`middleware/test/orchestrator/parentLoopThrownCallRepeat.test.ts`.
+`middleware/test/verifierResampleKillSwitch.test.ts`,
+`middleware/test/orchestrator/parentLoopThrownCallRepeat.test.ts`,
+`middleware/test/verifierReentryAttachments.test.ts` (one dataset import
+across a resample and a retry on `chat()` and the stream; a re-entry without a
+first-run ingestion), `middleware/test/verifierCorrectionHintPrivacy.test.ts`
+(the retry's system prompt carries surrogates and no evidence on both paths,
+the hint's masked spans on the request receipt, an unmaskable hint abandons
+the retry) and `middleware/test/correctionPromptEvidence.test.ts`.
 
 ## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
 
@@ -2162,7 +2213,18 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       instead of writing it (commit-on-delivery, §7c); a signal that must
       follow the request's `onAfterTurn` waits for the commit
       (`afterRequestRecord`).
+- [ ] A new turn step outside tool dispatch that changes data (like the
+      upload import in `ingestAttachments`) runs once per request: a verifier
+      re-entry gets the first run's outcome from the request's ledger
+      (`ToolReplayLedger.ingestAttachmentsOnce`) or is abandoned — it never
+      performs the step a second time (§7c).
+- [ ] Text a caller hands a turn for its system prompt (`extraSystemHint`)
+      reaches the model only through `wireExtraSystemHint`, which masks it
+      through the turn's prompt map and fails closed. A correction hint or
+      any other text built from a verifier verdict carries the claims only —
+      never `truth`, `detail` or other evidence the verifier fetched with its
+      own access (§7c).
 
 ---
 
-*Last reviewed: 2026-10 (§7c: a verifier re-entry replays the first run's tool results through a per-request ledger and never runs a tool twice, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception).*
+*Last reviewed: 2026-10 (§7c: a verifier re-entry replays the first run's tool results through a per-request ledger and never runs a tool twice, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception).*

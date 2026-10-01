@@ -254,6 +254,21 @@ in `enforce` mode; `shadow` and a disabled verifier behave as before.
   before the answer goes out. A message has one receipt row, written once
   after the last pass, whose receipt covers every pass; the delivered answer
   carries that receipt and the stream's `done.receiptId` names the row.
+- **An upload is imported once per message.** A CSV or XLSX attached to a
+  message that the verifier re-enters used to become a new dataset on every
+  pass (two or three per file). The re-entry now reuses the first run's
+  import and its dataset id. Datasets an earlier release created twice for
+  one message stay; their owner can delete the extra copies through
+  `DELETE /api/v1/datasets/:id`.
+- **The correction hint is masked and names the claims only.** With
+  `mask_user_prompt` on, the retry's correction hint is masked like the
+  user's message (its masked spans show on the turn's privacy receipt), and
+  a retry whose hint cannot be masked is abandoned — the first answer is
+  withheld with the `failed` badge and the log says why. The hint no longer
+  passes the value the verifier measured, or any other evidence it fetched,
+  to the model: the retry corrects from the turn's own tool results or says
+  that a claim could not be confirmed, so a retry that used to copy the
+  verified figure may now be withheld instead.
 - **Long-running tasks are unaffected by a re-entry.** A task started with a
   `<tool>_start` tool (for example a deferred sub-agent) keeps running its
   own tool calls while the verifier re-enters the message; it no longer ends

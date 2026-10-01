@@ -2264,6 +2264,29 @@ Jetzt erzeugt ein Wiedereintritt nur die Antwort neu:
   (geworfen oder Withheld-Notiz), für die ganze Anfrage — damit auch in den
   Eltern-Loops und beim CLI-Sub-Agent (offener Punkt aus der
   Tool-Fehler-Politik, §13).
+- **Uploads einmal pro Anfrage.** `ingestAttachments` läuft vor dem Modell und
+  außerhalb des Tool-Dispatch; ein CSV/XLSX wird dabei per
+  `importTabularDataset` → `KnowledgeGraph.ingestDataset` als **neues**
+  Dataset angelegt (kein Dedupe). Beide Pfade rufen deshalb
+  `ingestAttachmentsForPass` → `ledger.ingestAttachmentsOnce`: Lauf 1
+  ingestiert und hält das Ergebnis (Text/`[dataset-imported]`-Blöcke **vor**
+  dem Masking, Bild-Blöcke), jeder Wiedereintritt bekommt genau das zurück
+  und maskiert es über seine eigene Prompt-Map — gleiche `dataset_id` wie in
+  den abgespielten Tool-Ergebnissen. Findet ein Wiedereintritt nichts,
+  bricht er vor dem Modellaufruf ab (`REENTRY_ABANDONED.attachmentsNotRecorded`).
+- **Correction-Hint = Wire-Inhalt.** `wireExtraSystemHint` maskiert den
+  `extraSystemHint` des Aufrufers über die Prompt-Map des Laufs wie die
+  User-Nachricht (gleiche Surrogate, Spans im Receipt → `maskedPromptSpans`
+  im gemergten Request-Receipt); der Fresh-Check-Text des Kernels bleibt
+  unmaskiert. `PromptMaskBlockedError` in einem Wiedereintritt bricht ihn ab
+  (`REENTRY_ABANDONED.promptMaskBlocked`) statt die Privacy-Fehlerantwort zu
+  liefern; der erste Lauf behält sein Verhalten. `buildCorrectionPrompt`
+  (`@omadia/verifier`) nennt nur noch die Claims (Wortlaut der Antwort),
+  Call-IDs und feste Anweisungen — kein `truth`, kein `detail`, keine
+  Postcondition-Issues: die Evidenz holt der Verifier mit eigenem Zugriff
+  (KG mandantenweit, Odoo-Reader des Plugins), nicht mit den Grants des Users.
+  Abbruchgründe ohne Tool tragen Namen (`REENTRY_ABANDONED`,
+  `describeAbandonment`, `reentryAbandonment.ts`), die Log-Zeilen nennen sie.
 
 Schalter: `verifier_resample_on_borderline` (§10). Sicherheitsbegründung,
 Grenzen und Reviewer-Regeln: `docs/security-architecture.md` §7c und §11.
@@ -2273,7 +2296,10 @@ Tests: `test/toolReplayLedger.test.ts`, `test/toolReplaySeams.test.ts`,
 `test/requestTurnRecord.test.ts`,
 `test/verifierSubAgentReplay.test.ts`, `test/verifierResampleKillSwitch.test.ts`,
 `test/longRunningTaskReplayLedger.test.ts`,
-`test/orchestrator/parentLoopThrownCallRepeat.test.ts`.
+`test/orchestrator/parentLoopThrownCallRepeat.test.ts`,
+`test/verifierReentryAttachments.test.ts`,
+`test/verifierCorrectionHintPrivacy.test.ts`,
+`test/correctionPromptEvidence.test.ts`.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -3557,6 +3583,34 @@ Stand nach „Wiedereintritte führen kein Tool erneut aus“ (§3,
   als der Ledger, der freigegeben wird). Ein Aufrufer, der dasselbe Objekt für
   eine neue Nachricht wiederverwendet, umginge das Inbound-Screening. Kein
   bekannter Aufrufer tut das; Freigabe analog zum Ledger wäre billig.
+- **Verifier-Evidenz wird mandantenweit geholt.** `GraphEvidenceFetcher`
+  (`findEntities` nach Modell und Name, inkl. der `res.partner`/
+  `hr.employee`-Namensproben) und der deterministische Odoo-Re-Query laufen
+  ohne User-Identität und Grants. Seit dem Fix verlässt ihr Inhalt den
+  Verifier nicht mehr Richtung Turn (kein `truth`/`detail` im
+  Correction-Hint, die Summary trägt nur Zähler); er geht aber an das
+  Judge-Modell und in `verifier_contradictions`. Bevor Evidenz je wieder an
+  ein Turn-Modell oder einen User geht: Abruf auf den aufgelösten User und
+  seine Grants beschränken, ohne beides fail-closed.
+- **Retry ohne Messwert.** Der Correction-Retry korrigiert nur noch aus den
+  (abgespielten) Tool-Ergebnissen des Turns; einen Wert, den nur der
+  Verifier kannte, kann er nicht übernehmen. Erwartung: weniger
+  `corrected`, mehr zurückgehaltene Antworten — `corrected`-Rate vor/nach
+  messen.
+- **Hint-Texte passen nicht zum Replay.** Postcondition- und Replay-Abschnitt
+  von `buildCorrectionPrompt` verlangen einen neuen Tool-Call; im
+  Wiedereintritt wird jeder Call außerhalb des ersten Laufs (außer
+  Kernel-Lesern) abgelehnt und der Retry abgebrochen. Texte an die
+  Replay-Realität anpassen oder für diese Fälle keinen Retry starten.
+- **Masking-Grenze des Hints.** Er wird mit denselben Detektoren maskiert
+  wie die Nachricht: was keiner erkennt (Namen ohne C1, freie Beträge ohne
+  Währung …), geht wie in der Nachricht ans Modell; mit `mask_user_prompt`
+  aus (Default) wird nichts maskiert. Die Claims sind Wortlaut der Antwort.
+- **Nudge-State pro Lauf.** `applyNudgePipeline` läuft auch nach
+  abgespielten Tool-Batches eines Wiedereintritts und kann
+  `recordEmission` erneut schreiben (kein User-Write; Cooldown/Statistik).
+  Prüfen, ob ein Wiedereintritt (`isReentryPass()`) die Emission
+  überspringen soll.
 
 ### MRTR-Sentinel über Skill-Bindung und `ctx.mcp` (#570 follow-up)
 

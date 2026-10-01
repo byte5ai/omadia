@@ -105,6 +105,26 @@ the client before the final verdict, only liveness events (the retry's
 verdict releases it, and a retry that fails or is abandoned stays internal
 and the first answer is withheld.
 
+Two things outside tool dispatch follow the same rule. A tabular upload
+(CSV, XLSX) is imported as a dataset before the model runs — a new dataset
+per import, with no dedupe — so each re-entry imported the file again and
+told its model a dataset id none of the replayed first-run results referred
+to. The request's ledger now keeps the first run's attachment ingestion and
+hands it to every re-entry, masked through the re-entry's own prompt map; a
+re-entry that finds none to reuse is abandoned before the model runs. And
+the correction hint left the turn unprotected: it quoted each contradicted
+claim, cut from the answer after the prompt-mask restore, so with
+`mask_user_prompt` on the real values the mask keeps from the model reached
+the provider in the system prompt — on `chat()`, and with the stream retry on
+every streamed and channel turn — and it quoted what the verifier measured:
+Odoo values, knowledge-graph snippets and lookup details, fetched with the
+verifier's own access rather than the user's grants. The hint is now masked
+through the pass's prompt map like the user's message, its masked spans are
+on the request's receipt, and a re-entry whose prompt cannot be masked is
+abandoned; the hint names the claims only — no measured value, no check
+detail, no postcondition issues — and the retry corrects from the turn's own
+tool results.
+
 Two smaller changes ride along. The new setup field
 `verifier_resample_on_borderline` of `@omadia/verifier` (seeded on first
 boot from `VERIFIER_RESAMPLE_ON_BORDERLINE`, default `true`) switches the
@@ -119,9 +139,13 @@ of the request too. Another input, a repeat after an ordinary returned
 What operators notice: a correction retry or resample that would need a
 write the first run did not make is abandoned, so `corrected` badges can get
 rarer on turns that wrote something; the verifier logs
-`retry abandoned` / `resample abandoned` with the run id and the tool. A
-request has one receipt row and one session-log row instead of one per pass,
-both written after the verdict when the request can be re-entered.
+`retry abandoned` / `resample abandoned` with the run id and the tool (or the
+reason: an unmaskable prompt, an MCP input-card answer, no upload ingestion
+to reuse). A retry no longer gets the verifier's measured value to copy, so
+it corrects from the turn's own results or says it could not confirm the
+claim. A request has one receipt row and one session-log row instead of one
+per pass, both written after the verdict when the request can be re-entered,
+and one dataset per uploaded file, imported by the first run.
 `shadow` mode, a disabled verifier and turns that cannot be re-entered persist
 exactly as before. Tests: `toolReplayLedger.test.ts`, `toolReplaySeams.test.ts`,
 `verifierServiceWriteSafety.test.ts`, `verifierStreamRetry.test.ts`,
@@ -129,7 +153,9 @@ exactly as before. Tests: `toolReplayLedger.test.ts`, `toolReplaySeams.test.ts`,
 `requestTurnRecord.test.ts`,
 `verifierSubAgentReplay.test.ts`, `verifierResampleKillSwitch.test.ts`,
 `longRunningTaskReplayLedger.test.ts`,
-`orchestrator/parentLoopThrownCallRepeat.test.ts`. Details:
+`orchestrator/parentLoopThrownCallRepeat.test.ts`,
+`verifierReentryAttachments.test.ts`, `verifierCorrectionHintPrivacy.test.ts`,
+`correctionPromptEvidence.test.ts`. Details:
 `docs/security-architecture.md` §7c; upgrade note: `docs/upgrading.md`.
 
 ### Security — the answer verifier's `enforce` mode withholds what it could not confirm, on the stream too
