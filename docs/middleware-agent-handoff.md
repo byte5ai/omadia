@@ -2370,14 +2370,17 @@ dieser Reihenfolge:
    der Boot entschieden hat, also wie bisher), 410 `auth.setup_disabled` (Tabelle
    jetzt leer, beim Boot aber nicht; ein Neustart öffnet den Wizard wieder).
 3. Body-Validierung und optionaler Anthropic-Key-Ping (OB-61, unverändert), dann
-   argon2 **außerhalb** des Locks.
+   argon2 **außerhalb** des Locks, in einem Slot der globalen argon2-Kapazität des
+   Anmelde-Limiters (`acquireSlot()`; keiner frei → 503 `auth.busy` mit
+   `Retry-After`, siehe „Passwort-Anmeldung mit Rate-Limit“).
 4. **`UserStore.createFirstAdmin`**: eine Transaktion mit `SET LOCAL lock_timeout =
    '2000ms'`, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`, `COUNT(*)` unter dem
    Lock, INSERT, Audit-Zeile `auth.first_admin_create`, Löschen des gespeicherten
    Setup-Tokens, COMMIT. `not_empty` wird zu 410 `auth.setup_locked`, ein Lock-Timeout
    (55P03) zu 409 `auth.setup_in_progress`. Der Lock wartet auch auf Writer außerhalb
    dieses Pfads (OIDC-Erstanmeldung, Admin-UI-Create). Plain-SELECTs blockiert er nicht.
-5. Session-Cookie, `markLoginNow`, Antwort wie bisher.
+5. Session-Cookie, das Geräte-Cookie des Anmelde-Limiters (an die eben geschriebene
+   Zeile und ihren Hash gebunden), `markLoginNow`, Antwort wie bisher.
 
 Woher das Token kommt (Boot-Wiring `initSetupToken` in `index.ts`):
 
@@ -3613,6 +3616,9 @@ Adapter falsch konfiguriert ist. Offen:
 - **`user_disabled` vor der Passwortprüfung.** `LocalPasswordProvider` antwortet für ein
   deaktiviertes Konto mit `auth.user_disabled`, bevor es das Passwort prüft. Der Status
   eines Kontos ist damit ohne Passwort ablesbar.
+- **Setup-Seite: 503 `auth.busy` übersetzen.** `/setup` antwortet 503 `auth.busy`, wenn
+  kein argon2-Slot frei ist. Die Login-Seite zeigt dafür „bitte N Sekunden warten“, die
+  Setup-Seite (`web-ui/app/setup/page.tsx`) zeigt noch die rohe Fehlermeldung.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
