@@ -11,7 +11,11 @@
  * checkable), a verifier that could not run, and checks that confirmed
  * nothing get their own neutral states — they are never shown as a check. A
  * summary restored from local storage is untrusted input, so the mapping
- * validates rather than assumes its shape.
+ * validates rather than assumes its shape: counts must be nonnegative
+ * integers that agree with each other (`uncoveredCount ≤ uncheckedCount ≤
+ * unverifiedCount`, `contradictionCount + unverifiedCount ≤ claimCount`),
+ * otherwise the summary backs nothing and gets a neutral chip — the same rule
+ * the connector gate applies.
  */
 
 export type VerifierBadgeState =
@@ -58,8 +62,14 @@ const SKIP_HINTS: Readonly<Record<string, VerifierBadgeHint>> = {
   incomplete_coverage: 'incompleteCoverage',
 };
 
-function countOf(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+/** A count the summary must carry: a nonnegative integer, else `null`. */
+function countOf(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+/** An optional count: 0 when absent, else it must be a count. */
+function optionalCountOf(value: unknown): number | null {
+  return value === undefined || value === null ? 0 : countOf(value);
 }
 
 function unverified(reason: unknown): VerifierBadgeView {
@@ -71,8 +81,9 @@ function unverified(reason: unknown): VerifierBadgeView {
 export function verifierBadgeView(summary: unknown): VerifierBadgeView | null {
   if (typeof summary !== 'object' || summary === null) return null;
   const s = summary as Record<string, unknown>;
-  const claimCount = countOf(s['claimCount']);
-  const checkedClaims = EVIDENCED_STATUSES.has(s['status']) && claimCount > 0;
+  const counts = countsOf(s);
+  const checkedClaims =
+    counts !== null && counts.claims > 0 && EVIDENCED_STATUSES.has(s['status']);
   if (s['status'] === 'unavailable' || s['badge'] === 'unavailable') {
     // The verifier could not run, or it ran and every check failed.
     return {
@@ -82,11 +93,12 @@ export function verifierBadgeView(summary: unknown): VerifierBadgeView | null {
       count: 0,
     };
   }
-  if (!checkedClaims) return unverified(s['reason']);
-  return checkedView(s, claimCount);
+  // Missing counts, or counts that contradict each other, back nothing.
+  if (counts === null || !checkedClaims) return unverified(s['reason']);
+  return checkedView(s, counts);
 }
 
-/** Claim counts of a summary, each clamped to what the larger one allows. */
+/** Claim counts of a summary that agree with each other. */
 interface Counts {
   claims: number;
   contradicted: number;
@@ -96,23 +108,38 @@ interface Counts {
   uncovered: number;
 }
 
-function countsOf(s: Record<string, unknown>, claimCount: number): Counts {
+/** The summary's counts, or `null` when a required one is missing, any is not
+ *  a nonnegative integer, or they cannot describe one claim list. */
+function countsOf(s: Record<string, unknown>): Counts | null {
+  const claims = countOf(s['claimCount']);
   const contradicted = countOf(s['contradictionCount']);
   const unconfirmed = countOf(s['unverifiedCount']);
-  const unchecked = Math.min(countOf(s['uncheckedCount']), unconfirmed);
+  const unchecked = optionalCountOf(s['uncheckedCount']);
+  const uncovered = optionalCountOf(s['uncoveredCount']);
+  if (
+    claims === null ||
+    contradicted === null ||
+    unconfirmed === null ||
+    unchecked === null ||
+    uncovered === null ||
+    uncovered > unchecked ||
+    unchecked > unconfirmed ||
+    contradicted + unconfirmed > claims
+  ) {
+    return null;
+  }
   return {
-    claims: claimCount,
+    claims,
     contradicted,
     unconfirmed,
-    confirmed: Math.max(0, claimCount - contradicted - unconfirmed),
+    confirmed: claims - contradicted - unconfirmed,
     unchecked,
-    uncovered: Math.min(countOf(s['uncoveredCount']), unchecked),
+    uncovered,
   };
 }
 
 /** A summary over checked claims: its badge, capped by what the counts back. */
-function checkedView(s: Record<string, unknown>, claimCount: number): VerifierBadgeView {
-  const c = countsOf(s, claimCount);
+function checkedView(s: Record<string, unknown>, c: Counts): VerifierBadgeView {
   const blocked = s['status'] === 'blocked';
   if (blocked ? c.contradicted === 0 : c.confirmed === 0) {
     // Claims were checked, but no check settled one. Name only the claims a

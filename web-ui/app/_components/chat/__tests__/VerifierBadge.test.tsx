@@ -136,6 +136,15 @@ describe('<VerifierBadge>', () => {
     expect(chip.className).not.toContain(GREEN);
   });
 
+  it('does not turn a "verified" whose counts contradict each other into a green chip', () => {
+    renderWithIntl(
+      <VerifierBadge summary={summary({ claimCount: 1, uncheckedCount: 1, uncoveredCount: 1 })} />,
+    );
+    const chip = screen.getByText('Not verified');
+    expect(chip.className).not.toContain(GREEN);
+    expect(chip.getAttribute('data-verifier-state')).toBe('unverified');
+  });
+
   it('renders nothing without a summary', () => {
     const { container } = renderWithIntl(<VerifierBadge summary={undefined} />);
     expect(container.textContent).toBe('');

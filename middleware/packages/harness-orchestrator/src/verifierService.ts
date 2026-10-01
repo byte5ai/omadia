@@ -18,6 +18,7 @@ import type {
   VerifierVerdict,
 } from '@omadia/verifier';
 import {
+  bindVerdictToClaims,
   buildCorrectionPrompt,
   hasVerificationEvidence,
   isBorderlineVerdict,
@@ -49,7 +50,11 @@ import type { TurnHookRunner } from './turnHooks.js';
  * Errors in the verifier itself never block the user — we always fall back
  * to returning the original orchestrator reply. They surface as
  * `unavailable`, never as `approved`: "the verifier could not check" must
- * not read as "the verifier checked and found nothing wrong".
+ * not read as "the verifier checked and found nothing wrong". The pipeline
+ * is injected, so its verdict is held to what its claims show
+ * (`bindVerdictToClaims`) before it is retried, resampled, stored or
+ * streamed: a status its claims do not back, or a reason outside the closed
+ * codes, never reaches `verifier_verdicts` or the stream.
  */
 
 export interface VerifierServiceOptions {
@@ -411,8 +416,9 @@ export class VerifierService implements ChatAgent {
     const domainToolsCalled = extractToolsCalled(runTrace);
     const toolPostconditionViolations = extractPostconditionViolations(runTrace);
     const knowledgeGraphToolsCalled = extractKnowledgeGraphToolsCalled(runTrace);
+    let returned: unknown;
     try {
-      return await this.pipeline.verify({
+      returned = await this.pipeline.verify({
         runId,
         userMessage: input.userMessage,
         answer,
@@ -435,6 +441,14 @@ export class VerifierService implements ChatAgent {
         latencyMs: 0,
       };
     }
+    // Everything below acts on this verdict, so it is bound once, here: the
+    // status its claims back, a closed reason. What did not hold is logged
+    // with the raw value; the stream only ever sees the bound verdict.
+    const bound = bindVerdictToClaims(returned);
+    if (bound.problem !== undefined) {
+      this.log(`[verifier/service] pipeline verdict not taken as returned: ${bound.problem}`);
+    }
+    return bound.verdict;
   }
 
   private async persist(
@@ -472,10 +486,15 @@ function withVerifier(
 }
 
 function summarise(
-  verdict: VerifierVerdict,
+  returned: VerifierVerdict,
   retryCount: number,
   mode: 'shadow' | 'enforce',
 ): VerifierResultSummary {
+  // The summary goes out verbatim on the stream, so it is built from a bound
+  // verdict whatever the caller passes: a status the claims back, a reason
+  // from the closed codes. A verdict from `safeVerify` is bound already and
+  // passes unchanged.
+  const { verdict } = bindVerdictToClaims(returned);
   // Counted over the claim list itself, so `claimCount - contradictionCount
   // - unverifiedCount` is exactly the number of verified claims — the figure
   // the connector and web-chat badge gates check the badge against.

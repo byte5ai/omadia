@@ -138,17 +138,10 @@ function countByClass(verdicts: readonly ClaimVerdict[]): {
   return { hard, soft };
 }
 
+/** Counted from the claims, not inferred from the status: an `approved` row
+ *  must never report zero unverified claims that its claim list holds. */
 function countUnverified(verdict: VerifierVerdict): number {
-  switch (verdict.status) {
-    case 'approved_with_disclaimer':
-      return verdict.unverified.length;
-    case 'approved':
-    case 'skipped':
-    case 'unavailable':
-      return 0;
-    case 'blocked':
-      return verdict.claims.filter((v) => v.status === 'unverified').length;
-  }
+  return verdict.claims.filter((v) => v.status === 'unverified').length;
 }
 
 function formatValue(v: unknown): string | null {

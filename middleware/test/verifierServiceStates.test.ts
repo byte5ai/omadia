@@ -164,10 +164,14 @@ describe('VerifierService.chatStream — verifier event states', () => {
     assert.equal(summary.reason, 'no_trigger');
   });
 
-  it('approved over zero claims from an injected pipeline is not badged verified', async () => {
-    const { summary } = await streamVerifier(() => Promise.resolve(approvedWithoutClaims()));
+  it('approved over zero claims from an injected pipeline is no result, never verified', async () => {
+    const { summary, logs } = await streamVerifier(() => Promise.resolve(approvedWithoutClaims()));
     assert.ok(summary);
-    assert.equal(summary.badge, 'unverified');
+    assert.equal(summary.status, 'unavailable', 'not approved on the stream either');
+    assert.equal(summary.badge, 'unavailable');
+    assert.equal(summary.reason, 'pipeline_error');
+    assert.equal(summary.claimCount, 0);
+    assert.ok(logs.some((l) => l.includes('approved without a claim')), logs.join(' | '));
   });
 
   it('control: approved with a checked claim is badged verified, without a reason', async () => {

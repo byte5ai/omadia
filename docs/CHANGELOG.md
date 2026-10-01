@@ -101,10 +101,22 @@ check that ran failed (the checkers now mark a failed check as
 confirmed only some is `partial`, as the same verdict is on a first pass; any
 retry without a contradiction used to be badged `corrected`, including one
 whose checks all failed or that confirmed one claim and left the rest
-unchecked. Even an injected pipeline that
-returns `approved` over zero claims, or over an unconfirmed claim, gets no
-`verified`. Contradictions found without extraction (tool postconditions,
-missing citations, failure replay) still block on every path. The paid
+unchecked. The pipeline is injected, so its verdict is now held to what its
+claims show before the service retries, resamples, stores or streams it: a
+status is lowered to the one its claims earn (`approved` over an unconfirmed
+claim is `approved_with_disclaimer`, over a contradicted one `blocked`) and
+never raised, and `approved` over zero claims, an unknown status and a
+`reason` outside the closed codes are `unavailable` / `pipeline_error` — the
+raw value goes to the operator log, never onto the stream. The stored
+`unverified_count` is counted from the claims. The connector badge gate and
+the web chat chip also need the summary's counts to be nonnegative integers
+that agree with each other (no more unchecked than unverified claims, no
+more coverage entries than unchecked claims, no more contradicted and
+unverified claims than claims, no missing count read as 0); a summary that
+breaks this — only a foreign `ChatAgent` or edited local storage can produce
+one — gets no connector badge and a neutral chip. Contradictions found
+without extraction (tool postconditions, missing citations, failure replay)
+still block on every path. The paid
 borderline resample now runs only when a verdict confirmed some claims and a
 check left another unconfirmed: `skipped` / `unavailable`, a verdict that
 confirmed nothing, and one whose only doubt is claims no checker takes never

@@ -810,21 +810,37 @@ invariant cannot cover — a claim the model never lists — is stated below.
   `cause: 'check_failed'`. A verdict in which every check that ran failed
   that way is badged `unavailable`; one whose claims all stayed unconfirmed
   for any other reason is `unverified`, never `partial`.
+- **An injected verdict is held to its claims.** The pipeline is injected
+  (`verifier@1`), so `VerifierService` binds the verdict it returns to its
+  claims (`bindVerdictToClaims`) before it retries, resamples, stores or
+  streams anything on it, and `summarise` binds again where the summary
+  leaves for the stream. A status is never higher than its claims earn: an
+  `approved` over an unconfirmed claim is `approved_with_disclaimer`, over a
+  contradicted one `blocked`, and a status is never raised above the one
+  reported. `approved`, `approved_with_disclaimer` or `blocked` over zero
+  claims, an unknown status, entries that are not claim verdicts, and a
+  `skipped` / `unavailable` reason outside the closed codes are
+  `unavailable` / `pipeline_error`; the raw value goes to the operator log
+  (JSON-escaped, cut short), never onto the stream. A latency that is not a
+  duration is 0. The built-in pipeline's verdicts pass unchanged.
 - **Badges are derived under the evidence gate, not from the status alone.**
   `badgeFor` (`verifierService.ts`) checks `hasVerificationEvidence()` and
-  gives `verified` only when every claim was confirmed. The pipeline is
-  injected (`verifier@1`), so a pipeline that returns `approved` over zero
-  claims still yields `unverified`, and one that returns `approved` over an
-  unconfirmed claim yields `partial`. A correction retry earns `corrected`
-  only when the retry's own verdict confirmed every claim; a retry that
-  confirmed only some — the rest unconfirmed, not checked or not covered — is
-  `partial`, as the same verdict is on a first pass.
+  gives `verified` only when every claim was confirmed, so even a verdict
+  that bypassed the binding cannot earn more. A correction retry earns
+  `corrected` only when the retry's own verdict confirmed every claim; a
+  retry that confirmed only some — the rest unconfirmed, not checked or not
+  covered — is `partial`, as the same verdict is on a first pass.
 - **`toSemanticAnswer` is the single connector badge gate.** It forwards a
   badge only when `verifierSummaryHasEvidence()` holds, the badge is in the
   unchanged wire union `verified | partial | corrected | failed`
   (`SemanticAnswer.verifier`) and the summary's counts back it (`verified`
-  and `corrected` need every claim confirmed). Connectors (Teams card,
-  Telegram) need no change: a turn without evidence renders no chip there.
+  and `corrected` need every claim confirmed). `verifierSummaryHasEvidence()`
+  also needs counts that can describe one claim list — nonnegative integers
+  with `uncoveredCount ≤ uncheckedCount ≤ unverifiedCount` and
+  `contradictionCount + unverifiedCount ≤ claimCount` (absent optional counts
+  are 0) — so a summary from a foreign `ChatAgent` cannot buy a badge with
+  counts that contradict each other. Connectors (Teams card, Telegram) need
+  no change: a turn without evidence renders no chip there.
 - **The stream event carries every state.** The trailing `verifier` event is
   forwarded verbatim by `/api/chat/stream` and by the public API-key stream,
   so its `status` / `badge` can be `skipped` / `unverified` and
@@ -834,8 +850,9 @@ invariant cannot cover — a claim the model never lists — is stated below.
   green only for a `verified` summary whose every claim was confirmed, blue
   `corrected` under the same condition, never stronger than the summary's
   counts back (a `verified` or `corrected` badge whose counts back only part
-  of the answer shows as partly verified), and applies the same rule to a
-  summary restored from local storage.
+  of the answer shows as partly verified), and applies the same rules to a
+  summary restored from local storage — a summary with a missing count, or
+  counts that contradict each other, gets a neutral chip.
 - **A resample needs something a second sample could change.**
   `isBorderlineVerdict` holds only for an `approved_with_disclaimer` that
   confirmed at least one claim and left another one unconfirmed after a
@@ -845,7 +862,9 @@ invariant cannot cover — a claim the model never lists — is stated below.
 - **Telemetry keeps the distinction.** `verifier_verdicts.status` stores
   `skipped` / `unavailable` as their own values (free `TEXT` column, no
   migration), so a calibration query no longer counts an outage as a clean
-  turn. No code in the repository reads the table.
+  turn. The row carries the bound verdict, and `unverified_count` is counted
+  from its claims, never inferred from its status. No code in the repository
+  reads the table.
 
 Tests: `middleware/test/verifierPipelineStates.test.ts` (including the
 production `ClaimExtractor` over a failing, a truncated and a malformed LLM
@@ -861,6 +880,10 @@ badge and service),
 check takes — one whose tail is not in the answer, one the answer holds word
 for word, and the exact length limit — through the same stages),
 `middleware/test/verifierClaimExtractorFailure.test.ts`,
+`middleware/test/verifierVerdictBinding.test.ts` (injected verdicts whose
+status, reason or latency their claims do not back, through the service into
+the stream summary and the stored row),
+`middleware/test/verifierStoreStates.test.ts`,
 `middleware/test/verifierServiceStates.test.ts`,
 `middleware/test/verifierServiceResample.test.ts`,
 `middleware/test/verifierDeterministicChecker.test.ts`,
@@ -1578,7 +1601,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `claimCount - contradictionCount - unverifiedCount > 0`), and green or
       `corrected` only when every claim was confirmed. `skipped`,
       `unavailable` and verdicts whose claims all stayed unconfirmed never map
-      to a green badge, and a verifier `reason` stays a closed code (§7c).
+      to a green badge, and a verifier `reason` stays a closed code (§7c). A
+      verdict from the injected pipeline is bound to its claims
+      (`bindVerdictToClaims`) before anything acts on it. A summary is
+      untrusted input: a gate never reads a missing count as 0 and backs no
+      badge with counts that contradict each other.
 - [ ] A verifier stage that cannot do its work (a failed LLM call, a model
       response it cannot read, cut off at the token limit or with an entry
       that breaks the schema) never returns an empty or partial result: claim

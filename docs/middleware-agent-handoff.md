@@ -2859,11 +2859,29 @@ Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
   geprüft. Bestätigte Claims sind `claimCount - contradictionCount -
   unverifiedCount`.
 
+Die Pipeline ist injiziert (`verifier@1`). `VerifierService.safeVerify` bindet
+ihr Verdict deshalb an seine Claims (`bindVerdictToClaims`, `@omadia/verifier`),
+bevor Retry, Resample, Persistenz oder Stream darauf aufsetzen; `summarise`
+bindet beim Bau des Stream-Summaries noch einmal. Ein Status wird nie höher
+gemeldet, als die Claims tragen (`approved` mit unbestätigtem Claim →
+`approved_with_disclaimer`, mit widersprochenem → `blocked`), und nie
+angehoben. `approved` / `approved_with_disclaimer` / `blocked` ohne Claim, ein
+unbekannter Status, Einträge, die keine Claim-Verdicts sind, und ein `reason`
+außerhalb der geschlossenen Codes werden `unavailable` / `pipeline_error`; der
+Rohwert steht nur in der Server-Logzeile (`[verifier/service] pipeline verdict
+not taken as returned: …`). Die eingebaute Pipeline ist davon nicht betroffen.
+`verifier_verdicts.unverified_count` zählt die Claims selbst, nicht den Status.
+
 Das Event geht unverändert über `/api/chat/stream` und den Public-API-Key-Stream
 (`chatRouter.ts`) raus. Ein Connector-Badge entsteht daraus nur über
 `toSemanticAnswer` und nur, wenn die Zähler das Badge tragen
 (`verifierSummaryHasEvidence`, `verified` und `corrected` nur bei lauter
-bestätigten Claims); der Wire-Typ `SemanticAnswer.verifier` bleibt
+bestätigten Claims) und zueinander passen: nichtnegative ganze Zahlen,
+`uncoveredCount ≤ uncheckedCount ≤ unverifiedCount`,
+`contradictionCount + unverifiedCount ≤ claimCount`; fehlende optionale
+Zähler gelten als 0, fehlende Pflichtzähler nie. Der Web-Chip wendet dieselbe
+Regel an (ein Summary mit widersprüchlichen Zählern bekommt einen neutralen
+Chip); der Wire-Typ `SemanticAnswer.verifier` bleibt
 `verified | partial | corrected | failed`, Turns ohne Evidenz ergeben dort
 kein Badge. Der Web-Chat zeigt das Event als Footer-Chip (`VerifierBadge`,
 Keys `chat.verifier.*`), grün nur für ein `verified` mit lauter bestätigten
@@ -3302,6 +3320,29 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   `unavailable` (`extractor_error`) statt als `partial` — ehrlich, aber
   ungenauer als nötig. Budget aus `maxClaims` ableiten oder kompaktere
   Einträge anfordern.
+- **Claim-Wert nicht an den Claim-Text gebunden (älteres Limit).** Der
+  `DeterministicChecker` vergleicht bei Beträgen und Summen den vom Modell
+  gelieferten `claim.value` mit dem Odoo-Feld (`checkOdooAmount` ab
+  `deterministicChecker.ts:194`, `checkOdooAggregate` ab :234; bei Daten
+  `claim.value ?? claim.text`, :278), nie den Wert, den der zitierte Text
+  nennt. Der Text ist dank Verbatim-Guard ein Stück der Antwort, der Wert
+  aber die eigene Lesart des Modells: liest es „1.234,56 €" als 1000 und hält
+  der Beleg 1000, ist der Claim `verified`, obwohl die Antwort etwas anderes
+  sagt; umgekehrt kann ein Lesefehler einen richtigen Claim widerlegen.
+  Zudem kürzt der Extractor einen String-Wert auf 200 Zeichen. Offen: Betrag
+  und Datum deterministisch aus dem zitierten Text lesen und bei Abweichung
+  vom Modellwert `not_checked` melden, statt dem Modellwert zu folgen.
+- **Judge-Antwort wird großzügig gelesen (älteres Limit).** `parseVerdict`
+  (`evidenceJudge.ts:226`) liest nur den ersten `record_verdict`-Call; ein
+  zweiter mit anderem Urteil wird ignoriert. `verified` / `contradicted`
+  brauchen eine `evidence_node_id`, die aber nicht gegen die Node-IDs der
+  gezeigten Evidenz geprüft wird — `check` sucht sie nur, um die Quelle zu
+  bestimmen (:140), und fällt sonst auf `claim.expectedSource` zurück; eine
+  erfundene ID zählt also. Eine am Token-Limit abgeschnittene Judge-Antwort
+  (`finishReason: 'max_tokens'`) wird nicht verworfen, anders als beim
+  Extractor. Offen: alle Calls lesen (widersprüchliche Urteile →
+  `check_failed`), die Node-ID gegen die gezeigten Snippets prüfen und eine
+  abgeschnittene Antwort als `check_failed` werten.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

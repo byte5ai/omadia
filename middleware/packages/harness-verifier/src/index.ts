@@ -73,6 +73,11 @@ export type {
   VerifierVerdict,
 } from './claimTypes.js';
 
+// verdictBinding — holds an injected pipeline's verdict to what its claims
+// show, before the kernel-side `VerifierService` acts on, stores or streams it.
+export { bindVerdictToClaims } from './verdictBinding.js';
+export type { BoundVerdict } from './verdictBinding.js';
+
 // correctionPrompt
 export { buildCorrectionPrompt } from './correctionPrompt.js';
 

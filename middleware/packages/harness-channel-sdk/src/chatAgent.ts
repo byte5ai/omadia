@@ -289,10 +289,10 @@ export type VerifierSummaryReason =
  * claim for `blocked`, a verified one for `approved` /
  * `approved_with_disclaimer` (verified = `claimCount - contradictionCount -
  * unverifiedCount`). `skipped` (badge `unverified`), `unavailable` (badge
- * `unavailable`) and summaries whose claims all stayed unverified carry none,
- * and a consumer must never render them as a check — see
- * `verifierSummaryHasEvidence`. `toSemanticAnswer` forwards a connector badge
- * only when the counts back it.
+ * `unavailable`), summaries whose claims all stayed unverified and summaries
+ * whose counts contradict each other carry none, and a consumer must never
+ * render them as a check — see `verifierSummaryHasEvidence`.
+ * `toSemanticAnswer` forwards a connector badge only when the counts back it.
  */
 export interface VerifierResultSummary {
   badge: 'verified' | 'partial' | 'corrected' | 'failed' | 'unverified' | 'unavailable';

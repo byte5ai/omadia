@@ -3,7 +3,10 @@ import { strict as assert } from 'node:assert';
 
 // Imported from source (not the `@omadia/channel-sdk` dist barrel) — same
 // rationale as aiDisclosure.test.ts: fields added after the last dist build.
-import { toSemanticAnswer } from '../packages/harness-channel-sdk/src/toSemanticAnswer.js';
+import {
+  toSemanticAnswer,
+  verifierSummaryHasEvidence,
+} from '../packages/harness-channel-sdk/src/toSemanticAnswer.js';
 import type {
   ChatTurnResult,
   VerifierResultSummary,
@@ -122,6 +125,52 @@ describe('toSemanticAnswer — verifier badge gate', () => {
         retryCount: 1,
       }),
     ]) {
+      const sa = toSemanticAnswer({ ...base, verifier: summary });
+      assert.equal(sa.verifier, undefined, JSON.stringify(summary));
+    }
+  });
+
+  it('never forwards a badge whose counts contradict each other', () => {
+    // The verifier never builds such a summary; one from elsewhere (a foreign
+    // ChatAgent) backs no badge, however its badge and status read.
+    const inconsistent: VerifierResultSummary[] = [
+      // Every claim confirmed, yet one unchecked and one not covered.
+      verifierSummary({ claimCount: 1, uncheckedCount: 1, uncoveredCount: 1 }),
+      // More coverage entries than unchecked claims.
+      verifierSummary({
+        badge: 'partial',
+        status: 'approved_with_disclaimer',
+        claimCount: 3,
+        unverifiedCount: 1,
+        uncheckedCount: 0,
+        uncoveredCount: 1,
+      }),
+      // More contradicted and unconfirmed claims than claims.
+      verifierSummary({
+        badge: 'failed',
+        status: 'blocked',
+        claimCount: 1,
+        contradictionCount: 1,
+        unverifiedCount: 1,
+      }),
+      // Counts that are not nonnegative integers.
+      verifierSummary({ claimCount: 1.5 }),
+      verifierSummary({ claimCount: Number.NaN }),
+      verifierSummary({ contradictionCount: -1 }),
+      verifierSummary({ uncheckedCount: 0.5, unverifiedCount: 1, status: 'approved_with_disclaimer', badge: 'partial' }),
+      verifierSummary({ unverifiedCount: '0' as unknown as number }),
+      // Required counts missing: never read as 0.
+      {
+        badge: 'verified',
+        status: 'approved',
+        claimCount: 1,
+        retryCount: 0,
+        latencyMs: 1,
+        mode: 'enforce',
+      } as unknown as VerifierResultSummary,
+    ];
+    for (const summary of inconsistent) {
+      assert.equal(verifierSummaryHasEvidence(summary), false, JSON.stringify(summary));
       const sa = toSemanticAnswer({ ...base, verifier: summary });
       assert.equal(sa.verifier, undefined, JSON.stringify(summary));
     }

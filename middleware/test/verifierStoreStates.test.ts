@@ -84,3 +84,32 @@ describe('VerifierStore — skipped / unavailable rows', () => {
     );
   });
 });
+
+describe('VerifierStore — counts come from the claims, not the status', () => {
+  it('an approved verdict that holds an unverified claim reports it in unverified_count', async () => {
+    const claim = {
+      id: 'c_1',
+      text: '1.234,56 €',
+      type: 'amount' as const,
+      expectedSource: 'odoo' as const,
+      relatedEntities: [],
+    };
+    // Not a shape the pipeline builds, and the service binds a verdict to its
+    // claims before it stores it — but the row must not hide the claim either.
+    const { row } = await persisted({
+      status: 'approved',
+      claims: [
+        { status: 'verified', claim, source: 'odoo' },
+        {
+          status: 'unverified',
+          claim: { ...claim, id: 'c_2' },
+          reason: 'no checker',
+          cause: 'not_checked',
+        },
+      ],
+      latencyMs: 2,
+    });
+    assert.equal(row[CLAIM_COUNT], 2);
+    assert.equal(row[UNVERIFIED_COUNT], 1);
+  });
+});

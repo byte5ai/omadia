@@ -200,3 +200,58 @@ describe('verifierBadgeView — distinct states', () => {
     ).toBe('neutral');
   });
 });
+
+describe('verifierBadgeView — counts must agree with each other', () => {
+  it('a summary whose counts contradict each other gets a neutral chip, whatever its badge', () => {
+    const inconsistent: VerifierSummary[] = [
+      // Every claim confirmed, yet one unchecked and one not covered.
+      summary({ claimCount: 1, uncheckedCount: 1, uncoveredCount: 1 }),
+      // More coverage entries than unchecked claims.
+      summary({
+        badge: 'partial',
+        status: 'approved_with_disclaimer',
+        claimCount: 3,
+        unverifiedCount: 1,
+        uncheckedCount: 0,
+        uncoveredCount: 1,
+      }),
+      // More contradicted and unconfirmed claims than claims.
+      summary({
+        badge: 'failed',
+        status: 'blocked',
+        claimCount: 1,
+        contradictionCount: 1,
+        unverifiedCount: 1,
+      }),
+      // Counts that are not nonnegative integers.
+      summary({ claimCount: 1.5 }),
+      summary({ contradictionCount: -1 }),
+      summary({
+        badge: 'partial',
+        status: 'approved_with_disclaimer',
+        unverifiedCount: 1,
+        uncheckedCount: 0.5,
+      }),
+    ];
+    for (const s of inconsistent) {
+      expect(verifierBadgeView(s), JSON.stringify(s)).toMatchObject({
+        state: 'unverified',
+        tone: 'neutral',
+      });
+    }
+  });
+
+  it('never reads a missing count as 0', () => {
+    expect(verifierBadgeView({ badge: 'verified', status: 'approved', claimCount: 1 })).toMatchObject({
+      state: 'unverified',
+      tone: 'neutral',
+    });
+    expect(
+      verifierBadgeView({ badge: 'failed', status: 'blocked', claimCount: 1, contradictionCount: 1 }),
+    ).toMatchObject({ state: 'unverified', tone: 'neutral' });
+  });
+
+  it('control: the optional unchecked / uncovered counts may be absent', () => {
+    expect(verifierBadgeView(summary())).toMatchObject({ state: 'verified', tone: 'success' });
+  });
+});

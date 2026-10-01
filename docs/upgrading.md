@@ -228,7 +228,8 @@ its results:
   claim the extraction returned that is not in the answer or longer than 300
   characters) is now
   `approved_with_disclaimer`, its unchecked claims and coverage entries
-  counted in `unverified_count`. A dashboard or query that reads
+  counted in `unverified_count`, which now always counts every unverified
+  claim of the row. A dashboard or query that reads
   `status = 'approved'` as "clean turn" is now correct, but its numbers
   change.
 - **Clients of the `verifier` stream event** (`/api/chat/stream`, public API
@@ -261,7 +262,11 @@ its results:
   answer it quotes (case and whitespace may differ from the model's text),
   never longer than `MAX_CLAIM_CHARS`. A `switch` over `ExtractionGap` must
   handle `claims_too_long`. Give `VerifierPipeline` the same `maxClaims` to
-  cap the checks.
+  cap the checks. A plugin that provides its own `verifier@1` pipeline gets
+  its verdict held to its claims (`bindVerdictToClaims`): a status its claims
+  do not back is lowered, and `approved` over no claim, an unknown status or
+  a `reason` outside the closed codes is reported as `unavailable` /
+  `pipeline_error`.
 
 Teams and Telegram need nothing: they keep receiving only the four badges they
 know and show no badge for turns without evidence.

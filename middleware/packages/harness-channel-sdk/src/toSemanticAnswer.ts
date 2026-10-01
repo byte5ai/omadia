@@ -22,14 +22,40 @@ function confirmedClaims(summary: VerifierResultSummary): number {
   return Math.max(0, summary.claimCount - summary.contradictionCount - summary.unverifiedCount);
 }
 
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * Whether the summary's counts can describe one claim list: each a
+ * nonnegative integer (the optional `uncheckedCount` / `uncoveredCount` count
+ * as 0 when absent), `uncoveredCount ≤ uncheckedCount ≤ unverifiedCount`, and
+ * `contradictionCount + unverifiedCount ≤ claimCount`. The verifier never
+ * builds any other; a summary that breaks this comes from elsewhere and backs
+ * no badge.
+ */
+function countsAgree(summary: VerifierResultSummary): boolean {
+  const { claimCount, contradictionCount, unverifiedCount } = summary;
+  const unchecked = summary.uncheckedCount ?? 0;
+  const uncovered = summary.uncoveredCount ?? 0;
+  return (
+    [claimCount, contradictionCount, unverifiedCount, unchecked, uncovered].every(isCount) &&
+    uncovered <= unchecked &&
+    unchecked <= unverifiedCount &&
+    contradictionCount + unverifiedCount <= claimCount
+  );
+}
+
 /**
  * True when a check settled at least one claim of the summary: a contradicted
  * claim for `blocked`, a confirmed one for `approved` /
- * `approved_with_disclaimer`. A summary whose claims all stayed unconfirmed,
- * `skipped` and `unavailable` never do. Any consumer that renders a
- * verification signal from a `VerifierResultSummary` gates on this.
+ * `approved_with_disclaimer` — and its counts agree with each other. A
+ * summary whose claims all stayed unconfirmed, one whose counts contradict
+ * each other, `skipped` and `unavailable` never do. Any consumer that renders
+ * a verification signal from a `VerifierResultSummary` gates on this.
  */
 export function verifierSummaryHasEvidence(summary: VerifierResultSummary): boolean {
+  if (!countsAgree(summary)) return false;
   switch (summary.status) {
     case 'approved':
     case 'approved_with_disclaimer':
@@ -284,8 +310,8 @@ export function toSemanticAnswer(
   // a verification that never happened. Connectors get no badge for them, and
   // none whose summary counts do not back it (`verified` and `corrected` need
   // every claim confirmed, so a coverage gap or an unchecked claim keeps the
-  // answer at `partial`). This is the single badge gate for every connector
-  // (Teams card, Telegram, …).
+  // answer at `partial`) or contradict each other. This is the single badge
+  // gate for every connector (Teams card, Telegram, …).
   const verifier = connectorVerifierBadge(r.verifier);
 
   // #332 Layer 1 — curate a tamper-evident consulted-agents footer from the
