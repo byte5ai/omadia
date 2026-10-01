@@ -105,14 +105,19 @@ withdrawing an Entra identity from the whitelist never reached a socket that was
 already open, so its frames kept starting orchestrator turns as that user. The
 registry now keeps each socket's token and `exp` beside it and closes the socket
 with 4401 `session expired` at `exp`; a token without `exp`, or one that expires
-during the upgrade check, is closed before the handler runs. Handlers get the
+during the upgrade check, is closed before the handler runs, and a frame the
+handler sends after `exp` is dropped like an inbound one, even while the expiry
+timer runs late. Handlers get the
 claims (now with `expiresAt`), never the token, and the session cookie is
 stripped from `socket.request.headers`. A revocation announced on this replica
 closes that user's sockets at once with 4403, including a socket whose upgrade
-was still being checked at that moment. Announcements are process-local, so
+was still being checked at that moment; if more than 256 revocations were
+announced during that check, the socket closes with 1013 before its handler
+runs and the client's reconnect is checked afresh. Announcements are process-local, so
 every inbound frame is also authorised on its own: it reaches the handler only
 on a session check that started at most `WS_SESSION_FRAME_RECHECK_MS` (new env
-variable, default 5000, 0 = every frame) before the frame arrived. With an older
+variable, default 5000, 0 = every frame) before the frame arrived, both moments
+read from a monotonic clock so a wall-clock step cannot stretch that bound. With an older
 verdict the frame waits, in order, while `evaluateSessionToken` runs again and
 the socket stops reading. That is what carries a sign-out, disable or delete
 made on another replica, or directly in SQL, to the next frame (4403), and a
@@ -168,7 +173,10 @@ reaches the public `/logout` route, so a stale copy cannot sign its owner out of
 their current session. The OIDC callback no longer mints a session for a
 disabled account, and an admin who resets their own password is signed out as
 well. Tokens minted before this change carry no `sv` and count as version 0,
-where every existing row starts, so the upgrade signs nobody out. Migration
+where every existing row starts, so the upgrade signs nobody out. They carry no
+`uid` either, so they are tied to their row by sign-in time: a row deleted and
+re-created after that sign-in does not revive them, and their first renewal
+stamps the `uid` of the row it verified. Migration
 `auth/migrations/0003_users_session_version.sql` adds `users.session_version
 INTEGER NOT NULL DEFAULT 0`; it lives in the auth series because `users` is that
 series' own table (AGENTS.md, new SQL migrations), and it runs automatically at

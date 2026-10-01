@@ -132,8 +132,11 @@ async function checkIdentity(
  *      the new window is `min(now + 4h, auth_time + cap)`;
  *   5. the audit row is written — before the cookie, so a failed write
  *      (bubbling to Express as a 500) never yields a renewed session;
- *   6. the same claims are re-signed, `auth_time`, `sv`, `sid` and `uid`
- *      carried over (same sign-in, same account version).
+ *   6. the same claims are re-signed, `auth_time`, `sv` and `sid` carried
+ *      over (same sign-in, same account version), and `uid` set to the row
+ *      step 3 verified: the same id for a token that names one, and from
+ *      now on for a token minted before the claim existed, which step 3
+ *      could only tie to its row by sign-in time.
  */
 export function createRenewHandler(deps: RenewHandlerDeps) {
   return async function renew(req: Request, res: Response): Promise<void> {
@@ -203,7 +206,8 @@ export function createRenewHandler(deps: RenewHandlerDeps) {
         // the same account version, so a later bump ends it like the old one.
         sv: claims.sv,
         ...(claims.sid ? { sid: claims.sid } : {}),
-        ...(claims.uid ? { uid: claims.uid } : {}),
+        // The row `checkIdentity` just found vouching for this session.
+        uid: identity.userRowId,
       },
       deps.signingKey,
       newExp,

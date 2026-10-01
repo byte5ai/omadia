@@ -17,6 +17,8 @@ import type { UserRecord } from './userStore.js';
  * user), an admin password reset and disabling the account. Deleting the row
  * needs no bump — a missing row is itself the revocation, and the `uid` claim
  * keeps a re-created row (new id, version 0 again) from reviving old cookies.
+ * A token minted before `uid` existed is held to its sign-in time instead: a
+ * row created after that moment cannot be the row it was minted for.
  *
  * No cache: every check is one indexed point read, so "revoked" is effective
  * on the very next request, on every replica.
@@ -43,10 +45,16 @@ export interface SessionIdentity {
   sv: number;
   /** `users.id` at mint time; absent on a token older than the claim. */
   uid?: string;
+  /**
+   * Original sign-in, Unix epoch seconds (renewal carries it over). For a
+   * token without `uid` it is what ties the token to one incarnation of the
+   * row: the row it was minted for already existed at that moment.
+   */
+  auth_time: number;
 }
 
 /** The users-row fields that decide whether a session still stands. */
-export type SessionAccount = Pick<UserRecord, 'id' | 'status' | 'sessionVersion'>;
+export type SessionAccount = Pick<UserRecord, 'id' | 'status' | 'sessionVersion' | 'createdAt'>;
 
 /**
  * `ok` — the account still vouches for the session. `revoked` — it does not
@@ -107,9 +115,24 @@ export function accountVouchesFor(
   // Disabled takes effect on the next request, not at the next renewal.
   if (account.status !== 'active') return false;
   // A different row under the same identity (deleted and re-created).
-  if (session.uid !== undefined && session.uid !== account.id) return false;
+  if (!isRowMintedFor(account, session)) return false;
   // Sign-out, password reset or disable moved the version on.
   return account.sessionVersion === session.sv;
+}
+
+/**
+ * Is `account` the incarnation of the row this session was minted for? A
+ * token names it (`uid`). A token minted before that claim existed carries
+ * only its sign-in time, and the row it was minted for existed at that
+ * moment, so a row created in a later second is a re-creation: it starts at
+ * version 0 again and must not revive the old cookie. Whole seconds, because
+ * `auth_time` is floored to them — a sign-in in the second its row was
+ * created still counts. An unreadable creation time refuses.
+ */
+function isRowMintedFor(account: SessionAccount, session: SessionIdentity): boolean {
+  if (session.uid !== undefined) return session.uid === account.id;
+  const createdS = Math.floor(account.createdAt.getTime() / 1000);
+  return createdS <= session.auth_time;
 }
 
 /**

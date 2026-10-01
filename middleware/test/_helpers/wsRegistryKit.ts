@@ -32,6 +32,8 @@ import {
 export const KEY = new Uint8Array(64).fill(7);
 // Only this email is whitelisted — mirrors the requireAuth Entra gate.
 export const WHITELIST = new EmailWhitelist('allowed@example.com');
+/** `createdAt` of the suites' account rows: before any session they mint. */
+export const ACCOUNT_CREATED = new Date(0);
 
 export interface CookieOpts {
   /** Session version the token claims (`sv`). */

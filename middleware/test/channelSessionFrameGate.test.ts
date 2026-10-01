@@ -15,10 +15,14 @@
  *     the next frame checks again; a refusal that lands after the deadline
  *     still closes;
  *   - a revocation announced while the upgrade was being checked closes the
- *     socket at `accept`, before any handler sees it.
+ *     socket at `accept`, before any handler sees it — and so does (1013) a
+ *     flood of announcements too long to rule this user's revocation out;
+ *   - how old a verdict is and when a frame arrived are read from a monotonic
+ *     clock, so stepping the wall clock back cannot stretch a verdict.
  */
 
 import { strict as assert } from 'node:assert';
+import { performance } from 'node:perf_hooks';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 
 import type { WebSocket } from 'ws';
@@ -28,6 +32,7 @@ import type { RevocationListener } from '../src/auth/sessionRevocation.js';
 import {
   ChannelSessionTracker,
   RECENT_REVOCATIONS_KEPT,
+  WS_CLOSE_TRY_AGAIN,
   WS_SESSION_CHECK_TIMEOUT_MS,
   WS_SESSION_FRAME_RECHECK_MS,
   type ChannelSessionTrackerDeps,
@@ -35,6 +40,7 @@ import {
 } from '../src/channels/channelSessionLifetime.js';
 import {
   FakeWs,
+  MonotonicClock,
   NOW_MS,
   NOW_S,
   OK,
@@ -66,10 +72,13 @@ function verdicts(...queue: Array<SessionEvaluation | Promise<SessionEvaluation>
   };
 }
 
+let clock: MonotonicClock;
+
 function tracker(deps: Partial<ChannelSessionTrackerDeps>): ChannelSessionTracker {
   return new ChannelSessionTracker({
     evaluate: () => Promise.resolve(OK),
     recheckMs: NO_SWEEP_MS,
+    monotonicNow: clock.now,
     ...deps,
   });
 }
@@ -92,6 +101,7 @@ function open(t: ChannelSessionTracker, mark?: UpgradeMark, sub = 'u1'): Opened 
 
 beforeEach(() => {
   mock.timers.enable({ apis: ['setTimeout', 'Date'], now: NOW_MS });
+  clock = new MonotonicClock();
 });
 
 afterEach(() => {
@@ -108,9 +118,9 @@ describe('ChannelSessionTracker — every frame rides on a recent verdict', () =
     const v = verdicts(OK);
     const t = tracker({ evaluate: v.evaluate });
     const mark = t.mark();
-    mock.timers.tick(1_000); // the upgrade check took a second
+    clock.tick(1_000); // the upgrade check took a second
     const { ws, seen } = open(t, mark);
-    mock.timers.tick(3_999);
+    clock.tick(3_999);
     ws.frame('a');
     assert.deepEqual(seen, ['a']);
     assert.equal(v.checks(), 0);
@@ -121,7 +131,7 @@ describe('ChannelSessionTracker — every frame rides on a recent verdict', () =
     const v = verdicts(pending.promise);
     const t = tracker({ evaluate: v.evaluate });
     const { ws, seen } = open(t, t.mark());
-    mock.timers.tick(5_001);
+    clock.tick(5_001);
     ws.frame('a');
     ws.frame('b');
     ws.frame('c');
@@ -144,7 +154,7 @@ describe('ChannelSessionTracker — every frame rides on a recent verdict', () =
     const pending = deferred<SessionEvaluation>();
     const t = tracker({ evaluate: verdicts(pending.promise).evaluate });
     const { ws, seen, refused } = open(t, t.mark());
-    mock.timers.tick(5_001);
+    clock.tick(5_001);
     ws.frame('a');
     ws.frame('b');
     pending.resolve(REVOKED);
@@ -161,10 +171,10 @@ describe('ChannelSessionTracker — every frame rides on a recent verdict', () =
     const v = verdicts(OK);
     const t = tracker({ evaluate: v.evaluate, frameRecheckMs: 0 });
     const { ws, seen } = open(t, t.mark());
-    mock.timers.tick(1);
+    clock.tick(1);
     ws.frame('a');
     await settle();
-    mock.timers.tick(1);
+    clock.tick(1);
     ws.frame('b');
     await settle();
     assert.deepEqual(seen, ['a', 'b']);
@@ -193,7 +203,7 @@ describe('ChannelSessionTracker — no verdict, no frame', () => {
     const v = verdicts(UNAVAILABLE, OK);
     const t = tracker({ evaluate: v.evaluate });
     const { ws, seen, refused } = open(t, t.mark());
-    mock.timers.tick(5_001);
+    clock.tick(5_001);
     ws.frame('a');
     ws.frame('b');
     await settle();
@@ -214,7 +224,7 @@ describe('ChannelSessionTracker — no verdict, no frame', () => {
       },
     });
     const { ws, seen, refused } = open(t, t.mark());
-    mock.timers.tick(5_001);
+    clock.tick(5_001);
     ws.frame('a');
     await settle();
     assert.deepEqual([seen, refused], [[], ['a']]);
@@ -226,13 +236,13 @@ describe('ChannelSessionTracker — no verdict, no frame', () => {
     const v = verdicts(hung.promise, OK);
     const t = tracker({ evaluate: v.evaluate, checkTimeoutMs: 1_000 });
     const { ws, seen, refused } = open(t, t.mark());
-    mock.timers.tick(5_001);
+    clock.tick(5_001);
     ws.frame('a');
     await settle();
-    mock.timers.tick(999);
+    clock.tick(999);
     await settle();
     assert.deepEqual(refused, [], 'still inside the deadline');
-    mock.timers.tick(1);
+    clock.tick(1);
     await settle();
     assert.deepEqual(refused, ['a']);
     assert.equal(ws.closedWith, undefined);
@@ -251,12 +261,12 @@ describe('ChannelSessionTracker — no verdict, no frame', () => {
     const v = verdicts(OK, UNAVAILABLE, OK);
     const t = tracker({ evaluate: v.evaluate, recheckMs: 60_000 });
     const { ws, seen } = open(t, t.mark());
-    mock.timers.tick(59_000);
+    clock.tick(59_000);
     ws.frame('a'); // stale against the upgrade: check #1, ok
     await settle();
-    mock.timers.tick(1_000); // the sweep: check #2, unavailable
+    clock.tick(1_000); // the sweep: check #2, unavailable
     await settle();
-    mock.timers.tick(1_000); // 2 s after the ok verdict, 1 s after the outage
+    clock.tick(1_000); // 2 s after the ok verdict, 1 s after the outage
     ws.frame('b'); // must not ride on the ok from before the outage: check #3
     await settle();
     assert.deepEqual(seen, ['a', 'b']);
@@ -307,16 +317,79 @@ describe('ChannelSessionTracker — the upgrade window', () => {
     assert.equal(v.checks(), 0);
   });
 
-  it('when more announcements arrived than are kept, the first frame is checked again', async () => {
+  it('when more announcements arrived than are kept, it closes with 1013 before any handler sees it', () => {
     const a = announcer();
     const v = verdicts(OK);
     const t = tracker({ evaluate: v.evaluate, revocations: a.revocations });
     const mark = t.mark();
     for (let i = 0; i <= RECENT_REVOCATIONS_KEPT; i += 1) a.announce(`other-${String(i)}`);
+    const ws = new FakeWs();
+    const socket = t.accept(ws as unknown as WebSocket, REQ, 'ch', session(EXP, 'u1'), mark);
+    // u1's own revocation may have been among those dropped from the log, so
+    // the upgrade verdict is worth nothing — not even until a first frame: a
+    // handler's connection-time work and its pushes need no frame.
+    assert.equal(socket, undefined, 'no socket is handed to the handler');
+    assert.deepEqual(ws.closedWith, { code: WS_CLOSE_TRY_AGAIN, reason: 'session unverified' });
+    assert.equal(v.checks(), 0, 'the reconnect gets checked, not this socket');
+    assert.equal(t.closeSessions(() => true), 0, 'nothing is left behind');
+  });
+
+  it('as many announcements as are kept, none of them this user\'s: the socket is handed over', () => {
+    const a = announcer();
+    const v = verdicts(OK);
+    const t = tracker({ evaluate: v.evaluate, revocations: a.revocations });
+    const mark = t.mark();
+    for (let i = 0; i < RECENT_REVOCATIONS_KEPT; i += 1) a.announce(`other-${String(i)}`);
     const { ws, seen } = open(t, mark, 'u1');
+    ws.frame('a');
+    assert.deepEqual(seen, ['a']);
+    assert.equal(ws.closedWith, undefined);
+    assert.equal(v.checks(), 0);
+  });
+});
+
+describe('ChannelSessionTracker — ages run on a monotonic clock', () => {
+  it('a wall clock stepped back does not let a frame ride on a verdict past the bound', async () => {
+    const v = verdicts(OK);
+    const t = tracker({ evaluate: v.evaluate });
+    const { ws, seen } = open(t, t.mark());
+    clock.tick(5_001); // the upgrade verdict is now too old for a frame
+    mock.timers.setTime(NOW_MS - 3_600_000); // the wall clock steps back an hour
     ws.frame('a');
     await settle();
     assert.deepEqual(seen, ['a']);
-    assert.equal(v.checks(), 1, 'the upgrade verdict is not trusted blind');
+    assert.equal(v.checks(), 1, 'the frame waited for a fresh check');
+  });
+
+  it('a verdict from before the step serves no longer than the bound after it', async () => {
+    const v = verdicts(OK);
+    const t = tracker({ evaluate: v.evaluate });
+    const { ws, seen } = open(t, t.mark());
+    clock.tick(5_001);
+    ws.frame('a'); // check #1
+    await settle();
+    mock.timers.setTime(NOW_MS - 3_600_000); // the wall clock steps back an hour
+    clock.tick(4_999);
+    ws.frame('b'); // still within the bound of check #1
+    clock.tick(2);
+    ws.frame('c'); // past it, whatever the wall clock says
+    await settle();
+    assert.deepEqual(seen, ['a', 'b', 'c']);
+    assert.equal(v.checks(), 2);
+  });
+
+  it('defaults to performance.now, never to the wall clock', async (t) => {
+    let monotonic = 0;
+    t.mock.method(performance, 'now', () => monotonic);
+    const v = verdicts(OK);
+    // No `monotonicNow`: the production default.
+    const tr = new ChannelSessionTracker({ evaluate: v.evaluate, recheckMs: NO_SWEEP_MS });
+    const { ws, seen } = open(tr, tr.mark());
+    monotonic += 5_001;
+    mock.timers.setTime(NOW_MS - 3_600_000);
+    ws.frame('a');
+    await settle();
+    assert.deepEqual(seen, ['a']);
+    assert.equal(v.checks(), 1);
   });
 });

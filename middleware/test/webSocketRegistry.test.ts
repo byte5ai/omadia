@@ -34,6 +34,7 @@ import { WebSocket } from 'ws';
 import type { SessionAccount } from '../src/auth/sessionRevocation.js';
 import { CHANNEL_WS_MAX_PAYLOAD_BYTES } from '../src/channels/webSocketRegistry.js';
 import {
+  ACCOUNT_CREATED,
   FAST,
   authCookie,
   bearerAuth,
@@ -60,7 +61,12 @@ describe('WebSocketRegistry — server-side session revocation on upgrade', () =
       sessions: revocationGuard(accounts, { fail: () => failing }),
     });
     // u1 has signed out once since its first sign-in: version 1 is current.
-    accounts.set('local:u1', { id: 'row-u1', status: 'active', sessionVersion: 1 });
+    accounts.set('local:u1', {
+      id: 'row-u1',
+      status: 'active',
+      sessionVersion: 1,
+      createdAt: ACCOUNT_CREATED,
+    });
   });
 
   after(async () => {

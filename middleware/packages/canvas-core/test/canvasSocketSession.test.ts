@@ -226,6 +226,19 @@ describe('CanvasSocket — session close codes', () => {
     expect(h.last().headers).toEqual({ Cookie: 'omadia_session=a' });
   });
 
+  it('1013 before any handshake (the server could not trust its upgrade check) reconnects with backoff', () => {
+    const h = harness('omadia_session=a');
+    h.socket.connect();
+
+    // Closed right after the 101, before an offer: no verdict on the cookie.
+    h.last().serverClose(1013, 'session unverified');
+    expect(h.lastStatus()).toEqual({ state: 'connecting', detail: 'reconnecting in 1000ms' });
+    vi.advanceTimersByTime(1000);
+    expect(h.sockets).toHaveLength(2);
+    h.last().accept();
+    expect(h.lastStatus()).toMatchObject({ state: 'ready' });
+  });
+
   it('connect() during a pending backoff does not open a second socket', () => {
     const h = harness('omadia_session=a');
     h.socket.connect();

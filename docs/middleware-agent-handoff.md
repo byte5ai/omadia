@@ -592,7 +592,9 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   - Am `exp` des Tokens → Close **4401** `session expired`. Ein Token ohne
     `exp` oder eines, das zwischen Upgrade-Prüfung und Handshake abläuft, wird
     mit 4401 geschlossen, **bevor** der Handler läuft; ein Frame nach `exp`
-    wird verworfen, auch wenn der Timer spät dran ist.
+    wird verworfen, eingehend wie ausgehend (`socket.send` des Handlers), auch
+    wenn der Timer spät dran ist — `exp` ist Wanduhrzeit, die Wanduhr
+    entscheidet.
   - Widerruf auf dieser Replica: `SessionRevocation.onRevoked` (Logout,
     Passwort-Reset, Deaktivieren, Löschen, siehe „Serverseitiger
     Sitzungs-Widerruf“ in §3) schließt die Sockets des Users sofort mit **4403**
@@ -601,7 +603,13 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
     Upgrade-Prüfung eintrifft, findet noch keinen Socket: die Registry merkt
     sich davor den Widerrufszähler (`ChannelSessionTracker.mark()`), und
     `accept` schließt mit 4403, **bevor** der Handler läuft
-    (`RevocationLog` in `src/channels/channelSessionCheck.ts`).
+    (`RevocationLog` in `src/channels/channelSessionCheck.ts`). Das Log hält
+    die letzten 256 Ankündigungen (`RECENT_REVOCATIONS_KEPT`); kamen während
+    einer Upgrade-Prüfung mehr, lässt sich ein Widerruf dieses Users nicht
+    ausschließen → Close **1013** `session unverified`, ebenfalls **bevor**
+    der Handler läuft, und der Reconnect des Clients wird frisch geprüft.
+    Nicht „erst beim ersten Frame prüfen“: Arbeit beim Verbindungsaufbau und
+    Pushes des Handlers brauchen keinen Frame.
   - Widerruf auf anderen Replicas — **der nächste Frame**: `announce` ist
     prozesslokal, deshalb wird jeder eingehende Frame einzeln geprüft. Er
     erreicht den Handler nur auf einem Urteil, dessen Prüfung höchstens
@@ -612,7 +620,10 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
     Socket liest so lange nicht weiter (`ws.pause()`, TCP-Backpressure statt
     wachsendem Puffer). Widerrufen → 4403 `session revoked`, Entra-Whitelist
     entzogen → 4403 `session forbidden`, Token nicht mehr gültig → 4401; die
-    wartenden Frames verfallen.
+    wartenden Frames verfallen. Prüfbeginn und Frame-Ankunft misst der
+    Tracker mit einer monotonen Uhr (`performance.now`, injizierbar als
+    `monotonicNow`): ein Zurückstellen der Wanduhr (NTP, VM-Resume) kann ein
+    Urteil nicht über die Grenze hinaus strecken.
   - Leerlauf: ein Sweep alle `WS_SESSION_RECHECK_MS` (60 s) prüft jeden
     offenen Socket genauso. Das begrenzt, was ein Socket ohne eigene Frames
     noch bekommt (Notification-Pushes).
@@ -672,13 +683,14 @@ Ausfall hält Frames zurück, schließt aber nicht, keine Timer/Re-Checks nach
 Close oder Deaktivierung), `test/webSocketRegistryFrameGate.test.ts` (echte
 Sockets: Widerruf auf einer anderen Replica stoppt den nächsten Frame samt
 den dahinter wartenden, `announce` während der Upgrade-Prüfung schließt vor
-dem Handler, fehlgeschlagener bzw. hängender Lookup hält Frames zurück und
-der Socket beantwortet weiter Pings, Grenze 0 prüft jeden Frame),
+dem Handler, mehr Ankündigungen als gehalten → 1013 vor dem Handler und der
+Reconnect klappt, fehlgeschlagener bzw. hängender Lookup hält Frames zurück
+und der Socket beantwortet weiter Pings, Grenze 0 prüft jeden Frame),
 `test/channelSessionTracker.test.ts` (Mock-Timer: exakt am `exp`, später
-Timer, setTimeout-Obergrenze, Verdict-Mapping),
+Timer für ein- und ausgehende Frames, setTimeout-Obergrenze, Verdict-Mapping),
 `test/channelSessionFrameGate.test.ts` (Mock-Timer: Frame-Grenze und
 Default, Reihenfolge, Backpressure, Ausfall und Deadline, späte Ablehnung,
-Upgrade-Fenster), `test/uiChannelSessionRefusal.test.ts` (was der Canvas mit
+Upgrade-Fenster samt Überlauf, zurückgestellte Wanduhr), `test/uiChannelSessionRefusal.test.ts` (was der Canvas mit
 einem zurückgehaltenen Frame macht), `test/uiChannelSessionGate.test.ts`
 (Canvas an einer echten Registry: ein Turn nach einem Widerruf anderswo
 startet nie, im Ausfall gibt es `turn_error` und der Socket bleibt) und
@@ -2261,8 +2273,10 @@ Sitzung ohne Navigation.
   5. Audit-Zeile `auth.session_renew` (`actor.id` = users-UUID, #775),
      **vor** dem Cookie: scheitert der Audit-Write, gibt es 500 und kein
      neues Cookie.
-  6. Gleiche Claims neu signiert (`auth_time`, `sv`, `sid`, `uid` werden
-     übernommen), `exp = min(now + 4h, auth_time + cap)`.
+  6. Gleiche Claims neu signiert (`auth_time`, `sv`, `sid` werden
+     übernommen; `uid` ist die Zeile, die Schritt 3 geprüft hat — dieselbe
+     `id`, bei einem Alt-Token ohne `uid` erstmals gesetzt),
+     `exp = min(now + 4h, auth_time + cap)`.
      Antwort `{ expires_at, server_now, renewable_until }`.
 - Ohne `renewal`-Deps im `AuthDeps` (Test-Harnesses) antwortet `/renew` mit
   503 `auth.renew_unavailable`.
@@ -2301,7 +2315,10 @@ verlängern). Jetzt gibt es einen Marker pro User.
   `uid` (`users.id`, bindet das Token an genau diese Zeile) und `sid`
   (Zufalls-ID pro Anmeldung, wird noch nicht geprüft). Alte Tokens ohne `sv`
   gelten als Version 0 — so startet jede bestehende Zeile, das Upgrade meldet
-  also niemanden ab.
+  also niemanden ab. Ohne `uid` bindet ihre Anmeldezeit (`auth_time`, ganze
+  Sekunden) sie an die Zeile: eine später angelegte Zeile (gelöscht und neu
+  angelegt) trägt sie nicht, obwohl sie wieder bei Version 0 startet. Die
+  erste Verlängerung setzt die `uid` der geprüften Zeile.
 - **Prüfung** in `evaluateSessionToken` über `SessionRevocationGuard`
   (`auth/sessionRevocation.ts`, in `index.ts` einmal gebaut und nach
   `new UserStore(graphPool)` per `attach` verdrahtet): Zeile weg, `disabled`,
@@ -2314,8 +2331,9 @@ verlängern). Jetzt gibt es einen Marker pro User.
   Admin-Passwort-Reset und Deaktivieren (`UserStore.update(id, {…,
   revokeSessions: true })`, im selben UPDATE wie Hash bzw. Status). Löschen
   braucht keinen Bump — ohne Zeile keine Sitzung, und eine neu angelegte
-  Zeile hat eine neue `id`. Das eigene Passwort zurückzusetzen meldet auch
-  einen selbst ab.
+  Zeile hat eine neue `id` (und für Alt-Tokens ohne `uid` ein jüngeres
+  `created_at` als deren Anmeldung). Das eigene Passwort zurückzusetzen meldet
+  auch einen selbst ab.
 - **Login-Pfade** stempeln `sv`/`uid` aus der geprüften Zeile: Passwort-Login
   aus demselben Read wie die Hash-Prüfung (`PasswordAuthSuccess.account`),
   OIDC-Callback aus der upserteten Zeile (für eine deaktivierte Zeile wird

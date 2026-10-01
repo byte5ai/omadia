@@ -43,6 +43,7 @@ import {
   WS_SESSION_RECHECK_MS,
 } from '../src/channels/webSocketRegistry.js';
 import {
+  ACCOUNT_CREATED,
   FAST,
   KEY,
   MutableWhitelist,
@@ -72,7 +73,7 @@ function echoHandler(seen: string[] = []): (socket: ChannelSocket) => void {
 }
 
 function account(id: string, sessionVersion = 0): SessionAccount {
-  return { id, status: 'active', sessionVersion };
+  return { id, status: 'active', sessionVersion, createdAt: ACCOUNT_CREATED };
 }
 
 async function withServer(

@@ -9,9 +9,11 @@ import type { SessionRevocation } from '../auth/sessionRevocation.js';
 
 import { withoutSessionCookie, type AuthenticatedChannelSession } from './channelSessionAuth.js';
 import {
+  RECENT_REVOCATIONS_KEPT,
   RevocationLog,
   WS_CLOSE_SESSION_EXPIRED,
   WS_CLOSE_SESSION_FORBIDDEN,
+  WS_CLOSE_TRY_AGAIN,
   closeForRefusal,
   evaluateSafely,
   withDeadline,
@@ -24,6 +26,7 @@ export {
   RECENT_REVOCATIONS_KEPT,
   WS_CLOSE_SESSION_EXPIRED,
   WS_CLOSE_SESSION_FORBIDDEN,
+  WS_CLOSE_TRY_AGAIN,
   type SessionCloseReason,
   type UpgradeMark,
 } from './channelSessionCheck.js';
@@ -37,11 +40,12 @@ export {
  *   {@link WS_CLOSE_SESSION_EXPIRED} at that moment (a timer, re-armed past
  *   setTimeout's ceiling). A token without `exp`, or one that expired while
  *   the upgrade was being checked, is closed before the handler runs, and a
- *   frame that arrives after `exp` is dropped even if the timer is late.
+ *   frame received or sent after `exp` is dropped even if the timer is late.
  * - **Revocation, this replica.** `SessionRevocation.onRevoked` (sign-out,
  *   password reset, disable, delete) closes that user's sockets at once with
  *   {@link WS_CLOSE_SESSION_FORBIDDEN} — also a socket whose upgrade was
- *   still being checked when the revocation was announced.
+ *   still being checked when it was announced; with too many announcements
+ *   during that check to tell, {@link WS_CLOSE_TRY_AGAIN} instead.
  * - **Revocation, every replica: the next frame.** An announcement is
  *   process-local, so every inbound frame is checked on its own: it reaches
  *   the handler only on a verdict whose check started at most
@@ -51,7 +55,8 @@ export {
  *   verdict path HTTP uses) runs again; the socket stops reading meanwhile
  *   (TCP backpressure, so the wait cannot grow a buffer). A revoked session
  *   or a de-whitelisted identity closes with 4403, a token that no longer
- *   verifies with 4401, and the waiting frames are dropped.
+ *   verifies with 4401, and the waiting frames are dropped. Both moments come
+ *   from a monotonic clock, so a wall-clock step cannot stretch the bound.
  * - **Idle sockets.** Every {@link WS_SESSION_RECHECK_MS} one sweep checks
  *   every live socket too, which bounds what a socket that sends nothing
  *   still receives (notification pushes).
@@ -109,13 +114,19 @@ export interface ChannelSessionTrackerDeps {
   checkTimeoutMs?: number;
   /** Push side of server-side revocation (optional, like the registry's). */
   revocations?: Pick<SessionRevocation, 'onRevoked'>;
+  /** Monotonic ms clock for verdict and frame ages (default `performance.now`). */
+  monotonicNow?: () => number;
 }
 
 /** What a check means for the frames waiting on it. */
 type Verdict = 'ok' | 'unknown' | 'closed';
 
+/** `verifiedAt` while no verdict stands: older than any frame. */
+const NO_VERDICT = Number.NEGATIVE_INFINITY;
+
 interface HeldFrame {
   readonly text: string;
+  /** Arrival, on the monotonic clock (ms). */
   readonly at: number;
 }
 
@@ -131,7 +142,7 @@ interface LiveSession {
   expiryTimer: NodeJS.Timeout | undefined;
   /** The check in flight; the sweep and the frames share it. */
   check: Promise<Verdict> | undefined;
-  /** When the check behind the standing `ok` verdict started (ms); 0 = none stands. */
+  /** Monotonic start (ms) of the check behind the standing `ok`, or {@link NO_VERDICT}. */
   verifiedAt: number;
   draining: boolean;
   ended: boolean;
@@ -142,11 +153,13 @@ export class ChannelSessionTracker {
   private readonly revocationLog = new RevocationLog();
   private readonly frameRecheckMs: number;
   private readonly checkTimeoutMs: number;
+  private readonly monotonicNow: () => number;
   private sweepTimer: NodeJS.Timeout | undefined;
 
   constructor(private readonly deps: ChannelSessionTrackerDeps) {
     this.frameRecheckMs = deps.frameRecheckMs ?? WS_SESSION_FRAME_RECHECK_MS;
     this.checkTimeoutMs = deps.checkTimeoutMs ?? WS_SESSION_CHECK_TIMEOUT_MS;
+    this.monotonicNow = deps.monotonicNow ?? (() => performance.now());
     deps.revocations?.onRevoked((who) => {
       this.revocationLog.record(who);
       this.closeSessions(
@@ -161,14 +174,14 @@ export class ChannelSessionTracker {
    * announced while the check runs still reaches the socket.
    */
   mark(): UpgradeMark {
-    return this.revocationLog.mark();
+    return { revocations: this.revocationLog.announced, at: this.monotonicNow() };
   }
 
   /**
    * Take over an accepted socket. Returns the handler-facing socket, or
-   * `undefined` when the session already ended — expired (4401) or revoked
-   * on this replica while the upgrade was being checked (4403); the socket is
-   * then closed and the handler must not run.
+   * `undefined` when the session already ended — expired (4401), revoked on
+   * this replica during the upgrade check (4403) or possibly so (1013); the
+   * socket is then closed and the handler must not run.
    */
   accept(
     ws: WebSocket,
@@ -197,11 +210,22 @@ export class ChannelSessionTracker {
     this.armExpiry(live);
     const duringUpgrade = this.revocationLog.since(mark, live.session.claims);
     if (duringUpgrade === 'revoked') this.end(live, WS_CLOSE_SESSION_FORBIDDEN, 'session revoked');
-    // Too many announcements to tell: the upgrade verdict counts for nothing.
-    if (duringUpgrade === 'unknown') live.verifiedAt = 0;
+    if (duringUpgrade === 'unknown') this.refuseUnverified(live);
     if (live.ended) return undefined;
     this.scheduleSweep();
     return this.wrap(live, req);
+  }
+
+  /**
+   * Too many revocations during the upgrade check to rule this user's out: no
+   * handler runs on that verdict — connection-time work and pushes need no
+   * frame — and 1013 sends the client back through a fresh check.
+   */
+  private refuseUnverified(live: LiveSession): void {
+    if (!this.end(live, WS_CLOSE_TRY_AGAIN, 'session unverified')) return;
+    console.warn(
+      `[channels] websocket upgrade closed with 1013: over ${String(RECENT_REVOCATIONS_KEPT)} revocations during its check (channel=${live.channelId})`,
+    );
   }
 
   /**
@@ -245,9 +269,14 @@ export class ChannelSessionTracker {
     live.expiryTimer = timer;
   }
 
+  /** Has `exp` passed? The wall clock decides: `exp` is wall-clock time. */
+  private pastExpiry(live: LiveSession): boolean {
+    return Date.now() >= live.session.expiresAt * 1000;
+  }
+
   /** Close at `exp` even if the expiry timer runs late; true when it did. */
   private expired(live: LiveSession): boolean {
-    if (Date.now() < live.session.expiresAt * 1000) return false;
+    if (!this.pastExpiry(live)) return false;
     this.end(live, WS_CLOSE_SESSION_EXPIRED, 'session expired');
     return true;
   }
@@ -288,7 +317,7 @@ export class ChannelSessionTracker {
   /** An inbound frame: dropped once the session ended, otherwise queued for its verdict. */
   private receive(live: LiveSession, text: string): void {
     if (!this.isOpen(live) || this.expired(live)) return;
-    live.held.push({ text, at: Date.now() });
+    live.held.push({ text, at: this.monotonicNow() });
     this.drain(live).catch((err: unknown) => {
       // Nothing in `drain` is expected to throw; never let it go unhandled.
       console.error(`[channels] websocket frame gate failed: ${describe(err)}`);
@@ -340,7 +369,7 @@ export class ChannelSessionTracker {
     if (live.check === undefined) {
       const check = this.runCheck(live).catch((err: unknown) => {
         console.error(`[channels] websocket session re-check failed: ${describe(err)}`);
-        live.verifiedAt = 0;
+        live.verifiedAt = NO_VERDICT;
         return 'unknown' as const;
       });
       live.check = check;
@@ -353,7 +382,7 @@ export class ChannelSessionTracker {
   }
 
   private async runCheck(live: LiveSession): Promise<Verdict> {
-    const startedAt = Date.now();
+    const startedAt = this.monotonicNow();
     const evaluation = evaluateSafely((token) => this.deps.evaluate(token), live.session.token);
     const result = await withDeadline(evaluation, this.checkTimeoutMs);
     if (result === undefined) {
@@ -371,7 +400,7 @@ export class ChannelSessionTracker {
     if (result !== undefined && this.closeIfRefused(live, result)) return 'closed';
     // An outage (failed lookup, throw, deadline): no frame rides on an
     // earlier verdict any more.
-    live.verifiedAt = 0;
+    live.verifiedAt = NO_VERDICT;
     return 'unknown';
   }
 
@@ -411,7 +440,14 @@ export class ChannelSessionTracker {
     const { ws } = live;
     return {
       send: (data: string) => {
-        if (!live.ended) ws.send(data);
+        if (live.ended) return;
+        if (this.pastExpiry(live)) {
+          // Outbound stops at `exp` like inbound, even with the timer late; the
+          // close follows a microtask later, never inside the handler's `send`.
+          queueMicrotask(() => this.expired(live));
+          return;
+        }
+        ws.send(data);
       },
       onMessage: (cb: (data: string) => void) => {
         live.messageListeners.push(cb);

@@ -28,6 +28,7 @@ export type { WebSocketAuthResult, WebSocketAuthenticator } from './webSocketUpg
 export {
   WS_CLOSE_SESSION_EXPIRED,
   WS_CLOSE_SESSION_FORBIDDEN,
+  WS_CLOSE_TRY_AGAIN,
   WS_SESSION_CHECK_TIMEOUT_MS,
   WS_SESSION_FRAME_RECHECK_MS,
   WS_SESSION_RECHECK_MS,
@@ -66,9 +67,10 @@ export {
  * on this replica, otherwise before the socket's next frame is handled (a
  * frame needs a verdict at most {@link WS_SESSION_FRAME_RECHECK_MS} old) and,
  * for a socket that sends nothing, within {@link WS_SESSION_RECHECK_MS}. While
- * the session cannot be checked, frames are withheld from the handler. Kernel
- * routes own their principal and therefore their lifetime: the registry
- * enforces none for them.
+ * the session cannot be checked, frames are withheld from the handler, and an
+ * upgrade whose verdict cannot be trusted closes with 1013 before its handler
+ * runs. Kernel routes own their principal and therefore their lifetime: the
+ * registry enforces none for them.
  *
  * Every accepted socket carries an `'error'` listener: `ws` emits `'error'` on
  * any protocol violation from the peer (including a frame above the route's
@@ -388,9 +390,9 @@ export class WebSocketRegistry {
         auth.principal,
         mark,
       );
-      // Expired (or no `exp` at all, 4401) or revoked on this replica (4403)
-      // while the upgrade was being checked: already closed, and the handler
-      // never sees it.
+      // Expired (or no `exp` at all, 4401), revoked on this replica (4403) or
+      // possibly revoked (1013) while the upgrade was being checked: already
+      // closed, and the handler never sees it.
       if (!channelSocket) return;
       route.handler(channelSocket, { ...auth.principal.claims });
     });

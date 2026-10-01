@@ -50,7 +50,8 @@ function user(overrides: Partial<UserRecord>): UserRecord {
     displayName: 'Admin',
     role: 'admin',
     status: 'active',
-    createdAt: now,
+    // Before every sign-in in here (a token without uid is held to it).
+    createdAt: new Date((nowS() - 30 * 24 * HOUR) * 1000),
     updatedAt: now,
     lastLoginAt: null,
     sessionVersion: 0,
@@ -345,6 +346,22 @@ describe('POST /api/v1/auth/renew (#965)', () => {
     assert.equal(res.status, 200);
     const renewed = await verifySession(cookieToken(res) ?? '', KEY);
     assert.equal(renewed.auth_time, iat, 'the old iat becomes the carried auth_time');
+    assert.equal(renewed.uid, 'row-uuid-local', 'bound by id to the row the renewal verified');
+  });
+
+  it('refuses a token without uid once its row was deleted and re-created (auth.renew_denied)', async () => {
+    const h = await start();
+    const iat = nowS() - HOUR;
+    const legacy = await legacyToken(iat, iat + 4 * HOUR);
+    // Re-created after that sign-in: a new id, back at version 0 like the
+    // token — and still not the row it was minted for.
+    h.store.rows[0] = user({ id: 'row-uuid-recreated', createdAt: new Date() });
+    await expectRefusal(await renew(h, legacy), 401, 'auth.renew_denied');
+    // The same with the guard wired: refused up front.
+    const guarded = await start({ withGuard: true });
+    guarded.store.rows[0] = user({ id: 'row-uuid-recreated', createdAt: new Date() });
+    await expectRefusal(await renew(guarded, legacy), 401, 'auth.revoked');
+    assert.equal(h.audits.length + guarded.audits.length, 0);
   });
 
   it('applies the whitelist gate (403 auth.not_whitelisted)', async () => {

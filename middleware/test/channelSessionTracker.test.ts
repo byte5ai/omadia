@@ -4,7 +4,9 @@
  *
  *   - the expiry close lands at `exp` exactly, not a millisecond earlier;
  *   - a frame that arrives after `exp` while the expiry timer is late is
- *     dropped and the socket closed right there;
+ *     dropped and the socket closed right there, and so is a frame the
+ *     handler sends after `exp` (the close follows a microtask later, never
+ *     inside the handler's own `send`);
  *   - an `exp` beyond setTimeout's ~24.8-day ceiling is re-armed, not fired
  *     early;
  *   - a session without `exp` is closed at accept and no socket is handed out;
@@ -81,6 +83,31 @@ describe('ChannelSessionTracker — expiry', () => {
     ws.emit('message', Buffer.from('too late'), false);
     assert.deepEqual(seen, ['in time']);
     assert.deepEqual(ws.closedWith, { code: 4401, reason: 'session expired' });
+  });
+
+  it('drops a frame the handler sends after exp while the expiry timer is late, and closes', async () => {
+    const t = tracker();
+    const ws = new FakeWs();
+    const socket = t.accept(ws as unknown as WebSocket, REQ, 'ch', session(NOW_S + 10));
+    let sending = false;
+    let closedInsideSend = false;
+    socket?.onClose(() => {
+      closedInsideSend = sending;
+    });
+    // The wall clock reaches exp, but the expiry timer has not run yet.
+    mock.timers.setTime(NOW_MS + 9_999);
+    socket?.send('in time');
+    mock.timers.setTime(NOW_MS + 10_000);
+    sending = true;
+    socket?.send('turn output after exp');
+    sending = false;
+    assert.deepEqual(ws.sent, ['in time'], 'nothing reaches the peer at or after exp');
+
+    await settle();
+    assert.deepEqual(ws.closedWith, { code: 4401, reason: 'session expired' });
+    assert.equal(closedInsideSend, false, "onClose never runs inside the handler's own send");
+    socket?.send('after the close');
+    assert.deepEqual(ws.sent, ['in time']);
   });
 
   it('re-arms past the setTimeout ceiling instead of firing early', () => {

@@ -27,11 +27,20 @@ export const WS_CLOSE_SESSION_EXPIRED = 4401;
  */
 export const WS_CLOSE_SESSION_FORBIDDEN = 4403;
 
+/**
+ * The upgrade's verdict cannot be trusted: more revocations were announced
+ * while it ran than this replica keeps, so this user's may be among them.
+ * Not a verdict on the session — 1013 is "Try Again Later", and the client's
+ * reconnect goes through a fresh upgrade check.
+ */
+export const WS_CLOSE_TRY_AGAIN = 1013;
+
 export type SessionCloseReason =
   | 'session expired'
   | 'session invalid'
   | 'session revoked'
-  | 'session forbidden';
+  | 'session forbidden'
+  | 'session unverified';
 
 /** Announced revocations kept for upgrades whose session check still runs. */
 export const RECENT_REVOCATIONS_KEPT = 256;
@@ -95,7 +104,10 @@ export async function withDeadline<T>(pending: Promise<T>, ms: number): Promise<
 export interface UpgradeMark {
   /** How many revocations this replica had announced at that moment. */
   readonly revocations: number;
-  /** When the check started (ms): the upgrade verdict's age counts from here. */
+  /**
+   * When the check started, on the tracker's monotonic clock (ms): the
+   * upgrade verdict's age counts from here.
+   */
   readonly at: number;
 }
 
@@ -116,8 +128,9 @@ export class RevocationLog {
     if (this.recent.length > RECENT_REVOCATIONS_KEPT) this.recent.shift();
   }
 
-  mark(): UpgradeMark {
-    return { revocations: this.count, at: Date.now() };
+  /** How many revocations this replica has announced so far. */
+  get announced(): number {
+    return this.count;
   }
 
   /**
@@ -125,7 +138,7 @@ export class RevocationLog {
    * revocations arrived meanwhile than the log keeps.
    */
   since(
-    mark: UpgradeMark,
+    mark: Pick<UpgradeMark, 'revocations'>,
     claims: Pick<ChannelSessionClaims, 'provider' | 'subject'>,
   ): 'revoked' | 'clear' | 'unknown' {
     if (this.count === mark.revocations) return 'clear';

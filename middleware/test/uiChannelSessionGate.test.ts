@@ -23,6 +23,7 @@ import { handleCanvasSocket } from '../packages/omadia-ui-channel/src/canvasConn
 
 import type { SessionAccount } from '../src/auth/sessionRevocation.js';
 import {
+  ACCOUNT_CREATED,
   FAST,
   authCookie,
   closeClient,
@@ -40,7 +41,7 @@ interface Frame {
 }
 
 function account(sessionVersion = 0): SessionAccount {
-  return { id: 'row-u1', status: 'active', sessionVersion };
+  return { id: 'row-u1', status: 'active', sessionVersion, createdAt: ACCOUNT_CREATED };
 }
 
 /** The canvas channel on `/canvas`; `turns` counts orchestrator calls. */

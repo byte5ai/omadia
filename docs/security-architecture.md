@@ -1320,9 +1320,11 @@ IdP side of the renewal chain. Both happen only when the presented cookie is
 itself still current: a revoked copy reaching the public `/logout` route gets
 its own cookie cleared and changes nothing server-side.
 
-Re-signing carries `sv`, `sid` and `uid` over together with `auth_time`: a
-renewed token belongs to the same sign-in of the same account version, so a
-later sign-out or reset ends it like the original.
+Re-signing carries `sv` and `sid` over together with `auth_time`: a renewed
+token belongs to the same sign-in of the same account version, so a later
+sign-out or reset ends it like the original. `uid` is the id of the row the
+renewal just verified: the same id for a token that names one, and the first
+one for a token minted before the claim existed (§10k).
 
 **A renewal extends the cookie, not an open WebSocket.** A channel socket
 stays bound to the token that opened it and is closed with 4401 at that
@@ -1473,8 +1475,10 @@ channel socket:
   and the session cookie is stripped from `socket.request.headers`. At `exp`
   the socket is closed with **4401** `session expired`. A token without `exp`,
   or one that expired between the upgrade check and the handshake, is closed
-  with 4401 before the handler runs. A frame that arrives after `exp` is
-  dropped even when the timer runs late.
+  with 4401 before the handler runs. A frame that arrives after `exp`, and a
+  frame the handler sends after it (turn output, a notification push), is
+  dropped even when the timer runs late: `exp` is wall-clock time, and the
+  wall clock decides.
 - **Revocation on this replica.** A route that revokes calls
   `SessionRevocation.announce` (§10k). The registry listens and closes that
   user's sockets at once with **4403** `session revoked`.
@@ -1482,7 +1486,13 @@ channel socket:
   kernel path. An announcement that lands while an upgrade is still being
   checked finds no socket yet. The registry notes the revocation count before
   that check, and if this user was revoked in between, `accept` closes the
-  socket with 4403 before the handler runs.
+  socket with 4403 before the handler runs. It keeps the last 256
+  announcements for this. When more arrived during one upgrade's check, it
+  cannot rule out that this user's was among them. It then closes with
+  **1013** `session unverified`, also before the handler runs, and the
+  client's reconnect gets a check of its own. The registry never hands such a
+  socket over to be checked at its first frame, because a handler's
+  connection-time work and its pushes need no frame.
 - **Revocation on every replica: the next frame.** The announcement is
   process-local, so the guarantee across replicas (and for a revocation made
   directly in SQL) is a check per inbound frame. A frame reaches the handler
@@ -1497,7 +1507,9 @@ channel socket:
   frames are dropped. So no frame that arrives more than
   `WS_SESSION_FRAME_RECHECK_MS` after a revocation made elsewhere is
   handled: it waits for a check that sees the revocation, and the socket
-  closes.
+  closes. When a check started and when a frame arrived are both read from a
+  monotonic clock (`performance.now`), so stepping the wall clock back (NTP,
+  a VM resume) cannot stretch a verdict past that bound.
 - **Idle sockets.** Every `WS_SESSION_RECHECK_MS` (60 s, the admin UI's
   heartbeat cadence) one sweep runs the same check for every live socket.
   That bounds what a socket that sends nothing still receives, such as
@@ -1542,7 +1554,8 @@ next `connect()`, after it renewed or signed in, opens a socket again; a
 canvas switch in between only records which canvas that `connect()` resumes,
 since a reopen with the ended cookie is refused before the upgrade and looks
 like a network drop to the client. A cookie provider (`cookie: () => string`)
-supplies the current cookie on every connect.
+supplies the current cookie on every connect. A 1013 is no verdict on the
+cookie, so the client simply reconnects in its normal backoff.
 
 Kernel routes get none of this. Their principal is opaque to the registry, so
 a kernel route whose credential can expire or be revoked must close its own
@@ -1562,13 +1575,16 @@ outage withholds frames but keeps the socket, no timer or re-check after a
 close or a deactivation), `middleware/test/webSocketRegistryFrameGate.test.ts`
 (a revocation on another replica stops the next frame and the frames queued
 behind its check, a revocation announced during the upgrade closes before the
-handler runs, a failed or hung lookup withholds frames while the socket stays
-open and answers pings, a bound of 0 checks every frame),
-`middleware/test/channelSessionTracker.test.ts` (exactly at `exp`, a late
-timer, the setTimeout ceiling, verdict mapping, one check at a time),
+handler runs, more announcements than are kept close with 1013 before the
+handler runs and the reconnect works, a failed or hung lookup withholds frames
+while the socket stays open and answers pings, a bound of 0 checks every
+frame), `middleware/test/channelSessionTracker.test.ts` (exactly at `exp`, a
+late timer for inbound and outbound frames, the setTimeout ceiling, verdict
+mapping, one check at a time),
 `middleware/test/channelSessionFrameGate.test.ts` (the frame bound and its
 default, order, backpressure, outage and deadline, a late refusal, the
-upgrade window), `middleware/test/auth/liveSocketRevocation.test.ts` (through
+upgrade window and its overflow, a wall clock stepped back),
+`middleware/test/auth/liveSocketRevocation.test.ts` (through
 the real routes: renewal keeps the socket, sign-out and disable close it),
 `middleware/test/uiChannelWebSocket.test.ts` (`sessionExpiresAt` in the ack,
 abort on close), `middleware/test/uiChannelSessionRefusal.test.ts` (what the
@@ -2110,21 +2126,27 @@ just before it.
 
 **What a token carries.** Every sign-in mints `sv` (the row's
 `session_version` at that moment), `uid` (the row's id) and `sid` (a random id
-for this sign-in). Renewal carries all three over, like `auth_time`. The
+for this sign-in). Renewal carries `sv` and `sid` over, like `auth_time`, and
+sets `uid` to the row it verified. The
 password path takes `sv` and `uid` from the same read that checked the
 password (`PasswordAuthSuccess.account`), so a reset that lands after that
 check still ends the new session; the OIDC callback takes them from the row it
 upserts (and refuses to mint for a disabled row), `/setup` from the row it
 creates. Tokens minted before these claims existed carry none of them: they
 read as version 0, which is where every existing row starts, so the upgrade
-signs nobody out, and they age out at the absolute cap (§10b).
+signs nobody out, and they age out at the absolute cap (§10b). Without `uid`
+such a token is tied to its row by its sign-in time (`auth_time`) instead. The
+row it was minted for existed at that moment, so a row created in a later
+second is a re-creation and does not vouch for it. Its first renewal stamps
+the id of the row that renewal verified, and from then on the id decides.
 
 **Where it is checked.** `evaluateSessionToken` (`auth/requireAuth.ts`), after
 the signature and the whitelist gate, asks `SessionRevocationGuard.check`
 (`auth/sessionRevocation.ts`): one point read of `(provider, sub)` on the
 `users_provider_user_unique` index. The session stands only while the row
-exists, is `active`, is the row the token was minted for (`uid`, when present)
-and still has the token's `sv`. Every consumer inherits the check through that
+exists, is `active`, is the row the token was minted for (`uid`, or for a
+token without one, a row created no later than its sign-in second) and still
+has the token's `sv`. Every consumer inherits the check through that
 one function: `requireAuth` (all of `/api`, including plugin routes with
 `auth: 'session'`), `ctx.operatorAuth.hasValidSession`, the channel WebSocket
 upgrade, the frame and idle-socket re-checks of open channel sockets (§10d)
@@ -2141,7 +2163,7 @@ WebSocket honours it from its next frame once its last check is
 | `POST /api/v1/auth/logout` | `session_version + 1` | every session of that user, every device |
 | Admin password reset | `session_version + 1` in the same UPDATE as the new hash | every session of that user |
 | Admin disables the user | `session_version + 1` in the same UPDATE as the status; a later re-enable does not revive old cookies | every session of that user |
-| Admin deletes the user | the row is gone; a re-created row has a new id, so `uid` keeps old cookies dead even though it starts at version 0 again | every session of that user |
+| Admin deletes the user | the row is gone; a re-created row has a new id, so `uid` keeps old cookies dead even though it starts at version 0 again (a token without `uid`: the re-created row is younger than its sign-in) | every session of that user |
 | Signing-key rotation (`sessionSigningKey.ts`) | every signature fails | every session of every user |
 
 The bump is `UserStore.update(id, { revokeSessions: true })`, always relative
@@ -2191,9 +2213,14 @@ passes every signature-valid session, and the boot log says so.
   no such window. Setting the variable to 0 checks every frame, at one point
   read per frame. Server pushes to a socket that sends nothing are bounded by
   the 60 s sweep instead.
-- A token minted before the claims existed has no `uid`. Until the cap it
-  would survive a delete-and-recreate of its row, since the new row starts at
-  version 0 again.
+- A token minted before the claims existed has no `uid` until its first
+  renewal. Until then it is tied to its row by sign-in time, in whole
+  seconds, with `created_at` from the database clock and `auth_time` from the
+  server's. A row deleted and re-created within the second of that sign-in
+  would still vouch for it, and skew between the two clocks shifts that
+  boundary. The reverse case is a legacy token whose row was created in the
+  second of its own sign-in (`/setup`, an OIDC first sign-in): with the
+  database clock ahead it may be refused, and signing in again replaces it.
 - Every authenticated request, WebSocket upgrade and `hasValidSession` call
   costs one point read on the shared pool, and so does every live channel
   WebSocket once per sweep (60 s) and at most once per
@@ -2206,11 +2233,15 @@ passes every signature-valid session, and the boot log says so.
   /login), consistent with "a reset ends every session of that user".
 
 Tests: `middleware/test/auth/sessionRevocation.test.ts` (guard, status
-mapping, outage path, `ctx.operatorAuth`),
+mapping, outage path, `ctx.operatorAuth`, a token without `uid` against a
+re-created row),
 `middleware/test/auth/logoutRevokesSession.test.ts` (sign-in → copy cookie →
 sign-out → the copy gets 401 on `/api`, `/me` and `/renew`; stale-cookie
 logout; OIDC callback), `middleware/test/auth/userStoreSessionVersion.test.ts`
-and `.pg.test.ts` (the SQL and the migration against real Postgres),
+and `.pg.test.ts` (the SQL and the migration against real Postgres, and a
+legacy cookie that gets 401 once its row is deleted and re-created),
+`middleware/test/auth/renewRoute.test.ts` (renewal binds a legacy token by
+id and refuses one whose row was re-created),
 `middleware/test/auth/adminUsersRoute.test.ts` (reset, disable, re-enable,
 delete), `middleware/test/webSocketRegistry.test.ts` (401/503 on upgrade) and,
 for sockets that are already open, `middleware/test/webSocketRegistrySession.test.ts`
@@ -2389,7 +2420,8 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       lifetime and does not re-implement it: a channel handler caches no
       authorisation beyond its socket, never receives or reconstructs the
       session token, and stops its work in `onClose` (the kernel closes with
-      4401 at `exp` and 4403 on revocation). A frame that reaches
+      4401 at `exp`, 4403 on revocation and 1013 before the handler runs when
+      it cannot trust the upgrade's verdict). A frame that reaches
       `onRefusedMessage` is answered or stops work already running, and never
       starts, reads or changes anything. A new `registerKernel` caller states
       how its own credential's expiry and revocation close its sockets,
@@ -2399,9 +2431,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       OIDC provider implements `revalidateSession` or its sessions cannot be
       renewed (§10b).
 - [ ] A new path that mints the session cookie stamps `sv` and `uid` from the
-      `users` row it verified (a re-mint carries `sv`, `sid` and `uid` over),
-      and a new session consumer decides through `evaluateSessionToken` with
-      the `sessions` guard, never `verifySession` alone (§10k).
+      `users` row it verified (a re-mint carries `sv` and `sid` over and takes
+      `uid` from the row it re-verified), and a new session consumer decides
+      through `evaluateSessionToken` with the `sessions` guard, never
+      `verifySession` alone (§10k).
 - [ ] A change to a `users` row's credential or status passes
       `revokeSessions: true` in the same `update()` call and announces it via
       `SessionRevocation.announce` (§10k).

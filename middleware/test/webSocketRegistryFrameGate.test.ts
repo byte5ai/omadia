@@ -12,7 +12,8 @@
  *     socket on its next frame (4403); that frame never reaches the handler,
  *     and neither do the frames that arrived while its check was running;
  *   - a revocation announced between the upgrade's check and the handshake
- *     closes the socket before the handler runs;
+ *     closes the socket before the handler runs, and so does (with 1013) a
+ *     flood of announcements too long to rule this user's out;
  *   - while the account lookup fails, or hangs past its deadline, no frame
  *     reaches `onMessage` (they go to `onRefusedMessage`), but the socket
  *     stays open and answers pings, and frames flow again once lookups work;
@@ -31,7 +32,10 @@ import { WebSocket } from 'ws';
 import type { ChannelSocket } from '../packages/harness-channel-sdk/src/index.js';
 
 import type { SessionAccount } from '../src/auth/sessionRevocation.js';
+import { RECENT_REVOCATIONS_KEPT } from '../src/channels/channelSessionLifetime.js';
+import { WS_CLOSE_TRY_AGAIN } from '../src/channels/webSocketRegistry.js';
 import {
+  ACCOUNT_CREATED,
   FAST,
   authCookie,
   closeClient,
@@ -47,7 +51,7 @@ import {
 const BOUND_MS = 60;
 
 function account(id: string, sessionVersion = 0): SessionAccount {
-  return { id, status: 'active', sessionVersion };
+  return { id, status: 'active', sessionVersion, createdAt: ACCOUNT_CREATED };
 }
 
 /**
@@ -176,6 +180,43 @@ describe('WebSocketRegistry — a revocation elsewhere reaches the next frame', 
       const c = await closeWithin(ws, 3000);
       assert.deepEqual([c.code, c.reason], [4403, 'session revoked']);
       assert.equal(ran, false, 'the handler never sees a socket revoked during its upgrade');
+    });
+  });
+
+  it('more revocations during the upgrade check than are kept: 1013 before the handler runs, and the reconnect works', FAST, async () => {
+    const accounts = new Map([['local:u1', account('row-u1')]]);
+    let flood = true;
+    const sessions = revocationGuard(accounts, {
+      // The upgrade's read found u1 current; before the handshake completes,
+      // this replica announces more revocations of other users than the
+      // tracker keeps, so it cannot tell whether one of them was u1's.
+      afterRead: () => {
+        if (!flood) return;
+        flood = false;
+        for (let i = 0; i <= RECENT_REVOCATIONS_KEPT; i += 1) {
+          sessions.announce({ provider: 'local', sub: `other-${String(i)}` });
+        }
+      },
+    });
+    await withServer({ sessions }, async (rs) => {
+      let handled = 0;
+      rs.registry.register('ch.flood', '/flood', (socket) => {
+        handled += 1;
+        socket.onMessage((m) => socket.send(m));
+      });
+      const ws = new WebSocket(`${rs.base}/flood`, {
+        headers: { cookie: await authCookie({ sv: 0, uid: 'row-u1' }) },
+      });
+      ws.on('error', () => undefined);
+      const c = await closeWithin(ws, 3000);
+      assert.deepEqual([c.code, c.reason], [WS_CLOSE_TRY_AGAIN, 'session unverified']);
+      assert.equal(handled, 0, 'no handler runs on a verdict the tracker cannot trust');
+
+      // The client's reconnect gets a fresh upgrade check of its own.
+      const again = await openAs(rs, '/flood');
+      assert.equal(await echo(again, 'back'), 'back');
+      assert.equal(handled, 1);
+      await closeClient(again);
     });
   });
 

@@ -1,13 +1,14 @@
 /**
  * Fakes for the `ChannelSessionTracker` unit suites: the slice of a `ws`
  * socket the tracker touches, a synthetic upgrade request, a session built
- * around any `exp`, and helpers for checks a test resolves by hand. The
- * suites run with `mock.timers` on `setTimeout` and `Date`, so `settle` waits
- * on `setImmediate`, which stays real.
+ * around any `exp`, a monotonic clock, and helpers for checks a test resolves
+ * by hand. The suites run with `mock.timers` on `setTimeout` and `Date`, so
+ * `settle` waits on `setImmediate`, which stays real.
  */
 
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage } from 'node:http';
+import { mock } from 'node:test';
 
 import type { SessionEvaluation } from '../../src/auth/requireAuth.js';
 import type { VerifiedSession } from '../../src/auth/sessionJwt.js';
@@ -16,15 +17,33 @@ import type { AuthenticatedChannelSession } from '../../src/channels/channelSess
 export const NOW_MS = 1_800_000_000_000;
 export const NOW_S = NOW_MS / 1000;
 
+/**
+ * The tracker's monotonic clock (`monotonicNow`) under test. `tick` moves it
+ * together with the mocked wall clock and fires the timers that fall due, as
+ * real time does; `mock.timers.setTime` moves the wall clock alone, which is
+ * what an NTP step looks like.
+ */
+export class MonotonicClock {
+  private ms = 0;
+  readonly now = (): number => this.ms;
+
+  tick(ms: number): void {
+    this.ms += ms;
+    mock.timers.tick(ms);
+  }
+}
+
 /** The slice of a `ws` socket the tracker touches. */
 export class FakeWs extends EventEmitter {
   readyState = 1; // OPEN
   closedWith: { code?: number; reason?: string } | undefined;
   /** Reading from the peer is paused (`ws` stops pulling from the TCP socket). */
   isPaused = false;
+  /** Frames sent to the peer, in order. */
+  readonly sent: string[] = [];
 
-  send(): void {
-    /* frames to the peer are not under test here */
+  send(data: string): void {
+    this.sent.push(data);
   }
 
   pause(): void {

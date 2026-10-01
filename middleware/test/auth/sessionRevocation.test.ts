@@ -36,6 +36,8 @@ const KEY = new TextEncoder().encode('r'.repeat(64));
 const WHITELIST = new EmailWhitelist('entra@example.com');
 const SUB = 'admin@example.com';
 const ROW_ID = 'row-uuid-1';
+/** When the fixture rows were created: long before any session in here. */
+const ROW_CREATED = new Date(Date.now() - 30 * 24 * 3600 * 1000);
 
 class AccountRows implements SessionAccountSource {
   readonly rows = new Map<string, SessionAccount>();
@@ -54,7 +56,7 @@ class AccountRows implements SessionAccountSource {
 }
 
 function account(overrides: Partial<SessionAccount> = {}): SessionAccount {
-  return { id: ROW_ID, status: 'active', sessionVersion: 0, ...overrides };
+  return { id: ROW_ID, status: 'active', sessionVersion: 0, createdAt: ROW_CREATED, ...overrides };
 }
 
 async function token(claims: { sv?: number; uid?: string; provider?: string } = {}): Promise<string> {
@@ -73,13 +75,16 @@ async function token(claims: { sv?: number; uid?: string; provider?: string } = 
   );
 }
 
-/** A token as minted before the revocation claims existed: no sv/sid/uid. */
-async function legacyToken(): Promise<string> {
+/**
+ * A token as minted before the revocation claims existed: no sv/sid/uid, and
+ * signed in `signedInAgoS` seconds ago (also its `auth_time`).
+ */
+async function legacyToken(signedInAgoS = 0): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({ sub: SUB, email: SUB, display_name: 'Admin', role: 'admin', provider: 'local' })
     .setProtectedHeader({ alg: 'HS512' })
     .setIssuer('omadia')
-    .setIssuedAt(now)
+    .setIssuedAt(now - signedInAgoS)
     .setExpirationTime(now + 3600)
     .sign(KEY);
 }
@@ -120,7 +125,9 @@ async function ping(base: string, cookie: string): Promise<{ status: number; cod
 }
 
 describe('accountVouchesFor', () => {
-  const session = { provider: 'local', sub: SUB, sv: 2, uid: ROW_ID };
+  const SIGNED_IN = 1_790_000_000; // epoch s
+  const at = (epochS: number): Date => new Date(epochS * 1000);
+  const session = { provider: 'local', sub: SUB, sv: 2, uid: ROW_ID, auth_time: SIGNED_IN };
 
   it('vouches only for an existing, active, same-row account at the same version', () => {
     assert.equal(accountVouchesFor(account({ sessionVersion: 2 }), session), true);
@@ -138,9 +145,29 @@ describe('accountVouchesFor', () => {
     );
   });
 
-  it('cannot bind a token without uid to a row, but still checks its version', () => {
-    const legacy = { provider: 'local', sub: SUB, sv: 0 };
-    assert.equal(accountVouchesFor(account({ id: 'anything' }), legacy), true);
+  it('binds a token with uid by id alone, whenever its row was created', () => {
+    const later = account({ sessionVersion: 2, createdAt: at(SIGNED_IN + 3600) });
+    assert.equal(accountVouchesFor(later, session), true);
+  });
+
+  it('binds a token without uid to the row that existed when it signed in', () => {
+    const legacy = { provider: 'local', sub: SUB, sv: 0, auth_time: SIGNED_IN };
+    assert.equal(accountVouchesFor(account({ createdAt: at(SIGNED_IN - 86_400) }), legacy), true);
+    // `auth_time` is whole seconds: a row created within the sign-in's second
+    // (the setup wizard, an OIDC first sign-in) is still that sign-in's row.
+    assert.equal(
+      accountVouchesFor(account({ createdAt: new Date(SIGNED_IN * 1000 + 999) }), legacy),
+      true,
+    );
+    // Created in a later second: deleted and re-created after the sign-in,
+    // back at version 0 like the old cookie, and still not its row.
+    assert.equal(accountVouchesFor(account({ createdAt: at(SIGNED_IN + 1) }), legacy), false);
+    assert.equal(
+      accountVouchesFor(account({ createdAt: new Date(Number.NaN) }), legacy),
+      false,
+      'an unreadable creation time refuses',
+    );
+    // Its version is checked all the same.
     assert.equal(accountVouchesFor(account({ sessionVersion: 1 }), legacy), false);
   });
 });
@@ -184,7 +211,10 @@ describe('evaluateSessionToken — revocation', () => {
     const logged: string[] = [];
     const guard = new SessionRevocationGuard((line) => logged.push(line));
     guard.attach(rows);
-    assert.equal(await guard.check({ provider: 'local', sub: SUB, sv: 0 }), 'unavailable');
+    assert.equal(
+      await guard.check({ provider: 'local', sub: SUB, sv: 0, auth_time: 0 }),
+      'unavailable',
+    );
     const result = await evaluateSessionToken(await token(), {
       signingKey: KEY,
       whitelist: WHITELIST,
@@ -257,6 +287,18 @@ describe('requireAuth — a revoked session is refused on the next request', () 
     const legacy = await legacyToken();
     assert.deepEqual(await ping(base, legacy), { status: 200 });
     rows.put('local', SUB, account({ sessionVersion: 1 }));
+    assert.deepEqual(await ping(base, legacy), { status: 401, code: 'auth.revoked' });
+  });
+
+  it('refuses a legacy token (no uid) once its row was deleted and re-created', async () => {
+    const rows = new AccountRows();
+    rows.put('local', SUB, account());
+    const base = await gatedApp(guardOver(rows));
+    const legacy = await legacyToken(3600); // signed in an hour ago
+    assert.deepEqual(await ping(base, legacy), { status: 200 });
+    // Deleted and re-created just now: a new row back at version 0, the
+    // version the legacy token claims, but created after its sign-in.
+    rows.put('local', SUB, account({ id: 'row-uuid-recreated', createdAt: new Date() }));
     assert.deepEqual(await ping(base, legacy), { status: 401, code: 'auth.revoked' });
   });
 
