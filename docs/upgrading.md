@@ -339,6 +339,101 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.167.9 — sessions, canvas sockets, setup token, routine card buttons
+
+Four hardening changes an operator may notice. Two can need action: an
+install whose first-user wizard is still open (no admin exists yet) needs the
+setup token the middleware prints to its log, and an install whose Teams
+channel plugin is older than 0.26.1 needs that plugin updated before routine
+card buttons work again.
+
+### Signing out ends every session of that user
+
+No action needed; this section is about behaviour you will notice.
+
+- **Sign-out is server-side and account-wide.** Signing out ends every session
+  of that user, on every device, not only the one in this browser. So do an
+  admin password reset and disabling a user. A copied cookie stops working on
+  the next request instead of at its expiry. Resetting your own password signs
+  you out as well.
+- **One new auth migration** (`0003_users_session_version.sql`) adds a
+  `session_version` column to `users`. It is additive and runs at boot like
+  every other migration, and existing sessions stay valid through the upgrade.
+- **The new check needs Postgres, and an outage is not a sign-out.** Every
+  authenticated request now reads the user's row. While that read fails, API
+  calls answer 503 `auth.unavailable` and the UI keeps you signed in and
+  retries; it does not bounce you to the login page.
+- **Open canvas connections end with the session.** The desktop canvas
+  WebSocket is closed with code 4401 when the cookie that opened it expires
+  (at most 4 hours after sign-in or the last renewal) and with 4403 when the
+  session is revoked. A socket in use is re-checked before its next message
+  once its last check is older than `WS_SESSION_FRAME_RECHECK_MS` (new,
+  optional, default 5000 ms; 0 checks every message), an idle one every 60
+  seconds. While the database cannot be read, canvas requests are refused
+  with an error the user can retry, and the connection stays open. Clients
+  built on `@omadia/canvas-core` 0.2.0 or later stop and ask to renew or sign
+  in; older clients keep reconnecting into a 401 until the user signs in
+  again. Renewing the session in the browser does not extend a socket that is
+  already open: the client reconnects with the renewed cookie.
+- Rotating the session signing key is still the lever for signing out *every*
+  user at once.
+
+### The first-user wizard asks for a setup token
+
+**Nothing to do on an instance that already has an admin.** The change only
+affects the first-user wizard (`/setup`), which such an instance has closed for
+good.
+
+**An instance whose wizard is still open** (fresh install, no user created
+yet) now asks for a **setup token** before it creates the first admin. With
+`ADMIN_SETUP_TOKEN` unset, the middleware generates one at start and prints it
+once per start to its log. The value stays the same across restarts and
+replicas until the first admin exists.
+
+```bash
+docker compose logs middleware | grep "setup token"      # compose
+fly logs -a <middleware-app> | grep "setup token"         # Fly.io
+```
+
+Paste it into the wizard's **Setup token** field. To choose the value yourself,
+set `ADMIN_SETUP_TOKEN` (at least 16 characters) in `middleware/.env` or as a
+platform secret before the start. An empty `ADMIN_SETUP_TOKEN=` counts as unset.
+The desktop app needs no token: its supervisor sets `OMADIA_DESKTOP_EMBEDDED`
+together with a loopback bind, and only that pair is exempt. Either half on
+its own still asks for the token.
+
+Two behaviour changes worth knowing:
+
+- **Scripted setup** (`curl … /api/v1/auth/setup`) must send the token as the
+  `setup_token` JSON field. Without it the answer is 403
+  `auth.setup_token_invalid`. There is no header variant.
+- **Emptying the `users` table does not reopen the wizard on the running
+  process any more.** A process that started with users answers 410
+  `auth.setup_locked` while any exist, as before, and 410
+  `auth.setup_disabled` once the table is empty, until the middleware
+  restarts. It used to create an admin anyway. Restart, then open the wizard.
+
+Parallel wizard submissions now create exactly one admin. A late one gets 410
+`auth.setup_locked`, and one that collides with a slow database gets 409
+`auth.setup_in_progress`, which is safe to retry.
+
+### Routine card buttons need channel-teams 0.26.1 or later
+
+The buttons on a routine card in Teams (Pausieren, Aktivieren, Löschen, Jetzt
+auslösen) now act only for the user who clicked them, and the middleware refuses
+a click whose channel plugin does not say who that was. The Teams channel plugin
+(`@omadia/channel-teams`) sends that identity since **0.26.1**.
+
+- With channel-teams 0.26.1 or later, nothing changes.
+- With an older channel-teams, every routine card button answers *"Konnte die
+  Routine nicht …: Keine Benutzeridentität für diese Karten-Aktion übermittelt …"*
+  until the plugin is updated. Update it from the Hub before or right after the
+  middleware. Routines keep firing on schedule in the meantime, and the Operator
+  UI's Routines page can still pause, resume and delete them.
+- Each refused click is logged at error level as `[security] REFUSED routine card
+  action …`. If those lines keep appearing after the update, some channel plugin
+  still sends clicks without the user's identity.
+
 ## Upgrading past v0.167.7 — self-update overlay, framing, web-ui user, sandbox limits
 
 Four hardening changes an operator may notice. None needs action on a

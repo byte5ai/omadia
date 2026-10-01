@@ -320,23 +320,43 @@ working across it:
   the gate is "any valid operator session", not "operators-only" as an
   earlier draft of this entry claimed.
 
-  **The card path needed a different answer (#1029).** Scoping the smart-card
-  handler from the turn context alone would have broken all four buttons in
-  production. The Teams adapter dispatches card clicks out-of-band —
-  `handleMessage` takes the routine branch and returns before
+  **The card path takes its principal from the channel, or refuses (#1029).**
+  Scoping the smart-card handler from the turn context alone would have broken
+  all four buttons in production. The Teams adapter dispatches card clicks
+  out-of-band — `handleMessage` takes the routine branch and returns before
   `runOrchestratorTurn`, so `captureRoutineTurn` never fires and the context
-  is always absent there. Refusing on absence is an outage, not a safe
-  default. The contract therefore takes an optional `actor` from the channel,
-  with documented precedence: explicit `actor`, then the turn context, then
-  UNSCOPED as before #1025 — counted by `unscopedActionMetrics` and logged at
-  error level naming the action and id. A hole you can see beats scoping to
-  nobody, and the counter is what tells an operator the adapter-side fix has
-  shipped: the count stops rising and the fallback can be deleted. Teams
-  already holds both fields on the activity (tenant id and
-  `from.aadObjectId`); passing them is the adapter-side follow-up.
+  is always absent there. #1029 therefore added an `actor` to the contract
+  (the tenant and user of the activity behind the click), but as an interim
+  kept a fallback chain: explicit `actor`, then the turn context, then
+  UNSCOPED as before #1025. That last step meant a missing principal widened
+  rights to operator level, for any adapter that did not send `actor`.
 
-  The test for that path deliberately does NOT wrap the call in
-  `routineTurnContext.run`. That wrapper is what made the first version pass
+  The fallback chain is gone. `handleRoutineAction` scopes by `actor` and by
+  nothing else (`routineCardActor.ts`): an absent actor, a blank tenant or
+  user id, or anything that is not a pair of strings is refused with
+  `RoutineActorRequiredError` before any row is read, and counted by
+  `refusedRoutineActionMetrics` with an error-level log naming the action and
+  id — expected to stay at zero. The turn context is not consulted either: on
+  an out-of-band path a context can only be one that `enterWith` leaked
+  forward from an earlier turn (#1016), which would attribute the click to
+  whoever spoke last. Blankness is judged on the trimmed value, but the scope
+  carries the values verbatim, because they must equal what
+  `captureRoutineTurn` filed the routine under. channel-teams sends `actor`
+  since 0.26.1; an older adapter gets the refusal on every card button. The
+  contract type keeps `actor` optional so 1.x callers still compile — the
+  runtime refusal, not the type, is the protection — and plugin-api 2.0 will
+  make it required. The capability ref stays `routinesIntegration@1`.
+
+  `{ kind: 'operator' }` now has exactly one producer, the `requireAuth`-gated
+  router in `routes/routines.ts`. `routineOperatorScope.test.ts` walks the
+  AST of `src/` and fails on a second object literal of that shape, and pins
+  that the router is mounted behind `requireAuth` with no path under it on the
+  `publicPaths` list — the list `requireAuth` itself consults before it
+  enforces anything.
+
+  The card-path tests deliberately do NOT wrap the call in
+  `routineTurnContext.run`, except the one proving a captured context does not
+  substitute for `actor`. That wrapper is what made the first #1029 suite pass
   while production would have answered "routines are unavailable in this
   session" on every click.
 
@@ -349,11 +369,15 @@ working across it:
 
   Reviewer note: the layer tests stub the store, so they prove the callers
   *pass* a scope, not that the store *uses* it. Measured — with the SQL
-  predicate removed, all 14 layer tests stayed green. `routineScoping.test.ts`
-  therefore also drives the real `RoutineStore` against a recording pool and
-  follows each `$n` the SQL names into its bound value, which is what makes a
-  dropped predicate fail. Planted-omission results: tool scope dropped 2 red,
-  store predicate dropped 1 red, delete ordering flipped 1 red.
+  predicate removed from both statements, all 21 layer tests stayed green.
+  `routineScoping.test.ts` therefore also drives the real `RoutineStore`
+  against a recording pool and follows each `$n` the SQL names into its bound
+  value, which is what makes a dropped predicate fail. Planted-omission
+  results across `routineScoping.test.ts` and `routineOperatorScope.test.ts`
+  (re-measured when the card fallback was removed): tool scope replaced by
+  operator 5 red (four behavioural, plus the one-producer scan), store
+  predicate dropped 2 red, delete ordering flipped 2 red, card fallback chain
+  restored 7 red.
 - **Only advertised tools are dispatchable (#1015).** `tools/call` used to
   forward any name into `dispatch()`. The dispatchable set is wider than the
   advertised one — handler-only registrations stay dispatchable but
@@ -1254,8 +1278,10 @@ as a new one, never an unbounded one.
 **Renewal requires a currently valid session.** The route sits under the
 public `/api/v1/auth/*` prefix (`auth/publicPaths.ts`) because it
 authenticates itself: it calls `evaluateSessionToken`, the same single code
-path `requireAuth` and `ctx.operatorAuth` use, whitelist gate included. An
-expired cookie gets 401 `auth.invalid`. It can only be replaced by a login.
+path `requireAuth` and `ctx.operatorAuth` use, whitelist gate and
+server-side revocation (§10k) included. An expired cookie gets 401
+`auth.invalid`, a revoked one 401 `auth.revoked`; either can only be replaced
+by a login. A failed revocation lookup answers 503 `auth.unavailable`.
 
 **The principal is re-checked on every renewal, fail closed.**
 
@@ -1263,6 +1289,10 @@ expired cookie gets 401 `auth.invalid`. It can only be replaced by a login.
 - The `users` row (`provider`, `sub`) must exist and be `active`. This covers
   local users and Entra users alike (the OIDC callback upserts Entra rows, and
   admins can disable them).
+- That row must still vouch for the session: the same row (`uid`) at the same
+  session version (`sv`), §10k. With the guard wired the evaluation above has
+  already refused a revoked session; this re-check on the row the step reads
+  anyway keeps harnesses without the guard honest.
 - OIDC sessions are re-validated at the IdP through
   `OidcProvider.revalidateSession`. For Entra that redeems the refresh token
   kept in the vault (`RefreshStore`), then checks that the new id_token
@@ -1280,28 +1310,44 @@ uuid, `before`/`after` carry the old and new `exp` and `auth_time`). The row
 is written before the cookie is set. If the write fails, the error reaches
 Express as a 500 and no renewed cookie leaves the server.
 
-**Logout ends the Entra renewal chain.** `POST /logout` forgets the user's
-Entra refresh token. A cookie copied before the logout then fails the IdP
-re-check (no refresh token on file → denied) instead of renewing itself until
-the cap.
+**Logout ends the session on the server.** The marker is
+`users.session_version` (§10k); sign-out, an admin password reset and disabling
+the account move it, and deleting the row ends the sessions outright.
+`POST /logout` moves the user's version, so every copy of every session of
+that user is refused from the next request on, and cannot renew, because
+`/renew` runs the same evaluation. It also forgets the user's Entra refresh token, which ends the
+IdP side of the renewal chain. Both happen only when the presented cookie is
+itself still current: a revoked copy reaching the public `/logout` route gets
+its own cookie cleared and changes nothing server-side.
+
+Re-signing carries `sv` and `sid` over together with `auth_time`: a renewed
+token belongs to the same sign-in of the same account version, so a later
+sign-out or reset ends it like the original. `uid` is the id of the row the
+renewal just verified: the same id for a token that names one, and the first
+one for a token minted before the claim existed (§10k).
+
+**A renewal extends the cookie, not an open WebSocket.** A channel socket
+stays bound to the token that opened it and is closed with 4401 at that
+token's `exp` (§10d). The client reconnects with its renewed cookie. Because
+renewal never moves the session version, a renewal does not close the sockets
+opened before it.
 
 **Residual risks (accepted, documented).**
 
-- Local-password sessions have no server-side revocation store. A cookie
-  copied before logout stays valid for the rest of its window and can be
-  renewed until the cap, as long as the users row stays `active`. Before #965
-  that window was a hard 4h; now it is bounded by the cap. Disabling the user
-  stops the chain at the next renewal attempt.
-- The refresh token is keyed by email. If the same Entra user signs in again
-  after a logout, a still-valid copy of the *old* cookie could redeem the
-  *new* refresh token, bounded by the old cookie's own `auth_time + cap`.
 - Renewal only runs on an explicit click. Activity-based silent renewal is
   deliberately not implemented.
 
+Two earlier residuals are closed by the session version (§10k): a cookie
+copied before logout no longer stays valid for the rest of its window or
+renews up to the cap, and a copy of an *old* Entra cookie can no longer
+redeem the refresh token of the user's *next* sign-in (the refresh token is
+still keyed by email, but that old cookie is refused before any IdP call).
+Revocation's own residuals are listed in §10k.
+
 Tests: `middleware/test/auth/renewRoute.test.ts` (every refusal path, cap,
-legacy `iat` fallback, audit-before-cookie, logout forget),
-`middleware/test/auth/entraProviderRevalidate.test.ts` (denial vs. outage
-classification).
+legacy `iat` fallback, audit-before-cookie, logout forget, revoked and stale
+`sv` refusals), `middleware/test/auth/entraProviderRevalidate.test.ts`
+(denial vs. outage classification).
 
 ---
 
@@ -1390,10 +1436,14 @@ so no WebSocket is ever allocated for it. An unregistered path is `404`.
 - **Channel routes** (`register`, reached by plugins only through
   `CoreApi.registerWebSocket`) authenticate with `requireAuth`'s own
   `evaluateSessionToken`: same signing key, same Entra-whitelist gate, same
-  status mapping (`auth.not_whitelisted` → 403, anything else → 401). A
+  server-side revocation guard (§10k), same status mapping
+  (`auth.not_whitelisted` → 403, a revoked session → 401 plus one log line,
+  a failed revocation lookup → 503, anything else → 401). A
   deactivated channel answers `503`, and the active flag is checked again
   after the async cookie verification, so a deactivation during that window
-  cannot leak a socket past `deactivateChannel`.
+  cannot leak a socket past `deactivateChannel`. The upgrade is not the last
+  check: the socket lives no longer than its session (see "Session lifetime
+  after the upgrade" below).
 - **Kernel routes** (`registerKernel`) bring their own authenticator. They
   are a kernel-only capability and are deliberately not on `CoreApi`, so no
   plugin can opt out of the session cookie. The authenticator's verdict maps
@@ -1415,14 +1465,135 @@ so no WebSocket is ever allocated for it. An unregistered path is `404`.
   has an `'error'` listener, so a hostile frame cannot raise an uncaught
   exception.
 
-Out of scope here and owned by W1-2: the satellite tunnel's credential (API
-key plus signed challenge) and its revocation of live sockets.
+**Session lifetime after the upgrade.** A channel socket stays authorised
+exactly as long as the session that opened it.
+`middleware/src/channels/channelSessionLifetime.ts` owns every accepted
+channel socket:
+
+- **Expiry.** The registry keeps the token and its `exp` for each socket. The
+  plugin handler never gets the token: it gets the claims (with `expiresAt`),
+  and the session cookie is stripped from `socket.request.headers`. At `exp`
+  the socket is closed with **4401** `session expired`. A token without `exp`,
+  or one that expired between the upgrade check and the handshake, is closed
+  with 4401 before the handler runs. A frame that arrives after `exp`, and a
+  frame the handler sends after it (turn output, a notification push), is
+  dropped even when the timer runs late: `exp` is wall-clock time, and the
+  wall clock decides.
+- **Revocation on this replica.** A route that revokes calls
+  `SessionRevocation.announce` (§10k). The registry listens and closes that
+  user's sockets at once with **4403** `session revoked`.
+  `WebSocketRegistry.closeSessions(match)` is the same lever for any other
+  kernel path. An announcement that lands while an upgrade is still being
+  checked finds no socket yet. The registry notes the revocation count before
+  that check, and if this user was revoked in between, `accept` closes the
+  socket with 4403 before the handler runs. It keeps the last 256
+  announcements for this. When more arrived during one upgrade's check, it
+  cannot rule out that this user's was among them. It then closes with
+  **1013** `session unverified`, also before the handler runs, and the
+  client's reconnect gets a check of its own. The registry never hands such a
+  socket over to be checked at its first frame, because a handler's
+  connection-time work and its pushes need no frame.
+- **Revocation on every replica: the next frame.** The announcement is
+  process-local, so the guarantee across replicas (and for a revocation made
+  directly in SQL) is a check per inbound frame. A frame reaches the handler
+  only on a verdict whose check started at most `WS_SESSION_FRAME_RECHECK_MS`
+  (env, default 5 s, 0 = every frame) before the frame arrived. The upgrade's
+  own check counts. With an older verdict the frame waits, and so does every
+  frame behind it, in order, while `evaluateSessionToken` (the verdict path
+  HTTP uses) runs again. The socket stops reading meanwhile, so the wait is
+  TCP backpressure, not a growing buffer. A revoked session closes with 4403
+  `session revoked`, a de-whitelisted Entra identity with 4403 `session
+  forbidden`, a token that no longer verifies with 4401, and the waiting
+  frames are dropped. So no frame that arrives more than
+  `WS_SESSION_FRAME_RECHECK_MS` after a revocation made elsewhere is
+  handled: it waits for a check that sees the revocation, and the socket
+  closes. When a check started and when a frame arrived are both read from a
+  monotonic clock (`performance.now`), so stepping the wall clock back (NTP,
+  a VM resume) cannot stretch a verdict past that bound.
+- **Idle sockets.** Every `WS_SESSION_RECHECK_MS` (60 s, the admin UI's
+  heartbeat cadence) one sweep runs the same check for every live socket.
+  That bounds what a socket that sends nothing still receives, such as
+  notification pushes: within 60 s of a revocation on another replica.
+- **No verdict, no frame.** A failed account lookup (`auth.unavailable`), a
+  check that throws and a check that misses its deadline
+  (`WS_SESSION_CHECK_TIMEOUT_MS`, 10 s) are outages, not verdicts. The socket
+  stays open, still bounded by its `exp`, and answers pings again as soon as
+  the check has given up. The frames that waited on that check never reach
+  `onMessage`. They go to the handler's `onRefusedMessage`, the WebSocket
+  twin of HTTP's 503: the canvas answers a refused turn with `turn_error`
+  `session check unavailable, try again`, honours a refused `turn_abort`
+  (stopping needs no authorisation),
+  and closes with `1013` instead of acking a refused `handshake_select`, so
+  the client reconnects through a fresh upgrade check. An outage also ends
+  the grace of the verdict before it, so the next frame checks again. A
+  refusal that arrives after the deadline still closes the socket. The sweep
+  and the frames share one check per socket, and a check is never started a
+  second time while one runs.
+- **After the close.** No further frame reaches the handler and its sends are
+  dropped, even while the peer is still acknowledging the close. The
+  handler's `onClose` fires at once: the canvas channel aborts the turn still
+  running for that socket and starts nothing that was queued behind it.
+
+The two close codes follow what the client should do next, not the HTTP
+status: an expired session can be replaced by a renewal the client may already
+hold (4401, like 401), a revoked one only by a new sign-in (4403, although the
+revoked cookie itself gets 401 `auth.revoked` on HTTP). Channel deactivation
+still closes with `1001`.
+
+**Re-authentication and reconnect.** A socket is bound to the token that
+opened it. `POST /api/v1/auth/renew` extends the cookie, never an open socket,
+and renewal never moves the session version, so the re-check keeps finding
+the pre-renew token current until its own `exp`. `handshake_ack` carries that
+moment as `sessionExpiresAt`. The canvas client warns the user before it
+(renewal stays an explicit click, §10b). On 4401 it reconnects with whatever
+cookie is current: a renewed cookie opens a new socket with a new expiry, a
+401 on that upgrade means signing in again. On 4403 it stops.
+`@omadia/canvas-core` 0.2.0 implements this: 4401 reports `unauthenticated`,
+4403 reports `forbidden`, and neither enters the backoff loop. Only the host's
+next `connect()`, after it renewed or signed in, opens a socket again; a
+canvas switch in between only records which canvas that `connect()` resumes,
+since a reopen with the ended cookie is refused before the upgrade and looks
+like a network drop to the client. A cookie provider (`cookie: () => string`)
+supplies the current cookie on every connect. A 1013 is no verdict on the
+cookie, so the client simply reconnects in its normal backoff.
+
+Kernel routes get none of this. Their principal is opaque to the registry, so
+a kernel route whose credential can expire or be revoked must close its own
+sockets. The satellite tunnel's credential (API key plus signed challenge) and
+its revocation of live sockets are owned by W1-2.
 
 Tests: `middleware/test/webSocketRegistry.test.ts` (exact statuses, per-route
-auth and caps, collisions, deactivation) and
+auth and caps, collisions, deactivation),
 `middleware/test/webSocketRegistryHardening.test.ts` (503 on throw, deadline
-and junk result, raw status-line bytes, bounds, the deactivate-during-auth
-race).
+and junk result, raw status-line bytes, bounds including
+`channelSessionRecheckMs`, `channelFrameRecheckMs` and
+`channelSessionCheckTimeoutMs`, the deactivate-during-auth race),
+`middleware/test/webSocketRegistrySession.test.ts` (expiry close, tokens
+without `exp` or expired during the upgrade, claims without the token,
+`closeSessions`, announced and swept revocation, whitelist withdrawal, an
+outage withholds frames but keeps the socket, no timer or re-check after a
+close or a deactivation), `middleware/test/webSocketRegistryFrameGate.test.ts`
+(a revocation on another replica stops the next frame and the frames queued
+behind its check, a revocation announced during the upgrade closes before the
+handler runs, more announcements than are kept close with 1013 before the
+handler runs and the reconnect works, a failed or hung lookup withholds frames
+while the socket stays open and answers pings, a bound of 0 checks every
+frame), `middleware/test/channelSessionTracker.test.ts` (exactly at `exp`, a
+late timer for inbound and outbound frames, the setTimeout ceiling, verdict
+mapping, one check at a time),
+`middleware/test/channelSessionFrameGate.test.ts` (the frame bound and its
+default, order, backpressure, outage and deadline, a late refusal, the
+upgrade window and its overflow, a wall clock stepped back),
+`middleware/test/auth/liveSocketRevocation.test.ts` (through
+the real routes: renewal keeps the socket, sign-out and disable close it),
+`middleware/test/uiChannelWebSocket.test.ts` (`sessionExpiresAt` in the ack,
+abort on close), `middleware/test/uiChannelSessionRefusal.test.ts` (what the
+canvas does with a refused frame), `middleware/test/uiChannelSessionGate.test.ts`
+(the canvas on a real registry: a turn after a revocation elsewhere never
+starts, a turn during an outage gets `turn_error` while the socket stays) and
+`middleware/packages/canvas-core/test/canvasSocketSession.test.ts` plus
+`canvasSocket.test.ts` (the client's close-code policy, including a canvas
+switch after the session ended).
 
 ---
 
@@ -1943,6 +2114,256 @@ composition-root wiring).
 
 ---
 
+## 10k. Server-side session revocation
+
+The admin session is a stateless JWT (§10b), so on its own the server cannot
+end one early. A per-user marker in the `users` table does:
+`users.session_version` (auth migration `0003_users_session_version.sql`,
+`INTEGER NOT NULL DEFAULT 0`). An integer on purpose, not a "revoked before"
+timestamp: `iat` has second granularity, so a timestamp marker either refuses
+a sign-in made in the same second as the sign-out or accepts a token minted
+just before it.
+
+**What a token carries.** Every sign-in mints `sv` (the row's
+`session_version` at that moment), `uid` (the row's id) and `sid` (a random id
+for this sign-in). Renewal carries `sv` and `sid` over, like `auth_time`, and
+sets `uid` to the row it verified. The
+password path takes `sv` and `uid` from the same read that checked the
+password (`PasswordAuthSuccess.account`), so a reset that lands after that
+check still ends the new session; the OIDC callback takes them from the row it
+upserts (and refuses to mint for a disabled row), `/setup` from the row it
+creates. Tokens minted before these claims existed carry none of them: they
+read as version 0, which is where every existing row starts, so the upgrade
+signs nobody out, and they age out at the absolute cap (§10b). Without `uid`
+such a token is tied to its row by its sign-in time (`auth_time`) instead. The
+row it was minted for existed at that moment, so a row created in a later
+second is a re-creation and does not vouch for it. Its first renewal stamps
+the id of the row that renewal verified, and from then on the id decides.
+
+**Where it is checked.** `evaluateSessionToken` (`auth/requireAuth.ts`), after
+the signature and the whitelist gate, asks `SessionRevocationGuard.check`
+(`auth/sessionRevocation.ts`): one point read of `(provider, sub)` on the
+`users_provider_user_unique` index. The session stands only while the row
+exists, is `active`, is the row the token was minted for (`uid`, or for a
+token without one, a row created no later than its sign-in second) and still
+has the token's `sv`. Every consumer inherits the check through that
+one function: `requireAuth` (all of `/api`, including plugin routes with
+`auth: 'session'`), `ctx.operatorAuth.hasValidSession`, the channel WebSocket
+upgrade, the frame and idle-socket re-checks of open channel sockets (§10d)
+and `POST /renew`. `GET /me` runs the same check, so the UI's
+60 s heartbeat notices a revocation within a minute. There is no cache, so a
+revocation holds from the next request on, on every replica. An open channel
+WebSocket honours it from its next frame once its last check is
+`WS_SESSION_FRAME_RECHECK_MS` (5 s) old, and within 60 s while it is idle.
+
+**What ends sessions.**
+
+| Event | Mechanism | Scope |
+|---|---|---|
+| `POST /api/v1/auth/logout` | `session_version + 1` | every session of that user, every device |
+| Admin password reset | `session_version + 1` in the same UPDATE as the new hash | every session of that user |
+| Admin disables the user | `session_version + 1` in the same UPDATE as the status; a later re-enable does not revive old cookies | every session of that user |
+| Admin deletes the user | the row is gone; a re-created row has a new id, so `uid` keeps old cookies dead even though it starts at version 0 again (a token without `uid`: the re-created row is younger than its sign-in) | every session of that user |
+| Signing-key rotation (`sessionSigningKey.ts`) | every signature fails | every session of every user |
+
+The bump is `UserStore.update(id, { revokeSessions: true })`, always relative
+to the stored value, and always in the same statement as the change that
+causes it, so a password or status change and its revocation never land
+apart. Routes that revoke also call `SessionRevocation.announce`, which closes
+that user's open channel WebSockets on this replica at once (§10d).
+
+**Status mapping.** Revoked → 401 `auth.revoked` (a raw 401 on a WebSocket
+upgrade, logged once, because that cookie outlived a sign-out or a reset). A
+failed lookup is an outage, not a verdict on the credential: 503
+`auth.unavailable`, a raw 503 on a WebSocket upgrade, a refused frame on an
+open channel WebSocket that stays open (§10d), and `false` from
+`hasValidSession`, which never throws. The web UI bounces to /login only on a
+401 and the SessionWatcher keeps its state on a 503, so a database blip does
+not sign operators out.
+
+**A stale cookie cannot sign anyone out.** `/api/v1/auth/*` is public, so a
+revoked copy of a cookie can still reach `/logout`. It gets its own cookie
+cleared and nothing else: the bump and the Entra refresh-token forget only
+happen when the presented cookie still passes the check. Otherwise a copied
+cookie could sign its owner out of every fresh session, again and again, until
+its own `exp`.
+
+**No Postgres, no check.** Without `graphPool` there is no `users` table and no
+login route (the auth router answers 503). The guard then stays unattached and
+passes every signature-valid session, and the boot log says so.
+
+**Residual risks (accepted, documented).**
+
+- Sign-out is per user, not per device. Signing out in one browser ends the
+  sessions on every other device as well. That includes a canvas client: its
+  socket is closed with 4403, and `@omadia/canvas-core` 0.2.0 then stops and
+  reports `forbidden` until the user signs in again (older clients keep
+  reconnecting into the raw 401 an expired cookie produces). A per-device
+  sign-out would need a denylist keyed by `sid`.
+- The builder's SSE stream (`GET /drafts/:id/events`) still authenticates
+  once, when it opens, and stays open after a revocation. Channel WebSockets
+  no longer do: they close at once on the replica that revoked, and on every
+  other before their next frame is handled or within the 60 s sweep while idle
+  (§10d). The stream can use the same levers: `SessionRevocation.onRevoked`
+  for this replica and a periodic `check` for the rest, since the
+  announcement is process-local.
+- A channel WebSocket frame may ride on a verdict up to
+  `WS_SESSION_FRAME_RECHECK_MS` (5 s) old, so a revocation made on another
+  replica in that window can still let one burst of frames through. HTTP has
+  no such window. Setting the variable to 0 checks every frame, at one point
+  read per frame. Server pushes to a socket that sends nothing are bounded by
+  the 60 s sweep instead.
+- A token minted before the claims existed has no `uid` until its first
+  renewal. Until then it is tied to its row by sign-in time, in whole
+  seconds, with `created_at` from the database clock and `auth_time` from the
+  server's. A row deleted and re-created within the second of that sign-in
+  would still vouch for it, and skew between the two clocks shifts that
+  boundary. The reverse case is a legacy token whose row was created in the
+  second of its own sign-in (`/setup`, an OIDC first sign-in): with the
+  database clock ahead it may be refused, and signing in again replaces it.
+- Every authenticated request, WebSocket upgrade and `hasValidSession` call
+  costs one point read on the shared pool, and so does every live channel
+  WebSocket once per sweep (60 s) and at most once per
+  `WS_SESSION_FRAME_RECHECK_MS` while it sends frames. If that ever shows up
+  in latency, the follow-up is a short TTL cache that `announce` invalidates.
+  Its TTL then adds to every bound named here: "immediately" means "within
+  that TTL" across replicas, and a WebSocket frame may ride on a verdict up to
+  that TTL plus `WS_SESSION_FRAME_RECHECK_MS` old.
+- An admin who resets their own password is signed out too (the UI bounces to
+  /login), consistent with "a reset ends every session of that user".
+
+Tests: `middleware/test/auth/sessionRevocation.test.ts` (guard, status
+mapping, outage path, `ctx.operatorAuth`, a token without `uid` against a
+re-created row),
+`middleware/test/auth/logoutRevokesSession.test.ts` (sign-in → copy cookie →
+sign-out → the copy gets 401 on `/api`, `/me` and `/renew`; stale-cookie
+logout; OIDC callback), `middleware/test/auth/userStoreSessionVersion.test.ts`
+and `.pg.test.ts` (the SQL and the migration against real Postgres, and a
+legacy cookie that gets 401 once its row is deleted and re-created),
+`middleware/test/auth/renewRoute.test.ts` (renewal binds a legacy token by
+id and refuses one whose row was re-created),
+`middleware/test/auth/adminUsersRoute.test.ts` (reset, disable, re-enable,
+delete), `middleware/test/webSocketRegistry.test.ts` (401/503 on upgrade) and,
+for sockets that are already open, `middleware/test/webSocketRegistrySession.test.ts`
+and `middleware/test/auth/liveSocketRevocation.test.ts` (§10d).
+
+---
+
+## 10l. First-user setup: one admin, atomically, with operator consent
+
+A fresh install has no operator, so the first-user wizard
+(`POST /api/v1/auth/setup`, `middleware/src/routes/authSetup.ts`) cannot sit
+behind a session. It lives under the public `/api/v1/auth/*` prefix
+(`auth/publicPaths.ts`) and authorises itself. On an install whose wizard is
+still open it is the most valuable endpoint the server has: whoever completes
+it becomes the admin. Two things therefore have to hold. Only the operator may
+complete it, and it must produce exactly one admin no matter how many requests
+race.
+
+**Operator consent: the setup token.** The handler's first step, before the
+body is read, is a constant-time comparison (SHA-256 of both sides,
+`timingSafeEqual`) of the `setup_token` body field against the token for this
+boot (`auth/setupToken.ts`). A miss is 403 `auth.setup_token_invalid` and a
+log line with the socket peer. Putting it first means an unauthorised caller
+cannot make the server validate a body, run argon2id or wait on the table lock
+below. The token comes from one of two places:
+
+- `ADMIN_SETUP_TOKEN` (16 to 512 characters, enforced at boot; an empty value
+  counts as unset). It is never echoed to the log.
+- Otherwise a generated 24-byte base64url token. It is stored set-if-absent in
+  `platform_settings` (`auth.setup_token`), so every replica and every restart
+  serves the same token until setup completes. It is printed once per boot
+  ("setup token: …") and deleted in the transaction that creates the first
+  admin. A boot that finds setup already done clears any leftover. If the
+  store is unreachable the token is replica-local, and the log says so. The
+  wizard stays gated either way.
+
+The token is transported in the body only. A header copy would be a second
+spelling of the same credential with no caller that needs it.
+
+**The one exemption is the desktop app.** Its supervisor
+(`desktop/src/supervisor.ts`) spawns the kernel with
+`OMADIA_DESKTOP_EMBEDDED=true` and `HOST=127.0.0.1`. Only that combination
+opens the wizard without a token: the flag plus a literal loopback bind
+address, where the kernel is reachable from this machine alone. Either half
+alone still needs the token. A loopback bind behind a same-host reverse proxy
+is public, and the flag on a `::` bind is a misconfiguration. The decision is
+made at boot from configuration. It never reads `Host`, `X-Forwarded-For` or
+`PUBLIC_BASE_URL`. Behind a proxy every request can look local, and a check
+that a header can satisfy is decoration (the same reasoning as §10's loopback
+gate for `/api/dev`). The docker-compose stack publishes its ports on
+127.0.0.1 only, but the kernel inside the container binds `::` and cannot see
+how its port is published, so compose installs get a token too.
+
+**One predicate for discovery and handler.** `resolveSetupState` returns
+`available`, `disabled_at_boot`, `no_local_provider` or `locked`. It is the
+only source for `GET /providers.setup_required` and for the handler's fast
+path (410 `auth.setup_disabled` / `auth.setup_no_local_provider` /
+`auth.setup_locked`). The boot-time `setupAllowed` flag used to be read by
+`/providers` alone. A users table emptied after boot, which only direct SQL
+can do because admins cannot delete themselves, then advertised "no setup"
+while `/setup` still minted an admin. Now the wizard stays closed until a
+restart re-evaluates it. The predicate counts users before it reads the flag,
+so an install that has users answers `locked` whatever its boot decided, as it
+always did. `disabled_at_boot` only covers a table that is empty now but was
+not at boot, the one case a restart changes.
+
+**Exactly one admin: `UserStore.createFirstAdmin`.** The old handler ran
+`count()` and then a plain INSERT on different pool connections, with an
+argon2 hash (tens of ms) in between. N parallel requests all saw 0: distinct
+emails produced N admins with N sessions, and the same email produced a
+unique violation that surfaced as a 500. `INSERT … WHERE NOT EXISTS` would not
+have fixed it, because under READ COMMITTED each statement's NOT EXISTS runs
+against a snapshot without the other's uncommitted row. The store now does,
+in one transaction on one connection:
+
+1. `SET LOCAL lock_timeout = '2000ms'` (reverts at COMMIT/ROLLBACK, so the
+   pooled connection comes back clean);
+2. `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`. This lock conflicts with
+   itself and with the ROW EXCLUSIVE lock every INSERT/UPDATE/DELETE takes, so
+   it also waits for writers that do not go through this method: the OIDC
+   first-sign-in upsert and the admin-UI create. Plain SELECTs are not
+   blocked, so `/providers` and sign-in lookups keep working. It is never
+   ACCESS EXCLUSIVE;
+3. `SELECT COUNT(*)`, which gets a fresh snapshot after the lock and so sees
+   every committed writer. If the table is not empty, ROLLBACK and report
+   `not_empty` (410 `auth.setup_locked`);
+4. INSERT the user, INSERT the `admin_audit` row `auth.first_admin_create`
+   (actor = the new admin for the wizard, NULL for the env seed), DELETE the
+   persisted setup token, then COMMIT.
+
+The password is hashed before the transaction, so the lock is held for
+milliseconds. A wait past 2 s throws 55P03 (`isLockTimeout`), which the
+handler answers with 409 `auth.setup_in_progress`: something is holding a
+conflicting lock far longer than a first-admin transaction ever does, and a
+retry is the right move. The `ADMIN_BOOTSTRAP_*` env seed goes through the
+same method, so two replicas booting together seed one admin and the loser
+logs a skip.
+
+**Residual risks (accepted, documented).**
+
+- The generated token sits in the middleware log, and log retention keeps it.
+  It is single-use in effect: the wizard locks with the first admin and the
+  row is deleted then. Operators who object set `ADMIN_SETUP_TOKEN`.
+- Anyone who can read the logs or the database can complete setup first.
+  Both already imply control of the deployment.
+- A token holder can still make the server run argon2 once per request. There
+  is no rate limit on `/setup` yet. The token keeps unauthorised callers out.
+- A desktop kernel on loopback accepts the wizard from any local process.
+  That is the desktop trust model: the local user is the operator.
+
+Tests: `middleware/test/auth/setupRoute.test.ts` (token order, one predicate,
+409/410 mapping), `middleware/test/auth/setupToken.test.ts` (policy including
+both exemption halves, constant-time match, boot wiring),
+`middleware/test/auth/userStoreFirstAdmin.test.ts` (statement sequence without
+Postgres), and against real Postgres
+`middleware/test/auth/userStoreFirstAdmin.pg.test.ts` (N-way race, same-email
+race, uncommitted-OIDC seam, lock timeout, audit row, shared token store) and
+`middleware/test/auth/setupRouteConcurrency.pg.test.ts` (N parallel HTTP
+requests → one 200, the rest 410).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1994,11 +2415,29 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `CoreApi`. Plugins always get session-cookie and whitelist auth via
       `CoreApi.registerWebSocket`. The authenticator rejects before the `101`
       (raw 401/403; a throw or missed deadline is a fail-closed 503), and the
-      route sets an explicit, bounded `maxPayload` (§10c).
+      route sets an explicit, bounded `maxPayload` (§10d).
+- [ ] A new WebSocket consumer relies on the registry for its session
+      lifetime and does not re-implement it: a channel handler caches no
+      authorisation beyond its socket, never receives or reconstructs the
+      session token, and stops its work in `onClose` (the kernel closes with
+      4401 at `exp`, 4403 on revocation and 1013 before the handler runs when
+      it cannot trust the upgrade's verdict). A frame that reaches
+      `onRefusedMessage` is answered or stops work already running, and never
+      starts, reads or changes anything. A new `registerKernel` caller states
+      how its own credential's expiry and revocation close its sockets,
+      because the registry closes none of them (§10d).
 - [ ] A new path that mints or re-mints the session cookie carries
       `auth_time` over (never resets it) and respects the absolute cap; a new
       OIDC provider implements `revalidateSession` or its sessions cannot be
       renewed (§10b).
+- [ ] A new path that mints the session cookie stamps `sv` and `uid` from the
+      `users` row it verified (a re-mint carries `sv` and `sid` over and takes
+      `uid` from the row it re-verified), and a new session consumer decides
+      through `evaluateSessionToken` with the `sessions` guard, never
+      `verifySession` alone (§10k).
+- [ ] A change to a `users` row's credential or status passes
+      `revokeSessions: true` in the same `update()` call and announces it via
+      `SessionRevocation.announce` (§10k).
 - [ ] A new native tool bound to shared/unscoped state (like memory) is routed
       through the caller's scoped accessor in `ctx.tools.invoke`, or denied
       there (§4, #909).
@@ -2057,7 +2496,20 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       preference (§10j).
 - [ ] A store that maps caller-supplied keys onto the filesystem derives the
       path from a digest of the key, never from the key's text (§10j).
+- [ ] A path that creates an install's first principal goes through
+      `UserStore.createFirstAdmin` (one transaction, table lock, count under
+      the lock), never count-then-INSERT. A route that decides whether setup
+      is open uses `resolveSetupState`, the predicate `/providers` reports.
+      Anything that skips the setup token keys on boot configuration (the
+      desktop flag plus a loopback bind), never on a request header or
+      `PUBLIC_BASE_URL` (§10l).
+- [ ] A kernel service a channel can call takes its principal as an explicit
+      argument and refuses when it is missing or blank. It never falls back
+      to `{ kind: 'operator' }`, nor to a turn context the call did not run
+      in. Cross-tenant routine scope has one producer, the
+      `requireAuth`-gated operator router, and `routineOperatorScope.test.ts`
+      fails on a second (§3, #1025/#1029).
 
 ---
 
-*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches).*
+*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup).*

@@ -2,6 +2,11 @@
  * Dev/test stand-in for omadia-ui-channel: serves the canvas WebSocket at
  * /omadia-ui/canvas, runs the offer→select→ack handshake, and replays the
  * Walkthrough-1 recording once per incoming `turn`. No auth — local dev only.
+ *
+ * For the session-lifetime contract a client can be tested against without a
+ * middleware: `sessionExpiresAt` puts that value into every ack, and
+ * `closeSockets(4401 | 4403, reason)` ends every open socket the way the
+ * server does at session expiry or on revocation.
  */
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -25,14 +30,30 @@ function stamp(message: Record<string, unknown>, turnId: string, canvasSessionId
     .replaceAll('"$CANVAS"', JSON.stringify(canvasSessionId));
 }
 
-export function startStubServer(port = 0): Promise<{ port: number; close: () => Promise<void> }> {
+export interface StubServerOptions {
+  /** Sent as `handshake_ack.sessionExpiresAt` (Unix epoch seconds). */
+  sessionExpiresAt?: number;
+}
+
+export interface StubServer {
+  port: number;
+  close: () => Promise<void>;
+  /** Close every open socket with this code, e.g. 4401 or 4403. */
+  closeSockets: (code: number, reason: string) => void;
+  /** How many sockets have connected since the server started. */
+  connections: () => number;
+}
+
+export function startStubServer(port = 0, opts: StubServerOptions = {}): Promise<StubServer> {
   // `host` is explicit for the same reason the HTTP test helper binds it: with
   // `port = 0` and no host the socket lands on the wildcard, whose chosen port
   // is not reserved against a process holding that port on 127.0.0.1 — the
   // address every caller below actually dials.
   const wss = new WebSocketServer({ port, host: '127.0.0.1', path: '/omadia-ui/canvas' });
+  let connections = 0;
 
   wss.on('connection', (ws: WebSocket) => {
+    connections += 1;
     const handshakeId = `hs-${Math.random().toString(36).slice(2)}`;
     let canvasSessionId = '';
     let ready = false;
@@ -70,7 +91,16 @@ export function startStubServer(port = 0): Promise<{ port: number; close: () => 
           typeof msg['canvasSessionId'] === 'string' && msg['canvasSessionId'].length > 0
             ? msg['canvasSessionId']
             : 'stub-canvas';
-        ws.send(JSON.stringify({ type: 'handshake_ack', handshakeId, canvasSessionId }));
+        ws.send(
+          JSON.stringify({
+            type: 'handshake_ack',
+            handshakeId,
+            canvasSessionId,
+            ...(opts.sessionExpiresAt !== undefined
+              ? { sessionExpiresAt: opts.sessionExpiresAt }
+              : {}),
+          }),
+        );
         ready = true;
         return;
       }
@@ -93,6 +123,10 @@ export function startStubServer(port = 0): Promise<{ port: number; close: () => 
       resolve({
         port: typeof addr === 'object' && addr !== null ? addr.port : port,
         close: () => new Promise<void>((r) => wss.close(() => r())),
+        closeSockets: (code, reason) => {
+          for (const client of wss.clients) client.close(code, reason);
+        },
+        connections: () => connections,
       });
     });
   });

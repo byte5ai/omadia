@@ -4,11 +4,19 @@ import type { Request, Response } from 'express';
 import type { AdminAuditLog } from '../auth/adminAuditLog.js';
 import { hashPassword } from '../auth/passwordHasher.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
+import type { SessionRevocation } from '../auth/sessionRevocation.js';
 import type { UserRecord, UserStore } from '../auth/userStore.js';
 
 interface AdminUsersDeps {
   userStore: UserStore;
   audit: AdminAuditLog;
+  /**
+   * Server-side session revocation — told whose sessions a reset, disable or
+   * delete just ended, for consumers that hold sessions open (live sockets).
+   * The revocation itself is the `revokeSessions` bump (or the row's
+   * absence) and does not depend on it.
+   */
+  sessions?: Pick<SessionRevocation, 'announce'>;
 }
 
 /**
@@ -26,6 +34,12 @@ interface AdminUsersDeps {
  * lock the operator out of their own deployment with no recovery path
  * short of the bootstrap env-vars (which would re-create the same email
  * but lose the audit trail).
+ *
+ * Server-side session revocation: a password reset and a disable move the
+ * user's session version (`revokeSessions`, in the same UPDATE as the change
+ * itself), and a delete removes the row the session is checked against —
+ * each ends every outstanding session of that user on the next request.
+ * Resetting your OWN password therefore signs you out too, everywhere.
  */
 export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
   const router = Router();
@@ -140,11 +154,24 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       }
     }
 
-    const updated = await deps.userStore.update(id, patch);
+    // Disabling ends the user's sessions now, not at their next renewal, and
+    // moves the version so a later re-enable cannot revive an old cookie.
+    // Re-enabling and renaming leave sessions alone.
+    const revokes = patch.status === 'disabled';
+    const updated = await deps.userStore.update(
+      id,
+      revokes ? { ...patch, revokeSessions: true } : patch,
+    );
     if (!updated) {
       // Race: row vanished between findById and update.
       res.status(404).json({ code: 'admin_users.not_found' });
       return;
+    }
+    if (revokes) {
+      deps.sessions?.announce({
+        provider: updated.provider,
+        sub: updated.providerUserId,
+      });
     }
 
     await deps.audit.record({
@@ -181,7 +208,18 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       return;
     }
     const passwordHash = await hashPassword(password);
-    await deps.userStore.update(id, { passwordHash });
+    // One statement: the new hash and the end of every session issued under
+    // the old one land together or not at all.
+    const updated = await deps.userStore.update(id, {
+      passwordHash,
+      revokeSessions: true,
+    });
+    if (!updated) {
+      // Race: row vanished between findById and update.
+      res.status(404).json({ code: 'admin_users.not_found' });
+      return;
+    }
+    deps.sessions?.announce({ provider: user.provider, sub: user.providerUserId });
 
     await deps.audit.record({
       actor: { email: req.session?.email },
@@ -217,6 +255,11 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       res.status(404).json({ code: 'admin_users.not_found' });
       return;
     }
+    // No version bump needed: a session whose row is gone is refused.
+    deps.sessions?.announce({
+      provider: target.provider,
+      sub: target.providerUserId,
+    });
     await deps.audit.record({
       actor: { email: req.session?.email },
       action: 'user.delete',

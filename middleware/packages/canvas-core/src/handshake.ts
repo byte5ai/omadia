@@ -12,7 +12,8 @@ export interface HandshakeConfig {
 
 export type HandshakeAction =
   | { kind: 'send'; message: HandshakeSelect }
-  | { kind: 'ready'; canvasSessionId: string }
+  /** `sessionExpiresAt`: the ack's session expiry (epoch s), when it sent one. */
+  | { kind: 'ready'; canvasSessionId: string; sessionExpiresAt?: number }
   | { kind: 'fail'; reason: string };
 
 /**
@@ -72,7 +73,14 @@ export function createHandshake(config: HandshakeConfig): {
 
       if (msg.type === 'handshake_ack') {
         settled = true;
-        return { kind: 'ready', canvasSessionId: msg.canvasSessionId };
+        const expiresAt: unknown = msg.sessionExpiresAt;
+        return {
+          kind: 'ready',
+          canvasSessionId: msg.canvasSessionId,
+          ...(typeof expiresAt === 'number' && Number.isFinite(expiresAt)
+            ? { sessionExpiresAt: expiresAt }
+            : {}),
+        };
       }
 
       return null; // pre-handshake surface/turn frames: ignore

@@ -949,7 +949,12 @@
     "passwordTooShort": "Password must be at least 8 characters.",
     "alreadyLocked": "Setup is already locked — another user has been created.",
     "credentialsRejected": "Email or password rejected by the server (must be valid email + 8+ chars).",
-    "providerHint": "No LLM key needed here. After you create the admin account, connect a provider (Anthropic, OpenAI, …) under Admin → LLM access."
+    "providerHint": "No LLM key needed here. After you create the admin account, connect a provider (Anthropic, OpenAI, …) under Admin → LLM access.",
+    "setupTokenLabel": "Setup token",
+    "setupTokenHint": "The middleware prints this one-time token to its log when it starts (with Docker: docker compose logs middleware). If you set ADMIN_SETUP_TOKEN, use that value.",
+    "setupTokenRejected": "The setup token is missing or wrong. Copy it from the middleware log and try again.",
+    "setupInProgress": "Another setup request is being processed. Wait a moment and try again.",
+    "setupDisabled": "Setup is not available on this server start. Restart the middleware, then reload this page."
   },
   "onboarding": {
     "ariaLabel": "First-time setup",
@@ -4553,6 +4558,8 @@
       "invalidName": "The name may only contain letters, numbers, . _ -",
       "notFound": "Registry not found — list reloaded.",
       "missingFields": "Name and URL are required.",
+      "sessionExpired": "Your session is no longer valid. Redirecting to sign in…",
+      "authUnavailable": "Your session can't be checked right now. Try again shortly.",
       "generic": "Error {status}."
     }
   },

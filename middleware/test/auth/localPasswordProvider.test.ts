@@ -45,6 +45,7 @@ class InMemoryUserStore implements Pick<
       createdAt: now,
       updatedAt: now,
       lastLoginAt: null,
+      sessionVersion: 0,
     });
   }
 
@@ -142,6 +143,9 @@ describe('LocalPasswordProvider.verify', () => {
       assert.equal(r.email, 'Admin@Example.com');
       assert.equal(r.providerUserId, 'admin@example.com');
       assert.equal(r.displayName, 'Admin User');
+      // The session is minted for the row the hash was checked against: its
+      // id and session version come from that same read.
+      assert.deepEqual(r.account, { id: 'mock-1', sessionVersion: 0 });
     }
   });
 });

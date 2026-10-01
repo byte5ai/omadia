@@ -36,6 +36,155 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — routine card buttons act only for the user who clicked them (#1029 follow-up)
+
+2026-09-30 — the routine smart-card handler (`RoutinesIntegration.handleRoutineAction`)
+still carried the interim fallback from #1029: when a channel sent a card click
+without an `actor` and no turn context was active, the action ran unscoped. A
+missing principal therefore widened rights instead of narrowing them — pause,
+resume, delete and "Jetzt auslösen" could act on any tenant's routine by id, and a
+manual trigger delivered into that routine's own conversation. Such a click is now
+refused with `RoutineActorRequiredError` before any routine is read, and so is an
+actor with a blank tenant or user id. The turn context is no longer consulted on
+this path: card clicks arrive out-of-band, so a context there could only be one
+leaked forward from an earlier turn. `{ kind: 'operator' }` now has a single
+producer, the `requireAuth`-gated `/api/v1/routines` router, and a new structural
+test (`routineOperatorScope.test.ts`) fails on a second one. The counter that
+tracked unscoped runs now counts refusals (`refusedRoutineActionMetrics`) and is
+expected to stay at zero.
+
+The Teams channel plugin has sent `actor` since 0.26.1. An installation still on an
+older channel-teams gets "Keine Benutzeridentität für diese Karten-Aktion
+übermittelt …" on every routine card button until the plugin is updated; routines
+keep firing, and the Operator UI's Routines page still manages them (see
+`docs/upgrading.md`). `@omadia/plugin-api` 1.19.2 documents the rule: `actor` stays
+optional in the type so 1.x callers compile, is required at runtime, and becomes a
+required field in 2.0.
+
+### Fixed — first-user setup creates exactly one admin and needs the operator's setup token
+
+2026-09-30 — `POST /api/v1/auth/setup` checked `userStore.count()` and then
+ran a plain INSERT on another pool connection, with an argon2 hash in between.
+Parallel requests all saw an empty table: distinct emails created several
+admins, each signed in, and a repeated email surfaced as an unhandled 500.
+The emptiness check and the INSERT now run in one transaction in
+`UserStore.createFirstAdmin`, under `SET LOCAL lock_timeout` and
+`LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`. That lock also waits for the
+writers that bypass this path (an OIDC first sign-in, an admin-UI create), and
+a wait past 2 s answers 409 `auth.setup_in_progress`. The `ADMIN_BOOTSTRAP_*`
+env seed uses the same path, so two replicas booting together no longer crash
+the loser on a unique violation. The first admin's creation is now audited
+(`auth.first_admin_create`) in the same transaction. `GET /providers` and the
+handler share one predicate: a boot that did not allow setup now answers 410
+`auth.setup_disabled` if the users table is emptied later (restart to
+reopen the wizard), where it used to create an admin. While users exist the
+answer stays 410 `auth.setup_locked`.
+
+The wizard also needs operator consent now. It accepts only the setup token
+(`setup_token` body field, else 403 `auth.setup_token_invalid`), checked
+before anything else, so an unauthorised caller never runs argon2 or waits on
+the lock. The token is `ADMIN_SETUP_TOKEN` (new, 16 to 512 characters) or,
+when unset, a generated one. It is stored in `platform_settings` so every
+replica and restart shares it, printed once per start to the middleware log,
+and deleted when the first admin exists. The only install without a token is
+the desktop app, whose supervisor now sets the new `OMADIA_DESKTOP_EMBEDDED`
+together with its loopback bind. Neither half exempts on its own, and no
+request header or `PUBLIC_BASE_URL` is consulted. `/providers` reports
+`setup_token_required`, and the wizard asks for the token and maps 403, 409
+and both 410 codes to their own messages. The unused `/api/v1/setup` prefix
+was removed from the unauthenticated path allowlist. See
+`docs/upgrading.md` for installs whose wizard is still open.
+
+### Fixed — channel WebSockets end with the session that opened them
+
+2026-09-30 — a channel WebSocket (today the canvas at `/omadia-ui/canvas`) was
+authenticated once, at the upgrade, and then stayed authorised until the client
+disconnected, the channel was deactivated or the process restarted. Cookie
+expiry, sign-out, an admin password reset, disabling or deleting the user and
+withdrawing an Entra identity from the whitelist never reached a socket that was
+already open, so its frames kept starting orchestrator turns as that user. The
+registry now keeps each socket's token and `exp` beside it and closes the socket
+with 4401 `session expired` at `exp`; a token without `exp`, or one that expires
+during the upgrade check, is closed before the handler runs, and a frame the
+handler sends after `exp` is dropped like an inbound one, even while the expiry
+timer runs late. Handlers get the
+claims (now with `expiresAt`), never the token, and the session cookie is
+stripped from `socket.request.headers`. A revocation announced on this replica
+closes that user's sockets at once with 4403, including a socket whose upgrade
+was still being checked at that moment; if more than 256 revocations were
+announced during that check, the socket closes with 1013 before its handler
+runs and the client's reconnect is checked afresh. Announcements are process-local, so
+every inbound frame is also authorised on its own: it reaches the handler only
+on a session check that started at most `WS_SESSION_FRAME_RECHECK_MS` (new env
+variable, default 5000, 0 = every frame) before the frame arrived, both moments
+read from a monotonic clock so a wall-clock step cannot stretch that bound. With an older
+verdict the frame waits, in order, while `evaluateSessionToken` runs again and
+the socket stops reading. That is what carries a sign-out, disable or delete
+made on another replica, or directly in SQL, to the next frame (4403), and a
+de-whitelisted Entra identity likewise. A socket that sends nothing is re-checked
+every 60 s. A failed, throwing or hung account lookup (10 s deadline) is an
+outage, not a verdict: the socket stays open, but the frames that waited on it
+are refused instead of handled, as HTTP answers 503. The canvas answers a
+refused turn with `turn_error`, still honours a refused `turn_abort`, and closes
+with 1013 instead of acking a refused handshake so the client reconnects.
+Channel handlers can see refused frames through the new optional
+`ChannelSocket.onRefusedMessage`. After the close no frame reaches the handler,
+and the canvas channel aborts the turn still running and starts none that was
+queued behind it.
+
+A renewal extends the cookie, not an open socket: the client reconnects with
+its current cookie, so an active canvas reconnects once per session window, and
+signing out anywhere closes that user's canvas too. `handshake_ack` now carries
+`sessionExpiresAt` so the client can warn the user in time (renewal stays an
+explicit click). `@omadia/canvas-core` 0.2.0 stops reconnecting on 4401
+(`unauthenticated`) and 4403 (`forbidden`) instead of retrying a cookie that can
+only be refused (a canvas switch in that state waits for the host's next
+`connect()` as well), reads its cookie from an optional provider on every
+connect, reports `sessionExpiresAt` in its `ready` status, and its stub server
+can send the field and simulate both closes (`docs/security-architecture.md`
+§10d).
+
+### Fixed — sign-out, password reset, disable and delete end sessions on the server
+
+2026-09-30 — the admin session is a stateless JWT, and nothing on the server
+could end one early. Signing out only cleared the browser's cookie (Entra
+sessions also dropped their refresh token), an admin password reset only
+replaced the hash, and disabling or deleting a user took effect at the next
+renewal at the earliest. A copy of the cookie taken before any of these kept
+working until its own expiry and, while the row stayed `active`, could be
+renewed up to `AUTH_SESSION_MAX_LIFETIME_HOURS`. Every session token now
+carries the account's session version (`sv`), the id of the `users` row it was
+minted for (`uid`) and a random per-sign-in id (`sid`, not checked yet).
+`evaluateSessionToken`, the one verdict path behind `requireAuth`,
+`ctx.operatorAuth`, the channel WebSocket upgrade and `POST
+/api/v1/auth/renew`, re-reads that row (one indexed point read, no cache) and
+answers 401 `auth.revoked` once the row is gone, disabled, re-created or has
+moved its version on. `GET /api/v1/auth/me` runs the same check, so the UI's
+heartbeat shows the expired overlay within a minute. A failed lookup is an
+outage, not a verdict: 503 `auth.unavailable` (a raw 503 on a WebSocket
+upgrade, `false` from `hasValidSession`), so a database blip does not sign
+operators out.
+
+`POST /api/v1/auth/logout` now moves the version, which signs the user out on
+every device, not just in this browser. An admin password reset and disabling
+a user move it in the same UPDATE as the change itself; deleting the row needs
+no bump. A cookie that is already revoked changes nothing server-side when it
+reaches the public `/logout` route, so a stale copy cannot sign its owner out of
+their current session. The OIDC callback no longer mints a session for a
+disabled account, and an admin who resets their own password is signed out as
+well. Tokens minted before this change carry no `sv` and count as version 0,
+where every existing row starts, so the upgrade signs nobody out. They carry no
+`uid` either, so they are tied to their row by sign-in time: a row deleted and
+re-created after that sign-in does not revive them, and their first renewal
+stamps the `uid` of the row it verified. Migration
+`auth/migrations/0003_users_session_version.sql` adds `users.session_version
+INTEGER NOT NULL DEFAULT 0`; it lives in the auth series because `users` is that
+series' own table (AGENTS.md, new SQL migrations), and it runs automatically at
+boot, including on the desktop app's embedded Postgres. The builder's SSE
+stream that is already open when a session is revoked stays open for now; open
+channel WebSockets close with their session (see "channel WebSockets end with
+the session that opened them", `docs/security-architecture.md` §10k).
+
 ### Fixed — desktop updater: an update the OS is too old for is no longer "up to date"
 
 2026-09-30 — electron-updater withholds an update whose feed declares a

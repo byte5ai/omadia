@@ -10,8 +10,9 @@
 #   - omadia-web-ui-<suffix>      admin UI, public entrypoint
 #
 # Secrets are generated here (VAULT_KEY, CREDENTIAL_KEYCHAIN_KEY, Postgres
-# password); the LLM key
-# is collected by the /setup wizard on first boot — nothing to paste.
+# password). The first-admin /setup wizard asks for the one-time setup token
+# the middleware prints to its log on first boot; the LLM is connected in the
+# admin UI afterwards (Admin → LLM access).
 #
 # Prerequisites: flyctl installed and logged in (fly auth login), and
 # openssl on PATH. Cost: three shared-cpu machines + two 1 GB volumes,
@@ -117,7 +118,8 @@ fi
 
 echo
 echo "Done. Open https://${UI_APP}.fly.dev and finish the /setup wizard"
-echo "(first admin + LLM key, stored encrypted in the vault)."
+echo "(first admin). It asks for the one-time setup token the middleware"
+echo "printed at start:  fly logs -a ${MW_APP} | grep 'setup token'"
 echo
 echo "The middleware is public at https://${MW_APP}.fly.dev (needed for"
 echo "channel webhooks). VAULT_KEY and CREDENTIAL_KEYCHAIN_KEY live only as Fly"

@@ -24,6 +24,10 @@ export interface HandshakeAck {
   type: 'handshake_ack';
   handshakeId: string;
   canvasSessionId: string;
+  /** When the session behind the socket expires, Unix epoch seconds. The
+   *  server closes the socket with 4401 at that moment. Absent on servers
+   *  that predate the field. */
+  sessionExpiresAt?: number;
 }
 
 export interface AgentTextDelta {

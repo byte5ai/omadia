@@ -575,8 +575,10 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   Fehlt/ungültig → rohes `401` + `socket.destroy()` **vor** dem `101`; für einen
   unauthentifizierten Peer wird kein WebSocket allokiert. Nur authentifizierte
   Upgrades werden zu `ChannelSocket`s; die verifizierten `ChannelSessionClaims`
-  (`subject`/`email`/`displayName`/`provider`/`omadiaUserId?`) gehen an den
-  Handler. Zusätzlich der **gleiche Entra-Whitelist-Gate** wie `requireAuth`:
+  (`subject`/`email`/`displayName`/`provider`/`omadiaUserId?`/`expiresAt`) gehen
+  an den Handler — **nie das Token**: das bleibt in der Registry, und das
+  Session-Cookie wird aus `socket.request.headers.cookie` entfernt (andere
+  Cookies bleiben). Zusätzlich der **gleiche Entra-Whitelist-Gate** wie `requireAuth`:
   eine OIDC-(`entra`)-Session mit nicht (mehr) whitelisteter E-Mail → `403`
   (Auth-Parität zu den HTTP-Routes; der `EmailWhitelist` wird mitinjiziert).
   (Hinweis: `CoreApi.resolveIdentity` ist channel-natives User-Mapping,
@@ -584,15 +586,82 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   Nach der asynchronen Cookie-Prüfung wird das Active-Flag **erneut** geprüft:
   ein `deactivateChannel` im Auth-Fenster führt zu `503` statt zu einem Socket,
   der an `deactivateChannel` vorbeigerutscht ist.
+- **Lebensdauer nach dem Upgrade** (`src/channels/channelSessionLifetime.ts`,
+  `ChannelSessionTracker`): ein Channel-Socket lebt nicht länger als die
+  Sitzung, die ihn geöffnet hat.
+  - Am `exp` des Tokens → Close **4401** `session expired`. Ein Token ohne
+    `exp` oder eines, das zwischen Upgrade-Prüfung und Handshake abläuft, wird
+    mit 4401 geschlossen, **bevor** der Handler läuft; ein Frame nach `exp`
+    wird verworfen, eingehend wie ausgehend (`socket.send` des Handlers), auch
+    wenn der Timer spät dran ist — `exp` ist Wanduhrzeit, die Wanduhr
+    entscheidet.
+  - Widerruf auf dieser Replica: `SessionRevocation.onRevoked` (Logout,
+    Passwort-Reset, Deaktivieren, Löschen, siehe „Serverseitiger
+    Sitzungs-Widerruf“ in §3) schließt die Sockets des Users sofort mit **4403**
+    `session revoked`. `WebSocketRegistry.closeSessions(match)` ist derselbe
+    Hebel für andere Kernel-Pfade. Ein `announce`, das während der
+    Upgrade-Prüfung eintrifft, findet noch keinen Socket: die Registry merkt
+    sich davor den Widerrufszähler (`ChannelSessionTracker.mark()`), und
+    `accept` schließt mit 4403, **bevor** der Handler läuft
+    (`RevocationLog` in `src/channels/channelSessionCheck.ts`). Das Log hält
+    die letzten 256 Ankündigungen (`RECENT_REVOCATIONS_KEPT`); kamen während
+    einer Upgrade-Prüfung mehr, lässt sich ein Widerruf dieses Users nicht
+    ausschließen → Close **1013** `session unverified`, ebenfalls **bevor**
+    der Handler läuft, und der Reconnect des Clients wird frisch geprüft.
+    Nicht „erst beim ersten Frame prüfen“: Arbeit beim Verbindungsaufbau und
+    Pushes des Handlers brauchen keinen Frame.
+  - Widerruf auf anderen Replicas — **der nächste Frame**: `announce` ist
+    prozesslokal, deshalb wird jeder eingehende Frame einzeln geprüft. Er
+    erreicht den Handler nur auf einem Urteil, dessen Prüfung höchstens
+    `WS_SESSION_FRAME_RECHECK_MS` (Env, Default 5 s, 0 = jeder Frame) vor
+    seiner Ankunft begann; die Upgrade-Prüfung zählt mit. Ist das Urteil
+    älter, wartet der Frame (und jeder dahinter, in Reihenfolge), bis
+    `evaluateSessionToken` (derselbe Pfad wie HTTP) erneut gelaufen ist; der
+    Socket liest so lange nicht weiter (`ws.pause()`, TCP-Backpressure statt
+    wachsendem Puffer). Widerrufen → 4403 `session revoked`, Entra-Whitelist
+    entzogen → 4403 `session forbidden`, Token nicht mehr gültig → 4401; die
+    wartenden Frames verfallen. Prüfbeginn und Frame-Ankunft misst der
+    Tracker mit einer monotonen Uhr (`performance.now`, injizierbar als
+    `monotonicNow`): ein Zurückstellen der Wanduhr (NTP, VM-Resume) kann ein
+    Urteil nicht über die Grenze hinaus strecken.
+  - Leerlauf: ein Sweep alle `WS_SESSION_RECHECK_MS` (60 s) prüft jeden
+    offenen Socket genauso. Das begrenzt, was ein Socket ohne eigene Frames
+    noch bekommt (Notification-Pushes).
+  - Kein Urteil, kein Frame: `auth.unavailable` (DB-Ausfall), ein Wurf und
+    eine verpasste Deadline (`WS_SESSION_CHECK_TIMEOUT_MS`, 10 s) sind kein
+    Urteil — der Socket bleibt offen (begrenzt durch `exp`; Pings beantwortet
+    er wieder, sobald der Check aufgegeben hat), aber die wartenden Frames
+    erreichen `onMessage` nicht, sondern `onRefusedMessage` (das
+    WS-Gegenstück zu HTTP 503). Ein Ausfall beendet auch die Gnadenfrist des
+    Urteils davor, der nächste Frame prüft neu; eine Ablehnung, die erst nach
+    der Deadline kommt, schließt trotzdem. Sweep und Frames teilen sich einen
+    Check pro Socket.
+  - Ab dem Close erreicht kein Frame mehr den Handler, seine Sends werden
+    verworfen, und sein `onClose` feuert sofort (nicht erst nach dem
+    Close-Handshake des Peers).
+  - Ein `/renew` verlängert das Cookie, **nicht** den offenen Socket; der
+    Client verbindet sich mit dem aktuellen Cookie neu. Renewal bewegt die
+    Session-Version nicht, der Socket bleibt also bis zum `exp` seines Tokens
+    offen.
+  - Kernel-Routen bekommen nichts davon: ihr Principal ist für die Registry
+    opak, eine Kernel-Route muss Ablauf und Widerruf ihres Credentials selbst
+    durchsetzen.
 - **Wiring** (`index.ts`, per `grep -n WebSocketRegistry src/index.ts` finden —
   Zeilennummern driften): `new WebSocketRegistry({ signingKey:
-  sessionSigningKey, whitelist: emailWhitelist })` vor
-  `createCoreApi({ … webSockets })`, zusätzlich an die `DefaultChannelRegistry`
+  sessionSigningKey, whitelist: emailWhitelist, sessions: sessionRevocation })`
+  vor `createCoreApi({ … webSockets })`, zusätzlich an die `DefaultChannelRegistry`
   gereicht (Lifecycle-Spiegel zu `routes`), und
   `webSocketRegistry.attach(server)` nach `const server = app.listen(PORT, '::')`
-  — dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit.
-  `channelMaxPayloadBytes` bleibt in Prod ungesetzt, also greift der
-  32-MiB-Default; nur Tests setzen einen kleinen Cap.
+  — dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit. Über
+  `sessions` (derselbe `SessionRevocationGuard` wie `requireAuth`) kommen sowohl
+  der Upgrade-Check als auch `onRevoked`, die Frame-Prüfung und der Sweep.
+  `channelFrameRecheckMs` kommt aus `config.WS_SESSION_FRAME_RECHECK_MS`;
+  `channelMaxPayloadBytes`, `channelSessionRecheckMs` und
+  `channelSessionCheckTimeoutMs` bleiben in Prod ungesetzt, also greifen
+  32 MiB, 60 s bzw. 10 s; nur Tests setzen kleinere Werte. Der
+  Channel-Authenticator selbst (`authenticateChannelSession`, Cookie-Parsing,
+  Entfernen des Session-Cookies aus den Handler-Headern) liegt in
+  `src/channels/channelSessionAuth.ts`.
 - **Dependency:** `ws` + `@types/ws` nur im Kernel, nicht im SDK.
 
 Test: `test/webSocketRegistry.test.ts` fährt einen echten `http.Server` + echten
@@ -605,9 +674,29 @@ lässt Kernel-Sockets offen, 32-MiB-Default; Statuscodes werden exakt geprüft,
 nicht per `|unexpected server response`). `test/webSocketRegistryHardening.test.ts`
 deckt `503` bei Exception/Deadline/Nicht-Ergebnis (auch ein spätes `ok` nach
 der Deadline öffnet nichts), die rohen Status-Line-Bytes bei CR/LF im
-`message`, die Grenzen für `maxPayload`/`authTimeoutMs`/`channelMaxPayloadBytes`,
-das kaputte Cookie-Escape und das Deaktivieren im Auth-Fenster ab. Gemeinsame
-Fixtures: `test/_helpers/wsRegistryKit.ts`. Damit ist der
+`message`, die Grenzen für `maxPayload`/`authTimeoutMs`/`channelMaxPayloadBytes`/`channelSessionRecheckMs`,
+das kaputte Cookie-Escape und das Deaktivieren im Auth-Fenster ab. Die
+Lebensdauer prüfen `test/webSocketRegistrySession.test.ts` (echte Sockets:
+4401 am `exp`, Token ohne `exp` bzw. im Upgrade abgelaufen, Claims ohne Token,
+`closeSessions`, Widerruf per `announce` und per Sweep, Whitelist-Entzug,
+Ausfall hält Frames zurück, schließt aber nicht, keine Timer/Re-Checks nach
+Close oder Deaktivierung), `test/webSocketRegistryFrameGate.test.ts` (echte
+Sockets: Widerruf auf einer anderen Replica stoppt den nächsten Frame samt
+den dahinter wartenden, `announce` während der Upgrade-Prüfung schließt vor
+dem Handler, mehr Ankündigungen als gehalten → 1013 vor dem Handler und der
+Reconnect klappt, fehlgeschlagener bzw. hängender Lookup hält Frames zurück
+und der Socket beantwortet weiter Pings, Grenze 0 prüft jeden Frame),
+`test/channelSessionTracker.test.ts` (Mock-Timer: exakt am `exp`, später
+Timer für ein- und ausgehende Frames, setTimeout-Obergrenze, Verdict-Mapping),
+`test/channelSessionFrameGate.test.ts` (Mock-Timer: Frame-Grenze und
+Default, Reihenfolge, Backpressure, Ausfall und Deadline, späte Ablehnung,
+Upgrade-Fenster samt Überlauf, zurückgestellte Wanduhr), `test/uiChannelSessionRefusal.test.ts` (was der Canvas mit
+einem zurückgehaltenen Frame macht), `test/uiChannelSessionGate.test.ts`
+(Canvas an einer echten Registry: ein Turn nach einem Widerruf anderswo
+startet nie, im Ausfall gibt es `turn_error` und der Socket bleibt) und
+`test/auth/liveSocketRevocation.test.ts` (echte Auth-/Admin-Router:
+`/renew` lässt den Socket offen, Logout und Deaktivieren schließen ihn).
+Gemeinsame Fixtures: `test/_helpers/wsRegistryKit.ts`. Damit ist der
 Transport bereit für **PR-10b** (echter Canvas-Channel: Handshake-`offer→select→
 ack`, `IncomingTurn`-Bildung, `surface_*`-Fan-out).
 
@@ -630,6 +719,29 @@ PR-11s `CoreApi.registerWebSocket` aufsetzend. Drei neue Module im Package
      `handshake_select` Versions-Match (Protokoll **und** Ops-Catalog) → mintet/
      übernimmt `canvasSessionId` und schickt `handshake_ack`; Mismatch →
      `handshake_error` (eine Downgrade-Chance, zweiter Mismatch → `close`).
+     Das Ack trägt `sessionExpiresAt` (Epoch-Sekunden, aus
+     `session.expiresAt`), wann der Kernel den Socket mit 4401 schließt —
+     additiv und optional, also ohne Protokoll-Versionssprung.
+     **Client-Vertrag:** vor diesem Zeitpunkt den User warnen (Verlängern
+     bleibt ein expliziter Klick, wie im `SessionWatcher`), bei 4401 mit dem
+     aktuellen Cookie neu verbinden (ein 401 auf diesem Upgrade heißt neu
+     anmelden), bei 4403 aufhören. `@omadia/canvas-core` 0.2.0 setzt das um:
+     `CanvasSocket` meldet bei 4401 `unauthenticated`, bei 4403 `forbidden`,
+     beides ohne Backoff-Schleife; der Host verlängert bzw. meldet neu an und
+     ruft `connect()`. Bis dahin öffnet nichts anderes einen Socket:
+     `switchCanvas()` merkt sich nur die Canvas, die das nächste `connect()`
+     fortsetzt (ein Reopen mit dem beendeten Cookie scheitert schon vor dem
+     Upgrade und sähe für den Client wie ein Netzabbruch aus, also wieder
+     Backoff). `cookie` darf eine Funktion sein, die bei jedem Connect
+     das aktuelle Cookie liefert. Der Stub-Server (`tools/stubServer.ts`) kann
+     `sessionExpiresAt` senden und mit `closeSockets(4401 | 4403, …)` beide
+     Closes simulieren. Kann der Kernel die Sitzung gerade nicht prüfen
+     (DB-Ausfall, siehe PR-11-Abschnitt), läuft ein zurückgehaltener Frame
+     nicht: ein `turn`/`canvas_refresh` bekommt `turn_error` `session check
+     unavailable, try again`, ein `turn_abort` stoppt den laufenden Turn
+     trotzdem, und auf ein zurückgehaltenes `handshake_select` folgt statt
+     des Acks ein Close **1013** — der Client verbindet im normalen Backoff
+     neu, durch eine frische Upgrade-Prüfung.
   2. **Turn-Bildung:** je `turn`-Nachricht ein `IncomingTurn` —
      `channelId`, `userRef` (`kind: 'custom'`, `id = session.subject`), `text`,
      optional `target`/`viewState`/`viewStateTruncated`, `tenantId` aus
@@ -649,6 +761,10 @@ PR-11s `CoreApi.registerWebSocket` aufsetzend. Drei neue Module im Package
      `turn_complete`). Orchestrator-Telemetrie (`iteration_start`, `tool_*`,
      `verifier`, …) wird **verworfen**. Turns sind **pro Verbindung
      serialisiert** (Promise-Chain), damit Surface-Frames nicht interleaven.
+     Schließt der Socket (auch weil der Kernel die Sitzung beendet), bricht
+     `onClose` den laufenden Turn ab (der Orchestrator-Generator wird per
+     `return()` abgewickelt), und in der Kette wartende Turns starten nicht
+     mehr.
 - **`plugin.ts`** — `activate` registriert zusätzlich zur Discovery-Route
   (`GET /omadia-ui/info`, jetzt `websocket: /omadia-ui/canvas`) den WS-Endpoint
   via `core.registerWebSocket` — **feature-detected**: fehlt die Methode (kein
@@ -672,8 +788,12 @@ Mock-`ChannelSocket` + Mock-`handleTurnStream` (offer; matching select → ack m
 client-`canvasSessionId`; Versions-Mismatch → error, zweiter → close; Turn →
 korrekt geformter `IncomingTurn` + `surface_*`/`agent_text_delta`/`turn_complete`
 Fan-out; Turn vor Handshake wird verworfen; `localOperations`/`action` landen in
-`metadata`, malformed `action` → `turn_error`). Real-Socket-Pfad ist durch PR-11s
-`webSocketRegistry.test.ts` abgedeckt. **Damit kann der Agent live UI über den
+`metadata`, malformed `action` → `turn_error`; `sessionExpiresAt` im Ack nur mit
+`session.expiresAt`; Close bricht den laufenden Turn ab und startet keinen
+wartenden). Real-Socket-Pfad ist durch PR-11s
+`webSocketRegistry.test.ts` abgedeckt; die Client-Seite des Lebensdauer-Vertrags
+durch `packages/canvas-core/test/canvasSocketSession.test.ts` und
+`canvasSocket.test.ts`. **Damit kann der Agent live UI über den
 Canvas synthetisieren, sobald Tier 2 (`omadia-ui-orchestrator`) `surface_*`
 emittiert** — der Transport ist vollständig.
 
@@ -2135,13 +2255,16 @@ Sitzung ohne Navigation.
   Tokens ohne den Claim auf `iat` zurück.
 - **Route** (`routes/authRenew.ts`, gemountet im Auth-Router). Reihenfolge,
   jeder Schritt fail-closed:
-  1. `evaluateSessionToken` wie `requireAuth` (Cookie gültig, Whitelist):
-     401 `auth.missing` / `auth.invalid`, 403 `auth.not_whitelisted`.
-     Eine abgelaufene Sitzung ist nicht verlängerbar, nur ersetzbar.
+  1. `evaluateSessionToken` wie `requireAuth` (Cookie gültig, Whitelist,
+     serverseitiger Widerruf): 401 `auth.missing` / `auth.invalid` /
+     `auth.revoked`, 403 `auth.not_whitelisted`, 503 `auth.unavailable`
+     (Widerrufs-Lookup fehlgeschlagen). Eine abgelaufene oder widerrufene
+     Sitzung ist nicht verlängerbar, nur ersetzbar.
   2. Absolute Obergrenze: `now >= auth_time + cap` bzw. `exp` liegt schon auf
      der Grenze → 401 `auth.renew_expired`.
-  3. Provider noch aktiv, `users`-Zeile vorhanden und `active` → sonst 401
-     `auth.renew_denied`. Gilt für lokale und Entra-Zeilen.
+  3. Provider noch aktiv, `users`-Zeile vorhanden und `active`, und sie deckt
+     die Sitzung noch (gleiche Zeile `uid`, gleiche `session_version` `sv`)
+     → sonst 401 `auth.renew_denied`. Gilt für lokale und Entra-Zeilen.
   4. OIDC: `OidcProvider.revalidateSession` (Entra: Refresh-Token einlösen,
      `oid`/E-Mail/Whitelist prüfen, rotierten Token speichern). `denied` →
      401 `auth.renew_denied`, `unavailable` (Netz, 5xx, 429) → 502
@@ -2150,16 +2273,22 @@ Sitzung ohne Navigation.
   5. Audit-Zeile `auth.session_renew` (`actor.id` = users-UUID, #775),
      **vor** dem Cookie: scheitert der Audit-Write, gibt es 500 und kein
      neues Cookie.
-  6. Gleiche Claims neu signiert, `exp = min(now + 4h, auth_time + cap)`.
+  6. Gleiche Claims neu signiert (`auth_time`, `sv`, `sid` werden
+     übernommen; `uid` ist die Zeile, die Schritt 3 geprüft hat — dieselbe
+     `id`, bei einem Alt-Token ohne `uid` erstmals gesetzt),
+     `exp = min(now + 4h, auth_time + cap)`.
      Antwort `{ expires_at, server_now, renewable_until }`.
 - Ohne `renewal`-Deps im `AuthDeps` (Test-Harnesses) antwortet `/renew` mit
   503 `auth.renew_unavailable`.
 - **`GET /me`** liefert zusätzlich `renewable_until` (`auth_time + cap`,
   `null` ohne Renewal). Die UI zeigt damit im letzten Fenster vor der Grenze
   direkt „Neu anmelden“ statt eines Klicks, der sicher abgelehnt wird.
-- **`POST /logout`** vergisst bei Entra-Sitzungen den Refresh-Token
-  (`RefreshStore.forget`), damit ein vor dem Logout kopiertes Cookie sich
-  nicht weiter über den IdP verlängern kann.
+- **`POST /logout`** beendet die Sitzung serverseitig (siehe unten): ist das
+  vorgelegte Cookie noch gültig, zählt es `users.session_version` hoch und
+  beendet damit **alle** Sitzungen dieses Users auf allen Geräten; bei
+  Entra-Sitzungen wird zusätzlich der Refresh-Token vergessen
+  (`RefreshStore.forget`). Ein schon widerrufenes Cookie ändert serverseitig
+  nichts (die Route ist öffentlich), es bekommt nur sein Cookie gelöscht.
 - **UI** (`web-ui/app/_components/SessionWatcher.tsx`, `renewSession()` in
   `_lib/api.ts`): Erfolg setzt die Phase von `warning` zurück auf `normal`
   und plant die Timer neu. Ein Heartbeat, der vor der Verlängerung losging,
@@ -2172,6 +2301,111 @@ und Restrisiken: `docs/security-architecture.md` → „Session renewal“.
 
 Tests: `test/auth/renewRoute.test.ts`, `test/auth/entraProviderRevalidate.test.ts`,
 `test/auth/sessionJwt.test.ts`, `web-ui/app/_components/__tests__/SessionWatcher.test.tsx`.
+
+#### Serverseitiger Sitzungs-Widerruf (`users.session_version`)
+
+Ohne Serverzustand konnte nichts eine Sitzung vorzeitig beenden: Abmelden
+löschte nur das Browser-Cookie, ein Admin-Passwort-Reset nur den Hash, und eine
+Kopie des Cookies lief bis `exp` weiter (und ließ sich bis zur Obergrenze
+verlängern). Jetzt gibt es einen Marker pro User.
+
+- **Migration** `src/auth/migrations/0003_users_session_version.sql`:
+  `users.session_version INTEGER NOT NULL DEFAULT 0`, additiv und idempotent.
+- **Claims** (`auth/sessionJwt.ts`): `sv` (Version der Zeile beim Minten),
+  `uid` (`users.id`, bindet das Token an genau diese Zeile) und `sid`
+  (Zufalls-ID pro Anmeldung, wird noch nicht geprüft). Alte Tokens ohne `sv`
+  gelten als Version 0 — so startet jede bestehende Zeile, das Upgrade meldet
+  also niemanden ab. Ohne `uid` bindet ihre Anmeldezeit (`auth_time`, ganze
+  Sekunden) sie an die Zeile: eine später angelegte Zeile (gelöscht und neu
+  angelegt) trägt sie nicht, obwohl sie wieder bei Version 0 startet. Die
+  erste Verlängerung setzt die `uid` der geprüften Zeile.
+- **Prüfung** in `evaluateSessionToken` über `SessionRevocationGuard`
+  (`auth/sessionRevocation.ts`, in `index.ts` einmal gebaut und nach
+  `new UserStore(graphPool)` per `attach` verdrahtet): Zeile weg, `disabled`,
+  andere `id` oder andere Version → 401 `auth.revoked`. Lookup fehlgeschlagen
+  → 503 `auth.unavailable` (Ausfall, kein Urteil über das Cookie). Gilt für
+  `requireAuth`, `ctx.operatorAuth` (`false`), das Channel-WebSocket-Upgrade
+  (roh 401 bzw. 503), `POST /renew` und `GET /me` (60-s-Heartbeat des
+  `SessionWatcher`). Kein Cache: ein Point-Read pro Request.
+- **Wer hochzählt**: `POST /logout` (nur mit noch gültigem Cookie),
+  Admin-Passwort-Reset und Deaktivieren (`UserStore.update(id, {…,
+  revokeSessions: true })`, im selben UPDATE wie Hash bzw. Status). Löschen
+  braucht keinen Bump — ohne Zeile keine Sitzung, und eine neu angelegte
+  Zeile hat eine neue `id` (und für Alt-Tokens ohne `uid` ein jüngeres
+  `created_at` als deren Anmeldung). Das eigene Passwort zurückzusetzen meldet
+  auch einen selbst ab.
+- **Login-Pfade** stempeln `sv`/`uid` aus der geprüften Zeile: Passwort-Login
+  aus demselben Read wie die Hash-Prüfung (`PasswordAuthSuccess.account`),
+  OIDC-Callback aus der upserteten Zeile (für eine deaktivierte Zeile wird
+  keine Sitzung mehr gemintet), `/setup` aus der neu angelegten.
+- **Offene Verbindungen**: Channel-WebSockets schließt die Registry über
+  denselben Guard (`WebSocketRegistryDeps.sessions`): `onRevoked` sofort auf
+  dieser Replica (4403), auf allen anderen vor dem nächsten Frame, sobald
+  dessen letzte Prüfung älter als `WS_SESSION_FRAME_RECHECK_MS` (5 s) ist,
+  bzw. im 60-s-Sweep, solange der Socket schweigt, und am `exp` des Tokens
+  mit 4401 — Details im Abschnitt „Canvas WebSocket-Transport (Omadia UI,
+  PR-11)“. Der Builder-SSE-Stream bleibt nach einem Widerruf noch offen —
+  siehe §13.
+
+Tests: `test/auth/sessionRevocation.test.ts`,
+`test/auth/logoutRevokesSession.test.ts`,
+`test/auth/userStoreSessionVersion.test.ts` (+ `.pg.test.ts`),
+`test/auth/adminUsersRoute.test.ts`, `test/webSocketRegistry.test.ts`.
+
+### Ersteinrichtung `POST /api/v1/auth/setup`: atomar und mit Setup-Token
+
+Der Wizard legt den ersten Admin an und liegt unter dem öffentlichen
+`/api/v1/auth/*`-Präfix, weil es noch keinen Operator gibt. Die Route steckt seit
+dieser Änderung in `routes/authSetup.ts` (wie `/renew` in `authRenew.ts`) und prüft in
+dieser Reihenfolge:
+
+1. **Setup-Token** (`auth/setupToken.ts`), vor allem anderen: Body-Feld
+   `setup_token`, konstant-zeitlicher Vergleich. Fehlt es oder ist es falsch, gibt es
+   403 `auth.setup_token_invalid`. Ein Aufrufer ohne Token bringt den Server damit
+   weder zum Body-Validieren noch zu argon2 noch zum Tabellen-Lock. Einen Header gibt
+   es nicht.
+2. **`resolveSetupState`**, dasselbe Prädikat, das `GET /providers` als
+   `setup_required` meldet, in dieser Reihenfolge: 410
+   `auth.setup_no_local_provider`, 410 `auth.setup_locked` (es gibt Nutzer, egal was
+   der Boot entschieden hat, also wie bisher), 410 `auth.setup_disabled` (Tabelle
+   jetzt leer, beim Boot aber nicht; ein Neustart öffnet den Wizard wieder).
+3. Body-Validierung und optionaler Anthropic-Key-Ping (OB-61, unverändert), dann
+   argon2 **außerhalb** des Locks.
+4. **`UserStore.createFirstAdmin`**: eine Transaktion mit `SET LOCAL lock_timeout =
+   '2000ms'`, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`, `COUNT(*)` unter dem
+   Lock, INSERT, Audit-Zeile `auth.first_admin_create`, Löschen des gespeicherten
+   Setup-Tokens, COMMIT. `not_empty` wird zu 410 `auth.setup_locked`, ein Lock-Timeout
+   (55P03) zu 409 `auth.setup_in_progress`. Der Lock wartet auch auf Writer außerhalb
+   dieses Pfads (OIDC-Erstanmeldung, Admin-UI-Create). Plain-SELECTs blockiert er nicht.
+5. Session-Cookie, `markLoginNow`, Antwort wie bisher.
+
+Woher das Token kommt (Boot-Wiring `initSetupToken` in `index.ts`):
+
+- `ADMIN_SETUP_TOKEN` gesetzt → dieses Token, es wird nie geloggt.
+- Kein Setup auf diesem Boot → kein Token, ein altes gespeichertes wird gelöscht.
+- Desktop-Kernel (`OMADIA_DESKTOP_EMBEDDED=true` **und** Loopback-`HOST`) → kein Token.
+  Eine Hälfte allein reicht nicht.
+- Sonst generiert, set-if-absent in `platform_settings` (`auth.setup_token`)
+  gespeichert, also auf allen Replicas und über Neustarts gleich, und einmal pro Start
+  geloggt: `[auth] bootstrap: /setup wizard unlocked — setup token: …`.
+
+`GET /providers` liefert zusätzlich `setup_token_required`. Die Setup-Seite der Web-UI
+fragt das Token nur dann ab und zeigt für 403, 409 und beide 410-Codes eigene Texte.
+Der Env-Seed (`ADMIN_BOOTSTRAP_*`, `auth/bootstrap.ts`) läuft ebenfalls über
+`createFirstAdmin`. Verliert eine Replica das Rennen, loggt sie einen Skip statt an
+23505 zu sterben. Den ungenutzten Präfix `/api/v1/setup` gibt es in
+`auth/publicPaths.ts` nicht mehr; in `CORE_RESERVED_ROOTS` bleibt er, damit kein
+Plugin ihn beanspruchen kann.
+
+Sicherheitsbegründung und Restrisiken: `docs/security-architecture.md` §10l.
+Konfiguration: §10 „Ersteinrichtung“.
+
+Tests: `test/auth/setupRoute.test.ts`, `test/auth/setupToken.test.ts`,
+`test/auth/userStoreFirstAdmin.test.ts`, `test/auth/bootstrap.test.ts`, gegen echtes
+Postgres `test/auth/userStoreFirstAdmin.pg.test.ts` und
+`test/auth/setupRouteConcurrency.pg.test.ts`; UI
+`web-ui/app/setup/__tests__/page.test.tsx`; Desktop
+`desktop/test/supervisorKernelEnv.test.mts`.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -2524,6 +2758,26 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 |---|---|
 | `AUTH_SESSION_MAX_LIFETIME_HOURS` | Absolute Obergrenze einer Verlängerungskette in Stunden, gemessen ab der **ursprünglichen** Anmeldung (`auth_time`), nicht ab der letzten Verlängerung. Default `12`, erlaubt `4`–`168` (zod-validiert beim Boot). Jeder Login und jede „Ich bin noch da“-Verlängerung gibt ein 4h-Fenster, geklemmt auf diese Grenze; danach antwortet `POST /api/v1/auth/renew` mit 401 `auth.renew_expired` und die UI verlangt einen neuen Login. Werte unter 4 wären sinnlos, weil schon das Login-Fenster 4h lang ist. |
 
+Die Obergrenze bindet nur Sitzungen, die niemand beendet: Abmelden,
+Admin-Passwort-Reset, Deaktivieren und Löschen beenden alle Sitzungen des
+Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf“)
+— ohne eigene Env-Variable.
+
+| Variable | Wirkung |
+|---|---|
+| `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
+
+### Ersteinrichtung
+
+Siehe §3 „Ersteinrichtung `POST /api/v1/auth/setup`“ und `docs/security-architecture.md` §10l.
+
+| Variable | Wirkung |
+|---|---|
+| `ADMIN_SETUP_TOKEN` | Setup-Token, das der Wizard im Body-Feld `setup_token` verlangt. 16 bis 512 Zeichen (sonst bricht der Boot mit Config-Fehler ab), ein leerer Wert gilt als nicht gesetzt (`optionalNonEmpty`). Nicht gesetzt: Die Middleware generiert beim Start ein Token, speichert es in `platform_settings` (gleich auf allen Replicas und über Neustarts, bis der erste Admin existiert) und loggt es einmal pro Start (`setup token: …`). Ein gesetzter Wert wird nie geloggt. Wer den Wert vor dem ersten Start kennen will (etwa für ein Deploy-Skript), setzt ihn selbst (`openssl rand -base64 24`). |
+| `OMADIA_DESKTOP_EMBEDDED` | `true`/`false`, Default `false`. Setzt **nur** der Supervisor der Desktop-App. Zusammen mit einer Loopback-`HOST` braucht der Wizard kein Token. Allein wirkt der Schalter nicht, und `HOST=127.0.0.1` ohne ihn auch nicht (Reverse-Proxy auf demselben Host). Nicht auf Servern setzen. |
+| `HOST` | Bind-Adresse des Kernels, Default `::`. Für die Setup-Token-Ausnahme zählt nur eine literale Loopback-Adresse (`127.0.0.0/8`, `::1`, `::ffff:127.x`), kein `localhost`. |
+| `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD`, `ADMIN_BOOTSTRAP_DISPLAY_NAME` | Deklarativer Seed statt Wizard: Ist die `users`-Tabelle beim Boot leer und sind E-Mail und Passwort (mindestens 8 Zeichen) gesetzt, legt der Boot diesen Admin über `createFirstAdmin` an. Der Wizard bleibt dann zu. Ungültige Werte loggen den Grund und fallen auf den Wizard zurück. |
+
 ### Test-Schalter (nicht von der Middleware gelesen)
 
 Drei Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
@@ -2658,6 +2912,8 @@ CONDUCTOR_EPHEMERAL_REAPER_INTERVAL_MS=60000     # Reaper-Poll
 GRAPH_TENANT_ID=byte5
 # Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional
 PRIVACY_C1_DETECTOR_URL=http://pii-detector:8812   # unset ⇒ nur C0-Regex-Baseline
+# Offene Channel-WebSockets (Tabelle „Admin-UI-Sitzung“ oben)
+WS_SESSION_FRAME_RECHECK_MS=5000    # 0..60000; 0 = jeder Frame wird geprüft
 # Runtime
 PORT=3979
 ```
@@ -3012,8 +3268,58 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Sitzungs-Widerruf: offene Verbindungen, gerätegenaues Abmelden, Cache
+
+Der serverseitige Widerruf (`users.session_version`, §3) prüft bei jedem
+Request und bei jedem WebSocket-Upgrade. Offen:
+
+- **Builder-SSE-Stream schließen.** Channel-WebSockets enden inzwischen mit
+  ihrer Sitzung (4401 am `exp`, 4403 bei Widerruf, siehe PR-11-Abschnitt).
+  Der Builder-SSE-Stream (`GET /drafts/:id/events`) authentifiziert weiter nur
+  beim Öffnen und bleibt nach einem Widerruf offen. Vorlage ist
+  `ChannelSessionTracker` (`src/channels/channelSessionLifetime.ts`):
+  `onRevoked` für diese Replica, periodisch `check` für alle anderen, weil
+  `announce` prozesslokal ist.
+- **Canvas-Client nach verpasstem 4401.** `@omadia/canvas-core` hält nach
+  4401/4403 an; erst das nächste `connect()` öffnet wieder, `switchCanvas()`
+  nicht. Kommt der 4401 aber nie an (Gerät schläft über `exp` hinweg, Netz
+  reißt genau dann ab), sieht der Client nur 1006 und verbindet im Backoff mit
+  dem abgelaufenen Cookie neu. Das Upgrade scheitert mit 401, was im Browser
+  wieder als 1006 ankommt: bis zu alle 30 s ein Versuch, bis der User sich neu
+  anmeldet. Möglicher Fix: einen Close nach dem `sessionExpiresAt` des letzten
+  Acks wie 4401 behandeln, mit Toleranz für Uhrabweichung.
+- **Gerätegenaues Abmelden.** Abmelden gilt heute pro User (alle Geräte). Pro
+  Gerät bräuchte eine Denylist auf `sid` samt Aufräumen nach `exp`.
+- **Cache nur bei Bedarf.** Ein Point-Read pro authentifiziertem Request. Wenn
+  der Lookup in Messungen sichtbar wird (Richtwert: > 5 ms im p95 der
+  `/api`-Requests), ein kurzes TTL-Memo im Guard, das `announce` invalidiert;
+  die TTL dann in Code und `docs/security-architecture.md` §10k nennen, weil
+  „sofort“ danach „innerhalb der TTL“ heißt. Die TTL addiert sich auch auf
+  `WS_SESSION_FRAME_RECHECK_MS`: ein WebSocket-Frame dürfte dann auf einem
+  Urteil fahren, das TTL + 5 s alt ist. Deshalb die TTL klein halten (≤ 1 s)
+  und auch in `docs/security-architecture.md` §10d nennen.
+- **Upgrade-Prüfung ohne Deadline.** Der Re-Check offener Channel-Sockets
+  gibt nach `WS_SESSION_CHECK_TIMEOUT_MS` (10 s) auf; die Prüfung beim
+  Channel-Upgrade selbst (`authenticateBeforeHandshake` ohne `timeoutMs`)
+  nicht. Hängt der `users`-Read, hängt auch der rohe Upgrade-Socket, bis die
+  DB antwortet (danach 503 oder 101). Kein Autorisierungsloch, aber eine
+  Ressourcenfrage: dieselbe Deadline an die Channel-Upgrade-Prüfung geben und
+  `webSocketRegistryHardening.test.ts` um einen hängenden Channel-Lookup
+  erweitern.
+- **UI-Hinweise.** Der `SessionWatcher` zeigt bei `auth.revoked` dasselbe
+  Ablauf-Overlay wie bei einer abgelaufenen Sitzung; ein eigener Text
+  („An anderer Stelle abgemeldet“) wäre ehrlicher. Die Detailseite eines Users
+  sollte sagen, dass ein Passwort-Reset alle seine Sitzungen beendet, auch die
+  eigene.
+
 ### CI-Schulden aus dem Security-Review (2026-09-29)
 
+- **`PG_TEST_FLOOR` nachziehen, sobald die Auth-Härtungen gemergt sind.** Serverseitiger
+  Sitzungs-Widerruf und die atomare Ersteinrichtung bringen neue Postgres-Suiten mit
+  (`test/auth/userStoreSessionVersion.pg.test.ts`, `userStoreFirstAdmin.pg.test.ts`,
+  `setupRouteConcurrency.pg.test.ts`). Der Floor in `.github/workflows/ci.yml` bleibt bis
+  dahin auf dem Wert von `main` (`372`) und wird dann einmal auf den gemessenen `ran=`-Wert
+  des `test:pg`-Schritts gezogen (lokal mit diesem Stand: `ran=396`, `skipped=0`).
 - **`middleware/src/services/graph/migrations/` löschen** — 4 Dateien, byte-identisch mit
   KG-neon 0002/0004/0012/0013; kein Runner liest sie (die Graph-Migrationen laufen über die
   `harness-knowledge-graph-neon`-Serie; #875 hat die dort gestrandete 0009 gerettet). Seit
@@ -3112,6 +3418,33 @@ ein Update auf ein beliebiges Release-Tag anstoßen. Offen:
   neue Version sie ersetzt: `DockerPublishRuntime.deploy()` fasst bestehende
   Versionen nie an (Unveränderlichkeit), und ein `docker update` dort würde
   diese Zusage aufweichen.
+
+### Ersteinrichtung: was nach Setup-Token und atomarem Admin offen ist
+
+- **Rate-Limit auf `POST /api/v1/auth/setup`.** Das Token hält Unbefugte vor argon2
+  und dem Tabellen-Lock. Wer das Token hat, und jeder Prozess auf dem Desktop-Loopback,
+  löst pro Anfrage aber weiterhin einen argon2id-Lauf aus (19 MiB, t=2). Der
+  Login-Rate-Limiter sollte `/setup` mit abdecken.
+- **Token vorab erzeugen in `fly/deploy.sh` und `render.yaml`.** Heute holt der
+  Operator das generierte Token aus `fly logs` bzw. dem Render-Log. Ein beim Deploy
+  erzeugtes `ADMIN_SETUP_TOKEN`, wie schon `VAULT_KEY`, würde den Schritt sparen.
+
+### Routine-Karten: identitätslose Klicks schon im Teams-Adapter ablehnen (#1029 follow-up)
+
+Seit 2026-09-30 lehnt der Kernel `RoutinesIntegration.handleRoutineAction` ohne
+verwendbaren `actor` ab (`RoutineActorRequiredError`, `routineCardActor.ts`) — kein
+Rückfall mehr auf den Turn-Kontext oder auf `{ kind: 'operator' }`. channel-teams
+schickt `actor` seit 0.26.1, lässt ihn aber ganz weg, wenn `tenantId` oder die
+User-ID fehlt, und ruft den Kernel trotzdem. Dann sieht der Nutzer die generische
+Kernel-Absage, und im Log steht eine `[security] REFUSED …`-Zeile, obwohl nur der
+Adapter falsch konfiguriert ist. Offen:
+
+- **channel-teams:** den Klick in diesem Fall selbst ablehnen, mit eigener Meldung,
+  statt ohne `actor` weiterzureichen. Die Adapter-Tests, die das Weglassen von
+  `actor` festschreiben, gehen mit. Release + Hub-Publish.
+- **plugin-api 2.0:** `actor` im Typ zur Pflicht machen (heute nur zur Laufzeit,
+  damit 1.x-Aufrufer kompilieren). Der Capability-Ref `routinesIntegration@1`
+  bleibt davon unberührt.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 

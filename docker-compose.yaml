@@ -33,7 +33,10 @@
 # Usage:
 #   cp middleware/.env.example middleware/.env   # set ANTHROPIC_API_KEY
 #   docker compose up -d                         # start the minimal core (pulls)
-#   docker compose logs -f middleware            # tail middleware boot
+#   docker compose logs -f middleware            # tail middleware boot; on a fresh
+#                                                # install it prints the one-time
+#                                                # "setup token" the first-admin
+#                                                # wizard asks for
 #   docker compose down                          # stop (keeps volumes)
 #   docker compose down -v                       # stop + wipe all data
 #

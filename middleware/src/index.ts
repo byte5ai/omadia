@@ -287,6 +287,7 @@ import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
 import { resolveSessionSigningKey } from './auth/sessionSigningKey.js';
+import { SessionRevocationGuard } from './auth/sessionRevocation.js';
 import { runAuthMigrations } from './auth/migrator.js';
 import { runCoreMigrations } from './platform/coreMigrations.js';
 import { runProfileStorageMigrations } from './profileStorage/migrator.js';
@@ -320,6 +321,7 @@ import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
 } from './auth/platformSettings.js';
+import { initSetupToken, PgSetupTokenStore } from './auth/setupToken.js';
 import { createAdminUsersRouter } from './routes/adminUsers.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
@@ -948,6 +950,13 @@ async function main(): Promise<void> {
   // runtimes are constructed) because it doubles as the key the `ctx.flows`
   // toolkit signs plugin-flow state with (spec 004 FR-B3).
   const sessionSigningKey = await resolveSessionSigningKey(secretVault);
+  // Server-side session revocation (`users.session_version`): ONE guard for
+  // every session consumer — requireAuth, ctx.operatorAuth, the auth and
+  // admin-users routers and the channel WebSocket upgrade. Late-bound: the
+  // users table lives in graphPool, which exists only much further down, so
+  // the account source is attached right after the UserStore is built (still
+  // before app.listen, so no request is ever evaluated without it).
+  const sessionRevocation = new SessionRevocationGuard();
   // #778 W1 — HMAC key `promoteSkillOwnerScope` (#577 P3) re-signs a skill's
   // manifest with. Resolved here alongside the session key: same vault,
   // same "generate once, persist, reuse every boot" pattern — see
@@ -992,6 +1001,7 @@ async function main(): Promise<void> {
   const operatorAuth = createOperatorAuthAccessor({
     signingKey: sessionSigningKey,
     whitelist: emailWhitelist,
+    sessions: sessionRevocation,
   });
 
   const installedRegistry = new FileInstalledRegistry(
@@ -1902,6 +1912,7 @@ async function main(): Promise<void> {
   const requireAuth = createRequireAuth({
     signingKey: sessionSigningKey,
     whitelist: emailWhitelist,
+    sessions: sessionRevocation,
     // OB-106 mounted requireAuth at /api which collaterally gated the
     // public auth endpoints (login providers, login, setup) AND every
     // channel-plugin webhook mounted under /api/* (Teams Bot Framework
@@ -4588,12 +4599,25 @@ async function main(): Promise<void> {
     console.log('[middleware] provenance verify/export wired at /api/v1/operator/provenance (auth-gated)');
 
     const userStore = new UserStore(graphPool);
+    sessionRevocation.attach(userStore);
 
     const bootstrapResult = await runAuthBootstrap({
       userStore,
       bootstrapEmail: config.ADMIN_BOOTSTRAP_EMAIL,
       bootstrapPassword: config.ADMIN_BOOTSTRAP_PASSWORD,
       bootstrapDisplayName: config.ADMIN_BOOTSTRAP_DISPLAY_NAME,
+      log: (m) => console.log(m),
+    });
+    // Operator authorisation for the /setup wizard (auth/setupToken.ts):
+    // ADMIN_SETUP_TOKEN, else a generated token shared via platform_settings
+    // and printed once per boot. Only the desktop kernel on a loopback bind is
+    // exempt.
+    const setupToken = await initSetupToken({
+      configured: config.ADMIN_SETUP_TOKEN,
+      setupRequired: bootstrapResult.setupRequired,
+      desktopEmbedded: config.OMADIA_DESKTOP_EMBEDDED,
+      host: config.HOST,
+      store: new PgSetupTokenStore(graphPool),
       log: (m) => console.log(m),
     });
 
@@ -4660,6 +4684,8 @@ async function main(): Promise<void> {
         publicBaseUrl: config.PUBLIC_BASE_URL,
         defaultReturnPath: config.AUTH_DEFAULT_RETURN_PATH,
         setupAllowed: bootstrapResult.setupRequired,
+        sessions: sessionRevocation,
+        ...(setupToken.token !== undefined ? { setupToken: setupToken.token } : {}),
         // #965 — explicit session renewal ("I'm still here"): re-checks the
         // principal, audits every renewal, bounded by an absolute cap from
         // the original sign-in.
@@ -4745,7 +4771,11 @@ async function main(): Promise<void> {
     app.use(
       '/api/v1/admin/users',
       requireAuth,
-      createAdminUsersRouter({ userStore, audit: adminAudit }),
+      createAdminUsersRouter({
+        userStore,
+        audit: adminAudit,
+        sessions: sessionRevocation,
+      }),
     );
     app.use(
       '/api/v1/admin/auth',
@@ -4763,6 +4793,12 @@ async function main(): Promise<void> {
   } else {
     console.warn(
       '[auth] graphPool unavailable — local-password auth disabled, /api/v1/auth/* returns 503',
+    );
+    // No users table → nothing to check a session against. Nothing can mint
+    // one here either (the auth router answers 503), so only a cookie minted
+    // by an earlier Postgres-backed boot could still arrive.
+    console.warn(
+      '[auth] server-side session revocation inactive without graphPool — sessions are verified by signature and expiry only',
     );
     app.use('/api/v1/auth', (_req, res) => {
       res.status(503).json({
@@ -6160,10 +6196,16 @@ async function main(): Promise<void> {
   // ExpressRouteRegistry. It authenticates each upgrade with the session
   // cookie BEFORE the handshake (same signing key as requireAuth) and backs
   // `CoreApi.registerWebSocket`. Inert for every non-WS channel; attached to
-  // the http.Server once it exists (after app.listen, below).
+  // the http.Server once it exists (after app.listen, below). The same
+  // revocation guard ends open channel sockets too: 4401 at the cookie's exp,
+  // 4403 when `announce` reports a revocation, or when the check a frame
+  // needs (verdict older than WS_SESSION_FRAME_RECHECK_MS) or the 60 s
+  // idle-socket sweep finds one.
   const webSocketRegistry = new WebSocketRegistry({
     signingKey: sessionSigningKey,
     whitelist: emailWhitelist,
+    sessions: sessionRevocation,
+    channelFrameRecheckMs: config.WS_SESSION_FRAME_RECHECK_MS,
   });
 
   // #330 B3 — Principal-addressed targeted delivery ('targetedSend' service).
