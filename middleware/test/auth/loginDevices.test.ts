@@ -96,6 +96,7 @@ describe('usersTableEpochs — the epoch of a users-table account', () => {
     createdAt: new Date(0),
     updatedAt: new Date(0),
     lastLoginAt: null,
+    sessionVersion: 0,
   };
   const epochOf = (row: UserRecord | null): Promise<string | null> =>
     usersTableEpochs({ findByEmailWithHash: async () => row })('local', 'owner@example.com');

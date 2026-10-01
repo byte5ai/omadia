@@ -20,7 +20,7 @@ import {
 } from '../../src/auth/loginDeviceCookie.js';
 import { usersTableEpochs } from '../../src/auth/loginDevices.js';
 import { DEFAULT_LOGIN_LIMITER_CONFIG } from '../../src/auth/loginRateLimiter.js';
-import type { AuthResult, PasswordProvider } from '../../src/auth/providers/AuthProvider.js';
+import type { PasswordAuthResult, PasswordProvider } from '../../src/auth/providers/AuthProvider.js';
 import { LOCAL_PROVIDER_ID } from '../../src/auth/providers/LocalPasswordProvider.js';
 import { invoke } from '../_helpers/httpInvoke.js';
 import {
@@ -223,13 +223,13 @@ describe('POST /login/:id — lockout-DoS behind a shared client key', () => {
 
 describe('POST /login/:id — global capacity', () => {
   it('holds at most the unreserved in-flight slots for unknown browsers; the next gets 503 auth.busy', async () => {
-    const pending: Array<(r: AuthResult) => void> = [];
+    const pending: Array<(r: PasswordAuthResult) => void> = [];
     const slow: PasswordProvider = {
       id: LOCAL_PROVIDER_ID,
       displayName: 'slow',
       kind: 'password',
       verify: () =>
-        new Promise<AuthResult>((resolve) => {
+        new Promise<PasswordAuthResult>((resolve) => {
           pending.push(resolve);
         }),
     };

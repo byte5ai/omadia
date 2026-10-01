@@ -33,7 +33,7 @@ import {
   type LoginRateLimiter,
 } from '../../src/auth/loginRateLimiter.js';
 import { hashPassword } from '../../src/auth/passwordHasher.js';
-import type { AuthResult, PasswordProvider } from '../../src/auth/providers/AuthProvider.js';
+import type { PasswordAuthResult, PasswordProvider } from '../../src/auth/providers/AuthProvider.js';
 import {
   LOCAL_PROVIDER_ID,
   LocalPasswordProvider,
@@ -82,6 +82,7 @@ function userRecord(email: string, displayName: string): UserRecord {
     createdAt: now,
     updatedAt: now,
     lastLoginAt: null,
+    sessionVersion: 0,
   };
 }
 
@@ -182,7 +183,7 @@ export class FakeClock {
 function spyOnVerify(provider: PasswordProvider): { calls: number } {
   const counter = { calls: 0 };
   const original = provider.verify.bind(provider);
-  provider.verify = async (body: unknown): Promise<AuthResult> => {
+  provider.verify = async (body: unknown): Promise<PasswordAuthResult> => {
     counter.calls += 1;
     return original(body);
   };
