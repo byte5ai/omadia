@@ -66,7 +66,7 @@ export const SECOND = 1000;
  * loginAccountFold.pg.test.ts checks the real thing.
  */
 export function pgLower(s: string): string {
-  return Array.from(s, (c) => (c === 'İ' ? 'i' : c.toLowerCase())).join('');
+  return Array.from(s, (c) => (c === '\u0130' ? 'i' : c.toLowerCase())).join('');
 }
 
 function userRecord(email: string, displayName: string): UserRecord {

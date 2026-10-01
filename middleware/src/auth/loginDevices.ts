@@ -16,9 +16,11 @@
  * names has the cookie's device key, and the users-table lookup of that key
  * lands on an active row whose epoch is the one the cookie was minted under.
  * The device key lower-cases ASCII letters only, so that lookup lands where
- * the lookup of the address itself does; a spelling that differs from the
- * stored address beyond ASCII case names no known browser. A session alone
- * makes no known browser: `GET /me` sets no device cookie.
+ * the lookup of the address itself does (except under a collation that
+ * lower-cases a capital I its own way, see `./loginAccount.ts`); a spelling
+ * that differs from the stored address beyond ASCII case names no known
+ * browser. A session alone makes no known browser: `GET /me` sets no device
+ * cookie.
  *
  * A password reset writes a new hash (argon2 salts are random), so every
  * cookie minted before it is stale, and only a sign-in with the new password

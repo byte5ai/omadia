@@ -1478,7 +1478,8 @@ a budget of its own, 2^k of them for an address with k i's. The key
 case, then the dotless ı and the final ς folded to i and σ. Every spelling
 the users table treats as one account is one key. A unit test checks that
 against the `LOWER()` variants collations apply (libc, builtin, ICU, Turkish,
-C), and `loginAccountFold.pg.test.ts` against Postgres itself. Coarser is safe:
+Lithuanian, C), and `loginAccountFold.pg.test.ts` against Postgres itself.
+Coarser is safe:
 accounts whose addresses fold together only share their limiter state (a
 residual risk below). `LocalPasswordProvider` holds the other end: an attempt
 signs in only to an account whose stored address folds to the key it was
@@ -1531,9 +1532,10 @@ answer it, and the two paragraphs after them say what they leave open.
     cookie's device key, and the users-table lookup of that key lands on an
     active row whose epoch is the one the cookie was minted under. The
     device key lower-cases ASCII letters only, so that lookup lands where
-    the lookup of the typed address lands. A spelling that differs from the
-    stored address beyond ASCII case names no known browser and falls back
-    to the address key.
+    the lookup of the typed address lands (a residual risk below names the
+    collations where a capital I is the exception). A spelling that differs
+    from the stored address beyond ASCII case names no known browser and
+    falls back to the address key.
   - Revocation needs no per-device state. A password reset writes a new hash
     (argon2 salts are random), so every cookie minted before it is stale,
     and only a sign-in with the new password mints another. A disabled
@@ -1700,10 +1702,12 @@ with the defaults, so a forgotten wiring cannot switch it off.
   known-browser pair included: failures on one count against the other, and
   a known browser of one can make the other's known browsers wait. Real
   addresses rarely differ like that, and it shrinks the guessing budget
-  rather than growing it. The same goes for a Turkish or Azerbaijani
-  collation, where `LOWER()` makes a capital I the dotless ı: there the
-  lookup of an address's device key (with a plain i) can land on another
-  account of the same fold than the typed address does.
+  rather than growing it. The same goes for a collation that lower-cases a
+  capital I its own way (Turkish and Azerbaijani make it the dotless ı,
+  Lithuanian adds a dot before an accent above): there the lookup of an
+  address's device key (with a plain i) can land on another account of the
+  same fold than the typed address does. The shipped databases use none of
+  them.
 - **Distributed guessing.** The account layer is per (account, client). An
   attacker with many client keys (a botnet, an IPv6 allocation under
   `xff`/`header`) gets a budget per key, and the global layer is the

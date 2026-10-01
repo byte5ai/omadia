@@ -39,34 +39,34 @@ function dottedSpellings(local: string, domain: string): string[] {
   return Array.from({ length: 2 ** positions.length }, (_, mask) => {
     const chars = [...local];
     positions.forEach((at, bit) => {
-      if (mask & (1 << bit)) chars[at] = 'İ';
+      if (mask & (1 << bit)) chars[at] = '\u0130';
     });
     return `${chars.join('')}@${domain}`;
   });
 }
 
 describe('one account, many spellings: one budget', () => {
-  it('a capital dotted İ does not open a second budget for an address', async () => {
+  it('a capital dotted \u0130 does not open a second budget for an address', async () => {
     const h = await harness();
     const spellings = [
-      'admİn@example.com',
-      'ADMİN@EXAMPLE.COM',
+      'adm\u0130n@example.com',
+      'ADM\u0130N@EXAMPLE.COM',
       'admin@example.com',
-      'Admİn@Example.com',
-      ' admİn@example.com ',
+      'Adm\u0130n@Example.com',
+      ' adm\u0130n@example.com ',
     ];
     for (const email of spellings) {
       assert.equal((await login(h, wrong(email), PROXY)).status, 401, email);
     }
     assertRateLimited(await login(h, wrong('admin@example.com'), PROXY));
-    assertRateLimited(await login(h, wrong('admİn@example.com'), PROXY));
+    assertRateLimited(await login(h, wrong('adm\u0130n@example.com'), PROXY));
     assert.equal(h.verifies.calls, FREE, 'five guesses reached argon2, not more');
   });
 
   it('while that budget is spent, the right password is refused under every spelling', async () => {
     const h = await harness();
     for (let i = 0; i < FREE; i += 1) await login(h, wrong(), PROXY);
-    for (const email of ['admİn@example.com', 'ADMIN@EXAMPLE.COM']) {
+    for (const email of ['adm\u0130n@example.com', 'ADMIN@EXAMPLE.COM']) {
       assertRateLimited(await login(h, right(email), PROXY));
     }
   });
@@ -86,13 +86,13 @@ describe('one account, many spellings: one budget', () => {
     assert.equal(admitted, FREE);
   });
 
-  it('a word-final capital Σ is the same account as a lower-case σ', async () => {
+  it('a word-final capital \u03a3 is the same account as a lower-case \u03c3', async () => {
     const h = await harness();
-    await h.store.addLocalUser('ασ@example.com', 'another synthetic passphrase');
-    for (const email of ['ασ@example.com', 'ΑΣ@EXAMPLE.COM']) {
+    await h.store.addLocalUser('\u03b1\u03c3@example.com', 'another synthetic passphrase');
+    for (const email of ['\u03b1\u03c3@example.com', '\u0391\u03a3@EXAMPLE.COM']) {
       for (let i = 0; i < 3; i += 1) await login(h, wrong(email), PROXY);
     }
-    assertRateLimited(await login(h, wrong('ασ@example.com'), PROXY));
+    assertRateLimited(await login(h, wrong('\u03b1\u03c3@example.com'), PROXY));
   });
 });
 
@@ -100,8 +100,8 @@ describe('a device cookie belongs to the account that signed in', () => {
   // Two accounts the users table keeps apart: Postgres lower-cases A's
   // spelling with a capital İ to A's address, and B's combining dot stays.
   const A = 'iiii@example.com';
-  const B = 'i̇iii@example.com';
-  const A_ALIAS = 'İiii@example.com';
+  const B = 'i\u0307iii@example.com';
+  const A_ALIAS = '\u0130iii@example.com';
   const A_PASSWORD = 'account a synthetic passphrase';
   const B_PASSWORD = 'account b synthetic passphrase';
 

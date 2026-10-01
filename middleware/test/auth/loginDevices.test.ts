@@ -207,7 +207,7 @@ describe('createLoginDevices — which browsers are known', () => {
 
     assert.ok(await devices.knownDeviceOf(reqWith(cookie), { providerId: 'local', accountId: 'OWNER@EXAMPLE.COM' }));
     assert.equal(source.asked.at(-1), 'owner@example.com', 'a check looks up the ASCII-lower-cased address');
-    const accented = { providerId: 'local', accountId: 'Öwner@example.com' };
+    const accented = { providerId: 'local', accountId: '\u00d6wner@example.com' };
     assert.equal(await devices.knownDeviceOf(reqWith(cookie), accented), null);
     assert.equal(source.lookups(), 2, 'another spelling is another key: no lookup');
   });
@@ -216,7 +216,7 @@ describe('createLoginDevices — which browsers are known', () => {
     // Postgres LOWER() turns A's alias with a capital İ into A's address,
     // and keeps B's combining dot.
     const A = 'iiii@example.com';
-    const B = 'i̇iii@example.com';
+    const B = 'i\u0307iii@example.com';
     const rows = new Map([
       [pgLower(A), 'epoch-a'],
       [pgLower(B), 'epoch-b'],
@@ -236,11 +236,11 @@ describe('createLoginDevices — which browsers are known', () => {
     const cookieB = await mint(B);
 
     assert.ok(await known(cookieA, 'IIII@EXAMPLE.COM'));
-    assert.ok(await known(cookieB, 'İIII@EXAMPLE.COM'));
+    assert.ok(await known(cookieB, 'I\u0307III@EXAMPLE.COM'));
     assert.equal(await known(cookieA, B), null, 'A’s cookie is no known browser of B');
     assert.equal(await known(cookieB, A), null, 'nor B’s of A');
-    assert.equal(await known(cookieB, 'İiii@example.com'), null, 'nor under a spelling that finds A');
-    assert.equal(await known(cookieA, 'İiii@example.com'), null, 'that spelling is no device key at all');
+    assert.equal(await known(cookieB, '\u0130iii@example.com'), null, 'nor under a spelling that finds A');
+    assert.equal(await known(cookieA, '\u0130iii@example.com'), null, 'that spelling is no device key at all');
   });
 
   it(`reuses a looked-up epoch for ${String(EPOCH_CACHE_TTL_MS)} ms; forget() re-reads at once`, async () => {

@@ -177,15 +177,15 @@ describe('sign-in account identities against a real Postgres', { skip: !pgAvaila
     const stored = [
       'Admin@Example.com',
       'iiii@example.com',
-      'i̇iii@example.com',
-      'Élise@example.com',
-      'ΑΣ@example.com',
+      'i\u0307iii@example.com',
+      '\u00c9lise@example.com',
+      '\u0391\u03a3@example.com',
     ];
     for (const email of stored) await addUser(email);
     const typed = [
       ...stored.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase(), ` ${s} `]),
-      'İiii@example.com',
-      'ADMİN@EXAMPLE.COM',
+      '\u0130iii@example.com',
+      'ADM\u0130N@EXAMPLE.COM',
     ];
     for (const address of typed) {
       const byAddress = await store.findByEmailWithHash(LOCAL_PROVIDER_ID, address.trim());
@@ -201,15 +201,15 @@ describe('sign-in account identities against a real Postgres', { skip: !pgAvaila
     await addUser('admin@example.com', await hashPassword(password));
     const spellings = [
       'admin@example.com',
-      'ADMİN@EXAMPLE.COM',
-      'admİn@example.com',
-      'Admİn@Example.com',
+      'ADM\u0130N@EXAMPLE.COM',
+      'adm\u0130n@example.com',
+      'Adm\u0130n@Example.com',
       'ADMIN@example.com',
     ];
     const lower = await lowered(spellings);
     assert.ok(
       spellings.every((s) => lower.get(s) === 'admin@example.com'),
-      'precondition: LOWER() folds the capital dotted İ to i (libc en_US.UTF-8, builtin C.UTF-8)',
+      'precondition: LOWER() folds the capital dotted \u0130 to i (libc en_US.UTF-8, builtin C.UTF-8)',
     );
 
     const app = authApp();
@@ -223,8 +223,8 @@ describe('sign-in account identities against a real Postgres', { skip: !pgAvaila
 
   it('a device cookie belongs to the row that signed in, not to the row its spelling names', async () => {
     const A = 'iiii@example.com';
-    const B = 'i̇iii@example.com';
-    const ALIAS = 'İiii@example.com';
+    const B = 'i\u0307iii@example.com';
+    const ALIAS = '\u0130iii@example.com';
     const passwordA = 'a synthetic passphrase for account a';
     const idA = await addUser(A, await hashPassword(passwordA));
     const idB = await addUser(B, await hashPassword('a synthetic passphrase for account b'));

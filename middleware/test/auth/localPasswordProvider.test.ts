@@ -176,7 +176,7 @@ describe('LocalPasswordProvider.verify', () => {
   it('signs in under a spelling the table matches like Postgres LOWER() does', async () => {
     const store = new InMemoryUserStore(pgLower);
     await store.addLocalUser({ email: 'admin@example.com', plainPassword: 'pw-12345678' });
-    const r = await provider(store).verify({ email: 'ADMİN@example.com', password: 'pw-12345678' });
+    const r = await provider(store).verify({ email: 'ADM\u0130N@example.com', password: 'pw-12345678' });
     assert.equal(r.outcome, 'success');
   });
 
@@ -184,10 +184,10 @@ describe('LocalPasswordProvider.verify', () => {
     // A table that ignores zero-width spaces stands in for a collation or a
     // newer Unicode version the sign-in limiter's fold does not know: the
     // attempt was counted under another key than the account's (§10f).
-    const store = new InMemoryUserStore((e) => e.replace(/​/g, '').toLowerCase());
+    const store = new InMemoryUserStore((e) => e.replace(/\u200b/g, '').toLowerCase());
     await store.addLocalUser({ email: 'admin@example.com', plainPassword: 'pw-12345678' });
     const loose = await provider(store).verify({
-      email: 'adm​in@example.com',
+      email: 'adm\u200bin@example.com',
       password: 'pw-12345678',
     });
     assert.equal(loose.outcome, 'error');

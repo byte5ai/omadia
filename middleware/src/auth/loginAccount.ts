@@ -11,10 +11,12 @@
  *                It is minted from the address of the account the sign-in
  *                VERIFIED, as stored, and only ASCII letters are lower-cased,
  *                so the users-table lookup of the key lands on the same row
- *                as the lookup of the address itself. Never the bucket key:
- *                that one deliberately lumps spellings of different accounts
- *                together, and one account's cookie would then count for the
- *                other.
+ *                as the lookup of the address itself. (Collations that
+ *                lower-case a capital I their own way, Turkish, Azerbaijani
+ *                and Lithuanian, are the exception; the row is then still one
+ *                of the same bucket key.) Never the bucket key: that one
+ *                deliberately lumps spellings of different accounts together,
+ *                and one account's cookie would then count for the other.
  *
  * The users table matches `LOWER(email) = LOWER($input)`, and Postgres
  * lower-cases differently from JavaScript: it turns 'İ' (U+0130) into a plain
@@ -35,8 +37,8 @@ const MAX_ACCOUNT_ID_INPUT = 4 * MAX_ACCOUNT_ID_LENGTH;
 /** The key of a missing, empty or oversized account id. */
 const NO_ACCOUNT = '-';
 const COMBINING_MARK = /\p{M}/gu;
-const DOTLESS_I = /ı/g;
-const FINAL_SIGMA = /ς/g;
+const DOTLESS_I = /\u0131/g;
+const FINAL_SIGMA = /\u03c2/g;
 const ASCII_UPPER = /[A-Z]/g;
 
 /**
@@ -62,7 +64,7 @@ export function foldLoginAccountId(accountId: string | undefined): string | unde
     .replace(COMBINING_MARK, '')
     .toLowerCase()
     .replace(DOTLESS_I, 'i')
-    .replace(FINAL_SIGMA, 'σ');
+    .replace(FINAL_SIGMA, '\u03c3');
   return folded.length > 0 && folded.length <= MAX_ACCOUNT_ID_LENGTH ? folded : undefined;
 }
 
