@@ -66,9 +66,11 @@ address, so that shared address is never braked as one client: a single
 sender filling its budget would otherwise lock out every browser. A browser
 that has signed in to an account with its password carries a signed device
 cookie (`omadia_login_device`), minted once per sign-in for the account the
-sign-in verified (its stored address, never the one typed) and bound to that
-account's current password, and the account's known browsers share a budget
-of their own. A session alone mints none, so browsers that are signed in at
+sign-in verified (its stored address, never the one typed) and bound to the
+password that sign-in checked, never to one read back afterwards, so a sign-in
+with the old password that is still being checked when a reset lands gets a
+cookie that never counts. The account's known browsers share a budget of
+their own. A session alone mints none, so browsers that are signed in at
 the upgrade become known devices at their next password sign-in. A password
 reset, a disable or a delete turns the account's earlier cookies back into
 unknown browsers, and more cookies for one account buy no more guesses. One

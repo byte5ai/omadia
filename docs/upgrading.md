@@ -195,9 +195,10 @@ topology. What changes for operators:
   capacity. A session alone does not set it, so browsers that are signed in
   when the new version starts become known browsers at their next password
   sign-in. It authenticates nothing and survives logout. It is tied to the
-  account's password: after a password reset, a disable or a delete it no
-  longer counts, and only the next sign-in with the current password sets a
-  new one. Rotating the session signing key (the vault entry
+  password its sign-in checked: after a password reset, a disable or a
+  delete it no longer counts, not even when that sign-in was still being
+  checked as the reset landed, and only a sign-in with the current password
+  sets one that counts. Rotating the session signing key (the vault entry
   `core:auth/session_signing_key`) ends every such cookie and every session
   at once.
 - **Passwords over 1024 characters can no longer sign in.** Setting one

@@ -1409,7 +1409,7 @@ through `auth/loginRateLimiter.ts` (wired in `routes/authLogin.ts`) before
 of key decides which layers apply:
 
 - `device`: the browser carries a genuine device cookie for this account,
-  minted by a password sign-in to it under its current password (see
+  minted by a password sign-in to it that checked its current password (see
   below), so it is one of the browsers that have signed in to the account.
 - `address`: an address a trusted proxy or edge vouched for
   (`AUTH_LOGIN_CLIENT_ADDRESS=xff:<n>` or `header:<name>`). That is one
@@ -1515,12 +1515,16 @@ answer it, and the two paragraphs after them say what they leave open.
     session alone does not: `GET /me` and `/renew` set none. Holding one
     therefore takes the account's password. The cookie survives logout.
   - It is bound to the account the sign-in VERIFIED, never to the address as
-    typed: to that account's stored address and its current password. It
-    lives one year and is HttpOnly, SameSite=Lax, Path=/ and Secure behind
-    TLS, like the session cookie.
-  - The value is `v3.<id>.<exp>.<ep>.<tag>`. `ep` fingerprints the verified
-    account's credential epoch: SHA-256 over its users row id and its
-    password hash, for an active row. `tag` is an HMAC-SHA256 over the
+    typed: to that account's stored address and to the password that
+    sign-in checked. It lives one year and is HttpOnly, SameSite=Lax, Path=/
+    and Secure behind TLS, like the session cookie.
+  - The value is `v3.<id>.<exp>.<ep>.<tag>`. `ep` fingerprints the credential
+    epoch the sign-in checked: SHA-256 over the users row id and the password
+    hash the provider compared the password with (`AuthSuccess.credentialEpoch`;
+    for the wizard, the row and hash it just wrote). Never an epoch read after
+    that comparison: a reset that lands while a sign-in with the old password
+    is being verified would otherwise bind that sign-in's cookie to the new
+    password, which it never proved. `tag` is an HMAC-SHA256 over the
     account's device key (its stored address with ASCII letters lower-cased,
     `loginDeviceAccountKey`), the id, the expiry and `ep`. The tag and
     fingerprint keys are derived from the session signing key, one per
@@ -1538,12 +1542,14 @@ answer it, and the two paragraphs after them say what they leave open.
     falls back to the address key.
   - Revocation needs no per-device state. A password reset writes a new hash
     (argon2 salts are random), so every cookie minted before it is stale,
-    and only a sign-in with the new password mints another. A disabled
-    account has no epoch while it stays disabled, a deleted one has none,
-    and a re-created one gets a new row id. A stale cookie is an unknown
-    browser and falls back to the address key. The admin routes that
-    create, reset, disable, re-enable or delete an account drop its cached
-    epoch, so this process stops honouring the old one at once.
+    and so is the cookie of a sign-in still being verified against the old
+    hash when the reset lands: only a sign-in that checked the new password
+    mints a current one. A disabled account has no epoch while it stays
+    disabled, a deleted one has none, and a re-created one gets a new row
+    id. A stale cookie is an unknown browser and falls back to the address
+    key. The admin routes that create, reset, disable, re-enable or delete
+    an account drop its cached epoch, so this process stops honouring the
+    old one at once.
   - Checking the epoch is a users-table lookup. It runs only for a cookie
     whose tag checks out, one at a time per device key, and is cached per
     device key for 10 seconds, so a stream of requests carrying one stale
@@ -1573,10 +1579,12 @@ current device cookie for it can make the account's other known browsers
 wait, one wrong guess per 2-minute wait. Getting one takes a successful
 password sign-in to the account, so that is someone who knows its password.
 However many cookies such a holder collects, they are one budget. A password
-reset makes them stale, and a session from before the reset gets no new one.
-Re-enabling an account without a reset lets its earlier cookies count again,
-which gives their holders nothing: each of them signed in with that same,
-unchanged password. Reset the password to end them for good.
+reset makes them stale, a sign-in that was still checking the old password
+when the reset landed gets only a stale one, and a session from before the
+reset gets no new one. Re-enabling an account without a reset lets its
+earlier cookies count again, which gives their holders nothing: each of them
+signed in with that same, unchanged password. Reset the password to end them
+for good.
 
 **The client key under `trust proxy`.** `app.set('trust proxy', true)` makes
 `req.ip` the left-most `X-Forwarded-For` entry, which the client writes. The
@@ -1692,7 +1700,9 @@ with the defaults, so a forgotten wiring cannot switch it off.
   shares the account's known-browser pair. While it keeps failing, the
   owner's known browsers wait too (2 minutes at most per wait), and it gets
   one budget per account however many cookies it collected. A password reset
-  makes every earlier cookie stale, and only the new password mints another.
+  makes every earlier cookie stale, also the one a sign-in with the old
+  password gets while the reset lands, and only a sign-in that checked the
+  new password mints another.
   Re-enabling an account without a reset lets its earlier cookies count
   again, all of them minted with that unchanged password. Rotating the
   session signing key ends all device cookies and all sessions at once.
@@ -1739,21 +1749,24 @@ table that matches like Postgres: one budget for every spelling of an
 address, 2^k spellings included; a sign-in to one account under another
 spelling mints no known browser of a second account),
 `middleware/test/auth/loginAccountFold.pg.test.ts` (the same against real
-Postgres, the real `UserStore` and router),
+Postgres, the real `UserStore` and router, and a reset that lands while a
+sign-in is being verified),
 `middleware/test/auth/loginDevices.test.ts` (the v3 cookie, the epoch it is
-bound to, minting for the verified account and checking by device key, a
-fresh id per sign-in, the cached single-flight lookup and `forget`, a failing
-lookup), `middleware/test/auth/loginDeviceRevocation.test.ts` (through the
-routers: a session alone mints no cookie; more device ids buy no more
-guesses or capacity; after a reset, a disable or a delete through the admin
-routes, earlier cookies are the address key again),
+bound to, minting for the verified account under the epoch it checked
+without a lookup and checking by device key, a fresh id per sign-in, the
+cached single-flight lookup and `forget`, a failing lookup),
+`middleware/test/auth/loginDeviceRevocation.test.ts` (through the routers: a
+session alone mints no cookie; more device ids buy no more guesses or
+capacity; after a reset, a disable or a delete through the admin routes,
+earlier cookies are the address key again; a sign-in that checked the old
+password while a reset landed gets no cookie that counts),
 `middleware/test/auth/clientAddress.test.ts` (policies, the forged left-most
 entry, fallbacks and the `shared` flag, Fly's right-most app address, IPv6
 prefixes), `middleware/test/auth/loginRoute.test.ts` (429 and 503 with
 Retry-After and no cookie, no `verify` while blocked, the always-on default,
 address policies through the router, the device cookie on a shared key
 including forged, expired, foreign, stale and old-format cookies, one audit
-row per episode, the wizard's capacity slot),
+row per episode, the wizard's capacity slot and its device cookie),
 `middleware/test/auth/loginLockoutDos.test.ts`
 (through the router: one sender cannot stop other users on the shared key; a
 device-cookie holder gets in while the capacity for unknown browsers is
@@ -1763,7 +1776,8 @@ exhausted from the shared key or from many IPv6 /64s;
 under the account key; create, reset, status change and delete drop the
 cached device epoch under the device key),
 `middleware/test/auth/localPasswordProvider.test.ts` (the length cap; no
-sign-in to an account whose address folds to another key),
+sign-in to an account whose address folds to another key; a success reports
+the epoch of the hash it compared, even when a reset lands meanwhile),
 `web-ui/app/login/__tests__/page.test.tsx`.
 
 ---
@@ -1842,15 +1856,16 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       (`loginAccountKey`), never by a JavaScript lower-case of the typed
       value. Anything that earns a browser its own sign-in budget, like the
       device cookie, is bound to the account the sign-in verified (its
-      stored address, never the typed one) and to its current credentials,
-      is issued only by a sign-in that proved the password, at most once per
-      sign-in, and shares one budget per account however many of it a
-      client holds.
+      stored address, never the typed one) and to the credentials that
+      sign-in checked (never ones read after the check), is issued only by
+      a sign-in that proved the password, at most once per sign-in, and
+      shares one budget per account however many of it a client holds.
 
 ---
 
 *Last reviewed: 2026-10 (§10f password sign-in rate limiting added, then
 hardened against lockout through shared client keys and many IPv6 keys, its
-device cookies bound to the verified account and its password, minted only by
-a password sign-in and one budget per account, and its account key folded at
-least as coarsely as the users table; §10 added with issue #669).*
+device cookies bound to the verified account and to the password its sign-in
+checked, minted only by a password sign-in and one budget per account, and its
+account key folded at least as coarsely as the users table; §10 added with
+issue #669).*

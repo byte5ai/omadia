@@ -2270,12 +2270,16 @@ Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` 
    (`auth/loginDeviceCookie.ts`, `auth/loginDevices.ts`): `v3.<id>.<exp>.<ep>.<tag>`,
    einmal pro Anmeldung, für das Konto, das der Provider **verifiziert** hat (dessen
    gespeicherte Adresse, nie die eingegebene). `ep` ist ein Fingerabdruck der
-   Konto-Epoche beim Ausstellen (SHA-256 über die Users-Zeilen-id und den Passwort-Hash
-   einer aktiven Zeile), `tag` ein HMAC über den Geräte-Schlüssel des Kontos
-   (`loginDeviceAccountKey`: gespeicherte Adresse, nur ASCII-Buchstaben klein), id,
-   Ablauf und `ep`; die Schlüssel für Tag und Fingerabdruck sind aus dem
-   Session-Signing-Key abgeleitet, je einer pro Zweck. Der Geräte-Schlüssel ist bewusst
-   **nicht** der gefaltete Konto-Schlüssel des Limiters: Der wirft Schreibweisen
+   Konto-Epoche, gegen die die Anmeldung geprüft hat (SHA-256 über die Users-Zeilen-id
+   und den Passwort-Hash, mit dem der Provider verglichen hat:
+   `AuthSuccess.credentialEpoch`; beim Setup-Wizard die gerade geschriebene Zeile), nie
+   einer danach gelesenen: Landet ein Reset, während eine Anmeldung mit dem alten
+   Passwort noch geprüft wird, ist deren Cookie von Anfang an veraltet, statt an das neue
+   Passwort gebunden zu sein, das sie nie bewiesen hat. `tag` ist ein HMAC über den
+   Geräte-Schlüssel des Kontos (`loginDeviceAccountKey`: gespeicherte Adresse, nur
+   ASCII-Buchstaben klein), id, Ablauf und `ep`; die Schlüssel für Tag und Fingerabdruck
+   sind aus dem Session-Signing-Key abgeleitet, je einer pro Zweck. Der Geräte-Schlüssel
+   ist bewusst **nicht** der gefaltete Konto-Schlüssel des Limiters: Der wirft Schreibweisen
    verschiedener Konten zusammen, und das Cookie eines Kontos zählte dann für das
    andere. Ein Jahr gültig, HttpOnly/SameSite=Lax/Path=/. Bekannter Browser ist eine
    Anfrage, deren Adresse den Geräte-Schlüssel des Cookies hat und deren Users-Lookup
