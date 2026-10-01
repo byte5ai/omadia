@@ -452,7 +452,10 @@ export class Supervisor extends EventEmitter {
       // whose loopback port can change between launches (collision → new port).
       // The knowledge-graph plugin then treats the live env DSN as authoritative
       // over the first-boot value frozen in the vault, so a port change can't
-      // crash-loop boot against a dead port. Cloud/server leave this unset and
+      // crash-loop boot against a dead port. The live DSN also carries the
+      // kernel password and, on macOS/Linux, the socket directory; both can
+      // change between starts (password repair, temp-dir fallback), so the
+      // vault copy must never win here. Cloud/server leave this unset and
       // keep vault precedence.
       OMADIA_EMBEDDED_DB: '1',
       VAULT_KEY: vaultKey(),

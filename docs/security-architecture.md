@@ -869,8 +869,11 @@ explicit here so a deployment can reason about them:
 At a minimum, your deployment vault holds:
 
 - Database connection string(s). On the desktop app the kernel keeps its
-  first-boot DSN here too; it names the restricted `omadia_kernel` role and
-  carries that role's password (§8b).
+  first-boot DSN here too. On installs first set up with password
+  authentication it names the restricted `omadia_kernel` role and carries
+  that role's password; an upgraded install keeps its older passwordless
+  DSN, which the new `pg_hba.conf` refuses and the live `DATABASE_URL`
+  overrides (§8b).
 - Object-storage access key + secret.
 - HMAC signing secret for diagram URLs.
 - Upstream API tokens (one per integration).
@@ -985,8 +988,10 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
   `scram-sha-256`, no `trust`. The file is rewritten (temp file, rename)
   whenever it differs, and only while the server is stopped, so a running
   server never holds rules the shell did not write and no reload is ever
-  needed. The server starts with `-c hba_file=<pgdata>/pg_hba.conf`, so
-  `postgresql.auto.conf` cannot point it elsewhere. No rule depends on the
+  needed. The server starts with `-c hba_file=<pgdata>/pg_hba.conf`
+  (`desktop/src/embeddedDbEngine.ts`, which also runs `initdb` and the
+  single-user repairs), so `postgresql.auto.conf` cannot point it
+  elsewhere. No rule depends on the
   client's OS identity (no `peer`, no `trust`): without the password, nobody
   gets in.
 - **A private endpoint on macOS and Linux** (`desktop/src/embeddedDbEndpoint.ts`).
@@ -1071,11 +1076,14 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
 - **Rollback.** A build from before this change connects without a password
   and cannot open a migrated cluster. The pre-update snapshot (§8a), taken
   before the new version first starts, is the way back.
-- **The kernel vault's copy of the DSN.** The kernel froze its first-boot
-  `DATABASE_URL` into its vault (`database_url`, §8), so that copy now carries
-  the kernel role's password, encrypted with `VAULT_KEY`. On the desktop the
-  live `DATABASE_URL` wins (`OMADIA_EMBEDDED_DB=1`), so a copy left stale by a
-  password repair is never used.
+- **The kernel vault's copy of the DSN.** The kernel freezes its first-boot
+  `DATABASE_URL` into its vault (`database_url`, §8) only when the database
+  plugin is first installed. On an install first set up with this version
+  that copy carries the kernel role's password, encrypted with `VAULT_KEY`;
+  an upgraded install keeps its older passwordless superuser DSN, which the
+  new `pg_hba.conf` refuses. On the desktop the live `DATABASE_URL` wins
+  (`OMADIA_EMBEDDED_DB=1`), so neither a stale copy nor one left behind by a
+  password repair is ever used.
 
 Tests: `desktop/test/embeddedDbAuth.test.mts` (orderings and fail-closed paths
 against a simulated cluster, including that every server start happens on the
@@ -3053,7 +3061,8 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       key is cached only after its write succeeded, and neither the error's
       reason nor its `cause` quotes the file's content.
 - [ ] A change to the desktop's embedded Postgres (`desktop/src/embeddedDb.ts`,
-      `embeddedDbAuth.ts`, `embeddedDbOwnership.ts`) never writes a `trust` rule
+      `embeddedDbAuth.ts`, `embeddedDbOwnership.ts`, `embeddedDbEngine.ts`,
+      `embeddedDbEndpoint.ts`) never writes a `trust` rule
       or rewrites pg_hba.conf while the server runs (password repairs go through
       single-user mode), keeps the kernel's `DATABASE_URL` on the non-superuser
       `omadia_kernel`, keeps the bootstrap password inside the shell, pins the

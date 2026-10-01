@@ -352,9 +352,11 @@ Nothing to do beforehand. The log of that start says so:
 - **No database port on macOS and Linux.** The embedded server now listens
   only on a Unix socket in `<app data>/pg-socket` (owner-only; a private
   temporary directory when that path is too long for a socket), not on
-  `127.0.0.1`. A local tool that used to reach it over TCP has to use the
-  socket directory as its host, and it needs a password like any client.
-  Windows keeps `127.0.0.1`.
+  `127.0.0.1`. External tools can no longer connect to the embedded
+  database: both passwords stay encrypted inside the app and no supported
+  path hands them out (a follow-up in `docs/middleware-agent-handoff.md`
+  §13 tracks an operator export if that is ever needed). Windows keeps
+  `127.0.0.1`.
 - **Rolling back** to an earlier desktop build: that build connects without a
   password and cannot open the migrated cluster. Before starting it, restore
   the pre-update snapshot the updater took: `snapshots/pgdata-pre-<version>-<stamp>/`

@@ -3814,17 +3814,21 @@ irgendwohin geht. Bewusst offen:
   ein anderer lokaler Nutzer, der ihn dann bindet, bekommt kein Passwort, lässt
   aber den Boot scheitern (der nächste Start wählt einen freien Port). Ein
   automatischer Neuversuch mit neuem Port wäre die Ergänzung.
-
 - **Mitgliedschaft schlägt fehl statt sich zu reparieren.** Erhält
   `omadia_kernel` je eine Rollen-Mitgliedschaft (heute nur über die geschlossene
   Umleitung erreichbar, oder ein künftiges Feature, das bewusst eine vergibt),
   bricht der Start ab statt sie zu entziehen; der Rückweg ist der
-  Pre-Update-Snapshot (§8a). Ein `REVOKE` aller Mitgliedschaften im Provisioning
-  wäre die selbstheilende Alternative, falls das je nötig wird.
-
+  Pre-Update-Snapshot (security-architecture §8a). Ein `REVOKE` aller
+  Mitgliedschaften im Provisioning wäre die selbstheilende Alternative, falls
+  das je nötig wird.
 - **Kernel-Passwort im Kindprozess-Environment.** Es steckt in `DATABASE_URL`
   und ist damit für Prozesse desselben OS-Nutzers lesbar (`ps eww`), dieselbe
   Grenze wie bei `VAULT_KEY`. Die Härtung wäre die Übergabe per stdin/fd.
+- **Kein externer Zugriff auf die eingebettete Datenbank.** Beide Passwörter
+  bleiben verschlüsselt in `secrets.enc`, und kein unterstützter Weg gibt sie
+  heraus; ein lokales Werkzeug (psql, ein GUI-Client) kommt nicht mehr an die
+  Daten. Wird das gebraucht, wäre ein Operator-Export des Kernel-DSN hinter
+  einer Bestätigung im Hilfe-Menü die Ergänzung.
 - **Migration und Laufzeit teilen sich eine Rolle.** `omadia_kernel` besitzt
   die Datenbank und führt Kern- und Plugin-Migrationen aus, beim Boot und bei
   jeder Plugin-Aktivierung. Eine reine DML-Rolle für die Laufzeit bräuchte im
