@@ -110,7 +110,10 @@ const STAGES: ReadonlySet<string> = new Set<SecretsUnreadableStage>([
 export interface SecretsUnreadableDetails {
   readonly file: string;
   readonly stage: SecretsUnreadableStage;
-  /** One line on what went wrong. */
+  /**
+   * One line on what went wrong. It is logged and shown in the recovery dialog,
+   * so it never quotes the file's content.
+   */
   readonly reason: string;
   /** Where pre-update snapshots live, for the restore hint; null if unknown. */
   readonly snapshotDir: string | null;
@@ -245,8 +248,24 @@ function parse(io: SecretsIo, file: string, text: string, options: SecretsReadOp
   try {
     return JSON.parse(text) as unknown;
   } catch (err) {
-    throw unreadable(io, file, 'parse', describeCause(err), err, options);
+    // Neither the SyntaxError nor its message leaves this function: V8 quotes
+    // about ten characters on each side of the error (all of a short input),
+    // and this text is the decrypted blob, keys included.
+    throw unreadable(io, file, 'parse', parseFailureReason(err), undefined, options);
   }
+}
+
+/**
+ * V8 appends the position after its own wording ("... in JSON at position 57
+ * (line 1 column 58)"). Anchored at the end, so it cannot match inside the
+ * quoted excerpt of the other messages, which end in "is not valid JSON".
+ */
+const JSON_ERROR_POSITION = / at position (\d+)(?: \(line \d+ column \d+\))?$/;
+
+/** A fixed phrase plus V8's position when it reports one: never the text itself. */
+function parseFailureReason(err: unknown): string {
+  const position = err instanceof Error ? JSON_ERROR_POSITION.exec(err.message)?.[1] : undefined;
+  return position === undefined ? 'not valid JSON' : `not valid JSON at position ${position}`;
 }
 
 /** A well-formed plaintext blob, or null. */

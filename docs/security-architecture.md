@@ -822,6 +822,12 @@ rules, in the Electron-free `secretsBlob.ts` and `secretsStore.ts`:
   (`secretsRecovery.ts`) and without "Re-run setup". A refused keychain is
   presented as "the file is most likely intact; allow access", never as
   "restore or delete".
+- **The failure text never quotes the file.** The error's reason goes to the
+  log, the setup wizard and the dialog's support details. V8's JSON
+  `SyntaxError` quotes about ten characters on each side of the error, which
+  for a damaged file is a fragment of a key. So a `parse` failure reports only
+  `not valid JSON`, plus the position when V8 gives one, and the
+  `SyntaxError` is not attached as the error's `cause`.
 - **Every rewrite is backup, temp file, rename.** `secrets.enc` is first copied
   to `secrets.enc.bak`, with mode 0600 set explicitly, and a failed copy aborts
   the rewrite. The new bytes go to `secrets.enc.tmp-<pid>-<uuid>` (exclusive
@@ -1508,8 +1514,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] A change to `desktop/src/secrets.ts` or its `secretsBlob.ts` /
       `secretsStore.ts` core keeps the ENOENT-only creation rule and the
       backup + temp file + rename write (§8a): a read, decrypt, parse or shape
-      failure throws `SecretsUnreadableError` and never regenerates keys, and a
-      key is cached only after its write succeeded.
+      failure throws `SecretsUnreadableError` and never regenerates keys, a
+      key is cached only after its write succeeded, and neither the error's
+      reason nor its `cause` quotes the file's content.
 - [ ] A change to the desktop's embedded Postgres (`desktop/src/embeddedDb.ts`,
       `embeddedDbAuth.ts`, `embeddedDbOwnership.ts`) never writes a `trust` rule
       or rewrites pg_hba.conf while the server runs (password repairs go through

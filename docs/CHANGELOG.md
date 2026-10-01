@@ -94,7 +94,10 @@ byte-identical and stops boot with a dialog that names the failed stage and
 the next step: allow keychain access (the file is most likely intact), restore
 `secrets.enc.bak` or the snapshot copy, or move the whole data folder aside to
 start over. The dialog has no "Re-run setup" button, because setup would hit
-the same file. The rules live in the Electron-free `secretsBlob.ts` and
+the same file. Its support details, the log line and the wizard's error text
+never quote the file: the JSON parser's own message carries a fragment of the
+decrypted text, so a damaged file is reported as `not valid JSON` plus the
+position. The rules live in the Electron-free `secretsBlob.ts` and
 `secretsStore.ts`, so fault-injection tests can assert them.
 
 Every rewrite is now atomic: the current file is copied to `secrets.enc.bak`

@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { takeDbSnapshot, type SnapshotIo, type SnapshotRequest } from '../src/dbSnapshot.ts';
 import { snapshotDirName } from '../src/snapshotRetention.ts';
 
@@ -187,4 +190,29 @@ test('pruning removes a stale snapshot together with its secrets copy', () => {
   takeDbSnapshot(io, request({ keep: 3, secretsFile: SECRETS }));
   assert.ok(calls.includes(`remove(${stale})`), calls.join(' '));
   assert.ok(calls.includes(`remove(${stale}.secrets.enc)`), calls.join(' '));
+});
+
+/**
+ * `takeDbSnapshot` copies the secrets file only when it is given one, and the
+ * updater is what gives it. That glue runs only inside Electron, so it is
+ * pinned as source: without `secretsFile` every test above stays green while
+ * each pre-update snapshot silently loses the keys its ciphertexts need.
+ */
+test('the updater hands the secrets file to the pre-update snapshot (source contract)', () => {
+  const updater = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'updater.ts'),
+    'utf8',
+  );
+  assert.match(updater, /snapshot: snapshotDbDir\b/, 'the install preflight takes this snapshot');
+  const snapshotCall =
+    /function snapshotDbDir\(version: string\): void \{\s*takeDbSnapshot\(realSnapshotIo, \{([^}]*)\}\);/;
+  const fields = snapshotCall.exec(updater)?.[1];
+  assert.ok(fields !== undefined, 'snapshotDbDir builds its request in one takeDbSnapshot call');
+  assert.match(fields, /\bsecretsFile: secretsFile\(\)/);
+  assert.match(updater, /import \{[^}]*\bsecretsFile\b[^}]*\} from '\.\/paths';/);
+  // The copy holds the same secrets as the original: its mode is set, not inherited.
+  assert.match(
+    updater,
+    /copyFile: \(source, destination\) => \{\s*fs\.copyFileSync\(source, destination\);[^}]*fs\.chmodSync\(destination, 0o600\);/,
+  );
 });
