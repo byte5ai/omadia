@@ -2135,13 +2135,16 @@ Sitzung ohne Navigation.
   Tokens ohne den Claim auf `iat` zurück.
 - **Route** (`routes/authRenew.ts`, gemountet im Auth-Router). Reihenfolge,
   jeder Schritt fail-closed:
-  1. `evaluateSessionToken` wie `requireAuth` (Cookie gültig, Whitelist):
-     401 `auth.missing` / `auth.invalid`, 403 `auth.not_whitelisted`.
-     Eine abgelaufene Sitzung ist nicht verlängerbar, nur ersetzbar.
+  1. `evaluateSessionToken` wie `requireAuth` (Cookie gültig, Whitelist,
+     serverseitiger Widerruf): 401 `auth.missing` / `auth.invalid` /
+     `auth.revoked`, 403 `auth.not_whitelisted`, 503 `auth.unavailable`
+     (Widerrufs-Lookup fehlgeschlagen). Eine abgelaufene oder widerrufene
+     Sitzung ist nicht verlängerbar, nur ersetzbar.
   2. Absolute Obergrenze: `now >= auth_time + cap` bzw. `exp` liegt schon auf
      der Grenze → 401 `auth.renew_expired`.
-  3. Provider noch aktiv, `users`-Zeile vorhanden und `active` → sonst 401
-     `auth.renew_denied`. Gilt für lokale und Entra-Zeilen.
+  3. Provider noch aktiv, `users`-Zeile vorhanden und `active`, und sie deckt
+     die Sitzung noch (gleiche Zeile `uid`, gleiche `session_version` `sv`)
+     → sonst 401 `auth.renew_denied`. Gilt für lokale und Entra-Zeilen.
   4. OIDC: `OidcProvider.revalidateSession` (Entra: Refresh-Token einlösen,
      `oid`/E-Mail/Whitelist prüfen, rotierten Token speichern). `denied` →
      401 `auth.renew_denied`, `unavailable` (Netz, 5xx, 429) → 502
@@ -2150,16 +2153,20 @@ Sitzung ohne Navigation.
   5. Audit-Zeile `auth.session_renew` (`actor.id` = users-UUID, #775),
      **vor** dem Cookie: scheitert der Audit-Write, gibt es 500 und kein
      neues Cookie.
-  6. Gleiche Claims neu signiert, `exp = min(now + 4h, auth_time + cap)`.
+  6. Gleiche Claims neu signiert (`auth_time`, `sv`, `sid`, `uid` werden
+     übernommen), `exp = min(now + 4h, auth_time + cap)`.
      Antwort `{ expires_at, server_now, renewable_until }`.
 - Ohne `renewal`-Deps im `AuthDeps` (Test-Harnesses) antwortet `/renew` mit
   503 `auth.renew_unavailable`.
 - **`GET /me`** liefert zusätzlich `renewable_until` (`auth_time + cap`,
   `null` ohne Renewal). Die UI zeigt damit im letzten Fenster vor der Grenze
   direkt „Neu anmelden“ statt eines Klicks, der sicher abgelehnt wird.
-- **`POST /logout`** vergisst bei Entra-Sitzungen den Refresh-Token
-  (`RefreshStore.forget`), damit ein vor dem Logout kopiertes Cookie sich
-  nicht weiter über den IdP verlängern kann.
+- **`POST /logout`** beendet die Sitzung serverseitig (siehe unten): ist das
+  vorgelegte Cookie noch gültig, zählt es `users.session_version` hoch und
+  beendet damit **alle** Sitzungen dieses Users auf allen Geräten; bei
+  Entra-Sitzungen wird zusätzlich der Refresh-Token vergessen
+  (`RefreshStore.forget`). Ein schon widerrufenes Cookie ändert serverseitig
+  nichts (die Route ist öffentlich), es bekommt nur sein Cookie gelöscht.
 - **UI** (`web-ui/app/_components/SessionWatcher.tsx`, `renewSession()` in
   `_lib/api.ts`): Erfolg setzt die Phase von `warning` zurück auf `normal`
   und plant die Timer neu. Ein Heartbeat, der vor der Verlängerung losging,
@@ -2172,6 +2179,47 @@ und Restrisiken: `docs/security-architecture.md` → „Session renewal“.
 
 Tests: `test/auth/renewRoute.test.ts`, `test/auth/entraProviderRevalidate.test.ts`,
 `test/auth/sessionJwt.test.ts`, `web-ui/app/_components/__tests__/SessionWatcher.test.tsx`.
+
+#### Serverseitiger Sitzungs-Widerruf (`users.session_version`)
+
+Ohne Serverzustand konnte nichts eine Sitzung vorzeitig beenden: Abmelden
+löschte nur das Browser-Cookie, ein Admin-Passwort-Reset nur den Hash, und eine
+Kopie des Cookies lief bis `exp` weiter (und ließ sich bis zur Obergrenze
+verlängern). Jetzt gibt es einen Marker pro User.
+
+- **Migration** `src/auth/migrations/0003_users_session_version.sql`:
+  `users.session_version INTEGER NOT NULL DEFAULT 0`, additiv und idempotent.
+- **Claims** (`auth/sessionJwt.ts`): `sv` (Version der Zeile beim Minten),
+  `uid` (`users.id`, bindet das Token an genau diese Zeile) und `sid`
+  (Zufalls-ID pro Anmeldung, wird noch nicht geprüft). Alte Tokens ohne `sv`
+  gelten als Version 0 — so startet jede bestehende Zeile, das Upgrade meldet
+  also niemanden ab.
+- **Prüfung** in `evaluateSessionToken` über `SessionRevocationGuard`
+  (`auth/sessionRevocation.ts`, in `index.ts` einmal gebaut und nach
+  `new UserStore(graphPool)` per `attach` verdrahtet): Zeile weg, `disabled`,
+  andere `id` oder andere Version → 401 `auth.revoked`. Lookup fehlgeschlagen
+  → 503 `auth.unavailable` (Ausfall, kein Urteil über das Cookie). Gilt für
+  `requireAuth`, `ctx.operatorAuth` (`false`), das Channel-WebSocket-Upgrade
+  (roh 401 bzw. 503), `POST /renew` und `GET /me` (60-s-Heartbeat des
+  `SessionWatcher`). Kein Cache: ein Point-Read pro Request.
+- **Wer hochzählt**: `POST /logout` (nur mit noch gültigem Cookie),
+  Admin-Passwort-Reset und Deaktivieren (`UserStore.update(id, {…,
+  revokeSessions: true })`, im selben UPDATE wie Hash bzw. Status). Löschen
+  braucht keinen Bump — ohne Zeile keine Sitzung, und eine neu angelegte
+  Zeile hat eine neue `id`. Das eigene Passwort zurückzusetzen meldet auch
+  einen selbst ab.
+- **Login-Pfade** stempeln `sv`/`uid` aus der geprüften Zeile: Passwort-Login
+  aus demselben Read wie die Hash-Prüfung (`PasswordAuthSuccess.account`),
+  OIDC-Callback aus der upserteten Zeile (für eine deaktivierte Zeile wird
+  keine Sitzung mehr gemintet), `/setup` aus der neu angelegten.
+- **Seam für offene Verbindungen**: `WebSocketRegistryDeps.sessions` /
+  `SessionRevocation.onRevoked` + `check`. Noch schließt niemand offene Sockets
+  oder SSE-Streams — siehe §13.
+
+Tests: `test/auth/sessionRevocation.test.ts`,
+`test/auth/logoutRevokesSession.test.ts`,
+`test/auth/userStoreSessionVersion.test.ts` (+ `.pg.test.ts`),
+`test/auth/adminUsersRoute.test.ts`, `test/webSocketRegistry.test.ts`.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -2523,6 +2571,11 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 | Variable | Wirkung |
 |---|---|
 | `AUTH_SESSION_MAX_LIFETIME_HOURS` | Absolute Obergrenze einer Verlängerungskette in Stunden, gemessen ab der **ursprünglichen** Anmeldung (`auth_time`), nicht ab der letzten Verlängerung. Default `12`, erlaubt `4`–`168` (zod-validiert beim Boot). Jeder Login und jede „Ich bin noch da“-Verlängerung gibt ein 4h-Fenster, geklemmt auf diese Grenze; danach antwortet `POST /api/v1/auth/renew` mit 401 `auth.renew_expired` und die UI verlangt einen neuen Login. Werte unter 4 wären sinnlos, weil schon das Login-Fenster 4h lang ist. |
+
+Die Obergrenze bindet nur Sitzungen, die niemand beendet: Abmelden,
+Admin-Passwort-Reset, Deaktivieren und Löschen beenden alle Sitzungen des
+Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf“)
+— ohne eigene Env-Variable.
 
 ### Test-Schalter (nicht von der Middleware gelesen)
 
@@ -3011,6 +3064,31 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Sitzungs-Widerruf: offene Verbindungen, gerätegenaues Abmelden, Cache
+
+Der serverseitige Widerruf (`users.session_version`, §3) prüft bei jedem
+Request und bei jedem WebSocket-Upgrade. Offen:
+
+- **Offene Verbindungen schließen.** Ein Channel-WebSocket und der
+  Builder-SSE-Stream (`GET /drafts/:id/events`) authentifizieren nur beim
+  Öffnen und bleiben nach einem Widerruf offen. Seam:
+  `WebSocketRegistryDeps.sessions` — `onRevoked` meldet, wessen Sitzungen
+  gerade endeten, `check` bewertet gehaltene Claims neu. `announce` ist
+  prozesslokal (ein Widerruf auf einer anderen Replica oder per SQL kommt nie
+  an), also zusätzlich periodisch `check` laufen lassen.
+- **Gerätegenaues Abmelden.** Abmelden gilt heute pro User (alle Geräte). Pro
+  Gerät bräuchte eine Denylist auf `sid` samt Aufräumen nach `exp`.
+- **Cache nur bei Bedarf.** Ein Point-Read pro authentifiziertem Request. Wenn
+  der Lookup in Messungen sichtbar wird (Richtwert: > 5 ms im p95 der
+  `/api`-Requests), ein kurzes TTL-Memo im Guard, das `announce` invalidiert;
+  die TTL dann in Code und `docs/security-architecture.md` §10k nennen, weil
+  „sofort“ danach „innerhalb der TTL“ heißt.
+- **UI-Hinweise.** Der `SessionWatcher` zeigt bei `auth.revoked` dasselbe
+  Ablauf-Overlay wie bei einer abgelaufenen Sitzung; ein eigener Text
+  („An anderer Stelle abgemeldet“) wäre ehrlicher. Die Detailseite eines Users
+  sollte sagen, dass ein Passwort-Reset alle seine Sitzungen beendet, auch die
+  eigene.
 
 ### CI-Schulden aus dem Security-Review (2026-09-29)
 

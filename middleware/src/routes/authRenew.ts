@@ -4,9 +4,17 @@ import type { AdminAuditLog } from '../auth/adminAuditLog.js';
 import { isOidcProvider } from '../auth/providers/AuthProvider.js';
 import type { ProviderRegistry } from '../auth/providerRegistry.js';
 import type { RefreshStore } from '../auth/refreshStore.js';
-import { evaluateSessionToken, SESSION_COOKIE } from '../auth/requireAuth.js';
+import {
+  evaluateSessionToken,
+  SESSION_COOKIE,
+  sessionFailureStatus,
+} from '../auth/requireAuth.js';
 import { SESSION_WINDOW_S, setSessionCookie } from '../auth/sessionCookie.js';
 import { signSession, type VerifiedSession } from '../auth/sessionJwt.js';
+import {
+  accountVouchesFor,
+  type SessionRevocation,
+} from '../auth/sessionRevocation.js';
 import type { UserStore } from '../auth/userStore.js';
 import type { EmailWhitelist } from '../auth/whitelist.js';
 
@@ -35,6 +43,8 @@ interface RenewHandlerDeps {
   userStore: Pick<UserStore, 'findByProviderUserId'>;
   signingKey: Uint8Array;
   renewal?: SessionRenewalDeps;
+  /** Server-side revocation — the guard `requireAuth` runs (step 1). */
+  sessions?: Pick<SessionRevocation, 'check'>;
 }
 
 /** Last moment (Unix epoch seconds) a session with this `auth_time` may be
@@ -57,7 +67,8 @@ type IdentityCheck =
 
 /**
  * Re-check that the principal behind the cookie may still hold a session:
- * provider still active, users-row present and `active`, and (for OIDC)
+ * provider still active, users-row present and `active`, the row still
+ * vouching for this session (same row, same session version), and (for OIDC)
  * the IdP still vouching for the identity. Fails closed at every step.
  */
 async function checkIdentity(
@@ -75,6 +86,11 @@ async function checkIdentity(
 
   const row = await deps.userStore.findByProviderUserId(claims.provider, claims.sub);
   if (!row || row.status !== 'active') return denied('account is not active');
+  // Server-side revocation, on the row this step reads anyway. With the guard
+  // wired, step 1 has already refused a revoked session (so a renewal costs a
+  // second point read of the same row — acceptable on a rare, explicit route);
+  // without it, this is what keeps a signed-out cookie from renewing itself.
+  if (!accountVouchesFor(row, claims)) return denied('session was revoked');
 
   if (isOidcProvider(provider)) {
     if (!provider.revalidateSession) {
@@ -107,15 +123,17 @@ async function checkIdentity(
  *
  * Order matters and every step fails closed:
  *   1. the cookie must be valid right now (same `evaluateSessionToken` as
- *      `requireAuth`, whitelist gate included) — an expired session can
- *      only be replaced by a login, never renewed;
+ *      `requireAuth`, whitelist gate and server-side revocation included) —
+ *      an expired or revoked session can only be replaced by a login, never
+ *      renewed; a failed revocation lookup answers 503;
  *   2. the absolute cap from `auth_time` must not be reached;
  *   3. the principal is re-checked (provider, users-row, IdP);
  *   4. the current `exp` must not already sit on the cap (final window);
  *      the new window is `min(now + 4h, auth_time + cap)`;
  *   5. the audit row is written — before the cookie, so a failed write
  *      (bubbling to Express as a 500) never yields a renewed session;
- *   6. the same claims are re-signed, `auth_time` carried over.
+ *   6. the same claims are re-signed, `auth_time`, `sv`, `sid` and `uid`
+ *      carried over (same sign-in, same account version).
  */
 export function createRenewHandler(deps: RenewHandlerDeps) {
   return async function renew(req: Request, res: Response): Promise<void> {
@@ -129,10 +147,15 @@ export function createRenewHandler(deps: RenewHandlerDeps) {
     const evaluation = await evaluateSessionToken(cookies[SESSION_COOKIE], {
       signingKey: deps.signingKey,
       whitelist: renewal.whitelist,
+      ...(deps.sessions ? { sessions: deps.sessions } : {}),
     });
     if (!evaluation.ok) {
-      const status = evaluation.code === 'auth.not_whitelisted' ? 403 : 401;
-      refuse(res, status, evaluation.code, evaluation.message);
+      refuse(
+        res,
+        sessionFailureStatus(evaluation.code),
+        evaluation.code,
+        evaluation.message,
+      );
       return;
     }
     const claims = evaluation.claims;
@@ -176,6 +199,11 @@ export function createRenewHandler(deps: RenewHandlerDeps) {
         provider: claims.provider,
         ...(claims.omadia_user_id ? { omadia_user_id: claims.omadia_user_id } : {}),
         auth_time: claims.auth_time,
+        // Server-side revocation: the renewed token is the same sign-in of
+        // the same account version, so a later bump ends it like the old one.
+        sv: claims.sv,
+        ...(claims.sid ? { sid: claims.sid } : {}),
+        ...(claims.uid ? { uid: claims.uid } : {}),
       },
       deps.signingKey,
       newExp,

@@ -2,7 +2,7 @@ import type { Pool } from 'pg';
 
 /**
  * Thin Postgres-backed CRUD over the `users` table introduced by
- * `auth/migrations/0001_users.sql`. Provider-aware throughout: every read
+ * `auth/migrations/0001_users.sql` (plus `session_version`, 0003). Provider-aware throughout: every read
  * scopes by `(provider, ...)`, every write spells the provider out — so
  * adding a new AuthProvider doesn't require touching this layer beyond
  * passing a different `provider` string.
@@ -28,6 +28,14 @@ export interface UserRecord {
   createdAt: Date;
   updatedAt: Date;
   lastLoginAt: Date | null;
+  /**
+   * Server-side session revocation marker (`users.session_version`). Every
+   * session token carries the value it was minted at (claim `sv`);
+   * `evaluateSessionToken` refuses a token once this has moved past it. Moved
+   * only through `update(id, { revokeSessions: true })`. Required on purpose:
+   * a mapping that forgot it would mint tokens nothing could revoke.
+   */
+  sessionVersion: number;
 }
 
 export interface CreateUserInput {
@@ -45,6 +53,13 @@ export interface UpdateUserInput {
   role?: UserRole;
   status?: UserStatus;
   passwordHash?: string;
+  /**
+   * End every outstanding session of this user: bumps `session_version` in
+   * the SAME statement as the rest of the patch, so a password or status
+   * change and the revocation it implies can never land apart. Also valid as
+   * the only key.
+   */
+  revokeSessions?: boolean;
 }
 
 interface UserRow {
@@ -59,6 +74,7 @@ interface UserRow {
   created_at: Date;
   updated_at: Date;
   last_login_at: Date | null;
+  session_version: number;
 }
 
 function rowToRecord(row: UserRow): UserRecord {
@@ -73,6 +89,7 @@ function rowToRecord(row: UserRow): UserRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastLoginAt: row.last_login_at,
+    sessionVersion: row.session_version,
   };
 }
 
@@ -246,6 +263,11 @@ export class UserStore {
     if (patch.passwordHash !== undefined) {
       sets.push(`password_hash = $${i++}`);
       values.push(patch.passwordHash);
+    }
+    if (patch.revokeSessions === true) {
+      // Relative to the stored value, never a value the caller read earlier:
+      // two concurrent revocations must both move the version.
+      sets.push('session_version = session_version + 1');
     }
     if (sets.length === 0) {
       return this.findById(id);

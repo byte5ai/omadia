@@ -1,8 +1,11 @@
 import { parseCookie as parseCookieHeader } from 'cookie';
 import type { OperatorAuthAccessor } from '@omadia/plugin-api';
 
-import { evaluateSessionToken, SESSION_COOKIE } from './requireAuth.js';
-import type { EmailWhitelist } from './whitelist.js';
+import {
+  evaluateSessionToken,
+  SESSION_COOKIE,
+  type SessionEvaluationDeps,
+} from './requireAuth.js';
 
 /**
  * Issue #438 follow-up — kernel-side implementation of the plugin-facing
@@ -12,12 +15,13 @@ import type { EmailWhitelist } from './whitelist.js';
  * (e.g. `@omadia/channel-api`'s `/admin/keys`) can reuse it instead of
  * re-implementing — and risking drifting from — the kernel's own session
  * rules. There is exactly one code path that decides session validity; this
- * is a thin adapter from "raw Cookie header" to that path, not a second one.
+ * is a thin adapter from "raw Cookie header" to that path, not a second one —
+ * so a revoked session (`deps.sessions`) is refused here exactly as it is on
+ * every `/api` route.
  */
-export function createOperatorAuthAccessor(deps: {
-  signingKey: Uint8Array;
-  whitelist: EmailWhitelist;
-}): OperatorAuthAccessor {
+export function createOperatorAuthAccessor(
+  deps: SessionEvaluationDeps,
+): OperatorAuthAccessor {
   return {
     async hasValidSession(cookieHeader: string | undefined): Promise<boolean> {
       if (!cookieHeader) return false;
@@ -28,8 +32,16 @@ export function createOperatorAuthAccessor(deps: {
         // Malformed Cookie header — never throw out of this accessor.
         return false;
       }
-      const result = await evaluateSessionToken(parsed[SESSION_COOKIE], deps);
-      return result.ok;
+      try {
+        const result = await evaluateSessionToken(parsed[SESSION_COOKIE], deps);
+        // `auth.unavailable` (revocation lookup failed) is `false` too: the
+        // contract is a boolean, and an unverifiable session is not valid.
+        return result.ok;
+      } catch {
+        // The evaluation already maps a store outage to a verdict; this keeps
+        // the plugin-facing contract ("never throws") airtight regardless.
+        return false;
+      }
     },
   };
 }

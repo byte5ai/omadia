@@ -40,6 +40,27 @@ export interface AuthError {
 export type AuthResult = AuthSuccess | AuthError;
 
 /**
+ * The `users` row a password provider verified the credential against. The
+ * session is minted for exactly this row: its id becomes the token's `uid`
+ * claim and its `session_version` the `sv` claim (server-side revocation, see
+ * `auth/sessionRevocation.ts`). Taken from the SAME read that checked the
+ * password, so a reset that lands after the check still ends this session —
+ * a second lookup could return the already-bumped version and let a login
+ * with the old password survive the reset.
+ */
+export interface VerifiedAccount {
+  id: string;
+  sessionVersion: number;
+}
+
+/** A password provider's success: always tied to a `users` row. */
+export interface PasswordAuthSuccess extends AuthSuccess {
+  account: VerifiedAccount;
+}
+
+export type PasswordAuthResult = PasswordAuthSuccess | AuthError;
+
+/**
  * #965 — outcome of re-checking an existing session's identity against the
  * IdP before `POST /api/v1/auth/renew` extends it.
  *
@@ -70,7 +91,7 @@ export interface PasswordProvider {
    * concrete provider (LocalPasswordProvider expects `{email, password}`).
    * Routers pass `req.body` as-is — providers validate.
    */
-  verify(body: unknown): Promise<AuthResult>;
+  verify(body: unknown): Promise<PasswordAuthResult>;
 }
 
 /** Marks a provider as "user redirects to an external IdP" — login is a

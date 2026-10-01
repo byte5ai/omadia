@@ -339,6 +339,25 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.167.9 — signing out ends every session of that user
+
+No action needed; this section is about behaviour you will notice.
+
+- **Sign-out is server-side and account-wide.** Signing out ends every session
+  of that user, on every device, not only the one in this browser. So do an
+  admin password reset and disabling a user. A copied cookie stops working on
+  the next request instead of at its expiry. Resetting your own password signs
+  you out as well.
+- **One new auth migration** (`0003_users_session_version.sql`) adds a
+  `session_version` column to `users`. It is additive and runs at boot like
+  every other migration, and existing sessions stay valid through the upgrade.
+- **The new check needs Postgres, and an outage is not a sign-out.** Every
+  authenticated request now reads the user's row. While that read fails, API
+  calls answer 503 `auth.unavailable` and the UI keeps you signed in and
+  retries; it does not bounce you to the login page.
+- Rotating the session signing key is still the lever for signing out *every*
+  user at once.
+
 ## Upgrading past v0.167.7 — self-update overlay, framing, web-ui user, sandbox limits
 
 Four hardening changes an operator may notice. None needs action on a

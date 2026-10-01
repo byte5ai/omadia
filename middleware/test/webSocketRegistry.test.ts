@@ -9,7 +9,9 @@
  *     (auth before the handshake — the handler never runs);
  *   - an unknown path is rejected with 404;
  *   - a de-whitelisted entra session is rejected with 403;
- *   - a deactivated channel rejects new upgrades with 503.
+ *   - a deactivated channel rejects new upgrades with 503;
+ *   - a session revoked server-side (sign-out, password reset, disable) is
+ *     rejected with 401, and a failed revocation lookup with 503.
  *
  * Epic #746 W1-1 — per-route authenticator + payload cap:
  *   - a kernel route authenticates with its OWN authenticator (cookies ignored),
@@ -29,6 +31,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { WebSocket } from 'ws';
 
+import type { SessionAccount } from '../src/auth/sessionRevocation.js';
 import { CHANNEL_WS_MAX_PAYLOAD_BYTES } from '../src/channels/webSocketRegistry.js';
 import {
   FAST,
@@ -40,11 +43,72 @@ import {
   entraCookie,
   expectRejected,
   openClient,
+  revocationGuard,
   startRegistryServer,
   watchUncaught,
   type RegistryServer,
   type TestPrincipal,
 } from './_helpers/wsRegistryKit.js';
+
+describe('WebSocketRegistry — server-side session revocation on upgrade', () => {
+  let rs: RegistryServer;
+  const accounts = new Map<string, SessionAccount>();
+  let failing = false;
+
+  before(async () => {
+    rs = await startRegistryServer({
+      sessions: revocationGuard(accounts, { fail: () => failing }),
+    });
+    // u1 has signed out once since its first sign-in: version 1 is current.
+    accounts.set('local:u1', { id: 'row-u1', status: 'active', sessionVersion: 1 });
+  });
+
+  after(async () => {
+    await rs.close();
+  });
+
+  it('completes the handshake for a session its account still vouches for', FAST, async () => {
+    let ran = false;
+    rs.registry.register('ch.rev-ok', '/canvas-rev-ok', (socket) => {
+      ran = true;
+      socket.close();
+    });
+    const ws = new WebSocket(`${rs.base}/canvas-rev-ok`, {
+      headers: { cookie: await authCookie({ sv: 1, uid: 'row-u1' }) },
+    });
+    await once(ws, 'open');
+    await once(ws, 'close');
+    assert.equal(ran, true);
+  });
+
+  it('rejects a revoked session with a raw 401 before any 101 (handler never runs)', FAST, async () => {
+    rs.registry.register('ch.rev-stale', '/canvas-rev-stale', () => {
+      throw new Error('handler must not run for a revoked session');
+    });
+    // A cookie copied before the sign-out: still signed, still unexpired.
+    await expectRejected(`${rs.base}/canvas-rev-stale`, 401, {
+      cookie: await authCookie({ sv: 0, uid: 'row-u1' }),
+    });
+    // And one minted for an earlier row under the same identity.
+    await expectRejected(`${rs.base}/canvas-rev-stale`, 401, {
+      cookie: await authCookie({ sv: 1, uid: 'row-deleted-before' }),
+    });
+  });
+
+  it('rejects with a raw 503 when the account cannot be read (an outage, not a verdict)', FAST, async () => {
+    rs.registry.register('ch.rev-down', '/canvas-rev-down', () => {
+      throw new Error('handler must not run while the session cannot be checked');
+    });
+    failing = true;
+    try {
+      await expectRejected(`${rs.base}/canvas-rev-down`, 503, {
+        cookie: await authCookie({ sv: 1, uid: 'row-u1' }),
+      });
+    } finally {
+      failing = false;
+    }
+  });
+});
 
 describe('WebSocketRegistry — auth before upgrade', () => {
   let rs: RegistryServer;

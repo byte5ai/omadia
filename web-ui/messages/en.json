@@ -4553,6 +4553,8 @@
       "invalidName": "The name may only contain letters, numbers, . _ -",
       "notFound": "Registry not found — list reloaded.",
       "missingFields": "Name and URL are required.",
+      "sessionExpired": "Your session is no longer valid. Redirecting to sign in…",
+      "authUnavailable": "Your session can't be checked right now. Try again shortly.",
       "generic": "Error {status}."
     }
   },

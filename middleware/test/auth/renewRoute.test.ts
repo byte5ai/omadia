@@ -15,7 +15,8 @@ import type {
 import { LocalPasswordProvider } from '../../src/auth/providers/LocalPasswordProvider.js';
 import { ProviderRegistry } from '../../src/auth/providerRegistry.js';
 import { signSession, verifySession } from '../../src/auth/sessionJwt.js';
-import type { UserRecord, UserStore } from '../../src/auth/userStore.js';
+import { SessionRevocationGuard } from '../../src/auth/sessionRevocation.js';
+import type { UpdateUserInput, UserRecord, UserStore } from '../../src/auth/userStore.js';
 import { EmailWhitelist } from '../../src/auth/whitelist.js';
 import { createAuthRouter } from '../../src/routes/auth.js';
 import { listenLoopback } from '../_helpers/listenLoopback.js';
@@ -52,6 +53,7 @@ function user(overrides: Partial<UserRecord>): UserRecord {
     createdAt: now,
     updatedAt: now,
     lastLoginAt: null,
+    sessionVersion: 0,
     ...overrides,
   };
 }
@@ -77,8 +79,28 @@ class InMemoryUserStore {
     return this.rows.length;
   }
 
+  failLookups = false;
+
   async findByProviderUserId(provider: string, sub: string): Promise<UserRecord | null> {
+    if (this.failLookups) throw new Error('connection terminated unexpectedly');
     return this.rows.find((r) => r.provider === provider && r.providerUserId === sub) ?? null;
+  }
+
+  /** Just the session-revocation bump `/logout` performs. */
+  async update(id: string, patch: UpdateUserInput): Promise<UserRecord | null> {
+    const idx = this.rows.findIndex((r) => r.id === id);
+    const cur = this.rows[idx];
+    if (!cur) return null;
+    const next = {
+      ...cur,
+      sessionVersion: cur.sessionVersion + (patch.revokeSessions ? 1 : 0),
+    };
+    this.rows[idx] = next;
+    return next;
+  }
+
+  version(id: string): number | undefined {
+    return this.rows.find((r) => r.id === id)?.sessionVersion;
   }
 }
 
@@ -110,6 +132,8 @@ interface HarnessOpts {
   auditThrows?: boolean;
   entraVerdict?: SessionRevalidation | 'missing';
   activeProviders?: readonly string[];
+  /** Wire the server-side revocation guard over the harness store. */
+  withGuard?: boolean;
 }
 
 let servers: Server[] = [];
@@ -135,6 +159,9 @@ async function start(opts: HarnessOpts = {}): Promise<Harness> {
   const registry = new ProviderRegistry();
   registry.replaceActive(all.filter((p) => active.includes(p.id)));
 
+  const guard = new SessionRevocationGuard(() => undefined);
+  guard.attach(store);
+
   const app = express();
   app.use(cookieParser());
   app.use(express.json());
@@ -147,6 +174,7 @@ async function start(opts: HarnessOpts = {}): Promise<Harness> {
       publicBaseUrl: 'http://localhost',
       defaultReturnPath: '/',
       setupAllowed: false,
+      ...(opts.withGuard ? { sessions: guard } : {}),
       ...(opts.withRenewal === false
         ? {}
         : {
@@ -174,7 +202,9 @@ async function start(opts: HarnessOpts = {}): Promise<Harness> {
   return { baseUrl: `http://127.0.0.1:${port}`, audits, forgotten, store };
 }
 
-async function localToken(opts: { authTime?: number; exp?: number } = {}): Promise<string> {
+async function localToken(
+  opts: { authTime?: number; exp?: number; sv?: number; uid?: string } = {},
+): Promise<string> {
   return signSession(
     {
       sub: LOCAL_SUB,
@@ -184,6 +214,8 @@ async function localToken(opts: { authTime?: number; exp?: number } = {}): Promi
       provider: 'local',
       omadia_user_id: 'omadia-user-1',
       ...(opts.authTime !== undefined ? { auth_time: opts.authTime } : {}),
+      ...(opts.sv !== undefined ? { sv: opts.sv } : {}),
+      ...(opts.uid !== undefined ? { uid: opts.uid } : {}),
     },
     KEY,
     opts.exp ?? '4h',
@@ -238,7 +270,11 @@ describe('POST /api/v1/auth/renew (#965)', () => {
   it('renews a valid local session: same auth_time, later exp, one audit row', async () => {
     const h = await start();
     const authTime = nowS() - 3 * HOUR;
-    const oldToken = await localToken({ authTime, exp: nowS() + 4 * 60 });
+    const oldToken = await localToken({
+      authTime,
+      exp: nowS() + 4 * 60,
+      uid: 'row-uuid-local',
+    });
     const old = await verifySession(oldToken, KEY);
     const res = await renew(h, oldToken);
     assert.equal(res.status, 200);
@@ -252,6 +288,11 @@ describe('POST /api/v1/auth/renew (#965)', () => {
     assert.ok(Math.abs(renewed.exp - (nowS() + 4 * HOUR)) <= 2);
     assert.equal(renewed.omadia_user_id, 'omadia-user-1', 'claims are re-signed as-is');
     assert.equal(renewed.sub, LOCAL_SUB);
+    // Server-side revocation: the same sign-in of the same account version.
+    assert.equal(renewed.sv, old.sv, 'sv is carried over');
+    assert.ok(old.sid, 'the original sign-in has a session id');
+    assert.equal(renewed.sid, old.sid, 'sid is carried over');
+    assert.equal(renewed.uid, 'row-uuid-local', 'uid is carried over');
 
     assert.equal(body['expires_at'], renewed.exp);
     assert.equal(typeof body['server_now'], 'number');
@@ -362,6 +403,41 @@ describe('POST /api/v1/auth/renew (#965)', () => {
     const h = await start({ withRenewal: false });
     await expectRefusal(await renew(h, await localToken()), 503, 'auth.renew_unavailable');
   });
+
+  it('refuses a revoked session (stale sv) even without the guard wired', async () => {
+    const h = await start();
+    h.store.rows[0] = user({ sessionVersion: 1 });
+    // checkIdentity reads the row anyway and refuses on the version.
+    await expectRefusal(await renew(h, await localToken({ sv: 0 })), 401, 'auth.renew_denied');
+    assert.equal(h.audits.length, 0);
+    // A token minted after the bump still renews.
+    const res = await renew(h, await localToken({ sv: 1 }));
+    assert.equal(res.status, 200);
+    assert.equal((await verifySession(cookieToken(res) ?? '', KEY)).sv, 1);
+  });
+
+  it('refuses a token minted for a replaced row (auth.renew_denied)', async () => {
+    const h = await start();
+    await expectRefusal(
+      await renew(h, await localToken({ uid: 'row-uuid-deleted-earlier' })),
+      401,
+      'auth.renew_denied',
+    );
+  });
+
+  it('with the guard wired, refuses a revoked session up front (auth.revoked)', async () => {
+    const h = await start({ withGuard: true });
+    h.store.rows[0] = user({ sessionVersion: 1 });
+    await expectRefusal(await renew(h, await localToken({ sv: 0 })), 401, 'auth.revoked');
+    assert.equal(h.audits.length, 0);
+  });
+
+  it('answers 503 auth.unavailable when the guard cannot read the account', async () => {
+    const h = await start({ withGuard: true });
+    h.store.failLookups = true;
+    await expectRefusal(await renew(h, await localToken()), 503, 'auth.unavailable');
+    assert.equal(h.audits.length, 0);
+  });
 });
 
 describe('GET /me and POST /logout — renewal wiring (#965)', () => {
@@ -385,7 +461,7 @@ describe('GET /me and POST /logout — renewal wiring (#965)', () => {
     assert.equal(body['renewable_until'], null);
   });
 
-  it('/logout forgets the Entra refresh token, not for local sessions', async () => {
+  it('/logout ends the session server-side; the Entra refresh token is forgotten too', async () => {
     const h = await start();
     const logout = async (token: string): Promise<void> => {
       const res = await fetch(`${h.baseUrl}/api/v1/auth/logout`, {
@@ -395,8 +471,33 @@ describe('GET /me and POST /logout — renewal wiring (#965)', () => {
       assert.equal(res.status, 200);
     };
     await logout(await localToken());
-    assert.deepEqual(h.forgotten, []);
+    assert.deepEqual(h.forgotten, [], 'local sessions have no refresh token');
+    assert.equal(h.store.version('row-uuid-local'), 1, 'but the local row is bumped');
     await logout(await oidcToken('entra', ENTRA_SUB, ENTRA_EMAIL));
     assert.deepEqual(h.forgotten, [ENTRA_EMAIL]);
+    assert.equal(h.store.version('row-uuid-entra'), 1);
+  });
+
+  it('/logout with a stale cookie changes nothing server-side', async () => {
+    const h = await start();
+    h.store.rows[0] = user({ sessionVersion: 2 });
+    const res = await fetch(`${h.baseUrl}/api/v1/auth/logout`, {
+      method: 'POST',
+      headers: { cookie: `omadia_session=${await localToken({ sv: 1 })}` },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(h.store.version('row-uuid-local'), 2, 'no bump for an already revoked cookie');
+  });
+
+  it('/me refuses a revoked session with the guard wired (the heartbeat sees it)', async () => {
+    const h = await start({ withGuard: true });
+    const token = await localToken({ sv: 0 });
+    const me = async (): Promise<Response> =>
+      fetch(`${h.baseUrl}/api/v1/auth/me`, { headers: { cookie: `omadia_session=${token}` } });
+    assert.equal((await me()).status, 200);
+    h.store.rows[0] = user({ sessionVersion: 1 });
+    const res = await me();
+    assert.equal(res.status, 401);
+    assert.equal(((await res.json()) as { code?: string }).code, 'auth.revoked');
   });
 });

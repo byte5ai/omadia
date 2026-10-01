@@ -63,6 +63,7 @@ class InMemoryUserStore implements Pick<UserStore, 'count' | 'create' | 'markLog
       createdAt: now,
       updatedAt: now,
       lastLoginAt: null,
+      sessionVersion: 0,
     };
     this.rows.push(row);
     return { ...row, passwordHash: row.passwordHash ?? undefined };

@@ -10,6 +10,11 @@ import type {
 } from '@omadia/channel-sdk';
 
 import { SESSION_COOKIE, evaluateSessionToken } from '../auth/requireAuth.js';
+import {
+  SESSION_CHECK_UNAVAILABLE_CODE,
+  SESSION_REVOKED_CODE,
+  type SessionRevocation,
+} from '../auth/sessionRevocation.js';
 import type { EmailWhitelist } from '../auth/whitelist.js';
 
 import {
@@ -137,6 +142,20 @@ export interface WebSocketRegistryDeps {
    * would keep WS access until the cookie expires while HTTP returns 403.
    */
   whitelist: EmailWhitelist;
+  /**
+   * Server-side session revocation — the same guard `requireAuth` runs
+   * (`auth/sessionRevocation.ts`). With it a channel upgrade whose session was
+   * ended (sign-out, admin password reset, disable, delete) is refused with a
+   * raw 401, and one whose account could not be read with a raw 503.
+   *
+   * It is also the seam for sockets that are ALREADY open when a session is
+   * revoked, which this registry does not close yet: `onRevoked` announces
+   * whose sessions just ended on this replica, and `check` re-evaluates a
+   * socket's session claims (exact across replicas — the announcement is
+   * process-local). Optional so test harnesses without a users table keep
+   * the signature-only verdict.
+   */
+  sessions?: SessionRevocation;
   /**
    * Inbound frame cap for channel routes, in bytes. Defaults to
    * {@link CHANNEL_WS_MAX_PAYLOAD_BYTES}; injectable so tests can use a small cap.
@@ -334,11 +353,12 @@ export class WebSocketRegistry {
 
   /**
    * The channel-route authenticator: `requireAuth`'s own session evaluation
-   * (same signing key, same Entra whitelist gate), so the WS upgrade and the
-   * HTTP gate cannot drift. Status mapping matches `requireAuth`:
-   * `auth.not_whitelisted` → 403, everything else → 401. The raw upgrade
-   * request has no cookie-parser middleware in front of it, so the header is
-   * parsed by hand.
+   * (same signing key, same Entra whitelist gate, same revocation guard), so
+   * the WS upgrade and the HTTP gate cannot drift. Status mapping matches
+   * `requireAuth`: `auth.not_whitelisted` → 403, a failed revocation lookup →
+   * 503 (thrown, so `authenticateBeforeHandshake` answers it as the outage it
+   * is), everything else → 401. The raw upgrade request has no cookie-parser
+   * middleware in front of it, so the header is parsed by hand.
    */
   private async authenticateSession(
     req: IncomingMessage,
@@ -346,10 +366,17 @@ export class WebSocketRegistry {
     const token = sessionTokenFromCookie(req.headers.cookie);
     const result = await evaluateSessionToken(token, this.deps);
     if (!result.ok) {
+      if (result.code === SESSION_CHECK_UNAVAILABLE_CODE) {
+        throw new Error('session revocation lookup unavailable');
+      }
       // Missing/expired cookies are routine (a reconnecting logged-out tab)
-      // and stay unlogged; a de-whitelisted identity is worth a log line.
-      return result.code === 'auth.not_whitelisted'
-        ? { ok: false, status: 403, message: result.code }
+      // and stay unlogged. A de-whitelisted identity is worth a log line, and
+      // so is a revoked session: that cookie outlived a sign-out or a reset.
+      if (result.code === 'auth.not_whitelisted') {
+        return { ok: false, status: 403, message: result.code };
+      }
+      return result.code === SESSION_REVOKED_CODE
+        ? { ok: false, status: 401, message: result.code }
         : { ok: false, status: 401 };
     }
     const verified = result.claims;
