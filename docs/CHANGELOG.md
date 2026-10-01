@@ -150,6 +150,24 @@ copy as `<snapshot>.secrets.enc`, and pruning removes both. `platform-data/`
 §8a). A dev run that stored its blob unencrypted can still read it after OS
 encryption becomes available. No new environment variable.
 
+### Security — npm advisories against axios and next
+
+2026-10-01 — new advisories were published against `axios` (middleware,
+through `botbuilder`) and `next` (web-ui), so the required
+`audit (high+critical block)` check failed on every branch again.
+
+- middleware — the `overrides` pin for `axios` moves from 1.18.1 to 1.20.0.
+  The advisories cover prototype-pollution gadgets, header injection,
+  proxy-exclusion and redirect-limit bypasses and two ReDoS paths, all fixed in
+  1.20.0. `npm audit fix` cannot move an override pin, so it is raised by hand.
+- web-ui — `next` and its `@next/*` packages move from 16.3.5 to 16.3.8, and
+  `eslint-config-next` and `@next/eslint-plugin-next` from 16.3.7 to 16.3.8.
+  16.3.6 fixes a critical advisory in `next/og` image responses; the ranges in
+  `package.json` now start at 16.3.8.
+
+Both workspaces are free of high/critical advisories again. The remaining
+moderate findings need breaking upgrades and are left for their own changes.
+
 ### Fixed — operator UI response headers, non-root web-ui image, sandbox container limits
 
 2026-09-30 — operator pages were served without a frame policy, nosniff or
