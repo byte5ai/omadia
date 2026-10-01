@@ -1589,10 +1589,19 @@ zurückgeführt), und eine Node-ID oder ein String-Schlüssel (`id=…`) im
 Evidenztext wird wie ein Anzeigename ersetzt. Eine zweite
 Antwort mit ungelösten Platzhaltern (`countUnresolvedSurrogates`) ersetzt die
 erste nie — weder ein weiter blockierter Retry noch ein blockiertes Re-Sample
-nach einer Borderline-Antwort. Tests:
+nach einer Borderline-Antwort. Ungelöst heißt: wörtlich, in anderer
+Groß-/Kleinschreibung, mit umgruppierten Ziffern oder — bei Datum und Betrag —
+als anderes Literal desselben Werts (`harness-plugin-privacy-guard/src/valueLiterals.ts`:
+ISO, Punkt/Slash, ohne führende Null, zweistelliges Jahr, ausgeschriebener
+Monat in sechs Locales, Tausendergruppen, „k“/„Tsd.“/„T€“/„Mio.“); denn Restore
+ersetzt nur den exakten Platzhalter-String. Ein Datums- oder Betragsliteral
+ohne lesbaren Wert passt auf jeden Platzhalter seiner Art (fail closed).
+Tests:
 `test/orchestratorPrivacyEgress.test.ts` (Übergabe),
 `test/verifierPrivacyEgressEndToEnd.test.ts` (Verifier um den echten
-Orchestrator), `test/verifierEvidenceHandles.test.ts` (Judge-Kennungen),
+Orchestrator, auch ein als ISO umgeschriebener Datums-Platzhalter in Retry und
+Re-Sample), `test/privacyValueLiterals.test.ts` (Wert-Grammatik),
+`test/verifierEvidenceHandles.test.ts` (Judge-Kennungen),
 `test/verifierServicePrivacyEgress.test.ts` /
 `test/verifierServiceStreamPrivacyEgress.test.ts` (Wrapper, Harness in
 `test/_helpers/`).
@@ -3037,6 +3046,19 @@ laufen die Verifier-Requests unter der Surrogat-Map des Turns. Offen:
   Maskierung) könnte weiche Widersprüche wieder blockierend machen.
 - **Ledger-Attribution:** die Verifier-Kostenzeilen können an
   `continuation.receiptId` anknüpfen (siehe Cost-Ledger "Offen").
+- **Wertgleiche Platzhalter beim Minting:** `createPromptPseudonymMap`
+  (`v4/pseudonym.ts`) prüft Kollisionen nur als String. Ein echtes Datum oder
+  ein echter Betrag, dessen Wert einem Kandidaten entspricht, bekommt einen
+  Platzhalter mit demselben Wert in anderer Schreibweise (echte „10.000 €“ →
+  „€10000“, „1970-01-01“ → „01.01.1970“) — der Request trägt dann den echten
+  Wert. Nebenwirkung: `countUnresolvedSurrogates` zählt den restaurierten
+  echten Wert als ungelöst, ein Retry/Re-Sample wird in so einem Turn nie
+  gezeigt (sichere Richtung). Fix: Kandidaten per `asValueLiteral` gegen die
+  Werte der echten Spans und der Datums-/Betragsliterale im Prompt prüfen.
+- **Grenzen der Wertprüfung:** ausgeschriebene Zahlen („zehntausend Euro“),
+  Daten ohne Jahr („am 1. Januar“) und umgerechnete Werte (Monats- statt
+  Jahresbetrag) erkennt `countUnresolvedSurrogates` nicht; ein so
+  umgeschriebener Platzhalter bliebe in einer zweiten Antwort sichtbar.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 

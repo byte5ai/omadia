@@ -92,7 +92,12 @@ operator deny-list, C1 when wired and caller-named identity values — dates and
 amounts stay, as in a v4 digest — and blocks when a real value equals a
 surrogate minted earlier in the turn. `countUnresolvedSurrogates` reports
 placeholders a model reworded so restore could not map them back
-(`src/verifierProjection.ts`).
+(`src/verifierProjection.ts`): verbatim, in another case, with regrouped
+digits, or — for a date or an amount — in any other spelling of the same
+value (`src/valueLiterals.ts`: ISO, dotted, slashed and written-month dates in
+the six locales, thousands groupings, "k" / "Tsd." / "T€" / "Mio."). A date or
+amount it cannot read counts as a hit (fail closed); spelled-out numbers and
+dates without a year are not read.
 
 ## Canonical implementation path (resolved in #431)
 

@@ -63,7 +63,12 @@ shield installed but no privacy view handed over, nothing is verified raw.
 Behind the shield the correction retry carries no truth values and is withheld
 (badge `failed`) when masking would still alter its hint, and a second answer
 with unresolved placeholders — a still-blocked retry, or a blocked re-sample
-taken over a borderline first answer — never replaces the first one. A
+taken over a borderline first answer — never replaces the first one. Since
+restore only maps a placeholder's exact string back, a date or amount
+placeholder the model wrote back in another spelling of the same value (a
+dotted date as ISO or with a written month, an amount with a scale word such
+as "Tsd.") counts as unresolved too — otherwise the user would read a fake
+value — and a date or amount the check cannot read counts as well. A
 contradiction the judge found on placeholder values is reported as `unverified`
 rather than blocking. On streaming turns `done` — which carries the receipt — now arrives
 after the verifier finished, so the chat's "thinking" state lasts until then

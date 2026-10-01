@@ -698,6 +698,17 @@ written. They are now bound to the turn's own privacy handle:
   first answer, whether the retry then ran, failed or was withheld. The first
   answer is shown with the badge the verdict earned (`failed`). Without a
   shield the hint is unchanged: tool results reach that model raw anyway.
+  Restore only maps a placeholder's exact string back, so the check also
+  compares dates and amounts by value (`valueLiterals.ts`): a date placeholder
+  written as ISO, slashed, unpadded or with a written month (six locales), or
+  an amount placeholder regrouped or given a scale word ("Tsd.", "k", "T€",
+  "Mio."), still counts. A date or amount literal whose value cannot be read
+  matches every placeholder of its kind (fail closed). Open (handoff §13):
+  spelled-out numbers and dates without a year are not read, and minting
+  compares strings, so a real date or amount can get a placeholder of the
+  same value in another spelling — the request then carries that value, and
+  the check flags the restored real value, which only withholds a second
+  answer.
 - **Receipt.** Verifier spans are booked in `PrivacyReceipt.verifierEgress`
   (request count + span types), never in `maskedPromptSpans`; a turn whose
   only privacy-relevant event was the verifier still gets a receipt. On
