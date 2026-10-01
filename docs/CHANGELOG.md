@@ -101,14 +101,18 @@ releases through the same workflow, so its first run must not be a
 user-facing release. That build is also installed over the current release on
 macOS, Windows and Linux, and `secrets.enc` has to come through byte-identical
 with the same recovery key: the runtime that decrypts it moves from Electron
-37's `safeStorage` to Electron 44's. The fix that keeps an unreadable
-`secrets.enc` and stops the app instead of re-keying it ships in the same
-change (entry below), so a file the new runtime cannot decrypt stops the app
-at the secrets dialog instead of losing the vault, the credential keychain and
-the provider keys. The updater fix above still lands on `main` first, in its
-own release, the last one built on Electron 37. After the merge an admin adds
-the `audit (high+critical block) (desktop)` context to `main`'s required
-checks (handoff §13).
+37's `safeStorage` to Electron 44's. The arm64 start and the upgrade installs
+run only on a machine or user account without a productive omadia install
+(for an upgrade run, the current release is freshly installed there first): a
+build installed by hand takes no pre-update snapshot, and its kernel
+migrations run forward-only on whatever data folder it finds. The fix that
+keeps an unreadable `secrets.enc` and stops the app instead of re-keying it
+ships in the same change (entry below), so a file the new runtime cannot
+decrypt stops the app at the secrets dialog instead of losing the vault, the
+credential keychain and the provider keys. The updater fix above still lands
+on `main` first, in its own release, the last one built on Electron 37. After
+the merge an admin adds the `audit (high+critical block) (desktop)` context to
+`main`'s required checks (handoff §13).
 
 ### Fixed — desktop: setup wizard switches reach the kernel or are gone
 

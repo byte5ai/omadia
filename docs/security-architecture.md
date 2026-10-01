@@ -565,7 +565,10 @@ one rule about what counts as a runtime.
   `package.json` beside it and is not a leg. Each leg reports its own
   `audit (high+critical block) (<dir>)` status context, and each has to be a
   required check on `main`: a context that is not required reports findings
-  but blocks nothing.
+  but blocks nothing. An admin adds a new leg's context to `main`'s required
+  checks only after the PR that adds the leg is on `main`: a required context
+  that never reports blocks every open PR, and a PR's checks run on its merge
+  with `main`, which has no such leg before then.
 - **A registry error is not a result.** The audit step gives the npm registry
   three attempts and then fails the leg. Only the repository variable
   `AUDIT_ALLOW_REGISTRY_OUTAGE`, set by an admin for a confirmed upstream
@@ -1920,7 +1923,13 @@ wizard, above all the recovery-key export, which returns the vault master key
     every request. Any frame could otherwise launch an installed app's
     scheme (`ms-settings:`, `search-ms:`, …) without a prompt. This is the
     backstop behind the event rules above. Every other permission keeps
-    Electron's no-handler answer; narrowing those is a separate decision.
+    Electron's no-handler answer, which grants it to every frame without the
+    app asking: camera and microphone, clipboard read, notifications and the
+    rest, for plugin iframes, same-app popups and a foreign page reached by
+    a redirect alike. Narrowing that to a deny-by-default allowlist per
+    requesting origin and frame is an open follow-up
+    (`docs/middleware-agent-handoff.md` §13, "Desktop-Shell: Trust-Boundary
+    Renderer → Main").
   - So only vetted `http:`/`https:` URLs reach the OS. The shell passes
     nothing else to `shell.openExternal`, and no page can make Electron hand
     over anything else. The logs carry the target's origin or scheme, never
@@ -2119,19 +2128,26 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] A store that maps caller-supplied keys onto the filesystem derives the
       path from a digest of the key, never from the key's text (§10j).
 - [ ] A new directory with its own `package.json` + `package-lock.json` is a
-      leg of the `audit (high+critical block)` matrix, has an npm block in
-      `.github/dependabot.yml`, and its `(<dir>)` status context is required
-      on `main` (§4a). `audit-scope.test.mjs` catches a missing matrix leg;
-      the Dependabot block and the required check are on the reviewer.
+      leg of the `audit (high+critical block)` matrix and has an npm block in
+      `.github/dependabot.yml` (§4a). `audit-scope.test.mjs` catches a missing
+      matrix leg; the Dependabot block is on the reviewer. Its `(<dir>)`
+      status context becomes a required check on `main` after the merge, not
+      before: an admin adds it only once the PR that adds the leg is on
+      `main`, because a required context that never reports blocks every open
+      PR. The PR records that admin step as an open point (handoff §13).
 - [ ] An Electron major bump in `desktop/` moves `@types/node` to Electron's
       embedded Node major in the same PR. Before it merges, a `desktop-apps.yml`
       dispatch build of the PR branch (throwaway tag) has passed on all four
       targets, including "Verify native modules load under the Electron ABI"
       and afterPack's check of the macOS update floor (§4a): a push to `main`
       releases through that same workflow. That build has also been installed
-      over the current release on macOS, Windows and Linux with `secrets.enc`
-      left byte-identical: the new runtime's `safeStorage` decrypts the vault
-      key, and a runtime that cannot must stop the app, never re-key it.
+      over the current release on macOS, Windows and Linux, each on a machine
+      or user account without a productive omadia install (a fresh install of
+      the current release first), with `secrets.enc` left byte-identical: the
+      new runtime's `safeStorage` decrypts the vault key, and a runtime that
+      cannot must stop the app, never re-key it. Never on real data: a build
+      installed by hand takes no pre-update snapshot (only the updater's
+      install preflight does), and its kernel migrations run forward-only.
 
 ---
 

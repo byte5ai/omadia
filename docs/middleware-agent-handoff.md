@@ -3072,7 +3072,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   enthält keine Zeile `[secrets] … failed for …`. Fragt macOS beim ersten Start nach dem
   Schlüsselbund, passt die Code-Signatur des Builds nicht mehr zu der des Releases; das träfe
   jede Installation beim Update und zählt als Fehlschlag. Schlägt etwas davon fehl: nicht
-  mergen. Danach den Wegwerf-Tag löschen.
+  mergen. Danach den Wegwerf-Tag löschen. (2c) Als letzten Commit vor dem Merge im
+  CHANGELOG-Eintrag „desktop dependencies refreshed to Electron 44 …“ die Vor-dem-Merge-Sätze
+  („Before this merges …“ bis „… whatever data folder it finds.“) durch die Run-ID des
+  validierenden `desktop-apps.yml`-Laufs aus (1) und die Ergebnisse aus (2) und (2b) ersetzen
+  (je Plattform bestanden, `secrets.enc`-Hash und Wiederherstellungsschlüssel unverändert);
+  sonst liest sich die Anweisung in der Historie, als stünde sie noch aus.
   **Nach dem Merge** (Admin): (3) den Kontext `audit (high+critical block) (desktop)`, am besten
   zusammen mit `desktop (typecheck + test)`, in die Branch-Protection von `main` aufnehmen und
   per `GET /repos/byte5ai/omadia/branches/main/protection/required_status_checks` prüfen.
@@ -3373,6 +3378,25 @@ Offen:
   akzeptierte Rest-Ausnahme aus §10i: Solche Seiten bekommen keine Bridge,
   jeder Handler lehnt sie ab, und auch sie erreichen keinen
   OS-Protokoll-Handler.
+- **Übrige Session-Permissions: deny-by-default mit Allowlist.** Die Session
+  verweigert nur `openExternal` (`canGrantPermission`/`canPassPermissionCheck`
+  in `desktop/src/navigationPolicy.ts`). Jede andere Permission-Anfrage und
+  -Prüfung bekommt Electrons Antwort ohne Handler: gewährt, für jeden Frame und
+  ohne Rückfrage der App. Das betrifft Kamera und Mikrofon (`media`), das Lesen
+  der Zwischenablage (`clipboard-read`; Wizard und Shell kopieren den
+  Wiederherstellungsschlüssel dorthin), Standort und Benachrichtigungen, auch
+  für Plugin-iframes, Same-App-Popups und fremde Seiten nach einem Redirect.
+  Folgepunkt: Request- und Check-Handler lehnen ab, was nicht auf einer
+  expliziten Allowlist steht, entschieden pro anfragendem Origin
+  (`details.requestingUrl` bzw. `requestingOrigin`) und Frame
+  (`details.isMainFrame`). Gebraucht wird heute nur `clipboard-sanitized-write`
+  (`navigator.clipboard.writeText` im Wizard und in der Web-UI), also für die
+  gebündelten Seiten und den Origin der laufenden Web-UI. Plugin-iframes laufen
+  auf dem Origin der Web-UI und erben jede Freigabe für ihn, solange sie nicht
+  auf den Main-Frame begrenzt ist; ob Plugin-UIs kopieren dürfen, gehört zur
+  Entscheidung. Die Tests „grants every other request …“ und „answers every
+  other check …“ in `desktop/test/navigationPolicy.test.mts` pinnen das heutige
+  Verhalten und kehren sich mit dem Fix um.
 
 ### Desktop-Shell: Wizard-Schalter — Folgepunkte
 

@@ -134,7 +134,10 @@ const OPEN_EXTERNAL = 'openExternal';
  * Whether a page's permission request is granted. `openExternal` never is: the
  * shell opens vetted web links itself, so no page needs the OS to launch
  * anything. Every other request keeps Electron's answer without a handler,
- * which is to grant it; narrowing those is a separate decision.
+ * which is to grant it, to every frame. A deny-by-default allowlist per
+ * requesting origin and frame is an open follow-up, tracked in
+ * docs/middleware-agent-handoff.md §13 ("Desktop-Shell: Trust-Boundary
+ * Renderer → Main").
  */
 export function canGrantPermission(permission: string): boolean {
   return permission !== OPEN_EXTERNAL;

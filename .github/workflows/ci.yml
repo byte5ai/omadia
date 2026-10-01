@@ -496,8 +496,10 @@ jobs:
   # audit fails every leg when one is missing. A new package directory also
   # needs an npm block in .github/dependabot.yml and its
   # `audit (high+critical block) (<dir>)` context among main's required
-  # status checks. The root package-lock.json is an empty stub with no
-  # package.json beside it, so it is not a leg.
+  # status checks, added by an admin only after the PR that adds the leg is
+  # on main: a required context that never reports blocks every open PR.
+  # The root package-lock.json is an empty stub with no package.json beside
+  # it, so it is not a leg.
   #
   # desktop is audited like the others because its devDependency `electron`
   # is the shipped runtime (the supervisor runs kernel and web-ui under it via
