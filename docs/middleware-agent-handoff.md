@@ -2259,15 +2259,27 @@ Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` 
 3. `provider.verify` (argon2) im zugelassenen Versuch. Alles außer Erfolg ist ein
    Fehlversuch, auch ein Throw. Der globale Slot wird im `finally` frei.
 4. Erfolg: Session-Cookie plus ein frisches **Geräte-Cookie** `omadia_login_device`
-   (`auth/loginDeviceCookie.ts`): `v1.<id>.<exp>.<tag>`, HMAC über Konto, id und Ablauf
-   mit einem aus dem Session-Signing-Key abgeleiteten Schlüssel, an genau ein Konto
-   gebunden, ein Jahr gültig, HttpOnly/SameSite=Lax/Path=/. Bringt ein Browser ein
-   gültiges Geräte-Cookie für **dieses** Konto mit, ist sein Client-Key `device:<id>`
-   statt der Adresse. Hinter dem web-ui-Proxy teilen sich sonst alle Browser eine
+   (`auth/loginDeviceCookie.ts`, `auth/loginDevices.ts`): `v2.<id>.<exp>.<ep>.<tag>`.
+   `ep` ist ein Fingerabdruck der Konto-Epoche beim Ausstellen (SHA-256 über die
+   Users-Zeilen-id und den Passwort-Hash einer aktiven Zeile), `tag` ein HMAC über
+   Konto, id, Ablauf und `ep`; die Schlüssel (für Tag, Fingerabdruck und die
+   `/me`-id) sind aus dem Session-Signing-Key abgeleitet, je einer pro Zweck. An
+   genau ein Konto und dessen aktuelles Passwort gebunden, ein Jahr
+   gültig, HttpOnly/SameSite=Lax/Path=/. Bringt ein Browser ein gültiges Geräte-Cookie
+   für **dieses** Konto unter dessen aktueller Epoche mit, ist sein Client-Key
+   `device:<id>` statt der Adresse. Alle bekannten Browser eines Kontos teilen sich
+   **ein** Paar: Weitere Geräte-ids bringen weder weiteres Budget noch einen weiteren
+   Anteil an der Reserve. Hinter dem web-ui-Proxy teilen sich sonst alle Browser eine
    Adresse, und die Fehlversuche eines Angreifers würden den Operator mit bremsen.
-   `GET /me` setzt das Cookie zusätzlich für jeden Browser mit gültiger Session eines
-   Passwort-Kontos, dem es fehlt (`ensureLoginDeviceCookie` in `routes/authLogin.ts`);
-   der Session-Watcher der UI fragt `/me` minütlich ab.
+   Passwort-Reset, Deaktivieren und Löschen machen frühere Cookies wertlos (neuer Hash
+   bzw. keine Epoche); `routes/adminUsers.ts` ruft dafür `loginDevices.forget`, damit
+   der 10-s-Cache der Epoche sofort neu liest. Nachgeschlagen wird die Epoche nur für
+   ein Cookie, dessen Tag stimmt. `GET /me` setzt das Cookie zusätzlich für jeden
+   Browser mit gültiger Session eines Passwort-Kontos, dem ein aktuelles fehlt
+   (`ensureLoginDeviceCookie` in `routes/authLogin.ts`), mit einer aus `auth_time`
+   abgeleiteten id: eine Anmeldung, eine Geräte-id, egal wie oft `/me` läuft. Für
+   deaktivierte oder gelöschte Konten setzt `/me` nichts. Der Session-Watcher der UI
+   fragt `/me` minütlich ab.
 
 Der Client-Key kommt aus `AUTH_LOGIN_CLIENT_ADDRESS` (`auth/clientAddress.ts`): `socket`
 (Default), `xff:<n>` (n-ter `X-Forwarded-For`-Eintrag von **rechts**) oder
@@ -2279,17 +2291,23 @@ Bleibt offen: Wer sich einen Key teilt, teilt dessen Paare. Ein Absender, der al
 2 Minuten auf ein Konto falsch rät, hält das Paar für jeden Browser ohne Geräte-Cookie
 auf demselben Key zu, etwa für die erste Anmeldung auf einem neuen Gerät. Vor argon2
 lässt sich der Browser nicht vom Absender unterscheiden (§10f „What stays open“).
+Ebenso teilen sich die bekannten Browser eines Kontos ihr Paar: Wer ein aktuelles
+Geräte-Cookie hält (dazu braucht es das Passwort oder eine gültige Session), kann sie
+warten lassen, bekommt aber nur ein Budget pro Konto. Reaktivieren ohne Passwort-Reset
+lässt frühere Cookies wieder gelten.
 
 Weitere Stellen: `/setup` holt sich für seinen argon2-Hash einen globalen Slot
 (`acquireSlot()`, sonst 503 `auth.busy`) und setzt nach Erfolg ebenfalls das
 Geräte-Cookie. Admin-Passwort-Reset und Reaktivierung (`PATCH status: 'active'`) in
-`routes/adminUsers.ts` rufen `clearAccount`. `LocalPasswordProvider` lehnt Passwörter
+`routes/adminUsers.ts` rufen `clearAccount`; Reset, jede Statusänderung und Löschen
+rufen `loginDevices.forget`. `LocalPasswordProvider` lehnt Passwörter
 über 1024 Zeichen vor dem Users-Lookup ab. Die erste Ablehnung pro (Schicht, Client)
 und Minute schreibt eine Logzeile und eine Audit-Zeile `auth.login_rate_limited`, beide
-ohne das Konto. Boot-Wiring: `createLoginGuard` in `index.ts`, ein Limiter pro Prozess
-mit Sweep-Intervall, derselbe für Auth-Router und Admin-Users-Router. Ein Auth-Router
-ohne `loginLimiter`-Dep baut sich einen eigenen mit Defaults. Die Login-Seite zeigt für
-beide Codes „bitte N Sekunden warten“ (`login.tooManyAttempts`).
+ohne das Konto. Boot-Wiring: `createLoginGuard` in `index.ts`, ein Limiter und ein
+Geräte-Cookie-Register (`devices`) pro Prozess, dieselben für Auth-Router und
+Admin-Users-Router. Ein Auth-Router ohne `loginLimiter`-Dep baut sich beides selbst mit
+Defaults. Die Login-Seite zeigt für beide Codes „bitte N Sekunden warten“
+(`login.tooManyAttempts`).
 
 Sicherheitsbegründung und Restrisiken (u. a. in-memory pro Prozess, Replicas
 multiplizieren die Grenzen): `docs/security-architecture.md` §10f. Konfiguration: §10
@@ -2297,8 +2315,10 @@ multiplizieren die Grenzen): `docs/security-architecture.md` §10f. Konfiguratio
 
 Tests: `test/auth/loginRateLimiter.test.ts`, `test/auth/loginRateLimiterFairness.test.ts`,
 `test/auth/clientAddress.test.ts`, `test/auth/loginRoute.test.ts`,
-`test/auth/loginLockoutDos.test.ts` (Harness in `test/auth/loginHarness.ts`),
-`test/auth/adminUsersRoute.test.ts`, `test/auth/localPasswordProvider.test.ts`; UI
+`test/auth/loginLockoutDos.test.ts`, `test/auth/loginDevices.test.ts`,
+`test/auth/loginDeviceRevocation.test.ts` (Harness in `test/auth/loginHarness.ts`, mit
+dem echten Admin-Users-Router), `test/auth/adminUsersRoute.test.ts`,
+`test/auth/localPasswordProvider.test.ts`; UI
 `web-ui/app/login/__tests__/page.test.tsx`.
 
 ## 4. Migration Managed Agents → Lokal
@@ -3155,6 +3175,25 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Socket-Adresse des Browsers nicht, sobald ein `X-Forwarded-For` mitkommt. Denkbar:
   ein eigener Server-Wrapper um Next, der die Socket-Adresse in einen internen Header
   schreibt, den die Middleware nur vom web-ui-Peer annimmt.
+- **Geräte-Cookies von Session-Inhabern.** Eine gültige Session, auch eine kopierte,
+  solange sie gilt, holt sich über `GET /me` ein aktuelles Geräte-Cookie und teilt dann
+  das Paar der bekannten Browser des Kontos: Sie kann die Browser des Inhabers warten
+  lassen (höchstens 2 min pro Wartezeit), bekommt aber nur ein Budget pro Konto. Ein
+  Passwort-Reset macht ihre Cookies wertlos, `/me` stellt aber ein neues aus, solange
+  die Session gilt. Enden Sessions bei Reset, Deaktivieren und Löschen serverseitig,
+  endet auch das; die Geräte-Epoche sollte dann zusätzlich an diese Session-Version
+  gebunden werden.
+- **Reaktivieren ohne Reset belebt frühere Geräte-Cookies.** Die Epoche ist (Zeilen-id,
+  Passwort-Hash) eines aktiven Kontos; Deaktivieren setzt sie nur aus. Ein Konto, das
+  wegen eines Verdachts deaktiviert und ohne Passwort-Reset wieder aktiviert wird,
+  bekommt seine früheren Cookies zurück. Schließen ließe sich das mit einer
+  Epochen-Spalte, die auch bei einer Statusänderung weiterzählt.
+- **Session-Signing-Key rotieren: kein Werkzeug.** Der Notfall-Hebel, der alle
+  Geräte-Cookies und alle Sessions auf einmal beendet, ist ein neuer
+  `core:auth/session_signing_key` im Vault (fehlt der Eintrag, erzeugt die Middleware
+  beim Start einen neuen). Der Vault ist eine verschlüsselte Datei; einen einzelnen
+  Eintrag zu ersetzen oder zu löschen, geht heute nur mit eigenem Code. Ein
+  Admin-Kommando dafür fehlt.
 - **Passwort-Obergrenze auch beim Setzen.** Setup-Wizard und Admin-Formulare prüfen nur
   die Mindestlänge. Ein dort gesetztes Passwort über 1024 Zeichen kann sich nicht
   anmelden.

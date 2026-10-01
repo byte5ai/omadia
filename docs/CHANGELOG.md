@@ -59,14 +59,18 @@ None of this lets one client lock others out. The account limit is keyed per
 down. Every browser behind the web-ui proxy reaches the middleware from one
 address, so that shared address is never braked as one client: a single
 sender filling its budget would otherwise lock out every browser. A browser
-that has signed in to an account carries a signed, account-bound device cookie
-(`omadia_login_device`) that gives it a budget of its own, and `GET /me`
-hands one to every browser that is signed in, so existing sessions become
-known devices within a minute of the upgrade. One of the in-flight slots and
-the last 60 of the per-minute budget are kept for those browsers, so no flood
-from however many addresses (an IPv6 allocation holds thousands of /64s)
-turns them away. A browser without a device cookie still shares its client
-address's limits with whoever else uses it.
+that has signed in to an account carries a signed device cookie
+(`omadia_login_device`) bound to the account and its current password, and
+the account's known browsers share a budget of their own. `GET /me` hands one
+to every browser that is signed in, one device id per sign-in however often
+it runs, so existing sessions become known devices within a minute of the
+upgrade. A password reset, a disable or a delete turns the account's earlier
+cookies back into unknown browsers, and more cookies for one account buy no
+more guesses. One of the in-flight slots and the last 60 of the per-minute
+budget are kept for known browsers, so no flood from however many addresses
+(an IPv6 allocation holds thousands of /64s) turns them away, and no pile of
+one account's cookies can take that reserve. A browser without a device
+cookie still shares its client address's limits with whoever else uses it.
 
 The client address comes from the new `AUTH_LOGIN_CLIENT_ADDRESS`: `socket`
 (default, the TCP peer), `xff:<n>` (the n-th `X-Forwarded-For` entry from the

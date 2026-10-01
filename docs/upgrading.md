@@ -187,10 +187,16 @@ topology. What changes for operators:
   re-enabling the user clears the wait. When no admin session is available,
   restart the middleware: the limiter lives in memory and a restart clears it.
 - **A new cookie.** A successful sign-in (and the first-user wizard) sets
-  `omadia_login_device`, which gives that browser its own sign-in budget for
-  the account and a reserved share of the sign-in capacity. Browsers that are
-  signed in when the new version starts get it from the session check the
-  admin UI runs every minute. It authenticates nothing and survives logout.
+  `omadia_login_device`, which makes that browser one of the account's known
+  browsers: they share a sign-in budget of their own and a reserved share of
+  the sign-in capacity. Browsers that are signed in when the new version
+  starts get it from the session check the admin UI runs every minute. It
+  authenticates nothing and survives logout. It is tied to the account's
+  password: after a password reset, a disable or a delete it no longer
+  counts, and a browser gets a new one at its next sign-in or session check.
+  Rotating the session signing key (the vault entry
+  `core:auth/session_signing_key`) ends every such cookie and every session
+  at once.
 - **Passwords over 1024 characters can no longer sign in.** Setting one
   through the admin UI still works, so reset such a password to a shorter one.
 
