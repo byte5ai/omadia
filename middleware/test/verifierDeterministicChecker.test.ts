@@ -40,6 +40,22 @@ function stubGraph(
   };
 }
 
+type GraphCall = Parameters<GraphReader['findEntities']>[0];
+type GraphHit = Awaited<ReturnType<GraphReader['findEntities']>>[number];
+
+/** Records every lookup so a test can assert HOW the checker asked. */
+function recordingGraph(
+  calls: GraphCall[],
+  answer: (opts: GraphCall) => GraphHit[],
+): GraphReader {
+  return {
+    findEntities(opts) {
+      calls.push({ ...opts });
+      return Promise.resolve(answer(opts));
+    },
+  };
+}
+
 function makeAmountClaim(overrides: Partial<HardClaim> = {}): HardClaim {
   return {
     id: 'c_001',
@@ -305,6 +321,64 @@ describe('verifier/deterministicChecker - graph', () => {
     };
     const verdict = await checker.check(claim);
     assert.equal(verdict.status, 'contradicted');
+  });
+
+  // An `odooRecord.id` names ONE record: it is looked up by exact id (a
+  // number here, straight from `OdooRecordRef.id`), never as a substring —
+  // `'42'` would also match partners 142 and 420.
+  const partnerIdClaim: HardClaim = {
+    id: 'c_001',
+    text: 'Partner 42',
+    type: 'id',
+    expectedSource: 'graph',
+    value: 42,
+    odooRecord: { model: 'res.partner', id: 42 },
+    relatedEntities: [],
+  };
+
+  it('graph id claim with odooRecord.id queries by exact id', async () => {
+    const calls: GraphCall[] = [];
+    const graph = recordingGraph(calls, (opts) =>
+      opts.id === 42
+        ? [{ id: 'odoo:res.partner:42', props: { system: 'odoo', model: 'res.partner', id: 42 } }]
+        : [],
+    );
+    const checker = new DeterministicChecker({ graph });
+
+    const verdict = await checker.check(partnerIdClaim);
+
+    assert.equal(verdict.status, 'verified');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.id, 42);
+    assert.equal(calls[0]?.nameContains, undefined);
+    assert.equal(calls[0]?.model, 'res.partner');
+  });
+
+  it('leaves an id claim unverified when its record is not in the graph', async () => {
+    // The graph is a partial mirror: a record missing from it is not shown
+    // to be false, so the claim stays unverified instead of being refuted.
+    const graph = recordingGraph([], () => []);
+    const checker = new DeterministicChecker({ graph });
+
+    const verdict = await checker.check(partnerIdClaim);
+
+    assert.equal(verdict.status, 'unverified');
+    if (verdict.status === 'unverified') {
+      assert.match(verdict.reason, /no res\.partner with id 42 in graph/);
+    }
+  });
+
+  it('does not verify an id claim on a different record the graph hands back', async () => {
+    // A provider built before the exact-id option ignores it and answers by
+    // model; the hit is partner 142, whose name even contains "42".
+    const graph = recordingGraph([], () => [
+      { id: 'odoo:res.partner:142', props: { system: 'odoo', model: 'res.partner', id: 142, displayName: 'Halle 42' } },
+    ]);
+    const checker = new DeterministicChecker({ graph });
+
+    const verdict = await checker.check(partnerIdClaim);
+
+    assert.equal(verdict.status, 'unverified');
   });
 });
 

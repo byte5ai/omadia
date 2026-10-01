@@ -2921,7 +2921,29 @@ Siehe `docs/security-architecture.md` §10.
 
 Wird vom Orchestrator aufgerufen, wenn der User auf prior art verweist.
 End-to-End verifiziert: der Orchestrator nutzt das Tool von selbst, ohne
-dass man ihn zwingt.
+dass man ihn zwingt. `find_entity` (und das Sub-Agent-Tool `query_graph`)
+bleiben bei `name_contains`, also einer Substring-Suche.
+
+### Exakte Entity-Auflösung: `findEntities({ model, id })` (plugin-api 1.21.0)
+
+`FindEntitiesOptions.id` adressiert genau einen Datensatz über seine Quell-ID
+(`props.id`, Odoo-Record-ID oder Confluence-Page-ID). Beide Backends
+vergleichen als String nach `trim()` (`7` ≡ `'7'`), eine fehlende oder leere
+ID liefert `[]`, nie einen Nachbar-Datensatz; mit `nameContains` kombiniert
+gelten beide Bedingungen. Die extras-Wrapper reichen `opts` unverändert durch.
+`nameContains` bleibt Suche, keine Identität: `'7'` trifft 7, 17 und 70.
+
+Der Verifier nutzt das an zwei Stellen: `GraphEvidenceFetcher` löst jedes
+Entity-Handle mit ID (`odoo:hr.employee:7`, `hr.employee:7`) exakt auf und
+prüft Modell/ID/System des Treffers nach; ein Claim mit so einem Handle
+bekommt nur diese Datensätze (kein Modell-Sample, keine Namenssuche), fehlt
+der Datensatz, bleibt der Claim `unverified`. `DeterministicChecker.checkGraph`
+prüft `odooRecord.id` exakt; ein Miss ist dort ebenfalls `unverified` (der
+Graph ist ein Teil-Spiegel, fehlend heißt nicht falsch). `EvidenceJudge`
+stuft ein Verdikt, das einen anderen Datensatz eines gepinnten Modells zitiert,
+auf `unverified` herab. Nur `OdooEntity`/`ConfluencePage` — Plugin-Namespaces
+(`PluginEntity`) sind über `findEntities` nicht erreichbar. Begründung und
+Grenzen: `docs/security-architecture.md` §7c.
 
 ### Structured Datasets — CSV Import (#430)
 
@@ -4361,6 +4383,16 @@ der Code-Lektüre beim Connect-Prompt-Fix, nicht per Test reproduziert. Der
 Connect-Prompt hat deshalb einen eigenen AsyncLocalStorage
 (`McpAuthPromptMint`); für den Sentinel reicht dasselbe oder die Weitergabe des
 Felds in beiden Re-Scopes.
+
+### Graph-Tools: exakte ID-Abfrage auch für Agenten
+
+Seit plugin-api 1.21.0 kann `findEntities` einen Datensatz über `id` exakt
+adressieren (§7), der Verifier nutzt das. Die Agenten-Tools tun es noch nicht:
+`query_graph` (`createGraphLookupTool`, `harness-verifier/src/graphLookupTool.ts`)
+und `find_entity` in `query_knowledge_graph` kennen nur `name_contains`. Ein
+Sub-Agent, der nach „Partner 42“ fragt, bekommt so auch 142, 420 oder
+„Halle 42“. Offen: einen optionalen `id`-Input an beide Tools, Beschreibung und
+§7 entsprechend anpassen.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 

@@ -1767,6 +1767,80 @@ snippet supports the verdict; that remains the judge's call. Asserted by
 `test/verifierEvidenceJudge.test.ts` and, behind a shield,
 `test/verifierEvidenceHandles.test.ts`.
 
+### Evidence lookup: an entity handle resolves exactly its record
+
+The answer verifier's evidence judge (`EvidenceJudge`) sees only the snippets
+`GraphEvidenceFetcher` hands it — never the answer, never the graph itself. So
+which node the fetcher picks decides what "verified" means. The claim
+extractor attaches entity handles to each claim (`related_entities`:
+`odoo:hr.employee:7`, `hr.employee:7`, or a bare model such as
+`hr.department`), and the fetcher treats them as follows
+(`middleware/packages/harness-verifier/src/graphEvidenceFetcher.ts`,
+`entityHandle.ts`):
+
+- **An id-bearing handle names one record.** It is resolved with
+  `findEntities({ model, id })` (plugin-api 1.21.0; both backends compare
+  `props.id` as a string, so `7` and `'7'` are the same record). The fetcher
+  re-checks `props.model`, `props.id` and, for a three-part handle,
+  `props.system` on whatever comes back: `knowledgeGraph` is a plugin-provided
+  capability, and a provider compiled against the contract before `id` existed
+  ignores the option and returns any record of the model. A record that is not
+  in the graph contributes nothing; another record of the same model is never
+  substituted.
+- **A claim that pins a record gets only its pinned records.** No model-wide
+  sample and no name search is added, so a claim whose records are all missing
+  has no evidence and ends `unverified` — fail closed, never a sibling record
+  that happens to verify or contradict it.
+- **Search results are labelled.** Only claims without an id get a model sample
+  (bare `hr.department`, or the system-qualified `odoo:res.partner`) and the
+  capitalised-name search on `res.partner` / `hr.employee`. Those snippets say
+  "model sample, not a referenced record" or "name match, not a referenced
+  record" in title and content, so the judge — and a stored contradiction that
+  falls back to snippet content — can tell a search hit from a resolved record.
+- **The judge is bound to the pinned record.** Its prompt states that a snippet
+  about another record of a model RELATED pins is a different entity, and
+  `EvidenceJudge` enforces it deterministically: a `verified` or `contradicted`
+  verdict citing a node of a pinned model with a different id is demoted to
+  `unverified`, on the first call and on the contradiction recheck alike.
+  Behind a Privacy Shield the judge cites per-request handles; the check runs
+  server-side on the node id the cited handle resolves to, so it holds there
+  too.
+- **`nameContains` is a search, not an identity.** `'7'` matches records 7, 17
+  and 70 and every display name containing it. Code that starts from an entity
+  handle passes `id`.
+
+The deterministic checker applies the same primitive: `checkGraph` looks an
+`odooRecord.id` up by exact id and re-checks the hit (it used to substring-match
+the claim value, so "42" was also satisfied by 142 or "Halle 42"). A miss leaves
+that claim `unverified` too. The graph is a partial mirror of Odoo master data,
+synced periodically, so a record missing from it is not shown to be false; a
+`contradicted` verdict would hand the correction retry a "record not found"
+together with the instruction not to re-check it, which is wrong for any record
+created since the last sync. The substring path for claims without an id (a
+document reference or name) is unchanged and still reports a miss as
+`contradicted`.
+
+Why a filter on `findEntities` rather than a node-by-id read: two-part handles
+(`hr.employee:7`) carry no `system`, so an external-id read of
+`odoo:hr.employee:7` would have to guess the namespace. The Neon backend's
+private external-id lookup is therefore not the fix for this path and should not
+be "rediscovered" as one.
+
+Limits, stated so nobody reads more into "exact id" than it covers:
+
+- `findEntities` returns `OdooEntity` and `ConfluencePage` nodes only. A handle
+  in a plugin namespace (`PluginEntity`, e.g. `dataset:…`) never resolves, with
+  or without `id`, and such claims get no graph evidence.
+- This is an integrity rule for verifier evidence, not an access control.
+  `findEntities` returns every match in the graph's tenant and applies no
+  per-user, per-chat or per-agent scope.
+
+Tests: `middleware/test/verifierGraphEvidenceFetcher.test.ts` (fetcher and
+judge, including a provider that ignores `id`),
+`kgFindEntitiesById.test.ts` / `kgFindEntitiesById.pg.test.ts` (the exact-id
+contract on both backends, tenant scope on Neon), and the graph cases in
+`verifierDeterministicChecker.test.ts`.
+
 ## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
 
 Three properties of the human-approval gate are security decisions, made
@@ -3922,6 +3996,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] Any new proxy route validates the response shape before returning it
       to the agent (defends against prompt injection from upstream).
 - [ ] Any new sub-agent tool is scope-locked at construction time.
+- [ ] A graph lookup that starts from an entity handle (`model:id`,
+      `system:model:id`) passes the id as `findEntities({ id })` and re-checks
+      the returned node's model and id; it never feeds the id to `nameContains`
+      and never falls back to a model-wide or name search for that record
+      (§7c).
 - [ ] A change to either CLI spawn argv keeps the deny gate (`--tools ""`,
       `--disallowedTools`, `--permission-mode dontAsk`, `--setting-sources ""`,
       `--restricted` where the CLI version allows it plus the
@@ -4224,4 +4303,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§7c: the evidence judge counts a verdict only with a citation its request printed; a verifier re-entry replays the first run's tool results through a per-request ledger and never runs a tool twice, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*
+*Last reviewed: 2026-10 (§7c: the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and never runs a tool twice, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*

@@ -10,7 +10,10 @@ implements, is a major.
 
 ## 1.21.0 — 2026-10-01
 
-Additive. A run trace can now say that a call did not run in its pass.
+Additive. A run trace can now say that a call did not run in its pass, and
+`findEntities` can address one record by its source-system id, so a caller
+holding an entity handle such as `hr.employee:7` no longer has to turn the id
+into a substring search.
 
 ### Added
 
@@ -21,6 +24,22 @@ Additive. A run trace can now say that a call did not run in its pass.
   consumer that counts tool executions from a trace skips the flagged
   entries; the session logger never writes a re-entry's trace, so the
   Knowledge Graph does not see the flag today.
+- **`FindEntitiesOptions.id?: string | number`** — exact match on the node's
+  `props.id` (Odoo record id, Confluence page id), compared as strings after
+  trimming, so `7` and `'7'` address the same record. An absent or empty id
+  returns `[]`, never another record of the model; combinable with
+  `nameContains` (both must hold). Both in-tree backends implement it. The
+  answer verifier resolves every id-bearing entity handle through it and
+  re-checks `props.model`/`props.id` on the result, so a provider that ignores
+  the option yields no evidence rather than a substitute record.
+
+Why a filter on `findEntities` and not a node-by-id read: the handles the
+verifier sees are often two-part (`hr.employee:7`) and carry no `system`, so an
+external-id read (`odoo:hr.employee:7`) would have to guess the namespace. The
+Neon backend's private external-id lookup and the in-memory node map stay
+internal for that reason. `findEntities` still covers only `OdooEntity` and
+`ConfluencePage` nodes; plugin-namespaced entities (`PluginEntity`) are not
+reachable through it, with or without `id`.
 
 ## 1.20.0 — 2026-10-01
 

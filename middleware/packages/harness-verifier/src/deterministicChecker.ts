@@ -5,6 +5,7 @@ import type {
   OdooRecordRef,
 } from './claimTypes.js';
 import { SOFT_ANCHOR_REF_FIELDS, hasOdooRecordAnchor } from './claimTypes.js';
+import { matchesRecord, type RecordHandle } from './entityHandle.js';
 
 /**
  * Deterministic verifier for HardClaims. Runs an INDEPENDENT read-only
@@ -44,6 +45,8 @@ export interface OdooReader {
 export interface GraphReader {
   findEntities(opts: {
     model: string;
+    /** Exact source-system id (`FindEntitiesOptions.id`, plugin-api 1.20.0). */
+    id?: string | number;
     nameContains?: string;
     limit?: number;
   }): Promise<
@@ -339,7 +342,8 @@ export class DeterministicChecker {
   private async checkGraph(claim: HardClaim): Promise<ClaimVerdict> {
     if (!this.graph) return unverified(claim, 'no graph reader configured');
 
-    // The graph supports ID-and-name lookups; amounts/aggregates require a
+    // The graph resolves a record by its exact source id and otherwise
+    // searches a reference/name substring; amounts/aggregates require a
     // richer query language that we don't expose from this checker yet.
     if (claim.type !== 'id') {
       return unverified(claim, `graph check for type=${claim.type} not implemented`);
@@ -347,6 +351,11 @@ export class DeterministicChecker {
     const ref = claim.odooRecord;
     if (!ref) return unverified(claim, 'graph id claim without model');
 
+    if (typeof ref.id === 'number' && Number.isInteger(ref.id) && ref.id > 0) {
+      return this.checkGraphRecord(claim, ref.model, ref.id);
+    }
+
+    // No record id: a document ref or name is searched as a substring.
     const needle = ref.ref ?? asString(claim.value) ?? claim.text;
     const hits = await this.graph.findEntities({
       model: ref.model,
@@ -355,6 +364,30 @@ export class DeterministicChecker {
     });
     if (hits.length === 0) {
       return contradicted(claim, null, `no ${ref.model} matching "${needle}" in graph`);
+    }
+    return verified(claim, 'graph');
+  }
+
+  /**
+   * An `odooRecord.id` names ONE record: it is looked up by exact id (a
+   * substring match on "42" would also accept 142, 420 or "Halle 42"), and
+   * the hit's identity is re-checked, because a graph provider built before
+   * `FindEntitiesOptions.id` ignores the option and returns any record of
+   * the model. A miss leaves the claim `unverified`: no other record stands
+   * in for the named one, and the graph is a periodically synced partial
+   * mirror, so a record missing from it is not thereby shown to be false —
+   * a `contradicted` verdict would feed the retry a "record not found" that
+   * may be wrong.
+   */
+  private async checkGraphRecord(
+    claim: HardClaim,
+    model: string,
+    id: number,
+  ): Promise<ClaimVerdict> {
+    const hits = await this.graph!.findEntities({ model, id, limit: 1 });
+    const record: RecordHandle = { model, id: String(id) };
+    if (!hits.some((hit) => matchesRecord(hit, record))) {
+      return unverified(claim, `no ${model} with id ${String(id)} in graph`);
     }
     return verified(claim, 'graph');
   }

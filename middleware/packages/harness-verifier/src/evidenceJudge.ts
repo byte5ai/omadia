@@ -2,6 +2,7 @@ import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
 import { textMessage, toolCalls } from '@omadia/llm-provider';
 import type { ClaimVerdict, SoftClaim, VerifierPrivacy } from './claimTypes.js';
 import { MAX_CONTEXT_CHARS } from './claimContext.js';
+import { citesOtherRecord } from './entityHandle.js';
 import { citedNodeId, judgeRequestParts, projectRequestParts } from './judgeRequest.js';
 
 /**
@@ -58,7 +59,9 @@ export interface EvidenceSnippet {
 /**
  * Fetches evidence for one claim. Implementations typically hit the
  * knowledge-graph (findEntities, getNeighbors, turn search) but any
- * read-only source is fair game.
+ * read-only source is fair game. An id-bearing entity handle on the claim
+ * (`hr.employee:7`) names one record: return that record or nothing for it,
+ * never another record of the same model (see GraphEvidenceFetcher).
  */
 export interface EvidenceFetcher {
   fetch(claim: SoftClaim): Promise<EvidenceSnippet[]>;
@@ -130,6 +133,9 @@ interface JudgeVerdict {
   evidenceNodeId?: string;
   rationale?: string;
 }
+
+const OTHER_RECORD_REASON =
+  'cited evidence is a different record than the claim references';
 
 export class EvidenceJudge {
   private readonly llm: LlmProvider;
@@ -277,7 +283,9 @@ Rules:
 - verdict = "unverified": evidence is silent, ambiguous, or only tangentially related. This is the DEFAULT when unsure.
 - verdict = "contradicted": evidence explicitly says something incompatible with the claim. Requires evidence_node_id.
 - Do NOT reward plausibility. If the evidence doesn't mention it, it's unverified — not verified.
-- When a CONTEXT line is present it is the single sentence the claim was cut from. Use it only to resolve what the claim refers to (its subject, tense); judge the CLAIM as meant in that sentence. Never base "contradicted" or "verified" on a fact that appears only in CONTEXT and not in CLAIM.`;
+- When a CONTEXT line is present it is the single sentence the claim was cut from. Use it only to resolve what the claim refers to (its subject, tense); judge the CLAIM as meant in that sentence. Never base "contradicted" or "verified" on a fact that appears only in CONTEXT and not in CLAIM.
+- RELATED names the records the claim is about. When it gives a record id for a model (e.g. "odoo:hr.employee:7"), a snippet about another record of that model (e.g. nodeId "odoo:hr.employee:12") is a different entity: it can neither verify nor contradict the claim. Only the named record itself can.
+- A snippet titled "model sample" or "name match" is a search result, not a record the claim names: rely on it only when it is unmistakably about the claim's subject.`;
 
     const maxSnippetChars = privacy ? PRIVACY_MAX_SNIPPET_CHARS : MAX_SNIPPET_CHARS;
     const evidenceBlock = parts.evidence
@@ -327,11 +335,17 @@ ${evidenceBlock}`;
     // The judge cites a ref of THIS request; only the snippet printed under
     // it can stand behind the verdict.
     const nodeId = citedNodeId(parsed.evidenceNodeId, real, evidence);
-    const verdict: JudgeVerdict = {
-      verdict: parsed.verdict,
-      ...(nodeId !== undefined ? { evidenceNodeId: nodeId } : {}),
-      ...(parsed.rationale !== undefined ? { rationale: parsed.rationale } : {}),
-    };
+    // Checked on the RESOLVED node id, server-side: a record of a model the
+    // claim pins by id, but not a pinned record, is a different entity.
+    const verdict = bindToReferencedRecord(
+      claim,
+      {
+        verdict: parsed.verdict,
+        ...(nodeId !== undefined ? { evidenceNodeId: nodeId } : {}),
+        ...(parsed.rationale !== undefined ? { rationale: parsed.rationale } : {}),
+      },
+      this.log,
+    );
     if (privacy === undefined) return { ...verdict, projected };
     return { ...(await this.restoreRationale(verdict, privacy)), projected };
   }
@@ -357,6 +371,27 @@ ${evidenceBlock}`;
     }
     return out;
   }
+}
+
+/**
+ * A verdict citing a record of a model the claim pins by id, but not a
+ * pinned record, rests on a different entity than the claim is about. The
+ * prompt says so; this enforces it deterministically for the first call and
+ * the contradiction recheck alike, on the node id the cited ref resolved to:
+ * such a verdict becomes `unverified`. The log names the claim only — a node
+ * id can carry an external key or a user id.
+ */
+function bindToReferencedRecord(
+  claim: SoftClaim,
+  verdict: JudgeVerdict,
+  log: (msg: string) => void,
+): JudgeVerdict {
+  if (verdict.verdict === 'unverified') return verdict;
+  if (!citesOtherRecord(claim.relatedEntities, verdict.evidenceNodeId)) {
+    return verdict;
+  }
+  log(`[verifier/judge] ${OTHER_RECORD_REASON}, demoting claim=${claim.id}`);
+  return { verdict: 'unverified', rationale: OTHER_RECORD_REASON };
 }
 
 // ---------------- helpers ----------------
