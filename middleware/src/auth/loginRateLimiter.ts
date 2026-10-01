@@ -6,8 +6,8 @@
  * (`LoginClientKind`), and the kind decides which layers apply:
  *
  *   device   a genuine device cookie for the account, minted by a password
- *            sign-in to it under its current password: one of the browsers
- *            that have signed in to it (`loginDevices.ts`);
+ *            sign-in to it that checked its current password: one of the
+ *            browsers that have signed in to it (`loginDevices.ts`);
  *   address  an address a trusted proxy vouched for (`xff:<n>`,
  *            `header:<name>`): one client, or one NAT;
  *   shared   the TCP peer — in every shipped topology a proxy that all

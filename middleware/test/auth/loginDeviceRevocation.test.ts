@@ -7,7 +7,9 @@
  *  - all known browsers of an account share one budget, so more device ids
  *    buy no more guesses and no more of the capacity kept for known browsers;
  *  - a password reset, a disable or a delete through the admin routes makes
- *    every earlier cookie of the account an unknown browser again.
+ *    every earlier cookie of the account an unknown browser again;
+ *  - a sign-in verified against the old password while a reset lands gets a
+ *    cookie for the old password only, never one the new password counts.
  */
 
 import { strict as assert } from 'node:assert';
@@ -29,6 +31,7 @@ import {
   SECOND,
   setCookies,
   SIGNING_KEY,
+  until,
   wrong,
   type Harness,
   type RequestExtras,
@@ -202,5 +205,57 @@ describe('a password reset, a disable or a delete ends earlier device cookies', 
     assert.equal(await admittedGuesses(h, banked, FREE, FORMER), FREE);
     const back = await login(h, right(), { ...PROXY, headers: { cookie: operator } });
     assert.equal(back.status, 200, 'the operator’s browser still finds room');
+  });
+});
+
+/**
+ * Holds the next users-table read after it has read the row, until `resume`:
+ * a sign-in paused between reading the stored hash and comparing it.
+ */
+function holdNextRead(h: Harness): { isHeld: () => boolean; resume: () => void } {
+  const read = h.store.findByEmailWithHash.bind(h.store);
+  let held = false;
+  let resume: () => void = () => undefined;
+  h.store.findByEmailWithHash = async (provider, email) => {
+    const row = await read(provider, email);
+    if (!held) {
+      held = true;
+      await new Promise<void>((r) => {
+        resume = r;
+      });
+    }
+    return row;
+  };
+  return { isHeld: () => held, resume: () => resume() };
+}
+
+describe('a reset that lands while a sign-in is being verified', () => {
+  it('the sign-in that proved the old password gets no cookie the new password counts', async () => {
+    const h = await harness();
+    const gate = holdNextRead(h);
+    const racing = login(h, right(), PROXY);
+    await until(gate.isHeld);
+
+    const reset = await admin(h, 'POST', `/${h.store.idOf(ADMIN)}/reset-password`, {
+      password: NEW_PASSWORD,
+    });
+    assert.equal(reset.status, 200);
+    gate.resume();
+    // It compares against the hash it read: the old password signs in once more.
+    const res = await racing;
+    assert.equal(res.status, 200);
+
+    // Its device cookie is bound to the password it checked, the old one:
+    // once the shared address has spent its budget, the cookie is that
+    // address too, no known browser.
+    const raced = deviceCookiesSetBy(res).map((c) => c.split(';')[0] ?? '');
+    assert.equal(raced.length, 1);
+    assert.equal(await admittedGuesses(h, [undefined], 2 * FREE), FREE);
+    assertRateLimited(await login(h, wrong(), { ...PROXY, headers: { cookie: raced[0] ?? '' } }));
+    // Only a sign-in with the new password makes a known browser.
+    h.clock.t += DEFAULT_LOGIN_LIMITER_CONFIG.accountMaxBlockMs;
+    const signedIn = await login(h, right(ADMIN, NEW_PASSWORD), PROXY);
+    assert.equal(signedIn.status, 200);
+    assert.equal(await admittedGuesses(h, [deviceCookieFrom(signedIn)], 2 * FREE), FREE);
   });
 });

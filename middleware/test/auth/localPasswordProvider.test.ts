@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
+import { usersTableEpochs } from '../../src/auth/loginDevices.js';
 import { hashPassword } from '../../src/auth/passwordHasher.js';
 import {
   LOCAL_PROVIDER_ID,
@@ -53,6 +54,13 @@ class InMemoryUserStore implements Pick<
       updatedAt: now,
       lastLoginAt: null,
     });
+  }
+
+  /** An admin password reset: a new row value with a freshly salted hash. */
+  async resetPassword(email: string, plainPassword: string): Promise<void> {
+    const row = this.rows.get(this.match(email));
+    assert.ok(row, `no user ${email}`);
+    this.rows.set(this.match(email), { ...row, passwordHash: await hashPassword(plainPassword) });
   }
 
   async findByEmailWithHash(
@@ -208,5 +216,33 @@ describe('LocalPasswordProvider.verify', () => {
     assert.equal(padded.outcome, 'error');
     const trimmed = await provider(store).verify({ email: ' admin@example.com ', password: 'pw-12345678' });
     assert.equal(trimmed.outcome, 'success', 'ordinary surrounding whitespace still signs in');
+  });
+
+  it('reports the credential epoch of the hash it compared, even when a reset lands meanwhile', async () => {
+    const store = new InMemoryUserStore();
+    await store.addLocalUser({ email: 'admin@example.com', plainPassword: 'pw-12345678' });
+    const epochNow = (): Promise<string | null> =>
+      usersTableEpochs(store)(LOCAL_PROVIDER_ID, 'admin@example.com');
+    const epochOf = (r: Awaited<ReturnType<LocalPasswordProvider['verify']>>): string | undefined =>
+      r.outcome === 'success' ? r.credentialEpoch : undefined;
+    const before = await epochNow();
+    assert.ok(before);
+
+    const plain = await provider(store).verify({ email: 'admin@example.com', password: 'pw-12345678' });
+    assert.equal(epochOf(plain), before, 'the epoch a device-cookie check reads back');
+
+    // The reset lands after the provider read the row, before argon2 ran.
+    const read = store.findByEmailWithHash.bind(store);
+    store.findByEmailWithHash = async (p: string, e: string) => {
+      const row = await read(p, e);
+      await store.resetPassword('admin@example.com', 'the password after the reset');
+      return row;
+    };
+    const raced = await provider(store).verify({ email: 'admin@example.com', password: 'pw-12345678' });
+    store.findByEmailWithHash = read;
+    assert.equal(raced.outcome, 'success', 'it compared the hash it had read');
+    const after = await epochNow();
+    assert.ok(after !== null && after !== before, 'the reset moved the epoch');
+    assert.equal(epochOf(raced), before, 'the old password’s epoch, never the new one');
   });
 });

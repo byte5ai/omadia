@@ -13,7 +13,9 @@
  *  - the device key of an address finds the row the address itself finds;
  *  - spellings of one account share one guessing budget;
  *  - signing in to one account under another spelling mints a device cookie
- *    for that account, never for the row the typed spelling would name.
+ *    for that account, never for the row the typed spelling would name;
+ *  - a device cookie is bound to the password its sign-in checked: one
+ *    verified against the old hash while a reset lands never counts.
  *
  * Schema from the actual auth migrations, each applied twice, in a private
  * `search_path`-pinned schema. Skips loudly when no test Postgres is set.
@@ -44,6 +46,7 @@ import { createAuthRouter } from '../../src/routes/auth.js';
 import { invoke, type InvokeResult } from '../_helpers/httpInvoke.js';
 import { probePgTest } from '../_helpers/pgTestDb.js';
 import { accountSpellings } from './accountSpellings.js';
+import { until } from './loginHarness.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   label: 'loginAccountFold',
@@ -240,5 +243,48 @@ describe('sign-in account identities against a real Postgres', { skip: !pgAvaila
     assert.equal((await login(app, B, 'not the password')).status, 429);
     assert.equal((await login(app, B, 'not the password', device)).status, 429, 'no known browser of B');
     assert.equal((await login(app, A, passwordA, device)).status, 200, 'a known browser of A');
+  });
+
+  it('a sign-in verified against the old hash while a reset lands gets a cookie that never counts', async () => {
+    const ADMIN = 'admin@example.com';
+    const oldPassword = 'a synthetic passphrase before the reset';
+    const newPassword = 'a synthetic passphrase after the reset';
+    const id = await addUser(ADMIN, await hashPassword(oldPassword));
+    const app = authApp();
+
+    // Hold the provider's users-table read until the reset has committed.
+    const read = store.findByEmailWithHash.bind(store);
+    let held = false;
+    let resume: () => void = () => undefined;
+    store.findByEmailWithHash = async (provider: string, email: string) => {
+      const row = await read(provider, email);
+      if (!held) {
+        held = true;
+        await new Promise<void>((r) => {
+          resume = r;
+        });
+      }
+      return row;
+    };
+    let raced: InvokeResult;
+    try {
+      const racing = login(app, ADMIN, oldPassword);
+      await until(() => held);
+      await store.update(id, { passwordHash: await hashPassword(newPassword) });
+      resume();
+      raced = await racing;
+    } finally {
+      store.findByEmailWithHash = read;
+    }
+    assert.equal(raced.status, 200, 'it compared the hash it had read');
+    const racedCookie = deviceCookieOf(raced);
+    const current = deviceCookieOf(await login(app, ADMIN, newPassword));
+
+    // The shared address spends the account's budget; only the cookie of the
+    // sign-in that checked the new password is still a known browser.
+    for (let i = 0; i < FREE; i += 1) await login(app, ADMIN, 'not the password');
+    assert.equal((await login(app, ADMIN, 'not the password')).status, 429);
+    assert.equal((await login(app, ADMIN, 'not the password', current)).status, 401, 'a known browser');
+    assert.equal((await login(app, ADMIN, 'not the password', racedCookie)).status, 429, 'not a known browser');
   });
 });

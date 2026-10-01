@@ -44,13 +44,15 @@ import type { UserStore } from '../auth/userStore.js';
  *   3. `provider.verify` (argon2) inside the admitted attempt; anything but a
  *      success counts as a failure, a throw included;
  *   4. success: session cookie plus a fresh device cookie for the account the
- *      provider verified — its address as stored, never the one typed.
+ *      provider verified — its address as stored, never the one typed — under
+ *      the credential epoch the provider checked, never one read afterwards
+ *      (a success without one gets no device cookie).
  *
  * The account key folds the typed address at least as coarsely as the users
  * table matches it (`auth/loginAccount.ts`). The client key is the device id
  * when the request carries a current device cookie for the account the typed
  * address names (kind `device`: genuine, minted by a sign-in to that account
- * under its current password — `auth/loginDevices.ts`), otherwise the
+ * that checked its current password — `auth/loginDevices.ts`), otherwise the
  * `AUTH_LOGIN_CLIENT_ADDRESS` address — `address` when a trusted hop vouched
  * for it, `shared` when it is the TCP peer (the limiter header says why the
  * kind matters).
@@ -160,7 +162,13 @@ export function createPasswordLoginHandler(deps: PasswordLoginDeps): RequestHand
     }
 
     await deps.signIn(req, res, result, provider);
-    await deps.devices.remember(req, res, { providerId: provider.id, email: result.email });
+    if (result.credentialEpoch !== undefined) {
+      deps.devices.remember(req, res, {
+        providerId: provider.id,
+        email: result.email,
+        epoch: result.credentialEpoch,
+      });
+    }
     res.json({ ok: true, user: userPayload(result, provider) });
   };
 }

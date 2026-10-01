@@ -12,6 +12,13 @@
  *   epoch = SHA-256 over the users row id and its password hash, for an
  *           active row; none for a disabled, missing or hash-less one.
  *
+ * The cookie is minted under the epoch the sign-in itself checked: the row
+ * and the hash the provider compared the password with
+ * (`AuthSuccess.credentialEpoch`), or the row and hash the wizard just wrote.
+ * Never under an epoch read after that check: a reset that lands while a
+ * sign-in with the old password is being verified would otherwise hand that
+ * sign-in a cookie for the new password, which it never proved.
+ *
  * A request counts as one of an account's known browsers when the address it
  * names has the cookie's device key, and the users-table lookup of that key
  * lands on an active row whose epoch is the one the cookie was minted under.
@@ -23,12 +30,13 @@
  * cookie.
  *
  * A password reset writes a new hash (argon2 salts are random), so every
- * cookie minted before it is stale, and only a sign-in with the new password
- * mints another. A disabled account has no epoch while it stays disabled;
- * re-enabling it without a reset lets its earlier cookies count again, which
- * gives their holders nothing: each of them signed in with that unchanged
- * password. A deleted account has none, and a re-created one gets a new row
- * id. Nothing is stored per device.
+ * cookie minted before it is stale, and so is the cookie of a sign-in that
+ * was still comparing against the old hash when it landed: only a sign-in
+ * that checked the new password mints a current one. A disabled account has
+ * no epoch while it stays disabled; re-enabling it without a reset lets its
+ * earlier cookies count again, which gives their holders nothing: each of
+ * them signed in with that unchanged password. A deleted account has none,
+ * and a re-created one gets a new row id. Nothing is stored per device.
  *
  * Reading an epoch is a users-table lookup. It happens only for a cookie whose
  * tag already checks out, one at a time per device key, and the result is
@@ -38,9 +46,9 @@
  * an account call `forget`, so this process stops honouring a revoked epoch
  * at once; another replica may honour it until its cache entry expires.
  *
- * Issuing and checking are best-effort: a failed lookup sets no cookie and
- * counts the browser as unknown (logged at most once a minute), but never
- * fails a sign-in.
+ * Issuing needs no lookup. Checking is best-effort: a failed lookup counts the
+ * browser as unknown (logged at most once a minute), but never fails a
+ * sign-in.
  */
 
 import { createHash } from 'node:crypto';
@@ -69,10 +77,31 @@ export interface LoginAccount {
   readonly accountId: string | undefined;
 }
 
-/** The account a sign-in verified: its address exactly as the users table stores it. */
+/** The account a sign-in verified, and the credentials it verified. */
 export interface VerifiedLoginAccount {
   readonly providerId: string;
+  /** Its address exactly as the users table stores it. */
   readonly email: string;
+  /**
+   * The credential epoch the sign-in checked (`credentialEpoch` of the row
+   * and hash it compared with), never one read afterwards.
+   */
+  readonly epoch: string;
+}
+
+/** A users row as a credential epoch covers it: which row, under which password. */
+export interface CredentialRow {
+  readonly id: string;
+  readonly passwordHash: string;
+}
+
+/**
+ * The credential epoch of a users row: SHA-256 over its id and its password
+ * hash. Opaque and one-way; it never leaves the process (a cookie carries an
+ * HMAC fingerprint of it), and it is never logged.
+ */
+export function credentialEpoch(row: CredentialRow): string {
+  return createHash('sha256').update(`${row.id}\n${row.passwordHash}`).digest('base64url');
 }
 
 /**
@@ -88,9 +117,10 @@ export interface LoginDevices {
   knownDeviceOf(req: Request, typed: LoginAccount): Promise<string | null>;
   /**
    * Give `res` a device cookie, with a fresh id, for the account a sign-in
-   * verified, under its current epoch; none when it has no epoch.
+   * verified, under the epoch that sign-in checked: no lookup, so a reset
+   * that landed meanwhile leaves the cookie stale. None without an address.
    */
-  remember(req: Request, res: Response, verified: VerifiedLoginAccount): Promise<void>;
+  remember(req: Request, res: Response, verified: VerifiedLoginAccount): void;
   /** The account with this device key (`loginDeviceAccountKey`) changed: look it up afresh. */
   forget(deviceKey: string): void;
 }
@@ -102,7 +132,7 @@ export function usersTableEpochs(
   return async (providerId, accountId) => {
     const user = await store.findByEmailWithHash(providerId, accountId);
     if (!user || user.status !== 'active' || !user.passwordHash) return null;
-    return createHash('sha256').update(`${user.id}\n${user.passwordHash}`).digest('base64url');
+    return credentialEpoch({ id: user.id, passwordHash: user.passwordHash });
   };
 }
 
@@ -148,12 +178,12 @@ export function createLoginDevices(opts: {
     }
   }
 
-  function reportFailure(what: string, err: unknown): void {
+  function reportLookupFailure(err: unknown): void {
     const t = now();
     if (t - lastWarnAt < WARN_INTERVAL_MS) return;
     lastWarnAt = t;
     warn(
-      `[auth] sign-in device cookie: ${what} failed: ${err instanceof Error ? err.message : String(err)}`,
+      `[auth] sign-in device cookie: checking a cookie failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
@@ -169,25 +199,18 @@ export function createLoginDevices(opts: {
         const epoch = await epochOf(deviceKey, typed.providerId, name);
         return epoch !== null && cookies.isCurrent(cookie, epoch) ? cookie.id : null;
       } catch (err) {
-        reportFailure('checking a cookie', err);
+        reportLookupFailure(err);
         return null;
       }
     },
 
-    async remember(req, res, verified) {
+    remember(req, res, verified) {
       const deviceKey = loginDeviceAccountKey(verified.providerId, verified.email);
       if (deviceKey === undefined) return;
-      let epoch: string | null;
-      try {
-        // The stored address finds exactly the row that verified: the users
-        // table is unique on LOWER(email). Not cached — one per sign-in.
-        epoch = await opts.epochs(verified.providerId, verified.email);
-      } catch (err) {
-        reportFailure('issuing a cookie', err);
-        return;
-      }
-      if (epoch === null) return;
-      setLoginDeviceCookie(req, res, cookies.mint(deviceKey, epoch));
+      // The epoch the sign-in checked, not the account's epoch now: reading
+      // it afresh would bind the cookie to a password reset that landed
+      // after the check, i.e. to a password this sign-in never proved.
+      setLoginDeviceCookie(req, res, cookies.mint(deviceKey, verified.epoch));
     },
 
     forget(deviceKey) {

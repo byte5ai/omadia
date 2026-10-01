@@ -305,9 +305,18 @@ describe('POST /setup — shares the capacity gate and hands out a device cookie
     release();
     const ok = await invoke(h.app, 'POST', '/api/v1/auth/setup', { json: setupBody });
     assert.equal(ok.status, 200);
-    const device = setCookies(ok).find((c) => c.startsWith(`${LOGIN_DEVICE_COOKIE}=`));
-    assert.ok(device, 'the first admin’s browser is a known device from the start');
     assert.equal(h.limiter.stats().inFlight, 0);
+
+    // The first admin's browser is a known device from the start: its cookie
+    // is bound to the password the wizard set, so it still gets in once the
+    // shared address has spent the account's budget.
+    const device = deviceCookieFrom(ok);
+    for (let i = 0; i < DEFAULT_LOGIN_LIMITER_CONFIG.accountFreeFailures; i += 1) {
+      await login(h, wrong(setupBody.email));
+    }
+    assertRateLimited(await login(h, wrong(setupBody.email)));
+    const known = await login(h, wrong(setupBody.email), { headers: { cookie: device } });
+    assert.equal(known.status, 401);
   });
 });
 

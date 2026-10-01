@@ -445,9 +445,9 @@ export function createAuthRouter(deps: AuthDeps): Router {
         : {}),
       // Auto-login the freshly-created admin so the operator lands inside
       // the UI without a second round-trip. Mirrors the password login: the
-      // session cookie plus a device cookie, so the first admin's browser is
-      // a known device for the sign-in limiter from the start.
-      signIn: async (req, res, user) => {
+      // session cookie plus a device cookie under the epoch of the password
+      // just set, so the browser is a known device from the start.
+      signIn: async (req, res, user, epoch) => {
         await mintSessionAndSetCookie({
           req,
           res,
@@ -463,7 +463,7 @@ export function createAuthRouter(deps: AuthDeps): Router {
             ? { resolveChannelIdentity: deps.resolveChannelIdentity }
             : {}),
         });
-        await devices.remember(req, res, { providerId: LOCAL_PROVIDER_ID, email: user.email });
+        devices.remember(req, res, { providerId: LOCAL_PROVIDER_ID, email: user.email, epoch });
       },
     }),
   );

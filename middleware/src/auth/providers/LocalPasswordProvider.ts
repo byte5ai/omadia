@@ -1,4 +1,5 @@
 import { isSameLoginAccount } from '../loginAccount.js';
+import { credentialEpoch } from '../loginDevices.js';
 import type { UserStore } from '../userStore.js';
 import { verifyPassword } from '../passwordHasher.js';
 import type { AuthResult, PasswordProvider } from './AuthProvider.js';
@@ -16,8 +17,10 @@ import type { AuthResult, PasswordProvider } from './AuthProvider.js';
  * call through the sign-in rate limiter first (routes/authLogin.ts,
  * docs/security-architecture.md §10f) — per-client, per-(account, client)
  * backoff instead of a hard lockout, plus a cap on concurrent argon2 runs.
- * Its one duty towards the limiter: an attempt only signs in to an account
- * whose address folds to the key the limiter counted it under.
+ * Its two duties towards the limiter: an attempt only signs in to an account
+ * whose address folds to the key the limiter counted it under, and a success
+ * reports the credential epoch of the row and hash it compared the password
+ * with (`credentialEpoch`), which the sign-in's device cookie is bound to.
  *
  * Out-of-scope for V1 (per John-decision):
  *   - Self-service signup (admin provisions users via an admin endpoint)
@@ -127,6 +130,9 @@ export class LocalPasswordProvider implements PasswordProvider {
       providerUserId: user.providerUserId,
       email: user.email,
       displayName: user.displayName || user.email,
+      // The hash just compared, not the row as it may read by now: a reset
+      // that landed meanwhile must not count for this sign-in.
+      credentialEpoch: credentialEpoch({ id: user.id, passwordHash: user.passwordHash }),
     };
   }
 }

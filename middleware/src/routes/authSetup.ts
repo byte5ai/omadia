@@ -1,6 +1,7 @@
 import { providerApiKeyVaultKey } from '@omadia/llm-provider';
 import type { Request, RequestHandler, Response } from 'express';
 
+import { credentialEpoch } from '../auth/loginDevices.js';
 import type { LoginRateLimiter } from '../auth/loginRateLimiter.js';
 import { hashPassword } from '../auth/passwordHasher.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
@@ -75,8 +76,9 @@ export interface SetupRouteDeps extends SetupStateDeps {
   reactivate?: (agentId: string) => Promise<void>;
   anthropicKeyConsumers?: readonly string[];
   /** Mints the session cookie for the admin just created (the auth router
-   *  owns session minting). */
-  signIn: (req: Request, res: Response, user: UserRecord) => Promise<void>;
+   *  owns session minting), and its device cookie under `epoch`: the
+   *  credential epoch of the row and hash this request wrote (§10f). */
+  signIn: (req: Request, res: Response, user: UserRecord, epoch: string) => Promise<void>;
   log?: (msg: string) => void;
 }
 
@@ -306,8 +308,9 @@ export function createSetupHandler(deps: SetupRouteDeps): RequestHandler {
     }
 
     // Auto-login the freshly-created admin so the operator lands inside the
-    // UI without a second round-trip.
-    await deps.signIn(req, res, user);
+    // UI without a second round-trip. Its device cookie is bound to the
+    // password this request set, never to one read back later.
+    await deps.signIn(req, res, user, credentialEpoch({ id: user.id, passwordHash }));
     void deps.userStore.markLoginNow(user.id).catch(() => undefined);
 
     res.json({
