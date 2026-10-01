@@ -25,6 +25,12 @@ import type { PromptPiiDetector, PromptPiiSpan } from '@omadia/plugin-api';
 
 import { detectBaselineSync } from './promptMask.js';
 import type { PseudonymMap } from './v4/types.js';
+import {
+  asValueLiteral,
+  findValueLiterals,
+  type ValueKind,
+  type ValueLiteral,
+} from './valueLiterals.js';
 
 /** C0 types that identify a person. Mirrors `IDENTITY_PII_TYPES` in
  *  promptMask.ts: dates and amounts stay out on purpose. */
@@ -135,11 +141,16 @@ const MIN_NUMERIC_SURROGATE_DIGITS = 5;
 
 /**
  * How many surrogates of `map` still occur in `text`. A restored answer
- * should carry none; a hit means the model reworded a placeholder (a
- * different case, or re-grouped digits: "€10000" written as "10.000 €") and
- * restore could not map it back. Heuristic by design — it errs towards
- * reporting a hit, and callers only use it to refuse an answer they would
- * otherwise have to flag anyway.
+ * should carry none; a hit means the model wrote a placeholder back in a
+ * form restore cannot map back: in a different case, with re-grouped digits
+ * ("€10000" as "10.000 €"), or — for a date or an amount placeholder — as
+ * any literal of the same VALUE ("01.01.1970" as "1970-01-01" or
+ * "1. Januar 1970", "€10000" as "10 Tsd. €"; see `valueLiterals.ts`). A
+ * value that cannot be read counts as a match (fail closed): a literal with
+ * no readable value matches every placeholder of its kind, and a placeholder
+ * with none matches every literal of its kind. Heuristic by design — it errs
+ * towards reporting a hit, and callers only use it to refuse an answer they
+ * would otherwise have to flag anyway.
  */
 export function countUnresolvedSurrogates(
   text: string,
@@ -148,16 +159,52 @@ export function countUnresolvedSurrogates(
   if (map === undefined || map.reverse.size === 0) return 0;
   const lower = text.toLowerCase();
   const digitText = joinDigitGroups(text);
-  let count = 0;
-  for (const surrogate of map.reverse.keys()) {
-    if (lower.includes(surrogate.toLowerCase())) {
-      count += 1;
-      continue;
-    }
-    const digits = surrogate.replace(/\D/g, '');
-    if (digits.length >= MIN_NUMERIC_SURROGATE_DIGITS && digitText.includes(digits)) {
-      count += 1;
-    }
-  }
-  return count;
+  const literals = indexByKind(findValueLiterals(text));
+  return [...map.reverse.keys()].filter(
+    (surrogate) =>
+      lower.includes(surrogate.toLowerCase()) ||
+      carriesDigitsOf(digitText, surrogate) ||
+      carriesValueOf(literals, surrogate),
+  ).length;
+}
+
+function carriesDigitsOf(digitText: string, surrogate: string): boolean {
+  const digits = surrogate.replace(/\D/g, '');
+  return digits.length >= MIN_NUMERIC_SURROGATE_DIGITS && digitText.includes(digits);
+}
+
+/** The values a text's literals name, per kind; `unreadable` when one of
+ *  that kind names none. */
+interface KindValues {
+  readonly values: ReadonlySet<string>;
+  readonly unreadable: boolean;
+}
+
+function indexByKind(literals: readonly ValueLiteral[]): ReadonlyMap<ValueKind, KindValues> {
+  const kinds = [...new Set(literals.map((literal) => literal.kind))];
+  return new Map(
+    kinds.map((kind): [ValueKind, KindValues] => {
+      const ofKind = literals.filter((literal) => literal.kind === kind);
+      return [
+        kind,
+        {
+          values: new Set(ofKind.flatMap((literal) => literal.values)),
+          unreadable: ofKind.some((literal) => literal.values.length === 0),
+        },
+      ];
+    }),
+  );
+}
+
+/** A date or amount placeholder whose value the text names in any spelling. */
+function carriesValueOf(
+  literals: ReadonlyMap<ValueKind, KindValues>,
+  surrogate: string,
+): boolean {
+  const placeholder = asValueLiteral(surrogate);
+  if (placeholder === undefined) return false;
+  const seen = literals.get(placeholder.kind);
+  if (seen === undefined) return false;
+  if (seen.unreadable || placeholder.values.length === 0) return true;
+  return placeholder.values.some((value) => seen.values.has(value));
 }

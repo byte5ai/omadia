@@ -552,7 +552,10 @@ export interface PrivacyGuardService {
   ): Promise<PrivacyPromptMaskResult>;
   /**
    * How many of this turn's prompt surrogates still occur in `text` —
-   * verbatim, case-insensitively, or with digit separators reformatted. A
+   * verbatim, case-insensitively, with digit separators reformatted, or, for
+   * a date or an amount surrogate, as any literal of the same value in
+   * another spelling ("1970-01-01" for "01.01.1970"). A date or amount
+   * literal whose value cannot be read counts as a hit (fail closed). A
    * restored answer should carry none; a hit means the model reworded a
    * placeholder and restore could not map it back. `0` when the turn masked
    * nothing. Optional; absent ⇒ callers treat the answer as unchecked.

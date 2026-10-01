@@ -110,10 +110,11 @@ export function modelFacingUserMessage(userMessage: string): string {
 
 /**
  * True when `turn`'s restored answer still carries placeholders of its own
- * turn: the model reworded one ("10.000 €" for "€10000"), restore could not
- * map it back, and the user would read a fake value. `false` for a turn that
- * handed nothing over (no shield, nothing masked). Must run before the
- * turn's continuation is finalized — finalize drops the map it reads.
+ * turn: the model wrote one back in another spelling ("10.000 €" for
+ * "€10000", "1970-01-01" for "01.01.1970"), restore could not map it back,
+ * and the user would read a fake value. `false` for a turn that handed
+ * nothing over (no shield, nothing masked). Must run before the turn's
+ * continuation is finalized — finalize drops the map it reads.
  */
 export async function carriesUnresolvedPlaceholders(turn: EgressTurn): Promise<boolean> {
   if (turn.egress === undefined) return false;

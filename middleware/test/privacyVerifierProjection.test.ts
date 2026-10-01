@@ -11,10 +11,19 @@ import { describe, it } from 'node:test';
 
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 import { findIdentityLeaks } from '@omadia/plugin-privacy-guard/dist/v4/onTheWire.js';
+import { countUnresolvedSurrogates } from '@omadia/plugin-privacy-guard/dist/verifierProjection.js';
 
 const TURN = { sessionId: 's-verifier', turnId: 't-verifier' };
 const MAIL = 'jana.beispiel@firma.example';
 const NAME = 'Jana Beispielfrau';
+const DE_MONTHS = [
+  'Januar', 'Februar', 'März', 'April', 'Mai', 'Juni',
+  'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember',
+];
+const EN_MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
 
 function service(maskUserPrompt: boolean): ReturnType<typeof createPrivacyGuardService> {
   return createPrivacyGuardService({
@@ -205,5 +214,76 @@ describe('privacy-guard — unresolved surrogates', () => {
       `an ${email}, Gehalt ${amount}`,
     );
     assert.equal(await svc.countUnresolvedSurrogates!(TURN.turnId, restored), 0);
+  });
+
+  it('finds a date placeholder the model wrote back in another format', async () => {
+    const svc = service(true);
+    const masked = await svc.maskUserPrompt!({ ...TURN, text: 'Prüfe S1234 und Termin 24.12.1987' });
+    assert.equal(masked.outcome, 'masked');
+    if (masked.outcome !== 'masked') return;
+    const [placeholder, dd, mm, yyyy] = /(\d{2})\.(\d{2})\.(\d{4})/.exec(masked.maskedText) ?? [];
+    assert.ok(placeholder && dd && mm && yyyy, masked.maskedText);
+    const [day, month] = [Number(dd), Number(mm)];
+    const count = (text: string): Promise<number> =>
+      svc.countUnresolvedSurrogates!(TURN.turnId, text);
+
+    for (const rewritten of [
+      `${yyyy}-${mm}-${dd}`,
+      `${String(day)}.${String(month)}.${yyyy}`,
+      `${String(day)}. ${DE_MONTHS[month - 1]!} ${yyyy}`,
+      `${EN_MONTHS[month - 1]!} ${String(day)}, ${yyyy}`,
+    ]) {
+      assert.equal(await count(`S1234 ist bestätigt; Termin ist ${rewritten}.`), 1, rewritten);
+    }
+    // The restored answer names the real date; other dates are no placeholder.
+    const restored = await svc.restorePromptPseudonyms!(TURN.turnId, `Termin ist ${placeholder}.`);
+    assert.equal(restored, 'Termin ist 24.12.1987.');
+    assert.equal(await count(restored), 0);
+    assert.equal(await count('Termin ist 1987-12-24, Abgabe am 2026-10-01.'), 0);
+  });
+
+  it('compares dates by value in either direction (ISO placeholder, German rewrite)', () => {
+    const map = {
+      forward: new Map([['1987-12-24', '1970-01-01']]),
+      reverse: new Map([['1970-01-01', '1987-12-24']]),
+    };
+    assert.equal(countUnresolvedSurrogates('Termin am 01.01.1970', map), 1);
+    assert.equal(countUnresolvedSurrogates('Termin am 1. Januar 1970', map), 1);
+    assert.equal(countUnresolvedSurrogates('Termin am 24.12.1987', map), 0);
+  });
+
+  it('finds an amount placeholder the model wrote back with a scale word', async () => {
+    const svc = service(true);
+    const masked = await svc.maskUserPrompt!({ ...TURN, text: 'Gehalt 72.000 €' });
+    assert.equal(masked.outcome, 'masked');
+    if (masked.outcome !== 'masked') return;
+    const units = Number(/€(\d{5})/.exec(masked.maskedText)?.[1]);
+    assert.ok(units >= 10000, masked.maskedText);
+    const thousands = String(units / 1000).replace('.', ',');
+    const count = (text: string): Promise<number> =>
+      svc.countUnresolvedSurrogates!(TURN.turnId, text);
+
+    for (const rewritten of [`${thousands} Tsd. €`, `EUR ${thousands}k`, `${thousands} T€`]) {
+      assert.equal(await count(`Gehalt ${rewritten}`), 1, rewritten);
+    }
+    assert.equal(await count('Gehalt 72.000 €'), 0);
+    assert.equal(await count(`Gehalt ${String(units / 1000 + 0.5).replace('.', ',')} Tsd. €`), 0);
+  });
+
+  it('a value it cannot read counts as a placeholder of its kind (fail closed)', async () => {
+    const svc = service(true);
+    await svc.maskUserPrompt!({ ...TURN, text: 'Termin 24.12.1987' });
+    assert.equal(await svc.countUnresolvedSurrogates!(TURN.turnId, 'Termin ist 31.02.1990.'), 1);
+    // A turn that masked no date has no date placeholder to rewrite.
+    const mailOnly = { ...TURN, turnId: 't-mail-only' };
+    await svc.maskUserPrompt!({ ...mailOnly, text: `Mail an ${MAIL}` });
+    assert.equal(await svc.countUnresolvedSurrogates!(mailOnly.turnId, 'Termin ist 31.02.1990.'), 0);
+    // An unreadable placeholder matches every date in the text.
+    const map = {
+      forward: new Map([['24.12.1987', '31.02.1990']]),
+      reverse: new Map([['31.02.1990', '24.12.1987']]),
+    };
+    assert.equal(countUnresolvedSurrogates('Termin ist 2026-10-01.', map), 1);
+    assert.equal(countUnresolvedSurrogates('Kein Termin.', map), 0);
   });
 });

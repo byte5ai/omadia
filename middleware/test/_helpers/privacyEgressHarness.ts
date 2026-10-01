@@ -76,16 +76,18 @@ export function textResponse(text: string): LlmResponse {
 /**
  * The turn's model: answers with `reply(email)` for the first e-mail it
  * finds in its own request — i.e. the surrogate when the orchestrator masked
- * the prompt. Every serialized request is pushed to `requests`.
+ * the prompt. `find` picks another value to echo instead. Every serialized
+ * request is pushed to `requests` before `reply` runs.
  */
 export function echoingProvider(
   requests: string[] = [],
   reply: (email: string) => string = (email) => `Notiert, ich schreibe an ${email} heute`,
+  find: RegExp = ANY_EMAIL,
 ): LlmProvider {
   const answerFor = (req: LlmRequest): string => {
     const serialized = JSON.stringify(req);
     requests.push(serialized);
-    return reply(ANY_EMAIL.exec(serialized)?.[0] ?? 'niemanden');
+    return reply(find.exec(serialized)?.[0] ?? 'niemanden');
   };
   const provider = {
     id: 'anthropic',

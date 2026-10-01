@@ -35,6 +35,7 @@ import {
   EvidenceJudge,
   VerifierPipeline,
   type EvidenceSnippet,
+  type VerifierVerdict,
 } from '@omadia/verifier';
 
 import {
@@ -52,6 +53,7 @@ import {
   drain,
   echoingProvider,
 } from './_helpers/privacyEgressHarness.js';
+import { BLOCKED, BORDERLINE, verdicts } from './_helpers/verifierEgressStub.js';
 
 const REAL_NAME = 'Jana Beispielfrau';
 
@@ -254,6 +256,70 @@ describe('end to end — an MCP input-card reply reaches the verifier only as it
     await drain(agent.chatStream({ userMessage: ENVELOPE, sessionScope: 'sess-e2e-mcp-s' }));
 
     assertNoEnvelope(requests);
+  });
+});
+
+describe('end to end — a date placeholder the model rewrote never reaches the user', () => {
+  // Prompt masking replaces the date with a realistic placeholder
+  // ("dd.mm.yyyy"). Restore maps back only that exact string, so a model that
+  // writes the placeholder back in ISO form leaves a fake date — and an answer
+  // carrying one must never replace the first, restored answer.
+  const REAL_DATE = '24.12.1987';
+  const DATE_ASK = `Prüfe S1234 und Termin ${REAL_DATE}`;
+  /** The date placeholder the turn's model saw, as it saw it. */
+  const SEEN_DATE = /(?<=und Termin )\d{2}\.\d{2}\.\d{4}/;
+
+  /** The turn's model names the placeholder as written on its first call and
+   *  in ISO form on the next one (the re-sample or the retry). */
+  function rewritingAgent(sequence: readonly VerifierVerdict[], maxRetries: number) {
+    const requests: string[] = [];
+    const isoFakes: string[] = [];
+    const reply = (seen: string): string => {
+      if (requests.length === 1) return `S1234 geprüft: Termin ist ${seen}.`;
+      const [day, month, year] = seen.split('.');
+      const iso = `${year!}-${month!}-${day!}`;
+      isoFakes.push(iso);
+      return `S1234 ist bestätigt; Termin ist ${iso}.`;
+    };
+    const { service } = countingService(true);
+    const orchestrator = buildOrch({ service, provider: echoingProvider(requests, reply, SEEN_DATE) });
+    const agent = new BuiltVerifierService({
+      orchestrator,
+      pipeline: verdicts(sequence).pipeline,
+      enabled: true,
+      mode: 'enforce',
+      maxRetries,
+      log: () => undefined,
+    });
+    return { agent, requests, isoFakes };
+  }
+
+  function assertFirstAnswerShown(
+    text: string,
+    requests: readonly string[],
+    isoFakes: readonly string[],
+  ): void {
+    assert.equal(requests.length, 2, 'expected the first turn and exactly one more');
+    assert.equal(isoFakes.length, 1);
+    assert.ok(text.includes(REAL_DATE), `the restored first answer was not shown: ${text}`);
+    assert.equal(text.includes(isoFakes[0]!), false, `a fake date reached the user: ${text}`);
+  }
+
+  it('a still-blocked retry that wrote the placeholder in ISO form', async () => {
+    const { agent, requests, isoFakes } = rewritingAgent([BLOCKED, BLOCKED], 1);
+
+    const answer = await agent.chat({ userMessage: DATE_ASK, sessionScope: 'sess-e2e-iso-retry' });
+
+    assertFirstAnswerShown(answer.text, requests, isoFakes);
+    assert.equal(answer.verifier?.status, 'failed');
+  });
+
+  it('a blocked re-sample that wrote the placeholder in ISO form', async () => {
+    const { agent, requests, isoFakes } = rewritingAgent([BORDERLINE, BLOCKED], 0);
+
+    const answer = await agent.chat({ userMessage: DATE_ASK, sessionScope: 'sess-e2e-iso-resample' });
+
+    assertFirstAnswerShown(answer.text, requests, isoFakes);
   });
 });
 
