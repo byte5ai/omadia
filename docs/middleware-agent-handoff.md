@@ -3296,6 +3296,12 @@ Request und bei jedem WebSocket-Upgrade. Offen:
 
 ### CI-Schulden aus dem Security-Review (2026-09-29)
 
+- **`PG_TEST_FLOOR` nachziehen, sobald die Auth-Härtungen gemergt sind.** Serverseitiger
+  Sitzungs-Widerruf und die atomare Ersteinrichtung bringen neue Postgres-Suiten mit
+  (`test/auth/userStoreSessionVersion.pg.test.ts`, `userStoreFirstAdmin.pg.test.ts`,
+  `setupRouteConcurrency.pg.test.ts`). Der Floor in `.github/workflows/ci.yml` bleibt bis
+  dahin auf dem Wert von `main` (`372`) und wird dann einmal auf den gemessenen `ran=`-Wert
+  des `test:pg`-Schritts gezogen (lokal mit diesem Stand: `ran=396`, `skipped=0`).
 - **`middleware/src/services/graph/migrations/` löschen** — 4 Dateien, byte-identisch mit
   KG-neon 0002/0004/0012/0013; kein Runner liest sie (die Graph-Migrationen laufen über die
   `harness-knowledge-graph-neon`-Serie; #875 hat die dort gestrandete 0009 gerettet). Seit
