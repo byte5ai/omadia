@@ -8,6 +8,66 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.20.0 — 2026-10-01
+
+Additive. Two Privacy Shield seams gain optional contract members. The answer
+verifier's model requests run under the turn's privacy view and are accounted
+on the turn's own receipt. Tool errors are handled at the dispatch seams
+instead of reaching the model raw: a message a handler threw is withheld, a
+returned `Error:` text is redacted through the Privacy Shield, and both are
+receipted. The in-tree privacy-guard plugin implements every new member.
+
+### Added
+
+- **`PrivacyReceipt.verifierEgress?: VerifierEgressSummary`**
+  (`{ requests, maskedSpans }`): the answer verifier's post-turn model
+  requests, kept apart from `maskedPromptSpans`, which covers only the turn's
+  own model calls. PII-free: a request count plus span types and detector ids.
+- **`PrivacyPromptMaskRequest.stage?`** (`PrivacyEgressStage`,
+  `'turn' | 'verifier'`; absent means `turn`) and
+  **`PrivacyPromptMaskRequest.preview?`**, which computes the outcome without
+  extending the turn's surrogate map or recording anything in the receipt.
+- **`PrivacyGuardService.projectVerifierText?(request)`** with
+  `PrivacyVerifierProjectionRequest`: projects text the verifier composed from
+  real values (a restored claim and its evidence) through the turn's surrogate
+  map, whether or not `mask_user_prompt` is on. `blocked` means the text must
+  not be sent; a caller whose provider lacks the member sends no evidence.
+- **`PrivacyGuardService.countUnresolvedSurrogates?(turnId, text)`**: how many
+  of the turn's prompt placeholders still occur in a restored text. Dates and
+  amounts match by value in any spelling, and a date or amount the check
+  cannot read counts as a hit (fail closed).
+- **`PrivacyReceipt.toolErrors?: readonly ToolErrorEntry[]`** with
+  `ToolErrorEntry { toolName, carrier, outcome, bytes, redactedSpans? }`,
+  `ToolErrorCarrier` (`'thrown' | 'returned' | 'mcp_auth_prompt'`) and
+  `ToolErrorOutcome` (`'withheld' | 'redacted' | 'passed'`). PII-free by
+  contract: names, counts and masked span types only.
+- **`PrivacyGuardService.recordToolError?(request)`** and
+  **`PrivacyGuardService.redactToolErrorText?(request)`** with
+  `PrivacyToolErrorRequest`, `PrivacyToolErrorRedactRequest` and the
+  failure-closed union `PrivacyToolErrorRedactResult` (`redacted` | `withheld`).
+  Both members are OPTIONAL, so an existing provider still compiles and loads;
+  the kernel withholds returned `Error:` text when a provider lacks
+  `redactToolErrorText` rather than forwarding it unchecked.
+- **Runtime helpers** `describeThrownError`, `withheldToolErrorNotice`,
+  `newToolErrorRef` and `toolErrorFromException` (`toolErrorNotice.ts`): the one
+  way to turn a caught exception into a tool result — class name, sanitised
+  code and a log reference, never the message. A tool wrapper that returned
+  `Error: ${err.message}` should call `toolErrorFromException` instead. The
+  notice also tells the model that the call's outcome is unknown and not to
+  repeat a call that changes data. These are runtime exports: a plugin ZIP
+  that imports them resolves `@omadia/plugin-api` from the host, so it needs a
+  host at 1.20.0 or later.
+- **`isWithheldToolErrorNotice(text)`**: true for a notice
+  `withheldToolErrorNotice` built. Recognised by shape, so only for
+  restricting what happens next: the kernel's sub-agent loop uses it to refuse
+  an identical repeat of a call whose wrapper caught the exception itself.
+- **`RECEIPT_FIXTURE_TOOL_ERRORS`**, a receipt fixture for channel renderers.
+
+### Documentation
+
+- `toolControlFlowText.ts` no longer describes the `Error:` carrier as passing
+  to the model unchecked; see its module comment for the seam policy.
+
 ## 1.19.2 — 2026-09-30
 
 Documentation only: no change to the exported type surface (the API snapshot is

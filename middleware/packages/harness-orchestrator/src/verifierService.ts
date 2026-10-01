@@ -6,7 +6,7 @@ import type {
   Orchestrator,
   VerifierResultSummary,
 } from './orchestrator.js';
-import { toSemanticAnswer } from './orchestrator.js';
+import { PROMPT_MASK_BLOCKED_ANSWER, toSemanticAnswer } from './orchestrator.js';
 import { randomUUID } from 'node:crypto';
 import type { SemanticAnswer } from '@omadia/channel-sdk';
 import type { RunTracePayload } from './runTraceCollector.js';
@@ -16,8 +16,20 @@ import type {
   VerifierStore,
   VerifierVerdict,
 } from '@omadia/verifier';
-import { buildCorrectionPrompt, isBorderlineVerdict } from '@omadia/verifier';
+import { isBorderlineVerdict } from '@omadia/verifier';
 import type { TurnHookRunner } from './turnHooks.js';
+import type { PrivacyEgressContinuation } from './privacyEgress.js';
+import {
+  EgressLedger,
+  carriesUnresolvedPlaceholders,
+  modelFacingUserMessage,
+  privacySafeCorrection,
+  settleQuietly,
+  verifierGate,
+  type EgressTurn,
+  type PrivacyEgressHost,
+  type VerifierGate,
+} from './verifierPrivacyGate.js';
 
 /**
  * End-to-end wrapper around the orchestrator that adds answer verification.
@@ -38,6 +50,11 @@ import type { TurnHookRunner } from './turnHooks.js';
  * Errors in the verifier itself never surface to the user — we always fall
  * back to returning the original orchestrator reply. The failure mode the
  * user experiences is "verifier didn't help", not "verifier broke my bot".
+ *
+ * Behind a Privacy Shield every turn this wrapper runs hands its privacy
+ * finalisation over (see `privacyEgress.ts` / `verifierPrivacyGate.ts`): the
+ * verifier's model requests go through that turn's own privacy view, and the
+ * turn's receipt is finalized only after them — exactly once per turn.
  */
 
 export interface VerifierServiceOptions {
@@ -76,6 +93,8 @@ const DEFAULTS = {
 
 export class VerifierService implements ChatAgent {
   private readonly orchestrator: Orchestrator;
+  /** The orchestrator's privacy hand-over surface (feature-detected). */
+  private readonly host: PrivacyEgressHost;
   private readonly pipeline: VerifierPipeline;
   private readonly store?: VerifierStore;
   private readonly enabled: boolean;
@@ -88,6 +107,7 @@ export class VerifierService implements ChatAgent {
 
   constructor(opts: VerifierServiceOptions) {
     this.orchestrator = opts.orchestrator;
+    this.host = opts.orchestrator;
     this.pipeline = opts.pipeline;
     if (opts.store) this.store = opts.store;
     this.enabled = opts.enabled;
@@ -151,6 +171,13 @@ export class VerifierService implements ChatAgent {
    * replacing the answer after the fact would be a worse UX than a
    * clearly labelled "verifier-widerspruch" badge. Retries remain the
    * non-stream (`/api/chat`) endpoint's territory.
+   *
+   * Behind a Privacy Shield the orchestrator hands the turn's finalisation
+   * over, and `done` — which carries the receipt — is HELD: the inner stream
+   * is drained first (so its steering / auth cleanup runs), then the answer
+   * is verified through the turn's privacy view, then the turn is finalized
+   * and `done` goes out with the receipt, followed by the `verifier` event.
+   * The streamed text is already on screen; only completion waits.
    */
   async *chatStream(input: ChatTurnInput): AsyncGenerator<ChatStreamEvent> {
     if (!this.enabled) {
@@ -159,35 +186,78 @@ export class VerifierService implements ChatAgent {
     }
 
     const runId = randomUUID();
-    let doneAnswer: string | undefined;
-    let doneRunTrace: RunTracePayload | undefined;
+    let done: Extract<ChatStreamEvent, { type: 'done' }> | undefined;
+    let egress: PrivacyEgressContinuation | undefined;
+    let settled = false;
     let skipVerification = false;
 
-    for await (const event of this.orchestrator.chatStream(input)) {
-      yield event;
-      if (event.type === 'done') {
-        doneAnswer = event.answer;
-        doneRunTrace = event.runTrace;
-        // The turn ended with a clarification-request card — there are no
-        // fact claims to verify. Suppress the verifier pass entirely so the
-        // Smart-Card doesn't get adorned with a stray badge.
-        if (event.pendingUserChoice) skipVerification = true;
-        // #1094 — same reasoning for a degraded turn: its `answer` is the
-        // composed turn-incomplete notice (or a server-rendered v4 answer),
-        // not model prose, so there is nothing to fact-check. Without this the
-        // verifier would stamp a "verified" badge onto a turn that failed.
-        if (event.degraded) skipVerification = true;
+    this.host.markPrivacyFinalizeHeld?.(input);
+    try {
+      for await (const event of this.orchestrator.chatStream(input)) {
+        if (event.type === 'done') {
+          done = event;
+          // The turn ended with a clarification-request card — there are no
+          // fact claims to verify. Suppress the verifier pass entirely so the
+          // Smart-Card doesn't get adorned with a stray badge.
+          if (event.pendingUserChoice) skipVerification = true;
+          // #1094 — same reasoning for a degraded turn: its `answer` is the
+          // composed turn-incomplete notice (or a server-rendered v4 answer),
+          // not model prose, so there is nothing to fact-check. Without this the
+          // verifier would stamp a "verified" badge onto a turn that failed.
+          if (event.degraded) skipVerification = true;
+          // The orchestrator handed the continuation over before `done`.
+          egress = this.host.takePrivacyEgress?.(input);
+          // Held: the receipt only exists once the verifier is done.
+          if (egress !== undefined) continue;
+        }
+        yield event;
       }
+
+      if (done === undefined) return;
+      const gate = skipVerification
+        ? undefined
+        : this.gateFor(done.answerSource, egress);
+      if (egress === undefined) {
+        // `done` already went out, as without a shield.
+        if (gate === undefined || !gate.verify) return;
+        yield* this.verifyAfterStream(runId, input, done, gate);
+        return;
+      }
+      const verdict =
+        gate?.verify === true
+          ? await this.safeVerify(runId, input, done.answer, done.runTrace, gate)
+          : undefined;
+      settled = true;
+      const receipt = await settleQuietly(egress, this.log);
+      yield {
+        ...done,
+        ...(receipt ? { privacyReceipt: receipt, receiptId: egress.receiptId } : {}),
+      };
+      if (verdict !== undefined) yield* this.streamVerdict(runId, input, verdict);
+    } finally {
+      // A client that leaves early, or a throw, must not strand the turn's
+      // privacy state until restart.
+      egress ??= this.host.takePrivacyEgress?.(input);
+      if (egress !== undefined && !settled) await settleQuietly(egress, this.log);
     }
+  }
 
-    if (doneAnswer === undefined || skipVerification) return;
+  /** Verify a `done` that was already delivered (no hand-over). */
+  private async *verifyAfterStream(
+    runId: string,
+    input: ChatTurnInput,
+    done: Extract<ChatStreamEvent, { type: 'done' }>,
+    gate: Extract<VerifierGate, { verify: true }>,
+  ): AsyncGenerator<ChatStreamEvent> {
+    const verdict = await this.safeVerify(runId, input, done.answer, done.runTrace, gate);
+    yield* this.streamVerdict(runId, input, verdict);
+  }
 
-    const verdict = await this.safeVerify(
-      runId,
-      input,
-      doneAnswer,
-      doneRunTrace,
-    );
+  private async *streamVerdict(
+    runId: string,
+    input: ChatTurnInput,
+    verdict: VerifierVerdict,
+  ): AsyncGenerator<ChatStreamEvent> {
     // #133 (E6) — record a verifier block on this turn's plan, same as the
     // non-streaming enforce path. The stream path still does NOT retry (see the
     // method doc — the user already saw the tokens); this only surfaces the
@@ -202,34 +272,52 @@ export class VerifierService implements ChatAgent {
     };
   }
 
+  /** {@link verifierGate}, logging why a turn is not verified. */
+  private gateFor(
+    answerSource: ChatTurnResult['answerSource'],
+    egress: PrivacyEgressContinuation | undefined,
+  ): VerifierGate {
+    const gate = verifierGate(answerSource, egress, this.host);
+    if (!gate.verify) this.log(`[verifier/service] verification skipped: ${gate.reason}`);
+    return gate;
+  }
+
   /** Drop-in replacement for `orchestrator.chat` with verification. */
   async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
     if (!this.enabled) {
       return this.orchestrator.chat(input);
     }
+    // Every turn run below hands its privacy finalisation to this ledger;
+    // whatever path returns (or throws), each one is finalized exactly once.
+    const ledger = new EgressLedger(this.host, this.log);
+    try {
+      return await this.chatVerified(randomUUID(), input, ledger);
+    } finally {
+      await ledger.settleAll();
+    }
+  }
 
-    const runId = randomUUID();
+  private async chatVerified(
+    runId: string,
+    input: ChatTurnInput,
+    ledger: EgressLedger,
+  ): Promise<SemanticAnswer> {
     // Use `runTurn()` (full internal shape) rather than `chat()` — we need
     // access to `runTrace` for the verifier pipeline's evidence fetcher.
-    const firstResult = await this.orchestrator.runTurn(input);
+    const first = await ledger.runTurn(input, () => this.orchestrator.runTurn(input));
     // Clarification-request turns have no fact claims — skip verification.
     // The Smart-Card UX is the "answer" here; there is nothing to check.
-    if (firstResult.pendingUserChoice) {
-      return toSemanticAnswer(firstResult);
+    if (first.result.pendingUserChoice) {
+      return this.deliver(ledger, first);
     }
-    const firstVerdict = await this.safeVerify(
-      runId,
-      input,
-      firstResult.answer,
-      firstResult.runTrace,
-    );
+    const firstVerdict = await this.verifyTurn(runId, input, first);
+    // Behind a shield without a usable privacy view: not verified at all.
+    if (firstVerdict === undefined) return this.deliver(ledger, first);
 
     // Shadow mode: persist + summarise, never retry / block.
     if (this.mode === 'shadow') {
       void this.persist(runId, input, firstVerdict, 0);
-      return toSemanticAnswer(
-        withVerifier(firstResult, summarise(firstVerdict, 0, this.mode)),
-      );
+      return this.deliver(ledger, first, summarise(firstVerdict, 0, this.mode));
     }
 
     // #132 — borderline gate: when the first verdict is
@@ -238,16 +326,16 @@ export class VerifierService implements ChatAgent {
     // samples landing on the same disclaimer ⇒ keep. Disagreement ⇒ take
     // the more conservative reading (blocked wins). Bounded at
     // `maxResamples` per turn (default 1) so cost stays predictable.
-    let effectiveResult = firstResult;
+    let effective = first;
     let effectiveVerdict = firstVerdict;
     if (
       this.resampleOnBorderline &&
       this.maxResamples > 0 &&
       isBorderlineVerdict(firstVerdict)
     ) {
-      const merged = await this.tryResample(runId, input, firstVerdict);
+      const merged = await this.tryResample(runId, input, firstVerdict, ledger);
       if (merged) {
-        effectiveResult = merged.result ?? firstResult;
+        effective = merged.turn ?? first;
         effectiveVerdict = merged.verdict;
       }
     }
@@ -258,27 +346,28 @@ export class VerifierService implements ChatAgent {
     if (effectiveVerdict.status === 'blocked') {
       this.fireVerifierBlocked(input, effectiveVerdict);
     }
-    if (effectiveVerdict.status !== 'blocked' || this.maxRetries <= 0) {
+    const keepEffective = async (): Promise<SemanticAnswer> => {
       void this.persist(runId, input, effectiveVerdict, 0);
-      return toSemanticAnswer(
-        withVerifier(
-          effectiveResult,
-          summarise(effectiveVerdict, 0, this.mode),
-        ),
-      );
+      const shown = await this.shownTurn(runId, first, effective);
+      return this.deliver(ledger, shown, summarise(effectiveVerdict, 0, this.mode));
+    };
+    if (effectiveVerdict.status !== 'blocked' || this.maxRetries <= 0) {
+      return keepEffective();
     }
 
-    const correction = buildCorrectionPrompt(effectiveVerdict);
-    if (!correction) {
-      // Shouldn't happen for status=blocked, but be defensive.
-      void this.persist(runId, input, effectiveVerdict, 0);
-      return toSemanticAnswer(
-        withVerifier(
-          effectiveResult,
-          summarise(effectiveVerdict, 0, this.mode),
-        ),
+    // Behind a shield the hint carries no truth values, and the retry is
+    // withheld when the turn's masking would still alter it (badge `failed`).
+    const { correction, withheld } = await privacySafeCorrection(
+      effectiveVerdict,
+      effective.egress,
+    );
+    if (withheld) {
+      this.log(
+        `[verifier/service] retry withheld run=${runId} — the correction would carry masked values`,
       );
     }
+    // No correction: shouldn't happen for status=blocked unless withheld.
+    if (!correction) return keepEffective();
 
     this.log(
       `[verifier/service] retry run=${runId} contradictions=${String(
@@ -289,43 +378,93 @@ export class VerifierService implements ChatAgent {
       ...input,
       extraSystemHint: correction,
     };
-    let secondResult: ChatTurnResult;
+    let second: EgressTurn;
     try {
       // #579 — a correction retry re-runs an already-screened user turn; mark it
       // so the inbound screening gate does not screen/audit it a second time.
       this.orchestrator.markScreeningReentry(retryInput);
-      secondResult = await this.orchestrator.runTurn(retryInput);
+      second = await ledger.runTurn(retryInput, () => this.orchestrator.runTurn(retryInput));
     } catch (err) {
       this.log(`[verifier/service] retry FAIL: ${errMsg(err)}`);
-      void this.persist(runId, input, effectiveVerdict, 0);
-      return toSemanticAnswer(
-        withVerifier(
-          effectiveResult,
-          summarise(effectiveVerdict, 0, this.mode),
-        ),
-      );
+      return keepEffective();
     }
 
-    const secondVerdict = await this.safeVerify(
-      runId,
-      input,
-      secondResult.answer,
-      secondResult.runTrace,
-    );
+    const secondVerdict =
+      second.result.answer === PROMPT_MASK_BLOCKED_ANSWER
+        ? undefined
+        : await this.verifyTurn(runId, input, second);
+    // A retry that could not be verified (or was refused by the privacy
+    // guard) is no correction: keep the first answer, badge `failed`.
+    if (secondVerdict === undefined) return keepEffective();
 
     // Merge: persist ONE row with the final retry count; contradictions table
     // reflects whichever verdict actually tripped. We log both for telemetry.
     void this.persist(runId, input, secondVerdict, 1);
 
+    // A still-blocked retry whose restored answer carries placeholders the
+    // model reworded (so restore could not map them back) would show fake
+    // values: keep the earlier answer instead.
+    if (secondVerdict.status === 'blocked' && (await carriesUnresolvedPlaceholders(second))) {
+      this.log(
+        `[verifier/service] retry answer still blocked and carries unresolved placeholders — keeping the earlier answer run=${runId}`,
+      );
+      const shown = await this.shownTurn(runId, first, effective);
+      return this.deliver(ledger, shown, summarise(effectiveVerdict, 1, this.mode));
+    }
+
     // Compute the user-facing badge: `corrected` when retry fixed it,
     // `failed` when it did not.
     const badge = mergeBadges(effectiveVerdict, secondVerdict);
-    return toSemanticAnswer(
-      withVerifier(secondResult, {
-        ...summarise(secondVerdict, 1, this.mode),
-        badge,
-      }),
+    return this.deliver(ledger, second, {
+      ...summarise(secondVerdict, 1, this.mode),
+      badge,
+    });
+  }
+
+  /**
+   * The turn shown while the verdict stays the one `effective` produced. A
+   * blocked re-sample replaces the first answer only when it can be shown:
+   * one whose restored text still carries a placeholder the model reworded
+   * would put a fake value in front of the user, so the first answer is shown
+   * instead — the verdict, and with it the badge, stay the re-sample's.
+   */
+  private async shownTurn(
+    runId: string,
+    first: EgressTurn,
+    effective: EgressTurn,
+  ): Promise<EgressTurn> {
+    if (effective === first || !(await carriesUnresolvedPlaceholders(effective))) {
+      return effective;
+    }
+    this.log(
+      `[verifier/service] re-sample carries unresolved placeholders — showing the first answer run=${runId}`,
     );
+    return first;
+  }
+
+  /**
+   * Finalize the returned turn's privacy state and attach its receipt (the
+   * orchestrator attached none while the finalisation was handed over).
+   */
+  private async deliver(
+    ledger: EgressLedger,
+    turn: EgressTurn,
+    verifier?: VerifierResultSummary,
+  ): Promise<SemanticAnswer> {
+    const receipt = await ledger.settle(turn);
+    const result = verifier ? withVerifier(turn.result, verifier) : turn.result;
+    return toSemanticAnswer(receipt ? { ...result, privacyReceipt: receipt } : result);
+  }
+
+  /** Verify one turn through its privacy gate; `undefined` = not verified. */
+  private async verifyTurn(
+    runId: string,
+    input: ChatTurnInput,
+    turn: EgressTurn,
+  ): Promise<VerifierVerdict | undefined> {
+    const gate = this.gateFor(turn.result.answerSource, turn.egress);
+    if (!gate.verify) return undefined;
+    return this.safeVerify(runId, input, turn.result.answer, turn.result.runTrace, gate);
   }
 
   /**
@@ -344,32 +483,31 @@ export class VerifierService implements ChatAgent {
     runId: string,
     input: ChatTurnInput,
     firstVerdict: VerifierVerdict,
+    ledger: EgressLedger,
   ): Promise<{
     verdict: VerifierVerdict;
-    result?: ChatTurnResult;
+    turn?: EgressTurn;
   } | undefined> {
     this.log(`[verifier/service] borderline resample run=${runId}`);
-    let secondResult: ChatTurnResult;
+    let second: EgressTurn;
     try {
       // #579 — a borderline resample re-runs the same already-screened user
       // turn; mark it so the inbound gate skips a redundant screen + audit.
+      // The privacy hand-over mark is one-shot, so the ledger sets it again.
       this.orchestrator.markScreeningReentry(input);
-      secondResult = await this.orchestrator.runTurn(input);
+      second = await ledger.runTurn(input, () => this.orchestrator.runTurn(input));
     } catch (err) {
       this.log(`[verifier/service] resample FAIL: ${errMsg(err)}`);
       return undefined;
     }
-    if (secondResult.pendingUserChoice) {
+    if (second.result.pendingUserChoice) {
       // Second sample punted to a clarification card — keep the first
       // verdict, the user-facing answer didn't change.
       return undefined;
     }
-    const secondVerdict = await this.safeVerify(
-      runId,
-      input,
-      secondResult.answer,
-      secondResult.runTrace,
-    );
+    const secondVerdict = await this.verifyTurn(runId, input, second);
+    // Not verifiable behind the shield: re-sampling is best-effort.
+    if (secondVerdict === undefined) return undefined;
     const merged = mergeBorderlineVerdicts(firstVerdict, secondVerdict);
     this.log(
       `[verifier/service] resample merge run=${runId} first=${firstVerdict.status} second=${secondVerdict.status} → ${merged.verdict.status}${
@@ -378,7 +516,7 @@ export class VerifierService implements ChatAgent {
     );
     return {
       verdict: merged.verdict,
-      ...(merged.takeSecond ? { result: secondResult } : {}),
+      ...(merged.takeSecond ? { turn: second } : {}),
     };
   }
 
@@ -389,6 +527,7 @@ export class VerifierService implements ChatAgent {
     input: ChatTurnInput,
     answer: string,
     runTrace: RunTracePayload | undefined,
+    gate: Extract<VerifierGate, { verify: true }>,
   ): Promise<VerifierVerdict> {
     const domainToolsCalled = extractToolsCalled(runTrace);
     const toolPostconditionViolations = extractPostconditionViolations(runTrace);
@@ -396,7 +535,8 @@ export class VerifierService implements ChatAgent {
     try {
       return await this.pipeline.verify({
         runId,
-        userMessage: input.userMessage,
+        // What the turn's model saw — never an MCP input-card envelope.
+        userMessage: modelFacingUserMessage(input.userMessage),
         answer,
         ...(domainToolsCalled ? { domainToolsCalled } : {}),
         ...(toolPostconditionViolations.length > 0
@@ -405,6 +545,9 @@ export class VerifierService implements ChatAgent {
         ...(knowledgeGraphToolsCalled !== undefined
           ? { knowledgeGraphToolsCalled }
           : {}),
+        // The turn's privacy view: every model request of the verifier
+        // goes through it (absent only when no shield is installed).
+        ...(gate.privacy ? { privacy: gate.privacy } : {}),
       });
     } catch (err) {
       this.log(`[verifier/service] pipeline FAIL: ${errMsg(err)}`);

@@ -1,7 +1,8 @@
 import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
 import { textMessage, toolCalls } from '@omadia/llm-provider';
-import type { ClaimVerdict, SoftClaim } from './claimTypes.js';
+import type { ClaimVerdict, SoftClaim, VerifierPrivacy } from './claimTypes.js';
 import { MAX_CONTEXT_CHARS } from './claimExtractor.js';
+import { citedNodeId, judgeRequestParts, projectRequestParts } from './judgeRequest.js';
 
 /**
  * LLM-as-Judge for SoftClaims (names, qualitative statements) that can't
@@ -16,13 +17,34 @@ import { MAX_CONTEXT_CHARS } from './claimExtractor.js';
  * history reuse) and only keep the contradiction if both agree. Single
  * Haiku calls are cheap; the double-check prevents one unlucky flip from
  * blocking a correct answer.
+ *
+ * Behind a Privacy Shield (`check(claim, privacy)`) each request is projected
+ * through the turn's surrogate map before it leaves the process — claim,
+ * context and evidence in one pass, so the same person is the same
+ * placeholder on both sides. The judge can still verify; a contradiction
+ * judged on placeholders is reported as `unverified` instead of blocking.
+ * Node ids never leave: the request names each snippet by a handle minted
+ * for that request (`ev-1`, `ev-2`, …), the handle the judge cites is mapped
+ * back to the snippet server-side, and a node id the text repeats is
+ * replaced like a display name.
  */
 
 export interface EvidenceSnippet {
-  nodeId: string;               // stable id the judge references on contradict
+  /** Stable id of the record — what a verdict resolves to. Behind a Privacy
+   *  Shield it is never sent (see the class comment). */
+  nodeId: string;
   source: 'graph' | 'confluence' | 'odoo';
   content: string;              // <= ~2 kB per snippet
   title?: string;
+  /**
+   * Values in `title` / `content` that identify a person or record (display
+   * name, free-text fields, a string record key). Behind a Privacy Shield
+   * they are always replaced by placeholders before the judge's request
+   * leaves the process, whatever the detectors find — as is `nodeId`, which
+   * need not be listed. A fetcher that sets none leaves the rest of the text
+   * to the detectors.
+   */
+  identityValues?: readonly string[];
 }
 
 /**
@@ -48,6 +70,12 @@ const DEFAULTS = {
   model: 'claude-haiku-4-5-20251001',
   maxTokens: 256,
 };
+
+/** Per-snippet cap on the evidence text the judge sees. */
+const MAX_SNIPPET_CHARS = 1800;
+/** Tighter cap behind a Privacy Shield (the snippet count is capped too, see
+ *  judgeRequest.ts): it bounds what leaves the process. */
+const PRIVACY_MAX_SNIPPET_CHARS = 1200;
 
 const TOOL_NAME = 'record_verdict';
 
@@ -84,6 +112,14 @@ interface RawVerdict {
 
 type PrimitiveVerdict = 'verified' | 'unverified' | 'contradicted';
 
+interface JudgeVerdict {
+  verdict: PrimitiveVerdict;
+  /** As parsed: the ref the judge cited. Once `judgeOnce` resolved it: the
+   *  node id of the snippet printed under that ref, or absent. */
+  evidenceNodeId?: string;
+  rationale?: string;
+}
+
 export class EvidenceJudge {
   private readonly llm: LlmProvider;
   private readonly fetcher: EvidenceFetcher;
@@ -103,8 +139,12 @@ export class EvidenceJudge {
       });
   }
 
-  /** Check one SoftClaim. Always resolves; never throws. */
-  async check(claim: SoftClaim): Promise<ClaimVerdict> {
+  /**
+   * Check one SoftClaim. Always resolves; never throws. `claim` carries REAL
+   * values (the evidence lookup runs on them server-side); with a `privacy`
+   * view every request is projected through the turn's surrogate map first.
+   */
+  async check(claim: SoftClaim, privacy?: VerifierPrivacy): Promise<ClaimVerdict> {
     let evidence: EvidenceSnippet[];
     try {
       evidence = await this.fetcher.fetch(claim);
@@ -115,7 +155,7 @@ export class EvidenceJudge {
       return unverified(claim, 'no evidence available');
     }
 
-    const first = await this.judgeOnce(claim, evidence);
+    const first = await this.judgeOnce(claim, evidence, privacy);
     if (first === null) {
       return unverified(claim, 'judge returned no usable verdict');
     }
@@ -123,7 +163,21 @@ export class EvidenceJudge {
     // Double-check on contradicted: one shaky Haiku flip should not block a
     // correct answer. We only confirm when the second call agrees.
     if (first.verdict === 'contradicted') {
-      const second = await this.judgeOnce(claim, evidence);
+      // Behind the shield the judge compared placeholders. Equal placeholders
+      // mean equal values, so `verified` stays sound — but a contradiction
+      // can be an artefact of the substitution (a value masked on one side
+      // and written differently on the other). It must never block an
+      // answer, so it is not confirmed and no second request is sent.
+      if (first.projected) {
+        this.log(
+          `[verifier/judge] contradiction judged on placeholders, downgrading to unverified claim=${claim.id}`,
+        );
+        return unverified(
+          claim,
+          'contradiction judged on placeholder values — not confirmable behind the privacy shield',
+        );
+      }
+      const second = await this.judgeOnce(claim, evidence, privacy);
       if (second === null || second.verdict !== 'contradicted') {
         this.log(
           `[verifier/judge] contradiction not reproduced, downgrading to unverified claim=${claim.id}`,
@@ -155,20 +209,42 @@ export class EvidenceJudge {
     }
   }
 
-  async checkAll(claims: SoftClaim[]): Promise<ClaimVerdict[]> {
-    return Promise.all(claims.map((c) => this.check(c)));
+  async checkAll(
+    claims: SoftClaim[],
+    privacy?: VerifierPrivacy,
+  ): Promise<ClaimVerdict[]> {
+    return Promise.all(claims.map((c) => this.check(c, privacy)));
   }
 
   // ------------------------------------------------------------------
 
+  /**
+   * One judge request. Returns `null` when no usable verdict came back —
+   * including when the privacy projection was blocked, in which case NO
+   * request is sent. `projected` is true when the projection replaced
+   * anything, i.e. the judge saw placeholders.
+   */
   private async judgeOnce(
     claim: SoftClaim,
     evidence: EvidenceSnippet[],
-  ): Promise<{
-    verdict: PrimitiveVerdict;
-    evidenceNodeId?: string;
-    rationale?: string;
-  } | null> {
+    privacy: VerifierPrivacy | undefined,
+  ): Promise<(JudgeVerdict & { projected: boolean }) | null> {
+    const real = judgeRequestParts(claim, evidence, privacy !== undefined);
+    let parts = real;
+    let projected = false;
+    if (privacy) {
+      try {
+        const result = await projectRequestParts(real, evidence, privacy);
+        parts = result.parts;
+        projected = result.projected;
+      } catch (err) {
+        this.log(
+          `[verifier/judge] skipped — prompt masking blocked claim=${claim.id}: ${errMsg(err)}`,
+        );
+        return null;
+      }
+    }
+
     const system = `You judge whether a single factual claim is supported by a bundle of evidence snippets. You do NOT see the original answer — only the claim and the evidence. This is deliberate: your job is to be an independent reviewer, not to rubber-stamp.
 
 Rules:
@@ -179,20 +255,20 @@ Rules:
 - Do NOT reward plausibility. If the evidence doesn't mention it, it's unverified — not verified.
 - When a CONTEXT line is present it is the single sentence the claim was cut from. Use it only to resolve what the claim refers to (its subject, tense); judge the CLAIM as meant in that sentence. Never base "contradicted" or "verified" on a fact that appears only in CONTEXT and not in CLAIM.`;
 
-    const evidenceBlock = evidence
+    const maxSnippetChars = privacy ? PRIVACY_MAX_SNIPPET_CHARS : MAX_SNIPPET_CHARS;
+    const evidenceBlock = parts.evidence
       .map(
         (e, idx) =>
-          `Evidence #${String(idx + 1)} [nodeId=${e.nodeId}, source=${e.source}${e.title ? `, title=${e.title}` : ''}]:\n${truncate(e.content, 1800)}`,
+          `Evidence #${String(idx + 1)} [nodeId=${e.ref}, source=${e.source}${e.title ? `, title=${e.title}` : ''}]:\n${truncate(e.content, maxSnippetChars)}`,
       )
       .join('\n\n');
 
-    const context =
-      claim.context && claim.context.trim().toLowerCase() !== claim.text.trim().toLowerCase()
-        ? `\nCONTEXT: ${truncate(claim.context, MAX_CONTEXT_CHARS)}`
-        : '';
-    const user = `CLAIM: ${claim.text}${context}
+    const context = parts.context
+      ? `\nCONTEXT: ${truncate(parts.context, MAX_CONTEXT_CHARS)}`
+      : '';
+    const user = `CLAIM: ${parts.claimText}${context}
 CLAIM TYPE: ${claim.type}
-RELATED: ${claim.relatedEntities.join(', ') || '(none)'}
+RELATED: ${parts.related || '(none)'}
 
 EVIDENCE:
 ${evidenceBlock}`;
@@ -212,17 +288,46 @@ ${evidenceBlock}`;
       return null;
     }
 
-    return parseVerdict(response);
+    const parsed = parseVerdict(response);
+    if (parsed === null) return null;
+    // The judge cites a ref of THIS request; only the snippet printed under
+    // it can stand behind the verdict.
+    const nodeId = citedNodeId(parsed.evidenceNodeId, real, evidence);
+    const verdict: JudgeVerdict = {
+      verdict: parsed.verdict,
+      ...(nodeId !== undefined ? { evidenceNodeId: nodeId } : {}),
+      ...(parsed.rationale !== undefined ? { rationale: parsed.rationale } : {}),
+    };
+    if (privacy === undefined) return { ...verdict, projected };
+    return { ...(await this.restoreRationale(verdict, privacy)), projected };
+  }
+
+  /**
+   * The judge argued over the projected request: map its rationale (which
+   * `check` turns into truth / detail / reason) back to real values. A
+   * rationale that fails to restore is dropped rather than kept as
+   * placeholder text. The citation needs no restore — it is a handle.
+   */
+  private async restoreRationale(
+    verdict: JudgeVerdict,
+    privacy: VerifierPrivacy,
+  ): Promise<JudgeVerdict> {
+    const out: JudgeVerdict = { verdict: verdict.verdict };
+    if (verdict.evidenceNodeId !== undefined) out.evidenceNodeId = verdict.evidenceNodeId;
+    if (verdict.rationale !== undefined) {
+      try {
+        out.rationale = await privacy.restore(verdict.rationale);
+      } catch (err) {
+        this.log(`[verifier/judge] rationale restore failed, dropped: ${errMsg(err)}`);
+      }
+    }
+    return out;
   }
 }
 
 // ---------------- helpers ----------------
 
-function parseVerdict(response: LlmResponse): {
-  verdict: PrimitiveVerdict;
-  evidenceNodeId?: string;
-  rationale?: string;
-} | null {
+function parseVerdict(response: LlmResponse): JudgeVerdict | null {
   // Defensive: the contract guarantees `content` is an array, but keep the
   // historical never-throws behavior against malformed input.
   if (!Array.isArray(response.content)) return null;
@@ -241,11 +346,7 @@ function parseVerdict(response: LlmResponse): {
     }
     const rationale =
       typeof raw.rationale === 'string' ? raw.rationale.slice(0, 300) : '';
-    const out: {
-      verdict: PrimitiveVerdict;
-      evidenceNodeId?: string;
-      rationale?: string;
-    } = { verdict };
+    const out: JudgeVerdict = { verdict };
     if (nodeId) out.evidenceNodeId = nodeId;
     if (rationale) out.rationale = rationale;
     return out;

@@ -4,6 +4,7 @@ import type {
   HardClaim,
   SoftClaim,
   VerifierInput,
+  VerifierPrivacy,
   VerifierVerdict,
 } from './claimTypes.js';
 import { hasOdooRecordAnchor, isHardClaim, isSoftClaim } from './claimTypes.js';
@@ -93,11 +94,15 @@ export class VerifierPipeline {
       return aggregate(synthetic, started);
     }
 
+    // The privacy view reaches every stage that sends text to a model; the
+    // deterministic re-query below stays on the real values, server-side.
+    const privacy = input.privacy;
     let claims: Claim[];
     try {
       claims = await this.extractor.extract({
         userMessage: input.userMessage,
         answer: input.answer,
+        ...(privacy ? { privacy } : {}),
       });
     } catch (err) {
       this.log(`[verifier/pipeline] extractor FAIL: ${errMsg(err)}`);
@@ -135,7 +140,7 @@ export class VerifierPipeline {
     // own — we never need to wait on one to start the other.
     const [hardVerdicts, softVerdicts] = await Promise.all([
       this.deterministic.checkAll(hardToActuallyCheck),
-      this.checkSoftClaims(soft, hard),
+      this.checkSoftClaims(soft, hard, privacy),
     ]);
 
     const all: ClaimVerdict[] = [
@@ -163,12 +168,13 @@ export class VerifierPipeline {
   private async checkSoftClaims(
     soft: SoftClaim[],
     hard: readonly HardClaim[],
+    privacy: VerifierPrivacy | undefined,
   ): Promise<ClaimVerdict[]> {
     const coveredByHard = new Set(hard.map(anchorKey).filter(Boolean));
     const anchored = soft.filter(
       (c) => hasOdooRecordAnchor(c) && !coveredByHard.has(anchorKey(c)),
     );
-    if (anchored.length === 0) return this.judge.checkAll(soft);
+    if (anchored.length === 0) return this.judge.checkAll(soft, privacy);
 
     const existence = await Promise.all(
       anchored.map((c) => this.deterministic.checkRecordExists(c)),
@@ -181,7 +187,7 @@ export class VerifierPipeline {
       );
     }
     const forJudge = soft.filter((c) => !blockedIds.has(c.id));
-    const judged = await this.judge.checkAll(forJudge);
+    const judged = await this.judge.checkAll(forJudge, privacy);
     return [...contradicted, ...judged];
   }
 }

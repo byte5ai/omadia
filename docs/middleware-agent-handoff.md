@@ -1651,10 +1651,14 @@ Ein Turn persistiert seinen PII-freien `PrivacyReceipt` synchron nach
 der Privacy Shield in diesem Turn aktiv war**: `finalizeTurn()` in
 `harness-plugin-privacy-guard/src/service.ts` liefert nur dann einen Receipt,
 wenn der Turn ein Dataset interniert, einen Bypass oder die strukturierte
-Ausgabe eines angebundenen Tools protokolliert oder den Prompt maskiert hat
-(Letzteres nur bei mindestens einem erkannten PII-Span); der Orchestrator
-persistiert nur `if (receipt)`. Ein Turn ohne Shield-Aktivität (z. B. reine
-Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt;
+Ausgabe eines angebundenen Tools protokolliert, den Prompt maskiert
+(Letzteres nur bei mindestens einem erkannten PII-Span), einen Tool-Fehler
+behandelt hat (`toolErrors`: Exception-Text zurückgehalten, `Error:`-Text
+redigiert oder zurückgehalten, MCP-Connect-Prompt durchgereicht — siehe §11
+„Tool-Fehler an den Dispatch-Nähten“) oder der Antwort-Verifier unter seiner
+Privacy-Sicht Modellanfragen gestellt hat (`verifierEgress`, siehe unten); der
+Orchestrator persistiert nur `if (receipt)`. Ein Turn ohne Shield-Aktivität
+(z. B. reine Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt;
 `mask_user_prompt` ist per Default ohnehin aus) schreibt weder eine Zeile
 noch eine Log-Zeile. UI-Copy und README sagen das seit #1081 so. Ein
 Null-Aktivitäts-Receipt pro Turn wurde bewusst verworfen: er würde die
@@ -1670,6 +1674,61 @@ auth-gated **`GET /api/v1/operator/receipts`** (Liste, Composite-Keyset-Cursor
 `/operator/receipts`. Retention: `RECEIPT_RETENTION_DAYS` (Default 90),
 Reaper mit Eager-Boot-Tick, Cutoff auf der DB-Uhr. Tests:
 `test/turnReceipts.test.ts`, `test/orchestrator/turnReceiptPersistence.test.ts`.
+
+#### Verifier-gewrappte Turns finalisieren erst nach dem Verifier
+
+Läuft ein Turn über `VerifierService` (Bundle `verifier@1` publiziert) und ist
+der Privacy Shield aktiv, finalisiert der Turn **nicht selbst**: Der Wrapper
+setzt vor jedem `runTurn`/`chatStream` `markPrivacyFinalizeHeld(input)`
+(One-Shot, gekeyt auf das Input-Objekt des Aufrufers), der Turn liefert sein
+Ergebnis ohne `privacyReceipt` und übergibt eine
+`PrivacyEgressContinuation` (`harness-orchestrator/src/privacyEgress.ts`),
+die der Wrapper mit `takePrivacyEgress(input)` abholt. Alle drei
+Finalize-Stellen übergeben (gepuffert, Streaming-`done`, Streaming-Direct-Line).
+Über `continuation.verifierPrivacy` laufen Extractor- und Judge-Requests unter
+der Surrogat-Map des Turns; danach ruft der Wrapper `finalize()` **genau
+einmal** pro Turn (`EgressLedger` in `verifierPrivacyGate.ts`, auch bei Fehlern
+und Client-Abbruch) — erst dann entstehen Receipt und `turn_receipts`-Zeile.
+Das Modell-Attribut wird bei der Übergabe gesichert (die 512er-FIFO
+`turnAttribution` könnte es sonst verdrängen). Der Receipt trägt die
+Verifier-Requests getrennt in `verifierEgress` (Anzahl + Span-Typen); ein Turn,
+dessen einzige Shield-Aktivität der Verifier war, bekommt dadurch ebenfalls
+eine Zeile. Beim Streaming hält der Wrapper `done` zurück, bis der innere
+Stream gedrained ist und der Verifier fertig ist, und sendet es dann mit
+`privacyReceipt` + `receiptId`, gefolgt vom `verifier`-Event. Ein Turn, der
+wirft, oder ein abgebrochener Stream verwirft seinen Privacy-State jetzt
+sofort (vorher blieb er bis zum Neustart im Speicher). Sicherheitsseite:
+`docs/security-architecture.md` §6e. Die Wire-Sicht zeichnet der Turn selbst
+auf (`TurnContextValue.wireView`): den Prompt so, wie ihn das Modell bekam —
+eine MCP-Input-Card-Antwort also nur als Label, nie als Envelope mit den
+eingegebenen Werten — und die Antwort vor dem Restore. Der Extractor schickt
+genau das und maskiert es nicht erneut (`admitWireView` bucht den Request nur);
+`VerifierService` gibt der Pipeline auch als `userMessage` nie den Envelope
+(`modelFacingUserMessage`). Claims aus der Wire-Sicht stellt
+`harness-verifier/src/claimRestore.ts` serverseitig wieder her (Beträge/Daten
+aus Platzhaltern werden aus dem echten Literal neu gelesen). Der Judge bekommt
+keine Node-IDs: Jede Evidenz heißt im Request `ev-1`, `ev-2`, … (pro Request
+vergeben, die zitierte Kennung wird serverseitig auf das Snippet
+zurückgeführt), und eine Node-ID oder ein String-Schlüssel (`id=…`) im
+Evidenztext wird wie ein Anzeigename ersetzt. Eine zweite
+Antwort mit ungelösten Platzhaltern (`countUnresolvedSurrogates`) ersetzt die
+erste nie — weder ein weiter blockierter Retry noch ein blockiertes Re-Sample
+nach einer Borderline-Antwort. Ungelöst heißt: wörtlich, in anderer
+Groß-/Kleinschreibung, mit umgruppierten Ziffern oder — bei Datum und Betrag —
+als anderes Literal desselben Werts (`harness-plugin-privacy-guard/src/valueLiterals.ts`:
+ISO, Punkt/Slash, ohne führende Null, zweistelliges Jahr, ausgeschriebener
+Monat in sechs Locales, Tausendergruppen, „k“/„Tsd.“/„T€“/„Mio.“); denn Restore
+ersetzt nur den exakten Platzhalter-String. Ein Datums- oder Betragsliteral
+ohne lesbaren Wert passt auf jeden Platzhalter seiner Art (fail closed).
+Tests:
+`test/orchestratorPrivacyEgress.test.ts` (Übergabe),
+`test/verifierPrivacyEgressEndToEnd.test.ts` (Verifier um den echten
+Orchestrator, auch ein als ISO umgeschriebener Datums-Platzhalter in Retry und
+Re-Sample), `test/privacyValueLiterals.test.ts` (Wert-Grammatik),
+`test/verifierEvidenceHandles.test.ts` (Judge-Kennungen),
+`test/verifierServicePrivacyEgress.test.ts` /
+`test/verifierServiceStreamPrivacyEgress.test.ts` (Wrapper, Harness in
+`test/_helpers/`).
 
 #### API-Turn-Attribution + Korrelations-Id (#1107)
 
@@ -3132,7 +3191,9 @@ Konfiguration (live pro Call aufgelöst, kein Restart nötig): Setup-Field
 unset). URL nicht gesetzt ⇒ C1 unkonfiguriert, es wird **kein** Call
 versucht (kein Degrade-Audit-Noise). Docker: Overlay
 `docker-compose.pii-detector.yaml` baut den Sidecar (keine published Ports —
-er sieht rohe Prompt-PII, niemals öffentlich exponieren) und setzt die URL.
+er sieht rohe Kundendaten: Prompt-Text bei `mask_user_prompt=on` und,
+unabhängig davon, Tool-Fehlertexte und jede Evidence-Judge-Anfrage des
+Verifiers; niemals öffentlich exponieren) und setzt die URL.
 
 Fail-closed-Verhalten des Clients: Response-Schema wird **positiv**
 validiert (skillspector-Präzedenz); Non-200, `ok:false`, malformed Spans,
@@ -3220,6 +3281,16 @@ Genau ein `done` oder `error` schließt den Stream. Header:
 `Content-Type: application/x-ndjson; charset=utf-8`, `X-Accel-Buffering: no`
 (nginx-buffer-off).
 
+**Antwort-Verifier.** Ist `verifier@1` aktiv, folgt auf `done` noch genau ein
+`{ type: 'verifier'; summary }` (Status/Badge der Prüfung; die Web-UI wertet es
+derzeit nicht aus). Läuft zusätzlich der Privacy Shield, hält der Wrapper
+`done` zurück, bis der innere Stream gedrained und der Verifier fertig ist:
+`done` trägt dann — sofern der Turn einen hat — den vollständigen Receipt
+(`privacyReceipt` inkl. `verifierEgress`, `receiptId`), direkt danach kommt
+`verifier`. Text-Deltas
+laufen unverändert live, nur der Abschluss wartet (Heartbeats laufen weiter).
+Details: `docs/security-architecture.md` §6e.
+
 **Degradierter Turn (#1094).** Wirft ein Turn, *nachdem* mindestens ein
 Tool-Call bereits committet hat, bleibt das terminale Event bewusst `done` —
 ein `error` würde den committeten Seiteneffekt als gescheitert melden und den
@@ -3306,8 +3377,10 @@ zusammen mit `answerSource: 'privacy-render'`, nie `false`, additiv/optional.
 Zweiter, unabhängiger Fix im selben Issue: ein Guarded-Tool, das einen prosaischen
 `Error:`-String **zurückgibt** (die `Error:`-Konvention, aus der auch `is_error`
 abgeleitet wird), wird an den Dispatch-Nähten nicht mehr als 1-Zeilen-Dataset
-interniert, sondern unverändert an das Modell durchgereicht — sonst sah das
-Modell den Fehler nie und ein späteres Render materialisierte ihn als Daten.
+interniert, sondern als Text an das Modell gegeben — sonst sah das Modell den
+Fehler nie und ein späteres Render materialisierte ihn als Daten. Nicht
+interniert heißt seit dem Tool-Error-Fix nicht ungeprüft (siehe den Absatz
+„Tool-Fehler an den Dispatch-Nähten“ unten).
 #1105 schloss die beiden Nähte seiner Repros (`Orchestrator.dispatchTool`,
 `ToolDispatchService.afterDispatch`), **#1097** die restlichen zwei:
 `LocalSubAgent.dispatch` (Fehler eines Tools *innerhalb* eines Sub-Agents) und
@@ -3315,17 +3388,25 @@ Modell den Fehler nie und ein späteres Render materialisierte ihn als Daten.
 `McpManager` wirft nie, er liefert einen `Error: …`-String). Alle vier Guards
 sitzen an derselben Stelle: nach Intern-Exemption-Allowlist und Operator-Bypass,
 vor dem Internieren — und konsultieren **ein** Prädikat,
-`isControlFlowToolResult` (`@omadia/plugin-api`, `toolControlFlowText.ts`).
+`isGuardedControlFlowResult` (`toolErrorRedaction.ts`).
 
 Das Prädikat deckt zwei Träger ab, denn der `Error:`-Präfix allein war zu eng:
-den **MCP-Auth-Prompt** (verankert auf das exakte Produzenten-Präfix
-`🔒 The MCP server "`, ggf. mit dem `<mcp-auth-required>`-Block, aus dem die
-Chat-UI die Connect-Karte baut) liefert `McpManager.handleFailure`
-statt eines rohen Fehlers, sobald ein Call auth-förmig scheitert (Alltagsfall:
-abgelaufenes OAuth-Token auf einer geparkten MCP-Input-Karte). Interniert ging
-die Connect-Karte verloren und das Modell erzählte Erfolg über einem Digest.
-Das Prädikat prüft **nur Präfixe**, nie Teilstrings: ein Marker in einer
+den **MCP-Auth-Prompt** (`🔒 The MCP server "…`, ggf. mit dem
+`<mcp-auth-required>`-Block, aus dem die Chat-UI die Connect-Karte baut) liefert
+`McpManager.handleFailure` statt eines rohen Fehlers, sobald ein Call
+auth-förmig scheitert (Alltagsfall: abgelaufenes OAuth-Token auf einer
+geparkten MCP-Input-Karte). Interniert ging die Connect-Karte verloren und das
+Modell erzählte Erfolg über einem Digest. Erkannt wird der Prompt **per
+Provenienz, nicht am Präfix**: jede Naht öffnet um genau einen Dispatch eine
+`McpAuthPromptMint` (`mcp/mcpAuthPromptMint.ts`, eigener AsyncLocalStorage, weil
+der Dispatcher ohne Turn läuft und Skill-Bindung wie `ctx.mcp` den Turn-Store
+neu bauen), `handleFailure` trägt den zurückgegebenen Prompt dort ein, und nur
+ein byte-gleiches Ergebnis zählt. Text, der bloß so anfängt (ein
+Remote-Textblock, eine Datenzelle am Anfang eines Ergebnisses), ist Tool-Datum
+und wird interniert. Das Prädikat prüft nie Teilstrings: ein Marker in einer
 Datenzelle darf kein mehrzeiliges Ergebnis entmaskieren.
+`isControlFlowToolResult` (`@omadia/plugin-api`) klassifiziert weiter nur am
+Präfix; an den Nähten entscheidet es nichts mehr.
 
 Ein **gerenderter Fehler** wird als solcher markiert —
 `PrivacyRenderedAnswer.isError` (entschieden an der Quell-Zelle: ein Dataset
@@ -3333,11 +3414,89 @@ aus genau einer Control-Flow-Zelle), vom Orchestrator als
 `answerIsError: true` auf beide Antwortpfade gelegt (siehe §11-Kontrakt). Der
 **Shape-Classifier bleibt unverändert**: eine Ausnahme für 1×1-`Error:`-Skalare
 wäre ein Klartext-Kanal, weil Verben abgeleitete Datasets neu klassifizieren
-(`filter` + `select` verengen jede maskierte Spalte auf so einen Skalar). Die
-Maskierung **geworfener** Exceptions (`maskErrorText`) bleibt bewusst
-unberührt: diesen Text hat niemand saniert (ein ORM echot die
-Zeile, ein Treiber die gebundenen Parameter), das "Error-Strings enthalten
-konstruktionsbedingt keine PII"-Argument gilt nur für die Konvention.
+(`filter` + `select` verengen jede maskierte Spalte auf so einen Skalar).
+
+**Tool-Fehler an den Dispatch-Nähten.** Weder eine geworfene Exception noch ein
+zurückgegebener `Error:`-Text ist sanierter Text (ein ORM echot die Zeile, ein
+Treiber die gebundenen Parameter, ein Remote-MCP-Server seinen Fehler-Body).
+Deshalb laufen beide Träger an jeder Naht durch **einen** Helper,
+`toolErrorRedaction.ts` (`@omadia/orchestrator`), und die Politik folgt der
+Herkunft:
+- **Geworfen** (`withholdThrownToolError`): das Modell bekommt nur die
+  Withheld-Notice ``Error: tool `<name>` failed with <Klasse> (code <code>)
+  [ref <ref>] …`` — Klassenname und bereinigter Code (`describeThrownError`,
+  `@omadia/plugin-api`), nie die Message. `Orchestrator.dispatchTool` rejected
+  dafür nie mehr (auch nicht bei `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=0`); die
+  Rejection-Zweige beider Loops sind nur noch Backstops mit derselben Notice.
+  `ToolDispatchService.thrownResult` ersetzt das frühere `maskErrorText`
+  (das die Message als Dataset internierte) durch dieselbe Notice
+  (`origin: 'dispatcher'`), und `LocalSubAgent.dispatch` macht aus einem
+  werfenden inneren Tool ein `is_error`-Tool-Result, statt den Sub-Agent
+  abbrechen zu lassen. Der Aufruf kann vor der Exception schon gewirkt haben
+  (Write committet, Antwort läuft in den Timeout): die Notice sagt dem
+  Modell, dass der Ausgang unbekannt ist, und der Sub-Agent verweigert für den
+  Rest des Laufs eine identische Wiederholung (gleiches Tool, gleicher
+  kanonischer Input; `subAgentUnknownOutcome.ts`) — auch ohne
+  Privacy-Provider und auch dann, wenn eine Tool-Bridge die Exception selbst
+  gefangen und die Notice zurückgegeben hat (`isWithheldToolErrorNotice`,
+  Erkennung an der Form; wer sie imitiert, blockiert nur die eigene
+  Wiederholung). Anderer Input und ein Retry nach einem gewöhnlichen
+  zurückgegebenen `Error:`-Hinweis laufen weiter.
+- **Zurückgegeben** (`guardControlFlowResult`): der Text hinter `Error:` geht
+  durch `redactToolErrorText` des Providers (C0-Identitätstypen ohne
+  `date`/`amount`, Deny-List #760, C1; irreversibel `[masked:<typ>]`, die
+  Surrogat-Map des Turns wird nicht erweitert). Zurückgehalten statt redigiert
+  wird er, wenn er nach Exception aussieht (Zeilen-Echo als JSON, Python-Dict
+  oder JS-Objekt/`Map`, wie `util.inspect`, `console.log` und `%o` es
+  drucken; Datensatz mit Keyword-Feldern wie Dataclass, Kotlin/Lombok,
+  Java-Record oder Java-`Map`, oder mit Gos `Key:value`-Feldern; Stacktrace;
+  Postgres-`DETAIL:`-Zeile, `Failing row contains (…)` oder `Key (…)=(…)`,
+  wie psycopg und Odoos JSON-RPC-Fehler sie tragen), länger als 4096 Zeichen
+  ist oder der Provider ihn nicht prüfen kann.
+- **MCP-Connect-Prompt**: byte-identisch durchgereicht (Connect-Karte muss
+  überleben) und quittiert — aber nur der Text, den `McpManager` im selben
+  Dispatch erzeugt hat; alles andere mit diesem Präfix wird interniert. Der
+  Tool-Call eines Sub-Agents ist Teil des Eltern-Dispatches: sein Prompt wird
+  in beiden Mints eingetragen, die Eltern-Naht reicht eine Sub-Agent-Antwort
+  durch, die ihn byte-gleich wiederholt, und behandelt jede andere wie eine
+  normale Sub-Agent-Antwort.
+Die Kernel-eigenen Absagen aus `dispatchToolInner` (Tool nicht verfügbar /
+nicht gegrantet / unbekannt) sind per Provenienz ausgenommen, nicht per Form.
+Jeder behandelte Fehler schreibt einen PII-freien Eintrag in
+`PrivacyReceipt.toolErrors` (`carrier`, `outcome`, Bytes, maskierte
+Span-Typen); die volle Fehlermeldung samt Stack steht einmal im Server-Log
+unter `ref=<ref>` — der Turn-Korrelations-Id (#641, dieselbe wie in
+`<turn-incomplete ref="…">`), der Request-Id des Dispatcher-Callers oder einem
+frischen `err_…`-Token. Das Log ist die einzige Stelle, an der ein Operator den
+Treibertext noch findet. Die In-Tree-Wrapper, die `Error: ${err.message}`
+lieferten (die drei Tool-Bridges über `bridgedToolError`, Web-Search,
+Diagramme, Discussion, Transkription, `manage_routine`, `query_dataset`, die
+Long-Running-Task-Handler, `createDomainTool`), geben nur noch selbst
+formulierte Meldungen im Klartext zurück und sonst `toolErrorFromException`.
+Ein typisierter Fehler zählt nur dann als selbst formuliert, wenn nichts
+Fremdes in seiner Message steckt: Web-Search-Provider und Kroki-Client legen
+die gefangene Transport-Exception auf `cause` und den Upstream-Body auf
+`body`, und `web_search` / `render_diagram` bauen ihr Ergebnis nur aus
+Provider-Id bzw. Diagramm-Art und HTTP-Status, nie aus der Message; der Rest
+steht unter der Ref im Log.
+Auf dem **öffentlichen MCP-Endpunkt** läuft jeder Tool-Handler mit dem
+Privacy-Handle des Dispatches als ambientem `turnContext.privacyHandle`
+(`runHandlerInPrivacyScope`): der Sub-Agent eines Domain-Tools bekommt
+die verschachtelte Gate-Variante (`PrivacyTurnHandle.forNestedCalls`),
+interniert damit seine inneren Ergebnisse und sieht innere Fehler nur als
+Withheld-Notice. Diese Maskierung zählt nicht für `masked()` des
+Call-Ergebnisses, ein Fehlschlag darin verwirft den Call. Ohne Handle läuft
+dort kein Handler (`requirePrivacyHandle`; ein Dispatcher ohne `withPrivacy`
+wird vor dem Dispatch abgewiesen). Vorher fand der Sub-Agent dort keinen
+Handle, und sein Provider bekam innere Daten und Fehlertexte im Klartext.
+Ohne Privacy-Provider (und für intern-exempte Self-Tools) fließt der Text wie
+jedes andere Tool-Ergebnis roh — Parität; auf dem Abo-CLI-Pfad gibt es keinen
+Shield (#1087). Versions-Paarung: der gebündelte
+`@omadia/plugin-privacy-guard` implementiert `redactToolErrorText` ab 0.6.0.
+Ein Provider ohne die Methode lässt den Kernel zurückgegebene `Error:`-Texte
+vollständig zurückhalten, und das Log meldet einmal pro Prozess
+`does not implement redactToolErrorText`. Details, Residuen und Reviewer-Regel:
+`docs/security-architecture.md` §6c und §11.
 
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
@@ -3630,6 +3789,141 @@ Adapter falsch konfiguriert ist. Offen:
   kein argon2-Slot frei ist. Die Login-Seite zeigt dafür „bitte N Sekunden warten“, die
   Setup-Seite (`web-ui/app/setup/page.tsx`) zeigt noch die rohe Fehlermeldung.
 
+### Verifier hinter dem Privacy Shield — Folgearbeiten
+
+Seit dem Privacy-Hand-over (Turn-Receipts, `security-architecture.md` §6e)
+laufen die Verifier-Requests unter der Surrogat-Map des Turns. Offen:
+- **Teams-Card:** `channel-teams` (eigenes Repo) rendert
+  `PrivacyReceipt.verifierEgress` noch nicht — das Feld wird ignoriert, bis die
+  Card eine "Antwortprüfung"-Zeile bekommt (Web-UI hat sie).
+- **Judge-Widersprüche hinter dem Shield:** ein `contradicted` des Judges auf
+  Platzhaltern wird bewusst zu `unverified` herabgestuft (Formatabweichungen
+  zwischen Claim und Evidenz würden sonst korrekte Antworten blocken). Ein
+  format-bewusster Vergleich (z. B. Datums-/Betrags-Normalisierung vor der
+  Maskierung) könnte weiche Widersprüche wieder blockierend machen.
+- **Ledger-Attribution:** die Verifier-Kostenzeilen können an
+  `continuation.receiptId` anknüpfen (siehe Cost-Ledger "Offen").
+- **Wertgleiche Platzhalter beim Minting:** `createPromptPseudonymMap`
+  (`v4/pseudonym.ts`) prüft Kollisionen nur als String. Ein echtes Datum oder
+  ein echter Betrag, dessen Wert einem Kandidaten entspricht, bekommt einen
+  Platzhalter mit demselben Wert in anderer Schreibweise (echte „10.000 €“ →
+  „€10000“, „1970-01-01“ → „01.01.1970“) — der Request trägt dann den echten
+  Wert. Nebenwirkung: `countUnresolvedSurrogates` zählt den restaurierten
+  echten Wert als ungelöst, ein Retry/Re-Sample wird in so einem Turn nie
+  gezeigt (sichere Richtung). Fix: Kandidaten per `asValueLiteral` gegen die
+  Werte der echten Spans und der Datums-/Betragsliterale im Prompt prüfen.
+- **Grenzen der Wertprüfung:** ausgeschriebene Zahlen („zehntausend Euro“),
+  Daten ohne Jahr („am 1. Januar“) und umgerechnete Werte (Monats- statt
+  Jahresbetrag) erkennt `countUnresolvedSurrogates` nicht; ein so
+  umgeschriebener Platzhalter bliebe in einer zweiten Antwort sichtbar.
+
+### Tool-Fehler-Politik: offene Enden
+
+Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
+`docs/security-architecture.md` §6c):
+
+- **Channel-Renderer außerhalb dieses Repos** (Teams-/Telegram-Karten in
+  `omadia-channel-teams` / `omadia-channel-telegram`) kennen
+  `PrivacyReceipt.toolErrors` noch nicht. Das Feld ist additiv, sie ignorieren
+  es — zeigen die Einträge aber auch nicht. Die Web-UI zeigt sie.
+- **Laufzeit-Abhängigkeit der Tool-Plugins**: Web-Search, Diagramme und
+  Discussion (je 0.2.0) importieren `toolErrorFromException` (Web-Search und
+  Diagramme auch `newToolErrorRef`) zur Laufzeit aus `@omadia/plugin-api`
+  ≥ 1.20.0. Gebündelt passt das immer. Ein Build für einen älteren Host lädt
+  dort nicht, und `compat.core` erzwingt nichts. Ein Hub-ZIP gibt es nur für
+  Web-Search, der Publish ist offen (siehe „Hub-Publish der
+  In-Tree-Plugins“).
+- **Office-Plugin** (`officeTool.ts`) liefert bei einer unerwarteten Exception
+  weiter `Error: <message>`; die Naht redigiert oder hält zurück. Umstellung
+  auf `toolErrorFromException` offen. Die eigenen Fehler des Plugins
+  (`OfficeUnsafeFormulaError`, `OfficeRenderError`,
+  `OfficePostconditionError`) sind selbst formuliert und müssen lesbar bleiben:
+  ihre Absage nennt Zelle und Grund, damit das Modell die Formel korrigiert,
+  und die Naht lässt sie heute unverändert durch. Ausnahme: Die Schema-Absage
+  für ein Steuerzeichen (`… control character U+0001 …`) kommt als
+  `U[masked:phone]` beim Modell an, weil C0 `+0001` als Telefonnummer liest.
+- **Abo-CLI-Pfad** ohne Privacy Shield (#1087): beide Träger fließen dort roh.
+- **Öffentlicher MCP-Endpunkt, Sub-Agent:** das Gate redigiert keine
+  Tool-Fehler, also sieht der Sub-Agent eines Domain-Tools innere
+  `Error:`-Texte nur als Withheld-Notice und kann sich nicht am Hinweis
+  korrigieren. Redigierte Hinweise dort zuzulassen wäre eine eigene
+  Entscheidung: C1-Kosten und Per-Turn-State im Provider für einen Request, der
+  nie finalisiert wird. Außerdem fehlt dem öffentlichen Dispatcher die
+  Sub-Agent-Dataset-Brücke (`subAgentResultV4`); die Antwort des Sub-Agents
+  wird dort erneut als Datum interniert.
+- **Plugin-eigene Modellaufrufe (`ctx.llm`)** laufen auf keinem Einstiegspfad
+  durch den Privacy Shield, im Chat so wenig wie am öffentlichen Endpunkt: der
+  Accessor (`createLlmAccessor`, `platform/pluginContext.ts`) liest keinen
+  Privacy-Handle, ein Plugin-Tool, das Daten holt und selbst ein Modell fragt,
+  schickt sie, wie es sie zusammengebaut hat. Über den Shield geht nur das
+  Ergebnis des Tools. Eine Prompt-Maskierung für diese Aufrufe (nach dem
+  Muster von `maskUserPrompt`) wäre eine eigene Entscheidung.
+- **Connect-Prompt** wird per Provenienz erkannt (`McpAuthPromptMint`), nicht
+  mehr am Präfix. Offen: paraphrasiert ein Sub-Agent den Prompt, statt ihn
+  byte-gleich weiterzugeben, wird seine Antwort an der Eltern-Naht interniert
+  (sofern er kein Dataset interniert hat) und die Connect-Karte fehlt in der
+  Antwort. Ein typisiertes Control-Flow-Ergebnis statt Prosa wäre die
+  dauerhafte Lösung.
+- **Geworfener Text** wird ganz zurückgehalten, nicht C0-redigiert. Wer den
+  Treiber-Hinweis zurück will, stellt in `withholdThrownToolError` auf
+  `redactToolErrorText` um (eine Stelle) — um den Preis von Namen, die C0
+  nicht erkennt.
+- **Wiederholung nach einer Exception:** nur `LocalSubAgent` verweigert die
+  identische Wiederholung eines Aufrufs, der mit einer Exception endete
+  (`subAgentUnknownOutcome.ts`). Die Eltern-Loops und der Abo-CLI-Sub-Agent
+  (dessen Schleife der `claude`-CLI besitzt) blockieren keine Wiederholung;
+  den Hinweis der Notice liest ihr Modell nur dort, wo es die Notice liest
+  (ohne Privacy-Provider kommt ein direkter Throw roh an). Kein Pfad
+  blockiert eine Wiederholung mit anderem Input oder nach einem
+  zurückgegebenen Fehler mit ebenso unbekanntem Ausgang
+  (MCP-Request-Timeout). `LocalSubAgentTool` trägt keine
+  Write-Capability-Metadaten, deshalb gilt die Sperre für Lese- wie
+  Schreib-Tools. Ein Write genau einmal auszuführen braucht diese Metadaten
+  plus Idempotenz-Key (wie `ToolDispatchService` sie für das MCP-`exactlyOnce`
+  setzt) — gehört zur Write-Idempotenz-Arbeit am Sub-Agent-Pfad.
+- **Exception-Formen ohne C1:** positionale Datensatz-Dumps
+  (`Partner(42, 'Jane Doe')`, Gos `%v`) und `name=…`-Paare außerhalb eines
+  Datensatzes erkennt `looksExceptionShaped` nicht; ein Name darin geht ohne
+  C1 an das Modell. Jedes weitere Muster kostet Hinweise, die heute lesbar
+  bleiben — vor einer Erweiterung die Negativliste in
+  `toolErrorExceptionShape.test.ts` prüfen.
+
+### Hub-Publish der In-Tree-Plugins (#1075)
+
+Nur `@omadia/plugin-office` und `@omadia/plugin-web-search` gehen aus
+`middleware/packages/` auch auf den Hub (`docs/creating-plugins.md` §8). Der
+Hub serviert office 0.1.2 und web-search 0.1.0 (`registry/index.json`, Stand
+2026-10-01). Das Repo steht bei office 0.1.4 (Formeln ohne gecachtes Ergebnis,
+Formel-Policy) und web-search 0.2.0 (Tool-Fehler über
+`toolErrorFromException`). Beide Publishes sind offen, und `docs/upgrading.md`
+verspricht Hub-Installationen office 0.1.4 erst mit diesem Schritt.
+
+- **Mindest-Host im Release-Text.** Web-Search 0.2.0 importiert zur Laufzeit
+  aus `@omadia/plugin-api` ≥ 1.20.0. Das ZIP ist flach und löst die Plugin-API
+  vom Host auf, ein älterer Host lädt es also nicht.
+- **Vorher messen.** `latest_version` aus dem Index lesen, ein Plugin nach dem
+  anderen publizieren, nie `?overwrite=true`, danach den Index pollen
+  (`docs/creating-plugins.md` §8, dort auch Bundled-ID-Ablehnung und toter
+  Update-Badge).
+- **Nicht auf dem Hub:** Privacy Guard (0.6.0), Diagramme und Discussion (je
+  0.2.0) laufen nur gebündelt. Ein ZIP mit ihrer ID lehnt der Upload ab
+  (`package.id_conflict_bundled`), außer mit
+  `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`.
+
+### MRTR-Sentinel über Skill-Bindung und `ctx.mcp` (#570 follow-up)
+
+Die skill-gebundenen MCP-Tools (`subAgentToolHydration.ts`, Domain-Tools des
+Orchestrators) und der Plugin-Accessor `ctx.mcp.callTool` (`pluginContext.ts`)
+rufen den `McpManager` in einem `turnContext.run(...)` mit **neu gebautem**
+Store auf und reichen nur ausgewählte Felder weiter. `mcpInputSentinelMint`
+gehört nicht dazu: parkt ein solcher Call eine `input_required`-Karte, schreibt
+`parkInputRequired` keine Provenienz, und `dispatchToolDeadlined` interniert
+den Sentinel bei aktivem Privacy Shield — die Karte erscheint nicht. Befund aus
+der Code-Lektüre beim Connect-Prompt-Fix, nicht per Test reproduziert. Der
+Connect-Prompt hat deshalb einen eigenen AsyncLocalStorage
+(`McpAuthPromptMint`); für den Sentinel reicht dasselbe oder die Weitergabe des
+Felds in beiden Re-Scopes.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
@@ -3886,6 +4180,64 @@ Shell sie nicht einschalten kann. Offen:
   zeigt `[boot] attachments: on, kept in the data folder on this computer`;
   `GET http://127.0.0.1:8769/health` liefert `attachments.store: filesystem`;
   `<Datenordner>/attachments` existiert mit 0700.
+
+### Formeln in `create_xlsx` server-seitig auswerten (Option A, zurückgestellt)
+
+Seit `@omadia/plugin-office` 0.1.4 schreibt `create_xlsx` Formeln ohne
+gecachten Wert und setzt `fullCalcOnLoad`. Die Zahlen rechnet die Anwendung,
+die die Datei öffnet (`security-architecture.md` §5a). Vorschauen ohne
+Rechenwerk (Quick Look, Teams/Outlook, Excels Protected View) zeigen
+Formelzellen deshalb leer, und ein ungespeichert hochgeladener Export landet
+mit leeren Formelzellen im Dataset-Import. Option A wäre eine echte
+server-seitige Auswertung, die den `<v>`-Wert selbst schreibt. Aufwand L,
+bewusst zurückgestellt:
+
+- **Engine nur MIT-lizenziert.** Geprüft (Stand 2026-09): `fast-formula-parser`
+  (Sheet-Referenzen über `onCell`/`onRange`, rund 280 Funktionen, seit 2021
+  ohne Pflege), `xlsx-calc` (braucht ein SheetJS-Workbook, Teilmenge der
+  Funktionen), `@formulajs/formulajs` (nur Funktionen, kein Parser).
+  `hot-formula-parser` kennt keine Sheets und scheidet für die
+  Cross-Sheet-Pivots aus. **HyperFormula ist GPL/kommerziell und kommt nicht
+  in Frage.**
+- **Adapter exceljs → Engine**: Spaltenbuchstaben, Datums-Serials,
+  `{row}`-Vorlagen und eine Regel für nicht unterstützte Funktionen (dann
+  keinen `<v>` schreiben, sondern wie heute die Anwendung rechnen lassen).
+- **Semantik-Treue**: Jede Abweichung zwischen Engine und Excel schriebe einen
+  falschen `<v>` unter omadias Namen, also genau den Fehler, den 0.1.4
+  beseitigt hat. Ohne Differenztests gegen echtes Excel nicht ausrollen.
+- **Formel-Policy bleibt**: `formulaPolicy.ts` (nur Excels eigene Funktionen
+  aus `formulaFunctions.ts`; kein `WEBSERVICE`, `IMPORTTEXT`/`IMPORTCSV`,
+  `HYPERLINK`, DDE, keine Verweise auf andere Dateien) gilt unabhängig davon,
+  wer rechnet.
+
+**Funktionskatalog pflegen.** `formulaFunctions.ts` ist Microsofts Liste
+„Excel functions (alphabetical)“ vom 2026-09-30, wörtlich übernommen. Was
+Excel danach dazubekommt, lehnt `create_xlsx` ab, bis es jemand aufnimmt
+(Fail-closed, so fielen `IMPORTTEXT`/`IMPORTCSV` auf). Vor dem Aufnehmen
+prüfen, ob die Funktion nur über Zellen der Arbeitsmappe rechnet; greift sie
+auf Netz, Dateien, Dienste oder andere Programme zu, gehört sie stattdessen
+nach `EXTERNAL_FUNCTIONS`. Offen: Nackte, nicht aufgerufene Namen (LET-Namen
+oder eine Funktion als Wert ohne `_xleta.`) prüft die Policy nur gegen die
+Sperrliste. Sie ganz zu schließen bräuchte einen echten Formel-Parser mit
+LET/LAMBDA-Gültigkeitsbereichen. Damit ließen sich auch Aufrufe über LET-Namen
+(`f(A1)`) wieder erlauben, die heute abgelehnt werden.
+
+**exceljs-Upgrade: Zeichenliste nachziehen.** `formulaText.ts` lehnt genau die
+Zeichen ab, die exceljs 4.4 beim Schreiben verwirft (`utils.xmlEncode`:
+C0-Steuerzeichen außer Tab/LF/CR, dazu DEL) oder die XML nicht trägt. Ändert
+ein exceljs-Update den Encoder, muss die Liste mitziehen, sonst prüft die
+Policy wieder einen anderen Text, als in der Datei landet. Der Test „stores
+every formula it accepts exactly as it was checked“ in
+`office-formulas.test.ts` fällt dann auf, aber nur für die Zeichen, die er
+durchprobiert (alle C0-Zeichen, DEL, U+0085, ein Surrogat, U+FFFE).
+Ebenso die Wert-Erkennung (`Value.getType` in `lib/doc/cell.js`): exceljs
+liest jedes Objekt nach seiner Form (`formula`/`sharedFormula` → Formel samt
+`result` als Cache, `{ text, hyperlink }` → Link), deshalb reicht
+`renderXlsx` nur Text, Zahlen, Booleans, `null`, selbst erzeugte Dates und
+neu gebaute `{ formula }` durch (`cellValueOf`, Header nur als Text). Liest
+ein Update einen dieser Werte anders, etwa Text mit führendem `=` als Formel,
+umgeht er die Policy. `office-cell-values.test.ts` prüft die abgelehnten
+Objektformen und dass solcher Text Text bleibt.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
@@ -4674,7 +5026,10 @@ Orchestrator-Scope und übergibt eine eigene Turn-ID pro Lauf explizit — expli
 gewinnen immer.
 
 Offen: Verifier-Zeilen (laufen nach dem Turn-Scope) und `claude-cli-completion` bleiben
-NULL, bis der Orchestrator seine Ledger-Turn-ID nach außen gibt. ⚠️ Wie bei 0032:
+NULL, bis der Orchestrator seine Ledger-Turn-ID nach außen gibt. Für den Verifier
+liegt die Turn-ID inzwischen vor: die `PrivacyEgressContinuation` trägt sie als
+`receiptId`, solange der Verifier läuft — die Ledger-Attribution kann daran
+anknüpfen (Privacy-Hand-over, siehe Turn-Receipts). ⚠️ Wie bei 0032:
 Migration vor Deploy, sonst verwirft jeder Flush den ganzen Batch.
 
 ### Systemstatus: "Letzter Turn" (OM-100b, §3)

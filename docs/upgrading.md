@@ -339,6 +339,125 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.167.11 — answer check and tool errors behind the Privacy Shield, Excel formulas
+
+Nothing to migrate: no schema change and no new variable. What an operator
+notices ([`security-architecture.md`](security-architecture.md) §5a, §6c and
+§6e have the full policy):
+
+### The chat's completion waits for the answer verifier
+
+Applies to instances that run both the privacy plugin and the answer verifier
+(`VERIFIER_ENABLED`). The behaviour changes on update:
+
+- **Streaming completion waits for the verifier.** The streamed text appears
+  as before, but the final `done` event — the chat's "finished" state and the
+  privacy receipt — arrives after the verifier's one to three model requests.
+  Heartbeats keep the connection open meanwhile. API clients that read the
+  receipt from `done` get it there as before, now including the verifier.
+- **More receipts.** A verified turn now always has a receipt row, even when
+  the verifier's requests were the only privacy-relevant event of the turn
+  (new field `verifierEgress`, shown as "Answer check" in the web UI).
+- **Fewer blocks and retries, never raw retries.** A contradiction the evidence
+  judge found on placeholder values shows as a disclaimer instead of blocking;
+  in enforce mode a correction retry is skipped (badge "failed") when its hint
+  would have to carry masked values. Server-rendered table answers and Direct
+  Line relays are no longer verified.
+
+### Tool errors reach the model as withheld notices
+
+- **Tool error text moved from the chat to the log.** When a tool throws, the
+  model and the chat's tool card now see
+  ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …``
+  instead of the driver or ORM message. The message, with its stack, is in the
+  middleware log under the same ref (`grep 'ref=<ref>'`); on the chat path the
+  ref is the turn's correlation id. A tool's *returned* `Error:` text still
+  reaches the model, with personal data masked as `[masked:<type>]`, unless it
+  looks like a record dump or a stack trace; then it is withheld and logged the
+  same way. A failed `web_search` or `render_diagram` call shows the provider
+  or diagram kind, the HTTP status and a ref; the upstream response and a
+  connection error are in the log under that ref.
+- **More receipt rows.** A turn whose only privacy-shield activity was a
+  failing tool now writes a receipt (`/operator/receipts`), reaped by
+  `RECEIPT_RETENTION_DAYS` as before.
+- **A sub-agent does not repeat a call that ended in an exception.** The call
+  may have taken effect before it failed, so a second identical call (same
+  tool, same input) in the same sub-agent run gets
+  ``Error: tool `<name>` was not called: …`` instead of running. A run trace
+  shows that refusal where it used to show a second attempt.
+- **Public MCP: a domain tool's sub-agent now works on masked data.** When an
+  API key calls an `ask_<agent>` tool, that agent's sub-agent runs under the
+  call's privacy gate: its model reads masked tool results and withheld error
+  notices, as it does in chat, where before it read them in clear. Answers to
+  API-key callers can differ from before. Nothing to configure.
+
+For plugin authors: a tool that catches an exception should return
+`toolErrorFromException(toolName, err)` (`@omadia/plugin-api` 1.20.0) instead
+of `Error: ${err.message}`. Only text the plugin authors itself belongs in an
+`Error:` result, and the dispatch seam redacts even that. A typed error class
+of your own does not make its message authored text: keep a caught exception
+on `cause` and an upstream response body on a separate field, and build the
+`Error:` result from typed fields such as an HTTP status. The withheld notice
+tells the model the call's outcome is unknown, and a sub-agent will not repeat
+a call that ended with it; a tool whose failure is safe to retry (a read that
+timed out) can return an `Error:` hint it writes itself instead. A tool that
+returns an MCP connect prompt it wrote itself (text starting
+`🔒 The MCP server "`) now has it interned like any other result: only the
+prompt `McpManager` produced in the same dispatch reaches the model unchanged.
+To surface one, call the MCP server through `ctx.mcp` and return its answer as
+it is.
+
+### The privacy guard pairs with this release
+
+Tool-error redaction and the verifier's evidence projection need
+`@omadia/plugin-privacy-guard` 0.6.0, which ships bundled with this release, so
+a standard install has nothing to do. The plugin is not on the Hub, and a ZIP
+with its id is refused unless `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1` is set. An
+older copy is therefore only active where someone put it in place of the
+bundled one. With such a copy, or with another `privacy.redact@1` provider that
+lacks the new methods, the kernel withholds every returned `Error:` text
+entirely, every evidence-judge request fails closed (claims stay unverified),
+and a second answer whose placeholders the model reworded is no longer held
+back. The middleware log then shows `does not implement redactToolErrorText`
+once per process. Upload a 0.6.0 or later build over that copy (with the same
+`PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1` that admitted it): a version-change
+upload keeps the installed entry and carries its settings over. Removing the
+copy instead takes four steps, and no privacy shield runs between the second
+and the third — no redaction, no masking, no receipts:
+
+1. Note `mask_user_prompt`, the deny-lists and the C1 detector URL.
+2. Uninstall the plugin, then delete its package (deleting while it is
+   installed is refused with 409 `package.still_installed`).
+3. Install the bundled plugin from the Store, or restart the middleware.
+4. Enter the settings from step 1 again; the bundled plugin starts with its
+   defaults.
+
+Plugins built against `@omadia/plugin-api` < 1.20 keep working: the new
+service methods are optional.
+
+### Excel exports: the application that opens the file computes the formulas
+
+`create_xlsx` (`@omadia/plugin-office` 0.1.4, bundled with the middleware)
+writes formula cells without a cached result and marks a workbook that holds a
+formula for a full recalculation on open. Excel, LibreOffice or Google Sheets
+compute every figure when they open the file; omadia evaluates no formula
+itself, and a `result` the model sends with a formula is ignored.
+
+- **Previews show formula cells empty.** Viewers that do not calculate (Quick
+  Look, Teams and Outlook previews, Excel's Protected View) show them empty
+  until the file is opened for editing. A generated workbook uploaded as a
+  dataset without being saved in Excel first imports those cells as empty.
+- **Formulas that reach outside the workbook are refused.** A formula may only
+  call Excel's own worksheet functions by their English names and compute over
+  cells of this workbook. A URL fetch (`WEBSERVICE`, `IMPORTXML`, …),
+  `INDIRECT`, `HYPERLINK`, DDE, add-in functions, localised names such as
+  `SUMMEWENNS`, or a reference to another file makes the call fail: no file is
+  written, and the tool answers with an `Error:` naming the cell and the
+  reason, so the model can correct the formula.
+- An installation that runs a Hub copy of the plugin gets this once 0.1.4 is
+  published to the Hub. That publish is a separate step and still open
+  (handoff §13).
+
 ## Upgrading past v0.167.10 — password sign-in is rate-limited
 
 **Nothing to do for most installs.** The defaults are safe on every shipped

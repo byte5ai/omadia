@@ -36,6 +36,227 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — create_xlsx no longer persists model-supplied formula results; workbooks with formulas request a full recalculation on open
+
+2026-09-30 — a formula cell in `create_xlsx` accepted a `result` and stored it
+as the cell's cached value, so a workbook could hold the formula `1+1` showing
+999. Nothing on the server evaluates formulas, so that number was never computed
+by anyone, and every viewer that does not recalculate showed it as the figure.
+The input schema now has no `result` field (a sent one is stripped), the
+renderer writes formula cells as `<f>` without `<v>`, and a workbook that holds
+a formula sets `fullCalcOnLoad`, so the spreadsheet application computes each
+value when it opens the file. The tool description now asks for English
+function names (`SUMIFS`), which is what a recalculating Excel understands.
+
+Because Excel, LibreOffice and Google Sheets all recalculate such a file, every
+formula is checked before anything is stored, and a refused one fails with
+`OfficeUnsafeFormulaError`. A formula may only call Excel's own worksheet
+functions by their English names, from Microsoft's catalogue. Add-in and
+user-defined functions (`_xll.`, `_xludf.`), Excel 4 macro functions, other
+applications' functions, localised names and anything Excel adds later are
+refused until someone reviews them, so a new way out fails closed. Known ways
+out are also refused by name wherever they appear: URL fetches (`WEBSERVICE`,
+`FILTERXML`, `IMAGE`, and Google Sheets' `IMPORTDATA`, `IMPORTXML`,
+`IMPORTHTML`, `IMPORTFEED` and `IMPORTRANGE`), `IMPORTTEXT` and `IMPORTCSV`
+(local files, UNC paths and URLs), vendor services (`STOCKHISTORY`,
+`TRANSLATE`, `DETECTLANGUAGE`, `GOOGLEFINANCE`, `GOOGLETRANSLATE`), the `CUBE`
+functions, `HYPERLINK`, COM and DLL calls (`RTD`, `CALL`, `REGISTER`,
+`REGISTER.ID`), DDE as a function and as an `app|topic!item` reference, and
+references to another file by index, name or path, quoted or not. `INDIRECT`
+and `__xludf.DUMMYFUNCTION` are refused whatever their argument. Both turn text
+into a reference or a formula, and that text is invisible to the check and can
+be built from cell values. In a computed column, `{row}` may only follow a
+column letter, so a row number cannot complete a function name.
+
+The check reads the text the spreadsheet application reads. exceljs's XML
+encoder silently drops most control characters, and the file format lets
+formula text carry `_xHHHH_` escapes that a reader decodes, so such a formula
+could be checked as one text and stored as another. Both are now refused, by
+the input schema as well as by the renderer, and so are unpaired surrogates,
+U+FFFE and U+FFFF. Outside quotes a formula may only use letters, digits, plain
+spaces and the formula operators, on one line, and names are read the way
+Excel's grammar reads them (`?` and non-ASCII characters continue a name). The
+`{row}` check now reads only the characters just before each placeholder: it
+used to rescan the template for every placeholder, so a long template cost a
+noticeable amount of CPU per computed column.
+
+None of this relies on the input schema any more. `renderXlsx` is exported,
+and exceljs decides what a cell is from the shape of the value, so a
+descriptor handed to it directly could still store a cached value through a
+shared formula, write a formula the check never read because it was not a
+string, or add an external link, and a column header could do the same. The
+renderer now takes only text, numbers, booleans, `null` and a formula cell
+with a non-empty formula string as a cell value, and refuses any other cell
+value, a header that is not text and a computed-column formula that is not
+text with `OfficeRenderError`. `create_xlsx` itself was not exposed, because
+its input schema already refused these shapes. A column whose key a row lacks
+is now empty even when the key names a property every JavaScript object
+inherits, such as `constructor`; rendering used to fail there.
+
+Viewers that do not calculate (Quick Look, Teams and Outlook previews, Excel's
+Protected View) now show formula cells empty until the file is opened for
+editing. A generated workbook uploaded as a dataset without being saved in
+Excel first imports those cells as empty strings, because the importer reads
+cached results. Both are deliberate: an empty cell beats a number nobody
+computed. `@omadia/plugin-office` 0.1.4 ships as the bundled built-in with the
+middleware, so the fix is live with the next deploy. The Hub ZIP only matters
+for installations that took the plugin from the Hub. Server-side evaluation
+with an MIT-licensed engine is on the roadmap (handoff §13).
+
+### Changed — README no longer claims a server-side spreadsheet engine
+
+2026-09-30 — the root README said Office and Excel output came from "a real
+spreadsheet engine, server-side" and that the figures were "calculated by that
+engine rather than produced by the model". omadia has no such engine. The
+feature row "Computed, not guessed" is now called "Excel from real rows", and
+both it and the Office bullet describe what `create_xlsx` does. It writes the
+rows behind a `datasetId` into the workbook server-side, so they never pass
+through the model, and adds sums and pivots as Excel formulas that the
+spreadsheet application computes when it opens the file. `.docx` output
+computes nothing, and the bullet says so.
+
+### Security — tool errors no longer reach the model or the chat stream raw
+
+2026-09-30 — a tool error reached the model, the streamed `tool_result` event
+and the persisted chat session verbatim on two routes. A handler that THREW had
+its message folded into `Error: ${err.message}` by both chat loops, the
+Direct-Line relay and, inside a sub-agent, by the domain-tool wrapper. A
+RETURNED `Error:` string — an MCP server's error body, or any wrapper that
+returned `Error: ${err.message}` — passed the four control-flow seams
+(#1105/#1097) un-interned and unchecked. Driver and ORM messages quote the row
+they failed on, and neither route wrote a receipt entry.
+
+Both carriers now go through one helper, `toolErrorRedaction.ts`
+(`@omadia/orchestrator`):
+
+- **Thrown text is withheld.** Under a privacy provider the model gets
+  ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …``
+  and the full error, stack included, is logged once under that ref — the
+  turn's correlation id, the same id a degraded turn shows as
+  `<turn-incomplete ref>`. **To recover a driver message, grep the middleware
+  log for `ref=<ref>`**: the chat tool card no longer shows it.
+  `Orchestrator.dispatchTool` no longer rejects (also with
+  `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=0`), an inner tool throw no longer aborts a
+  `LocalSubAgent` run, and `ToolDispatchService` uses the same notice instead of
+  interning the message as a one-row dataset.
+- **A sub-agent does not repeat a call that ended in an exception.** Such a
+  call may have taken effect before it failed (a write commits, then its
+  response times out), so the notice says the outcome is unknown and not to
+  repeat a call that changes data, and a `LocalSubAgent` refuses an identical
+  repeat (same tool, same input) for the rest of the run with an `Error:`
+  result instead of running it. That includes a tool bridge that caught the
+  exception and returned the notice. Before, a bridged tool's exception came
+  back as text, and the sub-agent's model could run the same write up to three
+  times before the repeat-failure guard stopped it. Another input, or a retry
+  after an ordinary returned `Error:` hint, still runs.
+- **Returned `Error:` text is redacted** by the provider's new
+  `redactToolErrorText` (C0 identity types — dates and amounts stay readable —,
+  the operator deny-list and C1; irreversible `[masked:<type>]`), or withheld
+  whole when it looks like a record dump (JSON, a Python dict, or a JavaScript
+  object or `Map` as `util.inspect` and `%o` print it; a record printed with
+  keyword fields, such as a dataclass, Kotlin, Lombok or Java record dump, or
+  with Go's `Key:value` fields; a Postgres `DETAIL:` line or failing row, as
+  psycopg and Odoo's JSON-RPC errors carry it) or a stack trace, is longer
+  than 4096 characters, or cannot be checked. The kernel's own refusals are
+  exempt by per-dispatch provenance.
+- **The MCP connect prompt passes on provenance, not on its prefix.** It still
+  reaches the model unchanged, but only the exact text `McpManager` produced in
+  the same dispatch (`McpAuthPromptMint`). Before, any result that merely
+  started with the prompt's prefix skipped interning and redaction for all of
+  its text and was receipted as a connect prompt. A remote MCP server can put
+  that prefix at the start of a text block, so such text is now interned like
+  any other tool result.
+- **In-tree wrappers** (the three tool bridges, web search, diagrams,
+  discussion, transcription, `manage_routine`, `query_dataset`, the
+  long-running task handlers, domain tools) keep only text they author and
+  return the withheld notice for any other exception (`toolErrorFromException`).
+  A schema miss on the model's own input still comes back as a readable hint.
+  The web-search providers and the Kroki client no longer fold a caught
+  transport exception or an upstream response body into their typed errors'
+  messages; those ride on `cause` / `body` for the log, and `web_search` and
+  `render_diagram` answer with the provider id or diagram kind, the HTTP
+  status and a log ref.
+- **Receipts.** Every handled error writes a `toolErrors` entry; a turn whose
+  only shield activity was a tool error now writes a receipt row. The web UI
+  receipt card lists the entries.
+- **The public MCP endpoint's privacy gate covers a domain tool's sub-agent.**
+  `ToolDispatchService` ran tool handlers outside any turn scope, so a domain
+  tool's `LocalSubAgent` found no privacy handle there: its model provider
+  received inner tool results, inner `Error:` text and — once inner throws
+  became tool results — the raw exception message, while the API caller saw
+  only a masked digest. Handlers now run with the dispatch's handle as the
+  ambient one; the public gate hands them a nested variant
+  (`PrivacyTurnHandle.forNestedCalls`) that masks the same way but does not
+  count toward the endpoint's own masking check, and a nested masking failure
+  discards the call. No tool runs there without the gate: the wired dispatcher
+  runs no handler without a handle (`requirePrivacyHandle`), and the endpoint
+  refuses a dispatcher that cannot receive it before dispatch instead of after.
+  Proven against a real sub-agent in `publicMcpSubAgentPrivacy.test.ts`.
+
+Versions: `@omadia/plugin-api` 1.20.0 (additive) and
+`@omadia/plugin-privacy-guard` 0.6.0, which implements the new members. With a
+provider that lacks `redactToolErrorText`, the kernel withholds every returned
+`Error:` text and logs `does not implement redactToolErrorText` once per
+process. `@omadia/plugin-web-search`, `@omadia/diagrams` and
+`@omadia/plugin-discussion` move to 0.2.0: they now import
+`toolErrorFromException` from `@omadia/plugin-api` at runtime, so a build of
+them needs a host at plugin-api 1.20.0 or later.
+Without a privacy provider, and on the subscription-CLI path (#1087), error
+text still flows raw. Fences inverted or narrowed:
+`chatPathToolErrorText.test.ts` (asserted the raw e-mail on the wire),
+`streamToolRejection1095` and `streamingToolThrow1093` (asserted the raw driver
+text), `toolDispatchPrivacySeam.test.ts` and the public MCP privacy tests
+(asserted an interned digest of a thrown message), `queryDatasetTool.test.ts`
+and `manageRoutineTool.test.ts` (asserted the raw exception message), and the
+connect-prompt cases of `guardedToolErrorNotInterned1105`,
+`toolDispatchPrivacySeam` and `subAgentToolErrorNotInterned1097` (asserted that
+prompt text a handler returned itself passed verbatim; the producer-driven
+cases are in `mcpAuthPromptProvenance.test.ts`). Details and residuals:
+`docs/security-architecture.md` §6c; upgrade note: `docs/upgrading.md`.
+
+### Security — answer-verifier requests run behind the Privacy Shield; the receipt is finalised after them
+
+2026-09-30 — with the privacy plugin installed and the answer verifier
+enabled, every turn the trigger router picked produced one to three extra model
+requests that bypassed the shield. The verifier ran after the orchestrator had
+restored the answer and finalised the turn, so its claim extractor got the
+unmasked prompt and the restored (or v4-rendered) answer, its evidence judge got
+raw knowledge-graph node content, and the enforce-mode retry put the re-queried
+truth into the system prompt verbatim. None of it reached the turn's receipt,
+which had already been written. A turn the verifier wraps now hands its privacy
+state over instead of finalising it: the extractor sees the turn's wire view
+(the prompt exactly as the turn's model received it — an MCP input-card reply
+only as its label, never the envelope with the values typed for a third-party
+server — and the answer as its model wrote it; amounts and dates parsed from a
+placeholder are re-read from the real literal), the judge projects claim and
+evidence through the same surrogate map in one call — also with
+`mask_user_prompt` off — and names each evidence snippet by a handle minted for
+that request, so no node id and no string record key reaches its provider, and
+the continuation finalises exactly once
+afterwards, so one receipt and one `turn_receipts` row cover the turn and the
+verifier (new receipt field `verifierEgress`, shown as "Answer check" on the web
+card). Server-rendered answers and Direct Line relays are not verified; with a
+shield installed but no privacy view handed over, nothing is verified raw.
+
+Behind the shield the correction retry carries no truth values and is withheld
+(badge `failed`) when masking would still alter its hint, and a second answer
+with unresolved placeholders — a still-blocked retry, or a blocked re-sample
+taken over a borderline first answer — never replaces the first one. Since
+restore only maps a placeholder's exact string back, a date or amount
+placeholder the model wrote back in another spelling of the same value (a
+dotted date as ISO or with a written month, an amount with a scale word such
+as "Tsd.") counts as unresolved too — otherwise the user would read a fake
+value — and a date or amount the check cannot read counts as well. A
+contradiction the judge found on placeholder values is reported as `unverified`
+rather than blocking. On streaming turns `done` — which carries the receipt — now arrives
+after the verifier finished, so the chat's "thinking" state lasts until then
+(heartbeats keep the connection alive); the streamed text is unchanged. The
+caller-supplied system hint is masked like the prompt, and a turn that throws or
+a stream the client abandons now drops its privacy state instead of keeping it
+until restart. `@omadia/plugin-api` 1.20.0 (additive: mask `stage`/`preview`,
+`projectVerifierText`, `countUnresolvedSurrogates`, `verifierEgress`), and
+`@omadia/plugin-privacy-guard` 0.6.0 implements them.
+
 ### Fixed — password sign-in is rate-limited
 
 2026-09-30 — `POST /api/v1/auth/login/:providerId` ran a full argon2id

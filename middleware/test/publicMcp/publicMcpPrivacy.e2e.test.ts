@@ -309,7 +309,7 @@ describe('public MCP endpoint — privacy', () => {
     });
   }
 
-  it('masks PII out of a NATIVE tool that THROWS — the raw fault never reaches the wire', async (t) => {
+  it('withholds the message of a NATIVE tool that THROWS — the raw fault never reaches the wire', async (t) => {
     const h = await start(throwingOptions('native'), t);
     if (!h) return;
     const res = await h.post(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
@@ -319,10 +319,11 @@ describe('public MCP endpoint — privacy', () => {
       /sensitive\.person@customer\.example/,
       'a throwing tool leaked the raw error text to a public caller',
     );
-    // The email is the marker this whole file uses: `maskingPrivacyService`
-    // redacts email spans and nothing else, so its absence proves the digest —
-    // not the surrounding prose — is what came back.
-    assert.match(body, /\[email\]/, 'the error text should have been masked, not dropped');
+    assert.doesNotMatch(body, /Jane Doe/, 'a name no regex detects must not survive either');
+    // The dispatcher's withheld notice is what the caller gets: class name and
+    // the request id as ref — served as the error it is (`origin: dispatcher`),
+    // not refused as unmasked content.
+    assert.match(body, /tool `query_crm` failed with Error \[ref /);
     assert.doesNotMatch(
       body,
       new RegExp(THROWN_PII.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
@@ -330,7 +331,7 @@ describe('public MCP endpoint — privacy', () => {
     );
   });
 
-  it('masks PII out of a DOMAIN tool that THROWS too — both dispatch branches', async (t) => {
+  it('withholds the message of a DOMAIN tool that THROWS too — both dispatch branches', async (t) => {
     // The two branches of `dispatchInner` have separately-written error
     // handling; proving one says nothing about the other.
     const h = await start(throwingOptions('domain'), t);
@@ -338,7 +339,27 @@ describe('public MCP endpoint — privacy', () => {
     const res = await h.post(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
     const body = await res.text();
     assert.doesNotMatch(body, /sensitive\.person@customer\.example/);
-    assert.match(body, /\[email\]/);
+    assert.match(body, /tool `query_crm` failed with Error \[ref /);
+  });
+
+  it('never serves a RETURNED `Error:` text — the gate fails tool-error redaction closed', async (t) => {
+    const h = await start(
+      options({
+        dispatchers: {
+          sales: realDispatcher([
+            {
+              name: READ_TOOL,
+              handle: async () => ({ content: `Error: mailbox ${RAW_EMAIL} is over quota` }),
+            },
+          ]),
+        },
+      }),
+      t,
+    );
+    if (!h) return;
+    const { payload } = await h.rpc(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
+    assert.doesNotMatch(JSON.stringify(payload), /sensitive\.person@customer\.example/);
+    assert.match(rpcErrorMessage(payload) ?? '', /privacy masking did not run/);
   });
 
   it('still reports the failure as an error rather than swallowing it', async (t) => {

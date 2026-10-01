@@ -9,6 +9,7 @@ import {
   type EvidenceJudge,
   type HardClaim,
   type SoftClaim,
+  type VerifierPrivacy,
 } from '@omadia/verifier';
 
 // --- Stubs ---------------------------------------------------------------
@@ -577,5 +578,117 @@ describe('verifier/pipeline - anchored soft claims', () => {
     });
     assert.equal(existsCalls, 0);
     assert.equal(verdict.status, 'approved');
+  });
+});
+
+// The pipeline is the single ingestion point for the privacy view: every
+// stage that sends text to a model (extractor, judge) must receive it, while
+// the deterministic re-query keeps working on the REAL values server-side.
+describe('verifier/pipeline - privacy view', () => {
+  const view: VerifierPrivacy = {
+    wireUserMessage: 'Wer ist Lukas Becker?',
+    wireAnswer: 'Lukas Becker ist Senior Dev.',
+    admitWireView: async () => undefined,
+    projectForWire: async (t) => t,
+    restore: async (t) => t,
+  };
+
+  function recordingJudge(saw: Array<VerifierPrivacy | undefined>): EvidenceJudge {
+    return {
+      checkAll(claims: SoftClaim[], privacy?: VerifierPrivacy): Promise<ClaimVerdict[]> {
+        saw.push(privacy);
+        return Promise.resolve(
+          claims.map((c): ClaimVerdict => ({ status: 'verified', claim: c, source: 'graph' })),
+        );
+      },
+    } as unknown as EvidenceJudge;
+  }
+
+  function recordingExtractor(
+    claims: Claim[],
+    saw: Array<VerifierPrivacy | undefined>,
+  ): ClaimExtractor {
+    return {
+      extract(input: { privacy?: VerifierPrivacy }): Promise<Claim[]> {
+        saw.push(input.privacy);
+        return Promise.resolve(claims);
+      },
+    } as unknown as ClaimExtractor;
+  }
+
+  const deterministic = {
+    ...stubDeterministic((c) => ({ status: 'verified', claim: c, source: 'odoo' })),
+    checkRecordExists(c: Claim): Promise<ClaimVerdict> {
+      return Promise.resolve({ status: 'verified', claim: c, source: 'odoo' });
+    },
+  } as unknown as DeterministicChecker;
+
+  it('forwards input.privacy to the extractor and to the plain judge call site', async () => {
+    const extractorSaw: Array<VerifierPrivacy | undefined> = [];
+    const judgeSaw: Array<VerifierPrivacy | undefined> = [];
+    const pipeline = new VerifierPipeline({
+      extractor: recordingExtractor([softClaim()], extractorSaw),
+      deterministic,
+      judge: recordingJudge(judgeSaw),
+      log: SILENT_LOG,
+    });
+    await pipeline.verify({
+      runId: 'r_priv_plain',
+      userMessage: 'Wer ist John Doe?',
+      answer: 'John Doe ist seit 01.03.2023 Senior Dev, Rechnung INV/2026/0099.',
+      privacy: view,
+    });
+    assert.deepEqual(extractorSaw, [view]);
+    assert.deepEqual(judgeSaw, [view]);
+  });
+
+  it('forwards input.privacy to the judge after an anchored existence check', async () => {
+    const judgeSaw: Array<VerifierPrivacy | undefined> = [];
+    const anchored = softClaim({
+      id: 'c_anchor',
+      text: 'die Rechnung INV/2026/0099 ist verbucht',
+      expectedSource: 'odoo',
+      odooRecord: { model: 'account.move', ref: 'INV/2026/0099' },
+    });
+    const pipeline = new VerifierPipeline({
+      extractor: recordingExtractor([anchored], []),
+      deterministic,
+      judge: recordingJudge(judgeSaw),
+      log: SILENT_LOG,
+    });
+    await pipeline.verify({
+      runId: 'r_priv_anchor',
+      userMessage: 'Ist INV/2026/0099 verbucht?',
+      answer: 'Ja, die Rechnung INV/2026/0099 ist verbucht.',
+      domainToolsCalled: ['query_odoo_accounting'],
+      privacy: view,
+    });
+    assert.deepEqual(judgeSaw, [view]);
+  });
+
+  it('keeps the deterministic checker on the real claims (no privacy argument)', async () => {
+    const checkerArgs: unknown[][] = [];
+    const recordingDeterministic = {
+      checkAll(claims: HardClaim[], ...rest: unknown[]): Promise<ClaimVerdict[]> {
+        checkerArgs.push(rest);
+        return Promise.resolve(
+          claims.map((c): ClaimVerdict => ({ status: 'verified', claim: c, source: 'odoo' })),
+        );
+      },
+    } as unknown as DeterministicChecker;
+    const pipeline = new VerifierPipeline({
+      extractor: stubExtractor([hardClaim()]),
+      deterministic: recordingDeterministic,
+      judge: stubJudge((c) => ({ status: 'verified', claim: c, source: 'graph' })),
+      log: SILENT_LOG,
+    });
+    await pipeline.verify({
+      runId: 'r_det',
+      userMessage: 'Betrag?',
+      answer: 'Die Rechnung beträgt 1.234,56 €.',
+      domainToolsCalled: ['query_odoo_accounting'],
+      privacy: view,
+    });
+    assert.deepEqual(checkerArgs, [[]]);
   });
 });
