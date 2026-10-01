@@ -44,8 +44,10 @@ import type { UserStore } from '../auth/userStore.js';
  *      `retry_after_s`, never a cookie and never a `verify` call;
  *   3. `provider.verify` (argon2) inside the admitted attempt; anything but a
  *      success counts as a failure, a throw included;
- *   4. success: session cookie plus a fresh device cookie for the account the
- *      provider verified — its address as stored, never the one typed — under
+ *   4. success: session cookie for the `users` row the provider verified
+ *      (`PasswordAuthSuccess.account`: its session version comes from the
+ *      same read that checked the password, §10k) plus a fresh device cookie
+ *      for that account — its address as stored, never the one typed — under
  *      the credential epoch the provider checked, never one read afterwards
  *      (a success without one gets no device cookie).
  *
