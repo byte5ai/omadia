@@ -622,6 +622,20 @@ one rule about what counts as a runtime.
   the Node 22 of the server image. The release build's "Verify native modules
   load under the Electron ABI" step is the check that the middleware's native
   modules still load under that Node.
+- **Two Node majors run the same kernel.** The server images, development and
+  CI run the kernel and the web-ui on Node 22; the desktop app runs the same
+  builds on Electron's embedded Node, Node 24 since Electron 44, because no
+  Electron line that still gets security fixes embeds Node 22. `engines` in
+  `middleware/package.json` (an install gate through `engine-strict` in
+  `middleware/.npmrc`) and `middleware/scripts/check-node-version.mjs` pin the
+  toolchain that installs, builds and tests the kernel to Node 22, the desktop
+  release build included. The desktop runtime passes through neither, so
+  `engines` does not list Node 24. Plain Node 24 does not stand in for it
+  either: Electron's Node is built against BoringSSL, and its `node:crypto`
+  offers a fraction of Node's ciphers, hashes and curves. On Electron's Node
+  the kernel is checked only by that native-module step and by starting a
+  built app; no CI job runs its test suite there yet
+  (`docs/middleware-agent-handoff.md` §13).
 - **Windows update signatures.** electron-builder writes a `publisherName` into
   the Windows app's `app-update.yml`; the release build reads it from the
   certificate that signs the installer (Azure Trusted Signing), and
@@ -644,11 +658,12 @@ one rule about what counts as a runtime.
   the same feed version, as a current install. `desktop/src/updateHoldBack.ts`
   tells the two apart: the user learns which macOS the release needs and that
   updates, security fixes included, stop until the OS is updated — once per
-  floor at startup, and on every "Check for Updates…". Those Macs stay on the
-  last Electron 37 build, a runtime without further Electron security fixes; an
+  floor at startup, and on every "Check for Updates…". Those Macs stay on an
+  Electron 37 build, a runtime without further Electron security fixes; an
   OS update is the only remedy. Only builds that carry the handler can say
   this, so a raised floor ships its message first, in a release the held-back
-  OS can still install (for macOS 13, the last Electron 37 release).
+  OS can still install (for macOS 13: v0.167.9 through v0.167.13, the last
+  release built on Electron 37).
 
 ## 5. Signed artefact URLs
 

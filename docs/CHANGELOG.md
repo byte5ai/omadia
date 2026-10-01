@@ -56,8 +56,11 @@ now reports 0, `desktop` is the third leg of the audit matrix, and
 directory is missing from it (`docs/security-architecture.md` §4a).
 
 What changes with it: the desktop app needs macOS 13 or later (Electron 44
-dropped macOS 12, see `docs/upgrading.md`). electron-builder writes no macOS
-minimum into `latest-mac.yml`, so the merged feed now declares
+dropped macOS 12, see `docs/upgrading.md`). The install skill the README hands
+to AI assistants (`docs/onboarding/SKILL.md`) now checks the macOS version
+before it downloads anything and stops below macOS 13 with that message,
+instead of installing an app that does not start. electron-builder writes no
+macOS minimum into `latest-mac.yml`, so the merged feed now declares
 `minimumSystemVersion: 22.0.0`, the Darwin kernel of macOS 13, which is what
 electron-updater compares with `os.release()`. macOS 11 and 12 installs are
 therefore not offered the Electron 44 build and keep the version they run,
@@ -72,7 +75,10 @@ that are not Authenticode-signed under that name. Electron 44's
 copy is now logged and shows the key again to write down, where it would
 otherwise have ended the boot of a running app in the boot-failure dialog.
 `npm install` no longer downloads the Electron binary (it is fetched on first
-run). Before this merges, a `desktop-apps.yml` dispatch build of the branch
+run). The `desktop (typecheck + test)` CI job moves to Node 24 with it; the
+kernel and the web-ui are still built and tested on Node 22, although inside
+the desktop app they now run on Node 24 (`docs/security-architecture.md` §4a).
+Before this merges, a `desktop-apps.yml` dispatch build of the branch
 (throwaway tag, `notarize=false`) has to pass on all four targets and its arm64
 app has to start (wizard, kernel and web-ui up, update check): a push to `main`
 releases through the same workflow, so its first run must not be a

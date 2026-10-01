@@ -339,22 +339,23 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
-## Upgrading past v0.167.12 — desktop app: macOS 13 or later from the Electron 44 build
+## Upgrading past v0.167.13 — desktop app: macOS 13 or later from the Electron 44 build
 
 The desktop app's runtime moved from Electron 37 to Electron 44 (2026-09-30).
 Electron 44 does not run on macOS 12 or earlier, and the packaged app declares
-macOS 13 (Ventura) as its minimum.
+macOS 13 (Ventura) as its minimum. v0.167.13 is the last release built on
+Electron 37.
 
 - **macOS 11 and 12:** the update feed declares macOS 13 as its minimum, so
-  these Macs are no longer offered updates. The app keeps running the last
-  release built on Electron 37, which gets no further Electron security fixes.
-  Its updater says so, as does that of every release from v0.167.9 on: once at
-  startup when the first Electron 44 release appears, and on every "Check for
-  Updates…" ("omadia X needs macOS 13 or later"). An app still on a release
-  before v0.167.9 reports "already on the latest version" instead, because its
-  updater predates the notice; install the last Electron 37 release by hand to
-  get it. Updating macOS to 13 or later brings the next update. An app
-  installed by hand from a newer DMG does not start on macOS 11 or 12.
+  these Macs are no longer offered updates. Each keeps the version it runs;
+  the newest one that still starts there is v0.167.13, which gets no further
+  Electron security fixes. The updater of every release from v0.167.9 on says
+  so: once at startup when the first Electron 44 release appears, and on every
+  "Check for Updates…" ("omadia X needs macOS 13 or later"). An app still on a
+  release before v0.167.9 reports "already on the latest version" instead,
+  because its updater predates the notice; install v0.167.13 by hand to get
+  it. Updating macOS to 13 or later brings the next update. An app installed
+  by hand from a newer DMG does not start on macOS 11 or 12.
 - **Windows:** nothing to do. From this build on, the app pins the publisher
   name of its Authenticode signature and refuses an update that is not signed
   under it. The update *to* this build is not checked yet; every later one is.

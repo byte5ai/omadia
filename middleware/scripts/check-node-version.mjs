@@ -7,8 +7,18 @@
 // binary the middleware boot relied on (HANDOFF-2026-05-08-dev-stack-monitoring.md).
 // better-sqlite3 v13 moved to N-API and ships ABI-stable prebuilds, so that
 // particular failure can no longer happen — but the Node pin still stands on
-// its own: `engines` declares a single supported major, and the rest of the
-// stack (tsx, the compiled dist/, CI, the docker base image) is built for it.
+// its own: `engines` (an install gate, `engine-strict` in .npmrc) and this
+// guard keep the toolchain that installs, builds and tests the kernel on one
+// major. tsx, CI, the docker base images and the desktop release build all run
+// Node 22.
+//
+// The compiled kernel itself runs on a second major: the desktop app starts it,
+// and the web-ui, under Electron's embedded Node (ELECTRON_RUN_AS_NODE,
+// desktop/src/supervisor.ts), Node 24 since Electron 44. That runtime never
+// goes through npm or this guard, so `engines` does not list it. The decision
+// is recorded in docs/security-architecture.md §4a; the CI leg that would run
+// this suite on Electron's Node is still open (docs/middleware-agent-handoff.md
+// §13).
 
 const required = '127'; // Node 22 (LTS, .nvmrc)
 const actual = process.versions.modules;

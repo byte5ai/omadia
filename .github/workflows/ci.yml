@@ -343,6 +343,11 @@ jobs:
   # user's first impression. Electron's own binary is not downloaded: since
   # Electron 42 `npm ci` no longer fetches it (it arrives on first run), and
   # nothing here launches the app.
+  #
+  # Node 24, unlike the other jobs: this code runs in Electron's main process
+  # on Electron's embedded Node (24 since Electron 44), and the desktop's
+  # @types/node follows that Node. The kernel's suite stays on Node 22 in the
+  # middleware job (docs/security-architecture.md §4a).
   # ------------------------------------------------------------------
   desktop:
     name: desktop (typecheck + test)
@@ -356,7 +361,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: desktop/package-lock.json
 

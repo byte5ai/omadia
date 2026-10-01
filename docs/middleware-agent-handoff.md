@@ -3660,23 +3660,34 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   Öffnen; der Update-Check findet das aktuelle Release, den Neustart ablehnen. (2b)
   **Upgrade-Lauf je Plattform** — macOS arm64, Windows x64, Linux-AppImage mit
   gnome-keyring/libsecret —, jeweils auf einem Rechner oder Benutzerkonto ohne produktive
-  omadia-Installation: das aktuelle Release (Electron 37) installieren, Einrichtung abschließen,
-  einen Provider-Key speichern; dann `sha256` von `secrets.enc` (macOS
+  omadia-Installation: das neueste Release vor dem Merge installieren, frühestens v0.167.13
+  (Stand 2026-10-01 auch das letzte auf Electron 37), Einrichtung abschließen, einen
+  Provider-Key speichern; dann `sha256` von `secrets.enc` (macOS
   `~/Library/Application Support/omadia/`, Windows `%APPDATA%\omadia\`, Linux
   `~/.config/omadia/`, sofern kein eigener Datenordner gewählt wurde) und den Schlüssel aus
   Hilfe → „Wiederherstellungsschlüssel anzeigen…“ notieren. Den Build aus (1) darüber
   installieren und starten. Bestanden: kein Boot-Fehler-Dialog, Kernel und Web-UI laufen, der
   gespeicherte Provider-Key funktioniert, `secrets.enc` hat denselben Hash, der
   Wiederherstellungsschlüssel ist derselbe, und `logs/omadia-desktop.log` im userData-Ordner
-  enthält keine Zeile `[secrets] … failed for …`. Fragt macOS beim ersten Start nach dem
-  Schlüsselbund, passt die Code-Signatur des Builds nicht mehr zu der des Releases; das träfe
-  jede Installation beim Update und zählt als Fehlschlag. Schlägt etwas davon fehl: nicht
-  mergen. Danach den Wegwerf-Tag löschen. (2c) Als letzten Commit vor dem Merge im
+  enthält keine Zeile `[secrets] … failed for …`. Ein Release vor v0.167.13 taugt nicht als
+  Ausgangspunkt: Erst #1264 legt die Datenbank-Passwörter in `secrets.enc` ab, über einem
+  älteren Release schreibt der erste Start des Builds sie hinein (`embeddedDbCredentials()` in
+  `desktop/src/secrets.ts`), und „derselbe Hash“ prüft dann nichts mehr. Fragt macOS beim
+  ersten Start nach dem Schlüsselbund, passt die Code-Signatur des Builds nicht mehr zu der des
+  Releases; das träfe jede Installation beim Update und zählt als Fehlschlag. Schlägt etwas
+  davon fehl: nicht mergen. Danach den Wegwerf-Tag löschen. (2c) Als letzten Commit vor dem Merge im
   CHANGELOG-Eintrag „desktop dependencies refreshed to Electron 44 …“ die Vor-dem-Merge-Sätze
   („Before this merges …“ bis „… whatever data folder it finds.“) durch die Run-ID des
   validierenden `desktop-apps.yml`-Laufs aus (1) und die Ergebnisse aus (2) und (2b) ersetzen
   (je Plattform bestanden, `secrets.enc`-Hash und Wiederherstellungsschlüssel unverändert);
-  sonst liest sich die Anweisung in der Historie, als stünde sie noch aus.
+  sonst liest sich die Anweisung in der Historie, als stünde sie noch aus. Im selben Commit die
+  Versionsangaben gegen die Tags auf `main` prüfen: Die Überschrift „Upgrading past v0.167.13 —
+  desktop app: macOS 13 …“ in `docs/upgrading.md` nennt den letzten Tag vor dem Merge; der
+  Abschnitt darunter (Einleitung und macOS-11/12-Absatz) und der Hold-back-Absatz in
+  `docs/security-architecture.md` §4a („v0.167.9 through v0.167.13“) nennen das letzte
+  veröffentlichte Release auf Electron 37 (Stand 2026-10-01 jeweils v0.167.13, dessen
+  Auto-Release noch lief). Ist seither ein Release dazugekommen oder v0.167.13 ein Draft
+  geblieben, diese Stellen nachziehen.
   **Nach dem Merge** (Admin): (3) den Kontext `audit (high+critical block) (desktop)`, am besten
   zusammen mit `desktop (typecheck + test)`, in die Branch-Protection von `main` aufnehmen und
   per `GET /repos/byte5ai/omadia/branches/main/protection/required_status_checks` prüfen.
@@ -3697,6 +3708,31 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   kalte erste Aufruf meist über die Millisekunde hinaus dauert — unter Electron 44s Node 24 in
   rund 15–25 % der Läufe nicht. Test mit festen `time`-Werten schreiben oder die Turn-ID
   kollisionsfrei machen.
+- **Zwei Node-Majors für denselben Kernel; auf Electrons Node läuft seine Test-Suite in keinem
+  CI-Job.** Entscheidung mit dem Desktop-Refresh: Die Desktop-App startet Kernel und Web-UI mit
+  Electrons eingebettetem Node (`ELECTRON_RUN_AS_NODE`, `desktop/src/supervisor.ts`), seit
+  Electron 44 also Node 24.21.0 — keine Electron-Linie, die noch Sicherheitsfixes bekommt, hat
+  Node 22. Server-Images, Entwicklung, CI und der Desktop-Release-Build, der den Kernel
+  installiert und baut, bleiben auf Node 22 (`docs/security-architecture.md` §4a). `engines` in
+  `middleware/package.json` bleibt deshalb `>=22.13.0 <23`: Mit `engine-strict`
+  (`middleware/.npmrc`) ist es ein Install-Gate für genau diese Toolchain, wie
+  `scripts/check-node-version.mjs` vor `npm install` und `npm test`. Die Desktop-Laufzeit geht
+  durch keins von beiden; eine Node-24-Freigabe dort öffnete nur die Toolchain. Der Job
+  `desktop (typecheck + test)` läuft auf Node 24, weil der Shell-Code im Electron-Hauptprozess
+  läuft. Den Kernel prüfen unter Electrons Node bisher nur „Verify native modules load under the
+  Electron ABI“ (`desktop-apps.yml`) und der Start einer gebauten App. **Offen:** ein CI-Bein,
+  das wie der Release-Build unter Node 22 installiert und baut und dann die Unit-Suite mit
+  Electrons Binary startet, an `npm test` und seinem `pretest`-Guard vorbei, aus `middleware/`:
+  `ELECTRON_RUN_AS_NODE=1 ../desktop/node_modules/.bin/electron --import tsx --test …`
+  (Electron lädt sein Binary beim ersten Aufruf herunter). Electrons Binary statt
+  `setup-node@24`, weil Electrons Node gegen BoringSSL gebaut ist: `node:crypto` kennt dort 28
+  Cipher, 9 Hashes und 4 Kurven (Node 24: 130/52/82), und fehlt dem Kernel oder einer
+  Abhängigkeit davon etwas, fällt es nur dort auf. Die Primitive des Kernels selbst
+  (sha1/sha256 als Hash und HMAC, `aes-256-gcm`, `hkdfSync`, `RSA-SHA256`, Ed25519) laufen
+  unter Electron 44.5.1, und die Unit-Suite lief dort lokal mit diesem Aufruf durch
+  (2026-10-01, macOS arm64): 10324 Tests, 2 rot — `cliSpawnGate` (liest die lokal installierte
+  `claude`-CLI, unter Node 22 genauso rot) und der `graphBackfill`-Flake. Required erst, wenn
+  der Flake behoben ist.
 - **Kleinkram aus dem Desktop-Refresh:** der Schritt „Allow git-https for git dependencies“ in
   `desktop-apps.yml` ist tot (kein Lockfile zieht mehr eine git-Abhängigkeit); das leere
   Root-`package-lock.json` ohne `package.json` kann weg; der Audit-Schritt installiert
