@@ -36,6 +36,38 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop app no longer replaces an unreadable secrets file with new keys
+
+2026-09-30 — the desktop app keeps `VAULT_KEY`, `CREDENTIAL_KEYCHAIN_KEY` and
+the provider API keys in `secrets.enc`, encrypted with the OS keychain. Its
+loader treated any read, decrypt or parse failure like a missing file: it
+generated new keys and wrote them over the file in place. A refused keychain
+prompt, a Linux keyring that was not running, or a write torn by a crash was
+enough to lose every key. The kernel then could not open its own vault, and
+stored credentials, dataset cells and provider keys became unreadable. Now only
+a missing file (ENOENT) creates keys. Any other failure leaves the file
+byte-identical and stops boot with a dialog that names the failed stage and
+the next step: allow keychain access (the file is most likely intact), restore
+`secrets.enc.bak` or the snapshot copy, or move the whole data folder aside to
+start over. The dialog has no "Re-run setup" button, because setup would hit
+the same file. Its support details, the log line and the wizard's error text
+never quote the file: the JSON parser's own message carries a fragment of the
+decrypted text, so a damaged file is reported as `not valid JSON` plus the
+position. The rules live in the Electron-free `secretsBlob.ts` and
+`secretsStore.ts`, so fault-injection tests can assert them.
+
+Every rewrite is now atomic: the current file is copied to `secrets.enc.bak`
+(mode 0600) first, and the new bytes go to a temp file that a rename swaps in.
+A failed backup copy aborts the rewrite. A key is cached only after its write
+succeeded, and every rewrite re-reads the file it replaces. When first-run
+setup switches to a data folder that already holds a `secrets.enc`, that file
+is adopted instead of being overwritten with the keys cached for the default
+folder. The pre-update snapshot now copies `secrets.enc` next to the database
+copy as `<snapshot>.secrets.enc`, and pruning removes both. `platform-data/`
+(the kernel vault) is still not part of the snapshot (security-architecture
+§8a). A dev run that stored its blob unencrypted can still read it after OS
+encryption becomes available. No new environment variable.
+
 ### Fixed — operator UI response headers, non-root web-ui image, sandbox container limits
 
 2026-09-30 — operator pages were served without a frame policy, nosniff or

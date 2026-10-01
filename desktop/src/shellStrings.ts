@@ -44,6 +44,28 @@ const DE: Dictionary = {
     'Bitte warte, bis der Vorgang abgeschlossen ist. Das Fenster aktualisiert sich von selbst.',
   'boot.superseded.ok': 'OK',
 
+  // --- Unreadable secrets file: restore it, never re-key -------------------
+  // The advice is per failed stage (`secretsRecovery.ts`). A refused keychain
+  // leaves the file intact, so that text must lead with the keychain and rule
+  // out deleting it; the backup is for a damaged file.
+  'secrets.unreadable.title': 'omadia kann seine Schlüsseldatei nicht öffnen',
+  'secrets.unreadable.message': 'omadia hat angehalten, statt neue Schlüssel zu erzeugen.',
+  'secrets.unreadable.detail':
+    'Die Datei {file} enthält den Schlüssel zu deinem lokalen Tresor, deine gespeicherten Zugangsdaten und deine Anbieter-Schlüssel. Mit neuen Schlüsseln wäre all das nicht mehr lesbar, deshalb wurde die Datei nicht verändert.\n\n{remedy}\n\n{startOver}\n\nTechnische Details für den Support:\n{reason}\n\nLogdatei: {logFile}',
+  'secrets.unreadable.showFile': 'Datei anzeigen',
+  'secrets.unreadable.quit': 'Beenden',
+  'secrets.remedy.read':
+    'Die Datei ist vorhanden, konnte aber nicht gelesen werden. Prüfe, ob dein Benutzerkonto sie lesen darf und ob ihr Laufwerk verbunden ist, und starte omadia dann erneut.',
+  'secrets.remedy.decrypt':
+    'Der Schlüsselbund des Betriebssystems hat sie nicht entsperrt. Die Datei selbst ist sehr wahrscheinlich intakt, lösche sie also nicht: Starte omadia erneut und erlaube den Zugriff auf den Schlüsselbund, wenn du gefragt wirst (macOS: „Immer erlauben"; Linux: entsperre deinen Schlüsselbund). Schlägt das weiter fehl, ist die Datei möglicherweise beschädigt: Beende omadia und ersetze sie durch die Sicherung {backup} oder durch die neueste *.secrets.enc-Kopie in {snapshots}.',
+  'secrets.remedy.noKeyring':
+    'Die verschlüsselte Ablage des Betriebssystems (Schlüsselbund/Anmeldeinformationen) ist nicht verfügbar, daher kann omadia die Datei nicht entschlüsseln. Die Datei selbst ist sehr wahrscheinlich intakt, lösche sie also nicht. Richte unter Linux einen Secret-Service-Schlüsselbund ein (z. B. gnome-keyring/libsecret) und starte omadia dann erneut.',
+  'secrets.remedy.damaged':
+    'Die Datei ist beschädigt. Beende omadia, ersetze sie durch die Sicherung {backup} oder durch die neueste *.secrets.enc-Kopie in {snapshots} und starte omadia dann erneut.',
+  'secrets.startOver':
+    'Nur wenn sich die Schlüssel nicht wiederherstellen lassen: Beende omadia und verschiebe den Datenordner {dataDir} an einen anderen Ort (behalte ihn, lösche ihn nicht). omadia startet dann die Ersteinrichtung mit neuen Schlüsseln; der verschobene Ordner enthält weiterhin deine Daten und die alten Schlüssel.',
+  'secrets.snapshotsUnknown': 'dem Ordner „snapshots"',
+
   // --- Renderer crash / load failure (OM-57) ------------------------------
   // No auto-reload is promised anywhere here: the shell deliberately does NOT
   // retry (see `recoverRenderer`), and the first version of this dictionary

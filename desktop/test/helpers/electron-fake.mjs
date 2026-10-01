@@ -37,11 +37,25 @@ export function __setLocale(next) {
   locale = next;
 }
 
-export const safeStorage = {
+const SAFE_STORAGE_DEFAULTS = {
   isEncryptionAvailable: () => false,
   encryptString: () => Buffer.from(''),
   decryptString: () => '',
 };
+
+export const safeStorage = { ...SAFE_STORAGE_DEFAULTS };
+
+/**
+ * Replace `safeStorage` methods for a test (null restores the defaults), e.g. to
+ * make encryption available and decryption throw like a refused keychain.
+ *
+ * The methods are swapped ON the exported object rather than the export being
+ * reassigned: `secrets.ts` imports `safeStorage` by name, so only a mutation of
+ * the object it already holds reaches it.
+ */
+export function __setSafeStorage(impl) {
+  Object.assign(safeStorage, SAFE_STORAGE_DEFAULTS, impl ?? {});
+}
 
 function unavailable(name) {
   return new Proxy(
