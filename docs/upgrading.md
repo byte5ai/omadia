@@ -397,7 +397,11 @@ Not `xff:1`: Fly puts the app's own IP address right-most in
 fly/middleware.fly.toml` picks it up. The one-click updater only swaps the
 image and keeps the old settings; there, set the variable once with
 `fly secrets set AUTH_LOGIN_CLIENT_ADDRESS=header:Fly-Client-IP --app
-<middleware-app>`.
+<middleware-app>`. This holds only while web-ui's `MIDDLEWARE_URL` points
+at the middleware's `.internal` address, as `fly/deploy.sh` sets it. Through
+a `.flycast` address, Fly's proxy would most likely set the header to
+web-ui's own address, and every browser behind web-ui would share one client
+key (`docs/security-architecture.md` §10m).
 
 **Render.** The blueprint (`render.yaml`) keeps the default `socket`. web-ui
 reaches the middleware through the middleware's public URL, so a request

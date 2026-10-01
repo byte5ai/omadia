@@ -87,7 +87,7 @@ describe('bucket key: one key for every spelling the users table treats as one a
   it("collapses a missing, empty or oversized id to '-', and never folds a huge one", () => {
     assert.equal(loginAccountKey('local', undefined), 'local:-');
     assert.equal(key('   '), 'local:-');
-    assert.equal(key(`${'a'.repeat(250)}@x.de`), 'local:-');
+    assert.equal(key(`${'a'.repeat(250)}@x.example`), 'local:-');
     assert.equal(foldLoginAccountId('x'.repeat(5_000_000)), undefined);
   });
 
@@ -121,9 +121,9 @@ describe('bucket key: one key for every spelling the users table treats as one a
 describe('device key: the address as stored, ASCII case aside', () => {
   it('lower-cases ASCII letters and leaves every other character alone', () => {
     assert.equal(loginDeviceAccountName(' Admin@Example.COM '), 'admin@example.com');
-    assert.equal(loginDeviceAccountName('ADM\u0130N@X.DE'), 'adm\u0130n@x.de');
-    assert.equal(loginDeviceAccountName('\u00c9lise@X.de'), '\u00c9lise@x.de');
-    assert.equal(loginDeviceAccountKey('local', 'Admin@X.de'), 'local:admin@x.de');
+    assert.equal(loginDeviceAccountName('ADM\u0130N@X.EXAMPLE'), 'adm\u0130n@x.example');
+    assert.equal(loginDeviceAccountName('\u00c9lise@X.example'), '\u00c9lise@x.example');
+    assert.equal(loginDeviceAccountKey('local', 'Admin@X.example'), 'local:admin@x.example');
   });
 
   it('keeps apart two accounts the bucket key lumps together', () => {
@@ -136,7 +136,7 @@ describe('device key: the address as stored, ASCII case aside', () => {
   it('is undefined for a missing, empty or oversized id', () => {
     assert.equal(loginDeviceAccountKey('local', undefined), undefined);
     assert.equal(loginDeviceAccountKey('local', '  '), undefined);
-    assert.equal(loginDeviceAccountKey('local', `${'a'.repeat(250)}@x.de`), undefined);
+    assert.equal(loginDeviceAccountKey('local', `${'a'.repeat(250)}@x.example`), undefined);
   });
 
   // Collations that lower-case a capital I their own way are the exception:

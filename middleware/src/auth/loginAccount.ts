@@ -43,8 +43,8 @@ const ASCII_UPPER = /[A-Z]/g;
 
 /**
  * The account a sign-in attempt targets, as the limiter counts it: namespaced
- * by provider and folded (see the header). `' Admin@X.de '`, `'ADMİN@x.de'`
- * and `'admin@x.de'` are one key. A missing, empty or oversized id is `'-'`.
+ * by provider and folded (see the header). `' Admin@X.example '`, `'ADMİN@x.example'`
+ * and `'admin@x.example'` are one key. A missing, empty or oversized id is `'-'`.
  */
 export function loginAccountKey(providerId: string, accountId: string | undefined): string {
   return `${providerId}:${foldLoginAccountId(accountId) ?? NO_ACCOUNT}`;
