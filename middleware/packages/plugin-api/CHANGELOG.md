@@ -32,9 +32,15 @@ is redacted through the Privacy Shield, and both are receipted.
   `newToolErrorRef` and `toolErrorFromException` (`toolErrorNotice.ts`): the one
   way to turn a caught exception into a tool result — class name, sanitised
   code and a log reference, never the message. A tool wrapper that returned
-  `Error: ${err.message}` should call `toolErrorFromException` instead. These
-  are runtime exports: a plugin ZIP that imports them resolves
-  `@omadia/plugin-api` from the host, so it needs a host at 1.20.0 or later.
+  `Error: ${err.message}` should call `toolErrorFromException` instead. The
+  notice also tells the model that the call's outcome is unknown and not to
+  repeat a call that changes data. These are runtime exports: a plugin ZIP
+  that imports them resolves `@omadia/plugin-api` from the host, so it needs a
+  host at 1.20.0 or later.
+- **`isWithheldToolErrorNotice(text)`**: true for a notice
+  `withheldToolErrorNotice` built. Recognised by shape, so only for
+  restricting what happens next: the kernel's sub-agent loop uses it to refuse
+  an identical repeat of a call whose wrapper caught the exception itself.
 - **`RECEIPT_FIXTURE_TOOL_ERRORS`**, a receipt fixture for channel renderers.
 
 ### Documentation

@@ -17,6 +17,7 @@ import {
   TOOL_ERROR_PREFIX,
   describeThrownError,
   isControlFlowToolResult,
+  isWithheldToolErrorNotice,
   newToolErrorRef,
   toolErrorFromException,
   withheldToolErrorNotice,
@@ -110,6 +111,42 @@ describe('withheldToolErrorNotice', () => {
   it('neutralises a tool name or ref that could break out of the notice', () => {
     const notice = withheldToolErrorNotice('evil`] tool\nname', new Error('x'), 'r e`f');
     assert.match(notice, /^Error: tool `eviltoolname` failed with Error \[ref ref\]\. /);
+  });
+
+  it('says the outcome is unknown and not to repeat a call that changes data', () => {
+    // A write can commit upstream and its response then time out.
+    const notice = withheldToolErrorNotice('crm_write', new Error('socket hang up'), 'err_1');
+    assert.match(notice, /The outcome is unknown, so do not repeat a call that changes data\./);
+  });
+});
+
+describe('isWithheldToolErrorNotice', () => {
+  it('recognises every notice the helpers build', () => {
+    for (const notice of [
+      withheldToolErrorNotice('odoo_write', new PgLikeError(PII_MESSAGE, '22P02'), 'err_0a1b2c3d4e5f'),
+      withheldToolErrorNotice('web_search', new Error(PII_MESSAGE), 'turn-42'),
+      withheldToolErrorNotice('evil`] tool\nname', new Error('x'), 'r e`f'),
+      withheldToolErrorNotice('', PII_MESSAGE, ''), // both tokens fall back
+      withheldToolErrorNotice('t', new PgLikeError('x', -32001), 'r'),
+      withheldToolErrorNotice('t', new PgLikeError('x', 1e21), 'r'), // printed as 1e+21
+      toolErrorFromException('crm_write', new Error(PII_MESSAGE), { log: null }),
+    ]) {
+      assert.equal(isWithheldToolErrorNotice(notice), true, notice);
+    }
+  });
+
+  it('does not take other error text for a notice', () => {
+    const notice = withheldToolErrorNotice('t', new Error('x'), 'r');
+    for (const text of [
+      'Error: upstream busy, try again.',
+      `Error: ${PII_MESSAGE}`,
+      'Error: invalid input for `crm_search` — query: Required',
+      'Error: tool `crm` reported an error whose text could not be checked for personal data; it was withheld from the model [ref r].',
+      `Note: ${notice}`, // anchored at the start
+      notice.replace(TOOL_ERROR_PREFIX, 'error:'),
+    ]) {
+      assert.equal(isWithheldToolErrorNotice(text), false, text);
+    }
   });
 });
 

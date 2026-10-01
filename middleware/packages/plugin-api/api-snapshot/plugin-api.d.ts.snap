@@ -2480,6 +2480,7 @@ readonly code?: string;
 export declare function describeThrownError(err: unknown): ThrownErrorDescription;
 export declare function newToolErrorRef(): string;
 export declare function withheldToolErrorNotice(toolName: string, err: unknown, ref: string): string;
+export declare function isWithheldToolErrorNotice(text: string): boolean;
 export interface ToolErrorFromExceptionOptions {
 readonly ref?: string;
 readonly site?: string;

@@ -26,6 +26,12 @@
  *
  * The notice keeps the `Error:` prefix, so the dispatch loops still derive
  * `is_error` from it and {@link isControlFlowToolResult} still recognizes it.
+ *
+ * An exception says nothing about how far the call got: a write can commit
+ * upstream and its response then time out. So the notice tells the model the
+ * outcome is unknown and not to repeat a call that changes data, and a
+ * sub-agent loop refuses an identical repeat of a call that ended this way
+ * ({@link isWithheldToolErrorNotice}).
  */
 
 import { randomBytes } from 'node:crypto';
@@ -101,9 +107,31 @@ export function withheldToolErrorNotice(
     `${TOOL_ERROR_PREFIX} tool \`${safeToken(toolName, 'unknown')}\` failed with ` +
     `${name}${codeClause} [ref ${safeToken(ref, 'unknown')}]. The error text was ` +
     'withheld from the model; an operator can find it in the server log under ' +
-    'this ref. If the code points at your input, correct the call; otherwise ' +
+    'this ref. The outcome is unknown, so do not repeat a call that changes ' +
+    'data. If the code points at your input, correct the call; otherwise ' +
     'continue without this tool or tell the user it is unavailable.'
   );
+}
+
+/**
+ * The head of every notice {@link withheldToolErrorNotice} builds. The code
+ * clause accepts any run without brackets or whitespace, because a numeric
+ * code is printed as JavaScript prints the number (`1e+21`).
+ */
+const WITHHELD_NOTICE_HEAD =
+  /^Error: tool `[A-Za-z0-9_.:-]+` failed with [A-Za-z][A-Za-z0-9_$.]{0,63}(?: \(code [^()\s]{1,48}\))? \[ref [A-Za-z0-9_.:-]+\]\. The error text was withheld from the model;/;
+
+/**
+ * True when `text` is a notice {@link withheldToolErrorNotice} built: a tool
+ * call that ended in an exception, so whether it took effect is unknown. The
+ * kernel's sub-agent loop uses it to refuse an identical repeat of a call
+ * whose wrapper caught the exception itself ({@link toolErrorFromException}).
+ *
+ * Recognised by its shape, which any tool can imitate. Use it only to RESTRICT
+ * what happens next, never to exempt a text from a check.
+ */
+export function isWithheldToolErrorNotice(text: string): boolean {
+  return WITHHELD_NOTICE_HEAD.test(text);
 }
 
 export interface ToolErrorFromExceptionOptions {

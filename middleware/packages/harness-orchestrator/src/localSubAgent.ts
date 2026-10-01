@@ -4,11 +4,16 @@ import type {
   LocalSubAgentToolResult,
   LocalSubAgentToolSpec,
 } from '@omadia/plugin-api';
-import { appendLimitSignalNote } from '@omadia/plugin-api';
+import { appendLimitSignalNote, isWithheldToolErrorNotice } from '@omadia/plugin-api';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import { streamMessageWithObserver } from './streaming.js';
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  UnknownOutcomeCalls,
+  refusedRepeat,
+  type SubToolOutcome,
+} from './subAgentUnknownOutcome.js';
 import {
   guardControlFlowResult,
   isGuardedControlFlowResult,
@@ -127,6 +132,10 @@ export class LocalSubAgent {
     }> = [];
     let repeatFailureDetected = false;
     let lastIteration = 0;
+    // Calls that ended in an exception: whether they took effect is unknown,
+    // so an identical repeat is refused for the rest of this run, before the
+    // repeat-failure guard would allow it (`subAgentUnknownOutcome.ts`).
+    const unknownOutcome = new UnknownOutcomeCalls();
 
     // OB-31: per-turn tool obligation. When the caller declares a tool
     // that *must* be invoked at least once during this turn (e.g.
@@ -346,11 +355,16 @@ export class LocalSubAgent {
           } catch (err) {
             console.warn(`[sub-agent ${this.name}] observer.onSubToolUse threw:`, err);
           }
+          const toolName = String(use.name);
+          const inputHash = canonicalHash(use.input);
           const started = Date.now();
-          const { output, postcondition } = await this.dispatch(
-            use.name,
-            use.input,
-          );
+          const { output, postcondition, outcomeUnknown } = unknownOutcome.has(
+            toolName,
+            inputHash,
+          )
+            ? refusedRepeat(this.name, toolName)
+            : await this.dispatch(use.name, use.input);
+          if (outcomeUnknown === true) unknownOutcome.add(toolName, inputHash);
           const elapsed = Date.now() - started;
           const isError = output.startsWith('Error:') || postcondition !== undefined;
           console.log(
@@ -373,11 +387,7 @@ export class LocalSubAgent {
             content: output,
             ...(isError ? { is_error: true } : {}),
           });
-          recentToolCalls.push({
-            name: String(use.name),
-            inputHash: canonicalHash(use.input),
-            isError,
-          });
+          recentToolCalls.push({ name: toolName, inputHash, isError });
         }
         messages.push({ role: 'user', content: toolResults });
 
@@ -431,10 +441,7 @@ export class LocalSubAgent {
     }
   }
 
-  private async dispatch(
-    toolName: string,
-    input: unknown,
-  ): Promise<{ output: string; postcondition?: { issues: readonly string[] } }> {
+  private async dispatch(toolName: string, input: unknown): Promise<SubToolOutcome> {
     const tool = this.toolsByName.get(toolName);
     if (!tool) return { output: `Error: unknown tool \`${toolName}\`.` };
 
@@ -450,9 +457,10 @@ export class LocalSubAgent {
     // prose. Now the throw resolves as a tool result here, like it does in the
     // parent loops since #1095: the message is withheld from this sub-agent's
     // model (class name, code, log ref — `toolErrorRedaction.ts`), the
-    // sub-agent continues and can answer without the tool, and
-    // REPEAT_FAILURE_THRESHOLD bounds any retry loop. The notice is PII-free,
-    // so it skips the capture and privacy steps below.
+    // sub-agent continues and can answer without the tool. The call may have
+    // taken effect before it threw, so `ask` refuses an identical repeat for
+    // the rest of the run (`outcomeUnknown`, `subAgentUnknownOutcome.ts`). The
+    // notice is PII-free, so it skips the capture and privacy steps below.
     //
     // The mint records a connect prompt the MCP manager produces during this
     // inner call (the parent dispatch's mint records it too), so only that
@@ -468,7 +476,7 @@ export class LocalSubAgent {
         privacy,
         site: `sub-agent ${this.name}`,
       });
-      return { output: withheld.text };
+      return { output: withheld.text, outcomeUnknown: true };
     }
     // #130 — unwrap the structured tool-result union at the boundary so
     // every privacy / capture path downstream keeps seeing a plain string,
@@ -481,6 +489,13 @@ export class LocalSubAgent {
     // fall-through). PII-free + deterministic, safe through the data-plane.
     const result = appendLimitSignalNote(rawOutput, limitSignal);
     const postcondition = typeof raw === 'string' ? undefined : raw.postcondition;
+    // Carried by every return below. A wrapper that caught the exception
+    // itself (the tool bridges, `toolErrorFromException`) returns the withheld
+    // notice instead of throwing: that call's outcome is just as unknown.
+    const carried = {
+      ...(postcondition ? { postcondition } : {}),
+      ...(isWithheldToolErrorNotice(rawOutput) ? { outcomeUnknown: true as const } : {}),
+    };
     // Phase C.2 — Raw tool-result capture (parallel to orchestrator.dispatchTool).
     // Sub-agent tool calls also feed routine templates, so the capture
     // hook must fire here too. Absent callback ⇒ no capture.
@@ -502,7 +517,7 @@ export class LocalSubAgent {
       // reading memory / stored processes sees them in clear too. Checked
       // first so it wins over every other branch.
       if (isInternExemptTool(toolName)) {
-        return { output: result, ...(postcondition ? { postcondition } : {}) };
+        return { output: result, ...carried };
       }
       // Slice 2.5 — same operator-owned bypass check the orchestrator's
       // outer dispatch consults. If the tool's plugin opted into `bypass`,
@@ -526,7 +541,7 @@ export class LocalSubAgent {
             err,
           );
         }
-        return { output: result, ...(postcondition ? { postcondition } : {}) };
+        return { output: result, ...carried };
       }
       // Canvas sentinel tap — sub-tools (e.g. an agent plugin's deterministic
       // canvas tree) emit `_pending*` directives too; the synthesis needs the
@@ -564,7 +579,7 @@ export class LocalSubAgent {
             site: `sub-agent ${this.name}`,
             authPromptMint,
           }),
-          ...(postcondition ? { postcondition } : {}),
+          ...carried,
         };
       }
       // Intern the raw result server-side and hand the LLM only the
@@ -584,7 +599,7 @@ export class LocalSubAgent {
           // The raw result is interned away; re-attach the (PII-free) limit
           // note to the digest so the agent still learns the result is bounded.
           output: appendLimitSignalNote(v4.digestText, limitSignal),
-          ...(postcondition ? { postcondition } : {}),
+          ...carried,
         };
       } catch (err) {
         console.warn(
@@ -593,7 +608,7 @@ export class LocalSubAgent {
         );
       }
     }
-    return { output: result, ...(postcondition ? { postcondition } : {}) };
+    return { output: result, ...carried };
   }
 }
 
