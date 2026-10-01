@@ -597,14 +597,34 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
     Passwort-Reset, Deaktivieren, Löschen, siehe „Serverseitiger
     Sitzungs-Widerruf“ in §3) schließt die Sockets des Users sofort mit **4403**
     `session revoked`. `WebSocketRegistry.closeSessions(match)` ist derselbe
-    Hebel für andere Kernel-Pfade.
-  - Widerruf auf anderen Replicas: `announce` ist prozesslokal, deshalb prüft
-    ein Sweep alle `WS_SESSION_RECHECK_MS` (60 s) jeden offenen Socket erneut
-    über `evaluateSessionToken` (derselbe Pfad wie HTTP): widerrufen → 4403
-    `session revoked`, Entra-Whitelist entzogen → 4403 `session forbidden`,
-    Token nicht mehr gültig → 4401. `auth.unavailable` (DB-Ausfall) ist kein
-    Urteil — der Socket bleibt, begrenzt durch `exp`. Pro Socket läuft nie
-    mehr als ein Check gleichzeitig.
+    Hebel für andere Kernel-Pfade. Ein `announce`, das während der
+    Upgrade-Prüfung eintrifft, findet noch keinen Socket: die Registry merkt
+    sich davor den Widerrufszähler (`ChannelSessionTracker.mark()`), und
+    `accept` schließt mit 4403, **bevor** der Handler läuft
+    (`RevocationLog` in `src/channels/channelSessionCheck.ts`).
+  - Widerruf auf anderen Replicas — **der nächste Frame**: `announce` ist
+    prozesslokal, deshalb wird jeder eingehende Frame einzeln geprüft. Er
+    erreicht den Handler nur auf einem Urteil, dessen Prüfung höchstens
+    `WS_SESSION_FRAME_RECHECK_MS` (Env, Default 5 s, 0 = jeder Frame) vor
+    seiner Ankunft begann; die Upgrade-Prüfung zählt mit. Ist das Urteil
+    älter, wartet der Frame (und jeder dahinter, in Reihenfolge), bis
+    `evaluateSessionToken` (derselbe Pfad wie HTTP) erneut gelaufen ist; der
+    Socket liest so lange nicht weiter (`ws.pause()`, TCP-Backpressure statt
+    wachsendem Puffer). Widerrufen → 4403 `session revoked`, Entra-Whitelist
+    entzogen → 4403 `session forbidden`, Token nicht mehr gültig → 4401; die
+    wartenden Frames verfallen.
+  - Leerlauf: ein Sweep alle `WS_SESSION_RECHECK_MS` (60 s) prüft jeden
+    offenen Socket genauso. Das begrenzt, was ein Socket ohne eigene Frames
+    noch bekommt (Notification-Pushes).
+  - Kein Urteil, kein Frame: `auth.unavailable` (DB-Ausfall), ein Wurf und
+    eine verpasste Deadline (`WS_SESSION_CHECK_TIMEOUT_MS`, 10 s) sind kein
+    Urteil — der Socket bleibt offen (begrenzt durch `exp`; Pings beantwortet
+    er wieder, sobald der Check aufgegeben hat), aber die wartenden Frames
+    erreichen `onMessage` nicht, sondern `onRefusedMessage` (das
+    WS-Gegenstück zu HTTP 503). Ein Ausfall beendet auch die Gnadenfrist des
+    Urteils davor, der nächste Frame prüft neu; eine Ablehnung, die erst nach
+    der Deadline kommt, schließt trotzdem. Sweep und Frames teilen sich einen
+    Check pro Socket.
   - Ab dem Close erreicht kein Frame mehr den Handler, seine Sends werden
     verworfen, und sein `onClose` feuert sofort (nicht erst nach dem
     Close-Handshake des Peers).
@@ -623,9 +643,14 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   `webSocketRegistry.attach(server)` nach `const server = app.listen(PORT, '::')`
   — dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit. Über
   `sessions` (derselbe `SessionRevocationGuard` wie `requireAuth`) kommen sowohl
-  der Upgrade-Check als auch `onRevoked` und der periodische Re-Check.
-  `channelMaxPayloadBytes` und `channelSessionRecheckMs` bleiben in Prod
-  ungesetzt, also greifen 32 MiB bzw. 60 s; nur Tests setzen kleinere Werte.
+  der Upgrade-Check als auch `onRevoked`, die Frame-Prüfung und der Sweep.
+  `channelFrameRecheckMs` kommt aus `config.WS_SESSION_FRAME_RECHECK_MS`;
+  `channelMaxPayloadBytes`, `channelSessionRecheckMs` und
+  `channelSessionCheckTimeoutMs` bleiben in Prod ungesetzt, also greifen
+  32 MiB, 60 s bzw. 10 s; nur Tests setzen kleinere Werte. Der
+  Channel-Authenticator selbst (`authenticateChannelSession`, Cookie-Parsing,
+  Entfernen des Session-Cookies aus den Handler-Headern) liegt in
+  `src/channels/channelSessionAuth.ts`.
 - **Dependency:** `ws` + `@types/ws` nur im Kernel, nicht im SDK.
 
 Test: `test/webSocketRegistry.test.ts` fährt einen echten `http.Server` + echten
@@ -642,10 +667,21 @@ der Deadline öffnet nichts), die rohen Status-Line-Bytes bei CR/LF im
 das kaputte Cookie-Escape und das Deaktivieren im Auth-Fenster ab. Die
 Lebensdauer prüfen `test/webSocketRegistrySession.test.ts` (echte Sockets:
 4401 am `exp`, Token ohne `exp` bzw. im Upgrade abgelaufen, Claims ohne Token,
-`closeSessions`, Widerruf per `announce` und per Re-Check, Whitelist-Entzug,
-Ausfall schließt nicht, keine Timer/Re-Checks nach Close oder Deaktivierung),
+`closeSessions`, Widerruf per `announce` und per Sweep, Whitelist-Entzug,
+Ausfall hält Frames zurück, schließt aber nicht, keine Timer/Re-Checks nach
+Close oder Deaktivierung), `test/webSocketRegistryFrameGate.test.ts` (echte
+Sockets: Widerruf auf einer anderen Replica stoppt den nächsten Frame samt
+den dahinter wartenden, `announce` während der Upgrade-Prüfung schließt vor
+dem Handler, fehlgeschlagener bzw. hängender Lookup hält Frames zurück und
+der Socket beantwortet weiter Pings, Grenze 0 prüft jeden Frame),
 `test/channelSessionTracker.test.ts` (Mock-Timer: exakt am `exp`, später
-Timer, setTimeout-Obergrenze, Verdict-Mapping) und
+Timer, setTimeout-Obergrenze, Verdict-Mapping),
+`test/channelSessionFrameGate.test.ts` (Mock-Timer: Frame-Grenze und
+Default, Reihenfolge, Backpressure, Ausfall und Deadline, späte Ablehnung,
+Upgrade-Fenster), `test/uiChannelSessionRefusal.test.ts` (was der Canvas mit
+einem zurückgehaltenen Frame macht), `test/uiChannelSessionGate.test.ts`
+(Canvas an einer echten Registry: ein Turn nach einem Widerruf anderswo
+startet nie, im Ausfall gibt es `turn_error` und der Socket bleibt) und
 `test/auth/liveSocketRevocation.test.ts` (echte Auth-/Admin-Router:
 `/renew` lässt den Socket offen, Logout und Deaktivieren schließen ihn).
 Gemeinsame Fixtures: `test/_helpers/wsRegistryKit.ts`. Damit ist der
@@ -687,7 +723,13 @@ PR-11s `CoreApi.registerWebSocket` aufsetzend. Drei neue Module im Package
      Backoff). `cookie` darf eine Funktion sein, die bei jedem Connect
      das aktuelle Cookie liefert. Der Stub-Server (`tools/stubServer.ts`) kann
      `sessionExpiresAt` senden und mit `closeSockets(4401 | 4403, …)` beide
-     Closes simulieren.
+     Closes simulieren. Kann der Kernel die Sitzung gerade nicht prüfen
+     (DB-Ausfall, siehe PR-11-Abschnitt), läuft ein zurückgehaltener Frame
+     nicht: ein `turn`/`canvas_refresh` bekommt `turn_error` `session check
+     unavailable, try again`, ein `turn_abort` stoppt den laufenden Turn
+     trotzdem, und auf ein zurückgehaltenes `handshake_select` folgt statt
+     des Acks ein Close **1013** — der Client verbindet im normalen Backoff
+     neu, durch eine frische Upgrade-Prüfung.
   2. **Turn-Bildung:** je `turn`-Nachricht ein `IncomingTurn` —
      `channelId`, `userRef` (`kind: 'custom'`, `id = session.subject`), `text`,
      optional `target`/`viewState`/`viewStateTruncated`, `tenantId` aus
@@ -2280,10 +2322,12 @@ verlängern). Jetzt gibt es einen Marker pro User.
   keine Sitzung mehr gemintet), `/setup` aus der neu angelegten.
 - **Offene Verbindungen**: Channel-WebSockets schließt die Registry über
   denselben Guard (`WebSocketRegistryDeps.sessions`): `onRevoked` sofort auf
-  dieser Replica (4403), der 60-s-Re-Check per `check` auf allen anderen, und
-  am `exp` des Tokens mit 4401 — Details im Abschnitt „Canvas
-  WebSocket-Transport (Omadia UI, PR-11)“. Der Builder-SSE-Stream bleibt nach
-  einem Widerruf noch offen — siehe §13.
+  dieser Replica (4403), auf allen anderen vor dem nächsten Frame, sobald
+  dessen letzte Prüfung älter als `WS_SESSION_FRAME_RECHECK_MS` (5 s) ist,
+  bzw. im 60-s-Sweep, solange der Socket schweigt, und am `exp` des Tokens
+  mit 4401 — Details im Abschnitt „Canvas WebSocket-Transport (Omadia UI,
+  PR-11)“. Der Builder-SSE-Stream bleibt nach einem Widerruf noch offen —
+  siehe §13.
 
 Tests: `test/auth/sessionRevocation.test.ts`,
 `test/auth/logoutRevokesSession.test.ts`,
@@ -2646,6 +2690,10 @@ Admin-Passwort-Reset, Deaktivieren und Löschen beenden alle Sitzungen des
 Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf“)
 — ohne eigene Env-Variable.
 
+| Variable | Wirkung |
+|---|---|
+| `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
+
 ### Test-Schalter (nicht von der Middleware gelesen)
 
 Drei Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
@@ -2735,6 +2783,8 @@ CONDUCTOR_EPHEMERAL_REAPER_INTERVAL_MS=60000     # Reaper-Poll
 GRAPH_TENANT_ID=byte5
 # Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional
 PRIVACY_C1_DETECTOR_URL=http://pii-detector:8812   # unset ⇒ nur C0-Regex-Baseline
+# Offene Channel-WebSockets (Tabelle „Admin-UI-Sitzung“ oben)
+WS_SESSION_FRAME_RECHECK_MS=5000    # 0..60000; 0 = jeder Frame wird geprüft
 # Runtime
 PORT=3979
 ```
@@ -3115,9 +3165,18 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   der Lookup in Messungen sichtbar wird (Richtwert: > 5 ms im p95 der
   `/api`-Requests), ein kurzes TTL-Memo im Guard, das `announce` invalidiert;
   die TTL dann in Code und `docs/security-architecture.md` §10e nennen, weil
-  „sofort“ danach „innerhalb der TTL“ heißt. Die TTL muss unter
-  `WS_SESSION_RECHECK_MS` (60 s) bleiben, sonst verlängert sie die Frist, in
-  der ein offener WebSocket auf einer anderen Replica einen Widerruf bemerkt.
+  „sofort“ danach „innerhalb der TTL“ heißt. Die TTL addiert sich auch auf
+  `WS_SESSION_FRAME_RECHECK_MS`: ein WebSocket-Frame dürfte dann auf einem
+  Urteil fahren, das TTL + 5 s alt ist. Deshalb die TTL klein halten (≤ 1 s)
+  und auch in `docs/security-architecture.md` §10d nennen.
+- **Upgrade-Prüfung ohne Deadline.** Der Re-Check offener Channel-Sockets
+  gibt nach `WS_SESSION_CHECK_TIMEOUT_MS` (10 s) auf; die Prüfung beim
+  Channel-Upgrade selbst (`authenticateBeforeHandshake` ohne `timeoutMs`)
+  nicht. Hängt der `users`-Read, hängt auch der rohe Upgrade-Socket, bis die
+  DB antwortet (danach 503 oder 101). Kein Autorisierungsloch, aber eine
+  Ressourcenfrage: dieselbe Deadline an die Channel-Upgrade-Prüfung geben und
+  `webSocketRegistryHardening.test.ts` um einen hängenden Channel-Lookup
+  erweitern.
 - **UI-Hinweise.** Der `SessionWatcher` zeigt bei `auth.revoked` dasselbe
   Ablauf-Overlay wie bei einer abgelaufenen Sitzung; ein eigener Text
   („An anderer Stelle abgemeldet“) wäre ehrlicher. Die Detailseite eines Users

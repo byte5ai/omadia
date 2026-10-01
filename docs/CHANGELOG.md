@@ -49,12 +49,24 @@ with 4401 `session expired` at `exp`; a token without `exp`, or one that expires
 during the upgrade check, is closed before the handler runs. Handlers get the
 claims (now with `expiresAt`), never the token, and the session cookie is
 stripped from `socket.request.headers`. A revocation announced on this replica
-closes that user's sockets at once with 4403. Every 60 s one sweep re-runs
-`evaluateSessionToken` for every open socket, which reaches revocations made on
-other replicas and de-whitelisted identities (4403); a failed account lookup is
-an outage and keeps the socket, still bounded by its `exp`. After the close no
-frame reaches the handler, and the canvas channel aborts the turn still running
-and starts none that was queued behind it.
+closes that user's sockets at once with 4403, including a socket whose upgrade
+was still being checked at that moment. Announcements are process-local, so
+every inbound frame is also authorised on its own: it reaches the handler only
+on a session check that started at most `WS_SESSION_FRAME_RECHECK_MS` (new env
+variable, default 5000, 0 = every frame) before the frame arrived. With an older
+verdict the frame waits, in order, while `evaluateSessionToken` runs again and
+the socket stops reading. That is what carries a sign-out, disable or delete
+made on another replica, or directly in SQL, to the next frame (4403), and a
+de-whitelisted Entra identity likewise. A socket that sends nothing is re-checked
+every 60 s. A failed, throwing or hung account lookup (10 s deadline) is an
+outage, not a verdict: the socket stays open, but the frames that waited on it
+are refused instead of handled, as HTTP answers 503. The canvas answers a
+refused turn with `turn_error`, still honours a refused `turn_abort`, and closes
+with 1013 instead of acking a refused handshake so the client reconnects.
+Channel handlers can see refused frames through the new optional
+`ChannelSocket.onRefusedMessage`. After the close no frame reaches the handler,
+and the canvas channel aborts the turn still running and starts none that was
+queued behind it.
 
 A renewal extends the cookie, not an open socket: the client reconnects with
 its current cookie, so an active canvas reconnects once per session window, and

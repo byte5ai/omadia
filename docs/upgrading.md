@@ -192,7 +192,11 @@ No action needed; this section is about behaviour you will notice.
 - **Open canvas connections end with the session.** The desktop canvas
   WebSocket is closed with code 4401 when the cookie that opened it expires
   (at most 4 hours after sign-in or the last renewal) and with 4403 when the
-  session is revoked; an open socket is re-checked every 60 seconds. Clients
+  session is revoked. A socket in use is re-checked before its next message
+  once its last check is older than `WS_SESSION_FRAME_RECHECK_MS` (new,
+  optional, default 5000 ms; 0 checks every message), an idle one every 60
+  seconds. While the database cannot be read, canvas requests are refused
+  with an error the user can retry, and the connection stays open. Clients
   built on `@omadia/canvas-core` 0.2.0 or later stop and ask to renew or sign
   in; older clients keep reconnecting into a 401 until the user signs in
   again. Renewing the session in the browser does not extend a socket that is
