@@ -1652,12 +1652,13 @@ der Privacy Shield in diesem Turn aktiv war**: `finalizeTurn()` in
 `harness-plugin-privacy-guard/src/service.ts` liefert nur dann einen Receipt,
 wenn der Turn ein Dataset interniert, einen Bypass oder die strukturierte
 Ausgabe eines angebundenen Tools protokolliert, den Prompt maskiert
-(Letzteres nur bei mindestens einem erkannten PII-Span) oder einen Tool-Fehler
+(Letzteres nur bei mindestens einem erkannten PII-Span), einen Tool-Fehler
 behandelt hat (`toolErrors`: Exception-Text zurückgehalten, `Error:`-Text
 redigiert oder zurückgehalten, MCP-Connect-Prompt durchgereicht — siehe §11
-„Tool-Fehler an den Dispatch-Nähten“); der Orchestrator
-persistiert nur `if (receipt)`. Ein Turn ohne Shield-Aktivität (z. B. reine
-Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt;
+„Tool-Fehler an den Dispatch-Nähten“) oder der Antwort-Verifier unter seiner
+Privacy-Sicht Modellanfragen gestellt hat (`verifierEgress`, siehe unten); der
+Orchestrator persistiert nur `if (receipt)`. Ein Turn ohne Shield-Aktivität
+(z. B. reine Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt;
 `mask_user_prompt` ist per Default ohnehin aus) schreibt weder eine Zeile
 noch eine Log-Zeile. UI-Copy und README sagen das seit #1081 so. Ein
 Null-Aktivitäts-Receipt pro Turn wurde bewusst verworfen: er würde die
