@@ -11,8 +11,6 @@ import { describe, it } from 'node:test';
 import {
   createLoginRateLimiter,
   DEFAULT_LOGIN_LIMITER_CONFIG,
-  loginAccountKey,
-  readLoginAccountId,
   type LoginAdmission,
   type LoginClientKind,
   type LoginKeys,
@@ -369,26 +367,5 @@ describe('memory bounds, sweep and operator unlock', () => {
     if (inFlight.allowed) inFlight.attempt.fail();
     for (let i = 0; i < D.accountFreeFailures; i += 1) failOnce(limiter, keys('c1', 'local:v@x'));
     assert.equal(limiter.stats().inFlight, 0);
-  });
-});
-
-describe('account keys', () => {
-  it('normalise like the users table (trim + lower-case) and namespace by provider', () => {
-    assert.equal(loginAccountKey('local', ' Admin@Example.COM '), 'local:admin@example.com');
-    assert.equal(loginAccountKey('local', 'admin@example.com'), 'local:admin@example.com');
-  });
-
-  it("collapse a missing, empty or oversized id to '-'", () => {
-    assert.equal(loginAccountKey('local', undefined), 'local:-');
-    assert.equal(loginAccountKey('local', '   '), 'local:-');
-    assert.equal(loginAccountKey('local', `${'a'.repeat(250)}@x.de`), 'local:-');
-  });
-
-  it('read the account id from the login body: email, else username', () => {
-    assert.equal(readLoginAccountId({ email: 'a@x', password: 'p' }), 'a@x');
-    assert.equal(readLoginAccountId({ username: 'bob', password: 'p' }), 'bob');
-    assert.equal(readLoginAccountId({ email: 42 }), undefined);
-    assert.equal(readLoginAccountId(undefined), undefined);
-    assert.equal(readLoginAccountId('a@x'), undefined);
   });
 });

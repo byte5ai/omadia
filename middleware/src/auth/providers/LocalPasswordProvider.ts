@@ -1,3 +1,4 @@
+import { isSameLoginAccount } from '../loginAccount.js';
 import type { UserStore } from '../userStore.js';
 import { verifyPassword } from '../passwordHasher.js';
 import type { AuthResult, PasswordProvider } from './AuthProvider.js';
@@ -15,6 +16,8 @@ import type { AuthResult, PasswordProvider } from './AuthProvider.js';
  * call through the sign-in rate limiter first (routes/authLogin.ts,
  * docs/security-architecture.md §10f) — per-client, per-(account, client)
  * backoff instead of a hard lockout, plus a cap on concurrent argon2 runs.
+ * Its one duty towards the limiter: an attempt only signs in to an account
+ * whose address folds to the key the limiter counted it under.
  *
  * Out-of-scope for V1 (per John-decision):
  *   - Self-service signup (admin provisions users via an admin endpoint)
@@ -71,7 +74,13 @@ export class LocalPasswordProvider implements PasswordProvider {
       creds.email,
     );
 
-    if (!user || !user.passwordHash) {
+    // The sign-in limiter counted this attempt under the folded address
+    // (auth/loginAccount.ts). An account whose own address folds to another
+    // key, which a database collation or Unicode version could still match,
+    // is no match here: an attempt never signs in outside the budget it was
+    // counted in. For the shipped databases the fold is coarser than LOWER(),
+    // so this never turns away an address the table matches.
+    if (!user || !user.passwordHash || !isSameLoginAccount(this.id, user.email, creds.email)) {
       // Run a dummy verify against a non-trivial hash to keep timing
       // closer to the password-mismatch path. The hash below is the
       // result of argon2id-hashing a long random string; it can never

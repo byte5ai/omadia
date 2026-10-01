@@ -1,8 +1,10 @@
 /**
  * Device cookies of the password sign-in limiter (docs/security-architecture.md
- * §10f), unit by unit: the v2 cookie codec, the account epoch a cookie is
- * bound to, and the cached lookup that decides whether a browser is a known
- * device. The route-level picture is loginDeviceRevocation.test.ts.
+ * §10f), unit by unit: the v3 cookie codec, the account epoch a cookie is
+ * bound to, which account a cookie is minted for and checked against, and the
+ * cached lookup that decides whether a browser is a known device. The
+ * route-level picture is loginDeviceRevocation.test.ts and
+ * loginAccountAliases.test.ts.
  */
 
 import { strict as assert } from 'node:assert';
@@ -22,14 +24,18 @@ import {
   type LoginAccountEpochs,
 } from '../../src/auth/loginDevices.js';
 import type { UserRecord } from '../../src/auth/userStore.js';
+import { pgLower } from './loginHarness.js';
 
 const KEY = new TextEncoder().encode('device-cookie-unit-test-signing-key-'.repeat(2));
+/** The device key of OWNER (`loginDeviceAccountKey`). */
 const ACCOUNT_KEY = 'local:owner@example.com';
-/** As a sign-in body names it: `loginAccountKey` turns it into ACCOUNT_KEY. */
+/** As a sign-in body names it: ASCII case and whitespace do not matter. */
 const OWNER = { providerId: 'local', accountId: ' Owner@Example.com ' };
+/** As the users table stores it, the address a sign-in verified. */
+const VERIFIED = { providerId: 'local', email: 'Owner@Example.com' };
 const NOW_S = 1_790_000_000;
 
-describe('device cookie codec (v2)', () => {
+describe('device cookie codec (v3)', () => {
   const cookies = createLoginDeviceCookies(KEY);
 
   it('reads back what it minted, for that account only, within the cookie size cap', () => {
@@ -48,7 +54,14 @@ describe('device cookie codec (v2)', () => {
     assert.equal(cookies.isCurrent(read, 'epoch-2'), false);
   });
 
-  it('refuses an expired, re-pointed, foreign-key, old-format or malformed value', () => {
+  it('gives every cookie a fresh device id', () => {
+    const ids = new Set(
+      Array.from({ length: 5 }, () => cookies.mint(ACCOUNT_KEY, 'epoch-1', { nowS: NOW_S }).split('.')[1]),
+    );
+    assert.equal(ids.size, 5);
+  });
+
+  it('refuses an expired, re-pointed, foreign-key, older-format or malformed value', () => {
     const raw = cookies.mint(ACCOUNT_KEY, 'epoch-1', { nowS: NOW_S });
     assert.equal(cookies.read(raw, ACCOUNT_KEY, NOW_S + LOGIN_DEVICE_TTL_S), null, 'expired');
 
@@ -60,20 +73,12 @@ describe('device cookie codec (v2)', () => {
 
     const foreign = createLoginDeviceCookies(new TextEncoder().encode('x'.repeat(64)));
     assert.equal(cookies.read(foreign.mint(ACCOUNT_KEY, 'epoch-1', { nowS: NOW_S }), ACCOUNT_KEY, NOW_S), null);
+    // v2 cookies were bound to the address as typed; v1 to nothing but the account.
+    assert.equal(cookies.read(raw.replace(/^v3\./, 'v2.'), ACCOUNT_KEY, NOW_S), null, 'v2');
     assert.equal(cookies.read(`v1.${String(id)}.${String(exp)}.${String(tag)}`, ACCOUNT_KEY, NOW_S), null);
-    for (const junk of [undefined, 42, '', 'v2', `${raw}.extra`, `${raw}${'x'.repeat(100)}`]) {
+    for (const junk of [undefined, 42, '', 'v3', `${raw}.extra`, `${raw}${'x'.repeat(100)}`]) {
       assert.equal(cookies.read(junk, ACCOUNT_KEY, NOW_S), null, String(junk).slice(0, 20));
     }
-  });
-
-  it('gives one sign-in one device id, and takes it as the id of a minted cookie', () => {
-    const id = cookies.sessionDeviceId(ACCOUNT_KEY, NOW_S);
-    assert.equal(cookies.sessionDeviceId(ACCOUNT_KEY, NOW_S), id);
-    assert.notEqual(cookies.sessionDeviceId(ACCOUNT_KEY, NOW_S + 1), id);
-    assert.notEqual(cookies.sessionDeviceId('local:other@example.com', NOW_S), id);
-    const read = cookies.read(cookies.mint(ACCOUNT_KEY, 'epoch-1', { id, nowS: NOW_S }), ACCOUNT_KEY, NOW_S);
-    assert.equal(read?.id, id);
-    assert.throws(() => cookies.mint(ACCOUNT_KEY, 'epoch-1', { id: 'not.an.id' }));
   });
 });
 
@@ -135,19 +140,21 @@ function resJar(): { res: Response; set: Map<string, string> } {
   return { res, set };
 }
 
-/** An epoch source over a mutable table that counts its lookups. */
+/** An epoch source over a mutable table that records what it was asked for. */
 function table(initial: string | null): {
   epochs: LoginAccountEpochs;
   current: { epoch: string | null };
+  asked: string[];
   lookups: () => number;
 } {
   const current = { epoch: initial };
-  let lookups = 0;
+  const asked: string[] = [];
   return {
     current,
-    lookups: () => lookups,
-    epochs: async () => {
-      lookups += 1;
+    asked,
+    lookups: () => asked.length,
+    epochs: async (_providerId, accountId) => {
+      asked.push(accountId);
       return current.epoch;
     },
   };
@@ -161,10 +168,10 @@ function setup(initial: string | null = 'epoch-1') {
     epochs: source.epochs,
     now: () => clock.t,
   });
-  /** A cookie `remember` hands out for OWNER right now. */
-  const issue = async (): Promise<string> => {
+  /** A cookie `remember` hands out for the account a sign-in verified right now. */
+  const issue = async (verified = VERIFIED): Promise<string> => {
     const { res, set } = resJar();
-    await devices.remember(reqWith(), res, OWNER);
+    await devices.remember(reqWith(), res, verified);
     const value = set.get(LOGIN_DEVICE_COOKIE);
     assert.ok(value, 'remember set a device cookie');
     return value;
@@ -175,7 +182,7 @@ function setup(initial: string | null = 'epoch-1') {
 describe('createLoginDevices — which browsers are known', () => {
   it('looks nothing up for a request without a genuine cookie', async () => {
     const { devices, source } = setup();
-    for (const cookie of [undefined, 'v2.forged', `v1.${'A'.repeat(22)}.1.${'B'.repeat(43)}`]) {
+    for (const cookie of [undefined, 'v3.forged', `v1.${'A'.repeat(22)}.1.${'B'.repeat(43)}`]) {
       assert.equal(await devices.knownDeviceOf(reqWith(cookie), OWNER), null);
     }
     assert.equal(source.lookups(), 0);
@@ -193,10 +200,52 @@ describe('createLoginDevices — which browsers are known', () => {
     assert.equal(await devices.knownDeviceOf(reqWith(cookie), OWNER), null);
   });
 
-  it(`reuses a looked-up epoch for ${String(EPOCH_CACHE_TTL_MS)} ms; forget() re-reads at once`, async () => {
-    const { devices, source, clock, issue } = setup();
+  it('mints for the verified account by its stored address, and checks the typed one by ASCII case only', async () => {
+    const { devices, source, issue } = setup();
     const cookie = await issue();
-    assert.equal(source.lookups(), 1);
+    assert.deepEqual(source.asked, ['Owner@Example.com'], 'minting looks the stored address up as it is');
+
+    assert.ok(await devices.knownDeviceOf(reqWith(cookie), { providerId: 'local', accountId: 'OWNER@EXAMPLE.COM' }));
+    assert.equal(source.asked.at(-1), 'owner@example.com', 'a check looks up the ASCII-lower-cased address');
+    const accented = { providerId: 'local', accountId: 'Öwner@example.com' };
+    assert.equal(await devices.knownDeviceOf(reqWith(cookie), accented), null);
+    assert.equal(source.lookups(), 2, 'another spelling is another key: no lookup');
+  });
+
+  it('never counts one account’s cookie for another the users table keeps apart', async () => {
+    // Postgres LOWER() turns A's alias with a capital İ into A's address,
+    // and keeps B's combining dot.
+    const A = 'iiii@example.com';
+    const B = 'i̇iii@example.com';
+    const rows = new Map([
+      [pgLower(A), 'epoch-a'],
+      [pgLower(B), 'epoch-b'],
+    ]);
+    const devices = createLoginDevices({
+      signingKey: KEY,
+      epochs: async (_p, accountId) => rows.get(pgLower(accountId)) ?? null,
+    });
+    const mint = async (email: string): Promise<string> => {
+      const { res, set } = resJar();
+      await devices.remember(reqWith(), res, { providerId: 'local', email });
+      return String(set.get(LOGIN_DEVICE_COOKIE));
+    };
+    const known = (cookie: string, typed: string): Promise<string | null> =>
+      devices.knownDeviceOf(reqWith(cookie), { providerId: 'local', accountId: typed });
+    const cookieA = await mint(A);
+    const cookieB = await mint(B);
+
+    assert.ok(await known(cookieA, 'IIII@EXAMPLE.COM'));
+    assert.ok(await known(cookieB, 'İIII@EXAMPLE.COM'));
+    assert.equal(await known(cookieA, B), null, 'A’s cookie is no known browser of B');
+    assert.equal(await known(cookieB, A), null, 'nor B’s of A');
+    assert.equal(await known(cookieB, 'İiii@example.com'), null, 'nor under a spelling that finds A');
+    assert.equal(await known(cookieA, 'İiii@example.com'), null, 'that spelling is no device key at all');
+  });
+
+  it(`reuses a looked-up epoch for ${String(EPOCH_CACHE_TTL_MS)} ms; forget() re-reads at once`, async () => {
+    const { devices, source, clock } = setup();
+    const cookie = genuine('epoch-1');
     for (let i = 0; i < 20; i += 1) await devices.knownDeviceOf(reqWith(cookie), OWNER);
     assert.equal(source.lookups(), 1, 'a stream of requests is one lookup');
     clock.t += EPOCH_CACHE_TTL_MS;
@@ -252,24 +301,20 @@ describe('createLoginDevices — which browsers are known', () => {
     assert.equal(lookups, 1);
   });
 
-  it('remember() sets nothing for an account without an epoch, or without an id', async () => {
+  it('remember() sets nothing for an account without an epoch, or without an address', async () => {
     const { devices, source } = setup(null);
     const { res, set } = resJar();
-    await devices.remember(reqWith(), res, OWNER);
-    await devices.remember(reqWith(), res, { providerId: 'local', accountId: '   ' });
+    await devices.remember(reqWith(), res, VERIFIED);
+    await devices.remember(reqWith(), res, { providerId: 'local', email: '   ' });
     assert.equal(set.size, 0);
-    assert.equal(source.lookups(), 1, 'an empty account id costs no lookup');
+    assert.equal(source.lookups(), 1, 'an empty address costs no lookup');
   });
 
-  it('remember() with a sign-in time hands out that sign-in’s one id', async () => {
-    const { devices } = setup();
+  it('remember() hands out a fresh device id per sign-in', async () => {
+    const { issue } = setup();
     const ids = new Set<string>();
-    for (let i = 0; i < 5; i += 1) {
-      const { res, set } = resJar();
-      await devices.remember(reqWith(), res, OWNER, { authTime: NOW_S });
-      ids.add(String(set.get(LOGIN_DEVICE_COOKIE)).split('.')[1] ?? 'no id');
-    }
-    assert.equal(ids.size, 1);
+    for (let i = 0; i < 5; i += 1) ids.add((await issue()).split('.')[1] ?? 'no id');
+    assert.equal(ids.size, 5);
     assert.ok(!ids.has('no id'));
   });
 
@@ -288,11 +333,11 @@ describe('createLoginDevices — which browsers are known', () => {
     });
     assert.equal(await devices.knownDeviceOf(reqWith(cookie), OWNER), null);
     const { res, set } = resJar();
-    await devices.remember(reqWith(), res, OWNER);
+    await devices.remember(reqWith(), res, VERIFIED);
     assert.equal(set.size, 0);
     assert.equal(warnings.length, 1);
     assert.match(warnings[0] ?? '', /database unreachable/);
-    assert.ok(!(warnings[0] ?? '').includes('owner@example.com'), 'never the account');
+    assert.ok(!(warnings[0] ?? '').toLowerCase().includes('owner@example.com'), 'never the account');
     clock.t += 60_000;
     await devices.knownDeviceOf(reqWith(cookie), OWNER);
     assert.equal(warnings.length, 2);

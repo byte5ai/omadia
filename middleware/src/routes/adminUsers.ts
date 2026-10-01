@@ -2,8 +2,9 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import type { AdminAuditLog } from '../auth/adminAuditLog.js';
+import { loginAccountKey, loginDeviceAccountKey } from '../auth/loginAccount.js';
 import type { LoginDevices } from '../auth/loginDevices.js';
-import { loginAccountKey, type LoginRateLimiter } from '../auth/loginRateLimiter.js';
+import type { LoginRateLimiter } from '../auth/loginRateLimiter.js';
 import { hashPassword } from '../auth/passwordHasher.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
 import type { UserRecord, UserStore } from '../auth/userStore.js';
@@ -14,8 +15,10 @@ interface AdminUsersDeps {
   /**
    * The password sign-in limiter (docs/security-architecture.md §10f). A
    * password reset or a re-enable clears the account's backoff on every
-   * client — the operator's in-band unlock. Optional so harnesses without a
-   * limiter keep compiling; production passes the process-wide instance.
+   * client — the operator's in-band unlock — under its folded account key
+   * (`loginAccountKey`), so every spelling of the address is unlocked.
+   * Optional so harnesses without a limiter keep compiling; production
+   * passes the process-wide instance.
    */
   loginLimiter?: Pick<LoginRateLimiter, 'clearAccount'>;
   /**
@@ -23,8 +26,9 @@ interface AdminUsersDeps {
    * password and status, so a create, a reset, a status change or a delete
    * makes this process re-read the account at once instead of after its
    * cache entry expires: old cookies stop counting as known browsers
-   * immediately. Optional like `loginLimiter`; production passes the
-   * process-wide one.
+   * immediately. Addressed by the account's device key
+   * (`loginDeviceAccountKey`), not by the folded one. Optional like
+   * `loginLimiter`; production passes the process-wide one.
    */
   loginDevices?: Pick<LoginDevices, 'forget'>;
 }
@@ -110,7 +114,7 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       role: 'admin',
     });
     // No cached "no such account" may outlive the account's creation (§10f).
-    deps.loginDevices?.forget(loginAccountKey(created.provider, created.email));
+    forgetDevices(deps, created);
 
     await deps.audit.record({
       actor: { id: undefined, email: req.session?.email },
@@ -168,9 +172,10 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     }
     // A status change moves the account's device-cookie epoch (§10f); a
     // re-enable is also the operator unlock of its sign-in backoff.
-    const accountKey = loginAccountKey(updated.provider, updated.email);
-    if (patch.status !== undefined) deps.loginDevices?.forget(accountKey);
-    if (patch.status === 'active') deps.loginLimiter?.clearAccount(accountKey);
+    if (patch.status !== undefined) forgetDevices(deps, updated);
+    if (patch.status === 'active') {
+      deps.loginLimiter?.clearAccount(loginAccountKey(updated.provider, updated.email));
+    }
 
     await deps.audit.record({
       actor: { email: req.session?.email },
@@ -208,9 +213,8 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     const passwordHash = await hashPassword(password);
     await deps.userStore.update(id, { passwordHash });
     // The new hash is a new epoch: device cookies minted before it are stale.
-    const accountKey = loginAccountKey(user.provider, user.email);
-    deps.loginDevices?.forget(accountKey);
-    deps.loginLimiter?.clearAccount(accountKey);
+    forgetDevices(deps, user);
+    deps.loginLimiter?.clearAccount(loginAccountKey(user.provider, user.email));
 
     await deps.audit.record({
       actor: { email: req.session?.email },
@@ -246,7 +250,7 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       res.status(404).json({ code: 'admin_users.not_found' });
       return;
     }
-    deps.loginDevices?.forget(loginAccountKey(target.provider, target.email));
+    forgetDevices(deps, target);
     await deps.audit.record({
       actor: { email: req.session?.email },
       action: 'user.delete',
@@ -293,6 +297,12 @@ function readParam(req: Request, key: string): string | undefined {
   const v = (req.params as Record<string, string | string[] | undefined>)[key];
   if (typeof v === 'string' && v.length > 0) return v;
   return undefined;
+}
+
+/** Make the device cookies re-read `user` at once (§10f), under its device key. */
+function forgetDevices(deps: AdminUsersDeps, user: UserRecord): void {
+  const deviceKey = loginDeviceAccountKey(user.provider, user.email);
+  if (deviceKey !== undefined) deps.loginDevices?.forget(deviceKey);
 }
 
 function parseIntQuery(value: unknown, fallback: number): number {

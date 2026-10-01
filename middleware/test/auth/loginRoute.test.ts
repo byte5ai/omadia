@@ -186,14 +186,16 @@ describe('POST /login/:id — lockout-DoS behind a shared client key', () => {
     const otherKey = createLoginDeviceCookies(new TextEncoder().encode('x'.repeat(64)));
     const nowS = Math.floor(Date.now() / 1000);
     const candidates = [
-      `${LOGIN_DEVICE_COOKIE}=v2.forged`,
+      `${LOGIN_DEVICE_COOKIE}=v3.forged`,
       `${LOGIN_DEVICE_COOKIE}=${otherKey.mint(`local:${ADMIN}`, epoch)}`,
       `${LOGIN_DEVICE_COOKIE}=${cookies.mint('local:someone-else@example.com', epoch)}`,
       `${LOGIN_DEVICE_COOKIE}=${cookies.mint(`local:${ADMIN}`, epoch, { nowS: nowS - LOGIN_DEVICE_TTL_S - 1 })}`,
       // Minted under credentials the account no longer has (a reset since).
       `${LOGIN_DEVICE_COOKIE}=${cookies.mint(`local:${ADMIN}`, 'an epoch before a password reset')}`,
-      // The first format, which was bound to nothing but the account.
+      // The first format, bound to nothing but the account, and the second,
+      // bound to the address as typed rather than to the account verified.
       `${LOGIN_DEVICE_COOKIE}=v1.${'A'.repeat(22)}.${String(nowS + 60)}.${'B'.repeat(43)}`,
+      `${LOGIN_DEVICE_COOKIE}=${cookies.mint(`local:${ADMIN}`, epoch).replace(/^v3\./, 'v2.')}`,
     ];
     for (const cookie of candidates) {
       assertRateLimited(await login(h, right(), { ...shared, headers: { cookie } }));

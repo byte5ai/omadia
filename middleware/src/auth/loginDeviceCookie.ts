@@ -10,22 +10,23 @@
  * keying it by the shared address.
  *
  * The cookie authenticates nothing; it only picks a rate-limit bucket. Its
- * value is `v2.<id>.<exp>.<ep>.<tag>`:
+ * value is `v3.<id>.<exp>.<ep>.<tag>`:
  *
- *   id   the device id: random on a password sign-in, derived from the
- *        sign-in time for `GET /me` (`sessionDeviceId`), so one sign-in
- *        yields one id however often `/me` is called;
+ *   id   the device id, random per sign-in;
  *   exp  expiry, epoch seconds, LOGIN_DEVICE_TTL_S after minting;
- *   ep   a fingerprint of the account's credential epoch at minting time
- *        (`./loginDevices.ts`). A password reset or a deleted account changes
- *        the epoch, which leaves every older cookie stale;
- *   tag  HMAC-SHA256 over account, id, exp and ep.
+ *   ep   a fingerprint of the credential epoch of the account the sign-in
+ *        verified (`./loginDevices.ts`): that row and its password. A password
+ *        reset or a deleted account changes the epoch, which leaves every
+ *        older cookie stale;
+ *   tag  HMAC-SHA256 over the account's device key (`loginDeviceAccountKey`),
+ *        id, exp and ep.
  *
  * This module only checks the tag and the expiry (`read`); comparing `ep`
  * with the account's current epoch is `isCurrent`, which needs a lookup.
- * All three keys are derived from the session signing key, one per purpose,
- * so rotating that key revokes every device cookie together with every
- * session.
+ * Both keys are derived from the session signing key, one per purpose, so
+ * rotating that key revokes every device cookie together with every session.
+ * `v2` cookies were bound to the address as typed rather than to the account
+ * that signed in; they no longer read.
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -38,7 +39,7 @@ export const LOGIN_DEVICE_COOKIE = 'omadia_login_device';
 /** One year: a device stays known across many sessions. */
 export const LOGIN_DEVICE_TTL_S = 365 * 24 * 60 * 60;
 
-const FORMAT = 'v2';
+const FORMAT = 'v3';
 const ID_BYTES = 16;
 /** 16 bytes (an id) or a 132-bit truncated MAC (a fingerprint), base64url. */
 const SHORT_RE = /^[A-Za-z0-9_-]{22}$/;
@@ -46,7 +47,7 @@ const SHORT_LENGTH = 22;
 const EXP_RE = /^\d{1,12}$/;
 const TAG_RE = /^[A-Za-z0-9_-]{43}$/;
 const MAX_COOKIE_LENGTH = 128;
-const KEY_LABEL = 'omadia/login-device-cookie/v2';
+const KEY_LABEL = 'omadia/login-device-cookie/v3';
 
 /** A cookie whose tag and expiry check out for one account. */
 export interface LoginDeviceCookie {
@@ -56,14 +57,12 @@ export interface LoginDeviceCookie {
 }
 
 export interface LoginDeviceCookies {
-  /** A cookie value for `accountKey` under its current `epoch`; a random id unless `id` is given. */
-  mint(accountKey: string, epoch: string, opts?: { id?: string; nowS?: number }): string;
+  /** A cookie value for the account with device key `accountKey`, under its current `epoch`. */
+  mint(accountKey: string, epoch: string, opts?: { nowS?: number }): string;
   /** The cookie when `raw` is genuine and unexpired for exactly `accountKey`, else null. */
   read(raw: unknown, accountKey: string, nowS?: number): LoginDeviceCookie | null;
   /** Whether a read cookie was minted under `epoch`. */
   isCurrent(cookie: LoginDeviceCookie, epoch: string): boolean;
-  /** The device id of one sign-in: the same for every call with the same `authTime`. */
-  sessionDeviceId(accountKey: string, authTime: number): string;
 }
 
 function epochSeconds(): number {
@@ -83,7 +82,6 @@ export function createLoginDeviceCookies(signingKey: Uint8Array): LoginDeviceCoo
     createHmac('sha256', signingKey).update(`${KEY_LABEL}/${purpose}`).digest();
   const tagKey = subKey('tag');
   const epochKey = subKey('epoch');
-  const idKey = subKey('session-id');
   const mac = (key: Buffer, message: string): string =>
     createHmac('sha256', key).update(message).digest('base64url');
 
@@ -93,8 +91,7 @@ export function createLoginDeviceCookies(signingKey: Uint8Array): LoginDeviceCoo
 
   return {
     mint(accountKey, epoch, opts = {}) {
-      const id = opts.id ?? randomBytes(ID_BYTES).toString('base64url');
-      if (!SHORT_RE.test(id)) throw new Error('device id must be 22 base64url characters');
+      const id = randomBytes(ID_BYTES).toString('base64url');
       const exp = String((opts.nowS ?? epochSeconds()) + LOGIN_DEVICE_TTL_S);
       const ep = fingerprint(epoch);
       return `${FORMAT}.${id}.${exp}.${ep}.${tagFor(accountKey, id, exp, ep)}`;
@@ -112,9 +109,6 @@ export function createLoginDeviceCookies(signingKey: Uint8Array): LoginDeviceCoo
     },
     isCurrent(cookie, epoch) {
       return equalStrings(cookie.ep, fingerprint(epoch));
-    },
-    sessionDeviceId(accountKey, authTime) {
-      return mac(idKey, `${accountKey}\n${String(authTime)}`).slice(0, SHORT_LENGTH);
     },
   };
 }

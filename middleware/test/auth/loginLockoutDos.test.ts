@@ -8,27 +8,21 @@
  *    client, so a sender cannot exhaust it for the rest.
  *  - The global capacity keeps a reserve for browsers with a device cookie,
  *    so no number of client keys (IPv6 /64s included) can drain it for them.
- *  - GET /me hands a signed-in browser its device cookie, so browsers that
- *    were signed in before the limiter shipped are known devices too.
+ *  - A browser that has signed in with the password is a known device of
+ *    that account; a session alone is not (loginDeviceRevocation.test.ts).
  */
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { LOGIN_DEVICE_COOKIE } from '../../src/auth/loginDeviceCookie.js';
-import { LOCAL_PROVIDER_ID } from '../../src/auth/providers/LocalPasswordProvider.js';
-import { signSession } from '../../src/auth/sessionJwt.js';
-import { invoke, type InvokeResult } from '../_helpers/httpInvoke.js';
+import type { InvokeResult } from '../_helpers/httpInvoke.js';
 import {
-  ADMIN,
   assertBusy,
   assertRateLimited,
   deviceCookieFrom,
   harness,
   login,
   right,
-  setCookies,
-  SIGNING_KEY,
   wrong,
   type Harness,
   type RequestExtras,
@@ -50,17 +44,6 @@ async function sprayUntilRefused(
     if (res.status !== 401) return res;
   }
   assert.fail(`no refusal within ${String(limit)} attempts`);
-}
-
-function meWith(h: Harness, cookie: string): Promise<InvokeResult> {
-  return invoke(h.app, 'GET', '/api/v1/auth/me', { headers: { cookie } });
-}
-
-function sessionFor(provider: string, email: string): Promise<string> {
-  return signSession(
-    { sub: email, email, display_name: email, role: 'admin', provider },
-    SIGNING_KEY,
-  );
 }
 
 describe('a shared TCP peer (every browser behind the web-ui proxy)', () => {
@@ -136,42 +119,5 @@ describe('many client keys (IPv6 /64s out of one allocation)', () => {
       401,
       'another /48 is another client',
     );
-  });
-});
-
-describe('GET /me — a signed-in browser becomes a known device', () => {
-  it('sets the device cookie for a password session, and sign-in honours it', async () => {
-    const h = await harness();
-    const session = `omadia_session=${await sessionFor(LOCAL_PROVIDER_ID, ADMIN)}`;
-    const me = await meWith(h, session);
-    assert.equal(me.status, 200);
-    const device = deviceCookieFrom(me);
-
-    const again = await meWith(h, `${session}; ${device}`);
-    assert.equal(again.status, 200);
-    assert.deepEqual(
-      setCookies(again).filter((c) => c.startsWith(`${LOGIN_DEVICE_COOKIE}=`)),
-      [],
-      'a genuine device cookie is left alone',
-    );
-
-    // Later the session has run out, and a sender on the shared proxy
-    // address holds the (admin, proxy) pair shut...
-    for (let i = 0; i < 5; i += 1) await login(h, wrong(), PROXY);
-    assertRateLimited(await login(h, right(), PROXY));
-    // ...but the browser that was signed in has its own budget.
-    const back = await login(h, right(), { ...PROXY, headers: { cookie: device } });
-    assert.equal(back.status, 200);
-  });
-
-  it('sets no device cookie for a provider without password sign-in, or without a session', async () => {
-    const h = await harness();
-    const oidc = await meWith(h, `omadia_session=${await sessionFor('entra', 'e@example.com')}`);
-    assert.equal(oidc.status, 200);
-    assert.deepEqual(setCookies(oidc), []);
-
-    const anonymous = await invoke(h.app, 'GET', '/api/v1/auth/me');
-    assert.equal(anonymous.status, 401);
-    assert.deepEqual(setCookies(anonymous), []);
   });
 });

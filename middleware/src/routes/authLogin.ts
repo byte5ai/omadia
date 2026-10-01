@@ -8,6 +8,7 @@ import {
   parseClientAddressPolicy,
   type ClientAddressPolicy,
 } from '../auth/clientAddress.js';
+import { loginAccountKey, readLoginAccountId } from '../auth/loginAccount.js';
 import {
   createLoginDevices,
   usersTableEpochs,
@@ -17,8 +18,6 @@ import {
 import {
   createLoginRateLimiter,
   DEFAULT_LOGIN_LIMITER_CONFIG,
-  loginAccountKey,
-  readLoginAccountId,
   type LoginAttempt,
   type LoginKeys,
   type LoginRateLimiter,
@@ -44,11 +43,14 @@ import type { UserStore } from '../auth/userStore.js';
  *      `retry_after_s`, never a cookie and never a `verify` call;
  *   3. `provider.verify` (argon2) inside the admitted attempt; anything but a
  *      success counts as a failure, a throw included;
- *   4. success: session cookie plus a fresh device cookie for this account.
+ *   4. success: session cookie plus a fresh device cookie for the account the
+ *      provider verified — its address as stored, never the one typed.
  *
- * The client key is the device id when the request carries a current device
- * cookie for THIS account (kind `device`: genuine, and minted under the
- * account's current credentials — `auth/loginDevices.ts`), otherwise the
+ * The account key folds the typed address at least as coarsely as the users
+ * table matches it (`auth/loginAccount.ts`). The client key is the device id
+ * when the request carries a current device cookie for the account the typed
+ * address names (kind `device`: genuine, minted by a sign-in to that account
+ * under its current password — `auth/loginDevices.ts`), otherwise the
  * `AUTH_LOGIN_CLIENT_ADDRESS` address — `address` when a trusted hop vouched
  * for it, `shared` when it is the TCP peer (the limiter header says why the
  * kind matters).
@@ -158,7 +160,7 @@ export function createPasswordLoginHandler(deps: PasswordLoginDeps): RequestHand
     }
 
     await deps.signIn(req, res, result, provider);
-    await deps.devices.remember(req, res, account);
+    await deps.devices.remember(req, res, { providerId: provider.id, email: result.email });
     res.json({ ok: true, user: userPayload(result, provider) });
   };
 }
@@ -174,30 +176,6 @@ async function loginKeysFor(
   if (deviceId) return { clientKey: `device:${deviceId}`, clientKind: 'device', accountKey };
   const address = clientAddressFor(req, deps.guard.clientAddress, deps.guard.ipv6PrefixBits);
   return { clientKey: address.key, clientKind: address.shared ? 'shared' : 'address', accountKey };
-}
-
-/**
- * For `GET /me`: a browser that holds a valid session for a password account
- * is a known device of that account by definition. Give it the device cookie
- * when it lacks a current one, so browsers that were signed in when the
- * limiter shipped, any that lost the cookie, and any whose cookie a password
- * reset made stale count as known browsers without waiting for their next
- * password sign-in (§10f). The id is the session's own (`auth_time`), so one
- * sign-in yields one device id however often `/me` runs. The web-ui session
- * watcher calls `/me` every minute. OIDC sessions get nothing: their sign-in
- * never passes the limiter. Never throws.
- */
-export async function ensureLoginDeviceCookie(
-  req: Request,
-  res: Response,
-  deps: { registry: Pick<ProviderRegistry, 'get'>; devices: LoginDevices },
-  session: { provider: string; email: string; auth_time: number },
-): Promise<void> {
-  const provider = deps.registry.get(session.provider);
-  if (!provider || !isPasswordProvider(provider)) return;
-  const account: LoginAccount = { providerId: provider.id, accountId: session.email };
-  if (await deps.devices.knownDeviceOf(req, account)) return;
-  await deps.devices.remember(req, res, account, { authTime: session.auth_time });
 }
 
 /** Run `verify` inside an admitted attempt; only a success is not a failure. */

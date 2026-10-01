@@ -3,7 +3,7 @@
  * §10f) can be neither multiplied nor kept past the account's credentials.
  * Driven through the real auth and admin users routers:
  *
- *  - GET /me hands out ONE device id per sign-in, however often it runs;
+ *  - only a password sign-in mints one; a session alone (GET /me) does not;
  *  - all known browsers of an account share one budget, so more device ids
  *    buy no more guesses and no more of the capacity kept for known browsers;
  *  - a password reset, a disable or a delete through the admin routes makes
@@ -13,6 +13,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
+import { LOGIN_DEVICE_COOKIE } from '../../src/auth/loginDeviceCookie.js';
 import { DEFAULT_LOGIN_LIMITER_CONFIG } from '../../src/auth/loginRateLimiter.js';
 import { LOCAL_PROVIDER_ID } from '../../src/auth/providers/LocalPasswordProvider.js';
 import { signSession } from '../../src/auth/sessionJwt.js';
@@ -25,6 +26,7 @@ import {
   harness,
   login,
   right,
+  SECOND,
   setCookies,
   SIGNING_KEY,
   wrong,
@@ -63,18 +65,11 @@ function me(h: Harness, cookie: string): Promise<InvokeResult> {
   return invoke(h.app, 'GET', '/api/v1/auth/me', { headers: { cookie } });
 }
 
-/** `n` calls of GET /me with a session and no device cookie: the device cookies they set. */
-async function harvest(h: Harness, sessionCookie: string, n: number): Promise<string[]> {
-  const out: string[] = [];
-  for (let i = 0; i < n; i += 1) {
-    const res = await me(h, sessionCookie);
-    assert.equal(res.status, 200);
-    out.push(deviceCookieFrom(res));
-  }
-  return out;
+function deviceCookiesSetBy(res: InvokeResult): string[] {
+  return setCookies(res).filter((c) => c.startsWith(`${LOGIN_DEVICE_COOKIE}=`));
 }
 
-/** The device id inside a `name=v2.<id>.…` cookie pair. */
+/** The device id inside a `name=v3.<id>.…` cookie pair. */
 function idOf(cookie: string): string {
   return cookie.slice(cookie.indexOf('=') + 1).split('.')[1] ?? '';
 }
@@ -99,31 +94,36 @@ async function admittedGuesses(
   return admitted;
 }
 
-/** Device cookies of ten different sign-ins of `email`, each through GET /me. */
-async function tenSignIns(h: Harness, email: string): Promise<string[]> {
+/** Device cookies of `n` password sign-ins to `email`, a minute apart (capacity drains). */
+async function signIns(h: Harness, n: number, email = ADMIN, password?: string): Promise<string[]> {
   const out: string[] = [];
-  for (let i = 0; i < 10; i += 1) {
-    out.push(...(await harvest(h, await session(email, SIGNED_IN_AT + i), 1)));
+  for (let i = 0; i < n; i += 1) {
+    const res = await login(h, right(email, password), PROXY);
+    assert.equal(res.status, 200);
+    out.push(deviceCookieFrom(res));
+    h.clock.t += 60 * SECOND;
   }
   return out;
 }
 
-describe('GET /me — one device id per sign-in', () => {
-  it('twenty calls with one session hand out one id; another sign-in gets another', async () => {
+describe('only a password sign-in makes a known browser', () => {
+  it('GET /me sets no device cookie, so a session alone buys no budget', async () => {
     const h = await harness();
-    const ids = new Set((await harvest(h, await session(ADMIN, SIGNED_IN_AT), 20)).map(idOf));
-    assert.equal(ids.size, 1, 'every /me of one sign-in hands out the same device id');
-    const later = await harvest(h, await session(ADMIN, SIGNED_IN_AT + 60), 1);
-    assert.equal(ids.has(idOf(later[0] ?? '')), false, 'a new sign-in is a new device id');
+    const signedIn = await session(ADMIN, SIGNED_IN_AT);
+    for (let i = 0; i < 3; i += 1) {
+      const res = await me(h, signedIn);
+      assert.equal(res.status, 200);
+      assert.deepEqual(deviceCookiesSetBy(res), []);
+    }
+    for (let i = 0; i < FREE; i += 1) await login(h, wrong(), PROXY);
+    assertRateLimited(await login(h, wrong(), { ...PROXY, headers: { cookie: signedIn } }));
   });
 });
 
 describe('the known browsers of an account share one budget', () => {
   it('six device ids for one account still get five wrong guesses in all', async () => {
     const h = await harness();
-    const cookies: string[] = [];
-    for (let i = 0; i < 5; i += 1) cookies.push(deviceCookieFrom(await login(h, right(), PROXY)));
-    cookies.push(...(await harvest(h, await session(ADMIN, SIGNED_IN_AT), 1)));
+    const cookies = await signIns(h, 6);
     assert.equal(new Set(cookies.map(idOf)).size, 6);
 
     assert.equal(await admittedGuesses(h, cookies, FREE), FREE);
@@ -133,7 +133,7 @@ describe('the known browsers of an account share one budget', () => {
     const h = await harness({ config: SMALL_CAPACITY });
     const operator = deviceCookieFrom(await login(h, right(), PROXY));
     await h.store.addLocalUser(FORMER, FORMER_PASSWORD);
-    const banked = await tenSignIns(h, FORMER);
+    const banked = await signIns(h, 10, FORMER, FORMER_PASSWORD);
 
     await admittedGuesses(h, banked, 3, FORMER);
     const back = await login(h, right(), { ...PROXY, headers: { cookie: operator } });
@@ -142,10 +142,9 @@ describe('the known browsers of an account share one budget', () => {
 });
 
 describe('a password reset, a disable or a delete ends earlier device cookies', () => {
-  it('after a reset, banked cookies are only the shared address: no extra guesses', async () => {
+  it('after a reset, earlier cookies are only the shared address: no extra guesses', async () => {
     const h = await harness();
-    const banked = await harvest(h, await session(ADMIN, SIGNED_IN_AT), 20);
-    banked.push(deviceCookieFrom(await login(h, right(), PROXY)));
+    const banked = await signIns(h, 3);
 
     const reset = await admin(h, 'POST', `/${h.store.idOf(ADMIN)}/reset-password`, {
       password: NEW_PASSWORD,
@@ -154,22 +153,22 @@ describe('a password reset, a disable or a delete ends earlier device cookies', 
 
     // Without cookies the shared address gets the free budget...
     assert.equal(await admittedGuesses(h, [undefined], 2 * FREE), FREE);
-    // ...and 21 banked cookies add nothing to it.
+    // ...and the three earlier cookies add nothing to it.
     assert.equal(await admittedGuesses(h, banked, FREE), 0);
   });
 
-  it('a session that outlives the reset is one known browser again: one budget, not twenty', async () => {
+  it('a session from before the reset gets no new cookie: only the new password mints one', async () => {
     const h = await harness();
     const signedIn = await session(ADMIN, SIGNED_IN_AT);
-    await harvest(h, signedIn, 20);
     const reset = await admin(h, 'POST', `/${h.store.idOf(ADMIN)}/reset-password`, {
       password: NEW_PASSWORD,
     });
     assert.equal(reset.status, 200);
 
-    const again = await harvest(h, signedIn, 20);
-    assert.equal(new Set(again.map(idOf)).size, 1);
-    assert.equal(await admittedGuesses(h, again, FREE), FREE);
+    assert.deepEqual(deviceCookiesSetBy(await me(h, signedIn)), []);
+    const signedInAgain = await login(h, right(ADMIN, NEW_PASSWORD), PROXY);
+    assert.equal(signedInAgain.status, 200);
+    assert.equal(await admittedGuesses(h, [deviceCookieFrom(signedInAgain)], 2 * FREE), FREE);
   });
 
   it('a disabled account’s cookies do not count while it stays disabled', async () => {
@@ -183,31 +182,25 @@ describe('a password reset, a disable or a delete ends earlier device cookies', 
     assert.equal(await admittedGuesses(h, [undefined], FREE, FORMER), FREE);
     // ...and the cookie is that address now: refused, not a budget of its own.
     assertRateLimited(await login(h, wrong(FORMER), { ...PROXY, headers: { cookie: device } }));
-    // GET /me hands a disabled account's session no device cookie either.
-    const signedIn = await me(h, await session(FORMER, SIGNED_IN_AT));
-    assert.equal(signedIn.status, 200);
-    assert.deepEqual(setCookies(signedIn), []);
 
-    // Re-enabling without a reset lets the cookie count again (§10f).
+    // Re-enabling without a reset lets the cookie count again (§10f): it was
+    // minted by a sign-in with that same, unchanged password.
     assert.equal((await admin(h, 'PATCH', `/${id}`, { status: 'active' })).status, 200);
     assert.equal(await admittedGuesses(h, [undefined], FREE, FORMER), FREE);
     const known = await login(h, wrong(FORMER), { ...PROXY, headers: { cookie: device } });
     assert.equal(known.status, 401);
   });
 
-  it('cookies of a deleted account are no known browsers and cannot take their capacity', async () => {
+  it('cookies of a deleted account are no known browsers', async () => {
     const h = await harness({ config: SMALL_CAPACITY });
     const operator = deviceCookieFrom(await login(h, right(), PROXY));
     await h.store.addLocalUser(FORMER, FORMER_PASSWORD);
-    const banked = await tenSignIns(h, FORMER);
-    const signedIn = await session(FORMER, SIGNED_IN_AT);
+    const banked = await signIns(h, 3, FORMER, FORMER_PASSWORD);
     assert.equal((await admin(h, 'DELETE', `/${h.store.idOf(FORMER)}`)).status, 204);
 
-    for (const cookie of banked) {
-      await login(h, wrong(FORMER), { ...PROXY, headers: { cookie } });
-    }
+    // They are the shared address now: one budget between all of them.
+    assert.equal(await admittedGuesses(h, banked, FREE, FORMER), FREE);
     const back = await login(h, right(), { ...PROXY, headers: { cookie: operator } });
     assert.equal(back.status, 200, 'the operator’s browser still finds room');
-    assert.deepEqual(setCookies(await me(h, signedIn)), [], 'and /me mints nothing for it');
   });
 });

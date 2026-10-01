@@ -57,6 +57,18 @@ export const SECOND = 1000;
 
 // ─── test doubles ──────────────────────────────────────────────────────────
 
+/**
+ * Postgres `LOWER()` as the shipped databases apply it (libc en_US.UTF-8, the
+ * builtin C.UTF-8 provider): one code point at a time, by its simple Unicode
+ * mapping. It differs from JavaScript's toLowerCase() exactly where the
+ * sign-in limiter has to care: 'İ' (U+0130) becomes a plain 'i', not 'i' plus
+ * U+0307, and 'Σ' is always 'σ', never the word-final 'ς'.
+ * loginAccountFold.pg.test.ts checks the real thing.
+ */
+export function pgLower(s: string): string {
+  return Array.from(s, (c) => (c === 'İ' ? 'i' : c.toLowerCase())).join('');
+}
+
 function userRecord(email: string, displayName: string): UserRecord {
   const now = new Date();
   return {
@@ -81,24 +93,31 @@ function withoutHash(row: StoredUser): UserRecord {
   return record;
 }
 
+/**
+ * The users table as the auth code sees it, keyed like its unique index on
+ * `(provider, LOWER(email))` and matched like `LOWER(email) = LOWER($2)`.
+ */
 export class InMemoryUserStore {
   rows = new Map<string, StoredUser>();
+  /** How often a sign-in or a device check read an account. */
+  lookups = 0;
 
   async addLocalUser(email: string, plainPassword: string): Promise<void> {
     const passwordHash = await hashPassword(plainPassword);
-    this.rows.set(email.toLowerCase(), { ...userRecord(email, email), passwordHash });
+    this.rows.set(pgLower(email), { ...userRecord(email, email), passwordHash });
   }
 
   /** The row id `addLocalUser` gives `email` — what the admin routes address. */
   idOf(email: string): string {
-    const row = this.rows.get(email.toLowerCase());
+    const row = this.rows.get(pgLower(email));
     assert.ok(row, `no user ${email}`);
     return row.id;
   }
 
   async findByEmailWithHash(provider: string, email: string): Promise<UserRecord | null> {
+    this.lookups += 1;
     if (provider !== LOCAL_PROVIDER_ID) return null;
-    return this.rows.get(email.toLowerCase()) ?? null;
+    return this.rows.get(pgLower(email)) ?? null;
   }
 
   // ── what the admin users router needs ───────────────────────────────────
@@ -149,7 +168,7 @@ export class InMemoryUserStore {
   async createFirstAdmin(input: CreateFirstAdminInput): Promise<FirstAdminResult> {
     if (this.rows.size > 0) return { outcome: 'not_empty', totalUsers: this.rows.size };
     const user = userRecord(input.email, input.displayName);
-    this.rows.set(input.email.toLowerCase(), { ...user, passwordHash: input.passwordHash });
+    this.rows.set(pgLower(input.email), { ...user, passwordHash: input.passwordHash });
     return { outcome: 'created', user };
   }
 }

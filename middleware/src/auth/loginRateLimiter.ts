@@ -5,9 +5,9 @@
  * Every attempt names its client by a key of one of three kinds
  * (`LoginClientKind`), and the kind decides which layers apply:
  *
- *   device   a genuine device cookie for the account, minted under its
- *            current credentials: one of the browsers that have signed in
- *            to it (`loginDevices.ts`);
+ *   device   a genuine device cookie for the account, minted by a password
+ *            sign-in to it under its current password: one of the browsers
+ *            that have signed in to it (`loginDevices.ts`);
  *   address  an address a trusted proxy vouched for (`xff:<n>`,
  *            `header:<name>`): one client, or one NAT;
  *   shared   the TCP peer — in every shipped topology a proxy that all
@@ -68,8 +68,6 @@ const MINUTE = 60 * SECOND;
 const EPSILON = 1e-9;
 /** 2^30 × base is far beyond any sane cap; stops the exponent growing unboundedly. */
 const MAX_BACKOFF_EXPONENT = 30;
-/** RFC 5321 bounds a mailbox at 254 characters; longer ids share one key. */
-const MAX_ACCOUNT_ID_LENGTH = 254;
 const GLOBAL_REPORT_KEY = 'global';
 /**
  * The pair client of every `device` key: an account's known browsers share
@@ -87,7 +85,10 @@ export interface LoginKeys {
   /** Who is asking: `clientAddressFor(...).key`, or `device:<id>` for a device cookie. */
   readonly clientKey: string;
   readonly clientKind: LoginClientKind;
-  /** What is being guessed: `loginAccountKey(providerId, accountId)`. */
+  /**
+   * What is being guessed: `loginAccountKey(providerId, accountId)`
+   * (`./loginAccount.ts`), folded at least as coarsely as the users table.
+   */
   readonly accountKey: string;
 }
 
@@ -174,36 +175,6 @@ export const DEFAULT_LOGIN_LIMITER_CONFIG: LoginLimiterConfig = Object.freeze({
   reportIntervalMs: MINUTE,
   sweepIntervalMs: MINUTE,
 });
-
-/**
- * The account a sign-in attempt targets, namespaced by provider and
- * normalised like the users table (`LOWER(email)`, and the provider trims):
- * `' Admin@X.de '` and `'admin@x.de'` are one account. A missing, empty or
- * oversized id collapses to `'-'`.
- */
-export function loginAccountKey(providerId: string, accountId: string | undefined): string {
-  return `${providerId}:${normaliseLoginAccountId(accountId) ?? '-'}`;
-}
-
-/** The account id as `loginAccountKey` keys it; undefined for a missing, empty or oversized one. */
-export function normaliseLoginAccountId(accountId: string | undefined): string | undefined {
-  const id = (accountId ?? '').trim().toLowerCase();
-  return id.length > 0 && id.length <= MAX_ACCOUNT_ID_LENGTH ? id : undefined;
-}
-
-/**
- * The account id in a password-provider login body. Providers define their
- * own body shape (`PasswordProvider.verify(body: unknown)`); every provider
- * this repo has identifies the account by `email`, and `username` covers the
- * obvious other shape. Anything else shares the provider-wide `'-'` key.
- */
-export function readLoginAccountId(body: unknown): string | undefined {
-  if (!body || typeof body !== 'object') return undefined;
-  const b = body as { email?: unknown; username?: unknown };
-  if (typeof b.email === 'string') return b.email;
-  if (typeof b.username === 'string') return b.username;
-  return undefined;
-}
 
 interface ClientState {
   level: number;

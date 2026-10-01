@@ -358,7 +358,7 @@ describe('/api/v1/admin/users router', () => {
     );
   });
 
-  it('POST /:id/reset-password clears the backoff under the normalised (lower-cased) account key', async () => {
+  it('POST /:id/reset-password clears the backoff under the folded (lower-cased) account key', async () => {
     setSession(adminSession());
     const mixed = await store.create({
       email: 'Mixed.Case@Example.com',
@@ -375,6 +375,28 @@ describe('/api/v1/admin/users router', () => {
     });
     assert.equal(res.status, 200);
     assert.equal(clearedAccounts.at(-1), 'local:mixed.case@example.com');
+  });
+
+  it('POST /:id/reset-password unlocks every spelling but revokes only this account’s cookies', async () => {
+    setSession(adminSession());
+    const accented = await store.create({
+      email: 'Élise.Dupont@Example.com',
+      provider: LOCAL_PROVIDER_ID,
+      providerUserId: 'élise.dupont@example.com',
+      passwordHash: await hashPassword('seed-pass-3'),
+      displayName: 'Élise',
+      role: 'admin',
+    });
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${accented.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'pw-resetted-3' }),
+    });
+    assert.equal(res.status, 200);
+    // Two identities (§10f): the limiter's bucket folds the address, the
+    // device cookies are bound to the address as stored, ASCII case aside.
+    assert.equal(clearedAccounts.at(-1), 'local:elise.dupont@example.com');
+    assert.equal(forgottenAccounts.at(-1), 'local:Élise.dupont@example.com');
   });
 
   it('POST /:id/reset-password with a too-short password does not unlock', async () => {

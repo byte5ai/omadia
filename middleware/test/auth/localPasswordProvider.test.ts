@@ -13,6 +13,7 @@ import type {
   UserRecord,
   UserStore,
 } from '../../src/auth/userStore.js';
+import { pgLower } from './loginHarness.js';
 
 /**
  * In-memory UserStore stub that satisfies the subset of methods the
@@ -27,6 +28,9 @@ class InMemoryUserStore implements Pick<
   /** How often the provider reached the users table. */
   lookups = 0;
 
+  /** `match` is the table's LOWER(): two addresses are one row when it maps them alike. */
+  constructor(private readonly match: (email: string) => string = (e) => e.toLowerCase()) {}
+
   async addLocalUser(opts: {
     email: string;
     plainPassword: string;
@@ -36,7 +40,7 @@ class InMemoryUserStore implements Pick<
     const hash = await hashPassword(opts.plainPassword);
     const id = `mock-${this.rows.size + 1}`;
     const now = new Date();
-    this.rows.set(opts.email.toLowerCase(), {
+    this.rows.set(this.match(opts.email), {
       id,
       email: opts.email,
       provider: LOCAL_PROVIDER_ID,
@@ -57,7 +61,7 @@ class InMemoryUserStore implements Pick<
   ): Promise<UserRecord | null> {
     this.lookups += 1;
     if (provider !== LOCAL_PROVIDER_ID) return null;
-    const row = this.rows.get(email.toLowerCase());
+    const row = this.rows.get(this.match(email));
     if (!row) return null;
     return row.passwordHash != null
       ? { ...row, passwordHash: row.passwordHash }
@@ -167,5 +171,28 @@ describe('LocalPasswordProvider.verify', () => {
 
     const atLimit = await provider(store).verify({ email: 'long@example.com', password: longest });
     assert.equal(atLimit.outcome, 'success');
+  });
+
+  it('signs in under a spelling the table matches like Postgres LOWER() does', async () => {
+    const store = new InMemoryUserStore(pgLower);
+    await store.addLocalUser({ email: 'admin@example.com', plainPassword: 'pw-12345678' });
+    const r = await provider(store).verify({ email: 'ADMİN@example.com', password: 'pw-12345678' });
+    assert.equal(r.outcome, 'success');
+  });
+
+  it('refuses an account the table matches beyond the limiter’s fold, even with the right password', async () => {
+    // A table that ignores zero-width spaces stands in for a collation or a
+    // newer Unicode version the sign-in limiter's fold does not know: the
+    // attempt was counted under another key than the account's (§10f).
+    const store = new InMemoryUserStore((e) => e.replace(/​/g, '').toLowerCase());
+    await store.addLocalUser({ email: 'admin@example.com', plainPassword: 'pw-12345678' });
+    const loose = await provider(store).verify({
+      email: 'adm​in@example.com',
+      password: 'pw-12345678',
+    });
+    assert.equal(loose.outcome, 'error');
+    if (loose.outcome === 'error') assert.equal(loose.code, 'invalid_credentials');
+    const exact = await provider(store).verify({ email: 'Admin@example.com', password: 'pw-12345678' });
+    assert.equal(exact.outcome, 'success');
   });
 });
