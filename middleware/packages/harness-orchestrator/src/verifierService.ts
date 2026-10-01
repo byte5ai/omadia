@@ -4,15 +4,12 @@ import type {
   ChatTurnInput,
   ChatTurnResult,
   Orchestrator,
-  VerifierResultSummary,
 } from './orchestrator.js';
 import { toSemanticAnswer } from './orchestrator.js';
 import { randomUUID } from 'node:crypto';
 import type { SemanticAnswer } from '@omadia/channel-sdk';
 import type { RunTracePayload } from './runTraceCollector.js';
 import type {
-  ClaimVerdict,
-  VerifierBadge,
   VerifierPipeline,
   VerifierStore,
   VerifierVerdict,
@@ -20,10 +17,27 @@ import type {
 import {
   bindVerdictToClaims,
   buildCorrectionPrompt,
-  hasVerificationEvidence,
   isBorderlineVerdict,
 } from '@omadia/verifier';
 import type { TurnHookRunner } from './turnHooks.js';
+import {
+  extractKnowledgeGraphToolsCalled,
+  extractPostconditionViolations,
+  extractToolsCalled,
+} from './verifierTraceEvidence.js';
+import {
+  mergeBadges,
+  mergeBorderlineVerdicts,
+  summarise,
+  withVerifier,
+} from './verifierVerdicts.js';
+
+// Re-exported: tests and callers import these from this module.
+export {
+  badgeFor,
+  mergeBadges,
+  mergeBorderlineVerdicts,
+} from './verifierVerdicts.js';
 
 /**
  * End-to-end wrapper around the orchestrator that adds answer verification.
@@ -478,228 +492,6 @@ export class VerifierService implements ChatAgent {
 
 // --- helpers --------------------------------------------------------------
 
-function withVerifier(
-  result: ChatTurnResult,
-  verifier: VerifierResultSummary,
-): ChatTurnResult {
-  return { ...result, verifier };
-}
-
-function summarise(
-  returned: VerifierVerdict,
-  retryCount: number,
-  mode: 'shadow' | 'enforce',
-): VerifierResultSummary {
-  // The summary goes out verbatim on the stream, so it is built from a bound
-  // verdict whatever the caller passes: a status the claims back, a reason
-  // from the closed codes. A verdict from `safeVerify` is bound already and
-  // passes unchanged.
-  const { verdict } = bindVerdictToClaims(returned);
-  // Counted over the claim list itself, so `claimCount - contradictionCount
-  // - unverifiedCount` is exactly the number of verified claims — the figure
-  // the connector and web-chat badge gates check the badge against.
-  const count = (pick: (c: ClaimVerdict) => boolean): number =>
-    verdict.claims.filter(pick).length;
-
-  return {
-    badge: badgeFor(verdict, retryCount),
-    status: verdict.status,
-    ...(verdict.status === 'skipped' || verdict.status === 'unavailable'
-      ? { reason: verdict.reason }
-      : {}),
-    claimCount: verdict.claims.length,
-    contradictionCount: count((c) => c.status === 'contradicted'),
-    unverifiedCount: count((c) => c.status === 'unverified'),
-    uncheckedCount: count((c) => c.status === 'unverified' && c.cause === 'not_checked'),
-    uncoveredCount: count((c) => c.claim.type === 'coverage_gap'),
-    retryCount,
-    latencyMs: verdict.latencyMs,
-    mode,
-  };
-}
-
-/**
- * Badge for one verdict, bound to evidence (`hasVerificationEvidence`: a
- * check settled at least one claim). Without that the badge is `unavailable`
- * when the verifier could not run or every check that ran failed, and
- * `unverified` otherwise — whatever status the verdict carries. The pipeline
- * is injected, so this reads the claims, not the status. With evidence:
- * `failed` for any contradicted claim, `verified` only when every claim was
- * confirmed, `partial` when some were not. After a retry, `corrected` takes
- * the place of `verified` and needs the same: every claim confirmed. A retry
- * that confirmed only some claims is `partial`, as on a first pass.
- */
-export function badgeFor(
-  verdict: VerifierVerdict,
-  retryCount: number,
-): VerifierBadge {
-  if (!hasVerificationEvidence(verdict)) {
-    return verdict.status === 'unavailable' || everyCheckFailed(verdict)
-      ? 'unavailable'
-      : 'unverified';
-  }
-  if (verdict.claims.some((c) => c.status === 'contradicted')) return 'failed';
-  const everyClaimConfirmed =
-    verdict.status === 'approved' &&
-    verdict.claims.every((c) => c.status === 'verified');
-  if (!everyClaimConfirmed) return 'partial';
-  return retryCount > 0 ? 'corrected' : 'verified';
-}
-
-/** True when a check ran on at least one claim and every such check failed.
- *  Claims no check ran on (`not_checked`, including coverage entries) do not
- *  count either way. */
-function everyCheckFailed(verdict: VerifierVerdict): boolean {
-  const checked = verdict.claims.filter(
-    (c) => !(c.status === 'unverified' && c.cause === 'not_checked'),
-  );
-  return (
-    checked.length > 0 &&
-    checked.every((c) => c.status === 'unverified' && c.cause === 'check_failed')
-  );
-}
-
-/**
- * Badge after the correction retry. `corrected` / `failed` describe a retry
- * that followed a blocked first pass, and the retry's own verdict decides:
- * `corrected` needs a second pass that confirmed every claim; one that
- * confirmed only some is `partial`. A retry whose verification was skipped,
- * unavailable or confirmed nothing is never `corrected`.
- */
-export function mergeBadges(
-  first: VerifierVerdict,
-  second: VerifierVerdict,
-): VerifierBadge {
-  return badgeFor(second, first.status === 'blocked' ? 1 : 0);
-}
-
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-/**
- * Flatten a RunTrace into the list of tool / sub-agent names invoked in
- * this turn. Used by the pipeline's trace-cross-check rule to spot
- * accounting/HR numeric claims that arrived WITHOUT a fresh fach-agent
- * call — i.e. the orchestrator replayed numbers from the context block.
- *
- * Returns `undefined` when no trace is available — the pipeline then
- * skips the check rather than treating "no evidence" as "no tool call".
- */
-function extractToolsCalled(
-  trace: RunTracePayload | undefined,
-): string[] | undefined {
-  if (!trace) return undefined;
-  const names = new Set<string>();
-  for (const invocation of trace.agentInvocations) {
-    names.add(invocation.agentName);
-    for (const call of invocation.toolCalls) {
-      names.add(call.toolName);
-    }
-  }
-  for (const call of trace.orchestratorToolCalls) {
-    names.add(call.toolName);
-  }
-  return [...names];
-}
-
-/**
- * #131 — true when this turn invoked the knowledge-graph (or any of the
- * KG-backed sub-agent / orchestrator tools the verifier counts as
- * "fetched evidence"). The pipeline uses this as the gate for the
- * citation-missing check: no KG call ⇒ citations are irrelevant.
- */
-function extractKnowledgeGraphToolsCalled(
-  trace: RunTracePayload | undefined,
-): boolean | undefined {
-  if (!trace) return undefined;
-  const KG_NAMES: ReadonlySet<string> = new Set(['query_knowledge_graph']);
-  for (const call of trace.orchestratorToolCalls) {
-    if (KG_NAMES.has(call.toolName)) return true;
-  }
-  for (const inv of trace.agentInvocations) {
-    for (const call of inv.toolCalls) {
-      if (KG_NAMES.has(call.toolName)) return true;
-    }
-  }
-  return false;
-}
-
-/**
- * #130 — collect every postcondition violation the bridgeTool stamped onto
- * the runTrace. The verifier turns each entry into a synthetic
- * `tool_postcondition` ClaimVerdict (status='contradicted'), which flips the
- * verdict to `blocked` and drives the existing correctionPrompt retry loop.
- */
-function extractPostconditionViolations(
-  trace: RunTracePayload | undefined,
-): {
-  toolName: string;
-  callId: string;
-  agentContext: string;
-  issues: readonly string[];
-}[] {
-  if (!trace) return [];
-  const out: {
-    toolName: string;
-    callId: string;
-    agentContext: string;
-    issues: readonly string[];
-  }[] = [];
-  for (const invocation of trace.agentInvocations) {
-    for (const call of invocation.toolCalls) {
-      if (call.postcondition) {
-        out.push({
-          toolName: call.toolName,
-          callId: call.callId,
-          agentContext: call.agentContext,
-          issues: call.postcondition.issues,
-        });
-      }
-    }
-  }
-  for (const call of trace.orchestratorToolCalls) {
-    if (call.postcondition) {
-      out.push({
-        toolName: call.toolName,
-        callId: call.callId,
-        agentContext: call.agentContext,
-        issues: call.postcondition.issues,
-      });
-    }
-  }
-  return out;
-}
-
-/**
- * #132 — merge two verdicts when the first was borderline
- * (`approved_with_disclaimer`) and the second one was drawn from a re-run
- * of the same turn. Strategy:
- *
- * 1. Both agree on borderline → keep first (the two independent samples
- *    confirmed the same level of uncertainty; treat the disclaimer as
- *    earned signal, not noise).
- * 2. Second sample escalated to `blocked` → flip to second so the
- *    correctionPrompt retry can run on the contradictions the second
- *    sample exposed. Conservative bias.
- * 3. Second sample relaxed to `approved` → keep first. Two contradictory
- *    samples + one finding stuff we didn't is exactly the noise signal
- *    that the disclaimer exists to communicate; don't upgrade.
- * 4. Second sample checked nothing — `skipped`, or `unavailable` (safeVerify's
- *    result after a pipeline error) → keep first; it adds no signal.
- *
- * `takeSecond` is true only when we propagate the second sample's
- * orchestrator result onward (its answer string is what the LLM
- * generated for that verdict).
- */
-export function mergeBorderlineVerdicts(
-  first: VerifierVerdict,
-  second: VerifierVerdict,
-): { verdict: VerifierVerdict; takeSecond: boolean } {
-  if (second.status === 'blocked') {
-    return { verdict: second, takeSecond: true };
-  }
-  // Anything else (approved, approved_with_disclaimer, skipped,
-  // unavailable): trust the first sample's disclaimer signal.
-  return { verdict: first, takeSecond: false };
 }

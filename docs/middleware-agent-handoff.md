@@ -3356,13 +3356,13 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   Shadow-Betrieb die Logzeilen `[claim-extractor] … too_long=` beobachten;
   sind sie häufig, das Modell im System-Prompt ausdrücklich lange Aussagen in
   mehrere Claims teilen lassen, statt die Grenze anzuheben.
-- **`verifierService.ts` über der 500-Zeilen-Grenze.** Die Datei hatte vor
-  den evidenzgebundenen Verdicts schon 633 Zeilen und hat jetzt rund 700.
-  Reine Helfer — Summary und Badge (`summarise`, `badgeFor`, `mergeBadges`),
-  Trace-Extraktion (`extractToolsCalled` u. a.) und
-  `mergeBorderlineVerdicts` — in eigene Module ziehen und `badgeFor`,
-  `mergeBadges`, `mergeBorderlineVerdicts` weiter aus `verifierService.ts`
-  exportieren, weil Tests sie von dort importieren.
+- **`verifierService.ts` über der 500-Zeilen-Grenze — erledigt.** Die reinen
+  Helfer liegen jetzt in eigenen Modulen: Summary, Badge und Merge
+  (`summarise`, `badgeFor`, `mergeBadges`, `mergeBorderlineVerdicts`,
+  `withVerifier`) in `verifierVerdicts.ts`, die Trace-Extraktion
+  (`extractToolsCalled` u. a.) in `verifierTraceEvidence.ts`.
+  `verifierService.ts` exportiert `badgeFor`, `mergeBadges` und
+  `mergeBorderlineVerdicts` weiter, weil Tests sie von dort importieren.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
