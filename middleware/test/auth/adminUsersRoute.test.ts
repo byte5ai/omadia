@@ -221,6 +221,7 @@ describe('/api/v1/admin/users router', () => {
   it('POST / creates a local user, hashes the password, audits', async () => {
     setSession(adminSession());
     const before = audit.entries.length;
+    const forgottenBefore = forgottenAccounts.length;
     const res = await fetch(`${baseUrl}/api/v1/admin/users`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -235,6 +236,11 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(body.user.email, 'new@example.com');
     assert.equal(audit.entries.length, before + 1);
     assert.equal(audit.entries.at(-1)?.action, 'user.create');
+    assert.deepEqual(
+      forgottenAccounts.slice(forgottenBefore),
+      ['local:new@example.com'],
+      'no cached "no such account" outlives the create',
+    );
   });
 
   it('POST / rejects duplicate email with 409', async () => {
@@ -262,6 +268,7 @@ describe('/api/v1/admin/users router', () => {
 
   it('PATCH /:id updates display_name + audits', async () => {
     setSession(adminSession());
+    const forgottenBefore = forgottenAccounts.length;
     const target = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}`, {
       method: 'PATCH',
@@ -273,11 +280,12 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(body.user.display_name, 'Renamed');
     assert.equal(audit.entries.at(-1)?.action, 'user.update');
     assert.deepEqual(clearedAccounts, [], 'a rename does not touch the sign-in limiter');
-    assert.deepEqual(forgottenAccounts, [], 'nor the device cookies');
+    assert.equal(forgottenAccounts.length, forgottenBefore, 'nor the device cookies');
   });
 
   it('PATCH /:id refuses to disable yourself with 409 self_lockout', async () => {
     setSession(adminSession());
+    const forgottenBefore = forgottenAccounts.length;
     const self = store.rows.find((r) => r.email === 'admin@example.com')!;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${self.id}`, {
       method: 'PATCH',
@@ -287,11 +295,12 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 409);
     const body = (await res.json()) as { code: string };
     assert.equal(body.code, 'admin_users.self_lockout');
-    assert.deepEqual(forgottenAccounts, [], 'a refused change revokes nothing');
+    assert.equal(forgottenAccounts.length, forgottenBefore, 'a refused change revokes nothing');
   });
 
   it('PATCH /:id allows disabling someone else', async () => {
     setSession(adminSession());
+    const forgottenBefore = forgottenAccounts.length;
     const other = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
       method: 'PATCH',
@@ -303,7 +312,7 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(body.user.status, 'disabled');
     assert.deepEqual(clearedAccounts, [], 'disabling is not an unlock');
     assert.deepEqual(
-      forgottenAccounts,
+      forgottenAccounts.slice(forgottenBefore),
       ['local:new@example.com'],
       'but its device cookies stop counting at once',
     );

@@ -20,10 +20,11 @@ interface AdminUsersDeps {
   loginLimiter?: Pick<LoginRateLimiter, 'clearAccount'>;
   /**
    * The limiter's device cookies (§10f). They are bound to the account's
-   * password and status, so a reset, a status change or a delete makes this
-   * process re-read the account at once instead of after its cache entry
-   * expires: the old cookies stop counting as known browsers immediately.
-   * Optional like `loginLimiter`; production passes the process-wide one.
+   * password and status, so a create, a reset, a status change or a delete
+   * makes this process re-read the account at once instead of after its
+   * cache entry expires: old cookies stop counting as known browsers
+   * immediately. Optional like `loginLimiter`; production passes the
+   * process-wide one.
    */
   loginDevices?: Pick<LoginDevices, 'forget'>;
 }
@@ -108,6 +109,8 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       displayName: displayName.length > 0 ? displayName : email,
       role: 'admin',
     });
+    // No cached "no such account" may outlive the account's creation (§10f).
+    deps.loginDevices?.forget(loginAccountKey(created.provider, created.email));
 
     await deps.audit.record({
       actor: { id: undefined, email: req.session?.email },

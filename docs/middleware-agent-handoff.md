@@ -2272,9 +2272,10 @@ Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` 
    Anteil an der Reserve. Hinter dem web-ui-Proxy teilen sich sonst alle Browser eine
    Adresse, und die Fehlversuche eines Angreifers würden den Operator mit bremsen.
    Passwort-Reset, Deaktivieren und Löschen machen frühere Cookies wertlos (neuer Hash
-   bzw. keine Epoche); `routes/adminUsers.ts` ruft dafür `loginDevices.forget`, damit
-   der 10-s-Cache der Epoche sofort neu liest. Nachgeschlagen wird die Epoche nur für
-   ein Cookie, dessen Tag stimmt. `GET /me` setzt das Cookie zusätzlich für jeden
+   bzw. keine Epoche); `routes/adminUsers.ts` ruft dafür (und beim Anlegen)
+   `loginDevices.forget`, damit der 10-s-Cache der Epoche sofort neu liest.
+   Nachgeschlagen wird die Epoche nur für ein Cookie, dessen Tag stimmt, und pro Konto
+   nur einmal gleichzeitig. `GET /me` setzt das Cookie zusätzlich für jeden
    Browser mit gültiger Session eines Passwort-Kontos, dem ein aktuelles fehlt
    (`ensureLoginDeviceCookie` in `routes/authLogin.ts`), mit einer aus `auth_time`
    abgeleiteten id: eine Anmeldung, eine Geräte-id, egal wie oft `/me` läuft. Für
@@ -2299,8 +2300,8 @@ lässt frühere Cookies wieder gelten.
 Weitere Stellen: `/setup` holt sich für seinen argon2-Hash einen globalen Slot
 (`acquireSlot()`, sonst 503 `auth.busy`) und setzt nach Erfolg ebenfalls das
 Geräte-Cookie. Admin-Passwort-Reset und Reaktivierung (`PATCH status: 'active'`) in
-`routes/adminUsers.ts` rufen `clearAccount`; Reset, jede Statusänderung und Löschen
-rufen `loginDevices.forget`. `LocalPasswordProvider` lehnt Passwörter
+`routes/adminUsers.ts` rufen `clearAccount`; Anlegen, Reset, jede Statusänderung und
+Löschen rufen `loginDevices.forget`. `LocalPasswordProvider` lehnt Passwörter
 über 1024 Zeichen vor dem Users-Lookup ab. Die erste Ablehnung pro (Schicht, Client)
 und Minute schreibt eine Logzeile und eine Audit-Zeile `auth.login_rate_limited`, beide
 ohne das Konto. Boot-Wiring: `createLoginGuard` in `index.ts`, ein Limiter und ein

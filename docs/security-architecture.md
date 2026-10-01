@@ -1501,13 +1501,14 @@ answer it, and the two paragraphs after them say what they leave open.
     disabled account has no epoch while it stays disabled, a deleted one has
     none, and a re-created one gets a new row id. A stale cookie is an
     unknown browser and falls back to the address key. The admin routes that
-    reset, disable, re-enable or delete an account drop its cached epoch, so
-    this process stops honouring the old one at once.
+    create, reset, disable, re-enable or delete an account drop its cached
+    epoch, so this process stops honouring the old one at once.
   - Checking the epoch is a users-table lookup. It runs only for a cookie
-    whose tag checks out and is cached per account for 10 seconds, so a
-    stream of requests carrying one stale cookie is not a stream of queries.
-    A failed lookup counts the browser as unknown and is logged at most once
-    a minute; it never fails a sign-in or `GET /me`.
+    whose tag checks out, one at a time per account, and is cached per
+    account for 10 seconds, so a stream of requests carrying one stale
+    cookie is not a stream of queries, however many arrive at once. A failed
+    lookup counts the browser as unknown and is logged at most once a
+    minute; it never fails a sign-in or `GET /me`.
   - Every successful password sign-in mints one with a fresh id, and so does
     the first-user wizard. `GET /me` sets one when the browser has a valid
     session for a password account but no current device cookie for it. Its
@@ -1688,8 +1689,8 @@ budget of the reserve; many client keys fill the capacity for unknown
 browsers while a device-keyed attempt still gets in; the reserved in-flight
 slot),
 `middleware/test/auth/loginDevices.test.ts` (the v2 cookie, the epoch it is
-bound to, one id per sign-in, the cached lookup and `forget`, a failing
-lookup), `middleware/test/auth/loginDeviceRevocation.test.ts` (through the
+bound to, one id per sign-in, the cached single-flight lookup and `forget`,
+a failing lookup), `middleware/test/auth/loginDeviceRevocation.test.ts` (through the
 routers: `/me` hands out one id per sign-in; more device ids buy no more
 guesses or capacity; after a reset, a disable or a delete through the admin
 routes, earlier cookies are the address key again),
@@ -1706,7 +1707,7 @@ device-cookie holder gets in while the capacity for unknown browsers is
 exhausted from the shared key or from many IPv6 /64s;
 `AUTH_LOGIN_IPV6_PREFIX=48`; `/me` hands out the device cookie),
 `middleware/test/auth/adminUsersRoute.test.ts` (reset and re-enable unlock;
-reset, status change and delete revoke device cookies),
+create, reset, status change and delete drop the cached device epoch),
 `middleware/test/auth/localPasswordProvider.test.ts` (the length cap),
 `web-ui/app/login/__tests__/page.test.tsx`.
 

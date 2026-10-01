@@ -232,6 +232,26 @@ describe('createLoginDevices — which browsers are known', () => {
     assert.equal(await second, null);
   });
 
+  it('concurrent checks for one account share one lookup', async () => {
+    let answer: (epoch: string) => void = () => undefined;
+    let lookups = 0;
+    const gated: LoginAccountEpochs = () => {
+      lookups += 1;
+      return new Promise<string>((resolve) => {
+        answer = resolve;
+      });
+    };
+    const devices = createLoginDevices({ signingKey: KEY, epochs: gated, now: () => 0 });
+    const cookie = genuine('epoch-1');
+
+    const checks = Array.from({ length: 50 }, () => devices.knownDeviceOf(reqWith(cookie), OWNER));
+    assert.equal(lookups, 1, 'fifty requests at once, one query');
+    answer('epoch-1');
+    const ids = await Promise.all(checks);
+    assert.ok(ids.every((id) => id !== null));
+    assert.equal(lookups, 1);
+  });
+
   it('remember() sets nothing for an account without an epoch, or without an id', async () => {
     const { devices, source } = setup(null);
     const { res, set } = resJar();

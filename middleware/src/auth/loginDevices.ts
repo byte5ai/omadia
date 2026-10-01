@@ -14,11 +14,12 @@
  * row id. Nothing is stored per device.
  *
  * Reading an epoch is a users-table lookup. It happens only for a cookie whose
- * tag already checks out, and the result is cached per account for
- * EPOCH_CACHE_TTL_MS, so a stream of requests carrying one stale cookie is not
- * a stream of queries. The admin routes that reset, disable, re-enable or
- * delete an account call `forget`, so this process stops honouring a revoked
- * epoch at once; another replica may honour it until its cache entry expires.
+ * tag already checks out, one at a time per account, and the result is cached
+ * per account for EPOCH_CACHE_TTL_MS, so a stream of requests carrying one
+ * stale cookie is not a stream of queries, however many arrive at once. The
+ * admin routes that create, reset, disable, re-enable or delete an account
+ * call `forget`, so this process stops honouring a revoked epoch at once;
+ * another replica may honour it until its cache entry expires.
  *
  * Issuing and checking are best-effort: a failed lookup sets no cookie and
  * counts the browser as unknown (logged at most once a minute), but never
@@ -97,17 +98,19 @@ export function createLoginDevices(opts: {
   const now = opts.now ?? Date.now;
   const warn = opts.warn ?? ((m: string) => console.warn(m));
   const cache = new Map<string, { readonly epoch: string | null; readonly at: number }>();
+  /** One lookup per account at a time: concurrent checks wait for it. */
+  const inFlight = new Map<string, Promise<string | null>>();
   /** Bumped by `forget`: a lookup that overlapped one does not fill the cache. */
   let forgets = 0;
   let lastWarnAt = Number.NEGATIVE_INFINITY;
 
-  async function epochOf(accountKey: string, account: LoginAccount): Promise<string | null> {
-    const accountId = normaliseLoginAccountId(account.accountId);
-    if (accountId === undefined) return null;
-    const hit = cache.get(accountKey);
-    if (hit && now() - hit.at < EPOCH_CACHE_TTL_MS) return hit.epoch;
+  async function lookUp(
+    accountKey: string,
+    providerId: string,
+    accountId: string,
+  ): Promise<string | null> {
     const startedWith = forgets;
-    const epoch = await opts.epochs(account.providerId, accountId);
+    const epoch = await opts.epochs(providerId, accountId);
     if (forgets === startedWith) {
       cache.delete(accountKey);
       const oldest = cache.size >= EPOCH_CACHE_MAX_ENTRIES ? cache.keys().next() : undefined;
@@ -115,6 +118,22 @@ export function createLoginDevices(opts: {
       cache.set(accountKey, { epoch, at: now() });
     }
     return epoch;
+  }
+
+  async function epochOf(accountKey: string, account: LoginAccount): Promise<string | null> {
+    const accountId = normaliseLoginAccountId(account.accountId);
+    if (accountId === undefined) return null;
+    const hit = cache.get(accountKey);
+    if (hit && now() - hit.at < EPOCH_CACHE_TTL_MS) return hit.epoch;
+    const pending = inFlight.get(accountKey);
+    if (pending) return pending;
+    const lookup = lookUp(accountKey, account.providerId, accountId);
+    inFlight.set(accountKey, lookup);
+    try {
+      return await lookup;
+    } finally {
+      if (inFlight.get(accountKey) === lookup) inFlight.delete(accountKey);
+    }
   }
 
   function reportFailure(what: string, err: unknown): void {
@@ -161,6 +180,8 @@ export function createLoginDevices(opts: {
     forget(accountKey) {
       forgets += 1;
       cache.delete(accountKey);
+      // A check that starts after this must not join a lookup from before it.
+      inFlight.delete(accountKey);
     },
   };
 }
