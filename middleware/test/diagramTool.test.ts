@@ -1,8 +1,9 @@
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
+  DIAGRAM_TOOL_NAME,
   DiagramRenderError,
   DiagramTool,
   createKrokiClient,
@@ -10,6 +11,8 @@ import {
   type RenderInput,
   type RenderOutput,
 } from '@omadia/diagrams';
+import { createPrivacyTurnHandle, guardControlFlowResult } from '@omadia/orchestrator';
+import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 
 function stubService(
   render: (input: RenderInput) => Promise<RenderOutput>,
@@ -160,6 +163,35 @@ describe('DiagramTool — renderer failures keep foreign text off the model', ()
     );
     assert.equal(out.includes(NAME), false, `the message reached the model: ${out}`);
     assertLoggedUnderRef(out, logged, NAME);
+  });
+
+  it('through the dispatch seam with the real privacy guard: no name, hint intact', async () => {
+    // The seam redacts identity patterns, the deny-list and C1 when it is
+    // configured — a name in running prose passes it, so it must not be in
+    // the tool result in the first place.
+    const { out } = await failWith(
+      new DiagramRenderError(`Kroki mermaid/png responded 400: Syntax error near "${NAME}"`, 400),
+    );
+    const privacy = createPrivacyTurnHandle({
+      service: createPrivacyGuardService(),
+      sessionId: 'session-diagrams',
+      turnId: 'turn-diagrams',
+    });
+    const errorLog = mock.method(console, 'error', () => {});
+    let forModel: string;
+    try {
+      forModel = await guardControlFlowResult({
+        toolName: DIAGRAM_TOOL_NAME,
+        result: out,
+        privacy,
+        site: 'test',
+      });
+    } finally {
+      errorLog.mock.restore();
+    }
+    assert.equal(forModel.includes(NAME), false, `the name reached the model: ${forModel}`);
+    assert.equal(forModel, out, 'the tool-authored result passes the redactor unchanged');
+    assert.match(forModel, /HTTP 400/);
   });
 });
 

@@ -2,7 +2,10 @@ import { strict as assert } from 'node:assert';
 import { describe, it, mock } from 'node:test';
 import { inspect } from 'node:util';
 
+import { createPrivacyTurnHandle, guardControlFlowResult } from '@omadia/orchestrator';
+import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 import {
+  WEB_SEARCH_TOOL_NAME,
   WebSearchError,
   WebSearchProviderError,
   WebSearchQuotaError,
@@ -163,6 +166,33 @@ describe('web_search tool — provider failures keep foreign text off the model'
     const { result, log } = await runCapturingLog(handlerFor(provider));
     assert.equal(result.includes(NAME), false, `the message reached the model: ${result}`);
     assertLoggedUnderRef(result, log, NAME);
+  });
+
+  it('through the dispatch seam with the real privacy guard: no name, hint intact', async () => {
+    // The seam redacts identity patterns, the deny-list and C1 when it is
+    // configured — a name in running prose passes it. So the name must not
+    // be in the tool result in the first place.
+    const handler = handlerFor(createBraveProvider({ apiKey: 'k', fetch: throwingFetch }));
+    const { result } = await runCapturingLog(handler);
+    const privacy = createPrivacyTurnHandle({
+      service: createPrivacyGuardService(),
+      sessionId: 'session-web-search',
+      turnId: 'turn-web-search',
+    });
+    const errorLog = mock.method(console, 'error', () => {});
+    let forModel: string;
+    try {
+      forModel = await guardControlFlowResult({
+        toolName: WEB_SEARCH_TOOL_NAME,
+        result,
+        privacy,
+        site: 'test',
+      });
+    } finally {
+      errorLog.mock.restore();
+    }
+    assert.equal(forModel.includes(NAME), false, `the name reached the model: ${forModel}`);
+    assert.equal(forModel, result, 'the plugin-authored result passes the redactor unchanged');
   });
 
   it('withholds the message of a bare WebSearchError', async () => {
