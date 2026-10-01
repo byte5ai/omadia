@@ -18,6 +18,11 @@
 #
 # On Linux, set UPDATER_UID/UPDATER_GID in .env to your own uid/gid if it is
 # not 1000 — the sidecar has to be able to write that .env file.
+#
+# Adds two services and one network: `docker-socket-proxy` and `updater`, and
+# the internal `omadia-control` network that only those two join. Always pass
+# both `-f` files: a plain `docker compose up -d` leaves an already running
+# proxy and updater exactly as they were.
 
 services:
   middleware:
@@ -29,38 +34,71 @@ services:
 
   # --- Docker Engine API proxy ---------------------------------------------
   # The ONLY container with the socket mounted. Exposes a narrowed HTTP API to
-  # the compose network; the updater talks to this, never to the socket.
+  # the internal `omadia-control` network, which only the updater joins; the
+  # updater talks to this, never to the socket.
   #
-  # Endpoints the updater actually uses — audit against this list if you tighten
-  # the allowlist further:
-  #   GET    /_ping
+  # Trust model: whoever can reach this proxy owns the host. It has no
+  # authentication, and CONTAINERS=1 + POST=1 is host-root-equivalent on its
+  # own: every method under /containers is allowed, so `POST /containers/create`
+  # takes `HostConfig.Privileged` and host `Binds`, and `/containers/{id}/archive`
+  # reads and writes files in any container. VOLUMES=0 blocks the /volumes API,
+  # not bind mounts; EXEC=0 blocks `/exec/{id}/start`, while
+  # `POST /containers/{id}/exec` still creates exec instances. The flags below
+  # therefore only shrink what a compromised updater can do. The boundary is
+  # reachability: the proxy is on `omadia-control` alone, so middleware,
+  # web-ui, postgres and every overlay sidecar on `omadia` can neither resolve
+  # nor route to it (docs/security-architecture.md §10f). Never attach an
+  # application service to `omadia-control`.
+  #
+  # Engine calls the updater makes — audit against this list before you change
+  # a flag:
   #   GET    /containers/json               (find services by compose label)
   #   GET    /containers/{id}/json          (inspect, to rebuild the container)
-  #   POST   /containers/create|{id}/start|{id}/stop
-  #   DELETE /containers/{id}
   #   POST   /images/create                 (pull)
-  #   POST   /networks/{id}/connect         (multi-network stacks only)
+  #   POST   /containers/{id}/stop
+  #   DELETE /containers/{id}
+  #   POST   /containers/create
+  #   POST   /containers/{id}/start
+  #   POST   /networks/{id}/connect         (multi-network services only)
   #
-  # `POST=1` is what permits the write methods (POST *and* DELETE). Everything
-  # not listed below stays denied: no exec, no volumes, no secrets, no build,
-  # no swarm — so a compromised updater cannot read secrets or spawn a shell.
+  # Every section flag this image version knows is set below, on or off, so
+  # that turning one on is a deliberate edit (the image itself defaults EVENTS,
+  # PING and VERSION to 1). Re-audit the list whenever the image tag changes.
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0
     restart: unless-stopped
     environment:
-      PING: 1
-      VERSION: 1
+      # --- on ---
       CONTAINERS: 1
       IMAGES: 1
+      # Needed only when a service is on more than one network, but kept on:
+      # recreate.mjs attaches the second and later networks AFTER stop +
+      # remove, so a 403 here would strand a half-recreated middleware, and its
+      # rollback, on any stack that put it on an extra (e.g. reverse-proxy)
+      # network.
       NETWORKS: 1
+      # Admits every non-GET method (POST, DELETE, PUT) on the sections above.
       POST: 1
-      # Explicitly off — listed rather than omitted so a future edit has to
-      # make a deliberate decision to turn any of them on.
+      # Read-only liveness probe. The updater never calls it; it is kept for
+      # the operator check in docs/upgrading.md.
+      PING: 1
+      # --- off ---
+      # The ALLOW_* switches only add access when CONTAINERS=0. With
+      # CONTAINERS=1 + POST=1, start/stop/restart are already allowed, so
+      # these three change nothing here.
+      ALLOW_RESTARTS: 0
+      ALLOW_START: 0
+      ALLOW_STOP: 0
       AUTH: 0
       BUILD: 0
       COMMIT: 0
       CONFIGS: 0
+      DISTRIBUTION: 0
+      # On by image default; the updater does not subscribe to events.
+      EVENTS: 0
       EXEC: 0
+      GRPC: 0
+      INFO: 0
       NODES: 0
       PLUGINS: 0
       SECRETS: 0
@@ -69,13 +107,15 @@ services:
       SWARM: 0
       SYSTEM: 0
       TASKS: 0
+      # On by image default; the updater never calls /version.
+      VERSION: 0
       VOLUMES: 0
     volumes:
       # Read-only mount: the proxy only needs to read/write the socket stream,
       # and :ro prevents the socket file itself from being replaced.
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    # No ports: — reachable only from inside the compose network.
-    networks: [omadia]
+    # No ports:, and not on `omadia`: the control network is the only way in.
+    networks: [omadia-control]
 
   # --- Updater sidecar ------------------------------------------------------
   updater:
@@ -113,7 +153,11 @@ services:
     depends_on:
       - docker-socket-proxy
     # No ports: — the control plane is compose-network only and bearer-authed.
-    networks: [omadia]
+    # The only service on both networks: `omadia` so the middleware can reach
+    # it (OMADIA_UPDATER_URL) and its health gate can reach the middleware
+    # (UPDATER_HEALTH_URL); `omadia-control` for the Engine proxy
+    # (UPDATER_DOCKER_API).
+    networks: [omadia, omadia-control]
     healthcheck:
       test:
         - 'CMD'
@@ -124,3 +168,24 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+networks:
+  # Engine-control network: `docker-socket-proxy` and `updater`, nothing else.
+  # Whatever joins it can drive the Docker Engine, so never attach an
+  # application service to it. Three settings keep `omadia` out:
+  #   - a separate bridge: Docker's DNS answers `docker-socket-proxy` only to
+  #     containers on this network;
+  #   - `internal: true`: no route off the host, nothing published;
+  #   - `inhibit_ipv4`: the bridge gets no address on the host, so the host
+  #     has no route into this subnet and cannot forward traffic to the proxy
+  #     from another network. Stock Linux Docker already drops that traffic
+  #     with firewall rules; some runtimes (OrbStack) forward it, which this
+  #     setting stops. Accepted by every engine tested, 20.10 to 29.
+  # IPv6 stays off explicitly, so a daemon-wide IPv6 default cannot open a
+  # second path around `inhibit_ipv4`.
+  omadia-control:
+    driver: bridge
+    internal: true
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: 'true'

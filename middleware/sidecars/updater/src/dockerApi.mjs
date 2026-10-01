@@ -3,8 +3,11 @@
  *
  * Talks HTTP to a **docker-socket-proxy**, never to `/var/run/docker.sock`
  * directly — the whole point of the sidecar design is that the one component
- * with host-root-equivalent reach is a proxy whose allowlist is visible in the
- * compose overlay, not a mounted socket inside an application container.
+ * with host-root-equivalent reach is a proxy that only this sidecar can reach
+ * (the internal `omadia-control` network), not a mounted socket inside an
+ * application container. The proxy's allowlist in the compose overlay trims
+ * what can be asked; the calls this client needs are host-root-equivalent on
+ * their own, so reachability is the boundary.
  *
  * Node builtins only. Adding a Docker SDK here would give this container a
  * transitive dependency surface, and it is the last container in the stack

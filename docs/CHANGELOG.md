@@ -36,6 +36,133 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — operator UI response headers, non-root web-ui image, sandbox container limits
+
+2026-09-30 — operator pages were served without a frame policy, nosniff or
+Referrer-Policy, the web-ui image ran `node server.js` as root, and the Docker
+containers behind `execute` and `publish` had no memory, CPU or process
+ceiling, so one runaway command competed with the middleware for the whole
+host. Operator pages now carry `Content-Security-Policy: frame-ancestors
+'none'; object-src 'none'; base-uri 'none'`, `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff` and `Referrer-Policy:
+strict-origin-when-cross-origin`. `web-ui/proxy.ts` sets them per request, so
+the new `UI_FRAME_ANCESTORS` variable works on a published image: it replaces
+`'none'` for deployments that embed operator pages and drops `X-Frame-Options`.
+`/p/*` and `/bot-api/*` stay untouched, because they carry the framed plugin
+UIs and previews whose middleware headers a proxy header would override. The
+web-ui image now runs as `USER node`.
+
+Every sandbox and publish container gets `--memory` and `--memory-swap`
+(512 MiB), `--cpus` (1) and `--pids-limit` (256) from one builder in
+`@omadia/sandbox`. Each value comes from the orchestrator setup fields
+`sandbox_memory_mb`, `sandbox_cpus` and `sandbox_pids_limit`, else from
+`OMADIA_SANDBOX_MEMORY_MB`, `OMADIA_SANDBOX_CPUS` and
+`OMADIA_SANDBOX_PIDS_LIMIT`, else the default. A value only counts inside its
+range (6 to 1048576 MiB, 0.01 to 1024 CPUs, 1 to 4194304 PIDs); `0`, junk
+and anything out of range fall back instead of meaning "unlimited". The
+ranges matter because Docker starts some positive values with no limit and
+no error: `--cpus 0.000001` or `--cpus 1e64` leave the container without a
+CPU quota, and a memory value of 2^43 MiB or more (or `1e+21m`) is recorded
+as no limit on arm64. An existing persistent sandbox gets the current limits
+through `docker update` when it is next re-attached, while a publish container
+created before this change keeps running without them until a new version
+replaces it. Details in `docs/security-architecture.md` §3b and §10h and in
+`docs/upgrading.md`.
+
+### Fixed — pairing discovery answers 503 instead of claiming no sign-in is needed (#293)
+
+2026-09-30 — the pairing descriptor on the operator origin
+(`web-ui/app/pairing-discovery/route.ts`) reads the sign-in providers from
+the middleware. When that read failed (middleware unreachable, an error
+status, a response without a provider list), the handler still returned a
+descriptor, with `auth.mode: 'none'`. The pairing protocol defines `none` as
+"this host accepts unauthenticated connects", so an outage told a client
+that no sign-in was needed. Nothing was bypassed, since the API and the
+canvas WebSocket check the session themselves, but the client was sent down
+the wrong path. Since the route now answers without a session (entry below),
+it reaches exactly the clients that act on that field. The handler now
+answers `503` with `Retry-After: 5` and `{ "code": "pairing.auth_unavailable" }`
+instead, and logs the reason. `none` remains the answer only when the
+middleware returns an empty provider list, which is what the middleware's
+own descriptor says in that state.
+
+The provider read also had no deadline: a middleware that accepted the
+connection and never replied held every discovery request open for minutes.
+It now gives up after 5 seconds and answers the same `503`. Every answer
+carries `Cache-Control: no-store`, because the descriptor echoes the
+caller's host into `wsUrl` and `loginStartUrl`, and `force-dynamic` only
+turns off Next's own caching, not a shared cache in front of it.
+`docs/security-architecture.md` §10g describes the failure path.
+
+### Fixed — pairing discovery on the operator origin no longer bounces to /login (#293)
+
+2026-09-30 — a desktop client that knows only the operator URL could not
+find out where to connect. It fetches the pairing descriptor at
+`/.well-known/omadia-ui` before it has signed in, since the descriptor is
+what tells it where to sign in. `next.config.ts` rewrites that path to the
+`/pairing-discovery` route handler, but the web-ui login gate
+(`web-ui/proxy.ts`) runs before rewrites and had neither path on its
+allowlist, so a client without a session got `302 /login` instead of the
+JSON. On split deployments, where the middleware's own copy of the endpoint
+is not publicly reachable, pairing through the operator URL could not work.
+
+Both paths are now exempt from the gate, by exact match. They are defined
+once in `web-ui/app/_lib/pairingDiscoveryPaths.ts`, which the rewrite imports
+too, so the two cannot drift apart. The descriptor carries nothing
+confidential: the middleware serves a descriptor of the same shape without
+authentication, its provider list is already public through
+`/bot-api/v1/auth/providers`, and the canvas WebSocket its `wsUrl` points at
+authenticates every upgrade. Every other previously gated route keeps
+redirecting to `/login` without a session.
+`web-ui/app/__tests__/proxy.test.ts` pins the allowlist from both sides, and
+`docs/security-architecture.md` §10g documents the gate and its exemptions.
+
+### Fixed — Docker socket proxy moved to an internal control network (#432)
+
+2026-09-30 — with the opt-in self-update overlay, `docker-socket-proxy` sat on
+the shared `omadia` network next to the middleware, web-ui, postgres and every
+overlay sidecar. The proxy has no authentication, and the Engine calls an
+update needs are host-root-equivalent on their own, so who can reach the proxy,
+not its allowlist, decides who controls the host. The updater's bearer token,
+release-tag check and protected-service list guard only the updater's own API,
+and a direct call to the proxy skipped all three. The overlay now declares an
+internal network, `omadia-control`, that only the proxy and the updater join.
+The proxy has left `omadia`, so its name no longer resolves there. The new
+network has no host-side bridge address
+(`com.docker.network.bridge.inhibit_ipv4`) and no IPv6, so the proxy's address
+does not route from `omadia` either, including on runtimes such as OrbStack
+that do not firewall traffic between Docker networks. The updater keeps
+`omadia` for the middleware's calls and its own health gate. All 27 section
+flags of the pinned proxy image are now set explicitly: `VERSION` changes from
+1 to 0, and `EVENTS`, on by image default, is now 0 (the updater calls
+neither). The overlay header no longer claims that a compromised updater cannot
+read secrets or spawn a shell. It documents the proxy as root-equivalent and
+the network as the boundary (`docs/security-architecture.md` §10f).
+
+The updater is now the one route from `omadia` to the proxy, so its health
+gate no longer follows redirects. The probe used fetch's default
+`redirect: 'follow'` on a `/health` answer the middleware writes, and a
+redirect to `http://docker-socket-proxy:2375/…` made the updater send that GET
+onto `omadia-control`; a JSON 2xx from the Engine even passed the gate as an
+unstamped build. A 3xx now counts as not healthy and is noted once in the step
+trail (`sidecars/updater/test/health.test.mjs`).
+
+Existing overlay installs re-run
+`docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d`
+with both files, plus their other overlays. Admin → Update cannot do this for
+them: the updater never replaces the compose files, the proxy or itself.
+Compose creates `omadia-control` and recreates `docker-socket-proxy` and
+`updater`. Data is untouched. If Admin → Update installed the running
+release, the middleware and web-ui restart once, on the same images, because
+they still carry compose's configuration label from the previous release. An
+update running at that moment is aborted. `docs/upgrading.md` lists this step
+in its upgrade notes for this release, and has a check that first proves the
+updater reaches the proxy, then that the middleware and web-ui cannot, by name
+or by address. It ends in `PASS`, `FAIL` or `INCONCLUSIVE` with a matching
+exit code, and an error it cannot classify is inconclusive, never blocked.
+`middleware/test/composeUpdateOverlay.test.ts` guards the layout, and CI
+renders the merged overlay with `docker compose … config --quiet`.
+
 ### Fixed — /login and /setup only follow same-origin return paths
 
 2026-09-30 — after a password sign-in, and after the first administrator is

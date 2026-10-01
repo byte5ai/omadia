@@ -2545,6 +2545,46 @@ nicht importieren kann.
 |---|---|
 | `OMADIA_CLI_SPAWN_TIMEOUT_MS` | Wanduhr-Budget **eines** CLI-geführten Chat-Turns (Shape 3) in Millisekunden, Default `600000`. Vorher fest 120 s ohne Override, während ein einzelner Aufruf des eigenen `query_seo_analyst`-Sub-Agenten 69–75 s dauert — zwei davon waren garantiert über dem Limit. Das Leerlauf-Limit (60 s ohne Ausgabe) bleibt getrennt bestehen. Nicht-numerische oder nicht-positive Werte werden ignoriert. Priorität: explizite `spawnTimeoutMs`-Dependency > ENV > Default. |
 
+### Sandbox-Container-Limits (#576 `execute`, #581 `publish`)
+
+Gelesen vom `@omadia/sandbox`-Package (`resolveSandboxResourceLimits()` in
+`resourceLimits.ts`), nicht über `config.ts`. Gelten für jeden Docker-Container,
+in dem Agent-Code läuft (Sandbox des `execute`-Tools und per `publish`
+veröffentlichte Apps), also nur, wenn `sandbox_execute_enabled` bzw.
+`sandbox_publish_enabled` an ist. Reihenfolge je Wert wie bei OM-104:
+Orchestrator-Setup-Feld > ENV > Default. Die Setup-Felder sind Plugin-Konfiguration
+(`manifest.yaml` des Orchestrators), keine Env-Variablen.
+
+| Variable | Setup-Feld | Default | Wirkung |
+|---|---|---|---|
+| `OMADIA_SANDBOX_MEMORY_MB` | `sandbox_memory_mb` | `512` | `docker run --memory` **und** `--memory-swap` mit demselben Wert, in MiB, ganze Zahl von 6 bis 1048576 (1 TiB): der Container kann nicht über die Grenze hinaus auslagern. |
+| `OMADIA_SANDBOX_CPUS` | `sandbox_cpus` | `1` | `--cpus` von 0.01 bis 1024, Bruchteile erlaubt (`0.5`). |
+| `OMADIA_SANDBOX_PIDS_LIMIT` | `sandbox_pids_limit` | `256` | `--pids-limit`, ganze Zahl von 1 bis 4194304, Prozesse und Threads je Container. |
+
+Leer, `0`, negativ, nicht numerisch oder außerhalb des Bereichs zählt als nicht
+gesetzt; ein „unbegrenzt“ gibt es bewusst nicht. Docker liest nicht nur `0` als
+„kein Limit“, sondern startet auch manche positiven Werte still ohne Limit
+(`--cpus 0.000001` oder `1e64`, `--memory` ab 2^43 MiB oder als `1e+21m` auf
+arm64); die Bereiche (`SANDBOX_RESOURCE_LIMIT_BOUNDS` in `resourceLimits.ts`)
+schließen genau diese Werte aus. Neue Werte gelten für neu erstellte Container;
+eine bestehende persistente Sandbox bekommt sie beim nächsten Wiederanhängen per
+`docker update` (Best-Effort, ein Fehler landet im Log, der Container läuft mit
+seinen alten Limits weiter). Die wirksamen Werte stehen beim Boot in der
+Log-Zeile `sandbox_execute_enabled=true` bzw. `sandbox_publish_enabled=true`.
+Details: `docs/security-architecture.md` §3b.
+
+### Web-UI: Frame-Freigabe (`UI_FRAME_ANCESTORS`)
+
+Gelesen vom **web-ui**-Prozess, nicht von der Middleware:
+`web-ui/proxy.ts` setzt die Operator-UI-Header pro Request aus
+`web-ui/app/_lib/securityHeaders.ts`.
+
+| Variable | Wirkung |
+|---|---|
+| `UI_FRAME_ANCESTORS` | CSP-`frame-ancestors`-Quellenliste für alle Operator-Seiten, z. B. `"'self' https://teams.microsoft.com"` (ganzen Wert in doppelte Anführungszeichen setzen). Ungesetzt: `frame-ancestors 'none'` plus `X-Frame-Options: DENY`. Gesetzt: ersetzt `'none'`, `X-Frame-Options` entfällt, weil es keine Freigabeliste kennt. Ungültige Werte (`;`, `,`, andere Schlüsselwörter, Steuerzeichen) werden mit Warnung im web-ui-Log ignoriert, der Default bleibt. `/p/*` und `/bot-api/*` behalten immer die Header der Middleware. Pro Request gelesen, wirkt also ohne Rebuild auf einem veröffentlichten Image. |
+
+Details: `docs/security-architecture.md` §10h.
+
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 
 ```
@@ -3008,6 +3048,61 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **`/login/:id/start` ohne Längenlimit für `return`.** Der Web-UI-Helper begrenzt auf 2048
   Zeichen; ein direkter Link auf die Middleware-Route ist unbegrenzt (landet im OIDC-State-Cookie).
 
+### Self-Update-Steuerungsebene: Vertrauensmodell und offene Härtung (#432 follow-up)
+
+Vertrauensmodell (Details: `docs/security-architecture.md` §10f): Wer den
+`docker-socket-proxy` erreicht, ist Host-Root. Seine Abschnitts-Flags filtern nur
+nach URL-Präfix, und `CONTAINERS`+`POST` reichen allein schon für einen
+privilegierten Container mit Host-Mounts. Die Grenze ist deshalb die
+Erreichbarkeit: Der Proxy hängt nur am `internal`-Netz `omadia-control` (ohne
+Bridge-Adresse auf dem Host, ohne IPv6), das außer ihm nur der `updater` betritt.
+Der Updater ist per Design root-äquivalent, und die Middleware hält sein Token.
+Jeder Code im Middleware-Prozess, In-Process-Plugins eingeschlossen, kann damit
+ein Update auf ein beliebiges Release-Tag anstoßen. Offen:
+
+- **Exakte Methoden-/Pfad-Allowlist und Loopback-Bind.** Eine eigene
+  `haproxy.cfg` im tecnativa-Image ließe nur die acht Calls durch, die der
+  Updater macht (Liste im Header von `docker-compose.update.yaml`), und könnte an
+  `127.0.0.1:2375` binden. Dann liefe der Proxy mit
+  `network_mode: service:updater` (`UPDATER_DOCKER_API=http://127.0.0.1:2375`,
+  `depends_on` umgedreht), und die Isolation hinge nicht mehr an der
+  Netzwerk-Implementierung der Runtime. Mit dem unveränderten Image 0.3.0 geht
+  das nicht: `BIND_CONFIG` setzt `docker-entrypoint.sh` selbst, es ist kein
+  Env-Schalter. Eine Quell-IP-ACL wäre kein Ersatz, denn OrbStack maskiert
+  netzübergreifenden Verkehr als Gateway-Adresse des Zielnetzes.
+- **Kein Downgrade über das Update-Token.** `POST /api/v1/admin/update`
+  (`routes/adminUpdate.ts`) lehnt nur das laufende Release ab, der Sidecar
+  (`config.mjs`, `TAG_RE`) prüft nur die Form des Tags. Ein
+  „nicht älter als laufend“-Gate (mit ausdrücklichem Operator-Override für echte
+  Rollbacks) fehlt.
+- **Control-Plane-Hostnamen im Plugin-Egress sperren.**
+  `extractOutboundAllowlist` (`platform/pluginContext.ts`) nimmt jeden String als
+  Host an, und die Static-Allow-List-Modi von `ctx.http` vertrauen benannten Hosts
+  ohne SSRF-Guard. `docker-socket-proxy` löst aus der Middleware nicht mehr auf;
+  `updater` bleibt erreichbar (Bearer-Token nötig). Ein hartes Deny für beide
+  Namen im Host-Matcher wäre billige Defense in Depth.
+- **Nicht geprüfte Runtimes.** Die Isolation des Control-Netzes ist auf
+  Stock-dockerd 20.10, 24, 27 und 29 (iptables) und auf OrbStack 29.4 geprüft,
+  nicht auf Rootless Docker, Podman oder Docker Desktop. Wer das Overlay dort
+  betreibt, führt den Check aus `docs/upgrading.md` aus.
+
+### Operator-UI-Header und Sandbox-Limits — bewusst offen gelassen (Security-Doku §3b, §10h)
+
+- **Keine Script-Policy in der Operator-UI.** Die CSP enthält nur
+  `frame-ancestors`, `object-src` und `base-uri`. Der nächste Schritt wäre eine
+  Nonce pro Request aus `web-ui/proxy.ts` für `script-src`; das zwingt aber jede
+  Seite in dynamisches Rendering und muss vorher gemessen werden. `style-src`
+  bräuchte zusätzlich `'unsafe-inline'` wegen der `style`-Attribute.
+- **Keine zentralen Antwort-Header in der Middleware.** Plugin-UIs
+  (`pluginUiStatic.ts`, `withIframeSafeHeaders`) und die Builder-Preview setzen
+  eigene; die übrigen `/api/*`-Antworten, die über `/bot-api/*` ankommen,
+  tragen weder `nosniff` noch eine Frame-Policy. Die web-ui lässt `/bot-api/*`
+  absichtlich unverändert (§10h), die Lücke gehört also in die Middleware.
+- **Publish-Container von vor den Limits** laufen ohne Limits weiter, bis eine
+  neue Version sie ersetzt: `DockerPublishRuntime.deploy()` fasst bestehende
+  Versionen nie an (Unveränderlichkeit), und ein `docker update` dort würde
+  diese Zusage aufweichen.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
@@ -3339,6 +3434,21 @@ Randbedingungen für jede Variante:
 - Wird `strict` wirksam, muss `privacy_profile` in `runtimeChangeReasons`
   zurück (sonst greift die Änderung erst nach dem nächsten Neustart), und die
   UI bekommt ihren Toggle wieder.
+
+### Pairing: `auth.mode: 'none'` bei leerer Provider-Liste (#293 follow-up)
+
+`PairingAuth` (`middleware/src/pairing/discovery.ts`) definiert `none` als
+„Host nimmt unauthentifizierte Verbindungen an". Das trifft auf keinen Host zu:
+der Canvas-WebSocket authentifiziert jedes Upgrade (security-architecture §10d).
+Trotzdem melden der Middleware-Deskriptor (`buildPairingDescriptor`), die
+mDNS-Ankündigung und `web-ui/app/pairing-discovery/route.ts` `none`, sobald die
+Provider-Liste leer ist — die Middleware auch ohne Postgres, wo `/api/v1/auth/*`
+mit 503 antwortet. Die web-ui-Route tut das seit dem 503-Fix nur noch für eine
+tatsächlich leer gelieferte Liste; eine unlesbare beantwortet sie mit 503. Kein
+Auth-Bypass, aber der Client versucht es ohne Login und scheitert am 401.
+Offen: mit dem Canvas-Client festlegen, wie „kein Login möglich" gemeldet wird,
+und dann alle drei Erzeuger gemeinsam umstellen, damit jeder Weg dieselbe
+Antwort gibt.
 
 ---
 

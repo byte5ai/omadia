@@ -370,6 +370,81 @@ working across it:
   block indefinitely, the kill escalation never ran, and the turn hung holding
   its semaphore permit while a bearer-gated server kept listening.
 
+## 3b. Agent sandbox containers: resource ceilings (#576, #581)
+
+The `execute` tool (#576) runs agent-issued shell commands in a long-lived
+Docker container per scope, and `publish` (#581) runs agent-written apps in a
+container per version. Both are off by default (`sandbox_execute_enabled`,
+`sandbox_publish_enabled`). `profile.egress: false` already becomes
+`--network none`. `AgentComputerProfile.maxRunSeconds` bounds one `run()` call
+only: its `timeout` kills the wrapper shell, not processes the command left
+running in the container. Before this section existed nothing else bounded the
+container, so a fork bomb or a runaway allocation competed with the middleware
+for the same host.
+
+Every `docker run` for agent code now carries three ceilings:
+
+| Flag | Default | Setup field (orchestrator) | Env variable |
+|---|---|---|---|
+| `--memory` and `--memory-swap` (same value) | 512 MiB | `sandbox_memory_mb` | `OMADIA_SANDBOX_MEMORY_MB` |
+| `--cpus` | 1 | `sandbox_cpus` | `OMADIA_SANDBOX_CPUS` |
+| `--pids-limit` | 256 | `sandbox_pids_limit` | `OMADIA_SANDBOX_PIDS_LIMIT` |
+
+- **Resolution per field:** setup field, then env variable, then default
+  (`readSandboxResourceLimits()` in the orchestrator's `sandboxLimitsConfig.ts`
+  over `resolveSandboxResourceLimits()` in `@omadia/sandbox`). `plugin.ts`
+  reads the values once, passes them to both Docker paths and logs the
+  effective limits at boot.
+- **Fail-closed, no "unlimited".** Docker reads `0` as "no limit" for all three
+  flags, and it also starts some positive values with no limit and no error:
+  `--cpus` below 0.00001 truncates to a CFS quota of 0, which runc writes as
+  `cpu.max max`; `--cpus 1e64` overflows the CLI's int64 nano-CPU count and
+  wraps to 0; `--memory` from 2^43 MiB, or rendered as `1e+21m`, overflows
+  int64 and is recorded as no limit on arm64. So a value only counts inside
+  its field's range (`SANDBOX_RESOURCE_LIMIT_BOUNDS` in `resourceLimits.ts`):
+  - memory: a whole number of MiB from 6 (Docker refuses less) to 1048576,
+    i.e. 1 TiB, far below the overflow;
+  - CPUs: 0.01 (the smallest quota the kernel accepts) to 1024, which only
+    keeps the value finite, since Docker refuses more CPUs than the host has;
+  - PIDs: a whole number from 1 to 4194304, the most the kernel's `pids.max`
+    takes (`PID_MAX_LIMIT`).
+
+  Anything else (0, negative, out of range, empty, junk) counts as unset and
+  falls through to the next source, and every accepted value renders as plain
+  digits, never in exponent notation. `dockerResourceLimitArgs()` re-validates
+  its input, so a hand-built `{ memoryMb: 0 }` or `{ cpus: 1e-7 }` cannot
+  reach argv either. A value in range that Docker still refuses (more CPUs
+  than the host has, a CPU value with more than nine decimals) makes
+  `docker run` fail, which is closed as well.
+- **Swap is capped at the memory limit.** With `--memory` alone Docker allows
+  the same amount again as swap, so "512 MiB" would have meant up to 1 GiB. It
+  also makes raising the limit work: `docker update` refuses a `--memory` above
+  a swap ceiling that is not updated in the same call.
+- **Existing containers.** Limits are fixed at `docker run`. When a persistent
+  sandbox is re-attached, the backend first runs `docker update` with the
+  current limits, then `docker start`. That covers containers created before
+  the limits existed and containers created under different values. The update
+  is best-effort: a refusal is logged (`[sandbox] docker update … failed`) and
+  the container keeps the limits it has; the re-attach itself does not fail.
+  Publish containers are immutable per version and never re-created, so one
+  that predates the limits runs without them until a new version replaces it.
+- **One builder.** Both `docker run` sites (`DockerSandboxBackend.runContainer`,
+  `DockerPublishRuntime.deploy`) and the update path take their flags from
+  `dockerResourceLimitArgs()`.
+- **Host caveat.** On a host whose kernel lacks one of the cgroup controllers,
+  `docker run` prints a warning and starts the container without that limit
+  (exit 0), so an argv assertion cannot notice. The real-Docker test tier
+  (`SANDBOX_DOCKER_TEST=1`) checks `docker inspect`, reads the enforced CPU
+  quota from `cpu.max` (cgroup v2) and checks that a 700 MB allocation is
+  killed; run it once on any new host type.
+
+Tests: `middleware/test/sandbox/resourceLimits.test.ts` (ranges, fallback
+order, argv), `middleware/test/sandbox/dockerSandboxLimits.test.ts` (stub tier
+for argv and the update-before-start order, real tier for what the daemon and
+the kernel applied, including out-of-range values),
+`middleware/test/sandbox/sandboxLimitsConfig.test.ts` and
+`middleware/test/publish/dockerPublishRuntime.test.ts`.
+
 ## 4. Plugin install surface
 
 Plugins are installed as signed ZIPs uploaded through the operator UI, not
@@ -1350,6 +1425,279 @@ routes and the OIDC callback).
 
 ---
 
+## 10f. Self-update control plane: the Engine proxy is host root, reachability is the boundary (#432)
+
+The optional overlay `docker-compose.update.yaml` gives exactly one component
+Docker Engine access. An update travels this chain: operator session →
+`POST /api/v1/admin/update` (type-to-confirm, release tags only) → middleware →
+updater (`http://updater:8090`: shared bearer token, release tags only,
+protected services) → `docker-socket-proxy` (on `omadia-control` only) →
+`/var/run/docker.sock` (mounted read-only, into the proxy alone).
+
+1. **The proxy is host root to whoever reaches it.**
+   `tecnativa/docker-socket-proxy` has no authentication. Its section flags
+   match URL prefixes, and `CONTAINERS=1` + `POST=1` admit every method under
+   `/containers`. That covers creating a privileged container with host bind
+   mounts (root on the host once it starts), reading and writing any
+   container's files through `/containers/{id}/archive` (secrets on the
+   middleware's data volume included), and creating exec instances (`EXEC=0`
+   only blocks `/exec/{id}/start`). `VOLUMES=0` restricts the `/volumes` API,
+   not bind mounts. The flags therefore limit what a compromised *updater* can
+   do; they cannot make the proxy safe to reach. All 27 flags of the pinned
+   image are set explicitly, and only `CONTAINERS`, `IMAGES`, `NETWORKS`,
+   `POST` and `PING` are on. `EVENTS` and `VERSION` default to on in the image
+   and are off here.
+2. **Reachability is the boundary.** The proxy joins one network,
+   `omadia-control`, and the updater is the only other member. Three
+   properties keep everything on `omadia` (middleware, web-ui, postgres, every
+   overlay sidecar) away from it:
+   - Docker's embedded DNS answers `docker-socket-proxy` only to containers
+     that share a network with it.
+   - `internal: true` gives the network no route off the host and no
+     published ports.
+   - `com.docker.network.bridge.inhibit_ipv4` leaves the bridge without a
+     host-side address. The host then has no route into the subnet and cannot
+     forward traffic from another network to the proxy. IPv6 is switched off
+     on the network explicitly, so a daemon-wide IPv6 default cannot add a
+     second path.
+
+   The third property is there because isolation between networks is
+   otherwise a firewall feature of the runtime. A stock Linux dockerd
+   (verified on 29.8 with iptables) drops that traffic anyway. OrbStack
+   (verified on 29.4) forwards it: without `inhibit_ipv4`, a container on
+   `omadia` reached the proxy by IP address even though the name did not
+   resolve. With it, that path is closed on both runtimes. Every engine tested
+   accepts the option (20.10, 24, 27, 29).
+3. **Control-plane services live on internal networks, never on `omadia`.**
+   The updater is the only service on both networks, because the middleware
+   calls it (`OMADIA_UPDATER_URL`) and its health gate calls the middleware
+   (`UPDATER_HEALTH_URL`). Never attach an application service to
+   `omadia-control`: whatever joins it can drive the Engine. The same rule
+   applies to any later overlay with Engine access; the planned dev-runner
+   daemon (`docs/dev-platform/w1-manifest.json`) stays off `omadia` the same
+   way.
+
+**Why the network and not only the token.** The updater's guards (bearer
+token, release-tag check, protected services) live in the updater's own HTTP
+handler, and a direct call to the proxy never passes through them. Plugins run
+in the middleware process, and a plugin's egress allow-list is no boundary for
+internal hostnames. `permissions.network.outbound` accepts any host string
+(`$config.*` entries resolve to whatever the operator entered), and the
+static allow-list modes of `ctx.http` trust named hosts without the SSRF guard
+(`platform/httpAccessor.ts`). While the proxy sat on `omadia`, a manifest that
+named `docker-socket-proxy` got an HTTP client that could drive the Engine, no
+code-execution bug needed. Now the name does not resolve from the middleware,
+and the address does not route.
+
+**Residual risk, by design.**
+
+- A compromised updater is host root. It holds the only route to the proxy,
+  and the flags only trim what it can send.
+- The middleware holds the updater token (`OMADIA_UPDATER_TOKEN`), and so does
+  all code running in the middleware process, in-process plugins included.
+  With it they can read `/status` and start an update to any release tag,
+  including an older release. `routes/adminUpdate.ts` only refuses the release
+  that is already running, and the sidecar's `TAG_RE` checks the tag's shape;
+  neither compares the target with the running version. They cannot pick an
+  image repository, touch `postgres`, the updater or the proxy, or send any
+  other Engine call. A not-older-than-running gate is on the roadmap
+  (`docs/middleware-agent-handoff.md` §13).
+- Nor can they relay a request through the updater. Apart from the release
+  tag, the only middleware-written input the updater acts on is the `/health`
+  answer during the gate, and the health probe never follows a redirect
+  (`sidecars/updater/src/health.mjs`). A 3xx counts as not healthy and is
+  noted once in the step trail; its `Location`, for example
+  `http://docker-socket-proxy:2375/…`, is never requested. Before this, the
+  probe used fetch's default `redirect: 'follow'`, and a middleware answering
+  with such a redirect made the updater send GET requests onto
+  `omadia-control`.
+- `NETWORKS=1` stays on. `recreate.mjs` attaches a container's second and
+  later networks only after stop + remove, so turning it off would strand a
+  half-recreated middleware, and its rollback, on any stack that puts the
+  middleware on more than one network.
+
+**Assumptions.** The Docker daemon enforces all of the above. It was verified
+on stock dockerd and on OrbStack, not on rootless Docker, Podman or Docker
+Desktop, and a host firewall that rewrites Docker's chains can change it.
+Operators check their own host with the check in `docs/upgrading.md`. It
+first proves that the updater reaches the proxy by name and by address, then
+probes the same name and address from the middleware and the web-ui. It counts
+only a failed lookup (`ENOTFOUND`) or a refused, unroutable or timed-out
+connection as blocked, and reports any other error as `INCONCLUSIVE` with a
+non-zero exit, never as a pass. The Fly.io engine has no proxy and no socket;
+it calls the Machines API with app-scoped deploy tokens, so this section does
+not apply there.
+
+Tests: `middleware/test/composeUpdateOverlay.test.ts` reads every
+`docker-compose*.yaml` at the repo root. It asserts the network membership (as
+the union compose builds when it merges files), the control network's
+`internal`, `inhibit_ipv4` and IPv6 settings, the socket mount, the absence of
+ports and `network_mode` on the proxy, and the full flag list of the pinned
+image. CI also renders the merged overlay with
+`docker compose -f docker-compose.yaml -f docker-compose.update.yaml config --quiet`,
+which catches merge errors that a per-file parse cannot see.
+`middleware/sidecars/updater/test/health.test.mjs` answers the health probe
+with 301, 302, 303, 307 and 308 redirects to a stand-in Engine endpoint and
+asserts that the gate stays closed and the stand-in receives no request.
+
+---
+
+## 10g. The operator front's login gate (`web-ui/proxy.ts`) and its public allowlist
+
+The Next.js operator front (`web-ui/`) puts a login gate in front of every
+page and every `/bot-api/*` call: `web-ui/proxy.ts`, Next 16's `proxy.ts`
+convention. A request passes only with an `omadia_session` cookie whose JWT
+has not expired. Anything else gets `302 /login?return=<path>`, and a stale
+cookie is deleted on the way. The gate decodes the token and never verifies
+its signature. It spares the operator a page that 401s on every call, but it
+is not the authorization boundary: the middleware's `requireAuth` (§10)
+verifies every `/api/*` call itself, including the ones proxied through
+`/bot-api/*`.
+
+`isPublicPath` is the only way past the gate without a session. Each entry
+has its own reason:
+
+| Path | Why it needs no session |
+|---|---|
+| `/login`, `/setup` | The sign-in page and the first-user wizard. |
+| `/bot-api/v1/auth/*` | Sign-in, sign-out, OIDC callback, provider list. The middleware lists `/api/v1/auth` as public too (`auth/publicPaths.ts`). |
+| `/_next/*` | Framework assets and dev tooling. |
+| `/health`, `/favicon.ico` | Fly health checks must answer before anyone has signed in. |
+| `/p/*` | Plugin UI iframed by Teams Tabs, where only a Teams SSO token exists. The plugin handler runs its own auth. |
+| `/.well-known/omadia-ui`, `/pairing-discovery` | The pairing descriptor (#293), see below. |
+
+**Pairing discovery.** A desktop client that knows only the operator URL
+fetches `/.well-known/omadia-ui` before it has signed in. The descriptor is
+what tells it where to sign in (`auth.loginStartUrl`) and where to connect
+(`wsUrl`). Next runs the proxy before the `next.config.ts` rewrite to the
+`/pairing-discovery` handler, so the gate sees the canonical path; the
+handler path is reachable directly as well. Both are exempt by exact match,
+defined once in `web-ui/app/_lib/pairingDiscoveryPaths.ts`, which the
+rewrite imports too. The exemption is safe because the descriptor is
+non-confidential by construction:
+
+- the middleware serves a descriptor of the same shape without
+  authentication, at the same path, mounted outside the `/api` requireAuth
+  line (`buildPairingDescriptor` in `middleware/src/pairing/discovery.ts`);
+- its provider list (id, display name, kind) is already public through
+  `/bot-api/v1/auth/providers`;
+- the `wsUrl` it hands out leads to the canvas WebSocket, which
+  authenticates every upgrade before the `101` (§10d). Knowing the URL
+  grants nothing.
+
+The descriptor must therefore never carry a secret or session material: no
+token, no key, no per-user data. On split deployments the middleware is not
+publicly reachable, so this route is where `OMADIA_UI_INSTANCE_NAME` and
+`OMADIA_UI_PUBLIC_WS_URL` become visible from the internet. Both are
+non-secret by design, since a client needs them to connect. The handler
+echoes the caller's `x-forwarded-host`/`host` into `wsUrl` and
+`loginStartUrl`. Every answer carries `Cache-Control: no-store`, so a shared
+cache in front of the web-ui may not keep one caller's reflected host and
+hand it to the next; `force-dynamic` only turns off Next's own caching. Each
+cookie-less request costs one server-side read of the provider list, the
+same read `/bot-api/v1/auth/providers` already allows without a session.
+That read has a 5-second deadline, so a middleware that accepts the
+connection and never replies cannot hold discovery requests open.
+
+**An unread provider list is an error, not `none`.** The pairing protocol
+defines `auth.mode: 'none'` as "this host accepts unauthenticated connects"
+(`PairingAuth` in `middleware/src/pairing/discovery.ts`). When the handler
+cannot determine the providers (the middleware is unreachable, misses the
+deadline, answers with an error status, or sends no provider list), it
+answers `503` with `Retry-After` and `{ code: 'pairing.auth_unavailable' }`
+instead of a descriptor. Reporting `none` there would tell a client during
+an outage that no sign-in is needed. Nothing would be bypassed, since
+`requireAuth` and the canvas upgrade (§10d) check the session themselves,
+but the client would be sent down the wrong path. `none` remains the answer
+only for a provider list the middleware returned empty, which is how the
+middleware's own `buildPairingDescriptor` reads that state.
+
+**Rules for the allowlist.**
+
+1. Exact match. A prefix only where every path under it is public by
+   design or authenticates itself (`/_next/`, `/p/`, `/bot-api/v1/auth/`).
+   `/pairing-discovery/x` and `/.well-known/omadia-uix` stay gated.
+2. A new exemption needs a case in `web-ui/app/__tests__/proxy.test.ts` and
+   a row in the table above.
+3. An exemption lifts only this gate. A path proxied to the middleware under
+   `/api` still needs its own entry in `middleware/src/auth/publicPaths.ts`
+   (§10).
+
+Tests: `web-ui/app/__tests__/proxy.test.ts` (both discovery paths pass
+without a cookie and leave an expired one alone; operator routes and
+near-miss paths redirect; the older exemptions and a fresh session pass) and
+`web-ui/app/pairing-discovery/__tests__/route.test.ts` (the handler answers
+JSON without a cookie and sends none upstream; an unreachable, stalled,
+failing or malformed upstream yields `503`, never `auth.mode: 'none'`; every
+answer is `no-store`).
+
+---
+
+## 10h. Operator UI response headers and image user (web-ui)
+
+Every operator page of the web-ui answers with:
+
+| Header | Value |
+|---|---|
+| `Content-Security-Policy` | `frame-ancestors 'none'; object-src 'none'; base-uri 'none'` |
+| `X-Frame-Options` | `DENY` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+
+- **Set at request time.** `web-ui/proxy.ts` applies them from
+  `web-ui/app/_lib/securityHeaders.ts` on every response it returns. They are
+  deliberately not in `next.config.ts` `headers()`: Next freezes that into the
+  build, the same trap that once baked the compose hostname into `rewrites()`,
+  so an override set on a published image would do nothing.
+- **`UI_FRAME_ANCESTORS`** (env of the web-ui process) is for deployments that
+  embed operator pages, e.g.
+  `'self' https://teams.microsoft.com https://*.teams.microsoft.com`. It
+  replaces `'none'` in `frame-ancestors`, and `X-Frame-Options` is then left
+  out because it cannot express an allowlist. Only CSP source expressions are
+  accepted. A value containing `;`, `,`, a quoted keyword other than `'self'`
+  or `'none'`, or a control character is ignored with a warning in the web-ui
+  log, and the default stays in force. An explicit `'none'` equals the
+  default.
+- **`/p`, `/p/*`, `/bot-api` and `/bot-api/*` are left untouched**
+  (segment-exact, so `/bot-apix` is an operator route). These route handlers
+  stream middleware responses, and several of those are documents that are
+  framed: plugin UIs (`PluginUiFrame`, and Teams tabs load `/p/*`
+  cross-origin), the store's admin panel (`/bot-api<admin_ui_path>`) and the
+  builder preview (`/bot-api/v1/builder/.../preview/ui-route/...`). The
+  middleware sets their CSP, nosniff and Referrer-Policy itself
+  (`pluginUiStatic.ts`, `withIframeSafeHeaders` in `harness-ui-helpers`,
+  `builderPreview.ts`). Next copies proxy response headers onto the outgoing
+  response before the route handler runs, and its `send-response` does not
+  replace a header that is already there, so a header set by the proxy would
+  override the middleware's `frame-ancestors` and break those iframes.
+  Response headers on `/bot-api/*` stay the middleware's responsibility.
+- **Why `'none'` breaks nothing shipped.** No operator page is framed by
+  another operator page; the three iframe hosts in the web-ui load `/p/*` or
+  `/bot-api/*`. The Teams channel plugin's tabs (`hub`, `tab-config` and the
+  configured `contentUrl`s) all resolve under `/p/*`, and the desktop shell
+  loads the UI as a top-level page (`loadURL`). Checked against a prebuilt
+  image: `/login` is refused inside a cross-origin frame by default and shown
+  with a matching `UI_FRAME_ANCESTORS`, and a plugin iframe inside
+  `/plugin-ui/<id>` still renders.
+- **No script or style policy yet.** The App Router emits inline flight and
+  hydration scripts and components carry inline `style` attributes, so a
+  `script-src` needs `'unsafe-inline'` or a per-request nonce, which forces
+  every page into dynamic rendering. `object-src` and `base-uri` are locked
+  down because the operator UI renders no `<object>`, `<embed>` or `<base>`.
+- **The image runs unprivileged.** The web-ui image's runtime stage ends in
+  `USER node` (uid 1000) and copies the build with `--chown=node:node`, so
+  `.next/` stays writable. The middleware image drops root in its entrypoint
+  via gosu because it has to chown a mounted volume first; the web-ui mounts
+  none, so a plain `USER` is enough. If a volume is ever mounted into it,
+  handle its ownership the way the middleware image does.
+
+Tests: `web-ui/app/_lib/__tests__/securityHeaders.test.ts` (header table,
+exemption, override parsing), `web-ui/app/_lib/__tests__/proxySecurityHeaders.test.ts`
+(the headers on what `proxy()` returns, and the override read per request) and
+`web-ui/scripts/__tests__/runtimeImageUser.test.ts` (runtime stage `USER`).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1388,6 +1736,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       the test reported the version you are rolling out.
 - [ ] No new entry in `auth/publicPaths.ts` unless the route authenticates
       itself, and then only the narrowest regex covering that one route (§10).
+- [ ] No new `isPublicPath` exemption in `web-ui/proxy.ts` unless the route
+      serves only non-confidential data or authenticates itself; exact match,
+      not a prefix, with a case in `web-ui/app/__tests__/proxy.test.ts`. The
+      pairing descriptor never gains a secret or session field, and a
+      provider list it could not read is a `503`, never `auth.mode: 'none'`
+      (§10g).
 - [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —
       operator routers belong under `/api/v1/admin/*` (§10).
 - [ ] A WebSocket route with its own authenticator is registered through
@@ -1421,7 +1775,24 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       for a confirmed upstream outage and must be removed as soon as the
       registry answers again. A PR merged while it was set has no dependency
       audit and needs one re-run afterwards.
+- [ ] A compose change keeps `/var/run/docker.sock` on `docker-socket-proxy`
+      only, attaches nothing but `updater` to `omadia-control`, and leaves
+      that network `internal` with `inhibit_ipv4` set. A proxy image bump
+      re-audits the full flag list. `composeUpdateOverlay.test.ts` stays
+      green (§10f).
+- [ ] An updater change that reads an answer the middleware writes does not
+      follow redirects from it, as the health probe does not
+      (`health.test.mjs`, §10f).
+- [ ] A new `docker run` (or `docker update`) for agent code takes its limit
+      flags from `dockerResourceLimitArgs()` in `@omadia/sandbox`, never its
+      own copy, and offers no way to switch a limit off. A new limit field
+      gets a range in `SANDBOX_RESOURCE_LIMIT_BOUNDS` that excludes every
+      value Docker would apply as no limit, checked on a real daemon (§3b).
+- [ ] A new surface that has to be framed lives under `/p/*` or `/bot-api/*`
+      and sets its own `frame-ancestors`. The exemption in
+      `web-ui/app/_lib/securityHeaders.ts` is not widened, and the operator-UI
+      headers are not moved into `next.config.ts` `headers()` (§10h).
 
 ---
 
-*Last reviewed: 2026-09 (§10e added: same-origin return paths).*
+*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user).*
