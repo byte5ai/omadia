@@ -4137,9 +4137,10 @@ README, `docs/architecture.md`, `docs/security-architecture.md` und
   geprüft), `shadow` als Default-Modus und `enforce` als Auslieferungs-Gate mit
   Retry und Resample über den Replay-Ledger, samt Grenzen (Input-Cards,
   Shield-gerenderte Antworten, Abo-CLI, Routinen, MCP-Transport-Retry ohne
-  Ledger). Ändern sich Verdikt-Zustände oder das Enforce-Verhalten, README
-  „Answer verification“, §7c und die Verifier-Prüfung in
-  `docsClaimsGuard.test.ts` im selben PR mitziehen.
+  Ledger) und der Trigger-Muster, ohne deren Treffer `enforce` eine Antwort
+  ungeprüft ausliefert. Ändern sich Verdikt-Zustände, Trigger-Muster oder das
+  Enforce-Verhalten, README „Answer verification“, §7c und die
+  Verifier-Prüfungen in `docsClaimsGuard.test.ts` im selben PR mitziehen.
 - **`read_attachment` liest auch CSV-Uploads im Klartext.** Das Tool ist
   intern-exempt und extrahiert `.csv` als Text aus den Original-Bytes im
   Upload-Store, sobald das Modell den `storage_key` kennt (Teams listet ihn im
@@ -4184,6 +4185,40 @@ README, `docs/architecture.md`, `docs/security-architecture.md` und
   führen den Write erneut aus. Für verteilte Idempotenz einen geteilten Store
   (Postgres) mit demselben Schlüssel einsetzen; die Schlüssel-Komposition ist
   dafür schon serialisierbar.
+- **Modellaufrufe außerhalb des Privacy-Handles (eigene Code-Unit).** Der
+  Shield wirkt nur in den Modellanfragen des Turns selbst. Ungemaskt, mit
+  `mask_user_prompt` an oder aus, gehen: plugin-eigene `ctx.llm`-Anfragen (der
+  Accessor `createLlmAccessor`, `src/platform/pluginContext.ts`, liest keinen
+  Privacy-Handle), darunter die Skelett-Komposition des Canvas
+  (`composeSkeleton`, schickt `input.userMessage` vor dem Turn), Planungs-Gate
+  und Planer des Plan-Runners (`gate.ts`, `materializer.ts`, aus
+  `onBeforeTurn` mit der Rohnachricht) und jedes Tool, das Daten holt und
+  selbst ein Modell fragt; dazu Bild-Anhänge als Base64-Blöcke an ein Modell
+  mit Bild-Eingabe (`buildUserContent`). Die Einzelpunkte stehen unter
+  „Tool-Fehler-Politik“ und „Verifier-Wiedereintritt“; diese Unit fasst sie
+  zusammen: `ctx.llm`-Anfragen innerhalb eines Turns über dessen Prompt-Maske
+  führen (Handle aus `turnContext`, Maskierung nach dem Muster von
+  `maskUserPrompt`, fail-closed), den Canvas-Composer bei aktivem Shield auf
+  das deterministische Fallback-Skelett setzen und Bild-Anhänge unter aktivem
+  Shield nur nach Policy zulassen. Danach README (Intro, Zeile „Privacy
+  Shield“, Abschnitt „Trust & privacy“), §6f und `docsClaimsGuard.test.ts`
+  nachziehen.
+- **Verifier prüft nur, was ein Trigger-Muster trifft.** `shouldTriggerVerifier`
+  (`harness-verifier/src/triggerRouter.ts`) kennt Euro-Beträge,
+  Buchungsreferenzen, ISO- und `dd.mm.yyyy`-Daten, Prozente, deutsche
+  Stunden-/Tagesangaben und Aggregat-Schlüsselwörter (überwiegend deutsch) mit
+  einer mindestens dreistelligen Zahl. Andere Währungen, englische Datumsformate
+  und kleine Zählungen lösen nichts aus; die Antwort ist `skipped`/`no_trigger`
+  und geht in `enforce` ungeprüft raus. Code-Unit: Muster um weitere Währungen
+  sowie englische Datums- und Zahlformate erweitern, oder `enforce` eine
+  Antwort mit Zahlen ohne Treffer zurückhalten lassen. Danach README, §7c und
+  `docsClaimsGuard.test.ts` nachziehen.
+- **`verifier_max_retries` über 1 wirkt nicht.** Schema (`VERIFIER_MAX_RETRIES`,
+  `max(2)`), `clampMaxRetries` und die Manifest-Hilfe („Max: 2“) erlauben 2,
+  `VerifierService.chat` und `streamRetry` laufen aber höchstens einen Retry.
+  Entweder eine Retry-Schleife bis `maxRetries` bauen oder Schema, Clamp und
+  Hilfetext auf 1 setzen. Die Manifest-Hilfe zu `verifier_mode` („nichts
+  Prüfbares fand“) dabei auf die Trigger-Muster präzisieren.
 
 ### Self-Update-Steuerungsebene: Vertrauensmodell und offene Härtung (#432 follow-up)
 
@@ -4693,6 +4728,14 @@ Dieselbe Klasse wie oben, außerhalb des Scopes von #1076:
 steht damit der geerbte Orchestrator-Provider bis zum nächsten Rebuild fest.
 Ein lazy Getter würde das dort beheben; das „kein Lazy-Lookup“ aus #1076 gilt nur
 für extras, dessen Instanzen der Orchestrator eager festhält.
+
+Ebenso zählt der Aufrufzähler des Accessors (`callsUsed`) über die Lebenszeit
+des Kontexts. Für ein Extension-Plugin ist `calls_per_invocation` damit ein
+Budget seit der Aktivierung (das ui-orchestrator-Manifest setzt deshalb
+1000000). Der Plan-Runner (`calls_per_invocation: 30`) bekommt nach 30
+Modellaufrufen `LlmBudgetExceededError`; `shouldPlan` fängt ihn und plant bis
+zur nächsten Aktivierung nichts mehr, ohne Meldung. Budget pro Turn zählen oder
+die Obergrenze des Plan-Runners anheben.
 
 ### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
 

@@ -29,13 +29,18 @@ earlier answers, as the Teams and Telegram channels do, therefore sends the
 model the real values the shield rendered into those answers on later turns.
 The `read_attachment` tool, which reads an uploaded file, and a short allowlist
 of the agent's own tools, such as `memory`, return their results to the model in
-clear. Agents on the Claude subscription CLI run without the shield. An
-optional answer verifier, off by default, checks answers that carry figures
-against their sources. In its default `shadow` mode it only records a verdict.
-On the Postgres backend, each turn in which the shield acted appends a
-hash-chained receipt. Writing it is best-effort: a failed write is logged, and
-the turn completes without a receipt. Bring your own LLM key and switch
-providers by config, not code.
+clear. Images you attach reach an image-capable model unmasked, and so do model
+calls that plugins make themselves through `ctx.llm`, the canvas composer among
+them, with prompt masking on or off. Agents on the Claude subscription CLI run
+without the shield. An optional answer verifier, off by default, checks an
+answer against its sources only when one of its trigger patterns matches, such
+as a euro amount, an accounting reference or a date written as `2026-10-02`.
+Figures in other formats, like `$500` or `October 2, 2026`, are not checked. In
+its default `shadow` mode the verifier only records a verdict. On the Postgres
+backend, each turn in which the shield acted appends a hash-chained receipt.
+Writing it is best-effort: a failed write is logged, and the turn completes
+without a receipt. Bring your own LLM key and switch providers by config, not
+code.
 
 ---
 
@@ -164,8 +169,8 @@ three rows are why teams choose it; the rest is the groundwork done properly.
 
 | Capability | What you get |
 |---|---|
-| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary, and the LLM works from an identity-free digest. A result the shield cannot intern is withheld. `guarded` by default, with `bypass`, `per_tool` and a per-MCP-server bypass as opt-ins and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Prompt masking (`mask_user_prompt`) is off by default, so your own messages and the chat history a channel replays reach the model as typed. Replayed answers can carry real values the shield rendered into them. `read_attachment` (uploaded files) and a short allowlist of the agent's own tools return their results in clear. The Claude subscription CLI (`claude-cli`) runs without the shield. |
-| ✅&nbsp;**Answer&nbsp;verification** | Optional and off by default (`verifier_enabled`). Once switched on, it checks answers that contain figures, like amounts or dates, against the run's own sources and records a verdict. An answer with nothing to check is `skipped`, a verifier that could not run is `unavailable`, and `approved` means that every claim the verifier extracted was checked and confirmed. The default mode, `shadow`, only records. `enforce` holds each answer until its verdict and delivers it only when the verifier confirmed it or the answer holds no claim to check. A turn that carries an input card goes out unchecked. |
+| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary, and the LLM works from an identity-free digest. A result the shield cannot intern is withheld. `guarded` by default, with `bypass`, `per_tool` and a per-MCP-server bypass as opt-ins and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Prompt masking (`mask_user_prompt`) is off by default, so your own messages and the chat history a channel replays reach the model as typed. Replayed answers can carry real values the shield rendered into them. `read_attachment` (uploaded files) and a short allowlist of the agent's own tools return their results in clear. Images you attach reach an image-capable model unmasked, and so do model calls that plugins make themselves (`ctx.llm`, the canvas composer among them), with prompt masking on or off. The Claude subscription CLI (`claude-cli`) runs without the shield. |
+| ✅&nbsp;**Answer&nbsp;verification** | Optional and off by default (`verifier_enabled`). Once switched on, it checks an answer against the run's own sources only if one of its trigger patterns matches, such as a euro amount, an accounting reference like `INV/2026/0042` or a date written as `2026-10-02`, and records a verdict. Figures in other formats, such as other currencies or English-format dates, match no trigger pattern. An answer in which the verifier finds nothing to check is `skipped`, a verifier that could not run is `unavailable`, and `approved` means that every claim the verifier extracted was checked and confirmed. The default mode, `shadow`, only records. `enforce` holds each answer until its verdict, delivers an answer the verifier confirmed and withholds one it could not confirm. An answer that no trigger pattern matched, or in which the extraction found no claim, goes out unchecked in `enforce` too, and so does a turn that carries an input card. |
 | 🧮&nbsp;**Excel&nbsp;from&nbsp;real&nbsp;rows** | `create_xlsx` writes the real rows behind a `datasetId` into the workbook server-side, so they never pass through the model, and adds sums and pivots as Excel formulas. omadia runs no spreadsheet engine of its own: the workbook asks the spreadsheet application to recalculate when it opens the file, and that application computes every formula result. |
 | 🧾&nbsp;**Traces&nbsp;and&nbsp;receipts** | The call-stack viewer shows a run step by step, with each tool call and decision. That trace is best-effort telemetry, so a run can lack one. Privacy receipts (`/operator/receipts`, Postgres backend) are hash-chained and written best-effort, one for each turn in which the privacy shield acted. A failed write is logged and not retried, and a receipt that was never written leaves no gap in the chain. |
 | 👥&nbsp;**Multiplayer&nbsp;by&nbsp;design** | Agents run in your team's shared channels (Slack, Teams, Telegram, Discord), so several people work with them in one context, not a private one-on-one chatbot. |
@@ -181,9 +186,11 @@ three rows are why teams choose it; the rest is the groundwork done properly.
   limits listed under [Trust & privacy](#trust--privacy-architecture)
   ([`harness-plugin-privacy-guard`](middleware/packages/harness-plugin-privacy-guard),
   [`privacyMode.ts`](middleware/packages/plugin-api/src/privacyMode.ts))
-- **Answer verifier** (optional, off by default): checks answers that contain
-  figures against their sources and records a verdict, and in `enforce` mode
-  withholds an answer whose claims it could not confirm
+- **Answer verifier** (optional, off by default): checks answers that match
+  its trigger patterns, such as euro amounts and dates, against their sources
+  and records a verdict. In `enforce` mode it withholds an answer whose claims
+  it could not confirm and lets an answer that matched no pattern go out
+  unchecked
   ([`harness-verifier`](middleware/packages/harness-verifier),
   [`verifierService.ts`](middleware/packages/harness-orchestrator/src/verifierService.ts))
 - **Office files**: `create_xlsx` / `create_docx` build real spreadsheets and
@@ -276,40 +283,55 @@ answer:
   turns. Two kinds of tool result are never interned and reach the model in
   clear: the text of an uploaded file that `read_attachment` returns, and the
   results of a short allowlist of the agent's own tools (`memory`, the
-  stored-process tools, `suggest_follow_ups`, `ask_user_choice`). Agents on the
-  Claude subscription CLI (`claude-cli`) run without the shield, and
-  `agents.privacy_profile` is not a shield setting
+  stored-process tools, `suggest_follow_ups`, `ask_user_choice`). Images the
+  user attaches reach an image-capable model unmasked, and so do the model
+  calls that plugins make themselves through `ctx.llm`, such as the ones the
+  canvas composer and the plan-runner's planning check make before the turn
+  starts, with prompt masking on or off. Agents on the Claude subscription CLI
+  (`claude-cli`) run without the shield, and `agents.privacy_profile` is not a
+  shield setting
   ([`docs/security-architecture.md`](docs/security-architecture.md) §3a, §6b,
   §6d, §6f, §7b).
   Spec: [`specs/001-privacy-shield-v4/`](specs/001-privacy-shield-v4/).
 - **Answer verification (optional)**: off by default (`verifier_enabled`), and
   switching it on also needs an API key for the verifier's model provider. The
-  verifier checks answers that contain figures, like amounts, references or
-  dates, against the run's sources and records a verdict. An answer with
-  nothing to check is `skipped`, and a verifier that could not run is
-  `unavailable`. Neither is reported as `approved` or shown as verified. A
-  claim no checker takes, claims beyond the per-answer cap, text beyond the
-  part of the answer the claim extractor reads, and a returned claim that does
-  not quote the answer or is too long to check whole all stay in the verdict
-  as not checked, so such an answer is at most partly verified. No claim is
-  shortened to fit a check. The verifier only checks the claims its extraction
-  model lists, and a claim the model leaves out is not seen by any check. In
-  the default `shadow` mode the verifier only records, and every answer goes
-  out as written. `enforce` holds each answer until its verdict, on the stream
-  too. It delivers the answer only when the verifier confirmed it or the answer
-  holds no claim to check, and replaces any other answer with a notice that it
-  was withheld. A withheld answer is still stored and can reach a later turn's
-  context. `enforce` gives a contradiction a correction retry (one by default,
-  none on canvas streams), and on the non-streaming path it gives a borderline
-  answer a second sample. Both re-generate the answer from the first run's
-  recorded tool results. They run no tool again, and a re-entry that needs a
-  new call other than a kernel read is abandoned. Without that replay ledger,
-  which `enforce` binds only when it may re-enter, the MCP client retries a
-  call once after a transport failure, so an MCP write whose reply was lost
-  can run twice. An answer the shield rendered with real values is never sent
-  to the verifier, so `enforce` withholds it. A turn that carries an input
-  card goes out unchecked, and agents on the Claude subscription CLI and
-  routines are not verified
+  verifier checks an answer only if one of its trigger patterns matches
+  (`shouldTriggerVerifier`). The patterns look for euro amounts, accounting
+  references such as `INV/2026/0042`, dates written as `2026-10-02` or
+  `02.10.2026`, percentages, hour and day counts such as `42,5 Stunden`, and an
+  aggregate keyword such as `Summe` or `total` in an answer that also holds a
+  number of three or more digits. A figure in any other format, such as
+  `USD 50,000`, `$500`, `October 2, 2026` or `3 unpaid invoices`, matches none
+  of them. For an answer that matches, the verifier checks the claims its
+  extraction model lists against the run's sources and records a verdict. An
+  answer in which it finds nothing to check is `skipped`, and a verifier that
+  could not run is `unavailable`. Neither is reported as `approved` or shown as
+  verified. A claim no checker takes, claims beyond the per-answer cap, text
+  beyond the part of the answer the claim extractor reads, and a returned claim
+  that does not quote the answer or is too long to check whole all stay in the
+  verdict as not checked, so such an answer is at most partly verified. No
+  claim is shortened to fit a check, and a claim the extraction model leaves
+  out is not seen by any check. In the default `shadow` mode the verifier only
+  records, and every answer goes out as written. `enforce` holds each answer
+  until its verdict, on the stream too. It delivers an answer the verifier
+  confirmed and replaces one it could not confirm with a notice that the
+  answer was withheld. An answer that no trigger pattern matched, or in which
+  the extraction found no claim, goes out unchecked in `enforce` too, unless a
+  check that needs no extraction blocks it (a failure the answer reports
+  without evidence from this turn, a tool result that broke its declared
+  schema, missing citations for knowledge-graph evidence). A withheld answer
+  is still stored and can reach a later turn's context.
+  `enforce` gives a contradiction at most one correction retry, none on canvas
+  streams or with `verifier_max_retries` set to 0, and on the non-streaming
+  path it gives a borderline answer a second sample. Both re-generate the
+  answer from the first run's recorded tool results. They run no tool again,
+  and a re-entry that needs a new call other than a kernel read is abandoned.
+  Without that replay ledger, which `enforce` binds only when it may re-enter,
+  the MCP client retries a call once after a transport failure, so an MCP
+  write whose reply was lost can run twice. An answer the shield rendered with
+  real values is never sent to the verifier, so `enforce` withholds it. A turn
+  that carries an input card goes out unchecked, and agents on the Claude
+  subscription CLI and routines are not verified
   ([`docs/security-architecture.md`](docs/security-architecture.md) §6e, §7c).
 - **Office files from real rows**: when a specialist agent returns a
   `datasetId`, `create_xlsx` resolves the rows server-side and writes them into

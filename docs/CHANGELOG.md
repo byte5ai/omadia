@@ -65,17 +65,29 @@ do, sends the model the real values the shield rendered into those answers on
 later turns. `read_attachment` and a short allowlist of the agent's own tools
 (`INTERN_EXEMPT_TOOLS`) return their results in clear, an operator can bypass
 the shield per plugin, per tool or per MCP server, and agents on the Claude
-subscription CLI (`claude-cli`) run without the shield. Security architecture
-§6f lists everything that reaches the model unmasked under `guarded`.
+subscription CLI (`claude-cli`) run without the shield. Images the user
+attaches reach an image-capable model unmasked, and so do the model calls that
+plugins make themselves through `ctx.llm`, such as the canvas composer's and
+the plan-runner's, with prompt masking on or off. Security architecture §6f
+lists the tool results the shield exempts, the prompt-text layer and these
+model calls outside the shield.
 
 The answer verifier is described as optional and off by default, with `shadow`
-as its default mode, which only records. The README names the verdict states
-(`skipped`, `unavailable`, an answer checked only in part), the `enforce` gate
-that withholds an answer it could not confirm, and the gate's limits: turns
-with an input card, answers the shield rendered, the subscription CLI and
-routines. A correction retry or a resample replays the first run's tool
-results and runs no tool again. Without that replay ledger, the MCP client
-still retries a call once after a transport failure.
+as its default mode, which only records. It checks an answer only when one of
+its trigger patterns matches: euro amounts, accounting references,
+`yyyy-mm-dd` and `dd.mm.yyyy` dates, percentages, hour and day counts, and an
+aggregate keyword such as `Summe` or `total` in an answer that also holds a
+number of three or more digits. An answer none of them matches is `skipped`
+and goes out unchecked in `enforce` too, so an answer whose only figures are a
+dollar amount or an English-format date is not checked. The README names the
+verdict states (`skipped`, `unavailable`, an answer checked only in part), the
+`enforce` gate that withholds an answer it could not confirm, and the gate's
+limits: turns with an input card, answers the shield rendered, the
+subscription CLI and routines. A contradiction gets at most one correction
+retry, also when `verifier_max_retries` is set to 2. A correction retry or a
+resample replays the first run's tool results and runs no tool again. Without
+that replay ledger, the MCP client still retries a call once after a transport
+failure.
 
 Privacy receipts are described as appended best-effort, on the Postgres
 backend, for the turns in which the shield acted. A failed write is logged and
@@ -93,14 +105,16 @@ implementation-status note.
 
 A new item in the §11 reviewer checklist asks that a public security claim name
 the control that enforces it, that control's default and the limits the code
-puts on it, and that a claim that a call runs once name its scope.
+puts on it, that a claim that a call runs once name its scope, and that a
+claim about the shield or the verifier name what passes outside it.
 `middleware/test/docsClaimsGuard.test.ts` keeps the retired sentences out of the
 four files and the two ADR notes, and ties the defaults and limits the README
 names to the code (`PRIVACY_MODE_DEFAULT`, the `mask_user_prompt` manifest
 default, the `VERIFIER_ENABLED` and `VERIFIER_MODE` schema defaults, the
 catalog's `signed` field, `INTERN_EXEMPT_TOOLS`, which §6f must list in full,
-the idempotency store's window and size, the replayed chat history and the
-receipt store's `persistFailures` counter). `ConfigSchema` in
+the idempotency store's window and size, the replayed chat history, the
+receipt store's `persistFailures` counter, and the trigger router whose
+unmatched answers `enforce` releases). `ConfigSchema` in
 `middleware/src/config.ts` is exported for that test; boot is unchanged.
 `middleware/.env.example` now documents `OMADIA_PRIVACY_FORCE_GUARDED`, which
 the README already named.
@@ -381,14 +395,15 @@ surface events and `done` — is held until the verdict. Iteration, routing,
 persona, tool-progress, heartbeat, token and usage events still pass live, and
 the route's observer (which the wrapper used to drop) is now forwarded in
 every mode, so the web chat's liveness line keeps moving. A verdict releases
-the answer only when it is `approved`, or `skipped` because the answer holds
-nothing to check (`no_trigger`, `no_claims`); the held events then go out in
-order, the answer's text as one `text_delta` carrying `done.answer`, and
-`done` carries the verdict as `done.verifier`. The deltas the model streamed
-never go out in `enforce`: the orchestrator can discard a streamed response
-and run the model again (an unmet sub-agent obligation, a file it announced
-but did not build), and the verdict is about the answer it kept, not the one
-it discarded.
+the answer only when it is `approved`, or `skipped` because no trigger pattern
+matched the answer or the extraction found no claim in it (`no_trigger`,
+`no_claims`), in which case the answer goes out unchecked; the held events
+then go out in order, the answer's text as one `text_delta` carrying
+`done.answer`, and `done` carries the verdict as `done.verifier`. The deltas
+the model streamed never go out in `enforce`: the orchestrator can discard a
+streamed response and run the model again (an unmet sub-agent obligation, a
+file it announced but did not build), and the verdict is about the answer it
+kept, not the one it discarded.
 Every other verdict withholds the answer — the gate fails closed: a
 contradiction, claims the verifier could not confirm, did not check or did not
 cover (`approved_with_disclaimer`, `skipped` with `no_checkable_claims` /

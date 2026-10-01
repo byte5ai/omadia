@@ -7,8 +7,9 @@
  *
  * Kept narrow on purpose. Retired claims are matched as exact phrases, and the
  * positive checks look for the named control (a config key, a default, a
- * catalog field, an exemption list, a cache bound, a failure counter) plus the
- * one word that states its limit, not for the wording around it.
+ * catalog field, an exemption list, a cache bound, a failure counter, the
+ * verifier's trigger router) plus the one word that states its limit, not for
+ * the wording around it.
  */
 
 import { strict as assert } from 'node:assert';
@@ -27,11 +28,14 @@ import {
   DEFAULT_IDEMPOTENCY_TTL_MS,
   ToolIdempotencyStore,
 } from '@omadia/orchestrator/dist/toolIdempotency.js';
+import { verdictReleasesAnswer } from '@omadia/orchestrator/dist/verifierDelivery.js';
 import { isWriteCapableTool, PRIVACY_MODE_DEFAULT } from '@omadia/plugin-api';
 import {
   createPrivacyGuardService,
   MASK_USER_PROMPT_CONFIG_KEY,
 } from '@omadia/plugin-privacy-guard/dist/service.js';
+import { shouldTriggerVerifier, VerifierPipeline } from '@omadia/verifier';
+import type { VerifierPipelineOptions } from '@omadia/verifier';
 import { parse as parseYaml } from 'yaml';
 
 import { ConfigSchema } from '../src/config.js';
@@ -124,6 +128,12 @@ const RETIRED_CLAIMS = [
   'at most once per key',
   // omadia evaluates no spreadsheet formula.
   'calculated by that engine rather than produced by the model',
+  // The verifier checks only answers its trigger patterns match, and `enforce`
+  // delivers the others unchecked: figures in other formats are not checked.
+  'checks answers that contain figures',
+  'checks answers that carry figures',
+  'holds no claim to check',
+  'holds nothing to check',
 ] as const;
 
 describe('public security claims match the enforced behaviour', () => {
@@ -254,6 +264,57 @@ describe('public security claims match the enforced behaviour', () => {
     assert.ok(
       shadowSentences.some((sentence) => /\bdefault\b/i.test(sentence)),
       `README must name \`shadow\` as the verifier's default mode; mentions: ${JSON.stringify(shadowSentences)}`,
+    );
+  });
+
+  it('the docs say that the verifier checks only what its trigger patterns match, and enforce delivers the rest unchecked', async () => {
+    // A figure in a format the trigger router has no pattern for never reaches
+    // the claim extractor: the pipeline reports `skipped` / `no_trigger`, and
+    // `enforce` releases that verdict, so the answer goes out unchecked.
+    for (const figure of ['USD 50,000', '$500', 'October 2, 2026', '3 unpaid invoices']) {
+      assert.equal(shouldTriggerVerifier(figure).shouldVerify, false, figure);
+    }
+    const extracted: string[] = [];
+    const extractor = {
+      extract: async (request: { answer: string }) => {
+        extracted.push(request.answer);
+        return { claims: [], gaps: [] };
+      },
+    };
+    const pipeline = new VerifierPipeline({
+      extractor: extractor as unknown as VerifierPipelineOptions['extractor'],
+      deterministic: {} as VerifierPipelineOptions['deterministic'],
+      judge: {} as VerifierPipelineOptions['judge'],
+      log: () => {},
+    });
+    const unmatched = await pipeline.verify({
+      runId: 'docs-claims-run',
+      userMessage: 'What does Example Corp still owe?',
+      answer: 'Example Corp owes USD 50,000, due October 2, 2026.',
+    });
+    assert.ok(
+      unmatched.status === 'skipped' && unmatched.reason === 'no_trigger',
+      `expected skipped / no_trigger, got ${JSON.stringify(unmatched)}`,
+    );
+    assert.deepEqual(extracted, [], 'an answer no trigger pattern matches must not reach the extractor');
+    assert.equal(verdictReleasesAnswer(unmatched), true);
+    // A euro amount does reach the extractor.
+    await pipeline.verify({
+      runId: 'docs-claims-run',
+      userMessage: 'Was ist noch offen?',
+      answer: 'Offen sind 1.234,56 EUR.',
+    });
+    assert.equal(extracted.length, 1);
+
+    const triggerSentences = sentencesMentioning(read('README.md'), 'trigger pattern');
+    assert.ok(
+      triggerSentences.some((sentence) => /\bunchecked\b/i.test(sentence)),
+      `README must say that an answer no trigger pattern matches goes out unchecked; mentions: ${JSON.stringify(triggerSentences)}`,
+    );
+    const gateSentences = sentencesMentioning(read('docs/security-architecture.md'), '`no_trigger`');
+    assert.ok(
+      gateSentences.some((sentence) => /\bunchecked\b/i.test(sentence)),
+      `docs/security-architecture.md must say that \`enforce\` delivers a \`no_trigger\` answer unchecked; mentions: ${JSON.stringify(gateSentences)}`,
     );
   });
 

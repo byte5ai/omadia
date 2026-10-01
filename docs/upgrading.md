@@ -427,17 +427,24 @@ know and show no badge for turns without evidence.
 ### `enforce` withholds what it could not confirm, on the stream too
 
 - **Answers the verifier could not confirm are withheld.** `enforce` delivers
-  an answer only when its verdict is `approved`, or `skipped` because the
-  answer holds nothing to check (no figure, date or reference, or no claim).
+  an answer only when its verdict is `approved`, or `skipped` because no
+  trigger pattern matched the answer or the extraction found no claim in it.
+  An answer released on either reason goes out unchecked. The trigger
+  patterns cover euro amounts, accounting references, `yyyy-mm-dd` and
+  `dd.mm.yyyy` dates, percentages, hour and day counts, and an aggregate
+  keyword such as `Summe` or `total` in an answer that also holds a number of
+  three or more digits, so an answer whose figures are all in other formats
+  (a dollar amount, an English-format date) goes out unchecked.
   Every other verdict replaces the answer with a short notice in the
   operator's disclosure locale: a contradiction, but also a partly confirmed
   answer, an answer whose claims no checker takes, and a turn in which the
   verifier could not run. An answer longer than the 6000 characters the
-  claim extractor reads is never fully covered and is therefore always
-  withheld. Before switching, run `shadow` and compare. Of the answers
-  `shadow` verified, `enforce` delivers the rows with status `approved` and
-  the `skipped` rows whose reason is `no_trigger` or `no_claims`. Count only
-  rows written since this upgrade — an older `skipped` row has no reason:
+  claim extractor reads is never fully covered, so once a trigger pattern
+  matches it, the answer is always withheld. Before switching, run `shadow`
+  and compare. Of the answers `shadow` verified, `enforce` delivers the rows
+  with status `approved` and the `skipped` rows whose reason is `no_trigger`
+  or `no_claims`. Count only rows written since this upgrade — an older
+  `skipped` row has no reason:
 
   ```sql
   SELECT count(*) FILTER (
