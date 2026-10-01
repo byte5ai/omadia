@@ -906,6 +906,7 @@ producedEntityIds?: string[];
 postcondition?: {
 issues: readonly string[];
 };
+replayed?: boolean;
 }
 export interface RunAgentInvocation {
 index: number;
@@ -915,6 +916,7 @@ durationMs: number;
 subIterations: number;
 status: RunStatus;
 toolCalls: RunToolCall[];
+replayed?: boolean;
 }
 export interface RunTrace {
 turnId: string;
@@ -1050,6 +1052,7 @@ entityLimit?: number;
 }
 export interface FindEntitiesOptions {
 model: string;
+id?: string | number;
 nameContains?: string;
 limit?: number;
 }

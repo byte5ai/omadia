@@ -287,6 +287,48 @@ export interface ToolErrorEntry {
   redactedSpans?: readonly PromptMaskedSpanInfo[];
 }
 
+/**
+ * Answer-verifier summary for a turn — the `summary` of the stream's trailing
+ * `verifier` event. Mirrors `VerifierResultSummary` from `@omadia/channel-sdk`.
+ *
+ * A summary is evidence only when a check settled a claim: a contradicted
+ * claim for `blocked`, a confirmed one for `approved` /
+ * `approved_with_disclaimer` (confirmed = `claimCount - contradictionCount -
+ * unverifiedCount`). `skipped` (badge `unverified`: nothing checkable),
+ * `unavailable` (the verifier could not run) and checks that confirmed nothing
+ * carry none. `<VerifierBadge>` renders green only for a `verified` summary
+ * whose every claim was confirmed.
+ */
+export interface VerifierSummary {
+  badge: 'verified' | 'partial' | 'corrected' | 'failed' | 'unverified' | 'unavailable';
+  status: 'approved' | 'approved_with_disclaimer' | 'blocked' | 'skipped' | 'unavailable';
+  /** Why a `skipped` / `unavailable` turn has no evidence. A closed code set;
+   *  `privacy_shield`: an answer Privacy Shield rendered, withheld in
+   *  `enforce` mode without being sent to the verifier. */
+  reason?:
+    | 'no_trigger'
+    | 'no_claims'
+    | 'no_checkable_claims'
+    | 'incomplete_coverage'
+    | 'extractor_error'
+    | 'pipeline_error'
+    | 'privacy_shield';
+  claimCount: number;
+  contradictionCount: number;
+  unverifiedCount: number;
+  /** Of `unverifiedCount`, the claims no check ran on (no checker for them,
+   *  or over the per-answer cap). */
+  uncheckedCount?: number;
+  /** Of `uncheckedCount`, entries for a part of the answer the verifier's
+   *  claim extraction did not cover (text beyond its window, claims left out
+   *  at its list limit, or claims it returned that are not in the answer or
+   *  too long to check whole) — the answer was not checked in full. */
+  uncoveredCount?: number;
+  retryCount: number;
+  latencyMs: number;
+  mode: 'shadow' | 'enforce';
+}
+
 /** #547 / #569 — one entry in `PrivacyReceipt.structuredPayloads`. Mirrors
  *  `StructuredPayloadEntry` from `@omadia/plugin-api`. PII-free. */
 export interface StructuredPayloadEntry {
@@ -559,6 +601,24 @@ export interface Message {
    * when no privacy-guard plugin is installed.
    */
   privacyReceipt?: PrivacyReceipt;
+  /**
+   * Answer-verifier summary, folded in from `done.verifier` (enforce mode)
+   * or the `verifier` event that follows `done` when the verifier is
+   * enabled. Rendered by `<VerifierBadge>`. Undefined when the verifier is
+   * off or skipped the turn outright (a clarification card or a degraded
+   * turn). Restored on a local reload — `coerceMessage` spreads unknown
+   * fields through — and by the server-side mirror, whose `MessageSchema`
+   * keeps a summary that fits its shape and drops one that does not.
+   */
+  verifier?: VerifierSummary;
+  /**
+   * `true` when the answer verifier withheld this turn's answer in `enforce`
+   * mode (`done.answerSource === 'verifier-blocked'`): `content` is the
+   * server's notice saying so, never the model's answer. The bubble renders
+   * it under `<VerifierBlockedNotice>`'s UI-localized heading. Kept by the
+   * server-side mirror too.
+   */
+  verifierBlocked?: true;
   /**
    * Privacy Shield v4 — real values in `content` that the LLM never saw,
    * resolved server-side behind the data-plane boundary. `<Markdown>`

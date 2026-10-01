@@ -461,6 +461,25 @@ export type {
   ToolIdempotencyOutcome,
 } from './toolIdempotency.js';
 export {
+  ToolReplayAbortError,
+  ToolReplayLedger,
+  replayMissNotice,
+  runDetachedFromRequestLedger,
+} from './toolReplayLedger.js';
+export type {
+  ToolReplayDecision,
+  ToolReplayRecord,
+  ToolReplaySeam,
+} from './toolReplayLedger.js';
+export { RequestReceipts, mergePrivacyReceipts } from './requestReceipts.js';
+export { RequestTurnRecord } from './requestTurnRecord.js';
+export type {
+  CommittedTurn,
+  RequestAfterTurn,
+  TurnRecordDraft,
+  WrittenTurn,
+} from './requestTurnRecord.js';
+export {
   currentDispatchCaller,
   runWithDispatchCaller,
 } from './toolCallerContext.js';

@@ -3,7 +3,9 @@
  * implements `markPrivacyFinalizeHeld` / `takePrivacyEgress` /
  * `isPrivacyGuardActive` with recording continuations, so a test pins the
  * wrapper's side of the contract: which view reaches the pipeline, when
- * `done` is emitted, and how often each turn is finalized.
+ * `done` is emitted, and how often each turn is finalized. Like the real
+ * orchestrator, a pass that throws or whose stream ends before `done` hands
+ * nothing over and settles its own receipt (`closeUndeliveredPass`).
  */
 
 import { strict as assert } from 'node:assert';
@@ -23,6 +25,7 @@ import type {
 } from '../../packages/harness-channel-sdk/src/chatAgent.js';
 import type { Orchestrator } from '../../packages/harness-orchestrator/src/orchestrator.js';
 import type { PrivacyEgressContinuation } from '../../packages/harness-orchestrator/src/privacyEgress.js';
+import type { ToolReplayLedger } from '../../packages/harness-orchestrator/src/toolReplayLedger.js';
 
 export interface RecordingContinuation extends PrivacyEgressContinuation {
   finalizeCalls: number;
@@ -52,7 +55,13 @@ function recordingContinuation(
   n: number,
   opts: ContinuationOpts,
   input: ChatTurnInput,
+  /** Like the real orchestrator: a bound request ledger collects the
+   *  receipt, and the earliest pass with one owns the request's one row. */
+  ledger: ToolReplayLedger | undefined,
+  rows: PrivacyReceipt[],
 ): RecordingContinuation {
+  // Taken at hand-over: the continuation is finalized after the next pass began.
+  const pass = ledger?.pass ?? 0;
   const receipt = receiptFor(n);
   const view: VerifierPrivacy | undefined =
     opts.wireAnswer === undefined
@@ -73,16 +82,43 @@ function recordingContinuation(
     countUnresolvedSurrogates: async () => opts.unresolved ?? 0,
     finalize: async () => {
       c.finalizeCalls += 1;
+      if (ledger === undefined) rows.push(receipt);
+      else {
+        ledger.receipts.add(receipt, {
+          pass,
+          rowId: c.receiptId,
+          write: async (merged) => {
+            rows.push(merged);
+          },
+        });
+      }
       return receipt;
     },
   };
   return c;
 }
 
+/** The receipt a pass that never handed over settles itself (run index
+ *  `run`); its verb names the run, so a merged receipt shows it. */
+export function undeliveredReceipt(run: number): PrivacyReceipt {
+  return {
+    datasetsInterned: 0,
+    fieldsMasked: 0,
+    fieldsCleartext: 0,
+    verbsExecuted: [`undelivered-run-${String(run)}`],
+    pseudonymProjectionUsed: false,
+  };
+}
+
 export interface StubState {
   readonly marks: ChatTurnInput[];
   readonly runs: ChatTurnInput[];
   readonly continuations: RecordingContinuation[];
+  /** The receipts of passes that threw or ended before `done`, settled by
+   *  the orchestrator itself (only with `privacyActive`). */
+  readonly undelivered: PrivacyReceipt[];
+  /** The receipt rows written (`turn_receipts`): one per request. */
+  readonly rows: PrivacyReceipt[];
   streamClosed: boolean;
 }
 
@@ -99,7 +135,37 @@ export function stubOrchestrator(opts: {
 }): { orchestrator: Orchestrator; state: StubState } {
   const held = new WeakSet<object>();
   const stashed = new WeakMap<object, RecordingContinuation>();
-  const state: StubState = { marks: [], runs: [], continuations: [], streamClosed: false };
+  const ledgers = new WeakMap<object, ToolReplayLedger>();
+  const state: StubState = {
+    marks: [],
+    runs: [],
+    continuations: [],
+    undelivered: [],
+    rows: [],
+    streamClosed: false,
+  };
+  /** A pass that ended without handing over closes itself, like the real
+   *  orchestrator: its receipt is the turn's own row, or joins the bound
+   *  request's with the pass's offer to own the row — which an earlier pass
+   *  with a receipt takes over. */
+  const closeUndelivered = (input: ChatTurnInput, run: number): void => {
+    held.delete(input);
+    if (opts.privacyActive !== true) return;
+    const receipt = undeliveredReceipt(run);
+    state.undelivered.push(receipt);
+    const ledger = ledgers.get(input);
+    if (ledger === undefined) {
+      state.rows.push(receipt);
+      return;
+    }
+    ledger.receipts.add(receipt, {
+      pass: ledger.pass,
+      rowId: `turn-undelivered-${String(run)}`,
+      write: async (merged) => {
+        state.rows.push(merged);
+      },
+    });
+  };
   const handOver = (input: ChatTurnInput, result: ChatTurnResult): void => {
     if (!held.delete(input) || opts.handOver !== true) return;
     const index = state.continuations.length;
@@ -107,6 +173,8 @@ export function stubOrchestrator(opts: {
       index + 1,
       opts.continuation?.(index, result) ?? { wireAnswer: result.answer },
       input,
+      ledgers.get(input),
+      state.rows,
     );
     state.continuations.push(c);
     stashed.set(input, c);
@@ -114,6 +182,12 @@ export function stubOrchestrator(opts: {
   const orchestrator = {
     agentId: 'default',
     markScreeningReentry(): void {},
+    bindToolReplayLedger(input: ChatTurnInput, ledger: ToolReplayLedger): () => void {
+      ledgers.set(input, ledger);
+      return () => {
+        if (ledgers.get(input) === ledger) ledgers.delete(input);
+      };
+    },
     markPrivacyFinalizeHeld(input: ChatTurnInput): void {
       state.marks.push(input);
       held.add(input);
@@ -127,23 +201,30 @@ export function stubOrchestrator(opts: {
     async runTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
       const index = state.runs.length;
       state.runs.push(input);
-      if (opts.throwOnRun === index) throw new Error('turn failed');
+      if (opts.throwOnRun === index) {
+        closeUndelivered(input, index);
+        throw new Error('turn failed');
+      }
       const result = opts.results?.[index] ?? opts.results?.[opts.results.length - 1];
       assert.ok(result, 'stub has no scripted result');
       handOver(input, result);
       return result;
     },
     async *chatStream(input: ChatTurnInput): AsyncGenerator<ChatStreamEvent> {
+      const index = state.runs.length;
       state.runs.push(input);
+      let reachedDone = false;
       try {
         for (const event of opts.stream ?? []) {
           if (event.type === 'done') {
             handOver(input, { answer: event.answer, toolCalls: 0, iterations: 0 });
+            reachedDone = true;
           }
           await Promise.resolve();
           yield event;
         }
       } finally {
+        if (!reachedDone) closeUndelivered(input, index);
         state.streamClosed = true;
       }
     },
@@ -194,9 +275,15 @@ export const APPROVED: VerifierVerdict = {
   claims: [{ status: 'verified', claim: CLAIM, source: 'odoo' }],
   latencyMs: 0,
 };
+const CONFIRMED_CLAIM = { ...CLAIM, id: 'c_002', text: 'Die Rechnung ist gebucht' };
+// Borderline (#132): one claim confirmed, one a check could not confirm —
+// the only shape that buys a re-sample (`isBorderlineVerdict`).
 export const BORDERLINE: VerifierVerdict = {
   status: 'approved_with_disclaimer',
-  claims: [{ status: 'unverified', claim: CLAIM, reason: 'no evidence' }],
+  claims: [
+    { status: 'verified', claim: CONFIRMED_CLAIM, source: 'odoo' },
+    { status: 'unverified', claim: CLAIM, reason: 'no evidence' },
+  ],
   unverified: [{ status: 'unverified', claim: CLAIM, reason: 'no evidence' }],
   latencyMs: 0,
 };

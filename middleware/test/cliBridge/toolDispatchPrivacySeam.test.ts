@@ -278,7 +278,8 @@ describe('ToolDispatchService — privacy data-plane boundary (#542 prerequisite
     ]);
   });
 
-  it('fails OPEN when the privacy provider throws — documented parity with the chat path', async () => {
+  it('fails CLOSED when the privacy provider throws — parity with the chat path', async () => {
+    const warn = mock.method(console, 'warn', () => undefined);
     const service = new ToolDispatchService({
       nativeTools: registryWith('odoo_read_partner', PII_RESULT),
       domainTools: [],
@@ -286,12 +287,16 @@ describe('ToolDispatchService — privacy data-plane boundary (#542 prerequisite
     });
 
     const result = await service.dispatch('odoo_read_partner', {});
+    warn.mock.restore();
 
-    // `Orchestrator.dispatchToolDeadlined` logs and sends the raw result when
-    // interning throws. This path matches it deliberately rather than silently
-    // diverging; a fail-CLOSED policy for untrusted callers is its own decision.
-    assert.equal(result.content, PII_RESULT);
-    assert.equal(result.isError, undefined);
+    // `Orchestrator.dispatchToolDeadlined` withholds a result it could not
+    // intern, and so does this path: the raw values never leave the
+    // dispatcher, and the caller learns the call ran but its result is gone.
+    assert.equal(result.content.includes(EMAIL), false, 'the email left the dispatcher raw');
+    assert.equal(result.content.includes(IBAN), false, 'the IBAN left the dispatcher raw');
+    assert.match(result.content, /^Error: tool `odoo_read_partner` ran, but the privacy boundary/);
+    assert.equal(result.isError, true);
+    assert.equal(result.origin, 'dispatcher');
   });
 });
 

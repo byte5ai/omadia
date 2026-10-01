@@ -1,16 +1,20 @@
 import type {
   Claim,
+  ClaimExtraction,
   ClaimVerdict,
   HardClaim,
+  NonEmptyClaimVerdicts,
   SoftClaim,
   VerifierInput,
   VerifierPrivacy,
+  VerifierSkipReason,
   VerifierVerdict,
 } from './claimTypes.js';
 import { hasOdooRecordAnchor, isHardClaim, isSoftClaim } from './claimTypes.js';
 import type { ClaimExtractor } from './claimExtractor.js';
 import type { DeterministicChecker } from './deterministicChecker.js';
 import type { EvidenceJudge } from './evidenceJudge.js';
+import { coverageVerdicts, readExtraction, skipReason } from './extractionCoverage.js';
 import { detectFailureReplay } from './failureReplayDetector.js';
 import { shouldTriggerVerifier } from './triggerRouter.js';
 
@@ -26,29 +30,65 @@ import { shouldTriggerVerifier } from './triggerRouter.js';
  *                            └─► EvidenceJudge        (remaining soft claims)
  *                            → aggregate → VerifierVerdict
  *
- * Never throws. On any failure below the API level the pipeline returns
- * an `approved` verdict — the trigger router decided the answer was worth
- * checking, so a silent extractor failure shouldn't stop the user from
- * seeing the reply. The caller logs the empty-claim case as telemetry.
+ * Never throws, and the verdict is bound to evidence:
+ *   - `approved` ⇒ the extraction reported no coverage gap, and every
+ *     extracted claim was checked and is `verified`, at least one (the claim
+ *     list is typed non-empty). No coverage gap means: the model read the
+ *     whole answer, its claim list stayed below the request limit, and every
+ *     claim it returned, across all its `record_claims` calls, quotes the
+ *     answer in full and is short enough to check (`MAX_CLAIM_CHARS`) — no
+ *     claim is shortened to fit. A claim the model leaves out of a list below
+ *     that limit is beyond what any check here can see.
+ *   - A claim no checker accepts, one beyond the per-answer cap, and each
+ *     part of the answer the extraction did not cover (text beyond its
+ *     window, a claim list cut at its request limit, or claims that are not
+ *     in the answer or too long to check — a `coverage_gap` entry) stay in
+ *     the verdict as `unverified` / `not_checked`: an answer checked only in
+ *     part is `approved_with_disclaimer`, never `approved`.
+ *   - `skipped` — the pipeline ran but had nothing it could check: no trigger
+ *     signal, no extracted claim, or no claim any checker accepts; reason
+ *     `incomplete_coverage` when the extraction did not cover the whole
+ *     answer either.
+ *   - `unavailable` — the extraction failed or did not finish (see
+ *     `ClaimExtractor.extract`), so nothing was checked.
+ * A failure never stops the user from seeing the reply, but it is never
+ * reported as a pass either. Contradictions found without extraction
+ * (failure replay, tool postconditions, missing citations) still block on
+ * every one of these paths.
  */
 
 export interface VerifierPipelineOptions {
   extractor: ClaimExtractor;
   deterministic: DeterministicChecker;
   judge: EvidenceJudge;
+  /**
+   * Most claims handed to a checker per answer — each one is a re-query or a
+   * judge call. Claims beyond it stay in the verdict as `unverified` /
+   * `not_checked`, so the cap bounds cost without hiding part of the answer.
+   * Give the `ClaimExtractor` the same value: it asks the model for one claim
+   * more and reports a list cut at that limit as a coverage gap. Default 20.
+   */
+  maxClaims?: number;
   log?: (msg: string) => void;
 }
+
+const DEFAULT_MAX_CLAIMS = 20;
 
 export class VerifierPipeline {
   private readonly extractor: ClaimExtractor;
   private readonly deterministic: DeterministicChecker;
   private readonly judge: EvidenceJudge;
+  private readonly maxClaims: number;
   private readonly log: (msg: string) => void;
 
   constructor(opts: VerifierPipelineOptions) {
     this.extractor = opts.extractor;
     this.deterministic = opts.deterministic;
     this.judge = opts.judge;
+    this.maxClaims =
+      typeof opts.maxClaims === 'number' && Number.isFinite(opts.maxClaims)
+        ? Math.max(0, Math.floor(opts.maxClaims))
+        : DEFAULT_MAX_CLAIMS;
     this.log =
       opts.log ??
       ((msg: string): void => {
@@ -91,32 +131,63 @@ export class VerifierPipeline {
     const trigger = shouldTriggerVerifier(input.answer);
     if (!trigger.shouldVerify) {
       // Only the synthetic (no-extraction-needed) verdicts matter here.
-      return aggregate(synthetic, started);
+      return aggregate(synthetic, started, 'no_trigger');
     }
 
     // The privacy view reaches every stage that sends text to a model; the
     // deterministic re-query below stays on the real values, server-side.
     const privacy = input.privacy;
-    let claims: Claim[];
+    let extraction: ClaimExtraction;
     try {
-      claims = await this.extractor.extract({
-        userMessage: input.userMessage,
-        answer: input.answer,
-        ...(privacy ? { privacy } : {}),
-      });
+      extraction = readExtraction(
+        await this.extractor.extract({
+          userMessage: input.userMessage,
+          answer: input.answer,
+          ...(privacy ? { privacy } : {}),
+        }),
+      );
     } catch (err) {
       this.log(`[verifier/pipeline] extractor FAIL: ${errMsg(err)}`);
-      return aggregate(synthetic, started);
+      // Synthetic contradictions need no extraction and still block. Without
+      // one, nothing was checked: the verifier could not run. The reason is a
+      // code — the message stays in the log line above.
+      return isNonEmpty(synthetic)
+        ? aggregateChecked(synthetic, started)
+        : {
+            status: 'unavailable',
+            reason: 'extractor_error',
+            claims: [],
+            latencyMs: Date.now() - started,
+          };
+    }
+
+    // What the extraction did not cover stays in the verdict as not checked,
+    // so the answer is at most partly verified (see `extractionCoverage.ts`).
+    const { claims, gaps } = extraction;
+    const coverage = coverageVerdicts(gaps);
+    if (gaps.length > 0) {
+      this.log(
+        `[verifier/pipeline] extraction did not cover the whole answer (${gaps.join(',')})`,
+      );
     }
 
     if (claims.length === 0) {
       this.log(
         `[verifier/pipeline] no claims extracted (trigger=${trigger.reasons.join(',')})`,
       );
-      return aggregate(synthetic, started);
+      return aggregate(
+        synthetic.length > 0 ? [...synthetic, ...coverage] : [],
+        started,
+        skipReason('no_claims', coverage),
+      );
     }
 
-    const { hard, soft } = classify(claims);
+    const { hard, soft, notChecked } = classify(claims, this.maxClaims);
+    if (notChecked.length > 0) {
+      this.log(
+        `[verifier/pipeline] ${String(notChecked.length)} claim(s) not checked (no checker accepts them, or over the cap of ${String(this.maxClaims)})`,
+      );
+    }
 
     // Pre-check: any hard claim that needs Odoo re-query but whose turn
     // never called a `query_odoo_*` tool is a **replay / hallucination**.
@@ -143,13 +214,21 @@ export class VerifierPipeline {
       this.checkSoftClaims(soft, hard, privacy),
     ]);
 
-    const all: ClaimVerdict[] = [
+    const checked: ClaimVerdict[] = [
       ...synthetic,
       ...traceVerdicts,
       ...hardVerdicts,
       ...softVerdicts,
     ];
-    return aggregate(all, started);
+    // Claims no checker took, and the coverage gaps, stay in the verdict as
+    // `unverified` / `not_checked`, so an answer checked only in part is never
+    // `approved`. When nothing was checked at all — no extracted claim fits a
+    // checker and no synthetic contradiction exists — the verdict is `skipped`.
+    return aggregate(
+      checked.length > 0 ? [...checked, ...notChecked, ...coverage] : [],
+      started,
+      skipReason('no_checkable_claims', coverage),
+    );
   }
 
   /**
@@ -303,26 +382,70 @@ function anchorKey(claim: Claim): string {
   return '';
 }
 
-function classify(claims: readonly Claim[]): {
+/**
+ * Route each claim to the checker that can verify it. At most `maxClaims`
+ * claims reach a checker. Claims that fit no checker (e.g. an amount whose
+ * source is unknown or Confluence — we won't invent a way to check them), and
+ * checkable claims beyond the cap, come back as `unverified` / `not_checked`
+ * verdicts: kept in the verdict rather than dropped, so they count against
+ * the answer's coverage.
+ */
+function classify(
+  claims: readonly Claim[],
+  maxClaims: number,
+): {
   hard: HardClaim[];
   soft: SoftClaim[];
+  notChecked: ClaimVerdict[];
 } {
   const hard: HardClaim[] = [];
   const soft: SoftClaim[] = [];
+  const notChecked: ClaimVerdict[] = [];
   for (const c of claims) {
-    if (isHardClaim(c)) {
+    if (!isHardClaim(c) && !isSoftClaim(c)) {
+      notChecked.push(
+        notCheckedVerdict(c, `no checker for a ${c.type} claim from ${c.expectedSource}`),
+      );
+    } else if (hard.length + soft.length >= maxClaims) {
+      notChecked.push(
+        notCheckedVerdict(c, `over the cap of ${String(maxClaims)} checked claims per answer`),
+      );
+    } else if (isHardClaim(c)) {
       hard.push(c);
     } else if (isSoftClaim(c)) {
       soft.push(c);
     }
-    // Claims that fit neither (e.g. amount claim with expectedSource=unknown)
-    // are silently dropped — we won't invent a way to check them.
   }
-  return { hard, soft };
+  return { hard, soft, notChecked };
 }
 
+function notCheckedVerdict(claim: Claim, reason: string): ClaimVerdict {
+  return { status: 'unverified', claim, reason, cause: 'not_checked' };
+}
+
+/**
+ * Verdict for a list of claim verdicts. An empty list means nothing was
+ * checked, which is `skipped` with the caller's reason — never `approved`.
+ */
 function aggregate(
   verdicts: ClaimVerdict[],
+  startedAt: number,
+  whenEmpty: VerifierSkipReason,
+): VerifierVerdict {
+  if (!isNonEmpty(verdicts)) {
+    return {
+      status: 'skipped',
+      reason: whenEmpty,
+      claims: [],
+      latencyMs: Date.now() - startedAt,
+    };
+  }
+  return aggregateChecked(verdicts, startedAt);
+}
+
+/** Verdict over at least one checked claim: blocked, disclaimer or approved. */
+function aggregateChecked(
+  verdicts: NonEmptyClaimVerdicts,
   startedAt: number,
 ): VerifierVerdict {
   const latencyMs = Date.now() - startedAt;
@@ -345,15 +468,12 @@ function aggregate(
       latencyMs,
     };
   }
-  return approved(verdicts, startedAt);
+  // Non-empty, nothing contradicted, nothing unverified: every claim verified.
+  return { status: 'approved', claims: verdicts, latencyMs };
 }
 
-function approved(claims: ClaimVerdict[], startedAt: number): VerifierVerdict {
-  return {
-    status: 'approved',
-    claims,
-    latencyMs: Date.now() - startedAt,
-  };
+function isNonEmpty(verdicts: ClaimVerdict[]): verdicts is NonEmptyClaimVerdicts {
+  return verdicts.length > 0;
 }
 
 function errMsg(err: unknown): string {

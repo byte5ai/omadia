@@ -935,7 +935,8 @@ async function bootstrapOrchestratorExtrasFromEnv(
  * Seeds `@omadia/verifier` into the registry on first boot,
  * migrating the legacy ANTHROPIC_API_KEY / VERIFIER_ENABLED /
  * VERIFIER_MODE / VERIFIER_MODEL / VERIFIER_MAX_CLAIMS /
- * VERIFIER_AMOUNT_TOLERANCE / VERIFIER_MAX_RETRIES / GRAPH_TENANT_ID
+ * VERIFIER_AMOUNT_TOLERANCE / VERIFIER_MAX_RETRIES /
+ * VERIFIER_RESAMPLE_ON_BORDERLINE / GRAPH_TENANT_ID
  * env vars into per-plugin config so the plugin's activate() (S+9.3
  * sub-commit 2b) can build the pipeline via `ctx.config.get` instead
  * of reading env directly.
@@ -949,7 +950,7 @@ async function bootstrapOrchestratorExtrasFromEnv(
  * Idempotent: once the registry entry exists we never overwrite the
  * operator's settings.
  */
-async function bootstrapVerifierFromEnv(
+export async function bootstrapVerifierFromEnv(
   deps: BootstrapDeps,
 ): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
@@ -983,6 +984,9 @@ async function bootstrapVerifierFromEnv(
   config['verifier_max_claims'] = deps.config.VERIFIER_MAX_CLAIMS;
   config['verifier_amount_tolerance'] = deps.config.VERIFIER_AMOUNT_TOLERANCE;
   config['verifier_max_retries'] = deps.config.VERIFIER_MAX_RETRIES;
+  config['verifier_resample_on_borderline'] = deps.config.VERIFIER_RESAMPLE_ON_BORDERLINE
+    ? 'true'
+    : 'false';
   if (deps.config.GRAPH_TENANT_ID) {
     config['graph_tenant_id'] = deps.config.GRAPH_TENANT_ID;
   }

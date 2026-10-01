@@ -78,11 +78,21 @@ export function platformDataDir(): string {
   return dir;
 }
 
-/** Directory the embedded Postgres (PGlite) persists into. */
+/** The embedded PostgreSQL 17 cluster's data directory (`initdb -D`). */
 export function embeddedDbDir(): string {
   const dir = path.join(dataRoot(), 'pgdata');
   ensureDir(dir);
   return dir;
+}
+
+/**
+ * Where the embedded Postgres' private socket directory goes (macOS/Linux,
+ * see `embeddedDbEndpoint.ts`). `userData`, never the chosen data folder: that
+ * one may be cloud-synced (#934), and a sync client has no business with a
+ * socket (some cannot hold one at all).
+ */
+export function dbSocketParentDir(): string {
+  return app.getPath('userData');
 }
 
 /**

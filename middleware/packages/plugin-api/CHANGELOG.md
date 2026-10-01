@@ -8,6 +8,48 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.21.0 — 2026-10-01
+
+Additive. A run trace can now say that a call did not run in its pass, and
+`findEntities` can address one record by its source-system id, so a caller
+holding an entity handle such as `hr.employee:7` no longer has to turn the id
+into a substring search.
+
+### Added
+
+- **`RunToolCall.replayed?: boolean`** and **`RunAgentInvocation.replayed?: boolean`**:
+  set on the trace of an answer-verifier re-entry (a borderline resample or a
+  correction retry) for every call whose first-run result was handed back
+  instead of the tool running again. Absent on every call that ran in that
+  pass. A request records one trace, the delivered pass's
+  (commit-on-delivery): when the verifier delivers a re-entry, the session
+  log writes that pass's trace, and the first run's — where the flagged calls
+  actually ran — is not recorded. So a flagged entry stands for an execution
+  of the request, not of its pass, and its `durationMs` is the replay's, not
+  the tool's. Counting a request's executions from its recorded trace counts
+  the flagged entries too, and is a lower bound: a first-run call the
+  re-entry did not repeat is in no recorded trace. The Knowledge Graph does
+  not keep the flag yet — both bundled backends write a flagged call as an
+  ordinary `ToolCall` / `AgentInvocation` node (follow-up in
+  `docs/middleware-agent-handoff.md` §13).
+- **`FindEntitiesOptions.id?: string | number`** — exact match on the node's
+  `props.id` (Odoo record id, Confluence page id), compared as strings after
+  trimming, so `7` and `'7'` address the same record. An id that is not in
+  the graph, or an empty id, returns `[]`, never another record of the model;
+  without `id` the search stays model-wide, as before. Combinable with
+  `nameContains` (both must hold). Both in-tree backends implement it. The
+  answer verifier resolves every id-bearing entity handle through it and
+  re-checks `props.model`/`props.id` on the result, so a provider that ignores
+  the option yields no evidence rather than a substitute record.
+
+Why a filter on `findEntities` and not a node-by-id read: the handles the
+verifier sees are often two-part (`hr.employee:7`) and carry no `system`, so an
+external-id read (`odoo:hr.employee:7`) would have to guess the namespace. The
+Neon backend's private external-id lookup and the in-memory node map stay
+internal for that reason. `findEntities` still covers only `OdooEntity` and
+`ConfluencePage` nodes; plugin-namespaced entities (`PluginEntity`) are not
+reachable through it, with or without `id`.
+
 ## 1.20.0 — 2026-10-01
 
 Additive. Two Privacy Shield seams gain optional contract members. The answer

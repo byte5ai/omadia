@@ -276,7 +276,16 @@ answer:
   switched on, the verifier checks answers that contain figures, like amounts or
   dates, against the run's sources and records a verdict. In its default
   `shadow` mode it only records. It does not run for agents on the Claude
-  subscription CLI.
+  subscription CLI. An answer with nothing checkable is `skipped` and a
+  verifier that could not run is `unavailable`; neither is reported as
+  `approved` or shown as verified. An answer the verifier knows it checked only
+  in part is at most partly verified: a claim no checker takes, more claims
+  than the per-answer cap, text beyond the part of the answer the claim
+  extractor reads, and a claim the extractor returns that is not in the answer,
+  or is too long to check whole, each stay in the verdict as not checked — no
+  claim is shortened to fit a check. The verifier checks the claims its
+  extraction model lists; a claim the model leaves out entirely is not seen by
+  any check.
 - **Office files from real rows**: when a specialist agent returns a
   `datasetId`, `create_xlsx` resolves the rows server-side and writes them into
   the workbook without passing them through the model. Sums and pivots go in as

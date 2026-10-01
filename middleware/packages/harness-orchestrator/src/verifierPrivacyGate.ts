@@ -9,11 +9,13 @@
  *
  *   - {@link EgressLedger}: mark → run → take, and finalize every
  *     continuation once (the returned turn's first, the rest in `finally`).
+ *   - {@link StreamEgress}: the same for one streamed turn, whose `done`
+ *     carries the receipt once the verifier is done.
  *   - {@link verifierGate}: verify with the turn's privacy view, verify as
  *     before (no shield installed), or skip — never verify raw behind a
  *     shield.
- *   - {@link privacySafeCorrection}: the retry hint behind a shield carries
- *     no truth values, and is withheld when masking would still alter it.
+ *   - {@link privacySafeCorrection}: the retry hint carries no truth values
+ *     and, behind a shield, is withheld when masking would still alter it.
  *   - {@link carriesUnresolvedPlaceholders}: whether a second answer (re-sample
  *     or retry) may replace the first one the user would otherwise see.
  *   - {@link modelFacingUserMessage}: the prompt the pipeline gets — the one
@@ -96,6 +98,80 @@ export class EgressLedger {
 }
 
 /**
+ * The hand-over of one streamed turn: taken once — at its `done`, or at the
+ * latest when the stream is over — and finalized exactly once, after the
+ * verifier or, when the stream ended early or threw, in the caller's
+ * `finally`.
+ */
+export class StreamEgress {
+  #egress: PrivacyEgressContinuation | undefined;
+  #taken = false;
+  #settled = false;
+
+  constructor(
+    private readonly host: PrivacyEgressHost,
+    private readonly input: ChatTurnInput,
+    private readonly log: (msg: string) => void,
+  ) {}
+
+  /** The continuation the turn handed over, or `undefined` (no shield, or
+   *  nothing handed over yet). Taken from the host on the first call. */
+  take(): PrivacyEgressContinuation | undefined {
+    if (!this.#taken) {
+      this.#taken = true;
+      this.#egress = this.host.takePrivacyEgress?.(this.input);
+    }
+    return this.#egress;
+  }
+
+  /** `done` as it goes out: the turn finalized, its receipt attached. */
+  async finishDone<T extends { readonly type: 'done' }>(done: T): Promise<T> {
+    const egress = this.take();
+    if (egress === undefined) return done;
+    this.#settled = true;
+    const receipt = await settleQuietly(egress, this.log);
+    return receipt ? { ...done, privacyReceipt: receipt, receiptId: egress.receiptId } : done;
+  }
+
+  /** Finalizes a continuation nobody finished (an early exit, a throw). */
+  async settleUnfinished(): Promise<void> {
+    const egress = this.take();
+    if (egress === undefined || this.#settled) return;
+    this.#settled = true;
+    await settleQuietly(egress, this.log);
+  }
+}
+
+/**
+ * The streamed passes of one request — the first run and, in `enforce`, its
+ * correction retry. Each is marked held before its stream starts and
+ * finalized exactly once: before the request's merged receipt is read, or in
+ * the caller's `finally`.
+ */
+export class StreamPasses {
+  readonly #passes: StreamEgress[] = [];
+
+  constructor(
+    private readonly host: PrivacyEgressHost,
+    private readonly log: (msg: string) => void,
+  ) {}
+
+  /** Marks the next turn run with `input` held and tracks its hand-over.
+   *  Call before that pass's `chatStream` starts. */
+  open(input: ChatTurnInput): StreamEgress {
+    this.host.markPrivacyFinalizeHeld?.(input);
+    const egress = new StreamEgress(this.host, input, this.log);
+    this.#passes.push(egress);
+    return egress;
+  }
+
+  /** Finalizes every pass not finalized yet, in the order they ran. */
+  async settleAll(): Promise<void> {
+    for (const pass of this.#passes) await pass.settleUnfinished();
+  }
+}
+
+/**
  * The caller's user message as the turn's model received it, before masking:
  * an MCP input-card reply becomes its label (field names only), exactly as
  * `runTurn` / `chatStream` normalise it. The envelope's values were typed for
@@ -171,23 +247,26 @@ export function verifierGate(
 }
 
 /**
- * The correction hint for a blocked verdict. Without a shield: the classic
- * hint with the re-queried truth. Behind a shield: the truth — and every
- * detail derived from it — is withheld, and when the turn's policy would
- * still alter the hint (the claim spans themselves carry detected values) the
- * retry is withheld altogether: neither raw nor pseudonymised truth, nor a
- * placeholder-bearing hint, goes to the model.
+ * The correction hint for a blocked verdict. It never carries what the
+ * verifier found out itself — no re-queried truth, no detail derived from it
+ * (`buildCorrectionPrompt`): only the contradicted claims, the turn's own
+ * tool names and call ids, and fixed text. Behind a shield, when the turn's
+ * policy would still alter the hint (the claim spans themselves carry
+ * detected values) the retry is withheld altogether, so no
+ * placeholder-bearing hint goes to the model. A hint that passes is masked
+ * once, by the retry's own turn (`wireExtraSystemHint`), like the user's
+ * message — never twice with different maps. Checked against the turn whose
+ * verdict the hint corrects, before that turn is finalized: the preview
+ * needs its live policy and adds nothing to its receipt.
  */
 export async function privacySafeCorrection(
   verdict: VerifierVerdict,
   egress: PrivacyEgressContinuation | undefined,
 ): Promise<{ readonly correction?: string; readonly withheld: boolean }> {
-  if (egress === undefined) {
-    const correction = buildCorrectionPrompt(verdict);
-    return correction === undefined ? { withheld: false } : { correction, withheld: false };
-  }
-  const correction = buildCorrectionPrompt(verdict, { withholdValues: true });
+  const correction = buildCorrectionPrompt(verdict);
   if (correction === undefined) return { withheld: false };
-  if (await egress.maskWouldAlter(correction)) return { withheld: true };
+  if (egress !== undefined && (await egress.maskWouldAlter(correction))) {
+    return { withheld: true };
+  }
   return { correction, withheld: false };
 }

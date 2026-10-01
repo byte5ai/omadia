@@ -259,6 +259,38 @@ describe('createSecretsStore — updating', () => {
   });
 });
 
+/**
+ * Reading back what was just written, before anything outside the file is
+ * made to depend on it (the embedded database is provisioned with passwords
+ * from this blob): the cache says what was meant to be persisted, only the
+ * file says what was.
+ */
+describe('createSecretsStore — reading back', () => {
+  it('returns what is on disk now, bypassing the cache, and writes nothing', () => {
+    const { store, calls, files } = harness({ [P1]: encrypted(FULL) });
+    assert.deepEqual(store.load(), FULL);
+    files.set(P1, encrypted(LEGACY));
+    calls.length = 0;
+
+    assert.deepEqual(store.reread(), LEGACY);
+    assert.deepEqual(store.load(), FULL, 'the cache is left as it was');
+    for (const verb of ['writeFile', 'rename', 'copyFile', 'remove']) {
+      assert.deepEqual(callsTo(calls, verb), [], `no ${verb}`);
+    }
+  });
+
+  it('returns null for a missing file instead of creating one', () => {
+    const { store, calls } = harness();
+    assert.equal(store.reread(), null);
+    assert.deepEqual(callsTo(calls, 'writeFile'), []);
+  });
+
+  it('surfaces an unreadable file like every other read', () => {
+    const { store } = harness({ [P1]: 'not-ciphertext' });
+    assert.throws(() => store.reread(), SecretsUnreadableError);
+  });
+});
+
 describe('createSecretsStore — the cache follows the data dir', () => {
   it('adopts an existing file at the new path instead of writing the cached blob over it', () => {
     const chosen = encrypted(FULL);

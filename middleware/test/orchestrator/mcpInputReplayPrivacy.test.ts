@@ -660,6 +660,29 @@ describe('MCP input replay privacy boundary (#544 / W2-1)', () => {
     assert.equal(recorded[0]?.outcome, 'passed');
   });
 
+  it('MUTATION CHECK: a replay result the shield cannot intern is withheld, not sent raw', async () => {
+    clearSharedState();
+    serverArgs.length = 0;
+    const h = harness([textStream('fertig')], {
+      privacyGuard: () => ({
+        ...redactingPrivacyService(),
+        internToolResultV4: () => Promise.reject(new Error('privacy provider unavailable')),
+      }),
+    });
+    seedParkedCard(h, 'corr-intern-fails');
+
+    const wire = await replayWire(h, 'corr-intern-fails', { employeeId: 'E-13', pin: '2468' });
+
+    assert.ok(
+      serverArgs.some((a) => a[REPLAY_ARG_KEY] !== undefined),
+      'the replay never reached the MCP server',
+    );
+    assert.equal(wire.includes(PERSON), false, `person name crossed the wire: ${wire}`);
+    assert.equal(wire.includes(EMAIL), false, `email crossed the wire: ${wire}`);
+    assert.equal(wire.includes(IBAN), false, `IBAN crossed the wire: ${wire}`);
+    assert.ok(wire.includes('the result was withheld'), `the withheld notice is missing: ${wire}`);
+  });
+
   it('MUTATION CHECK: without a privacy handle the replay note stays legacy-raw byte-for-byte', async () => {
     clearSharedState();
     serverArgs.length = 0;

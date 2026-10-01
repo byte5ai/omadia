@@ -48,7 +48,13 @@ export interface SecretsStore {
    * writes nothing.
    */
   update(change: (current: SecretsBlob) => SecretsBlob): SecretsBlob;
-  /** Forget the cache (tests). */
+  /**
+   * The blob as the file holds it right now, bypassing the cache, or null when
+   * there is no file. Never writes and never touches the cache: this is how a
+   * caller checks that what it just persisted really reads back.
+   */
+  reread(): SecretsBlob | null;
+  /** Forget the cache (tests, and a caller that no longer trusts it). */
   reset(): void;
 }
 
@@ -107,6 +113,10 @@ export function createSecretsStore(deps: SecretsStoreDeps): SecretsStore {
       }
       cached = { file, blob: next };
       return next;
+    },
+
+    reread(): SecretsBlob | null {
+      return readSecretsBlob(deps.io, deps.codec, deps.file(), readOptions);
     },
 
     reset(): void {

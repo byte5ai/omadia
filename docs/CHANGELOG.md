@@ -85,6 +85,568 @@ the receipt store's `persistFailures` counter). `ConfigSchema` in
 `middleware/.env.example` now documents `OMADIA_PRIVACY_FORCE_GUARDED`, which
 the README already named.
 
+### Changed — the answer verifier's verdicts, `enforce` gate and re-entries work behind the Privacy Shield
+
+2026-10-01 — the verifier changes below were built next to the change that
+runs the verifier's model requests behind the Privacy Shield (further down)
+and now work as one design:
+
+- Every pass the verifier runs — the first run, a borderline resample, a
+  correction retry, on `chat()` and on the stream — hands its privacy
+  finalisation over. The verifier's requests about a pass's answer go
+  through that pass's own privacy view, and the pass is finalised exactly
+  once afterwards, also when the request errors, a re-entry is abandoned or
+  the client leaves. A request that can be re-entered keeps one
+  `turn_receipts` row with every pass's receipt merged in, the verifier's
+  request counts summed over the passes. A pass that throws or whose stream
+  ends before `done` hands nothing over; the orchestrator finalises it
+  itself and keeps its receipt — in the request's row, or as the turn's own
+  row when no verifier can re-enter it. Such receipts used to be dropped, so
+  a retry that failed or that the client left was missing from the request's
+  row, and a request whose first run failed had no row at all. The request's
+  row belongs to its earliest pass with a receipt, counted in pass order,
+  not in the order the passes are finalised: the first run whenever it had
+  one, otherwise the earliest re-entry that had one. A request whose only
+  receipt came from a re-entry that was abandoned, threw or was cut off used
+  to get no row although its answer carried that receipt. A stream whose
+  consumer stops in the prelude — at the `onBeforeTurn` annotations, after
+  an MCP input-card replay — is closed the same way; it used to keep the
+  replayed values in the privacy service until restart, write no receipt and
+  leave the turn's calendar auth context installed. Tests:
+  `verifierRequestReceiptRow.test.ts`, `chatStreamPreludeClosesPass.test.ts`.
+- Behind the shield the claim extractor reads the turn's wire view, so the
+  extraction window and the verbatim guard apply to the text the model saw.
+  A claim that cannot be mapped back onto the answer the user saw is no
+  longer dropped without a trace: it is the new coverage gap
+  `claims_not_restored`, so such an answer is at most partly verified and
+  `enforce` does not release it.
+- `enforce` withholds every answer the verifier may not see behind the
+  shield — a server-rendered answer, and a pass that handed over no privacy
+  view, such as a Direct Line relay — as `unavailable` / `privacy_shield`,
+  for a resample and a retry as well; `shadow` records no verdict for them
+  and no longer sends a rendered answer to the extractor. The shield's
+  refusal of a prompt it cannot mask and the inbound-screening quarantine
+  notice are server-composed and state no fact, so `enforce` releases them
+  without a verdict instead of replacing one notice with another.
+- The correction hint carries no verifier evidence on any path. Behind the
+  shield the retry is withheld when the contradicted pass's masking would
+  still alter the hint; a hint that passes is masked once, by the retry's
+  own pass. A retry or resample answer that still carries unresolved
+  placeholders is never shown in place of the earlier answer, and such a
+  retry answer is not judged at all.
+- A re-entry that throws is logged with its run id, the error's class and
+  the closed code `reentry_turn_failed`, never with the error's message. A
+  request's replay ledger is no longer bound to an input object that already
+  carries another one, and the uploads' import is single-flight across
+  passes.
+- The write-once guarantee is scoped to verifier re-entries: a resample or a
+  retry executes no write. Below the replay ledger, while a request ledger
+  is bound, every dispatch seam now runs its handler sending each call once
+  (`runHandlerAtMostOnce`), so the MCP client no longer re-sends a call after
+  a transient transport failure — a reply lost after the server executed a
+  write used to run it twice; turns without a request ledger keep that retry
+  (#542). And for every turn, a tool result the Privacy Shield cannot intern
+  is withheld at every seam (the orchestrator's dispatch, `LocalSubAgent`,
+  `ToolDispatchService`, the MCP input-card replay) with a notice that the
+  call ran, where the raw result used to reach the model — on a re-entry
+  also a result the first run had interned. `query_dataset` keeps its own
+  notice.
+- `verifier_verdicts` gains a nullable `reason` column (knowledge-graph
+  migration `0034_verifier_verdict_reason`) holding the closed reason code
+  of a `skipped` or `unavailable` verdict, so the share of answers `enforce`
+  would deliver can be read from `shadow` rows (`docs/upgrading.md`).
+
+`@omadia/plugin-api` 1.21.0 carries the additive API these changes need
+(`RunToolCall.replayed`, `RunAgentInvocation.replayed`,
+`FindEntitiesOptions.id`). Upgrade notes: `docs/upgrading.md`, "Upgrading
+past v0.167.13".
+
+### Fixed — verifier evidence resolves the exact entity reference
+
+2026-09-30 — the answer verifier's graph evidence ignored the id in an entity
+handle. A soft claim about `hr.employee:7` (or `odoo:hr.employee:7`) was
+looked up as "any `hr.employee`", so the evidence judge — which sees nothing
+but those snippets — received up to three unrelated employees as evidence for
+record 7, plus whatever the capitalised-name search on `res.partner` /
+`hr.employee` turned up. The graph API had no exact-id lookup at all:
+`findEntities` only knew a model and a substring over display name and id, so
+the deterministic checker's graph `id` check matched "42" against 142, 420 or
+"Halle 42" as well. `FindEntitiesOptions.id` (plugin-api 1.21.0) now addresses
+one record by its source-system id, string-compared, in both the in-memory and
+the Neon backend; the extras wrappers forward it unchanged.
+
+An id-bearing handle now resolves exactly that record, and the fetcher
+re-checks model, id and (for three-part handles) system on the result, so a
+graph provider that ignores the new option yields no evidence instead of a
+substitute. A claim that pins a record gets only its pinned records: no model
+sample, no name search. When the record is not in the graph the claim ends
+`unverified` ("no evidence available") — in enforce mode an
+`approved_with_disclaimer` where a sibling record used to be able to verify or
+contradict it. Model-wide samples (for a bare `hr.department` handle) and the
+name search remain for claims without an id and are labelled as search results
+in the judge prompt; the judge is told, and `EvidenceJudge` enforces, that a
+verdict citing another record of a pinned model is demoted to `unverified`.
+`DeterministicChecker` checks an `odooRecord.id` against the graph by exact id
+and leaves a miss `unverified` as well: the graph is a periodically synced
+partial mirror, so a record missing from it is not shown to be false (see
+`docs/security-architecture.md` §7c). Shadow-mode verdict metrics recorded
+before this change are not comparable with those after it: id-anchored claims
+about records outside the graph move from spurious `verified`/`contradicted`
+to `unverified`.
+
+### Fixed — evidence judge counts a verdict only with a citation it was shown
+
+2026-09-30 — the answer verifier's evidence judge accepted any non-empty
+`evidence_node_id` on a `verified` or `contradicted` verdict. It never checked
+that the id named one of the evidence snippets the judge had been shown. When
+it named none, the verdict kept its status and took its `source` from the
+claim's own `expectedSource`. So a citation the model made up counted as fully
+verified: the turn got the `verified` badge, and in enforce mode the #132
+borderline resample, which only runs on `approved_with_disclaimer`, was
+skipped. A contradiction with a made-up citation blocked the answer all the
+same and stored the claim's expected source as the contradiction's source.
+
+The judge now checks the cited id against the exact snippets it printed into
+the prompt, by exact match after trimming (ids are opaque, so there is no
+case-folding). An unknown id demotes the verdict to `unverified` with the
+reason `evidence_node_id not in evidence set` and logs
+`[verifier/judge] evidence_node_id not in evidence set, … claim=<id> cited_len=<n>`,
+which makes the rate observable. The cited id is model output and can repeat
+claim or evidence text, so only its length is logged, never the id itself. The
+contradiction recheck follows the same rule, and an unknown id on the first
+call no longer spends a recheck. Affected turns show `partial` instead of
+`verified` and, in enforce mode, can trigger the borderline resample. A
+contradiction whose citation names no shown snippet no longer blocks; it
+counts as an unconfirmed claim with the `partial` badge, as a contradiction
+without any citation already did (in `enforce` the answer is withheld
+without a correction retry). For judge contradictions, `verifier_contradictions.source` now
+records the cited snippet's source (a `confluence` snippet still lands as
+`graph`) instead of the claim's expected source. The rule is written up in
+`docs/security-architecture.md` §7c.
+
+### Security — a verifier re-entry replays the first run's tool results instead of running the tools again; the `enforce` stream retries a contradiction too
+
+2026-10-01 — In `enforce` mode the answer verifier re-enters a turn: a
+borderline verdict draws a second sample (non-streaming path), a
+contradiction a correction retry. Each re-entry used to be a complete new
+turn that executed every tool the model called again, so a write the first
+run had already made — creating a record, sending a message — ran twice for
+one user request, or three times when a resample turned up a contradiction
+and the correction retry followed.
+
+A re-entry now re-generates only the answer. The verifier binds a
+per-request replay ledger to the turn: the first run records the outcome of
+every tool call — the raw result the turn used, or the exception the handler
+threw — under the dispatch seam, the tool name and the canonical input, and
+a re-entry gets those outcomes back instead of running the tool. That holds
+at every seam that runs a handler: the orchestrator's dispatch, a
+`LocalSubAgent`'s inner calls and the standalone dispatcher a
+subscription-CLI sub-agent's tool calls go through. The re-entry's model sees
+the same results through its own Privacy Shield pass: a returned tool error
+is redacted again, a thrown one withheld again, never the raw text. A
+replayed diagram or generated file comes back with its call, so a delivered
+retry carries the file the first run built. A call
+the first run did not make runs only when it is one of the kernel's own reads
+(`query_knowledge_graph`, `query_dataset`, `read_attachment`,
+`find_free_slots`, the chat roster, a memory `view`). Any other call — every
+plugin, MCP, domain and sub-agent tool counts, because the plugin contract
+has no read-only declaration and a missing `writeCapabilities` is not one —
+is refused with a neutral notice and the re-entry is abandoned: a resample
+keeps the first answer, a correction retry withholds it with the `failed`
+badge. Under Privacy Shield a sub-agent whose answer rests on datasets of the
+first run's privacy scope runs again, with its inner calls replayed and
+interned afresh, so the dataset bridge still carries real rows; a re-entry of
+an MCP input-card answer is abandoned before the parked call could run again.
+
+A re-entry belongs to the same request: it fires no per-call turn hook,
+ingests no replayed MCP result into the Knowledge Graph and records no bypass
+again. Its run trace keeps every replayed call, flagged `replayed`
+(`RunToolCall.replayed`, `RunAgentInvocation.replayed` — `@omadia/plugin-api`
+1.21.0). The request also has ONE record, and it holds the answer the user
+got: no pass — the first run included — writes its session-log row while the
+verifier may still re-enter; each offers it to the request's ledger, and the
+verifier writes the row of the pass it delivers once it has decided
+(commit-on-delivery). A delivered correction retry or resample is therefore
+what the session log, the Knowledge-Graph turn, the next turn's verbatim
+context, fact extraction, an auto-promoted memory and `onAfterTurn` see, and
+the stream's `done.turnId` names its row, so saving the answer as a memory
+saves the delivered one. A withheld answer records the pass its final verdict
+was about. The row carries the entities of every pass, its writes run in the
+turn scope of the pass that produced it, and `onAfterTurn` runs once, in the
+first run's hook context, with `onVerifierBlocked` after it as before. A
+re-entry now also sees the same conversation history as the first run (the
+first answer is no longer in it). The request's privacy receipt is ONE row,
+written once after the last pass, that merges every pass (counts of the
+largest pass, lists united, an entry every pass recorded listed once); the
+delivered answer carries that receipt, and on the stream `done.receiptId`
+names that row. A long-running task started in the request runs its own tool
+calls outside the request's ledger: its detached runner used to inherit the
+ledger, so once the verifier re-entered the request every later call of the
+background task was refused as a miss — failing the task and abandoning the
+re-entry running at that moment — or handed a first-run result.
+
+With the ledger in place the `enforce` stream retries a contradiction once
+as well (`/api/chat/stream`, the public API-key stream, a channel that streams
+its turns), except on canvas turns. The release rule is unchanged: nothing of either run reaches
+the client before the final verdict, only liveness events (the retry's
+`iteration_start` among them); the answer goes out only when the retry's
+verdict releases it, and a retry that fails or is abandoned stays internal
+and the first answer is withheld.
+
+Two things outside tool dispatch follow the same rule. A tabular upload
+(CSV, XLSX) is imported as a dataset before the model runs — a new dataset
+per import, with no dedupe — so each re-entry imported the file again and
+told its model a dataset id none of the replayed first-run results referred
+to. The request's ledger now keeps the first run's attachment ingestion and
+hands it to every re-entry, masked through the re-entry's own prompt map; a
+re-entry that finds none to reuse is abandoned before the model runs. And
+the correction hint quoted what the verifier measured whenever no Privacy
+Shield was installed: Odoo values, knowledge-graph snippets and lookup
+details, fetched with the verifier's own access rather than the user's
+grants. The hint now names the claims only — no measured value, no check
+detail, no postcondition issues — on every path, and the retry corrects from
+the turn's own tool results. Like the user's message it is masked through
+the pass's own prompt map, on the stream retry too, its masked spans are on
+the request's receipt, and a re-entry whose prompt cannot be masked is
+abandoned.
+
+Two smaller changes ride along. The new setup field
+`verifier_resample_on_borderline` of `@omadia/verifier` (seeded on first
+boot from `VERIFIER_RESAMPLE_ON_BORDERLINE`, default `true`) switches the
+borderline resample off; until now nothing could. And within one request no
+loop repeats a write call that ended in an exception any more: the
+orchestrator's buffered and streaming tool loops and a subscription-CLI
+sub-agent's loopback dispatch refuse an identical repeat (same tool, same
+canonical input) the way `LocalSubAgent` already did, across sub-agent runs
+of the request too. Another input, a repeat after an ordinary returned
+`Error:` hint and the kernel's reads still run.
+
+What operators notice: a correction retry or resample that would need a
+write the first run did not make is abandoned, so `corrected` badges can get
+rarer on turns that wrote something; the verifier logs
+`retry abandoned` / `resample abandoned` with the run id and the tool (or the
+reason: an unmaskable prompt, an MCP input-card answer, no upload ingestion
+to reuse). A retry no longer gets the verifier's measured value to copy, so
+it corrects from the turn's own results or says it could not confirm the
+claim. A request has one receipt row and one session-log row instead of one
+per pass, both written after the verdict when the request can be re-entered,
+and one dataset per uploaded file, imported by the first run.
+`shadow` mode, a disabled verifier and turns that cannot be re-entered persist
+as before, except that a turn that fails now keeps its receipt row too (see the
+first entry above). Tests: `toolReplayLedger.test.ts`, `toolReplaySeams.test.ts`,
+`verifierServiceWriteSafety.test.ts`, `verifierStreamRetry.test.ts`,
+`verifierReentryRecords.test.ts`, `verifierDeliveredTurnRecord.test.ts`,
+`requestTurnRecord.test.ts`,
+`verifierSubAgentReplay.test.ts`, `verifierResampleKillSwitch.test.ts`,
+`longRunningTaskReplayLedger.test.ts`,
+`orchestrator/parentLoopThrownCallRepeat.test.ts`,
+`verifierReentryAttachments.test.ts`, `verifierCorrectionHintPrivacy.test.ts`,
+`correctionPromptEvidence.test.ts`. Details:
+`docs/security-architecture.md` §7c; upgrade note: `docs/upgrading.md`.
+
+### Security — the answer verifier's `enforce` mode withholds what it could not confirm, on the stream too
+
+2026-10-01 — `VERIFIER_MODE=enforce` was documented to block a contradicted
+answer, but on the streaming path (`/api/chat/stream`, the public API-key
+stream, the canvas) the verifier wrapper passed every `text_delta` and the
+terminal `done` to the client first and ran the verifier afterwards: `enforce`
+changed only the badge of a `verifier` event that arrived after the answer.
+The non-streaming path (Teams, Telegram, `/api/chat`) delivered an answer that
+was still contradicted after its correction retry, with a `failed` badge.
+
+In `enforce` mode the verifier is now a delivery gate on both paths. On the
+stream, every event that carries model or tool content — text deltas, tool
+calls and results, sub-agent tool traffic, nudges, turn annotations, canvas
+surface events and `done` — is held until the verdict. Iteration, routing,
+persona, tool-progress, heartbeat, token and usage events still pass live, and
+the route's observer (which the wrapper used to drop) is now forwarded in
+every mode, so the web chat's liveness line keeps moving. A verdict releases
+the answer only when it is `approved`, or `skipped` because the answer holds
+nothing to check (`no_trigger`, `no_claims`); the held events then go out in
+order, the answer's text as one `text_delta` carrying `done.answer`, and
+`done` carries the verdict as `done.verifier`. The deltas the model streamed
+never go out in `enforce`: the orchestrator can discard a streamed response
+and run the model again (an unmet sub-agent obligation, a file it announced
+but did not build), and the verdict is about the answer it kept, not the one
+it discarded.
+Every other verdict withholds the answer — the gate fails closed: a
+contradiction, claims the verifier could not confirm, did not check or did not
+cover (`approved_with_disclaimer`, `skipped` with `no_checkable_claims` /
+`incomplete_coverage`) and a verifier that could not run (`unavailable`). The
+client then gets exactly one `text_delta` with a localized notice ("Diese
+Antwort wurde zurückgehalten: …" / "This answer was withheld: …", naming
+contradictions, unconfirmed claims or an incomplete check, and what to do
+next) and a `done` with that notice as `answer`, `answerSource:
+"verifier-blocked"`, `answerIsError: true` and the verdict — without the
+attachments, files, follow-ups, masked values, delegated answer, cards and
+excerpts the withheld answer carried. The notice is worded in the turn's
+disclosure locale, then the operator's (`ai_disclosure_locale`), German by
+default; the AI-disclosure paragraph a first turn folds into `done.answer`
+stays there, never in the delta. A turn that carries a choice card, an MCP
+input form, a slot picker or an OAuth consent prompt, a degraded turn's
+turn-incomplete notice and a bare `NO_REPLY` (the sentinel as the whole
+answer) are released without verification — on the stream a bare `NO_REPLY`
+releases its `done` alone, without the tool traffic before it. A card does
+not make the answer it rides on free of facts: a slot picker, an OAuth consent
+prompt (set when any calendar tool of the turn needed consent) and a choice
+card the card-router pass attaches can ride on a complete answer, which then
+goes out unchecked. An answer that only ends with `NO_REPLY` after other text
+is verified like any answer, because stream clients do not drop it. An
+answer Privacy Shield rendered server-side (`answerSource: "privacy-render"`)
+is never sent to the verifier, whose claim extractor would pass the real
+values the shield kept from the model to its model provider: `enforce`
+withholds it with the verdict `unavailable` / `privacy_shield`, on both paths
+and for a resample or retry as well. That includes a degraded turn whose
+answer the shield had already rendered; its `done` keeps `degraded` and
+`committedTools`. A turn that ends in an `error` releases nothing it held.
+The canvas composer holds its skeleton — the composer model
+writes its headings, labels and text — until the verdict as well: it leads a
+released turn and never shows with a withheld or failed one. The stream path
+did not retry with this change, because a retry re-ran the turn's tool calls;
+it retries since a re-entry replays them (see the entry above). `chat()`
+keeps its correction retry and now delivers the same notice when the final
+verdict does not release the answer.
+
+What does not change: `shadow` streams exactly as before, and the trailing
+`verifier` event still follows `done` in both modes. A withheld turn is a
+policy decision, not a failure: the kernel route's health signal and the
+public API-key audit record it as `ok` — unless it is also degraded, which
+both still record as a failure.
+
+What clients see: in `enforce` mode no answer text arrives until the turn
+and its verification (two LLM calls plus the source checks) have finished,
+then all of it at once, as a single `text_delta`; on the canvas the skeleton
+arrives with it, not before. `done.answerSource` can be `"verifier-blocked"`
+(always with `answerIsError: true`), and `done.verifier` carries the summary,
+whose `reason` can now also be `privacy_shield`. A client that renders
+`done.answer`, as the API documentation recommends,
+shows the notice without any change. The web chat shows a "withheld by the
+fact-check" heading above the notice (new `chat.verifierBlocked.*` keys in en
+and de), and the server-side session mirror (`PUT /api/chat/sessions/:id`) now
+keeps a message's verifier summary and withheld marker. `@omadia/channel-sdk`
+gains `composeVerifierBlockedText`, `AnswerSource` the value
+`"verifier-blocked"`, the `done` event the `verifier` field and `ChatAgent`
+the optional `holdsContentUntilVerdict` flag (how a wrapper such as the
+canvas composer learns that its base holds content until the verdict);
+`VerifierSummaryReason` and `@omadia/verifier`'s `VerifierUnavailableReason`
+gain `privacy_shield` — all additive.
+
+What operators should expect: fail-closed `enforce` delivers only fully
+confirmed answers and answers without checkable claims. An answer longer than
+the 6000 characters the claim extractor reads is never `approved` and is
+therefore always withheld, as is one with a claim no checker takes, and, with
+Privacy Shield v4 rendering active, every answer the shield renders. Run
+`shadow` first: of the answers `shadow` verified, `enforce` delivers the
+`verifier_verdicts` rows with status `approved` and the `skipped` rows whose
+reason is `no_trigger` or `no_claims` (the `reason` column arrived with the
+combined entry above; the query is in `docs/upgrading.md`). `shadow` writes
+no row for an answer the verifier may not see behind the shield, all of
+which `enforce` withholds; they show in the log as `verification skipped`.
+
+Not covered: the subscription-CLI runtime (`claude-cli` provider) never passes
+through the verifier wrapper, and proactive routines call the raw
+orchestrator, so `VERIFIER_MODE` changes neither. A withheld answer is still
+written to the session log and the knowledge graph — before the verdict, or
+right after it when the request can be re-entered (commit-on-delivery, see
+the entry above) — and can be auto-promoted to memory. What a released turn
+carries besides its answer —
+tool output, surfaces, the canvas skeleton's own text — is released on the
+verdict about the answer, not checked itself. Details:
+`docs/security-architecture.md` §7c, upgrade notes in `docs/upgrading.md`.
+
+### Security — answer-verifier verdicts are evidence-bound: `skipped` / `unavailable` are no longer `approved`
+
+2026-09-30 — the answer verifier reported five situations in which it checked
+nothing as `approved` with an empty claim list: an answer without a trigger
+signal, an extractor that failed, an extractor that returned no claims,
+extracted claims that fit no checker, and a pipeline that threw. The badge
+mapping turned each of them into `verified`, and that is what the trailing
+`verifier` stream event told stream clients and what `verifier_verdicts`
+recorded. Connector badges were already held back by a claim-count check, which
+also kept the internal `corrected` badge of a retry whose own verification
+failed off Teams. Verdicts are now bound to evidence: `approved` requires a
+claim extraction without a coverage gap — the model read the whole answer, its
+list stayed below the request limit, every `record_claims` call was read and
+every claim it returned is in the answer in full and short enough to check —
+and every extracted claim to be checked and verified, at least one (its claim
+list is typed non-empty);
+nothing checkable is `skipped` (reason `no_trigger`, `no_claims`,
+`no_checkable_claims` or `incomplete_coverage`), and a verifier that could not
+run is `unavailable` (reason `extractor_error` or `pipeline_error`). An answer
+the verifier can check only in part used to pass as fully verified: a claim no
+checker accepts (an amount, date, id or total whose source is neither Odoo nor
+the knowledge graph) and a claim beyond the per-answer cap were dropped without
+a trace, the extractor told the model to return no more claims than the cap
+(so a model that kept to it left the rest out before the pipeline saw them),
+it read only the first 6000 characters of the answer, its verbatim guard
+dropped a well-formed claim whose text is not in the answer as written (a line
+break the model wrote as a space, a subject stitched in from elsewhere in the
+sentence), it read only the first `record_claims` call of a response, and it
+cut every claim to its first 300 characters before the verbatim guard looked
+at it — so a longer claim was checked on its head alone, even when the rest of
+it is not in the answer; the rest verifying gave `approved` / `verified`. Such
+claims now stay in the verdict as unverified (`cause: 'not_checked'`), and the
+extraction reports what it did not cover: it asks the model for one claim
+more than `VERIFIER_MAX_CLAIMS`, treats a list that reaches that limit as
+possibly incomplete, names answer text beyond its window, and reports claims
+that are not in the answer (`claims_not_in_answer`) and claims longer than a
+check takes (`claims_too_long`, over 300 characters — matched in full, never
+cut to fit). Each such gap becomes a
+`not_checked` coverage entry (claim type `coverage_gap`), so the answer is
+`approved_with_disclaimer` and badged `partial`, or `skipped` /
+`incomplete_coverage` when nothing in the part it covered could be checked.
+The verbatim guard now lets any run of whitespace match any other, so a claim
+the model re-wrapped is checked instead of dropped, and the extractor reads
+every `record_claims` call of a response. The verifier still sees only the
+claims its extraction model lists: a claim the model leaves out of a list
+below the limit leaves no trace, so `verified` means every claim found was
+confirmed and the extraction is not known to be incomplete.
+`VERIFIER_MAX_CLAIMS` bounds how many claims are checked. The claim extractor
+used to turn its own failures (an LLM error, a response without a usable
+`record_claims` call) into an empty claim list, and
+it accepted a response cut off at the token limit and dropped malformed
+entries, so an extractor outage or a partial extraction could still read as
+`skipped` / `no_claims` or even `approved`; it now rejects in each case, and
+the outcome is `unavailable` / `extractor_error`. Badges are derived under an
+evidence gate (`hasVerificationEvidence`): a badge needs a check that settled a
+claim — a confirmed one for `verified` / `partial` / `corrected` (every claim
+confirmed for `verified` and `corrected`), a contradicted one for `failed`. A
+verdict whose claims all stayed unconfirmed — the sources were silent, or the
+re-query or judge call failed — is `unverified`, or `unavailable` when every
+check that ran failed (the checkers now mark a failed check as
+`cause: 'check_failed'`). That also covers the correction retry: a retry earns
+`corrected` only when its own verification confirmed every claim, and one that
+confirmed only some is `partial`, as the same verdict is on a first pass; any
+retry without a contradiction used to be badged `corrected`, including one
+whose checks all failed or that confirmed one claim and left the rest
+unchecked. The pipeline is injected, so its verdict is now held to what its
+claims show before the service retries, resamples, stores or streams it: a
+status is lowered to the one its claims earn (`approved` over an unconfirmed
+claim is `approved_with_disclaimer`, over a contradicted one `blocked`) and
+never raised, and `approved` over zero claims, an unknown status and a
+`reason` outside the closed codes are `unavailable` / `pipeline_error` — the
+raw value goes to the operator log, never onto the stream. The stored
+`unverified_count` is counted from the claims. The connector badge gate and
+the web chat chip also need the summary's counts to be nonnegative integers
+that agree with each other (no more unchecked than unverified claims, no
+more coverage entries than unchecked claims, no more contradicted and
+unverified claims than claims, no missing count read as 0); a summary that
+breaks this — only a foreign `ChatAgent` or edited local storage can produce
+one — gets no connector badge and a neutral chip. Contradictions found
+without extraction (tool postconditions, missing citations, failure replay)
+still block on every path. The paid
+borderline resample now runs only when a verdict confirmed some claims and a
+check left another unconfirmed: `skipped` / `unavailable`, a verdict that
+confirmed nothing, and one whose only doubt is claims no checker takes never
+trigger it.
+
+What clients see: the `verifier` event on `/api/chat/stream` and on the public
+API-key stream can now carry `summary.status` `skipped` / `unavailable`,
+`summary.badge` `unverified` / `unavailable`, a `summary.reason` code,
+`summary.uncheckedCount` (claims no check ran on, also counted in
+`unverifiedCount`) and `summary.uncoveredCount` (of those, the coverage
+entries: the answer was not checked in full). The reason is a closed code set,
+never an error message.
+Clients that switch exhaustively on these fields must handle the new values,
+and anything other than `verified` / `partial` / `corrected` / `failed` with
+`claimCount > 0` must not be shown as a check; `badge` is `unverified` or
+`unavailable` whenever no claim was settled, whatever the `status`. The
+connector wire type `SemanticAnswer.verifier` is unchanged: `toSemanticAnswer`
+is the single badge gate and forwards a badge only when the summary's counts
+back it, and Teams / Telegram get no badge for turns without evidence, so those
+plugin repositories need no release. Code that switches on `@omadia/verifier`'s
+`VerifierVerdict['status']` stops compiling until it handles the two new
+statuses — deliberately. `ClaimExtractor.extract` now resolves
+`{ claims, gaps }` (`ClaimExtraction`) instead of a claim list, and no longer
+cuts its result at `maxClaims`; the pipeline applies the cap and turns the gaps
+into coverage entries. A claim's `text` is now the span of the answer it
+quotes, which can differ from the model's text in case and whitespace, and is
+at most `MAX_CLAIM_CHARS` (300, exported) long — a longer claim is the new
+`ExtractionGap` value `claims_too_long`, never a shortened claim. The web
+chat previously dropped the `verifier` event and
+had no answer-verifier badge at all; it now shows a footer chip that is green
+only for a verified answer whose every claim was confirmed, blue for a
+corrected answer under the same condition, neutral for "not verified" and
+"verification unavailable" (the tooltip names the reason), amber for partly
+verified (the tooltip names claims that could not be checked, or says the
+verifier did not check all of the answer) and red for a contradiction (new
+`chat.verifier.*` keys in en and de).
+
+Operators: `verifier_verdicts.status` now stores `skipped` / `unavailable` as
+their own values (free `TEXT` column, no migration), so the share of
+`approved` rows drops — small talk and outages no longer count as clean turns,
+and answers checked only in part are `approved_with_disclaimer` (an answer
+longer than 6000 characters is never `approved` any more). Ad-hoc SQL or
+dashboards that read `status = 'approved'` as "clean turn" need a second look.
+No new environment variable; `VERIFIER_MAX_CLAIMS` keeps its default of 20.
+The golden corpus file `approve.jsonl` is now `skipped.jsonl` and expects
+`skipped`. Details: `docs/security-architecture.md` §7c.
+
+### Fixed — desktop database requires passwords; the kernel runs without superuser rights
+
+2026-09-30 — the desktop app's embedded PostgreSQL cluster was initialised with
+`initdb -A trust`. Any local process, under any OS user, that reached its
+loopback port could log in as the bootstrap superuser without a password, and
+the kernel's own `DATABASE_URL` named that superuser, which can run
+`COPY ... TO PROGRAM`. New clusters are now created with SCRAM-SHA-256
+authentication, and the shell owns `pg_hba.conf`: password-only rules for its
+two roles, no `trust` rule, `hba_file` pinned on the server's command line. The
+kernel connects as `omadia_kernel`, which owns the `omadia` database but is not
+a superuser. Both passwords are random, live in `secrets.enc`, and are read back
+from it before the cluster is touched. The shell creates the `vector` and
+`pg_trgm` extensions itself, because pgvector is not a trusted extension. Every
+start ends with a fail-closed check that a wrong password is refused and the
+kernel role holds no privilege (desktop/README.md § Database authentication,
+security-architecture §8b).
+
+An existing cluster is migrated before the updated app first starts it: the
+superuser password is set in PostgreSQL's single-user mode, which opens no
+port, then `pg_hba.conf` switches to passwords, and once the server runs,
+every object the old kernel created as superuser moves to the kernel role.
+When the cluster refuses the stored password (a lost `secrets.enc`, a snapshot
+restored without its secrets copy), the shell stops the server, sets the
+password the same way and starts it again, logged at warn level; pg_hba.conf
+is only ever rewritten while the server is stopped, so no running server
+accepts a connection without a password. A rollback to an earlier desktop
+build cannot open a migrated cluster, because that build connects without a
+password; restore the pre-update snapshot
+(`snapshots/pgdata-pre-<version>-<stamp>/` and its `.secrets.enc`) to go back.
+No new runtime environment variable. The desktop-apps workflow sets the test
+switch `OMADIA_EMBEDDED_PG_IT=require`, so that a missing engine or pgvector
+fails the integration test instead of skipping it
+(`docs/middleware-agent-handoff.md` §10, Test-Schalter).
+
+The shell's own maintenance sessions treat the kernel-owned database as
+untrusted. Because `omadia_kernel` owns that database, it can set a
+per-database `search_path` and create objects in schemas it controls; left
+unchecked, a statement the shell runs there as the superuser could resolve an
+unqualified call to one of those objects and run it with the shell's rights.
+Every connection the shell opens now pins a fixed `search_path` (system
+catalogs first) as a startup option, which outranks any per-database or
+per-role default, and the ownership transfer schema-qualifies every call and
+pins its own search_path as well. The start-up verification is the backstop: it
+refuses the kernel role a database URL unless it holds none of the privileged
+attributes and is a member of no role, because a role membership can restore a
+capability without setting an attribute.
+
+Passwords alone would not keep another local user out of the picture: while
+the server is stopped, someone else could take its loopback port and ask the
+connecting client for a password, or pose as the cluster. So on macOS and
+Linux the server no longer listens on TCP at all, only on a Unix socket in an
+owner-only directory under the app data folder (a private temp directory when
+that path is too long for a socket), and the kernel's `DATABASE_URL` names that
+socket. On every platform the shell's own connections accept SCRAM-SHA-256 and
+nothing else, so no password goes to a server that asks for anything less, and
+a server that cannot prove it holds the verifier is refused. The shell counts
+the server as started when its `postmaster.pid` names the process the shell
+spawned, a check that needs no credentials; the first login after every start
+must report this cluster's data directory before the kernel's password is
+offered; and the server is re-confirmed before provisioning, before the
+verification and before the kernel gets its DSN. Windows keeps loopback TCP:
+another local user who takes the port while the server is stopped fails the
+boot instead of learning a password, and the kernel's own pools are not yet
+SCRAM-only (desktop/README.md § Database authentication).
+
 ### Fixed — create_xlsx no longer persists model-supplied formula results; workbooks with formulas request a full recalculation on open
 
 2026-09-30 — a formula cell in `create_xlsx` accepted a `result` and stored it

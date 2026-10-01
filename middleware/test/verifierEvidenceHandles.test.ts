@@ -247,3 +247,71 @@ describe('GraphEvidenceFetcher — record keys', () => {
     assert.deepEqual(byId.get('odoo:res.partner:43')?.identityValues, ['Beta AG']);
   });
 });
+
+// A citation counts only when it names a ref the request printed. Behind a
+// shield those refs are the per-request handles of the snippets the request
+// carried: the raw node id is not citable there, nor is a handle beyond the
+// snippets sent. The binding to a pinned record is checked on the node id the
+// handle resolves to.
+describe('verifier/evidenceJudge — citation membership behind a privacy shield', () => {
+  function snippet(id: number, source: EvidenceSnippet['source'] = 'graph'): EvidenceSnippet {
+    return { nodeId: `odoo:res.partner:${String(id)}`, source, content: `Kunde seit ${String(2000 + id)}` };
+  }
+
+  async function judged(
+    evidence: readonly EvidenceSnippet[],
+    cited: string,
+    claim: SoftClaim = softClaim({ relatedEntities: [] }),
+  ) {
+    const { llm, captured } = capturingJudge(() => ({ verdict: 'verified', evidence_node_id: cited }));
+    const logs: string[] = [];
+    const judge = new EvidenceJudge({
+      llm: llm as never,
+      fetcher: { fetch: async () => [...evidence] },
+      log: (line: string) => {
+        logs.push(line);
+      },
+    });
+    const verdict = await judge.check(claim, servicePrivacy(false));
+    return { verdict, captured, logs };
+  }
+
+  it('a raw node id is not citable behind the shield, though its snippet was sent', async () => {
+    const { verdict, captured, logs } = await judged([snippet(7)], 'odoo:res.partner:7');
+
+    assert.equal(captured.length, 1);
+    assert.match(captured[0]!.prompt, /\[nodeId=ev-1, /);
+    assert.equal(verdict.status, 'unverified');
+    if (verdict.status === 'unverified') assert.match(verdict.reason, /not in evidence set/);
+    // The rejected ref is logged by its length only.
+    assert.ok(logs.some((l) => /cited_len=18\b/.test(l)), logs.join(' | '));
+    assert.equal(logs.join('\n').includes('odoo:res.partner:7'), false);
+  });
+
+  it('a handle beyond the snippets the request carried is not citable', async () => {
+    const five = [1, 2, 3, 4, 5].map((id) => snippet(id));
+    const { verdict, captured } = await judged(five, 'ev-4');
+
+    // Behind a shield the request carries three snippets; ev-4 was never shown.
+    assert.match(captured[0]!.prompt, /Evidence #3 \[nodeId=ev-3,/);
+    assert.equal(captured[0]!.prompt.includes('ev-4'), false);
+    assert.equal(verdict.status, 'unverified');
+  });
+
+  it('a printed handle resolves to its snippet, which alone supplies the source', async () => {
+    const { verdict } = await judged([snippet(1, 'graph'), snippet(2, 'odoo')], 'ev-2');
+
+    assert.equal(verdict.status, 'verified');
+    if (verdict.status === 'verified') assert.equal(verdict.source, 'odoo');
+  });
+
+  it('a handle naming another record of a model the claim pins is demoted on the resolved id', async () => {
+    const pinned = softClaim({ relatedEntities: ['odoo:res.partner:7'] });
+    // A provider that ignored the exact-id lookup handed back record 12.
+    const { verdict, logs } = await judged([snippet(12)], 'ev-1', pinned);
+
+    assert.equal(verdict.status, 'unverified');
+    if (verdict.status === 'unverified') assert.match(verdict.reason, /different record/);
+    assert.equal(logs.join('\n').includes('odoo:res.partner:12'), false, 'a node id reached the log');
+  });
+});
