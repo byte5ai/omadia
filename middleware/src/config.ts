@@ -425,6 +425,11 @@ const ConfigSchema = z.object({
   AWS_ENDPOINT_URL_S3: optionalNonEmpty(z.string().url()),
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  // Local attachment store for a single-machine install without S3 (the
+  // desktop app sets it when its "Attachments" switch is on). Used only when
+  // the four S3 values above are NOT all set; published as the same
+  // `tigrisStore` service. See platform/attachmentStore.ts.
+  ATTACHMENT_STORE_DIR: optionalNonEmpty(z.string()),
 
   // Off-site backup of the encrypted vault to the same Tigris bucket. The
   // backup only holds ciphertext — the master key (VAULT_KEY) is never
@@ -733,6 +738,9 @@ function loadConfig(): Config {
     ),
     PLUGIN_DEV_DIR: parsed.data.PLUGIN_DEV_DIR
       ? resolvePath(parsed.data.PLUGIN_DEV_DIR)
+      : undefined,
+    ATTACHMENT_STORE_DIR: parsed.data.ATTACHMENT_STORE_DIR
+      ? resolvePath(parsed.data.ATTACHMENT_STORE_DIR)
       : undefined,
   };
 }

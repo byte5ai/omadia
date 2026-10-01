@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop: setup wizard switches reach the kernel or are gone
+
+2026-09-30 — the first-run wizard offered three capability switches
+(attachments on the local disk, semantic memory, diagrams through a "hosted
+omadia service"). main stored them in `setup.json` and nothing read them back,
+so every choice booted the same stack; they had been unwired since the
+installer shipped (#341). Attachments now reach the kernel. The supervisor
+reads the switch on every boot and, when it is on, sets `ATTACHMENT_STORE_DIR`
+to `<data folder>/attachments`; when it is off, an inherited value is dropped.
+The kernel turns the variable into a filesystem attachment store, published as
+the same `tigrisStore` service the S3 store fills (S3 keeps precedence).
+Objects are stored owner-only under the SHA-256 of their key, so a storage key
+cannot address a path outside the directory. `/health` gains
+`attachments.store` (`s3`, `filesystem` or `none`, never a bucket or a path),
+and the supervisor checks it after boot and logs a warning when it disagrees
+with the switch. Installs that kept the default (on) start keeping attachments
+in their data folder after the update.
+
+Semantic memory and diagrams are no longer offered, because nothing the shell
+can set switches them on: the keyless embedding adapter is auto-installed and
+downloads its model from Admin → Embedding Provider, and diagrams need the
+Diagrams plugin, a Kroki server and S3 storage (the hosted service the wizard
+named does not exist). The step says where each is set up instead, and no
+longer claims the choice can be changed later, since there is no settings path
+after setup. `readSetup()` drops the `embeddings` / `diagrams` keys older
+builds stored. The new kernel variable `ATTACHMENT_STORE_DIR` is optional (see
+`middleware/.env.example`); a server that does not set it behaves as before.
+See `docs/security-architecture.md` §10j.
+
 ### Fixed — desktop: setup and recovery-key IPC no longer reachable from the web UI or foreign documents
 
 2026-09-30 — the desktop shell runs the first-run wizard, the loading screen

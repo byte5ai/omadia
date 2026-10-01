@@ -6,9 +6,12 @@ an **embedded Postgres + pgvector** engine (PGlite) so there is no database to
 install. An onboarding wizard collects your AI provider key on first run.
 
 > Status: **first version (v1)**. Wires persistence + LLM + admin UI end to end.
-> Capability toggles for in-process embeddings, hosted diagrams, and the
-> filesystem attachment store are surfaced in the wizard but not yet wired in the
-> kernel (later milestones) — they are stored and degrade gracefully today.
+> The wizard's one capability switch, **Attachments**, reaches the kernel: when it
+> is on, attachments are kept in `<data folder>/attachments` (see
+> [Capability switches](#capability-switches)). Semantic memory and diagrams are
+> not wizard switches. The keyless embedding adapter is auto-installed and
+> downloads its model from Admin → Embedding Provider; diagrams need the Diagrams
+> plugin with a Kroki server and S3-compatible storage.
 
 ## How it works
 
@@ -329,9 +332,44 @@ live file, so they help with a damaged file, not with a lost keychain entry.
 `secrets.enc` is not enough, because the kernel vault in `platform-data/` would
 then no longer open.
 
+## Capability switches
+
+A switch in the setup wizard is a promise, so each one has to change what the
+kernel is started with, and the kernel has to say whether it took. Earlier
+builds offered three switches that were stored in `setup.json` and never read:
+every choice booted the same stack.
+
+- **Attachments** (on by default). The supervisor reads the switch from
+  `setup.json` on every boot (`src/capabilities.ts`) and, when it is on, sets
+  `ATTACHMENT_STORE_DIR=<data folder>/attachments`. The kernel then publishes a
+  filesystem attachment store as its `tigrisStore` service
+  (`middleware/src/platform/attachmentStore.ts`); objects are stored owner-only
+  under the SHA-256 of their key, and nothing expires them. When the switch is
+  off the variable is unset, even if the launch environment had one. S3 storage
+  configured in the environment (`BUCKET_NAME` / `AWS_*`) takes precedence.
+  What lands there today: files a channel persists through the kernel's store,
+  such as Teams attachments with `TEAMS_ATTACHMENT_STORAGE_ENABLED=true`. The
+  web UI chat has no file upload.
+- **Readiness.** Once the kernel answers `/health`, the supervisor compares its
+  `attachments.store` (`s3`, `filesystem` or `none`) with the switch and writes
+  the verdict to the log as `[boot] attachments: …`. A disagreement is a
+  warning, not a boot failure.
+- **Not switches:** semantic memory and diagrams. Nothing the shell can set
+  turns them on. The embedding weights are fetched from Admin → Embedding
+  Provider, and diagrams need the Diagrams plugin, a Kroki server and S3
+  storage, none of which a desktop install ships. `OMADIA_EMBEDDING_MODEL_DIR`
+  and `DIAGRAM_PUBLIC_BASE_URL` in the kernel env are locations those features
+  use once set up, not switches.
+
+The choice cannot be changed after setup yet (there is no settings screen); the
+handoff roadmap tracks that. A new switch follows the same rule: it maps to env
+in `capabilityKernelEnv`, the kernel reports on `/health` whether it took,
+`capabilities.ts` judges that answer, and `test/supervisorKernelEnv.test.mts`
+pins the wiring. A switch that is only stored does not ship.
+
 ## Data + uninstall
 
 Everything mutable lives under the per-user app-data directory (or a folder you
 pick in the wizard): the embedded database, the encrypted secrets blob, plugin
-uploads, and logs. Uninstalling removes the app; delete the data folder to wipe
-state.
+uploads, attachments (when the switch above is on), and logs. Uninstalling
+removes the app; delete the data folder to wipe state.

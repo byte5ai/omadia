@@ -89,7 +89,7 @@ function emit(channel: string, senderFrame: FakeFrame | null, ...args: unknown[]
 const SETUP: WizardConfig = {
   provider: 'subscription',
   apiKey: '',
-  capabilities: { embeddings: false, diagrams: false, attachments: true },
+  capabilities: { attachments: true },
   dataDir: null,
 };
 
@@ -252,6 +252,23 @@ describe('registerIpc — the legitimate wizard flow still works', () => {
     assert.equal(Buffer.from(String(key), 'base64').length, 32);
   });
 
+  it('rejects a malformed capability selection before writing anything', async () => {
+    view = 'wizard';
+    appOrigin = null;
+    // The payload is renderer data. main persists and acts on the switches, so
+    // a selection it cannot read is refused rather than stored as-is.
+    for (const capabilities of [undefined, null, 'on', { attachments: 'yes' }, { embeddings: true }]) {
+      assert.deepEqual(await invoke(CH.complete, WIZARD, { ...SETUP, capabilities }), {
+        ok: false,
+        error: 'Invalid capability selection.',
+      });
+    }
+    // The secrets file exists by now (the reveal above creates the vault key);
+    // what a refused completion must not do is save setup or boot.
+    assert.equal(fs.existsSync(setupFile()), false, 'no setup.json');
+    assert.equal(calls.boot, 0, 'the stack was not booted');
+  });
+
   it('completes setup, reading the sender before the first await', async () => {
     view = 'wizard';
     appOrigin = null;
@@ -273,7 +290,21 @@ describe('registerIpc — the legitimate wizard flow still works', () => {
     assert.deepEqual(await pending, { ok: true });
     assert.equal(calls.boot, 1);
     assert.deepEqual(calls.ready, [UI]);
-    const setup = JSON.parse(fs.readFileSync(setupFile(), 'utf8')) as { completed?: boolean };
+    const setup = JSON.parse(fs.readFileSync(setupFile(), 'utf8')) as {
+      completed?: boolean;
+      capabilities?: unknown;
+    };
     assert.equal(setup.completed, true);
+    assert.deepEqual(setup.capabilities, { attachments: true });
+  });
+
+  it('persists only the switches the supervisor reads, whatever else the page sends', async () => {
+    view = 'wizard';
+    appOrigin = null;
+    // A page from an older build still sends the removed switches.
+    const stale = { ...SETUP, capabilities: { attachments: false, embeddings: true, diagrams: true } };
+    assert.deepEqual(await invoke(CH.complete, WIZARD, stale), { ok: true });
+    const setup = JSON.parse(fs.readFileSync(setupFile(), 'utf8')) as { capabilities?: unknown };
+    assert.deepEqual(setup.capabilities, { attachments: false });
   });
 });

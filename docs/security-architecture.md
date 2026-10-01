@@ -1880,6 +1880,61 @@ subframes, redirects, popups, and the session's `openExternal` refusal).
 
 ---
 
+## 10j. Desktop shell: a wizard switch changes the kernel or does not exist
+
+The first-run wizard is where a desktop user decides what the local install
+does with their data, so a switch there has to be enforced, not just recorded.
+Until 2026-09-30 it offered three (attachments on the local disk, semantic
+memory, diagrams through a hosted service); `setup.json` stored them and
+`Supervisor.kernelEnv()` never read them, so every choice booted the same
+stack. The rule now:
+
+- **Every switch maps to kernel env the supervisor sets on each boot**
+  (`desktop/src/capabilities.ts` → `capabilityKernelEnv`, spread last in
+  `kernelEnv()`). The switch owns its keys: `withoutCapabilityEnv` drops an
+  inherited value first, so a switched-off capability cannot come back through
+  the launch environment.
+- **The kernel reports whether it took, and the supervisor checks.** After the
+  kernel answers `/health`, `confirmCapabilities` judges the reported state
+  against the switch (`attachmentReadiness`) and logs a warning on a mismatch.
+  The report carries the backend only, never a path or a bucket, because
+  `/health` is unauthenticated.
+- **main persists only parsed switches.** `complete` refuses a selection whose
+  shape it does not know (`Invalid capability selection.`) and writes the
+  parsed fields, never the renderer's object; `readSetup()` rebuilds the
+  selection from the file and drops keys older builds wrote.
+- **A capability nothing can switch on is not offered.** Semantic memory needs
+  its model fetched from the admin UI (an operator session the shell does not
+  have), and diagrams need a Kroki server and S3 storage a desktop install does
+  not ship. The wizard names where each is set up instead.
+
+**Attachments** is the one switch today. On, it sets `ATTACHMENT_STORE_DIR` to
+`<data folder>/attachments`, and the kernel publishes a filesystem store as its
+`tigrisStore` service when no S3 bucket is configured
+(`middleware/src/platform/attachmentStore.ts`; S3 keeps precedence).
+`/health` reports `attachments.store` as `s3`, `filesystem` or `none`. The
+store (`filesystemObjectStore.ts`) keeps keys out of paths entirely. A storage
+key is caller data (`read_attachment` takes one from the model), and an S3
+bucket answers a hostile key with a harmless 404, whereas a directory joined
+with it would read or overwrite anything the process can reach. So each object
+lives under the SHA-256 of its key, which confines every key to the directory
+by construction. The directory is created 0700 and objects are written 0600
+via temp file and rename. An unusable directory degrades to no store, with the
+reason in the boot log, instead of failing the boot. Accepted limits: nothing
+expires objects (S3 buckets get a 90-day lifecycle rule), and one directory
+serves one instance.
+
+Tests: `desktop/test/supervisorKernelEnv.test.mts` (the switch decides the env,
+inherited values included; the readiness check runs after the kernel is
+healthy and before the web UI), `capabilities.test.mts`,
+`wizardConfig.test.mts` (every offered checkbox reaches the payload),
+`setupState.test.mts`, `ipcRegistration.test.mts`, and
+`middleware/test/filesystemObjectStore.test.ts` (traversal keys stay inside the
+store), `attachmentStore.test.ts` (selection, the `/health` projection, the
+composition-root wiring).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -1988,7 +2043,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       widening the wizard surface. A new window or session stays covered by
       the `web-contents-created` guards, including the session's
       `openExternal` refusal (§10i).
+- [ ] A new desktop wizard control changes what the supervisor hands the
+      kernel (`capabilityKernelEnv`), the kernel reports on `/health` whether
+      it took, and a test pins the wiring. Never a stored-but-unread
+      preference (§10j).
+- [ ] A store that maps caller-supplied keys onto the filesystem derives the
+      path from a digest of the key, never from the key's text (§10j).
 
 ---
 
-*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary).*
+*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches).*

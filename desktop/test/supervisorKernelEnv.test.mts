@@ -8,12 +8,17 @@
  * a boot to the real `spawn` needs port 8769 free and a health endpoint, which
  * a unit test cannot promise.
  */
-import { describe, it, afterEach, before } from 'node:test';
+import { describe, it, afterEach, before, type TestContext } from 'node:test';
 import { strict as assert } from 'node:assert';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Supervisor } from '../src/supervisor.ts';
+import type { DesktopCapabilities } from '../src/capabilities.ts';
+import { onLog, type LogLevel } from '../src/log.ts';
+import { attachmentsDir, dataRoot, setupFile } from '../src/paths.ts';
+import { readSetup, writeSetup } from '../src/setupState.ts';
 
 before(() => {
   // `paths.ts` is compiled to CommonJS for the app and reads `__dirname` to
@@ -132,5 +137,163 @@ describe('Supervisor.kernelEnv login-redirect base (OM-90)', () => {
       if (saved === undefined) delete process.env['PUBLIC_BASE_URL'];
       else process.env['PUBLIC_BASE_URL'] = saved;
     }
+  });
+});
+
+/**
+ * The setup wizard's "Attachments" switch used to be stored in setup.json and
+ * never read: `kernelEnv()` handed the kernel the same env whatever the user
+ * picked. The switch now decides `ATTACHMENT_STORE_DIR`, which the kernel turns
+ * into a local attachment store (`middleware/src/platform/attachmentStore.ts`).
+ * These pin that the choice changes what the kernel is actually started with.
+ */
+function kernelEnvWith(capabilities: DesktopCapabilities): NodeJS.ProcessEnv {
+  const sup = new Supervisor({ capabilities: () => capabilities });
+  return (sup as unknown as WithKernelEnv).kernelEnv(8769, UI_PORT);
+}
+
+describe('Supervisor.kernelEnv — the attachments switch reaches the kernel', () => {
+  const savedDir = process.env['ATTACHMENT_STORE_DIR'];
+  afterEach(() => {
+    if (savedDir === undefined) delete process.env['ATTACHMENT_STORE_DIR'];
+    else process.env['ATTACHMENT_STORE_DIR'] = savedDir;
+    fs.rmSync(setupFile(), { force: true });
+  });
+
+  it('points ATTACHMENT_STORE_DIR into the data folder when the switch is on', () => {
+    const dir = kernelEnvWith({ attachments: true })['ATTACHMENT_STORE_DIR'];
+    assert.equal(dir, attachmentsDir());
+    assert.equal(dir, path.join(dataRoot(), 'attachments'));
+  });
+
+  it('leaves it unset when the switch is off', () => {
+    assert.equal('ATTACHMENT_STORE_DIR' in kernelEnvWith({ attachments: false }), false);
+  });
+
+  it('lets the switch decide, not a value inherited from the launch environment', () => {
+    process.env['ATTACHMENT_STORE_DIR'] = '/somewhere/inherited';
+    assert.equal('ATTACHMENT_STORE_DIR' in kernelEnvWith({ attachments: false }), false);
+    assert.equal(kernelEnvWith({ attachments: true })['ATTACHMENT_STORE_DIR'], attachmentsDir());
+  });
+
+  it('reads the switch the wizard saved in setup.json when none is injected', () => {
+    writeSetup({ ...readSetup(), capabilities: { attachments: false } });
+    assert.equal('ATTACHMENT_STORE_DIR' in kernelEnv(), false);
+    writeSetup({ ...readSetup(), capabilities: { attachments: true } });
+    assert.equal(kernelEnv()['ATTACHMENT_STORE_DIR'], attachmentsDir());
+  });
+});
+
+describe('the kernel reads what the switch sets', () => {
+  // The two halves are pinned in their own packages; these keep the names they
+  // share from drifting apart without either side noticing.
+  const middleware = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'middleware', 'src');
+
+  it('parses ATTACHMENT_STORE_DIR in its config schema', () => {
+    const config = fs.readFileSync(path.join(middleware, 'config.ts'), 'utf8');
+    assert.match(config, /^\s*ATTACHMENT_STORE_DIR: /m);
+  });
+
+  it('reports the store on /health under attachments', () => {
+    const index = fs.readFileSync(path.join(middleware, 'index.ts'), 'utf8');
+    assert.match(index, /attachments: attachmentStoreHealth\(/);
+  });
+});
+
+type WithReadiness = {
+  confirmCapabilities(port: number, requested: DesktopCapabilities): Promise<void>;
+};
+
+interface LogLine {
+  readonly level: LogLevel;
+  readonly msg: string;
+}
+
+function captureLog(t: TestContext): LogLine[] {
+  const lines: LogLine[] = [];
+  const off = onLog((level, msg) => lines.push({ level, msg }));
+  t.after(off);
+  return lines;
+}
+
+function healthAnswers(t: TestContext, body: unknown): string[] {
+  const urls: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL): Promise<Response> => {
+    urls.push(String(input));
+    return Response.json(body);
+  });
+  return urls;
+}
+
+async function confirm(requested: DesktopCapabilities): Promise<void> {
+  const sup = new Supervisor({ capabilities: () => requested });
+  await (sup as unknown as WithReadiness).confirmCapabilities(8769, requested);
+}
+
+const readinessLines = (lines: LogLine[]): LogLine[] => lines.filter((l) => /attachments/i.test(l.msg));
+
+describe('Supervisor.confirmCapabilities — the boot checks that the switch took', () => {
+  it('asks the kernel it started, and logs a local store as ready', async (t) => {
+    const urls = healthAnswers(t, { status: 'ok', attachments: { store: 'filesystem' } });
+    const lines = captureLog(t);
+    await confirm({ attachments: true });
+    assert.deepEqual(urls, ['http://127.0.0.1:8769/health']);
+    const found = readinessLines(lines);
+    assert.equal(found.length, 1);
+    assert.equal(found[0]?.level, 'INFO');
+  });
+
+  it('warns when the switch is on and the kernel reports no attachment store', async (t) => {
+    healthAnswers(t, { status: 'ok', attachments: { store: 'none' } });
+    const lines = captureLog(t);
+    await confirm({ attachments: true });
+    const found = readinessLines(lines);
+    assert.equal(found.length, 1);
+    assert.equal(found[0]?.level, 'WARN');
+  });
+
+  it('warns, and does not fail the boot, when /health cannot be read', async (t) => {
+    t.mock.method(globalThis, 'fetch', async (): Promise<Response> => {
+      throw new Error('connect ECONNREFUSED');
+    });
+    const lines = captureLog(t);
+    await confirm({ attachments: true });
+    assert.equal(readinessLines(lines)[0]?.level, 'WARN');
+  });
+
+  it('warns when the switch is off but the kernel stores attachments locally anyway', async (t) => {
+    healthAnswers(t, { status: 'ok', attachments: { store: 'filesystem' } });
+    const lines = captureLog(t);
+    await confirm({ attachments: false });
+    assert.equal(readinessLines(lines)[0]?.level, 'WARN');
+  });
+});
+
+describe('Supervisor boot — the readiness check is on the boot path', () => {
+  // bootOnce needs a free port 8769 and an embedded Postgres, which a unit test
+  // cannot promise (see supervisorRestartRace.test). Its source is checked
+  // instead: the switches are read once, handed to the kernel, and checked
+  // after the kernel answers /health, before the web UI starts.
+  const source = fs.readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'supervisor.ts'),
+    'utf8',
+  );
+  // Line comments stripped, so a call that was commented out does not count.
+  const boot = (/private async bootOnce\([\s\S]*?\n {2}\}\n/.exec(source)?.[0] ?? '')
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/, ''))
+    .join('\n');
+
+  it('starts the kernel with the switches it then confirms', () => {
+    assert.ok(boot, 'supervisor.ts must define bootOnce');
+    assert.match(boot, /const capabilities = this\.readCapabilities\(\);/);
+    assert.match(boot, /this\.kernelEnv\(kernelPort, uiPort, capabilities\)/);
+  });
+
+  it('confirms them after the kernel is healthy and before the web UI starts', () => {
+    const waited = boot.indexOf('await this.waitForKernel(');
+    const confirmed = boot.indexOf('await this.confirmCapabilities(kernelPort, capabilities);');
+    const uiStarted = boot.indexOf("this.progress('starting-ui'");
+    assert.ok(waited >= 0 && confirmed > waited && uiStarted > confirmed, 'order: kernel healthy → confirm → web UI');
   });
 });

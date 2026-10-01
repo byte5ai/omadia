@@ -20,6 +20,7 @@ import type { ShellView } from './shellView';
 import { decideSender, readSenderFacts, type IpcSurface } from './ipcSender';
 import { setProviderKey, exportRecoveryKey } from './secrets';
 import { readSetup, writeSetup } from './setupState';
+import { parseCapabilities, type DesktopCapabilities } from './capabilities';
 import { setDataDirOverride } from './paths';
 import { detectSyncedLocation } from './syncedPaths';
 import { log } from './log';
@@ -222,7 +223,7 @@ export function registerIpc(deps: IpcDeps): void {
 
   guardedHandle('wizard', CH.complete, async (e, config: WizardConfig): Promise<CompleteResult> => {
     try {
-      validateConfig(config);
+      const capabilities = validateConfig(config);
 
       if (config.dataDir) {
         setDataDirOverride(config.dataDir);
@@ -239,13 +240,15 @@ export function registerIpc(deps: IpcDeps): void {
       // Save config as `configured` but NOT yet `completed`: we only mark the
       // install boot-verified once the stack actually comes up, so a failed
       // first boot doesn't brick the next launch into a dead auto-boot path.
+      // The switches are persisted as parsed, never as the object the page
+      // sent: the supervisor reads them back on every boot.
       const setup = readSetup();
       writeSetup({
         ...setup,
         configured: true,
         completed: false,
         llmProvider: config.provider,
-        capabilities: config.capabilities,
+        capabilities,
       });
 
       const forward = makeProgressForwarder(e.sender);
@@ -273,7 +276,11 @@ function makeProgressForwarder(sender: WebContents): (p: BootProgress) => void {
   };
 }
 
-function validateConfig(config: WizardConfig): void {
+/**
+ * Checks the wizard's payload before anything is written, and returns the
+ * capability switches as they will be persisted.
+ */
+function validateConfig(config: WizardConfig): DesktopCapabilities {
   if (
     config.provider !== 'anthropic' &&
     config.provider !== 'openai' &&
@@ -284,6 +291,11 @@ function validateConfig(config: WizardConfig): void {
   if (requiresApiKey(config.provider) && (!config.apiKey || config.apiKey.trim().length < 8)) {
     throw new Error('Please enter a valid API key.');
   }
+  const capabilities = parseCapabilities(config.capabilities);
+  if (capabilities === null) {
+    throw new Error('Invalid capability selection.');
+  }
+  return capabilities;
 }
 
 /** A model list is a few KB at most; anything past this is not one. */
