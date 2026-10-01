@@ -82,6 +82,52 @@ export interface StructuredPayloadEntry {
 }
 
 /**
+ * How a tool error reached a dispatch seam.
+ *
+ *  - `thrown`          — the handler threw. Its message is exception text that
+ *                        nothing sanitized (an ORM echoes the failing row), so
+ *                        it is always withheld from the model.
+ *  - `returned`        — the handler returned an `Error:`-prefixed string (the
+ *                        tool-error convention). It reaches the model through
+ *                        the shield's free-text detectors, or is withheld.
+ *  - `mcp_auth_prompt` — the MCP layer answered an unauthorized call with its
+ *                        connect prompt (`🔒 The MCP server "…`). Kernel-authored
+ *                        and carrying the Connect-card block, so it passes
+ *                        unchanged — recorded because the call did fail.
+ */
+export type ToolErrorCarrier = 'thrown' | 'returned' | 'mcp_auth_prompt';
+
+/**
+ * What the seam let reach the model.
+ *
+ *  - `withheld` — the error text was replaced by a data-free notice (class
+ *                 name, sanitised code, log reference).
+ *  - `redacted` — the text reached the model with every detected PII span
+ *                 replaced by `[masked:<type>]` (possibly none).
+ *  - `passed`   — the text reached the model unchanged.
+ */
+export type ToolErrorOutcome = 'withheld' | 'redacted' | 'passed';
+
+/**
+ * One tool error a dispatch seam handled this turn. Receipted so the user and an
+ * operator auditing the turn see that error text was withheld or redacted before
+ * it reached the model, the same way they see an interned dataset or a bypass.
+ *
+ * MUST stay PII-free — tool name, carrier, outcome, a byte count and the span
+ * TYPES that were masked; never the error text or a masked value.
+ */
+export interface ToolErrorEntry {
+  /** The tool name as it appears in the LLM's `tool_use` block. */
+  readonly toolName: string;
+  readonly carrier: ToolErrorCarrier;
+  readonly outcome: ToolErrorOutcome;
+  /** Byte length of the ORIGINAL error text. For UI transparency only. */
+  readonly bytes: number;
+  /** Span types (+ detector id) masked in a `redacted` text. Absent otherwise. */
+  readonly redactedSpans?: readonly PromptMaskedSpanInfo[];
+}
+
+/**
  * The per-turn user-facing privacy report. Emitted by `finalizeTurn` and
  * attached to the assistant message metadata; channel renderers (Teams
  * card, Web disclosure) consume it to build their collapsible UI.
@@ -143,6 +189,12 @@ export interface PrivacyReceipt {
    * plus span TYPE + detector id, never a value.
    */
   readonly verifierEgress?: VerifierEgressSummary;
+  /**
+   * Tool errors a dispatch seam withheld, redacted or passed this turn (see
+   * {@link ToolErrorEntry}). Absent / empty when no tool failed. PII-free:
+   * tool name + carrier + outcome + byte count + masked span types only.
+   */
+  readonly toolErrors?: readonly ToolErrorEntry[];
 }
 
 /**
@@ -425,6 +477,56 @@ export type PrivacyPromptMaskResult =
     }
   | { readonly outcome: 'blocked'; readonly reason: string };
 
+// ---------------------------------------------------------------------------
+// Tool-error redaction — `Error:` text on its way to the model.
+//
+// A returned `Error:` string is control flow: the model must read the hint it
+// carries (`requires \`scope\``, `use search_turns instead`), so it is not
+// interned as a dataset. But not every such string is sanitized text — a
+// wrapper that returns `Error: ${err.message}`, or a remote MCP server's own
+// error body, can quote the row it failed on. The dispatch seams therefore run
+// the text through the shield's free-text detectors before the model sees it,
+// and record what they did in the turn receipt.
+// ---------------------------------------------------------------------------
+
+/** Record one tool error a dispatch seam handled this turn. PII-free. */
+export interface PrivacyToolErrorRequest {
+  readonly turnId: string;
+  readonly toolName: string;
+  readonly carrier: ToolErrorCarrier;
+  readonly outcome: ToolErrorOutcome;
+  /** Byte length of the ORIGINAL error text — never the text. */
+  readonly bytes: number;
+  readonly redactedSpans?: readonly PromptMaskedSpanInfo[];
+}
+
+export interface PrivacyToolErrorRedactRequest {
+  readonly turnId: string;
+  readonly toolName: string;
+  /** The error text to redact: the part AFTER the `Error:` prefix, which the
+   *  caller keeps so the `is_error` convention survives any substitution. */
+  readonly text: string;
+}
+
+/**
+ * Failure-closed, like {@link PrivacyPromptMaskResult}: there is no
+ * pass-through-unredacted outcome. `redacted` = every detected span replaced
+ * IRREVERSIBLY by `[masked:<type>]` (no pseudonym, nothing restored into the
+ * answer later; `degraded` when an optional detector failed and only the
+ * baseline ran). `withheld` = redaction could not be guaranteed (a detector
+ * failed outright, or a detected value survived substitution) — the caller
+ * MUST replace the whole text with a data-free notice.
+ */
+export type PrivacyToolErrorRedactResult =
+  | {
+      readonly outcome: 'redacted';
+      readonly text: string;
+      /** PII-free span records (type + detector), also for the receipt. */
+      readonly spans: readonly PromptMaskedSpanInfo[];
+      readonly degraded: boolean;
+    }
+  | { readonly outcome: 'withheld'; readonly reason: string };
+
 /**
  * Service surface published by the `privacy.redact@1` provider plugin.
  */
@@ -461,6 +563,28 @@ export interface PrivacyGuardService {
   recordStructuredPayload?(
     request: PrivacyStructuredPayloadRequest,
   ): Promise<void>;
+  /**
+   * Record a tool error a dispatch seam withheld, redacted or passed this turn,
+   * so `finalizeTurn` lists it under `PrivacyReceipt.toolErrors`. PII-free by
+   * contract; every call adds one entry.
+   *
+   * Optional so alternative providers (and test stubs) need not implement it;
+   * the kernel feature-detects and records nothing when absent.
+   */
+  recordToolError?(request: PrivacyToolErrorRequest): Promise<void>;
+  /**
+   * Redact a returned `Error:` text before it reaches the model: run the
+   * shield's free-text detectors (the identity types of the regex baseline,
+   * the operator deny-list, the optional C1 detector) and replace every span
+   * irreversibly. Independent of the `mask_user_prompt` flag — a tool error is
+   * never a channel the user consented to send in clear.
+   *
+   * Optional so a provider that predates it still loads; the kernel then
+   * WITHHOLDS returned `Error:` text rather than forwarding it unchecked.
+   */
+  redactToolErrorText?(
+    request: PrivacyToolErrorRedactRequest,
+  ): Promise<PrivacyToolErrorRedactResult>;
   /**
    * Privacy Shield v4 — run a v4 verb tool or the terminal render tool the
    * LLM called. Returns the text to place in the `tool_result` block. A
@@ -569,9 +693,11 @@ export interface PrivacyGuardService {
    * Emit the aggregated user-facing receipt for the turn and drop the
    * turn's Dataset Store. `turnInput` — the requester's own message text —
    * lets the receipt report `identityValuesOnWire`: personal-identity values
-   * the user named themselves. Returns `undefined` when the turn interned no
-   * tool results (nothing to report). Idempotent — a second call with the
-   * same `turnId` returns `undefined`.
+   * the user named themselves. Returns `undefined` when the shield did
+   * nothing this turn — no dataset interned, no bypass, no structured
+   * output, no masked prompt span, no tool error handled (nothing to
+   * report). Idempotent — a second call with the same `turnId` returns
+   * `undefined`.
    */
   finalizeTurn(
     turnId: string,

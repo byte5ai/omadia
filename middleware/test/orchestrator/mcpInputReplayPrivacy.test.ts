@@ -54,7 +54,7 @@ import type {
   LlmStreamEvent,
 } from '@omadia/llm-provider';
 import type { ChatStreamEvent, PendingMcpInputCard } from '@omadia/channel-sdk';
-import type { PrivacyGuardService } from '@omadia/plugin-api';
+import type { PrivacyGuardService, PrivacyToolErrorRequest } from '@omadia/plugin-api';
 import {
   InMemoryPendingMcpInputStore,
   type McpInputReplayer,
@@ -83,6 +83,10 @@ const MCP_TOOL_NAME = 'mcp__HR_Payroll__lookup_employee_record';
  *  `McpManager.callTool` renders with the `Error:` tool-error prefix. */
 const ERROR_CASE_ID = 'HR-ERR';
 const REPLAY_ERROR_TEXT = 'employee record locked — retry with an unlocked case id';
+/** A failing replay whose REMOTE error body quotes a personal value — the
+ *  foreign text the replay seam used to pass through unchecked. */
+const PII_ERROR_CASE_ID = 'HR-ERR-PII';
+const REPLAY_PII_ERROR_TEXT = `payslip mailbox ${EMAIL} rejected the export`;
 /** #1097 — the case id whose replay THROWS, so `McpManager.handleFailure`
  *  answers with the auth provider's connect prompt instead of a raw failure. */
 const AUTH_CASE_ID = 'HR-AUTH';
@@ -112,19 +116,36 @@ function clearSharedState(): void {
   resetSharedMcpInputWiring();
 }
 
-function redactingPrivacyService(): PrivacyGuardService {
+function redactPii(text: string): string {
+  return text
+    .replaceAll(PERSON, '[masked:person]')
+    .replaceAll(EMAIL, '[masked:email]')
+    .replaceAll(IBAN, '[masked:iban]');
+}
+
+/** Redacts for real on both paths — interning and the tool-error redactor —
+ *  and records every tool-error receipt entry into `recorded`. */
+function redactingPrivacyService(recorded: PrivacyToolErrorRequest[] = []): PrivacyGuardService {
   return {
     async internToolResultV4(request: { toolName: string; rawResult: string }) {
-      const redacted = request.rawResult
-        .replaceAll(PERSON, '[masked:person]')
-        .replaceAll(EMAIL, '[masked:email]')
-        .replaceAll(IBAN, '[masked:iban]');
       return {
-        digestText: `${DIGEST_MARKER} ${redacted}`,
+        digestText: `${DIGEST_MARKER} ${redactPii(request.rawResult)}`,
         datasetId: `ds-${request.toolName}`,
       };
     },
     async recordBypassedTool() {},
+    async recordToolError(request: PrivacyToolErrorRequest) {
+      recorded.push(request);
+    },
+    async redactToolErrorText({ text }: { text: string }) {
+      const redacted = redactPii(text);
+      return {
+        outcome: 'redacted' as const,
+        text: redacted,
+        spans: redacted === text ? [] : [{ type: 'email', detector: 'c0-regex' }],
+        degraded: false,
+      };
+    },
     async runV4Tool() {
       return { resultText: '' };
     },
@@ -164,6 +185,12 @@ function buildMcpServerInstance(): McpSdkServer {
       if (args.caseId === ERROR_CASE_ID) {
         return {
           content: [{ type: 'text' as const, text: REPLAY_ERROR_TEXT }],
+          isError: true,
+        };
+      }
+      if (args.caseId === PII_ERROR_CASE_ID) {
+        return {
+          content: [{ type: 'text' as const, text: REPLAY_PII_ERROR_TEXT }],
           isError: true,
         };
       }
@@ -530,13 +557,15 @@ describe('MCP input replay privacy boundary (#544 / W2-1)', () => {
    * comes back through `McpManager.callTool` as an `Error: …` string, and
    * interning that turned the failure into a masked 1-row dataset: the model
    * never learned the replay failed and rendered the error as a result. The
-   * error text is control-flow, not a personnel row — it reaches the model raw.
+   * error text is control flow, not a personnel row — it reaches the model as
+   * text, after the tool-error redactor (a PII-free hint passes unchanged).
    */
-  it('MUTATION CHECK: an `Error:` replay result reaches the wire raw, not interned', async () => {
+  it('MUTATION CHECK: an `Error:` replay result reaches the wire as its hint, not interned', async () => {
     clearSharedState();
     serverArgs.length = 0;
+    const recorded: PrivacyToolErrorRequest[] = [];
     const h = harness([textStream('fertig')], {
-      privacyGuard: () => redactingPrivacyService(),
+      privacyGuard: () => redactingPrivacyService(recorded),
     });
     seedParkedCard(h, 'corr-error', ERROR_CASE_ID);
 
@@ -557,6 +586,40 @@ describe('MCP input replay privacy boundary (#544 / W2-1)', () => {
       false,
       `an error result must NOT be interned as a renderable dataset: ${wire}`,
     );
+    assert.equal(recorded.length, 1, 'the handled replay error is receipted');
+    assert.equal(recorded[0]?.carrier, 'returned');
+    assert.equal(recorded[0]?.outcome, 'redacted');
+  });
+
+  /**
+   * The remote server's own error body is foreign text. When it quotes a
+   * personal value, that value must not reach the wire — redacted, not raw,
+   * and not interned as a digest either (the hint around it survives).
+   */
+  it('MUTATION CHECK: an `Error:` replay body quoting PII reaches the wire redacted', async () => {
+    clearSharedState();
+    serverArgs.length = 0;
+    const recorded: PrivacyToolErrorRequest[] = [];
+    const h = harness([textStream('fertig')], {
+      privacyGuard: () => redactingPrivacyService(recorded),
+    });
+    seedParkedCard(h, 'corr-error-pii', PII_ERROR_CASE_ID);
+
+    const wire = await replayWire(h, 'corr-error-pii', { employeeId: 'E-14', pin: '0000' });
+
+    assert.ok(
+      serverArgs.some((a) => a[REPLAY_ARG_KEY] !== undefined && a.caseId === PII_ERROR_CASE_ID),
+      'the failing replay never reached the MCP server',
+    );
+    assert.equal(wire.includes(EMAIL), false, `the remote error body leaked the e-mail: ${wire}`);
+    assert.ok(
+      wire.includes('payslip mailbox [masked:email] rejected the export'),
+      `the redacted hint is missing from the wire: ${wire}`,
+    );
+    assert.equal(wire.includes(DIGEST_MARKER), false, `not a dataset digest: ${wire}`);
+    assert.equal(recorded[0]?.carrier, 'returned');
+    assert.equal(recorded[0]?.outcome, 'redacted');
+    assert.deepEqual(recorded[0]?.redactedSpans, [{ type: 'email', detector: 'c0-regex' }]);
   });
 
   /**
@@ -569,8 +632,9 @@ describe('MCP input replay privacy boundary (#544 / W2-1)', () => {
   it('MUTATION CHECK: an auth-required replay reaches the wire with its Connect block intact', async () => {
     clearSharedState();
     serverArgs.length = 0;
+    const recorded: PrivacyToolErrorRequest[] = [];
     const h = harness([textStream('bitte verbinden')], {
-      privacyGuard: () => redactingPrivacyService(),
+      privacyGuard: () => redactingPrivacyService(recorded),
       authPrompt: AUTH_PROMPT,
     });
     seedParkedCard(h, 'corr-auth', AUTH_CASE_ID);
@@ -586,11 +650,14 @@ describe('MCP input replay privacy boundary (#544 / W2-1)', () => {
       `the Connect machine block must survive to the wire: ${wire}`,
     );
     assert.ok(wire.includes('needs authorization'), `the connect prompt is missing: ${wire}`);
+    assert.ok(wire.includes(AUTH_PROMPT), `the prompt must pass byte-identical: ${wire}`);
     assert.equal(
       wire.includes(DIGEST_MARKER),
       false,
       `an auth prompt must NOT be interned as a renderable dataset: ${wire}`,
     );
+    assert.equal(recorded[0]?.carrier, 'mcp_auth_prompt', 'the connect prompt is receipted');
+    assert.equal(recorded[0]?.outcome, 'passed');
   });
 
   it('MUTATION CHECK: without a privacy handle the replay note stays legacy-raw byte-for-byte', async () => {

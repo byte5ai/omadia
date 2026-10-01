@@ -476,6 +476,24 @@ export type { PrivacyTurnHandle, PromptMaskOptions } from './privacyHandle.js';
 // answer-verifier wrapper (see privacyEgress.ts).
 export type { PrivacyEgressContinuation } from './privacyEgress.js';
 export { INTERN_EXEMPT_TOOLS, isInternExemptTool } from './privacyInternPolicy.js';
+// Tool errors on their way to a model: the one helper every dispatch seam
+// routes a thrown exception or a returned `Error:` text through. The MCP
+// connect prompt passes on per-dispatch provenance (`McpAuthPromptMint`).
+export { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
+export {
+  MAX_REDACTABLE_TOOL_ERROR_CHARS,
+  guardControlFlowResult,
+  isGuardedControlFlowResult,
+  looksExceptionShaped,
+  returnedToolErrorWithheldNotice,
+  thrownToolErrorForModel,
+  toolErrorRef,
+  withholdThrownToolError,
+} from './toolErrorRedaction.js';
+export type {
+  ThrownToolErrorOutcome,
+  ToolErrorWithholdReason,
+} from './toolErrorRedaction.js';
 export { LoopbackMcpServer } from './loopbackMcpServer.js';
 export type {
   LoopbackMcpServerDeps,

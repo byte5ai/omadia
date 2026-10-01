@@ -693,25 +693,198 @@ a silent `fly secrets set`. Without any secret the import falls back to the old
 irreversible masking and says so in the `[dataset-imported]` fact, so the model
 does not promise real values in an export it cannot deliver.
 
-### 6c. Control-flow tool results pass the shield unmasked (#1105, #1097)
+### 6c. Tool errors: thrown text withheld, returned text redacted (#1105, #1097)
 
-A tool result that is control flow — the `Error:` tool-error convention, or an
-MCP auth prompt — reaches the model verbatim instead of being interned, so the
-model can read the hint and self-correct. Four seams apply it, each after the
-intern exemption and the operator bypass and before interning:
-`Orchestrator.dispatchTool`, `Orchestrator.guardReplayResult`,
-`ToolDispatchService.afterDispatch` and `LocalSubAgent.dispatch`. All four call
-one predicate, `isControlFlowToolResult` (`@omadia/plugin-api`), which is
-**prefix-anchored only**: `Error:` or the exact `🔒 The MCP server "` producer
-prefix. It never matches a substring, so a marker planted in one cell cannot
-unmask a multi-row result such as a decrypted `query_dataset` page (§6b).
-Known limits: remote MCP error
-bodies and `Error: ${err.message}` wrappers (`bridgeTool`) pass through as
-foreign or unsanitized text, matching the chat path's thrown-error policy; a
-passthrough writes no receipt entry. The shape classifier has **no**
-control-flow exemption — verbs re-classify derived datasets, so one would turn
-`filter` + `select` into a cleartext channel — and `ToolDispatchService`
-still masks a thrown exception's message even when it starts with `Error:`.
+A tool result that is control flow — the `Error:` tool-error convention, or the
+MCP connect prompt the kernel produced — is not interned, so the model can read
+the hint and self-correct. Not interned is not unchecked: a tool error is not
+sanitized text. An ORM echoes the row it failed on, a driver the bound
+parameters, a remote MCP server whatever its error body quotes. Every seam that
+hands a tool result to a model therefore routes a tool error through one helper,
+`toolErrorRedaction.ts` (`@omadia/orchestrator`), and the policy follows where
+the text came from, not its shape:
+
+| Carrier | What the model reads | Receipt entry (`toolErrors`) |
+|---|---|---|
+| A handler **threw** | The withheld notice: ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …`` — class name and a sanitised code (`describeThrownError`, `@omadia/plugin-api`), never the message; it also says the outcome is unknown and not to repeat a call that changes data | `thrown` / `withheld` |
+| A handler **returned** an `Error:` string | The text after the prefix, run through the provider's `redactToolErrorText`: the C0 identity types (e-mail, IBAN, phone, address, id number — not `date` or `amount`, which are hints), the operator deny-list (#760) and C1, each span replaced irreversibly by `[masked:<type>]`. **Withheld** whole instead when the text is exception-shaped (a record echo as JSON, as a Python dict, or as a JavaScript object or `Map` the way `util.inspect`, `console.log` and `%o` print it; a record printed with keyword fields — a Python dataclass, a Kotlin data class or Lombok `toString`, a Java record or `Map` — or with Go's bare `Key:value` fields; a stack trace; a Postgres `DETAIL:` line, a `Failing row contains (…)` or a `Key (…)=(…)` detail), longer than 4096 characters, or the provider cannot check it | `returned` / `redacted` (with span types) or `withheld` |
+| The MCP **connect prompt** (`🔒 The MCP server "…`) that `McpManager.handleFailure` produced **in the same dispatch** | Byte-identical: its connect URL and `<mcp-auth-required>` block must survive. Recognised by per-dispatch provenance, never by its prefix: any other text that starts like the prompt is tool data and is interned | `mcp_auth_prompt` / `passed` |
+
+The seams, each applying the helper after the intern exemption and the
+operator bypass and before interning:
+
+- `Orchestrator.dispatchTool` — the one choke point for both chat loops, the
+  streaming slots and the Direct-Line relay. It never rejects: a thrown error
+  resolves as the notice, also with the dispatch deadline disabled. The loops'
+  own rejection handlers are backstops that build the same notice.
+- `Orchestrator.dispatchToolDeadlined` and `Orchestrator.guardReplayResult`
+  (the returned carrier on the chat path and on MCP input replay).
+- `ToolDispatchService` (loopback and public dispatcher): `thrownResult` for a
+  throw — the same withheld notice, no longer an interned dataset — and
+  `afterDispatch` for a returned error. The handler itself runs with the
+  dispatch's privacy handle as the ambient `turnContext.privacyHandle`
+  (`runHandlerInPrivacyScope`, `handlerPrivacyScope.ts`), so the sub-agent
+  seam below applies beneath this dispatcher too.
+- `LocalSubAgent.dispatch`: both carriers, under whichever handle its domain
+  tool was dispatched with. An inner tool throw becomes an `is_error` tool
+  result the sub-agent can answer around, instead of aborting the sub-agent.
+  The call may have taken effect before it threw (a write commits, then its
+  response times out), so the notice says the outcome is unknown, and the
+  sub-agent refuses an identical repeat (same tool, same canonical input) for
+  the rest of the run, with or without a privacy provider
+  (`subAgentUnknownOutcome.ts`). That covers a tool whose wrapper caught the
+  exception and returned the withheld notice, too (the tool bridges,
+  `toolErrorFromException`): `isWithheldToolErrorNotice` recognises it by
+  shape, so a tool that imitates the shape only blocks its own repeat. A
+  different input still runs, and so does a retry after an ordinary returned
+  `Error:` hint.
+
+**Per entry point.** What reaches a model provider depends on where the call
+came in:
+
+| Entry point | Handle a sub-agent's model loop runs under | Tool errors on any model wire |
+|---|---|---|
+| Chat turn (`Orchestrator`, privacy provider installed) | The turn's handle, inherited through `turnContext` | Withheld or redacted at every seam, receipted |
+| Public MCP endpoint (`/api/v1/mcp`) | The call's fail-closed gate, as its nested handle `forNestedCalls()` | Withheld for the sub-agent's model (the gate redacts nothing); the API caller gets a masked result, a dispatcher notice for a throw, or a refusal for a returned `Error:` text |
+| Loopback MCP for the subscription CLI | None (§3a, #1087) | Raw — see Residuals |
+| Any path without a privacy provider | None | Raw (parity) |
+
+On the public endpoint the gate's nested handle interns a sub-agent's inner
+tool results through the same fail-closed masking and keeps the operator
+bypass off. Its masking never satisfies the endpoint's `masked()` check — that
+signal stays about the call's own result — but a failure inside the sub-agent
+discards the call (`maskingFailed()`). No tool runs there without a handle: a
+call with no provider installed is refused while masking is required, the
+endpoint refuses a dispatcher that cannot receive the gate (no `withPrivacy`)
+before dispatch, and the wired dispatcher runs no handler without one
+(`requirePrivacyHandle`). `test/publicMcp/publicMcpSubAgentPrivacy.test.ts`
+drives a real `LocalSubAgent` through the production wiring and asserts on
+what its provider receives.
+
+The kernel's own refusals from `dispatchToolInner` (tool unavailable, not
+granted, unknown tool) name only the tool and its plugin; they are exempted by
+per-dispatch provenance, never by their shape, so a provider that cannot
+redact does not blind the model to its own plumbing.
+
+**Connect-prompt provenance.** The connect prompt is exempted the same way.
+Each seam opens an `McpAuthPromptMint` (`mcp/mcpAuthPromptMint.ts`) around one
+dispatch: a chat-path tool call, an MCP input replay, a `ToolDispatchService`
+call, a sub-agent's tool call. `McpManager.handleFailure` records the exact
+prompt it returns into the open dispatch's mint and every mint around it (a
+sub-agent's tool call is part of the parent's dispatch; sibling dispatches
+never share one), and the seam asks `isGuardedControlFlowResult(result, mint)`:
+the `Error:` prefix, or a result equal byte for byte to a prompt recorded in
+that dispatch. A remote server can
+put the prefix at the start of a text block (`renderToolResult` passes those
+through verbatim); it cannot write the mint, and a result equal to a recorded
+prompt carries nothing the prompt did not. Any other text that starts like the
+prompt is tool data and is interned, and `guardControlFlowResult`, if handed
+one anyway, applies the returned-error policy. The mint has its own
+`AsyncLocalStorage` rather than a turn-context field: the standalone
+dispatcher runs outside a turn, and the skill-binding and plugin `ctx.mcp`
+paths re-scope the turn context with a rebuilt store.
+
+**Producers.** The in-tree wrappers that returned `Error: ${err.message}` keep
+only text they write themselves (typed quota/auth/config errors, a provider's
+or renderer's HTTP status, kernel refusals, a schema miss on the model's own
+input) and return the withheld notice for any other exception through
+`toolErrorFromException` (`@omadia/plugin-api`): the three platform tool
+bridges (`bridgedToolError`), web search, diagrams, discussion, transcription,
+`manage_routine`, `query_dataset`, the long-running task handlers and
+`createDomainTool`. The last one matters because `subAgentResultV4` hands a
+sub-agent's final text to the parent unchanged once the sub-agent interned a
+dataset. A typed error is not authored text just because the plugin defines
+its class: the web-search providers and the Kroki client used to fold a
+caught transport exception and an upstream response body (Kroki quotes the
+diagram source back) into the message. Both now ride on `cause` and `body`,
+and the two tools build their result from the provider id or diagram kind and
+the HTTP status alone, never from the message, logging the error with its
+cause and body under the result's ref. The seam is the backstop for every
+producer that still returns exception text: external plugins, the office
+plugin, remote MCP error bodies. It does not catch a name in running prose
+without C1, which is why a wrapper must not forward foreign text in the first
+place.
+
+**Diagnostics.** The full error — message, stack, cause — is logged once, at
+error level, under the notice's `ref`: the turn's correlation id on the chat
+and sub-agent paths (#641 — the id a degraded turn shows as
+`<turn-incomplete ref="…">`), the caller's request id on the dispatcher path
+when it sent one, otherwise a fresh `err_…` token. The server log is the only
+place the driver text can be recovered. Receipt entries are PII-free by
+contract: tool name, carrier, outcome, byte count, masked span types.
+
+**Provider pairing.** `redactToolErrorText` and `recordToolError` are optional
+members of `PrivacyGuardService` (`@omadia/plugin-api` 1.20.0). The pairing is
+by capability, not by package version: the bundled
+`@omadia/plugin-privacy-guard` implements both, but it gained them without a
+version bump of its own, so a build with them and an older copy without them
+(from the Hub or a ZIP upload) both carry 0.5.0. A provider without the
+redactor makes the kernel withhold every returned `Error:` text (fail closed)
+and log `does not implement redactToolErrorText` once per process; that line,
+not the version, tells the two builds apart. The public MCP gate
+(`createFailClosedPrivacyGate`) answers `redactToolErrorText` with `withheld`,
+so a returned error is refused as unmasked content by `assertMaskingCrossed`,
+while a thrown error's notice is dispatcher-authored (`origin: 'dispatcher'`)
+and served. Its nested handle gives a domain tool's sub-agent the same answer,
+so that sub-agent's model reads the withheld notice, never a redacted hint,
+and no per-turn detector state builds up for a request that is never
+finalized.
+
+**Residuals.**
+
+- Parity: without a privacy provider nothing is masked, tool results included,
+  so thrown and returned error text reaches the model raw — on the public MCP
+  endpoint too, but only when an operator set
+  `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING`. The same holds for
+  the intern-exempt self tools (`privacyInternPolicy.ts`), and for a returned
+  error of a plugin the operator set to bypass; a thrown message is withheld
+  even under bypass.
+- On the public MCP endpoint a sub-agent cannot correct itself from an inner
+  error hint, since the gate withholds that text, and the endpoint has no
+  sub-agent dataset bridge: the sub-agent's answer is interned again as data.
+- A plugin tool that asks a model itself through `ctx.llm` sends its request
+  as it built it, on every entry point: the accessor consults no privacy
+  handle. Only the tool's result crosses the shield (handoff §13).
+- The subscription-CLI path has no Privacy Shield at all (§3a, #1087): its
+  loopback dispatcher runs without a privacy handle, so both carriers pass raw
+  there.
+- C0 detects no names; C1 does when it is configured. Without C1 a returned
+  error keeps a name that stands in running prose, or in a record the
+  classifier does not recognise as one: positional fields
+  (`Partner(42, 'Jane Doe')`, Go's `%v`) or `name=…` pairs outside any
+  record. A record echo in one of the shapes in the table is withheld whole.
+- Only `LocalSubAgent` refuses to repeat a call that ended in an exception.
+  The parent chat loops and the subscription-CLI sub-agent (whose loop the
+  `claude` CLI owns) do not block a repeat; their model reads the notice's
+  warning only where it reads the notice. No loop blocks a repeat with
+  another input, or one after a returned failure whose outcome is just as
+  unknown (an MCP request timeout). Tools carry no write-capability metadata;
+  running a write at most once needs it, together with an idempotency key
+  (handoff §13).
+- A connect prompt produced by a sub-agent's tool call passes the parent seam
+  as control flow only when the sub-agent's answer repeats it byte for byte.
+  Any other answer takes the ordinary sub-agent path: interned, or bridged
+  with the datasets the sub-agent interned. On the interned path a Connect
+  block inside a paraphrased answer does not reach the final answer the chat
+  UI scans for it.
+- Two server-side sinks read the raw result before the seam:
+  `captureRawToolResult` (routine templates) and the MCP → Knowledge-Graph
+  ingest (#459), which stores a value-free byte count for a non-JSON error
+  unless the server is bypassed.
+- The run-trace `error` channel for turn-level failures is outside this policy.
+- One sub-agent failure can produce two receipt entries, one from the
+  sub-agent's seam and one from the parent's.
+
+The predicate every seam consults, `isGuardedControlFlowResult`
+(`toolErrorRedaction.ts`), is **anchored**: the `Error:` prefix, or a whole
+result equal to a connect prompt minted in that dispatch. It never matches a
+substring, so a marker planted in one cell cannot unmask a multi-row result
+such as a decrypted `query_dataset` page (§6b). `isControlFlowToolResult`
+(`@omadia/plugin-api`) still classifies by prefix alone, and no seam decides
+with it; the privacy guard uses it only to flag a rendered one-cell dataset as
+a failure. The shape classifier has **no** control-flow exemption — verbs
+re-classify derived datasets, so one would turn `filter` + `select` into a
+cleartext channel.
 
 ### 6d. `agents.privacy_profile` is not a Privacy Shield control (#978)
 
@@ -3076,7 +3249,28 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       request asks the model to cite (an evidence snippet) is named by a
       handle minted for that request and resolved server-side, never by its
       record or node id (§6e).
+- [ ] A new tool-dispatch seam that hands a result to a model opens an
+      `McpAuthPromptMint` around the dispatch, decides with
+      `isGuardedControlFlowResult(result, mint)`, routes that text through
+      `guardControlFlowResult` with the same mint, and never forwards a
+      thrown handler exception's message (`withholdThrownToolError`); see
+      `toolErrorRedaction.ts` and `mcp/mcpAuthPromptMint.ts` (§6c). No seam
+      passes a result because of its prefix alone. A new tool wrapper that
+      catches an exception returns `toolErrorFromException(...)`, not
+      `Error: ${err.message}`; only text the wrapper authors itself may reach
+      the model, and the seam still redacts it. A typed error's message
+      counts as authored only when nothing foreign is folded into it: a
+      caught exception goes on `cause`, an upstream response body on a
+      separate field, and the wrapper builds its result from typed fields
+      (status, provider id), not from the message.
+- [ ] A host that runs tool handlers outside a chat turn makes its privacy
+      handle the ambient `turnContext.privacyHandle` while a handler runs
+      (`runHandlerInPrivacyScope`, as `ToolDispatchService` does), so nothing
+      beneath the handler — a sub-agent's model loop above all — calls a model
+      without the guard; a host that requires masking runs no handler without
+      a handle (`requirePrivacyHandle`). A new `turnContext.run(...)` re-scope
+      on that path carries `privacyHandle` over (§6c).
 
 ---
 
-*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key).*
+*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception).*

@@ -84,8 +84,11 @@ export function createBraveProvider(
           signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new WebSearchProviderError(PROVIDER_ID, `request failed: ${msg}`);
+        // The transport exception's text is not ours: it rides as `cause`,
+        // for the log, never in the message (see errors.ts).
+        throw new WebSearchProviderError(PROVIDER_ID, 'request failed', undefined, undefined, {
+          cause: err,
+        });
       }
 
       if (!response.ok) {
@@ -94,10 +97,7 @@ export function createBraveProvider(
           throw new WebSearchAuthError(PROVIDER_ID);
         }
         if (response.status === 429) {
-          throw new WebSearchQuotaError(
-            PROVIDER_ID,
-            `HTTP 429 — ${body.slice(0, 200)}`,
-          );
+          throw new WebSearchQuotaError(PROVIDER_ID, 'HTTP 429', body.slice(0, 200));
         }
         throw new WebSearchProviderError(
           PROVIDER_ID,

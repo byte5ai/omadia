@@ -627,6 +627,58 @@ describe('#332 gap-closure — Direct Line answers are actually PII-masked', () 
   });
 });
 
+describe('Direct Line — a failing specialist never relays its exception text', () => {
+  const THROWN = 'Fault: Invalid field on record {"email":"jane.doe@example.com"}';
+
+  /** Like `fakePrivacyGuard`, plus the tool-error members of a current provider. */
+  const redactingGuard = (): any => () =>
+    ({
+      ...fakePrivacyGuard()(),
+      recordToolError: async () => {},
+      redactToolErrorText: async ({ text }: { text: string }) => ({
+        outcome: 'redacted',
+        text,
+        spans: [],
+        degraded: false,
+      }),
+    }) as any;
+
+  for (const [label, guard] of [
+    ['a current privacy provider', redactingGuard()],
+    ['a provider that predates tool-error redaction', fakePrivacyGuard()],
+    ['no privacy provider', undefined],
+  ] as const) {
+    it(`relays a data-free failure line — ${label}`, async () => {
+      const tool = strategistTool(async () => {
+        throw new Error(THROWN);
+      });
+      const orch = new Orchestrator({
+        provider: neverCalledProvider(),
+        model: 'test',
+        maxTokens: 1024,
+        maxToolIterations: 5,
+        domainTools: [tool],
+        nativeToolRegistry: new NativeToolRegistry(),
+        ...(guard ? { privacyGuard: guard } : {}),
+      });
+      const original = console.error;
+      console.error = () => {};
+      let sa;
+      try {
+        sa = await orch.chat({ userMessage: '#strategist plan?', sessionScope: `fail-${label}` });
+      } finally {
+        console.error = original;
+      }
+      assert.ok(sa.delegatedAnswer);
+      assert.equal(sa.delegatedAnswer.status, 'error', 'a faithful failure, not a success');
+      assert.doesNotMatch(sa.delegatedAnswer.text, /jane\.doe@example\.com/);
+      assert.doesNotMatch(sa.delegatedAnswer.text, /Invalid field/);
+      assert.match(sa.delegatedAnswer.text, /^Error: tool `ask_strategist` /);
+      assert.doesNotMatch(sa.text, /jane\.doe@example\.com/, 'nor in the user-facing answer');
+    });
+  }
+});
+
 describe('#332 Layer 3 — forced-delegation obligation (non-streaming)', () => {
   it('forces a consult when the model would end the turn without it', async () => {
     const captured: { q?: string } = {};

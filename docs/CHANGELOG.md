@@ -36,6 +36,103 @@ changelog.
 
 ## [Unreleased]
 
+### Security — tool errors no longer reach the model or the chat stream raw
+
+2026-09-30 — a tool error reached the model, the streamed `tool_result` event
+and the persisted chat session verbatim on two routes. A handler that THREW had
+its message folded into `Error: ${err.message}` by both chat loops, the
+Direct-Line relay and, inside a sub-agent, by the domain-tool wrapper. A
+RETURNED `Error:` string — an MCP server's error body, or any wrapper that
+returned `Error: ${err.message}` — passed the four control-flow seams
+(#1105/#1097) un-interned and unchecked. Driver and ORM messages quote the row
+they failed on, and neither route wrote a receipt entry.
+
+Both carriers now go through one helper, `toolErrorRedaction.ts`
+(`@omadia/orchestrator`):
+
+- **Thrown text is withheld.** Under a privacy provider the model gets
+  ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …``
+  and the full error, stack included, is logged once under that ref — the
+  turn's correlation id, the same id a degraded turn shows as
+  `<turn-incomplete ref>`. **To recover a driver message, grep the middleware
+  log for `ref=<ref>`**: the chat tool card no longer shows it.
+  `Orchestrator.dispatchTool` no longer rejects (also with
+  `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=0`), an inner tool throw no longer aborts a
+  `LocalSubAgent` run, and `ToolDispatchService` uses the same notice instead of
+  interning the message as a one-row dataset.
+- **A sub-agent does not repeat a call that ended in an exception.** Such a
+  call may have taken effect before it failed (a write commits, then its
+  response times out), so the notice says the outcome is unknown and not to
+  repeat a call that changes data, and a `LocalSubAgent` refuses an identical
+  repeat (same tool, same input) for the rest of the run with an `Error:`
+  result instead of running it. That includes a tool bridge that caught the
+  exception and returned the notice. Before, a bridged tool's exception came
+  back as text, and the sub-agent's model could run the same write up to three
+  times before the repeat-failure guard stopped it. Another input, or a retry
+  after an ordinary returned `Error:` hint, still runs.
+- **Returned `Error:` text is redacted** by the provider's new
+  `redactToolErrorText` (C0 identity types — dates and amounts stay readable —,
+  the operator deny-list and C1; irreversible `[masked:<type>]`), or withheld
+  whole when it looks like a record dump (JSON, a Python dict, or a JavaScript
+  object or `Map` as `util.inspect` and `%o` print it; a record printed with
+  keyword fields, such as a dataclass, Kotlin, Lombok or Java record dump, or
+  with Go's `Key:value` fields; a Postgres `DETAIL:` line or failing row, as
+  psycopg and Odoo's JSON-RPC errors carry it) or a stack trace, is longer
+  than 4096 characters, or cannot be checked. The kernel's own refusals are
+  exempt by per-dispatch provenance.
+- **The MCP connect prompt passes on provenance, not on its prefix.** It still
+  reaches the model unchanged, but only the exact text `McpManager` produced in
+  the same dispatch (`McpAuthPromptMint`). Before, any result that merely
+  started with the prompt's prefix skipped interning and redaction for all of
+  its text and was receipted as a connect prompt. A remote MCP server can put
+  that prefix at the start of a text block, so such text is now interned like
+  any other tool result.
+- **In-tree wrappers** (the three tool bridges, web search, diagrams,
+  discussion, transcription, `manage_routine`, `query_dataset`, the
+  long-running task handlers, domain tools) keep only text they author and
+  return the withheld notice for any other exception (`toolErrorFromException`).
+  A schema miss on the model's own input still comes back as a readable hint.
+  The web-search providers and the Kroki client no longer fold a caught
+  transport exception or an upstream response body into their typed errors'
+  messages; those ride on `cause` / `body` for the log, and `web_search` and
+  `render_diagram` answer with the provider id or diagram kind, the HTTP
+  status and a log ref.
+- **Receipts.** Every handled error writes a `toolErrors` entry; a turn whose
+  only shield activity was a tool error now writes a receipt row. The web UI
+  receipt card lists the entries.
+- **The public MCP endpoint's privacy gate covers a domain tool's sub-agent.**
+  `ToolDispatchService` ran tool handlers outside any turn scope, so a domain
+  tool's `LocalSubAgent` found no privacy handle there: its model provider
+  received inner tool results, inner `Error:` text and — once inner throws
+  became tool results — the raw exception message, while the API caller saw
+  only a masked digest. Handlers now run with the dispatch's handle as the
+  ambient one; the public gate hands them a nested variant
+  (`PrivacyTurnHandle.forNestedCalls`) that masks the same way but does not
+  count toward the endpoint's own masking check, and a nested masking failure
+  discards the call. No tool runs there without the gate: the wired dispatcher
+  runs no handler without a handle (`requirePrivacyHandle`), and the endpoint
+  refuses a dispatcher that cannot receive it before dispatch instead of after.
+  Proven against a real sub-agent in `publicMcpSubAgentPrivacy.test.ts`.
+
+Versions: `@omadia/plugin-api` 1.20.0 (additive). `@omadia/plugin-privacy-guard`
+implements the two new members without a version bump of its own, so a build
+with them and an older copy without them both carry 0.5.0. Redaction needs a
+provider that implements `redactToolErrorText`; with one that does not, the
+kernel withholds every returned `Error:` text and logs `does not implement
+redactToolErrorText` once per process, which is how to tell the two apart.
+Without a privacy provider, and on the subscription-CLI path (#1087), error
+text still flows raw. Fences inverted or narrowed:
+`chatPathToolErrorText.test.ts` (asserted the raw e-mail on the wire),
+`streamToolRejection1095` and `streamingToolThrow1093` (asserted the raw driver
+text), `toolDispatchPrivacySeam.test.ts` and the public MCP privacy tests
+(asserted an interned digest of a thrown message), `queryDatasetTool.test.ts`
+and `manageRoutineTool.test.ts` (asserted the raw exception message), and the
+connect-prompt cases of `guardedToolErrorNotInterned1105`,
+`toolDispatchPrivacySeam` and `subAgentToolErrorNotInterned1097` (asserted that
+prompt text a handler returned itself passed verbatim; the producer-driven
+cases are in `mcpAuthPromptProvenance.test.ts`). Details and residuals:
+`docs/security-architecture.md` §6c; upgrade note: `docs/upgrading.md`.
+
 ### Security — answer-verifier requests run behind the Privacy Shield; the receipt is finalised after them
 
 2026-09-30 — with the privacy plugin installed and the answer verifier

@@ -1,4 +1,5 @@
 import type { NativeToolSpec } from '@omadia/plugin-api';
+import { toolErrorFromException } from '@omadia/plugin-api';
 import { z } from 'zod';
 
 /**
@@ -120,6 +121,19 @@ export interface DiscussionsCapability {
  *  edge, so the capability may appear after this plugin has activated. */
 export type ResolveDiscussions = () => DiscussionsCapability | undefined;
 
+/**
+ * The kernel's named refusals (`DiscussionNoConversationError`,
+ * `DiscussionUnknownOpenerError`, `DiscussionPeerDisabledError`,
+ * `DiscussionUnknownPartnerError` in `src/conductor/discussionHere.ts`). Their
+ * messages are kernel-authored explanations the model must relay, so they keep
+ * their text. Matched by name: this package cannot import kernel classes.
+ */
+const KERNEL_REFUSAL_NAME = /^Discussion[A-Za-z]+Error$/;
+
+function isKernelRefusal(err: unknown): err is Error {
+  return err instanceof Error && KERNEL_REFUSAL_NAME.test(err.name);
+}
+
 const NOT_AVAILABLE =
   'Error: agent discussions are not available on this deployment (the kernel publishes no conductorDiscussions capability — it needs Postgres and a recent core).';
 
@@ -172,10 +186,15 @@ export function createDiscussionStartHandler(deps: {
         note: 'The discussion posts itself into this chat. Reply with one short sentence and stop; do not repeat the topic or write the first contribution here.',
       });
     } catch (err) {
+      // Anything but a kernel refusal (a database or runtime failure) is
+      // exception text nobody sanitized: withheld from the model, logged.
+      if (!isKernelRefusal(err)) {
+        return toolErrorFromException(DISCUSSION_START_TOOL_NAME, err, { site: 'discussion' });
+      }
       // Every refusal from the kernel is a named, explainable outcome — hand it
       // to the model as prose so it can tell the person WHY, rather than
       // silently answering as if nothing had been asked.
-      const message = err instanceof Error ? err.message : String(err);
+      const message = err.message;
       deps.log?.(`[discussion] start refused: ${message}`);
       // An unknown partner is the one refusal the model can fix by itself, so
       // it comes back WITH the candidates rather than as a bare no. Karen's
@@ -209,7 +228,8 @@ export function createDiscussionPartnersHandler(deps: {
             : 'No other agent has its own bot in this chat, so no discussion can be held here. Say so plainly.',
       });
     } catch (err) {
-      return `Error: ${err instanceof Error ? err.message : String(err)}`;
+      if (isKernelRefusal(err)) return `Error: ${err.message}`;
+      return toolErrorFromException(DISCUSSION_PARTNERS_TOOL_NAME, err, { site: 'discussion' });
     }
   };
 }
