@@ -3043,6 +3043,15 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ### Offene Punkte aus den Security-Härtungen (2026-09-30)
 
+- **Desktop-Runtime-Refresh (Electron 37 → 44) als eigener PR, nach dem Brücken-Release.**
+  `desktop/` läuft noch auf Electron 37 und hat kein Bein in der `npm audit`-Matrix. Der
+  Refresh (Electron 44, electron-builder 26, `desktop` als Audit-Bein, macOS-13-Floor im
+  Update-Feed) kommt als eigener PR. Er wird erst gemergt, wenn das Release mit dem
+  Updater-Hinweis aus `desktop/src/updateHoldBack.ts` veröffentlicht ist (kein Draft): Nur
+  Installationen mit diesem Release sagen auf macOS 11/12, dass das neue Release macOS 13
+  braucht. Vor dem Merge laufen ein `desktop-apps.yml`-Dispatch-Build aller Targets und je
+  ein Upgrade-Lauf auf macOS, Windows und Linux über das aktuelle Release, bei dem
+  `secrets.enc` byte-identisch bleibt; den genauen Ablauf bringt der PR in diesem Abschnitt mit.
 - **IdP-Logout-URL nicht allowlisted.** Die serverseitig gelieferte absolute End-Session-URL
   (`idpLogout.url`, `web-ui/app/_components/AuthBadge.tsx`) wird ungeprüft angesteuert. Eigene
   Vertrauensgrenze; Härtung z. B. per Allowlist der konfigurierten IdP-Hosts.
