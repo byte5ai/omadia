@@ -203,8 +203,13 @@ function makeDispatcherResolver(
       domainToolsProvider: () => entry.built.orchestrator.listDomainTools(),
       // Explicit, NOT the ambient `turnContext` fallback: this endpoint runs
       // outside any turn, so the ambient handle is always `undefined` here and
-      // relying on it would ship an unmasked public endpoint.
+      // relying on it would ship an unmasked public endpoint. The dispatcher
+      // also installs it as the ambient handle while a handler runs, so a
+      // domain tool's sub-agent model loop runs under the same gate.
       privacy: () => slot,
+      // With masking required, an empty slot means the gate never arrived: run
+      // no handler (and so no sub-agent model call) rather than run it unguarded.
+      requirePrivacyHandle: !deps.allowWithoutPrivacyMasking,
       idempotency,
       // Raw capture receives the result BEFORE masking. Deliberately records
       // SIZE ONLY — never content. `mcp_call_log` stores no tool arguments or

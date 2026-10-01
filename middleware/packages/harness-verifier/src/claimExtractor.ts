@@ -6,7 +6,9 @@ import type {
   ClaimSource,
   ClaimType,
   OdooRecordRef,
+  VerifierPrivacy,
 } from './claimTypes.js';
+import { restoreClaims } from './claimRestore.js';
 
 /**
  * Extracts structured factual claims from an orchestrator answer via a
@@ -42,6 +44,14 @@ export interface ClaimExtractorOptions {
 export interface ExtractInput {
   userMessage: string;
   answer: string;
+  /**
+   * The turn's privacy view (see {@link VerifierPrivacy}). When present the
+   * model sees the turn's own wire view — `privacy.wireUserMessage` and
+   * `privacy.wireAnswer`, never `userMessage` / `answer` above — and the
+   * returned claims are restored to real values here, server-side, before
+   * anything checks them.
+   */
+  privacy?: VerifierPrivacy;
 }
 
 const DEFAULTS = {
@@ -177,8 +187,25 @@ export class ClaimExtractor {
    * error (network, parse, validation).
    */
   async extract(input: ExtractInput): Promise<Claim[]> {
-    const answer = input.answer.trim();
+    const privacy = input.privacy;
+    // Behind a Privacy Shield the model sees the turn's wire view only: the
+    // answer as the turn's model wrote it, the prompt as the turn's model
+    // received it — never the caller's own text.
+    const answer = (privacy ? privacy.wireAnswer : input.answer).trim();
     if (answer.length === 0) return [];
+    const userMessage = privacy ? privacy.wireUserMessage : input.userMessage;
+    if (privacy) {
+      try {
+        await privacy.admitWireView();
+      } catch (err) {
+        this.opts.log(
+          `[claim-extractor] extraction skipped — prompt masking blocked: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return [];
+      }
+    }
 
     const system = `You are a claim extractor. Given an assistant answer (in German or English), list EVERY factual claim it makes. A claim is any concrete, verifiable assertion: monetary amounts, record references, dates, named entities, totals.
 
@@ -193,7 +220,7 @@ Strict rules:
 - Return at most ${String(this.opts.maxClaims)} claims via the ${TOOL_NAME} tool.`;
 
     const user = `USER MESSAGE:
-${truncate(input.userMessage, 2000)}
+${truncate(userMessage, 2000)}
 
 ASSISTANT ANSWER:
 ${truncate(answer, 6000)}`;
@@ -221,27 +248,34 @@ ${truncate(answer, 6000)}`;
       return [];
     }
 
-    const out: Claim[] = [];
+    const normalised: Claim[] = [];
     let idx = 0;
     for (const raw of rawClaims.slice(0, this.opts.maxClaims)) {
+      // Verbatim guard against the text the model actually saw.
       const claim = normaliseClaim(raw, idx, answer);
       if (claim) {
-        out.push(claim);
+        normalised.push(claim);
         idx += 1;
       }
     }
+    const out = privacy
+      ? await restoreClaims(normalised, privacy, input.answer.trim(), claimContext)
+      : normalised;
+    const dropped = normalised.length - out.length;
     this.opts.log(
-      `[claim-extractor] extracted=${String(out.length)} raw=${String(rawClaims.length)}`,
+      `[claim-extractor] extracted=${String(out.length)} raw=${String(rawClaims.length)}${
+        dropped > 0 ? ` droppedOnRestore=${String(dropped)}` : ''
+      }`,
     );
     // Diagnostic: when the extractor returns zero claims even though the
     // trigger router fired, we want to see WHY. Log the first 300 chars
     // of the answer + user message — that's enough to tell whether the
     // bot was honest ("I cannot answer") or Haiku under-extracted a
-    // valid numeric response. Safe to log: the answer already landed in
-    // session_logger / graph, no new PII surface.
+    // valid numeric response. Logs the wire view (what the model saw), so
+    // this line carries no more than the extraction request did.
     if (rawClaims.length === 0) {
       this.opts.log(
-        `[claim-extractor] zero-raw diag user="${shortSnippet(input.userMessage, 200)}" answerLen=${String(answer.length)} answerHead="${shortSnippet(answer, 400)}" answerTail="${shortSnippet(tail(answer, 400), 400)}"`,
+        `[claim-extractor] zero-raw diag user="${shortSnippet(userMessage, 200)}" answerLen=${String(answer.length)} answerHead="${shortSnippet(answer, 400)}" answerTail="${shortSnippet(tail(answer, 400), 400)}"`,
       );
     }
     return out;

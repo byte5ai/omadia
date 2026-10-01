@@ -41,6 +41,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { NativeToolHandler, NativeToolSpec } from '@omadia/plugin-api';
+import { toolErrorFromException } from '@omadia/plugin-api';
 
 import {
   TaskLeaseLostError,
@@ -304,9 +305,11 @@ export function describeDeferredPrivacyPosture(): string {
 // Helpers.
 // ---------------------------------------------------------------------------
 
-function errString(prefix: string, err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  return `Error: ${prefix}: ${msg}`;
+/** A task-store failure as a tool result. The store's exception text (a
+ *  driver message can echo the task input it failed to write) is withheld
+ *  from the model and logged in full under a ref. */
+function errString(toolName: string, err: unknown): string {
+  return toolErrorFromException(toolName, err, { site: 'long-running-task' });
 }
 
 /** Compact, model-facing descriptor view (keeps the tool return small). */
@@ -628,7 +631,7 @@ export function defineLongRunningTool(
         phase: descriptor.phase,
       });
     } catch (err: unknown) {
-      return errString(`${names.start} failed`, err);
+      return errString(names.start, err);
     }
   };
 
@@ -657,7 +660,7 @@ export function defineLongRunningTool(
         recentEvents: events.map(compactEvent),
       });
     } catch (err: unknown) {
-      return errString(`${names.status} failed`, err);
+      return errString(names.status, err);
     }
   };
 
@@ -683,7 +686,7 @@ export function defineLongRunningTool(
       });
       return JSON.stringify(tasks.map(compact));
     } catch (err: unknown) {
-      return errString(`${names.list} failed`, err);
+      return errString(names.list, err);
     }
   };
 

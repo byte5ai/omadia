@@ -12,13 +12,20 @@
  */
 
 import { isInternExemptTool } from './privacyInternPolicy.js';
-import { isControlFlowToolResult, isWriteCapableTool } from '@omadia/plugin-api';
+import { isWriteCapableTool } from '@omadia/plugin-api';
+import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
+import {
+  guardControlFlowResult,
+  isGuardedControlFlowResult,
+  withholdThrownToolError,
+} from './toolErrorRedaction.js';
 import type { WriteCapability } from '@omadia/plugin-api';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import type { DomainTool } from './tools/domainQueryTool.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import { sortByToolName } from './toolOrdering.js';
 import { turnContext } from './turnContext.js';
+import { runHandlerInPrivacyScope } from './handlerPrivacyScope.js';
 import { runWithDispatchCaller } from './toolCallerContext.js';
 import { runWithIdempotencyScope } from './toolIdempotency.js';
 import type { ToolIdempotencyStore } from './toolIdempotency.js';
@@ -27,15 +34,18 @@ import type { ToolIdempotencyStore } from './toolIdempotency.js';
  * Who authored a `ToolDispatchResult.content`, and therefore whether it had to
  * cross the privacy boundary.
  *
- *  - `'tool'`       — produced by a tool handler: its return value, or the
- *                     message of the exception it threw. UNTRUSTED. It carries
- *                     whatever the handler (and the ORM/driver beneath it) chose
- *                     to put in it, so it must be masked before it reaches an
- *                     untrusted caller.
- *  - `'dispatcher'` — produced by this service's own guards (unknown tool,
- *                     plugin not ready). Contains only the tool name the caller
- *                     itself supplied and the owning plugin id; never tool data,
- *                     so there is nothing for masking to have crossed.
+ *  - `'tool'`       — produced by a tool handler: its return value, or — only
+ *                     where nothing is withheld (no privacy provider, an
+ *                     intern-exempt self tool) — the message of the exception
+ *                     it threw. UNTRUSTED. It carries whatever the handler (and
+ *                     the ORM/driver beneath it) chose to put in it, so it must
+ *                     be masked before it reaches an untrusted caller.
+ *  - `'dispatcher'` — produced by this service itself: its own guards (unknown
+ *                     tool, plugin not ready), and the withheld notice it puts
+ *                     in place of a thrown exception's message (tool name,
+ *                     exception class name, sanitised code, log ref). Never
+ *                     tool data, so there is nothing for masking to have
+ *                     crossed.
  *
  * A consumer that gates on this MUST treat an ABSENT value as `'tool'`: a
  * dispatcher that predates this field, or a future one that forgets it, has to
@@ -177,8 +187,20 @@ export class ToolDispatchService {
        * a host that DOES dispatch from inside a turn still inherits that turn's
        * handle. Absent from both ⇒ no privacy provider installed and results flow
        * through unchanged, matching the orchestrator.
+       *
+       * The handle also guards what runs INSIDE a handler — see
+       * `handlerPrivacyScope.ts`.
        */
       readonly privacy?: () => PrivacyTurnHandle | undefined;
+      /**
+       * Run no tool handler without a privacy handle. With none resolvable at
+       * dispatch time the call answers with a dispatcher-authored notice and
+       * no handler runs, so nothing beneath it (a sub-agent's model loop) can
+       * reach a model unguarded. The public MCP endpoint sets this whenever
+       * masking is required; the loopback and CLI dispatchers leave it off
+       * (parity: no provider installed ⇒ nothing is masked).
+       */
+      readonly requirePrivacyHandle?: boolean;
       /**
        * #542 prerequisite — raw-result capture (the orchestrator's Phase C.2
        * `captureRawToolResult`). Receives the tool result BEFORE masking, so a
@@ -302,8 +324,9 @@ export class ToolDispatchService {
     options?: ToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
     const nativeRegistration = this.deps.nativeTools.get(name);
+    const nativeHandler = nativeRegistration?.handler;
     // Mirrors Orchestrator ordering: plugin/native handlers win first.
-    if (nativeRegistration?.handler) {
+    if (nativeRegistration !== undefined && nativeHandler !== undefined) {
       if (!this.isToolAvailable(nativeRegistration.agentId)) {
         return {
           content: `Error: tool \`${name}\` is unavailable — plugin \`${nativeRegistration.agentId}\` has not completed its connection/auth setup.`,
@@ -311,16 +334,7 @@ export class ToolDispatchService {
           origin: 'dispatcher',
         };
       }
-      try {
-        const raw = await nativeRegistration.handler(input);
-        return { content: await this.afterDispatch(name, raw, options), origin: 'tool' };
-      } catch (error) {
-        return {
-          content: await this.maskErrorText(name, this.errMsg(error)),
-          isError: true,
-          origin: 'tool',
-        };
-      }
+      return this.invoke(name, () => nativeHandler(input), options);
     }
 
     const domainTool = this.domainTools().find((t) => t.name === name);
@@ -335,19 +349,45 @@ export class ToolDispatchService {
           origin: 'dispatcher',
         };
       }
-      try {
-        const raw = await domainTool.handle(input);
-        return { content: await this.afterDispatch(name, raw, options), origin: 'tool' };
-      } catch (error) {
-        return {
-          content: await this.maskErrorText(name, this.errMsg(error)),
-          isError: true,
-          origin: 'tool',
-        };
-      }
+      return this.invoke(name, () => domainTool.handle(input), options);
     }
 
     return { content: `Error: unknown tool \`${name}\`.`, isError: true, origin: 'dispatcher' };
+  }
+
+  /** One handler run, native or domain: the same steps for both branches. */
+  private async invoke(
+    name: string,
+    handler: () => Promise<string>,
+    options?: ToolDispatchOptions,
+  ): Promise<ToolDispatchResult> {
+    const privacy = this.privacyHandle();
+    if (privacy === undefined && this.deps.requirePrivacyHandle === true) {
+      console.error(
+        `[toolDispatchService:${name}] no privacy handle for this dispatch — refused before the handler ran`,
+      );
+      return {
+        content: `Error: tool \`${name}\` was not run: no privacy guard is active for this call.`,
+        isError: true,
+        origin: 'dispatcher',
+      };
+    }
+    try {
+      // One mint per dispatch: a connect prompt the MCP manager produces
+      // while this handler runs is recorded in it (`mcpAuthPromptMint.ts`).
+      const authPromptMint = new McpAuthPromptMint();
+      // The handler runs with this dispatch's handle as the ambient one, so a
+      // sub-agent model loop inside it is guarded too (`handlerPrivacyScope.ts`).
+      const raw = await runWithMcpAuthPromptMint(authPromptMint, () =>
+        runHandlerInPrivacyScope(privacy, handler),
+      );
+      return {
+        content: await this.afterDispatch(name, raw, authPromptMint, options),
+        origin: 'tool',
+      };
+    } catch (error) {
+      return this.thrownResult(name, error, options);
+    }
   }
 
   /**
@@ -363,6 +403,8 @@ export class ToolDispatchService {
   private async afterDispatch(
     name: string,
     result: string,
+    /** The connect prompts the MCP manager produced in this dispatch. */
+    authPromptMint: McpAuthPromptMint,
     options?: ToolDispatchOptions,
   ): Promise<string> {
     const capture = this.deps.captureRawToolResult;
@@ -407,14 +449,23 @@ export class ToolDispatchService {
     }
 
     // #1105 / #1097 — fulfilled control-flow prose (the `Error:` convention,
-    // or an MCP auth prompt) reaches the model as that text, never interned:
+    // or the MCP connect prompt this dispatch produced) is never interned:
     // interning would both hide the failure behind a masked digest and
     // register a renderable dataset a later `v4_render_answer` could
-    // materialize as if the error were data. Mirrors the same guard on
-    // `Orchestrator.dispatchTool`. Thrown exceptions take the separate
-    // `maskErrorText` path and are unaffected.
-    if (isControlFlowToolResult(result)) {
-      return result;
+    // materialize as if the error were data. It is not forwarded unchecked
+    // either: the `Error:` text goes through the shield's free-text redactor
+    // (or is withheld whole) and is receipted — the same helper
+    // `Orchestrator.dispatchTool` uses. The connect prompt counts only by
+    // provenance; text that merely starts like it is interned below. Thrown
+    // exceptions take `thrownResult`.
+    if (isGuardedControlFlowResult(result, authPromptMint)) {
+      return guardControlFlowResult({
+        toolName: name,
+        result,
+        privacy,
+        site: 'toolDispatchService',
+        authPromptMint,
+      });
     }
     try {
       const v4 = await privacy.internToolResultV4({
@@ -437,67 +488,63 @@ export class ToolDispatchService {
   }
 
   /**
-   * The masking half of `afterDispatch`, applied to the message of an exception
-   * a tool handler THREW.
+   * The result for an exception a tool handler THREW.
    *
-   * ─── Why the error path needed this at all ──────────────────────────────────
+   * ─── Why the error path needs its own branch ────────────────────────────────
    *
-   * `afterDispatch` ran only on the success path, so a throwing handler took a
-   * branch that skipped the entire privacy boundary and returned the raw
-   * exception text. Handler exceptions are not sanitized strings: an ORM echoes
-   * the failing row, a driver echoes the bound query parameters. `Fault: Invalid
-   * field 'x' on record {'id':42,'name':'Jane Doe','email':'jane@acme.de'}` is a
-   * perfectly ordinary Odoo error, and it went to the caller verbatim.
+   * `afterDispatch` runs only on the success path. Handler exceptions are not
+   * sanitized strings: an ORM echoes the failing row, a driver echoes the bound
+   * query parameters. `Fault: Invalid field 'x' on record {'id':42,'name':'Jane
+   * Doe','email':'jane@example.com'}` is a perfectly ordinary Odoo error.
    *
-   * ─── Why NOT just call `afterDispatch` ──────────────────────────────────────
+   * ─── The policy: withheld, as on the chat path ──────────────────────────────
    *
-   * Two of its four steps are wrong for an exception, and reusing the whole
-   * chain would have imported both:
+   * This branch used to intern the message as a dataset — which handed the
+   * caller a renderable 1-row error "dataset" (the #1105 shape) and still let a
+   * name through wherever the classifier kept a column clear. It now applies the
+   * one thrown-error policy every seam shares (`withholdThrownToolError`,
+   * `toolErrorRedaction.ts`): under a privacy handle the caller gets the
+   * withheld notice — exception class name, sanitised code, log ref (the
+   * caller's `requestId` when it sent one) — the full error goes to the server
+   * log, and the turn's receipt, when there is one, records a `thrown` entry.
+   * The notice is authored here and carries no tool data, hence
+   * `origin: 'dispatcher'`: the public endpoint may return it without a
+   * masking pass.
    *
+   * Two steps of `afterDispatch` stay deliberately out:
    *  - **Raw capture.** `captureRawToolResult` is documented as receiving "the
    *    tool result", and its consumers (trace/audit, and on the chat path the
    *    Knowledge-Graph ingest) treat it as business data. A driver stack trace
-   *    is not a tool result; feeding one in would write connection strings and
-   *    query fragments into consumers built for row data.
+   *    is not a tool result.
    *  - **Operator bypass.** `_privacy_mode: bypass` is consent about a specific
-   *    plugin's DECLARED output shape — an operator who decided masking mangles
-   *    a tool's report did not thereby consent to arbitrary exception text,
-   *    which can carry any row the driver happened to be holding. Emitting a
-   *    `recordBypassedTool` receipt (with a byte count, as if a result had been
-   *    disclosed) would also mis-describe what actually happened.
+   *    plugin's DECLARED output shape, not about arbitrary exception text, and a
+   *    `recordBypassedTool` receipt would mis-describe what happened.
    *
-   * What DOES transfer is the intern exemption — a self/infra tool's failure is
-   * the agent's own operational state, exactly the case the allowlist exists for
-   * — and `internToolResultV4` itself. Those two run here, in that order.
-   *
-   * Fail-OPEN on a masking throw, matching `afterDispatch` and the chat path.
-   * That is safe for the public endpoint and only for a structural reason: the
-   * fail-closed gate in `publicMcpPrivacy.ts` never lets `internToolResultV4`
-   * throw (it records the failure and returns a placeholder), and
-   * `PublicMcpServer` refuses any result the gate did not mask. Do not read this
-   * branch as "raw error text may reach an untrusted caller".
+   * Parity: with no privacy provider installed, or for an intern-exempt self
+   * tool (the agent's own operational state), the raw message is returned as
+   * before, as `origin: 'tool'` content. The public endpoint refuses to call
+   * without a provider (`requirePrivacyMasking`) and never serves an
+   * intern-exempt tool (`isPubliclyServableTool`).
    */
-  private async maskErrorText(name: string, message: string): Promise<string> {
-    const privacy = this.privacyHandle();
-    // No privacy provider installed ⇒ results flow through unchanged here too,
-    // matching `afterDispatch`. The public endpoint refuses to call at all in
-    // this configuration (`requirePrivacyMasking`).
-    if (privacy === undefined) return message;
-    if (isInternExemptTool(name)) return message;
-
-    try {
-      const v4 = await privacy.internToolResultV4({
-        toolName: name,
-        rawResult: message,
-      });
-      return v4.digestText;
-    } catch (err) {
-      console.warn(
-        `[toolDispatchService:${name}] privacy.internToolResultV4 threw while masking an ERROR message — sending it raw:`,
-        err,
-      );
-      return message;
-    }
+  private async thrownResult(
+    name: string,
+    error: unknown,
+    options?: ToolDispatchOptions,
+  ): Promise<ToolDispatchResult> {
+    const requestId = options?.caller?.requestId;
+    const outcome = await withholdThrownToolError({
+      toolName: name,
+      err: error,
+      privacy: this.privacyHandle(),
+      site: 'toolDispatchService',
+      ...(requestId !== undefined && requestId !== '' ? { ref: requestId } : {}),
+      formatRaw: (message) => message,
+    });
+    return {
+      content: outcome.text,
+      isError: true,
+      origin: outcome.withheld ? 'dispatcher' : 'tool',
+    };
   }
 
   listDispatchableToolSpecs(): readonly DispatchableToolSpec[] {
@@ -548,10 +595,6 @@ export class ToolDispatchService {
     // tools first), and sorting only reorders the surviving entries.
     return sortByToolName(Array.from(advertised.values()));
   }
-
-  private errMsg(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-  }
 }
 
 // SEAM — divergence from `Orchestrator.dispatchToolInner` /
@@ -564,15 +607,24 @@ export class ToolDispatchService {
 // Caller identity is carried by `ToolDispatchCallerContext` (a carrier, not an
 // enforcement point — see its docs).
 //
-// CLOSED (W4): the ERROR path. A thrown handler's message used to skip the whole
-// boundary above; it now goes through `maskErrorText` (intern-exemption +
-// `internToolResultV4`, deliberately WITHOUT raw capture or the operator bypass —
-// see that method for why). This is a DIVERGENCE from the chat path, which still
-// lets a handler's exception propagate to the turn loop unmasked, and it is
-// intentional: the chat path's reader is the operator, this path's reader may be
-// a third party over HTTP. Every result now also carries `origin`, so a consumer
-// can tell handler-authored content (must have been masked) from this service's
-// own refusal strings (nothing to mask).
+// CLOSED (W4, then unified): the ERROR path. A thrown handler's message used to
+// skip the whole boundary above; W4 interned it as a dataset on this path only,
+// while the chat path forwarded it raw. There is now ONE policy for both, in
+// `toolErrorRedaction.ts`: a thrown message is withheld (notice with class name,
+// sanitised code and log ref; full error in the log; `thrown` receipt entry),
+// deliberately WITHOUT raw capture or the operator bypass — see `thrownResult`.
+// A fulfilled `Error:` text, and an MCP connect prompt the manager produced in
+// the same dispatch (`McpAuthPromptMint`), go through `guardControlFlowResult`
+// exactly as in `Orchestrator.dispatchToolDeadlined`.
+// Every result also carries `origin`, so a consumer can tell handler-authored
+// content (must have been masked) from this service's own text (its refusals and
+// the withheld notice — nothing to mask).
+//
+// CLOSED: what runs INSIDE a handler. The handler runs with the dispatch's
+// handle as the ambient `turnContext.privacyHandle`
+// (`runHandlerInPrivacyScope`), so a domain tool's `LocalSubAgent` masks its
+// inner results and tool errors before its own model sees them, as on the chat
+// path; `requirePrivacyHandle` runs no handler when no handle resolves.
 //
 // STILL ORCHESTRATOR-ONLY, because each needs turn-scoped state this path has no
 // access to (an unconditional copy would throw or silently no-op):

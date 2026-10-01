@@ -485,7 +485,7 @@ Vor dem Publish:
 > höhere Hub-Version zeigt auf Kernels mit älterer `installed_version` also
 > „Update verfügbar", der Klick endet in 422 `package.id_conflict_bundled`.
 > Für office besteht das schon (Hub 0.1.2 > installiert 0.1.1); ein Publish von
-> web-search 0.1.1 erzeugt es für web-search neu. Vor diesem Publish die
+> web-search 0.2.0 erzeugt es für web-search neu. Vor diesem Publish die
 > Update-Erkennung für Bundled-IDs abschalten oder den Badge bewusst in Kauf
 > nehmen.
 

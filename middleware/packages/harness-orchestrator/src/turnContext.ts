@@ -271,6 +271,17 @@ export interface TurnContextValue {
    */
   memoryFileRead?: { value: boolean };
   /**
+   * The turn's wire view: its user message exactly as the model received it
+   * (normalised — an MCP input-card reply is its label by then — and masked
+   * under the turn's policy) and its final answer exactly as the model wrote
+   * it, BEFORE surrogate restore. Written by the answer loops, read once when
+   * a verifier-wrapped turn hands its privacy state over: the answer verifier
+   * may see only this view — never the caller's raw text, never restored
+   * values. Mutable holder for the same shallow-copy reason as
+   * {@link memoryFileRead}.
+   */
+  wireView?: { userMessage?: string; answer?: string };
+  /**
    * #904 — the memory-tool handler bound to the turn that is currently
    * delegating to a sub-agent.
    *

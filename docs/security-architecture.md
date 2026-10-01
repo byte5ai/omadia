@@ -133,6 +133,13 @@ to route personal data through this provider. `maskHistory` already routes the
 replay through the turn's privacy handle and becomes effective the moment one is
 installed on this path; masking parity is tracked on #1087.
 
+The answer verifier is never installed on this path: `buildOrchestratorForAgent`
+returns the `CliChatAgent` bundle before the `VerifierService` wrap, so a
+subscription-CLI chat turn has no verifier egress at all. The reverse case is
+covered by §6e — the verifier plugin's OWN model may be the `claude-cli`
+completion provider (Shape 2), and its requests are masked before
+`llm.complete` like on any other provider.
+
 ### Why the deny list is generated, not written (#1014)
 
 The first version was hand-collected and missed 40 real tool names, `Tmux`
@@ -597,6 +604,94 @@ kernel keeps the session gate in front, fail-closed. What the link buys is
 what it always bought: whoever holds it can fetch that one object until it
 expires; there is no per-tenant or per-session authorisation on top.
 
+## 5a. Office exports: formula cells carry no caller-supplied value
+
+`create_xlsx` (`@omadia/plugin-office`) writes descriptor formulas into the
+workbook verbatim, and omadia evaluates none of them: exceljs only serialises,
+and no formula engine is installed. The rule that follows is that whatever a
+formula cell displays must come from the application that computes it, never
+from the descriptor.
+
+- **No cached value.** `FormulaCellSchema` has no `result` field, and Zod
+  strips one a caller sends anyway. `renderXlsx` is exported, so it does not
+  rely on the schema. exceljs decides what a cell is from the shape of the
+  value: any object with a truthy `formula` or `sharedFormula` is a formula,
+  with its `result` as the cached value, and `{ text, hyperlink }` is an
+  external link. The renderer therefore takes only text, numbers, booleans,
+  `null` and `{ formula }` rebuilt from a non-empty formula string as a cell
+  value (`cellValueOf`, which reads only a row's own keys; a date column turns
+  its text into a date), and writes `{ formula }` again when it sets the cell.
+  Any other cell value, a column header that is not text (exceljs writes
+  headers like cell values) and a computed-column formula that is not text
+  fail with `OfficeRenderError` before exceljs sees them. A direct caller that
+  gets past the type therefore gets an error, never a `<v>` next to an `<f>`,
+  a link, or a formula the policy below has not read.
+- **Recalculation on open.** A workbook with at least one formula sets
+  `calcPr fullCalcOnLoad="1"`. Clients that do not calculate (previews, Excel's
+  Protected View, `data_only` readers) show the cell empty, which is the
+  intended failure mode.
+- **Formulas stay inside the workbook.** The client recalculates on open, and
+  Excel, LibreOffice and Google Sheets each have functions that reach outside
+  the file. `formulaPolicy.ts` checks every formula in two layers, so that a
+  way out nobody has listed still fails closed:
+  - *Allowlist.* A formula may only call Excel's own worksheet functions by
+    their English names (`formulaFunctions.ts`, Microsoft's alphabetical
+    catalogue as of 2026-09-30), less the refused ones below. Everything else
+    is refused: `_xll.`/`_xludf.` add-in and user-defined functions in any
+    position, Excel 4 macro functions such as `EVALUATE`, other applications'
+    functions, localised names, calls through LET or LAMBDA names, and every
+    function Excel adds later until it has been reviewed (`IMPORTTEXT` and
+    `IMPORTCSV`, which read local files and URLs, were such additions). A
+    function passed as a value (`_xleta.NAME`) is checked like a call. A bare
+    name that is not called is checked against the refused names only. What
+    it could still reach is a function the user's own Excel has loaded (a
+    VBA macro or add-in passed by a guessed name), and an export cannot
+    supply one.
+  - *Refused by name, called or not:* `WEBSERVICE`, `FILTERXML`, `IMAGE`,
+    Google Sheets' `IMPORTDATA`, `IMPORTXML`, `IMPORTHTML`, `IMPORTFEED` and
+    `IMPORTRANGE`, `IMPORTTEXT` and `IMPORTCSV`, the vendor services
+    `STOCKHISTORY`, `TRANSLATE`, `DETECTLANGUAGE`, `GOOGLEFINANCE` and
+    `GOOGLETRANSLATE`, the `CUBE…` functions, `HYPERLINK`, `RTD`, `CALL`,
+    `REGISTER`, `REGISTER.ID` and LibreOffice's `DDE`. A DDE reference
+    (`app|topic!item`) and a reference to another file (`[n]…`,
+    `[book.xlsx]…`, a `\` outside quotes, or a quoted name containing
+    `\ / [ ]`) are refused as well. `INDIRECT` and `__xludf.DUMMYFUNCTION` are
+    refused whatever their argument, because they turn text into a reference
+    or a formula, and that text can be assembled from cell values where no
+    lexical check sees it.
+
+  A computed column is checked once as a template. Its `{row}` placeholder may
+  only follow a column letter or stand alone, so a row number cannot complete a
+  function name. `renderXlsx` throws `OfficeUnsafeFormulaError` before any byte
+  is written, so nothing is stored or delivered. The check is lexical: string
+  literals are skipped and an unterminated quote fails closed.
+
+  A lexical check only holds if it reads the text the application reads, so
+  it starts there (`formulaText.ts`). A formula is refused if it contains a
+  character the file would not carry as written (exceljs's XML encoder drops
+  most control characters, XML turns a carriage return into a line feed and
+  cannot hold an unpaired surrogate, U+FFFE or U+FFFF) or `_x` followed by a
+  hexadecimal digit, the file format's `_xHHHH_` escape, which a reader
+  decodes. The input schema refuses the same text before any dataset is
+  resolved, and the renderer checks it again. Outside quotes, a formula may
+  only use the grammar's own characters (letters, digits, the plain space and
+  the operators, on one line), and names are read by Excel's grammar
+  ([MS-XLSX] 2.2.2), so the check splits names exactly where the application
+  does. The `{row}` check reads only the characters just before each
+  placeholder, so checking a template takes time linear in its length.
+- **Dataset rows cannot become formulas.** Rows behind a `datasetId` go through
+  `normalizeCell` (`officeTool.ts`), which passes primitives and JSON-stringifies
+  every object and array, so a system of record cannot inject a formula or a
+  cached value. The dataset guarantees elsewhere in this document (the
+  `query_dataset` table in §6b) and in the orchestrator prompt are unchanged:
+  `create_xlsx` still resolves those rows server-side, and they never pass
+  through the model.
+- **No server-side engine, by decision.** HyperFormula is GPL/commercial and
+  excluded. Evaluation with an MIT engine is a roadmap item
+  (`middleware-agent-handoff.md` §13). Any engine would have to match Excel's
+  semantics exactly, because a wrong `<v>` under omadia's name is the defect
+  this section closes.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation
@@ -686,31 +781,316 @@ a silent `fly secrets set`. Without any secret the import falls back to the old
 irreversible masking and says so in the `[dataset-imported]` fact, so the model
 does not promise real values in an export it cannot deliver.
 
-### 6c. Control-flow tool results pass the shield unmasked (#1105, #1097)
+### 6c. Tool errors: thrown text withheld, returned text redacted (#1105, #1097)
 
-A tool result that is control flow — the `Error:` tool-error convention, or an
-MCP auth prompt — reaches the model verbatim instead of being interned, so the
-model can read the hint and self-correct. Four seams apply it, each after the
-intern exemption and the operator bypass and before interning:
-`Orchestrator.dispatchTool`, `Orchestrator.guardReplayResult`,
-`ToolDispatchService.afterDispatch` and `LocalSubAgent.dispatch`. All four call
-one predicate, `isControlFlowToolResult` (`@omadia/plugin-api`), which is
-**prefix-anchored only**: `Error:` or the exact `🔒 The MCP server "` producer
-prefix. It never matches a substring, so a marker planted in one cell cannot
-unmask a multi-row result such as a decrypted `query_dataset` page (§6b).
-Known limits: remote MCP error
-bodies and `Error: ${err.message}` wrappers (`bridgeTool`) pass through as
-foreign or unsanitized text, matching the chat path's thrown-error policy; a
-passthrough writes no receipt entry. The shape classifier has **no**
-control-flow exemption — verbs re-classify derived datasets, so one would turn
-`filter` + `select` into a cleartext channel — and `ToolDispatchService`
-still masks a thrown exception's message even when it starts with `Error:`.
+A tool result that is control flow — the `Error:` tool-error convention, or the
+MCP connect prompt the kernel produced — is not interned, so the model can read
+the hint and self-correct. Not interned is not unchecked: a tool error is not
+sanitized text. An ORM echoes the row it failed on, a driver the bound
+parameters, a remote MCP server whatever its error body quotes. Every seam that
+hands a tool result to a model therefore routes a tool error through one helper,
+`toolErrorRedaction.ts` (`@omadia/orchestrator`), and the policy follows where
+the text came from, not its shape:
+
+| Carrier | What the model reads | Receipt entry (`toolErrors`) |
+|---|---|---|
+| A handler **threw** | The withheld notice: ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …`` — class name and a sanitised code (`describeThrownError`, `@omadia/plugin-api`), never the message; it also says the outcome is unknown and not to repeat a call that changes data | `thrown` / `withheld` |
+| A handler **returned** an `Error:` string | The text after the prefix, run through the provider's `redactToolErrorText`: the C0 identity types (e-mail, IBAN, phone, address, id number — not `date` or `amount`, which are hints), the operator deny-list (#760) and C1, each span replaced irreversibly by `[masked:<type>]`. **Withheld** whole instead when the text is exception-shaped (a record echo as JSON, as a Python dict, or as a JavaScript object or `Map` the way `util.inspect`, `console.log` and `%o` print it; a record printed with keyword fields — a Python dataclass, a Kotlin data class or Lombok `toString`, a Java record or `Map` — or with Go's bare `Key:value` fields; a stack trace; a Postgres `DETAIL:` line, a `Failing row contains (…)` or a `Key (…)=(…)` detail), longer than 4096 characters, or the provider cannot check it | `returned` / `redacted` (with span types) or `withheld` |
+| The MCP **connect prompt** (`🔒 The MCP server "…`) that `McpManager.handleFailure` produced **in the same dispatch** | Byte-identical: its connect URL and `<mcp-auth-required>` block must survive. Recognised by per-dispatch provenance, never by its prefix: any other text that starts like the prompt is tool data and is interned | `mcp_auth_prompt` / `passed` |
+
+The seams, each applying the helper after the intern exemption and the
+operator bypass and before interning:
+
+- `Orchestrator.dispatchTool` — the one choke point for both chat loops, the
+  streaming slots and the Direct-Line relay. It never rejects: a thrown error
+  resolves as the notice, also with the dispatch deadline disabled. The loops'
+  own rejection handlers are backstops that build the same notice.
+- `Orchestrator.dispatchToolDeadlined` and `Orchestrator.guardReplayResult`
+  (the returned carrier on the chat path and on MCP input replay).
+- `ToolDispatchService` (loopback and public dispatcher): `thrownResult` for a
+  throw — the same withheld notice, no longer an interned dataset — and
+  `afterDispatch` for a returned error. The handler itself runs with the
+  dispatch's privacy handle as the ambient `turnContext.privacyHandle`
+  (`runHandlerInPrivacyScope`, `handlerPrivacyScope.ts`), so the sub-agent
+  seam below applies beneath this dispatcher too.
+- `LocalSubAgent.dispatch`: both carriers, under whichever handle its domain
+  tool was dispatched with. An inner tool throw becomes an `is_error` tool
+  result the sub-agent can answer around, instead of aborting the sub-agent.
+  The call may have taken effect before it threw (a write commits, then its
+  response times out), so the notice says the outcome is unknown, and the
+  sub-agent refuses an identical repeat (same tool, same canonical input) for
+  the rest of the run, with or without a privacy provider
+  (`subAgentUnknownOutcome.ts`). That covers a tool whose wrapper caught the
+  exception and returned the withheld notice, too (the tool bridges,
+  `toolErrorFromException`): `isWithheldToolErrorNotice` recognises it by
+  shape, so a tool that imitates the shape only blocks its own repeat. A
+  different input still runs, and so does a retry after an ordinary returned
+  `Error:` hint.
+
+**Per entry point.** What reaches a model provider depends on where the call
+came in:
+
+| Entry point | Handle a sub-agent's model loop runs under | Tool errors on any model wire |
+|---|---|---|
+| Chat turn (`Orchestrator`, privacy provider installed) | The turn's handle, inherited through `turnContext` | Withheld or redacted at every seam, receipted |
+| Public MCP endpoint (`/api/v1/mcp`) | The call's fail-closed gate, as its nested handle `forNestedCalls()` | Withheld for the sub-agent's model (the gate redacts nothing); the API caller gets a masked result, a dispatcher notice for a throw, or a refusal for a returned `Error:` text |
+| Loopback MCP for the subscription CLI | None (§3a, #1087) | Raw — see Residuals |
+| Any path without a privacy provider | None | Raw (parity) |
+
+On the public endpoint the gate's nested handle interns a sub-agent's inner
+tool results through the same fail-closed masking and keeps the operator
+bypass off. Its masking never satisfies the endpoint's `masked()` check — that
+signal stays about the call's own result — but a failure inside the sub-agent
+discards the call (`maskingFailed()`). No tool runs there without a handle: a
+call with no provider installed is refused while masking is required, the
+endpoint refuses a dispatcher that cannot receive the gate (no `withPrivacy`)
+before dispatch, and the wired dispatcher runs no handler without one
+(`requirePrivacyHandle`). `test/publicMcp/publicMcpSubAgentPrivacy.test.ts`
+drives a real `LocalSubAgent` through the production wiring and asserts on
+what its provider receives.
+
+The kernel's own refusals from `dispatchToolInner` (tool unavailable, not
+granted, unknown tool) name only the tool and its plugin; they are exempted by
+per-dispatch provenance, never by their shape, so a provider that cannot
+redact does not blind the model to its own plumbing.
+
+**Connect-prompt provenance.** The connect prompt is exempted the same way.
+Each seam opens an `McpAuthPromptMint` (`mcp/mcpAuthPromptMint.ts`) around one
+dispatch: a chat-path tool call, an MCP input replay, a `ToolDispatchService`
+call, a sub-agent's tool call. `McpManager.handleFailure` records the exact
+prompt it returns into the open dispatch's mint and every mint around it (a
+sub-agent's tool call is part of the parent's dispatch; sibling dispatches
+never share one), and the seam asks `isGuardedControlFlowResult(result, mint)`:
+the `Error:` prefix, or a result equal byte for byte to a prompt recorded in
+that dispatch. A remote server can
+put the prefix at the start of a text block (`renderToolResult` passes those
+through verbatim); it cannot write the mint, and a result equal to a recorded
+prompt carries nothing the prompt did not. Any other text that starts like the
+prompt is tool data and is interned, and `guardControlFlowResult`, if handed
+one anyway, applies the returned-error policy. The mint has its own
+`AsyncLocalStorage` rather than a turn-context field: the standalone
+dispatcher runs outside a turn, and the skill-binding and plugin `ctx.mcp`
+paths re-scope the turn context with a rebuilt store.
+
+**Producers.** The in-tree wrappers that returned `Error: ${err.message}` keep
+only text they write themselves (typed quota/auth/config errors, a provider's
+or renderer's HTTP status, kernel refusals, a schema miss on the model's own
+input) and return the withheld notice for any other exception through
+`toolErrorFromException` (`@omadia/plugin-api`): the three platform tool
+bridges (`bridgedToolError`), web search, diagrams, discussion, transcription,
+`manage_routine`, `query_dataset`, the long-running task handlers and
+`createDomainTool`. The last one matters because `subAgentResultV4` hands a
+sub-agent's final text to the parent unchanged once the sub-agent interned a
+dataset. A typed error is not authored text just because the plugin defines
+its class: the web-search providers and the Kroki client used to fold a
+caught transport exception and an upstream response body (Kroki quotes the
+diagram source back) into the message. Both now ride on `cause` and `body`,
+and the two tools build their result from the provider id or diagram kind and
+the HTTP status alone, never from the message, logging the error with its
+cause and body under the result's ref. The seam is the backstop for every
+producer that still returns exception text: external plugins, the office
+plugin, remote MCP error bodies. It does not catch a name in running prose
+without C1, which is why a wrapper must not forward foreign text in the first
+place.
+
+**Diagnostics.** The full error — message, stack, cause — is logged once, at
+error level, under the notice's `ref`: the turn's correlation id on the chat
+and sub-agent paths (#641 — the id a degraded turn shows as
+`<turn-incomplete ref="…">`), the caller's request id on the dispatcher path
+when it sent one, otherwise a fresh `err_…` token. The server log is the only
+place the driver text can be recovered. Receipt entries are PII-free by
+contract: tool name, carrier, outcome, byte count, masked span types.
+
+**Provider pairing.** `redactToolErrorText` and `recordToolError` are optional
+members of `PrivacyGuardService` (`@omadia/plugin-api` 1.20.0). The bundled
+`@omadia/plugin-privacy-guard` implements both from 0.6.0 on, together with
+the verifier's members (§6e). The plugin is not on the Hub, and a ZIP that
+claims its id is refused (`package.id_conflict_bundled`) unless the operator
+set `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`. A provider without the redactor is
+therefore an older copy someone put in place of the bundled one on purpose,
+or another `privacy.redact@1` provider. It makes the kernel withhold every
+returned `Error:` text (fail closed) and log `does not implement
+redactToolErrorText` once per process. The public MCP gate
+(`createFailClosedPrivacyGate`) answers `redactToolErrorText` with `withheld`,
+so a returned error is refused as unmasked content by `assertMaskingCrossed`,
+while a thrown error's notice is dispatcher-authored (`origin: 'dispatcher'`)
+and served. Its nested handle gives a domain tool's sub-agent the same answer,
+so that sub-agent's model reads the withheld notice, never a redacted hint,
+and no per-turn detector state builds up for a request that is never
+finalized.
+
+**Residuals.**
+
+- Parity: without a privacy provider nothing is masked, tool results included,
+  so thrown and returned error text reaches the model raw — on the public MCP
+  endpoint too, but only when an operator set
+  `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING`. The same holds for
+  the intern-exempt self tools (`privacyInternPolicy.ts`), and for a returned
+  error of a plugin the operator set to bypass; a thrown message is withheld
+  even under bypass.
+- On the public MCP endpoint a sub-agent cannot correct itself from an inner
+  error hint, since the gate withholds that text, and the endpoint has no
+  sub-agent dataset bridge: the sub-agent's answer is interned again as data.
+- A plugin tool that asks a model itself through `ctx.llm` sends its request
+  as it built it, on every entry point: the accessor consults no privacy
+  handle. Only the tool's result crosses the shield (handoff §13).
+- The subscription-CLI path has no Privacy Shield at all (§3a, #1087): its
+  loopback dispatcher runs without a privacy handle, so both carriers pass raw
+  there.
+- C0 detects no names; C1 does when it is configured. Without C1 a returned
+  error keeps a name that stands in running prose, or in a record the
+  classifier does not recognise as one: positional fields
+  (`Partner(42, 'Jane Doe')`, Go's `%v`) or `name=…` pairs outside any
+  record. A record echo in one of the shapes in the table is withheld whole.
+- Only `LocalSubAgent` refuses to repeat a call that ended in an exception.
+  The parent chat loops and the subscription-CLI sub-agent (whose loop the
+  `claude` CLI owns) do not block a repeat; their model reads the notice's
+  warning only where it reads the notice. No loop blocks a repeat with
+  another input, or one after a returned failure whose outcome is just as
+  unknown (an MCP request timeout). Tools carry no write-capability metadata;
+  running a write at most once needs it, together with an idempotency key
+  (handoff §13).
+- A connect prompt produced by a sub-agent's tool call passes the parent seam
+  as control flow only when the sub-agent's answer repeats it byte for byte.
+  Any other answer takes the ordinary sub-agent path: interned, or bridged
+  with the datasets the sub-agent interned. On the interned path a Connect
+  block inside a paraphrased answer does not reach the final answer the chat
+  UI scans for it.
+- Two server-side sinks read the raw result before the seam:
+  `captureRawToolResult` (routine templates) and the MCP → Knowledge-Graph
+  ingest (#459), which stores a value-free byte count for a non-JSON error
+  unless the server is bypassed.
+- The run-trace `error` channel for turn-level failures is outside this policy.
+- One sub-agent failure can produce two receipt entries, one from the
+  sub-agent's seam and one from the parent's.
+
+The predicate every seam consults, `isGuardedControlFlowResult`
+(`toolErrorRedaction.ts`), is **anchored**: the `Error:` prefix, or a whole
+result equal to a connect prompt minted in that dispatch. It never matches a
+substring, so a marker planted in one cell cannot unmask a multi-row result
+such as a decrypted `query_dataset` page (§6b). `isControlFlowToolResult`
+(`@omadia/plugin-api`) still classifies by prefix alone, and no seam decides
+with it; the privacy guard uses it only to flag a rendered one-cell dataset as
+a failure. The shape classifier has **no** control-flow exemption — verbs
+re-classify derived datasets, so one would turn `filter` + `select` into a
+cleartext channel.
 
 ### 6d. `agents.privacy_profile` is not a Privacy Shield control (#978)
 
 `agents.privacy_profile` (`'strict' | 'default'`, CHECK since migration `0001`) is written by the operator API (`POST` / `PATCH /api/v1/operator/agents`) and `scripts/agents-apply.ts`, and reported by `GET /api/v1/operator/agents`, `GET /api/v1/operator/agents/enabled`, `POST /api/v1/operator/agents/resolve-channel` and the Agent Builder graph (`agentNode()` in `routes/agentBuilder.ts`; contract field `AgentNode.privacyProfile` in `@omadia/plugin-api`). No runtime path reads it: `AgentRuntimeConfig` has no posture field, `buildForAgent` does not forward the value, and nothing branches on `'strict'`. What masks a turn is the `privacy.redact@1` provider, reached through the late-bound `OrchestratorDeps.privacyGuard` lookup that the registry passes unchanged into every agent's build, plus the tool-name-only exemptions in `privacyInternPolicy.ts`; neither receives the agent's profile. `strict` therefore behaves exactly like `default`, including for the first-boot fallback agent that `registry/onboarding.ts` seeds as `strict`: a `strict` value in the table, the API or the UI is not evidence that an agent's traffic is masked.
 
 Since #978 a change to the value is a metadata `update` (registry row refreshed, live orchestrator kept), not a `rebuild`; the web UI no longer offers a toggle and labels the value "(not enforced)"; migration `0061` records the status as a column comment. Making `strict` enforce anything is a security decision that must update this section: the posture has to reach `AgentRuntimeConfig`, survive the sub-agent boundary (`turnContext.privacyHandle` in `localSubAgent.ts` / `toolDispatchService.ts`), go back into `runtimeChangeReasons` in `applyDiff.ts`, and it changes behaviour for the seeded fallback agent without operator action (open decision: `docs/middleware-agent-handoff.md` §13).
+
+### 6e. The answer verifier's model requests run under the turn's privacy view
+
+The answer verifier (`verifier@1`, wrapped around the orchestrator by
+`VerifierService` whenever the bundle is published) sends model requests
+AFTER the turn produced its answer: one claim extraction, one evidence-judge
+request per soft claim (two on a confirmed contradiction), and in enforce mode
+a correction retry. They used to run outside the turn's privacy scope, on the
+restored answer, with raw knowledge-graph evidence, after the receipt had been
+written. They are now bound to the turn's own privacy handle:
+
+- **Hand-over instead of finalize.** Before every turn it runs (first sample,
+  borderline re-sample, correction retry), the wrapper calls
+  `markPrivacyFinalizeHeld(input)`. The turn then does not finalize: it returns
+  without a receipt and hands a `PrivacyEgressContinuation`
+  (`harness-orchestrator/src/privacyEgress.ts`) over, keyed on the caller's
+  input object (one-shot mark, weak maps). All three finalize sites hand over —
+  buffered `runTurn`, streaming `done`, streaming Direct Line. The wrapper
+  verifies through the continuation and then calls `finalize()` exactly once
+  per turn (`EgressLedger`, also on errors and early client exits), which
+  drops the surrogate map, dataset store and C1 cache and writes the
+  `turn_receipts` row with the model attribution captured at hand-over. One
+  receipt and one hash-chained row cover the turn and its verifier.
+- **What the verifier sees.** The extractor gets the turn's WIRE view, as the
+  turn recorded it (`TurnContextValue.wireView`): the prompt exactly as the
+  turn's model received it — normalised (an MCP input-card reply is its label,
+  never the envelope with the values the user typed for a third-party server)
+  and masked under the turn's `mask_user_prompt` policy (as written when the
+  operator left it off — the turn's own model saw the same) — and the answer as
+  the model wrote it, before restore. The request is admitted through the view
+  (`admitWireView`, one verifier request in the receipt) but never masked a
+  second time, which would read the turn's placeholders as new values. The
+  pipeline's own `userMessage` (server-side checks; the extraction prompt when
+  no shield is installed) is the same normalised text, never the envelope.
+  A server-rendered v4 answer (`answerSource: 'privacy-render'`, real values
+  the model never saw), a Direct Line relay and the privacy refusal are never
+  verified. Claims come back with placeholders and are restored server-side
+  (`harness-verifier/src/claimRestore.ts`); a claim whose span cut through a
+  placeholder is dropped, and an amount or date the model parsed from a
+  placeholder is re-read from the real literal it stands for — dropped when no
+  single literal can be tied to it, never compared as the placeholder's
+  value; a date or graph-id claim whose check would then read the whole
+  restored sentence is not checked at all. The deterministic re-query and the
+  graph lookup run on real values and never leave the process.
+- **Evidence is projected regardless of the flag.** The judge's claim,
+  context and knowledge-graph evidence are projected in ONE call per request
+  through the turn's surrogate map (`projectVerifierText`): identity-shaped C0
+  spans, the operator deny-list, the C1 detector when wired, the node's display
+  name and free-text fields (`EvidenceSnippet.identityValues`, deny-by-default
+  like the v4 classifier), and the turn's known real values. Dates and amounts
+  stay, as in a v4 digest. Node ids never leave the process (an ingested
+  record's id can embed an external key or a channel user id): the request
+  names each snippet by a handle minted for that request (`ev-1`, `ev-2`, …),
+  the handle the judge cites is resolved to its snippet server-side (a handle
+  the request did not print resolves to nothing), and a node id or a string
+  record key (`id=…`) that the evidence text repeats is always replaced like a
+  display name. Numeric record keys stay, as in a v4 digest. One map means the
+  same person is the same placeholder in claim and evidence, so the judge can
+  still verify. A real value that equals a surrogate minted earlier in the
+  turn blocks the request.
+  Evidence is capped (3 snippets × 1200 chars) and the C1 timeout/degrade
+  latch applies as for the prompt. Because a contradiction judged on
+  placeholders can be an artefact of the substitution, it is reported as
+  `unverified` and never blocks an answer.
+- **Fail closed.** A blocked mask or projection sends nothing (the stage
+  returns no claims / `unverified`). With a shield installed but no
+  continuation handed back, the wrapper does not verify at all. A provider
+  without `projectVerifierText` blocks every judge request. One without
+  `countUnresolvedSurrogates` reports no placeholders, so the check under
+  **Correction retry** never keeps a second answer back. The bundled privacy
+  guard implements both from 0.6.0 on.
+- **Correction retry.** Behind a shield the hint names the contradicted claims
+  but carries no truth values and no value-bearing detail (`Δ=…`, the judge's
+  rationale); when the turn's policy would still alter the hint, the retry is
+  withheld (badge `failed`). The retry turn masks the caller-supplied hint like
+  its prompt (`composeWireExtraSystemHint`). A second answer that still carries
+  unresolved placeholders (`countUnresolvedSurrogates` — the model reworded one
+  and restore could not map it back) never replaces the first: neither a
+  still-blocked retry answer nor a blocked re-sample taken over a borderline
+  first answer, whether the retry then ran, failed or was withheld. The first
+  answer is shown with the badge the verdict earned (`failed`). Without a
+  shield the hint is unchanged: tool results reach that model raw anyway.
+  Restore only maps a placeholder's exact string back, so the check also
+  compares dates and amounts by value (`valueLiterals.ts`): a date placeholder
+  written as ISO, slashed, unpadded or with a written month (six locales), or
+  an amount placeholder regrouped or given a scale word ("Tsd.", "k", "T€",
+  "Mio."), still counts. A date or amount literal whose value cannot be read
+  matches every placeholder of its kind (fail closed). Open (handoff §13):
+  spelled-out numbers and dates without a year are not read, and minting
+  compares strings, so a real date or amount can get a placeholder of the
+  same value in another spelling — the request then carries that value, and
+  the check flags the restored real value, which only withholds a second
+  answer.
+- **Receipt.** Verifier spans are booked in `PrivacyReceipt.verifierEgress`
+  (request count + span types), never in `maskedPromptSpans`; a turn whose
+  only privacy-relevant event was the verifier still gets a receipt. On
+  streaming turns `done` is held until the inner stream has drained (steering
+  and turn-auth cleanup run first) and the verifier finished, then goes out
+  with the receipt, followed by the `verifier` event.
+
+Callers: every `bundle.agent` caller goes through the wrapper — chat routes,
+channel adapters, the scheduler (`scheduleWorker.ts`) and conductor steps
+(`realStepEffects.ts`, `builderAgent.ts`). The subscription-CLI chat runtime
+is never wrapped (§3a); the verifier's own provider may be `claude-cli`, which
+receives the same masked text. Deliberately unchanged: `verifier_contradictions`
+stores claim text, claimed and truth values restored to real values
+(server-side, same trust zone as the session log); prompt masking stays
+default-off, so the extraction request carries the raw prompt when the
+operator chose so. Why a continuation and not the in-turn snapshot used for
+fact extraction: the judge masks evidence fetched after the turn with the
+live detectors and the same map, and only an unfinalized turn still has both.
 
 ## 7. Conductor generic webhooks (#437)
 
@@ -1286,7 +1666,9 @@ entry meaningful.
 **PII masking.** Chat turns from this ingress go through the exact same
 `CoreApi.handleTurnStream` dispatch as every other channel (Teams,
 Telegram, Omadia UI) — no second, parallel response path — so
-privacy-guard's prompt masking and receipt behavior apply identically.
+privacy-guard's prompt masking and receipt behavior apply identically. That
+includes the answer verifier's post-turn model requests: they run under the
+turn's own privacy view and are booked on the same receipt (§6e).
 
 **Operator deny-lists and the miss-report queue (#760).** Operators can add
 literal terms and vetted regex patterns (`custom_terms` / `custom_patterns`
@@ -3116,7 +3498,51 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       sign-in checked (never ones read after the check), is issued only by
       a sign-in that proved the password, at most once per sign-in, and
       shares one budget per account however many of it a client holds.
+- [ ] A new model call made after `runTurn` / `chatStream` produced the
+      answer (verifier stages, extractors, judges, any post-turn pass) sends
+      only what a `PrivacyEgressContinuation` view holds or returns (the
+      turn's recorded wire view, a projection) — never the caller's own input
+      (it may still be an MCP input-card envelope) and never text handed to a
+      bare `LlmProvider` — and the continuation's `finalize` runs after that
+      call, exactly once, also on the error path (§6e). A new finalize site in
+      the orchestrator hands over when the turn was held. An item such a
+      request asks the model to cite (an evidence snippet) is named by a
+      handle minted for that request and resolved server-side, never by its
+      record or node id (§6e).
+- [ ] A new tool-dispatch seam that hands a result to a model opens an
+      `McpAuthPromptMint` around the dispatch, decides with
+      `isGuardedControlFlowResult(result, mint)`, routes that text through
+      `guardControlFlowResult` with the same mint, and never forwards a
+      thrown handler exception's message (`withholdThrownToolError`); see
+      `toolErrorRedaction.ts` and `mcp/mcpAuthPromptMint.ts` (§6c). No seam
+      passes a result because of its prefix alone. A new tool wrapper that
+      catches an exception returns `toolErrorFromException(...)`, not
+      `Error: ${err.message}`; only text the wrapper authors itself may reach
+      the model, and the seam still redacts it. A typed error's message
+      counts as authored only when nothing foreign is folded into it: a
+      caught exception goes on `cause`, an upstream response body on a
+      separate field, and the wrapper builds its result from typed fields
+      (status, provider id), not from the message.
+- [ ] A host that runs tool handlers outside a chat turn makes its privacy
+      handle the ambient `turnContext.privacyHandle` while a handler runs
+      (`runHandlerInPrivacyScope`, as `ToolDispatchService` does), so nothing
+      beneath the handler — a sub-agent's model loop above all — calls a model
+      without the guard; a host that requires masking runs no handler without
+      a handle (`requirePrivacyHandle`). A new `turnContext.run(...)` re-scope
+      on that path carries `privacyHandle` over (§6c).
+- [ ] A new cell or value path in `@omadia/plugin-office` stores no
+      caller-supplied formula result (formula cells are `{ formula }` only),
+      passes no caller-supplied object to exceljs, header included (exceljs
+      reads any object by its shape, §5a; a formula cell is rebuilt as
+      `{ formula }`; `office-cell-values.test.ts` pins it), and runs every
+      formula through the formula policy (`formulaPolicy.ts`, §5a:
+      `assertFormulaStaysInWorkbook` for a cell,
+      `assertComputedColumnStaysInWorkbook` for a template). A function added
+      to `formulaFunctions.ts` has been checked to compute only over the
+      workbook. An exceljs upgrade re-checks which characters its XML encoder
+      changes against `formulaText.ts`. `office-formulas.test.ts` pins all of it, with rejected-formula
+      rows for every refused function family and reference form.
 
 ---
 
-*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key).*
+*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*

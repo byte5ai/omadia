@@ -153,6 +153,62 @@ export interface VerifierInput {
    * the pipeline skips the citation check in that case.
    */
   knowledgeGraphToolsCalled?: boolean;
+  /**
+   * The privacy view of the turn being verified, present when that turn ran
+   * behind a Privacy Shield (`privacy.redact@1`). Every stage that sends
+   * text to a model (claim extractor, evidence judge) goes through it, so
+   * the verifier's requests fall under the same policy and the same
+   * surrogate map as the turn itself. `userMessage` / `answer` above stay the
+   * REAL values: the trigger router and the deterministic re-query run on
+   * them server-side and never leave the process.
+   */
+  privacy?: VerifierPrivacy;
+}
+
+/**
+ * Per-turn privacy view for the verifier's model requests. Supplied by the
+ * kernel from the turn's own privacy handle (never built by the verifier
+ * plugin), valid until the turn's receipt is finalised — which happens only
+ * after the verifier finished.
+ *
+ * Contract for callers: text leaves the process only as the turn's wire view
+ * (`wireUserMessage`, `wireAnswer`) in a request admitted by `admitWireView`,
+ * or as the return value of `projectForWire` — one of these calls per
+ * outbound request (the turn receipt counts each call as one verifier
+ * request). Both THROW when the request cannot be admitted; the caller must
+ * then send nothing.
+ */
+export interface VerifierPrivacy {
+  /**
+   * The user message exactly as the turn's model received it: normalised
+   * (an MCP input-card reply is its label, never the envelope with the values
+   * typed for a third-party server) and masked under the turn's prompt-mask
+   * policy (as written when the operator left `mask_user_prompt` off). The
+   * claim extractor sends this — never `VerifierInput.userMessage`.
+   */
+  readonly wireUserMessage: string;
+  /**
+   * The answer exactly as the turn's model produced it: before surrogate
+   * restore, never a server-rendered answer holding values the model did not
+   * see. The claim extractor reads this instead of `VerifierInput.answer`.
+   */
+  readonly wireAnswer: string;
+  /**
+   * Admit one request that carries the turn's wire view and static prose
+   * only. Nothing in it is masked again — the view already went through the
+   * turn's policy, and a second pass would read its placeholders as new
+   * values — but the request leaves the process and is counted.
+   */
+  admitWireView(): Promise<void>;
+  /**
+   * Project a real, verifier-composed text (claim plus knowledge-graph
+   * evidence) through the turn's surrogate map, whether or not
+   * `mask_user_prompt` is on. `identityValues` (node ids, display names and
+   * free-text fields of the evidence) are always replaced.
+   */
+  projectForWire(text: string, identityValues: readonly string[]): Promise<string>;
+  /** Invert the turn's surrogate map. Server-side only — never sent. */
+  restore(text: string): Promise<string>;
 }
 
 /** Badge used by the Teams card to communicate verifier status. */

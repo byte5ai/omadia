@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import {
@@ -443,5 +443,49 @@ describe('conductorDiscussions peer gate (#1018)', () => {
     const { capability, started } = gated(['hr', 'accounting']);
     await capability.startHere({ partners: ['accounting'], topic: 'T' });
     assert.equal((started[0] as { participants: string[] }).participants.join(','), 'hr,accounting');
+  });
+});
+
+describe('discussion tools — a failure that is not a kernel refusal is withheld', () => {
+  const EMAIL = 'erika.mustermann@example.com';
+  const dbError = (): Error =>
+    Object.assign(new Error(`insert failed: Key (owner)=(${EMAIL}) exists`), { code: '23505' });
+  const quietly = async (run: () => Promise<string>): Promise<string> => {
+    const errorLog = mock.method(console, 'error', () => {});
+    try {
+      return await run();
+    } finally {
+      errorLog.mock.restore();
+    }
+  };
+
+  it('discussion_start keeps a kernel refusal and withholds anything else', async () => {
+    const refused = createDiscussionStartHandler({
+      resolveDiscussions: () =>
+        fakeCapability({ startHere: async () => Promise.reject(new DiscussionPeerDisabledError('hr')) }),
+    });
+    assert.match(await refused({ with_agents: ['accounting'], topic: 'T' }), /^Error: agent 'hr' is not enabled/);
+
+    const failing = createDiscussionStartHandler({
+      resolveDiscussions: () => fakeCapability({ startHere: async () => Promise.reject(dbError()) }),
+    });
+    const out = await quietly(() => failing({ with_agents: ['accounting'], topic: 'T' }));
+    assert.equal(out.includes(EMAIL), false, `the exception text reached the model: ${out}`);
+    assert.match(out, /^Error: tool `discussion_start` failed with Error \(code 23505\) \[ref /);
+  });
+
+  it('discussion_partners does the same', async () => {
+    const refused = createDiscussionPartnersHandler({
+      resolveDiscussions: () =>
+        fakeCapability({ partnersHere: async () => Promise.reject(new DiscussionNoConversationError()) }),
+    });
+    assert.match(await refused({}), /^Error: no conversation could be attributed/);
+
+    const failing = createDiscussionPartnersHandler({
+      resolveDiscussions: () => fakeCapability({ partnersHere: async () => Promise.reject(dbError()) }),
+    });
+    const out = await quietly(() => failing({}));
+    assert.equal(out.includes(EMAIL), false);
+    assert.match(out, /^Error: tool `discussion_partners` failed with Error \(code 23505\)/);
   });
 });

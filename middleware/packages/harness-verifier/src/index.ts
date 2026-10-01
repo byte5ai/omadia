@@ -58,11 +58,13 @@ export type {
   SoftClaim,
   VerifierBadge,
   VerifierInput,
+  VerifierPrivacy,
   VerifierVerdict,
 } from './claimTypes.js';
 
 // correctionPrompt
 export { buildCorrectionPrompt } from './correctionPrompt.js';
+export type { CorrectionPromptOptions } from './correctionPrompt.js';
 
 // DeterministicChecker
 export { DeterministicChecker } from './deterministicChecker.js';
