@@ -6182,11 +6182,16 @@ async function main(): Promise<void> {
   // ExpressRouteRegistry. It authenticates each upgrade with the session
   // cookie BEFORE the handshake (same signing key as requireAuth) and backs
   // `CoreApi.registerWebSocket`. Inert for every non-WS channel; attached to
-  // the http.Server once it exists (after app.listen, below).
+  // the http.Server once it exists (after app.listen, below). The same
+  // revocation guard ends open channel sockets too: 4401 at the cookie's exp,
+  // 4403 when `announce` reports a revocation, or when the check a frame
+  // needs (verdict older than WS_SESSION_FRAME_RECHECK_MS) or the 60 s
+  // idle-socket sweep finds one.
   const webSocketRegistry = new WebSocketRegistry({
     signingKey: sessionSigningKey,
     whitelist: emailWhitelist,
     sessions: sessionRevocation,
+    channelFrameRecheckMs: config.WS_SESSION_FRAME_RECHECK_MS,
   });
 
   // #330 B3 — Principal-addressed targeted delivery ('targetedSend' service).

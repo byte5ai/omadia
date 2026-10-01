@@ -36,6 +36,50 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — channel WebSockets end with the session that opened them
+
+2026-09-30 — a channel WebSocket (today the canvas at `/omadia-ui/canvas`) was
+authenticated once, at the upgrade, and then stayed authorised until the client
+disconnected, the channel was deactivated or the process restarted. Cookie
+expiry, sign-out, an admin password reset, disabling or deleting the user and
+withdrawing an Entra identity from the whitelist never reached a socket that was
+already open, so its frames kept starting orchestrator turns as that user. The
+registry now keeps each socket's token and `exp` beside it and closes the socket
+with 4401 `session expired` at `exp`; a token without `exp`, or one that expires
+during the upgrade check, is closed before the handler runs. Handlers get the
+claims (now with `expiresAt`), never the token, and the session cookie is
+stripped from `socket.request.headers`. A revocation announced on this replica
+closes that user's sockets at once with 4403, including a socket whose upgrade
+was still being checked at that moment. Announcements are process-local, so
+every inbound frame is also authorised on its own: it reaches the handler only
+on a session check that started at most `WS_SESSION_FRAME_RECHECK_MS` (new env
+variable, default 5000, 0 = every frame) before the frame arrived. With an older
+verdict the frame waits, in order, while `evaluateSessionToken` runs again and
+the socket stops reading. That is what carries a sign-out, disable or delete
+made on another replica, or directly in SQL, to the next frame (4403), and a
+de-whitelisted Entra identity likewise. A socket that sends nothing is re-checked
+every 60 s. A failed, throwing or hung account lookup (10 s deadline) is an
+outage, not a verdict: the socket stays open, but the frames that waited on it
+are refused instead of handled, as HTTP answers 503. The canvas answers a
+refused turn with `turn_error`, still honours a refused `turn_abort`, and closes
+with 1013 instead of acking a refused handshake so the client reconnects.
+Channel handlers can see refused frames through the new optional
+`ChannelSocket.onRefusedMessage`. After the close no frame reaches the handler,
+and the canvas channel aborts the turn still running and starts none that was
+queued behind it.
+
+A renewal extends the cookie, not an open socket: the client reconnects with
+its current cookie, so an active canvas reconnects once per session window, and
+signing out anywhere closes that user's canvas too. `handshake_ack` now carries
+`sessionExpiresAt` so the client can warn the user in time (renewal stays an
+explicit click). `@omadia/canvas-core` 0.2.0 stops reconnecting on 4401
+(`unauthenticated`) and 4403 (`forbidden`) instead of retrying a cookie that can
+only be refused (a canvas switch in that state waits for the host's next
+`connect()` as well), reads its cookie from an optional provider on every
+connect, reports `sessionExpiresAt` in its `ready` status, and its stub server
+can send the field and simulate both closes (`docs/security-architecture.md`
+§10d).
+
 ### Fixed — sign-out, password reset, disable and delete end sessions on the server
 
 2026-09-30 — the admin session is a stateless JWT, and nothing on the server
@@ -69,10 +113,10 @@ where every existing row starts, so the upgrade signs nobody out. Migration
 `auth/migrations/0003_users_session_version.sql` adds `users.session_version
 INTEGER NOT NULL DEFAULT 0`; it lives in the auth series because `users` is that
 series' own table (AGENTS.md, new SQL migrations), and it runs automatically at
-boot, including on the desktop app's embedded Postgres. WebSockets and the
-builder's SSE stream that are already open when a session is revoked stay open
-for now; `SessionRevocation.onRevoked` and `check` are the seam for closing
-them (`docs/security-architecture.md` §10k).
+boot, including on the desktop app's embedded Postgres. The builder's SSE
+stream that is already open when a session is revoked stays open for now; open
+channel WebSockets close with their session (see "channel WebSockets end with
+the session that opened them", `docs/security-architecture.md` §10k).
 
 ### Fixed — desktop updater: an update the OS is too old for is no longer "up to date"
 

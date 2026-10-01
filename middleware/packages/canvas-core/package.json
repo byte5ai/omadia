@@ -1,6 +1,6 @@
 {
   "name": "@omadia/canvas-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "description": "Canonical Omadia canvas protocol core: protocol types, tree patching, store reducer, handshake FSM, WebSocket-injected socket client, precompiled ajv validators, canonical schemas, and validated primitive fixtures.",
   "type": "module",
