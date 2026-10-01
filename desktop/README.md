@@ -2,7 +2,7 @@
 
 A native, no-Docker way to run the full omadia stack locally on macOS and Windows.
 The app bundles and supervises the existing omadia kernel and admin UI, and ships
-an **embedded Postgres + pgvector** engine (PGlite) so there is no database to
+a **bundled PostgreSQL 17 + pgvector** engine so there is no database to
 install. An onboarding wizard collects your AI provider key on first run.
 
 > Status: **first version (v1)**. Wires persistence + LLM + admin UI end to end.
@@ -17,10 +17,10 @@ install. An onboarding wizard collects your AI provider key on first run.
 
 ```
 Electron main
- ├─ embedded Postgres (PGlite + vector) exposed over the wire protocol on loopback
- ├─ kernel        ← forked from Electron-as-Node, DATABASE_URL → embedded engine
+ ├─ embedded PostgreSQL 17 + pgvector on a private Unix socket (Windows: loopback TCP), SCRAM for every connection
+ ├─ kernel        ← forked from Electron-as-Node, DATABASE_URL → embedded engine as omadia_kernel
  ├─ web-ui (Next) ← forked from Electron-as-Node, MIDDLEWARE_URL → kernel port
- ├─ vault key + keychain key + provider keys ← secrets.enc, OS keychain via Electron safeStorage
+ ├─ vault key + keychain key + provider keys + DB passwords ← secrets.enc, OS keychain via Electron safeStorage
  └─ tray · auto-update · onboarding wizard
 ```
 
@@ -152,10 +152,14 @@ A full adversarial review (Forge / codex, local) was run on this code. Resolved:
   concurrent queries in <10ms with no loss. Fix: the kernel's single `graphPool`
   now honours `GRAPH_POOL_MAX`, and the desktop app sets it to `1`. This is the
   seam (one env var) that makes the no-Docker DB work without forking the kernel.
-- **No real DB auth.** Verified: `pglite-socket` accepts any credentials. Security
-  therefore rests entirely on **loopback-only** binding. The kernel previously
-  bound `::` (all interfaces); it now honours `HOST`, and the desktop app sets
-  `HOST=127.0.0.1` so the local install is never reachable on the LAN.
+- **Database authentication.** The PGlite engine accepted any credentials, and
+  the native PostgreSQL that replaced it was first initialised with `trust`.
+  Now every connection needs a SCRAM password and the kernel connects as a role
+  without superuser rights; see [Database authentication](#database-authentication).
+  The server listens on a Unix socket in a private directory (Windows:
+  loopback only). The kernel previously bound `::` (all interfaces); it now
+  honours `HOST`, and the desktop app sets `HOST=127.0.0.1` so the local
+  install is never reachable on the LAN.
 - **Setup is only marked boot-verified after a successful boot** (`completed`),
   so a failed first boot can't brick the next launch; a failed boot offers
   "Re-run setup" instead of a dead auto-boot loop. The exception is an
@@ -172,12 +176,20 @@ A full adversarial review (Forge / codex, local) was run on this code. Resolved:
 
 Accepted v1 limitations (tracked for a follow-up):
 
-- Secrets (`VAULT_KEY`, provider keys) are passed to the kernel via the child
+- Secrets (`VAULT_KEY`, provider keys, and the kernel role's database password
+  inside `DATABASE_URL`) are passed to the kernel via the child
   **environment**, readable by same-user processes (`ps eww`). A same-user
   attacker already has the data dir, so this is accepted for v1; hardening to a
-  stdin/fd handoff is a follow-up.
-- Free-port selection has a small TOCTOU window (port released before the child
-  binds). Rare on a local machine; surfaces as a boot-timeout, not corruption.
+  stdin/fd handoff is a follow-up. The database superuser's password is not in
+  that environment: it never leaves the shell.
+- Free-port selection has a TOCTOU window: a port is chosen free and released
+  before the child binds it, and the database port is free again while the
+  shell repairs a password in single-user mode. For the database this matters
+  only on Windows (macOS and Linux use a private socket and no TCP port), and
+  there another local user who binds it fails the boot rather than learning a
+  password: the shell trusts only a server whose `postmaster.pid` names the
+  process it started and that completes SCRAM. The kernel's own database
+  connections are not SCRAM-only yet; see [Database authentication](#database-authentication).
 - No app/tray icons shipped yet (Electron defaults used).
 - No Linux target in v1 (mac + win only), though the code paths are cross-platform.
 
@@ -296,10 +308,10 @@ rationale is in `docs/security-architecture.md` §10i.
 ## Secrets and recovery
 
 `secrets.enc` in the data folder holds the kernel's `VAULT_KEY` and
-`CREDENTIAL_KEYCHAIN_KEY` plus the provider API keys, encrypted with the OS
-keychain (`src/secrets.ts`). The kernel vault, stored credentials and encrypted
-dataset cells all depend on these keys, so the app treats the file as
-irreplaceable:
+`CREDENTIAL_KEYCHAIN_KEY`, the provider API keys and the two embedded-database
+passwords, encrypted with the OS keychain (`src/secrets.ts`). The kernel vault,
+stored credentials and encrypted dataset cells all depend on these keys, so the
+app treats the file as irreplaceable:
 
 - **New keys only for a missing file.** If `secrets.enc` exists but cannot be
   read, decrypted or parsed, the app leaves it untouched. Boot stops at a dialog
@@ -334,6 +346,103 @@ live file, so they help with a damaged file, not with a lost keychain entry.
 (keep it). The next start runs first-time setup with new keys. Deleting only
 `secrets.enc` is not enough, because the kernel vault in `platform-data/` would
 then no longer open.
+
+## Database authentication
+
+The embedded PostgreSQL 17 cluster asks every connection for a SCRAM-SHA-256
+password. Its `pg_hba.conf` belongs to the shell (`src/embeddedDbAuth.ts`):
+password-only rules for exactly two roles, rewritten whenever the file differs
+but only while the server is stopped, and the server starts with `hba_file`
+pinned to it on the command line. Whoever runs a client, under whichever OS
+account, gets nowhere without a password.
+
+Where it listens (`src/embeddedDbEndpoint.ts`):
+
+- **macOS and Linux:** only on a Unix socket in `<app data>/pg-socket`, a
+  directory created `0700` and checked to be owned by the desktop user, with
+  the socket itself `0700` too. There is no TCP listener at all, and the
+  kernel's `DATABASE_URL` names the socket directory as its host. No other OS
+  user can reach the server or put a listener where the shell and the kernel
+  connect. When that path is too long for a socket (about 100 bytes, a long
+  home directory) or cannot be made private, the socket goes into a fresh
+  private directory under the OS temp folder instead, one per start. It is
+  never the chosen data folder, which may be cloud-synced.
+- **Windows:** on `127.0.0.1`. A socket there too is a follow-up (see the
+  end of this section).
+
+How the shell knows the server is its own: the server counts as started once
+its own `postmaster.pid` names the process the shell spawned, on the expected
+socket or address, with status `ready`; that check sends no credentials. Every
+connection the shell opens accepts SCRAM and nothing else
+(`src/scramOnlyConnect.ts`): a server that asks for a cleartext or MD5
+password, offers no SCRAM, or lets the client in without an exchange is
+refused before a password is sent, and SCRAM's last step makes the server
+prove it holds the password's verifier. The first login after every start is
+the superuser's and must report this cluster's data directory before the
+kernel's password goes anywhere. Before provisioning, before the verification
+and before the kernel gets its `DATABASE_URL`, the shell checks again that the
+server it started still runs and still holds its endpoint.
+
+| Role | Used by | May |
+|---|---|---|
+| `omadia` | the shell only (provisioning, extensions) | everything: it is the bootstrap superuser |
+| `omadia_kernel` | the kernel, via `DATABASE_URL` | own and change the `omadia` database and all it holds; no superuser, so no `COPY ... TO PROGRAM`, no server file access, no new roles or databases |
+
+Both passwords are random, stored in `secrets.enc`, and written and read back
+before a cluster is created or its authentication touched. The kernel gets only
+its own. The shell creates the `vector` and `pg_trgm` extensions itself,
+because pgvector is not a trusted extension and a non-superuser cannot create
+it.
+
+`omadia_kernel` owns its database, so the shell treats that database as
+untrusted when it connects there as the superuser: every maintenance connection
+pins a fixed `search_path` (system catalogs first) and the ownership transfer
+schema-qualifies its calls, so a statement the shell runs cannot be redirected
+onto an object the owning role planted. The start-up check also refuses the
+kernel role a `DATABASE_URL` if it has gained a role membership, which could
+otherwise restore a capability the restricted role is meant to lack.
+
+What a start does:
+
+- **Normal start:** the shell's `pg_hba.conf` is in place, the superuser login
+  finds this cluster and the kernel role logs in, so the shell only verifies:
+  a wrong password is refused for both roles, and the kernel role holds no
+  privilege. The server logs those two refused attempts as
+  `FATAL: password authentication failed`. That is the check, not a fault; a
+  failed check stops the start instead.
+- **First start of a cluster created before passwords were required:** before
+  the server starts, the superuser gets its password in PostgreSQL's
+  single-user mode (`postgres --single`, which opens no port), then
+  `pg_hba.conf` switches to passwords. Only then does the server listen, and
+  `omadia_kernel` is created and takes over the database and every object the
+  kernel had created. Logged at warn (`migrating a trust-authenticated
+  cluster`).
+- **Stored password refused** (a lost or regenerated `secrets.enc`, a `pgdata`
+  snapshot restored without its `.secrets.enc`): the shell stops the server,
+  sets the password in single-user mode and starts it again. Nothing listens
+  in between, so at no point does anyone get in without a password. Logged at
+  warn (`single-user mode`).
+- **Dev tree without pgvector:** the shell logs that `vector` is not installed
+  and continues; the kernel's graph migration then fails as it always has there.
+
+**Going back to an older version:** a build from before passwords were required
+connects without one, so it cannot open a migrated cluster. Restore the
+pre-update snapshot (`snapshots/pgdata-pre-<version>-<stamp>/` as `pgdata/`,
+its `.secrets.enc` as `secrets.enc`); a later update migrates it again.
+
+**What is left on Windows.** The loopback port is free while the server is
+stopped: between choosing the port and starting the server, and during a
+single-user password repair. Another local user can bind it in that window.
+The server then fails to start, so the boot fails (the next start picks a free
+port); the shell's SCRAM-only logins hand that listener no password, and its
+`postmaster.pid` check never takes it for the server. The kernel's own
+connections use a stock pg client, though: if the server stops while the
+kernel runs and another user binds the port before the kernel reconnects,
+that listener could ask the kernel for its password in cleartext. Closing that
+is a follow-up: a SCRAM-only client for the kernel's pools, or a private socket
+on Windows too (`docs/middleware-agent-handoff.md` §13). macOS and Linux are
+not affected: the private socket directory has room for no one else's
+listener.
 
 ## Capability switches
 

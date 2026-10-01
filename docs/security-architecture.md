@@ -1248,7 +1248,12 @@ explicit here so a deployment can reason about them:
 
 At a minimum, your deployment vault holds:
 
-- Database connection string(s).
+- Database connection string(s). On the desktop app the kernel keeps its
+  first-boot DSN here too. On installs first set up with password
+  authentication it names the restricted `omadia_kernel` role and carries
+  that role's password; an upgraded install keeps its older passwordless
+  DSN, which the new `pg_hba.conf` refuses and the live `DATABASE_URL`
+  overrides (§8b).
 - Object-storage access key + secret.
 - HMAC signing secret for diagram URLs.
 - Upstream API tokens (one per integration).
@@ -1272,7 +1277,11 @@ itself and hands them to the kernel as env vars on every spawn:
   database, a separate trust domain.
 - The provider API keys entered in the setup wizard.
 
-All three live in `secrets.enc` in the data folder, encrypted at rest with
+The same file holds the embedded Postgres passwords (§8b): the bootstrap
+superuser's never leaves the shell, the kernel role's reaches the kernel only
+inside `DATABASE_URL`.
+
+All of these live in `secrets.enc` in the data folder, encrypted at rest with
 Electron `safeStorage` (Keychain on macOS, DPAPI on Windows, Secret Service on
 Linux). A packaged build refuses to write it in plaintext. Only an unpackaged
 dev run may, with a warning, and such a dev blob stays readable once OS
@@ -1289,7 +1298,8 @@ rules, in the Electron-free `secretsBlob.ts` and `secretsStore.ts`:
   `SecretsUnreadableError` and writes nothing. The stages are: unreadable
   (`read`), keychain refused (`decrypt`), no OS encryption in a packaged build
   (`encryption-unavailable`), not JSON (`parse`), and wrong fields (`shape`,
-  where both keys must base64-decode to 32 bytes, the kernel's own check). Boot
+  where both keys must base64-decode to 32 bytes, the kernel's own check, and
+  the database passwords, when present, must be 64 hex characters). Boot
   then stops at a dialog with advice for the failed stage
   (`secretsRecovery.ts`) and without "Re-run setup". A refused keychain is
   presented as "the file is most likely intact; allow access", never as
@@ -1333,6 +1343,149 @@ rules, in the Electron-free `secretsBlob.ts` and `secretsStore.ts`:
 **Starting over** is a manual step: move the whole data folder aside, or pick a
 different, empty folder in setup. Deleting only `secrets.enc` produces new keys
 next to the old kernel vault, which the kernel then cannot open.
+
+## 8b. Desktop embedded Postgres: SCRAM passwords and a restricted kernel role
+
+The desktop app runs its own PostgreSQL 17 cluster (`desktop/src/embeddedDb.ts`).
+It used to be initialised with `initdb -A trust`: any local process, under any
+OS user, that reached the loopback port could log in as the bootstrap superuser
+without a password, and the kernel's own `DATABASE_URL` named that superuser,
+which can run `COPY ... TO PROGRAM` as the desktop user.
+`desktop/src/embeddedDbAuth.ts` replaces that:
+
+- **Two roles, random SCRAM passwords.** `omadia`, the bootstrap superuser, is
+  used only by the shell (provisioning, extensions). `omadia_kernel` is what
+  the kernel connects as: it owns the `omadia` database and everything in it,
+  so the kernel's own migrations run unchanged, but it is `NOSUPERUSER
+  NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`. Both passwords are 32
+  random bytes (hex) in `secrets.enc` (§8a). The superuser's never leaves the
+  shell process. The kernel's reaches the kernel only inside `DATABASE_URL`,
+  under the same same-user environment boundary as `VAULT_KEY` (an accepted v1
+  limitation, `desktop/README.md`). Passwords reach the server as SCRAM
+  verifiers, so a failing `ALTER ROLE` cannot put one in the server log, which
+  the shell copies into its own.
+- **The shell owns `pg_hba.conf`.** Rules for exactly those two roles, all
+  `scram-sha-256`, no `trust`. The file is rewritten (temp file, rename)
+  whenever it differs, and only while the server is stopped, so a running
+  server never holds rules the shell did not write and no reload is ever
+  needed. The server starts with `-c hba_file=<pgdata>/pg_hba.conf`
+  (`desktop/src/embeddedDbEngine.ts`, which also runs `initdb` and the
+  single-user repairs), so `postgresql.auto.conf` cannot point it
+  elsewhere. No rule depends on the
+  client's OS identity (no `peer`, no `trust`): without the password, nobody
+  gets in.
+- **A private endpoint on macOS and Linux** (`desktop/src/embeddedDbEndpoint.ts`).
+  The server listens only on a Unix socket, `listen_addresses` empty, in
+  `<userData>/pg-socket`: created `0700`, checked to be a plain directory owned
+  by the desktop user, socket `0700` as well. The kernel's `DATABASE_URL` names
+  that directory as its host. Another OS user can neither connect nor put a
+  listener of their own where the shell and the kernel connect, so there is no
+  port to squat while the server is stopped. A socket path too long for
+  `sun_path`, or a directory that cannot be made private, moves the socket to a
+  fresh private directory under the OS temp folder, per start; never into the
+  chosen data folder, which may be cloud-synced. Windows keeps `127.0.0.1`.
+- **The shell trusts a server only after it has proven itself.** Readiness is
+  read from the server's own `postmaster.pid`: the process the shell spawned,
+  the expected port and socket directory or address, status `ready`. That
+  sends no credentials, and an authentication error is never taken as "up".
+  Every shell connection accepts SCRAM-SHA-256 and nothing else
+  (`desktop/src/scramOnlyConnect.ts`): a cleartext or MD5 request, a SASL offer
+  without SCRAM, or an AuthenticationOk without a completed exchange is refused
+  before a password is sent, and pg's server-signature check makes the server
+  prove it holds the role's verifier. The first login after every start is the
+  superuser's and must report this cluster's `data_directory` before the kernel
+  password is offered. Before provisioning, before the verification and before
+  the DSN is handed to the kernel, the shell confirms again that its server
+  still runs and still holds the endpoint.
+- **Residual risk on Windows.** The loopback port is free while the server is
+  stopped (between port selection and start, and during a single-user repair).
+  Another local user who binds it there fails the boot but learns no password
+  and is never taken for the server. The kernel's pools use a stock pg client,
+  though: if the server stops while the kernel runs and another user binds the
+  port before the kernel reconnects, that listener could ask the kernel for its
+  password in cleartext. A SCRAM-only client for the kernel's pools (or a
+  socket on Windows) is the open follow-up
+  (`docs/middleware-agent-handoff.md` §13).
+- **Extensions are created by the shell.** pgvector's control file is not
+  `trusted`, so a non-superuser cannot `CREATE EXTENSION vector`. The shell
+  creates `vector` and `pg_trgm` as superuser, and the kernel's own
+  `CREATE EXTENSION IF NOT EXISTS` then short-circuits before its privilege
+  check. An engine without pgvector's files (an unstaged dev tree) is logged
+  and tolerated.
+- **Ordering that prevents a lockout.** New passwords are written to
+  `secrets.enc` and read back before the cluster is created or touched. On a
+  cluster from the trust era the superuser password is set first, and only
+  then does `pg_hba.conf` require passwords. The kernel password is set last,
+  after its database, the extensions and the ownership transfer, so an
+  interrupted run leaves a kernel that cannot log in, and the next start
+  repeats it.
+- **Password changes without a listener.** Whenever the superuser password
+  cannot be set over an authenticated connection, the shell sets it in
+  PostgreSQL's single-user mode (`postgres --single`) with the server stopped:
+  no port is open and no pg_hba.conf is consulted, and the session is the
+  bootstrap superuser by definition. That covers the trust-era migration, which
+  runs before the updated app ever starts the server, and a cluster that
+  refuses the stored password (a lost or regenerated `secrets.enc`, a `pgdata`
+  snapshot restored without its secrets copy): stop, single-user
+  `ALTER ROLE`, start. Both are logged at warn level. There is no moment in
+  which the running server accepts a connection without a password; a lost
+  secrets file still does not lock the local database for good.
+- **Trust-era ownership.** Everything the old kernel created as superuser is
+  moved to `omadia_kernel` one kind at a time (schemas, relations, sequences,
+  types, routines; extension members stay), because Postgres refuses
+  `REASSIGN OWNED` for the bootstrap superuser
+  (`desktop/src/embeddedDbOwnership.ts`).
+- **Superuser sessions treat the database as untrusted.** `omadia_kernel` owns
+  the `omadia` database, so it can set a per-database `search_path` and create
+  objects in schemas it controls (for example a function whose name a shell
+  statement would otherwise call unqualified). Every connection the shell opens
+  therefore pins `search_path = pg_catalog, pg_temp` as a startup option, which
+  outranks any `ALTER DATABASE`/`ALTER ROLE ... SET`, and the ownership
+  transfer both schema-qualifies its calls (`pg_catalog.format`) and pins its
+  own search_path (`desktop/src/embeddedDbOwnership.ts`). A statement the shell
+  runs there as the superuser cannot be redirected onto an object the owner
+  planted.
+- **Verification fails closed.** Every start ends with a check against the
+  running server: a random wrong password must be refused (`28P01`) for both
+  roles, and the kernel role must hold none of the privileged attributes and be
+  a member of no role — a membership (say in a predefined role such as
+  `pg_execute_server_program`) would restore a capability without setting an
+  attribute. Otherwise the start fails, the server is stopped and no DSN is
+  handed out. The two refused attempts appear in the log as `FATAL`; that is
+  the check.
+- **Rollback.** A build from before this change connects without a password
+  and cannot open a migrated cluster. The pre-update snapshot (§8a), taken
+  before the new version first starts, is the way back.
+- **The kernel vault's copy of the DSN.** The kernel freezes its first-boot
+  `DATABASE_URL` into its vault (`database_url`, §8) only when the database
+  plugin is first installed. On an install first set up with this version
+  that copy carries the kernel role's password, encrypted with `VAULT_KEY`;
+  an upgraded install keeps its older passwordless superuser DSN, which the
+  new `pg_hba.conf` refuses. On the desktop the live `DATABASE_URL` wins
+  (`OMADIA_EMBEDDED_DB=1`), so neither a stale copy nor one left behind by a
+  password repair is ever used.
+
+Tests: `desktop/test/embeddedDbAuth.test.mts` (orderings and fail-closed paths
+against a simulated cluster, including that every server start happens on the
+shell's rules, that the ownership transfer schema-qualifies its calls and pins
+its own search_path, and that a kernel role carrying a role membership is
+refused), `desktop/test/embeddedDbIdentity.test.mts` (the superuser login and
+its data-directory check come before any kernel password, a server reporting
+another data directory or refusing SCRAM stops the start, and the server is
+re-confirmed before provisioning and verification),
+`desktop/test/scramOnlyConnect.test.mts` (a listener on loopback that asks for
+cleartext, MD5, no SCRAM, no authentication at all, or forges the final
+signature gets no password and is refused),
+`desktop/test/embeddedDbEndpoint.test.mts` (the private socket directory, its
+fallback, the server command line and the `postmaster.pid` check),
+`desktop/test/embeddedDb.integration.test.mts` (the real engine:
+passwordless and wrong-password clients refused, on macOS and Linux no TCP
+listener and an owner-only socket directory, no `COPY ... TO PROGRAM` for the
+kernel role, the trust-era migration including ownership, the single-user
+repair, and a kernel that redirects the database `search_path` and plants a
+shadow function still contained after migration; the desktop-apps workflow runs
+it with pgvector staged) and `desktop/test/secrets.test.mts` (persistence and
+read-back).
 
 ## 9. API-key authentication (`@omadia/api-key-auth`, issues #438 / #439)
 
@@ -3289,6 +3442,21 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       failure throws `SecretsUnreadableError` and never regenerates keys, a
       key is cached only after its write succeeded, and neither the error's
       reason nor its `cause` quotes the file's content.
+- [ ] A change to the desktop's embedded Postgres (`desktop/src/embeddedDb.ts`,
+      `embeddedDbAuth.ts`, `embeddedDbOwnership.ts`, `embeddedDbEngine.ts`,
+      `embeddedDbEndpoint.ts`) never writes a `trust` rule
+      or rewrites pg_hba.conf while the server runs (password repairs go through
+      single-user mode), keeps the kernel's `DATABASE_URL` on the non-superuser
+      `omadia_kernel`, keeps the bootstrap password inside the shell, pins the
+      shell's `search_path` (system catalogs first) on every maintenance
+      connection and schema-qualifies the ownership transfer, and keeps the
+      fail-closed verification (wrong password refused for both roles, the
+      kernel role unprivileged and a member of no role) with its tests. The
+      shell's connections stay SCRAM-only (`scramOnlyConnect.ts`), readiness
+      sends no credentials and never counts an authentication error as "up",
+      the superuser login checks `data_directory` before a kernel password goes
+      out, and on macOS and Linux the server stays off TCP, its socket in an
+      owner-only directory outside the data folder (§8b).
 - [ ] A new desktop IPC channel is registered through `guardedHandle` /
       `guardedOn` with an explicit surface, never bare `ipcMain`. The `app`
       surface (the web UI and every plugin iframe in it) gets no method that
@@ -3377,4 +3545,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*
+*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*
