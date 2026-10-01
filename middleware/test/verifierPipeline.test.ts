@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
+  ClaimExtractor,
   VerifierPipeline,
   type Claim,
-  type ClaimExtractor,
+  type ClaimExtraction,
   type ClaimVerdict,
   type DeterministicChecker,
   type EvidenceJudge,
@@ -14,10 +15,11 @@ import {
 
 // --- Stubs ---------------------------------------------------------------
 
+/** An extractor that covered the whole answer and found `claims`. */
 function stubExtractor(claims: Claim[]): ClaimExtractor {
   return {
-    extract(): Promise<Claim[]> {
-      return Promise.resolve(claims);
+    extract(): Promise<ClaimExtraction> {
+      return Promise.resolve({ claims, gaps: [] });
     },
   } as unknown as ClaimExtractor;
 }
@@ -79,12 +81,12 @@ const SILENT_LOG = (): void => {
 // --- Tests ---------------------------------------------------------------
 
 describe('verifier/pipeline', () => {
-  it('approves smalltalk without triggering extractor', async () => {
+  it('skips smalltalk without triggering extractor (skipped, never approved)', async () => {
     let called = false;
     const extractor = {
-      extract(): Promise<Claim[]> {
+      extract(): Promise<ClaimExtraction> {
         called = true;
-        return Promise.resolve([]);
+        return Promise.resolve({ claims: [], gaps: [] });
       },
     } as unknown as ClaimExtractor;
     const pipeline = new VerifierPipeline({
@@ -106,7 +108,8 @@ describe('verifier/pipeline', () => {
       userMessage: 'Hallo',
       answer: 'Hallo, wie kann ich helfen?',
     });
-    assert.equal(verdict.status, 'approved');
+    assert.equal(verdict.status, 'skipped');
+    if (verdict.status === 'skipped') assert.equal(verdict.reason, 'no_trigger');
     assert.equal(called, false);
   });
 
@@ -186,7 +189,7 @@ describe('verifier/pipeline', () => {
     }
   });
 
-  it('approves when extractor returns no claims (trigger fired but nothing structured)', async () => {
+  it('skips when extractor returns no claims (trigger fired but nothing structured)', async () => {
     const pipeline = new VerifierPipeline({
       extractor: stubExtractor([]),
       deterministic: stubDeterministic(() => ({
@@ -206,7 +209,8 @@ describe('verifier/pipeline', () => {
       userMessage: 'was?',
       answer: 'Die Rechnung beträgt 1.234,56 €.',
     });
-    assert.equal(verdict.status, 'approved');
+    assert.equal(verdict.status, 'skipped');
+    if (verdict.status === 'skipped') assert.equal(verdict.reason, 'no_claims');
   });
 
   it('blocks odoo-amount claim when the turn never called an odoo tool (context-replay)', async () => {
@@ -306,10 +310,10 @@ describe('verifier/pipeline', () => {
     assert.equal(verdict.status, 'approved');
   });
 
-  it('tolerates extractor throwing', async () => {
+  it('tolerates extractor throwing — reports unavailable, never approved', async () => {
     const pipeline = new VerifierPipeline({
       extractor: {
-        extract(): Promise<Claim[]> {
+        extract(): Promise<ClaimExtraction> {
           return Promise.reject(new Error('rate limit'));
         },
       } as unknown as ClaimExtractor,
@@ -330,7 +334,8 @@ describe('verifier/pipeline', () => {
       userMessage: 'was?',
       answer: 'Die Rechnung beträgt 1.234,56 €.',
     });
-    assert.equal(verdict.status, 'approved');
+    assert.equal(verdict.status, 'unavailable');
+    if (verdict.status === 'unavailable') assert.equal(verdict.reason, 'extractor_error');
   });
 
   // #130 — postcondition violation flips the verdict to blocked even when
@@ -339,9 +344,9 @@ describe('verifier/pipeline', () => {
   it('blocks on tool_postcondition violation without invoking extractor', async () => {
     let extractorCalled = false;
     const extractor = {
-      extract(): Promise<Claim[]> {
+      extract(): Promise<ClaimExtraction> {
         extractorCalled = true;
-        return Promise.resolve([]);
+        return Promise.resolve({ claims: [], gaps: [] });
       },
     } as unknown as ClaimExtractor;
     const pipeline = new VerifierPipeline({
@@ -571,13 +576,17 @@ describe('verifier/pipeline - anchored soft claims', () => {
       judge: stubJudge((c) => ({ status: 'verified', claim: c, source: 'graph' })),
       log: SILENT_LOG,
     });
+    // The date fires the trigger, so the extractor and the judge really run —
+    // without a trigger signal the verdict would be `skipped` and
+    // `existsCalls === 0` would hold vacuously.
     const verdict = await pipeline.verify({
       runId: 'r_plain',
       userMessage: 'wer?',
-      answer: 'John Doe ist Senior Dev.',
+      answer: 'John Doe ist seit 12.03.2020 Senior Dev.',
     });
     assert.equal(existsCalls, 0);
     assert.equal(verdict.status, 'approved');
+    assert.equal(verdict.claims.length, 1);
   });
 });
 
@@ -609,9 +618,9 @@ describe('verifier/pipeline - privacy view', () => {
     saw: Array<VerifierPrivacy | undefined>,
   ): ClaimExtractor {
     return {
-      extract(input: { privacy?: VerifierPrivacy }): Promise<Claim[]> {
+      extract(input: { privacy?: VerifierPrivacy }): Promise<ClaimExtraction> {
         saw.push(input.privacy);
-        return Promise.resolve(claims);
+        return Promise.resolve({ claims, gaps: [] });
       },
     } as unknown as ClaimExtractor;
   }
@@ -690,5 +699,112 @@ describe('verifier/pipeline - privacy view', () => {
       privacy: view,
     });
     assert.deepEqual(checkerArgs, [[]]);
+  });
+});
+
+// Behind a Privacy Shield the extractor reads the turn's wire view and maps
+// every claim back to real values. A claim that does not map back onto the
+// answer the user was shown is kept from the checkers — and reported as a
+// coverage gap, so an answer the verifier checked only in part is never
+// `approved`, however well the rest verifies.
+describe('verifier/pipeline - a claim that does not restore is a coverage gap', () => {
+  const REAL = 'Jana Beispielfrau';
+  const SURROGATE = 'Erika Musterfrau';
+  const REAL_ANSWER = `${REAL} ist Senior Dev seit 01.03.2023, Rechnung über 1.234,56 €.`;
+  const swap = (text: string, from: 0 | 1): string =>
+    from === 0 ? text.split(REAL).join(SURROGATE) : text.split(SURROGATE).join(REAL);
+  const view: VerifierPrivacy = {
+    wireUserMessage: 'Stand?',
+    wireAnswer: swap(REAL_ANSWER, 0),
+    admitWireView: async () => undefined,
+    projectForWire: async (t) => t,
+    restore: async (t) => swap(t, 1),
+  };
+
+  function extractorReturning(claims: unknown[]): ClaimExtractor {
+    return new ClaimExtractor({
+      llm: {
+        complete: async () => ({
+          content: [{ type: 'tool_call', name: 'record_claims', id: 'toolu_x', input: { claims } }],
+        }),
+      } as never,
+      log: SILENT_LOG,
+    });
+  }
+
+  it('keeps the answer at approved_with_disclaimer with a not_checked coverage entry', async () => {
+    const pipeline = new VerifierPipeline({
+      extractor: extractorReturning([
+        // Restores and verifies.
+        { text: '1.234,56 €', type: 'amount', expected_source: 'odoo', value: 1234.56 },
+        // Cuts through the surrogate: restores to nothing the user was shown.
+        { text: 'Musterfrau ist Senior Dev', type: 'qualitative', expected_source: 'graph' },
+      ]),
+      deterministic: stubDeterministic((c) => ({ status: 'verified', claim: c, source: 'odoo' })),
+      judge: stubJudge((c) => ({ status: 'verified', claim: c, source: 'graph' })),
+      log: SILENT_LOG,
+    });
+
+    const verdict = await pipeline.verify({
+      runId: 'r_restore_gap',
+      userMessage: 'Stand?',
+      answer: REAL_ANSWER,
+      domainToolsCalled: ['query_odoo_accounting'],
+      privacy: view,
+    });
+
+    assert.equal(verdict.status, 'approved_with_disclaimer');
+    const gap = verdict.claims.find((c) => c.claim.type === 'coverage_gap');
+    assert.equal(gap?.claim.id, 'c_coverage_claims_not_restored');
+    assert.equal(gap?.status === 'unverified' ? gap.cause : undefined, 'not_checked');
+    assert.equal(
+      verdict.claims.some((c) => c.status === 'verified' && c.claim.text === '1.234,56 €'),
+      true,
+    );
+  });
+
+  it('a request the privacy view does not admit is unavailable, never an empty extraction', async () => {
+    const pipeline = new VerifierPipeline({
+      extractor: extractorReturning([]),
+      deterministic: stubDeterministic((c) => ({ status: 'verified', claim: c, source: 'odoo' })),
+      judge: stubJudge((c) => ({ status: 'verified', claim: c, source: 'graph' })),
+      log: SILENT_LOG,
+    });
+
+    const verdict = await pipeline.verify({
+      runId: 'r_admit_blocked',
+      userMessage: 'Stand?',
+      answer: REAL_ANSWER,
+      privacy: {
+        ...view,
+        admitWireView: async () => {
+          throw new Error('masking blocked');
+        },
+      },
+    });
+
+    assert.equal(verdict.status, 'unavailable');
+    if (verdict.status === 'unavailable') assert.equal(verdict.reason, 'extractor_error');
+  });
+
+  it('with nothing checkable left, it is skipped as incomplete_coverage — never no_claims', async () => {
+    const pipeline = new VerifierPipeline({
+      extractor: extractorReturning([
+        { text: 'Musterfrau ist Senior Dev', type: 'qualitative', expected_source: 'graph' },
+      ]),
+      deterministic: stubDeterministic((c) => ({ status: 'verified', claim: c, source: 'odoo' })),
+      judge: stubJudge((c) => ({ status: 'verified', claim: c, source: 'graph' })),
+      log: SILENT_LOG,
+    });
+
+    const verdict = await pipeline.verify({
+      runId: 'r_restore_gap_only',
+      userMessage: 'Stand?',
+      answer: REAL_ANSWER,
+      privacy: view,
+    });
+
+    assert.equal(verdict.status, 'skipped');
+    if (verdict.status === 'skipped') assert.equal(verdict.reason, 'incomplete_coverage');
   });
 });

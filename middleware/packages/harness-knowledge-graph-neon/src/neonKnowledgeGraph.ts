@@ -5166,6 +5166,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const limit = Math.max(1, Math.min(opts.limit ?? 25, 200));
     const model = opts.model.trim();
     if (model.length === 0) return [];
+    // Exact-id identity (plugin-api 1.21.0). `->>` yields text for a JSON
+    // number and a JSON string alike, so '7' matches an id stored as 7 or
+    // "7". An empty id names no record.
+    const idFilter = opts.id === undefined ? null : String(opts.id).trim();
+    if (idFilter !== null && idFilter.length === 0) return [];
     const nameFilter = opts.nameContains?.trim();
     const hasName = nameFilter !== undefined && nameFilter.length > 0;
     const like = hasName ? `%${nameFilter}%` : null;
@@ -5177,6 +5182,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       WHERE tenant_id = $1
         AND type IN ('OdooEntity', 'ConfluencePage')
         AND properties->>'model' = $2
+        AND ($5::text IS NULL OR properties->>'id' = $5)
         AND (
           $3::text IS NULL
           OR (properties->>'displayName') ILIKE $3
@@ -5185,7 +5191,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       ORDER BY properties->>'displayName' ASC NULLS LAST
       LIMIT $4
       `,
-      [this.tenantId, model, like, limit],
+      [this.tenantId, model, like, limit, idFilter],
     );
     return rows.rows.map(rowToNode);
   }

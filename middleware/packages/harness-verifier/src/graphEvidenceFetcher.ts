@@ -1,5 +1,16 @@
-import type { GraphNode, KnowledgeGraph } from '@omadia/plugin-api';
+import type {
+  FindEntitiesOptions,
+  GraphNode,
+  KnowledgeGraph,
+} from '@omadia/plugin-api';
 import type { SoftClaim } from './claimTypes.js';
+import {
+  isRecordHandle,
+  matchesRecord,
+  parseEntityHandle,
+  type EntityHandle,
+  type RecordHandle,
+} from './entityHandle.js';
 import type {
   EvidenceFetcher,
   EvidenceSnippet,
@@ -7,18 +18,34 @@ import type {
 
 /**
  * Default EvidenceFetcher: resolves soft-claim related-entities into
- * graph nodes and surfaces their properties + neighbour labels as
- * evidence snippets for the judge.
+ * graph nodes and surfaces their properties as evidence snippets for the
+ * judge — the only evidence the judge ever sees.
  *
- * Coverage today is intentionally narrow: we look up by the entity refs
- * already attached to the claim (format "odoo:hr.employee:7" or
- * "hr.employee:7"). Broader recall (full-text search over turns / facts)
+ * Lookup rules for the claim's entity handles (see entityHandle.ts):
+ *  - A handle with an id (`odoo:hr.employee:7`, `hr.employee:7`) names one
+ *    record. It is resolved by exact id (`findEntities({ model, id })`) and
+ *    the returned node's identity is re-checked here. A record that is not
+ *    in the graph contributes no snippet; another record of the same model
+ *    is never substituted.
+ *  - A claim that pins at least one record gets ONLY those records: no model
+ *    sample and no name search. If none resolves, the claim has no evidence
+ *    and the judge leaves it unverified.
+ *  - A claim that pins no record gets a labelled sample of each model it
+ *    names without an id (`hr.department`), and a labelled name search on
+ *    res.partner / hr.employee for the first capitalised phrase of its text.
+ *    The labels tell the judge these are search results, not the record the
+ *    claim is about.
+ *
+ * `findEntities` covers Odoo and Confluence entity nodes only; a handle in a
+ * plugin namespace (`PluginEntity`, e.g. `dataset:…`) never resolves and
+ * yields no evidence. Broader recall (full-text search over turns / facts)
  * is a follow-up — start small so the judge isn't drowned in irrelevant
  * context.
  */
 
 export interface GraphEvidenceFetcherOptions {
-  graph: KnowledgeGraph;
+  /** Only `findEntities` is used; the narrow type keeps stubs honest. */
+  graph: Pick<KnowledgeGraph, 'findEntities'>;
   /** How many snippets to return per claim. Judge cost scales with this. */
   maxSnippets?: number;
 }
@@ -27,8 +54,18 @@ const DEFAULTS = {
   maxSnippets: 5,
 };
 
+/** Records sampled for a model handle without an id. */
+const MODEL_SAMPLE_LIMIT = 3;
+/** Records the name search takes per model. */
+const NAME_SEARCH_LIMIT = 2;
+/** Models the name search probes, in order. */
+const NAME_SEARCH_MODELS: readonly string[] = ['res.partner', 'hr.employee'];
+
+const MODEL_SAMPLE_LABEL = 'model sample, not a referenced record';
+const NAME_MATCH_LABEL = 'name match, not a referenced record';
+
 export class GraphEvidenceFetcher implements EvidenceFetcher {
-  private readonly graph: KnowledgeGraph;
+  private readonly graph: Pick<KnowledgeGraph, 'findEntities'>;
   private readonly maxSnippets: number;
 
   constructor(opts: GraphEvidenceFetcherOptions) {
@@ -37,77 +74,81 @@ export class GraphEvidenceFetcher implements EvidenceFetcher {
   }
 
   async fetch(claim: SoftClaim): Promise<EvidenceSnippet[]> {
+    const handles = claim.relatedEntities
+      .map(parseEntityHandle)
+      .filter((h): h is EntityHandle => h !== null);
+    const pinned = handles.filter(isRecordHandle);
+    if (pinned.length > 0) return this.fetchPinned(pinned);
+
     const snippets: EvidenceSnippet[] = [];
-
-    // 1) entity-anchored lookup: for each "model:id" or "system:model:id"
-    //    ref, probe the graph for matching entity nodes and their neighbours.
-    for (const ref of claim.relatedEntities) {
+    for (const handle of handles) {
       if (snippets.length >= this.maxSnippets) break;
-      const parsed = parseEntityRef(ref);
-      if (!parsed) continue;
-      try {
-        const hits = await this.graph.findEntities({
-          model: parsed.model,
-          ...(parsed.name ? { nameContains: parsed.name } : {}),
-          limit: 3,
+      const hits = await this.search({
+        model: handle.model,
+        limit: MODEL_SAMPLE_LIMIT,
+      });
+      this.collect(snippets, hits, MODEL_SAMPLE_LABEL);
+    }
+
+    const candidate = extractCandidateName(claim.text);
+    if (candidate) {
+      for (const model of NAME_SEARCH_MODELS) {
+        if (snippets.length >= this.maxSnippets) break;
+        const hits = await this.search({
+          model,
+          nameContains: candidate,
+          limit: NAME_SEARCH_LIMIT,
         });
-        for (const hit of hits) {
-          if (snippets.length >= this.maxSnippets) break;
-          snippets.push(toSnippet(hit));
-        }
-      } catch {
-        // Graph errors are soft: return what we have, let the judge
-        // default to `unverified` rather than fail the pipeline.
+        this.collect(snippets, hits, NAME_MATCH_LABEL);
       }
     }
+    return snippets;
+  }
 
-    // 2) if the claim text carries an obvious proper-noun candidate and we
-    //    haven't hit the cap yet, try a name-contains lookup on the most
-    //    common entity models.
-    if (snippets.length < this.maxSnippets) {
-      const candidate = extractCandidateName(claim.text);
-      if (candidate) {
-        for (const model of ['res.partner', 'hr.employee']) {
-          if (snippets.length >= this.maxSnippets) break;
-          try {
-            const hits = await this.graph.findEntities({
-              model,
-              nameContains: candidate,
-              limit: 2,
-            });
-            for (const hit of hits) {
-              if (snippets.length >= this.maxSnippets) break;
-              snippets.push(toSnippet(hit));
-            }
-          } catch {
-            // swallow
-          }
-        }
-      }
+  /** Exactly the pinned records that exist in the graph — nothing else. */
+  private async fetchPinned(
+    pinned: readonly RecordHandle[],
+  ): Promise<EvidenceSnippet[]> {
+    const snippets: EvidenceSnippet[] = [];
+    for (const handle of pinned) {
+      if (snippets.length >= this.maxSnippets) break;
+      const hits = await this.search({
+        model: handle.model,
+        id: handle.id,
+        limit: 1,
+      });
+      const record = hits.filter((node) => matchesRecord(node, handle));
+      this.collect(snippets, record);
     }
+    return snippets;
+  }
 
-    return dedupeByNodeId(snippets);
+  /** Graph errors are soft: the claim just gets less evidence, and the
+   *  judge defaults to `unverified` rather than failing the pipeline. */
+  private async search(opts: FindEntitiesOptions): Promise<GraphNode[]> {
+    try {
+      return await this.graph.findEntities(opts);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Append snippets for `nodes`, skipping nodes already present and
+   *  stopping at the cap. `label` marks search results. */
+  private collect(
+    snippets: EvidenceSnippet[],
+    nodes: readonly GraphNode[],
+    label?: string,
+  ): void {
+    for (const node of nodes) {
+      if (snippets.length >= this.maxSnippets) return;
+      if (snippets.some((s) => s.nodeId === node.id)) continue;
+      snippets.push(toSnippet(node, label));
+    }
   }
 }
 
 // --- helpers --------------------------------------------------------------
-
-function parseEntityRef(ref: string): {
-  model: string;
-  id?: string;
-  name?: string;
-} | null {
-  const parts = ref.split(':').filter((p) => p.length > 0);
-  if (parts.length === 0) return null;
-  // Accept "model:id", "system:model:id", or "model" alone.
-  if (parts.length >= 3) {
-    return { model: parts[1]!, id: parts[2]! };
-  }
-  if (parts.length === 2) {
-    return { model: parts[0]!, id: parts[1]! };
-  }
-  return { model: parts[0]! };
-}
 
 function displayNameOf(node: GraphNode): string {
   const raw = node.props['displayName'];
@@ -127,7 +168,11 @@ const STRUCTURAL_PROPS: ReadonlySet<string> = new Set(['model', 'system', 'type'
 const ISO_DATE_VALUE = /^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/;
 const NUMERIC_VALUE = /^[+-]?\d+([.,]\d+)?$/;
 
-function toSnippet(node: GraphNode): EvidenceSnippet {
+/**
+ * One node as evidence. `label` marks a search result (a model sample, a
+ * name match) so the judge can tell it from the record a claim names.
+ */
+function toSnippet(node: GraphNode, label?: string): EvidenceSnippet {
   const display = displayNameOf(node);
   const extras: string[] = [];
   // Display name plus every free-text value shown below, a string record key
@@ -151,11 +196,12 @@ function toSnippet(node: GraphNode): EvidenceSnippet {
     if (extras.length >= 6) break;
   }
   const suffix = extras.length > 0 ? ` (${extras.join(', ')})` : '';
+  const content = `Graph-Node ${node.id} — ${display}${suffix}`;
   return {
     nodeId: node.id,
     source: 'graph',
-    title: display,
-    content: `Graph-Node ${node.id} — ${display}${suffix}`,
+    title: label ? `${display} (${label})` : display,
+    content: label ? `[${label}] ${content}` : content,
     identityValues,
   };
 }
@@ -168,15 +214,4 @@ function extractCandidateName(text: string): string | undefined {
   const match =
     /\b([A-ZÄÖÜ][\wäöüß]+(?:\s+[A-ZÄÖÜ][\wäöüß]+){0,2})\b/.exec(text);
   return match?.[1];
-}
-
-function dedupeByNodeId(snippets: EvidenceSnippet[]): EvidenceSnippet[] {
-  const seen = new Set<string>();
-  const out: EvidenceSnippet[] = [];
-  for (const s of snippets) {
-    if (seen.has(s.nodeId)) continue;
-    seen.add(s.nodeId);
-    out.push(s);
-  }
-  return out;
 }

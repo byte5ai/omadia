@@ -1,0 +1,11 @@
+# Expected verdict class: skipped (reason no_trigger). shouldTriggerVerifier fires
+# only on hard signals (currency / date / accounting-ref / percent / duration), so
+# an answer without one skips extraction and the pipeline checks nothing. That is
+# `skipped`, never `approved`: `approved` needs at least one checked claim, all of
+# them verified (see approved-deterministic.jsonl for that path). The judge never
+# runs here. The ids keep their original `approve_` prefix — they are stable ids
+# and predate the `skipped` class; the file held `approved` expectations until
+# verdicts became evidence-bound.
+{"id":"approve_smalltalk_hallo","note":"Pure smalltalk; no trigger signal, so shouldTriggerVerifier skips extraction entirely.","userMessage":"Hallo!","answer":"Hallo! Wie kann ich dir heute helfen?","expected":{"status":"skipped"}}
+{"id":"approve_smalltalk_danke","note":"Acknowledgement only; no factual claims and no trigger signal.","userMessage":"Danke, das war alles.","answer":"Gern geschehen! Melde dich jederzeit, wenn du noch etwas brauchst.","expected":{"status":"skipped"}}
+{"id":"approve_qualitative_no_trigger","note":"A qualitative claim but NO hard trigger signal in the answer -> extraction skipped -> skipped. The judge never runs (evidence would be irrelevant, so none is given). Guards that plain qualitative statements are not over-verified into a disclaimer — and that an unchecked statement is not reported as approved either.","userMessage":"Wer leitet die Buchhaltung?","answer":"Anna Müller ist die Teamleiterin der Buchhaltung.","expected":{"status":"skipped"}}

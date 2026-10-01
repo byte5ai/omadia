@@ -338,6 +338,14 @@ User → Orchestrator.chatStream
                           └─ entityRefBus.publish (tagged mit turnId)
 ```
 
+Mit aktivem Answer-Verifier sitzt `VerifierService` vor dem Orchestrator
+(`User → VerifierService.chatStream/chat → Orchestrator`): in `shadow` prüft er
+nur und hängt das Urteil an, in `enforce` ist er ein Auslieferungs-Gate — der
+Stream hält jeden Inhalt bis zum Urteil (der Canvas-Composer sein Skeleton
+ebenso), eine nicht bestätigte Antwort wird durch eine Notiz ersetzt (§11,
+Kontrakt-Erweiterung Verifier-Gate). Agenten auf dem Abo-CLI-Runtime und
+Routinen laufen ohne diesen Wrapper.
+
 ### Channel → Orchestrator-Dispatch (per-Channel, Omadia UI)
 
 Ein Channel-Turn erreicht den Orchestrator über den **`orchestratorDispatcher`**
@@ -469,6 +477,10 @@ Macht den `canvasChatAgent` zum echten Tier-2-Composer. Für einen Canvas-Turn
    Skeleton geht als `surface_snapshot` (Revision `"0"`) raus, **bevor** der
    langsame Hauptturn startet (~500ms-Ziel, implementation-plan Risiko #1;
    Spike-Gate: <95% First-Attempt-Validität → Modell auf Sonnet pinnen).
+   Ausnahme Answer-Verifier in `enforce` (Basis-Agent mit
+   `holdsContentUntilVerdict`): dann wartet das Skeleton auf das Urteil und
+   geht nur mit einem freigegebenen Turn raus (`src/verdictHold.ts`, §11
+   Verifier-Gate).
 2. **Requirement-Handoff**: der delegierte Hauptturn bekommt die
    `dataRequirements` als `[canvas-context]`-Block an die `userMessage`
    angehängt (containerIds + exakte fieldKeys + Instruktion) — Tier-3
@@ -1687,8 +1699,15 @@ die der Wrapper mit `takePrivacyEgress(input)` abholt. Alle drei
 Finalize-Stellen übergeben (gepuffert, Streaming-`done`, Streaming-Direct-Line).
 Über `continuation.verifierPrivacy` laufen Extractor- und Judge-Requests unter
 der Surrogat-Map des Turns; danach ruft der Wrapper `finalize()` **genau
-einmal** pro Turn (`EgressLedger` in `verifierPrivacyGate.ts`, auch bei Fehlern
-und Client-Abbruch) — erst dann entstehen Receipt und `turn_receipts`-Zeile.
+einmal** pro Lauf (`EgressLedger` in `verifierPrivacyGate.ts` für `chat()`,
+`StreamPasses` im Stream; auch bei Fehlern, abgebrochenen Wiedereintritten
+und Client-Abbruch) — erst dann entsteht der Receipt des Laufs. Jeder Lauf
+(erster Lauf, Resample, Retry) wird über seine eigene Sicht verifiziert. Kann
+die Anfrage wieder betreten werden (Request-Ledger, §3 „Replay-Ledger“),
+gehen die Receipts aller Läufe in die **eine** `turn_receipts`-Zeile der
+Anfrage, nach dem Urteil geschrieben (`requestReceipts.ts`, die
+Verifier-Requests der Läufe summiert); sonst schreibt der Lauf die Zeile
+selbst.
 Das Modell-Attribut wird bei der Übergabe gesichert (die 512er-FIFO
 `turnAttribution` könnte es sonst verdrängen). Der Receipt trägt die
 Verifier-Requests getrennt in `verifierEgress` (Anzahl + Span-Typen); ein Turn,
@@ -1706,14 +1725,17 @@ genau das und maskiert es nicht erneut (`admitWireView` bucht den Request nur);
 `VerifierService` gibt der Pipeline auch als `userMessage` nie den Envelope
 (`modelFacingUserMessage`). Claims aus der Wire-Sicht stellt
 `harness-verifier/src/claimRestore.ts` serverseitig wieder her (Beträge/Daten
-aus Platzhaltern werden aus dem echten Literal neu gelesen). Der Judge bekommt
+aus Platzhaltern werden aus dem echten Literal neu gelesen); ein Claim, der
+sich nicht auf die gezeigte Antwort zurückführen lässt, erreicht keinen
+Checker und ist die Abdeckungslücke `claims_not_restored` — die Antwort ist
+dann nie `approved`. Der Judge bekommt
 keine Node-IDs: Jede Evidenz heißt im Request `ev-1`, `ev-2`, … (pro Request
 vergeben, die zitierte Kennung wird serverseitig auf das Snippet
 zurückgeführt), und eine Node-ID oder ein String-Schlüssel (`id=…`) im
 Evidenztext wird wie ein Anzeigename ersetzt. Eine zweite
 Antwort mit ungelösten Platzhaltern (`countUnresolvedSurrogates`) ersetzt die
-erste nie — weder ein weiter blockierter Retry noch ein blockiertes Re-Sample
-nach einer Borderline-Antwort. Ungelöst heißt: wörtlich, in anderer
+erste nie — weder ein Retry (er wird dann gar nicht beurteilt) noch ein
+blockiertes Re-Sample nach einer Borderline-Antwort. Ungelöst heißt: wörtlich, in anderer
 Groß-/Kleinschreibung, mit umgruppierten Ziffern oder — bei Datum und Betrag —
 als anderes Literal desselben Werts (`harness-plugin-privacy-guard/src/valueLiterals.ts`:
 ISO, Punkt/Slash, ohne führende Null, zweistelliges Jahr, ausgeschriebener
@@ -2585,6 +2607,156 @@ vergleicht), `test/auth/adminUsersRoute.test.ts`, `test/auth/localPasswordProvid
 Postgres `test/auth/loginAccountFold.pg.test.ts`; UI
 `web-ui/app/login/__tests__/page.test.tsx`.
 
+### Replay-Ledger: ein Verifier-Wiedereintritt führt keinen Write aus
+
+`VerifierService` betritt in `enforce` einen Turn erneut — Borderline-Resample
+(`chat()`), Correction-Retry (`chat()` und Stream, nicht bei Canvas-Turns).
+Früher war jeder Wiedereintritt ein kompletter neuer Turn, der alle Tools des
+Modells wieder ausführte; ein Write lief so zwei- bis dreimal pro Nachricht.
+Jetzt erzeugt ein Wiedereintritt nur die Antwort neu:
+
+- **Bindung.** `bindRequestLedger` (`verifierReentry.ts`) legt vor dem ersten
+  Lauf einen `ToolReplayLedger` (`toolReplayLedger.ts`) an und bindet ihn per
+  `Orchestrator.bindToolReplayLedger(input, ledger)` an das Input-Objekt
+  (WeakMap, wie `markScreeningReentry`; Rückgabe ist die Freigabe am Ende der
+  Anfrage). Trägt der Input schon einen anderen Ledger, wirft die Bindung
+  (zwei Anfragen auf einem Input-Objekt spielten sonst gegenseitig ihre
+  Ergebnisse ab); ein Resample bindet den eigenen Ledger erneut.
+  `runTurnCore`/`chatStream` lesen ihn in der **ersten** Zeile, vor
+  dem Umbinden von `input`, und legen ihn als `turnContext.toolReplayLedger`
+  ab. Ohne Bindung bekommt jeder Turn einen turn-lokalen Ledger ohne
+  Ergebnisse (nur für die Wiederholungssperre unten).
+- **Nähte.** `dispatchToolDeadlined` (Orchestrator), `LocalSubAgent.dispatch`
+  (`subagent:<name>`) und `ToolDispatchService.invoke` (`dispatch`, CLI-Sub-
+  Agent über den Loopback-Snapshot) fragen `decide()` vor dem Handler: im
+  ersten Lauf `execute` + `record()` (Rohergebnis nach der Deadline-Firewall
+  oder die geworfene Exception), im Wiedereintritt `replay` über Cursor pro
+  (Naht, Tool, kanonischer Input), die `beginReentry()` zurücksetzt — Resample
+  und Retry spielen also beide Lauf 1 ab. Fehlt ein Call: nur Kernel-Lese-
+  Tools (`replayClassOf`: KG-Abfrage, `query_dataset`, `read_attachment`,
+  `find_free_slots`, Roster, Memory-`view`) laufen frisch, alles andere wird
+  mit `replayMissNotice` verweigert und setzt `abortedTool`. Was ein Tool im
+  ersten Lauf über seinen Attachment-Sink abgab (Diagramm, Office-Datei),
+  hält der Ledger fest (`drainAttachments` → `recordAttachments`) und gibt es
+  für im Wiedereintritt abgespielte Tools einmal pro Lauf zurück — bei einem
+  Replay bleibt der Sink ja leer.
+- **Abbruch.** Post-Batch-Check in beiden Tool-Loops und im `LocalSubAgent`,
+  dazu der autoritative Check am Ende von `runTurnCore` bzw. am Terminal-Event
+  im Stream (fängt Direct-Line und gefaltete Sub-Agent-Antworten).
+  `ToolReplayAbortError` → Resample behält die erste Antwort, Retry hält sie
+  mit `failed` zurück. Wirft ein Wiedereintritt aus anderem Grund, loggt
+  `reentryFailureLine` nur Run-ID, Fehlerklasse und `reentry_turn_failed`,
+  nie die Fehlermeldung. MCP-Input-Card-Antworten und aufgezeichnete
+  MRTR-Sentinels/Connect-Prompts sind nicht abspielbar → Abbruch.
+- **Sub-Agent unter Privacy Shield.** Hat ein Domain-Tool-Dispatch Datasets
+  gebrückt oder ein Bypass-Tool genutzt, wird der Sub-Agent im
+  Wiedereintritt neu ausgeführt (`rerun`), seine inneren Calls werden
+  abgespielt und im neuen Scope neu interniert; sonst wird das Ergebnis samt
+  Sub-Agent-Events (Trace, Postconditions) abgespielt.
+- **Eine Anfrage, ein Datensatz — der gelieferte.** Ein Wiedereintritt feuert
+  keine Per-Call-Hooks (`onBeforeTurn`, `onAfterToolCall`), ingestiert kein
+  MCP-Ergebnis erneut in den KG und bucht keinen Bypass erneut. Der Trace
+  markiert abgespielte Calls mit `replayed` (plugin-api 1.21.0).
+  Commit-on-Delivery (`requestTurnRecord.ts`): Solange ein Request-Ledger
+  gebunden ist (`defersTurnRecord`), schreibt **kein** Lauf — auch nicht der
+  erste — Session-Log/Fact-Extraction/Auto-Promotion oder feuert
+  `onAfterTurn`; jeder Lauf bietet seine Zeile an (`TurnRecordWriter`,
+  `turnRecordWriter.ts`: `recordRow` / `offerRow` →
+  `ledger.turnRecord.offer(pass, …)`) und notiert seine Antwort
+  (`Orchestrator.afterTurn` → `noteAnswer`). Der Verifier committet nach dem
+  Urteil den gelieferten Lauf (bei Zurückhalten den, über den das Endurteil
+  ging): `asRequestResult` / `finishRequestDone` →
+  `turnRecord.commit(pass)`; `prepareReentry` liefert die Pass-Nummer. Die
+  Zeile trägt die Entities aller Läufe, wird im Turn-Scope ihres Laufs
+  geschrieben (`AsyncLocalStorage.snapshot()`, wegen Usage-Attribution),
+  danach `onAfterTurn` im Hook-Kontext des ersten Laufs (der Plan-Runner
+  hängt dort); `onVerifierBlocked` wartet auf den Commit
+  (`afterRequestRecord`), damit er wie vorher nach `onAfterTurn` kommt.
+  `done.turnId` nennt die committete Zeile. Ohne Lieferung committet das
+  `finally` den ersten Lauf. Die Receipts aller Läufe sammelt
+  `ledger.receipts` (`requestReceipts.ts`); geliefert wird das gemergte
+  Receipt, und genau **eine** `turn_receipts`-Zeile wird nach dem letzten
+  Lauf geschrieben (`receiptId` im Stream). Ein Lauf, der wirft oder dessen
+  Stream vor `done` endet (`error`, Client weg — auch schon im Vorlauf, an
+  den `onBeforeTurn`-Annotationen nach einem MCP-Input-Card-Replay),
+  übergibt nichts; der Orchestrator schließt ihn selbst
+  (`closeUndeliveredPass`, samt Auth-Kontext) und behält sein Receipt — in
+  der Zeile der Anfrage oder ohne Request-Ledger als eigene Zeile. Vorher
+  wurde es verworfen. Jeder Lauf mit Receipt bietet an, die Zeile zu
+  besitzen; sie gehört dem frühesten (`BoundPass`: Pass-Nummer bei
+  Laufbeginn, nicht Finalisierungs-Reihenfolge) — dem ersten Lauf, sobald er
+  ein Receipt hat, sonst dem frühesten Wiedereintritt mit einem. Eine
+  Anfrage, deren einziges Receipt von einem abgebrochenen, geworfenen oder
+  verlassenen Wiedereintritt stammt, bekommt so trotzdem ihre Zeile.
+- **Abgekoppelte Arbeit.** Der Runner eines langlaufenden Tasks
+  (`<tool>_start`, `tasks/longRunningTool.ts`) startet unter
+  `runDetachedFromRequestLedger` mit eigenem turn-lokalem Ledger: er läuft
+  nach dem Turn weiter, auch während eines Wiedereintritts, und darf weder
+  gegen den Replay-Modus der Anfrage laufen (Miss → Task `failed`,
+  Wiedereintritt abgebrochen) noch deren Rohergebnisse am Leben halten.
+- **Wiederholungssperre.** Unabhängig vom Verifier verweigert jede Naht die
+  identische Wiederholung eines Write-Calls, dessen Ausgang unbekannt ist
+  (geworfen oder Withheld-Notiz), für die ganze Anfrage — damit auch in den
+  Eltern-Loops und beim CLI-Sub-Agent (offener Punkt aus der
+  Tool-Fehler-Politik, §13).
+- **Uploads einmal pro Anfrage.** `ingestAttachments` läuft vor dem Modell und
+  außerhalb des Tool-Dispatch; ein CSV/XLSX wird dabei per
+  `importTabularDataset` → `KnowledgeGraph.ingestDataset` als **neues**
+  Dataset angelegt (kein Dedupe). Beide Pfade rufen deshalb
+  `ingestAttachmentsForPass` → `ledger.ingestAttachmentsOnce`: Lauf 1
+  ingestiert und hält das Ergebnis (Text/`[dataset-imported]`-Blöcke **vor**
+  dem Masking, Bild-Blöcke), jeder Wiedereintritt bekommt genau das zurück
+  und maskiert es über seine eigene Prompt-Map — gleiche `dataset_id` wie in
+  den abgespielten Tool-Ergebnissen. Findet ein Wiedereintritt nichts,
+  bricht er vor dem Modellaufruf ab (`REENTRY_ABANDONED.attachmentsNotRecorded`).
+  Single-Flight: ein Lauf, der fragt, während der erste Import noch läuft,
+  wartet auf diesen Import, statt einen zweiten zu starten.
+- **Correction-Hint = Wire-Inhalt.** `wireExtraSystemHint` maskiert den
+  `extraSystemHint` des Aufrufers über die Prompt-Map des Laufs wie die
+  User-Nachricht (gleiche Surrogate, Spans im Receipt → `maskedPromptSpans`
+  im gemergten Request-Receipt); der Fresh-Check-Text des Kernels bleibt
+  unmaskiert. `PromptMaskBlockedError` in einem Wiedereintritt bricht ihn ab
+  (`REENTRY_ABANDONED.promptMaskBlocked`) statt die Privacy-Fehlerantwort zu
+  liefern; der erste Lauf behält sein Verhalten. Hinter einem Shield schickt
+  der Verifier einen Hint, den die Maskierung des widersprochenen Laufs
+  verändern würde, gar nicht (`privacySafeCorrection` → Retry zurückgehalten,
+  Badge `failed`); ein Hint, der durchgeht, wird genau einmal maskiert, vom
+  Retry-Lauf selbst. `buildCorrectionPrompt`
+  (`@omadia/verifier`) nennt nur noch die Claims (Wortlaut der Antwort),
+  Call-IDs und feste Anweisungen — kein `truth`, kein `detail`, keine
+  Postcondition-Issues: die Evidenz holt der Verifier mit eigenem Zugriff
+  (KG mandantenweit, Odoo-Reader des Plugins), nicht mit den Grants des Users.
+  Abbruchgründe ohne Tool tragen Namen (`REENTRY_ABANDONED`,
+  `describeAbandonment`, `reentryAbandonment.ts`), die Log-Zeilen nennen sie.
+- **Unterhalb des Ledgers.** Solange ein Request-Ledger gebunden ist, läuft
+  der Handler jeder Naht über `runHandlerAtMostOnce` (`toolReplayLedger.ts`,
+  auch der MCP-Input-Card-Replay): das Signal `sendsEachCallOnce`
+  (`toolIdempotency.ts`, eigener AsyncLocalStorage — übersteht die Re-Scopes
+  von Skill-Bindung und `ctx.mcp`) lässt `McpManager.callTool` nur einen
+  Versuch machen, also keinen Transport-Retry nach einem transienten Fehler,
+  der „ausgeführt, Antwort verloren“ nicht von „nie ausgeführt“
+  unterscheiden kann. Turns ohne Request-Ledger behalten den einen Retry
+  (#542; offener Punkt in §13). Wirft `internToolResultV4`, geben alle Nähte
+  (Orchestrator-Dispatch, `LocalSubAgent`, `ToolDispatchService`,
+  MCP-Input-Card-Replay) die Notiz `internFailedNotice`
+  (`privacyInternPolicy.ts`) statt des Rohergebnisses ans Modell, im ersten
+  Lauf wie im Wiedereintritt; `query_dataset` behält seinen eigenen Text.
+
+Schalter: `verifier_resample_on_borderline` (§10). Sicherheitsbegründung,
+Grenzen und Reviewer-Regeln: `docs/security-architecture.md` §7c und §11.
+Tests: `test/toolReplayLedger.test.ts`, `test/toolReplaySeams.test.ts`,
+`test/verifierServiceWriteSafety.test.ts`, `test/verifierStreamRetry.test.ts`,
+`test/verifierReentryRecords.test.ts`, `test/verifierDeliveredTurnRecord.test.ts`,
+`test/requestTurnRecord.test.ts`,
+`test/verifierSubAgentReplay.test.ts`, `test/verifierResampleKillSwitch.test.ts`,
+`test/longRunningTaskReplayLedger.test.ts`,
+`test/orchestrator/parentLoopThrownCallRepeat.test.ts`,
+`test/verifierReentryAttachments.test.ts`,
+`test/verifierCorrectionHintPrivacy.test.ts`,
+`test/correctionPromptEvidence.test.ts`, `test/mcpWriteIdempotency.test.ts`,
+`test/orchestrator/internFailureFailsClosed.test.ts`,
+`test/orchestratorPrivacyEgress.test.ts`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -2796,7 +2968,29 @@ Siehe `docs/security-architecture.md` §10.
 
 Wird vom Orchestrator aufgerufen, wenn der User auf prior art verweist.
 End-to-End verifiziert: der Orchestrator nutzt das Tool von selbst, ohne
-dass man ihn zwingt.
+dass man ihn zwingt. `find_entity` (und das Sub-Agent-Tool `query_graph`)
+bleiben bei `name_contains`, also einer Substring-Suche.
+
+### Exakte Entity-Auflösung: `findEntities({ model, id })` (plugin-api 1.21.0)
+
+`FindEntitiesOptions.id` adressiert genau einen Datensatz über seine Quell-ID
+(`props.id`, Odoo-Record-ID oder Confluence-Page-ID). Beide Backends
+vergleichen als String nach `trim()` (`7` ≡ `'7'`), eine fehlende oder leere
+ID liefert `[]`, nie einen Nachbar-Datensatz; mit `nameContains` kombiniert
+gelten beide Bedingungen. Die extras-Wrapper reichen `opts` unverändert durch.
+`nameContains` bleibt Suche, keine Identität: `'7'` trifft 7, 17 und 70.
+
+Der Verifier nutzt das an zwei Stellen: `GraphEvidenceFetcher` löst jedes
+Entity-Handle mit ID (`odoo:hr.employee:7`, `hr.employee:7`) exakt auf und
+prüft Modell/ID/System des Treffers nach; ein Claim mit so einem Handle
+bekommt nur diese Datensätze (kein Modell-Sample, keine Namenssuche), fehlt
+der Datensatz, bleibt der Claim `unverified`. `DeterministicChecker.checkGraph`
+prüft `odooRecord.id` exakt; ein Miss ist dort ebenfalls `unverified` (der
+Graph ist ein Teil-Spiegel, fehlend heißt nicht falsch). `EvidenceJudge`
+stuft ein Verdikt, das einen anderen Datensatz eines gepinnten Modells zitiert,
+auf `unverified` herab. Nur `OdooEntity`/`ConfluencePage` — Plugin-Namespaces
+(`PluginEntity`) sind über `findEntities` nicht erreichbar. Begründung und
+Grenzen: `docs/security-architecture.md` §7c.
 
 ### Structured Datasets — CSV Import (#430)
 
@@ -3029,6 +3223,22 @@ Gelesen vom **web-ui**-Prozess, nicht von der Middleware:
 | `UI_FRAME_ANCESTORS` | CSP-`frame-ancestors`-Quellenliste für alle Operator-Seiten, z. B. `"'self' https://teams.microsoft.com"` (ganzen Wert in doppelte Anführungszeichen setzen). Ungesetzt: `frame-ancestors 'none'` plus `X-Frame-Options: DENY`. Gesetzt: ersetzt `'none'`, `X-Frame-Options` entfällt, weil es keine Freigabeliste kennt. Ungültige Werte (`;`, `,`, andere Schlüsselwörter, Steuerzeichen) werden mit Warnung im web-ui-Log ignoriert, der Default bleibt. `/p/*` und `/bot-api/*` behalten immer die Header der Middleware. Pro Request gelesen, wirkt also ohne Rebuild auf einem veröffentlichten Image. |
 
 Details: `docs/security-architecture.md` §10h.
+
+### Answer-Verifier (`VERIFIER_*`)
+
+Die Variablen werden beim ersten Boot einmal in die Setup-Felder des Plugins
+`@omadia/verifier` migriert (`bootstrap.ts`, `verifier_*`); danach gelten die
+Setup-Felder, nicht mehr die Env.
+
+| Variable / Setup-Feld | Wirkung |
+|---|---|
+| `VERIFIER_ENABLED` / `verifier_enabled` | `true` schaltet den Verifier-Wrapper ein. Default `false`. |
+| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht nur bei `approved` oder `skipped` (`no_trigger`/`no_claims`) raus, sonst eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort — hinter dem Shield ebenso ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) — geht nie an den Verifier und wird zurückgehalten (`privacy_shield`); `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
+| `VERIFIER_MODEL` / `verifier_model` | Modell für Claim-Extraktion und Evidence-Judge. |
+| `VERIFIER_MAX_CLAIMS` / `verifier_max_claims` | Höchstzahl geprüfter Claims pro Antwort, Default `20`. |
+| `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Relative Betragstoleranz, Default `0.01`. |
+| `VERIFIER_MAX_RETRIES` / `verifier_max_retries` | Correction-Retry nach einem Widerspruch in `enforce`, auf `chat()` (`/api/chat`, Scheduler, Conductor) und im Stream (nicht bei Canvas-Turns); `0` schaltet ihn ab. Default `1`, max `2`. Der Retry führt kein Tool erneut aus (Replay-Ledger, §3 und Security §7c). |
+| `VERIFIER_RESAMPLE_ON_BORDERLINE` / `verifier_resample_on_borderline` | `false` schaltet in `enforce` die zweite Stichprobe für Grenzfall-Antworten ab (nur `chat()`); jeder andere Wert lässt sie an. Default `true`. Die Stichprobe führt kein Tool erneut aus. Wie alle `VERIFIER_*` nur beim ersten Boot übernommen. |
 
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 
@@ -3275,22 +3485,129 @@ type ChatStreamEvent =
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; output: string; durationMs: number; isError?: boolean }
   | { type: 'done'; answer: string; toolCalls: number; iterations: number }
+  | { type: 'verifier'; summary: VerifierResultSummary } // nur mit aktivem Verifier, nach `done`
   | { type: 'error'; message: string }
 ```
 
-Genau ein `done` oder `error` schließt den Stream. Header:
+Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
+`done` noch genau ein `verifier`-Event (siehe unten). Header:
 `Content-Type: application/x-ndjson; charset=utf-8`, `X-Accel-Buffering: no`
 (nginx-buffer-off).
 
 **Antwort-Verifier.** Ist `verifier@1` aktiv, folgt auf `done` noch genau ein
-`{ type: 'verifier'; summary }` (Status/Badge der Prüfung; die Web-UI wertet es
-derzeit nicht aus). Läuft zusätzlich der Privacy Shield, hält der Wrapper
+`{ type: 'verifier'; summary }` (Status/Badge der Prüfung, Werte siehe
+unten). Läuft zusätzlich der Privacy Shield, hält der Wrapper
 `done` zurück, bis der innere Stream gedrained und der Verifier fertig ist:
 `done` trägt dann — sofern der Turn einen hat — den vollständigen Receipt
 (`privacyReceipt` inkl. `verifierEgress`, `receiptId`), direkt danach kommt
 `verifier`. Text-Deltas
-laufen unverändert live, nur der Abschluss wartet (Heartbeats laufen weiter).
-Details: `docs/security-architecture.md` §6e.
+laufen in `shadow` unverändert live, nur der Abschluss wartet (Heartbeats
+laufen weiter); `enforce` hält ohnehin alles Inhaltliche bis zum Urteil
+(Verifier-Gate, unten). Details: `docs/security-architecture.md` §6e.
+
+**Verifier-Event (`verifier`).** `summary` ist ein `VerifierResultSummary`
+(`@omadia/channel-sdk`). Die Werte sind an Evidenz gebunden:
+
+- `status`: `approved` | `approved_with_disclaimer` | `blocked` — es wurden
+  Claims geprüft; `skipped` — der Verifier lief, fand aber nichts Prüfbares;
+  `unavailable` — der Verifier konnte nicht laufen (Extractor- oder
+  Pipeline-Fehler). `approved` heißt: die Extraktion meldet keine Lücke (das
+  Modell hat die ganze Antwort gesehen, seine Liste blieb unter dem
+  Anfrage-Limit, alle `record_claims`-Calls wurden gelesen und jeder
+  zurückgegebene Claim steht vollständig in der Antwort und ist kurz genug
+  für einen Check), und jeder extrahierte Claim ist geprüft und `verified`,
+  mindestens einer. Einen Claim, den das Modell unter
+  dem Limit gar nicht auflistet, sieht keine Prüfung — `approved` heißt also
+  „nichts bekannt Ungeprüftes“, nicht „die Antwort enthält sonst nichts“. Ein
+  Claim, den kein Checker nimmt (Betrag, Datum, ID oder Summe mit
+  Quelle weder Odoo noch Graph) oder der über dem Claim-Limit pro Antwort
+  liegt (`VERIFIER_MAX_CLAIMS`, greift in der Pipeline), bleibt als
+  `unverified` mit `cause: 'not_checked'` im Verdict — eine nur teilweise
+  prüfbare Antwort ist damit `approved_with_disclaimer`, nie `approved`.
+  Ebenso, was die Extraktion nicht erfasst hat: Der `ClaimExtractor` liest
+  die ersten 6000 Zeichen der Antwort (`EXTRACTION_WINDOW_CHARS`) und bittet
+  das Modell um höchstens `VERIFIER_MAX_CLAIMS + 1` Claims; Text jenseits des
+  Fensters, eine bis zu diesem Limit gefüllte Liste (das Modell hat dann
+  womöglich Claims ausgelassen) und Claims, die nicht in der Antwort stehen
+  (`claims_not_in_answer`), meldet er in `ClaimExtraction.gaps`, und die
+  Pipeline hält jede Lücke als `not_checked`-Eintrag (Claim-Typ
+  `coverage_gap`) im Verdict. Der Verbatim-Guard vergleicht ohne Rücksicht
+  auf Groß-/Kleinschreibung und lässt jede Whitespace-Folge auf jede andere
+  passen (ein Zeilenumbruch, den das Modell als Leerzeichen schreibt, zählt
+  als Zitat; der Claim trägt dann den Wortlaut der Antwort). Was dann noch
+  nicht passt — eine Umschreibung oder ein aus einem anderen Satzteil
+  hineingezogenes Subjekt — geht an keinen Checker, verschwindet aber nicht
+  mehr spurlos, sondern ist die Lücke `claims_not_in_answer`. Der Guard
+  vergleicht den ganzen Claim, nie ein gekürztes Präfix (früher wurde jeder
+  Claim vor dem Abgleich auf 300 Zeichen gekürzt und nur sein Anfang
+  geprüft). Ein Claim, der die Antwort zitiert, aber länger ist als
+  `MAX_CLAIM_CHARS` (300 Zeichen; das Tool-Schema verlangt 1-200), wird
+  nicht passend gekürzt, sondern ist die Lücke `claims_too_long`. Der
+  Extractor liest jeden `record_claims`-Call einer Modellantwort, nicht nur
+  den ersten.
+  Fand die Extraktion im erfassten Teil nichts Prüfbares, ist das Verdict
+  `skipped` mit `incomplete_coverage`. Der
+  `ClaimExtractor` wirft, wenn der LLM-Call scheitert, die Antwort am
+  Token-Limit abgeschnitten ist (`finishReason: 'max_tokens'`), sie keinen
+  verwertbaren `record_claims`-Call trägt (keinen, oder einen ohne
+  `claims`-Array) oder ein Eintrag das Schema verletzt, statt eine leere oder
+  halbe Claim-Liste zu liefern: das landet in
+  `unavailable` (`extractor_error`), nie in `skipped` (`no_claims`) oder
+  `approved`.
+- `badge`: braucht einen Check, der einen Claim entschieden hat
+  (`hasVerificationEvidence`): `verified` nur, wenn jeder Claim bestätigt ist;
+  `partial` bei mindestens einem bestätigten und einem offenen Claim;
+  `corrected` nach einem Retry, dessen eigene Prüfung jeden Claim bestätigt
+  hat — bestätigt sie nur einen Teil, ist das Badge `partial` wie beim ersten
+  Durchlauf; `failed` bei einem Widerspruch. Ohne bestätigten Claim ist das
+  Badge `unverified` — auch bei `status` `approved_with_disclaimer`, wenn die
+  Quellen schwiegen — bzw. `unavailable`, wenn jede gelaufene Prüfung
+  scheiterte (Re-Query oder Judge-Call fehlgeschlagen,
+  `cause: 'check_failed'`) oder der Verifier nicht lief.
+- `reason`: nur bei `skipped` (`no_trigger` | `no_claims` |
+  `no_checkable_claims` | `incomplete_coverage`) und `unavailable`
+  (`extractor_error` | `pipeline_error`). Geschlossener Code-Satz, nie eine
+  Fehlermeldung — die bleibt in der Logzeile, wo der Fehler gefangen wird.
+- `uncheckedCount`: Claims, auf denen keine Prüfung lief (`not_checked`); in
+  `unverifiedCount` mitgezählt. Davon `uncoveredCount`: Einträge für nicht
+  erfasste Teile der Antwort (`coverage_gap`) — die Antwort wurde nicht ganz
+  geprüft. Bestätigte Claims sind `claimCount - contradictionCount -
+  unverifiedCount`.
+
+Die Pipeline ist injiziert (`verifier@1`). `VerifierService.safeVerify` bindet
+ihr Verdict deshalb an seine Claims (`bindVerdictToClaims`, `@omadia/verifier`),
+bevor Retry, Resample, Persistenz oder Stream darauf aufsetzen; `summarise`
+bindet beim Bau des Stream-Summaries noch einmal. Ein Status wird nie höher
+gemeldet, als die Claims tragen (`approved` mit unbestätigtem Claim →
+`approved_with_disclaimer`, mit widersprochenem → `blocked`), und nie
+angehoben. `approved` / `approved_with_disclaimer` / `blocked` ohne Claim, ein
+unbekannter Status, Einträge, die keine Claim-Verdicts sind, und ein `reason`
+außerhalb der geschlossenen Codes werden `unavailable` / `pipeline_error`; der
+Rohwert steht nur in der Server-Logzeile (`[verifier/service] pipeline verdict
+not taken as returned: …`). Die eingebaute Pipeline ist davon nicht betroffen.
+`verifier_verdicts.unverified_count` zählt die Claims selbst, nicht den Status.
+
+Das Event geht unverändert über `/api/chat/stream` und den Public-API-Key-Stream
+(`chatRouter.ts`) raus. Ein Connector-Badge entsteht daraus nur über
+`toSemanticAnswer` und nur, wenn die Zähler das Badge tragen
+(`verifierSummaryHasEvidence`, `verified` und `corrected` nur bei lauter
+bestätigten Claims) und zueinander passen: nichtnegative ganze Zahlen,
+`uncoveredCount ≤ uncheckedCount ≤ unverifiedCount`,
+`contradictionCount + unverifiedCount ≤ claimCount`; fehlende optionale
+Zähler gelten als 0, fehlende Pflichtzähler nie. Der Web-Chip wendet dieselbe
+Regel an (ein Summary mit widersprüchlichen Zählern bekommt einen neutralen
+Chip); der Wire-Typ `SemanticAnswer.verifier` bleibt
+`verified | partial | corrected | failed`, Turns ohne Evidenz ergeben dort
+kein Badge. Der Web-Chat zeigt das Event als Footer-Chip (`VerifierBadge`,
+Keys `chat.verifier.*`), grün nur für ein `verified` mit lauter bestätigten
+Claims, `corrected` nur unter derselben Bedingung; der Tooltip nennt nicht
+geprüfte Claims bzw. sagt, dass nicht die ganze Antwort geprüft wurde. Der
+Borderline-Resample (#132) läuft nur, wenn ein Verdict Claims bestätigt und
+ein geprüfter Claim offen bleibt — nicht bei `skipped` / `unavailable`, nicht
+ohne bestätigten Claim und nicht, wenn nur `not_checked` (auch eine
+Abdeckungslücke) offen ist. Der Omadia-UI-Channel verwirft das Event weiterhin
+(`omadia-ui-channel/src/protocol.ts`). Zustands-Tabelle und Regeln:
+`docs/security-architecture.md` §7c.
 
 **Degradierter Turn (#1094).** Wirft ein Turn, *nachdem* mindestens ein
 Tool-Call bereits committet hat, bleibt das terminale Event bewusst `done` —
@@ -3331,7 +3648,10 @@ degradiert markiert und darf von keinem Consumer als Antwort gerendert werden:
   und `correlationId` bleiben am Event.
 - Ein degradierter Turn zählt **nicht** als „letzter Turn ok" im Operator-Health
   (`routes/chat.ts`), **nicht** als `ok` im Public-API-Key-Audit
-  (`chatRouter.ts`), und der Verifier überspringt ihn (keine Claims).
+  (`chatRouter.ts`), und der Verifier überspringt ihn im Stream ganz (kein
+  `verifier`-Event, `VerifierService.chatStream`). Der nicht-streamende Pfad
+  (`VerifierService.chat` → `runTurn`) sieht nie einen degradierten Turn: dort
+  wirft der Turn weiter, bevor der Verifier läuft.
 
 **Contract-Erweiterung — AI-Act-Kennzeichnung (Epic #642).** Der Ausgangs-Contract
 trägt die KI-Kennzeichnung zusätzlich zum Antworttext:
@@ -3367,6 +3687,7 @@ widersprüchlich bleiben, trägt `done` (und für den gepufferten Pfad
 weggelassen (bedeutet `'model'`). **`done.answer` ist autoritativ**; ein Client,
 der die Antwort aus Deltas rekonstruiert, muss sie durch `done.answer` ersetzen,
 sobald `answerSource` gesetzt und nicht `'model'` ist. Additiv/optional wie oben.
+Dritter Wert seit dem Verifier-Gate: `'verifier-blocked'` (siehe unten).
 
 **Kontrakt-Erweiterung — `answerIsError` (#1097).** Ein Server-Render kann auch
 ein *Fehler* sein (das Modell hat den Shield gebeten, etwas zu rendern, das in
@@ -3374,7 +3695,8 @@ Wahrheit ein Tool-Fehler oder ein Auth-Prompt ist). Dann trägt `done` (bzw.
 `ChatTurnResult`/`SemanticAnswer`) zusätzlich `answerIsError: true`, gesetzt aus
 `PrivacyRenderedAnswer.isError`. Kanäle dürfen den Turn damit als Fehler
 darstellen, statt den englischen Fehlertext als Ergebnis zu zeigen. Nur
-zusammen mit `answerSource: 'privacy-render'`, nie `false`, additiv/optional.
+zusammen mit `answerSource: 'privacy-render'` oder (immer) mit
+`'verifier-blocked'`, nie `false`, additiv/optional.
 Zweiter, unabhängiger Fix im selben Issue: ein Guarded-Tool, das einen prosaischen
 `Error:`-String **zurückgibt** (die `Error:`-Konvention, aus der auch `is_error`
 abgeleitet wird), wird an den Dispatch-Nähten nicht mehr als 1-Zeilen-Dataset
@@ -3498,6 +3820,107 @@ Ein Provider ohne die Methode lässt den Kernel zurückgegebene `Error:`-Texte
 vollständig zurückhalten, und das Log meldet einmal pro Prozess
 `does not implement redactToolErrorText`. Details, Residuen und Reviewer-Regel:
 `docs/security-architecture.md` §6c und §11.
+
+**Kontrakt-Erweiterung — Verifier-Gate im Stream (`VERIFIER_MODE=enforce`).**
+`shadow` bleibt der unveränderte Pass-through: alle Events wie erzeugt, danach
+ein `verifier`-Event. In `enforce` ist `VerifierService.chatStream` ein
+Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
+`docs/security-architecture.md` §7c):
+
+- **Bis zum Urteil** gehen nur Lebenszeichen raus: `iteration_start`,
+  `turn_routing`, `turn_persona`, `tool_progress`, `heartbeat`,
+  `stream_token_chunk`, `iteration_usage`, `steer_applied` (geschlossene
+  Allowlist `passesBeforeVerdict`). Alles andere — `text_delta`,
+  `tool_use`/`tool_result`, `sub_*` (auch `sub_iteration`, damit es beim
+  Freigeben unter seinem Tool-Call steht), `nudge`, `turn_annotation`,
+  `surface_*`, `done`, jeder künftige Typ — wird gehalten. Der Observer der
+  Route wird jetzt in jedem Modus durchgereicht (vorher verworfen), Token- und
+  Usage-Zähler laufen also live weiter.
+- **Freigabe** nur bei `approved` oder `skipped` mit `no_trigger` /
+  `no_claims`: die gehaltenen Events in Originalreihenfolge, aber ohne die
+  gestreamten `text_delta`s — der Text geht als **ein** `text_delta` mit
+  `done.answer` (ohne gefalteten KI-Kennzeichnungsblock) direkt vor `done`
+  raus, `done` mit `verifier` (dasselbe Summary wie das folgende
+  `verifier`-Event): `…, text_delta(done.answer), done{verifier}, verifier`.
+  Grund: der Orchestrator streamt jede Modellantwort live und verwirft sie
+  ggf. danach (#332-L3-Eskalation, File-Retry: `textParts.length = 0`) — die
+  verworfene Antwort steht in den Deltas, nicht in `done.answer`, und das
+  Urteil gilt nur `done.answer`.
+- **Zurückgehalten** (fail-closed) bei jedem anderen Urteil — `blocked`,
+  `approved_with_disclaimer`, `skipped` mit `no_checkable_claims` /
+  `incomplete_coverage`, `unavailable`: genau ein `text_delta` mit der
+  lokalisierten Notiz (`composeVerifierBlockedText`, Locale: Turn-Disclosure →
+  `ai_disclosure_locale` → `de`), dann `done` mit dieser Notiz als `answer`,
+  `answerSource: 'verifier-blocked'`, `answerIsError: true`, `verifier` und nur
+  Identitäts-/Telemetriefeldern (Allowlist; Anhänge, Dateien, Follow-ups,
+  `maskedValues`, `delegatedAnswer`, Karten, Excerpts fallen weg), dann das
+  `verifier`-Event: `text_delta(Notiz), done{verifier-blocked}, verifier`.
+  Hatte der Turn die KI-Kennzeichnung in `done.answer` gefaltet (erster Turn
+  des Scopes), trägt die Notiz in `done.answer` denselben Block — nie im
+  Delta.
+- **Ohne Urteil freigegeben:** `pendingUserChoice`, `pendingMcpInput`,
+  `pendingSlotCard`, `pendingOAuthConsent`, `degraded` mit der
+  Turn-Incomplete-Notiz, die Datenschutz-Absage (`PROMPT_MASK_BLOCKED_ANSWER`)
+  und die Screening-Quarantäne (`SECURITY_QUARANTINE_NOTICE`) — beide ohne
+  Modelllauf, erkannt auch mit gefaltetem KI-Kennzeichnungsblock — gehaltene
+  Events wie bei der Freigabe (Text als ein Delta aus `done.answer`), kein
+  `verifier`-Event. Sicher faktenfrei sind nur die Server-Notizen und
+  `NO_REPLY`: eine Karte hängt an der Antwort ihres Turns.
+  Auswahlkarte und MCP-Eingabeformular beenden den Turn am Tool-Call (Antwort
+  = Text davor); `pendingSlotCard`, `pendingOAuthConsent` (turnweit, sobald
+  ein Kalender-Tool `consent_required` meldete) und eine vom Card-Router
+  (`maybeRouteCardsFromText`, Provider ohne Interleaving, Antwort ab 40
+  Zeichen) angehängte Auswahlkarte reiten dagegen auf dem `done` einer
+  vollständigen Antwort — die geht dann samt Tool-Output und Surfaces
+  ungeprüft raus (offener Punkt in §13). Ein nacktes `NO_REPLY` (Sentinel als
+  ganze Antwort) gibt nur sein `done` frei, nichts Gehaltenes. Geprüft wie
+  jede Antwort wird eine Antwort, die nur mit `NO_REPLY` **endet**
+  (`isNoReply` akzeptiert die Form, Stream-Clients verwerfen sie aber nicht).
+  Endet der Turn mit `error`, geht nur der `error` raus, nichts Gehaltenes.
+- **Nie an den Verifier: was er hinter dem Privacy Shield nicht sehen darf.**
+  Eine Antwort mit `answerSource: 'privacy-render'` (auch ein `degraded`-Turn,
+  dessen Antwort der Shield schon gerendert hatte) und — hinter einem Shield —
+  ein Lauf ohne Privacy-Sicht (Direct-Line-Relay, keine übergebene
+  Continuation) gehen nie an `pipeline.verify` (`verifierGate`,
+  `verifierPrivacyGate.ts`): die gerenderte Antwort hält echte Werte, die der
+  Shield dem Modell vorenthalten hat. In `enforce` wird daraus das Verdict
+  `unavailable` / `privacy_shield` → zurückgehalten, auf Stream und `chat()`,
+  dort auch für Resample und Retry; `shadow` speichert kein Verdict. Ein
+  zurückgehaltener `degraded`-Turn behält `degraded`, `committedTools` und
+  `correlationId`.
+- **Ein Correction-Retry im Stream** (seit dem Replay-Ledger, §3) — außer bei
+  Canvas-Turns. Bei `blocked` betritt der Wrapper den Turn erneut mit
+  Correction-Hint über den Tool-Ergebnissen des ersten Laufs (kein Tool des
+  ersten Laufs läuft erneut), hält den Retry genauso und liefert nach dessen
+  Urteil; nur seine
+  Lebenszeichen (ein zweites `iteration_start`) gehen vorher raus. Ein
+  abgebrochener oder gescheiterter Retry bleibt intern, dann gilt die Notiz
+  zum ersten Lauf. `done.turnId` nennt die Session-Log-Zeile des gelieferten
+  Laufs (Commit-on-Delivery, §3); `onAfterTurn`-Annotationen kommen mit der
+  freigegebenen Antwort direkt vor ihr. `VerifierService.chat` (`/api/chat`,
+  Scheduler, Conductor)
+  hat Retry und Borderline-Resample und liefert bei einem nicht freigegebenen
+  Endurteil dieselbe Notiz als `SemanticAnswer` (`answerSource`/
+  `answerIsError` gesetzt, Anhänge und Karten entfernt).
+- Ein zurückgehaltener Turn zählt als `ok` (Operator-Health in `routes/chat.ts`,
+  API-Key-Audit in `chatRouter.ts`) — eine Policy-Entscheidung, kein Fehler;
+  außer er ist zugleich `degraded`, dann bleibt er ein Fehler.
+- **Canvas-Skeleton:** deklariert der Basis-Agent
+  `ChatAgent.holdsContentUntilVerdict` (der `VerifierService` in `enforce`),
+  hält der Canvas-Composer sein Skeleton zurück (`verdictHold.ts`): es geht
+  direkt vor dem ersten `surface_*` bzw. dem freigebenden `done` raus, vor
+  dem Antworttext, und nie mit einem zurückgehaltenen oder fehlgeschlagenen
+  Turn. In `shadow` und ohne Verifier bleibt Skeleton-first unverändert.
+- Der Web-Chat faltet `done.verifier` und `verifierBlocked` in die Nachricht
+  (`chatStreamEvents.ts`) und setzt `VerifierBlockedNotice`
+  (`chat.verifierBlocked.*`) über die Notiz; der Server-Mirror
+  (`MessageSchema`) behält beide Felder.
+- **Nicht abgedeckt:** der Abo-CLI-Runtime (`claude-cli`; `buildOrchestrator`
+  gibt den `CliChatAgent` vor dem Verifier-Wrapper zurück) und Routinen (der
+  Routine-Runner ruft `runTurn` auf dem rohen Orchestrator). Persistenz
+  (Session-Log, KG-Turn, Auto-Promotion) passiert vor `done` — mit
+  Request-Ledger erst nach dem Urteil, für den Lauf, über den es ging —, also
+  auch für eine zurückgehaltene Antwort.
 
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
@@ -3637,6 +4060,12 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   Floor anheben, sobald die Zahl steigt. `mask_user_prompt` ist ein globaler Schalter (kein
   Locale-Schalter); Betreibern mit überwiegend niederländischen Nutzern bis dahin C1 mit
   aktivieren oder die C0-Lücke bei Adressen bewusst in Kauf nehmen.
+- **Wackelnder Web-UI-Test `QualityPanel.test.tsx` („Aktualisieren button refetches").**
+  Der Test klickt den Refresh-Button, sobald der erste Fetch nur *aufgerufen* wurde; der
+  Button ist aber `disabled={loading}`, bis dieser Fetch fertig ist. Landet der Klick im
+  Ladezustand, kommt kein zweiter Fetch, und das `waitFor` läuft nach 1 s ab — am
+  2026-10-01 einmal im vollen Suite-Lauf rot, isoliert dreimal grün. Fix: vor dem Klick
+  warten, bis der Button wieder aktiv ist.
 
 ### Offene Punkte aus den Security-Härtungen (2026-09-30)
 
@@ -3804,6 +4233,11 @@ laufen die Verifier-Requests unter der Surrogat-Map des Turns. Offen:
   Maskierung) könnte weiche Widersprüche wieder blockierend machen.
 - **Ledger-Attribution:** die Verifier-Kostenzeilen können an
   `continuation.receiptId` anknüpfen (siehe Cost-Ledger "Offen").
+- **Direct-Line-Relay in `enforce`.** Hinter einem Shield übergibt ein
+  Relay-Lauf keine Privacy-Sicht; `enforce` hält seine Antwort deshalb als
+  `unavailable` / `privacy_shield` zurück. Wer Direct-Line-Agenten mit
+  `enforce` und Shield betreibt, bekommt dort keine Antwort. Prüfen, ob die
+  Relay-Antwort über die Sicht des Sub-Agent-Laufs verifiziert werden kann.
 - **Wertgleiche Platzhalter beim Minting:** `createPromptPseudonymMap`
   (`v4/pseudonym.ts`) prüft Kollisionen nur als String. Ein echtes Datum oder
   ein echter Betrag, dessen Wert einem Kandidaten entspricht, bekommt einen
@@ -3869,19 +4303,21 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   Treiber-Hinweis zurück will, stellt in `withholdThrownToolError` auf
   `redactToolErrorText` um (eine Stelle) — um den Preis von Namen, die C0
   nicht erkennt.
-- **Wiederholung nach einer Exception:** nur `LocalSubAgent` verweigert die
-  identische Wiederholung eines Aufrufs, der mit einer Exception endete
-  (`subAgentUnknownOutcome.ts`). Die Eltern-Loops und der Abo-CLI-Sub-Agent
-  (dessen Schleife der `claude`-CLI besitzt) blockieren keine Wiederholung;
-  den Hinweis der Notice liest ihr Modell nur dort, wo es die Notice liest
-  (ohne Privacy-Provider kommt ein direkter Throw roh an). Kein Pfad
-  blockiert eine Wiederholung mit anderem Input oder nach einem
-  zurückgegebenen Fehler mit ebenso unbekanntem Ausgang
-  (MCP-Request-Timeout). `LocalSubAgentTool` trägt keine
-  Write-Capability-Metadaten, deshalb gilt die Sperre für Lese- wie
-  Schreib-Tools. Ein Write genau einmal auszuführen braucht diese Metadaten
-  plus Idempotenz-Key (wie `ToolDispatchService` sie für das MCP-`exactlyOnce`
-  setzt) — gehört zur Write-Idempotenz-Arbeit am Sub-Agent-Pfad.
+- **Wiederholung nach einer Exception:** seit dem Replay-Ledger (§3)
+  verweigern innerhalb derselben Anfrage auch die Eltern-Loops (gepuffert und
+  Stream) und der Abo-CLI-Sub-Agent (über die `dispatch`-Naht seines
+  Loopback-Snapshots) die identische Wiederholung eines Write-Calls, der mit
+  einer Exception oder der Withheld-Notiz endete — nahtübergreifend,
+  `LocalSubAgent` behält zusätzlich seine Sperre pro Lauf. Offen bleibt:
+  (a) der **Haupt**-Abo-CLI-Agent (`CliChatAgent` als Chat-Agent) läuft ohne
+  Orchestrator-Turn und hat keinen Ledger, dort sperrt nichts; (b) zwei
+  identische Calls im **selben** parallelen Batch laufen beide, die Sperre
+  greift erst für Calls, die nach dem Throw entschieden werden; (c) nach
+  einem Dispatch-Deadline-Timeout oder einem zurückgegebenen Fehler mit
+  ebenso unbekanntem Ausgang (MCP-Request-Timeout) wird nicht gesperrt;
+  (d) eine Wiederholung mit anderem Input läuft. Ein Write genau einmal
+  auszuführen braucht dafür Write-Metadaten plus Idempotenz-Key (wie
+  `ToolDispatchService` sie für das MCP-`exactlyOnce` setzt).
 - **Exception-Formen ohne C1:** positionale Datensatz-Dumps
   (`Partner(42, 'Jane Doe')`, Gos `%v`) und `name=…`-Paare außerhalb eines
   Datensatzes erkennt `looksExceptionShaped` nicht; ein Name darin geht ohne
@@ -3911,6 +4347,155 @@ verspricht Hub-Installationen office 0.1.4 erst mit diesem Schritt.
   (`package.id_conflict_bundled`), außer mit
   `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`.
 
+### Verifier-Wiedereintritt (Replay-Ledger): offene Enden
+
+Stand nach „Wiedereintritte führen kein Tool erneut aus“ (§3,
+`docs/security-architecture.md` §7c):
+
+- **Erledigt: Session-Log hält die gelieferte Antwort.** Commit-on-Delivery
+  (§3, `requestTurnRecord.ts`) schreibt die eine Zeile der Anfrage nach dem
+  Urteil für den gelieferten Lauf. Offen bleibt nur, was der Commit für eine
+  **zurückgehaltene** Antwort schreibt: die Antwort des Laufs, über den das
+  Endurteil ging (Punkt „Zurückgehaltene Antwort wird trotzdem persistiert“
+  unten) — der Commit kennt das Urteil jetzt, ein Marker statt der Antwort
+  wäre dort einzuhängen. Eine Anfrage mit Request-Ledger, die nie committet
+  wird (Aufrufer ohne `finally`), verliert ihre Zeile; beide bestehenden
+  Binder committen auf jedem Pfad.
+- **Kein positives Read-only im Plugin-Vertrag.** Auf einem Wiedereintritt
+  dürfen nur Kernel-Lese-Tools neu laufen; jeder Plugin-, MCP-, Domain- und
+  Sub-Agent-Call, den der erste Lauf nicht machte, bricht ab — auch reine
+  Lesezugriffe. Eine `readOnly`-Deklaration auf `NativeToolRegistration`,
+  `DomainTool` und `LocalSubAgentTool` (dort fehlt auch ein
+  `writeCapabilities`-Träger) würde mehr Wiedereintritte zu Ende laufen
+  lassen. Fehlendes `writeCapabilities` darf dafür NICHT reichen.
+- **Correction-Retry auf Write-Turns bricht oft ab.** `traceMissingCallVerdict`
+  blockiert jede harte Odoo-Aussage ohne `query_odoo_*`/`odoo_execute`-Call;
+  nennt eine Antwort den gerade angelegten Datensatz, folgt der Retry, und
+  ein neu formulierter Write-Payload bricht ihn ab (`failed`). Prüfen, ob
+  write-fähige Plugin-Tools als Evidenz zählen sollen.
+- **Exakter Input.** Ein Wiedereintritt trifft den aufgezeichneten Call nur
+  bei identischem kanonischem Input (Schlüsselreihenfolge egal). Bewusst kein
+  Fuzzy-Matching — das würde einen anderen Write ausführen.
+- **Canvas-Turns ohne Stream-Retry.** Der Canvas-Composer ordnet
+  Roh-Sentinels per Tool-Name (FIFO) zu; ein Retry, der Calls umsortiert,
+  könnte eine Surface mit dem falschen Ergebnis bauen. Für Canvas-Turns
+  bleibt es beim Zurückhalten ohne Retry, bis die Zuordnung per Call-ID läuft.
+- **Abo-CLI-Sub-Agent: Obligation-Re-Prompt.** Der zweite CLI-Spawn bei
+  fehlendem `expectedTurnToolUse` wird angewiesen, aber nicht daran gehindert,
+  einen erfolgreichen Write zu wiederholen; der Ledger zeichnet im ersten
+  Lauf nur auf. Ein „replay-or-execute“-Modus für diesen Spawn wäre der Fix.
+- **Abgespielte Status-Abfragen.** Ein `_status` eines langlaufenden
+  Sub-Agent-Tasks wird im Wiedereintritt mit dem Stand des ersten Laufs
+  abgespielt — gewollt (gleiche Evidenz), aber kein Live-Stand. Der Runner
+  selbst läuft seit `runDetachedFromRequestLedger` auf eigenem Ledger; er
+  erbt aber weiterhin den übrigen Turn-Kontext des Dispatches (Privacy-Handle,
+  Sinks — `describeDeferredPrivacyPosture`). Andere abgekoppelte Arbeit, die
+  später Tool-Handler ruft, muss denselben Weg nehmen (Security §11).
+- **Screening-Marker bleibt am Input.** `markScreeningReentry` setzt einen
+  WeakSet-Eintrag auf das Input-Objekt, der nach der Anfrage bleibt (anders
+  als der Ledger, der freigegeben wird). Ein Aufrufer, der dasselbe Objekt für
+  eine neue Nachricht wiederverwendet, umginge das Inbound-Screening. Kein
+  bekannter Aufrufer tut das; Freigabe analog zum Ledger wäre billig.
+- **Verifier-Evidenz wird mandantenweit geholt.** `GraphEvidenceFetcher`
+  (`findEntities` nach Modell, exakter ID und Name, inkl. der
+  `res.partner`/`hr.employee`-Namensproben) und der deterministische
+  Odoo-Re-Query laufen ohne User-Identität und Grants. Seit dem Fix verlässt
+  ihr Inhalt den Verifier nicht mehr Richtung Turn (kein `truth`/`detail` im
+  Correction-Hint, die Summary trägt nur Zähler); er geht aber an das
+  Judge-Modell (hinter dem Shield projiziert, Security §6e, ohne Shield roh)
+  und in `verifier_contradictions`. Offen: den Abruf auf den aufgelösten
+  User und seine Grants beschränken und ohne beides fail-closed werten
+  (keine Evidenz → `unverified`) — Voraussetzung, bevor Evidenz je wieder an
+  ein Turn-Modell oder einen User geht.
+- **Retry ohne Messwert.** Der Correction-Retry korrigiert nur noch aus den
+  (abgespielten) Tool-Ergebnissen des Turns; einen Wert, den nur der
+  Verifier kannte, kann er nicht übernehmen. Erwartung: weniger
+  `corrected`, mehr zurückgehaltene Antworten — `corrected`-Rate vor/nach
+  messen.
+- **Hint-Texte passen nicht zum Replay.** Postcondition- und Replay-Abschnitt
+  von `buildCorrectionPrompt` verlangen einen neuen Tool-Call; im
+  Wiedereintritt wird jeder Call außerhalb des ersten Laufs (außer
+  Kernel-Lesern) abgelehnt und der Retry abgebrochen. Texte an die
+  Replay-Realität anpassen oder für diese Fälle keinen Retry starten.
+- **Masking-Grenze des Hints.** Er wird mit denselben Detektoren geprüft und
+  maskiert wie die Nachricht: hinter einem Shield geht ein Hint, den die
+  Maskierung verändern würde, gar nicht raus (Retry zurückgehalten); was
+  keiner erkennt (Namen ohne C1, freie Beträge ohne Währung …), geht wie in
+  der Nachricht ans Modell; mit `mask_user_prompt` aus (Default) wird nichts
+  maskiert. Die Claims sind Wortlaut der Antwort.
+- **Nudge-State pro Lauf.** `applyNudgePipeline` läuft auch nach
+  abgespielten Tool-Batches eines Wiedereintritts und kann
+  `recordEmission` erneut schreiben (kein User-Write; Cooldown/Statistik).
+  Prüfen, ob ein Wiedereintritt (`isReentryPass()`) die Emission
+  überspringen soll.
+- **Wiedereintritte überspringen das #579-Screening.** `prepareReentry`
+  markiert den Input (`markScreeningReentry`), das Inbound-Gate läuft für
+  Resample und Retry nicht erneut. Den Untrusted-Marker, den das Gate im
+  ersten Lauf bei einem Screening-Ausfall (fail-open) an den
+  `extraSystemHint` hängte, trägt ein Wiedereintritt nicht: der Retry-Input
+  entsteht aus dem Input des Aufrufers, dessen `extraSystemHint` der
+  Correction-Hint ersetzt, und ein Resample läuft mit dem Input vor dem Gate.
+  Der Wiedereintritt sieht dieselben Anhänge und abgespielten
+  Tool-Ergebnisse ohne den Hinweis, dass sie ungeprüft sind. Fix: die
+  Gate-Entscheidung des ersten Laufs (samt Marker) an den Wiedereintritt
+  weiterreichen, statt neu zu screenen oder sie zu verlieren.
+- **Bild-Blöcke umgehen die Privacy-Grenze (#504/#505).** Bild-Anhänge gehen
+  als Vision-Blöcke ungemaskt ans Modell — der Shield maskiert nur Text
+  (`ingestedImages` läuft am Prompt-Masking vorbei). Der Ledger hält die
+  Bild-Blöcke des ersten Laufs und gibt sie jedem Wiedereintritt mit, der
+  sie erneut an den Provider schickt. Ein Bild mit personenbezogenen Daten
+  (Scan, Screenshot) verlässt den Prozess damit unmaskiert, im ersten Lauf
+  wie im Wiedereintritt. Offen: Bild-Anhänge unter aktivem Shield nur nach
+  Policy zulassen (abschaltbar, oder OCR plus Maskierung statt Vision).
+- **MCP-Transport-Retry in Turns ohne Request-Ledger.** Bei gebundenem
+  Request-Ledger sendet jede Naht jeden Call nur einmal
+  (`runHandlerAtMostOnce` → `sendsEachCallOnce`, §3). Turns ohne
+  Request-Ledger — `shadow`, Verifier aus, `enforce` ohne erlaubten
+  Wiedereintritt, Canvas-Stream — behalten den einen Retry
+  (`MCP_CALL_MAX_ATTEMPTS = 2`, `mcp/mcpClient.ts`): dort kann
+  ein MCP-Write, dessen Antwort verloren ging, zweimal laufen. Bewusst so
+  gelassen (#542: der Retry fängt einen wackligen gehosteten Proxy ab, für
+  Lesezugriffe harmlos). Fix: Write-Metadaten für MCP-Tools (Punkt „Kein
+  positives Read-only im Plugin-Vertrag“) oder die Ein-Versuch-Regel für
+  jeden Chat-Turn. Daneben: ein transienter MCP-Fehler kommt als
+  `Error:`-Text zurück (`handleFailure` wirft nicht), markiert den Call also
+  nicht als „Ausgang unbekannt“ — das Modell darf denselben Write erneut
+  aufrufen.
+- **Erledigt: Interning fail-closed.** Wirft `privacy.internToolResultV4`,
+  bekommt das Modell an jeder Naht die Notiz `internFailedNotice` (Call lief,
+  Ergebnis zurückgehalten, nicht erneut aufrufen) statt des Rohergebnisses —
+  im ersten Lauf wie im Wiedereintritt; `query_dataset` behält seinen Text.
+  Kostet Antworten, sobald der Privacy-Provider hakt (Log:
+  `privacy.internToolResultV4 threw — result WITHHELD`). Ein Receipt-Eintrag
+  für den zurückgehaltenen Inhalt fehlt noch — es ging nichts raus, aber der
+  Turn-Receipt zeigt den Ausfall nicht.
+- **`replayed` erreicht den Knowledge Graph nicht.** Liefert der Verifier
+  einen Wiedereintritt, schreibt das Session-Log dessen Trace
+  (Commit-on-Delivery); beide KG-Backends legen pro Trace-Eintrag einen
+  `ToolCall`-/`AgentInvocation`-Knoten an und lassen `replayed` fallen
+  (`neonKnowledgeGraph.ts`, `writeToolCall`). Abgespielte Calls stehen dort
+  wie Ausführungen dieses Laufs, mit der Dauer des Replays; der Trace des
+  ersten Laufs, in dem sie wirklich liefen, wird nicht geschrieben. Fix:
+  `replayed` als Knoten-Property in beiden Backends mitschreiben (JSONB, keine
+  SQL-Migration) — plugin-api 1.21.0 dokumentiert die Lücke.
+- **Canvas-Skelett-Komposition umgeht die Privacy-Grenze.** Vor dem
+  geschützten Turn schickt der ui-orchestrator `input.userMessage` (oder die
+  serialisierte Aktion) über den LLM-Accessor des Plugins an das
+  Kompositionsmodell (`composition.ts`, `composeSkeleton`;
+  `pluginContext.ts`) — ohne das Prompt-Masking des Turns. `verdictHold.ts`
+  regelt nur, wann das Skelett ausgeliefert wird, nicht, was an den Provider
+  geht. Mit `mask_user_prompt` an verlässt der Nutzertext den Prozess damit
+  unmaskiert. Fix (eigener Fix, außerhalb dieses Bündels): Komposition über
+  die Privacy-Sicht des Turns führen, oder bei aktivem Shield das
+  deterministische Fallback-Skelett nehmen.
+- **Kalibrierung vor `enforce`: verborgene Antworten haben keine Zeile.**
+  `verifier_verdicts.reason` (KG-Migration 0034) macht `skipped`-Gründe
+  abfragbar (`docs/upgrading.md`). `shadow` schreibt aber keine Zeile für eine
+  Antwort, die der Verifier hinter dem Shield nicht sehen darf (Render,
+  Direct-Line-Relay) — `enforce` hält jede davon zurück. Gezählt werden kann
+  nur über die Log-Zeile `verification skipped run=…`. Fix: in `shadow` eine
+  `unavailable`/`privacy_shield`-Zeile schreiben, ohne zu prüfen.
+
 ### MRTR-Sentinel über Skill-Bindung und `ctx.mcp` (#570 follow-up)
 
 Die skill-gebundenen MCP-Tools (`subAgentToolHydration.ts`, Domain-Tools des
@@ -3924,6 +4509,16 @@ der Code-Lektüre beim Connect-Prompt-Fix, nicht per Test reproduziert. Der
 Connect-Prompt hat deshalb einen eigenen AsyncLocalStorage
 (`McpAuthPromptMint`); für den Sentinel reicht dasselbe oder die Weitergabe des
 Felds in beiden Re-Scopes.
+
+### Graph-Tools: exakte ID-Abfrage auch für Agenten
+
+Seit plugin-api 1.21.0 kann `findEntities` einen Datensatz über `id` exakt
+adressieren (§7), der Verifier nutzt das. Die Agenten-Tools tun es noch nicht:
+`query_graph` (`createGraphLookupTool`, `harness-verifier/src/graphLookupTool.ts`)
+und `find_entity` in `query_knowledge_graph` kennen nur `name_contains`. Ein
+Sub-Agent, der nach „Partner 42“ fragt, bekommt so auch 142, 420 oder
+„Halle 42“. Offen: einen optionalen `id`-Input an beide Tools, Beschreibung und
+§7 entsprechend anpassen.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
@@ -4304,6 +4899,217 @@ neu gebaute `{ formula }` durch (`cellValueOf`, Header nur als Text). Liest
 ein Update einen dieser Werte anders, etwa Text mit führendem `=` als Formel,
 umgeht er die Policy. `office-cell-values.test.ts` prüft die abgelehnten
 Objektformen und dass solcher Text Text bleibt.
+
+### Answer-Verifier: offene Punkte nach den evidenzgebundenen Verdicts (2026-09-30)
+
+- **Connector-Chip für `skipped` / `unavailable` — Produktentscheidung.** Teams
+  und Telegram bekommen für diese Turns bewusst **kein** Badge; der Wire-Typ
+  `SemanticAnswer.verifier` blieb unverändert, damit die Connector-Repos kein
+  Release brauchen. Ein expliziter „nicht geprüft"- / „Prüfung nicht
+  verfügbar"-Chip hieße: Union in `outgoing.ts` erweitern, `teamsCard.ts`
+  (`verifierChip`) nachziehen, beide Connector-Repos releasen — und ein
+  neutrales Badge auf jedem Small-Talk-Turn. Der Web-Chat zeigt beide Zustände
+  bereits (`VerifierBadge`).
+- **`CHECK`-Constraint auf `verifier_verdicts.status`.** Das Vokabular ist
+  jetzt geschlossen (`approved`, `approved_with_disclaimer`, `blocked`,
+  `skipped`, `unavailable`); eine Migration in der KG-neon-Serie könnte es
+  festschreiben. Heute freie `TEXT`-Spalte ohne Leser im Repo.
+- **Golden-Eval einmal beaufsichtigt laufen lassen.** `skipped.jsonl` (vorher
+  `approve.jsonl`) erwartet jetzt `skipped`. Ein Sample, dessen Extraktion leer
+  bleibt, landet nun in `skipped` statt still in `approved`; extrahiert das
+  Modell neben einem geprüften Claim einen, den kein Checker nimmt, oder einen,
+  der nicht wörtlich in der Antwort steht (Umschreibung, hineingezogenes
+  Subjekt — `claims_not_in_answer`), landet ein `approved`-Eintrag jetzt in
+  `approved_with_disclaimer`; eine am Token-Limit abgeschnittene oder
+  schemawidrige Extraktion in `unavailable` — ein erster roter Lauf von
+  `npm run eval:golden` ist zu untersuchen, nicht wegzuwinken.
+- **Nicht gelistete Claims bleiben unsichtbar.** Der Verifier prüft, was das
+  Extraktionsmodell auflistet. Lässt es unter dem Anfrage-Limit einen Claim
+  weg, hinterlässt das keine Spur; `approved` heißt deshalb „keine bekannte
+  Lücke", nicht „die Antwort enthält sonst nichts" (so auch in
+  `docs/security-architecture.md` §7c). Denkbar: die starken Signale des
+  Trigger-Routers (Beträge, Daten, Referenzen) deterministisch gegen die
+  extrahierten Claims abgleichen und ein Signal ohne Claim als Lücke melden,
+  oder ein Pflichtfeld im `record_claims`-Schema, in dem das Modell
+  Vollständigkeit bestätigt. Heute beobachtet nur die Golden-Eval, ob das
+  Modell die entscheidenden Claims findet.
+- **Verifier-Aufzählung in der README-Feature-Tabelle.** Die Zeile
+  „Answer verification" nennt nur `approved` / `approved_with_disclaimer` und
+  „each answer"; beim nächsten Abgleich der README-Aussagen mit dem erzwungenen
+  Verhalten auf `skipped` / `unavailable` erweitern — und sagen, dass nur
+  `enforce` blockiert (auch im Stream), `shadow` nur beobachtet, und dass der
+  Abo-CLI-Runtime und Routinen nicht verifiziert werden.
+- **Verdict-Zustand im Server-Mirror — erledigt.** Der Chat-Mirror
+  (`MessageSchema`, `routes/chatSessions.ts`) behält `Message.verifier` (ein
+  Summary, das nicht ins Schema passt, fällt einzeln weg) und
+  `verifierBlocked`.
+- **Abdeckung nur im Log, nicht in `verifier_verdicts`.** Die Tabelle hat keine
+  Spalte für nicht geprüfte (`not_checked`) oder gescheiterte
+  (`check_failed`) Claims; beide zählen dort in `unverified_count`. Eine
+  Kalibrierungs-Abfrage trennt „nicht geprüft" und „Check gescheitert" von
+  „geprüft, nicht bestätigt" heute nur über die Logzeilen
+  (`[verifier/pipeline] … not checked`, `[verifier/deterministic] FAIL`,
+  `[verifier/judge] API FAIL`). Eine Migration mit eigenen Zählern wäre der
+  saubere Weg; der Stream (`uncheckedCount`) hat die Zahl bereits.
+- **Konfigurationslücken zählen als „geprüft, nicht bestätigt".** Ein Claim,
+  den der `DeterministicChecker` mangels Odoo-/Graph-Reader oder bekanntem
+  Feld nicht prüfen kann („no odoo reader configured", „no amount field for
+  …"), trägt keine `cause`. Das Badge bleibt ehrlich (ohne bestätigten Claim
+  `unverified`, nie grün), der Tooltip sagt aber „geprüft, keine bestätigt"
+  statt „nicht geprüft", und neben einem bestätigten Claim stößt so ein Claim
+  den Borderline-Resample an. Offen: solche Fälle als `not_checked` markieren.
+- **Schemawidriger Eintrag kippt die ganze Extraktion.** Ein `record_claims`-
+  Eintrag ohne Text, mit unbekanntem Typ oder unbekannter Quelle macht die
+  Extraktion zu `unavailable`, auch wenn die übrigen Einträge lesbar wären —
+  konservativ, weil sich ein unlesbarer Eintrag nicht als Claim im Verdict
+  halten lässt. Häufen sich im Shadow-Betrieb die Logzeilen „… entries do not
+  match the schema", die lesbaren Einträge prüfen und die unlesbaren als
+  Abdeckungslücke zählen.
+- **Resample bei gescheitertem Check neben bestätigtem Claim.** Ein Verdict mit
+  einem bestätigten und einem `check_failed`-Claim gilt weiter als
+  Borderline und kauft einen zweiten Orchestrator-Turn (#132), weil ein
+  transienter Fehler beim zweiten Sample verschwinden kann. Seit dem
+  Replay-Ledger führt ein Resample kein Tool erneut aus; bleibt die Abwägung
+  gegen die Kosten des zweiten Turns.
+- **Lange Antworten fensterweise extrahieren.** Der `ClaimExtractor` liest nur
+  die ersten 6000 Zeichen (`EXTRACTION_WINDOW_CHARS`); jede längere Antwort
+  trägt deshalb eine `coverage_gap` und ist höchstens `partial`, auch wenn
+  jeder Claim im gelesenen Teil stimmt. ERP-Listen überschreiten das leicht.
+  Fensterweise Extraktion (überlappende Fenster, Dubletten zusammenführen, ein
+  LLM-Call je Fenster, bis die Claim-Liste voll ist) würde sie voll prüfbar
+  machen; die Lücke bliebe nur für Text jenseits des letzten Fensters.
+- **Verbatim-Guard und Markdown.** Der Guard (`verbatimSpan.ts`) toleriert
+  Groß-/Kleinschreibung und Whitespace, aber keine Auszeichnung: zitiert das
+  Modell „Die Gutschrift beträgt 2.000,00 €" aus einer Antwort mit
+  `**2.000,00 €**`, ist das die Lücke `claims_not_in_answer` und die Antwort
+  höchstens `partial` — ehrlich, aber womöglich häufig. Im Shadow-Betrieb die
+  Logzeilen `[claim-extractor] … not_in_answer=` beobachten; ist Markdown die
+  Hauptursache, Emphasis-Zeichen (`*`, `_`, Backtick) zwischen den Wörtern
+  gezielt überspringen, statt den Guard allgemein zu lockern.
+- **Token-Budget der Extraktion an das Claim-Limit koppeln.** Der
+  `record_claims`-Call hat `maxTokens: 1024`. Eine Liste nahe am Limit
+  (`VERIFIER_MAX_CLAIMS + 1` Einträge) kann daran abreißen und endet dann als
+  `unavailable` (`extractor_error`) statt als `partial` — ehrlich, aber
+  ungenauer als nötig. Budget aus `maxClaims` ableiten oder kompaktere
+  Einträge anfordern.
+- **Claim-Wert nicht an den Claim-Text gebunden (älteres Limit).** Der
+  `DeterministicChecker` vergleicht bei Beträgen und Summen den vom Modell
+  gelieferten `claim.value` mit dem Odoo-Feld (`checkOdooAmount` ab
+  `deterministicChecker.ts:194`, `checkOdooAggregate` ab :234; bei Daten
+  `claim.value ?? claim.text`, :278), nie den Wert, den der zitierte Text
+  nennt. Der Text ist dank Verbatim-Guard ein Stück der Antwort, der Wert
+  aber die eigene Lesart des Modells: liest es „1.234,56 €" als 1000 und hält
+  der Beleg 1000, ist der Claim `verified`, obwohl die Antwort etwas anderes
+  sagt; umgekehrt kann ein Lesefehler einen richtigen Claim widerlegen.
+  Zudem kürzt der Extractor einen String-Wert auf 200 Zeichen. Offen: Betrag
+  und Datum deterministisch aus dem zitierten Text lesen und bei Abweichung
+  vom Modellwert `not_checked` melden, statt dem Modellwert zu folgen.
+- **Judge-Antwort wird großzügig gelesen (älteres Limit).** `parseVerdict`
+  (`evidenceJudge.ts`) liest nur den ersten `record_verdict`-Call; ein
+  zweiter mit anderem Urteil wird ignoriert. Eine am Token-Limit
+  abgeschnittene Judge-Antwort (`finishReason: 'max_tokens'`) wird nicht
+  verworfen, anders als beim Extractor. Erledigt ist die Zitatprüfung: die
+  zitierte `evidence_node_id` muss eine Kennung sein, die der Request
+  gedruckt hat (Security §7c). Offen: alle Calls lesen (widersprüchliche
+  Urteile → `check_failed`) und eine abgeschnittene Antwort als
+  `check_failed` werten.
+- **Überlange Claims beobachten.** Ein Claim über `MAX_CLAIM_CHARS` (300
+  Zeichen) wird nicht mehr gekürzt geprüft, sondern ist die Lücke
+  `claims_too_long` — die Antwort ist dann höchstens `partial`. Das
+  Tool-Schema verlangt 1-200 Zeichen, erzwungen wird es im Prompt nicht. Im
+  Shadow-Betrieb die Logzeilen `[claim-extractor] … too_long=` beobachten;
+  sind sie häufig, das Modell im System-Prompt ausdrücklich lange Aussagen in
+  mehrere Claims teilen lassen, statt die Grenze anzuheben.
+- **`verifierService.ts` über der 500-Zeilen-Grenze — erledigt.** Die reinen
+  Helfer liegen jetzt in eigenen Modulen: Summary, Badge und Merge
+  (`summarise`, `badgeFor`, `mergeBadges`, `mergeBorderlineVerdicts`,
+  `withVerifier`) in `verifierVerdicts.ts`, die Trace-Extraktion
+  (`extractToolsCalled` u. a.) in `verifierTraceEvidence.ts`.
+  `verifierService.ts` exportiert `badgeFor`, `mergeBadges` und
+  `mergeBorderlineVerdicts` weiter, weil Tests sie von dort importieren.
+
+### Answer-Verifier: offene Punkte zum `enforce`-Gate (2026-10-01)
+
+- **Correction-Retry im Stream — erledigt** (Replay-Ledger, §3), außer bei
+  Canvas-Turns (Punkt „Canvas-Turns ohne Stream-Retry“ oben).
+- **Zurückgehaltene Antwort wird trotzdem persistiert.** Der Orchestrator
+  schreibt Session-Log, KG-Turn und ggf. die Auto-Promotion vor `done`; die
+  zurückgehaltene Antwort landet so im Kontext späterer Turns, und ihre
+  `autoPromotedMkId` wird nicht ausgeliefert (der Web-Chat bietet kein
+  Verwerfen an). Mit Request-Ledger (Retry oder Resample möglich) ist die
+  Persistenz schon bis nach dem Urteil zurückgestellt (Commit-on-Delivery,
+  §3); dort nach dem #1094-Muster einen Marker statt der Antwort committen
+  und die Promotion auslassen. Ohne Ledger (`VERIFIER_MAX_RETRIES=0` ohne
+  Resample, Canvas-Stream) schreibt der Turn weiterhin vor dem Urteil.
+- **Zurückgehaltener Turn zeigt nicht, welche Tools liefen.** Tool-Trace und
+  Tool-Ergebnisse fallen mit der Antwort weg; der Web-Chat zeigt nur die
+  Anzahl (`tools=N`). Hat ein Schreib-Tool committet, sollte die Notiz es nennen
+  wie die Turn-Incomplete-Notiz (#1094) — `done.runTrace` trägt die Namen.
+- **Keepalive für Public-API- und Canvas-Stream.** Bis zum Urteil gehen nur
+  Lebenszeichen raus; `heartbeat` erzeugt nur die Kernel-Route. Ein Turn ohne
+  Tool-Calls ist auf dem API-Key-Stream bis zum Urteil still — Integratoren mit
+  kurzen Lese-Timeouts brechen ab. Ein Wrapper-Heartbeat während des Haltens
+  wäre die Lösung (die README nennt das Verhalten).
+- **Canvas: erster Paint erst nach dem Urteil.** In `enforce` hält der
+  Composer das Skeleton bis zum Urteil (es ist Modell-Output); der Canvas
+  bleibt bis dahin leer. Ein Platzhalter ohne Modelltext (etwa das
+  deterministische Fallback-Skeleton) könnte live rausgehen, braucht aber
+  eine eigene Revisionsfolge (Modell-Skeleton als Revision 1, Patches darauf)
+  und einen lokalisierten „zurückgehalten“-Status für einen zurückgehaltenen
+  Turn.
+- **Mitausgelieferte Inhalte ungeprüft.** Das Urteil gilt `done.answer`;
+  Tool-Output, Sub-Agent-Antworten, Surfaces und der Skeleton-Text gehen mit
+  einem freigegebenen Turn raus, ohne selbst geprüft zu sein. Erfindet der
+  Composer Zahlen im Skeleton, wäre ein Skeleton ohne Freitext in `enforce`
+  (oder eine Prüfung seines Texts) der nächste Schritt.
+- **Nachgestelltes `NO_REPLY` in Teams/Telegram.** Eine Antwort, die nur mit
+  `NO_REPLY` endet, wird in `enforce` geprüft; hält der Verifier sie zurück,
+  postet der Channel die Notiz statt zu schweigen. Falls das stört: die Form
+  vor dem Verifier auf das strikte `NO_REPLY` normalisieren (Prosa verwerfen)
+  — Produktentscheidung.
+- **`onVerifierBlocked` nur bei Widerspruch.** Der Plan-Hook feuert für
+  `blocked`; eine fail-closed zurückgehaltene Antwort (`partial`,
+  `unavailable`) erscheint im Plan nicht als abgelehnt.
+- **Fail-closed hält lange Antworten immer zurück.** Eine Antwort über 6000
+  Zeichen ist nie `approved` (Abdeckungslücke) und wird in `enforce` stets
+  zurückgehalten, ebenso jede mit einem Claim, den kein Checker nimmt. Die
+  fensterweise Extraktion (Punkt oben) ist damit Voraussetzung für `enforce`
+  bei ERP-Listen.
+- **Borderline-Resample in `enforce chat()`.** Ein Borderline-Verdict ist
+  `approved_with_disclaimer` und wird zurückgehalten; der bezahlte Resample
+  ändert daran nur etwas, wenn er auf `blocked` eskaliert und der Retry dann
+  korrigiert. Kosten gegen Nutzen neu abwägen. Seit dem Replay-Ledger führt er
+  kein Tool mehr erneut aus, und `verifier_resample_on_borderline=false`
+  schaltet ihn ab.
+- **Abo-CLI-Runtime und Routinen ohne Verifier.** `VERIFIER_MODE` wirkt weder
+  auf `claude-cli`-Agenten (der `CliChatAgent` wird vor dem Wrapper
+  zurückgegeben) noch auf Routinen (`runTurn` auf dem rohen Orchestrator).
+- **Connector-Badge auf der Notiz.** Teams/Telegram zeigen an einer
+  zurückgehaltenen Antwort das Badge ihres Verdicts (`failed`, `partial`) neben
+  der Notiz. Produktentscheidung, ob es dort entfallen soll.
+- **Karten-Ausnahme lässt Faktenantworten ungeprüft durch.**
+  `releasesWithoutVerification` gibt jeden Turn mit `pendingUserChoice`,
+  `pendingMcpInput`, `pendingSlotCard` oder `pendingOAuthConsent` ohne Urteil
+  frei — auch die vollständige Antwort, an der ein Slot-Picker, ein
+  Consent-Prompt (turnweit) oder eine Card-Router-Auswahlkarte hängt, samt
+  Tool-Output, Surfaces und Canvas-Skeleton, ohne Badge. Engere Regel zur
+  Entscheidung: den Antworttext solcher Turns prüfen und die Karte nur
+  mitliefern, wenn das Urteil die Antwort freigibt — oder nur Turns
+  ausnehmen, die nichts als die Karte sind. Die vier Ausnahmen sind derzeit
+  so gesetzt; Security §7c beschreibt die Lücke.
+- **`enforce` mit Privacy Shield v4 liefert keine gerenderte Antwort.** Eine
+  gerenderte Antwort geht nie an den Verifier und wird zurückgehalten
+  (`unavailable` / `privacy_shield`) — auch ein gerenderter Tool-Fehler oder
+  Anmelde-Prompt (`answerIsError`). Damit `enforce` sie freigeben kann, müsste
+  der Verifier die Antwort über die Privacy-Sicht des Turns prüfen (Prosa und
+  Spaltenlabels maskiert, Werte über Handles statt Klartext).
+- **Zusammenführen mit der Privacy-Bindung der Verifier-Requests — erledigt.**
+  `verifierGate` entscheidet für beide Modi und jeden Lauf: „nicht prüfen“
+  wird in `enforce` zu `unavailable` / `privacy_shield` (zurückgehalten), nie
+  zu einer Auslieferung ohne Urteil, und in `shadow` zu keinem Verdict;
+  `mayVerifyAnswer` entfällt, `shadow` schickt keine gerenderte Antwort mehr
+  an den Extraktor. Datenschutz-Absage und Screening-Quarantäne gehen in
+  `enforce` als Server-Notizen ohne Urteil raus.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

@@ -4,6 +4,7 @@ import type { CommandPolicyProvider } from './commandPolicyGuard.js';
 import type { ChatParticipantsProvider } from './chatParticipants.js';
 import type { McpInputSentinelMint } from './mcp/pendingMcpInput.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
+import type { ToolReplayLedger } from './toolReplayLedger.js';
 
 /**
  * Per-turn context that propagates implicitly through every `await` triggered
@@ -301,6 +302,21 @@ export interface TurnContextValue {
    * would have silently reopened a wider store.
    */
   subAgentMemoryHandler?: SubAgentMemoryHandler;
+  /**
+   * The request's tool replay ledger (`toolReplayLedger.ts`). Set by the
+   * orchestrator's turn entry point (`runTurnCore`, `chatStream`): the ledger a
+   * verifier bound to the input for this request, or a turn-local one that
+   * keeps no results. Every seam that runs a tool handler consults it before
+   * the handler runs — `Orchestrator.dispatchToolDeadlined`,
+   * `LocalSubAgent.dispatch`, `ToolDispatchService.invoke` — so a re-entry
+   * replays the first run's results and nothing repeats a call whose outcome
+   * is unknown. Carried into every nested scope by the `{ ...ctx }` spread —
+   * but not into work that outlives the turn (a long-running task's runner),
+   * which gets a ledger of its own (`runDetachedFromRequestLedger`);
+   * undefined outside a turn (the public MCP endpoint), where every dispatch
+   * executes as before. Holds raw handler results: never log or persist it.
+   */
+  toolReplayLedger?: ToolReplayLedger;
 }
 
 /**

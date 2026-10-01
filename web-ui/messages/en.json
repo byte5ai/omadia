@@ -1638,6 +1638,10 @@
       "bodyNoTools": "Some actions had already run when this turn failed, and the assistant could not produce an answer afterwards, so your question is still unanswered. Repeat the question; check with your operator before repeating anything that changes data.",
       "completedTools": "Completed actions:"
     },
+    "verifierBlocked": {
+      "heading": "Answer withheld by the fact-check",
+      "body": "The fact-check could not confirm this answer, so it is not shown. Ask the question again, or check the details directly in the source system."
+    },
     "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
     "errorCorrelationRef": "Reference for support: {id}",
     "routing": {
@@ -1647,6 +1651,32 @@
       "bucketFallback": "Fallback",
       "providerFallback": "Fallback model",
       "providerFallbackTooltip": "The primary model was unavailable — this answer came from the agent's fallback ({model} on {provider})."
+    },
+    "verifier": {
+      "label": {
+        "verified": "Answer verified",
+        "partial": "Partly verified",
+        "corrected": "Answer corrected",
+        "failed": "Contradiction found",
+        "unverified": "Not verified",
+        "unavailable": "Verification unavailable"
+      },
+      "hint": {
+        "verified": "The verifier checked {count, plural, one {# claim} other {# claims}} in this answer against the sources and confirmed all of them.",
+        "partial": "No claim contradicts the sources, but {count, plural, one {# claim} other {# claims}} could not be confirmed.",
+        "partialUnchecked": "The verifier confirmed the other claims, but {count, plural, one {# claim} other {# claims}} in this answer could not be checked.",
+        "partialCoverage": "The verifier confirmed {count, plural, one {# claim} other {# claims}}, but did not check all of this answer.",
+        "corrected": "The first answer contradicted the sources; the verifier confirmed {count, plural, one {the # claim} other {all # claims}} in this corrected answer.",
+        "failed": "{count, plural, one {# claim contradicts} other {# claims contradict}} the sources.",
+        "unverified": "Not verified: no check confirmed this answer.",
+        "noneConfirmed": "Not verified: the verifier checked {count, plural, one {# claim} other {# claims}} in this answer but could not confirm any.",
+        "noTrigger": "Not checked: the answer contains no figures, dates or references the verifier checks.",
+        "noClaims": "Not checked: the verifier found no factual claims in this answer.",
+        "noCheckableClaims": "Not checked: none of the claims in this answer can be checked against a source.",
+        "incompleteCoverage": "Not checked: the verifier covered only part of this answer and found nothing it could check there.",
+        "unavailable": "The verifier could not run for this answer, so nothing was checked.",
+        "checkFailed": "The verifier's checks failed for this answer, so no claim was confirmed."
+      }
     }
   },
   "privacyReceipt": {

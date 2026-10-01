@@ -263,7 +263,9 @@ describe('end to end — a date placeholder the model rewrote never reaches the 
   // Prompt masking replaces the date with a realistic placeholder
   // ("dd.mm.yyyy"). Restore maps back only that exact string, so a model that
   // writes the placeholder back in ISO form leaves a fake date — and an answer
-  // carrying one must never replace the first, restored answer.
+  // carrying one must never replace the first, restored answer. Both cases
+  // stay blocked, so `enforce` withholds the request's answer: the user gets
+  // the notice, never the fake date.
   const REAL_DATE = '24.12.1987';
   const DATE_ASK = `Prüfe S1234 und Termin ${REAL_DATE}`;
   /** The date placeholder the turn's model saw, as it saw it. */
@@ -294,15 +296,15 @@ describe('end to end — a date placeholder the model rewrote never reaches the 
     return { agent, requests, isoFakes };
   }
 
-  function assertFirstAnswerShown(
-    text: string,
+  function assertNoFakeShown(
+    answer: { readonly text: string; readonly answerSource?: string },
     requests: readonly string[],
     isoFakes: readonly string[],
   ): void {
     assert.equal(requests.length, 2, 'expected the first turn and exactly one more');
     assert.equal(isoFakes.length, 1);
-    assert.ok(text.includes(REAL_DATE), `the restored first answer was not shown: ${text}`);
-    assert.equal(text.includes(isoFakes[0]!), false, `a fake date reached the user: ${text}`);
+    assert.equal(answer.answerSource, 'verifier-blocked', `not withheld: ${answer.text}`);
+    assert.equal(answer.text.includes(isoFakes[0]!), false, `a fake date reached the user: ${answer.text}`);
   }
 
   it('a still-blocked retry that wrote the placeholder in ISO form', async () => {
@@ -310,7 +312,7 @@ describe('end to end — a date placeholder the model rewrote never reaches the 
 
     const answer = await agent.chat({ userMessage: DATE_ASK, sessionScope: 'sess-e2e-iso-retry' });
 
-    assertFirstAnswerShown(answer.text, requests, isoFakes);
+    assertNoFakeShown(answer, requests, isoFakes);
     assert.equal(answer.verifier?.status, 'failed');
   });
 
@@ -319,7 +321,7 @@ describe('end to end — a date placeholder the model rewrote never reaches the 
 
     const answer = await agent.chat({ userMessage: DATE_ASK, sessionScope: 'sess-e2e-iso-resample' });
 
-    assertFirstAnswerShown(answer.text, requests, isoFakes);
+    assertNoFakeShown(answer, requests, isoFakes);
   });
 });
 

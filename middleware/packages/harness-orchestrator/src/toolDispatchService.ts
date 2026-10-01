@@ -11,8 +11,10 @@
  * closed and what is still deliberately orchestrator-only.
  */
 
-import { isInternExemptTool } from './privacyInternPolicy.js';
-import { isWriteCapableTool } from '@omadia/plugin-api';
+import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import { isWithheldToolErrorNotice, isWriteCapableTool } from '@omadia/plugin-api';
+import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
+import { replayMissNotice, runHandlerAtMostOnce } from './toolReplayLedger.js';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import {
   guardControlFlowResult,
@@ -43,7 +45,8 @@ import type { ToolIdempotencyStore } from './toolIdempotency.js';
  *  - `'dispatcher'` — produced by this service itself: its own guards (unknown
  *                     tool, plugin not ready), and the withheld notice it puts
  *                     in place of a thrown exception's message (tool name,
- *                     exception class name, sanitised code, log ref). Never
+ *                     exception class name, sanitised code, log ref) or of a
+ *                     result the privacy boundary could not intern. Never
  *                     tool data, so there is nothing for masking to have
  *                     crossed.
  *
@@ -71,6 +74,11 @@ export interface ToolDispatchResult {
    * cannot tell whether the mutation committed.
    */
   readonly replayed?: boolean;
+}
+
+/** Handler-authored content that went through the post-dispatch pipeline. */
+function fromTool(content: string): ToolDispatchResult {
+  return { content, origin: 'tool' };
 }
 
 export interface DispatchableToolSpec {
@@ -334,7 +342,7 @@ export class ToolDispatchService {
           origin: 'dispatcher',
         };
       }
-      return this.invoke(name, () => nativeHandler(input), options);
+      return this.invoke(name, input, () => nativeHandler(input), options);
     }
 
     const domainTool = this.domainTools().find((t) => t.name === name);
@@ -349,7 +357,7 @@ export class ToolDispatchService {
           origin: 'dispatcher',
         };
       }
-      return this.invoke(name, () => domainTool.handle(input), options);
+      return this.invoke(name, input, () => domainTool.handle(input), options);
     }
 
     return { content: `Error: unknown tool \`${name}\`.`, isError: true, origin: 'dispatcher' };
@@ -358,6 +366,7 @@ export class ToolDispatchService {
   /** One handler run, native or domain: the same steps for both branches. */
   private async invoke(
     name: string,
+    input: unknown,
     handler: () => Promise<string>,
     options?: ToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
@@ -372,19 +381,45 @@ export class ToolDispatchService {
         origin: 'dispatcher',
       };
     }
+    // The request's tool replay ledger, from the AMBIENT turn context only —
+    // a CLI sub-agent's loopback calls run in the snapshot of the parent's
+    // dispatch scope, the public MCP endpoint runs outside any turn and sees
+    // none (`toolReplayLedger.ts`). Nothing on this path is known read-only.
+    const ledger = turnContext.current()?.toolReplayLedger;
+    const decision = ledger?.decide('dispatch', name, input, { readOnly: false });
+    if (decision?.action === 'refuse-repeat') {
+      return { content: repeatRefusedNotice(name), isError: true, origin: 'dispatcher' };
+    }
+    if (decision?.action === 'refuse-miss') {
+      return { content: replayMissNotice(name), isError: true, origin: 'dispatcher' };
+    }
+    const replay = decision?.action === 'replay' ? decision.record : undefined;
+    // One mint per dispatch: a connect prompt the MCP manager produces
+    // while this handler runs is recorded in it (`mcpAuthPromptMint.ts`).
+    const authPromptMint = new McpAuthPromptMint();
+    let raw: string;
     try {
-      // One mint per dispatch: a connect prompt the MCP manager produces
-      // while this handler runs is recorded in it (`mcpAuthPromptMint.ts`).
-      const authPromptMint = new McpAuthPromptMint();
+      if (replay?.kind === 'rejection') throw replay.error;
       // The handler runs with this dispatch's handle as the ambient one, so a
       // sub-agent model loop inside it is guarded too (`handlerPrivacyScope.ts`).
-      const raw = await runWithMcpAuthPromptMint(authPromptMint, () =>
-        runHandlerInPrivacyScope(privacy, handler),
-      );
-      return {
-        content: await this.afterDispatch(name, raw, authPromptMint, options),
-        origin: 'tool',
-      };
+      raw =
+        replay?.kind === 'result'
+          ? (replay.value as string)
+          : await runHandlerAtMostOnce(ledger, () =>
+              runWithMcpAuthPromptMint(authPromptMint, () =>
+                runHandlerInPrivacyScope(privacy, handler),
+              ),
+            );
+    } catch (error) {
+      if (replay === undefined) ledger?.record('dispatch', name, input, { kind: 'rejection', error });
+      return this.thrownResult(name, error, options);
+    }
+    if (replay === undefined) {
+      ledger?.record('dispatch', name, input, { kind: 'result', value: raw });
+      if (isWithheldToolErrorNotice(raw)) ledger?.noteUnknownOutcome(name, input);
+    }
+    try {
+      return await this.afterDispatch(name, raw, authPromptMint, options, replay !== undefined);
     } catch (error) {
       return this.thrownResult(name, error, options);
     }
@@ -398,7 +433,8 @@ export class ToolDispatchService {
    *   1. raw capture — trace/audit consumers must see ground truth
    *   2. intern-exemption — the agent's own infra tools are never masked
    *   3. operator bypass (+ receipt entry) — explicit opt-out stays auditable
-   *   4. intern — the caller receives the identity-free digest
+   *   4. intern — the caller receives the identity-free digest, or, when
+   *      interning throws, the kernel's withheld notice (fail closed)
    */
   private async afterDispatch(
     name: string,
@@ -406,7 +442,9 @@ export class ToolDispatchService {
     /** The connect prompts the MCP manager produced in this dispatch. */
     authPromptMint: McpAuthPromptMint,
     options?: ToolDispatchOptions,
-  ): Promise<string> {
+    /** A verifier re-entry handed back the first run's result. */
+    replayed = false,
+  ): Promise<ToolDispatchResult> {
     const capture = this.deps.captureRawToolResult;
     if (capture !== undefined && typeof result === 'string') {
       try {
@@ -420,32 +458,35 @@ export class ToolDispatchService {
     }
 
     const privacy = this.privacyHandle();
-    if (privacy === undefined || typeof result !== 'string') return result;
+    if (privacy === undefined || typeof result !== 'string') return fromTool(result);
 
     // Interning-exemption: the agent's own infrastructure/self tools (memory,
     // stored-process CRUD, self-produced meta output) are never interned —
     // masking them blinds the agent to its own operational state. Same
     // auditable allowlist the orchestrator uses.
-    if (isInternExemptTool(name)) return result;
+    if (isInternExemptTool(name)) return fromTool(result);
 
     // Operator-owned per-plugin bypass (Slice 2.5). Raw passthrough, but the
     // receipt entry keeps it transparent.
     const bypass = privacy.checkBypass(name);
     if (bypass !== undefined) {
-      try {
-        await privacy.recordBypassedTool({
-          toolName: name,
-          pluginId: bypass.pluginId,
-          reason: 'operator_setting',
-          bytes: Buffer.byteLength(result, 'utf8'),
-        });
-      } catch (err) {
-        console.warn(
-          `[toolDispatchService:${name}] privacy.recordBypassedTool threw — bypass still applied:`,
-          err,
-        );
+      // A replayed bypass is on the first run's receipt already.
+      if (!replayed) {
+        try {
+          await privacy.recordBypassedTool({
+            toolName: name,
+            pluginId: bypass.pluginId,
+            reason: 'operator_setting',
+            bytes: Buffer.byteLength(result, 'utf8'),
+          });
+        } catch (err) {
+          console.warn(
+            `[toolDispatchService:${name}] privacy.recordBypassedTool threw — bypass still applied:`,
+            err,
+          );
+        }
       }
-      return result;
+      return fromTool(result);
     }
 
     // #1105 / #1097 — fulfilled control-flow prose (the `Error:` convention,
@@ -459,31 +500,32 @@ export class ToolDispatchService {
     // provenance; text that merely starts like it is interned below. Thrown
     // exceptions take `thrownResult`.
     if (isGuardedControlFlowResult(result, authPromptMint)) {
-      return guardControlFlowResult({
-        toolName: name,
-        result,
-        privacy,
-        site: 'toolDispatchService',
-        authPromptMint,
-      });
+      return fromTool(
+        await guardControlFlowResult({
+          toolName: name,
+          result,
+          privacy,
+          site: 'toolDispatchService',
+          authPromptMint,
+        }),
+      );
     }
     try {
       const v4 = await privacy.internToolResultV4({
         toolName: name,
         rawResult: result,
       });
-      return v4.digestText;
+      return fromTool(v4.digestText);
     } catch (err) {
-      // Fail-OPEN, matching `Orchestrator.dispatchToolDeadlined` exactly. This is
-      // parity, not an endorsement: for a PUBLIC endpoint a masking failure that
-      // emits raw rows is a leak, and a fail-CLOSED policy for untrusted callers
-      // is worth its own decision (#542) — but making this path stricter than the
-      // chat path would be a silent behaviour change beyond closing the seam.
+      // Fail CLOSED, like `Orchestrator.dispatchToolDeadlined` and every other
+      // seam (`internFailedNotice`): the caller gets the kernel's withheld
+      // notice, never the raw result. The public MCP endpoint's privacy gate
+      // refuses such a call on its own as well (`publicMcpPrivacy.ts`).
       console.warn(
-        `[toolDispatchService:${name}] privacy.internToolResultV4 threw — sending raw result:`,
+        `[toolDispatchService:${name}] privacy.internToolResultV4 threw — result WITHHELD:`,
         err,
       );
-      return result;
+      return { content: internFailedNotice(name), isError: true, origin: 'dispatcher' };
     }
   }
 
@@ -625,6 +667,18 @@ export class ToolDispatchService {
 // (`runHandlerInPrivacyScope`), so a domain tool's `LocalSubAgent` masks its
 // inner results and tool errors before its own model sees them, as on the chat
 // path; `requirePrivacyHandle` runs no handler when no handle resolves.
+//
+// KEPT IN SYNC: the request's tool replay ledger (`toolReplayLedger.ts`).
+// `invoke` asks the AMBIENT `turnContext.toolReplayLedger` before the handler
+// runs, exactly like `Orchestrator.dispatchToolDeadlined` and
+// `LocalSubAgent.dispatch`: a verifier re-entry replays the first run's
+// outcome (a thrown handler as the same rejection, through `thrownResult`), a
+// call outside the first run is refused, and an identical repeat of a call
+// whose outcome is unknown is refused in every pass. Nothing on this path is
+// known read-only. A CLI sub-agent's loopback calls run in the snapshot of the
+// parent's dispatch scope and see the ledger; the public MCP endpoint and the
+// top-level CLI chat agent run outside any orchestrator turn and see none, so
+// they dispatch exactly as before.
 //
 // STILL ORCHESTRATOR-ONLY, because each needs turn-scoped state this path has no
 // access to (an unconditional copy would throw or silently no-op):
