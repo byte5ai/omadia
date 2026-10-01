@@ -338,6 +338,13 @@ User → Orchestrator.chatStream
                           └─ entityRefBus.publish (tagged mit turnId)
 ```
 
+Mit aktivem Answer-Verifier sitzt `VerifierService` vor dem Orchestrator
+(`User → VerifierService.chatStream/chat → Orchestrator`): in `shadow` prüft er
+nur und hängt das Urteil an, in `enforce` ist er ein Auslieferungs-Gate — der
+Stream hält jeden Inhalt bis zum Urteil, eine nicht bestätigte Antwort wird
+durch eine Notiz ersetzt (§11, Kontrakt-Erweiterung Verifier-Gate). Agenten
+auf dem Abo-CLI-Runtime und Routinen laufen ohne diesen Wrapper.
+
 ### Channel → Orchestrator-Dispatch (per-Channel, Omadia UI)
 
 Ein Channel-Turn erreicht den Orchestrator über den **`orchestratorDispatcher`**
