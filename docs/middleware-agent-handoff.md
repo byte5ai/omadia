@@ -3029,7 +3029,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   sieben Electron-Majors, des macOS-Signatur-Umwegs unter electron-builder 26, des Azure-
   `publisherName` und des `minimumSystemVersion`-Felds in `latest-mac.yml` darf deshalb kein
   User-Release sein.
-  **Vorher auf `main`**, jeweils eigener PR mit eigenem Auto-Release: (0a) **Brücken-Release.**
+  **Vorher auf `main`**, als eigener PR mit eigenem Auto-Release: (0a) **Brücken-Release.**
   Der Commit „fix(desktop): say when an update needs a newer macOS“ (`updateHoldBack.ts`, die
   `update-not-available`-Behandlung in `updater.ts`, Strings, Tests) hängt nicht an Electron 44;
   auf `main` gecherry-pickt bestehen Typecheck, `typecheck:test`, alle Tests und `npm run build`
@@ -3040,14 +3040,13 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Feed-Version als eigene. Diesen Branch erst mergen, wenn das Brücken-Release veröffentlicht
   (kein Draft) ist; wie lange man danach wartet, ist eine Produktentscheidung, denn jede
   macOS-11/12-Installation, die es bis dahin nicht installiert hat, meldet weiter „aktuell“.
-  (0b) **Secrets-Fix.** Heute erzeugt `desktop/src/secrets.ts` bei einer `secrets.enc`, die
-  sich nicht entschlüsseln lässt, neue Schlüssel und überschreibt die Datei: Tresor,
-  Credential-Keychain und Provider-Keys wären unwiederbringlich weg. Dieser Branch tauscht das
-  Electron, dessen `safeStorage` die Datei entschlüsselt (37 → 44; laut Electrons
-  Breaking-Changes-Liste ohne `safeStorage`-Änderung in 38–44, aber ungetestet). Der Fix
-  „fix: keep an unreadable desktop secrets file instead of re-keying“ (samt `secrets.enc` im
-  Pre-Update-Snapshot) muss vor dem ersten Electron-44-Release auf `main` sein, damit ein
-  fehlgeschlagenes Entschlüsseln die App anhält statt neu zu verschlüsseln.
+  (0b) **Secrets-Fix — im selben Change.** Dieser Branch tauscht das Electron, dessen
+  `safeStorage` die Datei entschlüsselt (37 → 44; laut Electrons Breaking-Changes-Liste ohne
+  `safeStorage`-Änderung in 38–44, aber ungetestet). Der Fix „fix: keep an unreadable desktop
+  secrets file instead of re-keying“ (samt `secrets.enc` im Pre-Update-Snapshot) ist im Branch
+  vor dem Electron-Bump gemergt, das erste Electron-44-Release trägt ihn also: Ein
+  fehlgeschlagenes Entschlüsseln hält die App mit dem Secrets-Dialog an, statt neue Schlüssel
+  zu erzeugen.
   **Vor dem Merge**, Run-IDs in den PR: (1) einen Wegwerf-Tag auf den Branch-Head setzen und
   pushen (semver, z. B. `v0.0.0-desktop-refresh.1`; kein Workflow startet auf Tag-Pushes) und
   `desktop-apps.yml` per `workflow_dispatch` vom Branch mit `tag=<Wegwerf-Tag>` und
@@ -3070,7 +3069,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   installieren und starten. Bestanden: kein Boot-Fehler-Dialog, Kernel und Web-UI laufen, der
   gespeicherte Provider-Key funktioniert, `secrets.enc` hat denselben Hash, der
   Wiederherstellungsschlüssel ist derselbe, und `logs/omadia-desktop.log` im userData-Ordner
-  enthält kein `[secrets] failed to read secrets file`. Fragt macOS beim ersten Start nach dem
+  enthält keine Zeile `[secrets] … failed for …`. Fragt macOS beim ersten Start nach dem
   Schlüsselbund, passt die Code-Signatur des Builds nicht mehr zu der des Releases; das träfe
   jede Installation beim Update und zählt als Fehlschlag. Schlägt etwas davon fehl: nicht
   mergen. Danach den Wegwerf-Tag löschen.
@@ -3115,10 +3114,6 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ### Offene Punkte aus den Security-Härtungen (2026-09-30)
 
-- **Desktop-Navigationsschutz → §10e nachziehen.** Das Desktop-Fenster hat noch keinen
-  `will-navigate`-/`setWindowOpenHandler`-Schutz; die Return-Pfad-Prüfung (§10e) ist dort
-  heute die einzige Schicht. Sobald der Desktop-Trust-Boundary-Change landet, den Absatz „at
-  the time of writing“ in `docs/security-architecture.md` §10e auf „zweite Schicht“ umstellen.
 - **IdP-Logout-URL nicht allowlisted.** Die serverseitig gelieferte absolute End-Session-URL
   (`idpLogout.url`, `web-ui/app/_components/AuthBadge.tsx`) wird ungeprüft angesteuert. Eigene
   Vertrauensgrenze; Härtung z. B. per Allowlist der konfigurierten IdP-Hosts.

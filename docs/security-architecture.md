@@ -1545,12 +1545,14 @@ straight to `/login`, so that back-compat route only serves old bookmarks and
 hand-made links. The password login never sends `return` to the server.
 
 **Desktop shell.** The desktop app loads the web UI from
-`http://127.0.0.1:<port>` (`desktop/src/supervisor.ts`). At the time of
-writing its window restricts no top-level navigation (no `will-navigate` or
-`setWindowOpenHandler` guard in `desktop/src`), so a return value that left
-the origin would replace the app window itself, with no address bar to show
-it. This check is what prevents that. A navigation allowlist in the shell is
-a second layer, not a replacement.
+`http://127.0.0.1:<port>` (`desktop/src/supervisor.ts`) in a window with no
+address bar, so a return value that left the origin would replace the app
+window itself without showing it. The shell's navigation fence (§10i) is a
+second layer, not a replacement: it keeps navigations the web UI starts on
+the app's loopback origins and opens other web targets in the system
+browser, but it lets server redirects between web URLs through, because the
+in-window OIDC sign-in needs them. For the OIDC callback's redirect this
+check is the only layer.
 
 **Not covered here.** Absolute redirect targets that the server supplies,
 such as the IdP end-session URL behind sign-out (`idpLogout.url` in
