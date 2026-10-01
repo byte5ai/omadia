@@ -2979,10 +2979,12 @@ wird vor dem Dispatch abgewiesen). Vorher fand der Sub-Agent dort keinen
 Handle, und sein Provider bekam innere Daten und Fehlertexte im Klartext.
 Ohne Privacy-Provider (und für intern-exempte Self-Tools) fließt der Text wie
 jedes andere Tool-Ergebnis roh — Parität; auf dem Abo-CLI-Pfad gibt es keinen
-Shield (#1087). Versions-Paarung: `redactToolErrorText` braucht
-`@omadia/plugin-privacy-guard` ≥ 0.6.0; mit einem älteren Provider hält der
-Kernel zurückgegebene `Error:`-Texte vollständig zurück und loggt das einmal
-pro Prozess. Details, Residuen und Reviewer-Regel:
+Shield (#1087). Versions-Paarung nach Fähigkeit, nicht nach Nummer: der
+gebündelte `@omadia/plugin-privacy-guard` implementiert `redactToolErrorText`
+ohne eigene Versionsanhebung (weiter 0.5.0, Anhebung offen, §13); ein
+Provider ohne die Methode lässt den Kernel zurückgegebene `Error:`-Texte
+vollständig zurückhalten, und das Log meldet einmal pro Prozess
+`does not implement redactToolErrorText`. Details, Residuen und Reviewer-Regel:
 `docs/security-architecture.md` §6c und §11.
 
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
@@ -3061,6 +3063,16 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   gebautes ZIP braucht also einen Host ab diesem Release, und `compat.core`
   erzwingt das nicht. Vor dem nächsten Publish Version bumpen und die
   Mindest-Host-Version im Release-Text nennen.
+- **Versionsnummer von `@omadia/plugin-privacy-guard`**: das Paket hat
+  `redactToolErrorText` / `recordToolError` bekommen, steht aber weiter auf
+  0.5.0. Die Anhebung (0.6.0) muss `package.json`, `manifest.yaml` und den
+  Workspace-Eintrag in `middleware/package-lock.json` gemeinsam ändern
+  (`pluginPackageVersions.test.ts` prüft alle drei), gehört also in eine
+  Änderung, die das Lockfile anfassen darf. Die Paarungstexte (Manifest,
+  `docs/security-architecture.md` §6c, `docs/upgrading.md`, die Diagnose in
+  `toolErrorRedaction.ts`) nennen die Fähigkeit statt einer Nummer und bleiben
+  dabei richtig, denn 0.5.0 bleibt mehrdeutig; nach der Anhebung kann man
+  ergänzen, dass jeder Build ab 0.6.0 die Methode hat.
 - **Office-Plugin** (`officeTool.ts`) liefert bei einer unerwarteten Exception
   weiter `Error: <message>`; die Naht redigiert oder hält zurück. Umstellung
   auf `toolErrorFromException` zusammen mit der laufenden Office-Arbeit.

@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.6.0"
+  version: "0.5.0"
   kind: "tool"
   domain: "privacy.redact"
   description:
@@ -83,18 +83,21 @@ playbook:
         Server-Code aus.
       - `finalizeTurn` verwirft die Turn-Datasets und liefert eine PII-freie
         `PrivacyReceipt` für die UI-Disclosure.
-      - `redactToolErrorText` (ab 0.6.0) redigiert zurückgegebene
-        `Error:`-Texte irreversibel (`[masked:<typ>]`), bevor das Modell sie
-        liest; `recordToolError` listet jeden behandelten Tool-Fehler unter
+      - `redactToolErrorText` redigiert zurückgegebene `Error:`-Texte
+        irreversibel (`[masked:<typ>]`), bevor das Modell sie liest;
+        `recordToolError` listet jeden behandelten Tool-Fehler unter
         `PrivacyReceipt.toolErrors`.
     Die Receipt landet als Message-Metadata im Channel-Output (Teams + Web)
     und kann dort als Collapsed-/Expanded-Card gerendert werden.
 
     Versions-Paarung: Ein Orchestrator, der Tool-Fehler redigiert
-    (@omadia/plugin-api >= 1.20.0), braucht dieses Plugin in >= 0.6.0. Mit
-    einer älteren Version fehlt `redactToolErrorText`; der Orchestrator hält
-    zurückgegebene `Error:`-Texte dann vollständig zurück (fail-closed) und
-    loggt das einmal pro Prozess.
+    (@omadia/plugin-api >= 1.20.0), braucht einen Provider, der
+    `redactToolErrorText` implementiert. Die Paarung hängt an dieser
+    Fähigkeit, nicht an der Paketversion: die Methode kam ohne eigene
+    Versionsanhebung dazu, Builds mit und ohne sie tragen beide 0.5.0. Fehlt
+    sie, hält der Orchestrator zurückgegebene `Error:`-Texte vollständig
+    zurück (fail-closed) und loggt einmal pro Prozess
+    `does not implement redactToolErrorText`.
 
 # ---------------------------------------------------------------------------
 # Permissions. Server-side compute plus ONE deliberate network target

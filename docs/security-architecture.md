@@ -699,16 +699,21 @@ place the driver text can be recovered. Receipt entries are PII-free by
 contract: tool name, carrier, outcome, byte count, masked span types.
 
 **Provider pairing.** `redactToolErrorText` and `recordToolError` are optional
-members of `PrivacyGuardService` (`@omadia/plugin-api` 1.20.0). A provider
-older than `@omadia/plugin-privacy-guard` 0.6.0 lacks the redactor; the kernel
-then withholds every returned `Error:` text (fail closed) and says so once per
-process in the log. The public MCP gate (`createFailClosedPrivacyGate`)
-answers `redactToolErrorText` with `withheld`, so a returned error is refused
-as unmasked content by `assertMaskingCrossed`, while a thrown error's notice is
-dispatcher-authored (`origin: 'dispatcher'`) and served. Its nested handle
-gives a domain tool's sub-agent the same answer, so that sub-agent's model
-reads the withheld notice, never a redacted hint, and no per-turn detector
-state builds up for a request that is never finalized.
+members of `PrivacyGuardService` (`@omadia/plugin-api` 1.20.0). The pairing is
+by capability, not by package version: the bundled
+`@omadia/plugin-privacy-guard` implements both, but it gained them without a
+version bump of its own, so a build with them and an older copy without them
+(from the Hub or a ZIP upload) both carry 0.5.0. A provider without the
+redactor makes the kernel withhold every returned `Error:` text (fail closed)
+and log `does not implement redactToolErrorText` once per process; that line,
+not the version, tells the two builds apart. The public MCP gate
+(`createFailClosedPrivacyGate`) answers `redactToolErrorText` with `withheld`,
+so a returned error is refused as unmasked content by `assertMaskingCrossed`,
+while a thrown error's notice is dispatcher-authored (`origin: 'dispatcher'`)
+and served. Its nested handle gives a domain tool's sub-agent the same answer,
+so that sub-agent's model reads the withheld notice, never a redacted hint,
+and no per-turn detector state builds up for a request that is never
+finalized.
 
 **Residuals.**
 
@@ -1509,4 +1514,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages).*
+*Last reviewed: 2026-10 (§6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability).*

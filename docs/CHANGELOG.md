@@ -101,11 +101,14 @@ Both carriers now go through one helper, `toolErrorRedaction.ts`
   refuses a dispatcher that cannot receive it before dispatch instead of after.
   Proven against a real sub-agent in `publicMcpSubAgentPrivacy.test.ts`.
 
-Versions: `@omadia/plugin-api` 1.20.0 (additive) and
-`@omadia/plugin-privacy-guard` 0.6.0. Redaction needs the 0.6.0 provider; with
-an older one the kernel withholds every returned `Error:` text and logs that
-once per process. Without a privacy provider, and on the subscription-CLI path
-(#1087), error text still flows raw. Fences inverted or narrowed:
+Versions: `@omadia/plugin-api` 1.20.0 (additive). `@omadia/plugin-privacy-guard`
+implements the two new members without a version bump of its own, so a build
+with them and an older copy without them both carry 0.5.0. Redaction needs a
+provider that implements `redactToolErrorText`; with one that does not, the
+kernel withholds every returned `Error:` text and logs `does not implement
+redactToolErrorText` once per process, which is how to tell the two apart.
+Without a privacy provider, and on the subscription-CLI path (#1087), error
+text still flows raw. Fences inverted or narrowed:
 `chatPathToolErrorText.test.ts` (asserted the raw e-mail on the wire),
 `streamToolRejection1095` and `streamingToolThrow1093` (asserted the raw driver
 text), `toolDispatchPrivacySeam.test.ts` and the public MCP privacy tests

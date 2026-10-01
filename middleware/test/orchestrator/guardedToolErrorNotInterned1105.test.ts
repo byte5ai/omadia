@@ -289,7 +289,7 @@ describe('#1105 — guarded-tool error result is not interned as a dataset', () 
     const results = toolResultTexts(seen);
     const handlerError = results[0] ?? '';
     assert.equal(handlerError.includes(EMAIL), false, 'unchecked text must not be forwarded');
-    assert.match(handlerError, /@omadia\/plugin-privacy-guard >= 0\.6\.0/);
+    assert.match(handlerError, /it lacks redactToolErrorText from the @omadia\/plugin-api 1\.20\.0 contract/);
     assert.equal(
       results.at(-1),
       'Error: unknown tool `no_such_tool`.',

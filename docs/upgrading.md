@@ -231,10 +231,12 @@ full policy):
   or diagram kind, the HTTP status and a ref; the upstream response and a
   connection error are in the log under that ref.
 - **The privacy guard pairs with this release.** The bundled
-  `@omadia/plugin-privacy-guard` is 0.6.0. If a 0.5.x copy was installed from
-  the Hub or as a ZIP upload, update it: an older provider cannot redact tool
-  error text, so the kernel withholds every returned `Error:` text entirely and
-  logs `does not implement redactToolErrorText` once per process.
+  `@omadia/plugin-privacy-guard` implements tool-error redaction without a
+  version bump of its own, so an older copy installed from the Hub or as a ZIP
+  upload carries the same 0.5.0. If the middleware log shows
+  `does not implement redactToolErrorText` (once per process), such a copy is
+  active: it cannot redact tool error text, so the kernel withholds every
+  returned `Error:` text entirely. Update that copy to the current build.
 - **More receipt rows.** A turn whose only privacy-shield activity was a
   failing tool now writes a receipt (`/operator/receipts`), reaped by
   `RECEIPT_RETENTION_DAYS` as before.

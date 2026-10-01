@@ -82,8 +82,13 @@ export type ToolErrorWithholdReason =
   | 'provider_unsupported'
   | 'redaction_failed';
 
-/** The minimum provider version that implements `redactToolErrorText`. */
-const REQUIRED_PROVIDER = '@omadia/plugin-privacy-guard >= 0.6.0';
+/**
+ * The contract whose `redactToolErrorText` returned-error redaction needs.
+ * The diagnostics name the capability, not a package version:
+ * `@omadia/plugin-privacy-guard` gained the method without a version bump of
+ * its own, so builds with and without it both carry 0.5.0.
+ */
+const REQUIRED_CONTRACT = '@omadia/plugin-api 1.20.0';
 
 // A quoted key followed by `:` or `=>`, opened by `{`, `[` or `,`: a JSON
 // object, a Python dict repr, a JavaScript `Map` as `util.inspect` prints it
@@ -186,7 +191,7 @@ const WITHHOLD_CLAUSE: Readonly<Record<ToolErrorWithholdReason, string>> = {
   too_long: 'was too long to check for personal data',
   exception_shaped: 'looked like a raw exception or record dump',
   provider_unsupported:
-    `could not be checked: the installed privacy provider predates tool-error redaction (${REQUIRED_PROVIDER} required)`,
+    `could not be checked: the installed privacy provider predates tool-error redaction (it lacks redactToolErrorText from the ${REQUIRED_CONTRACT} contract)`,
   redaction_failed: 'could not be checked for personal data',
 };
 
@@ -381,6 +386,7 @@ function logProviderGapOnce(): void {
   console.error(
     '[orchestrator] the installed privacy.redact@1 provider does not implement ' +
       'redactToolErrorText — returned `Error:` tool results are WITHHELD from the ' +
-      `model until ${REQUIRED_PROVIDER} is installed (logged once per process).`,
+      `model until a provider that implements it (${REQUIRED_CONTRACT} contract) is ` +
+      'installed, such as the bundled @omadia/plugin-privacy-guard (logged once per process).',
   );
 }

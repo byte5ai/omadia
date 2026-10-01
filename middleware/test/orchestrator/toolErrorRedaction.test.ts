@@ -273,7 +273,7 @@ describe('guardControlFlowResult — returned `Error:` text', () => {
     assert.equal(recorded[0]?.outcome, 'withheld');
   });
 
-  it('fails CLOSED when the provider predates redaction, naming the version, logging once', async () => {
+  it('fails CLOSED when the provider predates redaction, naming the capability, logging once', async () => {
     const recorded: RecordedEntry[] = [];
     const handle = fakeHandle(recorded, [], { redact: () => undefined });
     const first = await guardControlFlowResult({
@@ -289,7 +289,9 @@ describe('guardControlFlowResult — returned `Error:` text', () => {
       site: 'test',
     });
     assert.equal(first.includes(EMAIL), false);
-    assert.match(first, /@omadia\/plugin-privacy-guard >= 0\.6\.0/);
+    // By capability, not by package version: builds with and without the
+    // redactor both carry @omadia/plugin-privacy-guard 0.5.0.
+    assert.match(first, /it lacks redactToolErrorText from the @omadia\/plugin-api 1\.20\.0 contract/);
     assert.equal(recorded.length, 2);
     assert.ok(recorded.every((e) => e.outcome === 'withheld' && e.carrier === 'returned'));
     assert.equal(
