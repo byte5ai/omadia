@@ -1,4 +1,6 @@
-import { toolErrorFromException } from '@omadia/plugin-api';
+import { inspect } from 'node:util';
+
+import { newToolErrorRef, toolErrorFromException } from '@omadia/plugin-api';
 import { z } from 'zod';
 import {
   ALLOWED_DIAGRAM_KINDS,
@@ -6,6 +8,7 @@ import {
   DiagramRenderTooLargeError,
   DiagramSourceTooLargeError,
   UnsupportedDiagramKindError,
+  type DiagramKind,
   type RenderInput,
   type RenderOutput,
 } from './types.js';
@@ -24,6 +27,24 @@ export interface DiagramBrandMemory {
 
 const BRAND_LOGO_PLACEHOLDER = 'brand://logo';
 const BRAND_LOGO_MEMORY_PATH = '/memories/_brand/logo.md';
+
+/**
+ * The full error for the server log: message, stack, own fields (`status`,
+ * `body`) and the cause chain. Never throws — it runs inside a catch block.
+ */
+function formatForLog(err: unknown): string {
+  try {
+    return inspect(err, { depth: 4, breakLength: Infinity });
+  } catch {
+    return '[unprintable error]';
+  }
+}
+
+/** True for an HTTP status that says the renderer refused this source
+ *  (a syntax error, a size limit) rather than being unavailable. */
+function rejectsTheSource(status: number | undefined): boolean {
+  return status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
 
 const DiagramInputSchema = z.object({
   kind: z.enum(ALLOWED_DIAGRAM_KINDS),
@@ -153,17 +174,44 @@ export class DiagramTool {
         return `Error: ${err.message}`;
       }
       if (err instanceof DiagramRenderError) {
-        return `Error: upstream renderer failed — ${err.message}`;
+        return this.rendererFailure(parsed.data.kind, err);
       }
       // An exception this tool did not author (storage, memory lookup, a
       // bug): its text is withheld from the model and logged in full.
       return toolErrorFromException(DIAGRAM_TOOL_NAME, err, {
         site: 'diagrams',
         log: (line, e) => {
-          this.log(`${line} ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+          this.log(`${line} ${formatForLog(e)}`);
         },
       });
     }
+  }
+
+  /**
+   * The renderer failed. The model reads only what this tool writes itself:
+   * the kind, the HTTP status and what that status means for the next call.
+   * The error's text and its upstream detail go to the log under the
+   * notice's ref: `body` quotes the diagram source back (and the source can
+   * carry values restored for this call), `cause` is a transport exception.
+   * The message is not echoed either — a KrokiClient implemented elsewhere
+   * may still fold foreign text into it.
+   */
+  private rendererFailure(kind: DiagramKind, err: DiagramRenderError): string {
+    const ref = newToolErrorRef();
+    this.log(
+      `[diagrams:${DIAGRAM_TOOL_NAME}] renderer failed (ref=${ref}) — error text withheld from the model: ${formatForLog(err)}`,
+    );
+    const status =
+      typeof err.status === 'number' && Number.isInteger(err.status) ? err.status : undefined;
+    const statusClause = status === undefined ? '' : ` with HTTP ${String(status)}`;
+    const advice = rejectsTheSource(status)
+      ? 'The renderer rejected the source: check its syntax for this kind and call again, or answer without the diagram.'
+      : 'Try once more, or answer without the diagram.';
+    return (
+      `Error: upstream renderer failed for \`${kind}\`${statusClause} [ref ${ref}]. ` +
+      'Its error text was withheld from the model; an operator can find it in the server ' +
+      `log under this ref. ${advice}`
+    );
   }
 
   /**

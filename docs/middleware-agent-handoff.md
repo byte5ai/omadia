@@ -2961,6 +2961,12 @@ lieferten (die drei Tool-Bridges über `bridgedToolError`, Web-Search,
 Diagramme, Discussion, Transkription, `manage_routine`, `query_dataset`, die
 Long-Running-Task-Handler, `createDomainTool`), geben nur noch selbst
 formulierte Meldungen im Klartext zurück und sonst `toolErrorFromException`.
+Ein typisierter Fehler zählt nur dann als selbst formuliert, wenn nichts
+Fremdes in seiner Message steckt: Web-Search-Provider und Kroki-Client legen
+die gefangene Transport-Exception auf `cause` und den Upstream-Body auf
+`body`, und `web_search` / `render_diagram` bauen ihr Ergebnis nur aus
+Provider-Id bzw. Diagramm-Art und HTTP-Status, nie aus der Message; der Rest
+steht unter der Ref im Log.
 Auf dem **öffentlichen MCP-Endpunkt** läuft jeder Tool-Handler mit dem
 Privacy-Handle des Dispatches als ambientem `turnContext.privacyHandle`
 (`runHandlerInPrivacyScope`): der Sub-Agent eines Domain-Tools bekommt
@@ -3049,7 +3055,8 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   `PrivacyReceipt.toolErrors` noch nicht. Das Feld ist additiv, sie ignorieren
   es — zeigen die Einträge aber auch nicht. Die Web-UI zeigt sie.
 - **Hub-ZIPs von Web-Search, Diagrammen und Discussion** importieren jetzt
-  `toolErrorFromException` zur Laufzeit aus `@omadia/plugin-api` ≥ 1.20.0. Die
+  `toolErrorFromException` (Web-Search und Diagramme auch `newToolErrorRef`)
+  zur Laufzeit aus `@omadia/plugin-api` ≥ 1.20.0. Die
   ZIPs sind flach und lösen die Plugin-API vom Host auf; ein aus diesem Stand
   gebautes ZIP braucht also einen Host ab diesem Release, und `compat.core`
   erzwingt das nicht. Vor dem nächsten Publish Version bumpen und die

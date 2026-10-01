@@ -670,16 +670,25 @@ dispatcher runs outside a turn, and the skill-binding and plugin `ctx.mcp`
 paths re-scope the turn context with a rebuilt store.
 
 **Producers.** The in-tree wrappers that returned `Error: ${err.message}` keep
-only messages they author themselves (typed quota/auth/config errors, kernel
-refusals, a schema miss on the model's own input) and return the withheld
-notice for any other exception through `toolErrorFromException`
-(`@omadia/plugin-api`): the three platform tool bridges (`bridgedToolError`),
-web search, diagrams, discussion, transcription, `manage_routine`,
-`query_dataset`, the long-running task handlers and `createDomainTool`. The
-last one matters because `subAgentResultV4` hands a sub-agent's final text to
-the parent unchanged once the sub-agent interned a dataset. The seam is the
-backstop for every producer that still returns exception text: external
-plugins, the office plugin, remote MCP error bodies.
+only text they write themselves (typed quota/auth/config errors, a provider's
+or renderer's HTTP status, kernel refusals, a schema miss on the model's own
+input) and return the withheld notice for any other exception through
+`toolErrorFromException` (`@omadia/plugin-api`): the three platform tool
+bridges (`bridgedToolError`), web search, diagrams, discussion, transcription,
+`manage_routine`, `query_dataset`, the long-running task handlers and
+`createDomainTool`. The last one matters because `subAgentResultV4` hands a
+sub-agent's final text to the parent unchanged once the sub-agent interned a
+dataset. A typed error is not authored text just because the plugin defines
+its class: the web-search providers and the Kroki client used to fold a
+caught transport exception and an upstream response body (Kroki quotes the
+diagram source back) into the message. Both now ride on `cause` and `body`,
+and the two tools build their result from the provider id or diagram kind and
+the HTTP status alone, never from the message, logging the error with its
+cause and body under the result's ref. The seam is the backstop for every
+producer that still returns exception text: external plugins, the office
+plugin, remote MCP error bodies. It does not catch a name in running prose
+without C1, which is why a wrapper must not forward foreign text in the first
+place.
 
 **Diagnostics.** The full error — message, stack, cause — is logged once, at
 error level, under the notice's `ref`: the turn's correlation id on the chat
@@ -1483,10 +1492,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       thrown handler exception's message (`withholdThrownToolError`); see
       `toolErrorRedaction.ts` and `mcp/mcpAuthPromptMint.ts` (§6c). No seam
       passes a result because of its prefix alone. A new tool wrapper that
-      catches an
-      exception returns `toolErrorFromException(...)`, not
-      `Error: ${err.message}`; only a message the wrapper authors itself may
-      reach the model as text, and the seam still redacts it.
+      catches an exception returns `toolErrorFromException(...)`, not
+      `Error: ${err.message}`; only text the wrapper authors itself may reach
+      the model, and the seam still redacts it. A typed error's message
+      counts as authored only when nothing foreign is folded into it: a
+      caught exception goes on `cause`, an upstream response body on a
+      separate field, and the wrapper builds its result from typed fields
+      (status, provider id), not from the message.
 - [ ] A host that runs tool handlers outside a chat turn makes its privacy
       handle the ambient `turnContext.privacyHandle` while a handler runs
       (`runHandlerInPrivacyScope`, as `ToolDispatchService` does), so nothing
@@ -1497,4 +1509,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point).*
+*Last reviewed: 2026-10 (§6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages).*

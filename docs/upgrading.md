@@ -227,7 +227,9 @@ full policy):
   ref is the turn's correlation id. A tool's *returned* `Error:` text still
   reaches the model, with personal data masked as `[masked:<type>]`, unless it
   looks like a record dump or a stack trace; then it is withheld and logged the
-  same way.
+  same way. A failed `web_search` or `render_diagram` call shows the provider
+  or diagram kind, the HTTP status and a ref; the upstream response and a
+  connection error are in the log under that ref.
 - **The privacy guard pairs with this release.** The bundled
   `@omadia/plugin-privacy-guard` is 0.6.0. If a 0.5.x copy was installed from
   the Hub or as a ZIP upload, update it: an older provider cannot redact tool
@@ -245,7 +247,10 @@ full policy):
 For plugin authors: a tool that catches an exception should return
 `toolErrorFromException(toolName, err)` (`@omadia/plugin-api` 1.20.0) instead
 of `Error: ${err.message}`. Only text the plugin authors itself belongs in an
-`Error:` result, and the dispatch seam redacts even that. A tool that returns
+`Error:` result, and the dispatch seam redacts even that. A typed error class
+of your own does not make its message authored text: keep a caught exception
+on `cause` and an upstream response body on a separate field, and build the
+`Error:` result from typed fields such as an HTTP status. A tool that returns
 an MCP connect prompt it wrote itself (text starting `🔒 The MCP server "`) now
 has it interned like any other result: only the prompt `McpManager` produced in
 the same dispatch reaches the model unchanged. To surface one, call the MCP

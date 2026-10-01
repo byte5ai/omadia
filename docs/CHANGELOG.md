@@ -76,9 +76,14 @@ Both carriers now go through one helper, `toolErrorRedaction.ts`
   any other tool result.
 - **In-tree wrappers** (the three tool bridges, web search, diagrams,
   discussion, transcription, `manage_routine`, `query_dataset`, the
-  long-running task handlers, domain tools) keep only messages they author and
+  long-running task handlers, domain tools) keep only text they author and
   return the withheld notice for any other exception (`toolErrorFromException`).
   A schema miss on the model's own input still comes back as a readable hint.
+  The web-search providers and the Kroki client no longer fold a caught
+  transport exception or an upstream response body into their typed errors'
+  messages; those ride on `cause` / `body` for the log, and `web_search` and
+  `render_diagram` answer with the provider id or diagram kind, the HTTP
+  status and a log ref.
 - **Receipts.** Every handled error writes a `toolErrors` entry; a turn whose
   only shield activity was a tool error now writes a receipt row. The web UI
   receipt card lists the entries.
