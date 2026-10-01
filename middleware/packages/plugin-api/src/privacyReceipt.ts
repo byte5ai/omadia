@@ -135,6 +135,26 @@ export interface PrivacyReceipt {
    * tool name + server name + byte count + schema flag only.
    */
   readonly structuredPayloads?: readonly StructuredPayloadEntry[];
+  /**
+   * The answer verifier's post-turn model requests (claim extraction,
+   * evidence judging), gated by this turn's privacy view. Kept apart from
+   * `maskedPromptSpans`, which covers only the turn's own model calls. Absent
+   * when the verifier sent nothing for this turn. PII-free: a request count
+   * plus span TYPE + detector id, never a value.
+   */
+  readonly verifierEgress?: VerifierEgressSummary;
+}
+
+/**
+ * Accounting for the answer verifier's model requests on one turn. The
+ * verifier runs after the turn produced its answer but before the receipt
+ * is finalised, so these requests belong to the same receipt.
+ */
+export interface VerifierEgressSummary {
+  /** Model requests the verifier sent under this turn's privacy view. */
+  readonly requests: number;
+  /** Spans replaced with placeholders in verifier-bound text. */
+  readonly maskedSpans: readonly PromptMaskedSpanInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -340,11 +360,49 @@ export interface PromptMaskedSpanInfo {
   readonly detector: string;
 }
 
+/**
+ * Which model egress a masked text is bound for. `turn` (the default) is the
+ * turn's own model calls; its spans aggregate into
+ * `PrivacyReceipt.maskedPromptSpans`. `verifier` is the answer verifier's
+ * post-turn requests; its spans aggregate into `PrivacyReceipt.verifierEgress`
+ * and every non-blocked call counts as one verifier request.
+ */
+export type PrivacyEgressStage = 'turn' | 'verifier';
+
 export interface PrivacyPromptMaskRequest {
   readonly sessionId: string;
   readonly turnId: string;
   /** The prompt text to mask (user message or ingested attachment tail). */
   readonly text: string;
+  /** Egress the text is bound for. Absent ⇒ `turn`. */
+  readonly stage?: PrivacyEgressStage;
+  /**
+   * Compute the outcome without keeping anything: the turn's surrogate map
+   * is not extended and nothing is recorded in the receipt. For a caller
+   * that must decide whether masking WOULD alter a text before it sends it.
+   */
+  readonly preview?: boolean;
+}
+
+/**
+ * Text the answer verifier composed from REAL values (a restored claim plus
+ * the evidence it is judged against), bound for the verifier's model.
+ * Projected through the turn's surrogate map whether or not the operator
+ * enabled `mask_user_prompt`: evidence comes from the knowledge graph, and
+ * the turn itself only ever showed that data to its model as an interned
+ * digest.
+ */
+export interface PrivacyVerifierProjectionRequest {
+  readonly sessionId: string;
+  readonly turnId: string;
+  /** The real, verifier-composed text. */
+  readonly text: string;
+  /**
+   * Values the caller knows identify a person or record (an evidence node's
+   * display name, its free-text fields). Every occurrence is replaced,
+   * whether or not a detector would have found it.
+   */
+  readonly identityValues?: readonly string[];
 }
 
 /**
@@ -478,6 +536,31 @@ export interface PrivacyGuardService {
   snapshotPromptRestorer?(
     turnId: string,
   ): ((text: string) => string) | undefined;
+  /**
+   * Project a verifier-composed text through this turn's surrogate map —
+   * always on, independent of `mask_user_prompt` (see
+   * {@link PrivacyVerifierProjectionRequest}). Never returns `disabled`;
+   * `blocked` means the text must not be sent (a real value in it collides
+   * with a surrogate already minted this turn, detection failed, or a
+   * residual span survived). Recorded under `verifierEgress`.
+   *
+   * Optional so alternative privacy providers (and test stubs) stay
+   * compilable; a caller without it must not send evidence at all.
+   */
+  projectVerifierText?(
+    request: PrivacyVerifierProjectionRequest,
+  ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * How many of this turn's prompt surrogates still occur in `text` —
+   * verbatim, case-insensitively, with digit separators reformatted, or, for
+   * a date or an amount surrogate, as any literal of the same value in
+   * another spelling ("1970-01-01" for "01.01.1970"). A date or amount
+   * literal whose value cannot be read counts as a hit (fail closed). A
+   * restored answer should carry none; a hit means the model reworded a
+   * placeholder and restore could not map it back. `0` when the turn masked
+   * nothing. Optional; absent ⇒ callers treat the answer as unchecked.
+   */
+  countUnresolvedSurrogates?(turnId: string, text: string): Promise<number>;
   /**
    * Privacy Shield v4 — the verb + render tool specs to offer the LLM.
    */

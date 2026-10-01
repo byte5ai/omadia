@@ -245,6 +245,21 @@ export interface PrivacyReceipt {
    * when no connected tool emitted structured output. PII-free.
    */
   structuredPayloads?: readonly StructuredPayloadEntry[];
+  /**
+   * The answer verifier's model requests for this turn, sent under the turn's
+   * privacy rules and booked apart from `maskedPromptSpans`. Absent when the
+   * verifier sent nothing. PII-free: a request count plus span TYPE +
+   * detector id.
+   */
+  verifierEgress?: VerifierEgressSummary;
+}
+
+/** Mirrors `VerifierEgressSummary` from `@omadia/plugin-api`. PII-free. */
+export interface VerifierEgressSummary {
+  /** Model requests the verifier sent under this turn's privacy view. */
+  requests: number;
+  /** Spans replaced with placeholders in verifier-bound text. */
+  maskedSpans: readonly PromptMaskedSpanInfo[];
 }
 
 /** #547 / #569 — one entry in `PrivacyReceipt.structuredPayloads`. Mirrors

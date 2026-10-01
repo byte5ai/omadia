@@ -11,12 +11,21 @@
  */
 
 import type {
+  PrivacyEgressStage,
   PrivacyGuardService,
   PrivacyPromptMaskResult,
   PrivacyReceipt,
   PrivacyRenderedAnswer,
   PrivacyV4ToolSpec,
 } from '@omadia/plugin-api';
+
+/** Options for {@link PrivacyTurnHandle.maskUserPrompt}. */
+export interface PromptMaskOptions {
+  /** Egress the text is bound for; absent ⇒ the turn's own model calls. */
+  readonly stage?: PrivacyEgressStage;
+  /** Compute the outcome without extending the map or booking anything. */
+  readonly preview?: boolean;
+}
 
 export interface PrivacyTurnHandle {
   /**
@@ -85,9 +94,32 @@ export interface PrivacyTurnHandle {
    * the provider predates the contract — the caller uses the original text
    * (byte-identical legacy behavior). `blocked` = failure-closed: the turn
    * MUST fail instead of sending the prompt. Repeated calls within the
-   * turn share one server-held surrogate map.
+   * turn share one server-held surrogate map. `opts.stage: 'verifier'` books
+   * the call as an answer-verifier request; `opts.preview` asks whether the
+   * text WOULD change without keeping anything.
    */
-  maskUserPrompt(text: string): Promise<PrivacyPromptMaskResult>;
+  maskUserPrompt(
+    text: string,
+    opts?: PromptMaskOptions,
+  ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * Project a verifier-composed text (claim + knowledge-graph evidence)
+   * through this turn's surrogate map, independent of `mask_user_prompt`.
+   * `blocked` when the provider cannot guarantee it — including a provider
+   * that predates the contract: evidence is never sent unprojected.
+   * Optional so hand-built handles (tests, wrappers) stay valid; absent ⇒
+   * callers must treat it as blocked.
+   */
+  projectVerifierText?(
+    text: string,
+    identityValues: readonly string[],
+  ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * How many of this turn's surrogates still occur in `text` (see
+   * `PrivacyGuardService.countUnresolvedSurrogates`). `0` when the provider
+   * predates the contract. Optional like `projectVerifierText`.
+   */
+  countUnresolvedSurrogates?(text: string): Promise<number>;
   /**
    * #361 — invert this turn's prompt-surrogate map over the final answer.
    * Identity when nothing was masked. Must run BEFORE `finalize` (which
@@ -175,7 +207,7 @@ export function createPrivacyTurnHandle(deps: {
       return deps.service.v4ToolSpecs();
     },
 
-    async maskUserPrompt(text) {
+    async maskUserPrompt(text, opts) {
       // Optional on the service contract — providers (and test stubs) that
       // predate #361 simply never mask.
       if (deps.service.maskUserPrompt === undefined) {
@@ -185,7 +217,28 @@ export function createPrivacyTurnHandle(deps: {
         sessionId: deps.sessionId,
         turnId: deps.turnId,
         text,
+        ...(opts?.stage !== undefined ? { stage: opts.stage } : {}),
+        ...(opts?.preview === true ? { preview: true } : {}),
       });
+    },
+
+    async projectVerifierText(text, identityValues) {
+      if (deps.service.projectVerifierText === undefined) {
+        return {
+          outcome: 'blocked',
+          reason: 'privacy provider cannot project verifier text',
+        };
+      }
+      return deps.service.projectVerifierText({
+        sessionId: deps.sessionId,
+        turnId: deps.turnId,
+        text,
+        identityValues,
+      });
+    },
+
+    async countUnresolvedSurrogates(text) {
+      return (await deps.service.countUnresolvedSurrogates?.(deps.turnId, text)) ?? 0;
     },
 
     async restorePromptPseudonyms(text) {

@@ -8,12 +8,25 @@ import type { ClaimVerdict, VerifierVerdict } from './claimTypes.js';
  *
  * Deliberately German — matches the orchestrator's primary response
  * language; switching languages mid-prompt confuses the model.
+ *
+ * `withholdValues` is for a turn behind a Privacy Shield: the re-queried
+ * truth (and every detail that encodes it, such as `Δ=…` or the judge's
+ * rationale) came from Odoo / the knowledge graph, data the turn's model
+ * only ever saw as an interned digest. The hint then names the contradicted
+ * claims and asks for a fresh lookup instead of handing over the values —
+ * neither raw nor pseudonymised truth goes into the retry.
  */
+
+export interface CorrectionPromptOptions {
+  readonly withholdValues?: boolean;
+}
 
 export function buildCorrectionPrompt(
   verdict: VerifierVerdict,
+  opts: CorrectionPromptOptions = {},
 ): string | undefined {
   if (verdict.status !== 'blocked') return undefined;
+  const withhold = opts.withholdValues === true;
 
   const postconditionItems = verdict.contradictions.filter(isPostcondition);
   const citationItems = verdict.contradictions.filter(isCitationMissing);
@@ -46,7 +59,7 @@ export function buildCorrectionPrompt(
       '',
       '**Jetzt bitte:** rufe das gleiche Tool mit korrigierten Argumenten erneut auf (z.B. fehlende Felder ergänzen, Filter präzisieren) ODER nutze ein anderes Tool, das die benötigten Daten liefern kann. Wenn das Tool strukturell broken ist und kein Re-Call hilft, sag dem User ehrlich: "Tool X liefert kein verwertbares Ergebnis für Y".',
       '',
-      ...postconditionItems.map(formatPostcondition),
+      ...postconditionItems.map((v) => formatPostcondition(v, withhold)),
       '',
     );
   }
@@ -64,7 +77,16 @@ export function buildCorrectionPrompt(
     );
   }
 
-  if (dataItems.length > 0) {
+  if (dataItems.length > 0 && withhold) {
+    sections.push(
+      '## Widerlegte Aussagen',
+      '',
+      'Die folgenden Aussagen widersprechen einer unabhängigen Re-Query gegen die Quelle. Die korrekten Werte werden aus Datenschutzgründen nicht mitgeschickt: hole sie mit einem frischen Fach-Agent-Call und formuliere die Antwort damit neu. Falls eine Angabe unklar bleibt, sag das ehrlich statt zu raten.',
+      '',
+      ...dataItems.map(formatWithheldContradiction),
+      '',
+    );
+  } else if (dataItems.length > 0) {
     sections.push(
       '## Falsche / widerlegte Daten',
       '',
@@ -94,12 +116,19 @@ function isReplay(v: ClaimVerdict): boolean {
   return v.source === 'unknown' || v.claim.id.startsWith('c_replay');
 }
 
-function formatPostcondition(v: ClaimVerdict): string {
+function formatPostcondition(v: ClaimVerdict, withhold: boolean): string {
   if (v.status !== 'contradicted') return '';
   // claim.id format: `c_postcond_<callId>` — strip the prefix for display.
   const callId = v.claim.id.replace(/^c_postcond_/, '');
-  const detail = v.detail ? ` — Issues: ${v.detail}` : '';
+  // Schema issues can quote the value the tool returned.
+  const detail = v.detail && !withhold ? ` — Issues: ${v.detail}` : '';
   return `- ${v.claim.text} (callId=${callId})${detail}`;
+}
+
+/** A contradicted claim without the truth or any detail derived from it. */
+function formatWithheldContradiction(v: ClaimVerdict): string {
+  if (v.status !== 'contradicted') return '';
+  return `- Behauptet: "${v.claim.text}" → widerspricht der Quelle`;
 }
 
 function formatContradiction(v: ClaimVerdict): string {

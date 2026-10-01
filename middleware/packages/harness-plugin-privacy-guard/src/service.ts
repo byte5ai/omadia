@@ -18,6 +18,7 @@
 import type {
   BypassedToolEntry,
   PrivacyBypassedToolRequest,
+  PrivacyEgressStage,
   PrivacyStructuredPayloadRequest,
   StructuredPayloadEntry,
   PrivacyGuardService,
@@ -30,6 +31,7 @@ import type {
   PrivacyToolResultV4Result,
   PrivacyV4ToolRequest,
   PrivacyV4ToolSpec,
+  PrivacyVerifierProjectionRequest,
   PromptMaskedSpanInfo,
   PromptPiiDetector,
   PromptPiiSpan,
@@ -62,6 +64,13 @@ import {
 import { findIdentityLeaks } from './v4/onTheWire.js';
 import { resolvePseudonyms } from './v4/pseudonym.js';
 import type { PseudonymMap } from './v4/types.js';
+import {
+  countUnresolvedSurrogates as countResidualSurrogates,
+  createBaselineIdentityDetector,
+  createIdentityValuesDetector,
+  hasSurrogateCollision,
+} from './verifierProjection.js';
+import { createTurnSerialQueue } from './turnSerialQueue.js';
 
 /**
  * Collect the identity-bearing string(s) of a single field VALUE into `out`
@@ -95,6 +104,10 @@ interface V4ReceiptAccum {
   pseudonymProjectionUsed: boolean;
   /** #361 — PII-free records of prompt spans masked this turn. */
   readonly maskedPromptSpans: PromptMaskedSpanInfo[];
+  /** Answer-verifier requests gated under this turn's privacy view. */
+  verifierRequests: number;
+  /** PII-free records of spans masked in verifier-bound text. */
+  readonly verifierMaskedSpans: PromptMaskedSpanInfo[];
 }
 
 /** #361 — config key on THIS plugin's install that turns prompt masking on.
@@ -278,6 +291,14 @@ export function createPrivacyGuardService(deps?: {
   // ingested attachment tail) so surrogates stay stable; inverted over the
   // final answer by `restorePromptPseudonyms`; dropped by `finalizeTurn`.
   const promptMaskMaps = new Map<string, PseudonymMap>();
+  // A mask call reads the turn's map, awaits its detectors and writes the
+  // extended map back; two interleaved calls — the answer verifier's judge
+  // projects its requests in parallel — would both mint from the same base,
+  // hand the same placeholder to different values, and the later write would
+  // drop the earlier call's entries. So that read-modify-write runs one call
+  // at a time per turn (detection by the C1 sidecar still runs concurrently,
+  // before a call joins the queue).
+  const serialPerTurn = createTurnSerialQueue();
 
   // #979 / #980 — per-turn C1 state. TWO mechanisms, because the two things
   // being avoided have different keys.
@@ -362,6 +383,143 @@ export function createPrivacyGuardService(deps?: {
     return s;
   }
 
+  /**
+   * #979 / #980 — the C1 detector for one text, as a memoised pass-through
+   * detector. The per-turn degrade latch and text cache apply to every caller
+   * (prompt mask and verifier projection alike), so a down sidecar costs one
+   * timeout per turn, not one per call. `degraded` reports the C0-only fall
+   * back; it is audited here and never passes text through unmasked.
+   */
+  async function resolveC1Detector(
+    turnId: string,
+    text: string,
+  ): Promise<{ readonly detector?: PromptPiiDetector; readonly degraded: boolean }> {
+    const c1 = deps?.c1Detector;
+    if (c1 === undefined) return { degraded: false };
+    // Nothing to detect — e.g. a verifier request that carries only the
+    // turn's wire view books itself with an empty text. No sidecar call.
+    if (text.trim().length === 0) return { degraded: false };
+    if (c1FailedTurns.has(turnId)) {
+      // C1 already failed once in THIS turn. A down sidecar is down for
+      // every text, so retrying only buys another full timeout — a dozen
+      // of which is ~3 minutes for the C0 result the first attempt
+      // already produced. Degrade immediately, still audited by the caller.
+      return { degraded: true };
+    }
+    const cached = c1CacheGet(turnId, text);
+    if (cached !== undefined) {
+      return { detector: { id: c1.id, detect: async () => cached }, degraded: false };
+    }
+    try {
+      const c1Spans = await c1.detect(text);
+      c1CacheSet(turnId, text, c1Spans);
+      return { detector: { id: c1.id, detect: async () => c1Spans }, degraded: false };
+    } catch (err) {
+      c1FailedTurns.add(turnId);
+      console.warn(
+        `[privacy-guard v4] promptMaskDegraded turn=${turnId} ` +
+          `detector=${c1.id}: ${err instanceof Error ? err.message : String(err)} ` +
+          `(C1 disabled for the remainder of this turn)`,
+      );
+      return { degraded: true };
+    }
+  }
+
+  /** Book a masked text into the receipt. `verifier` counts one request even
+   *  when nothing was masked — the request left the process either way. */
+  function recordMasked(
+    turnId: string,
+    stage: PrivacyEgressStage,
+    spanInfos: readonly PromptMaskedSpanInfo[],
+  ): void {
+    if (stage === 'verifier') {
+      const receipt = receiptFor(turnId);
+      receipt.verifierRequests += 1;
+      receipt.verifierMaskedSpans.push(...spanInfos);
+      return;
+    }
+    if (spanInfos.length > 0) {
+      receiptFor(turnId).maskedPromptSpans.push(...spanInfos);
+    }
+  }
+
+  interface MaskArgs {
+    readonly turnId: string;
+    readonly text: string;
+    readonly detectors: readonly PromptPiiDetector[];
+    readonly degraded: boolean;
+    readonly stage: PrivacyEgressStage;
+    readonly preview: boolean;
+    /** Refusal judged on the turn's map as it stands when this call's turn
+     *  in the queue comes; `undefined` lets the call proceed. */
+    readonly precheck?: (map: PseudonymMap | undefined) => PrivacyPromptMaskResult | undefined;
+  }
+
+  /**
+   * Substitute detected spans through the turn's map and enforce the
+   * post-mask invariant. Failure-closed: a residual real span, or the
+   * detection pass itself failing, is `blocked` — never a pass-through.
+   * `preview` computes the outcome without extending the map or booking
+   * anything, so a caller can ask "would this text change?" for free.
+   * Calls of one turn run one at a time (see `serialPerTurn`).
+   */
+  function maskThroughTurnMap(args: MaskArgs): Promise<PrivacyPromptMaskResult> {
+    return serialPerTurn(args.turnId, () => maskOnce(args));
+  }
+
+  async function maskOnce(args: MaskArgs): Promise<PrivacyPromptMaskResult> {
+    const { turnId, text, detectors, degraded, stage, preview } = args;
+    const label = stage === 'verifier' ? 'verifierMask' : 'promptMask';
+    const refused = args.precheck?.(promptMaskMaps.get(turnId));
+    if (refused !== undefined) return refused;
+    try {
+      const result = await maskPrompt(text, detectors, promptMaskMaps.get(turnId));
+      // Post-mask invariant: no detected real value may survive in the
+      // wire-bound text. A hit means substitution failed — block.
+      const residual = findIdentityLeaks(result.maskedText, [
+        ...result.map.forward.keys(),
+      ]);
+      if (residual.length > 0) {
+        console.error(
+          `[privacy-guard v4] ${label}Blocked turn=${turnId} ` +
+            `residual=${String(residual.length)} span(s) survived substitution`,
+        );
+        return {
+          outcome: 'blocked',
+          reason: 'residual PII span survived substitution',
+        };
+      }
+      const spanInfos: PromptMaskedSpanInfo[] = result.spans.map((s) => ({
+        type: s.type,
+        detector: s.detector,
+      }));
+      if (!preview) {
+        promptMaskMaps.set(turnId, result.map);
+        recordMasked(turnId, stage, spanInfos);
+        console.log(
+          `[privacy-guard v4] ${label} turn=${turnId} ` +
+            `spans=${String(spanInfos.length)}${degraded ? ' degraded=c0-only' : ''}`,
+        );
+      }
+      return {
+        outcome: 'masked',
+        maskedText: result.maskedText,
+        spans: spanInfos,
+        degraded,
+      };
+    } catch (err) {
+      // Tier 2 — the baseline path itself failed. Never pass unmasked.
+      console.error(
+        `[privacy-guard v4] ${label}Blocked turn=${turnId}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        outcome: 'blocked',
+        reason: 'prompt PII detection failed',
+      };
+    }
+  }
+
   function receiptFor(turnId: string): V4ReceiptAccum {
     let r = receipts.get(turnId);
     if (r === undefined) {
@@ -372,6 +530,8 @@ export function createPrivacyGuardService(deps?: {
         verbsExecuted: [],
         pseudonymProjectionUsed: false,
         maskedPromptSpans: [],
+        verifierRequests: 0,
+        verifierMaskedSpans: [],
       };
       receipts.set(turnId, r);
     }
@@ -612,95 +772,73 @@ export function createPrivacyGuardService(deps?: {
     async maskUserPrompt(
       request: PrivacyPromptMaskRequest,
     ): Promise<PrivacyPromptMaskResult> {
+      const stage = request.stage ?? 'turn';
+      const preview = request.preview === true;
       if (!isPromptMaskEnabled(deps?.readConfig?.(MASK_USER_PROMPT_CONFIG_KEY))) {
+        // Policy off: the text goes out as written. A verifier request still
+        // left the process, so the receipt counts it.
+        if (stage === 'verifier' && !preview) recordMasked(request.turnId, stage, []);
         return { outcome: 'disabled' };
       }
-      const detectors = [createBaselineDetector()];
+      const detectors: PromptPiiDetector[] = [createBaselineDetector()];
       // #760 — operator deny-list: literal terms + vetted regex patterns.
       // Same confidence-1, fail-closed path as the baseline.
       const customDetector = resolveCustomDetector(deps?.readConfig);
       if (customDetector) detectors.push(customDetector);
-      let degraded = false;
-      if (deps?.c1Detector) {
-        // Run the C1 detector up-front so its failure cannot take the C0
-        // baseline down with it (tier-1 degrade, audited); its spans are
-        // memoized into a pass-through detector for the mask pass.
-        const c1 = deps.c1Detector;
-        const cached = c1CacheGet(request.turnId, request.text);
-        if (c1FailedTurns.has(request.turnId)) {
-          // C1 already failed once in THIS turn. A down sidecar is down for
-          // every text, so retrying only buys another full timeout — a dozen
-          // of which is ~3 minutes for the C0 result the first attempt
-          // already produced. Degrade immediately, still audited below.
-          degraded = true;
-        } else if (cached !== undefined) {
-          detectors.push({ id: c1.id, detect: async () => cached });
-        } else {
-          try {
-            const c1Spans = await c1.detect(request.text);
-            c1CacheSet(request.turnId, request.text, c1Spans);
-            detectors.push({ id: c1.id, detect: async () => c1Spans });
-          } catch (err) {
-            degraded = true;
-            c1FailedTurns.add(request.turnId);
-            console.warn(
-              `[privacy-guard v4] promptMaskDegraded turn=${request.turnId} ` +
-                `detector=${c1.id}: ${err instanceof Error ? err.message : String(err)} ` +
-                `(C1 disabled for the remainder of this turn)`,
-            );
-          }
-        }
-      }
-      try {
-        const result = await maskPrompt(
-          request.text,
-          detectors,
-          promptMaskMaps.get(request.turnId),
-        );
-        // Post-mask invariant: no detected real value may survive in the
-        // wire-bound text. A hit means substitution failed — block.
-        const residual = findIdentityLeaks(result.maskedText, [
-          ...result.map.forward.keys(),
-        ]);
-        if (residual.length > 0) {
+      // Run the C1 detector up-front so its failure cannot take the C0
+      // baseline down with it (tier-1 degrade, audited); its spans are
+      // memoized into a pass-through detector for the mask pass.
+      const c1 = await resolveC1Detector(request.turnId, request.text);
+      if (c1.detector) detectors.push(c1.detector);
+      return maskThroughTurnMap({
+        turnId: request.turnId,
+        text: request.text,
+        detectors,
+        degraded: c1.degraded,
+        stage,
+        preview,
+      });
+    },
+
+    // Always on, independent of `mask_user_prompt`: the text carries
+    // knowledge-graph evidence the turn's model only saw as a digest.
+    // Identity shapes only (dates/amounts stay, as in a v4 digest), plus the
+    // values the caller names, plus the turn's known real values.
+    async projectVerifierText(
+      request: PrivacyVerifierProjectionRequest,
+    ): Promise<PrivacyPromptMaskResult> {
+      const detectors: PromptPiiDetector[] = [createBaselineIdentityDetector()];
+      const customDetector = resolveCustomDetector(deps?.readConfig);
+      if (customDetector) detectors.push(customDetector);
+      const identityDetector = createIdentityValuesDetector(
+        request.identityValues ?? [],
+      );
+      if (identityDetector) detectors.push(identityDetector);
+      const c1 = await resolveC1Detector(request.turnId, request.text);
+      if (c1.detector) detectors.push(c1.detector);
+      return maskThroughTurnMap({
+        turnId: request.turnId,
+        text: request.text,
+        detectors,
+        degraded: c1.degraded,
+        stage: 'verifier',
+        preview: false,
+        precheck: (map) => {
+          if (!hasSurrogateCollision(request.text, map)) return undefined;
           console.error(
-            `[privacy-guard v4] promptMaskBlocked turn=${request.turnId} ` +
-              `residual=${String(residual.length)} span(s) survived substitution`,
+            `[privacy-guard v4] verifierMaskBlocked turn=${request.turnId} ` +
+              'reason=surrogate-collision',
           );
           return {
             outcome: 'blocked',
-            reason: 'residual PII span survived substitution',
+            reason: 'a real value collides with a surrogate minted this turn',
           };
-        }
-        promptMaskMaps.set(request.turnId, result.map);
-        const spanInfos: PromptMaskedSpanInfo[] = result.spans.map((s) => ({
-          type: s.type,
-          detector: s.detector,
-        }));
-        if (spanInfos.length > 0) {
-          receiptFor(request.turnId).maskedPromptSpans.push(...spanInfos);
-        }
-        console.log(
-          `[privacy-guard v4] promptMask turn=${request.turnId} ` +
-            `spans=${String(spanInfos.length)}${degraded ? ' degraded=c0-only' : ''}`,
-        );
-        return {
-          outcome: 'masked',
-          maskedText: result.maskedText,
-          spans: spanInfos,
-          degraded,
-        };
-      } catch (err) {
-        // Tier 2 — the baseline path itself failed. Never pass unmasked.
-        console.error(
-          `[privacy-guard v4] promptMaskBlocked turn=${request.turnId}: ` +
-            `${err instanceof Error ? err.message : String(err)}`,
-        );
-        return {
-          outcome: 'blocked',
-          reason: 'prompt PII detection failed',
-        };
-      }
+        },
+      });
+    },
+
+    async countUnresolvedSurrogates(turnId: string, text: string): Promise<number> {
+      return countResidualSurrogates(text, promptMaskMaps.get(turnId));
     },
 
     async restorePromptPseudonyms(turnId: string, text: string): Promise<string> {
@@ -778,14 +916,21 @@ export function createPrivacyGuardService(deps?: {
       const structured = structuredPayloads.get(turnId);
       structuredPayloads.delete(turnId);
       // No receipt for a turn that touched neither the boundary, a bypass,
-      // structured output, nor prompt masking — there is nothing to report and
-      // a zero receipt is just noise in the channel UI.
+      // structured output, prompt masking nor a verifier request — there is
+      // nothing to report and a zero receipt is just noise in the channel UI.
       const hasInterned = accum !== undefined && accum.datasetsInterned > 0;
       const hasBypassed = bypassed !== undefined && bypassed.length > 0;
       const hasStructured = structured !== undefined && structured.length > 0;
       const hasMaskedPrompt =
         accum !== undefined && accum.maskedPromptSpans.length > 0;
-      if (!hasInterned && !hasBypassed && !hasStructured && !hasMaskedPrompt)
+      const hasVerifierEgress = accum !== undefined && accum.verifierRequests > 0;
+      if (
+        !hasInterned &&
+        !hasBypassed &&
+        !hasStructured &&
+        !hasMaskedPrompt &&
+        !hasVerifierEgress
+      )
         return undefined;
       // identityValuesOnWire — personal-identity values the requester named
       // in their own message text. A transparency notice (the user put a
@@ -804,6 +949,7 @@ export function createPrivacyGuardService(deps?: {
           `verbs=[${(accum?.verbsExecuted ?? []).join(',')}] ` +
           `bypassed=${String(bypassed?.length ?? 0)} ` +
           `structured=${String(structured?.length ?? 0)} ` +
+          `verifierRequests=${String(accum?.verifierRequests ?? 0)} ` +
           `identityOnWire=${String(identityValuesOnWire)}`,
       );
       return {
@@ -817,6 +963,14 @@ export function createPrivacyGuardService(deps?: {
         ...(hasStructured ? { structuredPayloads: [...structured] } : {}),
         ...(hasMaskedPrompt
           ? { maskedPromptSpans: [...accum.maskedPromptSpans] }
+          : {}),
+        ...(hasVerifierEgress
+          ? {
+              verifierEgress: {
+                requests: accum.verifierRequests,
+                maskedSpans: [...accum.verifierMaskedSpans],
+              },
+            }
           : {}),
       };
     },

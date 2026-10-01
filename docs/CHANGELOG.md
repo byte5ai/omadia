@@ -36,6 +36,49 @@ changelog.
 
 ## [Unreleased]
 
+### Security — answer-verifier requests run behind the Privacy Shield; the receipt is finalised after them
+
+2026-09-30 — with the privacy plugin installed and the answer verifier
+enabled, every turn the trigger router picked produced one to three extra model
+requests that bypassed the shield. The verifier ran after the orchestrator had
+restored the answer and finalised the turn, so its claim extractor got the
+unmasked prompt and the restored (or v4-rendered) answer, its evidence judge got
+raw knowledge-graph node content, and the enforce-mode retry put the re-queried
+truth into the system prompt verbatim. None of it reached the turn's receipt,
+which had already been written. A turn the verifier wraps now hands its privacy
+state over instead of finalising it: the extractor sees the turn's wire view
+(the prompt exactly as the turn's model received it — an MCP input-card reply
+only as its label, never the envelope with the values typed for a third-party
+server — and the answer as its model wrote it; amounts and dates parsed from a
+placeholder are re-read from the real literal), the judge projects claim and
+evidence through the same surrogate map in one call — also with
+`mask_user_prompt` off — and names each evidence snippet by a handle minted for
+that request, so no node id and no string record key reaches its provider, and
+the continuation finalises exactly once
+afterwards, so one receipt and one `turn_receipts` row cover the turn and the
+verifier (new receipt field `verifierEgress`, shown as "Answer check" on the web
+card). Server-rendered answers and Direct Line relays are not verified; with a
+shield installed but no privacy view handed over, nothing is verified raw.
+
+Behind the shield the correction retry carries no truth values and is withheld
+(badge `failed`) when masking would still alter its hint, and a second answer
+with unresolved placeholders — a still-blocked retry, or a blocked re-sample
+taken over a borderline first answer — never replaces the first one. Since
+restore only maps a placeholder's exact string back, a date or amount
+placeholder the model wrote back in another spelling of the same value (a
+dotted date as ISO or with a written month, an amount with a scale word such
+as "Tsd.") counts as unresolved too — otherwise the user would read a fake
+value — and a date or amount the check cannot read counts as well. A
+contradiction the judge found on placeholder values is reported as `unverified`
+rather than blocking. On streaming turns `done` — which carries the receipt — now arrives
+after the verifier finished, so the chat's "thinking" state lasts until then
+(heartbeats keep the connection alive); the streamed text is unchanged. The
+caller-supplied system hint is masked like the prompt, and a turn that throws or
+a stream the client abandons now drops its privacy state instead of keeping it
+until restart. `@omadia/plugin-api` 1.20.0 (additive: mask `stage`/`preview`,
+`projectVerifierText`, `countUnresolvedSurrogates`, `verifierEgress`); the
+in-tree privacy-guard plugin implements them without a version change.
+
 ### Fixed — password sign-in is rate-limited
 
 2026-09-30 — `POST /api/v1/auth/login/:providerId` ran a full argon2id

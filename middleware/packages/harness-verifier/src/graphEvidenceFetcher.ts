@@ -53,12 +53,7 @@ export class GraphEvidenceFetcher implements EvidenceFetcher {
         });
         for (const hit of hits) {
           if (snippets.length >= this.maxSnippets) break;
-          snippets.push({
-            nodeId: hit.id,
-            source: 'graph',
-            title: displayNameOf(hit),
-            content: formatNode(hit),
-          });
+          snippets.push(toSnippet(hit));
         }
       } catch {
         // Graph errors are soft: return what we have, let the judge
@@ -82,12 +77,7 @@ export class GraphEvidenceFetcher implements EvidenceFetcher {
             });
             for (const hit of hits) {
               if (snippets.length >= this.maxSnippets) break;
-              snippets.push({
-                nodeId: hit.id,
-                source: 'graph',
-                title: displayNameOf(hit),
-                content: formatNode(hit),
-              });
+              snippets.push(toSnippet(hit));
             }
           } catch {
             // swallow
@@ -125,18 +115,49 @@ function displayNameOf(node: GraphNode): string {
   return node.id;
 }
 
-function formatNode(node: GraphNode): string {
+/** Props that name the node's kind rather than describe the record. The
+ *  record's own key (`id`) is not one of them: a string key can be a login or
+ *  an address, so it is judged like any other value below — a numeric one
+ *  stays, as it would in a v4 digest. */
+const STRUCTURAL_PROPS: ReadonlySet<string> = new Set(['model', 'system', 'type']);
+
+/** Values the v4 shape classifier would keep as cleartext on its own: ISO
+ *  dates and plain numbers. Everything else a string prop holds is treated as
+ *  identity-bearing (deny by default). */
+const ISO_DATE_VALUE = /^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/;
+const NUMERIC_VALUE = /^[+-]?\d+([.,]\d+)?$/;
+
+function toSnippet(node: GraphNode): EvidenceSnippet {
   const display = displayNameOf(node);
   const extras: string[] = [];
+  // Display name plus every free-text value shown below, a string record key
+  // included: behind a Privacy Shield these are always replaced before the
+  // judge's request leaves the process (see EvidenceSnippet.identityValues).
+  // The node id needs no entry — the judge never sends a snippet's node id.
+  const identityValues = display !== node.id ? [display] : [];
   for (const [k, v] of Object.entries(node.props)) {
     if (k === 'displayName') continue;
     if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
       extras.push(`${k}=${String(v)}`);
+      if (
+        typeof v === 'string' &&
+        !STRUCTURAL_PROPS.has(k) &&
+        !ISO_DATE_VALUE.test(v.trim()) &&
+        !NUMERIC_VALUE.test(v.trim())
+      ) {
+        identityValues.push(v);
+      }
     }
     if (extras.length >= 6) break;
   }
   const suffix = extras.length > 0 ? ` (${extras.join(', ')})` : '';
-  return `Graph-Node ${node.id} — ${display}${suffix}`;
+  return {
+    nodeId: node.id,
+    source: 'graph',
+    title: display,
+    content: `Graph-Node ${node.id} — ${display}${suffix}`,
+    identityValues,
+  };
 }
 
 /**

@@ -1671,6 +1671,61 @@ auth-gated **`GET /api/v1/operator/receipts`** (Liste, Composite-Keyset-Cursor
 Reaper mit Eager-Boot-Tick, Cutoff auf der DB-Uhr. Tests:
 `test/turnReceipts.test.ts`, `test/orchestrator/turnReceiptPersistence.test.ts`.
 
+#### Verifier-gewrappte Turns finalisieren erst nach dem Verifier
+
+Läuft ein Turn über `VerifierService` (Bundle `verifier@1` publiziert) und ist
+der Privacy Shield aktiv, finalisiert der Turn **nicht selbst**: Der Wrapper
+setzt vor jedem `runTurn`/`chatStream` `markPrivacyFinalizeHeld(input)`
+(One-Shot, gekeyt auf das Input-Objekt des Aufrufers), der Turn liefert sein
+Ergebnis ohne `privacyReceipt` und übergibt eine
+`PrivacyEgressContinuation` (`harness-orchestrator/src/privacyEgress.ts`),
+die der Wrapper mit `takePrivacyEgress(input)` abholt. Alle drei
+Finalize-Stellen übergeben (gepuffert, Streaming-`done`, Streaming-Direct-Line).
+Über `continuation.verifierPrivacy` laufen Extractor- und Judge-Requests unter
+der Surrogat-Map des Turns; danach ruft der Wrapper `finalize()` **genau
+einmal** pro Turn (`EgressLedger` in `verifierPrivacyGate.ts`, auch bei Fehlern
+und Client-Abbruch) — erst dann entstehen Receipt und `turn_receipts`-Zeile.
+Das Modell-Attribut wird bei der Übergabe gesichert (die 512er-FIFO
+`turnAttribution` könnte es sonst verdrängen). Der Receipt trägt die
+Verifier-Requests getrennt in `verifierEgress` (Anzahl + Span-Typen); ein Turn,
+dessen einzige Shield-Aktivität der Verifier war, bekommt dadurch ebenfalls
+eine Zeile. Beim Streaming hält der Wrapper `done` zurück, bis der innere
+Stream gedrained ist und der Verifier fertig ist, und sendet es dann mit
+`privacyReceipt` + `receiptId`, gefolgt vom `verifier`-Event. Ein Turn, der
+wirft, oder ein abgebrochener Stream verwirft seinen Privacy-State jetzt
+sofort (vorher blieb er bis zum Neustart im Speicher). Sicherheitsseite:
+`docs/security-architecture.md` §6e. Die Wire-Sicht zeichnet der Turn selbst
+auf (`TurnContextValue.wireView`): den Prompt so, wie ihn das Modell bekam —
+eine MCP-Input-Card-Antwort also nur als Label, nie als Envelope mit den
+eingegebenen Werten — und die Antwort vor dem Restore. Der Extractor schickt
+genau das und maskiert es nicht erneut (`admitWireView` bucht den Request nur);
+`VerifierService` gibt der Pipeline auch als `userMessage` nie den Envelope
+(`modelFacingUserMessage`). Claims aus der Wire-Sicht stellt
+`harness-verifier/src/claimRestore.ts` serverseitig wieder her (Beträge/Daten
+aus Platzhaltern werden aus dem echten Literal neu gelesen). Der Judge bekommt
+keine Node-IDs: Jede Evidenz heißt im Request `ev-1`, `ev-2`, … (pro Request
+vergeben, die zitierte Kennung wird serverseitig auf das Snippet
+zurückgeführt), und eine Node-ID oder ein String-Schlüssel (`id=…`) im
+Evidenztext wird wie ein Anzeigename ersetzt. Eine zweite
+Antwort mit ungelösten Platzhaltern (`countUnresolvedSurrogates`) ersetzt die
+erste nie — weder ein weiter blockierter Retry noch ein blockiertes Re-Sample
+nach einer Borderline-Antwort. Ungelöst heißt: wörtlich, in anderer
+Groß-/Kleinschreibung, mit umgruppierten Ziffern oder — bei Datum und Betrag —
+als anderes Literal desselben Werts (`harness-plugin-privacy-guard/src/valueLiterals.ts`:
+ISO, Punkt/Slash, ohne führende Null, zweistelliges Jahr, ausgeschriebener
+Monat in sechs Locales, Tausendergruppen, „k“/„Tsd.“/„T€“/„Mio.“); denn Restore
+ersetzt nur den exakten Platzhalter-String. Ein Datums- oder Betragsliteral
+ohne lesbaren Wert passt auf jeden Platzhalter seiner Art (fail closed).
+Tests:
+`test/orchestratorPrivacyEgress.test.ts` (Übergabe),
+`test/verifierPrivacyEgressEndToEnd.test.ts` (Verifier um den echten
+Orchestrator, auch ein als ISO umgeschriebener Datums-Platzhalter in Retry und
+Re-Sample), `test/privacyValueLiterals.test.ts` (Wert-Grammatik),
+`test/verifierEvidenceHandles.test.ts` (Judge-Kennungen),
+`test/verifierServicePrivacyEgress.test.ts` /
+`test/verifierServiceStreamPrivacyEgress.test.ts` (Wrapper, Harness in
+`test/_helpers/`).
+
 #### API-Turn-Attribution + Korrelations-Id (#1107)
 
 Turns über `POST /api/public/v1/chat` trugen `channel = NULL` und der Caller
@@ -3220,6 +3275,16 @@ Genau ein `done` oder `error` schließt den Stream. Header:
 `Content-Type: application/x-ndjson; charset=utf-8`, `X-Accel-Buffering: no`
 (nginx-buffer-off).
 
+**Antwort-Verifier.** Ist `verifier@1` aktiv, folgt auf `done` noch genau ein
+`{ type: 'verifier'; summary }` (Status/Badge der Prüfung; die Web-UI wertet es
+derzeit nicht aus). Läuft zusätzlich der Privacy Shield, hält der Wrapper
+`done` zurück, bis der innere Stream gedrained und der Verifier fertig ist:
+`done` trägt dann — sofern der Turn einen hat — den vollständigen Receipt
+(`privacyReceipt` inkl. `verifierEgress`, `receiptId`), direkt danach kommt
+`verifier`. Text-Deltas
+laufen unverändert live, nur der Abschluss wartet (Heartbeats laufen weiter).
+Details: `docs/security-architecture.md` §6e.
+
 **Degradierter Turn (#1094).** Wirft ein Turn, *nachdem* mindestens ein
 Tool-Call bereits committet hat, bleibt das terminale Event bewusst `done` —
 ein `error` würde den committeten Seiteneffekt als gescheitert melden und den
@@ -3629,6 +3694,34 @@ Adapter falsch konfiguriert ist. Offen:
 - **Setup-Seite: 503 `auth.busy` übersetzen.** `/setup` antwortet 503 `auth.busy`, wenn
   kein argon2-Slot frei ist. Die Login-Seite zeigt dafür „bitte N Sekunden warten“, die
   Setup-Seite (`web-ui/app/setup/page.tsx`) zeigt noch die rohe Fehlermeldung.
+
+### Verifier hinter dem Privacy Shield — Folgearbeiten
+
+Seit dem Privacy-Hand-over (Turn-Receipts, `security-architecture.md` §6e)
+laufen die Verifier-Requests unter der Surrogat-Map des Turns. Offen:
+- **Teams-Card:** `channel-teams` (eigenes Repo) rendert
+  `PrivacyReceipt.verifierEgress` noch nicht — das Feld wird ignoriert, bis die
+  Card eine "Antwortprüfung"-Zeile bekommt (Web-UI hat sie).
+- **Judge-Widersprüche hinter dem Shield:** ein `contradicted` des Judges auf
+  Platzhaltern wird bewusst zu `unverified` herabgestuft (Formatabweichungen
+  zwischen Claim und Evidenz würden sonst korrekte Antworten blocken). Ein
+  format-bewusster Vergleich (z. B. Datums-/Betrags-Normalisierung vor der
+  Maskierung) könnte weiche Widersprüche wieder blockierend machen.
+- **Ledger-Attribution:** die Verifier-Kostenzeilen können an
+  `continuation.receiptId` anknüpfen (siehe Cost-Ledger "Offen").
+- **Wertgleiche Platzhalter beim Minting:** `createPromptPseudonymMap`
+  (`v4/pseudonym.ts`) prüft Kollisionen nur als String. Ein echtes Datum oder
+  ein echter Betrag, dessen Wert einem Kandidaten entspricht, bekommt einen
+  Platzhalter mit demselben Wert in anderer Schreibweise (echte „10.000 €“ →
+  „€10000“, „1970-01-01“ → „01.01.1970“) — der Request trägt dann den echten
+  Wert. Nebenwirkung: `countUnresolvedSurrogates` zählt den restaurierten
+  echten Wert als ungelöst, ein Retry/Re-Sample wird in so einem Turn nie
+  gezeigt (sichere Richtung). Fix: Kandidaten per `asValueLiteral` gegen die
+  Werte der echten Spans und der Datums-/Betragsliterale im Prompt prüfen.
+- **Grenzen der Wertprüfung:** ausgeschriebene Zahlen („zehntausend Euro“),
+  Daten ohne Jahr („am 1. Januar“) und umgerechnete Werte (Monats- statt
+  Jahresbetrag) erkennt `countUnresolvedSurrogates` nicht; ein so
+  umgeschriebener Platzhalter bliebe in einer zweiten Antwort sichtbar.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
@@ -4674,7 +4767,10 @@ Orchestrator-Scope und übergibt eine eigene Turn-ID pro Lauf explizit — expli
 gewinnen immer.
 
 Offen: Verifier-Zeilen (laufen nach dem Turn-Scope) und `claude-cli-completion` bleiben
-NULL, bis der Orchestrator seine Ledger-Turn-ID nach außen gibt. ⚠️ Wie bei 0032:
+NULL, bis der Orchestrator seine Ledger-Turn-ID nach außen gibt. Für den Verifier
+liegt die Turn-ID inzwischen vor: die `PrivacyEgressContinuation` trägt sie als
+`receiptId`, solange der Verifier läuft — die Ledger-Attribution kann daran
+anknüpfen (Privacy-Hand-over, siehe Turn-Receipts). ⚠️ Wie bei 0032:
 Migration vor Deploy, sonst verwirft jeder Flush den ganzen Batch.
 
 ### Systemstatus: "Letzter Turn" (OM-100b, §3)

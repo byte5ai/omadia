@@ -1940,6 +1940,11 @@ readonly identityValuesOnWire?: number;
 readonly bypassedTools?: readonly BypassedToolEntry[];
 readonly maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
 readonly structuredPayloads?: readonly StructuredPayloadEntry[];
+readonly verifierEgress?: VerifierEgressSummary;
+}
+export interface VerifierEgressSummary {
+readonly requests: number;
+readonly maskedSpans: readonly PromptMaskedSpanInfo[];
 }
 export interface PrivacyToolResultV4Request {
 readonly sessionId: string;
@@ -2009,10 +2014,19 @@ export interface PromptMaskedSpanInfo {
 readonly type: string;
 readonly detector: string;
 }
+export type PrivacyEgressStage = 'turn' | 'verifier';
 export interface PrivacyPromptMaskRequest {
 readonly sessionId: string;
 readonly turnId: string;
 readonly text: string;
+readonly stage?: PrivacyEgressStage;
+readonly preview?: boolean;
+}
+export interface PrivacyVerifierProjectionRequest {
+readonly sessionId: string;
+readonly turnId: string;
+readonly text: string;
+readonly identityValues?: readonly string[];
 }
 export type PrivacyPromptMaskResult = {
 readonly outcome: 'disabled';
@@ -2040,6 +2054,8 @@ resolveDatasetForRender?(turnId: string, datasetId: string): PrivacyResolvedData
 maskUserPrompt?(request: PrivacyPromptMaskRequest): Promise<PrivacyPromptMaskResult>;
 restorePromptPseudonyms?(turnId: string, text: string): Promise<string>;
 snapshotPromptRestorer?(turnId: string): ((text: string) => string) | undefined;
+projectVerifierText?(request: PrivacyVerifierProjectionRequest): Promise<PrivacyPromptMaskResult>;
+countUnresolvedSurrogates?(turnId: string, text: string): Promise<number>;
 v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
 finalizeTurn(turnId: string, turnInput?: string): Promise<PrivacyReceipt | undefined>;
 }

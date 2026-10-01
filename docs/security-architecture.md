@@ -133,6 +133,13 @@ to route personal data through this provider. `maskHistory` already routes the
 replay through the turn's privacy handle and becomes effective the moment one is
 installed on this path; masking parity is tracked on #1087.
 
+The answer verifier is never installed on this path: `buildOrchestratorForAgent`
+returns the `CliChatAgent` bundle before the `VerifierService` wrap, so a
+subscription-CLI chat turn has no verifier egress at all. The reverse case is
+covered by §6e — the verifier plugin's OWN model may be the `claude-cli`
+completion provider (Shape 2), and its requests are masked before
+`llm.complete` like on any other provider.
+
 ### Why the deny list is generated, not written (#1014)
 
 The first version was hand-collected and missed 40 real tool names, `Tmux`
@@ -712,6 +719,114 @@ still masks a thrown exception's message even when it starts with `Error:`.
 
 Since #978 a change to the value is a metadata `update` (registry row refreshed, live orchestrator kept), not a `rebuild`; the web UI no longer offers a toggle and labels the value "(not enforced)"; migration `0061` records the status as a column comment. Making `strict` enforce anything is a security decision that must update this section: the posture has to reach `AgentRuntimeConfig`, survive the sub-agent boundary (`turnContext.privacyHandle` in `localSubAgent.ts` / `toolDispatchService.ts`), go back into `runtimeChangeReasons` in `applyDiff.ts`, and it changes behaviour for the seeded fallback agent without operator action (open decision: `docs/middleware-agent-handoff.md` §13).
 
+### 6e. The answer verifier's model requests run under the turn's privacy view
+
+The answer verifier (`verifier@1`, wrapped around the orchestrator by
+`VerifierService` whenever the bundle is published) sends model requests
+AFTER the turn produced its answer: one claim extraction, one evidence-judge
+request per soft claim (two on a confirmed contradiction), and in enforce mode
+a correction retry. They used to run outside the turn's privacy scope, on the
+restored answer, with raw knowledge-graph evidence, after the receipt had been
+written. They are now bound to the turn's own privacy handle:
+
+- **Hand-over instead of finalize.** Before every turn it runs (first sample,
+  borderline re-sample, correction retry), the wrapper calls
+  `markPrivacyFinalizeHeld(input)`. The turn then does not finalize: it returns
+  without a receipt and hands a `PrivacyEgressContinuation`
+  (`harness-orchestrator/src/privacyEgress.ts`) over, keyed on the caller's
+  input object (one-shot mark, weak maps). All three finalize sites hand over —
+  buffered `runTurn`, streaming `done`, streaming Direct Line. The wrapper
+  verifies through the continuation and then calls `finalize()` exactly once
+  per turn (`EgressLedger`, also on errors and early client exits), which
+  drops the surrogate map, dataset store and C1 cache and writes the
+  `turn_receipts` row with the model attribution captured at hand-over. One
+  receipt and one hash-chained row cover the turn and its verifier.
+- **What the verifier sees.** The extractor gets the turn's WIRE view, as the
+  turn recorded it (`TurnContextValue.wireView`): the prompt exactly as the
+  turn's model received it — normalised (an MCP input-card reply is its label,
+  never the envelope with the values the user typed for a third-party server)
+  and masked under the turn's `mask_user_prompt` policy (as written when the
+  operator left it off — the turn's own model saw the same) — and the answer as
+  the model wrote it, before restore. The request is admitted through the view
+  (`admitWireView`, one verifier request in the receipt) but never masked a
+  second time, which would read the turn's placeholders as new values. The
+  pipeline's own `userMessage` (server-side checks; the extraction prompt when
+  no shield is installed) is the same normalised text, never the envelope.
+  A server-rendered v4 answer (`answerSource: 'privacy-render'`, real values
+  the model never saw), a Direct Line relay and the privacy refusal are never
+  verified. Claims come back with placeholders and are restored server-side
+  (`harness-verifier/src/claimRestore.ts`); a claim whose span cut through a
+  placeholder is dropped, and an amount or date the model parsed from a
+  placeholder is re-read from the real literal it stands for — dropped when no
+  single literal can be tied to it, never compared as the placeholder's
+  value; a date or graph-id claim whose check would then read the whole
+  restored sentence is not checked at all. The deterministic re-query and the
+  graph lookup run on real values and never leave the process.
+- **Evidence is projected regardless of the flag.** The judge's claim,
+  context and knowledge-graph evidence are projected in ONE call per request
+  through the turn's surrogate map (`projectVerifierText`): identity-shaped C0
+  spans, the operator deny-list, the C1 detector when wired, the node's display
+  name and free-text fields (`EvidenceSnippet.identityValues`, deny-by-default
+  like the v4 classifier), and the turn's known real values. Dates and amounts
+  stay, as in a v4 digest. Node ids never leave the process (an ingested
+  record's id can embed an external key or a channel user id): the request
+  names each snippet by a handle minted for that request (`ev-1`, `ev-2`, …),
+  the handle the judge cites is resolved to its snippet server-side (a handle
+  the request did not print resolves to nothing), and a node id or a string
+  record key (`id=…`) that the evidence text repeats is always replaced like a
+  display name. Numeric record keys stay, as in a v4 digest. One map means the
+  same person is the same placeholder in claim and evidence, so the judge can
+  still verify. A real value that equals a surrogate minted earlier in the
+  turn blocks the request.
+  Evidence is capped (3 snippets × 1200 chars) and the C1 timeout/degrade
+  latch applies as for the prompt. Because a contradiction judged on
+  placeholders can be an artefact of the substitution, it is reported as
+  `unverified` and never blocks an answer.
+- **Fail closed.** A blocked mask or projection sends nothing (the stage
+  returns no claims / `unverified`). With a shield installed but no
+  continuation handed back, the wrapper does not verify at all. A provider
+  without `projectVerifierText` blocks every judge request.
+- **Correction retry.** Behind a shield the hint names the contradicted claims
+  but carries no truth values and no value-bearing detail (`Δ=…`, the judge's
+  rationale); when the turn's policy would still alter the hint, the retry is
+  withheld (badge `failed`). The retry turn masks the caller-supplied hint like
+  its prompt (`composeWireExtraSystemHint`). A second answer that still carries
+  unresolved placeholders (`countUnresolvedSurrogates` — the model reworded one
+  and restore could not map it back) never replaces the first: neither a
+  still-blocked retry answer nor a blocked re-sample taken over a borderline
+  first answer, whether the retry then ran, failed or was withheld. The first
+  answer is shown with the badge the verdict earned (`failed`). Without a
+  shield the hint is unchanged: tool results reach that model raw anyway.
+  Restore only maps a placeholder's exact string back, so the check also
+  compares dates and amounts by value (`valueLiterals.ts`): a date placeholder
+  written as ISO, slashed, unpadded or with a written month (six locales), or
+  an amount placeholder regrouped or given a scale word ("Tsd.", "k", "T€",
+  "Mio."), still counts. A date or amount literal whose value cannot be read
+  matches every placeholder of its kind (fail closed). Open (handoff §13):
+  spelled-out numbers and dates without a year are not read, and minting
+  compares strings, so a real date or amount can get a placeholder of the
+  same value in another spelling — the request then carries that value, and
+  the check flags the restored real value, which only withholds a second
+  answer.
+- **Receipt.** Verifier spans are booked in `PrivacyReceipt.verifierEgress`
+  (request count + span types), never in `maskedPromptSpans`; a turn whose
+  only privacy-relevant event was the verifier still gets a receipt. On
+  streaming turns `done` is held until the inner stream has drained (steering
+  and turn-auth cleanup run first) and the verifier finished, then goes out
+  with the receipt, followed by the `verifier` event.
+
+Callers: every `bundle.agent` caller goes through the wrapper — chat routes,
+channel adapters, the scheduler (`scheduleWorker.ts`) and conductor steps
+(`realStepEffects.ts`, `builderAgent.ts`). The subscription-CLI chat runtime
+is never wrapped (§3a); the verifier's own provider may be `claude-cli`, which
+receives the same masked text. Deliberately unchanged: `verifier_contradictions`
+stores claim text, claimed and truth values restored to real values
+(server-side, same trust zone as the session log); prompt masking stays
+default-off, so the extraction request carries the raw prompt when the
+operator chose so. Why a continuation and not the in-turn snapshot used for
+fact extraction: the judge masks evidence fetched after the turn with the
+live detectors and the same map, and only an unfinalized turn still has both.
+
 ## 7. Conductor generic webhooks (#437)
 
 Inbound endpoints (`POST /api/hooks/:endpointId`) and outbound subscriptions
@@ -1133,7 +1248,9 @@ entry meaningful.
 **PII masking.** Chat turns from this ingress go through the exact same
 `CoreApi.handleTurnStream` dispatch as every other channel (Teams,
 Telegram, Omadia UI) — no second, parallel response path — so
-privacy-guard's prompt masking and receipt behavior apply identically.
+privacy-guard's prompt masking and receipt behavior apply identically. That
+includes the answer verifier's post-turn model requests: they run under the
+turn's own privacy view and are booked on the same receipt (§6e).
 
 **Operator deny-lists and the miss-report queue (#760).** Operators can add
 literal terms and vetted regex patterns (`custom_terms` / `custom_patterns`
@@ -2948,6 +3065,17 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       sign-in checked (never ones read after the check), is issued only by
       a sign-in that proved the password, at most once per sign-in, and
       shares one budget per account however many of it a client holds.
+- [ ] A new model call made after `runTurn` / `chatStream` produced the
+      answer (verifier stages, extractors, judges, any post-turn pass) sends
+      only what a `PrivacyEgressContinuation` view holds or returns (the
+      turn's recorded wire view, a projection) — never the caller's own input
+      (it may still be an MCP input-card envelope) and never text handed to a
+      bare `LlmProvider` — and the continuation's `finalize` runs after that
+      call, exactly once, also on the error path (§6e). A new finalize site in
+      the orchestrator hands over when the turn was held. An item such a
+      request asks the model to cite (an evidence snippet) is named by a
+      handle minted for that request and resolved server-side, never by its
+      record or node id (§6e).
 
 ---
 

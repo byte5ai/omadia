@@ -46,6 +46,8 @@ export function PrivacyReceiptCard({
   const bypassed = receipt.bypassedTools ?? [];
   const promptSpans = receipt.maskedPromptSpans ?? [];
   const structured = receipt.structuredPayloads ?? [];
+  const verifier = receipt.verifierEgress;
+  const hasVerifier = verifier !== undefined && verifier.requests > 0;
 
   // Palette precedence: identity-breach (red) wins over bypass-warning
   // (amber) wins over default (emerald). Breach is a transparency notice
@@ -115,6 +117,20 @@ export function PrivacyReceiptCard({
             <Fact
               label={t('factPromptMasked')}
               value={formatMaskedPromptSpans(promptSpans)}
+              labelClass={palette.label}
+            />
+          )}
+          {hasVerifier && (
+            <Fact
+              label={t('factVerifier')}
+              value={
+                verifier.maskedSpans.length > 0
+                  ? t('verifierRequestsMasked', {
+                      count: verifier.requests,
+                      spans: formatMaskedPromptSpans(verifier.maskedSpans),
+                    })
+                  : t('verifierRequests', { count: verifier.requests })
+              }
               labelClass={palette.label}
             />
           )}
@@ -207,6 +223,11 @@ export function PrivacyReceiptCard({
             {t('explainerStructured')}
           </div>
         )}
+        {hasVerifier && (
+          <div className={['text-[11px] italic', palette.muted].join(' ')}>
+            {t('explainerVerifier')}
+          </div>
+        )}
         {/* #760 — the catch basin's intake: report a value the shield missed. */}
         <MissReportForm turnId={turnId} />
       </div>
@@ -283,6 +304,10 @@ export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
   const structured = r.structuredPayloads ?? [];
   if (structured.length > 0) {
     parts.push(t('summaryStructured', { count: structured.length }));
+  }
+  const verifierRequests = r.verifierEgress?.requests ?? 0;
+  if (verifierRequests > 0) {
+    parts.push(t('summaryVerifier', { count: verifierRequests }));
   }
   const onWire = r.identityValuesOnWire ?? 0;
   if (onWire > 0) {
