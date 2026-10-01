@@ -525,17 +525,25 @@ jobs:
       # update that is not Authenticode-signed under that name. Reading it from
       # the certificate that signs this build keeps it exact and keeps forks
       # generic — no byte5-specific value lives in the workflow.
+      #
+      # The warm-up file is compiled here, not copied from System32. A Windows
+      # system binary is catalog-signed by Microsoft, and an Authenticode hash
+      # leaves out the embedded signature, so after signing the copy
+      # Get-AuthenticodeSignature still matched the catalog and reported
+      # "Microsoft Windows" as the publisher. No catalog lists a freshly
+      # compiled file, and the SignatureType check refuses any answer that does
+      # not come from the signature embedded here.
       - name: Pre-warm Azure Trusted Signing tooling (avoid concurrent-install race)
         if: ${{ matrix.os == 'windows-latest' && env.AZURE_CLIENT_ID != '' }}
         shell: pwsh
         run: |
           Install-Module -Name TrustedSigning -MinimumVersion 0.5.0 -Force -Repository PSGallery -Scope CurrentUser -AllowClobber
-          $warmupFile = Join-Path $env:RUNNER_TEMP 'trusted-signing-warmup.exe'
-          Copy-Item -Path "$env:SystemRoot\System32\notepad.exe" -Destination $warmupFile
+          $warmupFile = Join-Path $env:RUNNER_TEMP 'trusted-signing-warmup.dll'
+          Add-Type -TypeDefinition 'public static class TrustedSigningWarmup { }' -OutputAssembly $warmupFile -OutputType Library
           Invoke-TrustedSigning -Endpoint $env:AZURE_SIGN_ENDPOINT -CodeSigningAccountName $env:AZURE_SIGN_ACCOUNT -CertificateProfileName $env:AZURE_SIGN_CERT_PROFILE -Files $warmupFile -FileDigest SHA256
           $sig = Get-AuthenticodeSignature -LiteralPath $warmupFile
-          if ($sig.Status -ne 'Valid' -or $null -eq $sig.SignerCertificate) {
-            throw "FAIL: the warm-up file is not validly signed (status=$($sig.Status)), so the publisher name electron-builder needs cannot be read."
+          if ($sig.Status -ne 'Valid' -or $null -eq $sig.SignerCertificate -or "$($sig.SignatureType)" -ne 'Authenticode') {
+            throw "FAIL: the warm-up file carries no valid embedded signature (status=$($sig.Status), type=$($sig.SignatureType)), so the publisher name electron-builder needs cannot be read."
           }
           $publisher = $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
           if ([string]::IsNullOrWhiteSpace($publisher)) {
