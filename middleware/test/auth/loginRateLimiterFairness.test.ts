@@ -7,7 +7,9 @@
  *            layer, because one sender would exhaust it for all of them;
  *   address  an address a trusted proxy vouched for: the client layer brakes it;
  *   device   a valid device cookie: no client layer (its pair is stricter),
- *            and a reserve in the global capacity nobody else can use.
+ *            and a reserve in the global capacity nobody else can use. All
+ *            device ids of one account share one pair, so a second id buys
+ *            neither a second budget nor a second share of that reserve.
  */
 
 import { strict as assert } from 'node:assert';
@@ -129,7 +131,7 @@ describe('address key: the client layer brakes one vouched-for address', () => {
   });
 });
 
-describe('device key: its own pair is its only limit', () => {
+describe('device key: the account’s known-browser pair is its only limit', () => {
   it('skips the client layer and meets the pair backoff after five failures', () => {
     const { limiter } = setup({ clientMaxFailures: 2 });
     for (let i = 0; i < D.accountFreeFailures; i += 1) {
@@ -137,6 +139,25 @@ describe('device key: its own pair is its only limit', () => {
     }
     assert.equal(scopeOf(limiter.admit(device('owner-browser', 'local:owner@x'))), 'account');
     assert.equal(limiter.stats().clients, 0);
+  });
+
+  it('every device id of one account shares that one pair', () => {
+    const { limiter } = setup();
+    for (let i = 0; i < D.accountFreeFailures; i += 1) {
+      failOnce(limiter, device(`browser-${String(i)}`, 'local:owner@x'));
+    }
+    assert.equal(scopeOf(limiter.admit(device('yet-another-browser', 'local:owner@x'))), 'account');
+    // Another account's known browsers, and the account's address pairs, are apart.
+    assert.equal(limiter.admit(device('yet-another-browser', 'local:other@x')).allowed, true);
+    assert.equal(limiter.admit(shared('local:owner@x')).allowed, true);
+  });
+
+  it('so one account’s device ids take at most the free budget of the reserve', () => {
+    const { limiter } = setup();
+    admitUntilRefused(limiter, (i) => shared(`local:n${String(i)}@x`));
+    const run = admitUntilRefused(limiter, (i) => device(`browser-${String(i)}`, 'local:former@x'));
+    assert.deepEqual(run, { admitted: D.accountFreeFailures, scope: 'account' });
+    assert.equal(limiter.admit(device('owner-browser', 'local:owner@x')).allowed, true);
   });
 });
 

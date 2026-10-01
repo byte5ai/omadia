@@ -33,15 +33,20 @@
  *     Clients that share a key share its pairs: a sender that keeps failing
  *     on one account keeps that account's pair shut for everyone on the key
  *     who has no device cookie. That is inherent — it is the same bucket.
+ *     Every `device` key of one account is ONE client here, the account's
+ *     known browsers: a second device id buys no second budget, and so no
+ *     second share of the reserve below either.
  *  3. global  — process-wide argon2 capacity: `globalMaxInFlight`
  *     verifications at once and `globalMaxPerMinute` admitted attempts per
  *     minute (leaky bucket, so the Retry-After stays short). `device`
  *     attempts may use all of it; every other attempt stops
  *     `globalDeviceReserveInFlight` slots and `globalDeviceReservePerMinute`
  *     tokens short, so no amount of traffic from unknown browsers — however
- *     many keys it comes from — turns a known browser away. Only attempts
- *     layers 1 and 2 admitted consume it, so a flood of cheap refusals can
- *     never turn into a deployment-wide 503. → 503.
+ *     many keys it comes from — turns a known browser away. What one
+ *     account's known browsers can take of the reserve is what their one
+ *     pair admits. Only attempts layers 1 and 2 admitted consume it, so a
+ *     flood of cheap refusals can never turn into a deployment-wide 503.
+ *     → 503.
  *
  * Counting happens at ADMISSION. An admitted attempt is pending on its
  * client and pair until the caller settles it, and a pending attempt counts
@@ -65,6 +70,12 @@ const MAX_BACKOFF_EXPONENT = 30;
 /** RFC 5321 bounds a mailbox at 254 characters; longer ids share one key. */
 const MAX_ACCOUNT_ID_LENGTH = 254;
 const GLOBAL_REPORT_KEY = 'global';
+/**
+ * The pair client of every `device` key: an account's known browsers share
+ * one pair. No client key equals it — device keys are `device:<id>` with a
+ * 22-character id, address keys an IP address, a prefix or 'unknown'.
+ */
+const KNOWN_BROWSERS = 'device:*';
 
 export type LoginLimitScope = 'client' | 'account' | 'global';
 
@@ -170,9 +181,13 @@ export const DEFAULT_LOGIN_LIMITER_CONFIG: LoginLimiterConfig = Object.freeze({
  * oversized id collapses to `'-'`.
  */
 export function loginAccountKey(providerId: string, accountId: string | undefined): string {
+  return `${providerId}:${normaliseLoginAccountId(accountId) ?? '-'}`;
+}
+
+/** The account id as `loginAccountKey` keys it; undefined for a missing, empty or oversized one. */
+export function normaliseLoginAccountId(accountId: string | undefined): string | undefined {
   const id = (accountId ?? '').trim().toLowerCase();
-  const safe = id.length > 0 && id.length <= MAX_ACCOUNT_ID_LENGTH ? id : '-';
-  return `${providerId}:${safe}`;
+  return id.length > 0 && id.length <= MAX_ACCOUNT_ID_LENGTH ? id : undefined;
 }
 
 /**
@@ -363,7 +378,8 @@ export function createLoginRateLimiter(
     const cWait = braked ? clientWaitMs(existingClient, t) : 0;
     if (cWait > 0) return refuse('client', keys.clientKey, cWait, t);
 
-    const pairKey = JSON.stringify([keys.accountKey, keys.clientKey]);
+    const pairClient = keys.clientKind === 'device' ? KNOWN_BROWSERS : keys.clientKey;
+    const pairKey = JSON.stringify([keys.accountKey, pairClient]);
     const existingPair = currentPair(pairKey, t);
     const pWait = pairWaitMs(existingPair, t);
     if (pWait > 0) return refuse('account', keys.clientKey, pWait, t);
