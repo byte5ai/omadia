@@ -3695,6 +3695,35 @@ README, `docs/architecture.md`, `docs/security-architecture.md` und
   Default, `shadow` als Default-Modus, nur Antworten mit Zahlen). Ändern sich
   Verdikt-Zustände oder das Enforce-Verhalten, README „Answer verification“ und
   die Verifier-Prüfung in `docsClaimsGuard.test.ts` im selben PR mitziehen.
+- **Internieren schlägt fehl ⇒ Rohdaten.** Wirft `internToolResultV4`, schicken
+  `Orchestrator.dispatchToolDeadlined`, `LocalSubAgent`,
+  `ToolDispatchService.afterDispatch` und der MCP-Input-Replay
+  (`guardReplayResult`) das rohe Ergebnis ans Modell; nur `query_dataset` hält
+  die Zeilen zurück. Für jedes Tool fail-closed machen (zurückhalten mit
+  `Error:`-Text wie im `query_dataset`-Zweig), danach README (Intro,
+  Privacy-Shield-Zeile, „Trust & privacy“), `security-architecture.md` §6f und
+  `docsClaimsGuard.test.ts` im selben PR nachziehen.
+- **`read_attachment` liest auch CSV-Uploads im Klartext.** Das Tool ist
+  intern-exempt und extrahiert `.csv` als Text aus den Original-Bytes im
+  Upload-Store, sobald das Modell den `storage_key` kennt (Teams listet ihn im
+  `[attachments-info]`-Block). Zellen, die der Dataset-Import derselben Datei
+  als PII verschlüsselt (`security-architecture.md` §6b), kommen so roh beim
+  Modell an, unabhängig von `mask_user_prompt`. Tabellarische Uploads dort
+  ablehnen und auf `query_dataset` verweisen, oder das Ergebnis für Tabellen
+  internieren.
+- **Receipt-Verluste sichtbar machen.** `persistFailures` zählt nur im Prozess
+  (`turnReceiptCounters()` in `src/receipts/store.ts`), kein Endpunkt meldet
+  ihn. Ein werfendes `finalize()` und ein Turn, der vor dem Finalize scheitert,
+  zählen gar nicht. Zähler auf einer Operator-Oberfläche ausgeben und beide
+  Fälle mitzählen; erst dann darf das README „gezählt“ sagen.
+- **Prüfen: Chat-Verlauf aus Channel-Plugins.** `priorTurns` laufen nur bei
+  `mask_user_prompt` on durch die Prompt-Maske (`maskPriorTurnsForWire`). Baut
+  ein Channel-Plugin den Verlauf aus der ausgelieferten Antwort, enthält er nach
+  einem server-gerenderten v4-Turn (`answerSource: 'privacy-render'`) Realwerte,
+  die das Modell im Folgeturn roh sieht. In diesem Repo setzt kein Channel
+  `priorTurns`; der Web-Chat holt den Verlauf per Recall aus dem Knowledge
+  Graph, in den das Session-Log die Modellantwort vor dem Render schreibt. Teams
+  und Telegram liegen in eigenen Repos und sind darauf zu prüfen.
 
 ### Self-Update-Steuerungsebene: Vertrauensmodell und offene Härtung (#432 follow-up)
 

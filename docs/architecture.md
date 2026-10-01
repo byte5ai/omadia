@@ -7,8 +7,10 @@ patterns, read [`security-architecture.md`](security-architecture.md).
 
 omadia is a self-hostable agentic operating system. You compose teams of agents
 from plugin packages pinned by SHA-256 and run them on one machine. A per-run
-trace shows what they did, and every turn in which the Privacy Shield acted
-leaves a hash-chained receipt.
+trace shows what they did. On the Postgres backend, a turn in which the Privacy
+Shield acted also appends a hash-chained receipt. That write is best-effort: a
+failed one is logged and not retried
+([`security-architecture.md`](security-architecture.md) §7b).
 
 ## Component map
 

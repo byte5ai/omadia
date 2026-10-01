@@ -1136,6 +1136,46 @@ operator chose so. Why a continuation and not the in-turn snapshot used for
 fact extraction: the judge masks evidence fetched after the turn with the
 live detectors and the same map, and only an unfinalized turn still has both.
 
+### 6f. What reaches the model unmasked under `guarded`
+
+`guarded` interns a tool's result into the turn's dataset store and gives the
+model an identity-free digest in its place. On the in-process paths some
+results skip that step; the subscription-CLI path has no shield at all (§3a).
+
+- **Intern-exempt tools.** `INTERN_EXEMPT_TOOLS`
+  (`harness-orchestrator/src/privacyInternPolicy.ts`, pinned by
+  `test/privacyInternPolicy.test.ts`) lists `memory`, the stored-process tools
+  `query_processes`, `run_stored_process`, `write_process` and `edit_process`,
+  then `suggest_follow_ups`, `ask_user_choice` and `read_attachment`. The model
+  gets their results as the tool returned them. `read_attachment` returns the
+  extracted text of an uploaded file, a CSV included, so it can hand over
+  cells that the dataset import of the same CSV encrypted (§6b).
+  `mask_user_prompt` does not reach it: that setting masks prompt text, and a
+  tool result is not prompt text.
+- **Operator bypass.** A plugin set to `bypass`, or a tool on its `per_tool`
+  list, passes the raw result and records the tool on the receipt. A sub-agent
+  that read a bypassed result and interned no dataset hands its answer up raw
+  as well. `OMADIA_PRIVACY_FORCE_GUARDED=true` switches both off.
+- **Control flow.** A returned `Error:` text and an MCP connect prompt are not
+  interned; §6c says how they are redacted or withheld. An MCP input-required
+  sentinel minted by the same dispatch passes unchanged. It holds a random id,
+  the server and tool name and at most eight field names, never a value (#570).
+- **Interning failure.** When `internToolResultV4` throws,
+  `Orchestrator.dispatchToolDeadlined`, `LocalSubAgent`,
+  `ToolDispatchService.afterDispatch` and the MCP input replay
+  (`guardReplayResult`) log a warning and send the raw result. Only
+  `query_dataset` fails closed: its page carries decrypted cell values (§6b),
+  so the orchestrator, the only seam that dispatches it, withholds the rows and
+  returns an `Error:` text. Failing closed for every tool is open
+  (`middleware-agent-handoff.md` §13).
+
+Prompt text is a separate layer. The user's message, document text inlined at
+upload, the chat history a channel replays (`priorTurns`) and recalled context
+are masked only while `mask_user_prompt` is on (default off), and then by the
+C0 baseline and the operator's deny-list, plus names when the C1 detector is
+configured. Without an active privacy-guard provider nothing is interned or
+masked (§6c, residuals).
+
 ## 7. Conductor generic webhooks (#437)
 
 Inbound endpoints (`POST /api/hooks/:endpointId`) and outbound subscriptions
@@ -1224,6 +1264,18 @@ tail-truncated table can never report green (`empty_chain_with_history`,
 `head_beyond_rows`). Verify surface: `GET /api/v1/operator/provenance/
 verify`, signed export + zero-dependency offline verifier — see
 `docs/provenance-verification.md`.
+
+What the chain cannot show is a receipt that was never written. Appending is
+best-effort, because the user's answer outranks the audit row
+(`src/receipts/store.ts`). A failed insert is logged and counted in the process
+(`persistFailures`, `turnReceiptCounters()`), and no endpoint reports that
+count yet. A receipt whose `finalize()` throws is logged and dropped. A turn
+that fails or is abandoned before it reaches finalize leaves no receipt; after
+the verifier hand-over of §6e the wrapper finalizes on errors too. Nothing is
+retried. `seq` is assigned inside the insert transaction, so a missing receipt
+leaves no sequence gap and the chain verifier reports green without it. The
+receipts are also Postgres-only: on the in-memory backend no store is wired
+and nothing is persisted.
 
 ## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
 
@@ -3424,10 +3476,14 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       "never" and "every" stand only where a check runs on the default path, and
       an opt-in control (`verifier_enabled`, `mask_user_prompt`,
       `human.strictApproval`) is called opt-in (§3a, §4, §6d, §7a,
-      `docs/ai-act-transparency.md` §6). `test/docsClaimsGuard.test.ts` keeps
-      the retired claims out and ties the defaults the README names to the code;
-      a new public claim that rests on a default gets a line there.
+      `docs/ai-act-transparency.md` §6). A limit the code puts on such a
+      property, like an exemption list, a fail-open branch or a best-effort
+      write, is named where the property is claimed (§6f, §7b), and a tool
+      added to `INTERN_EXEMPT_TOOLS` is listed in §6f.
+      `test/docsClaimsGuard.test.ts` keeps the retired claims out and ties the
+      defaults and limits the README names to the code; a new public claim
+      that rests on a default gets a line there.
 
 ---
 
-*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default).*
+*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, a failed interning); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it).*

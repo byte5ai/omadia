@@ -6,8 +6,9 @@
  *
  * Kept narrow on purpose. Retired claims are matched as exact phrases, and the
  * positive checks look for the named control (a config key, a default, a
- * catalog field), not for the wording around it. The answer verifier is checked
- * through its config defaults only; its README wording is still moving.
+ * catalog field, an exemption list, a failure counter) plus the one word that
+ * states its limit, not for the wording around it. The answer verifier is
+ * checked through its config defaults only; its README wording is still moving.
  */
 
 import { strict as assert } from 'node:assert';
@@ -17,12 +18,15 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { INTERN_EXEMPT_TOOLS } from '@omadia/orchestrator/dist/privacyInternPolicy.js';
+import { QUERY_DATASET_TOOL_NAME } from '@omadia/orchestrator/dist/tools/queryDatasetTool.js';
 import { isWriteCapableTool, PRIVACY_MODE_DEFAULT } from '@omadia/plugin-api';
 import { MASK_USER_PROMPT_CONFIG_KEY } from '@omadia/plugin-privacy-guard/dist/service.js';
 import { parse as parseYaml } from 'yaml';
 
 import { ConfigSchema } from '../src/config.js';
 import { loadManifestFromPath } from '../src/plugins/manifestLoader.js';
+import { turnReceiptCounters } from '../src/receipts/store.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -71,10 +75,18 @@ const RETIRED_CLAIMS = [
   // The subscription CLI runs without the shield, and prompt masking is opt-in.
   'never leaves in clear text',
   'without running through the model',
-  // Receipts exist only for turns in which the shield acted; the run trace is
-  // best-effort telemetry and has no replay.
+  // Intern-exempt tools, and any result whose interning fails, reach the model
+  // in clear: the digest covers the results of data-source tools only.
+  'the LLM sees only an identity-free digest',
+  'exposes only an identity-free digest',
+  'raw tool results stay on your server',
+  // Receipts exist only for turns in which the shield acted, and appending one
+  // is best-effort; the run trace is best-effort telemetry and has no replay.
   'every action carries a receipt',
   'a receipt for every action',
+  'every turn in which the shield acted',
+  'every turn in which the privacy shield acted',
+  'receipts for the turns in which',
   'carries a full per-run trace',
   'is your audit receipt',
   'an auditable trace for every action',
@@ -132,6 +144,47 @@ describe('public security claims match the enforced behaviour', () => {
     assert.ok(
       cliSentences.some((sentence) => /shield/i.test(sentence)),
       `README must say that the \`claude-cli\` provider runs without the shield; mentions: ${JSON.stringify(cliSentences)}`,
+    );
+  });
+
+  it('the docs name the results that reach the model without a digest', () => {
+    const readme = read('README.md');
+
+    // Intern-exempt tools hand their results to the model as returned. The
+    // security architecture lists every one of them, the README names
+    // `read_attachment`, the one that carries an uploaded file's text.
+    const security = read('docs/security-architecture.md');
+    const unlisted = [...INTERN_EXEMPT_TOOLS].filter((tool) => !security.includes(`\`${tool}\``));
+    assert.deepEqual(unlisted, [], 'docs/security-architecture.md must list every intern-exempt tool');
+    assert.ok(INTERN_EXEMPT_TOOLS.has('read_attachment'));
+    const exemptSentences = sentencesMentioning(readme, '`read_attachment`');
+    assert.ok(
+      exemptSentences.some((sentence) => /\bin clear\b/i.test(sentence)),
+      `README must say that \`read_attachment\` results reach the model in clear; mentions: ${JSON.stringify(exemptSentences)}`,
+    );
+
+    // When interning throws, every seam sends the raw result; only the
+    // orchestrator's `query_dataset` branch withholds the rows.
+    assert.equal(QUERY_DATASET_TOOL_NAME, 'query_dataset');
+    const failSentences = sentencesMentioning(readme, '`query_dataset`');
+    assert.ok(
+      failSentences.some((sentence) => /\braw\b/i.test(sentence)),
+      `README must say that a result whose interning fails goes out raw, except from \`query_dataset\`; mentions: ${JSON.stringify(failSentences)}`,
+    );
+  });
+
+  it('receipts are described as best-effort, as the store writes them', () => {
+    // A failed insert is counted and rethrown; the orchestrator logs it and
+    // completes the turn without a receipt.
+    assert.equal(typeof turnReceiptCounters().persistFailures, 'number');
+    assert.ok(
+      read('docs/security-architecture.md').includes('`persistFailures`'),
+      'docs/security-architecture.md must name the receipt failure counter',
+    );
+    const receiptSentences = sentencesMentioning(read('README.md'), '`/operator/receipts`');
+    assert.ok(
+      receiptSentences.some((sentence) => /best-effort/i.test(sentence)),
+      `README must say that receipts are written best-effort; mentions: ${JSON.stringify(receiptSentences)}`,
     );
   });
 

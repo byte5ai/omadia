@@ -50,14 +50,21 @@ files.
 Security architecture §4 says this in its opening and lists the three places
 where omadia itself runs npm. None of them installs plugin code.
 
-The Privacy Shield sentences name their limits. The user's own message reaches
-the model as typed while `mask_user_prompt` is off, which is the default, and
-agents on the Claude subscription CLI (`claude-cli`) run without the shield.
+The Privacy Shield sentences name their limits. The digest covers the results
+of data-source tools. The user's own message reaches the model as typed while
+`mask_user_prompt` is off, which is the default. `read_attachment` and a short
+allowlist of the agent's own tools (`INTERN_EXEMPT_TOOLS`) return their results
+in clear, and when interning a result fails, every tool except `query_dataset`
+sends the raw result. Agents on the Claude subscription CLI (`claude-cli`) run
+without the shield. The new security architecture §6f lists everything that
+reaches the model unmasked under `guarded`.
 The answer verifier is described as optional and off by default; switched on,
 it checks answers that contain figures, and its default `shadow` mode only
-records a verdict. Privacy receipts are described as written for the turns in
-which the shield acted, and the run trace as best-effort telemetry, without the
-earlier "audit receipt" and "replayable" wording.
+records a verdict. Privacy receipts are described as appended best-effort, on
+the Postgres backend, for the turns in which the shield acted: a failed write
+is logged and not retried, and §7b now states that the hash chain cannot show a
+receipt that was never written. The run trace is described as best-effort
+telemetry, without the earlier "audit receipt" and "replayable" wording.
 
 Write confirmation (ADR-0005) is described as a feature of the connector
 plugins that implement it. The core adds no confirmation step; its
@@ -66,14 +73,17 @@ on the public MCP endpoint and asks nobody before the write. ADR-0001 and
 ADR-0005 keep their decision text and gain an implementation-status note.
 
 A new item in the §11 reviewer checklist asks that a public security claim name
-the control that enforces it and that control's default.
+the control that enforces it, that control's default and the limits the code
+puts on it.
 `middleware/test/docsClaimsGuard.test.ts` keeps the retired sentences out of the
-four files and ties the defaults the README names to the code
+four files and ties the defaults and limits the README names to the code
 (`PRIVACY_MODE_DEFAULT`, the `mask_user_prompt` manifest default, the
 `VERIFIER_ENABLED` and `VERIFIER_MODE` schema defaults, the catalog's `signed`
-field). `ConfigSchema` in `middleware/src/config.ts` is exported for that test;
-boot is unchanged. `middleware/.env.example` now documents
-`OMADIA_PRIVACY_FORCE_GUARDED`, which the README already named.
+field, `INTERN_EXEMPT_TOOLS`, which §6f must list in full, `query_dataset` and
+the receipt store's `persistFailures` counter). `ConfigSchema` in
+`middleware/src/config.ts` is exported for that test; boot is unchanged.
+`middleware/.env.example` now documents `OMADIA_PRIVACY_FORCE_GUARDED`, which
+the README already named.
 
 ### Fixed — create_xlsx no longer persists model-supplied formula results; workbooks with formulas request a full recalculation on open
 

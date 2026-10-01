@@ -20,13 +20,18 @@ enough for real work.** A team of agents runs on infrastructure you own and work
 inside your team's shared channels, so several people collaborate with the same
 agents in one context, not a private one-on-one chatbot. The agents turn your
 data, software, and people into results you can steer, audit, and prove. By
-default, raw tool results stay on your server behind the Privacy Shield, and the
-model works from an identity-free digest. Your own messages reach the model as
-typed unless you switch on prompt masking. Agents on the Claude subscription CLI
-run without the shield. An optional verifier checks answers that carry figures
-against their sources, and every turn in which the shield acted leaves a
-hash-chained receipt. Bring your own LLM key and switch providers by config, not
-code.
+default, the Privacy Shield keeps the raw results of data-source tools on your
+server, and the model works from an identity-free digest. Your own messages
+reach the model as typed unless you switch on prompt masking. The
+`read_attachment` tool, which reads an uploaded file, and a short allowlist of
+the agent's own tools, such as `memory`, return their results to the model in
+clear. If interning a result fails, omadia sends the raw result for every tool
+except `query_dataset`. Agents on the Claude subscription CLI run without the
+shield. An optional verifier checks answers that carry figures against their
+sources. On the Postgres backend, each turn in which the shield acted appends a
+hash-chained receipt. Writing it is best-effort: a failed write is logged, and
+the turn completes without a receipt. Bring your own LLM key and switch
+providers by config, not code.
 
 ---
 
@@ -143,8 +148,9 @@ for it:
    the agents in the team.
 5. **Open the run's trace.** The per-run call-stack viewer shows every step, tool
    call and decision of the run. The trace is telemetry. The audit record is the
-   hash-chained receipt under `/operator/receipts`, written for each turn in which
-   the Privacy Shield acted.
+   hash-chained receipt under `/operator/receipts`, written best-effort for each
+   turn in which the Privacy Shield acted. A turn whose receipt write failed has
+   none, and the server log records the failure.
 
 ## Why omadia?
 
@@ -154,10 +160,10 @@ three rows are why teams choose it; the rest is the groundwork done properly.
 
 | Capability | What you get |
 |---|---|
-| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw tool results stay behind a data-plane boundary; the LLM sees only an identity-free digest. `guarded` by default, with `bypass`/`per_tool` opt-in and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Prompt masking (`mask_user_prompt`) is off by default, so your own messages reach the model as typed. The Claude subscription CLI (`claude-cli`) runs without the shield. |
+| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary, and the LLM works from an identity-free digest. `guarded` by default, with `bypass`/`per_tool` opt-in and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Prompt masking (`mask_user_prompt`) is off by default, so your own messages reach the model as typed. `read_attachment` (uploaded files) and a short allowlist of the agent's own tools return their results in clear, and a result whose interning fails goes out raw unless it came from `query_dataset`. The Claude subscription CLI (`claude-cli`) runs without the shield. |
 | ✅&nbsp;**Answer&nbsp;verification** | Optional and off by default (`verifier_enabled`). Once switched on, it checks answers that contain figures, like amounts or dates, against the run's own sources and records a verdict. Its default mode, `shadow`, only records. |
 | 🧮&nbsp;**Excel&nbsp;from&nbsp;real&nbsp;rows** | `create_xlsx` writes the real rows behind a `datasetId` into the workbook server-side, so they never pass through the model, and adds sums and pivots as Excel formulas. omadia runs no spreadsheet engine of its own: the workbook asks the spreadsheet application to recalculate when it opens the file, and that application computes every formula result. |
-| 🧾&nbsp;**Traces&nbsp;and&nbsp;receipts** | The call-stack viewer shows a run step by step, with each tool call and decision. That trace is best-effort telemetry, so a run can lack one. Privacy receipts (`/operator/receipts`, Postgres backend) are hash-chained and written for every turn in which the privacy shield acted. |
+| 🧾&nbsp;**Traces&nbsp;and&nbsp;receipts** | The call-stack viewer shows a run step by step, with each tool call and decision. That trace is best-effort telemetry, so a run can lack one. Privacy receipts (`/operator/receipts`, Postgres backend) are hash-chained and written best-effort, one for each turn in which the privacy shield acted. A failed write is logged and not retried, and a receipt that was never written leaves no gap in the chain. |
 | 👥&nbsp;**Multiplayer&nbsp;by&nbsp;design** | Agents run in your team's shared channels (Slack, Teams, Telegram, Discord), so several people work with them in one context, not a private one-on-one chatbot. |
 | 🤖&nbsp;**Agent&nbsp;teams,&nbsp;not&nbsp;one&nbsp;chatbot** | An orchestrator routes each turn to the right specialist plugin agent. Channels, integrations, tools, and capability providers sit behind one stable API. |
 | 🔒&nbsp;**Self-hosted&nbsp;and&nbsp;yours** | One `docker compose up` on a single machine. Your Postgres, your LLM key, all of the data on your own infrastructure. GDPR-aware and made in the EU. |
@@ -166,8 +172,9 @@ three rows are why teams choose it; the rest is the groundwork done properly.
 
 ## What's in the box
 
-- **Privacy Shield**: a data-plane boundary that interns raw tool results and
-  exposes only an identity-free digest to the LLM
+- **Privacy Shield**: a data-plane boundary that interns the raw results of
+  data-source tools and gives the LLM an identity-free digest of them, with the
+  limits listed under [Trust & privacy](#trust--privacy-architecture)
   ([`harness-plugin-privacy-guard`](middleware/packages/harness-plugin-privacy-guard),
   [`privacyMode.ts`](middleware/packages/plugin-api/src/privacyMode.ts))
 - **Answer verifier** (optional, off by default): checks answers that contain
@@ -247,17 +254,23 @@ capability registry, and multi-provider authentication layer lives under
 Three subsystems let omadia put real data in front of an LLM and stand behind the
 answer:
 
-- **Privacy Shield (data-plane boundary)**: raw tool results are interned behind
-  the boundary and the LLM sees only an identity-free digest. `guarded` is the
-  default; `bypass` and `per_tool` are explicit opt-ins, and
-  `OMADIA_PRIVACY_FORCE_GUARDED` clamps every plugin to `guarded` org-wide.
-  Pseudonyms resolve back to real values only at materialization, and each bypass
-  lands in the receipt. Prompt masking (`mask_user_prompt`) is off by default,
-  so the user's own message reaches the model as typed until an operator turns
-  it on.
-  Agents on the Claude subscription CLI (`claude-cli`) run without the shield, and
+- **Privacy Shield (data-plane boundary)**: the raw results of data-source tools
+  are interned behind the boundary, and the LLM works from an identity-free
+  digest of them. `guarded` is the default; `bypass` and `per_tool` are explicit
+  opt-ins, and `OMADIA_PRIVACY_FORCE_GUARDED` clamps every plugin to `guarded`
+  org-wide. Pseudonyms resolve back to real values only at materialization, and
+  each bypass lands in the receipt. Prompt masking (`mask_user_prompt`) is off by
+  default, so the user's own message reaches the model as typed until an
+  operator turns it on. Two kinds of tool result are never interned and reach
+  the model in clear: the text of an uploaded file that `read_attachment`
+  returns, and the results of a short allowlist of the agent's own tools
+  (`memory`, the stored-process tools, `suggest_follow_ups`, `ask_user_choice`).
+  If interning a result fails, omadia logs a warning and sends the raw result
+  for every tool except `query_dataset`, whose rows it withholds. Agents on the
+  Claude subscription CLI (`claude-cli`) run without the shield, and
   `agents.privacy_profile` is not a shield setting
-  ([`docs/security-architecture.md`](docs/security-architecture.md) §3a, §6d).
+  ([`docs/security-architecture.md`](docs/security-architecture.md) §3a, §6b,
+  §6d, §6f).
   Spec: [`specs/001-privacy-shield-v4/`](specs/001-privacy-shield-v4/).
 - **Answer verification (optional)**: off by default (`verifier_enabled`). Once
   switched on, the verifier checks answers that contain figures, like amounts or
