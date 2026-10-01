@@ -712,23 +712,27 @@ nothing: the answer carries no trigger signal, the extractor fails, the
 extractor returns no claims, no extracted claim fits a checker, or the
 pipeline itself throws. None of them is a pass.
 
-**Invariant.** `approved` ⇒ every extracted claim was checked and is
-`verified`, at least one. The `approved` variant's claim list is typed
-non-empty (`NonEmptyClaimVerdicts`), the pipeline's aggregate returns `skipped`
-for an empty list, and a claim the pipeline did not check stays in the verdict
-as `unverified` (`cause: 'not_checked'`) instead of being dropped. A badge
-other than `unverified` / `unavailable` needs a check that settled a claim
-(`hasVerificationEvidence`): a confirmed claim for `verified` / `partial` /
-`corrected`, a contradicted one for `failed`.
+**Invariant.** `approved` ⇒ the claim extraction covered the whole answer,
+and every extracted claim was checked and is `verified`, at least one. The
+`approved` variant's claim list is typed non-empty (`NonEmptyClaimVerdicts`),
+the pipeline's aggregate returns `skipped` for an empty list, and whatever the
+pipeline did not check stays in the verdict as `unverified`
+(`cause: 'not_checked'`) instead of being dropped: a claim no checker takes, a
+claim over the cap, and a `coverage_gap` entry for each part of the answer the
+extraction did not cover. A badge other than `unverified` / `unavailable`
+needs a check that settled a claim (`hasVerificationEvidence`): a confirmed
+claim for `verified` / `partial` / `corrected`, a contradicted one for
+`failed`; `verified` and `corrected` need every claim confirmed.
 
 | Verdict status | Meaning | Summary badge | Connector badge | Web chat chip |
 |---|---|---|---|---|
-| `approved` | every claim checked and verified | `verified` | verified | green |
-| `approved_with_disclaimer`, ≥ 1 claim verified | none contradicted, ≥ 1 unconfirmed or not checked | `partial` | partial | amber |
-| `approved_with_disclaimer`, no claim verified | none contradicted, nothing confirmed | `unverified`; `unavailable` when every check failed | none | neutral |
+| `approved` | whole answer covered, every claim checked and verified | `verified` | verified | green |
+| `approved_with_disclaimer`, ≥ 1 claim verified | none contradicted, ≥ 1 unconfirmed, not checked, or part of the answer not covered | `partial` | partial | amber |
+| `approved_with_disclaimer`, no claim verified | none contradicted, nothing confirmed | `unverified`; `unavailable` when every check that ran failed | none | neutral |
 | `blocked` | ≥ 1 claim contradicted | `failed` | failed | red |
-| retry after `blocked`, ≥ 1 claim verified, none contradicted | correction confirmed | `corrected` | corrected | blue |
-| `skipped` — `no_trigger`, `no_claims`, `no_checkable_claims` | ran, nothing checkable | `unverified` | none | neutral "not verified" |
+| retry after `blocked`, every claim verified | correction confirmed | `corrected` | corrected | blue |
+| retry after `blocked`, some claims verified, none contradicted | correction confirmed in part | `partial` | partial | amber |
+| `skipped` — `no_trigger`, `no_claims`, `no_checkable_claims`, `incomplete_coverage` | ran, nothing checkable | `unverified` | none | neutral "not verified" |
 | `unavailable` — `extractor_error`, `pipeline_error` | could not run | `unavailable` | none | neutral "unavailable" |
 
 - **A failed extraction is not an empty one.** `ClaimExtractor.extract`
@@ -737,43 +741,63 @@ other than `unverified` / `unavailable` needs a check that settled a claim
   the whole answer), the response carries no usable `record_claims` call
   (none, or one without a `claims` array), or an entry breaks the
   `record_claims` schema (no text, unknown type or source); the pipeline maps
-  the rejection to `unavailable` / `extractor_error`. It resolves an empty
-  list only when the model reported no claim, or none survived the verbatim
-  guard, which is `skipped` / `no_claims`. No extraction failure comes back
-  as an empty or partial result, so an outage never reads as a clean run.
+  the rejection to `unavailable` / `extractor_error`. It resolves no claims
+  only when the model reported none, or none survived the verbatim guard,
+  which is `skipped` / `no_claims` (or `incomplete_coverage`, below). No
+  extraction failure comes back as an empty or partial result, so an outage
+  never reads as a clean run.
+- **Coverage is explicit.** An extraction that by design reads only part of
+  the answer says so. The extractor sends the model the first 6000 characters
+  of the answer (`EXTRACTION_WINDOW_CHARS`) and asks for at most
+  `VERIFIER_MAX_CLAIMS + 1` claims; its result names what it did not cover
+  (`ClaimExtraction.gaps`): `answer_beyond_window` for a longer answer, and
+  `claim_list_full` when the model's list reached that limit — a model that
+  keeps to the limit may have left claims out, so a full list never passes
+  for a complete one, while an answer with exactly `VERIFIER_MAX_CLAIMS`
+  claims still gets its whole list. The pipeline adds one `not_checked`
+  verdict over a synthetic `coverage_gap` claim per gap, so a long answer, or
+  one with more claims than the cap, is `approved_with_disclaimer` /
+  `partial` at best. When nothing in the covered part could be checked, the
+  verdict is `skipped` with reason `incomplete_coverage` rather than
+  `no_claims`, which would say more than was looked at. The summary counts
+  the entries as `uncoveredCount`, and the web chat's tooltip says the
+  verifier did not check all of the answer.
 - **A claim nobody checked still counts.** A claim no checker accepts (an
   amount, id, date or aggregate whose source is neither Odoo nor the graph)
-  and a claim beyond the per-answer cap (`VERIFIER_MAX_CLAIMS`, now applied by
-  the pipeline, not the extractor) stay in the verdict as `not_checked`. An
-  answer checked only in part is therefore `approved_with_disclaimer` /
-  `partial`, and the summary reports them as `uncheckedCount`.
+  and a claim beyond the per-answer cap (`VERIFIER_MAX_CLAIMS`, applied by
+  the pipeline) stay in the verdict as `not_checked`. An answer checked only
+  in part is therefore `approved_with_disclaimer` / `partial`, and the
+  summary reports them, with the coverage entries, as `uncheckedCount`.
 - **A failed check is not evidence.** The deterministic re-query and the
   evidence judge mark a claim they could not check `unverified` with
-  `cause: 'check_failed'`. A verdict whose every claim failed that way is
-  badged `unavailable`; one whose claims all stayed unconfirmed for any other
-  reason is `unverified`, never `partial`.
+  `cause: 'check_failed'`. A verdict in which every check that ran failed
+  that way is badged `unavailable`; one whose claims all stayed unconfirmed
+  for any other reason is `unverified`, never `partial`.
 - **Badges are derived under the evidence gate, not from the status alone.**
   `badgeFor` (`verifierService.ts`) checks `hasVerificationEvidence()` and
   gives `verified` only when every claim was confirmed. The pipeline is
   injected (`verifier@1`), so a pipeline that returns `approved` over zero
   claims still yields `unverified`, and one that returns `approved` over an
   unconfirmed claim yields `partial`. A correction retry earns `corrected`
-  only when the retry's own verdict confirmed a claim without a
-  contradiction.
+  only when the retry's own verdict confirmed every claim; a retry that
+  confirmed only some — the rest unconfirmed, not checked or not covered — is
+  `partial`, as the same verdict is on a first pass.
 - **`toSemanticAnswer` is the single connector badge gate.** It forwards a
   badge only when `verifierSummaryHasEvidence()` holds, the badge is in the
   unchanged wire union `verified | partial | corrected | failed`
   (`SemanticAnswer.verifier`) and the summary's counts back it (`verified`
-  needs every claim confirmed). Connectors (Teams card, Telegram) need no
-  change: a turn without evidence renders no chip there.
+  and `corrected` need every claim confirmed). Connectors (Teams card,
+  Telegram) need no change: a turn without evidence renders no chip there.
 - **The stream event carries every state.** The trailing `verifier` event is
   forwarded verbatim by `/api/chat/stream` and by the public API-key stream,
   so its `status` / `badge` can be `skipped` / `unverified` and
   `unavailable`. Its `reason` is a closed code set, never an error message:
   the message stays in the log line where the failure is caught. The web chat
   renders the event as a footer chip (`web-ui/app/_components/chat/VerifierBadge.tsx`),
-  green only for a `verified` summary whose every claim was confirmed, never
-  stronger than the summary's counts back, and applies the same rule to a
+  green only for a `verified` summary whose every claim was confirmed, blue
+  `corrected` under the same condition, never stronger than the summary's
+  counts back (a `verified` or `corrected` badge whose counts back only part
+  of the answer shows as partly verified), and applies the same rule to a
   summary restored from local storage.
 - **A resample needs something a second sample could change.**
   `isBorderlineVerdict` holds only for an `approved_with_disclaimer` that
@@ -789,6 +813,9 @@ other than `unverified` / `unavailable` needs a check that settled a claim
 Tests: `middleware/test/verifierPipelineStates.test.ts` (including the
 production `ClaimExtractor` over a failing, a truncated and a malformed LLM
 response, and answers checked only in part),
+`middleware/test/verifierExtractionCoverage.test.ts` (the production
+extractor and pipeline over a model that keeps to the claim limit: an answer
+longer than the window, and one with more claims than the cap),
 `middleware/test/verifierClaimExtractorFailure.test.ts`,
 `middleware/test/verifierServiceStates.test.ts`,
 `middleware/test/verifierServiceResample.test.ts`,
@@ -1504,10 +1531,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `verified`, `partial` or `corrected` only when a check settled a claim:
       `hasVerificationEvidence()` for a verdict, `verifierSummaryHasEvidence()`
       for a summary (a contradicted claim for `blocked`, otherwise
-      `claimCount - contradictionCount - unverifiedCount > 0`), and green only
-      when every claim was confirmed. `skipped`, `unavailable` and verdicts
-      whose claims all stayed unconfirmed never map to a green badge, and a
-      verifier `reason` stays a closed code (§7c).
+      `claimCount - contradictionCount - unverifiedCount > 0`), and green or
+      `corrected` only when every claim was confirmed. `skipped`,
+      `unavailable` and verdicts whose claims all stayed unconfirmed never map
+      to a green badge, and a verifier `reason` stays a closed code (§7c).
 - [ ] A verifier stage that cannot do its work (a failed LLM call, a model
       response it cannot read, cut off at the token limit or with an entry
       that breaks the schema) never returns an empty or partial result: claim
@@ -1516,6 +1543,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       `cause: 'check_failed'`. A claim the pipeline does not check stays in
       the verdict as `not_checked` instead of being dropped. None of these may
       look like "nothing to check" or "fully checked" (§7c).
+- [ ] A verifier stage that reads only part of its input by design (a text
+      window, a limit on how many claims a model may list) reports what it
+      left out, and the pipeline keeps it in the verdict as `not_checked`. A
+      prompt never tells a model to stop at a limit unless a list that
+      reaches the limit is recorded as possibly incomplete (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it

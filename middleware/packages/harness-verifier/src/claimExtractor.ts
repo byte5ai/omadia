@@ -1,10 +1,13 @@
 import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
 import { textMessage, toolCalls } from '@omadia/llm-provider';
+import { claimContext } from './claimContext.js';
 import type {
   Aggregation,
   Claim,
+  ClaimExtraction,
   ClaimSource,
   ClaimType,
+  ExtractionGap,
   OdooRecordRef,
 } from './claimTypes.js';
 
@@ -27,10 +30,20 @@ import type {
  *    survived the verbatim guard), which the pipeline reports as `skipped`.
  *    Returning [] — or the readable part of a broken response — on a
  *    failure would make an outage look like a clean, complete run.
- *  - No claim is cut here. `maxClaims` tells the model how many to return;
- *    the pipeline decides how many it checks and keeps the rest in the
- *    verdict as not checked, so a cap never hides part of the answer.
+ *  - Coverage is explicit. The model sees the first
+ *    `EXTRACTION_WINDOW_CHARS` characters of the answer and is asked for at
+ *    most `maxClaims + 1` claims. The result names what the extraction did
+ *    not cover (`ClaimExtraction.gaps`): text beyond the window, and a list
+ *    that reached the request limit, since the model may have left claims
+ *    out. The pipeline keeps each gap in the verdict as not checked, so an
+ *    answer read only in part is at most partly verified. No valid claim is
+ *    cut here; the pipeline decides how many it checks.
  */
+
+/** Characters of the answer the extractor sends to the model. Claims in the
+ *  rest are never looked for, which the result reports as the
+ *  `answer_beyond_window` gap. */
+export const EXTRACTION_WINDOW_CHARS = 6000;
 
 export interface ClaimExtractorOptions {
   /** Provider-agnostic LLM (Anthropic adapter today). Was `anthropic` before
@@ -38,9 +51,11 @@ export interface ClaimExtractorOptions {
   llm: LlmProvider;
   /** Haiku model id. Defaults to the latest Haiku 4.5. */
   model?: string;
-  /** How many claims the prompt asks for at most. Haiku usually stays well
-   *  below this. A model that returns more is not cut off here: every valid
-   *  claim is returned, and the pipeline checks up to its own cap. */
+  /** The pipeline's per-answer claim cap. The prompt asks the model for one
+   *  claim more, so a list that reaches that limit shows the answer may hold
+   *  more claims than the model listed (the `claim_list_full` gap), while an
+   *  answer with exactly `maxClaims` claims still gets its whole list. A
+   *  model that returns more is not cut off here. Default 20. */
   maxClaims?: number;
   /** Token budget for the extraction call. */
   maxTokens?: number;
@@ -170,7 +185,12 @@ export class ClaimExtractor {
     this.opts = {
       llm: opts.llm,
       model: opts.model ?? DEFAULTS.model,
-      maxClaims: opts.maxClaims ?? DEFAULTS.maxClaims,
+      // Normalised like the pipeline's cap, so the prompt never asks for a
+      // negative or fractional number of claims.
+      maxClaims:
+        typeof opts.maxClaims === 'number' && Number.isFinite(opts.maxClaims)
+          ? Math.max(0, Math.floor(opts.maxClaims))
+          : DEFAULTS.maxClaims,
       maxTokens: opts.maxTokens ?? DEFAULTS.maxTokens,
       log:
         opts.log ??
@@ -181,18 +201,22 @@ export class ClaimExtractor {
   }
 
   /**
-   * Extract claims from the given answer. Resolves [] when there is nothing
-   * to extract: an empty answer, or a model that reports no claim. Rejects
-   * when extraction could not run or did not finish: the LLM call failed,
-   * the response was cut off at the token limit, it carries no usable
-   * `record_claims` call, or an entry breaks the `record_claims` schema.
-   * A well-formed claim whose text is not in the answer is dropped (the
-   * anti-hallucination guard), not an error.
+   * Extract claims from the given answer, and name what the extraction did
+   * not cover (`gaps`, see `ClaimExtraction`). Resolves no claims when there
+   * is nothing to extract: an empty answer, or a model that reports no claim
+   * (with the gaps that still apply). Rejects when extraction could not run
+   * or did not finish: the LLM call failed, the response was cut off at the
+   * token limit, it carries no usable `record_claims` call, or an entry
+   * breaks the `record_claims` schema. A well-formed claim whose text is not
+   * in the answer is dropped (the anti-hallucination guard), not an error.
    */
-  async extract(input: ExtractInput): Promise<Claim[]> {
+  async extract(input: ExtractInput): Promise<ClaimExtraction> {
     const answer = input.answer.trim();
-    if (answer.length === 0) return [];
+    if (answer.length === 0) return { claims: [], gaps: [] };
 
+    // One more than the pipeline checks: a list that reaches this limit shows
+    // the answer may hold claims the model left out.
+    const requestLimit = this.opts.maxClaims + 1;
     const system = `You are a claim extractor. Given an assistant answer (in German or English), list EVERY factual claim it makes. A claim is any concrete, verifiable assertion: monetary amounts, record references, dates, named entities, totals.
 
 Strict rules:
@@ -203,13 +227,13 @@ Strict rules:
 - When in doubt, skip the claim rather than invent one.
 - A record reference (invoice, order or document number, numeric record id) is ALWAYS its own claim of type "id" with odoo_record.model and odoo_record.ref/id set — in addition to any qualitative claim about the same record.
 - A qualitative claim must be a self-contained statement: include the subject it is about in the verbatim span ("Anna Müller wechselte in die IT-Abteilung"), never a bare fragment ("in die IT-Abteilung"). An independent reviewer will judge the claim WITHOUT seeing the answer.
-- Return at most ${String(this.opts.maxClaims)} claims via the ${TOOL_NAME} tool.`;
+- List the claims in the order they appear in the answer. Return at most ${String(requestLimit)} claims via the ${TOOL_NAME} tool; if the answer makes more, return its first ${String(requestLimit)}.`;
 
     const user = `USER MESSAGE:
 ${truncate(input.userMessage, 2000)}
 
 ASSISTANT ANSWER:
-${truncate(answer, 6000)}`;
+${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
 
     let response: LlmResponse;
     try {
@@ -252,8 +276,11 @@ ${truncate(answer, 6000)}`;
       this.opts.log(`[claim-extractor] ${problem}`);
       throw new Error(`claim extraction failed: ${problem}`);
     }
+    const gaps = coverageGaps(answer.length, rawClaims.length, requestLimit);
     this.opts.log(
-      `[claim-extractor] extracted=${String(out.length)} raw=${String(rawClaims.length)}`,
+      `[claim-extractor] extracted=${String(out.length)} raw=${String(rawClaims.length)}${
+        gaps.length > 0 ? ` gaps=${gaps.join(',')}` : ''
+      }`,
     );
     // Diagnostic: when the extractor returns zero claims even though the
     // trigger router fired, we want to see WHY. Log the first 300 chars
@@ -266,8 +293,24 @@ ${truncate(answer, 6000)}`;
         `[claim-extractor] zero-raw diag user="${shortSnippet(input.userMessage, 200)}" answerLen=${String(answer.length)} answerHead="${shortSnippet(answer, 400)}" answerTail="${shortSnippet(tail(answer, 400), 400)}"`,
       );
     }
-    return out;
+    return { claims: out, gaps };
   }
+}
+
+/**
+ * What an extraction did not cover: answer text beyond the window the model
+ * saw, and a raw list that reached the request limit — counted before the
+ * verbatim guard, since the model stopped listing either way.
+ */
+function coverageGaps(
+  answerLength: number,
+  rawClaimCount: number,
+  requestLimit: number,
+): ExtractionGap[] {
+  const gaps: ExtractionGap[] = [];
+  if (answerLength > EXTRACTION_WINDOW_CHARS) gaps.push('answer_beyond_window');
+  if (rawClaimCount >= requestLimit) gaps.push('claim_list_full');
+  return gaps;
 }
 
 function shortSnippet(value: string, max = 300): string {
@@ -304,87 +347,6 @@ function readToolClaims(
     }
   }
   return { ok: false, problem: 'no tool_use block in response' };
-}
-
-export const MAX_CONTEXT_CHARS = 400;
-
-/** Tokens whose trailing dot does not end a sentence: ordinals ("1.", "3."),
- *  and the common German/English abbreviations an ERP answer uses. */
-const NON_TERMINAL_BEFORE_DOT = /(?:\d+|z\.b|d\.h|u\.a|bzw|ca|dr|prof|nr|str|evtl|ggf|inkl|exkl|vgl|etc|usw|vs|abs|art|no|approx|e\.g|i\.e)$/i;
-
-/**
- * #129 — the sentence of `answer` that contains `text` (case-insensitive),
- * or `undefined` when `text` is absent, already spans the whole sentence,
- * or occurs in more than one sentence (then we would only be guessing
- * which subject the fragment belongs to — better no context than a wrong
- * one, which could turn an `unverified` into a false `contradicted`).
- *
- * Sentence boundaries are `.`, `!`, `?` followed by whitespace/end, or a
- * newline; a dot after a number or a known abbreviation ("01.03.2023",
- * "1. März", "z.B.", "Dr.") is not a boundary. Pure string work, no LLM:
- * the extractor sometimes emits a subject-less fragment ("in die
- * IT-Abteilung") and the judge, which never sees the answer, needs the
- * enclosing sentence to know *who* moved where.
- */
-export function claimContext(text: string, answer: string): string | undefined {
-  const needle = text.trim().toLowerCase();
-  if (needle.length === 0) return undefined;
-  const hay = answer.toLowerCase();
-  // Lower-casing can change the code-unit length (e.g. U+0130) and would
-  // shift every offset — bail out rather than slice at the wrong place.
-  if (hay.length !== answer.length) return undefined;
-  const at = hay.indexOf(needle);
-  if (at < 0) return undefined;
-
-  const [start, end] = sentenceBounds(answer, at, needle.length);
-  const again = hay.indexOf(needle, at + 1);
-  if (again >= 0 && again >= end) return undefined; // second occurrence in another sentence
-
-  let [s, e] = [start, end];
-  if (e - s > MAX_CONTEXT_CHARS) {
-    // Over-long sentence: keep a window around the span, not its head.
-    const room = Math.floor((MAX_CONTEXT_CHARS - needle.length) / 2);
-    s = Math.max(s, at - room);
-    e = Math.min(e, at + needle.length + room);
-  }
-  const sentence = answer.slice(s, e).trim();
-  if (sentence.length === 0) return undefined;
-  if (stripTrailingPunctuation(sentence.toLowerCase()) === stripTrailingPunctuation(needle)) {
-    return undefined;
-  }
-  return sentence;
-}
-
-/** `[start, end)` of the sentence containing the span `[at, at+len)`. */
-function sentenceBounds(s: string, at: number, len: number): [number, number] {
-  let start = at;
-  while (start > 0 && !isSentenceBoundaryBefore(s, start)) start -= 1;
-  let end = at + len;
-  while (end < s.length && !isSentenceBoundaryAfter(s, end)) end += 1;
-  return [start, end];
-}
-
-/** True when position `i` starts a new sentence (previous char ends one). */
-function isSentenceBoundaryBefore(s: string, i: number): boolean {
-  const prev = s[i - 1];
-  if (prev === '\n') return true;
-  if (prev !== '.' && prev !== '!' && prev !== '?') return false;
-  if (!/\s/.test(s[i] ?? ' ')) return false;
-  return prev !== '.' || !NON_TERMINAL_BEFORE_DOT.test(s.slice(Math.max(0, i - 8), i - 1));
-}
-
-/** True when position `i` (exclusive end) closes a sentence — `i` is the
- *  index just past the terminator. */
-function isSentenceBoundaryAfter(s: string, i: number): boolean {
-  const ch = s[i - 1];
-  if (s[i] === '\n') return true;
-  if (ch !== '.' && ch !== '!' && ch !== '?') return false;
-  if (!(i >= s.length || /\s/.test(s[i] ?? ''))) return false;
-  return ch !== '.' || !NON_TERMINAL_BEFORE_DOT.test(s.slice(Math.max(0, i - 9), i - 1));
-}
-
-function stripTrailingPunctuation(v: string): string {
-  return v.replace(/[.!?\s]+$/u, '');
 }
 
 /**

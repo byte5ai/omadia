@@ -267,6 +267,7 @@ export interface VerifierSummary {
     | 'no_trigger'
     | 'no_claims'
     | 'no_checkable_claims'
+    | 'incomplete_coverage'
     | 'extractor_error'
     | 'pipeline_error';
   claimCount: number;
@@ -275,6 +276,10 @@ export interface VerifierSummary {
   /** Of `unverifiedCount`, the claims no check ran on (no checker for them,
    *  or over the per-answer cap). */
   uncheckedCount?: number;
+  /** Of `uncheckedCount`, entries for a part of the answer the verifier's
+   *  claim extraction did not cover (text beyond its window, or claims left
+   *  out at its list limit) — the answer was not checked in full. */
+  uncoveredCount?: number;
   retryCount: number;
   latencyMs: number;
   mode: 'shadow' | 'enforce';

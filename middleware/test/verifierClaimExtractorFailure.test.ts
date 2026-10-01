@@ -1,12 +1,13 @@
 /**
  * `ClaimExtractor.extract` keeps a failed extraction apart from an empty one.
  *
- * An empty result means "the answer holds no claim"; the pipeline reports it
- * as `skipped`. An extraction that could not run, or did not finish, must
- * reject instead, so the pipeline reports `unavailable`: an outage, a
- * response cut off at the token limit or a malformed one is not a clean
- * zero-claim run. The pipeline side of this contract is pinned in
- * `verifierPipelineStates.test.ts`.
+ * A result without claims means "the answer holds no claim"; the pipeline
+ * reports it as `skipped`. An extraction that could not run, or did not
+ * finish, must reject instead, so the pipeline reports `unavailable`: an
+ * outage, a response cut off at the token limit or a malformed one is not a
+ * clean zero-claim run. The pipeline side of this contract is pinned in
+ * `verifierPipelineStates.test.ts`; what an extraction reports as not covered
+ * (its `gaps`) in `verifierExtractionCoverage.test.ts`.
  */
 
 import { describe, it } from 'node:test';
@@ -45,6 +46,9 @@ const INPUT = {
 
 /** A well-formed entry whose text is in INPUT.answer. */
 const AMOUNT = { text: '1.234,56 €', type: 'amount', expected_source: 'odoo' };
+
+/** A complete extraction that found no claim. */
+const NOTHING = { claims: [], gaps: [] };
 
 describe('verifier/claimExtractor - failed extraction vs. empty result', () => {
   it('rejects when the LLM call fails, and still logs the failure', async () => {
@@ -93,12 +97,12 @@ describe('verifier/claimExtractor - failed extraction vs. empty result', () => {
     assert.ok(logs.some((l) => l.includes('without a claims array')), JSON.stringify(logs));
   });
 
-  it('resolves [] when the model reports no claims', async () => {
+  it('resolves no claims when the model reports none', async () => {
     const { extractor } = extractorOver(() => Promise.resolve(recordClaimsCall({ claims: [] })));
-    assert.deepEqual(await extractor.extract(INPUT), []);
+    assert.deepEqual(await extractor.extract(INPUT), NOTHING);
   });
 
-  it('resolves [] when every returned claim fails the verbatim guard', async () => {
+  it('resolves no claims when every returned claim fails the verbatim guard', async () => {
     const { extractor } = extractorOver(() =>
       Promise.resolve(
         recordClaimsCall({
@@ -106,16 +110,16 @@ describe('verifier/claimExtractor - failed extraction vs. empty result', () => {
         }),
       ),
     );
-    assert.deepEqual(await extractor.extract(INPUT), []);
+    assert.deepEqual(await extractor.extract(INPUT), NOTHING);
   });
 
-  it('resolves [] for an empty answer without calling the model', async () => {
+  it('resolves no claims for an empty answer without calling the model', async () => {
     let calls = 0;
     const { extractor } = extractorOver(() => {
       calls += 1;
       return Promise.reject(new Error('must not be called'));
     });
-    assert.deepEqual(await extractor.extract({ userMessage: 'Hallo', answer: '   ' }), []);
+    assert.deepEqual(await extractor.extract({ userMessage: 'Hallo', answer: '   ' }), NOTHING);
     assert.equal(calls, 0);
   });
 
@@ -147,9 +151,11 @@ describe('verifier/claimExtractor - failed extraction vs. empty result', () => {
     }
   });
 
-  it('returns every valid claim beyond maxClaims: the pipeline decides what it checks', async () => {
+  it('returns every valid claim beyond maxClaims, and reports the full list as a gap', async () => {
     // Cutting here would make the rest of the answer vanish without a trace;
     // the pipeline keeps claims over its cap in the verdict as not checked.
+    // Two claims fill the request limit of maxClaims + 1, so the model may
+    // have left more out: the result says so instead of passing as complete.
     const { extractor } = extractorOver(
       () =>
         Promise.resolve(
@@ -159,7 +165,7 @@ describe('verifier/claimExtractor - failed extraction vs. empty result', () => {
         ),
       { maxClaims: 1 },
     );
-    const claims = await extractor.extract({
+    const { claims, gaps } = await extractor.extract({
       userMessage: 'Und die Gutschrift?',
       answer: 'Die Rechnung beträgt 1.234,56 €, die Gutschrift 99,00 €.',
     });
@@ -167,5 +173,23 @@ describe('verifier/claimExtractor - failed extraction vs. empty result', () => {
       claims.map((c) => c.text),
       ['1.234,56 €', '99,00 €'],
     );
+    assert.deepEqual(gaps, ['claim_list_full']);
+  });
+
+  it('a list cut at the request limit is a gap even when the verbatim guard drops entries', async () => {
+    // The model stopped listing at the limit either way; what the guard drops
+    // afterwards does not make the list complete.
+    const { extractor } = extractorOver(
+      () =>
+        Promise.resolve(
+          recordClaimsCall({
+            claims: [AMOUNT, { text: '7,00 €', type: 'amount', expected_source: 'odoo' }],
+          }),
+        ),
+      { maxClaims: 1 },
+    );
+    const { claims, gaps } = await extractor.extract(INPUT);
+    assert.equal(claims.length, 1, 'the claim that is not in the answer is dropped');
+    assert.deepEqual(gaps, ['claim_list_full']);
   });
 });

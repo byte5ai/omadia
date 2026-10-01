@@ -111,6 +111,16 @@ describe('toSemanticAnswer — verifier badge gate', () => {
       verifierSummary({ badge: 'failed', status: 'blocked', unverifiedCount: 2 }),
       // A corrected answer is not still contradicted.
       verifierSummary({ badge: 'corrected', status: 'blocked', contradictionCount: 1, retryCount: 1 }),
+      // Corrected, like verified, needs every claim confirmed: a retry that
+      // confirmed one claim and left three unchecked is only partly verified.
+      verifierSummary({
+        badge: 'corrected',
+        status: 'approved_with_disclaimer',
+        claimCount: 4,
+        unverifiedCount: 3,
+        uncheckedCount: 3,
+        retryCount: 1,
+      }),
     ]) {
       const sa = toSemanticAnswer({ ...base, verifier: summary });
       assert.equal(sa.verifier, undefined, JSON.stringify(summary));

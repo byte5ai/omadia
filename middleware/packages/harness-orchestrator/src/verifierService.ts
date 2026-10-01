@@ -36,8 +36,11 @@ import type { TurnHookRunner } from './turnHooks.js';
  *                                        → inject correction into system hint
  *                                        → orchestrator.chat (retry, max 1x)
  *                                        → verify again
- *                                        → return (badge = corrected | failed,
- *                                          no badge when the retry confirmed nothing)
+ *                                        → return (badge = corrected when the
+ *                                          retry confirmed every claim, partial
+ *                                          when only some, failed when still
+ *                                          contradicted, no badge when it
+ *                                          confirmed nothing)
  *
  * In shadow mode the verifier runs + persists but never blocks / retries.
  * That's how we calibrate the trigger router and extractor in production
@@ -331,9 +334,9 @@ export class VerifierService implements ChatAgent {
     void this.persist(runId, input, secondVerdict, 1);
 
     // Compute the user-facing badge: `corrected` when the retry confirmed
-    // claims without a contradiction, `failed` when it is still contradicted,
-    // `unverified` / `unavailable` (no connector badge) when the retry's
-    // verification confirmed nothing.
+    // every claim, `partial` when it confirmed only some, `failed` when it is
+    // still contradicted, `unverified` / `unavailable` (no connector badge)
+    // when the retry's verification confirmed nothing.
     const badge = mergeBadges(effectiveVerdict, secondVerdict);
     return toSemanticAnswer(
       withVerifier(secondResult, {
@@ -489,6 +492,7 @@ function summarise(
     contradictionCount: count((c) => c.status === 'contradicted'),
     unverifiedCount: count((c) => c.status === 'unverified'),
     uncheckedCount: count((c) => c.status === 'unverified' && c.cause === 'not_checked'),
+    uncoveredCount: count((c) => c.claim.type === 'coverage_gap'),
     retryCount,
     latencyMs: verdict.latencyMs,
     mode,
@@ -498,11 +502,13 @@ function summarise(
 /**
  * Badge for one verdict, bound to evidence (`hasVerificationEvidence`: a
  * check settled at least one claim). Without that the badge is `unavailable`
- * when the verifier could not run or every check failed, and `unverified`
- * otherwise — whatever status the verdict carries. The pipeline is injected,
- * so this reads the claims, not the status. With evidence: `failed` for any
- * contradicted claim, `verified` only when every claim was confirmed,
- * `partial` when some were not; after a retry, `corrected`.
+ * when the verifier could not run or every check that ran failed, and
+ * `unverified` otherwise — whatever status the verdict carries. The pipeline
+ * is injected, so this reads the claims, not the status. With evidence:
+ * `failed` for any contradicted claim, `verified` only when every claim was
+ * confirmed, `partial` when some were not. After a retry, `corrected` takes
+ * the place of `verified` and needs the same: every claim confirmed. A retry
+ * that confirmed only some claims is `partial`, as on a first pass.
  */
 export function badgeFor(
   verdict: VerifierVerdict,
@@ -514,28 +520,32 @@ export function badgeFor(
       : 'unverified';
   }
   if (verdict.claims.some((c) => c.status === 'contradicted')) return 'failed';
-  // Retry already happened — it confirmed claims without a contradiction.
-  if (retryCount > 0) return 'corrected';
-  return verdict.status === 'approved' &&
-    verdict.claims.every((c) => c.status === 'verified')
-    ? 'verified'
-    : 'partial';
+  const everyClaimConfirmed =
+    verdict.status === 'approved' &&
+    verdict.claims.every((c) => c.status === 'verified');
+  if (!everyClaimConfirmed) return 'partial';
+  return retryCount > 0 ? 'corrected' : 'verified';
 }
 
-/** True when the verdict has claims and the check of every one failed. */
+/** True when a check ran on at least one claim and every such check failed.
+ *  Claims no check ran on (`not_checked`, including coverage entries) do not
+ *  count either way. */
 function everyCheckFailed(verdict: VerifierVerdict): boolean {
+  const checked = verdict.claims.filter(
+    (c) => !(c.status === 'unverified' && c.cause === 'not_checked'),
+  );
   return (
-    verdict.claims.length > 0 &&
-    verdict.claims.every((c) => c.status === 'unverified' && c.cause === 'check_failed')
+    checked.length > 0 &&
+    checked.every((c) => c.status === 'unverified' && c.cause === 'check_failed')
   );
 }
 
 /**
  * Badge after the correction retry. `corrected` / `failed` describe a retry
  * that followed a blocked first pass, and the retry's own verdict decides:
- * `corrected` needs a second pass that confirmed at least one claim without
- * a contradiction, so a retry whose verification was skipped, unavailable or
- * confirmed nothing is never `corrected`.
+ * `corrected` needs a second pass that confirmed every claim; one that
+ * confirmed only some is `partial`. A retry whose verification was skipped,
+ * unavailable or confirmed nothing is never `corrected`.
  */
 export function mergeBadges(
   first: VerifierVerdict,

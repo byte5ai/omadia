@@ -32,7 +32,8 @@ export { activate } from './plugin.js';
 export type { VerifierBundle, VerifierPluginHandle } from './plugin.js';
 
 // ClaimExtractor
-export { ClaimExtractor, claimContext } from './claimExtractor.js';
+export { ClaimExtractor, EXTRACTION_WINDOW_CHARS } from './claimExtractor.js';
+export { claimContext } from './claimContext.js';
 export type {
   ClaimExtractorOptions,
   ExtractInput,
@@ -51,9 +52,11 @@ export {
 export type {
   Aggregation,
   Claim,
+  ClaimExtraction,
   ClaimSource,
   ClaimType,
   ClaimVerdict,
+  ExtractionGap,
   HardClaim,
   NonEmptyClaimVerdicts,
   OdooRecordRef,

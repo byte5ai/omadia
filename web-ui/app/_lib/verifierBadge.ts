@@ -5,12 +5,13 @@
  * evidence only when a check settled a claim — a contradicted claim for
  * `blocked`, a confirmed one for `approved` / `approved_with_disclaimer`
  * (confirmed = `claimCount - contradictionCount - unverifiedCount`). The chip
- * never claims more than the counts back: green needs an `approved` summary
- * whose every claim was confirmed. `skipped` turns (nothing checkable), a
- * verifier that could not run, and checks that confirmed nothing get their own
- * neutral states — they are never shown as a check. A summary restored from
- * local storage is untrusted input, so the mapping validates rather than
- * assumes its shape.
+ * never claims more than the counts back: green ("verified") and blue
+ * ("corrected") need an `approved` summary whose every claim was confirmed;
+ * otherwise the answer is at most partly verified. `skipped` turns (nothing
+ * checkable), a verifier that could not run, and checks that confirmed
+ * nothing get their own neutral states — they are never shown as a check. A
+ * summary restored from local storage is untrusted input, so the mapping
+ * validates rather than assumes its shape.
  */
 
 export type VerifierBadgeState =
@@ -29,15 +30,17 @@ export type VerifierBadgeHint =
   | 'noTrigger'
   | 'noClaims'
   | 'noCheckableClaims'
+  | 'incompleteCoverage'
   | 'noneConfirmed'
   | 'checkFailed'
-  | 'partialUnchecked';
+  | 'partialUnchecked'
+  | 'partialCoverage';
 
 export interface VerifierBadgeView {
   state: VerifierBadgeState;
   tone: VerifierBadgeTone;
   hint: VerifierBadgeHint;
-  /** The count the hint names: checked, unconfirmed, unchecked or
+  /** The count the hint names: checked, confirmed, unconfirmed, unchecked or
    *  contradicted claims. */
   count: number;
 }
@@ -52,6 +55,7 @@ const SKIP_HINTS: Readonly<Record<string, VerifierBadgeHint>> = {
   no_trigger: 'noTrigger',
   no_claims: 'noClaims',
   no_checkable_claims: 'noCheckableClaims',
+  incomplete_coverage: 'incompleteCoverage',
 };
 
 function countOf(value: unknown): number {
@@ -82,45 +86,73 @@ export function verifierBadgeView(summary: unknown): VerifierBadgeView | null {
   return checkedView(s, claimCount);
 }
 
-/** A summary over checked claims: its badge, capped by what the counts back. */
-function checkedView(s: Record<string, unknown>, claimCount: number): VerifierBadgeView {
+/** Claim counts of a summary, each clamped to what the larger one allows. */
+interface Counts {
+  claims: number;
+  contradicted: number;
+  unconfirmed: number;
+  confirmed: number;
+  unchecked: number;
+  uncovered: number;
+}
+
+function countsOf(s: Record<string, unknown>, claimCount: number): Counts {
   const contradicted = countOf(s['contradictionCount']);
   const unconfirmed = countOf(s['unverifiedCount']);
-  const confirmed = Math.max(0, claimCount - contradicted - unconfirmed);
+  const unchecked = Math.min(countOf(s['uncheckedCount']), unconfirmed);
+  return {
+    claims: claimCount,
+    contradicted,
+    unconfirmed,
+    confirmed: Math.max(0, claimCount - contradicted - unconfirmed),
+    unchecked,
+    uncovered: Math.min(countOf(s['uncoveredCount']), unchecked),
+  };
+}
+
+/** A summary over checked claims: its badge, capped by what the counts back. */
+function checkedView(s: Record<string, unknown>, claimCount: number): VerifierBadgeView {
+  const c = countsOf(s, claimCount);
   const blocked = s['status'] === 'blocked';
-  if (blocked ? contradicted === 0 : confirmed === 0) {
-    // Claims were checked, but no check settled one.
-    return { state: 'unverified', tone: 'neutral', hint: 'noneConfirmed', count: claimCount };
+  if (blocked ? c.contradicted === 0 : c.confirmed === 0) {
+    // Claims were checked, but no check settled one. Name only the claims a
+    // check ran on — not the unchecked ones, nor coverage entries.
+    const checked = c.claims - c.unchecked;
+    return checked > 0
+      ? { state: 'unverified', tone: 'neutral', hint: 'noneConfirmed', count: checked }
+      : unverified(undefined);
   }
+  const uncontradicted = !blocked && c.contradicted === 0;
   switch (s['badge']) {
     case 'verified':
-      if (s['status'] === 'approved' && confirmed === claimCount) {
-        return { state: 'verified', tone: 'success', hint: 'verified', count: claimCount };
-      }
-      break;
-    case 'partial':
-      if (!blocked && contradicted === 0) {
-        return partialView(unconfirmed, countOf(s['uncheckedCount']));
-      }
-      break;
     case 'corrected':
-      if (!blocked && contradicted === 0) {
-        return { state: 'corrected', tone: 'info', hint: 'corrected', count: claimCount };
+      if (s['status'] === 'approved' && c.confirmed === c.claims) {
+        return s['badge'] === 'verified'
+          ? { state: 'verified', tone: 'success', hint: 'verified', count: c.claims }
+          : { state: 'corrected', tone: 'info', hint: 'corrected', count: c.claims };
       }
+      // The counts back only part of the answer: show that, nothing more.
+      return uncontradicted ? partialView(c) : unverified(undefined);
+    case 'partial':
+      if (uncontradicted) return partialView(c);
       break;
     case 'failed':
-      if (contradicted > 0) {
-        return { state: 'failed', tone: 'danger', hint: 'failed', count: contradicted };
+      if (c.contradicted > 0) {
+        return { state: 'failed', tone: 'danger', hint: 'failed', count: c.contradicted };
       }
       break;
   }
   return unverified(undefined);
 }
 
-/** Partly confirmed. When every unconfirmed claim is one no check ran on,
- *  the hint says so instead of "could not be confirmed". */
-function partialView(unconfirmed: number, unchecked: number): VerifierBadgeView {
-  return unchecked > 0 && unchecked === unconfirmed
-    ? { state: 'partial', tone: 'warning', hint: 'partialUnchecked', count: unchecked }
-    : { state: 'partial', tone: 'warning', hint: 'partial', count: unconfirmed };
+/** Partly confirmed. The hint says why: part of the answer was not covered,
+ *  every unconfirmed claim is one no check ran on, or claims could not be
+ *  confirmed. */
+function partialView(c: Counts): VerifierBadgeView {
+  if (c.uncovered > 0) {
+    return { state: 'partial', tone: 'warning', hint: 'partialCoverage', count: c.confirmed };
+  }
+  return c.unchecked > 0 && c.unchecked === c.unconfirmed
+    ? { state: 'partial', tone: 'warning', hint: 'partialUnchecked', count: c.unchecked }
+    : { state: 'partial', tone: 'warning', hint: 'partial', count: c.unconfirmed };
 }

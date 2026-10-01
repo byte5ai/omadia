@@ -74,6 +74,9 @@ describe('verifierBadgeView — distinct states', () => {
     expect(verifierBadgeView(summary({ ...base, reason: 'no_checkable_claims' }))?.hint).toBe(
       'noCheckableClaims',
     );
+    expect(verifierBadgeView(summary({ ...base, reason: 'incomplete_coverage' }))?.hint).toBe(
+      'incompleteCoverage',
+    );
     const generic = verifierBadgeView(summary(base));
     expect(generic).toMatchObject({ state: 'unverified', tone: 'neutral', hint: 'unverified' });
   });
@@ -111,6 +114,54 @@ describe('verifierBadgeView — distinct states', () => {
         }),
       ),
     ).toEqual({ state: 'partial', tone: 'warning', hint: 'partialUnchecked', count: 1 });
+  });
+
+  it('an answer the verifier did not read in full is partial and says so', () => {
+    expect(
+      verifierBadgeView(
+        summary({
+          badge: 'partial',
+          status: 'approved_with_disclaimer',
+          claimCount: 3,
+          unverifiedCount: 1,
+          uncheckedCount: 1,
+          uncoveredCount: 1,
+        }),
+      ),
+    ).toEqual({ state: 'partial', tone: 'warning', hint: 'partialCoverage', count: 2 });
+  });
+
+  it('a corrected badge needs every claim confirmed, otherwise it is partial', () => {
+    // A retry that confirmed one claim and checked none of the other three.
+    expect(
+      verifierBadgeView(
+        summary({
+          badge: 'corrected',
+          status: 'approved_with_disclaimer',
+          claimCount: 4,
+          unverifiedCount: 3,
+          uncheckedCount: 3,
+          retryCount: 1,
+        }),
+      ),
+    ).toEqual({ state: 'partial', tone: 'warning', hint: 'partialUnchecked', count: 3 });
+    expect(
+      verifierBadgeView(summary({ badge: 'corrected', unverifiedCount: 1, retryCount: 1 }))?.state,
+    ).toBe('partial');
+  });
+
+  it('"none confirmed" names only the claims a check ran on', () => {
+    expect(
+      verifierBadgeView(
+        summary({
+          badge: 'unverified',
+          status: 'approved_with_disclaimer',
+          claimCount: 3,
+          unverifiedCount: 3,
+          uncheckedCount: 1,
+        }),
+      ),
+    ).toEqual({ state: 'unverified', tone: 'neutral', hint: 'noneConfirmed', count: 2 });
   });
 
   it('claims checked but none confirmed are "not verified", or unavailable when every check failed', () => {

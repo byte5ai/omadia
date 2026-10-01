@@ -99,6 +99,9 @@ const noneConfirmed = (): VerifierVerdict => disclaimer([UNVERIFIED, UNVERIFIED]
 const allChecksFailed = (): VerifierVerdict => disclaimer([CHECK_FAILED, CHECK_FAILED]);
 /** One claim verified, one no checker accepts. */
 const partlyChecked = (): VerifierVerdict => disclaimer([VERIFIED, NOT_CHECKED]);
+/** A correction retry that confirmed one claim and checked none of the rest. */
+const retryMostlyUnchecked = (): VerifierVerdict =>
+  disclaimer([VERIFIED, NOT_CHECKED, NOT_CHECKED, NOT_CHECKED]);
 /** An injected `approved` that holds an unconfirmed claim. */
 const approvedOverUnverified = (): VerifierVerdict => ({
   status: 'approved',
@@ -204,6 +207,13 @@ describe('badgeFor — evidence-bound', () => {
     assert.equal(badgeFor(allChecksFailed(), 0), 'unavailable');
   });
 
+  it('unavailable when every check that ran failed, whatever was not checked', () => {
+    // E.g. the head of a long answer: its one check failed, the rest of the
+    // answer was never covered. Nothing unchecked turns that into a result.
+    assert.equal(badgeFor(disclaimer([CHECK_FAILED, NOT_CHECKED]), 0), 'unavailable');
+    assert.equal(badgeFor(disclaimer([NOT_CHECKED, NOT_CHECKED]), 0), 'unverified');
+  });
+
   it('verified needs every claim confirmed', () => {
     assert.equal(badgeFor(approvedOverUnverified(), 0), 'partial');
     assert.equal(badgeFor(partlyChecked(), 0), 'partial');
@@ -217,10 +227,15 @@ describe('badgeFor — evidence-bound', () => {
 });
 
 describe('mergeBadges — the retry badge needs evidence from the retry', () => {
-  it('corrected only when the retry checked claims and found no contradiction', () => {
+  it('corrected only when the retry confirmed every claim', () => {
     assert.equal(mergeBadges(blocked(), approved()), 'corrected');
-    assert.equal(mergeBadges(blocked(), borderline()), 'corrected');
     assert.equal(mergeBadges(blocked(), blocked()), 'failed');
+  });
+
+  it('a retry that confirmed only some claims is partial, as on a first pass', () => {
+    assert.equal(mergeBadges(blocked(), borderline()), 'partial');
+    assert.equal(mergeBadges(blocked(), retryMostlyUnchecked()), 'partial');
+    assert.equal(badgeFor(retryMostlyUnchecked(), 0), 'partial');
   });
 
   it('a retry that checked nothing is never corrected', () => {
@@ -290,6 +305,12 @@ describe('VerifierService.chat — no resample or retry without evidence', () =>
   it('control: a blocked turn whose retry verifies is badged corrected', async () => {
     const r = await chatOnce([blocked(), approved()]);
     assert.deepEqual(r.sa.verifier, { status: 'corrected' });
+  });
+
+  it('a blocked turn whose retry confirmed only one claim is partial, not corrected', async () => {
+    const r = await chatOnce([blocked(), retryMostlyUnchecked()]);
+    assert.equal(r.runTurns, 2, 'one retry after the block');
+    assert.deepEqual(r.sa.verifier, { status: 'partial' });
   });
 
   it('a blocked turn whose retry confirmed no claim is not badged corrected', async () => {

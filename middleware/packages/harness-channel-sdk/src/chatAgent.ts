@@ -266,15 +266,18 @@ export interface RunTracePayload {
 
 /**
  * Why a verifier summary carries no evidence. `no_trigger` / `no_claims` /
- * `no_checkable_claims` explain a `skipped` turn (nothing checkable);
- * `extractor_error` / `pipeline_error` an `unavailable` one (the verifier
- * could not run). A closed code set: the summary is forwarded verbatim on
- * the stream, so it never carries an error message.
+ * `no_checkable_claims` explain a `skipped` turn (nothing checkable), and
+ * `incomplete_coverage` one whose claim extraction covered only part of the
+ * answer and found nothing checkable there; `extractor_error` /
+ * `pipeline_error` an `unavailable` one (the verifier could not run). A closed
+ * code set: the summary is forwarded verbatim on the stream, so it never
+ * carries an error message.
  */
 export type VerifierSummaryReason =
   | 'no_trigger'
   | 'no_claims'
   | 'no_checkable_claims'
+  | 'incomplete_coverage'
   | 'extractor_error'
   | 'pipeline_error';
 
@@ -307,6 +310,14 @@ export interface VerifierResultSummary {
    * beyond the per-answer claim cap. Optional for summaries built without it.
    */
   uncheckedCount?: number;
+  /**
+   * Of `uncheckedCount`, entries that stand for a part of the answer the claim
+   * extraction did not cover rather than for one claim: text beyond the
+   * extractor's window, or claims the model left out once its list reached
+   * the request limit. Any such entry means the answer was not checked in
+   * full. Optional for summaries built without it.
+   */
+  uncoveredCount?: number;
   retryCount: number;
   latencyMs: number;
   mode: 'shadow' | 'enforce';

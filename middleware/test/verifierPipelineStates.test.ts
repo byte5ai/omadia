@@ -18,6 +18,7 @@ import {
   VerifierPipeline,
   isBorderlineVerdict,
   type Claim,
+  type ClaimExtraction,
   type ClaimExtractorOptions,
   type ClaimVerdict,
   type DeterministicChecker,
@@ -73,9 +74,11 @@ function harness(opts: { claims?: Claim[]; fail?: Error; maxClaims?: number }): 
     );
   };
   const extractor = {
-    extract(): Promise<Claim[]> {
+    extract(): Promise<ClaimExtraction> {
       extractCalls += 1;
-      return opts.fail ? Promise.reject(opts.fail) : Promise.resolve(opts.claims ?? []);
+      return opts.fail
+        ? Promise.reject(opts.fail)
+        : Promise.resolve({ claims: opts.claims ?? [], gaps: [] });
     },
   } as unknown as ClaimExtractor;
   const pipeline = new VerifierPipeline({

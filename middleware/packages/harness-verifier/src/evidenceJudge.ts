@@ -1,7 +1,7 @@
 import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
 import { textMessage, toolCalls } from '@omadia/llm-provider';
 import type { ClaimVerdict, SoftClaim } from './claimTypes.js';
-import { MAX_CONTEXT_CHARS } from './claimExtractor.js';
+import { MAX_CONTEXT_CHARS } from './claimContext.js';
 
 /**
  * LLM-as-Judge for SoftClaims (names, qualitative statements) that can't

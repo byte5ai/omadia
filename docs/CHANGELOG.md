@@ -47,18 +47,26 @@ mapping turned each of them into `verified`, and that is what the trailing
 recorded. Connector badges were already held back by a claim-count check, which
 also kept the internal `corrected` badge of a retry whose own verification
 failed off Teams. Verdicts are now bound to evidence: `approved` requires
-every extracted claim to be checked and verified, at least one (its claim list
-is typed non-empty); nothing checkable is `skipped` (reason `no_trigger`,
-`no_claims` or `no_checkable_claims`), and a verifier that could not run is
-`unavailable` (reason `extractor_error` or `pipeline_error`). An answer the
-verifier can check only in part used to pass as fully verified: a claim no
+the claim extraction to cover the whole answer and every extracted claim to be
+checked and verified, at least one (its claim list is typed non-empty);
+nothing checkable is `skipped` (reason `no_trigger`, `no_claims`,
+`no_checkable_claims` or `incomplete_coverage`), and a verifier that could not
+run is `unavailable` (reason `extractor_error` or `pipeline_error`). An answer
+the verifier can check only in part used to pass as fully verified: a claim no
 checker accepts (an amount, date, id or total whose source is neither Odoo nor
 the knowledge graph) and a claim beyond the per-answer cap were dropped without
-a trace, and the rest verifying gave `approved` / `verified`. Such claims now
-stay in the verdict as unverified (`cause: 'not_checked'`), so the answer is
-`approved_with_disclaimer` and badged `partial`; the cap
-(`VERIFIER_MAX_CLAIMS`) now bounds how many claims are checked, not how many
-are seen. The claim extractor used to turn its own failures (an LLM error, a
+a trace, the extractor told the model to return no more claims than the cap
+(so a model that kept to it left the rest out before the pipeline saw them),
+and it read only the first 6000 characters of the answer; the rest verifying
+gave `approved` / `verified`. Such claims now stay in the verdict as unverified
+(`cause: 'not_checked'`), and the extraction reports what it did not cover: it
+asks the model for one claim more than `VERIFIER_MAX_CLAIMS`, treats a list
+that reaches that limit as possibly incomplete, and names answer text beyond
+its window. Each such gap becomes a `not_checked` coverage entry (claim type
+`coverage_gap`), so the answer is `approved_with_disclaimer` and badged
+`partial`, or `skipped` / `incomplete_coverage` when nothing in the part it
+read could be checked. `VERIFIER_MAX_CLAIMS` bounds how many claims are
+checked. The claim extractor used to turn its own failures (an LLM error, a
 response without a usable `record_claims` call) into an empty claim list, and
 it accepted a response cut off at the token limit and dropped malformed
 entries, so an extractor outage or a partial extraction could still read as
@@ -66,13 +74,16 @@ entries, so an extractor outage or a partial extraction could still read as
 the outcome is `unavailable` / `extractor_error`. Badges are derived under an
 evidence gate (`hasVerificationEvidence`): a badge needs a check that settled a
 claim — a confirmed one for `verified` / `partial` / `corrected` (every claim
-confirmed for `verified`), a contradicted one for `failed`. A verdict whose
-claims all stayed unconfirmed — the sources were silent, or the re-query or
-judge call failed — is `unverified`, or `unavailable` when every check failed
-(the checkers now mark a failed check as `cause: 'check_failed'`). That also
-covers the correction retry: a retry earns `corrected` only when its own
-verification confirmed a claim without a contradiction, where a retry whose
-checks all failed used to be badged `corrected`. Even an injected pipeline that
+confirmed for `verified` and `corrected`), a contradicted one for `failed`. A
+verdict whose claims all stayed unconfirmed — the sources were silent, or the
+re-query or judge call failed — is `unverified`, or `unavailable` when every
+check that ran failed (the checkers now mark a failed check as
+`cause: 'check_failed'`). That also covers the correction retry: a retry earns
+`corrected` only when its own verification confirmed every claim, and one that
+confirmed only some is `partial`, as the same verdict is on a first pass; any
+retry without a contradiction used to be badged `corrected`, including one
+whose checks all failed or that confirmed one claim and left the rest
+unchecked. Even an injected pipeline that
 returns `approved` over zero claims, or over an unconfirmed claim, gets no
 `verified`. Contradictions found without extraction (tool postconditions,
 missing citations, failure replay) still block on every path. The paid
@@ -83,9 +94,11 @@ trigger it.
 
 What clients see: the `verifier` event on `/api/chat/stream` and on the public
 API-key stream can now carry `summary.status` `skipped` / `unavailable`,
-`summary.badge` `unverified` / `unavailable`, a `summary.reason` code and
+`summary.badge` `unverified` / `unavailable`, a `summary.reason` code,
 `summary.uncheckedCount` (claims no check ran on, also counted in
-`unverifiedCount`). The reason is a closed code set, never an error message.
+`unverifiedCount`) and `summary.uncoveredCount` (of those, the coverage
+entries: the answer was not checked in full). The reason is a closed code set,
+never an error message.
 Clients that switch exhaustively on these fields must handle the new values,
 and anything other than `verified` / `partial` / `corrected` / `failed` with
 `claimCount > 0` must not be shown as a check; `badge` is `unverified` or
@@ -95,19 +108,23 @@ is the single badge gate and forwards a badge only when the summary's counts
 back it, and Teams / Telegram get no badge for turns without evidence, so those
 plugin repositories need no release. Code that switches on `@omadia/verifier`'s
 `VerifierVerdict['status']` stops compiling until it handles the two new
-statuses — deliberately. `ClaimExtractor.extract` no longer cuts its result at
-`maxClaims`; the pipeline applies the cap. The web chat previously dropped the
-`verifier` event and had no answer-verifier badge at all; it now shows a footer
-chip that is green only for a verified answer whose every claim was confirmed,
-neutral for "not verified" and "verification unavailable" (the tooltip names
-the reason), amber for partly verified (the tooltip names claims that could not
-be checked) and red for a contradiction (new `chat.verifier.*` keys in en and
-de).
+statuses — deliberately. `ClaimExtractor.extract` now resolves
+`{ claims, gaps }` (`ClaimExtraction`) instead of a claim list, and no longer
+cuts its result at `maxClaims`; the pipeline applies the cap and turns the gaps
+into coverage entries. The web chat previously dropped the `verifier` event and
+had no answer-verifier badge at all; it now shows a footer chip that is green
+only for a verified answer whose every claim was confirmed, blue for a
+corrected answer under the same condition, neutral for "not verified" and
+"verification unavailable" (the tooltip names the reason), amber for partly
+verified (the tooltip names claims that could not be checked, or says the
+verifier did not check all of the answer) and red for a contradiction (new
+`chat.verifier.*` keys in en and de).
 
 Operators: `verifier_verdicts.status` now stores `skipped` / `unavailable` as
 their own values (free `TEXT` column, no migration), so the share of
 `approved` rows drops — small talk and outages no longer count as clean turns,
-and answers checked only in part are `approved_with_disclaimer`. Ad-hoc SQL or
+and answers checked only in part are `approved_with_disclaimer` (an answer
+longer than 6000 characters is never `approved` any more). Ad-hoc SQL or
 dashboards that read `status = 'approved'` as "clean turn" need a second look.
 No new environment variable; `VERIFIER_MAX_CLAIMS` keeps its default of 20.
 The golden corpus file `approve.jsonl` is now `skipped.jsonl` and expects

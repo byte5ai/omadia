@@ -70,6 +70,49 @@ describe('<VerifierBadge>', () => {
     expect(chip.getAttribute('title')).toMatch(/1 claim .*could not be checked/);
   });
 
+  it('renders a corrected answer with the claims the retry confirmed', () => {
+    renderWithIntl(<VerifierBadge summary={summary({ badge: 'corrected', retryCount: 1 })} />);
+    const chip = screen.getByText('Answer corrected');
+    expect(chip.getAttribute('title')).toMatch(/confirmed all 3 claims/);
+  });
+
+  it('renders a retry that left claims unchecked as partly verified, not as corrected', () => {
+    renderWithIntl(
+      <VerifierBadge
+        summary={summary({
+          badge: 'corrected',
+          status: 'approved_with_disclaimer',
+          claimCount: 4,
+          unverifiedCount: 3,
+          uncheckedCount: 3,
+          retryCount: 1,
+        })}
+      />,
+    );
+    const chip = screen.getByText('Partly verified');
+    expect(chip.getAttribute('data-verifier-state')).toBe('partial');
+    expect(chip.getAttribute('title')).toMatch(/3 claims .*could not be checked/);
+  });
+
+  it('renders an answer the verifier did not read in full as amber, saying so', () => {
+    renderWithIntl(
+      <VerifierBadge
+        summary={summary({
+          badge: 'partial',
+          status: 'approved_with_disclaimer',
+          claimCount: 2,
+          unverifiedCount: 1,
+          uncheckedCount: 1,
+          uncoveredCount: 1,
+        })}
+      />,
+      { locale: 'de' },
+    );
+    const chip = screen.getByText('Teilweise geprüft');
+    expect(chip.className).not.toContain(GREEN);
+    expect(chip.getAttribute('title')).toMatch(/nicht die ganze Antwort geprüft/);
+  });
+
   it('renders a retry that confirmed no claim as "not verified", not as corrected', () => {
     renderWithIntl(
       <VerifierBadge

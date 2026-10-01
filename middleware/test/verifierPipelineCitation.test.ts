@@ -14,6 +14,7 @@ import { strict as assert } from 'node:assert';
 import {
   VerifierPipeline,
   type Claim,
+  type ClaimExtraction,
   type ClaimExtractor,
   type ClaimVerdict,
   type DeterministicChecker,
@@ -24,8 +25,8 @@ import {
 
 function stubExtractor(claims: Claim[]): ClaimExtractor {
   return {
-    extract(): Promise<Claim[]> {
-      return Promise.resolve(claims);
+    extract(): Promise<ClaimExtraction> {
+      return Promise.resolve({ claims, gaps: [] });
     },
   } as unknown as ClaimExtractor;
 }

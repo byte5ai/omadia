@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import {
   VerifierPipeline,
   type Claim,
+  type ClaimExtraction,
   type ClaimExtractor,
   type ClaimVerdict,
   type DeterministicChecker,
@@ -13,10 +14,11 @@ import {
 
 // --- Stubs ---------------------------------------------------------------
 
+/** An extractor that covered the whole answer and found `claims`. */
 function stubExtractor(claims: Claim[]): ClaimExtractor {
   return {
-    extract(): Promise<Claim[]> {
-      return Promise.resolve(claims);
+    extract(): Promise<ClaimExtraction> {
+      return Promise.resolve({ claims, gaps: [] });
     },
   } as unknown as ClaimExtractor;
 }
@@ -81,9 +83,9 @@ describe('verifier/pipeline', () => {
   it('skips smalltalk without triggering extractor (skipped, never approved)', async () => {
     let called = false;
     const extractor = {
-      extract(): Promise<Claim[]> {
+      extract(): Promise<ClaimExtraction> {
         called = true;
-        return Promise.resolve([]);
+        return Promise.resolve({ claims: [], gaps: [] });
       },
     } as unknown as ClaimExtractor;
     const pipeline = new VerifierPipeline({
@@ -310,7 +312,7 @@ describe('verifier/pipeline', () => {
   it('tolerates extractor throwing — reports unavailable, never approved', async () => {
     const pipeline = new VerifierPipeline({
       extractor: {
-        extract(): Promise<Claim[]> {
+        extract(): Promise<ClaimExtraction> {
           return Promise.reject(new Error('rate limit'));
         },
       } as unknown as ClaimExtractor,
@@ -341,9 +343,9 @@ describe('verifier/pipeline', () => {
   it('blocks on tool_postcondition violation without invoking extractor', async () => {
     let extractorCalled = false;
     const extractor = {
-      extract(): Promise<Claim[]> {
+      extract(): Promise<ClaimExtraction> {
         extractorCalled = true;
-        return Promise.resolve([]);
+        return Promise.resolve({ claims: [], gaps: [] });
       },
     } as unknown as ClaimExtractor;
     const pipeline = new VerifierPipeline({

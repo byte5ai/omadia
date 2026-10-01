@@ -1655,13 +1655,15 @@
         "verified": "Der Verifier hat {count, plural, one {# Aussage} other {# Aussagen}} dieser Antwort gegen die Quellen geprüft und alle bestätigt.",
         "partial": "Keine Aussage widerspricht den Quellen, aber {count, plural, one {# Aussage konnte} other {# Aussagen konnten}} nicht bestätigt werden.",
         "partialUnchecked": "Der Verifier hat die übrigen Aussagen bestätigt, aber {count, plural, one {# Aussage dieser Antwort konnte} other {# Aussagen dieser Antwort konnten}} nicht geprüft werden.",
-        "corrected": "Die erste Antwort widersprach den Quellen; diese korrigierte Antwort hat die Prüfung bestanden.",
+        "partialCoverage": "Der Verifier hat {count, plural, one {# Aussage} other {# Aussagen}} bestätigt, aber nicht die ganze Antwort geprüft.",
+        "corrected": "Die erste Antwort widersprach den Quellen; der Verifier hat {count, plural, one {die # Aussage} other {alle # Aussagen}} dieser korrigierten Antwort bestätigt.",
         "failed": "{count, plural, one {# Aussage widerspricht} other {# Aussagen widersprechen}} den Quellen.",
         "unverified": "Nicht geprüft: Keine Prüfung hat diese Antwort bestätigt.",
         "noneConfirmed": "Nicht bestätigt: Der Verifier hat {count, plural, one {# Aussage} other {# Aussagen}} dieser Antwort geprüft, konnte aber keine bestätigen.",
         "noTrigger": "Nicht geprüft: Die Antwort enthält keine Beträge, Daten oder Referenzen, die der Verifier prüft.",
         "noClaims": "Nicht geprüft: Der Verifier hat in dieser Antwort keine Faktenaussagen gefunden.",
         "noCheckableClaims": "Nicht geprüft: Keine Aussage dieser Antwort lässt sich gegen eine Quelle prüfen.",
+        "incompleteCoverage": "Nicht geprüft: Der Verifier hat nur einen Teil dieser Antwort gelesen und darin nichts Prüfbares gefunden.",
         "unavailable": "Der Verifier konnte für diese Antwort nicht laufen, es wurde nichts geprüft.",
         "checkFailed": "Die Prüfungen des Verifiers sind für diese Antwort fehlgeschlagen, es wurde keine Aussage bestätigt."
       }

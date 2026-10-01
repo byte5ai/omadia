@@ -126,6 +126,9 @@ function countByClass(verdicts: readonly ClaimVerdict[]): {
   let soft = 0;
   for (const v of verdicts) {
     const t = v.claim.type;
+    // A coverage entry stands for a part of the answer, not a claim; it
+    // still counts in `claim_count` and `unverified_count`.
+    if (t === 'coverage_gap') continue;
     if (t === 'amount' || t === 'id' || t === 'date' || t === 'aggregate') {
       hard += 1;
     } else {

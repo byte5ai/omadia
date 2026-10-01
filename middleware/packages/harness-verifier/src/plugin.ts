@@ -212,9 +212,13 @@ export async function activate(
     fetcher,
     model,
   });
-  // The extractor asks the model for at most `maxClaims`; the pipeline checks
-  // at most `maxClaims` and keeps any further claim in the verdict as not
-  // checked, so the cap never hides part of the answer.
+  // One cap for both stages. The pipeline checks at most `maxClaims` and keeps
+  // any further claim in the verdict as not checked. The extractor asks the
+  // model for `maxClaims + 1`, so a model that keeps to the limit still shows
+  // when it had more to list: a full list is reported as a coverage gap and
+  // kept in the verdict as not checked, like text beyond the extractor's
+  // window. Neither the cap nor the window can make a partly read answer
+  // `approved`.
   const pipeline = new VerifierPipeline({
     extractor,
     deterministic,

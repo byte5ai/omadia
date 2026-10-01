@@ -243,8 +243,11 @@ answer:
   `approved_with_disclaimer`, or `blocked`). A borderline verdict attaches a
   disclaimer instead of silently shipping an unsupported claim. An answer with
   nothing checkable is `skipped` and a verifier that could not run is
-  `unavailable`; neither is reported as `approved` or shown as verified, and
-  an answer the verifier could check only in part is at most partly verified.
+  `unavailable`; neither is reported as `approved` or shown as verified. An
+  answer the verifier checked only in part is at most partly verified: a claim
+  no checker takes, more claims than the per-answer cap, and text beyond the
+  part of the answer the claim extractor reads each stay in the verdict as not
+  checked.
 - **Office compute (computed, not guessed)**: numbers in `.xlsx` / `.docx` output
   come from a real spreadsheet engine over real rows, rather than the model's
   token stream. When a specialist agent returns a `datasetId`, the rows are

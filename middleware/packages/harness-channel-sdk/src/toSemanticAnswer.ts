@@ -44,8 +44,8 @@ export function verifierSummaryHasEvidence(summary: VerifierResultSummary): bool
 
 /**
  * Whether the summary's counts back the badge it carries, beyond having
- * evidence at all: `verified` needs every claim confirmed on an `approved`
- * summary, `partial` and `corrected` an answer that is not contradicted.
+ * evidence at all: `verified` and `corrected` need every claim confirmed on
+ * an `approved` summary, `partial` an answer that is not contradicted.
  */
 function countsBackBadge(
   summary: VerifierResultSummary,
@@ -53,9 +53,9 @@ function countsBackBadge(
 ): boolean {
   switch (badge) {
     case 'verified':
+    case 'corrected':
       return summary.status === 'approved' && confirmedClaims(summary) === summary.claimCount;
     case 'partial':
-    case 'corrected':
       return summary.status !== 'blocked' && summary.contradictionCount === 0;
     case 'failed':
       return summary.contradictionCount > 0;
@@ -282,9 +282,10 @@ export function toSemanticAnswer(
   // evidence, and their `unverified` / `unavailable` badges have no value in
   // the connector wire union: a "✓ geprüft" chip — or any chip — would assert
   // a verification that never happened. Connectors get no badge for them, and
-  // none whose summary counts do not back it (green needs every claim
-  // confirmed). This is the single badge gate for every connector (Teams card,
-  // Telegram, …).
+  // none whose summary counts do not back it (`verified` and `corrected` need
+  // every claim confirmed, so a coverage gap or an unchecked claim keeps the
+  // answer at `partial`). This is the single badge gate for every connector
+  // (Teams card, Telegram, …).
   const verifier = connectorVerifierBadge(r.verifier);
 
   // #332 Layer 1 — curate a tamper-evident consulted-agents footer from the

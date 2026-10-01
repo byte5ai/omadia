@@ -111,7 +111,7 @@ describe('verifier/claimExtractor - extract', () => {
       ]) as never,
       log: () => undefined,
     });
-    const claims = await extractor.extract({ userMessage: 'Wo arbeitet Anna?', answer: ANSWER });
+    const { claims } = await extractor.extract({ userMessage: 'Wo arbeitet Anna?', answer: ANSWER });
     assert.equal(claims.length, 2);
     assert.equal(
       claims[0]!.context,

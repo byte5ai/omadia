@@ -2796,47 +2796,61 @@ Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
 - `status`: `approved` | `approved_with_disclaimer` | `blocked` — es wurden
   Claims geprüft; `skipped` — der Verifier lief, fand aber nichts Prüfbares;
   `unavailable` — der Verifier konnte nicht laufen (Extractor- oder
-  Pipeline-Fehler). `approved` heißt: jeder extrahierte Claim geprüft und
-  `verified`, mindestens einer. Ein Claim, den kein Checker nimmt (Betrag,
-  Datum, ID oder Summe mit Quelle weder Odoo noch Graph) oder der über dem
-  Claim-Limit pro Antwort liegt (`VERIFIER_MAX_CLAIMS`, greift jetzt in der
-  Pipeline statt im Extractor), bleibt als `unverified` mit
-  `cause: 'not_checked'` im Verdict — eine nur teilweise prüfbare Antwort ist
-  damit `approved_with_disclaimer`, nie `approved`. Der `ClaimExtractor` wirft,
-  wenn der LLM-Call scheitert, die Antwort am Token-Limit abgeschnitten ist
-  (`finishReason: 'max_tokens'`), sie keinen verwertbaren `record_claims`-Call
-  trägt oder ein Eintrag das Schema verletzt, statt eine leere oder halbe
-  Claim-Liste zu liefern: das landet in `unavailable` (`extractor_error`), nie
-  in `skipped` (`no_claims`) oder `approved`.
+  Pipeline-Fehler). `approved` heißt: die Extraktion hat die ganze Antwort
+  erfasst, und jeder extrahierte Claim ist geprüft und `verified`, mindestens
+  einer. Ein Claim, den kein Checker nimmt (Betrag, Datum, ID oder Summe mit
+  Quelle weder Odoo noch Graph) oder der über dem Claim-Limit pro Antwort
+  liegt (`VERIFIER_MAX_CLAIMS`, greift in der Pipeline), bleibt als
+  `unverified` mit `cause: 'not_checked'` im Verdict — eine nur teilweise
+  prüfbare Antwort ist damit `approved_with_disclaimer`, nie `approved`.
+  Ebenso, was die Extraktion nicht erfasst hat: Der `ClaimExtractor` liest
+  die ersten 6000 Zeichen der Antwort (`EXTRACTION_WINDOW_CHARS`) und bittet
+  das Modell um höchstens `VERIFIER_MAX_CLAIMS + 1` Claims; Text jenseits des
+  Fensters und eine bis zu diesem Limit gefüllte Liste (das Modell hat dann
+  womöglich Claims ausgelassen) meldet er in `ClaimExtraction.gaps`, und die
+  Pipeline hält jede Lücke als `not_checked`-Eintrag (Claim-Typ
+  `coverage_gap`) im Verdict. Fand die Extraktion im gelesenen Teil nichts
+  Prüfbares, ist das Verdict `skipped` mit `incomplete_coverage`. Der
+  `ClaimExtractor` wirft, wenn der LLM-Call scheitert, die Antwort am
+  Token-Limit abgeschnitten ist (`finishReason: 'max_tokens'`), sie keinen
+  verwertbaren `record_claims`-Call trägt oder ein Eintrag das Schema
+  verletzt, statt eine leere oder halbe Claim-Liste zu liefern: das landet in
+  `unavailable` (`extractor_error`), nie in `skipped` (`no_claims`) oder
+  `approved`.
 - `badge`: braucht einen Check, der einen Claim entschieden hat
   (`hasVerificationEvidence`): `verified` nur, wenn jeder Claim bestätigt ist;
   `partial` bei mindestens einem bestätigten und einem offenen Claim;
-  `corrected` nach einem Retry, dessen eigene Prüfung einen Claim bestätigt
-  und keinen Widerspruch gefunden hat; `failed` bei einem Widerspruch. Ohne
-  bestätigten Claim ist das Badge `unverified` — auch bei `status`
-  `approved_with_disclaimer`, wenn die Quellen schwiegen — bzw. `unavailable`,
-  wenn die Prüfung jedes Claims scheiterte (Re-Query oder Judge-Call
-  fehlgeschlagen, `cause: 'check_failed'`) oder der Verifier nicht lief.
+  `corrected` nach einem Retry, dessen eigene Prüfung jeden Claim bestätigt
+  hat — bestätigt sie nur einen Teil, ist das Badge `partial` wie beim ersten
+  Durchlauf; `failed` bei einem Widerspruch. Ohne bestätigten Claim ist das
+  Badge `unverified` — auch bei `status` `approved_with_disclaimer`, wenn die
+  Quellen schwiegen — bzw. `unavailable`, wenn jede gelaufene Prüfung
+  scheiterte (Re-Query oder Judge-Call fehlgeschlagen,
+  `cause: 'check_failed'`) oder der Verifier nicht lief.
 - `reason`: nur bei `skipped` (`no_trigger` | `no_claims` |
-  `no_checkable_claims`) und `unavailable` (`extractor_error` |
-  `pipeline_error`). Geschlossener Code-Satz, nie eine Fehlermeldung — die
-  bleibt in der Logzeile, wo der Fehler gefangen wird.
+  `no_checkable_claims` | `incomplete_coverage`) und `unavailable`
+  (`extractor_error` | `pipeline_error`). Geschlossener Code-Satz, nie eine
+  Fehlermeldung — die bleibt in der Logzeile, wo der Fehler gefangen wird.
 - `uncheckedCount`: Claims, auf denen keine Prüfung lief (`not_checked`); in
-  `unverifiedCount` mitgezählt. Bestätigte Claims sind `claimCount -
-  contradictionCount - unverifiedCount`.
+  `unverifiedCount` mitgezählt. Davon `uncoveredCount`: Einträge für nicht
+  erfasste Teile der Antwort (`coverage_gap`) — die Antwort wurde nicht ganz
+  geprüft. Bestätigte Claims sind `claimCount - contradictionCount -
+  unverifiedCount`.
 
 Das Event geht unverändert über `/api/chat/stream` und den Public-API-Key-Stream
 (`chatRouter.ts`) raus. Ein Connector-Badge entsteht daraus nur über
 `toSemanticAnswer` und nur, wenn die Zähler das Badge tragen
-(`verifierSummaryHasEvidence`, `verified` nur bei lauter bestätigten Claims);
-der Wire-Typ `SemanticAnswer.verifier` bleibt `verified | partial | corrected |
-failed`, Turns ohne Evidenz ergeben dort kein Badge. Der Web-Chat zeigt das
-Event als Footer-Chip (`VerifierBadge`, Keys `chat.verifier.*`), grün nur für
-ein `verified` mit lauter bestätigten Claims, der Tooltip nennt nicht geprüfte
-Claims. Der Borderline-Resample (#132) läuft nur, wenn ein Verdict Claims
-bestätigt und ein geprüfter Claim offen bleibt — nicht bei `skipped` /
-`unavailable`, nicht ohne bestätigten Claim und nicht, wenn nur `not_checked`
-offen ist. Der Omadia-UI-Channel verwirft das Event weiterhin
+(`verifierSummaryHasEvidence`, `verified` und `corrected` nur bei lauter
+bestätigten Claims); der Wire-Typ `SemanticAnswer.verifier` bleibt
+`verified | partial | corrected | failed`, Turns ohne Evidenz ergeben dort
+kein Badge. Der Web-Chat zeigt das Event als Footer-Chip (`VerifierBadge`,
+Keys `chat.verifier.*`), grün nur für ein `verified` mit lauter bestätigten
+Claims, `corrected` nur unter derselben Bedingung; der Tooltip nennt nicht
+geprüfte Claims bzw. sagt, dass nicht die ganze Antwort geprüft wurde. Der
+Borderline-Resample (#132) läuft nur, wenn ein Verdict Claims bestätigt und
+ein geprüfter Claim offen bleibt — nicht bei `skipped` / `unavailable`, nicht
+ohne bestätigten Claim und nicht, wenn nur `not_checked` (auch eine
+Abdeckungslücke) offen ist. Der Omadia-UI-Channel verwirft das Event weiterhin
 (`omadia-ui-channel/src/protocol.ts`). Zustands-Tabelle und Regeln:
 `docs/security-architecture.md` §7c.
 
@@ -3233,6 +3247,19 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   transienter Fehler beim zweiten Sample verschwinden kann. Solange ein Resample
   Schreib-Tools erneut ausführen kann (offener Punkt zu Verifier-Retries ohne
   Write-Replay), ist das gegen die Kosten neu abzuwägen.
+- **Lange Antworten fensterweise extrahieren.** Der `ClaimExtractor` liest nur
+  die ersten 6000 Zeichen (`EXTRACTION_WINDOW_CHARS`); jede längere Antwort
+  trägt deshalb eine `coverage_gap` und ist höchstens `partial`, auch wenn
+  jeder Claim im gelesenen Teil stimmt. ERP-Listen überschreiten das leicht.
+  Fensterweise Extraktion (überlappende Fenster, Dubletten zusammenführen, ein
+  LLM-Call je Fenster, bis die Claim-Liste voll ist) würde sie voll prüfbar
+  machen; die Lücke bliebe nur für Text jenseits des letzten Fensters.
+- **Token-Budget der Extraktion an das Claim-Limit koppeln.** Der
+  `record_claims`-Call hat `maxTokens: 1024`. Eine Liste nahe am Limit
+  (`VERIFIER_MAX_CLAIMS + 1` Einträge) kann daran abreißen und endet dann als
+  `unavailable` (`extractor_error`) statt als `partial` — ehrlich, aber
+  ungenauer als nötig. Budget aus `maxClaims` ableiten oder kompaktere
+  Einträge anfordern.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

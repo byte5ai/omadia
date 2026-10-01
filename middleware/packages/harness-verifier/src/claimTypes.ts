@@ -21,12 +21,17 @@ export type ClaimType =
                           // Never produced by the LLM-side claim extractor;
                           // verifierPipeline manufactures one per violation
                           // it scans out of the runTrace before extraction.
-  | 'citation_missing'; // #131 — synthetic claim: the turn called a
-                        // knowledge-graph tool but the answer contains no
-                        // `[ref:nodeId]` markers, so any KG-grounded
-                        // statement in the answer is structurally
-                        // unattributable. Drives the correctionPrompt
-                        // retry to force the model to add citations.
+  | 'citation_missing' // #131 — synthetic claim: the turn called a
+                       // knowledge-graph tool but the answer contains no
+                       // `[ref:nodeId]` markers, so any KG-grounded
+                       // statement in the answer is structurally
+                       // unattributable. Drives the correctionPrompt
+                       // retry to force the model to add citations.
+  | 'coverage_gap'; // synthetic claim: a part of the answer the claim
+                    // extraction did not cover (an `ExtractionGap`). Never
+                    // produced by the LLM; the pipeline adds one `not_checked`
+                    // verdict per gap, so an answer read only in part is never
+                    // `approved`.
 
 /** Which subsystem is authoritative for this claim. */
 export type ClaimSource = 'odoo' | 'graph' | 'confluence' | 'unknown';
@@ -78,11 +83,33 @@ export interface SoftClaim extends Claim {
 }
 
 /**
+ * A part of the answer a claim extraction did not cover. A closed code:
+ *  - `answer_beyond_window` — the answer is longer than the text the extractor
+ *    sends to the model; claims in the rest were never looked for.
+ *  - `claim_list_full`      — the model returned as many claims as it was
+ *    asked for at most, so it may have left further claims out.
+ */
+export type ExtractionGap = 'answer_beyond_window' | 'claim_list_full';
+
+/**
+ * What a claim extraction found and what it did not cover. `gaps` is empty
+ * only when the model saw the whole answer and its claim list was not cut at
+ * the request limit; otherwise the result is incomplete and the pipeline
+ * keeps every gap in the verdict as not checked.
+ */
+export interface ClaimExtraction {
+  claims: Claim[];
+  gaps: ExtractionGap[];
+}
+
+/**
  * Why a claim stayed `unverified`, where that is more than "checked, not
  * confirmed" (which carries no cause):
  *  - `not_checked`  — no check ran: no checker accepts the claim (an amount,
  *                     id, date or aggregate whose source is neither Odoo nor
- *                     the graph), or it lies beyond the per-answer claim cap.
+ *                     the graph), it lies beyond the per-answer claim cap, or
+ *                     it is a `coverage_gap` entry for a part of the answer
+ *                     the extraction did not cover.
  *  - `check_failed` — a check ran and could not finish: the re-query, the
  *                     evidence fetch or the judge call failed.
  * Neither is evidence. A claim nobody checked still counts against the
@@ -113,8 +140,16 @@ export type NonEmptyClaimVerdicts = [ClaimVerdict, ...ClaimVerdict[]];
  *  - `no_claims`           — the trigger fired but the extractor found no claim.
  *  - `no_checkable_claims` — claims were extracted, but none fits a checker
  *                            (e.g. an amount whose source is unknown).
+ *  - `incomplete_coverage` — the extraction did not cover the whole answer
+ *                            (an `ExtractionGap`) and found nothing checkable
+ *                            in the part it covered; "no claims" would say
+ *                            more than was looked at.
  */
-export type VerifierSkipReason = 'no_trigger' | 'no_claims' | 'no_checkable_claims';
+export type VerifierSkipReason =
+  | 'no_trigger'
+  | 'no_claims'
+  | 'no_checkable_claims'
+  | 'incomplete_coverage';
 
 /**
  * Why the verifier could not run. A closed code on purpose: the reason is
@@ -130,8 +165,9 @@ export type VerifierUnavailableReason = 'extractor_error' | 'pipeline_error';
  *    cannot be built).
  *  - `approved_with_disclaimer` — nothing contradicted, at least one claim
  *    not confirmed: checked without confirmation, failed in its checker, or
- *    never checked (`cause: 'not_checked'`). An answer checked only in part
- *    lands here, never in `approved`.
+ *    never checked (`cause: 'not_checked'`, including the `coverage_gap`
+ *    entry for a part of the answer the extraction did not cover). An answer
+ *    checked only in part lands here, never in `approved`.
  *  - `blocked` — at least one claim was contradicted.
  *  - `skipped` — the verifier ran but had nothing it could check.
  *  - `unavailable` — the verifier could not run.
