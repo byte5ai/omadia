@@ -600,8 +600,8 @@ the text came from, not its shape:
 
 | Carrier | What the model reads | Receipt entry (`toolErrors`) |
 |---|---|---|
-| A handler **threw** | The withheld notice: ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …`` — class name and a sanitised code (`describeThrownError`, `@omadia/plugin-api`), never the message | `thrown` / `withheld` |
-| A handler **returned** an `Error:` string | The text after the prefix, run through the provider's `redactToolErrorText`: the C0 identity types (e-mail, IBAN, phone, address, id number — not `date` or `amount`, which are hints), the operator deny-list (#760) and C1, each span replaced irreversibly by `[masked:<type>]`. **Withheld** whole instead when the text is exception-shaped (a record echo as JSON, as a Python dict, or as a JavaScript object or `Map` the way `util.inspect`, `console.log` and `%o` print it; a stack trace; a Postgres `Key (…)=(…)` detail), longer than 4096 characters, or the provider cannot check it | `returned` / `redacted` (with span types) or `withheld` |
+| A handler **threw** | The withheld notice: ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …`` — class name and a sanitised code (`describeThrownError`, `@omadia/plugin-api`), never the message; it also says the outcome is unknown and not to repeat a call that changes data | `thrown` / `withheld` |
+| A handler **returned** an `Error:` string | The text after the prefix, run through the provider's `redactToolErrorText`: the C0 identity types (e-mail, IBAN, phone, address, id number — not `date` or `amount`, which are hints), the operator deny-list (#760) and C1, each span replaced irreversibly by `[masked:<type>]`. **Withheld** whole instead when the text is exception-shaped (a record echo as JSON, as a Python dict, or as a JavaScript object or `Map` the way `util.inspect`, `console.log` and `%o` print it; a record printed with keyword fields — a Python dataclass, a Kotlin data class or Lombok `toString`, a Java record or `Map` — or with Go's bare `Key:value` fields; a stack trace; a Postgres `DETAIL:` line, a `Failing row contains (…)` or a `Key (…)=(…)` detail), longer than 4096 characters, or the provider cannot check it | `returned` / `redacted` (with span types) or `withheld` |
 | The MCP **connect prompt** (`🔒 The MCP server "…`) that `McpManager.handleFailure` produced **in the same dispatch** | Byte-identical: its connect URL and `<mcp-auth-required>` block must survive. Recognised by per-dispatch provenance, never by its prefix: any other text that starts like the prompt is tool data and is interned | `mcp_auth_prompt` / `passed` |
 
 The seams, each applying the helper after the intern exemption and the
@@ -621,8 +621,17 @@ operator bypass and before interning:
   seam below applies beneath this dispatcher too.
 - `LocalSubAgent.dispatch`: both carriers, under whichever handle its domain
   tool was dispatched with. An inner tool throw becomes an `is_error` tool
-  result the sub-agent can answer around, bounded by its repeat-failure guard,
-  instead of aborting the sub-agent.
+  result the sub-agent can answer around, instead of aborting the sub-agent.
+  The call may have taken effect before it threw (a write commits, then its
+  response times out), so the notice says the outcome is unknown, and the
+  sub-agent refuses an identical repeat (same tool, same canonical input) for
+  the rest of the run, with or without a privacy provider
+  (`subAgentUnknownOutcome.ts`). That covers a tool whose wrapper caught the
+  exception and returned the withheld notice, too (the tool bridges,
+  `toolErrorFromException`): `isWithheldToolErrorNotice` recognises it by
+  shape, so a tool that imitates the shape only blocks its own repeat. A
+  different input still runs, and so does a retry after an ordinary returned
+  `Error:` hint.
 
 **Per entry point.** What reaches a model provider depends on where the call
 came in:
@@ -735,10 +744,17 @@ finalized.
   there.
 - C0 detects no names; C1 does when it is configured. Without C1 a returned
   error keeps a name that stands in running prose, or in a record the
-  classifier does not recognise as one: keyword style (`Partner(name='…')`,
-  `name=…` pairs) or bare keys whose values are unquoted words
-  (`{Name:Jane Doe}`). A record echo in one of the shapes in the table is
-  withheld whole.
+  classifier does not recognise as one: positional fields
+  (`Partner(42, 'Jane Doe')`, Go's `%v`) or `name=…` pairs outside any
+  record. A record echo in one of the shapes in the table is withheld whole.
+- Only `LocalSubAgent` refuses to repeat a call that ended in an exception.
+  The parent chat loops and the subscription-CLI sub-agent (whose loop the
+  `claude` CLI owns) do not block a repeat; their model reads the notice's
+  warning only where it reads the notice. No loop blocks a repeat with
+  another input, or one after a returned failure whose outcome is just as
+  unknown (an MCP request timeout). Tools carry no write-capability metadata;
+  running a write at most once needs it, together with an idempotency key
+  (handoff §13).
 - A connect prompt produced by a sub-agent's tool call passes the parent seam
   as control flow only when the sub-agent's answer repeats it byte for byte.
   Any other answer takes the ordinary sub-agent path: interned, or bridged
@@ -1514,4 +1530,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability).*
+*Last reviewed: 2026-10 (§6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception).*

@@ -60,13 +60,26 @@ Both carriers now go through one helper, `toolErrorRedaction.ts`
   `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=0`), an inner tool throw no longer aborts a
   `LocalSubAgent` run, and `ToolDispatchService` uses the same notice instead of
   interning the message as a one-row dataset.
+- **A sub-agent does not repeat a call that ended in an exception.** Such a
+  call may have taken effect before it failed (a write commits, then its
+  response times out), so the notice says the outcome is unknown and not to
+  repeat a call that changes data, and a `LocalSubAgent` refuses an identical
+  repeat (same tool, same input) for the rest of the run with an `Error:`
+  result instead of running it. That includes a tool bridge that caught the
+  exception and returned the notice. Before, a bridged tool's exception came
+  back as text, and the sub-agent's model could run the same write up to three
+  times before the repeat-failure guard stopped it. Another input, or a retry
+  after an ordinary returned `Error:` hint, still runs.
 - **Returned `Error:` text is redacted** by the provider's new
   `redactToolErrorText` (C0 identity types — dates and amounts stay readable —,
   the operator deny-list and C1; irreversible `[masked:<type>]`), or withheld
   whole when it looks like a record dump (JSON, a Python dict, or a JavaScript
-  object or `Map` as `util.inspect` and `%o` print it) or a stack trace, is
-  longer than 4096 characters, or cannot be checked. The kernel's own refusals
-  are exempt by per-dispatch provenance.
+  object or `Map` as `util.inspect` and `%o` print it; a record printed with
+  keyword fields, such as a dataclass, Kotlin, Lombok or Java record dump, or
+  with Go's `Key:value` fields; a Postgres `DETAIL:` line or failing row, as
+  psycopg and Odoo's JSON-RPC errors carry it) or a stack trace, is longer
+  than 4096 characters, or cannot be checked. The kernel's own refusals are
+  exempt by per-dispatch provenance.
 - **The MCP connect prompt passes on provenance, not on its prefix.** It still
   reaches the model unchanged, but only the exact text `McpManager` produced in
   the same dispatch (`McpAuthPromptMint`). Before, any result that merely

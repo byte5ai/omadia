@@ -240,6 +240,11 @@ full policy):
 - **More receipt rows.** A turn whose only privacy-shield activity was a
   failing tool now writes a receipt (`/operator/receipts`), reaped by
   `RECEIPT_RETENTION_DAYS` as before.
+- **A sub-agent does not repeat a call that ended in an exception.** The call
+  may have taken effect before it failed, so a second identical call (same
+  tool, same input) in the same sub-agent run gets
+  ``Error: tool `<name>` was not called: …`` instead of running. A run trace
+  shows that refusal where it used to show a second attempt.
 - **Public MCP: a domain tool's sub-agent now works on masked data.** When an
   API key calls an `ask_<agent>` tool, that agent's sub-agent runs under the
   call's privacy gate: its model reads masked tool results and withheld error
@@ -252,11 +257,15 @@ of `Error: ${err.message}`. Only text the plugin authors itself belongs in an
 `Error:` result, and the dispatch seam redacts even that. A typed error class
 of your own does not make its message authored text: keep a caught exception
 on `cause` and an upstream response body on a separate field, and build the
-`Error:` result from typed fields such as an HTTP status. A tool that returns
-an MCP connect prompt it wrote itself (text starting `🔒 The MCP server "`) now
-has it interned like any other result: only the prompt `McpManager` produced in
-the same dispatch reaches the model unchanged. To surface one, call the MCP
-server through `ctx.mcp` and return its answer as it is.
+`Error:` result from typed fields such as an HTTP status. The withheld notice
+tells the model the call's outcome is unknown, and a sub-agent will not repeat
+a call that ended with it; a tool whose failure is safe to retry (a read that
+timed out) can return an `Error:` hint it writes itself instead. A tool that
+returns an MCP connect prompt it wrote itself (text starting
+`🔒 The MCP server "`) now has it interned like any other result: only the
+prompt `McpManager` produced in the same dispatch reaches the model unchanged.
+To surface one, call the MCP server through `ctx.mcp` and return its answer as
+it is.
 
 ## Upgrading to 0.3
 

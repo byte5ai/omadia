@@ -2932,15 +2932,27 @@ Herkunft:
   (das die Message als Dataset internierte) durch dieselbe Notice
   (`origin: 'dispatcher'`), und `LocalSubAgent.dispatch` macht aus einem
   werfenden inneren Tool ein `is_error`-Tool-Result, statt den Sub-Agent
-  abbrechen zu lassen.
+  abbrechen zu lassen. Der Aufruf kann vor der Exception schon gewirkt haben
+  (Write committet, Antwort läuft in den Timeout): die Notice sagt dem
+  Modell, dass der Ausgang unbekannt ist, und der Sub-Agent verweigert für den
+  Rest des Laufs eine identische Wiederholung (gleiches Tool, gleicher
+  kanonischer Input; `subAgentUnknownOutcome.ts`) — auch ohne
+  Privacy-Provider und auch dann, wenn eine Tool-Bridge die Exception selbst
+  gefangen und die Notice zurückgegeben hat (`isWithheldToolErrorNotice`,
+  Erkennung an der Form; wer sie imitiert, blockiert nur die eigene
+  Wiederholung). Anderer Input und ein Retry nach einem gewöhnlichen
+  zurückgegebenen `Error:`-Hinweis laufen weiter.
 - **Zurückgegeben** (`guardControlFlowResult`): der Text hinter `Error:` geht
   durch `redactToolErrorText` des Providers (C0-Identitätstypen ohne
   `date`/`amount`, Deny-List #760, C1; irreversibel `[masked:<typ>]`, die
   Surrogat-Map des Turns wird nicht erweitert). Zurückgehalten statt redigiert
   wird er, wenn er nach Exception aussieht (Zeilen-Echo als JSON, Python-Dict
   oder JS-Objekt/`Map`, wie `util.inspect`, `console.log` und `%o` es
-  drucken; Stacktrace; `Key (…)=(…)`), länger als 4096 Zeichen ist oder der
-  Provider ihn nicht prüfen kann.
+  drucken; Datensatz mit Keyword-Feldern wie Dataclass, Kotlin/Lombok,
+  Java-Record oder Java-`Map`, oder mit Gos `Key:value`-Feldern; Stacktrace;
+  Postgres-`DETAIL:`-Zeile, `Failing row contains (…)` oder `Key (…)=(…)`,
+  wie psycopg und Odoos JSON-RPC-Fehler sie tragen), länger als 4096 Zeichen
+  ist oder der Provider ihn nicht prüfen kann.
 - **MCP-Connect-Prompt**: byte-identisch durchgereicht (Connect-Karte muss
   überleben) und quittiert — aber nur der Text, den `McpManager` im selben
   Dispatch erzeugt hat; alles andere mit diesem Präfix wird interniert. Der
@@ -3102,6 +3114,25 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   Treiber-Hinweis zurück will, stellt in `withholdThrownToolError` auf
   `redactToolErrorText` um (eine Stelle) — um den Preis von Namen, die C0
   nicht erkennt.
+- **Wiederholung nach einer Exception:** nur `LocalSubAgent` verweigert die
+  identische Wiederholung eines Aufrufs, der mit einer Exception endete
+  (`subAgentUnknownOutcome.ts`). Die Eltern-Loops und der Abo-CLI-Sub-Agent
+  (dessen Schleife der `claude`-CLI besitzt) blockieren keine Wiederholung;
+  den Hinweis der Notice liest ihr Modell nur dort, wo es die Notice liest
+  (ohne Privacy-Provider kommt ein direkter Throw roh an). Kein Pfad
+  blockiert eine Wiederholung mit anderem Input oder nach einem
+  zurückgegebenen Fehler mit ebenso unbekanntem Ausgang
+  (MCP-Request-Timeout). `LocalSubAgentTool` trägt keine
+  Write-Capability-Metadaten, deshalb gilt die Sperre für Lese- wie
+  Schreib-Tools. Ein Write genau einmal auszuführen braucht diese Metadaten
+  plus Idempotenz-Key (wie `ToolDispatchService` sie für das MCP-`exactlyOnce`
+  setzt) — gehört zur Write-Idempotenz-Arbeit am Sub-Agent-Pfad.
+- **Exception-Formen ohne C1:** positionale Datensatz-Dumps
+  (`Partner(42, 'Jane Doe')`, Gos `%v`) und `name=…`-Paare außerhalb eines
+  Datensatzes erkennt `looksExceptionShaped` nicht; ein Name darin geht ohne
+  C1 an das Modell. Jedes weitere Muster kostet Hinweise, die heute lesbar
+  bleiben — vor einer Erweiterung die Negativliste in
+  `toolErrorExceptionShape.test.ts` prüfen.
 
 ### MRTR-Sentinel über Skill-Bindung und `ctx.mcp` (#570 follow-up)
 
