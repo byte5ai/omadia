@@ -30,13 +30,15 @@ model the real values the shield rendered into those answers on later turns.
 The `read_attachment` tool, which reads an uploaded file, and a short allowlist
 of the agent's own tools, such as `memory`, return their results to the model in
 clear. Images you attach reach an image-capable model unmasked, and so do model
-calls that plugins make themselves through `ctx.llm`, the canvas composer among
-them, with prompt masking on or off. Agents on the Claude subscription CLI run
-without the shield. An optional answer verifier, off by default, checks an
-answer against its sources only when one of its trigger patterns matches, such
-as a euro amount, an accounting reference or a date written as `2026-10-02`.
-Figures in other formats, like `$500` or `October 2, 2026`, are not checked. In
-its default `shadow` mode the verifier only records a verdict. On the Postgres
+calls that plugins make on their own, through `ctx.llm` or their own provider,
+with prompt masking on or off. The canvas composer makes such calls, and so do
+the memory jobs that filter recalled context and summarise earlier sessions.
+Agents on the Claude subscription CLI run without the shield. An optional
+answer verifier, off by default, checks an answer against its sources only
+when one of its trigger patterns matches, such as a euro amount, an accounting
+reference or a date written as `2026-10-02`. An answer whose figures all come
+in other formats, like `$500` or `October 2, 2026`, is not checked. In its
+default `shadow` mode the verifier only records a verdict. On the Postgres
 backend, each turn in which the shield acted appends a hash-chained receipt.
 Writing it is best-effort: a failed write is logged, and the turn completes
 without a receipt. Bring your own LLM key and switch providers by config, not
@@ -169,7 +171,7 @@ three rows are why teams choose it; the rest is the groundwork done properly.
 
 | Capability | What you get |
 |---|---|
-| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary, and the LLM works from an identity-free digest. A result the shield cannot intern is withheld. `guarded` by default, with `bypass`, `per_tool` and a per-MCP-server bypass as opt-ins and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Prompt masking (`mask_user_prompt`) is off by default, so your own messages and the chat history a channel replays reach the model as typed. Replayed answers can carry real values the shield rendered into them. `read_attachment` (uploaded files) and a short allowlist of the agent's own tools return their results in clear. Images you attach reach an image-capable model unmasked, and so do model calls that plugins make themselves (`ctx.llm`, the canvas composer among them), with prompt masking on or off. The Claude subscription CLI (`claude-cli`) runs without the shield. |
+| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary, and the LLM works from an identity-free digest. A result the shield cannot intern is withheld. `guarded` by default, with `bypass`, `per_tool` and a per-MCP-server bypass as opt-ins and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Prompt masking (`mask_user_prompt`) is off by default, so your own messages and the chat history a channel replays reach the model as typed. Replayed answers can carry real values the shield rendered into them. `read_attachment` (uploaded files) and a short allowlist of the agent's own tools return their results in clear. Images you attach reach an image-capable model unmasked, and so do model calls that plugins make on their own (`ctx.llm` or their own provider, as the canvas composer and the memory jobs do), with prompt masking on or off. The Claude subscription CLI (`claude-cli`) runs without the shield. |
 | ✅&nbsp;**Answer&nbsp;verification** | Optional and off by default (`verifier_enabled`). Once switched on, it checks an answer against the run's own sources only if one of its trigger patterns matches, such as a euro amount, an accounting reference like `INV/2026/0042` or a date written as `2026-10-02`, and records a verdict. Figures in other formats, such as other currencies or English-format dates, match no trigger pattern. An answer in which the verifier finds nothing to check is `skipped`, a verifier that could not run is `unavailable`, and `approved` means that every claim the verifier extracted was checked and confirmed. The default mode, `shadow`, only records. `enforce` holds each answer until its verdict, delivers an answer the verifier confirmed and withholds one it could not confirm. An answer that no trigger pattern matched, or in which the extraction found no claim, goes out unchecked in `enforce` too, and so does a turn that carries an input card. |
 | 🧮&nbsp;**Excel&nbsp;from&nbsp;real&nbsp;rows** | `create_xlsx` writes the real rows behind a `datasetId` into the workbook server-side, so they never pass through the model, and adds sums and pivots as Excel formulas. omadia runs no spreadsheet engine of its own: the workbook asks the spreadsheet application to recalculate when it opens the file, and that application computes every formula result. |
 | 🧾&nbsp;**Traces&nbsp;and&nbsp;receipts** | The call-stack viewer shows a run step by step, with each tool call and decision. That trace is best-effort telemetry, so a run can lack one. Privacy receipts (`/operator/receipts`, Postgres backend) are hash-chained and written best-effort, one for each turn in which the privacy shield acted. A failed write is logged and not retried, and a receipt that was never written leaves no gap in the chain. |
@@ -285,11 +287,13 @@ answer:
   results of a short allowlist of the agent's own tools (`memory`, the
   stored-process tools, `suggest_follow_ups`, `ask_user_choice`). Images the
   user attaches reach an image-capable model unmasked, and so do the model
-  calls that plugins make themselves through `ctx.llm`, such as the ones the
-  canvas composer and the plan-runner's planning check make before the turn
-  starts, with prompt masking on or off. Agents on the Claude subscription CLI
-  (`claude-cli`) run without the shield, and `agents.privacy_profile` is not a
-  shield setting
+  calls that plugins make on their own, with prompt masking on or off. Through
+  `ctx.llm`, the canvas composer and the plan-runner's planning check send the
+  user's message before the turn starts. Through their own provider, the
+  memory jobs send stored memories and earlier turns, which hold real values,
+  to filter recalled context, summarise an earlier session or compare
+  memories. Agents on the Claude subscription CLI (`claude-cli`) run without
+  the shield, and `agents.privacy_profile` is not a shield setting
   ([`docs/security-architecture.md`](docs/security-architecture.md) §3a, §6b,
   §6d, §6f, §7b).
   Spec: [`specs/001-privacy-shield-v4/`](specs/001-privacy-shield-v4/).

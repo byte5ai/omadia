@@ -4193,16 +4193,21 @@ README, `docs/architecture.md`, `docs/security-architecture.md` und
   (`composeSkeleton`, schickt `input.userMessage` vor dem Turn), Planungs-Gate
   und Planer des Plan-Runners (`gate.ts`, `materializer.ts`, aus
   `onBeforeTurn` mit der Rohnachricht) und jedes Tool, das Daten holt und
-  selbst ein Modell fragt; dazu Bild-Anhänge als Base64-Blöcke an ein Modell
-  mit Bild-Eingabe (`buildUserContent`). Die Einzelpunkte stehen unter
-  „Tool-Fehler-Politik“ und „Verifier-Wiedereintritt“; diese Unit fasst sie
-  zusammen: `ctx.llm`-Anfragen innerhalb eines Turns über dessen Prompt-Maske
-  führen (Handle aus `turnContext`, Maskierung nach dem Muster von
-  `maskUserPrompt`, fail-closed), den Canvas-Composer bei aktivem Shield auf
-  das deterministische Fallback-Skelett setzen und Bild-Anhänge unter aktivem
-  Shield nur nach Policy zulassen. Danach README (Intro, Zeile „Privacy
-  Shield“, Abschnitt „Trust & privacy“), §6f und `docsClaimsGuard.test.ts`
-  nachziehen.
+  selbst ein Modell fragt; die Memory-Jobs von `@omadia/orchestrator-extras`
+  über dessen eigenen Provider mit gespeicherten Realwerten
+  (Recall-Relevance-Judge pro Turn, Session-Briefing, Inconsistency-Detector,
+  Cluster-Benennung, Topic-Detector für Teams; Fakten- und Excerpt-Extraktion
+  lesen dagegen schon den Wire-Text); dazu Bild-Anhänge als Base64-Blöcke an
+  ein Modell mit Bild-Eingabe (`buildUserContent`). Die Einzelpunkte zu
+  `ctx.llm`, Canvas und Bildern stehen unter „Tool-Fehler-Politik“ und
+  „Verifier-Wiedereintritt“; diese Unit fasst sie zusammen: `ctx.llm`- und
+  Memory-Job-Anfragen über die Prompt-Maske des Turns bzw. eine Maske für
+  gespeicherten Text führen (Handle aus `turnContext`, Maskierung nach dem
+  Muster von `maskUserPrompt`, fail-closed), den Canvas-Composer bei aktivem
+  Shield auf das deterministische Fallback-Skelett setzen und Bild-Anhänge
+  unter aktivem Shield nur nach Policy zulassen. Danach README (Intro, Zeile
+  „Privacy Shield“, Abschnitt „Trust & privacy“), §6f und
+  `docsClaimsGuard.test.ts` nachziehen.
 - **Verifier prüft nur, was ein Trigger-Muster trifft.** `shouldTriggerVerifier`
   (`harness-verifier/src/triggerRouter.ts`) kennt Euro-Beträge,
   Buchungsreferenzen, ISO- und `dd.mm.yyyy`-Daten, Prozente, deutsche

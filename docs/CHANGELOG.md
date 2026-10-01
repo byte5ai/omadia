@@ -67,10 +67,12 @@ later turns. `read_attachment` and a short allowlist of the agent's own tools
 the shield per plugin, per tool or per MCP server, and agents on the Claude
 subscription CLI (`claude-cli`) run without the shield. Images the user
 attaches reach an image-capable model unmasked, and so do the model calls that
-plugins make themselves through `ctx.llm`, such as the canvas composer's and
-the plan-runner's, with prompt masking on or off. Security architecture §6f
-lists the tool results the shield exempts, the prompt-text layer and these
-model calls outside the shield.
+plugins make on their own, with prompt masking on or off: through `ctx.llm`
+the canvas composer and the plan-runner send the user's message before the
+turn starts, and through their own provider the memory jobs send stored
+memories and earlier turns. Security architecture §6f lists the tool results
+the shield exempts, the prompt-text layer and these model calls outside the
+shield.
 
 The answer verifier is described as optional and off by default, with `shadow`
 as its default mode, which only records. It checks an answer only when one of
