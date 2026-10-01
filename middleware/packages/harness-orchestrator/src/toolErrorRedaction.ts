@@ -27,10 +27,12 @@
  *    which replaces every span irreversibly with `[masked:<type>]` so the hint
  *    survives. It is WITHHELD whole instead when it is exception-shaped (a row
  *    echo as JSON, a Python dict or a JavaScript object or `Map` the way
- *    `util.inspect` / `%o` print it; a stack trace — partial regex masking of a
- *    record dump is not reliable, names survive it), when it is too long to
- *    check, or when the provider cannot redact (it predates the contract,
- *    throws, or reports `withheld`). Fail closed, never forward unchecked.
+ *    `util.inspect` / `%o` print it; a record with keyword fields or Go-style
+ *    bare keys; a Postgres detail line such as `Failing row contains (…)`; a
+ *    stack trace — partial regex masking of a record dump is not reliable,
+ *    names survive it), when it is too long to check, or when the provider
+ *    cannot redact (it predates the contract, throws, or reports `withheld`).
+ *    Fail closed, never forward unchecked.
  *  - MCP CONNECT PROMPT: passes byte-identical, because the connect URL and the
  *    `<mcp-auth-required>` block the chat UI parses into a Connect card must
  *    survive (C0's phone pattern would rewrite digit runs in the URL). Only
@@ -108,6 +110,32 @@ const STACK_FRAME = /\n\s*at\s+\S/;
 const PY_TRACEBACK = /Traceback \(most recent call last\)|\bFile "[^"\n]{1,256}", line \d+/;
 // Postgres unique-violation detail: `Key (email)=(jane@…) already exists`.
 const KEY_VALUE_DETAIL = /\bKey \([^)\n]{1,128}\)=\(/;
+// A Postgres detail line. It carries values, not hints: the failing row of a
+// NOT NULL or CHECK violation, the key of a unique violation, the token a
+// parser rejected. psycopg keeps it in the message, and Odoo's JSON-RPC
+// `data.message` passes it on.
+const PG_DETAIL_LINE = /\bDETAIL:/;
+// The failing row without its label (psycopg's `diag.message_detail`,
+// node-postgres' `err.detail`): `Failing row contains (42, Jane Doe, …)`.
+const PG_FAILING_ROW = /\bFailing row contains \(/;
+// A record printed with keyword fields: a Python dataclass or namedtuple repr,
+// a Kotlin data class, Lombok's `toString`, a Java record
+// (`Partner(id=42, name=Jane Doe)`, `Partner[id=42, …]`), positional fields
+// before the first keyword included. The first `=` after the bracket must
+// follow an identifier directly and must not start `==`, so a comparison such
+// as `filter(amount>=100)` stays readable. The run before it cannot contain a
+// bracket or `=` and every quantifier is bounded, so the scan stays cheap
+// (well under a millisecond on a 4 KB body).
+const KEYWORD_RECORD = /\b[A-Za-z_][\w$.]{0,63}[([][^()[\]=]{0,256}\b[A-Za-z_]\w{0,63}=(?!=)/;
+// A map printed with `key=value` entries (Java's `Map#toString`:
+// `{name=Jane Doe, id=42}`).
+const KEYWORD_MAP = /\{\s*[A-Za-z_]\w{0,63}=(?!=)/;
+// A record printed with bare `Key:value` fields and no space after the colon:
+// Go's `%+v` (`{Name:Jane Doe Email:…}`, `&{ID:42 …}`) and its maps
+// (`map[name:…]`). The value must open with a letter, a digit or a quote, so a
+// format spec such as `{amount:.2f}` stays readable.
+const GO_STRUCT = /\{[A-Za-z_]\w{0,63}:["'A-Za-z0-9]/;
+const GO_MAP = /\bmap\[[A-Za-z_]\w{0,63}:/;
 
 const UNSAFE_TOKEN_CHARS = /[^A-Za-z0-9_.:-]/g;
 
@@ -150,9 +178,15 @@ export function looksExceptionShaped(text: string): boolean {
   return (
     QUOTED_KEY.test(text) ||
     hasBareKeyEntry(text) ||
+    KEYWORD_RECORD.test(text) ||
+    KEYWORD_MAP.test(text) ||
+    GO_STRUCT.test(text) ||
+    GO_MAP.test(text) ||
     STACK_FRAME.test(text) ||
     PY_TRACEBACK.test(text) ||
-    KEY_VALUE_DETAIL.test(text)
+    KEY_VALUE_DETAIL.test(text) ||
+    PG_DETAIL_LINE.test(text) ||
+    PG_FAILING_ROW.test(text)
   );
 }
 

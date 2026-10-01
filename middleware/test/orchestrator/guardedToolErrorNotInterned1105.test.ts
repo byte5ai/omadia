@@ -253,13 +253,16 @@ describe('#1105 — guarded-tool error result is not interned as a dataset', () 
     assert.deepEqual(recorded[0]?.redactedSpans, [{ type: 'email', detector: 'c0-regex' }]);
   });
 
-  it('withholds a record echo whole — JSON, a JS object literal, util.inspect, %o', async () => {
+  it('withholds a record echo whole — JSON, JS literals, keyword and Go records, a failing row', async () => {
     const record = { id: 42, name: 'Erika Mustermann', email: EMAIL };
     for (const returned of [
       `Error: Fault on record ${JSON.stringify(record)}`,
       `Error: Fault on record { name: 'Erika Mustermann', email: '${EMAIL}' }`,
       `Error: Fault on record ${inspect(record)}`,
       format('Error: Fault on record %o', record),
+      `Error: Fault on Partner(id=42, name=Erika Mustermann, email=${EMAIL})`,
+      `Error: Fault on {Name:Erika Mustermann Email:${EMAIL}}`,
+      `Error: check violation\nDETAIL:  Failing row contains (42, Erika Mustermann, ${EMAIL}).`,
     ]) {
       const recorded: PrivacyToolErrorRequest[] = [];
       const text = await wireTextOfReturnedError('odoo_write', returned, recorded);
