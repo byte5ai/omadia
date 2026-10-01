@@ -195,4 +195,18 @@ describe('LocalPasswordProvider.verify', () => {
     const exact = await provider(store).verify({ email: 'Admin@example.com', password: 'pw-12345678' });
     assert.equal(exact.outcome, 'success');
   });
+
+  it('judges the address as sent, so padding the limiter does not fold cannot sign in', async () => {
+    // The limiter folds at most ~1000 characters; a longer value shares the
+    // provider-wide key, so it must not reach an account after trimming.
+    const store = new InMemoryUserStore();
+    await store.addLocalUser({ email: 'admin@example.com', plainPassword: 'pw-12345678' });
+    const padded = await provider(store).verify({
+      email: `${' '.repeat(2_000)}admin@example.com`,
+      password: 'pw-12345678',
+    });
+    assert.equal(padded.outcome, 'error');
+    const trimmed = await provider(store).verify({ email: ' admin@example.com ', password: 'pw-12345678' });
+    assert.equal(trimmed.outcome, 'success', 'ordinary surrounding whitespace still signs in');
+  });
 });

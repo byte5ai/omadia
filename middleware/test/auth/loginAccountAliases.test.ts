@@ -94,6 +94,16 @@ describe('one account, many spellings: one budget', () => {
     }
     assertRateLimited(await login(h, wrong('\u03b1\u03c3@example.com'), PROXY));
   });
+
+  it('an address padded past what the key folds is counted apart, so it never signs in', async () => {
+    const h = await harness();
+    for (let i = 0; i < FREE; i += 1) await login(h, wrong(), PROXY);
+    assertRateLimited(await login(h, right(), PROXY));
+    // Thousands of spaces put the attempt under the provider-wide key...
+    const padded = await login(h, right(`${' '.repeat(2_000)}admin@example.com`), PROXY);
+    // ...where even the right password signs in to nothing.
+    assert.equal(padded.status, 401);
+  });
 });
 
 describe('a device cookie belongs to the account that signed in', () => {

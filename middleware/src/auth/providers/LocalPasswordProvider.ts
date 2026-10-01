@@ -41,7 +41,15 @@ interface LoginBody {
   password?: unknown;
 }
 
-function readLoginBody(body: unknown): { email: string; password: string } | null {
+interface LoginCredentials {
+  /** The address the users table is asked for: trimmed. */
+  email: string;
+  /** The address exactly as sent — what the sign-in limiter keyed the attempt by. */
+  typed: string;
+  password: string;
+}
+
+function readLoginBody(body: unknown): LoginCredentials | null {
   if (!body || typeof body !== 'object') return null;
   const b = body as LoginBody;
   if (typeof b.email !== 'string' || b.email.length === 0) return null;
@@ -49,7 +57,7 @@ function readLoginBody(body: unknown): { email: string; password: string } | nul
   if (b.password.length > MAX_LOGIN_PASSWORD_LENGTH) return null;
   // Trim email surroundings — passwords are taken as-is (whitespace is
   // legitimate password material).
-  return { email: b.email.trim(), password: b.password };
+  return { email: b.email.trim(), typed: b.email, password: b.password };
 }
 
 export class LocalPasswordProvider implements PasswordProvider {
@@ -74,13 +82,14 @@ export class LocalPasswordProvider implements PasswordProvider {
       creds.email,
     );
 
-    // The sign-in limiter counted this attempt under the folded address
-    // (auth/loginAccount.ts). An account whose own address folds to another
-    // key, which a database collation or Unicode version could still match,
-    // is no match here: an attempt never signs in outside the budget it was
-    // counted in. For the shipped databases the fold is coarser than LOWER(),
-    // so this never turns away an address the table matches.
-    if (!user || !user.passwordHash || !isSameLoginAccount(this.id, user.email, creds.email)) {
+    // The sign-in limiter counted this attempt under the folded address as
+    // sent (auth/loginAccount.ts). An account whose own address folds to
+    // another key, which a database collation or Unicode version could still
+    // match, or which the sent value only reaches after trimming past the
+    // fold's input cap, is no match here: an attempt never signs in outside
+    // the budget it was counted in. For the shipped databases the fold is
+    // coarser than LOWER(), so this never turns away an address as typed.
+    if (!user || !user.passwordHash || !isSameLoginAccount(this.id, user.email, creds.typed)) {
       // Run a dummy verify against a non-trivial hash to keep timing
       // closer to the password-mismatch path. The hash below is the
       // result of argon2id-hashing a long random string; it can never
