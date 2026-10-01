@@ -1632,6 +1632,10 @@
       "bodyNoTools": "Some actions had already run when this turn failed, and the assistant could not produce an answer afterwards, so your question is still unanswered. Repeat the question; check with your operator before repeating anything that changes data.",
       "completedTools": "Completed actions:"
     },
+    "verifierBlocked": {
+      "heading": "Answer withheld by the fact-check",
+      "body": "The fact-check could not confirm this answer, so it is not shown. Ask the question again, or check the details directly in the source system."
+    },
     "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
     "errorCorrelationRef": "Reference for support: {id}",
     "routing": {

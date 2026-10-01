@@ -593,18 +593,21 @@ export interface ChatTurnResult {
   /**
    * #1105 — set to `'privacy-render'` when this turn's `answer` was swapped
    * in from a Privacy-Shield v4 server-side render (i.e. it may diverge from
-   * the streamed `text_delta` preview). Omitted / `'model'` for the ordinary
-   * case where `answer` is the model's own streamed text. See `AnswerSource`.
+   * the streamed `text_delta` preview), and to `'verifier-blocked'` when the
+   * answer verifier withheld the answer in `enforce` mode and `answer` is the
+   * notice saying so. Omitted / `'model'` for the ordinary case where
+   * `answer` is the model's own streamed text. See `AnswerSource`.
    */
   answerSource?: AnswerSource;
   /**
-   * #1097 — `true` when the server-rendered `answer` is control flow rather
-   * than a result: a tool error (`Error: …`) or an MCP auth prompt the model
-   * rendered as if it were data. Channels MAY present the turn as a failure
-   * (and localise around it) instead of showing success prose over an error
-   * string. Only ever set alongside `answerSource: 'privacy-render'`; omitted
-   * for an ordinary answer, so a client that ignores it keeps today's
-   * behaviour.
+   * #1097 — `true` when `answer` is not a result: a server-rendered tool
+   * error (`Error: …`) or MCP auth prompt the model rendered as if it were
+   * data (alongside `answerSource: 'privacy-render'`), or the notice for an
+   * answer the verifier withheld (alongside `answerSource:
+   * 'verifier-blocked'`, always). Channels MAY present the turn as a failure
+   * (and localise around it) instead of showing success prose over it. Never
+   * set without one of those two `answerSource` values; omitted for an
+   * ordinary answer, so a client that ignores it keeps today's behaviour.
    */
   answerIsError?: boolean;
   /**
@@ -935,18 +938,33 @@ export type ChatStreamEvent =
        * #1105 — `'privacy-render'` when `answer` was materialized server-side
        * by Privacy-Shield v4 this turn, meaning it can diverge from the
        * concatenated `text_delta` preview; `answer` is then authoritative.
-       * Omitted / `'model'` for the ordinary streamed-text case. Additive and
-       * optional — a client that ignores it keeps today's behaviour. See
-       * `AnswerSource`.
+       * `'verifier-blocked'` when the answer verifier withheld the answer in
+       * `enforce` mode: `answer` is the notice, and the stream carried exactly
+       * one `text_delta` (the notice, without the AI-disclosure block that
+       * `answer` may end with) and none of the model's text. Omitted /
+       * `'model'` for the ordinary streamed-text case. Additive and optional —
+       * a client that ignores it keeps today's behaviour. See `AnswerSource`.
        */
       answerSource?: AnswerSource;
       /**
-       * #1097 — `true` when the server-rendered `answer` is control flow (a
-       * tool error, an MCP auth prompt) rather than a result. Additive and
-       * optional; only ever set alongside `answerSource: 'privacy-render'`.
-       * See `ChatTurnResult.answerIsError`.
+       * #1097 — `true` when `answer` is not a result: a server-rendered tool
+       * error or MCP auth prompt (alongside `answerSource: 'privacy-render'`),
+       * or the withheld-answer notice (alongside `answerSource:
+       * 'verifier-blocked'`, always). Additive and optional. See
+       * `ChatTurnResult.answerIsError`.
        */
       answerIsError?: boolean;
+      /**
+       * The answer verifier's verdict on this turn, set by the verifier
+       * wrapper in `enforce` mode, where `done` is released only after the
+       * verdict: the answer and its verdict arrive together. Same summary as
+       * the trailing `verifier` event (which still follows, for clients that
+       * read it there) and as `ChatTurnResult.verifier`. Absent in `shadow`
+       * mode (`done` goes out before the verdict), when the verifier is off,
+       * and on turns it releases without a verdict (choice card, MCP input
+       * form, slot picker, OAuth consent, degraded turn, NO_REPLY).
+       */
+      verifier?: VerifierResultSummary;
       /** #133 — persisted Turn node external id (`turn:<scope>:<time>`); see
        *  ChatTurnResult.turnId. Lets the UI resolve the turn's plan DAG. */
       turnId?: string;
@@ -1023,9 +1041,11 @@ export type ChatStreamEvent =
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The
-   * client can render a badge, hide unverified facts, or simply ignore the
-   * event. `summary.status` may be `skipped` / `unavailable` — nothing was
-   * checked, so it must not render as a check. Never emitted by the base
+   * client can render a badge or simply ignore the event. `summary.status` may
+   * be `skipped` / `unavailable` — nothing was checked, so it must not render
+   * as a check. In `shadow` mode it arrives after an answer the client already
+   * has; in `enforce` mode `done` itself was held until the verdict and
+   * carries the same summary (`done.verifier`). Never emitted by the base
    * orchestrator.
    */
   | { type: 'verifier'; summary: VerifierResultSummary }

@@ -28,9 +28,10 @@ import { parseTurnIncomplete } from './turnIncomplete';
 
 /**
  * Wire-format for chat stream events. Mirrors `ChatStreamEvent` in
- * `middleware/src/services/orchestrator.ts`. Validation is lax on purpose —
- * the server is trusted and any shape drift should surface as an obvious
- * UI bug rather than a silent drop.
+ * `@omadia/channel-sdk` (`middleware/packages/harness-channel-sdk/src/chatAgent.ts`)
+ * — keep the two in sync, or a field the server sends is silently dropped
+ * here. Validation is lax on purpose — the server is trusted and any shape
+ * drift should surface as an obvious UI bug rather than a silent drop.
  */
 export type ChatStreamEvent =
   | { type: 'iteration_start'; iteration: number }
@@ -168,12 +169,26 @@ export type ChatStreamEvent =
       /** #1094 — the turn's support token, same value the `error` variant
        *  carries (#641). */
       correlationId?: string;
+      /**
+       * Where `answer` comes from (`AnswerSource` in `@omadia/channel-sdk`).
+       * `'verifier-blocked'`: the answer verifier withheld the answer in
+       * `enforce` mode and `answer` is the server's notice saying so; the
+       * model's text never reached the stream.
+       */
+      answerSource?: 'model' | 'privacy-render' | 'verifier-blocked';
+      /** `answer` is not a result (a rendered failure, or the withheld-answer
+       *  notice). */
+      answerIsError?: boolean;
+      /** The verifier's verdict, on `done` itself in `enforce` mode (the
+       *  trailing `verifier` event carries the same summary). */
+      verifier?: VerifierSummary;
     }
   /** #133 (E9) — opaque turn annotation the orchestrator forwarded from a
    *  turn-hook. `channel: 'plan'` carries a live PlanSnapshot. */
   | { type: 'turn_annotation'; channel: string; payload: unknown }
   /** Answer-verifier summary, emitted once AFTER `done` when the verifier is
-   *  enabled. `skipped` / `unavailable` mean nothing was checked. */
+   *  enabled (in `enforce` mode `done.verifier` already carried it).
+   *  `skipped` / `unavailable` mean nothing was checked. */
   | { type: 'verifier'; summary: VerifierSummary }
   /** Mid-turn steering — a user message injected via `/chat/steer` was folded
    *  into the running turn at iteration `iteration`. */
@@ -444,6 +459,14 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         // after a restart, a registry rebuild or a TTL expiry.
         ...(event.directLineSession
           ? { directLineSession: event.directLineSession }
+          : {}),
+        // Enforce-mode verifier: the verdict rides `done`, and a withheld
+        // answer is marked so the bubble says so (`VerifierBlockedNotice`)
+        // instead of presenting the notice as an ordinary reply. Not an
+        // `error`: the turn ran; the verifier declined to deliver its answer.
+        ...(event.verifier ? { verifier: event.verifier } : {}),
+        ...(event.answerSource === 'verifier-blocked'
+          ? { verifierBlocked: true as const }
           : {}),
         finishedAt: Date.now(),
         streaming: false,

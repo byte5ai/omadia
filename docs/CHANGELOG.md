@@ -36,6 +36,79 @@ changelog.
 
 ## [Unreleased]
 
+### Security — the answer verifier's `enforce` mode withholds what it could not confirm, on the stream too
+
+2026-10-01 — `VERIFIER_MODE=enforce` was documented to block a contradicted
+answer, but on the streaming path (`/api/chat/stream`, the public API-key
+stream, the canvas) the verifier wrapper passed every `text_delta` and the
+terminal `done` to the client first and ran the verifier afterwards: `enforce`
+changed only the badge of a `verifier` event that arrived after the answer.
+The non-streaming path (Teams, Telegram, `/api/chat`) delivered an answer that
+was still contradicted after its correction retry, with a `failed` badge.
+
+In `enforce` mode the verifier is now a delivery gate on both paths. On the
+stream, every event that carries model or tool content — text deltas, tool
+calls and results, sub-agent tool traffic, nudges, turn annotations, canvas
+surface events and `done` — is held until the verdict. Iteration, routing,
+persona, tool-progress, heartbeat, token and usage events still pass live, and
+the route's observer (which the wrapper used to drop) is now forwarded in
+every mode, so the web chat's liveness line keeps moving. A verdict releases
+the answer only when it is `approved`, or `skipped` because the answer holds
+nothing to check (`no_trigger`, `no_claims`); the held events then go out
+unchanged and in order, and `done` carries the verdict as `done.verifier`.
+Every other verdict withholds the answer — the gate fails closed: a
+contradiction, claims the verifier could not confirm, did not check or did not
+cover (`approved_with_disclaimer`, `skipped` with `no_checkable_claims` /
+`incomplete_coverage`) and a verifier that could not run (`unavailable`). The
+client then gets exactly one `text_delta` with a localized notice ("Diese
+Antwort wurde zurückgehalten: …" / "This answer was withheld: …", naming
+contradictions, unconfirmed claims or an incomplete check, and what to do
+next) and a `done` with that notice as `answer`, `answerSource:
+"verifier-blocked"`, `answerIsError: true` and the verdict — without the
+attachments, files, follow-ups, masked values, delegated answer, cards and
+excerpts the withheld answer carried. The notice is worded in the turn's
+disclosure locale, then the operator's (`ai_disclosure_locale`), German by
+default; the AI-disclosure paragraph a first turn folds into `done.answer`
+stays there, never in the delta. A choice card, an MCP input form, a slot
+picker, an OAuth consent prompt, a degraded turn and a NO_REPLY answer are
+released without verification, and a turn that ends in an `error` releases
+nothing it held. The stream path still never retries, because a retry re-runs
+the turn's tool calls. `chat()` keeps its correction retry and now delivers
+the same notice when the final verdict does not release the answer.
+
+What does not change: `shadow` streams exactly as before, and the trailing
+`verifier` event still follows `done` in both modes. A withheld turn is a
+policy decision, not a failure: the kernel route's health signal and the
+public API-key audit record it as `ok`.
+
+What clients see: in `enforce` mode no answer text arrives until the turn
+and its verification (two LLM calls plus the source checks) have finished,
+then all of it at once; `done.answerSource` can be `"verifier-blocked"`
+(always with `answerIsError: true`), and `done.verifier` carries the summary.
+A client that renders `done.answer`, as the API documentation recommends,
+shows the notice without any change. The web chat shows a "withheld by the
+fact-check" heading above the notice (new `chat.verifierBlocked.*` keys in en
+and de), and the server-side session mirror (`PUT /api/chat/sessions/:id`) now
+keeps a message's verifier summary and withheld marker. `@omadia/channel-sdk`
+gains `composeVerifierBlockedText`, `AnswerSource` the value
+`"verifier-blocked"` and the `done` event the `verifier` field — all additive.
+
+What operators should expect: fail-closed `enforce` delivers only fully
+confirmed answers and answers without checkable claims. An answer longer than
+the 6000 characters the claim extractor reads is never `approved` and is
+therefore always withheld, as is one with a claim no checker takes. Run
+`shadow` first: the share of `verifier_verdicts` rows with status `approved`,
+or `skipped` with reason `no_trigger` / `no_claims`, is the share of answers
+`enforce` would deliver.
+
+Not covered: the subscription-CLI runtime (`claude-cli` provider) never passes
+through the verifier wrapper, and proactive routines call the raw
+orchestrator, so `VERIFIER_MODE` changes neither. A withheld answer is still
+written to the session log and the knowledge graph before the verdict and can
+be auto-promoted to memory, and the canvas composer's skeleton layout goes out
+before the turn. Details: `docs/security-architecture.md` §7c, upgrade notes in
+`docs/upgrading.md`.
+
 ### Security — answer-verifier verdicts are evidence-bound: `skipped` / `unavailable` are no longer `approved`
 
 2026-09-30 — the answer verifier reported five situations in which it checked

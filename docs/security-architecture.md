@@ -842,7 +842,8 @@ invariant cannot cover — a claim the model never lists — is stated below.
   counts that contradict each other. Connectors (Teams card, Telegram) need
   no change: a turn without evidence renders no chip there.
 - **The stream event carries every state.** The trailing `verifier` event is
-  forwarded verbatim by `/api/chat/stream` and by the public API-key stream,
+  forwarded verbatim by `/api/chat/stream` and by the public API-key stream
+  (in `enforce` mode `done.verifier` carries the same summary, see below),
   so its `status` / `badge` can be `skipped` / `unverified` and
   `unavailable`. Its `reason` is a closed code set, never an error message:
   the message stays in the log line where the failure is caught. The web chat
@@ -892,6 +893,80 @@ the stream summary and the stored row),
 `middleware/test/channelApi/chatRouterVerifierStates.test.ts`,
 `web-ui/app/_lib/__tests__/verifierBadge.test.ts` and
 `web-ui/app/_components/chat/__tests__/VerifierBadge.test.tsx`.
+
+### `enforce` is a delivery gate, not a badge
+
+`VERIFIER_MODE=shadow` observes; `enforce` decides whether the user sees an
+answer. The wrapper releases an answer only when its bound verdict is
+`approved`, or `skipped` because the answer holds nothing to check
+(`no_trigger`, `no_claims`) — `verdictReleasesAnswer` in
+`harness-orchestrator/src/verifierDelivery.ts`. Every other verdict withholds
+it; the gate fails closed: `blocked`, `approved_with_disclaimer` (a claim not
+confirmed, not checked or not covered), `skipped` with `no_checkable_claims` /
+`incomplete_coverage`, and `unavailable`. A withheld answer is replaced by a
+localized notice (`composeVerifierBlockedText`, `@omadia/channel-sdk`) marked
+`answerSource: 'verifier-blocked'` + `answerIsError: true`. The summary keeps
+the badge its verdict earns (a withheld, partly confirmed answer is `partial`,
+not `failed`), so the evidence rules above hold for withheld answers too.
+
+- **Stream: no content before the verdict.** `enforcedVerifiedStream` passes
+  a closed allowlist of events while the verdict is pending
+  (`passesBeforeVerdict`: iteration, routing, persona, tool progress,
+  heartbeat, token and usage counters, and `steer_applied`, which echoes the
+  user's own steering message) — none carries model or tool output.
+  Everything else is held, including any event type added later:
+  `text_delta`, `tool_use`, `tool_result`, the sub-agent events
+  (`sub_iteration` with its parent call), `nudge` (nudge text derived from
+  tool results), `turn_annotation` (plan, recall and knowledge-graph
+  payloads), `surface_*` and `done`. A released
+  turn's events go out unchanged and in order, `done` with `verifier`; a
+  withheld turn's never do. The client gets one `text_delta` (the notice,
+  without the disclosure block) and a `done` rebuilt from an allowlist of
+  identity and telemetry fields: attachments, files, follow-ups, masked
+  values, the delegated answer, cards and excerpts are dropped. A turn that
+  ends in an `error` releases nothing it held.
+- **Released without a verdict, on both paths.** A choice card, an MCP input
+  form, a slot picker and an OAuth consent prompt (they ask for input rather
+  than state facts), a degraded turn (its answer is the server's
+  turn-incomplete notice) and a NO_REPLY answer (a notice would break the
+  agent's deliberate silence) — `releasesWithoutVerification`. `shadow` keeps
+  its narrower rule (choice card and degraded turn only).
+- **Non-streaming path.** `VerifierService.chat` keeps its correction retry
+  for a contradiction (`VERIFIER_MAX_RETRIES`, default 1) and its borderline
+  resample, and delivers the notice when the final verdict does not release
+  the answer. The stream path never retries: a retry re-runs the turn
+  including its tool calls, without a safeguard against repeating a write.
+- **One gate for every consumer.** The kernel route, channel dispatch (Teams,
+  Telegram), the public API-key stream and the canvas composer all resolve
+  the same wrapped chat agent. Canvas surfaces synthesised from tool results
+  are held with those results. A withheld turn counts as `ok` for the operator
+  health signal and the API-key audit: it is a policy decision, not a failure.
+- **Not covered — by design or still open:**
+  - the subscription-CLI runtime (`claude-cli` provider): `buildOrchestrator`
+    returns the CLI chat agent before the verifier wrapper, so `VERIFIER_MODE`
+    has no effect on CLI-backed agents;
+  - proactive routines: the routine runner calls `runTurn` on the raw
+    orchestrator, so routine output is neither verified nor gated;
+  - persistence: the orchestrator writes the turn (session log,
+    knowledge-graph turn node, a possible auto-promoted memory) before `done`,
+    so a withheld answer is stored and can reach a later turn's context — the
+    gate acts on delivery only;
+  - the canvas composer's skeleton layout (empty containers composed from the
+    user's message) goes out before the turn runs;
+  - latency: no answer text arrives before the turn and its verification have
+    finished. The kernel route keeps sending heartbeats; the public API-key
+    stream and the canvas get only the live events above, so a turn without
+    tool calls is silent until the verdict.
+
+Tests: `middleware/test/verifierServiceEnforceStream.test.ts` (what a consumer
+holds when the verifier is asked; release, withhold and fail-closed verdicts;
+control-flow terminals; failed turns; disclosure and locale; observer
+forwarding; `shadow` unchanged), `middleware/test/verifierServiceEnforceChat.test.ts`,
+`middleware/test/verifierBlockedText.test.ts`,
+`middleware/test/channelApi/chatRouterVerifierEnforce.test.ts` (the public
+API-key wire), `middleware/test/chatSessionsMirrorVerifier.test.ts`,
+`web-ui/app/_lib/__tests__/chatStreamEvents.test.ts` and
+`web-ui/app/_components/chat/__tests__/VerifierBlockedNotice.test.tsx`.
 
 ## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
 
@@ -1625,6 +1700,14 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       check sees it, and a claim too long to check is a gap, not a shortened
       claim. A model response is read in full — every tool call, not the
       first one (§7c).
+- [ ] A new `ChatAgent` wrapper or stream consumer releases nothing of an
+      `enforce`-mode turn before the verdict: no `text_delta`, tool output or
+      `done`. An event type added to the live allowlist (`passesBeforeVerdict`)
+      carries no model or tool output, and a verdict other than `approved` or
+      `skipped` with `no_trigger` / `no_claims` withholds the answer. A turn
+      marked `answerSource: "verifier-blocked"` is a withheld answer: its
+      `answer` is the notice, and nothing of the original answer reaches the
+      client (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it

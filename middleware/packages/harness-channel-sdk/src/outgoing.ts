@@ -34,8 +34,16 @@ export type { AiDisclosure } from './aiDisclosure.js';
  * turn: those deltas are a live preview and are superseded by the final
  * answer. A streaming client that reconstructs the answer from deltas MUST
  * treat the final answer as authoritative whenever this is not `'model'`.
+ *
+ * `'verifier-blocked'` — the answer verifier, in `enforce` mode, withheld the
+ * model's answer because it could not confirm it (a contradiction, claims it
+ * could not confirm, or a check that could not be completed). The answer is
+ * then a localized notice saying so (`composeVerifierBlockedText`), always
+ * with `answerIsError: true`; the model's own text never reaches the client,
+ * not even as earlier deltas — the stream carries exactly one `text_delta`,
+ * the notice.
  */
-export type AnswerSource = 'model' | 'privacy-render';
+export type AnswerSource = 'model' | 'privacy-render' | 'verifier-blocked';
 
 /**
  * The top-level shape the orchestrator hands to a connector for rendering.
@@ -127,19 +135,24 @@ export interface SemanticAnswer {
 
   /**
    * #1105 — `'privacy-render'` when `text` was materialized server-side by
-   * Privacy Shield v4 this turn (the streaming sibling is `done.answerSource`).
-   * Omitted / `'model'` for the ordinary case. Non-streaming channels render
-   * `text` directly so this is informational for them; it exists so a channel
-   * that also exposes the raw stream can reconcile the two. See `AnswerSource`.
+   * Privacy Shield v4 this turn (the streaming sibling is `done.answerSource`);
+   * `'verifier-blocked'` when the answer verifier withheld the answer in
+   * `enforce` mode and `text` is the notice saying so. Omitted / `'model'` for
+   * the ordinary case. Non-streaming channels render `text` directly so this
+   * is informational for them; it exists so a channel that also exposes the
+   * raw stream can reconcile the two. See `AnswerSource`.
    */
   answerSource?: AnswerSource;
 
   /**
-   * #1097 — `true` when `text` is a server-rendered FAILURE (a tool error, an
-   * MCP auth prompt) rather than an answer. Connectors MAY render it as an
-   * error (their own wording, their own styling) instead of presenting it as a
-   * result. Only ever set alongside `answerSource: 'privacy-render'`; omitted
-   * otherwise, so a connector that ignores it behaves exactly as before.
+   * #1097 — `true` when `text` is not an answer but a server-composed
+   * FAILURE: a rendered tool error or MCP auth prompt (alongside
+   * `answerSource: 'privacy-render'`), or the notice for an answer the
+   * verifier withheld (alongside `answerSource: 'verifier-blocked'`, always).
+   * Connectors MAY render it as an error (their own wording, their own
+   * styling) instead of presenting it as a result. Never set without one of
+   * those two `answerSource` values; omitted otherwise, so a connector that
+   * ignores it behaves exactly as before.
    */
   answerIsError?: boolean;
 

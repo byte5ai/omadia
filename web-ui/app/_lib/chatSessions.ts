@@ -559,14 +559,23 @@ export interface Message {
    */
   privacyReceipt?: PrivacyReceipt;
   /**
-   * Answer-verifier summary, folded in from the `verifier` event that follows
-   * `done` when the verifier is enabled. Rendered by `<VerifierBadge>`.
-   * Undefined when the verifier is off or skipped the turn outright (a
-   * clarification card or a degraded turn). Restored on a local reload —
-   * `coerceMessage` spreads unknown fields through; the server-side mirror's
-   * `MessageSchema` strips it, so a mirror restore shows no badge.
+   * Answer-verifier summary, folded in from `done.verifier` (enforce mode)
+   * or the `verifier` event that follows `done` when the verifier is
+   * enabled. Rendered by `<VerifierBadge>`. Undefined when the verifier is
+   * off or skipped the turn outright (a clarification card or a degraded
+   * turn). Restored on a local reload — `coerceMessage` spreads unknown
+   * fields through — and by the server-side mirror, whose `MessageSchema`
+   * keeps a summary that fits its shape and drops one that does not.
    */
   verifier?: VerifierSummary;
+  /**
+   * `true` when the answer verifier withheld this turn's answer in `enforce`
+   * mode (`done.answerSource === 'verifier-blocked'`): `content` is the
+   * server's notice saying so, never the model's answer. The bubble renders
+   * it under `<VerifierBlockedNotice>`'s UI-localized heading. Kept by the
+   * server-side mirror too.
+   */
+  verifierBlocked?: true;
   /**
    * Privacy Shield v4 — real values in `content` that the LLM never saw,
    * resolved server-side behind the data-plane boundary. `<Markdown>`

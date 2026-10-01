@@ -965,6 +965,10 @@ export function buildOrchestratorForAgent(
       ...(deps.turnHookRegistry
         ? { turnHookRegistry: deps.turnHookRegistry }
         : {}),
+      // The notice for an answer `enforce` withholds is worded in the turn's
+      // disclosure locale; this is the fallback when the operator turned the
+      // disclosure off (same rule as the turn-incomplete notice).
+      ...(deps.aiDisclosure?.locale ? { locale: deps.aiDisclosure.locale } : {}),
     });
   }
 
