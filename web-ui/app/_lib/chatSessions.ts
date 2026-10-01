@@ -278,8 +278,8 @@ export interface VerifierSummary {
   uncheckedCount?: number;
   /** Of `uncheckedCount`, entries for a part of the answer the verifier's
    *  claim extraction did not cover (text beyond its window, claims left out
-   *  at its list limit, or claims it returned that are not in the answer) —
-   *  the answer was not checked in full. */
+   *  at its list limit, or claims it returned that are not in the answer or
+   *  too long to check whole) — the answer was not checked in full. */
   uncoveredCount?: number;
   retryCount: number;
   latencyMs: number;

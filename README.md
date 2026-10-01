@@ -247,8 +247,9 @@ answer:
   answer the verifier knows it checked only in part is at most partly
   verified: a claim no checker takes, more claims than the per-answer cap,
   text beyond the part of the answer the claim extractor reads, and a claim
-  the extractor returns that is not in the answer each stay in the verdict as
-  not checked. The verifier checks the claims its extraction model lists; a
+  the extractor returns that is not in the answer, or is too long to check
+  whole, each stay in the verdict as not checked — no claim is shortened to
+  fit a check. The verifier checks the claims its extraction model lists; a
   claim the model leaves out entirely is not seen by any check.
 - **Office compute (computed, not guessed)**: numbers in `.xlsx` / `.docx` output
   come from a real spreadsheet engine over real rows, rather than the model's

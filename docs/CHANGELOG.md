@@ -49,8 +49,9 @@ also kept the internal `corrected` badge of a retry whose own verification
 failed off Teams. Verdicts are now bound to evidence: `approved` requires a
 claim extraction without a coverage gap — the model read the whole answer, its
 list stayed below the request limit, every `record_claims` call was read and
-every claim it returned is in the answer — and every extracted claim to be
-checked and verified, at least one (its claim list is typed non-empty);
+every claim it returned is in the answer in full and short enough to check —
+and every extracted claim to be checked and verified, at least one (its claim
+list is typed non-empty);
 nothing checkable is `skipped` (reason `no_trigger`, `no_claims`,
 `no_checkable_claims` or `incomplete_coverage`), and a verifier that could not
 run is `unavailable` (reason `extractor_error` or `pipeline_error`). An answer
@@ -62,13 +63,17 @@ a trace, the extractor told the model to return no more claims than the cap
 it read only the first 6000 characters of the answer, its verbatim guard
 dropped a well-formed claim whose text is not in the answer as written (a line
 break the model wrote as a space, a subject stitched in from elsewhere in the
-sentence), and it read only the first `record_claims` call of a response; the
-rest verifying gave `approved` / `verified`. Such claims now stay in the
-verdict as unverified (`cause: 'not_checked'`), and the extraction reports
-what it did not cover: it asks the model for one claim more than
-`VERIFIER_MAX_CLAIMS`, treats a list that reaches that limit as possibly
-incomplete, names answer text beyond its window, and reports claims that are
-not in the answer (`claims_not_in_answer`). Each such gap becomes a
+sentence), it read only the first `record_claims` call of a response, and it
+cut every claim to its first 300 characters before the verbatim guard looked
+at it — so a longer claim was checked on its head alone, even when the rest of
+it is not in the answer; the rest verifying gave `approved` / `verified`. Such
+claims now stay in the verdict as unverified (`cause: 'not_checked'`), and the
+extraction reports what it did not cover: it asks the model for one claim
+more than `VERIFIER_MAX_CLAIMS`, treats a list that reaches that limit as
+possibly incomplete, names answer text beyond its window, and reports claims
+that are not in the answer (`claims_not_in_answer`) and claims longer than a
+check takes (`claims_too_long`, over 300 characters — matched in full, never
+cut to fit). Each such gap becomes a
 `not_checked` coverage entry (claim type `coverage_gap`), so the answer is
 `approved_with_disclaimer` and badged `partial`, or `skipped` /
 `incomplete_coverage` when nothing in the part it covered could be checked.
@@ -125,7 +130,9 @@ statuses — deliberately. `ClaimExtractor.extract` now resolves
 `{ claims, gaps }` (`ClaimExtraction`) instead of a claim list, and no longer
 cuts its result at `maxClaims`; the pipeline applies the cap and turns the gaps
 into coverage entries. A claim's `text` is now the span of the answer it
-quotes, which can differ from the model's text in case and whitespace. The web
+quotes, which can differ from the model's text in case and whitespace, and is
+at most `MAX_CLAIM_CHARS` (300, exported) long — a longer claim is the new
+`ExtractionGap` value `claims_too_long`, never a shortened claim. The web
 chat previously dropped the `verifier` event and
 had no answer-verifier badge at all; it now shows a footer chip that is green
 only for a verified answer whose every claim was confirmed, blue for a

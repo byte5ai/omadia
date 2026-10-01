@@ -225,7 +225,8 @@ its results:
   It drops further because an answer the verifier could check only in part
   (a claim no checker accepts, more claims than `VERIFIER_MAX_CLAIMS`, an
   answer longer than the 6000 characters the claim extractor reads, or a
-  claim the extraction returned that is not in the answer) is now
+  claim the extraction returned that is not in the answer or longer than 300
+  characters) is now
   `approved_with_disclaimer`, its unchecked claims and coverage entries
   counted in `unverified_count`. A dashboard or query that reads
   `status = 'approved'` as "clean turn" is now correct, but its numbers
@@ -254,9 +255,13 @@ its results:
   instead of cutting the list at `maxClaims`, reads every `record_claims`
   call of the model's response, and names in `gaps` what it did not cover —
   including claims that are not in the answer (`claims_not_in_answer`), which
-  it used to drop without a trace. A claim's `text` is the span of the answer
-  it quotes (case and whitespace may differ from the model's text). Give
-  `VerifierPipeline` the same `maxClaims` to cap the checks.
+  it used to drop without a trace, and claims longer than `MAX_CLAIM_CHARS`
+  (300; `claims_too_long`), which it used to cut to their first 300
+  characters before checking them. A claim's `text` is the span of the
+  answer it quotes (case and whitespace may differ from the model's text),
+  never longer than `MAX_CLAIM_CHARS`. A `switch` over `ExtractionGap` must
+  handle `claims_too_long`. Give `VerifierPipeline` the same `maxClaims` to
+  cap the checks.
 
 Teams and Telegram need nothing: they keep receiving only the four badges they
 know and show no badge for turns without evidence.

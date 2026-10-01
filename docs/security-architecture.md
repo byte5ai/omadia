@@ -716,13 +716,15 @@ pipeline itself throws. None of them is a pass.
 and every extracted claim was checked and is `verified`, at least one. No
 coverage gap means: the extraction model read the whole answer, its claim
 list stayed below the request limit, every `record_claims` call in its
-response was read, and every claim it returned quotes the answer (case and
-whitespace aside). The `approved` variant's claim list is typed non-empty
-(`NonEmptyClaimVerdicts`), the pipeline's aggregate returns `skipped` for an
-empty list, and whatever the pipeline did not check stays in the verdict as
-`unverified` (`cause: 'not_checked'`) instead of being dropped: a claim no
-checker takes, a claim over the cap, and a `coverage_gap` entry for each part
-of the answer the extraction did not cover. A badge other than `unverified` /
+response was read, and every claim it returned quotes the answer in full
+(case and whitespace aside) and is short enough to check (`MAX_CLAIM_CHARS`,
+300 characters); no claim is shortened to fit. The `approved` variant's claim
+list is typed non-empty (`NonEmptyClaimVerdicts`), the pipeline's aggregate
+returns `skipped` for an empty list, and whatever the pipeline did not check
+stays in the verdict as `unverified` (`cause: 'not_checked'`) instead of
+being dropped: a claim no checker takes, a claim over the cap, and a
+`coverage_gap` entry for each part of the answer the extraction did not
+cover. A badge other than `unverified` /
 `unavailable` needs a check that settled a claim (`hasVerificationEvidence`):
 a confirmed claim for `verified` / `partial` / `corrected`, a contradicted one
 for `failed`; `verified` and `corrected` need every claim confirmed. What the
@@ -760,9 +762,11 @@ invariant cannot cover — a claim the model never lists — is stated below.
   `claim_list_full` when the model's list reached that limit — a model that
   keeps to the limit may have left claims out, so a full list never passes
   for a complete one, while an answer with exactly `VERIFIER_MAX_CLAIMS`
-  claims still gets its whole list; and `claims_not_in_answer` when the model
-  returned a well-formed claim that is not in the answer. The pipeline adds
-  one `not_checked` verdict over a synthetic `coverage_gap` claim per gap, so
+  claims still gets its whole list; `claims_not_in_answer` when the model
+  returned a well-formed claim that is not in the answer; and
+  `claims_too_long` when it returned a claim that quotes the answer but is
+  longer than a check takes. The pipeline adds one `not_checked` verdict
+  over a synthetic `coverage_gap` claim per gap, so
   such an answer is `approved_with_disclaimer` / `partial` at best. When
   nothing in the covered part could be checked, the verdict is `skipped` with
   reason `incomplete_coverage` rather than `no_claims`, which would say more
@@ -777,10 +781,15 @@ invariant cannot cover — a claim the model never lists — is stated below.
   text the answer does not hold proves nothing about the answer. Dropping it
   silently would let the rest verifying make the answer `approved`, so the
   part of the answer it stood for is reported as the `claims_not_in_answer`
-  gap. Likewise every `record_claims` call in the response is read: a model
-  that splits its list over several calls gets every part checked, where
-  reading only the first call would leave the rest unchecked without a
-  trace.
+  gap. The guard matches the whole claim, never a prefix of it: a claim cut to
+  a length before the match would be checked on its head while its tail — in
+  the answer or not — went unchecked. A claim that quotes the answer but is
+  longer than a check takes (`MAX_CLAIM_CHARS`, 300 characters; the tool
+  schema asks for 1-200) is not cut to fit either; it is kept from the
+  checkers and reported as the `claims_too_long` gap. Likewise every
+  `record_claims` call in the response is read: a model that splits its list
+  over several calls gets every part checked, where reading only the first
+  call would leave the rest unchecked without a trace.
 - **What no check can see.** The verifier checks the claims its extraction
   model lists. A claim the model leaves out of a list that stays below the
   request limit leaves no trace in the response, so `approved` / `verified`
@@ -848,6 +857,9 @@ longer than the window, and one with more claims than the cap),
 differs from the answer — whitespace drift, a stitched subject — and a list
 split over several `record_claims` calls, through the extractor, pipeline,
 badge and service),
+`middleware/test/verifierExtractionLongClaim.test.ts` (claims longer than a
+check takes — one whose tail is not in the answer, one the answer holds word
+for word, and the exact length limit — through the same stages),
 `middleware/test/verifierClaimExtractorFailure.test.ts`,
 `middleware/test/verifierServiceStates.test.ts`,
 `middleware/test/verifierServiceResample.test.ts`,
@@ -1581,8 +1593,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       prompt never tells a model to stop at a limit unless a list that
       reaches the limit is recorded as possibly incomplete. A guard that
       keeps model output from the checkers (the verbatim guard) reports what
-      it kept out as a gap instead of dropping it, and a model response is
-      read in full — every tool call, not the first one (§7c).
+      it kept out as a gap instead of dropping it, and matches the whole
+      output: model text is never cut to a length before a guard or a check
+      sees it, and a claim too long to check is a gap, not a shortened claim.
+      A model response is read in full — every tool call, not the first one
+      (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it

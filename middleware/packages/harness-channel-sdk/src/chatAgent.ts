@@ -315,8 +315,8 @@ export interface VerifierResultSummary {
    * extraction did not cover rather than for one claim: text beyond the
    * extractor's window, claims the model left out once its list reached the
    * request limit, or claims it returned that are not in the answer as
-   * written. Any such entry means the answer was not checked in full.
-   * Optional for summaries built without it.
+   * written or too long to check whole. Any such entry means the answer was
+   * not checked in full. Optional for summaries built without it.
    */
   uncoveredCount?: number;
   retryCount: number;

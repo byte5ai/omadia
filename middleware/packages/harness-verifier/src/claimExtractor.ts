@@ -25,10 +25,14 @@ import { verbatimSpans } from './verbatimSpan.js';
  *    answer; we police this client-side (`verbatimSpans`): a claim must quote
  *    the answer, case and whitespace set aside, and carries the quoted span
  *    of the answer as its text. This is our primary anti-hallucination guard
- *    on the extractor itself (ironic but necessary). A claim that quotes
- *    nothing never reaches a checker, but it is not dropped without a trace
- *    either: the part of the answer it stood for was not checked, which the
- *    result reports as the `claims_not_in_answer` gap.
+ *    on the extractor itself (ironic but necessary). The guard reads the
+ *    whole claim — a claim is never shortened, before or after the match,
+ *    since a check on its head would leave its tail unchecked. A claim that
+ *    quotes nothing never reaches a checker, but it is not dropped without a
+ *    trace either: the part of the answer it stood for was not checked, which
+ *    the result reports as the `claims_not_in_answer` gap. Likewise a claim
+ *    that quotes the answer but is longer than a check takes
+ *    (`MAX_CLAIM_CHARS`) is the `claims_too_long` gap, not a cut-down claim.
  *  - A failed extraction is not an empty one. When the LLM call fails, the
  *    response was cut off at the token limit, it carries no usable
  *    `record_claims` call (none, or one of them without a `claims` array), or
@@ -42,16 +46,22 @@ import { verbatimSpans } from './verbatimSpan.js';
  *    most `maxClaims + 1` claims. The result names what the extraction did
  *    not cover (`ClaimExtraction.gaps`): text beyond the window, a list that
  *    reached the request limit, since the model may have left claims out,
- *    and claims that are not in the answer. The pipeline keeps each gap in
- *    the verdict as not checked, so an answer covered only in part is at
- *    most partly verified. No valid claim is cut here; the pipeline decides
- *    how many it checks.
+ *    claims that are not in the answer, and claims too long to check. The
+ *    pipeline keeps each gap in the verdict as not checked, so an answer
+ *    covered only in part is at most partly verified. No valid claim is cut
+ *    here; the pipeline decides how many it checks.
  */
 
 /** Characters of the answer the extractor sends to the model. Claims in the
  *  rest are never looked for, which the result reports as the
  *  `answer_beyond_window` gap. */
 export const EXTRACTION_WINDOW_CHARS = 6000;
+
+/** Longest claim a check takes, in characters of the answer span it quotes.
+ *  A longer claim is not cut to fit — its tail would go unchecked without a
+ *  trace — but kept from the checkers and reported as the `claims_too_long`
+ *  gap. The tool schema asks the model for 1-200 characters. */
+export const MAX_CLAIM_CHARS = 300;
 
 export interface ClaimExtractorOptions {
   /** Provider-agnostic LLM (Anthropic adapter today). Was `anthropic` before
@@ -218,7 +228,8 @@ export class ClaimExtractor {
    * `claims` array, or an entry breaks the `record_claims` schema. A
    * well-formed claim whose text is not in the answer is kept from the
    * checkers (the anti-hallucination guard) and reported as the
-   * `claims_not_in_answer` gap, not as an error.
+   * `claims_not_in_answer` gap, one longer than `MAX_CLAIM_CHARS` as the
+   * `claims_too_long` gap — neither is an error, and neither is shortened.
    */
   async extract(input: ExtractInput): Promise<ClaimExtraction> {
     const answer = input.answer.trim();
@@ -274,11 +285,11 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
     const spanOf = verbatimSpans(answer);
     const out: Claim[] = [];
     let malformed = 0;
-    let notInAnswer = 0;
+    const missed = { not_verbatim: 0, too_long: 0 };
     for (const raw of rawClaims) {
       const claim = normaliseClaim(raw, out.length, answer, spanOf);
       if (claim === 'malformed') malformed += 1;
-      else if (claim === 'not_verbatim') notInAnswer += 1;
+      else if (typeof claim === 'string') missed[claim] += 1;
       else out.push(claim);
     }
     if (malformed > 0) {
@@ -293,14 +304,15 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
       answerLength: answer.length,
       rawClaimCount: rawClaims.length,
       requestLimit,
-      notInAnswer,
+      notInAnswer: missed.not_verbatim,
+      tooLong: missed.too_long,
     });
     this.opts.log(
       `[claim-extractor] extracted=${String(out.length)} raw=${String(rawClaims.length)}${
         read.calls > 1 ? ` calls=${String(read.calls)}` : ''
-      }${notInAnswer > 0 ? ` not_in_answer=${String(notInAnswer)}` : ''}${
-        gaps.length > 0 ? ` gaps=${gaps.join(',')}` : ''
-      }`,
+      }${missed.not_verbatim > 0 ? ` not_in_answer=${String(missed.not_verbatim)}` : ''}${
+        missed.too_long > 0 ? ` too_long=${String(missed.too_long)}` : ''
+      }${gaps.length > 0 ? ` gaps=${gaps.join(',')}` : ''}`,
     );
     // Diagnostic: when the extractor returns zero claims even though the
     // trigger router fired, we want to see WHY. Log the first 300 chars
@@ -320,19 +332,22 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
 /**
  * What an extraction did not cover: answer text beyond the window the model
  * saw; a raw list that reached the request limit — counted before the
- * verbatim guard, since the model stopped listing either way; and claims the
- * guard kept from the checkers because the answer does not hold them.
+ * verbatim guard, since the model stopped listing either way; claims the
+ * guard kept from the checkers because the answer does not hold them; and
+ * claims longer than a check takes.
  */
 function coverageGaps(extraction: {
   answerLength: number;
   rawClaimCount: number;
   requestLimit: number;
   notInAnswer: number;
+  tooLong: number;
 }): ExtractionGap[] {
   const gaps: ExtractionGap[] = [];
   if (extraction.answerLength > EXTRACTION_WINDOW_CHARS) gaps.push('answer_beyond_window');
   if (extraction.rawClaimCount >= extraction.requestLimit) gaps.push('claim_list_full');
   if (extraction.notInAnswer > 0) gaps.push('claims_not_in_answer');
+  if (extraction.tooLong > 0) gaps.push('claims_too_long');
   return gaps;
 }
 
@@ -378,20 +393,23 @@ function readToolClaims(
  * required fields — a non-empty `text`, a known `type`, a known
  * `expected_source` — is `'malformed'`: a failed extraction, never a claim to
  * drop quietly. A well-formed entry whose text is not in the answer is
- * `'not_verbatim'`: the anti-hallucination guard keeps it from the checkers,
- * and the caller reports it as a coverage gap. Optional fields that do not
- * parse are left out of the claim.
+ * `'not_verbatim'`, one whose span is longer than `MAX_CLAIM_CHARS`
+ * `'too_long'`: either is kept from the checkers, and the caller reports it as
+ * a coverage gap. Optional fields that do not parse are left out of the
+ * claim.
  */
 function normaliseClaim(
   raw: unknown,
   idx: number,
   answer: string,
   spanOf: (claimText: string) => string | undefined,
-): Claim | 'malformed' | 'not_verbatim' {
+): Claim | 'malformed' | 'not_verbatim' | 'too_long' {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'malformed';
   const r = raw as RawClaim;
 
-  const quoted = asShortString(r.text, 300);
+  // The whole text, never a prefix: a claim cut before the guard sees it
+  // would be matched — and checked — on its head alone.
+  const quoted = typeof r.text === 'string' ? r.text.trim() : '';
   const type = asEnum<ClaimType>(r.type, CLAIM_TYPES);
   const expectedSource = asEnum<ClaimSource>(r.expected_source, CLAIM_SOURCES);
   if (!quoted || !type || !expectedSource) return 'malformed';
@@ -400,6 +418,7 @@ function normaliseClaim(
   // drift are tolerated; the claim then carries the span of the answer.
   const text = spanOf(quoted);
   if (text === undefined) return 'not_verbatim';
+  if (text.length > MAX_CLAIM_CHARS) return 'too_long';
 
   const claim: Claim = {
     id: `c_${String(idx + 1).padStart(3, '0')}`,

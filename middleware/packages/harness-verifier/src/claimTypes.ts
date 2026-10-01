@@ -91,20 +91,25 @@ export interface SoftClaim extends Claim {
  *  - `claims_not_in_answer` — the model returned a well-formed claim whose
  *    text is not in the answer, even with case and whitespace set aside (a
  *    paraphrase, or a subject stitched in from elsewhere in the sentence).
- *    The verbatim guard keeps it from the checkers, so whatever part of the
- *    answer it stood for was not checked.
+ *    The verbatim guard reads the whole claim and keeps it from the checkers,
+ *    so whatever part of the answer it stood for was not checked.
+ *  - `claims_too_long`      — the model returned a claim that quotes the
+ *    answer but is longer than a check takes (`MAX_CLAIM_CHARS`). It is not
+ *    cut to fit, which would check its head and leave its tail unchecked; it
+ *    is kept from the checkers instead.
  */
 export type ExtractionGap =
   | 'answer_beyond_window'
   | 'claim_list_full'
-  | 'claims_not_in_answer';
+  | 'claims_not_in_answer'
+  | 'claims_too_long';
 
 /**
  * What a claim extraction found and what it did not cover. `gaps` is empty
  * only when the model saw the whole answer, its claim list was not cut at the
- * request limit and every claim it returned quotes the answer; otherwise the
- * result is incomplete and the pipeline keeps every gap in the verdict as not
- * checked.
+ * request limit and every claim it returned quotes the answer in full and is
+ * short enough to check; otherwise the result is incomplete and the pipeline
+ * keeps every gap in the verdict as not checked.
  */
 export interface ClaimExtraction {
   claims: Claim[];

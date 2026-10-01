@@ -35,14 +35,15 @@ import { shouldTriggerVerifier } from './triggerRouter.js';
  *     list is typed non-empty). No coverage gap means: the model read the
  *     whole answer, its claim list stayed below the request limit, and every
  *     claim it returned, across all its `record_claims` calls, quotes the
- *     answer. A claim the model leaves out of a list below that limit is
- *     beyond what any check here can see.
+ *     answer in full and is short enough to check (`MAX_CLAIM_CHARS`) — no
+ *     claim is shortened to fit. A claim the model leaves out of a list below
+ *     that limit is beyond what any check here can see.
  *   - A claim no checker accepts, one beyond the per-answer cap, and each
  *     part of the answer the extraction did not cover (text beyond its
  *     window, a claim list cut at its request limit, or claims that are not
- *     in the answer — a `coverage_gap` entry) stay in the verdict as
- *     `unverified` / `not_checked`: an answer checked only in part is
- *     `approved_with_disclaimer`, never `approved`.
+ *     in the answer or too long to check — a `coverage_gap` entry) stay in
+ *     the verdict as `unverified` / `not_checked`: an answer checked only in
+ *     part is `approved_with_disclaimer`, never `approved`.
  *   - `skipped` — the pipeline ran but had nothing it could check: no trigger
  *     signal, no extracted claim, or no claim any checker accepts; reason
  *     `incomplete_coverage` when the extraction did not cover the whole

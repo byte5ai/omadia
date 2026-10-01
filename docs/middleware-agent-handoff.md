@@ -2799,8 +2799,9 @@ Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
   Pipeline-Fehler). `approved` heißt: die Extraktion meldet keine Lücke (das
   Modell hat die ganze Antwort gesehen, seine Liste blieb unter dem
   Anfrage-Limit, alle `record_claims`-Calls wurden gelesen und jeder
-  zurückgegebene Claim steht in der Antwort), und jeder extrahierte Claim ist
-  geprüft und `verified`, mindestens einer. Einen Claim, den das Modell unter
+  zurückgegebene Claim steht vollständig in der Antwort und ist kurz genug
+  für einen Check), und jeder extrahierte Claim ist geprüft und `verified`,
+  mindestens einer. Einen Claim, den das Modell unter
   dem Limit gar nicht auflistet, sieht keine Prüfung — `approved` heißt also
   „nichts bekannt Ungeprüftes“, nicht „die Antwort enthält sonst nichts“. Ein
   Claim, den kein Checker nimmt (Betrag, Datum, ID oder Summe mit
@@ -2821,8 +2822,14 @@ Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
   als Zitat; der Claim trägt dann den Wortlaut der Antwort). Was dann noch
   nicht passt — eine Umschreibung oder ein aus einem anderen Satzteil
   hineingezogenes Subjekt — geht an keinen Checker, verschwindet aber nicht
-  mehr spurlos, sondern ist die Lücke `claims_not_in_answer`. Der Extractor
-  liest jeden `record_claims`-Call einer Modellantwort, nicht nur den ersten.
+  mehr spurlos, sondern ist die Lücke `claims_not_in_answer`. Der Guard
+  vergleicht den ganzen Claim, nie ein gekürztes Präfix (früher wurde jeder
+  Claim vor dem Abgleich auf 300 Zeichen gekürzt und nur sein Anfang
+  geprüft). Ein Claim, der die Antwort zitiert, aber länger ist als
+  `MAX_CLAIM_CHARS` (300 Zeichen; das Tool-Schema verlangt 1-200), wird
+  nicht passend gekürzt, sondern ist die Lücke `claims_too_long`. Der
+  Extractor liest jeden `record_claims`-Call einer Modellantwort, nicht nur
+  den ersten.
   Fand die Extraktion im erfassten Teil nichts Prüfbares, ist das Verdict
   `skipped` mit `incomplete_coverage`. Der
   `ClaimExtractor` wirft, wenn der LLM-Call scheitert, die Antwort am

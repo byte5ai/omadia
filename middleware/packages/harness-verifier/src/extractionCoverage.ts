@@ -22,6 +22,8 @@ const GAP_REASONS: Readonly<Record<ExtractionGap, string>> = {
     'the extraction listed as many claims as it asks for, so claims it left out were not checked',
   claims_not_in_answer:
     'the extraction returned claims that are not in the answer as written, so the part of the answer they stood for was not checked',
+  claims_too_long:
+    'the extraction returned claims longer than a check takes, so the part of the answer they stood for was not checked',
 };
 
 /** One `not_checked` coverage verdict per gap, in the order reported. */

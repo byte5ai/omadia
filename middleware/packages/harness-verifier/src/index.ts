@@ -32,7 +32,11 @@ export { activate } from './plugin.js';
 export type { VerifierBundle, VerifierPluginHandle } from './plugin.js';
 
 // ClaimExtractor
-export { ClaimExtractor, EXTRACTION_WINDOW_CHARS } from './claimExtractor.js';
+export {
+  ClaimExtractor,
+  EXTRACTION_WINDOW_CHARS,
+  MAX_CLAIM_CHARS,
+} from './claimExtractor.js';
 export { claimContext } from './claimContext.js';
 export type {
   ClaimExtractorOptions,
