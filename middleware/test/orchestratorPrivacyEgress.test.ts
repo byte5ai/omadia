@@ -12,7 +12,8 @@
  *     model only masked, and a blocked mask refuses the turn;
  *   - a thrown or abandoned turn drops its privacy state and keeps its
  *     receipt: its own row, or under a request ledger the request's one row
- *     (a re-entry's receipt joins it without taking the row);
+ *     (a re-entry's receipt joins it; the first run, finalized later, still
+ *     takes the row over);
  *   - the streaming paths (model turn, Direct Line) hand over the same way.
  *
  * The verifier wrapped around this, end to end: verifierPrivacyEgressEndToEnd.
@@ -287,11 +288,14 @@ describe('orchestrator — privacy hand-over for the verifier (runTurn)', () => 
     assert.ok(first);
     ledger.beginReentry();
     await assert.rejects(orch.runTurn(input));
-    assert.equal(ledger.receipts.rowId, undefined, 'the re-entry that threw took the row');
+    // No earlier pass's receipt yet: the re-entry holds the row for now.
+    const heldByReentry = ledger.receipts.rowId;
+    assert.ok(heldByReentry, 'the re-entry that threw did not offer to own the row');
+    assert.notEqual(heldByReentry, first.receiptId);
     await first.finalize();
     release();
 
-    assert.equal(ledger.receipts.rowId, first.receiptId, 'the first run owns the row');
+    assert.equal(ledger.receipts.rowId, first.receiptId, 'the first run takes the row over');
     assert.equal(ledger.receipts.merged()?.verbsExecuted.length, 2, 'both passes are in the receipt');
     await ledger.receipts.commit();
     assert.equal(recorded.length, 1);
@@ -386,11 +390,14 @@ describe('orchestrator — privacy hand-over for the verifier (chatStream)', () 
     for await (const event of orch.chatStream(input)) {
       if (event.type === 'text_delta') break;
     }
-    assert.equal(ledger.receipts.rowId, undefined, 'the abandoned re-entry took the row');
+    // No earlier pass's receipt yet: the re-entry holds the row for now.
+    const heldByReentry = ledger.receipts.rowId;
+    assert.ok(heldByReentry, 'the abandoned re-entry did not offer to own the row');
+    assert.notEqual(heldByReentry, first.receiptId);
     await first.finalize();
     release();
 
-    assert.equal(ledger.receipts.rowId, first.receiptId, 'the first run owns the row');
+    assert.equal(ledger.receipts.rowId, first.receiptId, 'the first run takes the row over');
     await ledger.receipts.commit();
     assert.equal(recorded.length, 1, 'one row for the request');
     assert.equal(recorded[0]!.turnId, first.receiptId);

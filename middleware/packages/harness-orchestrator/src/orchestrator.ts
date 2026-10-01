@@ -1689,6 +1689,24 @@ interface TurnMemoryBinding {
 }
 
 /**
+ * A pass of a request a verifier bound a ledger to (`bindToolReplayLedger`):
+ * the ledger, which holds the request's receipts, and which pass this is.
+ * Taken when the pass starts — a pass the verifier holds is finalized after
+ * the next one began — and offered with the pass's receipt, so the request's
+ * row goes to its earliest pass with a receipt (`requestReceipts.ts`).
+ */
+interface BoundPass {
+  readonly ledger: ToolReplayLedger;
+  /** 0 for the first run, then 1, 2, … (`ToolReplayLedger.pass`). */
+  readonly pass: number;
+}
+
+/** The pass of `ledger` that starts now, or undefined for an unbound turn. */
+function boundPassOf(ledger: ToolReplayLedger | undefined): BoundPass | undefined {
+  return ledger === undefined ? undefined : { ledger, pass: ledger.pass };
+}
+
+/**
  * A pass that ends without finalizing or handing its privacy state over — it
  * threw, or its stream ended before `done` — and what is needed to close it
  * (`Orchestrator.closeUndeliveredPass`).
@@ -1698,8 +1716,8 @@ interface UndeliveredPass {
   readonly turnId: string;
   /** The turn's input after normalisation and the screening gate. */
   readonly input: ChatTurnInput;
-  /** The ledger a verifier bound to the request, if one did. */
-  readonly boundLedger: ToolReplayLedger | undefined;
+  /** The request pass, when a verifier bound a ledger to the request. */
+  readonly bound: BoundPass | undefined;
 }
 
 /**
@@ -3869,9 +3887,9 @@ export class Orchestrator {
     readonly input: ChatTurnInput;
     /** What the verifier may see; `undefined` ⇒ it verifies nothing. */
     readonly wireView: TurnWireView | undefined;
-    /** The request's ledger when a verifier may re-enter the request: the
+    /** The request pass when a verifier may re-enter the request: the
      *  receipt then joins the request's one row (`requestReceipts.ts`). */
-    readonly boundLedger: ToolReplayLedger | undefined;
+    readonly bound: BoundPass | undefined;
   }): void {
     const ran = this.takeTurnAttribution(args.turnId);
     this.privacyEgress.stash(
@@ -3884,7 +3902,7 @@ export class Orchestrator {
           try {
             const receipt = await args.handle.finalize(args.input.userMessage);
             if (receipt) {
-              await this.settleTurnReceipt(args.turnId, args.input, receipt, args.boundLedger, ran);
+              await this.settleTurnReceipt(args.turnId, args.input, receipt, args.bound, ran);
             }
             return receipt;
           } catch (err) {
@@ -3906,13 +3924,13 @@ export class Orchestrator {
    * values must not outlive the turn — and drains the receipt of what the
    * pass did put on the wire. That receipt is kept like a delivered pass's
    * (`settleTurnReceipt`): the turn's own row, or the request's one row when
-   * a verifier bound a ledger. A re-entry's receipt joins that row without
-   * offering to own it, as an abandoned re-entry's does
-   * (`closeAbandonedReentry`): the first run's continuation is often
-   * finalized later, and the first run keeps the row.
+   * a verifier bound a ledger. A re-entry closed here offers to own that row
+   * like any pass, as an abandoned re-entry does (`closeAbandonedReentry`):
+   * it keeps it only while no earlier pass had a receipt, so the first run —
+   * whose continuation is often finalized later — still takes it over.
    */
   private async closeUndeliveredPass(pass: UndeliveredPass): Promise<void> {
-    const { handle, turnId, input, boundLedger } = pass;
+    const { handle, turnId, input, bound } = pass;
     const ran = this.takeTurnAttribution(turnId);
     let receipt: PrivacyReceipt | undefined;
     try {
@@ -3922,11 +3940,7 @@ export class Orchestrator {
       return;
     }
     if (receipt === undefined) return;
-    if (boundLedger?.mode === 'replay') {
-      boundLedger.receipts.add(receipt);
-      return;
-    }
-    await this.settleTurnReceipt(turnId, input, receipt, boundLedger, ran);
+    await this.settleTurnReceipt(turnId, input, receipt, bound, ran);
   }
 
   /**
@@ -3944,8 +3958,10 @@ export class Orchestrator {
    * no per-call turn hook of its own. The binder owns the request's record:
    * every pass — the first run included — offers its session-log row and its
    * `onAfterTurn` answer to `ledger.turnRecord` instead of writing them, and
-   * its privacy receipt to `ledger.receipts`; once it delivered, the binder
-   * calls `ledger.turnRecord.commit(pass)` for the pass it delivers and
+   * its privacy receipt, with an offer to own the request's receipt row, to
+   * `ledger.receipts` — also a pass that threw, was abandoned or was left by
+   * its client; once it delivered, the binder calls
+   * `ledger.turnRecord.commit(pass)` for the pass it delivers and
    * `ledger.receipts.commit()` (commit-on-delivery, `requestTurnRecord.ts`).
    *
    * Returns a function that removes the binding — call it when the request is
@@ -4098,6 +4114,8 @@ export class Orchestrator {
     // outcome is unknown (`toolReplayLedger.ts`).
     const boundLedger = this.toolReplayLedgers.get(input);
     const toolReplayLedger = boundLedger ?? new ToolReplayLedger({ retainResults: false });
+    // Which pass of the request this is, for its receipt (`BoundPass`).
+    const bound = boundPassOf(boundLedger);
     const turnId = randomUUID();
     // Verifier hand-over, read on the CALLER's object before `input` is
     // re-bound below (MCP envelope, screening gate). One-shot.
@@ -4204,7 +4222,7 @@ export class Orchestrator {
     // What a throw out of the turn body closes (`closePassOnThrow`). `input`
     // is final here: normalised and through the screening gate.
     const undeliveredPass: UndeliveredPass | undefined = privacyHandle
-      ? { handle: privacyHandle, turnId, input, boundLedger }
+      ? { handle: privacyHandle, turnId, input, bound }
       : undefined;
 
     return turnContext.run(
@@ -4323,7 +4341,7 @@ export class Orchestrator {
         // The pass's privacy scope is closed here, exactly once: the abort
         // below is not closed again by `closePassOnThrow`.
         if (result === undefined || toolReplayLedger.abortedTool !== undefined) {
-          await this.closeAbandonedReentry(toolReplayLedger, privacyHandle, turnId, input);
+          await this.closeAbandonedReentry(toolReplayLedger, bound, privacyHandle, turnId, input);
           throw new ToolReplayAbortError(toolReplayLedger.abortedTool ?? 'unknown');
         }
         let serverRendered = false;
@@ -4386,7 +4404,7 @@ export class Orchestrator {
             turnId,
             input,
             wireView: verifierWireView,
-            boundLedger,
+            bound,
           });
           return result;
         }
@@ -4398,7 +4416,7 @@ export class Orchestrator {
                 turnId,
                 input,
                 receipt,
-                boundLedger,
+                bound,
                 this.takeTurnAttribution(turnId),
               );
               return { ...result, privacyReceipt: receipt };
@@ -4435,26 +4453,29 @@ export class Orchestrator {
   /**
    * Writes the turn's receipt row — unless a verifier bound a ledger to the
    * request (`requestReceipts.ts`): then the request has ONE row, owned by
-   * the first pass that had a receipt (normally the first run) and written
-   * by the binder once it delivered, with the receipt of every pass merged
-   * in. A pass whose finalisation the verifier held (`stashPrivacyEgress`)
-   * comes here only once the verifier is done with it, so its receipt also
-   * covers the verifier's requests (`verifierEgress`). `ran` is the
-   * pass's model attribution, taken when the pass ended. Returns whether a
-   * row is (or will be) written under this turn's id.
+   * the earliest pass that had a receipt (the first run whenever it had one)
+   * and written by the binder once it delivered, with the receipt of every
+   * pass merged in. Every pass offers to own it, so the row exists whenever
+   * any pass had a receipt. A pass whose finalisation the verifier held
+   * (`stashPrivacyEgress`) comes here only once the verifier is done with it,
+   * so its receipt also covers the verifier's requests (`verifierEgress`).
+   * `ran` is the pass's model attribution, taken when the pass ended. Returns
+   * whether a row is (or will be) written under this turn's id — under a
+   * ledger, as far as the passes finalized so far tell.
    */
   private async settleTurnReceipt(
     turnId: string,
     input: ChatTurnInput,
     receipt: PrivacyReceipt,
-    boundLedger: ToolReplayLedger | undefined,
+    bound: BoundPass | undefined,
     ran: { model: string; provider: string; fallbackUsed: boolean } | undefined,
   ): Promise<boolean> {
-    if (boundLedger === undefined) {
+    if (bound === undefined) {
       await this.persistTurnReceiptWith(turnId, input, receipt, ran);
       return true;
     }
-    return boundLedger.receipts.add(receipt, {
+    return bound.ledger.receipts.add(receipt, {
+      pass: bound.pass,
       rowId: turnId,
       write: (merged) => this.persistTurnReceiptWith(turnId, input, merged, ran),
     });
@@ -4463,10 +4484,13 @@ export class Orchestrator {
   /**
    * Ends a re-entry pass that needed a call outside the first run. Its
    * privacy scope is finalized — the model did get the replayed results, so
-   * the receipt joins the request's — and nothing of the pass is delivered.
+   * the receipt joins the request's, with the pass's offer to own the
+   * request's row (`settleTurnReceipt`) — and nothing of the pass is
+   * delivered.
    */
   private async closeAbandonedReentry(
     ledger: ToolReplayLedger,
+    bound: BoundPass | undefined,
     privacyHandle: PrivacyTurnHandle | undefined,
     turnId: string,
     input: ChatTurnInput,
@@ -4474,11 +4498,11 @@ export class Orchestrator {
     console.warn(
       `[orchestrator] verifier re-entry abandoned (turn ${turnId}): ${describeAbandonment(ledger.abortedTool ?? 'unknown')}`,
     );
-    this.turnAttribution.delete(turnId);
+    const ran = this.takeTurnAttribution(turnId);
     if (privacyHandle === undefined) return;
     try {
       const receipt = await privacyHandle.finalize(input.userMessage);
-      if (receipt) ledger.receipts.add(receipt);
+      if (receipt) await this.settleTurnReceipt(turnId, input, receipt, bound, ran);
     } catch (err) {
       console.warn('[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:', err);
     }
@@ -6228,6 +6252,7 @@ export class Orchestrator {
     // caller's object before `input` is re-bound.
     const boundLedger = this.toolReplayLedgers.get(input);
     const toolReplayLedger = boundLedger ?? new ToolReplayLedger({ retainResults: false });
+    const bound = boundPassOf(boundLedger);
     const turnId = randomUUID();
     // Verifier hand-over — read on the CALLER's object before `input` is
     // re-bound below; see `runTurnCore`. One-shot.
@@ -6389,7 +6414,7 @@ export class Orchestrator {
         callerInput,
         holdPrivacyFinalize,
         toolReplayLedger,
-        ...(boundLedger ? { boundLedger } : {}),
+        ...(bound ? { bound } : {}),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(observer ? { observer } : {}),
       }),
@@ -6413,13 +6438,13 @@ export class Orchestrator {
     readonly holdPrivacyFinalize: boolean;
     /** The ledger the turn scope carries (bound or turn-local). */
     readonly toolReplayLedger: ToolReplayLedger;
-    /** The ledger a verifier bound to the request, if one did. */
-    readonly boundLedger?: ToolReplayLedger;
+    /** The request pass, when a verifier bound a ledger to the request. */
+    readonly bound?: BoundPass;
     readonly privacyHandle?: PrivacyTurnHandle;
     readonly observer?: AskObserver;
   }): AsyncGenerator<ChatStreamEvent> {
     const { input, turnId, sessionId, mcpInputReply, privacyHandle, observer } = args;
-    const { toolReplayLedger, boundLedger } = args;
+    const { toolReplayLedger, bound } = args;
     // Set once the turn's privacy state was finalized or handed over. A
     // stream that ends otherwise (thrown, abandoned by the client) drops the
     // state in `finally` — real values must not outlive the turn.
@@ -6432,42 +6457,54 @@ export class Orchestrator {
         turnId,
         input,
         wireView,
-        boundLedger,
+        bound,
       });
       privacySettled = true;
     };
 
-    this.applyTurnAuthContext(input);
-    // Commit-on-delivery — mirror of `runTurnCore`.
-    this.bindRequestAfterTurn(boundLedger, turnId, input);
-    // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
-    if (mcpInputReply) {
-      await this.applyMcpInputReplay(mcpInputReply, input, turnId);
-    }
     // #133 E0 — streaming-path turn hooks. tool_result events carry only the
     // tool-use id, so track id→name from tool_use events to label
     // onAfterToolCall.
     const toolNameById = new Map<string, string>();
-    // #133 (E9) — onBeforeTurn is unbounded, so the plan-runner's plan snapshot
-    // is emitted as the FIRST stream event, before any answer tokens.
-    yield* this.toAnnotationEvents(
-      await this.fireTurnHook('onBeforeTurn', turnId, input, {
-        userMessage: input.userMessage,
-      }),
-    );
-    // Mid-turn steering — register this turn as live so `/chat/steer` can
-    // inject extra user messages keyed by the same session scope. The inner
-    // loop drains them at each iteration boundary; `endTurn` clears the buffer.
-    steeringBus.beginTurn(sessionId);
-    // W5 memory-ACL — the streaming mirror of `runTurnCore`: bind once, thread
-    // explicitly. The streaming path is exactly why this is a parameter and not
-    // an AsyncLocalStorage lookup — a generator is resumed in the async context
-    // of whoever calls `.next()`, which is how `turnContext.enter` was silently
-    // losing the turn context on every streaming turn before W3-A (see the
-    // comment at the top of `chatStream`). A binding lost that way would not
-    // fail; it would quietly fall back to the agent-global tree.
-    const turnMemory = this.bindTurnMemory(input);
+    // Set once this turn registered with the steering bus: `finally` ends
+    // only a registration this turn made.
+    let steeringLive = false;
+    // The prelude runs inside the `try` as well. A consumer may stop reading
+    // at the stream's first event (the `onBeforeTurn` annotations), and an
+    // MCP input-card replay has interned its result into the turn's privacy
+    // state by then: the `finally` still closes the pass and clears the
+    // turn's auth context.
     try {
+      this.applyTurnAuthContext(input);
+      // Commit-on-delivery — mirror of `runTurnCore`.
+      this.bindRequestAfterTurn(bound?.ledger, turnId, input);
+      // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
+      if (mcpInputReply) {
+        await this.applyMcpInputReplay(mcpInputReply, input, turnId);
+      }
+      // #133 (E9) — onBeforeTurn is unbounded, so the plan-runner's plan
+      // snapshot is emitted as the FIRST stream event, before any answer
+      // tokens.
+      yield* this.toAnnotationEvents(
+        await this.fireTurnHook('onBeforeTurn', turnId, input, {
+          userMessage: input.userMessage,
+        }),
+      );
+      // Mid-turn steering — register this turn as live so `/chat/steer` can
+      // inject extra user messages keyed by the same session scope. The inner
+      // loop drains them at each iteration boundary; `endTurn` clears the
+      // buffer.
+      steeringBus.beginTurn(sessionId);
+      steeringLive = true;
+      // W5 memory-ACL — the streaming mirror of `runTurnCore`: bind once,
+      // thread explicitly. The streaming path is exactly why this is a
+      // parameter and not an AsyncLocalStorage lookup — a generator is resumed
+      // in the async context of whoever calls `.next()`, which is how
+      // `turnContext.enter` was silently losing the turn context on every
+      // streaming turn before W3-A (see the comment at the top of
+      // `chatStream`). A binding lost that way would not fail; it would
+      // quietly fall back to the agent-global tree.
+      const turnMemory = this.bindTurnMemory(input);
       // #332 Layer 2 — Direct Line short-circuit (streaming / web-ui path).
       // A user-directed specialist turn is dispatched deterministically by the
       // harness; the orchestrator LLM never runs. We synthesize the `done`
@@ -6477,7 +6514,7 @@ export class Orchestrator {
       if (direct && toolReplayLedger.abortedTool !== undefined) {
         // A direct-line dispatch folds a refused re-entry miss into its own
         // answer; the authoritative check ends the pass here instead.
-        await this.closeAbandonedReentry(toolReplayLedger, privacyHandle, turnId, input);
+        await this.closeAbandonedReentry(toolReplayLedger, bound, privacyHandle, turnId, input);
         privacySettled = true;
         const abandoned = this.abandonedReentryEvent();
         if (abandoned) yield abandoned;
@@ -6516,13 +6553,13 @@ export class Orchestrator {
                 turnId,
                 input,
                 receipt,
-                boundLedger,
+                bound,
                 this.takeTurnAttribution(turnId),
               );
               // #1107 — surface the receipt-store key (== turnId) so an API
               // caller can correlate this turn with `GET .../receipts/:id`.
-              // Emitted only when a row is written under this turn's id (a
-              // verifier re-entry has none of its own).
+              // Emitted only when a row is written under this turn's id (under
+              // a request ledger: when this pass owns the request's row).
               doneEvent = {
                 ...doneEvent,
                 privacyReceipt: receipt,
@@ -6583,7 +6620,7 @@ export class Orchestrator {
           // the refusal (the tool loop's post-batch check, or a sub-agent's).
           // Its privacy scope is closed once, here.
           if (!privacySettled) {
-            await this.closeAbandonedReentry(toolReplayLedger, privacyHandle, turnId, input);
+            await this.closeAbandonedReentry(toolReplayLedger, bound, privacyHandle, turnId, input);
             privacySettled = true;
           }
           yield event.type === 'error' ? event : (this.abandonedReentryEvent() ?? event);
@@ -6661,13 +6698,14 @@ export class Orchestrator {
                   turnId,
                   input,
                   receipt,
-                  boundLedger,
+                  bound,
                   this.takeTurnAttribution(turnId),
                 );
                 // #1107 — surface the receipt-store key (== turnId) so an API
                 // caller can correlate this turn with `GET .../receipts/:id`.
-                // Emitted only when a row is written under this turn's id (a
-                // verifier re-entry has none of its own).
+                // Emitted only when a row is written under this turn's id
+                // (under a request ledger: when this pass owns the request's
+                // row).
                 doneEvent = {
                   ...doneEvent,
                   privacyReceipt: receipt,
@@ -6702,12 +6740,13 @@ export class Orchestrator {
         yield event;
       }
     } finally {
-      steeringBus.endTurn(sessionId);
+      if (steeringLive) steeringBus.endTurn(sessionId);
       this.clearTurnAuthContext();
       // A stream that ended without `done` (an `error`, a throw, a client
-      // that left) closes its pass here: state dropped, receipt kept.
+      // that left — in the prelude too) closes its pass here: state dropped,
+      // receipt kept.
       if (privacyHandle && !privacySettled) {
-        await this.closeUndeliveredPass({ handle: privacyHandle, turnId, input, boundLedger });
+        await this.closeUndeliveredPass({ handle: privacyHandle, turnId, input, bound });
       }
     }
   }

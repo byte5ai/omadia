@@ -56,10 +56,12 @@ function recordingContinuation(
   opts: ContinuationOpts,
   input: ChatTurnInput,
   /** Like the real orchestrator: a bound request ledger collects the
-   *  receipt, and the first pass to offer owns the request's one row. */
+   *  receipt, and the earliest pass with one owns the request's one row. */
   ledger: ToolReplayLedger | undefined,
   rows: PrivacyReceipt[],
 ): RecordingContinuation {
+  // Taken at hand-over: the continuation is finalized after the next pass began.
+  const pass = ledger?.pass ?? 0;
   const receipt = receiptFor(n);
   const view: VerifierPrivacy | undefined =
     opts.wireAnswer === undefined
@@ -83,6 +85,7 @@ function recordingContinuation(
       if (ledger === undefined) rows.push(receipt);
       else {
         ledger.receipts.add(receipt, {
+          pass,
           rowId: c.receiptId,
           write: async (merged) => {
             rows.push(merged);
@@ -143,7 +146,8 @@ export function stubOrchestrator(opts: {
   };
   /** A pass that ended without handing over closes itself, like the real
    *  orchestrator: its receipt is the turn's own row, or joins the bound
-   *  request's — a re-entry's without offering to own the row. */
+   *  request's with the pass's offer to own the row — which an earlier pass
+   *  with a receipt takes over. */
   const closeUndelivered = (input: ChatTurnInput, run: number): void => {
     held.delete(input);
     if (opts.privacyActive !== true) return;
@@ -152,16 +156,15 @@ export function stubOrchestrator(opts: {
     const ledger = ledgers.get(input);
     if (ledger === undefined) {
       state.rows.push(receipt);
-    } else if (ledger.mode === 'replay') {
-      ledger.receipts.add(receipt);
-    } else {
-      ledger.receipts.add(receipt, {
-        rowId: `turn-undelivered-${String(run)}`,
-        write: async (merged) => {
-          state.rows.push(merged);
-        },
-      });
+      return;
     }
+    ledger.receipts.add(receipt, {
+      pass: ledger.pass,
+      rowId: `turn-undelivered-${String(run)}`,
+      write: async (merged) => {
+        state.rows.push(merged);
+      },
+    });
   };
   const handOver = (input: ChatTurnInput, result: ChatTurnResult): void => {
     if (!held.delete(input) || opts.handOver !== true) return;

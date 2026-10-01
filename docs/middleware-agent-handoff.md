@@ -2677,11 +2677,17 @@ Jetzt erzeugt ein Wiedereintritt nur die Antwort neu:
   `ledger.receipts` (`requestReceipts.ts`); geliefert wird das gemergte
   Receipt, und genau **eine** `turn_receipts`-Zeile wird nach dem letzten
   Lauf geschrieben (`receiptId` im Stream). Ein Lauf, der wirft oder dessen
-  Stream vor `done` endet (`error`, Client weg), übergibt nichts; der
-  Orchestrator schließt ihn selbst (`closeUndeliveredPass`) und behält sein
-  Receipt — in der Zeile der Anfrage (ein Wiedereintritt, ohne die Zeile vom
-  ersten Lauf zu übernehmen) oder ohne Request-Ledger als eigene Zeile.
-  Vorher wurde es verworfen.
+  Stream vor `done` endet (`error`, Client weg — auch schon im Vorlauf, an
+  den `onBeforeTurn`-Annotationen nach einem MCP-Input-Card-Replay),
+  übergibt nichts; der Orchestrator schließt ihn selbst
+  (`closeUndeliveredPass`, samt Auth-Kontext) und behält sein Receipt — in
+  der Zeile der Anfrage oder ohne Request-Ledger als eigene Zeile. Vorher
+  wurde es verworfen. Jeder Lauf mit Receipt bietet an, die Zeile zu
+  besitzen; sie gehört dem frühesten (`BoundPass`: Pass-Nummer bei
+  Laufbeginn, nicht Finalisierungs-Reihenfolge) — dem ersten Lauf, sobald er
+  ein Receipt hat, sonst dem frühesten Wiedereintritt mit einem. Eine
+  Anfrage, deren einziges Receipt von einem abgebrochenen, geworfenen oder
+  verlassenen Wiedereintritt stammt, bekommt so trotzdem ihre Zeile.
 - **Abgekoppelte Arbeit.** Der Runner eines langlaufenden Tasks
   (`<tool>_start`, `tasks/longRunningTool.ts`) startet unter
   `runDetachedFromRequestLedger` mit eigenem turn-lokalem Ledger: er läuft
@@ -4378,15 +4384,6 @@ Stand nach „Wiedereintritte führen kein Tool erneut aus“ (§3,
   fehlendem `expectedTurnToolUse` wird angewiesen, aber nicht daran gehindert,
   einen erfolgreichen Write zu wiederholen; der Ledger zeichnet im ersten
   Lauf nur auf. Ein „replay-or-execute“-Modus für diesen Spawn wäre der Fix.
-- **Request-Receipt eines abgebrochenen Laufs.** Ein abgebrochener,
-  geworfener oder vom Client verlassener Wiedereintritt übernimmt nie die
-  Zeile (`closeAbandonedReentry`, `closeUndeliveredPass`); hatte nur er ein
-  Receipt (der erste Lauf keins), trägt die gelieferte Notiz das Receipt,
-  aber es entsteht keine `turn_receipts`-Zeile. Randfall. Ebenso offen: auf
-  `chat()` finalisiert `EgressLedger.settleAll` die übergebenen Läufe
-  parallel, die Zeile gehört dann dem, der zuerst fertig ist — meist der erste
-  Lauf, aber nicht garantiert (auf dem Stream finalisiert `StreamPasses` der
-  Reihe nach). Niemand liest die Zeilen-ID auf `chat()`.
 - **Abgespielte Status-Abfragen.** Ein `_status` eines langlaufenden
   Sub-Agent-Tasks wird im Wiedereintritt mit dem Stand des ersten Laufs
   abgespielt — gewollt (gleiche Evidenz), aber kein Live-Stand. Der Runner

@@ -1015,16 +1015,22 @@ answer they check:
   early client exits). That drops the pass's surrogate map, dataset store and
   C1 cache, and its receipt covers the pass and the verifier's requests about
   it, with the model attribution captured at hand-over. A pass that throws,
-  or whose stream ends before `done` (an `error`, a client that leaves),
+  or whose stream ends before `done` (an `error`, a client that leaves —
+  also during the stream's prelude, at the `onBeforeTurn` annotations, after
+  an MCP input-card replay put its result into the turn's privacy state),
   hands nothing over: the orchestrator finalizes it itself
-  (`closeUndeliveredPass`) and keeps its receipt like any other pass's — it
-  used to drop it. A request has one hash-chained `turn_receipts` row: the
-  pass writes it when the request cannot be re-entered; otherwise every
-  pass's receipt — a pass that threw, was abandoned or was cut off by the
-  client included — is merged into the request's one row, written once when
-  the verifier is done with the request (`requestReceipts.ts`, §7c). A
-  re-entry's receipt never takes that row from the first run, also when the
-  first run's continuation is finalized after it.
+  (`closeUndeliveredPass`), clears the turn's auth context and keeps its
+  receipt like any other pass's — it used to drop it. A request has one
+  hash-chained `turn_receipts` row: the pass writes it when the request
+  cannot be re-entered; otherwise every pass's receipt — a pass that threw,
+  was abandoned or was cut off by the client included — is merged into the
+  request's one row, written once when the verifier is done with the request
+  (`requestReceipts.ts`, §7c). Every pass with a receipt offers to own that
+  row, and the earliest pass owns it — in pass order, not in the order the
+  passes are finalized: the first run whenever it had a receipt, also when
+  its continuation is finalized after a re-entry; otherwise the earliest
+  re-entry that had one, so a request whose only receipt is a failed or
+  abandoned re-entry's still gets its row.
 - **What the verifier sees.** The extractor gets the turn's WIRE view, as the
   turn recorded it (`TurnContextValue.wireView`): the prompt exactly as the
   turn's model received it — normalised (an MCP input-card reply is its label,
@@ -1718,11 +1724,15 @@ replayed result the shield cannot intern again is withheld, never sent raw.
   (counts of the largest pass, the verifier's request counts summed, lists
   united), and the request has ONE `turn_receipts` row, written once with
   that merged receipt under the turn id of the first pass that had a
-  receipt; `done.receiptId` names it. An abandoned pass's receipt is merged
-  too — its model saw the replayed results — and so is the receipt of a pass
-  that threw or that the client left before `done`, which the orchestrator
-  closes itself (§6e). Neither takes the row from the first run, and a
-  request whose first run threw still gets its row.
+  receipt — first in pass order (the pass number is taken when the pass
+  starts), whatever order the passes are finalized in; `done.receiptId`
+  names it. An abandoned pass's receipt is merged too — its model saw the
+  replayed results — and so is the receipt of a pass that threw or that the
+  client left before `done`, which the orchestrator closes itself (§6e).
+  Each offers to own the row like any pass. Neither takes it from a first
+  run that had a receipt; a request whose only receipt is theirs still gets
+  its row (the first run had no shield activity, and a retry read live and
+  was then abandoned), and so does a request whose first run threw.
 - **Detached work keeps out of the request.** A long-running task's runner
   (`<tool>_start`, e.g. a deferred sub-agent) keeps working after the turn —
   in `enforce` also while the verifier re-enters the request — so it starts
@@ -4434,4 +4444,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request that also keeps the receipt of a pass that threw or was cut off, and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*
+*Last reviewed: 2026-10 (§7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*

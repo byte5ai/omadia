@@ -329,18 +329,21 @@ describe('RequestReceipts — one receipt for one request', () => {
     assert.equal(mergePrivacyReceipts([receipt(), receipt()])?.verifierEgress, undefined);
   });
 
-  it('commits the merged receipt once, through the first pass that offered to own the row', async () => {
+  /** An offer to own the row that records each write as `[rowId, receipt]`. */
+  const owner = (rows: Array<[string, PrivacyReceipt]>, pass: number, rowId: string) => ({
+    pass,
+    rowId,
+    write: (r: PrivacyReceipt) => {
+      rows.push([rowId, r]);
+      return Promise.resolve();
+    },
+  });
+
+  it('commits the merged receipt once, through the earliest pass that had a receipt', async () => {
     const rows: Array<[string, PrivacyReceipt]> = [];
-    const owner = (rowId: string) => ({
-      rowId,
-      write: (r: PrivacyReceipt) => {
-        rows.push([rowId, r]);
-        return Promise.resolve();
-      },
-    });
     const receipts = new RequestReceipts();
-    assert.equal(receipts.add(receipt(), owner('turn-1')), true);
-    assert.equal(receipts.add(receipt({ datasetsInterned: 4 }), owner('turn-2')), false);
+    assert.equal(receipts.add(receipt(), owner(rows, 0, 'turn-1')), true);
+    assert.equal(receipts.add(receipt({ datasetsInterned: 4 }), owner(rows, 1, 'turn-2')), false);
     assert.equal(receipts.rowId, 'turn-1');
     await receipts.commit();
     await receipts.commit();
@@ -348,13 +351,34 @@ describe('RequestReceipts — one receipt for one request', () => {
     assert.deepEqual(receipts.merged(), receipt({ datasetsInterned: 4 }));
   });
 
-  it('without an owning pass nothing is written, and a failing write does not throw', async () => {
+  it('a re-entry finalized first holds the row only until an earlier pass’s receipt arrives', async () => {
+    // An abandoned retry (pass 1) is closed before the verifier finalizes the
+    // first run's handed-over pass (pass 0); a resample (pass 2) comes last.
+    const rows: Array<[string, PrivacyReceipt]> = [];
+    const receipts = new RequestReceipts();
+    assert.equal(receipts.add(receipt(), owner(rows, 1, 'retry')), true, 'no earlier pass yet');
+    assert.equal(receipts.rowId, 'retry');
+    assert.equal(receipts.add(receipt(), owner(rows, 0, 'first')), true, 'the first run takes it over');
+    assert.equal(receipts.add(receipt(), owner(rows, 2, 'resample')), false);
+    assert.equal(receipts.rowId, 'first');
+    await receipts.commit();
+    assert.deepEqual(rows.map(([rowId]) => rowId), ['first']);
+  });
+
+  it('a request whose only receipt is a re-entry’s still writes its one row', async () => {
+    const rows: Array<[string, PrivacyReceipt]> = [];
+    const receipts = new RequestReceipts();
+    receipts.add(receipt({ datasetsInterned: 1 }), owner(rows, 2, 'retry'));
+    await receipts.commit();
+    assert.deepEqual(rows, [['retry', receipt({ datasetsInterned: 1 })]]);
+  });
+
+  it('without a receipt nothing is written, and a failing write does not throw', async () => {
     const none = new RequestReceipts();
-    none.add(receipt());
     await none.commit();
     assert.equal(none.rowId, undefined);
     const failing = new RequestReceipts();
-    failing.add(receipt(), { rowId: 't', write: () => Promise.reject(new Error('db down')) });
+    failing.add(receipt(), { pass: 0, rowId: 't', write: () => Promise.reject(new Error('db down')) });
     await failing.commit();
     assert.equal(new RequestReceipts().merged(), undefined);
   });

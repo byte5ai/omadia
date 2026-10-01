@@ -596,11 +596,17 @@ know and show no badge for turns without evidence.
   endpoint already refused such a call and is unchanged.
 - **A turn that fails or that the client leaves keeps its receipt.** A turn
   that throws, or whose stream ends before `done` (an error, or a client that
-  disconnects), used to drop its privacy receipt while freeing its privacy
-  state. It now writes the receipt to `turn_receipts` like any turn — or, in
-  a message the verifier may re-enter, merges it into the message's one row,
-  which the first run owns. Expect receipt rows for failed and abandoned
-  turns; no `done` event names them.
+  disconnects — also before the model ran, for example at the plan
+  annotation after an MCP input-card answer was replayed), used to drop its
+  privacy receipt while freeing its privacy state; one left at that first
+  annotation was not freed at all. It now writes the receipt to
+  `turn_receipts` like any turn — or, in a message the verifier may re-enter,
+  merges it into the message's one row. That row belongs to the first run
+  when the first run had a receipt, otherwise to the earliest re-check that
+  had one, so a message whose only receipt comes from a re-check that failed,
+  was abandoned or was cut off still gets its row. Expect receipt rows for
+  failed and abandoned turns; a `done` event names one only when it is the
+  message's row.
 
 ## Upgrading past v0.167.12 — desktop app: database passwords, no TCP port on macOS and Linux
 

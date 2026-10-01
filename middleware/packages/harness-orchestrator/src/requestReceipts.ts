@@ -15,10 +15,13 @@ import type { PrivacyReceipt, VerifierEgressSummary } from '@omadia/plugin-api';
  * receipt here — behind a Privacy Shield once the pass is finalized after the
  * verifier, so the pass's receipt also accounts for the verifier's requests
  * on it (`verifierEgress`). The answer it delivers carries {@link mergePrivacyReceipts} of
- * all of them, and the request's ONE row is written once, through the first
- * pass (the only one that persisted on its own before), with that merged
- * receipt. A turn no re-entry can follow never comes here and persists exactly
- * as before.
+ * all of them, and the request's ONE row is written once, with that merged
+ * receipt, under the turn id of the earliest pass that had a receipt — the
+ * first run whenever it had one. Every pass with a receipt offers to own the
+ * row, also one that never delivered (it threw, was abandoned or was cut off
+ * by the client), so the request has its row whenever any pass had a receipt.
+ * A turn no re-entry can follow never comes here and persists exactly as
+ * before.
  */
 
 /**
@@ -92,10 +95,13 @@ function union<T>(lists: ReadonlyArray<readonly T[] | undefined>): T[] {
   return out;
 }
 
-/** A pass offering to own the request's receipt row: the row's key (the
- *  pass's turn id) and the writer (the orchestrator's `persistTurnReceipt`
- *  bound to that turn). The writer is expected not to throw. */
+/** A pass offering to own the request's receipt row: which pass it is, the
+ *  row's key (the pass's turn id) and the writer (the orchestrator's
+ *  `persistTurnReceipt` bound to that turn). The writer is expected not to
+ *  throw. */
 export interface ReceiptRowOwner {
+  /** 0 for the first run, then 1, 2, … per re-entry (`ToolReplayLedger.pass`). */
+  readonly pass: number;
   readonly rowId: string;
   readonly write: (receipt: PrivacyReceipt) => Promise<void>;
 }
@@ -107,19 +113,25 @@ export class RequestReceipts {
   #committed = false;
 
   /**
-   * Adds one pass's receipt. The first pass that offers to own the row owns
-   * it — normally the first run — and later offers are declined. Returns
-   * whether this pass owns the row.
+   * Adds one pass's receipt with that pass's offer to own the request's row.
+   * The EARLIEST pass that had a receipt owns it, in whatever order the
+   * passes are finalized: a re-entry that ended early is closed before the
+   * verifier finalizes the first run's handed-over pass, and holds the row
+   * only until an earlier pass's receipt arrives. So the first run owns the
+   * row whenever it had a receipt, and a request whose only receipts come
+   * from re-entries still gets its row. Returns whether this pass owns the
+   * row so far.
    */
-  add(receipt: PrivacyReceipt, owner?: ReceiptRowOwner): boolean {
+  add(receipt: PrivacyReceipt, owner: ReceiptRowOwner): boolean {
     this.#receipts.push(receipt);
-    if (owner === undefined || this.#owner !== undefined) return false;
+    if (this.#owner !== undefined && this.#owner.pass <= owner.pass) return false;
     this.#owner = owner;
     return true;
   }
 
-  /** The key the request's row is (or will be) written under, if any pass
-   *  owns it. */
+  /** The key the request's row is (or will be) written under — the turn id
+   *  of the earliest pass with a receipt so far — or undefined while no pass
+   *  had one. */
   get rowId(): string | undefined {
     return this.#owner?.rowId;
   }
@@ -130,9 +142,10 @@ export class RequestReceipts {
   }
 
   /**
-   * Writes the request's row once, with the merged receipt. Later calls do
-   * nothing; so does a request no pass wrote a receipt for. Never throws: the
-   * answer outranks the audit row, and the writer logs its own failure.
+   * Writes the request's row once, with the merged receipt, through the
+   * owning pass. Later calls do nothing; so does a request no pass had a
+   * receipt for. Never throws: the answer outranks the audit row, and the
+   * writer logs its own failure.
    */
   async commit(): Promise<void> {
     if (this.#committed) return;

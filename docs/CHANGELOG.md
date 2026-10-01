@@ -51,11 +51,20 @@ and now work as one design:
   `turn_receipts` row with every pass's receipt merged in, the verifier's
   request counts summed over the passes. A pass that throws or whose stream
   ends before `done` hands nothing over; the orchestrator finalises it
-  itself and keeps its receipt — in the request's row (a re-entry's without
-  taking the row from the first run), or as the turn's own row when no
-  verifier can re-enter it. Such receipts used to be dropped, so a retry that
-  failed or that the client left was missing from the request's row, and a
-  request whose first run failed had no row at all.
+  itself and keeps its receipt — in the request's row, or as the turn's own
+  row when no verifier can re-enter it. Such receipts used to be dropped, so
+  a retry that failed or that the client left was missing from the request's
+  row, and a request whose first run failed had no row at all. The request's
+  row belongs to its earliest pass with a receipt, counted in pass order,
+  not in the order the passes are finalised: the first run whenever it had
+  one, otherwise the earliest re-entry that had one. A request whose only
+  receipt came from a re-entry that was abandoned, threw or was cut off used
+  to get no row although its answer carried that receipt. A stream whose
+  consumer stops in the prelude — at the `onBeforeTurn` annotations, after
+  an MCP input-card replay — is closed the same way; it used to keep the
+  replayed values in the privacy service until restart, write no receipt and
+  leave the turn's calendar auth context installed. Tests:
+  `verifierRequestReceiptRow.test.ts`, `chatStreamPreludeClosesPass.test.ts`.
 - Behind the shield the claim extractor reads the turn's wire view, so the
   extraction window and the verbatim guard apply to the text the model saw.
   A claim that cannot be mapped back onto the answer the user saw is no
