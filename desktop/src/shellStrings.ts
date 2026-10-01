@@ -96,6 +96,11 @@ const DE: Dictionary = {
     'Dieser Schlüssel verschlüsselt deinen Geheimnis-Tresor. Wenn du omadia auf einen neuen Rechner umziehst, brauchst du ihn. Geht er verloren, sind gespeicherte Geheimnisse nicht wiederherstellbar.\n\n{key}',
   'recovery.copy': 'In die Zwischenablage kopieren',
   'recovery.close': 'Schließen',
+  'recovery.copyFailed.title': 'Kopieren fehlgeschlagen',
+  'recovery.copyFailed.message':
+    'Der Wiederherstellungsschlüssel wurde nicht in die Zwischenablage kopiert.',
+  'recovery.copyFailed.detail':
+    'Schreib ihn jetzt ab und bewahre ihn an einem sicheren Ort auf:\n\n{key}',
   'recovery.unavailableTitle': 'Wiederherstellungsschlüssel nicht verfügbar',
   'recovery.unavailableDetail':
     'Der Schlüssel konnte nicht gelesen werden: {error}\n\nLogdatei: {logFile}',

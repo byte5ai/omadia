@@ -122,8 +122,10 @@ updates:
         dependency-type: 'production'
         update-types: ['patch']
     ignore:
-      # @types/node tracks the runtime major (Node 22 LTS), as in the /web-ui
-      # block above; typescript 7.x is the Go-native rewrite (see /middleware).
+      # @types/node tracks the desktop's runtime, which is Electron's embedded
+      # Node (24 for Electron 44), not the Node 22 of the server image: it moves
+      # together with the Electron major that moves Node. typescript 7.x is the
+      # Go-native rewrite (see /middleware).
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
       - dependency-name: 'typescript'

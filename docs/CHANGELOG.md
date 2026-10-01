@@ -36,6 +36,63 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop dependencies refreshed to Electron 44 and electron-builder 26; `desktop` joins the CI audit
+
+2026-09-30 — `desktop/` has its own lockfile but had no leg in the
+`audit (high+critical block)` job, and `npm audit` there reported 18 findings
+(17 high, 1 critical): Electron 37.10.3, out of support and the shipped runtime
+although it is a devDependency (the app, and through `ELECTRON_RUN_AS_NODE` the
+kernel and the web-ui, run on it); js-yaml 4.2.0, which electron-updater uses to
+parse the update feed inside the installed app; and a critical tar plus
+node-gyp, cacache, make-fetch-happen, ip-address and builder-util-runtime in the
+build tree of electron-builder 25.1.8 and a direct `@electron/rebuild` 3.6.1
+pin. Electron moves to 44.5.1 (embedded Node 22.21.1 → 24.21.0; the desktop's
+`@types/node` follows it to 24), electron-builder to 26.17.0 — not the
+`latest`-tagged 26.15.3, whose NSIS installer silently skips every executable
+and native module at install time (electron-builder#9983) — and js-yaml to
+4.3.2; the unused `@electron/rebuild` pin is dropped. `npm audit` in `desktop/`
+now reports 0, `desktop` is the third leg of the audit matrix, and
+`.github/scripts/audit-scope.test.mjs` fails the job when a tracked lockfile
+directory is missing from it (`docs/security-architecture.md` §4a).
+
+What changes with it: the desktop app needs macOS 13 or later (Electron 44
+dropped macOS 12, see `docs/upgrading.md`). electron-builder writes no macOS
+minimum into `latest-mac.yml`, so the merged feed now declares
+`minimumSystemVersion: 22.0.0`, the Darwin kernel of macOS 13, which is what
+electron-updater compares with `os.release()`. macOS 11 and 12 installs are
+therefore not offered the Electron 44 build and keep the version they run,
+instead of installing an update that does not start, and are told so rather
+than reported current (desktop updater entry below); `afterPack` fails every
+mac build whose packaged `LSMinimumSystemVersion` no longer matches that floor.
+electron-builder 26 requires `win.azureSignOptions.publisherName`; the release
+workflow reads it from the signing certificate, and because it also lands in
+the Windows app's `app-update.yml`, installed Windows apps now refuse updates
+that are not Authenticode-signed under that name. Electron 44's
+`clipboard.writeText` returns a promise that can reject: a failed recovery-key
+copy is now logged and shows the key again to write down, where it would
+otherwise have ended the boot of a running app in the boot-failure dialog.
+`npm install` no longer downloads the Electron binary (it is fetched on first
+run). Before this merges, a `desktop-apps.yml` dispatch build of the branch
+(throwaway tag, `notarize=false`) has to pass on all four targets and its arm64
+app has to start (wizard, kernel and web-ui up, update check): a push to `main`
+releases through the same workflow, so its first run must not be a
+user-facing release. That build is also installed over the current release on
+macOS, Windows and Linux, and `secrets.enc` has to come through byte-identical
+with the same recovery key: the runtime that decrypts it moves from Electron
+37's `safeStorage` to Electron 44's. The arm64 start and the upgrade installs
+run only on a machine or user account without a productive omadia install
+(for an upgrade run, the current release is freshly installed there first): a
+build installed by hand takes no pre-update snapshot, and its kernel
+migrations run forward-only on whatever data folder it finds. The fix that
+keeps an unreadable `secrets.enc` and stops the app instead of re-keying it
+shipped before this change, in v0.167.9 (entry below), so a file the new
+runtime cannot decrypt stops the app at the secrets dialog instead of losing
+the vault, the credential keychain and the provider keys. The updater fix
+(entry below) landed on `main` first as well and shipped in the same release,
+built on Electron 37 like every release before this change. After the merge an
+admin adds the `audit (high+critical block) (desktop)` context to `main`'s
+required checks (handoff §13).
+
 ### Fixed — desktop database requires passwords; the kernel runs without superuser rights
 
 2026-09-30 — the desktop app's embedded PostgreSQL cluster was initialised with
@@ -549,7 +606,8 @@ userData). The version comparison follows semver's strict grammar and is tested
 against electron-updater's own OS check. Nothing in it depends on Electron 44,
 so it ships first, in a release still built on Electron 37: an install only
 gets the new handler by updating to a build that carries it, and a macOS 11/12
-install that never takes that release keeps reporting "up to date".
+install that never takes that release keeps reporting "up to date"
+(`docs/upgrading.md`).
 
 ### Fixed — desktop: setup wizard switches reach the kernel or are gone
 
