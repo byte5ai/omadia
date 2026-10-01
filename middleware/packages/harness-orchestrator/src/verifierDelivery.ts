@@ -53,8 +53,8 @@ import { PROMPT_MASK_BLOCKED_ANSWER, SECURITY_QUARANTINE_NOTICE } from './orches
  *  - A turn that fails (an `error` event, or no `done`) releases nothing it
  *    held; the `error` itself goes out.
  *  - A contradiction may buy one correction retry ({@link EnforcedRetry}):
- *    the service re-enters the turn over the first run's tool results (no
- *    tool runs twice, `toolReplayLedger.ts`), the retry is held the same way,
+ *    the service re-enters the turn over the first run's tool results (none
+ *    of them runs again, `toolReplayLedger.ts`), the retry is held the same way,
  *    and its verdict decides by the same rule. Nothing of the first turn is
  *    released once a retry ran; a retry that fails or is abandoned stays
  *    internal and the first turn is withheld.
@@ -394,7 +394,8 @@ export interface EnforcedVerdict {
 /**
  * The stream's correction retry (`VerifierService`). It re-generates the
  * answer over the first run's tool results (`toolReplayLedger.ts`), so it
- * runs no tool twice; the release rule above decides what goes out.
+ * runs none of the first run's tools again; the release rule above decides
+ * what goes out.
  */
 export interface EnforcedRetry {
   readonly stream: AsyncIterable<ChatStreamEvent>;

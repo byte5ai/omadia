@@ -36,6 +36,56 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — the answer verifier's verdicts, `enforce` gate and re-entries work behind the Privacy Shield
+
+2026-10-01 — the verifier changes below were built next to the change that
+runs the verifier's model requests behind the Privacy Shield (further down)
+and now work as one design:
+
+- Every pass the verifier runs — the first run, a borderline resample, a
+  correction retry, on `chat()` and on the stream — hands its privacy
+  finalisation over. The verifier's requests about a pass's answer go
+  through that pass's own privacy view, and the pass is finalised exactly
+  once afterwards, also when the request errors, a re-entry is abandoned or
+  the client leaves. A request that can be re-entered keeps one
+  `turn_receipts` row with every pass's receipt merged in, the verifier's
+  request counts summed over the passes.
+- Behind the shield the claim extractor reads the turn's wire view, so the
+  extraction window and the verbatim guard apply to the text the model saw.
+  A claim that cannot be mapped back onto the answer the user saw is no
+  longer dropped without a trace: it is the new coverage gap
+  `claims_not_restored`, so such an answer is at most partly verified and
+  `enforce` does not release it.
+- `enforce` withholds every answer the verifier may not see behind the
+  shield — a server-rendered answer, and a pass that handed over no privacy
+  view, such as a Direct Line relay — as `unavailable` / `privacy_shield`,
+  for a resample and a retry as well; `shadow` records no verdict for them
+  and no longer sends a rendered answer to the extractor. The shield's
+  refusal of a prompt it cannot mask and the inbound-screening quarantine
+  notice are server-composed and state no fact, so `enforce` releases them
+  without a verdict instead of replacing one notice with another.
+- The correction hint carries no verifier evidence on any path. Behind the
+  shield the retry is withheld when the contradicted pass's masking would
+  still alter the hint; a hint that passes is masked once, by the retry's
+  own pass. A retry or resample answer that still carries unresolved
+  placeholders is never shown in place of the earlier answer, and such a
+  retry answer is not judged at all.
+- A re-entry that throws is logged with its run id, the error's class and
+  the closed code `reentry_turn_failed`, never with the error's message. A
+  request's replay ledger is no longer bound to an input object that already
+  carries another one, and the uploads' import is single-flight across
+  passes.
+- The write-once guarantee is scoped to verifier re-entries: a resample or a
+  retry executes no write. Two layers below the replay ledger are named as
+  known exceptions in `docs/security-architecture.md` §7c — the MCP client's
+  transport retry on the chat path and the privacy guard's interning
+  fail-open — with follow-ups in `docs/middleware-agent-handoff.md` §13.
+
+`@omadia/plugin-api` 1.21.0 carries the additive API these changes need
+(`RunToolCall.replayed`, `RunAgentInvocation.replayed`,
+`FindEntitiesOptions.id`). Upgrade notes: `docs/upgrading.md`, "Upgrading
+past v0.167.13".
+
 ### Fixed — verifier evidence resolves the exact entity reference
 
 2026-09-30 — the answer verifier's graph evidence ignored the id in an entity
@@ -91,14 +141,15 @@ claim or evidence text, so only its length is logged, never the id itself. The
 contradiction recheck follows the same rule, and an unknown id on the first
 call no longer spends a recheck. Affected turns show `partial` instead of
 `verified` and, in enforce mode, can trigger the borderline resample. A
-contradiction whose citation names no shown snippet no longer blocks; it is
-released with the `partial` badge, as a contradiction without any citation
-already was. For judge contradictions, `verifier_contradictions.source` now
+contradiction whose citation names no shown snippet no longer blocks; it
+counts as an unconfirmed claim with the `partial` badge, as a contradiction
+without any citation already did (in `enforce` the answer is withheld
+without a correction retry). For judge contradictions, `verifier_contradictions.source` now
 records the cited snippet's source (a `confluence` snippet still lands as
 `graph`) instead of the claim's expected source. The rule is written up in
 `docs/security-architecture.md` §7c.
 
-### Security — a verifier re-entry never runs a tool twice; the `enforce` stream retries a contradiction too
+### Security — a verifier re-entry replays the first run's tool results instead of running the tools again; the `enforce` stream retries a contradiction too
 
 2026-10-01 — In `enforce` mode the answer verifier re-enters a turn: a
 borderline verdict draws a second sample (non-streaming path), a
@@ -174,18 +225,15 @@ told its model a dataset id none of the replayed first-run results referred
 to. The request's ledger now keeps the first run's attachment ingestion and
 hands it to every re-entry, masked through the re-entry's own prompt map; a
 re-entry that finds none to reuse is abandoned before the model runs. And
-the correction hint left the turn unprotected: it quoted each contradicted
-claim, cut from the answer after the prompt-mask restore, so with
-`mask_user_prompt` on the real values the mask keeps from the model reached
-the provider in the system prompt — on `chat()`, and with the stream retry on
-every streamed and channel turn — and it quoted what the verifier measured:
-Odoo values, knowledge-graph snippets and lookup details, fetched with the
-verifier's own access rather than the user's grants. The hint is now masked
-through the pass's prompt map like the user's message, its masked spans are
-on the request's receipt, and a re-entry whose prompt cannot be masked is
-abandoned; the hint names the claims only — no measured value, no check
-detail, no postcondition issues — and the retry corrects from the turn's own
-tool results.
+the correction hint quoted what the verifier measured whenever no Privacy
+Shield was installed: Odoo values, knowledge-graph snippets and lookup
+details, fetched with the verifier's own access rather than the user's
+grants. The hint now names the claims only — no measured value, no check
+detail, no postcondition issues — on every path, and the retry corrects from
+the turn's own tool results. Like the user's message it is masked through
+the pass's own prompt map, on the stream retry too, its masked spans are on
+the request's receipt, and a re-entry whose prompt cannot be masked is
+abandoned.
 
 Two smaller changes ride along. The new setup field
 `verifier_resample_on_borderline` of `@omadia/verifier` (seeded on first

@@ -3902,9 +3902,10 @@ export class Orchestrator {
    * {@link chatStream}.
    *
    * A turn whose input carries a ledger records its tool results into it (the
-   * first run) or replays them (a re-entry, after `beginReentry()`): no tool a
-   * re-entry calls runs twice, and a re-entry that needs a call outside the
-   * first run is abandoned with {@link ToolReplayAbortError}. A re-entry fires
+   * first run) or replays them (a re-entry, after `beginReentry()`): a call
+   * the first run made is replayed, never run again, and a re-entry that
+   * needs a call outside the first run — other than a kernel read — is
+   * abandoned with {@link ToolReplayAbortError}. A re-entry fires
    * no per-call turn hook of its own. The binder owns the request's record:
    * every pass — the first run included — offers its session-log row and its
    * `onAfterTurn` answer to `ledger.turnRecord` instead of writing them, and

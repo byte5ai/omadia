@@ -339,6 +339,216 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.167.13 — answer verifier: honest verdicts, `enforce` withholds what it could not confirm, re-entries replay tool results
+
+No migration and no schema change. One new, optional setting
+(`verifier_resample_on_borderline`). Everything here applies only when the
+answer verifier is enabled (`VERIFIER_ENABLED=true`, or the
+`verifier_enabled` setup field of `@omadia/verifier`); withholding, the
+stream retry and the tool replay only in `enforce` mode (`VERIFIER_MODE`, or
+`verifier_mode`). [`security-architecture.md`](security-architecture.md)
+§6e and §7c have the full policy.
+
+### Verdicts say what was checked (all modes)
+
+- **SQL on `verifier_verdicts`.** `status` now also holds `skipped` (nothing
+  checkable in the answer) and `unavailable` (the verifier could not run).
+  Both used to be stored as `approved`, so the share of `approved` rows drops.
+  It drops further because an answer the verifier could check only in part
+  (a claim no checker accepts, more claims than `VERIFIER_MAX_CLAIMS`, an
+  answer longer than the 6000 characters the claim extractor reads, or a
+  claim the extraction returned that is not in the answer or longer than 300
+  characters) is now `approved_with_disclaimer`, its unchecked claims and
+  coverage entries counted in `unverified_count`, which now always counts
+  every unverified claim of the row. A dashboard or query that reads
+  `status = 'approved'` as "clean turn" is now correct, but its numbers
+  change.
+- **Fewer confirmed claims from the evidence judge.** A judge verdict counts
+  only when it cites an evidence snippet its own request showed, and a claim
+  about one specific record is checked against exactly that record: a record
+  missing from the knowledge graph leaves the claim unconfirmed, where a
+  sibling record of the same model used to verify or contradict it. Behind
+  the Privacy Shield, a claim the verifier cannot map back onto the answer
+  the user saw is reported as not checked. Shadow-mode figures recorded
+  before this update are not comparable with later ones.
+- **Clients of the `verifier` stream event** (`/api/chat/stream`, public API
+  keys). `summary.status` can be `skipped` / `unavailable`, `summary.badge`
+  `unverified` / `unavailable`, and a `summary.reason` code,
+  `summary.uncheckedCount` and `summary.uncoveredCount` appear. The badge is
+  `unverified` or `unavailable` whenever no claim was confirmed or
+  contradicted — also on an `approved_with_disclaimer` status — so key on the
+  badge, not on the status. Show a result as checked only for `verified` /
+  `partial` / `corrected` / `failed` with `claimCount > 0`; `corrected`, like
+  `verified`, now means every claim was confirmed.
+- **`VERIFIER_MAX_CLAIMS`** keeps its value and default (20) and caps how many
+  claims are checked per answer. Claims beyond it are no longer dropped; they
+  are reported as not checked. The claim extractor asks the model for one
+  claim more than the cap and reports a list that reaches that limit as
+  possibly incomplete, so a model that stops at the limit cannot hide claims
+  either. Both keep the answer at "partly verified".
+- **Plugins built against `@omadia/verifier` types.** A `switch` over
+  `VerifierVerdict['status']` must handle the two new statuses before it
+  compiles again. An `unverified` claim verdict may carry
+  `cause: 'not_checked' | 'check_failed'`, and a claim may have the synthetic
+  type `coverage_gap`. `ClaimExtractor.extract` now resolves
+  `{ claims, gaps }` instead of a claim list, returns every valid claim
+  instead of cutting the list at `maxClaims`, reads every `record_claims`
+  call of the model's response, and names in `gaps` what it did not cover —
+  claims that are not in the answer (`claims_not_in_answer`), which it used
+  to drop without a trace; claims longer than `MAX_CLAIM_CHARS` (300;
+  `claims_too_long`), which it used to cut to their first 300 characters
+  before checking them; and, behind a Privacy Shield, claims that do not map
+  back onto the answer the user saw (`claims_not_restored`). A claim's
+  `text` is the span of the answer it quotes (case and whitespace may differ
+  from the model's text), never longer than `MAX_CLAIM_CHARS`. A `switch`
+  over `ExtractionGap` must handle both new values. Give `VerifierPipeline`
+  the same `maxClaims` to cap the checks. A plugin that provides its own
+  `verifier@1` pipeline gets its verdict held to its claims
+  (`bindVerdictToClaims`): a status its claims do not back is lowered, and
+  `approved` over no claim, an unknown status or a `reason` outside the
+  closed codes is reported as `unavailable` / `pipeline_error`.
+- **Knowledge-graph providers.** `findEntities` takes an exact-id filter,
+  `FindEntitiesOptions.id` (`@omadia/plugin-api` 1.21.0, additive); both
+  bundled backends implement it. A third-party `knowledgeGraph` provider that
+  ignores the option returns other records, which the verifier now discards:
+  claims about a specific record then get no graph evidence until the
+  provider implements the filter.
+
+Teams and Telegram need nothing: they keep receiving only the four badges they
+know and show no badge for turns without evidence.
+
+### `enforce` withholds what it could not confirm, on the stream too
+
+- **Answers the verifier could not confirm are withheld.** `enforce` delivers
+  an answer only when its verdict is `approved`, or `skipped` because the
+  answer holds nothing to check (no figure, date or reference, or no claim).
+  Every other verdict replaces the answer with a short notice in the
+  operator's disclosure locale: a contradiction, but also a partly confirmed
+  answer, an answer whose claims no checker takes, and a turn in which the
+  verifier could not run. An answer longer than the 6000 characters the
+  claim extractor reads is never fully covered and is therefore always
+  withheld. Before switching, run `shadow` and compare: the share of
+  `verifier_verdicts` rows with status `approved`, or `skipped` with reason
+  `no_trigger` / `no_claims`, is the share of answers `enforce` would
+  deliver.
+- **Privacy Shield v4 rendering and `enforce` do not combine.** An answer the
+  shield renders server-side holds real values the model never saw, so it is
+  never sent to the verifier; `enforce` withholds it (summary `unavailable`,
+  reason `privacy_shield`, a `verifier_verdicts` row with status
+  `unavailable`). That includes rendered tool errors and sign-in prompts, and
+  behind the shield a Direct Line relay, which hands over no privacy view to
+  verify through. With v4 rendering active, expect no rendered answer to
+  reach users in `enforce`. The shield's own refusal of a prompt it cannot
+  mask and the security screening's quarantine notice go out as before,
+  without a verdict.
+- **Turns with an input card are delivered unchecked.** A turn that ends with
+  a choice card, an MCP input form, a slot picker or an OAuth consent prompt
+  is released without a verdict, and so is the answer the card rides on — a
+  slot picker, a consent prompt or a choice card added after the answer can
+  come with a complete factual answer.
+- **Streaming clients wait for the verdict.** On `/api/chat/stream`, the
+  public API-key stream and the canvas, no answer text arrives before the
+  turn and its verification (two LLM calls plus the source checks) have
+  finished; then the whole answer arrives at once, as a single text delta.
+  The canvas skeleton waits too: it appears with a released answer and not
+  at all with a withheld one. A turn without tool calls sends only its start
+  events (routing, iteration start) in between on the API-key stream — give
+  API clients a read timeout that covers a full turn plus verification.
+- **The stream retries a contradiction.** Every stream consumer —
+  `/api/chat/stream`, the public API-key stream, a channel that streams its
+  turns — now gets one correction retry on a contradiction (canvas turns do
+  not); `chat()` callers had it already. Nothing reaches the client before
+  the final verdict; a client sees a second `iteration_start` while the
+  retry runs, and a contradicted turn takes up to twice as long before its
+  answer or the notice arrives. `VERIFIER_MAX_RETRIES=0` (or the
+  `verifier_max_retries` field) switches the retry off on both paths.
+- **Teams and Telegram** now show the notice instead of an answer that is
+  still contradicted after the correction retry (previously delivered with a
+  "contradiction found" badge); `VERIFIER_MAX_RETRIES` keeps its default
+  of 1. An answer that ends with `NO_REPLY` after other text is checked like
+  any answer; when the verifier withholds it, the channel posts the notice
+  instead of staying silent.
+- **API clients** that switch exhaustively over `done.answerSource` must
+  handle `"verifier-blocked"` (always with `answerIsError: true`; `answer` is
+  the notice). A client that renders `done.answer` needs no change.
+  `done.verifier` now carries the verdict in `enforce` mode; the trailing
+  `verifier` event is still sent, and its `summary.reason` can be
+  `privacy_shield`. A withheld turn that had also failed after a tool
+  committed keeps `degraded: true` and `committedTools`. Plugins compiled
+  against `@omadia/channel-sdk`'s `AnswerSource` and `VerifierSummaryReason`
+  types, or `@omadia/verifier`'s `VerifierUnavailableReason`, see the
+  widened unions.
+- **Not covered:** agents on the subscription-CLI runtime (`claude-cli`
+  provider) and proactive routines are not verified, whatever the mode.
+
+### Resample and retry re-generate the answer, they never re-run the turn's tools
+
+- **The first run's tool results are replayed.** A borderline resample and a
+  correction retry used to run the whole turn again, tools included, so a
+  write could run two or three times for one message. They now get the first
+  run's tool results back instead. When the re-sampled model wants a call the
+  first run did not make, it runs only if it is one of the kernel's own
+  reads; any other call — every plugin, MCP, specialist-agent and sub-agent
+  tool — ends the re-entry: a resample keeps the first answer, a retry
+  withholds it with the `failed` badge. Expect fewer `corrected` badges on
+  turns that wrote something, and the log lines
+  `[verifier/service] retry abandoned run=…` / `resample abandoned run=…`
+  naming the tool or the reason. A re-entry that fails for any other reason
+  logs `retry FAIL run=… class=<error class> code=reentry_turn_failed`,
+  without the error's message.
+- **Switching the resample off.** The new setup field
+  `verifier_resample_on_borderline` of `@omadia/verifier` turns the
+  borderline resample off with `false` (default `true`).
+  `VERIFIER_RESAMPLE_ON_BORDERLINE` seeds it, like every `VERIFIER_*`
+  variable, only when the plugin is installed for the first time; on an
+  existing install set the field in the plugin's settings.
+- **One record per message — the delivered answer.** A re-entry no longer
+  writes its own session-log row, fact extraction, turn-hook events or
+  `turn_receipts` row. When a message can be re-entered, its session-log row
+  (with the knowledge-graph turn, fact extraction, an auto-promoted memory
+  and `onAfterTurn`) is written once, right after the verdict, for the answer
+  that goes out — a delivered retry's or resample's, not the first run's —
+  or for the answer the final verdict withheld; the stream's `done.turnId`
+  names that row, so "save as memory" saves the delivered answer. It still
+  lands before the answer goes out. A message has one receipt row, written
+  once after the last pass, whose receipt covers every pass and, behind the
+  Privacy Shield, the verifier's requests on each; the delivered answer
+  carries that receipt and the stream's `done.receiptId` names the row.
+- **An upload is imported once per message.** A CSV or XLSX attached to a
+  message that the verifier re-enters used to become a new dataset on every
+  pass (two or three per file). The re-entry now reuses the first run's
+  import and its dataset id. Datasets an earlier release created twice for
+  one message stay; their owner can delete the extra copies through
+  `DELETE /api/v1/datasets/:id`.
+- **The correction hint names the claims only.** The hint no longer passes
+  the value the verifier measured, or any other evidence it fetched, to the
+  model: the retry corrects from the turn's own tool results or says that a
+  claim could not be confirmed, so a retry that used to copy the verified
+  figure may now be withheld instead. With `mask_user_prompt` on, the hint
+  is masked like the user's message (its masked spans show on the message's
+  privacy receipt), and a retry whose prompt cannot be masked is abandoned.
+  Behind the Privacy Shield a retry whose hint the turn's masking would
+  alter is not sent at all — the answer is withheld with the `failed` badge
+  and the log says `retry withheld`.
+- **Long-running tasks are unaffected by a re-entry.** A task started with a
+  `<tool>_start` tool (for example a deferred sub-agent) keeps running its
+  own tool calls while the verifier re-enters the message; it no longer ends
+  as `failed` or abandons the retry because of it.
+- **A failed write is not repeated.** Independent of the verifier, the
+  orchestrator's own tool loops and a subscription-CLI sub-agent no longer
+  repeat a write call (same tool, same input) that ended in an exception
+  within the same message; the model gets a notice that the outcome is
+  unknown. Sub-agents already behaved this way.
+- **What the replay does not cover.** It holds for one message in one
+  process: a new message, a retried HTTP call or another instance runs its
+  tools again. Below the replay, the MCP client still retries a call once
+  after a transient transport failure on the chat path, and a tool result
+  the privacy shield fails to intern still reaches the model raw; both are
+  tracked as open points in `docs/middleware-agent-handoff.md` §13.
+- **API clients and plugins** reading run traces see `replayed: true` on
+  `RunToolCall` / `RunAgentInvocation` entries a re-entry handed back
+  (`@omadia/plugin-api` 1.21.0, additive).
+
 ## Upgrading past v0.167.12 — desktop app: database passwords, no TCP port on macOS and Linux
 
 On macOS and Linux the desktop app's embedded database no longer listens on a
@@ -765,191 +975,6 @@ What that means for an instance installed before v0.115:
 
 Fresh installs via `render.yaml` or `fly/deploy.sh` generate the key
 themselves; only pre-v0.115 instances have to add it by hand.
-
-## Answer verifier: a re-entry never runs a tool twice (releases after 2026-10-01)
-
-No migration. One new, optional setting. It matters only if the verifier runs
-in `enforce` mode; `shadow` and a disabled verifier behave as before.
-
-- **Resample and correction retry re-generate the answer only.** A borderline
-  resample and a correction retry used to run the whole turn again, tools
-  included, so a write could run two or three times for one message. They now
-  replay the first run's tool results instead. When the re-sampled model
-  wants a call the first run did not make, it runs only if it is one of the
-  kernel's own reads; any other call — every plugin, MCP, specialist-agent and
-  sub-agent tool — ends the re-entry: a resample keeps the first answer, a
-  retry withholds it with the `failed` badge. Expect fewer `corrected` badges
-  on turns that wrote something, and the log lines
-  `[verifier/service] retry abandoned run=…` / `resample abandoned run=…`
-  naming the tool.
-- **The stream retries a contradiction too.** Every stream consumer —
-  `/api/chat/stream`, the public API-key stream, a channel that streams its
-  turns — now gets one correction retry on a contradiction (canvas turns do
-  not); `chat()` callers had it already. Nothing reaches the client before the
-  final verdict, as before; a client sees a second `iteration_start` while the
-  retry runs, and a contradicted turn takes up to twice as long before its
-  answer or the notice arrives. `VERIFIER_MAX_RETRIES=0` (or the
-  `verifier_max_retries` field) switches the retry off on both paths.
-- **Switching the resample off.** The new setup field
-  `verifier_resample_on_borderline` of `@omadia/verifier` turns the borderline
-  resample off with `false` (default `true`). `VERIFIER_RESAMPLE_ON_BORDERLINE`
-  seeds it, like every `VERIFIER_*` variable, only when the plugin is
-  installed for the first time; on an existing install set the field in the
-  plugin's settings.
-- **One record per message — the delivered answer.** A re-entry no longer
-  writes its own session-log row, fact extraction, turn-hook events or
-  `turn_receipts` row. When a message can be re-entered, its session-log row
-  (with the knowledge-graph turn, fact extraction, an auto-promoted memory
-  and `onAfterTurn`) is written once, right after the verdict, for the answer
-  that goes out — a delivered retry's or resample's, not the first run's — or
-  for the answer the final verdict withheld; the stream's `done.turnId` names
-  that row, so "save as memory" saves the delivered answer. It still lands
-  before the answer goes out. A message has one receipt row, written once
-  after the last pass, whose receipt covers every pass; the delivered answer
-  carries that receipt and the stream's `done.receiptId` names the row.
-- **An upload is imported once per message.** A CSV or XLSX attached to a
-  message that the verifier re-enters used to become a new dataset on every
-  pass (two or three per file). The re-entry now reuses the first run's
-  import and its dataset id. Datasets an earlier release created twice for
-  one message stay; their owner can delete the extra copies through
-  `DELETE /api/v1/datasets/:id`.
-- **The correction hint is masked and names the claims only.** With
-  `mask_user_prompt` on, the retry's correction hint is masked like the
-  user's message (its masked spans show on the turn's privacy receipt), and
-  a retry whose hint cannot be masked is abandoned — the first answer is
-  withheld with the `failed` badge and the log says why. The hint no longer
-  passes the value the verifier measured, or any other evidence it fetched,
-  to the model: the retry corrects from the turn's own tool results or says
-  that a claim could not be confirmed, so a retry that used to copy the
-  verified figure may now be withheld instead.
-- **Long-running tasks are unaffected by a re-entry.** A task started with a
-  `<tool>_start` tool (for example a deferred sub-agent) keeps running its
-  own tool calls while the verifier re-enters the message; it no longer ends
-  as `failed` or abandons the retry because of it.
-- **A failed write is not repeated.** Independent of the verifier, the
-  orchestrator's own tool loops and a subscription-CLI sub-agent no longer
-  repeat a write call (same tool, same input) that ended in an exception
-  within the same message; the model gets a notice that the outcome is
-  unknown. Sub-agents already behaved this way.
-- **API clients and plugins** reading run traces see `replayed: true` on
-  `RunToolCall` / `RunAgentInvocation` entries a re-entry handed back
-  (`@omadia/plugin-api` 1.21.0, additive).
-
-## Answer verifier: `enforce` withholds what it could not confirm (releases after 2026-10-01)
-
-No configuration step: no new environment variable, no migration. It matters
-only if the verifier runs in `enforce` mode (`VERIFIER_ENABLED=true` and
-`VERIFIER_MODE=enforce`, or the `verifier_enabled` / `verifier_mode` setup
-fields of `@omadia/verifier`); `shadow` behaves exactly as before.
-
-- **Answers the verifier could not confirm are withheld.** `enforce` delivers
-  an answer only when its verdict is `approved`, or `skipped` because the
-  answer holds nothing to check (no figure, date or reference, or no claim).
-  Every other verdict replaces the answer with a short notice in the operator's
-  disclosure locale: a contradiction, but also a partly confirmed answer, an
-  answer whose claims no checker takes, and a turn in which the verifier could
-  not run. An answer longer than the 6000 characters the claim extractor reads
-  is never fully covered and is therefore always withheld. Before switching,
-  run `shadow` and compare: the share of `verifier_verdicts` rows with status
-  `approved`, or `skipped` with reason `no_trigger` / `no_claims`, is the share
-  of answers `enforce` would deliver.
-- **Privacy Shield v4 rendering and `enforce` do not combine.** An answer the
-  shield renders server-side holds real values the model never saw, so it is
-  never sent to the verifier; `enforce` withholds it (summary `unavailable`,
-  reason `privacy_shield`, a `verifier_verdicts` row with status
-  `unavailable`). That includes rendered tool errors and sign-in prompts. With
-  v4 rendering active, expect no rendered answer to reach users in `enforce`.
-- **Turns with an input card are delivered unchecked.** A turn that ends with
-  a choice card, an MCP input form, a slot picker or an OAuth consent prompt is
-  released without a verdict, and so is the answer the card rides on — a slot
-  picker, a consent prompt or a choice card added after the answer can come
-  with a complete factual answer.
-- **Streaming clients wait for the verdict.** On `/api/chat/stream`, the
-  public API-key stream and the canvas, no answer text arrives before the turn
-  and its verification (two LLM calls plus the source checks) have finished;
-  then the whole answer arrives at once, as a single text delta. The canvas
-  skeleton waits too: it appears with a released answer and not at all with
-  a withheld one. A turn without tool calls sends only its start events
-  (routing, iteration start) in between on the API-key stream — give API
-  clients a read timeout that covers a full turn plus verification.
-- **Teams and Telegram** now show the notice instead of an answer that is
-  still contradicted after the correction retry (previously delivered with a
-  "contradiction found" badge). The retry itself is unchanged on this
-  non-streaming path (the stream runs it too since the section above);
-  `VERIFIER_MAX_RETRIES` keeps its default of 1. An
-  answer that ends with `NO_REPLY` after other text is checked like any
-  answer; when the verifier withholds it, the channel posts the notice
-  instead of staying silent.
-- **API clients** that switch exhaustively over `done.answerSource` must
-  handle `"verifier-blocked"` (always with `answerIsError: true`; `answer` is
-  the notice). A client that renders `done.answer` needs no change.
-  `done.verifier` now carries the verdict in `enforce` mode; the trailing
-  `verifier` event is still sent, and its `summary.reason` can be
-  `privacy_shield`. A withheld turn that had also failed after a tool
-  committed keeps `degraded: true` and `committedTools`. Plugins compiled
-  against `@omadia/channel-sdk`'s `AnswerSource` and `VerifierSummaryReason`
-  types, or `@omadia/verifier`'s `VerifierUnavailableReason`, see the widened
-  unions.
-- **Not covered:** agents on the subscription-CLI runtime (`claude-cli`
-  provider) and proactive routines are not verified, whatever the mode.
-
-## Answer verifier: `skipped` and `unavailable` verdicts (releases after 2026-09-30)
-
-No configuration step: no new environment variable, no migration. It matters
-only if the verifier is enabled (`VERIFIER_ENABLED=true`) and something reads
-its results:
-
-- **SQL on `verifier_verdicts`.** `status` now also holds `skipped` (nothing
-  checkable in the answer) and `unavailable` (the verifier could not run).
-  Both used to be stored as `approved`, so the share of `approved` rows drops.
-  It drops further because an answer the verifier could check only in part
-  (a claim no checker accepts, more claims than `VERIFIER_MAX_CLAIMS`, an
-  answer longer than the 6000 characters the claim extractor reads, or a
-  claim the extraction returned that is not in the answer or longer than 300
-  characters) is now
-  `approved_with_disclaimer`, its unchecked claims and coverage entries
-  counted in `unverified_count`, which now always counts every unverified
-  claim of the row. A dashboard or query that reads
-  `status = 'approved'` as "clean turn" is now correct, but its numbers
-  change.
-- **Clients of the `verifier` stream event** (`/api/chat/stream`, public API
-  keys). `summary.status` can be `skipped` / `unavailable`, `summary.badge`
-  `unverified` / `unavailable`, and a `summary.reason` code,
-  `summary.uncheckedCount` and `summary.uncoveredCount` appear. The badge is
-  `unverified` or `unavailable` whenever no claim was confirmed or
-  contradicted — also on an `approved_with_disclaimer` status — so key on the
-  badge, not on the status. Show a result as checked only for `verified` /
-  `partial` / `corrected` / `failed` with `claimCount > 0`; `corrected`, like
-  `verified`, now means every claim was confirmed.
-- **`VERIFIER_MAX_CLAIMS`** keeps its value and default (20) and caps how many
-  claims are checked per answer. Claims beyond it are no longer dropped; they
-  are reported as not checked. The claim extractor asks the model for one
-  claim more than the cap and reports a list that reaches that limit as
-  possibly incomplete, so a model that stops at the limit cannot hide claims
-  either. Both keep the answer at "partly verified".
-- **Plugins built against `@omadia/verifier` types.** A `switch` over
-  `VerifierVerdict['status']` must handle the two new statuses before it
-  compiles again. An `unverified` claim verdict may carry
-  `cause: 'not_checked' | 'check_failed'`, and a claim may have the synthetic
-  type `coverage_gap`. `ClaimExtractor.extract` now resolves
-  `{ claims, gaps }` instead of a claim list, returns every valid claim
-  instead of cutting the list at `maxClaims`, reads every `record_claims`
-  call of the model's response, and names in `gaps` what it did not cover —
-  including claims that are not in the answer (`claims_not_in_answer`), which
-  it used to drop without a trace, and claims longer than `MAX_CLAIM_CHARS`
-  (300; `claims_too_long`), which it used to cut to their first 300
-  characters before checking them. A claim's `text` is the span of the
-  answer it quotes (case and whitespace may differ from the model's text),
-  never longer than `MAX_CLAIM_CHARS`. A `switch` over `ExtractionGap` must
-  handle `claims_too_long`. Give `VerifierPipeline` the same `maxClaims` to
-  cap the checks. A plugin that provides its own `verifier@1` pipeline gets
-  its verdict held to its claims (`bindVerdictToClaims`): a status its claims
-  do not back is lowered, and `approved` over no claim, an unknown status or
-  a `reason` outside the closed codes is reported as `unavailable` /
-  `pipeline_error`.
-
-Teams and Telegram need nothing: they keep receiving only the four badges they
-know and show no badge for turns without evidence.
 
 ## Upgrading to 0.3
 
