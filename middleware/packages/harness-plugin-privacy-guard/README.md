@@ -17,24 +17,34 @@ every tool result:
    inline disclosure) surface to the user. A turn without shield activity
    emits none (#1081).
 
-**Control-flow results are not interned (#1105, #1097).** A tool result that
-is control flow rather than data — the orchestrator's `Error:`-prefix
-convention (the same prefix that derives the `is_error` flag on the
-tool_result), or an MCP auth prompt starting with `🔒 The MCP server "` — is
-passed to the LLM verbatim instead of being interned. Interning it would both
-hide the failure behind a masked digest (the model would narrate success) and
-register a renderable 1-row dataset that a later `v4_render_answer` could
-materialize as if the error were data. The skip lives at the four dispatch
-seams (`Orchestrator.dispatchTool`, `Orchestrator.guardReplayResult`,
-`ToolDispatchService.afterDispatch`, `LocalSubAgent.dispatch`), not in this
-package; all four call `isControlFlowToolResult` from `@omadia/plugin-api`.
-**Limitations:** the predicate is an anchored prefix match, never a substring
-match — a *successful* result whose data happens to begin with `Error:` or the
-auth-prompt prefix also skips interning and reaches the LLM unmasked, so a
-guarded tool must not emit real rows that start with either. A passed-through
-result writes no receipt entry. The shape classifier itself has no
-control-flow exemption: an interned `Error:` string (a masked thrown
-exception, say) is masked like any other free text.
+**Control-flow results are not interned, but they are checked (#1105,
+#1097).** A tool result that is control flow rather than data — the
+orchestrator's `Error:`-prefix convention (the same prefix that derives the
+`is_error` flag on the tool_result), or the MCP connect prompt `McpManager`
+produced in the same dispatch — reaches the LLM as text instead of being
+interned. Interning it would both hide the failure behind a masked digest (the
+model would narrate success) and register a renderable 1-row dataset that a
+later `v4_render_answer` could materialize as if the error were data. The
+decision lives at the dispatch seams (`Orchestrator.dispatchTool`,
+`Orchestrator.guardReplayResult`, `ToolDispatchService`,
+`LocalSubAgent.dispatch`), which use `isGuardedControlFlowResult` and
+`guardControlFlowResult` from `@omadia/orchestrator` (`toolErrorRedaction.ts`).
+The text behind `Error:` comes back to this package through
+`redactToolErrorText` (`src/toolErrorRedact.ts`): identity-type C0 spans (dates
+and amounts stay readable), the operator deny-list and C1, each replaced
+irreversibly by `[masked:<type>]`. The turn's surrogate map is read for the
+known-value sweep but never extended, and the call does not depend on
+`mask_user_prompt`. A detector failure or a surviving value answers
+`withheld`, never the input text. Every handled error — thrown text withheld,
+returned text redacted or withheld, connect prompt passed — is recorded through
+`recordToolError` and lands in the receipt's `toolErrors`. **Limitations:** the
+`Error:` match is an anchored prefix, never a substring, so a *successful*
+result whose data begins with `Error:` is handled as an error (redacted or
+withheld, not interned); the connect prompt counts only by provenance, so text
+that merely starts like it is interned. The shape classifier itself has no
+control-flow exemption: an interned string that happens to read like an error
+is masked like any other free text. Details and residuals:
+`docs/security-architecture.md` §6c.
 
 The boundary itself has no configuration: it is generic over JSON shape and
 value statistics — no per-tenant policy, allowlist, or detector tuning. The
