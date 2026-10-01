@@ -9,8 +9,9 @@
  *    redactor, unless it is exception-shaped (a row dump, a stack trace) or
  *    too long to check, in which case it is withheld too. A provider that
  *    cannot redact makes the seam fail CLOSED.
- * The MCP connect prompt passes byte-identical. Every handled error is
- * receipted.
+ * The MCP connect prompt passes byte-identical only when `McpManager` produced
+ * it in the same dispatch (`mcpAuthPromptProvenance.test.ts`). Every handled
+ * error is receipted.
  *
  * Imported from SOURCE, not the `@omadia/orchestrator` barrel (which resolves
  * to `dist/`), so a change in `src/` cannot hide behind a stale build.
@@ -40,11 +41,6 @@ import { turnContext } from '../../packages/harness-orchestrator/src/turnContext
 
 const EMAIL = 'erika.mustermann@example.com';
 const IBAN = 'DE89370400440532013000';
-const AUTH_PROMPT =
-  '🔒 The MCP server "Strava" needs authorization before it can be used. Ask the ' +
-  "user to click Connect (this opens the provider's login), then retry: " +
-  'https://example.test/oauth/authorize?state=0171234567&x=1\n' +
-  '<mcp-auth-required serverId="s-1" server="Strava" needsClient="false"></mcp-auth-required>';
 
 type RecordedEntry = Omit<PrivacyToolErrorRequest, 'turnId'>;
 
@@ -355,29 +351,6 @@ describe('guardControlFlowResult — returned `Error:` text', () => {
       site: 'test',
     });
     assert.equal(out, 'Error: mailbox [masked:email] is over quota');
-  });
-});
-
-describe('guardControlFlowResult — MCP connect prompt', () => {
-  it('passes byte-identical (URL digits untouched) and is receipted', async () => {
-    const recorded: RecordedEntry[] = [];
-    const calls: string[] = [];
-    const out = await guardControlFlowResult({
-      toolName: 'mcp__Strava__list_activities',
-      result: AUTH_PROMPT,
-      privacy: fakeHandle(recorded, calls),
-      site: 'test',
-    });
-    assert.equal(out, AUTH_PROMPT);
-    assert.deepEqual(calls, [], 'the prompt is kernel-authored; no redaction pass');
-    assert.deepEqual(recorded, [
-      {
-        toolName: 'mcp__Strava__list_activities',
-        carrier: 'mcp_auth_prompt',
-        outcome: 'passed',
-        bytes: Buffer.byteLength(AUTH_PROMPT),
-      },
-    ]);
   });
 });
 

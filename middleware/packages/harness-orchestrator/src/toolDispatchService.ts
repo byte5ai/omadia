@@ -12,9 +12,11 @@
  */
 
 import { isInternExemptTool } from './privacyInternPolicy.js';
-import { isControlFlowToolResult, isWriteCapableTool } from '@omadia/plugin-api';
+import { isWriteCapableTool } from '@omadia/plugin-api';
+import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import {
   guardControlFlowResult,
+  isGuardedControlFlowResult,
   withholdThrownToolError,
 } from './toolErrorRedaction.js';
 import type { WriteCapability } from '@omadia/plugin-api';
@@ -309,8 +311,9 @@ export class ToolDispatchService {
     options?: ToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
     const nativeRegistration = this.deps.nativeTools.get(name);
+    const nativeHandler = nativeRegistration?.handler;
     // Mirrors Orchestrator ordering: plugin/native handlers win first.
-    if (nativeRegistration?.handler) {
+    if (nativeRegistration !== undefined && nativeHandler !== undefined) {
       if (!this.isToolAvailable(nativeRegistration.agentId)) {
         return {
           content: `Error: tool \`${name}\` is unavailable — plugin \`${nativeRegistration.agentId}\` has not completed its connection/auth setup.`,
@@ -319,8 +322,14 @@ export class ToolDispatchService {
         };
       }
       try {
-        const raw = await nativeRegistration.handler(input);
-        return { content: await this.afterDispatch(name, raw, options), origin: 'tool' };
+        // One mint per dispatch: a connect prompt the MCP manager produces
+        // while this handler runs is recorded in it (`mcpAuthPromptMint.ts`).
+        const authPromptMint = new McpAuthPromptMint();
+        const raw = await runWithMcpAuthPromptMint(authPromptMint, () => nativeHandler(input));
+        return {
+          content: await this.afterDispatch(name, raw, authPromptMint, options),
+          origin: 'tool',
+        };
       } catch (error) {
         return this.thrownResult(name, error, options);
       }
@@ -339,8 +348,12 @@ export class ToolDispatchService {
         };
       }
       try {
-        const raw = await domainTool.handle(input);
-        return { content: await this.afterDispatch(name, raw, options), origin: 'tool' };
+        const authPromptMint = new McpAuthPromptMint();
+        const raw = await runWithMcpAuthPromptMint(authPromptMint, () => domainTool.handle(input));
+        return {
+          content: await this.afterDispatch(name, raw, authPromptMint, options),
+          origin: 'tool',
+        };
       } catch (error) {
         return this.thrownResult(name, error, options);
       }
@@ -362,6 +375,8 @@ export class ToolDispatchService {
   private async afterDispatch(
     name: string,
     result: string,
+    /** The connect prompts the MCP manager produced in this dispatch. */
+    authPromptMint: McpAuthPromptMint,
     options?: ToolDispatchOptions,
   ): Promise<string> {
     const capture = this.deps.captureRawToolResult;
@@ -406,19 +421,22 @@ export class ToolDispatchService {
     }
 
     // #1105 / #1097 — fulfilled control-flow prose (the `Error:` convention,
-    // or an MCP auth prompt) is never interned: interning would both hide the
-    // failure behind a masked digest and register a renderable dataset a
-    // later `v4_render_answer` could materialize as if the error were data.
-    // It is not forwarded unchecked either: the `Error:` text goes through
-    // the shield's free-text redactor (or is withheld whole) and is receipted
-    // — the same helper `Orchestrator.dispatchTool` uses. Thrown exceptions
-    // take `thrownResult` below.
-    if (isControlFlowToolResult(result)) {
+    // or the MCP connect prompt this dispatch produced) is never interned:
+    // interning would both hide the failure behind a masked digest and
+    // register a renderable dataset a later `v4_render_answer` could
+    // materialize as if the error were data. It is not forwarded unchecked
+    // either: the `Error:` text goes through the shield's free-text redactor
+    // (or is withheld whole) and is receipted — the same helper
+    // `Orchestrator.dispatchTool` uses. The connect prompt counts only by
+    // provenance; text that merely starts like it is interned below. Thrown
+    // exceptions take `thrownResult`.
+    if (isGuardedControlFlowResult(result, authPromptMint)) {
       return guardControlFlowResult({
         toolName: name,
         result,
         privacy,
         site: 'toolDispatchService',
+        authPromptMint,
       });
     }
     try {
@@ -567,8 +585,9 @@ export class ToolDispatchService {
 // `toolErrorRedaction.ts`: a thrown message is withheld (notice with class name,
 // sanitised code and log ref; full error in the log; `thrown` receipt entry),
 // deliberately WITHOUT raw capture or the operator bypass — see `thrownResult`.
-// A fulfilled `Error:` text and an MCP connect prompt go through
-// `guardControlFlowResult` exactly as in `Orchestrator.dispatchToolDeadlined`.
+// A fulfilled `Error:` text, and an MCP connect prompt the manager produced in
+// the same dispatch (`McpAuthPromptMint`), go through `guardControlFlowResult`
+// exactly as in `Orchestrator.dispatchToolDeadlined`.
 // Every result also carries `origin`, so a consumer can tell handler-authored
 // content (must have been masked) from this service's own text (its refusals and
 // the withheld notice — nothing to mask).

@@ -31,10 +31,14 @@
  *    record dump is not reliable, names survive it), when it is too long to
  *    check, or when the provider cannot redact (it predates the contract,
  *    throws, or reports `withheld`). Fail closed, never forward unchecked.
- *  - MCP CONNECT PROMPT: passes byte-identical. It is kernel-authored, and the
- *    connect URL and the `<mcp-auth-required>` block the chat UI parses into a
- *    Connect card must survive (C0's phone pattern would rewrite digit runs in
- *    the URL). Known limit: recognized by its prefix only.
+ *  - MCP CONNECT PROMPT: passes byte-identical, because the connect URL and the
+ *    `<mcp-auth-required>` block the chat UI parses into a Connect card must
+ *    survive (C0's phone pattern would rewrite digit runs in the URL). Only
+ *    the exact text `McpManager.handleFailure` produced in the same dispatch
+ *    counts (`mcp/mcpAuthPromptMint.ts`); the prefix is something a remote
+ *    server can write. Seams intern any other prompt-shaped text as data
+ *    (`isGuardedControlFlowResult`), and this helper, if handed one anyway,
+ *    gives it the returned-error policy.
  *
  * Every handled error writes a PII-free `toolErrors` entry into the turn's
  * privacy receipt (`recordToolError`).
@@ -47,7 +51,6 @@
  */
 
 import {
-  MCP_AUTH_PROMPT_PREFIX,
   TOOL_ERROR_PREFIX,
   newToolErrorRef,
   withheldToolErrorNotice,
@@ -58,6 +61,7 @@ import type {
   ToolErrorOutcome,
 } from '@omadia/plugin-api';
 
+import type { McpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
 import { turnContext } from './turnContext.js';
@@ -276,8 +280,22 @@ export async function withholdThrownToolError(input: {
 }
 
 /**
+ * True when a fulfilled result takes {@link guardControlFlowResult} instead of
+ * being interned: the `Error:` convention, or a connect prompt `McpManager`
+ * produced in this dispatch (`authPromptMint`). Text that only starts like the
+ * prompt is tool data and is interned like any other result: a remote server
+ * can write the prefix, it cannot write the mint.
+ */
+export function isGuardedControlFlowResult(
+  result: string,
+  authPromptMint: McpAuthPromptMint | undefined,
+): boolean {
+  return result.startsWith(TOOL_ERROR_PREFIX) || authPromptMint?.minted(result) === true;
+}
+
+/**
  * For a fulfilled control-flow result (precondition:
- * `isControlFlowToolResult(result)`) under a privacy handle. Returns the text
+ * {@link isGuardedControlFlowResult}) under a privacy handle. Returns the text
  * the model may read: the connect prompt unchanged, a redacted `Error:` text,
  * or the withheld notice. Never throws.
  */
@@ -286,11 +304,17 @@ export async function guardControlFlowResult(input: {
   readonly result: string;
   readonly privacy: PrivacyTurnHandle;
   readonly site: string;
+  /**
+   * The connect prompts `McpManager` produced in this dispatch. A result
+   * passes verbatim only when it equals one of them; absent ⇒ none was
+   * produced, and prompt-shaped text gets the returned-error policy below.
+   */
+  readonly authPromptMint?: McpAuthPromptMint;
 }): Promise<string> {
-  const { toolName, result, privacy, site } = input;
+  const { toolName, result, privacy, site, authPromptMint } = input;
   const bytes = Buffer.byteLength(result, 'utf8');
 
-  if (result.startsWith(MCP_AUTH_PROMPT_PREFIX)) {
+  if (authPromptMint?.minted(result) === true) {
     await recordSafely(privacy, { toolName, carrier: 'mcp_auth_prompt', outcome: 'passed', bytes }, site);
     return result;
   }
@@ -306,10 +330,11 @@ export async function guardControlFlowResult(input: {
   };
 
   // The caller keeps the prefix, so `is_error` stays derivable whatever a
-  // detector does to the body.
+  // detector does to the body. A text without it (prompt-shaped data that
+  // reached this backstop) is reported as an error, never passed as it is.
   const body = result.startsWith(TOOL_ERROR_PREFIX)
     ? result.slice(TOOL_ERROR_PREFIX.length)
-    : result;
+    : ` ${result}`;
   if (body.length > MAX_REDACTABLE_TOOL_ERROR_CHARS) return withhold('too_long');
   if (looksExceptionShaped(body)) return withhold('exception_shaped');
 

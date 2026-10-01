@@ -59,6 +59,7 @@ import type {
 
 import { turnContext } from '../turnContext.js';
 import { currentIdempotencyScope } from '../toolIdempotency.js';
+import { recordMcpAuthPrompt } from './mcpAuthPromptMint.js';
 import {
   MCP_INPUT_MAX_REPLAY_DEPTH,
   extractMcpInputPrompt,
@@ -1433,6 +1434,10 @@ export class McpManager {
       }
       if (authMessage) {
         this.emitCall(cfg, toolName, 'fail', 'auth_required', startedAt, actingIdentity);
+        // Provenance for the dispatch seam: this exact text, produced in this
+        // dispatch, may reach the model verbatim. Text that merely starts like
+        // it (a remote body) is data. See `mcpAuthPromptMint.ts`.
+        recordMcpAuthPrompt(authMessage);
         return authMessage;
       }
     }

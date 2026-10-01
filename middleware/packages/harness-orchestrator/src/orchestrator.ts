@@ -91,6 +91,7 @@ import {
   mcpInputReplyLabel,
   parseMcpInputReply,
 } from './mcp/pendingMcpInput.js';
+import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import {
   ASK_USER_CHOICE_TOOL_NAME,
   askUserChoiceToolSpec,
@@ -154,7 +155,6 @@ import type {
 } from '@omadia/plugin-api';
 import {
   agentScopePrefix,
-  isControlFlowToolResult,
   PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
   PRIVACY_MODE_CONFIG_KEY,
   resolveEffectivePrivacyMode,
@@ -194,6 +194,7 @@ import type { CliTurnCards } from './cliChatAgent.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
 import {
   guardControlFlowResult,
+  isGuardedControlFlowResult,
   thrownToolErrorForModel,
   toolErrorRef,
   withholdThrownToolError,
@@ -2799,9 +2800,14 @@ export class Orchestrator {
         'und ruf kein Tool auf.'
       );
     }
+    // The replay is one dispatch: a connect prompt the manager answers it with
+    // is recorded here, and only that exact text skips the shield below.
+    const authPromptMint = new McpAuthPromptMint();
     let result: string | undefined;
     try {
-      result = await replayer.replay(record, reply.inputResponses);
+      result = await runWithMcpAuthPromptMint(authPromptMint, () =>
+        replayer.replay(record, reply.inputResponses),
+      );
     } catch (err) {
       console.error(
         '[orchestrator] MCP input replay failed:',
@@ -2816,7 +2822,7 @@ export class Orchestrator {
         'Sag das dem User und ruf kein Tool auf.'
       );
     }
-    const guardedResult = await this.guardReplayResult(record, result);
+    const guardedResult = await this.guardReplayResult(record, result, authPromptMint);
     // The collected VALUES are deliberately absent from this note: they may be
     // secrets the user typed for the server, and this text goes on the LLM wire
     // and into the session log. Only the outcome travels.
@@ -2848,6 +2854,8 @@ export class Orchestrator {
   private async guardReplayResult(
     record: PendingMcpInput,
     rawResult: string,
+    /** The connect prompts the manager produced during this replay. */
+    authPromptMint: McpAuthPromptMint,
   ): Promise<string> {
     const privacy = turnContext.current()?.privacyHandle;
     if (privacy === undefined) return rawResult;
@@ -2888,20 +2896,24 @@ export class Orchestrator {
     // Not every failed replay looks like that: `handleFailure` answers an
     // auth-shaped failure with the provider's connect prompt instead (`🔒 …`
     // plus the `<mcp-auth-required>` block the chat UI turns into a Connect
-    // card), which carries no `Error:` prefix. `isControlFlowToolResult`
-    // covers both carriers — interning the prompt destroyed the card and left
-    // the model narrating success over a masked digest.
+    // card), which carries no `Error:` prefix. Interning the prompt destroyed
+    // the card and left the model narrating success over a masked digest. It
+    // is recognised by provenance — the manager recorded this exact text in
+    // `authPromptMint` during the replay — because a replayed result whose
+    // text merely STARTS like the prompt is the remote server's data and is
+    // interned below like any other.
     //
     // The text behind an MCP `Error:` prefix is the REMOTE server's own body,
     // so it is not trusted: it goes through the same tool-error redaction as
     // on the chat path (redacted, or withheld whole when it is a record dump),
     // and the connect prompt is receipted — see `toolErrorRedaction.ts`.
-    if (isControlFlowToolResult(rawResult)) {
+    if (isGuardedControlFlowResult(rawResult, authPromptMint)) {
       return guardControlFlowResult({
         toolName: record.toolName,
         result: rawResult,
         privacy,
         site: 'orchestrator.mcpInputReplay',
+        authPromptMint,
       });
     }
     try {
@@ -7228,6 +7240,13 @@ export class Orchestrator {
     // model to its own plumbing. Written only by `dispatchToolInner`, per
     // dispatch, and compared by exact string — a handler cannot reach it.
     const kernelRefusal: KernelRefusalBox = {};
+    // Provenance for the MCP connect prompt: `McpManager.handleFailure`
+    // records the exact prompt it returns during THIS dispatch, and only that
+    // text skips the shield below — a result that merely starts like it is
+    // tool data. Same per-dispatch scoping as the sentinel mint; its own
+    // AsyncLocalStorage, so it survives the turn-context re-scopes of the
+    // skill-binding and plugin `ctx.mcp` paths. See `mcpAuthPromptMint.ts`.
+    const mcpAuthPromptMint = new McpAuthPromptMint();
     let result: string;
     if (
       privacy !== undefined &&
@@ -7238,17 +7257,19 @@ export class Orchestrator {
       // the sub-agent's inner tool calls can resolve bypass via the
       // same plugin's `_privacy_mode` setting.
       const domainToolAgentId = this.domainToolsByName.get(name)?.agentId;
-      result = await turnContext.run(
-        {
-          ...ctx,
-          subAgentDatasetSink: subAgentSink,
-          subAgentBypassFlag,
-          mcpInputSentinelMint,
-          ...(domainToolAgentId !== undefined
-            ? { subAgentOwnerPluginId: domainToolAgentId }
-            : {}),
-        },
-        () => this.dispatchToolInner(name, input, observer, turnMemory, kernelRefusal),
+      result = await runWithMcpAuthPromptMint(mcpAuthPromptMint, () =>
+        turnContext.run(
+          {
+            ...ctx,
+            subAgentDatasetSink: subAgentSink,
+            subAgentBypassFlag,
+            mcpInputSentinelMint,
+            ...(domainToolAgentId !== undefined
+              ? { subAgentOwnerPluginId: domainToolAgentId }
+              : {}),
+          },
+          () => this.dispatchToolInner(name, input, observer, turnMemory, kernelRefusal),
+        ),
       );
     } else if (privacy !== undefined && ctx !== undefined) {
       // #570 — MCP tools reach dispatch as NATIVE tools (`mcpNativeHandler`),
@@ -7256,9 +7277,11 @@ export class Orchestrator {
       // the same per-dispatch scope for the mint box and nothing else: the
       // sub-agent sinks stay out, so this scope is a plain copy of the turn
       // context plus the receipt.
-      result = await turnContext.run(
-        { ...ctx, mcpInputSentinelMint },
-        () => this.dispatchToolInner(name, input, observer, turnMemory, kernelRefusal),
+      result = await runWithMcpAuthPromptMint(mcpAuthPromptMint, () =>
+        turnContext.run(
+          { ...ctx, mcpInputSentinelMint },
+          () => this.dispatchToolInner(name, input, observer, turnMemory, kernelRefusal),
+        ),
       );
     } else {
       result = await this.dispatchToolInner(name, input, observer, turnMemory, kernelRefusal);
@@ -7434,25 +7457,28 @@ export class Orchestrator {
       }
       // #1105 / #1097 — a guarded tool that returned control-flow prose (the
       // orchestrator's `Error:` tool-error convention — the same prefix the
-      // tool-result assembly reads to stamp `is_error` — or an MCP auth
-      // prompt) must reach the model AS that text, not be interned. Interning
-      // it would (a) hide the failure behind a masked digest so the model
-      // never learns the call failed, and (b) register a renderable 1-row
-      // dataset that a later `v4_render_answer` materializes as if the error
-      // were data — the divergence reported in #1105.
+      // tool-result assembly reads to stamp `is_error` — or the MCP connect
+      // prompt this dispatch produced) must reach the model AS that text, not
+      // be interned. Interning it would (a) hide the failure behind a masked
+      // digest so the model never learns the call failed, and (b) register a
+      // renderable 1-row dataset that a later `v4_render_answer` materializes
+      // as if the error were data — the divergence reported in #1105.
       //
       // Not interned is not unchecked: the `Error:` text can quote the record
       // a plugin wrapper or a remote MCP server failed on, so it goes through
       // the shield's free-text redactor (or is withheld whole) and is
-      // receipted — see `toolErrorRedaction.ts`. The kernel's own refusals
-      // are PII-free by construction and pass as they are.
-      if (isControlFlowToolResult(result)) {
+      // receipted — see `toolErrorRedaction.ts`. The connect prompt counts
+      // only by provenance (`mcpAuthPromptMint`); text that merely starts like
+      // it falls through to interning. The kernel's own refusals are PII-free
+      // by construction and pass as they are.
+      if (isGuardedControlFlowResult(result, mcpAuthPromptMint)) {
         if (result === kernelRefusal.text) return result;
         return guardControlFlowResult({
           toolName: name,
           result,
           privacy,
           site: 'orchestrator.dispatchTool',
+          authPromptMint: mcpAuthPromptMint,
         });
       }
       // Intern the raw result server-side and hand the LLM only the

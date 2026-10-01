@@ -33,10 +33,10 @@ const EMAIL = 'erika.mustermann@example.com';
 const ERROR_RESULT =
   'Error: routines are unavailable in this session because the user context did not reach the routines tool.';
 const OK_RESULT = '{"status":"ok","rows":[{"a":1}]}';
-/** #1097 — the other control-flow carrier: `McpManager.handleFailure` answers
- *  an auth-shaped failure with the app layer's connect prompt (`🔒 …` plus the
- *  `<mcp-auth-required>` machine block the chat UI turns into a Connect card).
- *  It carries no `Error:` prefix, so the original guard missed it. */
+/** #1097 — the shape of the other control-flow carrier, the connect prompt
+ *  `McpManager.handleFailure` produces. It passes only when the manager made it
+ *  in the same dispatch (`mcpAuthPromptProvenance.test.ts`); the same bytes
+ *  returned by a handler are data. */
 const AUTH_PROMPT =
   '🔒 The MCP server "Strava" needs authorization before it can be used. Ask the ' +
   'user to click Connect (this opens the provider\'s login), then retry: ' +
@@ -302,11 +302,13 @@ describe('#1105 — guarded-tool error result is not interned as a dataset', () 
     );
   });
 
-  it('#1097 — hands an MCP auth prompt to the model verbatim, block intact, receipted', async () => {
+  it('#1097 — connect-prompt text a handler returns itself is data: interned, not receipted', async () => {
+    // A remote server or a stored record can start with the prefix; only the
+    // prompt the manager produced in this dispatch passes verbatim.
     const recorded: PrivacyToolErrorRequest[] = [];
     const { provider, seen } = recordingProvider([
       toolCallResponse('mcp__Strava__list_activities'),
-      textResponse('bitte verbinden'),
+      textResponse('done'),
     ]);
     const orchestrator = orchestratorWith(
       provider,
@@ -318,17 +320,12 @@ describe('#1105 — guarded-tool error result is not interned as a dataset', () 
 
     const results = toolResultTexts(seen);
     assert.equal(results.length, 1);
-    assert.equal(
-      results[0],
-      AUTH_PROMPT,
-      'the model must see the connect prompt so it can relay it to the user',
+    assert.match(
+      results[0] ?? '',
+      /^«dataset:mcp__Strava__list_activities»/,
+      'prompt-shaped text without the manager as its producer is interned like any result',
     );
-    assert.ok(
-      results[0]?.includes('<mcp-auth-required'),
-      'the machine block the Connect card is parsed from must survive the boundary',
-    );
-    assert.equal(recorded[0]?.carrier, 'mcp_auth_prompt');
-    assert.equal(recorded[0]?.outcome, 'passed');
+    assert.deepEqual(recorded, [], 'neither a tool error nor a connect prompt was handled');
   });
 
   it('#1097 — a data result carrying the auth block in one cell IS still interned', async () => {

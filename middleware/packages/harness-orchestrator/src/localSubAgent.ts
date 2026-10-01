@@ -4,12 +4,14 @@ import type {
   LocalSubAgentToolResult,
   LocalSubAgentToolSpec,
 } from '@omadia/plugin-api';
-import { appendLimitSignalNote, isControlFlowToolResult } from '@omadia/plugin-api';
+import { appendLimitSignalNote } from '@omadia/plugin-api';
+import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import { streamMessageWithObserver } from './streaming.js';
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
 import {
   guardControlFlowResult,
+  isGuardedControlFlowResult,
   withholdThrownToolError,
 } from './toolErrorRedaction.js';
 import { buildDateHeader, turnContext } from './turnContext.js';
@@ -449,9 +451,14 @@ export class LocalSubAgent {
     // sub-agent continues and can answer without the tool, and
     // REPEAT_FAILURE_THRESHOLD bounds any retry loop. The notice is PII-free,
     // so it skips the capture and privacy steps below.
+    //
+    // The mint records a connect prompt the MCP manager produces during this
+    // inner call (the parent dispatch's mint records it too), so only that
+    // exact text skips interning below (`mcpAuthPromptMint.ts`).
+    const authPromptMint = new McpAuthPromptMint();
     let raw: Awaited<ReturnType<LocalSubAgentTool['handle']>>;
     try {
-      raw = await tool.handle(input);
+      raw = await runWithMcpAuthPromptMint(authPromptMint, () => tool.handle(input));
     } catch (err) {
       const withheld = await withholdThrownToolError({
         toolName,
@@ -532,7 +539,8 @@ export class LocalSubAgent {
         }
       }
       // #1097 — a guarded tool that returned control-flow prose (the `Error:`
-      // tool-error convention, or an MCP auth prompt) must reach this
+      // tool-error convention, or the MCP connect prompt this inner call
+      // produced — by provenance, never by its prefix) must reach this
       // sub-agent's model AS that text, not be interned. Interning it would
       // (a) hide the failure behind a masked digest, so the sub-agent never
       // learns the call failed and cannot act on the hint the error carries,
@@ -545,13 +553,14 @@ export class LocalSubAgent {
       // receipted — `bridgeTool` hands plugin output straight here. The
       // `is_error` flag on the tool_result block is derived from the prefix
       // (see `dispatch`'s caller), and the redaction keeps it.
-      if (isControlFlowToolResult(result)) {
+      if (isGuardedControlFlowResult(result, authPromptMint)) {
         return {
           output: await guardControlFlowResult({
             toolName,
             result,
             privacy,
             site: `sub-agent ${this.name}`,
+            authPromptMint,
           }),
           ...(postcondition ? { postcondition } : {}),
         };
