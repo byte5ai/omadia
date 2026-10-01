@@ -80,6 +80,88 @@ refuses the kernel role a database URL unless it holds none of the privileged
 attributes and is a member of no role, because a role membership can restore a
 capability without setting an attribute.
 
+### Fixed — desktop updater: an update the OS is too old for is no longer "up to date"
+
+2026-09-30 — electron-updater withholds an update whose feed declares a
+`minimumSystemVersion` above `os.release()`, and then reports
+`update-not-available` with the feed's version: the same event a current
+install gets. The desktop app answered it with "You're already on the latest
+version of omadia" and filled "Current version" from the feed. Once the
+Electron 44 build puts a macOS 13 floor into the macOS update feed, a macOS 11
+or 12 install would have been told it is current, shown the release it cannot
+install as its own version, and left on Electron 37 with no hint that updates,
+security fixes included, had stopped. `desktop/src/updateHoldBack.ts` now tells the two apart.
+"Check for Updates…" names the installed version when the app is current, and
+otherwise warns that omadia X needs macOS 13 or later and that this computer
+gets no further updates until its operating system is updated; the silent
+startup check says the same once per floor (`updater-hold-back.json` in
+userData). The version comparison follows semver's strict grammar and is tested
+against electron-updater's own OS check. Nothing in it depends on Electron 44,
+so it ships first, in a release still built on Electron 37: an install only
+gets the new handler by updating to a build that carries it, and a macOS 11/12
+install that never takes that release keeps reporting "up to date".
+
+### Fixed — desktop: setup wizard switches reach the kernel or are gone
+
+2026-09-30 — the first-run wizard offered three capability switches
+(attachments on the local disk, semantic memory, diagrams through a "hosted
+omadia service"). main stored them in `setup.json` and nothing read them back,
+so every choice booted the same stack; they had been unwired since the
+installer shipped (#341). Attachments now reach the kernel. The supervisor
+reads the switch on every boot and, when it is on, sets `ATTACHMENT_STORE_DIR`
+to `<data folder>/attachments`; when it is off, an inherited value is dropped.
+The kernel turns the variable into a filesystem attachment store, published as
+the same `tigrisStore` service the S3 store fills (S3 keeps precedence).
+Objects are stored owner-only under the SHA-256 of their key, so a storage key
+cannot address a path outside the directory. `/health` gains
+`attachments.store` (`s3`, `filesystem` or `none`, never a bucket or a path),
+and the supervisor checks it after boot and logs a warning when it disagrees
+with the switch. Installs that kept the default (on) start keeping attachments
+in their data folder after the update.
+
+Semantic memory and diagrams are no longer offered, because nothing the shell
+can set switches them on: the keyless embedding adapter is auto-installed and
+downloads its model from Admin → Embedding Provider, and diagrams need the
+Diagrams plugin, a Kroki server and S3 storage (the hosted service the wizard
+named does not exist). The step says where each is set up instead, and no
+longer claims the choice can be changed later, since there is no settings path
+after setup. `readSetup()` drops the `embeddings` / `diagrams` keys older
+builds stored. The new kernel variable `ATTACHMENT_STORE_DIR` is optional (see
+`middleware/.env.example`); a server that does not set it behaves as before.
+See `docs/security-architecture.md` §10j.
+
+### Fixed — desktop: setup and recovery-key IPC no longer reachable from the web UI or foreign documents
+
+2026-09-30 — the desktop shell runs the first-run wizard, the loading screen
+and the web UI in one window with one preload, and every IPC handler answered
+whichever document was loaded. So the web UI, any same-origin plugin iframe in
+it (through `window.parent.omadia`) and any page the window had navigated to
+could call `exportRecoveryKey`, which returns the vault master key, or
+`complete`, which rewrites the data directory and the setup state. Main now
+checks each call against the frame that sent it. The setup channels answer
+only the bundled `wizard.html` in the main frame while the wizard is on
+screen, and the UI pings answer only the running web UI's origin. A vanished,
+destroyed or detached sender frame is refused. The preload also hands each
+document only its own methods: the web UI gets `uiReady` and `setUiLocale`,
+and foreign pages get no bridge. The unused `getState` channel is removed.
+See `docs/security-architecture.md` §10i.
+
+Navigation is now fenced for every window. Links and `window.open` to other
+sites (links in chat answers, plugin author pages, GitHub help) open in the
+system browser instead of replacing the app or spawning Electron windows.
+Same-app popups open sandboxed and without the bridge. `about:blank` popups
+and `file:`, `javascript:` and `data:` targets are refused. No page can make
+the app hand a non-web link to another program any more (`mailto:`,
+`ms-settings:`, `search-ms:`, any installed app's scheme), including from an
+embedded frame such as a plugin UI or through a server redirect. Such
+navigations are cancelled, and the session refuses Electron's `openExternal`
+permission, which Electron grants to every page by default. The in-window
+OIDC/Entra sign-in keeps working, because web redirects and the IdP's own
+steps stay in the window. One visible change: signing out of an OIDC session
+no longer shows the IdP logout page in the app window. That page opens in the
+system browser, and the app window moves to the sign-in page once the web UI
+notices the ended session (its next API call or session heartbeat).
+
 ### Fixed — desktop app no longer replaces an unreadable secrets file with new keys
 
 2026-09-30 — the desktop app keeps `VAULT_KEY`, `CREDENTIAL_KEYCHAIN_KEY` and
@@ -111,6 +193,250 @@ copy as `<snapshot>.secrets.enc`, and pruning removes both. `platform-data/`
 (the kernel vault) is still not part of the snapshot (security-architecture
 §8a). A dev run that stored its blob unencrypted can still read it after OS
 encryption becomes available. No new environment variable.
+
+### Security — npm advisories against axios and next
+
+2026-10-01 — new advisories were published against `axios` (middleware,
+through `botbuilder`) and `next` (web-ui), so the required
+`audit (high+critical block)` check failed on every branch again.
+
+- middleware — the `overrides` pin for `axios` moves from 1.18.1 to 1.20.0.
+  The advisories cover prototype-pollution gadgets, header injection,
+  proxy-exclusion and redirect-limit bypasses and two ReDoS paths, all fixed in
+  1.20.0. `npm audit fix` cannot move an override pin, so it is raised by hand.
+- web-ui — `next` and its `@next/*` packages move from 16.3.5 to 16.3.8, and
+  `eslint-config-next` and `@next/eslint-plugin-next` from 16.3.7 to 16.3.8.
+  16.3.6 fixes a critical advisory in `next/og` image responses; the ranges in
+  `package.json` now start at 16.3.8.
+
+Both workspaces are free of high/critical advisories again. The remaining
+moderate findings need breaking upgrades and are left for their own changes.
+
+### Fixed — operator UI response headers, non-root web-ui image, sandbox container limits
+
+2026-09-30 — operator pages were served without a frame policy, nosniff or
+Referrer-Policy, the web-ui image ran `node server.js` as root, and the Docker
+containers behind `execute` and `publish` had no memory, CPU or process
+ceiling, so one runaway command competed with the middleware for the whole
+host. Operator pages now carry `Content-Security-Policy: frame-ancestors
+'none'; object-src 'none'; base-uri 'none'`, `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff` and `Referrer-Policy:
+strict-origin-when-cross-origin`. `web-ui/proxy.ts` sets them per request, so
+the new `UI_FRAME_ANCESTORS` variable works on a published image: it replaces
+`'none'` for deployments that embed operator pages and drops `X-Frame-Options`.
+`/p/*` and `/bot-api/*` stay untouched, because they carry the framed plugin
+UIs and previews whose middleware headers a proxy header would override. The
+web-ui image now runs as `USER node`.
+
+Every sandbox and publish container gets `--memory` and `--memory-swap`
+(512 MiB), `--cpus` (1) and `--pids-limit` (256) from one builder in
+`@omadia/sandbox`. Each value comes from the orchestrator setup fields
+`sandbox_memory_mb`, `sandbox_cpus` and `sandbox_pids_limit`, else from
+`OMADIA_SANDBOX_MEMORY_MB`, `OMADIA_SANDBOX_CPUS` and
+`OMADIA_SANDBOX_PIDS_LIMIT`, else the default. A value only counts inside its
+range (6 to 1048576 MiB, 0.01 to 1024 CPUs, 1 to 4194304 PIDs); `0`, junk
+and anything out of range fall back instead of meaning "unlimited". The
+ranges matter because Docker starts some positive values with no limit and
+no error: `--cpus 0.000001` or `--cpus 1e64` leave the container without a
+CPU quota, and a memory value of 2^43 MiB or more (or `1e+21m`) is recorded
+as no limit on arm64. An existing persistent sandbox gets the current limits
+through `docker update` when it is next re-attached, while a publish container
+created before this change keeps running without them until a new version
+replaces it. Details in `docs/security-architecture.md` §3b and §10h and in
+`docs/upgrading.md`.
+
+### Fixed — pairing discovery answers 503 instead of claiming no sign-in is needed (#293)
+
+2026-09-30 — the pairing descriptor on the operator origin
+(`web-ui/app/pairing-discovery/route.ts`) reads the sign-in providers from
+the middleware. When that read failed (middleware unreachable, an error
+status, a response without a provider list), the handler still returned a
+descriptor, with `auth.mode: 'none'`. The pairing protocol defines `none` as
+"this host accepts unauthenticated connects", so an outage told a client
+that no sign-in was needed. Nothing was bypassed, since the API and the
+canvas WebSocket check the session themselves, but the client was sent down
+the wrong path. Since the route now answers without a session (entry below),
+it reaches exactly the clients that act on that field. The handler now
+answers `503` with `Retry-After: 5` and `{ "code": "pairing.auth_unavailable" }`
+instead, and logs the reason. `none` remains the answer only when the
+middleware returns an empty provider list, which is what the middleware's
+own descriptor says in that state.
+
+The provider read also had no deadline: a middleware that accepted the
+connection and never replied held every discovery request open for minutes.
+It now gives up after 5 seconds and answers the same `503`. Every answer
+carries `Cache-Control: no-store`, because the descriptor echoes the
+caller's host into `wsUrl` and `loginStartUrl`, and `force-dynamic` only
+turns off Next's own caching, not a shared cache in front of it.
+`docs/security-architecture.md` §10g describes the failure path.
+
+### Fixed — pairing discovery on the operator origin no longer bounces to /login (#293)
+
+2026-09-30 — a desktop client that knows only the operator URL could not
+find out where to connect. It fetches the pairing descriptor at
+`/.well-known/omadia-ui` before it has signed in, since the descriptor is
+what tells it where to sign in. `next.config.ts` rewrites that path to the
+`/pairing-discovery` route handler, but the web-ui login gate
+(`web-ui/proxy.ts`) runs before rewrites and had neither path on its
+allowlist, so a client without a session got `302 /login` instead of the
+JSON. On split deployments, where the middleware's own copy of the endpoint
+is not publicly reachable, pairing through the operator URL could not work.
+
+Both paths are now exempt from the gate, by exact match. They are defined
+once in `web-ui/app/_lib/pairingDiscoveryPaths.ts`, which the rewrite imports
+too, so the two cannot drift apart. The descriptor carries nothing
+confidential: the middleware serves a descriptor of the same shape without
+authentication, its provider list is already public through
+`/bot-api/v1/auth/providers`, and the canvas WebSocket its `wsUrl` points at
+authenticates every upgrade. Every other previously gated route keeps
+redirecting to `/login` without a session.
+`web-ui/app/__tests__/proxy.test.ts` pins the allowlist from both sides, and
+`docs/security-architecture.md` §10g documents the gate and its exemptions.
+
+### Fixed — Docker socket proxy moved to an internal control network (#432)
+
+2026-09-30 — with the opt-in self-update overlay, `docker-socket-proxy` sat on
+the shared `omadia` network next to the middleware, web-ui, postgres and every
+overlay sidecar. The proxy has no authentication, and the Engine calls an
+update needs are host-root-equivalent on their own, so who can reach the proxy,
+not its allowlist, decides who controls the host. The updater's bearer token,
+release-tag check and protected-service list guard only the updater's own API,
+and a direct call to the proxy skipped all three. The overlay now declares an
+internal network, `omadia-control`, that only the proxy and the updater join.
+The proxy has left `omadia`, so its name no longer resolves there. The new
+network has no host-side bridge address
+(`com.docker.network.bridge.inhibit_ipv4`) and no IPv6, so the proxy's address
+does not route from `omadia` either, including on runtimes such as OrbStack
+that do not firewall traffic between Docker networks. The updater keeps
+`omadia` for the middleware's calls and its own health gate. All 27 section
+flags of the pinned proxy image are now set explicitly: `VERSION` changes from
+1 to 0, and `EVENTS`, on by image default, is now 0 (the updater calls
+neither). The overlay header no longer claims that a compromised updater cannot
+read secrets or spawn a shell. It documents the proxy as root-equivalent and
+the network as the boundary (`docs/security-architecture.md` §10f).
+
+The updater is now the one route from `omadia` to the proxy, so its health
+gate no longer follows redirects. The probe used fetch's default
+`redirect: 'follow'` on a `/health` answer the middleware writes, and a
+redirect to `http://docker-socket-proxy:2375/…` made the updater send that GET
+onto `omadia-control`; a JSON 2xx from the Engine even passed the gate as an
+unstamped build. A 3xx now counts as not healthy and is noted once in the step
+trail (`sidecars/updater/test/health.test.mjs`).
+
+Existing overlay installs re-run
+`docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d`
+with both files, plus their other overlays. Admin → Update cannot do this for
+them: the updater never replaces the compose files, the proxy or itself.
+Compose creates `omadia-control` and recreates `docker-socket-proxy` and
+`updater`. Data is untouched. If Admin → Update installed the running
+release, the middleware and web-ui restart once, on the same images, because
+they still carry compose's configuration label from the previous release. An
+update running at that moment is aborted. `docs/upgrading.md` lists this step
+in its upgrade notes for this release, and has a check that first proves the
+updater reaches the proxy, then that the middleware and web-ui cannot, by name
+or by address. It ends in `PASS`, `FAIL` or `INCONCLUSIVE` with a matching
+exit code, and an error it cannot classify is inconclusive, never blocked.
+`middleware/test/composeUpdateOverlay.test.ts` guards the layout, and CI
+renders the merged overlay with `docker compose … config --quiet`.
+
+### Fixed — /login and /setup only follow same-origin return paths
+
+2026-09-30 — after a password sign-in, and after the first administrator is
+created, the web UI navigates to the page's `?return=` value; a visitor who is
+already signed in is forwarded to it straight away. Both pages accepted any
+value that started with `/` but not with `//`. Browsers normalise a URL before
+they follow it: they read `\` as `/` and drop TAB, LF and CR, so values shaped
+like `/\host` or `/<TAB>/host` passed that check and still resolved to another
+origin. Both pages now use one helper, `web-ui/app/_lib/returnPath.ts`. The
+value must start with exactly one `/`, contain no control characters and be at
+most 2048 characters long. It is then parsed the way the browser will parse
+it, and only the normalised path, query and fragment are used, once they pass
+the same checks (dot segments would otherwise turn `/..//host` into `//host`).
+Anything else leads to `/`. The helper also sends `?return=/login?…`, `/login/`
+and `/setup` to `/`; the old guard caught only the exact string `/login`, and
+return values that are auth pages or longer than 2048 characters now land on
+`/` as well. The app's own redirects to `/login` never produce such values.
+
+The middleware's own check for the OIDC round trip (`sanitiseReturnPath` in
+`middleware/src/routes/auth.ts`) now also rejects a `\` right after the leading
+`/` and every control character, so the back-compat `GET /api/v1/auth/login`
+no longer copies such a value into the `/login?return=` link it redirects to.
+Its own redirects already stayed on `publicBaseUrl`. The rules are written up
+in `docs/security-architecture.md` §10e.
+
+### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
+
+2026-09-29 — the `audit (high+critical block)` step treated an npm registry
+outage ("audit endpoint returned an error") as a pass, so an unknown audit
+state was indistinguishable from a clean one. It now gets three attempts (two
+retries, 20 s then 40 s backoff), each registry fetch capped at 60 s, and then
+fails. For a confirmed upstream outage an admin can set the repository
+variable `AUDIT_ALLOW_REGISTRY_OUTAGE=true`, which downgrades that to a
+warning until the registry is back (reviewer checklist,
+`docs/security-architecture.md` §11). Every run archives `audit-report.json`
+as a workflow artifact for 30 days; the upload overwrites on a re-run, so
+"Re-run failed jobs" cannot turn the required check red by itself. Dependabot
+gets a `/desktop` npm block — the Electron shell had no dependency updates at
+all, and `electron` is a devDependency that ships as the runtime, so its
+patch/minor releases stay out of the tooling group. Adding `desktop` to the
+audit matrix is tracked in the handoff's §13 and lands with the desktop
+dependency refresh that makes it pass. Local audit working files under
+`docs/audits/` are git-ignored.
+
+### Changed — CI schema gate covers every live SQL migration series (#1239)
+
+2026-09-29 — the `schema (migrations on pgvector)` job listed six migration
+domains and named three as "still uncovered". Two of them are live and are
+now applied and re-applied by the job: `middleware/src/conductor/migrations`
+(11 files, applied at boot through the `_conductor_migrations` ledger) and
+`middleware/packages/harness-memory-postgres/src/migrations` (1 file,
+`_memory_migrations`). The third, `middleware/src/services/graph/migrations`,
+is read by no runtime migrator — its four files are byte-identical copies of
+knowledge-graph-neon 0002/0004/0012/0013 — so applying it would only turn
+files that never run in production green. Instead a new step fails the job if
+that directory holds anything but those four copies, which closes the trap
+that stranded a migration there before (#875). A local reproduction of the
+job (every live file applied twice against a throwaway pgvector 16) exposed
+no latent schema defect. `AGENTS.md` no longer names that directory as an
+example for subsystem migrations. The remaining debts — deleting the inert
+graph directory, the 347 allowed test-tree type errors of the typecheck
+ratchet, and the `nl` prompt-PII floor of 0.84 against the 0.97 release gate —
+are recorded in the handoff's §13 roadmap.
+
+### Fixed — SessionWatcher test no longer races framer-motion's exit animation
+
+2026-09-30 — `SessionWatcher.test.tsx` "drops a warning back to normal when
+another tab renewed" failed intermittently in CI (twice on 2026-09-28 on
+Dependabot branches, twice on 2026-09-30). framer-motion's frame loop captures
+`requestAnimationFrame` when the module loads — jsdom's real one, not the fake
+timers the suite installs — so whether the warning card's exit animation
+finished inside a fake-time `flush()` depended on real wall-clock time.
+Removing the one-second slack made the unchanged test fail deterministically.
+The suite now renders `AnimatePresence`'s children directly, so a card leaves
+the DOM in the same commit that its phase ends; the component is unchanged.
+
+### Security — npm advisories in middleware and web-ui dependencies
+
+2026-09-30 — new advisories were published against packages both workspaces
+resolve, so the required `audit (high+critical block)` check failed on every
+branch. The `overrides` pins for `brace-expansion` (both workspaces,
+5.0.9 → 5.0.12: three high-severity advisories on quadratic and recursive
+expansion) and `fast-uri` (middleware, 3.1.7 → 3.1.8) cannot be moved by
+`npm audit fix`, so they are raised by hand. `npm audit fix` then refreshed,
+within the existing semver ranges:
+
+- middleware — `hono` 4.12.32 → 4.13.11, `multer` 2.3.0 → 2.4.0, `qs`
+  6.15.3 → 6.16.0, `ip-address` 10.3.1 → 10.7.2, `minimatch` 10.2.5 → 10.2.6;
+  the no longer needed `concat-stream`, `buffer-from` and `typedarray` drop out.
+- web-ui — `undici` 7.29.0 → 7.30.0, `typescript-eslint` and every
+  `@typescript-eslint/*` package 8.65.0 → 8.71.0, `eslint-config-next` and
+  `@next/eslint-plugin-next` 16.3.5 → 16.3.7, `@eslint/eslintrc` 3.3.6 → 3.3.7.
+
+The lockfile's stale workspace entry for `packages/plugin-api` (1.13.0) now
+matches its `package.json` (1.19.1). Both workspaces are free of
+high/critical advisories again. The remaining moderate findings (`uuid` via
+`exceljs`/`botbuilder`, `dompurify` via `monaco-editor`) need breaking
+upgrades and are left for their own changes.
 
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
@@ -2250,7 +2576,6 @@ Not reproduced and deliberately left open: the setup-wizard overwrite (#930) is
 plausible from the code and matches the observed timing, but provoking the race
 would have required a build that still started.
 
-
 ---
 
 ## Hand-written notes awaiting a mirror refresh (2026-07-06 to 2026-08-28)
@@ -2385,7 +2710,6 @@ Two consequences worth knowing:
 
 Unchanged and still true: the `claude-cli` provider never constructs the
 `Orchestrator`, so `context_memory` remains inert there (#899).
-
 
 ### Added — team uninstall for provisioned agent identities (#900, part of #860)
 
@@ -2880,7 +3204,6 @@ shallow copy of the turn store.
   an empty box: the panel renders nothing when the listing is empty, and treats a
   pre-feature kernel's 501 exactly like "feature not present". Real load errors stay visible.
 
-
 ### Changed — facilitation panel readability + tick nudge discipline (#330 round 4 follow-up)
 
 - The "Laufende Facilitations" card is structured now: conversation line, goal as title, the
@@ -2890,7 +3213,6 @@ shallow copy of the turn store.
 - The assess tick's prompt carries an explicit nudge discipline: nudge ONLY when the progress
   log has not moved since the previous tick — an actively working group needs no impulse, and
   a second facilitator voice mid-conversation reads as a duplicate bot.
-
 
 ### Added — Admin lens + stop for running facilitations (#330 round 4)
 
@@ -2905,7 +3227,6 @@ shallow copy of the turn store.
   idempotent, refuses non-ephemeral workflows.
 - Conductor page: new "Laufende Facilitations" panel with the overview and a confirmed
   Stop & remove action (en+de).
-
 
 ### Added — channel directory entries can carry resolved member names
 
@@ -3016,7 +3337,6 @@ shallow copy of the turn store.
 - Agent steps now carry a structured verdict: the LAST fenced ```json block of an agent answer becomes `stepResult.data` (mirror of the action-step's `data`; size-capped, tolerant — a missing verdict just keeps the bounded loop going). The bundled `facilitation` pattern is **v2**: hourly assess tick (moderate → wait PT1H → moderate, max 24 rounds) that routes a met DoD to the initiator's confirmation and exhausted rounds to the abort report.
 - `conductorEphemeralRuns.poke(runId)` early-fires a run's open timer await ("the group is done — don't wait out the interval").
 - New deny-by-default kernel service **`conversationSend`** (+ channel-SDK seam `registerConversationSendProvider`, plugin-api **1.9.0**): conversation-addressed proactive send — the Facilitator's stall-nudges post INTO the group, distinct from targetedSend's user-addressed DMs. First-registrant ownership per channel type, named unreachable outcomes, never a throw.
-
 
 ### Added — zero-touch Facilitator setup: agent provisioning, invite-guarded auto-bind, scoped role assignments (#330 C2a)
 
@@ -3159,7 +3479,6 @@ shallow copy of the turn store.
 - `@omadia/plugin-api` **1.3.0** (additive): `SqlAccessor.seedLedger` (optional, so
   a plugin still activates against a 1.2.0 core), `LedgerSeedEntry`,
   `SeedLedgerOptions`, `LedgerSeedReport`.
-
 
 ### Removed — Dev Platform moved to byte5ai/omadia-dev-platform (install via Hub/ZIP) (#470 C10)
 
@@ -3824,7 +4143,6 @@ shallow copy of the turn store.
 - Removed 23 now-dead `await once('listening')` waits that followed a
   converted site. The helper already resolves after `listening`, so a second
   wait could never fire — it hung 12 files to the 120s test timeout.
-
 
 ### Added — the public MCP endpoint serves MRTR to 2026-07-28 clients (#700)
 

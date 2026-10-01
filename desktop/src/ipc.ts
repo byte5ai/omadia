@@ -1,18 +1,26 @@
-import { ipcMain, dialog, app, BrowserWindow, WebContents } from 'electron';
+import {
+  ipcMain,
+  dialog,
+  BrowserWindow,
+  type IpcMainEvent,
+  type IpcMainInvokeEvent,
+  type WebContents,
+} from 'electron';
 import os from 'node:os';
 import {
   CH,
-  ApiKeyProvider,
-  AppState,
-  TestLlmKeyRequest,
-  TestLlmKeyResult,
-  WizardConfig,
-  CompleteResult,
+  type ApiKeyProvider,
+  type TestLlmKeyRequest,
+  type TestLlmKeyResult,
+  type WizardConfig,
+  type CompleteResult,
 } from './ipcTypes';
 import type { BootProgress } from './supervisor';
-import { setProviderKey, exportRecoveryKey, isEncryptionAvailable } from './secrets';
+import type { ShellView } from './shellView';
+import { decideSender, readSenderFacts, type IpcSurface } from './ipcSender';
+import { setProviderKey, exportRecoveryKey } from './secrets';
 import { readSetup, writeSetup } from './setupState';
-import { isSetupComplete } from './setupState';
+import { parseCapabilities, type DesktopCapabilities } from './capabilities';
 import { setDataDirOverride } from './paths';
 import { detectSyncedLocation } from './syncedPaths';
 import { log } from './log';
@@ -35,6 +43,88 @@ export interface IpcDeps {
    * through `parseUiLocale`.
    */
   onUiLocale: (locale: unknown) => void;
+  /**
+   * What the window navigator says is on screen. The setup channels answer
+   * only while it is the wizard, so the recovery key is out of reach once
+   * first-run setup is over.
+   */
+  currentView: () => ShellView;
+  /** The running web UI's origin, or null while none serves; the UI pings answer only it. */
+  appOrigin: () => string | null;
+  /** Absolute path of the bundled pages (`<app>/dist/renderer`); setup answers only its wizard.html. */
+  rendererDir: string;
+}
+
+/** What a refused invoke rejects with; the wizard shows invoke errors verbatim. */
+const REFUSED = 'This action is not available from here.';
+
+/**
+ * `ipcMain.handle` / `ipcMain.on` with the sender check in front. The handler
+ * declares its renderer arguments; they arrive unchecked, exactly as with bare
+ * `ipcMain`, so each handler still validates what it uses.
+ */
+interface SenderGuards {
+  guardedHandle<A extends unknown[]>(
+    surface: IpcSurface,
+    channel: string,
+    handler: (event: IpcMainInvokeEvent, ...args: A) => unknown,
+  ): void;
+  guardedOn<A extends unknown[]>(
+    surface: IpcSurface,
+    channel: string,
+    listener: (event: IpcMainEvent, ...args: A) => void,
+  ): void;
+}
+
+/**
+ * Builds the guarded registrations, with `decideSender` (`ipcSender.ts`) in
+ * front of every handler.
+ *
+ * The sender frame is read on entry, synchronously, before the handler runs:
+ * Electron answers null for `senderFrame` once the frame has navigated away, so
+ * a check behind an `await` would refuse the wizard in the middle of `complete`.
+ */
+function senderGuards(deps: IpcDeps): SenderGuards {
+  const refused = (
+    surface: IpcSurface,
+    channel: string,
+    event: IpcMainEvent | IpcMainInvokeEvent,
+  ): boolean => {
+    const decision = decideSender(surface, readSenderFacts(event), {
+      rendererDir: deps.rendererDir,
+      appOrigin: deps.appOrigin(),
+      view: deps.currentView(),
+    });
+    if (decision.allowed) return false;
+    const line = `[ipc] ${channel} refused: ${decision.reason}`;
+    // A refused setup channel is either a document probing for the key or a
+    // path mismatch that would brick first-run setup: loud either way. A UI
+    // ping refused after a stop or restart is routine.
+    if (surface === 'wizard') log.warn(line);
+    else log.info(line);
+    return true;
+  };
+  return {
+    guardedHandle: <A extends unknown[]>(
+      surface: IpcSurface,
+      channel: string,
+      handler: (event: IpcMainInvokeEvent, ...args: A) => unknown,
+    ): void => {
+      ipcMain.handle(channel, (event, ...args) => {
+        if (refused(surface, channel, event)) throw new Error(REFUSED);
+        return handler(event, ...(args as A));
+      });
+    },
+    guardedOn: <A extends unknown[]>(
+      surface: IpcSurface,
+      channel: string,
+      listener: (event: IpcMainEvent, ...args: A) => void,
+    ): void => {
+      ipcMain.on(channel, (event, ...args) => {
+        if (!refused(surface, channel, event)) listener(event, ...(args as A));
+      });
+    },
+  };
 }
 
 /**
@@ -98,26 +188,26 @@ async function chooseDataDirWithSyncWarning(
   return null;
 }
 
+/**
+ * Every channel is registered for the one surface allowed to use it, and each
+ * call is checked against the frame that sent it (`ipcSender.ts`): setup
+ * channels answer only the bundled wizard during first-run setup, the UI pings
+ * only the running web UI's origin. A new channel goes through
+ * `guardedHandle`/`guardedOn` with an explicit surface, never bare `ipcMain`.
+ */
 export function registerIpc(deps: IpcDeps): void {
-  ipcMain.on(CH.uiReady, () => deps.onUiReady());
-  // No sender/origin check, same as `uiReady` above: the one window hosts both
-  // the file:// wizard/loading pages and the localhost web UI, whose origin is
-  // only known after boot. The payload is validated down to 'en' | 'de' and
-  // only picks the language of shell dialogs, so a forged value can do no more
-  // than switch that language.
-  ipcMain.on(CH.uiLocale, (_e, locale: unknown) => deps.onUiLocale(locale));
+  const { guardedHandle, guardedOn } = senderGuards(deps);
 
-  ipcMain.handle(CH.getState, (): AppState => ({
-    setupComplete: isSetupComplete(),
-    encryptionAvailable: isEncryptionAvailable(),
-    version: app.getVersion(),
-  }));
+  guardedOn('app', CH.uiReady, () => deps.onUiReady());
+  // The payload is validated down to 'en' | 'de' and only picks the language
+  // of shell dialogs.
+  guardedOn('app', CH.uiLocale, (_e, locale: unknown) => deps.onUiLocale(locale));
 
-  ipcMain.handle(CH.testLlmKey, async (_e, req: TestLlmKeyRequest): Promise<TestLlmKeyResult> => {
+  guardedHandle('wizard', CH.testLlmKey, async (_e, req: TestLlmKeyRequest): Promise<TestLlmKeyResult> => {
     return testLlmKey(req);
   });
 
-  ipcMain.handle(CH.chooseDataDir, async (e): Promise<string | null> => {
+  guardedHandle('wizard', CH.chooseDataDir, async (e): Promise<string | null> => {
     const win = BrowserWindow.fromWebContents(e.sender) ?? undefined;
     return chooseDataDirWithSyncWarning(win as BrowserWindow);
   });
@@ -129,11 +219,11 @@ export function registerIpc(deps: IpcDeps): void {
   // read the key off the wizard's last step still gets one reminder on the next
   // launch. Calling `markRecoveryKeyShown()` here closes that — it was left out
   // only because this file belonged to a concurrent PR at the time.
-  ipcMain.handle(CH.exportRecoveryKey, (): string => exportRecoveryKey());
+  guardedHandle('wizard', CH.exportRecoveryKey, (): string => exportRecoveryKey());
 
-  ipcMain.handle(CH.complete, async (e, config: WizardConfig): Promise<CompleteResult> => {
+  guardedHandle('wizard', CH.complete, async (e, config: WizardConfig): Promise<CompleteResult> => {
     try {
-      validateConfig(config);
+      const capabilities = validateConfig(config);
 
       if (config.dataDir) {
         setDataDirOverride(config.dataDir);
@@ -150,13 +240,15 @@ export function registerIpc(deps: IpcDeps): void {
       // Save config as `configured` but NOT yet `completed`: we only mark the
       // install boot-verified once the stack actually comes up, so a failed
       // first boot doesn't brick the next launch into a dead auto-boot path.
+      // The switches are persisted as parsed, never as the object the page
+      // sent: the supervisor reads them back on every boot.
       const setup = readSetup();
       writeSetup({
         ...setup,
         configured: true,
         completed: false,
         llmProvider: config.provider,
-        capabilities: config.capabilities,
+        capabilities,
       });
 
       const forward = makeProgressForwarder(e.sender);
@@ -184,7 +276,11 @@ function makeProgressForwarder(sender: WebContents): (p: BootProgress) => void {
   };
 }
 
-function validateConfig(config: WizardConfig): void {
+/**
+ * Checks the wizard's payload before anything is written, and returns the
+ * capability switches as they will be persisted.
+ */
+function validateConfig(config: WizardConfig): DesktopCapabilities {
   if (
     config.provider !== 'anthropic' &&
     config.provider !== 'openai' &&
@@ -195,6 +291,11 @@ function validateConfig(config: WizardConfig): void {
   if (requiresApiKey(config.provider) && (!config.apiKey || config.apiKey.trim().length < 8)) {
     throw new Error('Please enter a valid API key.');
   }
+  const capabilities = parseCapabilities(config.capabilities);
+  if (capabilities === null) {
+    throw new Error('Invalid capability selection.');
+  }
+  return capabilities;
 }
 
 /** A model list is a few KB at most; anything past this is not one. */

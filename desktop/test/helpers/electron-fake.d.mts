@@ -1,10 +1,16 @@
 /**
  * Types for the test-only Electron fake, so a test can import its control
- * surface (`__setDialogHandler`, `__lastClipboardText`, `__setSafeStorage`)
- * under `typecheck:test`.
- * Runtime behaviour lives in `electron-fake.mjs`; keep the two in step.
+ * surface (`__setDialogHandler`, `__lastClipboardText`, `__setSafeStorage`,
+ * `__setIpcMain`, `__setContextBridge`) under `typecheck:test`. Runtime
+ * behaviour lives in `electron-fake.mjs`; keep the two in step.
  */
-import type { MessageBoxOptions, MessageBoxReturnValue, BrowserWindow } from 'electron';
+import type {
+  MessageBoxOptions,
+  MessageBoxReturnValue,
+  BrowserWindow,
+  IpcMainEvent,
+  IpcMainInvokeEvent,
+} from 'electron';
 
 export type DialogHandler = (
   ...args: [BrowserWindow, MessageBoxOptions] | [MessageBoxOptions]
@@ -28,3 +34,25 @@ export interface SafeStorageOverride {
 
 /** Swap `safeStorage` methods in place; null restores the defaults (no encryption). */
 export function __setSafeStorage(impl: SafeStorageOverride | null): void;
+
+/** What `registerIpc` hands `ipcMain.handle`; a test calls it like Electron would. */
+export type FakeInvokeHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
+/** What `registerIpc` hands `ipcMain.on`. */
+export type FakeOnListener = (event: IpcMainEvent, ...args: unknown[]) => void;
+
+/** The part of `ipcMain` that `registerIpc` calls. */
+export interface FakeIpcMain {
+  handle(channel: string, handler: FakeInvokeHandler): void;
+  on(channel: string, listener: FakeOnListener): unknown;
+}
+
+/** Install the object `ipcMain.handle` / `ipcMain.on` are forwarded to. */
+export function __setIpcMain(fake: FakeIpcMain | null): void;
+
+/** The part of `contextBridge` the preload calls. */
+export interface FakeContextBridge {
+  exposeInMainWorld(apiKey: string, api: unknown): void;
+}
+
+/** Install the object `contextBridge.exposeInMainWorld` is forwarded to. */
+export function __setContextBridge(fake: FakeContextBridge | null): void;

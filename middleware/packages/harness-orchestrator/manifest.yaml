@@ -186,6 +186,26 @@ setup:
       type: "string"
       required: false
       help: "Wie oft ein identischer Tool-Aufruf wiederholt werden darf, bevor der Turn zwangsweise mit einer Best-Effort-Antwort finalisiert wird (statt das ganze Iterations-Budget zu verbrennen). Leer/0 = Default (5). Muss > Soft-Schwelle sein."
+    # Obergrenzen für jeden Container, in dem Agent-Code läuft (Sandbox des
+    # `execute`-Tools und per `publish` veröffentlichte Apps). Wirken nur, wenn
+    # `sandbox_execute_enabled` bzw. `sandbox_publish_enabled` an ist.
+    # Reihenfolge je Feld: Setup-Feld > OMADIA_SANDBOX_*-Umgebungsvariable >
+    # Default (siehe sandboxLimitsConfig.ts).
+    - key: "sandbox_memory_mb"
+      label: "Sandbox: Speicherlimit (MB)"
+      type: "string"
+      required: false
+      help: "RAM-Obergrenze in MB für jeden Sandbox- und App-Container (`docker run --memory`), ganze Zahl von 6 bis 1048576 (= 1 TiB). Swap zählt mit, der Container kann also nicht über diese Grenze hinaus auslagern. Leer, 0, ungültig oder außerhalb des Bereichs = nicht gesetzt: dann greifen die Umgebungsvariable OMADIA_SANDBOX_MEMORY_MB und danach der Default von 512. Ein „unbegrenzt“ gibt es bewusst nicht; wer mehr braucht, trägt eine größere Zahl im Bereich ein. Gilt für neu erstellte Container und beim nächsten Wiederanhängen einer bestehenden Sandbox."
+    - key: "sandbox_cpus"
+      label: "Sandbox: CPU-Anteil"
+      type: "string"
+      required: false
+      help: "CPU-Anteil je Sandbox- und App-Container (`docker run --cpus`) von 0.01 bis 1024, Bruchteile mit Punkt erlaubt (z. B. 0.5). Mehr CPUs, als der Docker-Host hat, lehnt Docker beim Start ab. Leer, 0, ungültig oder außerhalb des Bereichs = OMADIA_SANDBOX_CPUS, danach Default 1. Kein „unbegrenzt“: auch Werte, die Docker stillschweigend ohne CPU-Limit starten würde (z. B. 0.000001 oder 1e64), zählen als nicht gesetzt."
+    - key: "sandbox_pids_limit"
+      label: "Sandbox: Prozesslimit"
+      type: "string"
+      required: false
+      help: "Höchstzahl an Prozessen und Threads je Sandbox- und App-Container (`docker run --pids-limit`), ganze Zahl von 1 bis 4194304; fängt Fork-Bomben ab. Leer, 0, ungültig oder außerhalb des Bereichs = OMADIA_SANDBOX_PIDS_LIMIT, danach Default 256. Kein „unbegrenzt“."
     - key: "assistant_identity"
       label: "Assistant-Persona"
       type: "string"

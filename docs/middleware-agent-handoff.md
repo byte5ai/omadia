@@ -2545,6 +2545,46 @@ nicht importieren kann.
 |---|---|
 | `OMADIA_CLI_SPAWN_TIMEOUT_MS` | Wanduhr-Budget **eines** CLI-geführten Chat-Turns (Shape 3) in Millisekunden, Default `600000`. Vorher fest 120 s ohne Override, während ein einzelner Aufruf des eigenen `query_seo_analyst`-Sub-Agenten 69–75 s dauert — zwei davon waren garantiert über dem Limit. Das Leerlauf-Limit (60 s ohne Ausgabe) bleibt getrennt bestehen. Nicht-numerische oder nicht-positive Werte werden ignoriert. Priorität: explizite `spawnTimeoutMs`-Dependency > ENV > Default. |
 
+### Sandbox-Container-Limits (#576 `execute`, #581 `publish`)
+
+Gelesen vom `@omadia/sandbox`-Package (`resolveSandboxResourceLimits()` in
+`resourceLimits.ts`), nicht über `config.ts`. Gelten für jeden Docker-Container,
+in dem Agent-Code läuft (Sandbox des `execute`-Tools und per `publish`
+veröffentlichte Apps), also nur, wenn `sandbox_execute_enabled` bzw.
+`sandbox_publish_enabled` an ist. Reihenfolge je Wert wie bei OM-104:
+Orchestrator-Setup-Feld > ENV > Default. Die Setup-Felder sind Plugin-Konfiguration
+(`manifest.yaml` des Orchestrators), keine Env-Variablen.
+
+| Variable | Setup-Feld | Default | Wirkung |
+|---|---|---|---|
+| `OMADIA_SANDBOX_MEMORY_MB` | `sandbox_memory_mb` | `512` | `docker run --memory` **und** `--memory-swap` mit demselben Wert, in MiB, ganze Zahl von 6 bis 1048576 (1 TiB): der Container kann nicht über die Grenze hinaus auslagern. |
+| `OMADIA_SANDBOX_CPUS` | `sandbox_cpus` | `1` | `--cpus` von 0.01 bis 1024, Bruchteile erlaubt (`0.5`). |
+| `OMADIA_SANDBOX_PIDS_LIMIT` | `sandbox_pids_limit` | `256` | `--pids-limit`, ganze Zahl von 1 bis 4194304, Prozesse und Threads je Container. |
+
+Leer, `0`, negativ, nicht numerisch oder außerhalb des Bereichs zählt als nicht
+gesetzt; ein „unbegrenzt“ gibt es bewusst nicht. Docker liest nicht nur `0` als
+„kein Limit“, sondern startet auch manche positiven Werte still ohne Limit
+(`--cpus 0.000001` oder `1e64`, `--memory` ab 2^43 MiB oder als `1e+21m` auf
+arm64); die Bereiche (`SANDBOX_RESOURCE_LIMIT_BOUNDS` in `resourceLimits.ts`)
+schließen genau diese Werte aus. Neue Werte gelten für neu erstellte Container;
+eine bestehende persistente Sandbox bekommt sie beim nächsten Wiederanhängen per
+`docker update` (Best-Effort, ein Fehler landet im Log, der Container läuft mit
+seinen alten Limits weiter). Die wirksamen Werte stehen beim Boot in der
+Log-Zeile `sandbox_execute_enabled=true` bzw. `sandbox_publish_enabled=true`.
+Details: `docs/security-architecture.md` §3b.
+
+### Web-UI: Frame-Freigabe (`UI_FRAME_ANCESTORS`)
+
+Gelesen vom **web-ui**-Prozess, nicht von der Middleware:
+`web-ui/proxy.ts` setzt die Operator-UI-Header pro Request aus
+`web-ui/app/_lib/securityHeaders.ts`.
+
+| Variable | Wirkung |
+|---|---|
+| `UI_FRAME_ANCESTORS` | CSP-`frame-ancestors`-Quellenliste für alle Operator-Seiten, z. B. `"'self' https://teams.microsoft.com"` (ganzen Wert in doppelte Anführungszeichen setzen). Ungesetzt: `frame-ancestors 'none'` plus `X-Frame-Options: DENY`. Gesetzt: ersetzt `'none'`, `X-Frame-Options` entfällt, weil es keine Freigabeliste kennt. Ungültige Werte (`;`, `,`, andere Schlüsselwörter, Steuerzeichen) werden mit Warnung im web-ui-Log ignoriert, der Default bleibt. `/p/*` und `/bot-api/*` behalten immer die Header der Middleware. Pro Request gelesen, wirkt also ohne Rebuild auf einem veröffentlichten Image. |
+
+Details: `docs/security-architecture.md` §10h.
+
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 
 ```
@@ -2600,6 +2640,11 @@ DIAGRAM_MAX_SOURCE_BYTES=64000             # Quellcode-Cap
 DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
 # Object-storage (Tigris auf Fly, MinIO lokal — auto-provisioniert via `fly storage create`)
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Lokaler Attachment-Store ohne S3 (platform/attachmentStore.ts). Greift nur, wenn
+# die vier S3-Werte NICHT alle gesetzt sind; wird als `tigrisStore` veröffentlicht.
+# Die Desktop-App setzt ihn, wenn der Wizard-Schalter „Anhänge“ an ist.
+# GET /health → attachments.store: 's3' | 'filesystem' | 'none' (nie Pfad/Bucket).
+ATTACHMENT_STORE_DIR=/data/attachments     # Objekte unter sha256(key), 0700/0600, kein Ablauf
 # Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId
 CONDUCTOR_WEBHOOKS_ENABLED=true
 CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE=60   # Rate-Limit pro Endpoint (rolling minute)
@@ -2967,6 +3012,107 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### CI-Schulden aus dem Security-Review (2026-09-29)
+
+- **`middleware/src/services/graph/migrations/` löschen** — 4 Dateien, byte-identisch mit
+  KG-neon 0002/0004/0012/0013; kein Runner liest sie (die Graph-Migrationen laufen über die
+  `harness-knowledge-graph-neon`-Serie; #875 hat die dort gestrandete 0009 gerettet). Seit
+  2026-09-29 schlägt der `schema`-Job fehl, sobald dort etwas anderes liegt als diese vier
+  Kopien (Schritt „Inert legacy graph migrations stay inert“). Löschen = Verzeichnis +
+  Eintrag in `scripts/copy-build-assets.mjs` + dieser CI-Schritt + der Pfad in
+  `test/mcpDelegationBackfillMigration.pg.test.ts` (liest das Verzeichnis und nennt es noch
+  „live migration series“); das Dockerfile kopiert es nicht.
+- **`desktop` in die Audit-Matrix aufnehmen.** Der `audit (high+critical block)`-Job prüft
+  nur `middleware` und `web-ui`; Dependabot deckt `desktop/` seit 2026-09-29 ab. Die Matrix
+  bekommt `desktop` zusammen mit dem Desktop-Dependency-Refresh (Electron, Builder-Toolchain),
+  der das Gate grün macht — danach den neuen Status-Check als Required eintragen.
+- **Typecheck-Ratchet `test/` + `scripts/` (#573): 347 bekannte Fehler in 120 Dateien**
+  (`middleware/test-typecheck-baseline.json`, Stand 2026-09-29). `npm run typecheck:test`
+  blockt nur *neue* Fehler. Abbau: `npm run typecheck:test -- --report`, fixen,
+  `-- --update` senkt die Baseline (nie erhöhen). Ziel: leere Baseline, dann den Ratchet
+  durch ein hartes `tsc -p test/tsconfig.json` ersetzen, wie `desktop` es mit
+  `typecheck:test` schon tut.
+- **Prompt-PII C0, Locale `nl`: strukturierter Recall 88,2 % statt 0,97.** Der Floor in
+  `packages/harness-plugin-privacy-guard/src/validation/ci-baseline.json` steht für `nl` auf
+  0.84 (de/en/es/fr/it: 0.97). Ursachen: NL-Adressen (`straat`/`gracht`/`plein`, Postcode
+  `1016 AZ`) ohne C0-Muster und bewusst ungepatterte BSN. Wege: NL-Adressmuster in C0, oder
+  `nl` nur mit C1-Sidecar freigeben (`c0+c1` laut `validation/README.md` 89,0 % / 100 %).
+  Floor anheben, sobald die Zahl steigt. `mask_user_prompt` ist ein globaler Schalter (kein
+  Locale-Schalter); Betreibern mit überwiegend niederländischen Nutzern bis dahin C1 mit
+  aktivieren oder die C0-Lücke bei Adressen bewusst in Kauf nehmen.
+
+### Offene Punkte aus den Security-Härtungen (2026-09-30)
+
+- **Desktop-Runtime-Refresh (Electron 37 → 44) als eigener PR, nach dem Brücken-Release.**
+  `desktop/` läuft noch auf Electron 37 und hat kein Bein in der `npm audit`-Matrix. Der
+  Refresh (Electron 44, electron-builder 26, `desktop` als Audit-Bein, macOS-13-Floor im
+  Update-Feed) kommt als eigener PR. Er wird erst gemergt, wenn das Release mit dem
+  Updater-Hinweis aus `desktop/src/updateHoldBack.ts` veröffentlicht ist (kein Draft): Nur
+  Installationen mit diesem Release sagen auf macOS 11/12, dass das neue Release macOS 13
+  braucht. Vor dem Merge laufen ein `desktop-apps.yml`-Dispatch-Build aller Targets und je
+  ein Upgrade-Lauf auf macOS, Windows und Linux über das aktuelle Release, bei dem
+  `secrets.enc` byte-identisch bleibt; den genauen Ablauf bringt der PR in diesem Abschnitt mit.
+- **IdP-Logout-URL nicht allowlisted.** Die serverseitig gelieferte absolute End-Session-URL
+  (`idpLogout.url`, `web-ui/app/_components/AuthBadge.tsx`) wird ungeprüft angesteuert. Eigene
+  Vertrauensgrenze; Härtung z. B. per Allowlist der konfigurierten IdP-Hosts.
+- **`/login/:id/start` ohne Längenlimit für `return`.** Der Web-UI-Helper begrenzt auf 2048
+  Zeichen; ein direkter Link auf die Middleware-Route ist unbegrenzt (landet im OIDC-State-Cookie).
+
+### Self-Update-Steuerungsebene: Vertrauensmodell und offene Härtung (#432 follow-up)
+
+Vertrauensmodell (Details: `docs/security-architecture.md` §10f): Wer den
+`docker-socket-proxy` erreicht, ist Host-Root. Seine Abschnitts-Flags filtern nur
+nach URL-Präfix, und `CONTAINERS`+`POST` reichen allein schon für einen
+privilegierten Container mit Host-Mounts. Die Grenze ist deshalb die
+Erreichbarkeit: Der Proxy hängt nur am `internal`-Netz `omadia-control` (ohne
+Bridge-Adresse auf dem Host, ohne IPv6), das außer ihm nur der `updater` betritt.
+Der Updater ist per Design root-äquivalent, und die Middleware hält sein Token.
+Jeder Code im Middleware-Prozess, In-Process-Plugins eingeschlossen, kann damit
+ein Update auf ein beliebiges Release-Tag anstoßen. Offen:
+
+- **Exakte Methoden-/Pfad-Allowlist und Loopback-Bind.** Eine eigene
+  `haproxy.cfg` im tecnativa-Image ließe nur die acht Calls durch, die der
+  Updater macht (Liste im Header von `docker-compose.update.yaml`), und könnte an
+  `127.0.0.1:2375` binden. Dann liefe der Proxy mit
+  `network_mode: service:updater` (`UPDATER_DOCKER_API=http://127.0.0.1:2375`,
+  `depends_on` umgedreht), und die Isolation hinge nicht mehr an der
+  Netzwerk-Implementierung der Runtime. Mit dem unveränderten Image 0.3.0 geht
+  das nicht: `BIND_CONFIG` setzt `docker-entrypoint.sh` selbst, es ist kein
+  Env-Schalter. Eine Quell-IP-ACL wäre kein Ersatz, denn OrbStack maskiert
+  netzübergreifenden Verkehr als Gateway-Adresse des Zielnetzes.
+- **Kein Downgrade über das Update-Token.** `POST /api/v1/admin/update`
+  (`routes/adminUpdate.ts`) lehnt nur das laufende Release ab, der Sidecar
+  (`config.mjs`, `TAG_RE`) prüft nur die Form des Tags. Ein
+  „nicht älter als laufend“-Gate (mit ausdrücklichem Operator-Override für echte
+  Rollbacks) fehlt.
+- **Control-Plane-Hostnamen im Plugin-Egress sperren.**
+  `extractOutboundAllowlist` (`platform/pluginContext.ts`) nimmt jeden String als
+  Host an, und die Static-Allow-List-Modi von `ctx.http` vertrauen benannten Hosts
+  ohne SSRF-Guard. `docker-socket-proxy` löst aus der Middleware nicht mehr auf;
+  `updater` bleibt erreichbar (Bearer-Token nötig). Ein hartes Deny für beide
+  Namen im Host-Matcher wäre billige Defense in Depth.
+- **Nicht geprüfte Runtimes.** Die Isolation des Control-Netzes ist auf
+  Stock-dockerd 20.10, 24, 27 und 29 (iptables) und auf OrbStack 29.4 geprüft,
+  nicht auf Rootless Docker, Podman oder Docker Desktop. Wer das Overlay dort
+  betreibt, führt den Check aus `docs/upgrading.md` aus.
+
+### Operator-UI-Header und Sandbox-Limits — bewusst offen gelassen (Security-Doku §3b, §10h)
+
+- **Keine Script-Policy in der Operator-UI.** Die CSP enthält nur
+  `frame-ancestors`, `object-src` und `base-uri`. Der nächste Schritt wäre eine
+  Nonce pro Request aus `web-ui/proxy.ts` für `script-src`; das zwingt aber jede
+  Seite in dynamisches Rendering und muss vorher gemessen werden. `style-src`
+  bräuchte zusätzlich `'unsafe-inline'` wegen der `style`-Attribute.
+- **Keine zentralen Antwort-Header in der Middleware.** Plugin-UIs
+  (`pluginUiStatic.ts`, `withIframeSafeHeaders`) und die Builder-Preview setzen
+  eigene; die übrigen `/api/*`-Antworten, die über `/bot-api/*` ankommen,
+  tragen weder `nosniff` noch eine Frame-Policy. Die web-ui lässt `/bot-api/*`
+  absichtlich unverändert (§10h), die Lücke gehört also in die Middleware.
+- **Publish-Container von vor den Limits** laufen ohne Limits weiter, bis eine
+  neue Version sie ersetzt: `DockerPublishRuntime.deploy()` fasst bestehende
+  Versionen nie an (Unveränderlichkeit), und ein `docker update` dort würde
+  diese Zusage aufweichen.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
@@ -3144,6 +3290,119 @@ außerdem ab, wenn sie Mitglied irgendeiner Rolle ist. Bewusst offen:
 - **Windows-Stop vor der Passwort-Reparatur.** Die Reparatur im Single-User-Modus
   braucht einen gestoppten Server; `postgres.exe` wird dafür hart beendet (wie
   jeder Stop dort), der Single-User-Lauf macht danach eine Crash-Recovery.
+
+### Desktop-Shell: Trust-Boundary Renderer → Main
+
+Wizard, Ladeseite, Web-UI und bei In-Window-OIDC auch IdP-Seiten laufen im
+selben Fenster mit demselben Preload. Seit 2026-09-30 gilt, Begründung und
+Details in [`security-architecture.md` §10i](security-architecture.md):
+
+- **IPC:** Jeder Kanal wird in `desktop/src/ipc.ts` über
+  `guardedHandle`/`guardedOn` mit genau einer Surface registriert, nie direkt
+  über `ipcMain`. `desktop/src/ipcSender.ts` entscheidet pro Aufruf anhand von
+  `event.senderFrame`. Setup-Kanäle antworten nur dem gebündelten
+  `wizard.html` im Main-Frame (Pfadvergleich gegen die Installation), und nur
+  solange der Navigator `wizard` zeigt. UI-Pings antworten nur dem Origin der
+  laufenden Web-UI. `getState` ist entfernt.
+- **Preload:** `desktop/src/bridgeSurface.ts` gibt der Web-UI nur
+  `uiReady`/`setUiLocale`, fremden Seiten gar nichts. Plugin-iframes erreichen
+  die Bridge der Web-UI über `window.parent.omadia`. Deshalb darf die
+  `app`-Surface nie eine Methode bekommen, die ein Geheimnis liefert oder
+  schreibt.
+- **Navigation:** `desktop/src/navigationGuards.ts` hängt an jedem
+  webContents und dessen Session. Fremde Links und Popups gehen in den
+  Systembrowser. `file:`, `javascript:`, `data:` und `about:blank` werden
+  abgelehnt. Same-App-Popups öffnen sandboxed und ohne Preload. Subframes
+  dürfen Webseiten und `about:`/`data:`/`blob:` laden, sonst nichts.
+  Web-Redirects bleiben bewusst offen, damit der In-Window-Login per
+  OIDC/Entra funktioniert; ein Redirect auf ein anderes Schema bricht die
+  Navigation ab.
+- **OS-Protokoll-Handler:** Die Session verweigert Electrons
+  `openExternal`-Permission, die Electron ohne Handler jeder Seite gewährt.
+  Damit startet keine Seite, kein Plugin-iframe und kein Redirect ein
+  Programm über ein eigenes Schema (`ms-settings:`, `search-ms:`, …). Web-Links
+  öffnet die Shell selbst, geprüft, über `shell.openExternal`.
+
+Offen:
+
+- **Manuelle Prüfung auf paketierten Builds (macOS und Windows)** vor dem
+  nächsten Desktop-Release. Den Wizard komplett durchlaufen: Reveal zeigt den
+  Key, Finish bootet. Im Log darf keine `[ipc] … refused`-Zeile zu
+  `wizard.html` stehen, sonst stimmt der Pfadvergleich (asar-Pfad,
+  Laufwerksbuchstabe) nicht. In der Web-UI muss
+  `Object.keys(window.omadia)` genau `uiReady` und `setUiLocale` liefern.
+  Plugin-Autor-Link, GitHub-Hilfe-Link und ein Link in einer Chat-Antwort
+  öffnen im Systembrowser. Ein Same-App-Popup hat kein `window.omadia`. Ein
+  Link mit eigenem Schema in einer Plugin-UI startet kein Programm (Log:
+  `[nav] blocked a subframe navigation`). Der Entra-Login-Rundlauf klappt
+  inklusive Passwort-POST.
+- **Abmelden einer OIDC-Sitzung:** Die IdP-End-Session-URL öffnet jetzt im
+  Systembrowser, der einen eigenen Cookie-Speicher hat. Die IdP-Sitzung im
+  App-Fenster bleibt also bestehen. Folgepunkt für die Web-UI: in
+  `web-ui/app/_components/AuthBadge.tsx` bei vorhandener Desktop-Bridge direkt
+  auf `/login` gehen statt den IdP-Hop zu versuchen.
+- **Web-Redirects auf fremde Seiten** werden nicht blockiert. Das ist die
+  akzeptierte Rest-Ausnahme aus §10i: Solche Seiten bekommen keine Bridge,
+  jeder Handler lehnt sie ab, und auch sie erreichen keinen
+  OS-Protokoll-Handler.
+- **Übrige Session-Permissions: deny-by-default mit Allowlist.** Die Session
+  verweigert nur `openExternal` (`canGrantPermission`/`canPassPermissionCheck`
+  in `desktop/src/navigationPolicy.ts`). Jede andere Permission-Anfrage und
+  -Prüfung bekommt Electrons Antwort ohne Handler: gewährt, für jeden Frame und
+  ohne Rückfrage der App. Das betrifft Kamera und Mikrofon (`media`), das Lesen
+  der Zwischenablage (`clipboard-read`; Wizard und Shell kopieren den
+  Wiederherstellungsschlüssel dorthin), Standort und Benachrichtigungen, auch
+  für Plugin-iframes, Same-App-Popups und fremde Seiten nach einem Redirect.
+  Folgepunkt: Request- und Check-Handler lehnen ab, was nicht auf einer
+  expliziten Allowlist steht, entschieden pro anfragendem Origin
+  (`details.requestingUrl` bzw. `requestingOrigin`) und Frame
+  (`details.isMainFrame`). Gebraucht wird heute nur `clipboard-sanitized-write`
+  (`navigator.clipboard.writeText` im Wizard und in der Web-UI), also für die
+  gebündelten Seiten und den Origin der laufenden Web-UI. Plugin-iframes laufen
+  auf dem Origin der Web-UI und erben jede Freigabe für ihn, solange sie nicht
+  auf den Main-Frame begrenzt ist; ob Plugin-UIs kopieren dürfen, gehört zur
+  Entscheidung. Die Tests „grants every other request …“ und „answers every
+  other check …“ in `desktop/test/navigationPolicy.test.mts` pinnen das heutige
+  Verhalten und kehren sich mit dem Fix um.
+
+### Desktop-Shell: Wizard-Schalter — Folgepunkte
+
+Seit 2026-09-30 gilt [`security-architecture.md` §10j](security-architecture.md):
+Ein Wizard-Schalter ändert die Kernel-Env oder existiert nicht. Übrig ist
+**Anhänge** (`ATTACHMENT_STORE_DIR` → lokaler `tigrisStore`, Readiness über
+`/health` → `attachments.store`, geprüft von `Supervisor.confirmCapabilities`).
+Semantisches Gedächtnis und Diagramme wurden aus dem Wizard entfernt, weil die
+Shell sie nicht einschalten kann. Offen:
+
+- **Semantisches Gedächtnis als echter Opt-in.** Darf nur mit Verdrahtung
+  zurück in den Wizard: Gewichte-Download aus der Shell heraus (heute nur über
+  die Admin-Route `POST /api/v1/admin/embedding-provider/local-model/fetch`,
+  also mit Operator-Session), danach Selbst-Reaktivierung des Adapters,
+  Neubewertung des Embedding-Gates und ein Readiness-Signal auf `/health`, das
+  die Shell prüft — plus ein `supervisorKernelEnv`-Test, der das pinnt.
+- **Diagramme** brauchen eine Owner-Entscheidung: gehosteter Renderer (ein
+  neuer Datenabfluss der Diagramm-Quellen an einen Dienst außerhalb des
+  Rechners) oder ein mitgelieferter Renderer (Kroki ist JVM-basiert und lässt
+  sich nicht bündeln). Selbst dann fehlt Speicher: `@omadia/diagrams` baut
+  einen eigenen S3-Client und nutzt den Kernel-Store nicht.
+- **Office- und Diagramm-Plugin auf den Kernel-Store umstellen.** Beide bauen
+  eigene S3-Clients aus ihrer Plugin-Config; mit dem Kernel-`tigrisStore`
+  liefen `create_xlsx`/`create_docx` auch auf dem Desktop.
+- **Ablauf für den lokalen Store.** S3-Buckets bekommen eine 90-Tage-Lifecycle-
+  Regel, `filesystemObjectStore.ts` löscht nichts.
+- **Schalter nach dem Setup ändern.** Es gibt keinen Einstellungs-Pfad; heute
+  nur „Setup erneut ausführen“ nach einem Boot-Fehler.
+- **Readiness sichtbar machen.** Die Prüfung schreibt heute nur eine Log-Zeile
+  (`[boot] attachments: …`, im Boot-Log des Wizards sichtbar). Eine Warnung
+  könnte zusätzlich in Tray oder Web-UI erscheinen.
+- **Wer schreibt in den Store?** Der Web-Chat hat keinen Datei-Upload. Heute
+  landen dort nur Dateien von Kanälen, die über den Kernel-Store persistieren
+  (Teams mit `TEAMS_ATTACHMENT_STORAGE_ENABLED=true`).
+- **Manuelle Prüfung auf paketierten Builds:** Wizard zeigt einen Schalter
+  plus Hinweis; `setup.json` enthält `capabilities: { attachments }`; das Log
+  zeigt `[boot] attachments: on, kept in the data folder on this computer`;
+  `GET http://127.0.0.1:8769/health` liefert `attachments.store: filesystem`;
+  `<Datenordner>/attachments` existiert mit 0700.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
@@ -3363,6 +3622,21 @@ Randbedingungen für jede Variante:
 - Wird `strict` wirksam, muss `privacy_profile` in `runtimeChangeReasons`
   zurück (sonst greift die Änderung erst nach dem nächsten Neustart), und die
   UI bekommt ihren Toggle wieder.
+
+### Pairing: `auth.mode: 'none'` bei leerer Provider-Liste (#293 follow-up)
+
+`PairingAuth` (`middleware/src/pairing/discovery.ts`) definiert `none` als
+„Host nimmt unauthentifizierte Verbindungen an". Das trifft auf keinen Host zu:
+der Canvas-WebSocket authentifiziert jedes Upgrade (security-architecture §10d).
+Trotzdem melden der Middleware-Deskriptor (`buildPairingDescriptor`), die
+mDNS-Ankündigung und `web-ui/app/pairing-discovery/route.ts` `none`, sobald die
+Provider-Liste leer ist — die Middleware auch ohne Postgres, wo `/api/v1/auth/*`
+mit 503 antwortet. Die web-ui-Route tut das seit dem 503-Fix nur noch für eine
+tatsächlich leer gelieferte Liste; eine unlesbare beantwortet sie mit 503. Kein
+Auth-Bypass, aber der Client versucht es ohne Login und scheitert am 401.
+Offen: mit dem Canvas-Client festlegen, wie „kein Login möglich" gemeldet wird,
+und dann alle drei Erzeuger gemeinsam umstellen, damit jeder Weg dieselbe
+Antwort gibt.
 
 ---
 

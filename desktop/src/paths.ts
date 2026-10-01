@@ -106,6 +106,19 @@ export function embeddingModelsDir(): string {
   return dir;
 }
 
+/**
+ * Where the kernel keeps attachments when the wizard's "Attachments" switch is
+ * on (`ATTACHMENT_STORE_DIR`, see `capabilities.ts`).
+ *
+ * Under the chosen data folder, next to the database: these are the user's
+ * files, not re-downloadable cache like {@link embeddingModelsDir}. Not created
+ * here. The kernel creates it owner-only when it opens the store, so the store
+ * it reports on `/health` is one that could actually create its directory.
+ */
+export function attachmentsDir(): string {
+  return path.join(dataRoot(), 'attachments');
+}
+
 /** Encrypted secrets blob (vault master key + provider API keys). */
 export function secretsFile(): string {
   return path.join(dataRoot(), 'secrets.enc');

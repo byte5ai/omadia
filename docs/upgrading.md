@@ -22,7 +22,9 @@ keys, and shifts in the plugin API.
    `CREDENTIAL_KEYCHAIN_KEY`.
 3. Pull the new image. Pin a release with `OMADIA_VERSION`, see the
    [README quickstart](../README.md#-quickstart).
-4. Restart with `docker compose up -d`.
+4. Restart with `docker compose up -d`. If you run overlays, pass the same
+   `-f` files you start the stack with; a plain `up` leaves their services
+   running as they were.
 5. Verify the admin UI comes up and an existing agent run still works.
 
 ## Updating from the Operator UI
@@ -40,10 +42,27 @@ pieces are deployed:
 ### Enabling one-click updates
 
 The executor is **opt-in**, because replacing running containers requires
-Docker Engine access, which is host-root-equivalent. It is isolated in a
-sidecar that reaches the Engine only through a `docker-socket-proxy` with a
-narrow endpoint allowlist, has no published port, and requires a shared token —
-see [`middleware/sidecars/updater/README.md`](../middleware/sidecars/updater/README.md).
+Docker Engine access, which is host-root-equivalent. The overlay confines that
+access to two containers on a network of their own:
+
+- `docker-socket-proxy` is the only container with `/var/run/docker.sock`
+  mounted (read-only). It has no authentication, and the Engine calls an
+  update needs are host-root-equivalent on their own, so its flag list is not
+  what protects you. Reachability is: the proxy sits on `omadia-control`
+  alone, an `internal` network without a host-side address.
+- `updater` is the only service on both `omadia-control` (to reach the proxy)
+  and the application network `omadia` (so the middleware can call it, and it
+  can check the middleware's `/health`). It has no published port and demands
+  the shared `UPDATER_TOKEN` on every call.
+
+Nothing on `omadia` (middleware, web-ui, postgres, any overlay sidecar) can
+resolve or reach the proxy. **Never attach another service to
+`omadia-control`**: whatever joins it can drive the Docker Engine, which means
+it owns the host. Treat the updater the same way. It is root-equivalent by
+design, and the middleware holds its token, so anything that takes over the
+middleware can start an update to any release tag, older ones included.
+Details: [`security-architecture.md`](security-architecture.md) §10f and
+[`middleware/sidecars/updater/README.md`](../middleware/sidecars/updater/README.md).
 
 ```bash
 # The updater rewrites OMADIA_VERSION in the project-root .env, so the file has
@@ -58,6 +77,151 @@ docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d
 Then open **Admin → Update**, retype the target version to confirm, and start
 the update. The page polls through the restart — the middleware is briefly
 unavailable while its container is replaced.
+
+#### Already running the overlay
+
+Pull the new compose files, then re-run the overlay with **both** files, plus
+every other overlay you normally use:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d
+```
+
+Compose creates `omadia-control` and recreates `docker-socket-proxy` and
+`updater`. Your data is not touched, and neither are the middleware and web-ui
+if compose started them on the release they run now. If Admin → Update
+installed that release, compose restarts them once, on the same images,
+because they still carry compose's configuration label from the previous
+release. An update that is running at that moment is aborted, because the
+updater keeps its job state in memory. A plain `docker compose up -d` without
+the overlay leaves the old proxy and updater running on `omadia` as orphans
+(compose only prints a warning), so the old exposure stays. Add
+`--remove-orphans` only when your `-f` list contains every overlay you run;
+otherwise it also removes the containers of the overlays you left out. Then
+run the check below.
+
+#### Checking the control network
+
+Run this in the project directory after enabling the overlay, and again after
+any change to Docker or the host firewall. If you start the stack with more
+`-f` files or a `-p` project name, add them to the `compose()` line. The check
+ends with one verdict and a matching exit code: `PASS` (0), `FAIL` (1) or
+`INCONCLUSIVE` (2).
+
+```sh
+sh -eu <<'CHECK'
+# Use the same -f files (and -p, if you use one) as for `up`.
+compose() { docker compose -f docker-compose.yaml -f docker-compose.update.yaml "$@"; }
+fail() { echo "FAIL: $*" >&2; exit 1; }
+unsure() { echo "INCONCLUSIVE: $*" >&2; exit 2; }
+one() { case $2 in '' | *[!0-9a-f]*) unsure "expected one running $1 container" ;; esac; }
+
+# 1. One running container per service, in this compose project.
+PROXY=$(compose ps -q docker-socket-proxy) || unsure "docker compose failed; run this in the project directory"
+UPDATER=$(compose ps -q updater) || unsure "docker compose failed"
+MIDDLEWARE=$(compose ps -q middleware) || unsure "docker compose failed"
+one docker-socket-proxy "$PROXY"; one updater "$UPDATER"; one middleware "$MIDDLEWARE"
+
+# 2. The proxy is on the control network alone; that network is internal and
+#    has two members (the updater has to prove below that it is the other one).
+PROJECT=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$PROXY") ||
+  unsure "cannot inspect docker-socket-proxy"
+NET=$(docker network ls --format '{{.Name}}' --filter label=com.docker.compose.network=omadia-control \
+  --filter "label=com.docker.compose.project=$PROJECT") || unsure "cannot list networks"
+[ -n "$NET" ] || fail "project $PROJECT has no omadia-control network"
+PROXY_NETS=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' "$PROXY") ||
+  unsure "cannot inspect docker-socket-proxy"
+[ "$PROXY_NETS" = "$NET" ] || fail "docker-socket-proxy is not on $NET alone: $PROXY_NETS"
+NET_INFO=$(docker network inspect -f '{{.Internal}} {{len .Containers}}' "$NET") || unsure "cannot inspect $NET"
+[ "$NET_INFO" = "true 2" ] || fail "$NET must be internal with two members (internal, members: $NET_INFO)"
+
+# 3. The proxy's address on that network: exactly one dotted quad.
+PROXY_IP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$PROXY") ||
+  unsure "cannot read the proxy's address on $NET"
+case $PROXY_IP in
+  *[!0-9.]* | *.*.*.*.* | .* | *. | *..*) unsure "unexpected proxy address '$PROXY_IP'" ;;
+  *.*.*.*) ;;
+  *) unsure "unexpected proxy address '$PROXY_IP'" ;;
+esac
+
+# 4. Probe by name and by address. The probe exits 3 when the proxy answered
+#    where it must not, 4 when an outcome proves nothing either way.
+PROBE='
+const expectReach = process.env.EXPECT === "reach";
+const blockedBy = {
+  name: ["ENOTFOUND"],
+  address: ["TimeoutError", "EHOSTUNREACH", "ENETUNREACH", "ECONNREFUSED"],
+};
+const targets = [["name", "docker-socket-proxy"], ["address", process.env.PROXY_IP]];
+Promise.all(targets.map(([kind, host]) =>
+  fetch(`http://${host}:2375/_ping`, { signal: AbortSignal.timeout(4000) }).then(
+    (res) => ({ kind, host, seen: res.status }),
+    (err) => ({ kind, host, seen: String(err.cause?.code ?? err.name) }),
+  ),
+)).then((results) => {
+  let code = 0;
+  for (const { kind, host, seen } of results) {
+    const verdict = expectReach
+      ? (seen === 200 ? "reached" : "INCONCLUSIVE")
+      : typeof seen === "number" ? "REACHABLE"
+      : blockedBy[kind].includes(seen) ? "blocked" : "INCONCLUSIVE";
+    console.log(`  by ${kind} (${host}): ${verdict} [${seen}]`);
+    if (verdict === "REACHABLE") code = 3;
+    else if (verdict === "INCONCLUSIVE" && code === 0) code = 4;
+  }
+  process.exitCode = code;
+});'
+probe() {  # probe <service> <container> <reach|blocked>
+  echo "$1 -> docker-socket-proxy (expected: $3)"
+  rc=0
+  docker exec -e EXPECT="$3" -e PROXY_IP="$PROXY_IP" "$2" node -e "$PROBE" || rc=$?
+  case $rc in
+    0) ;;
+    3) fail "$1 reaches the proxy: this host does not isolate $NET" ;;
+    *) unsure "no clear answer from $1 (exit $rc); this is not a pass" ;;
+  esac
+}
+# The updater has to get through first; otherwise "blocked" below proves nothing.
+probe updater "$UPDATER" reach
+probe middleware "$MIDDLEWARE" blocked
+WEB_UI=$(compose ps -q web-ui) || WEB_UI=
+if [ -n "$WEB_UI" ]; then one web-ui "$WEB_UI"; probe web-ui "$WEB_UI" blocked; fi
+echo "PASS: only the updater reaches docker-socket-proxy ($PROXY_IP on $NET)"
+CHECK
+```
+
+On an isolated host the output looks like this (addresses differ):
+
+```text
+updater -> docker-socket-proxy (expected: reach)
+  by name (docker-socket-proxy): reached [200]
+  by address (172.19.0.2): reached [200]
+middleware -> docker-socket-proxy (expected: blocked)
+  by name (docker-socket-proxy): blocked [ENOTFOUND]
+  by address (172.19.0.2): blocked [TimeoutError]
+web-ui -> docker-socket-proxy (expected: blocked)
+  by name (docker-socket-proxy): blocked [ENOTFOUND]
+  by address (172.19.0.2): blocked [TimeoutError]
+PASS: only the updater reaches docker-socket-proxy (172.19.0.2 on <project>_omadia-control)
+```
+
+Depending on the runtime, the address probe ends in `TimeoutError`,
+`EHOSTUNREACH`, `ENETUNREACH` or `ECONNREFUSED`. Those four, and `ENOTFOUND`
+for the name, are the only answers the check counts as blocked, and only after
+the updater has reached the proxy at the same name and address.
+
+- **FAIL**: the proxy answered the middleware or the web-ui, or the layout is
+  wrong (the proxy is on a second network, the control network is missing or
+  not `internal`, or it does not have exactly two members). Treat the host as
+  not isolating the control network. Stop the two services
+  (`docker compose -f docker-compose.yaml -f docker-compose.update.yaml stop docker-socket-proxy updater`)
+  and find out why before you start them again; the runtimes checked so far
+  are listed in [`security-architecture.md`](security-architecture.md) §10f.
+- **INCONCLUSIVE** is not a pass: the check could not tell. Typical causes are
+  running it outside the project directory or without your `-p`, a service
+  that is not running, an updater that cannot reach the proxy, or a probe
+  error that says nothing about isolation, such as a failing DNS server. Fix
+  the cause and run the check again.
 
 ### What the update does
 
@@ -191,6 +355,67 @@ authentication). Nothing to do beforehand. The start logs
   the next start re-provisions the database passwords with the server stopped
   (single-user mode, no port open) and logs it at warn level. The kernel-vault
   caveat in `desktop/README.md` § Secrets and recovery still applies.
+
+## Upgrading past v0.167.7 — self-update overlay, framing, web-ui user, sandbox limits
+
+Four hardening changes an operator may notice. None needs action on a
+default install. On an install that runs the self-update overlay
+(`docker-compose.update.yaml`), the first one does, and Admin → Update cannot
+apply it.
+
+- **The self-update overlay needs one `up` by hand.** The overlay now puts
+  `docker-socket-proxy` on its own internal network, `omadia-control`, and the
+  updater's health gate no longer follows redirects. Admin → Update cannot
+  apply either: the updater replaces the middleware and web-ui, never the
+  compose files, the proxy or itself. Until compose re-applies the overlay,
+  the proxy stays on `omadia`, where the middleware (plugins included), the
+  web-ui and every sidecar can reach it, and whatever reaches it controls the
+  host. Pull the new compose files, then run `up` with both files, plus
+  every other overlay you use:
+
+  ```bash
+  docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d
+  ```
+
+  On a manual upgrade, this is step 4 of the general steps. If you upgrade
+  through Admin → Update, run it by hand afterwards; it also restarts the
+  middleware and web-ui once, on the images they already run. Then run the
+  [control-network check](#checking-the-control-network): only `PASS` shows
+  that the proxy is out of reach. Details:
+  [Already running the overlay](#already-running-the-overlay).
+- **Operator pages can no longer be framed.** Every operator page now sends
+  `Content-Security-Policy: frame-ancestors 'none'` and
+  `X-Frame-Options: DENY`. Plugin UIs and Teams tabs under `/p/*`, and
+  everything under `/bot-api/*`, are unchanged. If you embed operator pages in
+  another site (an intranet portal, a custom Teams tab pointing at `/chat`), set
+  `UI_FRAME_ANCESTORS` on the **web-ui** service to the allowed origins, with
+  the whole value in double quotes:
+
+  ```bash
+  UI_FRAME_ANCESTORS="'self' https://portal.example.com"
+  ```
+
+  It is read per request, so the published image picks it up on restart
+  without a rebuild.
+- **The web-ui container runs as `node` (uid 1000).** The shipped compose, Fly
+  and Render setups mount nothing into it, so nothing changes there. If you
+  mount a volume into the web-ui container yourself, make it writable for
+  uid 1000. The self-updater recreates the container with the new image's
+  user.
+- **Sandbox containers have ceilings.** With `sandbox_execute_enabled` or
+  `sandbox_publish_enabled` on, every container that runs agent code is capped
+  at 512 MiB (swap included), 1 CPU and 256 processes. A heavier job, such as
+  a large build, is now killed or throttled instead of competing with the
+  middleware for the host. Raise the orchestrator setup fields
+  `sandbox_memory_mb`, `sandbox_cpus` and `sandbox_pids_limit`, or set
+  `OMADIA_SANDBOX_MEMORY_MB`, `OMADIA_SANDBOX_CPUS` and
+  `OMADIA_SANDBOX_PIDS_LIMIT` on the middleware, within 6 to 1048576 MiB,
+  0.01 to 1024 CPUs and 1 to 4194304 processes. There is no "unlimited": a
+  value outside those ranges is ignored and the default applies, because
+  Docker would run some of them (such as 0.000001 CPUs) with no limit at all.
+  Existing persistent sandboxes get the limits the next time they are used;
+  apps published before the upgrade keep running without them until you
+  publish a new version.
 
 ## Upgrading to 0.115 or later — `CREDENTIAL_KEYCHAIN_KEY` is required
 
