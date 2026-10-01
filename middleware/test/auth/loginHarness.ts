@@ -1,11 +1,16 @@
 /**
  * Shared harness for the password sign-in route tests (loginRoute.test.ts,
- * loginLockoutDos.test.ts): the real auth router over express.json() +
- * cookieParser(), driven with `invoke` (no listening socket), and a fresh
- * limiter per harness. Every harness builds its own limiter on purpose: the
- * suite runs files concurrently and every `invoke` request shares the client
- * key 'unknown' unless it sets a socket address, so a shared limiter would
- * leak budget between cases.
+ * loginLockoutDos.test.ts, loginDeviceRevocation.test.ts): the real auth
+ * router over express.json() + cookieParser(), driven with `invoke` (no
+ * listening socket), and a fresh limiter per harness. Every harness builds its
+ * own limiter on purpose: the suite runs files concurrently and every `invoke`
+ * request shares the client key 'unknown' unless it sets a socket address, so
+ * a shared limiter would leak budget between cases.
+ *
+ * The real admin users router is mounted too, at /api/v1/admin/users, behind
+ * a fixed operator session and wired to the same limiter and device cookies
+ * as production wires it — so a reset, disable or delete in a test takes the
+ * production path.
  */
 
 import { strict as assert } from 'node:assert';
@@ -13,9 +18,14 @@ import { strict as assert } from 'node:assert';
 import cookieParser from 'cookie-parser';
 import express, { type Express } from 'express';
 
-import type { AuditEntryInput } from '../../src/auth/adminAuditLog.js';
+import type { AdminAuditLog, AuditEntryInput } from '../../src/auth/adminAuditLog.js';
 import type { ClientAddressPolicy } from '../../src/auth/clientAddress.js';
 import { LOGIN_DEVICE_COOKIE } from '../../src/auth/loginDeviceCookie.js';
+import {
+  createLoginDevices,
+  usersTableEpochs,
+  type LoginDevices,
+} from '../../src/auth/loginDevices.js';
 import {
   createLoginRateLimiter,
   DEFAULT_LOGIN_LIMITER_CONFIG,
@@ -32,9 +42,11 @@ import { ProviderRegistry } from '../../src/auth/providerRegistry.js';
 import type {
   CreateFirstAdminInput,
   FirstAdminResult,
+  UpdateUserInput,
   UserRecord,
   UserStore,
 } from '../../src/auth/userStore.js';
+import { createAdminUsersRouter } from '../../src/routes/adminUsers.js';
 import { createAuthRouter } from '../../src/routes/auth.js';
 import { invoke, type InvokeResult } from '../_helpers/httpInvoke.js';
 
@@ -61,17 +73,69 @@ function userRecord(email: string, displayName: string): UserRecord {
   };
 }
 
+type StoredUser = UserRecord & { passwordHash: string };
+
+/** A stored row as the real store reads it out for admin views: without the hash. */
+function withoutHash(row: StoredUser): UserRecord {
+  const { passwordHash: _hash, ...record } = row;
+  return record;
+}
+
 export class InMemoryUserStore {
-  rows = new Map<string, UserRecord & { passwordHash: string }>();
+  rows = new Map<string, StoredUser>();
 
   async addLocalUser(email: string, plainPassword: string): Promise<void> {
     const passwordHash = await hashPassword(plainPassword);
     this.rows.set(email.toLowerCase(), { ...userRecord(email, email), passwordHash });
   }
 
+  /** The row id `addLocalUser` gives `email` — what the admin routes address. */
+  idOf(email: string): string {
+    const row = this.rows.get(email.toLowerCase());
+    assert.ok(row, `no user ${email}`);
+    return row.id;
+  }
+
   async findByEmailWithHash(provider: string, email: string): Promise<UserRecord | null> {
     if (provider !== LOCAL_PROVIDER_ID) return null;
     return this.rows.get(email.toLowerCase()) ?? null;
+  }
+
+  // ── what the admin users router needs ───────────────────────────────────
+  private entryById(id: string): [string, StoredUser] | undefined {
+    return [...this.rows.entries()].find(([, row]) => row.id === id);
+  }
+
+  async findById(id: string): Promise<UserRecord | null> {
+    const entry = this.entryById(id);
+    return entry ? withoutHash(entry[1]) : null;
+  }
+
+  async findByProviderUserId(provider: string, sub: string): Promise<UserRecord | null> {
+    const row = [...this.rows.values()].find(
+      (r) => r.provider === provider && r.providerUserId === sub,
+    );
+    return row ? withoutHash(row) : null;
+  }
+
+  async update(id: string, patch: UpdateUserInput): Promise<UserRecord | null> {
+    const entry = this.entryById(id);
+    if (!entry) return null;
+    const [key, row] = entry;
+    const next: StoredUser = {
+      ...row,
+      ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}),
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      ...(patch.passwordHash !== undefined ? { passwordHash: patch.passwordHash } : {}),
+      updatedAt: new Date(),
+    };
+    this.rows.set(key, next);
+    return withoutHash(next);
+  }
+
+  async deleteById(id: string): Promise<boolean> {
+    const entry = this.entryById(id);
+    return entry ? this.rows.delete(entry[0]) : false;
   }
 
   async markLoginNow(_id: string): Promise<void> {
@@ -112,9 +176,20 @@ export interface Harness {
   provider: PasswordProvider;
   verifies: { calls: number };
   limiter: LoginRateLimiter;
+  /** The device cookies the limiter honours (absent from the router when `unwired`). */
+  devices: LoginDevices;
   clock: FakeClock;
   audit: AuditEntryInput[];
 }
+
+/** The operator the mounted admin users router acts for — not a stored user. */
+const OPERATOR_SESSION = {
+  sub: 'operator@example.com',
+  email: 'operator@example.com',
+  display_name: 'Operator',
+  role: 'admin' as const,
+  provider: LOCAL_PROVIDER_ID,
+};
 
 export interface HarnessOptions {
   config?: Partial<LoginLimiterConfig>;
@@ -139,6 +214,11 @@ export async function harness(opts: HarnessOptions = {}): Promise<Harness> {
     { ...DEFAULT_LOGIN_LIMITER_CONFIG, ...opts.config },
     clock.now,
   );
+  const devices = createLoginDevices({
+    signingKey: SIGNING_KEY,
+    epochs: usersTableEpochs(store),
+    now: clock.now,
+  });
   const audit: AuditEntryInput[] = [];
 
   const app = express();
@@ -160,6 +240,7 @@ export async function harness(opts: HarnessOptions = {}): Promise<Harness> {
               limiter,
               clientAddress: opts.clientAddress ?? { kind: 'socket' },
               ...(opts.ipv6PrefixBits !== undefined ? { ipv6PrefixBits: opts.ipv6PrefixBits } : {}),
+              devices,
               audit: {
                 record: async (entry: AuditEntryInput) => {
                   audit.push(entry);
@@ -169,7 +250,30 @@ export async function harness(opts: HarnessOptions = {}): Promise<Harness> {
           }),
     }),
   );
-  return { app, store, provider, verifies, limiter, clock, audit };
+  app.use(
+    '/api/v1/admin/users',
+    (req, _res, next) => {
+      req.session = OPERATOR_SESSION;
+      next();
+    },
+    createAdminUsersRouter({
+      userStore: store as unknown as UserStore,
+      audit: { record: async () => undefined } as unknown as AdminAuditLog,
+      loginLimiter: limiter,
+      loginDevices: devices,
+    }),
+  );
+  return { app, store, provider, verifies, limiter, devices, clock, audit };
+}
+
+/** An admin users route call as the operator (`POST …/reset-password`, `PATCH`, `DELETE`). */
+export function admin(
+  h: Harness,
+  method: 'POST' | 'PATCH' | 'DELETE',
+  path: string,
+  json?: unknown,
+): Promise<InvokeResult> {
+  return invoke(h.app, method, `/api/v1/admin/users${path}`, json === undefined ? {} : { json });
 }
 
 export interface RequestExtras {

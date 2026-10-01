@@ -9,10 +9,11 @@ import {
   type ClientAddressPolicy,
 } from '../auth/clientAddress.js';
 import {
-  LOGIN_DEVICE_COOKIE,
-  setLoginDeviceCookie,
-  type LoginDeviceCookies,
-} from '../auth/loginDeviceCookie.js';
+  createLoginDevices,
+  usersTableEpochs,
+  type LoginAccount,
+  type LoginDevices,
+} from '../auth/loginDevices.js';
 import {
   createLoginRateLimiter,
   DEFAULT_LOGIN_LIMITER_CONFIG,
@@ -30,6 +31,7 @@ import {
   type PasswordProvider,
 } from '../auth/providers/AuthProvider.js';
 import type { ProviderRegistry } from '../auth/providerRegistry.js';
+import type { UserStore } from '../auth/userStore.js';
 
 /**
  * `POST /api/v1/auth/login/:providerId` — password sign-in behind the login
@@ -44,8 +46,9 @@ import type { ProviderRegistry } from '../auth/providerRegistry.js';
  *      success counts as a failure, a throw included;
  *   4. success: session cookie plus a fresh device cookie for this account.
  *
- * The client key is the device id when the request carries a genuine device
- * cookie for THIS account (kind `device`), otherwise the
+ * The client key is the device id when the request carries a current device
+ * cookie for THIS account (kind `device`: genuine, and minted under the
+ * account's current credentials — `auth/loginDevices.ts`), otherwise the
  * `AUTH_LOGIN_CLIENT_ADDRESS` address — `address` when a trusted hop vouched
  * for it, `shared` when it is the TCP peer (the limiter header says why the
  * kind matters).
@@ -60,6 +63,12 @@ export interface LoginGuardDeps {
   ipv6PrefixBits?: number;
   /** One `auth.login_rate_limited` row per refusal episode — never the account. */
   audit?: Pick<AdminAuditLog, 'record'>;
+  /**
+   * The device cookies the limiter honours. Absent → the auth router builds
+   * them from its own signing key and user store. Production passes the
+   * process-wide instance so the admin routes can revoke through it.
+   */
+  devices?: LoginDevices;
 }
 
 /**
@@ -78,9 +87,13 @@ export function createLoginGuard(opts: {
   maxInFlight: number;
   /** `AUTH_LOGIN_IPV6_PREFIX`. */
   ipv6PrefixBits?: number;
+  /** The session signing key; the device-cookie keys are derived from it. */
+  signingKey: Uint8Array;
+  /** Where a device cookie's account epoch is read (`auth/loginDevices.ts`). */
+  accounts: Pick<UserStore, 'findByEmailWithHash'>;
   audit?: Pick<AdminAuditLog, 'record'>;
   log?: (msg: string) => void;
-}): LoginGuardDeps {
+}): LoginGuardDeps & { devices: LoginDevices } {
   const limiter = createLoginRateLimiter({
     ...DEFAULT_LOGIN_LIMITER_CONFIG,
     globalMaxInFlight: opts.maxInFlight,
@@ -96,6 +109,10 @@ export function createLoginGuard(opts: {
     limiter,
     clientAddress,
     ipv6PrefixBits,
+    devices: createLoginDevices({
+      signingKey: opts.signingKey,
+      epochs: usersTableEpochs(opts.accounts),
+    }),
     ...(opts.audit ? { audit: opts.audit } : {}),
   };
 }
@@ -103,7 +120,7 @@ export function createLoginGuard(opts: {
 export interface PasswordLoginDeps {
   registry: Pick<ProviderRegistry, 'get'>;
   guard: LoginGuardDeps;
-  devices: LoginDeviceCookies;
+  devices: LoginDevices;
   /** Mints the session cookie (the auth router owns session minting). */
   signIn: (
     req: Request,
@@ -125,7 +142,8 @@ export function createPasswordLoginHandler(deps: PasswordLoginDeps): RequestHand
       return;
     }
 
-    const keys = loginKeysFor(req, provider.id, deps);
+    const account: LoginAccount = { providerId: provider.id, accountId: readLoginAccountId(req.body) };
+    const keys = await loginKeysFor(req, account, deps);
     const admission = deps.guard.limiter.admit(keys);
     if (!admission.allowed) {
       if (admission.report) reportRefusal(deps.guard, admission, keys.clientKey, log);
@@ -140,15 +158,19 @@ export function createPasswordLoginHandler(deps: PasswordLoginDeps): RequestHand
     }
 
     await deps.signIn(req, res, result, provider);
-    setLoginDeviceCookie(req, res, deps.devices.mint(keys.accountKey));
+    await deps.devices.remember(req, res, account);
     res.json({ ok: true, user: userPayload(result, provider) });
   };
 }
 
-/** The limiter keys of a sign-in attempt: a genuine device cookie for THIS account, else the address. */
-function loginKeysFor(req: Request, providerId: string, deps: PasswordLoginDeps): LoginKeys {
-  const accountKey = loginAccountKey(providerId, readLoginAccountId(req.body));
-  const deviceId = deps.devices.deviceIdFor(readCookie(req, LOGIN_DEVICE_COOKIE), accountKey);
+/** The limiter keys of a sign-in attempt: a current device cookie for THIS account, else the address. */
+async function loginKeysFor(
+  req: Request,
+  account: LoginAccount,
+  deps: PasswordLoginDeps,
+): Promise<LoginKeys> {
+  const accountKey = loginAccountKey(account.providerId, account.accountId);
+  const deviceId = await deps.devices.knownDeviceOf(req, account);
   if (deviceId) return { clientKey: `device:${deviceId}`, clientKind: 'device', accountKey };
   const address = clientAddressFor(req, deps.guard.clientAddress, deps.guard.ipv6PrefixBits);
   return { clientKey: address.key, clientKind: address.shared ? 'shared' : 'address', accountKey };
@@ -157,23 +179,25 @@ function loginKeysFor(req: Request, providerId: string, deps: PasswordLoginDeps)
 /**
  * For `GET /me`: a browser that holds a valid session for a password account
  * is a known device of that account by definition. Give it the device cookie
- * when it lacks a genuine one, so browsers that were signed in when the
- * limiter shipped — and any that lost the cookie — get their own sign-in
- * budget without waiting for their next password sign-in (§10f). The web-ui
- * session watcher calls `/me` every minute. OIDC sessions get nothing: their
- * sign-in never passes the limiter.
+ * when it lacks a current one, so browsers that were signed in when the
+ * limiter shipped, any that lost the cookie, and any whose cookie a password
+ * reset made stale count as known browsers without waiting for their next
+ * password sign-in (§10f). The id is the session's own (`auth_time`), so one
+ * sign-in yields one device id however often `/me` runs. The web-ui session
+ * watcher calls `/me` every minute. OIDC sessions get nothing: their sign-in
+ * never passes the limiter. Never throws.
  */
-export function ensureLoginDeviceCookie(
+export async function ensureLoginDeviceCookie(
   req: Request,
   res: Response,
-  deps: { registry: Pick<ProviderRegistry, 'get'>; devices: LoginDeviceCookies },
-  session: { provider: string; email: string },
-): void {
+  deps: { registry: Pick<ProviderRegistry, 'get'>; devices: LoginDevices },
+  session: { provider: string; email: string; auth_time: number },
+): Promise<void> {
   const provider = deps.registry.get(session.provider);
   if (!provider || !isPasswordProvider(provider)) return;
-  const accountKey = loginAccountKey(provider.id, session.email);
-  if (deps.devices.deviceIdFor(readCookie(req, LOGIN_DEVICE_COOKIE), accountKey)) return;
-  setLoginDeviceCookie(req, res, deps.devices.mint(accountKey));
+  const account: LoginAccount = { providerId: provider.id, accountId: session.email };
+  if (await deps.devices.knownDeviceOf(req, account)) return;
+  await deps.devices.remember(req, res, account, { authTime: session.auth_time });
 }
 
 /** Run `verify` inside an admitted attempt; only a success is not a failure. */
@@ -251,11 +275,6 @@ export function httpForAuthErrorCode(code: string): number {
 function readProviderId(req: Request): string | undefined {
   const v = (req.params as Record<string, string | string[] | undefined>)['providerId'];
   return typeof v === 'string' && v.length > 0 ? v : undefined;
-}
-
-function readCookie(req: Request, name: string): string | undefined {
-  const cookies = (req as Request & { cookies?: Record<string, string> }).cookies;
-  return cookies?.[name];
 }
 
 function userPayload(

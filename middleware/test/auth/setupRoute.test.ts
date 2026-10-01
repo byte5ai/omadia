@@ -62,7 +62,11 @@ interface StoredUser {
  * crash here instead of passing.
  */
 class InMemoryUserStore
-  implements Pick<UserStore, 'count' | 'createFirstAdmin' | 'markLoginNow' | 'findByProviderUserId'>
+  implements
+    Pick<
+      UserStore,
+      'count' | 'createFirstAdmin' | 'markLoginNow' | 'findByProviderUserId' | 'findByEmailWithHash'
+    >
 {
   rows: StoredUser[] = [];
   countCalls = 0;
@@ -109,6 +113,14 @@ class InMemoryUserStore
     _providerUserId: string,
   ): Promise<UserRecord | null> {
     return null;
+  }
+
+  /** The sign-in device cookie reads the new admin's epoch (§10f). */
+  async findByEmailWithHash(provider: string, email: string): Promise<UserRecord | null> {
+    const row = this.rows.find(
+      (r) => r.user.provider === provider && r.user.email.toLowerCase() === email.toLowerCase(),
+    );
+    return row ? { ...row.user, passwordHash: row.passwordHash } : null;
   }
 }
 

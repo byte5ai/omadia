@@ -5,8 +5,9 @@
  * Every attempt names its client by a key of one of three kinds
  * (`LoginClientKind`), and the kind decides which layers apply:
  *
- *   device   a genuine device cookie for the account: one browser that has
- *            signed in to it before;
+ *   device   a genuine device cookie for the account, minted under its
+ *            current credentials: one of the browsers that have signed in
+ *            to it (`loginDevices.ts`);
  *   address  an address a trusted proxy vouched for (`xff:<n>`,
  *            `header:<name>`): one client, or one NAT;
  *   shared   the TCP peer — in every shipped topology a proxy that all

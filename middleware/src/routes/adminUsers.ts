@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import type { AdminAuditLog } from '../auth/adminAuditLog.js';
+import type { LoginDevices } from '../auth/loginDevices.js';
 import { loginAccountKey, type LoginRateLimiter } from '../auth/loginRateLimiter.js';
 import { hashPassword } from '../auth/passwordHasher.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
@@ -17,6 +18,14 @@ interface AdminUsersDeps {
    * limiter keep compiling; production passes the process-wide instance.
    */
   loginLimiter?: Pick<LoginRateLimiter, 'clearAccount'>;
+  /**
+   * The limiter's device cookies (§10f). They are bound to the account's
+   * password and status, so a reset, a status change or a delete makes this
+   * process re-read the account at once instead of after its cache entry
+   * expires: the old cookies stop counting as known browsers immediately.
+   * Optional like `loginLimiter`; production passes the process-wide one.
+   */
+  loginDevices?: Pick<LoginDevices, 'forget'>;
 }
 
 /**
@@ -154,6 +163,11 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       res.status(404).json({ code: 'admin_users.not_found' });
       return;
     }
+    // A status change moves the account's device-cookie epoch (§10f); a
+    // re-enable is also the operator unlock of its sign-in backoff.
+    const accountKey = loginAccountKey(updated.provider, updated.email);
+    if (patch.status !== undefined) deps.loginDevices?.forget(accountKey);
+    if (patch.status === 'active') deps.loginLimiter?.clearAccount(accountKey);
 
     await deps.audit.record({
       actor: { email: req.session?.email },
@@ -162,9 +176,6 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       before: toPublicUser(before),
       after: toPublicUser(updated),
     });
-    if (patch.status === 'active') {
-      deps.loginLimiter?.clearAccount(loginAccountKey(updated.provider, updated.email));
-    }
 
     res.json({ user: toPublicUser(updated) });
   });
@@ -193,7 +204,10 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     }
     const passwordHash = await hashPassword(password);
     await deps.userStore.update(id, { passwordHash });
-    deps.loginLimiter?.clearAccount(loginAccountKey(user.provider, user.email));
+    // The new hash is a new epoch: device cookies minted before it are stale.
+    const accountKey = loginAccountKey(user.provider, user.email);
+    deps.loginDevices?.forget(accountKey);
+    deps.loginLimiter?.clearAccount(accountKey);
 
     await deps.audit.record({
       actor: { email: req.session?.email },
@@ -229,6 +243,7 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       res.status(404).json({ code: 'admin_users.not_found' });
       return;
     }
+    deps.loginDevices?.forget(loginAccountKey(target.provider, target.email));
     await deps.audit.record({
       actor: { email: req.session?.email },
       action: 'user.delete',

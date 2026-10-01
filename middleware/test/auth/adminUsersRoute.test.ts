@@ -139,12 +139,15 @@ describe('/api/v1/admin/users router', () => {
   let session: ForgedSession | null;
   /** Account keys the router asked the sign-in limiter to forget (§10f unlock). */
   let clearedAccounts: string[];
+  /** Account keys whose device-cookie epoch the router asked to re-read (§10f revocation). */
+  let forgottenAccounts: string[];
 
   before(async () => {
     store = new InMemoryUserStore();
     audit = new InMemoryAuditLog();
     session = null;
     clearedAccounts = [];
+    forgottenAccounts = [];
 
     // Pre-seed an existing local admin so list/edit/delete tests have a
     // target without exercising create-side every time.
@@ -172,6 +175,11 @@ describe('/api/v1/admin/users router', () => {
         loginLimiter: {
           clearAccount: (accountKey: string) => {
             clearedAccounts.push(accountKey);
+          },
+        },
+        loginDevices: {
+          forget: (accountKey: string) => {
+            forgottenAccounts.push(accountKey);
           },
         },
       }),
@@ -265,6 +273,7 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(body.user.display_name, 'Renamed');
     assert.equal(audit.entries.at(-1)?.action, 'user.update');
     assert.deepEqual(clearedAccounts, [], 'a rename does not touch the sign-in limiter');
+    assert.deepEqual(forgottenAccounts, [], 'nor the device cookies');
   });
 
   it('PATCH /:id refuses to disable yourself with 409 self_lockout', async () => {
@@ -278,6 +287,7 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 409);
     const body = (await res.json()) as { code: string };
     assert.equal(body.code, 'admin_users.self_lockout');
+    assert.deepEqual(forgottenAccounts, [], 'a refused change revokes nothing');
   });
 
   it('PATCH /:id allows disabling someone else', async () => {
@@ -292,6 +302,11 @@ describe('/api/v1/admin/users router', () => {
     const body = (await res.json()) as { user: { status: string } };
     assert.equal(body.user.status, 'disabled');
     assert.deepEqual(clearedAccounts, [], 'disabling is not an unlock');
+    assert.deepEqual(
+      forgottenAccounts,
+      ['local:new@example.com'],
+      'but its device cookies stop counting at once',
+    );
   });
 
   it('PATCH /:id re-enabling a user clears their sign-in backoff (operator unlock)', async () => {
@@ -304,11 +319,13 @@ describe('/api/v1/admin/users router', () => {
     });
     assert.equal(res.status, 200);
     assert.deepEqual(clearedAccounts, ['local:new@example.com']);
+    assert.equal(forgottenAccounts.at(-1), 'local:new@example.com');
   });
 
   it('POST /:id/reset-password updates the hash + audits without leaking material', async () => {
     setSession(adminSession());
     const before = audit.entries.length;
+    const forgottenBefore = forgottenAccounts.length;
     const target = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(
       `${baseUrl}/api/v1/admin/users/${target.id}/reset-password`,
@@ -325,6 +342,11 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(last.before, null);
     assert.equal(last.after, null);
     assert.equal(clearedAccounts.at(-1), 'local:new@example.com');
+    assert.deepEqual(
+      forgottenAccounts.slice(forgottenBefore),
+      ['local:new@example.com'],
+      'the new hash revokes the account’s device cookies',
+    );
   });
 
   it('POST /:id/reset-password clears the backoff under the normalised (lower-cased) account key', async () => {
@@ -349,6 +371,7 @@ describe('/api/v1/admin/users router', () => {
   it('POST /:id/reset-password with a too-short password does not unlock', async () => {
     setSession(adminSession());
     const cleared = clearedAccounts.length;
+    const forgotten = forgottenAccounts.length;
     const target = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}/reset-password`, {
       method: 'POST',
@@ -357,6 +380,7 @@ describe('/api/v1/admin/users router', () => {
     });
     assert.equal(res.status, 400);
     assert.equal(clearedAccounts.length, cleared);
+    assert.equal(forgottenAccounts.length, forgotten, 'nor revokes anything');
   });
 
   it('DELETE /:id refuses self-delete with 409', async () => {
@@ -377,5 +401,6 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 204);
     assert.equal(store.rows.find((r) => r.id === other.id), undefined);
     assert.equal(audit.entries.at(-1)?.action, 'user.delete');
+    assert.equal(forgottenAccounts.at(-1), 'local:new@example.com', 'its device cookies with it');
   });
 });

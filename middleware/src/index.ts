@@ -4676,11 +4676,14 @@ async function main(): Promise<void> {
 
     // Password sign-in limiter (docs/security-architecture.md §10f): one per
     // process, shared by the login route, the setup wizard's argon2 slot and
-    // the admin unlock paths (reset password / re-enable).
+    // the admin paths that unlock (reset password / re-enable) or revoke the
+    // device cookies (reset, status change, delete).
     const loginGuard = createLoginGuard({
       clientAddress: config.AUTH_LOGIN_CLIENT_ADDRESS,
       maxInFlight: config.AUTH_LOGIN_MAX_INFLIGHT,
       ipv6PrefixBits: config.AUTH_LOGIN_IPV6_PREFIX,
+      signingKey: sessionSigningKey,
+      accounts: userStore,
       audit: adminAudit,
     });
 
@@ -4784,6 +4787,7 @@ async function main(): Promise<void> {
         userStore,
         audit: adminAudit,
         loginLimiter: loginGuard.limiter,
+        loginDevices: loginGuard.devices,
       }),
     );
     app.use(

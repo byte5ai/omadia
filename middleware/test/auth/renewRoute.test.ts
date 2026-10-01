@@ -80,6 +80,13 @@ class InMemoryUserStore {
   async findByProviderUserId(provider: string, sub: string): Promise<UserRecord | null> {
     return this.rows.find((r) => r.provider === provider && r.providerUserId === sub) ?? null;
   }
+
+  /** GET /me asks for the sign-in device cookie's epoch; these rows hold no hash, so none. */
+  async findByEmailWithHash(provider: string, email: string): Promise<UserRecord | null> {
+    return (
+      this.rows.find((r) => r.provider === provider && r.email.toLowerCase() === email) ?? null
+    );
+  }
 }
 
 function stubOidc(

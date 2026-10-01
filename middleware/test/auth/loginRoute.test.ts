@@ -18,6 +18,7 @@ import {
   LOGIN_DEVICE_COOKIE,
   LOGIN_DEVICE_TTL_S,
 } from '../../src/auth/loginDeviceCookie.js';
+import { usersTableEpochs } from '../../src/auth/loginDevices.js';
 import { DEFAULT_LOGIN_LIMITER_CONFIG } from '../../src/auth/loginRateLimiter.js';
 import type { AuthResult, PasswordProvider } from '../../src/auth/providers/AuthProvider.js';
 import { LOCAL_PROVIDER_ID } from '../../src/auth/providers/LocalPasswordProvider.js';
@@ -173,26 +174,32 @@ describe('POST /login/:id — lockout-DoS behind a shared client key', () => {
     assert.equal(typo.status, 401);
   });
 
-  it('a forged, expired or foreign device cookie falls back to the address key', async () => {
+  it('a forged, expired, foreign, stale or old-format device cookie falls back to the address key', async () => {
     const h = await harness();
     const shared = { remoteAddress: '10.0.0.5' };
     for (let i = 0; i < 5; i += 1) await login(h, wrong(), shared);
     assertRateLimited(await login(h, wrong(), shared));
 
+    const epoch = await usersTableEpochs(h.store)(LOCAL_PROVIDER_ID, ADMIN);
+    assert.ok(epoch);
     const cookies = createLoginDeviceCookies(SIGNING_KEY);
     const otherKey = createLoginDeviceCookies(new TextEncoder().encode('x'.repeat(64)));
     const nowS = Math.floor(Date.now() / 1000);
     const candidates = [
-      `${LOGIN_DEVICE_COOKIE}=v1.forged`,
-      `${LOGIN_DEVICE_COOKIE}=${otherKey.mint(`local:${ADMIN}`)}`,
-      `${LOGIN_DEVICE_COOKIE}=${cookies.mint('local:someone-else@example.com')}`,
-      `${LOGIN_DEVICE_COOKIE}=${cookies.mint(`local:${ADMIN}`, nowS - LOGIN_DEVICE_TTL_S - 1)}`,
+      `${LOGIN_DEVICE_COOKIE}=v2.forged`,
+      `${LOGIN_DEVICE_COOKIE}=${otherKey.mint(`local:${ADMIN}`, epoch)}`,
+      `${LOGIN_DEVICE_COOKIE}=${cookies.mint('local:someone-else@example.com', epoch)}`,
+      `${LOGIN_DEVICE_COOKIE}=${cookies.mint(`local:${ADMIN}`, epoch, { nowS: nowS - LOGIN_DEVICE_TTL_S - 1 })}`,
+      // Minted under credentials the account no longer has (a reset since).
+      `${LOGIN_DEVICE_COOKIE}=${cookies.mint(`local:${ADMIN}`, 'an epoch before a password reset')}`,
+      // The first format, which was bound to nothing but the account.
+      `${LOGIN_DEVICE_COOKIE}=v1.${'A'.repeat(22)}.${String(nowS + 60)}.${'B'.repeat(43)}`,
     ];
     for (const cookie of candidates) {
       assertRateLimited(await login(h, right(), { ...shared, headers: { cookie } }));
     }
-    // Control: a genuine cookie for this account does get through.
-    const genuine = `${LOGIN_DEVICE_COOKIE}=${cookies.mint(`local:${ADMIN}`)}`;
+    // Control: a genuine cookie under the account's current epoch does get through.
+    const genuine = `${LOGIN_DEVICE_COOKIE}=${cookies.mint(`local:${ADMIN}`, epoch)}`;
     assert.equal((await login(h, right(), { ...shared, headers: { cookie: genuine } })).status, 200);
   });
 

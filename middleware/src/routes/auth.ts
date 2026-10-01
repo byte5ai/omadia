@@ -1,11 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import {
-  createLoginDeviceCookies,
-  setLoginDeviceCookie,
-} from '../auth/loginDeviceCookie.js';
-import { loginAccountKey } from '../auth/loginRateLimiter.js';
+import { createLoginDevices, usersTableEpochs } from '../auth/loginDevices.js';
 import {
   isOidcProvider,
   type AuthProvider,
@@ -144,7 +140,8 @@ const PKCE_COOKIE_MAX_AGE_S = 600;
  *   GET  /api/v1/auth/login/:id/cb     oidc-provider callback handler
  *   POST /api/v1/auth/logout           clear cookie + optional IdP-logout
  *   GET  /api/v1/auth/me               current session (or 401); sets the
- *                                      sign-in device cookie if missing
+ *                                      sign-in device cookie if missing or
+ *                                      stale (one id per sign-in)
  *   POST /api/v1/auth/renew            extend a valid session ("I'm still
  *                                      here", #965; see ./authRenew.ts)
  *   POST /api/v1/auth/setup            first-user wizard (one-shot, setup
@@ -156,7 +153,9 @@ const PKCE_COOKIE_MAX_AGE_S = 600;
 export function createAuthRouter(deps: AuthDeps): Router {
   const router = Router();
   const loginGuard = deps.loginLimiter ?? defaultLoginGuard();
-  const devices = createLoginDeviceCookies(deps.signingKey);
+  const devices =
+    loginGuard.devices ??
+    createLoginDevices({ signingKey: deps.signingKey, epochs: usersTableEpochs(deps.userStore) });
 
   // ── GET /providers ───────────────────────────────────────────────────────
   router.get('/providers', async (_req: Request, res: Response) => {
@@ -390,7 +389,7 @@ export function createAuthRouter(deps: AuthDeps): Router {
       const { verifySession } = await import('../auth/sessionJwt.js');
       const claims = await verifySession(token, deps.signingKey);
       // A signed-in browser is a known device for the sign-in limiter (§10f).
-      ensureLoginDeviceCookie(req, res, { registry: deps.registry, devices }, claims);
+      await ensureLoginDeviceCookie(req, res, { registry: deps.registry, devices }, claims);
       res.json({
         user: {
           id: claims.sub,
@@ -467,11 +466,7 @@ export function createAuthRouter(deps: AuthDeps): Router {
             ? { resolveChannelIdentity: deps.resolveChannelIdentity }
             : {}),
         });
-        setLoginDeviceCookie(
-          req,
-          res,
-          devices.mint(loginAccountKey(LOCAL_PROVIDER_ID, user.email)),
-        );
+        await devices.remember(req, res, { providerId: LOCAL_PROVIDER_ID, accountId: user.email });
       },
     }),
   );
