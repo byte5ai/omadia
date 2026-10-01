@@ -1703,6 +1703,70 @@ first-run ingestion), `middleware/test/verifierCorrectionHintPrivacy.test.ts`
 the hint's masked spans on the request receipt, an unmaskable hint abandons
 the retry) and `middleware/test/correctionPromptEvidence.test.ts`.
 
+### Evidence judge: a verdict counts only with a citation its request printed
+
+The answer verifier (`@omadia/verifier`) hands every soft claim (names,
+qualitative statements) to `EvidenceJudge`: an LLM call that sees the claim and
+a bundle of evidence snippets, never the answer, and must reply through the
+forced `record_verdict` tool. Each snippet appears in the prompt as
+`Evidence #N [nodeId=<ref>, source=…]`, and a `verified` or `contradicted`
+verdict has to name the snippet it rests on in `evidence_node_id`. The ref is
+the snippet's node id without a Privacy Shield; behind one it is a handle
+minted for that one request (`ev-1`, `ev-2`, …), and the node id never leaves
+the process (§6e).
+
+That tool input is untrusted model output. The provider interface does not
+guarantee schema conformance, so any string can come back as the id. Checking
+only that the id is non-empty is not enough: an id that names no snippet would
+still yield a `verified` verdict, with its `source` taken from the claim's own
+`expectedSource`, and a made-up citation would earn the `verified` badge and
+skip the #132 borderline resample. The rules:
+
+- The citable refs are exactly the ones the request printed — the handles of
+  the snippets it carried behind a shield (at most three), the node ids
+  without one — and the cited ref is checked against them by exact match
+  after trimming. Refs are opaque (for example `odoo:hr.employee:7` or
+  `ev-2`), so there is no case-folding or prefix matching. Behind a shield a
+  node id is therefore never citable, and a handle beyond the snippets the
+  request carried is not either.
+- A ref outside that set demotes the verdict to `unverified`, the same
+  outcome as a missing one. A printed ref resolves server-side to the snippet
+  printed under it; nothing falls back to a value derived from the claim: a
+  verdict's `source` and `truth` come only from that snippet.
+- The contradiction recheck (the second, independent call that must agree
+  before a contradiction blocks) is parsed under the same rule, so a recheck
+  citing an unknown id does not confirm the contradiction. `check()` resolves
+  the snippet again before a recheck is spent, so the rule holds even if the
+  parser changes.
+- There is no switch to turn the check off. The tool schema already declares
+  the id required for `verified` and `contradicted`, and the check's off-state
+  is exactly the unearned badge described above.
+
+Trade-off: a genuine contradiction whose citation the model mistypes counts
+as an unconfirmed claim, not as a contradiction: `partial` in `shadow`; in
+`enforce` the answer is withheld like any answer with an unconfirmed claim,
+but no correction retry is bought for it. That is accepted because a
+contradiction must point at evidence by contract, and the deterministic
+checker (hard claims, anchored Odoo records, the trace cross-check) still
+blocks on its own.
+
+Each unknown-ref demotion is logged as `[verifier/judge] evidence_node_id not in
+evidence set, downgrading to unverified claim=<id> cited_len=<n>`: the claim id
+the extractor assigned (`c_001`, …) and the length of the cited ref, nothing
+else. The cited ref itself is never logged. It is model output and can repeat
+anything the judge was shown, including claim text and evidence content that
+may hold personal data or credentials. It can also carry characters that break
+or disguise a log line, such as U+2028/U+2029 line separators, ANSI escape
+sequences or bidi overrides, and JSON quoting leaves some of those intact. An
+id-shaped value is not echoed either, because a name or a token can look like
+an id. The claim text is not logged, and the demoted verdict carries a fixed
+reason string, so the cited id goes no further in the verdict.
+
+The check proves that the judge cited a snippet it was shown, not that the
+snippet supports the verdict; that remains the judge's call. Asserted by
+`test/verifierEvidenceJudge.test.ts` and, behind a shield,
+`test/verifierEvidenceHandles.test.ts`.
+
 ## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
 
 Three properties of the human-approval gate are security decisions, made
@@ -4153,6 +4217,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       never `truth`, `detail` or other evidence the verifier fetched with its
       own access (§7c).
 
+- [ ] An LLM judge or classifier output that references an input item by id
+      resolves that id deterministically against the concrete input set of
+      that call. An unknown id yields the conservative verdict, never a
+      fallback derived from the claim itself (§7c).
+
 ---
 
-*Last reviewed: 2026-10 (§7c: a verifier re-entry replays the first run's tool results through a per-request ledger and never runs a tool twice, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*
+*Last reviewed: 2026-10 (§7c: the evidence judge counts a verdict only with a citation its request printed; a verifier re-entry replays the first run's tool results through a per-request ledger and never runs a tool twice, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*

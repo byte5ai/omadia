@@ -27,11 +27,19 @@ import { citedNodeId, judgeRequestParts, projectRequestParts } from './judgeRequ
  * for that request (`ev-1`, `ev-2`, …), the handle the judge cites is mapped
  * back to the snippet server-side, and a node id the text repeats is
  * replaced like a display name.
+ *
+ * A cited `evidence_node_id` is checked deterministically against the refs
+ * the request printed — the per-request handles behind a shield, the node ids
+ * without one: a ref outside that set demotes the verdict to `unverified`,
+ * on the recheck call as well, and `source` / `truth` come only from the
+ * snippet printed under the ref, never from the claim. The rejected ref is
+ * logged by its length only, never verbatim.
  */
 
 export interface EvidenceSnippet {
   /** Stable id of the record — what a verdict resolves to. Behind a Privacy
-   *  Shield it is never sent (see the class comment). */
+   *  Shield it is never sent (see the class comment); a verdict citing
+   *  anything but a ref its own request printed is rejected. */
   nodeId: string;
   source: 'graph' | 'confluence' | 'odoo';
   content: string;              // <= ~2 kB per snippet
@@ -78,6 +86,9 @@ const MAX_SNIPPET_CHARS = 1800;
 const PRIVACY_MAX_SNIPPET_CHARS = 1200;
 
 const TOOL_NAME = 'record_verdict';
+
+/** Reason for a verdict whose citation names no snippet the judge was shown. */
+const UNKNOWN_EVIDENCE_REASON = 'evidence_node_id not in evidence set';
 
 const toolSpec: ToolSpec = {
   name: TOOL_NAME,
@@ -165,54 +176,61 @@ export class EvidenceJudge {
       // sent because the privacy projection did not admit it.
       return checkFailed(claim, 'judge returned no usable verdict');
     }
+    if (first.verdict === 'unverified') {
+      return unverified(claim, first.rationale ?? 'judge unverified');
+    }
+
+    // `parseVerdict` already demotes a citation outside the refs its request
+    // printed, and `judgeOnce` resolves a printed ref to its snippet's node id.
+    // Resolving it again here keeps that rule if the parser ever changes,
+    // before a recheck call is spent, and leaves the cited snippet as the
+    // only place `source` and `truth` can come from — never the claim's own
+    // `expectedSource`.
+    const sourceSnippet =
+      first.evidenceNodeId === undefined
+        ? undefined
+        : evidence.find((s) => s.nodeId === first.evidenceNodeId);
+    if (!sourceSnippet) {
+      return unverified(claim, UNKNOWN_EVIDENCE_REASON);
+    }
+    const source = sourceKind(sourceSnippet.source);
+
+    if (first.verdict === 'verified') {
+      return { status: 'verified', claim, source };
+    }
 
     // Double-check on contradicted: one shaky Haiku flip should not block a
-    // correct answer. We only confirm when the second call agrees.
-    if (first.verdict === 'contradicted') {
-      // Behind the shield the judge compared placeholders. Equal placeholders
-      // mean equal values, so `verified` stays sound — but a contradiction
-      // can be an artefact of the substitution (a value masked on one side
-      // and written differently on the other). It must never block an
-      // answer, so it is not confirmed and no second request is sent.
-      if (first.projected) {
-        this.log(
-          `[verifier/judge] contradiction judged on placeholders, downgrading to unverified claim=${claim.id}`,
-        );
-        return unverified(
-          claim,
-          'contradiction judged on placeholder values — not confirmable behind the privacy shield',
-        );
-      }
-      const second = await this.judgeOnce(claim, evidence, privacy);
-      if (second === null || second.verdict !== 'contradicted') {
-        this.log(
-          `[verifier/judge] contradiction not reproduced, downgrading to unverified claim=${claim.id}`,
-        );
-        return unverified(claim, 'judge contradiction not reproduced on recheck');
-      }
+    // correct answer. We only confirm when the second call agrees; a recheck
+    // citing a ref the request did not print comes back `unverified`.
+    //
+    // Behind the shield the judge compared placeholders. Equal placeholders
+    // mean equal values, so `verified` stays sound — but a contradiction can
+    // be an artefact of the substitution (a value masked on one side and
+    // written differently on the other). It must never block an answer, so
+    // it is not confirmed and no second request is sent.
+    if (first.projected) {
+      this.log(
+        `[verifier/judge] contradiction judged on placeholders, downgrading to unverified claim=${claim.id}`,
+      );
+      return unverified(
+        claim,
+        'contradiction judged on placeholder values — not confirmable behind the privacy shield',
+      );
     }
-
-    const sourceSnippet = evidence.find((s) => s.nodeId === first.evidenceNodeId);
-    const source = sourceSnippet?.source ?? claim.expectedSource;
-
-    switch (first.verdict) {
-      case 'verified':
-        return {
-          status: 'verified',
-          claim,
-          source: sourceKind(source),
-        };
-      case 'contradicted':
-        return {
-          status: 'contradicted',
-          claim,
-          truth: first.rationale ?? sourceSnippet?.content ?? null,
-          source: sourceKind(source),
-          ...(first.rationale ? { detail: first.rationale } : {}),
-        };
-      case 'unverified':
-        return unverified(claim, first.rationale ?? 'judge unverified');
+    const second = await this.judgeOnce(claim, evidence, privacy);
+    if (second === null || second.verdict !== 'contradicted') {
+      this.log(
+        `[verifier/judge] contradiction not reproduced, downgrading to unverified claim=${claim.id}`,
+      );
+      return unverified(claim, 'judge contradiction not reproduced on recheck');
     }
+    return {
+      status: 'contradicted',
+      claim,
+      truth: first.rationale ?? sourceSnippet.content,
+      source,
+      ...(first.rationale ? { detail: first.rationale } : {}),
+    };
   }
 
   async checkAll(
@@ -294,7 +312,17 @@ ${evidenceBlock}`;
       return null;
     }
 
-    const parsed = parseVerdict(response);
+    // The refs a verdict may cite: exactly the ones this request printed —
+    // the per-request handles behind a shield, the node ids without one.
+    const knownRefs: ReadonlySet<string> = new Set(real.evidence.map((e) => e.ref));
+    const parsed = parseVerdict(response, knownRefs, (citedLength) => {
+      // Only the length: the cited ref is model output that can repeat claim
+      // or evidence text, or break or disguise the line (U+2028, ANSI, bidi
+      // controls). `claim.id` is assigned by the extractor (`c_001`, …).
+      this.log(
+        `[verifier/judge] ${UNKNOWN_EVIDENCE_REASON}, downgrading to unverified claim=${claim.id} cited_len=${String(citedLength)}`,
+      );
+    });
     if (parsed === null) return null;
     // The judge cites a ref of THIS request; only the snippet printed under
     // it can stand behind the verdict.
@@ -333,7 +361,11 @@ ${evidenceBlock}`;
 
 // ---------------- helpers ----------------
 
-function parseVerdict(response: LlmResponse): JudgeVerdict | null {
+function parseVerdict(
+  response: LlmResponse,
+  knownRefs: ReadonlySet<string>,
+  onUnknownRef: (citedLength: number) => void,
+): JudgeVerdict | null {
   // Defensive: the contract guarantees `content` is an array, but keep the
   // historical never-throws behavior against malformed input.
   if (!Array.isArray(response.content)) return null;
@@ -346,14 +378,22 @@ function parseVerdict(response: LlmResponse): JudgeVerdict | null {
       typeof raw.evidence_node_id === 'string'
         ? raw.evidence_node_id.trim()
         : '';
+    const needsCitation = verdict === 'verified' || verdict === 'contradicted';
     // verified and contradicted MUST cite a node id — otherwise demote.
-    if ((verdict === 'verified' || verdict === 'contradicted') && !nodeId) {
+    if (needsCitation && !nodeId) {
       return { verdict: 'unverified', rationale: 'missing evidence_node_id' };
+    }
+    // ...and it must name a snippet this call was shown. Exact match on the
+    // trimmed string: ids are opaque, so no case-folding or prefix matching.
+    if (needsCitation && !knownRefs.has(nodeId)) {
+      onUnknownRef(nodeId.length);
+      return { verdict: 'unverified', rationale: UNKNOWN_EVIDENCE_REASON };
     }
     const rationale =
       typeof raw.rationale === 'string' ? raw.rationale.slice(0, 300) : '';
     const out: JudgeVerdict = { verdict };
-    if (nodeId) out.evidenceNodeId = nodeId;
+    // An unknown ref never leaves the parser, not even on `unverified`.
+    if (nodeId && knownRefs.has(nodeId)) out.evidenceNodeId = nodeId;
     if (rationale) out.rationale = rationale;
     return out;
   }
@@ -373,9 +413,13 @@ function checkFailed(claim: SoftClaim, reason: string): ClaimVerdict {
   return { status: 'unverified', claim, reason, cause: 'check_failed' };
 }
 
-function sourceKind(
-  source: EvidenceSnippet['source'] | SoftClaim['expectedSource'],
-): 'odoo' | 'graph' {
+/**
+ * Maps the cited snippet's source onto the verdict's source. Only a snippet
+ * can supply it (never the claim's expectation). `ClaimSource` also knows
+ * 'confluence', but a confluence snippet is still recorded as 'graph' here —
+ * a long-standing mapping, kept as is.
+ */
+function sourceKind(source: EvidenceSnippet['source']): 'odoo' | 'graph' {
   return source === 'odoo' ? 'odoo' : 'graph';
 }
 

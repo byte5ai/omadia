@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — evidence judge counts a verdict only with a citation it was shown
+
+2026-09-30 — the answer verifier's evidence judge accepted any non-empty
+`evidence_node_id` on a `verified` or `contradicted` verdict. It never checked
+that the id named one of the evidence snippets the judge had been shown. When
+it named none, the verdict kept its status and took its `source` from the
+claim's own `expectedSource`. So a citation the model made up counted as fully
+verified: the turn got the `verified` badge, and in enforce mode the #132
+borderline resample, which only runs on `approved_with_disclaimer`, was
+skipped. A contradiction with a made-up citation blocked the answer all the
+same and stored the claim's expected source as the contradiction's source.
+
+The judge now checks the cited id against the exact snippets it printed into
+the prompt, by exact match after trimming (ids are opaque, so there is no
+case-folding). An unknown id demotes the verdict to `unverified` with the
+reason `evidence_node_id not in evidence set` and logs
+`[verifier/judge] evidence_node_id not in evidence set, … claim=<id> cited_len=<n>`,
+which makes the rate observable. The cited id is model output and can repeat
+claim or evidence text, so only its length is logged, never the id itself. The
+contradiction recheck follows the same rule, and an unknown id on the first
+call no longer spends a recheck. Affected turns show `partial` instead of
+`verified` and, in enforce mode, can trigger the borderline resample. A
+contradiction whose citation names no shown snippet no longer blocks; it is
+released with the `partial` badge, as a contradiction without any citation
+already was. For judge contradictions, `verifier_contradictions.source` now
+records the cited snippet's source (a `confluence` snippet still lands as
+`graph`) instead of the claim's expected source. The rule is written up in
+`docs/security-architecture.md` §7c.
+
 ### Security — a verifier re-entry never runs a tool twice; the `enforce` stream retries a contradiction too
 
 2026-10-01 — In `enforce` mode the answer verifier re-enters a turn: a
