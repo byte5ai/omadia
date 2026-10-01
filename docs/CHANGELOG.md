@@ -54,8 +54,13 @@ persona, tool-progress, heartbeat, token and usage events still pass live, and
 the route's observer (which the wrapper used to drop) is now forwarded in
 every mode, so the web chat's liveness line keeps moving. A verdict releases
 the answer only when it is `approved`, or `skipped` because the answer holds
-nothing to check (`no_trigger`, `no_claims`); the held events then go out
-unchanged and in order, and `done` carries the verdict as `done.verifier`.
+nothing to check (`no_trigger`, `no_claims`); the held events then go out in
+order, the answer's text as one `text_delta` carrying `done.answer`, and
+`done` carries the verdict as `done.verifier`. The deltas the model streamed
+never go out in `enforce`: the orchestrator can discard a streamed response
+and run the model again (an unmet sub-agent obligation, a file it announced
+but did not build), and the verdict is about the answer it kept, not the one
+it discarded.
 Every other verdict withholds the answer — the gate fails closed: a
 contradiction, claims the verifier could not confirm, did not check or did not
 cover (`approved_with_disclaimer`, `skipped` with `no_checkable_claims` /
@@ -70,11 +75,19 @@ excerpts the withheld answer carried. The notice is worded in the turn's
 disclosure locale, then the operator's (`ai_disclosure_locale`), German by
 default; the AI-disclosure paragraph a first turn folds into `done.answer`
 stays there, never in the delta. A choice card, an MCP input form, a slot
-picker, an OAuth consent prompt, a degraded turn and a NO_REPLY answer are
-released without verification, and a turn that ends in an `error` releases
-nothing it held. The stream path still never retries, because a retry re-runs
-the turn's tool calls. `chat()` keeps its correction retry and now delivers
-the same notice when the final verdict does not release the answer.
+picker, an OAuth consent prompt, a degraded turn's turn-incomplete notice and
+a bare `NO_REPLY` (the sentinel as the whole answer) are released without
+verification — on the stream a bare `NO_REPLY` releases its `done` alone,
+without the tool traffic before it. An answer that only ends with `NO_REPLY`
+after other text, and a degraded turn whose answer Privacy Shield had already
+rendered, are verified like any answer: stream clients do not drop the first,
+and the second is a real answer. A turn that ends in an `error` releases
+nothing it held. The canvas composer holds its skeleton — the composer model
+writes its headings, labels and text — until the verdict as well: it leads a
+released turn and never shows with a withheld or failed one. The stream path
+still never retries, because a retry re-runs the turn's tool calls. `chat()`
+keeps its correction retry and now delivers the same notice when the final
+verdict does not release the answer.
 
 What does not change: `shadow` streams exactly as before, and the trailing
 `verifier` event still follows `done` in both modes. A withheld turn is a
@@ -83,7 +96,8 @@ public API-key audit record it as `ok`.
 
 What clients see: in `enforce` mode no answer text arrives until the turn
 and its verification (two LLM calls plus the source checks) have finished,
-then all of it at once; `done.answerSource` can be `"verifier-blocked"`
+then all of it at once, as a single `text_delta`; on the canvas the skeleton
+arrives with it, not before. `done.answerSource` can be `"verifier-blocked"`
 (always with `answerIsError: true`), and `done.verifier` carries the summary.
 A client that renders `done.answer`, as the API documentation recommends,
 shows the notice without any change. The web chat shows a "withheld by the
@@ -91,7 +105,10 @@ fact-check" heading above the notice (new `chat.verifierBlocked.*` keys in en
 and de), and the server-side session mirror (`PUT /api/chat/sessions/:id`) now
 keeps a message's verifier summary and withheld marker. `@omadia/channel-sdk`
 gains `composeVerifierBlockedText`, `AnswerSource` the value
-`"verifier-blocked"` and the `done` event the `verifier` field — all additive.
+`"verifier-blocked"`, the `done` event the `verifier` field and `ChatAgent`
+the optional `holdsContentUntilVerdict` flag (how a wrapper such as the
+canvas composer learns that its base holds content until the verdict) — all
+additive.
 
 What operators should expect: fail-closed `enforce` delivers only fully
 confirmed answers and answers without checkable claims. An answer longer than
@@ -105,9 +122,10 @@ Not covered: the subscription-CLI runtime (`claude-cli` provider) never passes
 through the verifier wrapper, and proactive routines call the raw
 orchestrator, so `VERIFIER_MODE` changes neither. A withheld answer is still
 written to the session log and the knowledge graph before the verdict and can
-be auto-promoted to memory, and the canvas composer's skeleton layout goes out
-before the turn. Details: `docs/security-architecture.md` §7c, upgrade notes in
-`docs/upgrading.md`.
+be auto-promoted to memory. What a released turn carries besides its answer —
+tool output, surfaces, the canvas skeleton's own text — is released on the
+verdict about the answer, not checked itself. Details:
+`docs/security-architecture.md` §7c, upgrade notes in `docs/upgrading.md`.
 
 ### Security — answer-verifier verdicts are evidence-bound: `skipped` / `unavailable` are no longer `approved`
 

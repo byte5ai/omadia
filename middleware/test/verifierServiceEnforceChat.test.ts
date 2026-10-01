@@ -6,8 +6,10 @@
  * the verifier failed — is replaced by the withheld notice, marked
  * `answerSource: 'verifier-blocked'` + `answerIsError`, without the
  * attachments, cards and follow-ups that carried its claims. Control-flow
- * results (choice card, MCP input form, slot picker, OAuth consent, NO_REPLY)
- * are delivered without verification. `shadow` still delivers the answer.
+ * results (choice card, MCP input form, slot picker, OAuth consent, a bare
+ * NO_REPLY) are delivered without verification; an answer that only ends
+ * with NO_REPLY is verified like any answer. `shadow` still delivers the
+ * answer.
  */
 
 import { describe, it } from 'node:test';
@@ -146,6 +148,13 @@ describe('VerifierService.chat — enforce withholds what it could not confirm',
       assert.equal(sa.answerSource, undefined, `${label}: not withheld`);
       assert.ok(sa.text.startsWith(r.answer), `${label}: answer delivered`);
     }
+  });
+
+  it('verifies an answer that only ends with NO_REPLY, and withholds it like any other', async () => {
+    const { h, sa } = await chatEnforced([blocked()], [result({}, `${ANSWER}\nNO_REPLY`)], { maxRetries: 0 });
+    assert.equal(h.verifyInputs.length, 1, 'verified');
+    assert.equal(h.verifyInputs[0]?.answer, `${ANSWER}\nNO_REPLY`);
+    assertWithheld(sa, 'trailing NO_REPLY');
   });
 
   it('words the notice in the turn locale, then the operator locale', async () => {

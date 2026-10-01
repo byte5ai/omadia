@@ -150,6 +150,12 @@ export class VerifierService implements ChatAgent {
     this.locale = opts.locale;
   }
 
+  /** `ChatAgent.holdsContentUntilVerdict`: true in `enforce`, so a wrapper
+   *  holds content of its own (a canvas skeleton) until the verdict too. */
+  get holdsContentUntilVerdict(): boolean {
+    return this.enabled && this.mode === 'enforce';
+  }
+
   /** #133 (E6) — record a verifier block on this turn's plan (`verifierBlockedHook.ts`). */
   private fireVerifierBlocked(input: ChatTurnInput, verdict: VerifierVerdict): void {
     fireVerifierBlockedHook(this.turnHookRegistry, this.orchestrator.agentId, input, verdict);
@@ -158,7 +164,8 @@ export class VerifierService implements ChatAgent {
   /**
    * Stream wrapper. `shadow` passes every event through as produced and
    * reports the verdict as one trailing `verifier` event; `enforce` holds
-   * every content event until the verdict and replaces an answer it does not
+   * every content event until the verdict, releases an answer as the text
+   * the verdict is about (never the raw deltas) and replaces one it does not
    * release with the withheld-answer notice (`verifierDelivery.ts`). The
    * route's observer (iteration, token and usage counters — no text) is
    * forwarded in every mode.

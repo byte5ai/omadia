@@ -341,9 +341,10 @@ User → Orchestrator.chatStream
 Mit aktivem Answer-Verifier sitzt `VerifierService` vor dem Orchestrator
 (`User → VerifierService.chatStream/chat → Orchestrator`): in `shadow` prüft er
 nur und hängt das Urteil an, in `enforce` ist er ein Auslieferungs-Gate — der
-Stream hält jeden Inhalt bis zum Urteil, eine nicht bestätigte Antwort wird
-durch eine Notiz ersetzt (§11, Kontrakt-Erweiterung Verifier-Gate). Agenten
-auf dem Abo-CLI-Runtime und Routinen laufen ohne diesen Wrapper.
+Stream hält jeden Inhalt bis zum Urteil (der Canvas-Composer sein Skeleton
+ebenso), eine nicht bestätigte Antwort wird durch eine Notiz ersetzt (§11,
+Kontrakt-Erweiterung Verifier-Gate). Agenten auf dem Abo-CLI-Runtime und
+Routinen laufen ohne diesen Wrapper.
 
 ### Channel → Orchestrator-Dispatch (per-Channel, Omadia UI)
 
@@ -476,6 +477,10 @@ Macht den `canvasChatAgent` zum echten Tier-2-Composer. Für einen Canvas-Turn
    Skeleton geht als `surface_snapshot` (Revision `"0"`) raus, **bevor** der
    langsame Hauptturn startet (~500ms-Ziel, implementation-plan Risiko #1;
    Spike-Gate: <95% First-Attempt-Validität → Modell auf Sonnet pinnen).
+   Ausnahme Answer-Verifier in `enforce` (Basis-Agent mit
+   `holdsContentUntilVerdict`): dann wartet das Skeleton auf das Urteil und
+   geht nur mit einem freigegebenen Turn raus (`src/verdictHold.ts`, §11
+   Verifier-Gate).
 2. **Requirement-Handoff**: der delegierte Hauptturn bekommt die
    `dataRequirements` als `[canvas-context]`-Block an die `userMessage`
    angehängt (containerIds + exakte fieldKeys + Instruktion) — Tier-3
@@ -3056,9 +3061,15 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   Route wird jetzt in jedem Modus durchgereicht (vorher verworfen), Token- und
   Usage-Zähler laufen also live weiter.
 - **Freigabe** nur bei `approved` oder `skipped` mit `no_trigger` /
-  `no_claims`: die gehaltenen Events unverändert in Originalreihenfolge,
-  `done` mit `verifier` (dasselbe Summary wie das folgende `verifier`-Event):
-  `…, done{verifier}, verifier`.
+  `no_claims`: die gehaltenen Events in Originalreihenfolge, aber ohne die
+  gestreamten `text_delta`s — der Text geht als **ein** `text_delta` mit
+  `done.answer` (ohne gefalteten KI-Kennzeichnungsblock) direkt vor `done`
+  raus, `done` mit `verifier` (dasselbe Summary wie das folgende
+  `verifier`-Event): `…, text_delta(done.answer), done{verifier}, verifier`.
+  Grund: der Orchestrator streamt jede Modellantwort live und verwirft sie
+  ggf. danach (#332-L3-Eskalation, File-Retry: `textParts.length = 0`) — die
+  verworfene Antwort steht in den Deltas, nicht in `done.answer`, und das
+  Urteil gilt nur `done.answer`.
 - **Zurückgehalten** (fail-closed) bei jedem anderen Urteil — `blocked`,
   `approved_with_disclaimer`, `skipped` mit `no_checkable_claims` /
   `incomplete_coverage`, `unavailable`: genau ein `text_delta` mit der
@@ -3071,9 +3082,16 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   Hatte der Turn die KI-Kennzeichnung in `done.answer` gefaltet (erster Turn
   des Scopes), trägt die Notiz in `done.answer` denselben Block — nie im
   Delta.
-- **Ohne Urteil freigegeben:** `pendingUserChoice`, `pendingMcpInput`,
-  `pendingSlotCard`, `pendingOAuthConsent`, `degraded`, NO_REPLY — Events wie
-  gehalten, kein `verifier`-Event. Endet der Turn mit `error`, geht nur der
+- **Ohne Urteil freigegeben** (nur Antworten ohne Faktenaussage):
+  `pendingUserChoice`, `pendingMcpInput`, `pendingSlotCard`,
+  `pendingOAuthConsent`, `degraded` mit der Turn-Incomplete-Notiz —
+  gehaltene Events wie bei der Freigabe (Text als ein Delta aus
+  `done.answer`), kein `verifier`-Event. Ein nacktes `NO_REPLY` (Sentinel als
+  ganze Antwort) gibt nur sein `done` frei, nichts Gehaltenes. Geprüft wie
+  jede Antwort werden eine Antwort, die nur mit `NO_REPLY` **endet**
+  (`isNoReply` akzeptiert die Form, Stream-Clients verwerfen sie aber nicht),
+  und ein `degraded`-Turn mit `answerSource: 'privacy-render'` (eine echte,
+  serverseitig gerenderte Antwort). Endet der Turn mit `error`, geht nur der
   `error` raus, nichts Gehaltenes.
 - **Kein Retry im Stream** — ein Retry führt die Tools des Turns erneut aus.
   `VerifierService.chat` (Teams, Telegram, `/api/chat`) behält Retry und
@@ -3082,6 +3100,12 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   Karten entfernt).
 - Ein zurückgehaltener Turn zählt als `ok` (Operator-Health in `routes/chat.ts`,
   API-Key-Audit in `chatRouter.ts`) — eine Policy-Entscheidung, kein Fehler.
+- **Canvas-Skeleton:** deklariert der Basis-Agent
+  `ChatAgent.holdsContentUntilVerdict` (der `VerifierService` in `enforce`),
+  hält der Canvas-Composer sein Skeleton zurück (`verdictHold.ts`): es geht
+  direkt vor dem ersten `surface_*` bzw. dem freigebenden `done` raus, vor
+  dem Antworttext, und nie mit einem zurückgehaltenen oder fehlgeschlagenen
+  Turn. In `shadow` und ohne Verifier bleibt Skeleton-first unverändert.
 - Der Web-Chat faltet `done.verifier` und `verifierBlocked` in die Nachricht
   (`chatStreamEvents.ts`) und setzt `VerifierBlockedNotice`
   (`chat.verifierBlocked.*`) über die Notiz; der Server-Mirror
@@ -3465,10 +3489,23 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   Tool-Calls ist auf dem API-Key-Stream bis zum Urteil still — Integratoren mit
   kurzen Lese-Timeouts brechen ab. Ein Wrapper-Heartbeat während des Haltens
   wäre die Lösung (die README nennt das Verhalten).
-- **Canvas-Skeleton bei zurückgehaltenem Turn.** Das Skeleton geht vor dem
-  Turn raus; bei einem zurückgehaltenen Turn kommen keine Daten-Patches, die
-  Container bleiben im Ladezustand. Den Status im Skeleton auf „zurückgehalten“
-  patchen.
+- **Canvas: erster Paint erst nach dem Urteil.** In `enforce` hält der
+  Composer das Skeleton bis zum Urteil (es ist Modell-Output); der Canvas
+  bleibt bis dahin leer. Ein Platzhalter ohne Modelltext (etwa das
+  deterministische Fallback-Skeleton) könnte live rausgehen, braucht aber
+  eine eigene Revisionsfolge (Modell-Skeleton als Revision 1, Patches darauf)
+  und einen lokalisierten „zurückgehalten“-Status für einen zurückgehaltenen
+  Turn.
+- **Mitausgelieferte Inhalte ungeprüft.** Das Urteil gilt `done.answer`;
+  Tool-Output, Sub-Agent-Antworten, Surfaces und der Skeleton-Text gehen mit
+  einem freigegebenen Turn raus, ohne selbst geprüft zu sein. Erfindet der
+  Composer Zahlen im Skeleton, wäre ein Skeleton ohne Freitext in `enforce`
+  (oder eine Prüfung seines Texts) der nächste Schritt.
+- **Nachgestelltes `NO_REPLY` in Teams/Telegram.** Eine Antwort, die nur mit
+  `NO_REPLY` endet, wird in `enforce` geprüft; hält der Verifier sie zurück,
+  postet der Channel die Notiz statt zu schweigen. Falls das stört: die Form
+  vor dem Verifier auf das strikte `NO_REPLY` normalisieren (Prosa verwerfen)
+  — Produktentscheidung.
 - **`onVerifierBlocked` nur bei Widerspruch.** Der Plan-Hook feuert für
   `blocked`; eine fail-closed zurückgehaltene Antwort (`partial`,
   `unavailable`) erscheint im Plan nicht als abgelehnt.

@@ -99,15 +99,18 @@ describe('channelApi/chatRouter — enforce-mode verifier on the public stream',
     );
   });
 
-  it('a confirmed answer reaches the wire with its verdict on done', async () => {
+  it('a confirmed answer reaches the wire as one delta, with its verdict on done', async () => {
     const events = await enforcedWire(approved());
     const done = events.find((e) => e['type'] === 'done');
     assert.equal(done?.['answer'], ANSWER);
     assert.equal(done?.['answerSource'], undefined);
     assert.equal((done?.['verifier'] as Record<string, unknown> | undefined)?.['badge'], 'verified');
+    // The delta carries the answer the verdict is about, not the raw chunks.
+    const deltas = events.filter((e) => e['type'] === 'text_delta');
+    assert.deepEqual(deltas.map((e) => e['text']), [ANSWER]);
     assert.deepEqual(
       events.map((e) => e['type']),
-      ['iteration_start', 'text_delta', 'text_delta', 'done', 'verifier'],
+      ['iteration_start', 'text_delta', 'done', 'verifier'],
     );
   });
 });

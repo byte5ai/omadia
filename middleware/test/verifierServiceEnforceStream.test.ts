@@ -5,12 +5,16 @@
  *     the terminal `done`) reaches the consumer before the verdict; liveness,
  *     progress and usage events pass;
  *   - a verdict that confirms the answer (or finds nothing to check) releases
- *     the held events in their original order, with the verdict on `done`;
+ *     the held events in their original order, the answer the verdict is
+ *     about as one text delta, and the verdict on `done`
+ *     (`verifierServiceEnforceRelease.test.ts` pins that delta);
  *   - any other verdict — a contradiction, claims left unconfirmed, a
  *     verifier that could not run — withholds the answer: the consumer gets
  *     one notice delta and a `done` marked `answerSource: 'verifier-blocked'`;
  *   - control-flow terminals (choice card, MCP input form, slot picker, OAuth
- *     consent, degraded turn, NO_REPLY) are released without verification;
+ *     consent, a degraded turn's notice) are released without verification;
+ *     a bare NO_REPLY releases its `done` and nothing else, and an answer that
+ *     only ends with NO_REPLY is verified like any other;
  *   - a failed turn releases nothing it held, and the stream path never
  *     starts a correction retry.
  * `shadow` stays the unchanged pass-through.
@@ -19,7 +23,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import type { RevisionId } from '../packages/harness-channel-sdk/src/surface.js';
 import type {
   ChatStreamEvent,
   ChatStreamObserver,
@@ -35,68 +38,18 @@ import {
   skipped,
   unavailable,
 } from './_helpers/verifierVerdictFixtures.js';
-
-type DoneEvent = Extract<ChatStreamEvent, { type: 'done' }>;
-
-const ANSWER = `Der Umsatz im dritten Quartal beträgt ${AMOUNT_TEXT}.`;
-
-/** Events in the script below that reach the consumer while the verdict is
- *  pending. `sub_iteration` is held with its parent `tool_use`. */
-const LIVE_TYPES = new Set([
-  'iteration_start',
-  'turn_routing',
-  'tool_progress',
-  'iteration_usage',
-]);
-
-const DISCLOSURE = {
-  text: 'Diese Antwort wurde von einem KI-System erzeugt.',
-  level: 'standard' as const,
-  locale: 'de',
-  source: 'operator' as const,
-  operatorNote: 'Bei Fragen: Support-Team.',
-};
-
-function done(extra: Partial<DoneEvent> = {}, answer = ANSWER): DoneEvent {
-  return { type: 'done', answer, toolCalls: 1, iterations: 1, ...extra };
-}
-
-/** A full turn: live telemetry interleaved with content that states the
- *  figure the verdict is about. */
-function turn(terminal: DoneEvent = done()): ChatStreamEvent[] {
-  return [
-    { type: 'iteration_start', iteration: 1 },
-    { type: 'turn_routing', bucket: 'complex', classifierModel: 'class:fast', model: 'class:smart' },
-    { type: 'tool_use', id: 't1', name: 'query_odoo_accounting', input: { question: 'Umsatz Q3' } },
-    { type: 'tool_progress', id: 't1', elapsedMs: 5000 },
-    { type: 'sub_iteration', parentId: 't1', iteration: 1 },
-    { type: 'sub_tool_use', parentId: 't1', id: 's1', name: 'odoo_execute', input: { model: 'account.move' } },
-    { type: 'sub_tool_result', parentId: 't1', id: 's1', output: `amount_total ${AMOUNT_TEXT}`, durationMs: 40, isError: false },
-    { type: 'tool_result', id: 't1', output: `Umsatz Q3: ${AMOUNT_TEXT}`, durationMs: 900 },
-    { type: 'nudge', id: 't1', nudgeId: 'n1', text: `${AMOUNT_TEXT} als Notiz speichern?` },
-    {
-      type: 'iteration_usage',
-      iteration: 1,
-      inputTokens: 10,
-      outputTokens: 5,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-    },
-    { type: 'turn_annotation', channel: 'kg_insert', payload: { nodes: [{ id: 'k1', label: AMOUNT_TEXT }] } },
-    {
-      type: 'surface_snapshot',
-      canvasSessionId: 'canvas-1',
-      surfaceSeq: 1,
-      producesRevision: '1' as RevisionId,
-      tree: { type: 'text', content: AMOUNT_TEXT },
-      protocolVersion: '1.0',
-      opsCatalogVersion: '1.0',
-    },
-    { type: 'text_delta', text: 'Der Umsatz im dritten Quartal ' },
-    { type: 'text_delta', text: `beträgt ${AMOUNT_TEXT}.` },
-    terminal,
-  ];
-}
+import {
+  ANSWER,
+  DISCLOSURE,
+  DISCLOSURE_BLOCK,
+  LIVE_TYPES,
+  deltasOf,
+  done,
+  doneOf,
+  releasedAs,
+  turn,
+} from './_helpers/verifierStreamScript.js';
+import type { DoneEvent } from './_helpers/verifierStreamScript.js';
 
 async function runEnforced(
   verdicts: readonly ScriptedVerdict[],
@@ -112,11 +65,6 @@ async function runEnforced(
   const events = await h.stream();
   return { h, events };
 }
-
-const doneOf = (events: ChatStreamEvent[]): DoneEvent | undefined =>
-  events.find((e): e is DoneEvent => e.type === 'done');
-const deltasOf = (events: ChatStreamEvent[]): string[] =>
-  events.flatMap((e) => (e.type === 'text_delta' ? [e.text] : []));
 
 /**
  * What a withheld turn must look like on the wire, whatever the verdict: the
@@ -161,20 +109,13 @@ describe('VerifierService.chatStream — enforce holds content until the verdict
     ]);
   });
 
-  it('an approved verdict releases the held events verbatim and in order, then the verdict', async () => {
+  it('an approved verdict releases the held events in order, the answer as one delta, then the verdict', async () => {
     const script = turn();
     const { events } = await runEnforced([approved()], script);
-    const live = script.filter((e) => LIVE_TYPES.has(e.type));
-    const held = script.filter((e) => !LIVE_TYPES.has(e.type));
     const summary = events.find((e) => e.type === 'verifier');
     assert.ok(summary && summary.type === 'verifier');
     assert.equal(summary.summary.badge, 'verified');
-    assert.deepEqual(events, [
-      ...live,
-      ...held.slice(0, -1),
-      { ...done(), verifier: summary.summary },
-      summary,
-    ]);
+    assert.deepEqual(events, [...releasedAs(script, { ...done(), verifier: summary.summary }), summary]);
     assert.equal(doneOf(events)?.answerSource, undefined);
   });
 
@@ -185,7 +126,7 @@ describe('VerifierService.chatStream — enforce holds content until the verdict
       assert.equal(terminal?.answer, ANSWER, reason);
       assert.equal(terminal?.answerSource, undefined, reason);
       assert.equal(terminal?.verifier?.badge, 'unverified', reason);
-      assert.deepEqual(deltasOf(events), ['Der Umsatz im dritten Quartal ', `beträgt ${AMOUNT_TEXT}.`]);
+      assert.deepEqual(deltasOf(events), [ANSWER], reason);
       assert.equal(h.receivedAtVerify[0]?.includes('text_delta'), false, reason);
     }
   });
@@ -258,10 +199,9 @@ describe('VerifierService.chatStream — enforce withholds an answer it could no
   });
 
   it('keeps the disclosure the turn folded on done.answer only, never in the delta', async () => {
-    const block = `${DISCLOSURE.text}\n\n${DISCLOSURE.operatorNote}`;
-    const folded = done({ aiDisclosure: DISCLOSURE }, `${ANSWER}\n\n${block}`);
+    const folded = done({ aiDisclosure: DISCLOSURE }, `${ANSWER}\n\n${DISCLOSURE_BLOCK}`);
     const events = (await runEnforced([blocked()], turn(folded))).events;
-    const withheld = assertWithheld(events, 'folded', block);
+    const withheld = assertWithheld(events, 'folded', DISCLOSURE_BLOCK);
     assert.equal(deltasOf(events)[0]?.includes(DISCLOSURE.text), false, 'never in the delta');
     assert.deepEqual(withheld.aiDisclosure, DISCLOSURE);
 
@@ -284,7 +224,7 @@ describe('VerifierService.chatStream — enforce withholds an answer it could no
 });
 
 describe('VerifierService.chatStream — enforce release rules without a verdict', () => {
-  it('releases control-flow terminals unverified and unchanged', async () => {
+  it('releases control-flow terminals unverified, with the text of their own answer', async () => {
     const terminals: [string, DoneEvent][] = [
       ['choice card', done({ pendingUserChoice: { question: 'Welches Quartal?', options: [{ label: 'Q3', value: 'q3' }] } })],
       [
@@ -310,16 +250,41 @@ describe('VerifierService.chatStream — enforce release rules without a verdict
       ],
       ['OAuth consent', done({ pendingOAuthConsent: true })],
       ['degraded turn', done({ degraded: true, committedTools: ['create_invoice'], correlationId: 'corr-2' })],
-      ['NO_REPLY', done({}, 'NO_REPLY')],
     ];
     for (const [label, terminal] of terminals) {
       const script = turn(terminal);
       const { events, h } = await runEnforced([blocked()], script);
       assert.equal(h.verifyInputs.length, 0, `${label}: not verified`);
-      const live = script.filter((e) => LIVE_TYPES.has(e.type));
-      const held = script.filter((e) => !LIVE_TYPES.has(e.type));
-      assert.deepEqual(events, [...live, ...held], `${label}: released as produced`);
+      assert.deepEqual(events, releasedAs(script, terminal), `${label}: released`);
     }
+  });
+
+  it('a bare NO_REPLY releases its done and nothing the turn held', async () => {
+    for (const answer of ['NO_REPLY', '  NO_REPLY\n']) {
+      const script = turn(done({}, answer));
+      const { events, h } = await runEnforced([blocked()], script);
+      assert.equal(h.verifyInputs.length, 0, 'not verified');
+      assert.deepEqual(events, [...script.filter((e) => LIVE_TYPES.has(e.type)), done({}, answer)]);
+      assert.equal(JSON.stringify(events).includes(AMOUNT_TEXT), false, 'tool content stays held');
+    }
+  });
+
+  it('an answer that only ends with NO_REPLY is verified, and withheld like any other', async () => {
+    const { events, h } = await runEnforced([blocked()], turn(done({}, `${ANSWER}\nNO_REPLY`)));
+    assert.equal(h.verifyInputs.length, 1, 'verified');
+    assert.equal(h.verifyInputs[0]?.answer, `${ANSWER}\nNO_REPLY`);
+    assertWithheld(events, 'trailing NO_REPLY');
+  });
+
+  it('a degraded turn whose answer the privacy shield rendered is verified like any answer', async () => {
+    const rendered = done({
+      degraded: true,
+      committedTools: ['v4_render_answer'],
+      answerSource: 'privacy-render',
+    });
+    const { events, h } = await runEnforced([blocked()], turn(rendered));
+    assert.equal(h.verifyInputs.length, 1, 'verified');
+    assertWithheld(events, 'degraded privacy render');
   });
 
   it('a failed turn releases nothing it held', async () => {
@@ -348,6 +313,14 @@ describe('VerifierService.chatStream — observer and the unchanged modes', () =
       await h.stream(USER_INPUT, observer);
       assert.equal(h.streamCalls[0]?.observer, observer, JSON.stringify(opts));
     }
+  });
+
+  it('declares that it holds content until the verdict only when enforce is on', () => {
+    const holds = (mode: 'shadow' | 'enforce', enabled = true): boolean | undefined =>
+      createVerifierHarness({ mode, enabled, verdicts: [approved()] }).service.holdsContentUntilVerdict;
+    assert.equal(holds('enforce'), true);
+    assert.equal(holds('shadow'), false);
+    assert.equal(holds('enforce', false), false);
   });
 
   it('a disabled verifier passes the stream through untouched, whatever the mode', async () => {

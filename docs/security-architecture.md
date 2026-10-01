@@ -918,19 +918,36 @@ not `failed`), so the evidence rules above hold for withheld answers too.
   `text_delta`, `tool_use`, `tool_result`, the sub-agent events
   (`sub_iteration` with its parent call), `nudge` (nudge text derived from
   tool results), `turn_annotation` (plan, recall and knowledge-graph
-  payloads), `surface_*` and `done`. A released
-  turn's events go out unchanged and in order, `done` with `verifier`; a
-  withheld turn's never do. The client gets one `text_delta` (the notice,
-  without the disclosure block) and a `done` rebuilt from an allowlist of
-  identity and telemetry fields: attachments, files, follow-ups, masked
-  values, the delegated answer, cards and excerpts are dropped. A turn that
-  ends in an `error` releases nothing it held.
-- **Released without a verdict, on both paths.** A choice card, an MCP input
-  form, a slot picker and an OAuth consent prompt (they ask for input rather
-  than state facts), a degraded turn (its answer is the server's
-  turn-incomplete notice) and a NO_REPLY answer (a notice would break the
-  agent's deliberate silence) — `releasesWithoutVerification`. `shadow` keeps
-  its narrower rule (choice card and degraded turn only).
+  payloads), `surface_*` and `done`. A released turn's held events go out
+  in order, `done` with `verifier` — except its text deltas: the answer goes
+  out as one `text_delta` carrying `done.answer` (without the disclosure
+  block) right before `done` (`releasedTurn`) — the same text, and for an
+  answer Privacy Shield rendered the same real values, that `done` hands the
+  same client anyway. The verdict is about
+  `done.answer`, and the streamed deltas can say more: the orchestrator
+  streams each model response live and may then discard it and run the
+  model again (an unmet sub-agent obligation, a file it announced but did
+  not build), so a discarded response is in the deltas but never in
+  `done.answer`. A withheld turn's held events never go out. The client gets
+  one `text_delta` (the notice, without the disclosure block) and a `done`
+  rebuilt from an allowlist of identity and telemetry fields: attachments,
+  files, follow-ups, masked values, the delegated answer, cards and excerpts
+  are dropped. A turn that ends in an `error` releases nothing it held.
+- **Released without a verdict, on both paths — only answers that state no
+  fact.** A choice card, an MCP input form, a slot picker and an OAuth
+  consent prompt (they ask for input rather than state facts), a degraded
+  turn whose answer is the server's turn-incomplete notice, and a bare
+  `NO_REPLY` (the sentinel as the whole answer: a notice would break the
+  agent's deliberate silence) — `releasesWithoutVerification`. On the stream
+  these turns carry the text of their own `done.answer` like a released
+  turn, and a bare `NO_REPLY` releases its `done` alone, without the tool
+  traffic that led to it. Two look-alikes are verified like any answer: a
+  degraded turn whose answer Privacy Shield had already rendered
+  (`answerSource: 'privacy-render'`) is a real answer, and an answer that
+  only ends with the sentinel on its own line states whatever precedes it —
+  `isNoReply` accepts that form so Teams, Telegram and `/api/chat` stay
+  silent, but no stream consumer drops it. `shadow` keeps its narrower rule
+  (choice card and degraded turn only).
 - **Non-streaming path.** `VerifierService.chat` keeps its correction retry
   for a contradiction (`VERIFIER_MAX_RETRIES`, default 1) and its borderline
   resample, and delivers the notice when the final verdict does not release
@@ -939,8 +956,15 @@ not `failed`), so the evidence rules above hold for withheld answers too.
 - **One gate for every consumer.** The kernel route, channel dispatch (Teams,
   Telegram), the public API-key stream and the canvas composer all resolve
   the same wrapped chat agent. Canvas surfaces synthesised from tool results
-  are held with those results. A withheld turn counts as `ok` for the operator
-  health signal and the API-key audit: it is a policy decision, not a failure.
+  are held with those results. The canvas skeleton is model output as well
+  (the composer model writes its headings, labels and text from the user's
+  request), so the composer holds it while its base declares
+  `ChatAgent.holdsContentUntilVerdict` (an enabled `enforce` wrapper): it
+  goes out right before a released turn's first surface, or its `done`, and
+  never with a withheld or failed turn
+  (`omadia-ui-orchestrator/src/verdictHold.ts`). A withheld turn counts as
+  `ok` for the operator health signal and the API-key audit: it is a policy
+  decision, not a failure.
 - **Not covered — by design or still open:**
   - the subscription-CLI runtime (`claude-cli` provider): `buildOrchestrator`
     returns the CLI chat agent before the verifier wrapper, so `VERIFIER_MODE`
@@ -951,17 +975,27 @@ not `failed`), so the evidence rules above hold for withheld answers too.
     knowledge-graph turn node, a possible auto-promoted memory) before `done`,
     so a withheld answer is stored and can reach a later turn's context — the
     gate acts on delivery only;
-  - the canvas composer's skeleton layout (empty containers composed from the
-    user's message) goes out before the turn runs;
+  - what a released turn carries besides its answer is not checked itself:
+    the verdict is about `done.answer`, and tool output, sub-agent traffic,
+    nudges, annotations, surfaces and the canvas skeleton's own text go out
+    because of that verdict, not their own;
+  - LLM-free canvas actions and refreshes (a deterministic action or a
+    refresh recipe runs the tool directly) involve no model answer and no
+    verifier;
   - latency: no answer text arrives before the turn and its verification have
-    finished. The kernel route keeps sending heartbeats; the public API-key
-    stream and the canvas get only the live events above, so a turn without
-    tool calls is silent until the verdict.
+    finished, and on the canvas no skeleton either (its first paint waits for
+    the verdict). The kernel route keeps sending heartbeats; the public
+    API-key stream and the canvas get only the live events above, so a turn
+    without tool calls is silent until the verdict.
 
 Tests: `middleware/test/verifierServiceEnforceStream.test.ts` (what a consumer
 holds when the verifier is asked; release, withhold and fail-closed verdicts;
-control-flow terminals; failed turns; disclosure and locale; observer
-forwarding; `shadow` unchanged), `middleware/test/verifierServiceEnforceChat.test.ts`,
+control-flow terminals, `NO_REPLY` and its trailing form; failed turns;
+disclosure and locale; observer forwarding; `shadow` unchanged),
+`middleware/test/verifierServiceEnforceRelease.test.ts` (the released text is
+`done.answer`, never a discarded response's deltas),
+`middleware/test/uiOrchestratorVerifierEnforce.test.ts` (the canvas skeleton),
+`middleware/test/verifierServiceEnforceChat.test.ts`,
 `middleware/test/verifierBlockedText.test.ts`,
 `middleware/test/channelApi/chatRouterVerifierEnforce.test.ts` (the public
 API-key wire), `middleware/test/chatSessionsMirrorVerifier.test.ts`,
@@ -1701,13 +1735,19 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       claim. A model response is read in full — every tool call, not the
       first one (§7c).
 - [ ] A new `ChatAgent` wrapper or stream consumer releases nothing of an
-      `enforce`-mode turn before the verdict: no `text_delta`, tool output or
-      `done`. An event type added to the live allowlist (`passesBeforeVerdict`)
+      `enforce`-mode turn before the verdict: no `text_delta`, tool output,
+      surface or `done` — nor content the wrapper adds itself (like the
+      canvas skeleton) while its base declares `holdsContentUntilVerdict`.
+      An event type added to the live allowlist (`passesBeforeVerdict`)
       carries no model or tool output, and a verdict other than `approved` or
-      `skipped` with `no_trigger` / `no_claims` withholds the answer. A turn
-      marked `answerSource: "verifier-blocked"` is a withheld answer: its
-      `answer` is the notice, and nothing of the original answer reaches the
-      client (§7c).
+      `skipped` with `no_trigger` / `no_claims` withholds the answer. A
+      released turn's text is the text of its `done.answer`, never the deltas
+      the model streamed. A turn exempt from verification
+      (`releasesWithoutVerification`) states no fact: an input card or
+      prompt, the server's turn-incomplete notice, or `NO_REPLY` as the whole
+      answer. A turn marked `answerSource: "verifier-blocked"` is a withheld
+      answer: its `answer` is the notice, and nothing of the original answer
+      reaches the client (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it

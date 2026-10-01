@@ -65,6 +65,17 @@ export interface ChatAgent {
     input: ChatTurnInput,
     observer?: ChatStreamObserver,
   ): AsyncGenerator<ChatStreamEvent>;
+  /**
+   * `true` when this agent's stream delivers a turn's content only once a
+   * verdict on it is in — the answer verifier in `enforce` mode. Until then
+   * the stream carries liveness, progress and usage events only; a turn
+   * whose content was withheld ends in a `done` marked `answerSource:
+   * 'verifier-blocked'`. A wrapper that adds content of its own to such a
+   * stream (a canvas skeleton) holds it until the base's releasing `done` and
+   * drops it with a withheld or failed turn. Absent or `false`: the stream
+   * delivers content as it is produced.
+   */
+  readonly holdsContentUntilVerdict?: boolean;
 }
 
 /** Inbound channel-supplied attachment (image/file/audio/video). Vision-capable
@@ -761,6 +772,13 @@ export type ChatStreamEvent =
       skillId: string | null;
       skillName: string | null;
     }
+  /**
+   * Answer text as the model streams it — a preview; `done.answer` is
+   * authoritative. Behind the answer verifier in `enforce` mode a turn's text
+   * arrives after the verdict instead, as one `text_delta`: the text of
+   * `done.answer` without the AI-disclosure block, or the withheld-answer
+   * notice.
+   */
   | { type: 'text_delta'; text: string }
   | {
       type: 'tool_use';
@@ -962,7 +980,8 @@ export type ChatStreamEvent =
        * read it there) and as `ChatTurnResult.verifier`. Absent in `shadow`
        * mode (`done` goes out before the verdict), when the verifier is off,
        * and on turns it releases without a verdict (choice card, MCP input
-       * form, slot picker, OAuth consent, degraded turn, NO_REPLY).
+       * form, slot picker, OAuth consent, a degraded turn's turn-incomplete
+       * notice, a bare NO_REPLY).
        */
       verifier?: VerifierResultSummary;
       /** #133 — persisted Turn node external id (`turn:<scope>:<time>`); see

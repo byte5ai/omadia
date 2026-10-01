@@ -234,14 +234,18 @@ fields of `@omadia/verifier`); `shadow` behaves exactly as before.
 - **Streaming clients wait for the verdict.** On `/api/chat/stream`, the
   public API-key stream and the canvas, no answer text arrives before the turn
   and its verification (two LLM calls plus the source checks) have finished;
-  then the whole answer arrives at once. A turn without tool calls sends only
-  its start events (routing, iteration start) in between on the API-key
-  stream — give API clients a read timeout that covers a full turn plus
-  verification.
+  then the whole answer arrives at once, as a single text delta. The canvas
+  skeleton waits too: it appears with a released answer and not at all with
+  a withheld one. A turn without tool calls sends only its start events
+  (routing, iteration start) in between on the API-key stream — give API
+  clients a read timeout that covers a full turn plus verification.
 - **Teams and Telegram** now show the notice instead of an answer that is
   still contradicted after the correction retry (previously delivered with a
   "contradiction found" badge). The retry itself is unchanged and runs only on
-  this non-streaming path; `VERIFIER_MAX_RETRIES` keeps its default of 1.
+  this non-streaming path; `VERIFIER_MAX_RETRIES` keeps its default of 1. An
+  answer that ends with `NO_REPLY` after other text is checked like any
+  answer; when the verifier withholds it, the channel posts the notice
+  instead of staying silent.
 - **API clients** that switch exhaustively over `done.answerSource` must
   handle `"verifier-blocked"` (always with `answerIsError: true`; `answer` is
   the notice). A client that renders `done.answer` needs no change.

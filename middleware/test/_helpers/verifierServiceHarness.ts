@@ -41,6 +41,10 @@ export interface VerifierHarnessOptions {
   maxRetries?: number;
   /** Operator locale for the withheld-answer notice. */
   locale?: string;
+  /** Called when the pipeline is asked for a verdict, before it answers — for
+   *  a consumer outside the harness (a wrapping agent) to snapshot what it
+   *  holds at that moment. */
+  onVerify?: () => void;
 }
 
 export interface PersistedRow {
@@ -117,6 +121,7 @@ export function createVerifierHarness(opts: VerifierHarnessOptions): VerifierHar
       const next = pick(opts.verdicts, verifyInputs.length, 'verdict');
       verifyInputs.push(input);
       receivedAtVerify.push(received.map((e) => e.type));
+      opts.onVerify?.();
       return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
     },
   } as unknown as VerifierPipeline;
