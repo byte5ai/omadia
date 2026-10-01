@@ -1276,7 +1276,8 @@ subscription-CLI path has no shield at all (§3a).
   plugin's own provider, also outside the handle, and send stored text, which
   holds real values: the session log keeps the user's original message, and a
   memory excerpt is restored before it is stored. The recall relevance judge
-  (`recallRelevanceJudge.ts`, on whenever a model is configured, switch
+  (`recallRelevanceJudge.ts`, on whenever a model is configured, off only with
+  `KG_RECALL_RELEVANCE_JUDGE_ENABLED=false` or the plugin config key
   `kg_recall_relevance_judge_enabled`) sends the texts of recalled memories,
   plans and processes next to the turn's wire message. The session briefing
   (`sessionBriefing.ts`) sends a session's stored turns to be summarised, the
