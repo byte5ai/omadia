@@ -178,6 +178,30 @@ describe('VerifierService.chat — a re-entry replays the first run, it never re
     assert.deepEqual(sa.verifier, { status: 'corrected' }, 'the retry completed');
   });
 
+  it('a replayed memory read still counts for the Fresh-Check signal', async () => {
+    const memoryReads: unknown[] = [];
+    const VIEW = { command: 'view', path: '/memories/kunden.md' };
+    const once = () => [toolCalls(['memory', VIEW]), text(ANSWER)];
+    const t = verifiedTurn({
+      responses: [...once(), ...once()],
+      verdicts: [blocked(), approved()],
+      orchestrator: {
+        memoryToolHandler: {
+          handle: (input: unknown) => {
+            memoryReads.push(input);
+            return Promise.resolve("Here's the content of /memories/kunden.md: Zahlungsziel 14 Tage");
+          },
+        },
+      } as unknown as Partial<OrchestratorOptions>,
+    });
+
+    const sa = await t.service.chat(REQUEST);
+
+    assert.deepEqual(memoryReads, [VIEW], 'the memory was read once');
+    assert.deepEqual(sa.verifier, { status: 'corrected' }, 'the retry was delivered');
+    assert.equal(sa.memoryUsed, true, 'the delivered answer still says memory fed it');
+  });
+
   it('a thrown handler replays as a rejection: the retry sees the withheld notice, never the message', async () => {
     const registry = new NativeToolRegistry();
     const invoice = registerWriteTool(registry, 'create_invoice', () =>
