@@ -1647,6 +1647,32 @@
       "bucketFallback": "Fallback",
       "providerFallback": "Fallback model",
       "providerFallbackTooltip": "The primary model was unavailable — this answer came from the agent's fallback ({model} on {provider})."
+    },
+    "verifier": {
+      "label": {
+        "verified": "Answer verified",
+        "partial": "Partly verified",
+        "corrected": "Answer corrected",
+        "failed": "Contradiction found",
+        "unverified": "Not verified",
+        "unavailable": "Verification unavailable"
+      },
+      "hint": {
+        "verified": "The verifier checked {count, plural, one {# claim} other {# claims}} in this answer against the sources and confirmed all of them.",
+        "partial": "No claim contradicts the sources, but {count, plural, one {# claim} other {# claims}} could not be confirmed.",
+        "partialUnchecked": "The verifier confirmed the other claims, but {count, plural, one {# claim} other {# claims}} in this answer could not be checked.",
+        "partialCoverage": "The verifier confirmed {count, plural, one {# claim} other {# claims}}, but did not check all of this answer.",
+        "corrected": "The first answer contradicted the sources; the verifier confirmed {count, plural, one {the # claim} other {all # claims}} in this corrected answer.",
+        "failed": "{count, plural, one {# claim contradicts} other {# claims contradict}} the sources.",
+        "unverified": "Not verified: no check confirmed this answer.",
+        "noneConfirmed": "Not verified: the verifier checked {count, plural, one {# claim} other {# claims}} in this answer but could not confirm any.",
+        "noTrigger": "Not checked: the answer contains no figures, dates or references the verifier checks.",
+        "noClaims": "Not checked: the verifier found no factual claims in this answer.",
+        "noCheckableClaims": "Not checked: none of the claims in this answer can be checked against a source.",
+        "incompleteCoverage": "Not checked: the verifier covered only part of this answer and found nothing it could check there.",
+        "unavailable": "The verifier could not run for this answer, so nothing was checked.",
+        "checkFailed": "The verifier's checks failed for this answer, so no claim was confirmed."
+      }
     }
   },
   "privacyReceipt": {

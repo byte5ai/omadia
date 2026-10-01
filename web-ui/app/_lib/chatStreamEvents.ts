@@ -22,6 +22,7 @@ import type {
   SubAgentEvent,
   ToolEvent,
   UseChatSessionsResult,
+  VerifierSummary,
 } from './chatSessions';
 import { parseTurnIncomplete } from './turnIncomplete';
 
@@ -171,6 +172,9 @@ export type ChatStreamEvent =
   /** #133 (E9) — opaque turn annotation the orchestrator forwarded from a
    *  turn-hook. `channel: 'plan'` carries a live PlanSnapshot. */
   | { type: 'turn_annotation'; channel: string; payload: unknown }
+  /** Answer-verifier summary, emitted once AFTER `done` when the verifier is
+   *  enabled. `skipped` / `unavailable` mean nothing was checked. */
+  | { type: 'verifier'; summary: VerifierSummary }
   /** Mid-turn steering — a user message injected via `/chat/steer` was folded
    *  into the running turn at iteration `iteration`. */
   | { type: 'steer_applied'; iteration: number; message: string }
@@ -459,6 +463,10 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
       const steers = [...(m.steers ?? []), event.message];
       return { ...m, steers };
     }
+    case 'verifier':
+      // Metadata about the answer, never content. `<VerifierBadge>` decides
+      // what (if anything) it may claim — green only with evidence.
+      return { ...m, verifier: event.summary };
     case 'iteration_start':
     default:
       return m;

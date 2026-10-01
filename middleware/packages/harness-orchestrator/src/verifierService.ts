@@ -11,12 +11,17 @@ import { randomUUID } from 'node:crypto';
 import type { SemanticAnswer } from '@omadia/channel-sdk';
 import type { RunTracePayload } from './runTraceCollector.js';
 import type {
+  ClaimVerdict,
   VerifierBadge,
   VerifierPipeline,
   VerifierStore,
   VerifierVerdict,
 } from '@omadia/verifier';
-import { isBorderlineVerdict } from '@omadia/verifier';
+import {
+  bindVerdictToClaims,
+  hasVerificationEvidence,
+  isBorderlineVerdict,
+} from '@omadia/verifier';
 import type { TurnHookRunner } from './turnHooks.js';
 import type { PrivacyEgressContinuation } from './privacyEgress.js';
 import {
@@ -37,19 +42,30 @@ import {
  *   user turn → orchestrator.chat → verifier.verify
  *                                   ├─ approved              → return
  *                                   ├─ approved_with_disclaimer → return + disclaimer badge
+ *                                   │    (no badge when no claim was confirmed)
+ *                                   ├─ skipped / unavailable → return, no badge
  *                                   └─ blocked (enforce only)
  *                                        → inject correction into system hint
  *                                        → orchestrator.chat (retry, max 1x)
  *                                        → verify again
- *                                        → return (badge = corrected | failed)
+ *                                        → return (badge = corrected when the
+ *                                          retry confirmed every claim, partial
+ *                                          when only some, failed when still
+ *                                          contradicted, no badge when it
+ *                                          confirmed nothing)
  *
  * In shadow mode the verifier runs + persists but never blocks / retries.
  * That's how we calibrate the trigger router and extractor in production
  * without risking UX regressions.
  *
- * Errors in the verifier itself never surface to the user — we always fall
- * back to returning the original orchestrator reply. The failure mode the
- * user experiences is "verifier didn't help", not "verifier broke my bot".
+ * Errors in the verifier itself never block the user — we always fall back
+ * to returning the original orchestrator reply. They surface as
+ * `unavailable`, never as `approved`: "the verifier could not check" must
+ * not read as "the verifier checked and found nothing wrong". The pipeline
+ * is injected, so its verdict is held to what its claims show
+ * (`bindVerdictToClaims`) before it is retried, resampled, stored or
+ * streamed: a status its claims do not back, or a reason outside the closed
+ * codes, never reaches `verifier_verdicts` or the stream.
  *
  * Behind a Privacy Shield every turn this wrapper runs hands its privacy
  * finalisation over (see `privacyEgress.ts` / `verifierPrivacyGate.ts`): the
@@ -66,10 +82,10 @@ export interface VerifierServiceOptions {
   /** Hard cap on retries after a contradiction. Default 1. */
   maxRetries?: number;
   /**
-   * #132 — when the first verdict is borderline (`approved_with_disclaimer`,
-   * i.e. no contradictions but at least one unverified claim), draw a
-   * second sample from the same orchestrator turn and merge the two
-   * verdicts. Default true.
+   * #132 — when the first verdict is borderline (`isBorderlineVerdict`: no
+   * contradictions, at least one claim confirmed and one a check could not
+   * confirm), draw a second sample from the same orchestrator turn and merge
+   * the two verdicts. Default true.
    *
    * Cost note: each enabled re-sample doubles the LLM cost of a turn that
    * already cleared verification with "almost". `maxResamples` caps the
@@ -320,12 +336,16 @@ export class VerifierService implements ChatAgent {
       return this.deliver(ledger, first, summarise(firstVerdict, 0, this.mode));
     }
 
-    // #132 — borderline gate: when the first verdict is
-    // `approved_with_disclaimer` (no contradictions but unverified claims),
-    // draw a second sample from the same orchestrator turn. Two independent
+    // #132 — borderline gate: when the first verdict confirmed claims but
+    // could not confirm another one it checked (`isBorderlineVerdict`), draw
+    // a second sample from the same orchestrator turn. Two independent
     // samples landing on the same disclaimer ⇒ keep. Disagreement ⇒ take
     // the more conservative reading (blocked wins). Bounded at
     // `maxResamples` per turn (default 1) so cost stays predictable.
+    // `skipped` / `unavailable`, a disclaimer that confirmed nothing, and one
+    // whose doubt is only claims no checker takes must never trigger this
+    // paid resample: a second sample cannot add evidence there, and
+    // otherwise every small-talk turn would run twice.
     let effective = first;
     let effectiveVerdict = firstVerdict;
     if (
@@ -412,8 +432,10 @@ export class VerifierService implements ChatAgent {
       return this.deliver(ledger, shown, summarise(effectiveVerdict, 1, this.mode));
     }
 
-    // Compute the user-facing badge: `corrected` when retry fixed it,
-    // `failed` when it did not.
+    // Compute the user-facing badge: `corrected` when the retry confirmed
+    // every claim, `partial` when it confirmed only some, `failed` when it is
+    // still contradicted, `unverified` / `unavailable` (no connector badge)
+    // when the retry's verification confirmed nothing.
     const badge = mergeBadges(effectiveVerdict, secondVerdict);
     return this.deliver(ledger, second, {
       ...summarise(secondVerdict, 1, this.mode),
@@ -532,8 +554,9 @@ export class VerifierService implements ChatAgent {
     const domainToolsCalled = extractToolsCalled(runTrace);
     const toolPostconditionViolations = extractPostconditionViolations(runTrace);
     const knowledgeGraphToolsCalled = extractKnowledgeGraphToolsCalled(runTrace);
+    let returned: unknown;
     try {
-      return await this.pipeline.verify({
+      returned = await this.pipeline.verify({
         runId,
         // What the turn's model saw — never an MCP input-card envelope.
         userMessage: modelFacingUserMessage(input.userMessage),
@@ -551,12 +574,23 @@ export class VerifierService implements ChatAgent {
       });
     } catch (err) {
       this.log(`[verifier/service] pipeline FAIL: ${errMsg(err)}`);
+      // Nothing was checked. The reason is a closed code: this verdict is
+      // summarised onto the stream, the message stays in the log line above.
       return {
-        status: 'approved',
+        status: 'unavailable',
+        reason: 'pipeline_error',
         claims: [],
         latencyMs: 0,
       };
     }
+    // Everything below acts on this verdict, so it is bound once, here: the
+    // status its claims back, a closed reason. What did not hold is logged
+    // with the raw value; the stream only ever sees the bound verdict.
+    const bound = bindVerdictToClaims(returned);
+    if (bound.problem !== undefined) {
+      this.log(`[verifier/service] pipeline verdict not taken as returned: ${bound.problem}`);
+    }
+    return bound.verdict;
   }
 
   private async persist(
@@ -594,54 +628,91 @@ function withVerifier(
 }
 
 function summarise(
-  verdict: VerifierVerdict,
+  returned: VerifierVerdict,
   retryCount: number,
   mode: 'shadow' | 'enforce',
 ): VerifierResultSummary {
-  const contradictionCount =
-    verdict.status === 'blocked' ? verdict.contradictions.length : 0;
-  const unverifiedCount =
-    verdict.status === 'approved_with_disclaimer'
-      ? verdict.unverified.length
-      : verdict.claims.filter((v) => v.status === 'unverified').length;
+  // The summary goes out verbatim on the stream, so it is built from a bound
+  // verdict whatever the caller passes: a status the claims back, a reason
+  // from the closed codes. A verdict from `safeVerify` is bound already and
+  // passes unchanged.
+  const { verdict } = bindVerdictToClaims(returned);
+  // Counted over the claim list itself, so `claimCount - contradictionCount
+  // - unverifiedCount` is exactly the number of verified claims — the figure
+  // the connector and web-chat badge gates check the badge against.
+  const count = (pick: (c: ClaimVerdict) => boolean): number =>
+    verdict.claims.filter(pick).length;
 
   return {
     badge: badgeFor(verdict, retryCount),
     status: verdict.status,
+    ...(verdict.status === 'skipped' || verdict.status === 'unavailable'
+      ? { reason: verdict.reason }
+      : {}),
     claimCount: verdict.claims.length,
-    contradictionCount,
-    unverifiedCount,
+    contradictionCount: count((c) => c.status === 'contradicted'),
+    unverifiedCount: count((c) => c.status === 'unverified'),
+    uncheckedCount: count((c) => c.status === 'unverified' && c.cause === 'not_checked'),
+    uncoveredCount: count((c) => c.claim.type === 'coverage_gap'),
     retryCount,
     latencyMs: verdict.latencyMs,
     mode,
   };
 }
 
-function badgeFor(
+/**
+ * Badge for one verdict, bound to evidence (`hasVerificationEvidence`: a
+ * check settled at least one claim). Without that the badge is `unavailable`
+ * when the verifier could not run or every check that ran failed, and
+ * `unverified` otherwise — whatever status the verdict carries. The pipeline
+ * is injected, so this reads the claims, not the status. With evidence:
+ * `failed` for any contradicted claim, `verified` only when every claim was
+ * confirmed, `partial` when some were not. After a retry, `corrected` takes
+ * the place of `verified` and needs the same: every claim confirmed. A retry
+ * that confirmed only some claims is `partial`, as on a first pass.
+ */
+export function badgeFor(
   verdict: VerifierVerdict,
   retryCount: number,
 ): VerifierBadge {
-  if (retryCount > 0) {
-    // Retry already happened — outcome defines badge.
-    return verdict.status === 'blocked' ? 'failed' : 'corrected';
+  if (!hasVerificationEvidence(verdict)) {
+    return verdict.status === 'unavailable' || everyCheckFailed(verdict)
+      ? 'unavailable'
+      : 'unverified';
   }
-  switch (verdict.status) {
-    case 'approved':
-      return 'verified';
-    case 'approved_with_disclaimer':
-      return 'partial';
-    case 'blocked':
-      return 'failed';
-  }
+  if (verdict.claims.some((c) => c.status === 'contradicted')) return 'failed';
+  const everyClaimConfirmed =
+    verdict.status === 'approved' &&
+    verdict.claims.every((c) => c.status === 'verified');
+  if (!everyClaimConfirmed) return 'partial';
+  return retryCount > 0 ? 'corrected' : 'verified';
 }
 
-function mergeBadges(
+/** True when a check ran on at least one claim and every such check failed.
+ *  Claims no check ran on (`not_checked`, including coverage entries) do not
+ *  count either way. */
+function everyCheckFailed(verdict: VerifierVerdict): boolean {
+  const checked = verdict.claims.filter(
+    (c) => !(c.status === 'unverified' && c.cause === 'not_checked'),
+  );
+  return (
+    checked.length > 0 &&
+    checked.every((c) => c.status === 'unverified' && c.cause === 'check_failed')
+  );
+}
+
+/**
+ * Badge after the correction retry. `corrected` / `failed` describe a retry
+ * that followed a blocked first pass, and the retry's own verdict decides:
+ * `corrected` needs a second pass that confirmed every claim; one that
+ * confirmed only some is `partial`. A retry whose verification was skipped,
+ * unavailable or confirmed nothing is never `corrected`.
+ */
+export function mergeBadges(
   first: VerifierVerdict,
   second: VerifierVerdict,
 ): VerifierBadge {
-  if (first.status === 'blocked' && second.status !== 'blocked') return 'corrected';
-  if (first.status === 'blocked' && second.status === 'blocked') return 'failed';
-  return badgeFor(second, 1);
+  return badgeFor(second, first.status === 'blocked' ? 1 : 0);
 }
 
 function errMsg(err: unknown): string {
@@ -756,8 +827,8 @@ function extractPostconditionViolations(
  * 3. Second sample relaxed to `approved` → keep first. Two contradictory
  *    samples + one finding stuff we didn't is exactly the noise signal
  *    that the disclaimer exists to communicate; don't upgrade.
- * 4. Second sample also borderline (fell back to safeVerify's
- *    `approved` fallback after a pipeline error) → keep first.
+ * 4. Second sample checked nothing — `skipped`, or `unavailable` (safeVerify's
+ *    result after a pipeline error) → keep first; it adds no signal.
  *
  * `takeSecond` is true only when we propagate the second sample's
  * orchestrator result onward (its answer string is what the LLM
@@ -770,7 +841,7 @@ export function mergeBorderlineVerdicts(
   if (second.status === 'blocked') {
     return { verdict: second, takeSecond: true };
   }
-  // Anything else (approved, approved_with_disclaimer): trust the first
-  // sample's disclaimer signal.
+  // Anything else (approved, approved_with_disclaimer, skipped,
+  // unavailable): trust the first sample's disclaimer signal.
   return { verdict: first, takeSecond: false };
 }

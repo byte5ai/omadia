@@ -194,9 +194,15 @@ export const APPROVED: VerifierVerdict = {
   claims: [{ status: 'verified', claim: CLAIM, source: 'odoo' }],
   latencyMs: 0,
 };
+const CONFIRMED_CLAIM = { ...CLAIM, id: 'c_002', text: 'Die Rechnung ist gebucht' };
+// Borderline (#132): one claim confirmed, one a check could not confirm —
+// the only shape that buys a re-sample (`isBorderlineVerdict`).
 export const BORDERLINE: VerifierVerdict = {
   status: 'approved_with_disclaimer',
-  claims: [{ status: 'unverified', claim: CLAIM, reason: 'no evidence' }],
+  claims: [
+    { status: 'verified', claim: CONFIRMED_CLAIM, source: 'odoo' },
+    { status: 'unverified', claim: CLAIM, reason: 'no evidence' },
+  ],
   unverified: [{ status: 'unverified', claim: CLAIM, reason: 'no evidence' }],
   latencyMs: 0,
 };

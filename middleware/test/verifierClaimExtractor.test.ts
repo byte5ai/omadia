@@ -112,7 +112,7 @@ describe('verifier/claimExtractor - extract', () => {
       ]) as never,
       log: () => undefined,
     });
-    const claims = await extractor.extract({ userMessage: 'Wo arbeitet Anna?', answer: ANSWER });
+    const { claims } = await extractor.extract({ userMessage: 'Wo arbeitet Anna?', answer: ANSWER });
     assert.equal(claims.length, 2);
     assert.equal(
       claims[0]!.context,
@@ -199,7 +199,7 @@ describe('verifier/claimExtractor - privacy view', () => {
       { text: 'in die IT-Abteilung', type: 'qualitative', expected_source: 'graph' },
     ]);
     const extractor = new ClaimExtractor({ llm: llm as never, log: () => undefined });
-    const claims = await extractor.extract({
+    const { claims, gaps } = await extractor.extract({
       userMessage: REAL_USER,
       answer: REAL_ANSWER,
       privacy: view,
@@ -214,6 +214,7 @@ describe('verifier/claimExtractor - privacy view', () => {
     assert.match(JSON.stringify(requests[0]), new RegExp(SURROGATE_NAME));
 
     assert.equal(claims.length, 3);
+    assert.deepEqual(gaps, [], 'every claim mapped back onto the real answer');
     assert.equal(claims[0]!.text, `${REAL_NAME} wechselte am ${REAL_DATE} in die IT-Abteilung`);
     assert.deepEqual(claims[0]!.relatedEntities, ['odoo:hr.employee:7']);
     // A string value that is itself a surrogate restores to the real literal,
@@ -247,7 +248,7 @@ describe('verifier/claimExtractor - privacy view', () => {
     assert.equal(admitCalls(), 1, 'the request must be admitted (and counted) exactly once');
   });
 
-  it('drops a claim whose span only partially covers a surrogate', async () => {
+  it('keeps a claim whose span only partially covers a surrogate from the checkers, as a coverage gap', async () => {
     const { view } = fakePrivacy();
     const { llm } = capturingLlm([
       // "Musterfrau wechselte" is in the wire answer, but restore cannot map a
@@ -256,7 +257,7 @@ describe('verifier/claimExtractor - privacy view', () => {
       { text: 'in die IT-Abteilung', type: 'qualitative', expected_source: 'graph' },
     ]);
     const extractor = new ClaimExtractor({ llm: llm as never, log: () => undefined });
-    const claims = await extractor.extract({
+    const { claims, gaps } = await extractor.extract({
       userMessage: REAL_USER,
       answer: REAL_ANSWER,
       privacy: view,
@@ -265,6 +266,9 @@ describe('verifier/claimExtractor - privacy view', () => {
       claims.map((c) => c.text),
       ['in die IT-Abteilung'],
     );
+    // Not dropped without a trace: the part of the answer it stood for was
+    // not checked, so the answer can be partly verified at most.
+    assert.deepEqual(gaps, ['claims_not_restored']);
   });
 
   /** A view over literal [real, surrogate] pairs; the wire answer is derived. */
@@ -296,7 +300,7 @@ describe('verifier/claimExtractor - privacy view', () => {
   it('re-derives an amount parsed from a placeholder from the real literal', async () => {
     const realAnswer = 'Das Jahresgehalt beträgt €72,000.';
     const view = swapView([['€72,000', '€10000']], realAnswer);
-    const claims = await extractWith(view, realAnswer, [
+    const { claims } = await extractWith(view, realAnswer, [
       { text: '€10000', type: 'amount', expected_source: 'odoo', value: 10000, unit: '€' },
       {
         text: 'Jahresgehalt beträgt €10000',
@@ -319,7 +323,7 @@ describe('verifier/claimExtractor - privacy view', () => {
   it('re-derives a date parsed from a placeholder, as ISO', async () => {
     const realAnswer = 'Der Vertrag endet am 31.12.2026 regulär.';
     const view = swapView([['31.12.2026', '05.05.1985']], realAnswer);
-    const claims = await extractWith(view, realAnswer, [
+    const { claims } = await extractWith(view, realAnswer, [
       // The model normalised the surrogate date itself.
       { text: 'endet am 05.05.1985', type: 'date', expected_source: 'odoo', value: '1985-05-05' },
     ]);
@@ -331,7 +335,7 @@ describe('verifier/claimExtractor - privacy view', () => {
   it('keeps a value the model read from a real literal next to a placeholder', async () => {
     const realAnswer = 'Jana Beispielfrau erhielt €500 Prämie mit Rechnung INV/2026/0042.';
     const view = swapView([['Jana Beispielfrau', 'Erika Musterfrau']], realAnswer);
-    const claims = await extractWith(view, realAnswer, [
+    const { claims } = await extractWith(view, realAnswer, [
       { text: 'Erika Musterfrau erhielt €500', type: 'amount', expected_source: 'odoo', value: 500 },
       {
         text: 'Erika Musterfrau erhielt €500 Prämie mit Rechnung INV/2026/0042',
@@ -355,7 +359,7 @@ describe('verifier/claimExtractor - privacy view', () => {
       ],
       realAnswer,
     );
-    const claims = await extractWith(view, realAnswer, [
+    const { claims } = await extractWith(view, realAnswer, [
       // Two amounts in the span: which one the value came from is a guess.
       { text: 'Statt €10000 sind es €80,000', type: 'amount', expected_source: 'odoo', value: 80000 },
       // A value that is only a fragment of a placeholder.
@@ -376,7 +380,7 @@ describe('verifier/claimExtractor - privacy view', () => {
       ],
       realAnswer,
     );
-    const claims = await extractWith(view, realAnswer, [
+    const { claims, gaps } = await extractWith(view, realAnswer, [
       // Two dates, one a placeholder: without a value the date check would
       // parse the FIRST date of the sentence.
       { text: 'Von 01.03.2023 bis 05.05.1985', type: 'date', expected_source: 'odoo', value: '1985-05-05' },
@@ -395,9 +399,11 @@ describe('verifier/claimExtractor - privacy view', () => {
       claims.map((c) => [c.text, c.value, c.odooRecord?.ref]),
       [['Jana Beispielfrau im Team', undefined, 'Jana Beispielfrau']],
     );
+    // The two claims kept from the checkers are reported, not lost.
+    assert.deepEqual(gaps, ['claims_not_restored']);
   });
 
-  it('blocked masking sends nothing and yields no claims', async () => {
+  it('blocked masking sends nothing and rejects — no empty extraction', async () => {
     const { view, admitCalls } = fakePrivacy({ blocked: true });
     const { llm, requests } = capturingLlm([
       { text: 'in die IT-Abteilung', type: 'qualitative', expected_source: 'graph' },
@@ -409,12 +415,16 @@ describe('verifier/claimExtractor - privacy view', () => {
         logs.push(m);
       },
     });
-    const claims = await extractor.extract({
-      userMessage: REAL_USER,
-      answer: REAL_ANSWER,
-      privacy: view,
-    });
-    assert.deepEqual(claims, []);
+    // Nothing was looked for: the pipeline reports this as `unavailable`,
+    // never as an extraction that found no claim (`skipped`).
+    await assert.rejects(
+      extractor.extract({
+        userMessage: REAL_USER,
+        answer: REAL_ANSWER,
+        privacy: view,
+      }),
+      /not admitted/,
+    );
     assert.equal(admitCalls(), 1);
     assert.equal(requests.length, 0, 'the extractor called the model after masking was blocked');
     assert.ok(logs.some((l) => l.includes('prompt masking blocked')));

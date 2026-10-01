@@ -35,6 +35,7 @@ import { RecalledContextCard } from '../_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
 import { TurnIncompleteNotice } from '../_components/chat/TurnIncompleteNotice';
+import { VerifierBadge } from '../_components/chat/VerifierBadge';
 import { Markdown } from '../_components/Markdown';
 import { resetChatSession, steerActiveTurn } from '../_lib/api';
 import { isSendKey } from '../_lib/composerKeys';
@@ -1089,7 +1090,10 @@ export function MessageRow({
           </>
         )}
         {!isUser &&
-          (message.telemetry || elapsed || message.turnId !== undefined) && (
+          (message.telemetry ||
+            elapsed ||
+            message.turnId !== undefined ||
+            message.verifier) && (
             <div className="mt-2 flex flex-wrap items-center border-t border-current/10 pt-2 text-[11px] text-[color:var(--fg-muted)]">
               {message.telemetry && (
                 <span>
@@ -1105,6 +1109,7 @@ export function MessageRow({
                   {shortModelName(message.model)}
                 </span>
               )}
+              {message.verifier && <VerifierBadge summary={message.verifier} />}
               {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
               {message.streaming && (
                 <span className="ml-3">{t('streamingSuffix')}</span>

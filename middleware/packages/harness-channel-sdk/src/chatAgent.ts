@@ -264,14 +264,61 @@ export interface RunTracePayload {
   provider?: string;
 }
 
-/** Compact verifier summary attached to `ChatTurnResult` and the streaming
- *  `verifier` event. */
+/**
+ * Why a verifier summary carries no evidence. `no_trigger` / `no_claims` /
+ * `no_checkable_claims` explain a `skipped` turn (nothing checkable), and
+ * `incomplete_coverage` one whose claim extraction covered only part of the
+ * answer and found nothing checkable there; `extractor_error` /
+ * `pipeline_error` an `unavailable` one (the verifier could not run, or its
+ * pipeline returned no usable verdict). A closed code set: the summary is
+ * forwarded verbatim on the stream, so it never carries an error message.
+ */
+export type VerifierSummaryReason =
+  | 'no_trigger'
+  | 'no_claims'
+  | 'no_checkable_claims'
+  | 'incomplete_coverage'
+  | 'extractor_error'
+  | 'pipeline_error';
+
+/**
+ * Compact verifier summary attached to `ChatTurnResult` and the streaming
+ * `verifier` event.
+ *
+ * A summary is evidence only when a check settled a claim: a contradicted
+ * claim for `blocked`, a verified one for `approved` /
+ * `approved_with_disclaimer` (verified = `claimCount - contradictionCount -
+ * unverifiedCount`). `skipped` (badge `unverified`), `unavailable` (badge
+ * `unavailable`), summaries whose claims all stayed unverified and summaries
+ * whose counts contradict each other carry none, and a consumer must never
+ * render them as a check — see `verifierSummaryHasEvidence`.
+ * `toSemanticAnswer` forwards a connector badge only when the counts back it.
+ */
 export interface VerifierResultSummary {
-  badge: 'verified' | 'partial' | 'corrected' | 'failed';
-  status: 'approved' | 'approved_with_disclaimer' | 'blocked';
+  badge: 'verified' | 'partial' | 'corrected' | 'failed' | 'unverified' | 'unavailable';
+  status: 'approved' | 'approved_with_disclaimer' | 'blocked' | 'skipped' | 'unavailable';
+  /** Present only for `skipped` / `unavailable`. */
+  reason?: VerifierSummaryReason;
   claimCount: number;
   contradictionCount: number;
+  /** Claims not confirmed: checked without confirmation, failed in their
+   *  checker, or never checked. */
   unverifiedCount: number;
+  /**
+   * Of `unverifiedCount`, the claims no check ran on: no checker accepts them
+   * (e.g. an amount whose source is neither Odoo nor the graph) or they lie
+   * beyond the per-answer claim cap. Optional for summaries built without it.
+   */
+  uncheckedCount?: number;
+  /**
+   * Of `uncheckedCount`, entries that stand for a part of the answer the claim
+   * extraction did not cover rather than for one claim: text beyond the
+   * extractor's window, claims the model left out once its list reached the
+   * request limit, or claims it returned that are not in the answer as
+   * written or too long to check whole. Any such entry means the answer was
+   * not checked in full. Optional for summaries built without it.
+   */
+  uncoveredCount?: number;
   retryCount: number;
   latencyMs: number;
   mode: 'shadow' | 'enforce';
@@ -465,10 +512,12 @@ export interface ChatTurnResult {
    */
   fileAttachments?: OutgoingFileAttachment[];
   /**
-   * Answer-verifier summary. Populated only when the verifier is configured
-   * AND ran for this turn (trigger router fired). Consumers like the Teams
-   * adapter render a badge based on `badge`; dev UIs can surface the full
-   * claim breakdown. See docs/plans/answer-verifier-agent.md for semantics.
+   * Answer-verifier summary. Populated whenever the verifier is configured
+   * and ran for this turn — including turns it could not check (`skipped`:
+   * nothing checkable; `unavailable`: the verifier failed). Only
+   * `toSemanticAnswer`'s evidence gate decides whether a connector badge
+   * follows from it; dev UIs can surface the full breakdown. State table:
+   * docs/security-architecture.md §7c.
    */
   verifier?: VerifierResultSummary;
   /**
@@ -975,7 +1024,9 @@ export type ChatStreamEvent =
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The
    * client can render a badge, hide unverified facts, or simply ignore the
-   * event. Never emitted by the base orchestrator.
+   * event. `summary.status` may be `skipped` / `unavailable` — nothing was
+   * checked, so it must not render as a check. Never emitted by the base
+   * orchestrator.
    */
   | { type: 'verifier'; summary: VerifierResultSummary }
   /**

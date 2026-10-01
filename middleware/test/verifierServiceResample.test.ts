@@ -18,6 +18,7 @@ import { strict as assert } from 'node:assert';
 
 import {
   isBorderlineVerdict,
+  type ClaimVerdict,
   type VerifierPipeline,
   type VerifierVerdict,
 } from '@omadia/verifier';
@@ -29,17 +30,53 @@ import {
   VerifierService,
 } from '../packages/harness-orchestrator/src/verifierService.js';
 
+const VERIFIED_CLAIM: ClaimVerdict = {
+  status: 'verified',
+  claim: {
+    id: 'c_1',
+    text: '1.234,56 €',
+    type: 'amount',
+    expectedSource: 'odoo',
+    relatedEntities: [],
+  },
+  source: 'odoo',
+};
+
+/** `approved` always rests on at least one verified claim — the pipeline
+ *  cannot produce it otherwise, so the fixture does not either. */
 function approved(): VerifierVerdict {
-  return { status: 'approved', claims: [], latencyMs: 0 };
+  return { status: 'approved', claims: [VERIFIED_CLAIM], latencyMs: 0 };
 }
 
-function borderline(): VerifierVerdict {
+function skipped(): VerifierVerdict {
+  return { status: 'skipped', reason: 'no_trigger', claims: [], latencyMs: 0 };
+}
+
+function unavailable(): VerifierVerdict {
+  return { status: 'unavailable', reason: 'pipeline_error', claims: [], latencyMs: 0 };
+}
+
+function unverifiedClaim(cause?: 'not_checked' | 'check_failed'): ClaimVerdict {
+  return {
+    status: 'unverified',
+    claim: { ...VERIFIED_CLAIM.claim, id: 'c_2' },
+    reason: 'no evidence',
+    ...(cause ? { cause } : {}),
+  };
+}
+
+function disclaimer(claims: ClaimVerdict[]): VerifierVerdict {
   return {
     status: 'approved_with_disclaimer',
-    claims: [],
-    unverified: [],
+    claims,
+    unverified: claims.filter((c) => c.status === 'unverified'),
     latencyMs: 0,
   };
+}
+
+/** One claim confirmed, one checked without confirmation. */
+function borderline(): VerifierVerdict {
+  return disclaimer([VERIFIED_CLAIM, unverifiedClaim()]);
 }
 
 function blocked(): VerifierVerdict {
@@ -52,10 +89,31 @@ function blocked(): VerifierVerdict {
 }
 
 describe('isBorderlineVerdict', () => {
-  it('returns true only for approved_with_disclaimer', () => {
+  it('returns true only for a disclaimer that confirmed a claim and doubts another', () => {
     assert.equal(isBorderlineVerdict(approved()), false);
     assert.equal(isBorderlineVerdict(borderline()), true);
     assert.equal(isBorderlineVerdict(blocked()), false);
+    // A resample is a second paid orchestrator turn. Nothing checkable
+    // (`skipped`) or a verifier that could not run (`unavailable`) must never
+    // buy one — otherwise every small-talk turn would run twice.
+    assert.equal(isBorderlineVerdict(skipped()), false);
+    assert.equal(isBorderlineVerdict(unavailable()), false);
+  });
+
+  it('a disclaimer that confirmed nothing, or doubts only unchecked claims, is not borderline', () => {
+    // Nothing confirmed: badged `unverified`, not `partial` — no resample.
+    assert.equal(isBorderlineVerdict(disclaimer([unverifiedClaim(), unverifiedClaim()])), false);
+    assert.equal(isBorderlineVerdict(disclaimer([unverifiedClaim('check_failed')])), false);
+    // A second sample cannot make a claim checkable that no checker accepts.
+    assert.equal(
+      isBorderlineVerdict(disclaimer([VERIFIED_CLAIM, unverifiedClaim('not_checked')])),
+      false,
+    );
+    // A failed check next to a confirmed claim may clear on a second sample.
+    assert.equal(
+      isBorderlineVerdict(disclaimer([VERIFIED_CLAIM, unverifiedClaim('check_failed')])),
+      true,
+    );
   });
 });
 
@@ -76,6 +134,16 @@ describe('mergeBorderlineVerdicts', () => {
     const merged = mergeBorderlineVerdicts(borderline(), blocked());
     assert.equal(merged.verdict.status, 'blocked');
     assert.equal(merged.takeSecond, true);
+  });
+
+  it('keeps first when the second sample is unavailable or skipped', () => {
+    // A second sample that checked nothing adds no signal; the first
+    // sample's disclaimer stands and its answer is kept.
+    for (const second of [unavailable(), skipped()]) {
+      const merged = mergeBorderlineVerdicts(borderline(), second);
+      assert.equal(merged.verdict.status, 'approved_with_disclaimer', second.status);
+      assert.equal(merged.takeSecond, false, second.status);
+    }
   });
 });
 

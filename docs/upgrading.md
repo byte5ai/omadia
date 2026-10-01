@@ -766,6 +766,64 @@ What that means for an instance installed before v0.115:
 Fresh installs via `render.yaml` or `fly/deploy.sh` generate the key
 themselves; only pre-v0.115 instances have to add it by hand.
 
+## Answer verifier: `skipped` and `unavailable` verdicts (releases after 2026-09-30)
+
+No configuration step: no new environment variable, no migration. It matters
+only if the verifier is enabled (`VERIFIER_ENABLED=true`) and something reads
+its results:
+
+- **SQL on `verifier_verdicts`.** `status` now also holds `skipped` (nothing
+  checkable in the answer) and `unavailable` (the verifier could not run).
+  Both used to be stored as `approved`, so the share of `approved` rows drops.
+  It drops further because an answer the verifier could check only in part
+  (a claim no checker accepts, more claims than `VERIFIER_MAX_CLAIMS`, an
+  answer longer than the 6000 characters the claim extractor reads, or a
+  claim the extraction returned that is not in the answer or longer than 300
+  characters) is now
+  `approved_with_disclaimer`, its unchecked claims and coverage entries
+  counted in `unverified_count`, which now always counts every unverified
+  claim of the row. A dashboard or query that reads
+  `status = 'approved'` as "clean turn" is now correct, but its numbers
+  change.
+- **Clients of the `verifier` stream event** (`/api/chat/stream`, public API
+  keys). `summary.status` can be `skipped` / `unavailable`, `summary.badge`
+  `unverified` / `unavailable`, and a `summary.reason` code,
+  `summary.uncheckedCount` and `summary.uncoveredCount` appear. The badge is
+  `unverified` or `unavailable` whenever no claim was confirmed or
+  contradicted — also on an `approved_with_disclaimer` status — so key on the
+  badge, not on the status. Show a result as checked only for `verified` /
+  `partial` / `corrected` / `failed` with `claimCount > 0`; `corrected`, like
+  `verified`, now means every claim was confirmed.
+- **`VERIFIER_MAX_CLAIMS`** keeps its value and default (20) and caps how many
+  claims are checked per answer. Claims beyond it are no longer dropped; they
+  are reported as not checked. The claim extractor asks the model for one
+  claim more than the cap and reports a list that reaches that limit as
+  possibly incomplete, so a model that stops at the limit cannot hide claims
+  either. Both keep the answer at "partly verified".
+- **Plugins built against `@omadia/verifier` types.** A `switch` over
+  `VerifierVerdict['status']` must handle the two new statuses before it
+  compiles again. An `unverified` claim verdict may carry
+  `cause: 'not_checked' | 'check_failed'`, and a claim may have the synthetic
+  type `coverage_gap`. `ClaimExtractor.extract` now resolves
+  `{ claims, gaps }` instead of a claim list, returns every valid claim
+  instead of cutting the list at `maxClaims`, reads every `record_claims`
+  call of the model's response, and names in `gaps` what it did not cover —
+  including claims that are not in the answer (`claims_not_in_answer`), which
+  it used to drop without a trace, and claims longer than `MAX_CLAIM_CHARS`
+  (300; `claims_too_long`), which it used to cut to their first 300
+  characters before checking them. A claim's `text` is the span of the
+  answer it quotes (case and whitespace may differ from the model's text),
+  never longer than `MAX_CLAIM_CHARS`. A `switch` over `ExtractionGap` must
+  handle `claims_too_long`. Give `VerifierPipeline` the same `maxClaims` to
+  cap the checks. A plugin that provides its own `verifier@1` pipeline gets
+  its verdict held to its claims (`bindVerdictToClaims`): a status its claims
+  do not back is lowered, and `approved` over no claim, an unknown status or
+  a `reason` outside the closed codes is reported as `unavailable` /
+  `pipeline_error`.
+
+Teams and Telegram need nothing: they keep receiving only the four badges they
+know and show no badge for turns without evidence.
+
 ## Upgrading to 0.3
 
 > Stub. Fill this in as part of the 0.3 release.

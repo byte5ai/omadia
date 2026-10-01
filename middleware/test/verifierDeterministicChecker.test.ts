@@ -325,7 +325,13 @@ describe('verifier/deterministicChecker - error handling', () => {
     assert.equal(verdict.status, 'unverified');
     if (verdict.status === 'unverified') {
       assert.match(verdict.reason, /timeout/);
+      // A failed check is marked as such: it confirms nothing, and when every
+      // check of an answer fails the verifier reports itself unavailable.
+      assert.equal(verdict.cause, 'check_failed');
     }
+    // Control: a claim the checker cannot settle without failing has no cause.
+    const noReader = await new DeterministicChecker({}).check(makeAmountClaim());
+    assert.equal(noReader.status === 'unverified' ? noReader.cause : 'not unverified', undefined);
   });
 });
 
@@ -371,10 +377,9 @@ describe('verifier/deterministicChecker - checkRecordExists (any claim type)', (
       }),
       log: () => undefined,
     });
-    assert.equal(
-      (await throwing.checkRecordExists(anchoredQualitative())).status,
-      'unverified',
-    );
+    const failed = await throwing.checkRecordExists(anchoredQualitative());
+    assert.equal(failed.status, 'unverified');
+    assert.equal(failed.status === 'unverified' ? failed.cause : undefined, 'check_failed');
     const none = new DeterministicChecker({});
     assert.equal(
       (await none.checkRecordExists(anchoredQualitative())).status,

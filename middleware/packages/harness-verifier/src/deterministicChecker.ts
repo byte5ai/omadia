@@ -23,8 +23,9 @@ import { SOFT_ANCHOR_REF_FIELDS, hasOdooRecordAnchor } from './claimTypes.js';
  *    'hr')` branch — the `hr.*` model prefix in `odooRecord.model` is the
  *    real trigger.
  *  - On transient failure (network, timeout, rate limit) we return
- *    `unverified`, not `contradicted`. The pipeline's aggregator decides
- *    whether that degrades the final verdict to `approved_with_disclaimer`.
+ *    `unverified` with `cause: 'check_failed'`, not `contradicted`. The
+ *    pipeline's aggregator decides whether that degrades the final verdict
+ *    to `approved_with_disclaimer`; a failed check is never evidence.
  *  - Monetary tolerance is 0.01 € (one cent). Dates are compared as
  *    ISO strings, ids as exact matches.
  */
@@ -115,7 +116,7 @@ export class DeterministicChecker {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.log(`[verifier/deterministic] FAIL claim=${claim.id} err=${msg}`);
-      return unverified(claim, `re-query error: ${msg}`);
+      return checkFailed(claim, `re-query error: ${msg}`);
     }
   }
 
@@ -168,7 +169,7 @@ export class DeterministicChecker {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.log(`[verifier/deterministic] FAIL exists claim=${claim.id} err=${msg}`);
-      return unverified(claim, `re-query error: ${msg}`);
+      return checkFailed(claim, `re-query error: ${msg}`);
     }
   }
 
@@ -378,6 +379,12 @@ function contradicted(claim: Claim, truth: unknown, detail?: string): ClaimVerdi
 
 function unverified(claim: Claim, reason: string): ClaimVerdict {
   return { status: 'unverified', claim, reason };
+}
+
+/** The re-query itself failed: the claim is unconfirmed, and the failure is
+ *  marked so an answer whose every check failed reads as an outage. */
+function checkFailed(claim: Claim, reason: string): ClaimVerdict {
+  return { status: 'unverified', claim, reason, cause: 'check_failed' };
 }
 
 /**

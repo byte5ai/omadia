@@ -45,6 +45,14 @@ export class VerifierStore {
     const contradictions =
       verdict.status === 'blocked' ? verdict.contradictions : [];
     const unverifiedCount = countUnverified(verdict);
+    // `skipped` / `unavailable` persist as their own status (the column is
+    // free TEXT), so calibration queries can tell an outage from a clean run.
+    // The run id links the row to the failure logged where it happened.
+    if (verdict.status === 'unavailable') {
+      this.log(
+        `[verifier/store] unavailable run=${input.runId} reason=${verdict.reason}`,
+      );
+    }
 
     try {
       await this.pool.query(
@@ -118,6 +126,9 @@ function countByClass(verdicts: readonly ClaimVerdict[]): {
   let soft = 0;
   for (const v of verdicts) {
     const t = v.claim.type;
+    // A coverage entry stands for a part of the answer, not a claim; it
+    // still counts in `claim_count` and `unverified_count`.
+    if (t === 'coverage_gap') continue;
     if (t === 'amount' || t === 'id' || t === 'date' || t === 'aggregate') {
       hard += 1;
     } else {
@@ -127,9 +138,9 @@ function countByClass(verdicts: readonly ClaimVerdict[]): {
   return { hard, soft };
 }
 
+/** Counted from the claims, not inferred from the status: an `approved` row
+ *  must never report zero unverified claims that its claim list holds. */
 function countUnverified(verdict: VerifierVerdict): number {
-  if (verdict.status === 'approved_with_disclaimer') return verdict.unverified.length;
-  if (verdict.status === 'approved') return 0;
   return verdict.claims.filter((v) => v.status === 'unverified').length;
 }
 

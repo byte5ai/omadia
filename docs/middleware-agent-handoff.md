@@ -3275,22 +3275,128 @@ type ChatStreamEvent =
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; output: string; durationMs: number; isError?: boolean }
   | { type: 'done'; answer: string; toolCalls: number; iterations: number }
+  | { type: 'verifier'; summary: VerifierResultSummary } // nur mit aktivem Verifier, nach `done`
   | { type: 'error'; message: string }
 ```
 
-Genau ein `done` oder `error` schließt den Stream. Header:
+Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
+`done` noch genau ein `verifier`-Event (siehe unten). Header:
 `Content-Type: application/x-ndjson; charset=utf-8`, `X-Accel-Buffering: no`
 (nginx-buffer-off).
 
 **Antwort-Verifier.** Ist `verifier@1` aktiv, folgt auf `done` noch genau ein
-`{ type: 'verifier'; summary }` (Status/Badge der Prüfung; die Web-UI wertet es
-derzeit nicht aus). Läuft zusätzlich der Privacy Shield, hält der Wrapper
+`{ type: 'verifier'; summary }` (Status/Badge der Prüfung, Werte siehe
+unten). Läuft zusätzlich der Privacy Shield, hält der Wrapper
 `done` zurück, bis der innere Stream gedrained und der Verifier fertig ist:
 `done` trägt dann — sofern der Turn einen hat — den vollständigen Receipt
 (`privacyReceipt` inkl. `verifierEgress`, `receiptId`), direkt danach kommt
 `verifier`. Text-Deltas
 laufen unverändert live, nur der Abschluss wartet (Heartbeats laufen weiter).
 Details: `docs/security-architecture.md` §6e.
+
+**Verifier-Event (`verifier`).** `summary` ist ein `VerifierResultSummary`
+(`@omadia/channel-sdk`). Die Werte sind an Evidenz gebunden:
+
+- `status`: `approved` | `approved_with_disclaimer` | `blocked` — es wurden
+  Claims geprüft; `skipped` — der Verifier lief, fand aber nichts Prüfbares;
+  `unavailable` — der Verifier konnte nicht laufen (Extractor- oder
+  Pipeline-Fehler). `approved` heißt: die Extraktion meldet keine Lücke (das
+  Modell hat die ganze Antwort gesehen, seine Liste blieb unter dem
+  Anfrage-Limit, alle `record_claims`-Calls wurden gelesen und jeder
+  zurückgegebene Claim steht vollständig in der Antwort und ist kurz genug
+  für einen Check), und jeder extrahierte Claim ist geprüft und `verified`,
+  mindestens einer. Einen Claim, den das Modell unter
+  dem Limit gar nicht auflistet, sieht keine Prüfung — `approved` heißt also
+  „nichts bekannt Ungeprüftes“, nicht „die Antwort enthält sonst nichts“. Ein
+  Claim, den kein Checker nimmt (Betrag, Datum, ID oder Summe mit
+  Quelle weder Odoo noch Graph) oder der über dem Claim-Limit pro Antwort
+  liegt (`VERIFIER_MAX_CLAIMS`, greift in der Pipeline), bleibt als
+  `unverified` mit `cause: 'not_checked'` im Verdict — eine nur teilweise
+  prüfbare Antwort ist damit `approved_with_disclaimer`, nie `approved`.
+  Ebenso, was die Extraktion nicht erfasst hat: Der `ClaimExtractor` liest
+  die ersten 6000 Zeichen der Antwort (`EXTRACTION_WINDOW_CHARS`) und bittet
+  das Modell um höchstens `VERIFIER_MAX_CLAIMS + 1` Claims; Text jenseits des
+  Fensters, eine bis zu diesem Limit gefüllte Liste (das Modell hat dann
+  womöglich Claims ausgelassen) und Claims, die nicht in der Antwort stehen
+  (`claims_not_in_answer`), meldet er in `ClaimExtraction.gaps`, und die
+  Pipeline hält jede Lücke als `not_checked`-Eintrag (Claim-Typ
+  `coverage_gap`) im Verdict. Der Verbatim-Guard vergleicht ohne Rücksicht
+  auf Groß-/Kleinschreibung und lässt jede Whitespace-Folge auf jede andere
+  passen (ein Zeilenumbruch, den das Modell als Leerzeichen schreibt, zählt
+  als Zitat; der Claim trägt dann den Wortlaut der Antwort). Was dann noch
+  nicht passt — eine Umschreibung oder ein aus einem anderen Satzteil
+  hineingezogenes Subjekt — geht an keinen Checker, verschwindet aber nicht
+  mehr spurlos, sondern ist die Lücke `claims_not_in_answer`. Der Guard
+  vergleicht den ganzen Claim, nie ein gekürztes Präfix (früher wurde jeder
+  Claim vor dem Abgleich auf 300 Zeichen gekürzt und nur sein Anfang
+  geprüft). Ein Claim, der die Antwort zitiert, aber länger ist als
+  `MAX_CLAIM_CHARS` (300 Zeichen; das Tool-Schema verlangt 1-200), wird
+  nicht passend gekürzt, sondern ist die Lücke `claims_too_long`. Der
+  Extractor liest jeden `record_claims`-Call einer Modellantwort, nicht nur
+  den ersten.
+  Fand die Extraktion im erfassten Teil nichts Prüfbares, ist das Verdict
+  `skipped` mit `incomplete_coverage`. Der
+  `ClaimExtractor` wirft, wenn der LLM-Call scheitert, die Antwort am
+  Token-Limit abgeschnitten ist (`finishReason: 'max_tokens'`), sie keinen
+  verwertbaren `record_claims`-Call trägt (keinen, oder einen ohne
+  `claims`-Array) oder ein Eintrag das Schema verletzt, statt eine leere oder
+  halbe Claim-Liste zu liefern: das landet in
+  `unavailable` (`extractor_error`), nie in `skipped` (`no_claims`) oder
+  `approved`.
+- `badge`: braucht einen Check, der einen Claim entschieden hat
+  (`hasVerificationEvidence`): `verified` nur, wenn jeder Claim bestätigt ist;
+  `partial` bei mindestens einem bestätigten und einem offenen Claim;
+  `corrected` nach einem Retry, dessen eigene Prüfung jeden Claim bestätigt
+  hat — bestätigt sie nur einen Teil, ist das Badge `partial` wie beim ersten
+  Durchlauf; `failed` bei einem Widerspruch. Ohne bestätigten Claim ist das
+  Badge `unverified` — auch bei `status` `approved_with_disclaimer`, wenn die
+  Quellen schwiegen — bzw. `unavailable`, wenn jede gelaufene Prüfung
+  scheiterte (Re-Query oder Judge-Call fehlgeschlagen,
+  `cause: 'check_failed'`) oder der Verifier nicht lief.
+- `reason`: nur bei `skipped` (`no_trigger` | `no_claims` |
+  `no_checkable_claims` | `incomplete_coverage`) und `unavailable`
+  (`extractor_error` | `pipeline_error`). Geschlossener Code-Satz, nie eine
+  Fehlermeldung — die bleibt in der Logzeile, wo der Fehler gefangen wird.
+- `uncheckedCount`: Claims, auf denen keine Prüfung lief (`not_checked`); in
+  `unverifiedCount` mitgezählt. Davon `uncoveredCount`: Einträge für nicht
+  erfasste Teile der Antwort (`coverage_gap`) — die Antwort wurde nicht ganz
+  geprüft. Bestätigte Claims sind `claimCount - contradictionCount -
+  unverifiedCount`.
+
+Die Pipeline ist injiziert (`verifier@1`). `VerifierService.safeVerify` bindet
+ihr Verdict deshalb an seine Claims (`bindVerdictToClaims`, `@omadia/verifier`),
+bevor Retry, Resample, Persistenz oder Stream darauf aufsetzen; `summarise`
+bindet beim Bau des Stream-Summaries noch einmal. Ein Status wird nie höher
+gemeldet, als die Claims tragen (`approved` mit unbestätigtem Claim →
+`approved_with_disclaimer`, mit widersprochenem → `blocked`), und nie
+angehoben. `approved` / `approved_with_disclaimer` / `blocked` ohne Claim, ein
+unbekannter Status, Einträge, die keine Claim-Verdicts sind, und ein `reason`
+außerhalb der geschlossenen Codes werden `unavailable` / `pipeline_error`; der
+Rohwert steht nur in der Server-Logzeile (`[verifier/service] pipeline verdict
+not taken as returned: …`). Die eingebaute Pipeline ist davon nicht betroffen.
+`verifier_verdicts.unverified_count` zählt die Claims selbst, nicht den Status.
+
+Das Event geht unverändert über `/api/chat/stream` und den Public-API-Key-Stream
+(`chatRouter.ts`) raus. Ein Connector-Badge entsteht daraus nur über
+`toSemanticAnswer` und nur, wenn die Zähler das Badge tragen
+(`verifierSummaryHasEvidence`, `verified` und `corrected` nur bei lauter
+bestätigten Claims) und zueinander passen: nichtnegative ganze Zahlen,
+`uncoveredCount ≤ uncheckedCount ≤ unverifiedCount`,
+`contradictionCount + unverifiedCount ≤ claimCount`; fehlende optionale
+Zähler gelten als 0, fehlende Pflichtzähler nie. Der Web-Chip wendet dieselbe
+Regel an (ein Summary mit widersprüchlichen Zählern bekommt einen neutralen
+Chip); der Wire-Typ `SemanticAnswer.verifier` bleibt
+`verified | partial | corrected | failed`, Turns ohne Evidenz ergeben dort
+kein Badge. Der Web-Chat zeigt das Event als Footer-Chip (`VerifierBadge`,
+Keys `chat.verifier.*`), grün nur für ein `verified` mit lauter bestätigten
+Claims, `corrected` nur unter derselben Bedingung; der Tooltip nennt nicht
+geprüfte Claims bzw. sagt, dass nicht die ganze Antwort geprüft wurde. Der
+Borderline-Resample (#132) läuft nur, wenn ein Verdict Claims bestätigt und
+ein geprüfter Claim offen bleibt — nicht bei `skipped` / `unavailable`, nicht
+ohne bestätigten Claim und nicht, wenn nur `not_checked` (auch eine
+Abdeckungslücke) offen ist. Der Omadia-UI-Channel verwirft das Event weiterhin
+(`omadia-ui-channel/src/protocol.ts`). Zustands-Tabelle und Regeln:
+`docs/security-architecture.md` §7c.
 
 **Degradierter Turn (#1094).** Wirft ein Turn, *nachdem* mindestens ein
 Tool-Call bereits committet hat, bleibt das terminale Event bewusst `done` —
@@ -3331,7 +3437,10 @@ degradiert markiert und darf von keinem Consumer als Antwort gerendert werden:
   und `correlationId` bleiben am Event.
 - Ein degradierter Turn zählt **nicht** als „letzter Turn ok" im Operator-Health
   (`routes/chat.ts`), **nicht** als `ok` im Public-API-Key-Audit
-  (`chatRouter.ts`), und der Verifier überspringt ihn (keine Claims).
+  (`chatRouter.ts`), und der Verifier überspringt ihn im Stream ganz (kein
+  `verifier`-Event, `VerifierService.chatStream`). Der nicht-streamende Pfad
+  (`VerifierService.chat` → `runTurn`) sieht nie einen degradierten Turn: dort
+  wirft der Turn weiter, bevor der Verifier läuft.
 
 **Contract-Erweiterung — AI-Act-Kennzeichnung (Epic #642).** Der Ausgangs-Contract
 trägt die KI-Kennzeichnung zusätzlich zum Antworttext:
@@ -3637,6 +3746,12 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   Floor anheben, sobald die Zahl steigt. `mask_user_prompt` ist ein globaler Schalter (kein
   Locale-Schalter); Betreibern mit überwiegend niederländischen Nutzern bis dahin C1 mit
   aktivieren oder die C0-Lücke bei Adressen bewusst in Kauf nehmen.
+- **Wackelnder Web-UI-Test `QualityPanel.test.tsx` („Aktualisieren button refetches").**
+  Der Test klickt den Refresh-Button, sobald der erste Fetch nur *aufgerufen* wurde; der
+  Button ist aber `disabled={loading}`, bis dieser Fetch fertig ist. Landet der Klick im
+  Ladezustand, kommt kein zweiter Fetch, und das `waitFor` läuft nach 1 s ab — am
+  2026-10-01 einmal im vollen Suite-Lauf rot, isoliert dreimal grün. Fix: vor dem Klick
+  warten, bis der Button wieder aktiv ist.
 
 ### Offene Punkte aus den Security-Härtungen (2026-09-30)
 
@@ -4304,6 +4419,134 @@ neu gebaute `{ formula }` durch (`cellValueOf`, Header nur als Text). Liest
 ein Update einen dieser Werte anders, etwa Text mit führendem `=` als Formel,
 umgeht er die Policy. `office-cell-values.test.ts` prüft die abgelehnten
 Objektformen und dass solcher Text Text bleibt.
+
+### Answer-Verifier: offene Punkte nach den evidenzgebundenen Verdicts (2026-09-30)
+
+- **Connector-Chip für `skipped` / `unavailable` — Produktentscheidung.** Teams
+  und Telegram bekommen für diese Turns bewusst **kein** Badge; der Wire-Typ
+  `SemanticAnswer.verifier` blieb unverändert, damit die Connector-Repos kein
+  Release brauchen. Ein expliziter „nicht geprüft"- / „Prüfung nicht
+  verfügbar"-Chip hieße: Union in `outgoing.ts` erweitern, `teamsCard.ts`
+  (`verifierChip`) nachziehen, beide Connector-Repos releasen — und ein
+  neutrales Badge auf jedem Small-Talk-Turn. Der Web-Chat zeigt beide Zustände
+  bereits (`VerifierBadge`).
+- **`CHECK`-Constraint auf `verifier_verdicts.status`.** Das Vokabular ist
+  jetzt geschlossen (`approved`, `approved_with_disclaimer`, `blocked`,
+  `skipped`, `unavailable`); eine Migration in der KG-neon-Serie könnte es
+  festschreiben. Heute freie `TEXT`-Spalte ohne Leser im Repo.
+- **Golden-Eval einmal beaufsichtigt laufen lassen.** `skipped.jsonl` (vorher
+  `approve.jsonl`) erwartet jetzt `skipped`. Ein Sample, dessen Extraktion leer
+  bleibt, landet nun in `skipped` statt still in `approved`; extrahiert das
+  Modell neben einem geprüften Claim einen, den kein Checker nimmt, oder einen,
+  der nicht wörtlich in der Antwort steht (Umschreibung, hineingezogenes
+  Subjekt — `claims_not_in_answer`), landet ein `approved`-Eintrag jetzt in
+  `approved_with_disclaimer`; eine am Token-Limit abgeschnittene oder
+  schemawidrige Extraktion in `unavailable` — ein erster roter Lauf von
+  `npm run eval:golden` ist zu untersuchen, nicht wegzuwinken.
+- **Nicht gelistete Claims bleiben unsichtbar.** Der Verifier prüft, was das
+  Extraktionsmodell auflistet. Lässt es unter dem Anfrage-Limit einen Claim
+  weg, hinterlässt das keine Spur; `approved` heißt deshalb „keine bekannte
+  Lücke", nicht „die Antwort enthält sonst nichts" (so auch in
+  `docs/security-architecture.md` §7c). Denkbar: die starken Signale des
+  Trigger-Routers (Beträge, Daten, Referenzen) deterministisch gegen die
+  extrahierten Claims abgleichen und ein Signal ohne Claim als Lücke melden,
+  oder ein Pflichtfeld im `record_claims`-Schema, in dem das Modell
+  Vollständigkeit bestätigt. Heute beobachtet nur die Golden-Eval, ob das
+  Modell die entscheidenden Claims findet.
+- **Verifier-Aufzählung in der README-Feature-Tabelle.** Die Zeile
+  „Answer verification" nennt nur `approved` / `approved_with_disclaimer` und
+  „each answer"; beim nächsten Abgleich der README-Aussagen mit dem erzwungenen
+  Verhalten auf `skipped` / `unavailable` erweitern.
+- **Verdict-Zustand im Server-Mirror.** Der Chat-Mirror (`MessageSchema`,
+  `routes/chatSessions.ts`) verwirft `Message.verifier`; ein Mirror-Restore
+  zeigt deshalb keinen Verifier-Chip (nur ein lokaler Reload). Nachziehen,
+  falls der Chip auch geräteübergreifend sichtbar sein soll.
+- **Abdeckung nur im Log, nicht in `verifier_verdicts`.** Die Tabelle hat keine
+  Spalte für nicht geprüfte (`not_checked`) oder gescheiterte
+  (`check_failed`) Claims; beide zählen dort in `unverified_count`. Eine
+  Kalibrierungs-Abfrage trennt „nicht geprüft" und „Check gescheitert" von
+  „geprüft, nicht bestätigt" heute nur über die Logzeilen
+  (`[verifier/pipeline] … not checked`, `[verifier/deterministic] FAIL`,
+  `[verifier/judge] API FAIL`). Eine Migration mit eigenen Zählern wäre der
+  saubere Weg; der Stream (`uncheckedCount`) hat die Zahl bereits.
+- **Konfigurationslücken zählen als „geprüft, nicht bestätigt".** Ein Claim,
+  den der `DeterministicChecker` mangels Odoo-/Graph-Reader oder bekanntem
+  Feld nicht prüfen kann („no odoo reader configured", „no amount field for
+  …"), trägt keine `cause`. Das Badge bleibt ehrlich (ohne bestätigten Claim
+  `unverified`, nie grün), der Tooltip sagt aber „geprüft, keine bestätigt"
+  statt „nicht geprüft", und neben einem bestätigten Claim stößt so ein Claim
+  den Borderline-Resample an. Offen: solche Fälle als `not_checked` markieren.
+- **Schemawidriger Eintrag kippt die ganze Extraktion.** Ein `record_claims`-
+  Eintrag ohne Text, mit unbekanntem Typ oder unbekannter Quelle macht die
+  Extraktion zu `unavailable`, auch wenn die übrigen Einträge lesbar wären —
+  konservativ, weil sich ein unlesbarer Eintrag nicht als Claim im Verdict
+  halten lässt. Häufen sich im Shadow-Betrieb die Logzeilen „… entries do not
+  match the schema", die lesbaren Einträge prüfen und die unlesbaren als
+  Abdeckungslücke zählen.
+- **Resample bei gescheitertem Check neben bestätigtem Claim.** Ein Verdict mit
+  einem bestätigten und einem `check_failed`-Claim gilt weiter als
+  Borderline und kauft einen zweiten Orchestrator-Turn (#132), weil ein
+  transienter Fehler beim zweiten Sample verschwinden kann. Solange ein Resample
+  Schreib-Tools erneut ausführen kann (offener Punkt zu Verifier-Retries ohne
+  Write-Replay), ist das gegen die Kosten neu abzuwägen.
+- **Lange Antworten fensterweise extrahieren.** Der `ClaimExtractor` liest nur
+  die ersten 6000 Zeichen (`EXTRACTION_WINDOW_CHARS`); jede längere Antwort
+  trägt deshalb eine `coverage_gap` und ist höchstens `partial`, auch wenn
+  jeder Claim im gelesenen Teil stimmt. ERP-Listen überschreiten das leicht.
+  Fensterweise Extraktion (überlappende Fenster, Dubletten zusammenführen, ein
+  LLM-Call je Fenster, bis die Claim-Liste voll ist) würde sie voll prüfbar
+  machen; die Lücke bliebe nur für Text jenseits des letzten Fensters.
+- **Verbatim-Guard und Markdown.** Der Guard (`verbatimSpan.ts`) toleriert
+  Groß-/Kleinschreibung und Whitespace, aber keine Auszeichnung: zitiert das
+  Modell „Die Gutschrift beträgt 2.000,00 €" aus einer Antwort mit
+  `**2.000,00 €**`, ist das die Lücke `claims_not_in_answer` und die Antwort
+  höchstens `partial` — ehrlich, aber womöglich häufig. Im Shadow-Betrieb die
+  Logzeilen `[claim-extractor] … not_in_answer=` beobachten; ist Markdown die
+  Hauptursache, Emphasis-Zeichen (`*`, `_`, Backtick) zwischen den Wörtern
+  gezielt überspringen, statt den Guard allgemein zu lockern.
+- **Token-Budget der Extraktion an das Claim-Limit koppeln.** Der
+  `record_claims`-Call hat `maxTokens: 1024`. Eine Liste nahe am Limit
+  (`VERIFIER_MAX_CLAIMS + 1` Einträge) kann daran abreißen und endet dann als
+  `unavailable` (`extractor_error`) statt als `partial` — ehrlich, aber
+  ungenauer als nötig. Budget aus `maxClaims` ableiten oder kompaktere
+  Einträge anfordern.
+- **Claim-Wert nicht an den Claim-Text gebunden (älteres Limit).** Der
+  `DeterministicChecker` vergleicht bei Beträgen und Summen den vom Modell
+  gelieferten `claim.value` mit dem Odoo-Feld (`checkOdooAmount` ab
+  `deterministicChecker.ts:194`, `checkOdooAggregate` ab :234; bei Daten
+  `claim.value ?? claim.text`, :278), nie den Wert, den der zitierte Text
+  nennt. Der Text ist dank Verbatim-Guard ein Stück der Antwort, der Wert
+  aber die eigene Lesart des Modells: liest es „1.234,56 €" als 1000 und hält
+  der Beleg 1000, ist der Claim `verified`, obwohl die Antwort etwas anderes
+  sagt; umgekehrt kann ein Lesefehler einen richtigen Claim widerlegen.
+  Zudem kürzt der Extractor einen String-Wert auf 200 Zeichen. Offen: Betrag
+  und Datum deterministisch aus dem zitierten Text lesen und bei Abweichung
+  vom Modellwert `not_checked` melden, statt dem Modellwert zu folgen.
+- **Judge-Antwort wird großzügig gelesen (älteres Limit).** `parseVerdict`
+  (`evidenceJudge.ts:226`) liest nur den ersten `record_verdict`-Call; ein
+  zweiter mit anderem Urteil wird ignoriert. `verified` / `contradicted`
+  brauchen eine `evidence_node_id`, die aber nicht gegen die Node-IDs der
+  gezeigten Evidenz geprüft wird — `check` sucht sie nur, um die Quelle zu
+  bestimmen (:140), und fällt sonst auf `claim.expectedSource` zurück; eine
+  erfundene ID zählt also. Eine am Token-Limit abgeschnittene Judge-Antwort
+  (`finishReason: 'max_tokens'`) wird nicht verworfen, anders als beim
+  Extractor. Offen: alle Calls lesen (widersprüchliche Urteile →
+  `check_failed`), die Node-ID gegen die gezeigten Snippets prüfen und eine
+  abgeschnittene Antwort als `check_failed` werten.
+- **Überlange Claims beobachten.** Ein Claim über `MAX_CLAIM_CHARS` (300
+  Zeichen) wird nicht mehr gekürzt geprüft, sondern ist die Lücke
+  `claims_too_long` — die Antwort ist dann höchstens `partial`. Das
+  Tool-Schema verlangt 1-200 Zeichen, erzwungen wird es im Prompt nicht. Im
+  Shadow-Betrieb die Logzeilen `[claim-extractor] … too_long=` beobachten;
+  sind sie häufig, das Modell im System-Prompt ausdrücklich lange Aussagen in
+  mehrere Claims teilen lassen, statt die Grenze anzuheben.
+- **`verifierService.ts` über der 500-Zeilen-Grenze.** Die Datei hatte vor
+  den evidenzgebundenen Verdicts schon 633 Zeilen und hat jetzt rund 700.
+  Reine Helfer — Summary und Badge (`summarise`, `badgeFor`, `mergeBadges`),
+  Trace-Extraktion (`extractToolsCalled` u. a.) und
+  `mergeBorderlineVerdicts` — in eigene Module ziehen und `badgeFor`,
+  `mergeBadges`, `mergeBorderlineVerdicts` weiter aus `verifierService.ts`
+  exportieren, weil Tests sie von dort importieren.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

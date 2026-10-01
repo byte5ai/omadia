@@ -82,6 +82,8 @@ describe('verifier/evidenceJudge', () => {
     });
     const verdict = await judge.check(makeSoftClaim());
     assert.equal(verdict.status, 'unverified');
+    // The check ran and found nothing: not a failed check.
+    assert.equal(verdict.status === 'unverified' ? verdict.cause : 'n/a', undefined);
   });
 
   it('verifies when judge says verified with node id', async () => {
@@ -156,6 +158,7 @@ describe('verifier/evidenceJudge', () => {
     });
     const verdict = await judge.check(makeSoftClaim());
     assert.equal(verdict.status, 'unverified');
+    assert.equal(verdict.status === 'unverified' ? verdict.cause : 'n/a', 'check_failed');
   });
 
   it('returns unverified when fetcher throws', async () => {
@@ -174,6 +177,7 @@ describe('verifier/evidenceJudge', () => {
     });
     const verdict = await judge.check(makeSoftClaim());
     assert.equal(verdict.status, 'unverified');
+    assert.equal(verdict.status === 'unverified' ? verdict.cause : 'n/a', 'check_failed');
   });
 
   it('handles unverified verdict from judge', async () => {
@@ -188,6 +192,7 @@ describe('verifier/evidenceJudge', () => {
     assert.equal(verdict.status, 'unverified');
     if (verdict.status === 'unverified') {
       assert.match(verdict.reason, /silent/);
+      assert.equal(verdict.cause, undefined, 'an inconclusive judge is not a failed check');
     }
   });
 });

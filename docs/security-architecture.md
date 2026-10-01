@@ -1181,6 +1181,197 @@ tail-truncated table can never report green (`empty_chain_with_history`,
 verify`, signed export + zero-dependency offline verifier — see
 `docs/provenance-verification.md`.
 
+## 7c. Answer-verifier verdicts and badges are evidence-bound
+
+The answer verifier (`@omadia/verifier`, wrapped by `VerifierService` in
+`@omadia/orchestrator`) puts a trust signal on a turn: a verdict, and from it
+a badge. A badge that says "verified" is a statement about the answer, so it
+may only follow from claims the verifier actually checked. Five paths check
+nothing: the answer carries no trigger signal, the extractor fails, the
+extractor returns no claims, no extracted claim fits a checker, or the
+pipeline itself throws. None of them is a pass.
+
+**Invariant.** `approved` ⇒ the claim extraction reported no coverage gap,
+and every extracted claim was checked and is `verified`, at least one. No
+coverage gap means: the extraction model read the whole answer, its claim
+list stayed below the request limit, every `record_claims` call in its
+response was read, and every claim it returned quotes the answer in full
+(case and whitespace aside) and is short enough to check (`MAX_CLAIM_CHARS`,
+300 characters); no claim is shortened to fit. The `approved` variant's claim
+list is typed non-empty (`NonEmptyClaimVerdicts`), the pipeline's aggregate
+returns `skipped` for an empty list, and whatever the pipeline did not check
+stays in the verdict as `unverified` (`cause: 'not_checked'`) instead of
+being dropped: a claim no checker takes, a claim over the cap, and a
+`coverage_gap` entry for each part of the answer the extraction did not
+cover. A badge other than `unverified` /
+`unavailable` needs a check that settled a claim (`hasVerificationEvidence`):
+a confirmed claim for `verified` / `partial` / `corrected`, a contradicted one
+for `failed`; `verified` and `corrected` need every claim confirmed. What the
+invariant cannot cover — a claim the model never lists — is stated below.
+
+| Verdict status | Meaning | Summary badge | Connector badge | Web chat chip |
+|---|---|---|---|---|
+| `approved` | no coverage gap, every claim checked and verified | `verified` | verified | green |
+| `approved_with_disclaimer`, ≥ 1 claim verified | none contradicted, ≥ 1 unconfirmed, not checked, or part of the answer not covered | `partial` | partial | amber |
+| `approved_with_disclaimer`, no claim verified | none contradicted, nothing confirmed | `unverified`; `unavailable` when every check that ran failed | none | neutral |
+| `blocked` | ≥ 1 claim contradicted | `failed` | failed | red |
+| retry after `blocked`, every claim verified | correction confirmed | `corrected` | corrected | blue |
+| retry after `blocked`, some claims verified, none contradicted | correction confirmed in part | `partial` | partial | amber |
+| `skipped` — `no_trigger`, `no_claims`, `no_checkable_claims`, `incomplete_coverage` | ran, nothing checkable | `unverified` | none | neutral "not verified" |
+| `unavailable` — `extractor_error`, `pipeline_error` | could not run, or the pipeline returned no usable verdict | `unavailable` | none | neutral "unavailable" |
+
+- **A failed extraction is not an empty one.** `ClaimExtractor.extract`
+  rejects when the LLM call fails, the response was cut off at the token
+  limit (`finishReason: 'max_tokens'` — the claims array may parse but is not
+  the whole answer), the response carries no usable `record_claims` call
+  (none, or any one of them without a `claims` array), or an entry breaks the
+  `record_claims` schema (no text, unknown type or source); the pipeline maps
+  the rejection to `unavailable` / `extractor_error`. It resolves no claims
+  and no gap only when the model reported none, which is `skipped` /
+  `no_claims`; when none of the claims it returned is in the answer, the
+  result carries a coverage gap, and without any other finding the verdict
+  is `skipped` / `incomplete_coverage` (below). No extraction failure comes
+  back as an empty or partial result, so an outage never reads as a clean
+  run.
+- **Coverage is explicit.** An extraction that covers only part of the
+  answer says so. The extractor sends the model the first 6000 characters of
+  the answer (`EXTRACTION_WINDOW_CHARS`) and asks for at most
+  `VERIFIER_MAX_CLAIMS + 1` claims; its result names what it did not cover
+  (`ClaimExtraction.gaps`): `answer_beyond_window` for a longer answer;
+  `claim_list_full` when the model's list reached that limit — a model that
+  keeps to the limit may have left claims out, so a full list never passes
+  for a complete one, while an answer with exactly `VERIFIER_MAX_CLAIMS`
+  claims still gets its whole list; `claims_not_in_answer` when the model
+  returned a well-formed claim that is not in the answer; and
+  `claims_too_long` when it returned a claim that quotes the answer but is
+  longer than a check takes. The pipeline adds one `not_checked` verdict
+  over a synthetic `coverage_gap` claim per gap, so
+  such an answer is `approved_with_disclaimer` / `partial` at best. When
+  nothing in the covered part could be checked, the verdict is `skipped` with
+  reason `incomplete_coverage` rather than `no_claims`, which would say more
+  than was looked at. The summary counts the entries as `uncoveredCount`, and
+  the web chat's tooltip says the verifier did not check all of the answer.
+- **The verbatim guard reports what it keeps out.** A claim must quote the
+  answer: the guard compares case-insensitively and lets any run of whitespace
+  match any other (a line break the model writes as a space, a non-breaking
+  space written as a plain one), and the claim then carries the answer's own
+  span. A claim that quotes nothing — a paraphrase, or a subject stitched in
+  from elsewhere in the sentence — never reaches a checker, since a check on
+  text the answer does not hold proves nothing about the answer. Dropping it
+  silently would let the rest verifying make the answer `approved`, so the
+  part of the answer it stood for is reported as the `claims_not_in_answer`
+  gap. The guard matches the whole claim, never a prefix of it: a claim cut to
+  a length before the match would be checked on its head while its tail — in
+  the answer or not — went unchecked. A claim that quotes the answer but is
+  longer than a check takes (`MAX_CLAIM_CHARS`, 300 characters; the tool
+  schema asks for 1-200) is not cut to fit either; it is kept from the
+  checkers and reported as the `claims_too_long` gap. Likewise every
+  `record_claims` call in the response is read: a model that splits its list
+  over several calls gets every part checked, where reading only the first
+  call would leave the rest unchecked without a trace.
+- **What no check can see.** The verifier checks the claims its extraction
+  model lists. A claim the model leaves out of a list that stays below the
+  request limit leaves no trace in the response, so `approved` / `verified`
+  says that every claim the extraction found was confirmed and nothing marks
+  the extraction as incomplete — not that the answer holds no further claim.
+  How reliably the model lists every claim is a property of the model and
+  its prompt (which asks for every claim, in order); the golden-set eval
+  (`middleware/test/golden/`) runs the real extractor over known answers and
+  fails when the pinned model stops finding a claim that decides the verdict.
+- **A claim nobody checked still counts.** A claim no checker accepts (an
+  amount, id, date or aggregate whose source is neither Odoo nor the graph)
+  and a claim beyond the per-answer cap (`VERIFIER_MAX_CLAIMS`, applied by
+  the pipeline) stay in the verdict as `not_checked`. An answer checked only
+  in part is therefore `approved_with_disclaimer` / `partial`, and the
+  summary reports them, with the coverage entries, as `uncheckedCount`.
+- **A failed check is not evidence.** The deterministic re-query and the
+  evidence judge mark a claim they could not check `unverified` with
+  `cause: 'check_failed'`. A verdict in which every check that ran failed
+  that way is badged `unavailable`; one whose claims all stayed unconfirmed
+  for any other reason is `unverified`, never `partial`.
+- **An injected verdict is held to its claims.** The pipeline is injected
+  (`verifier@1`), so `VerifierService` binds the verdict it returns to its
+  claims (`bindVerdictToClaims`) before it retries, resamples, stores or
+  streams anything on it, and `summarise` binds again where the summary
+  leaves for the stream. A status is never higher than its claims earn: an
+  `approved` over an unconfirmed claim is `approved_with_disclaimer`, over a
+  contradicted one `blocked`, and a status is never raised above the one
+  reported. `approved`, `approved_with_disclaimer` or `blocked` over zero
+  claims, an unknown status, entries that are not claim verdicts, and a
+  `skipped` / `unavailable` reason outside the closed codes are
+  `unavailable` / `pipeline_error`; the raw value goes to the operator log
+  (JSON-escaped, cut short), never onto the stream. A latency that is not a
+  duration is 0. The built-in pipeline's verdicts pass unchanged.
+- **Badges are derived under the evidence gate, not from the status alone.**
+  `badgeFor` (`verifierService.ts`) checks `hasVerificationEvidence()` and
+  gives `verified` only when every claim was confirmed, so even a verdict
+  that bypassed the binding cannot earn more. A correction retry earns
+  `corrected` only when the retry's own verdict confirmed every claim; a
+  retry that confirmed only some — the rest unconfirmed, not checked or not
+  covered — is `partial`, as the same verdict is on a first pass.
+- **`toSemanticAnswer` is the single connector badge gate.** It forwards a
+  badge only when `verifierSummaryHasEvidence()` holds, the badge is in the
+  unchanged wire union `verified | partial | corrected | failed`
+  (`SemanticAnswer.verifier`) and the summary's counts back it (`verified`
+  and `corrected` need every claim confirmed). `verifierSummaryHasEvidence()`
+  also needs counts that can describe one claim list — nonnegative integers
+  with `uncoveredCount ≤ uncheckedCount ≤ unverifiedCount` and
+  `contradictionCount + unverifiedCount ≤ claimCount` (absent optional counts
+  are 0) — so a summary from a foreign `ChatAgent` cannot buy a badge with
+  counts that contradict each other. Connectors (Teams card, Telegram) need
+  no change: a turn without evidence renders no chip there.
+- **The stream event carries every state.** The trailing `verifier` event is
+  forwarded verbatim by `/api/chat/stream` and by the public API-key stream,
+  so its `status` / `badge` can be `skipped` / `unverified` and
+  `unavailable`. Its `reason` is a closed code set, never an error message:
+  the message stays in the log line where the failure is caught. The web chat
+  renders the event as a footer chip (`web-ui/app/_components/chat/VerifierBadge.tsx`),
+  green only for a `verified` summary whose every claim was confirmed, blue
+  `corrected` under the same condition, never stronger than the summary's
+  counts back (a `verified` or `corrected` badge whose counts back only part
+  of the answer shows as partly verified), and applies the same rules to a
+  summary restored from local storage — a summary with a missing count, or
+  counts that contradict each other, gets a neutral chip.
+- **A resample needs something a second sample could change.**
+  `isBorderlineVerdict` holds only for an `approved_with_disclaimer` that
+  confirmed at least one claim and left another one unconfirmed after a
+  check. `skipped` / `unavailable`, a verdict that confirmed nothing and one
+  whose only doubt is `not_checked` claims never buy a resample — it is a
+  second paid orchestrator turn.
+- **Telemetry keeps the distinction.** `verifier_verdicts.status` stores
+  `skipped` / `unavailable` as their own values (free `TEXT` column, no
+  migration), so a calibration query no longer counts an outage as a clean
+  turn. The row carries the bound verdict, and `unverified_count` is counted
+  from its claims, never inferred from its status. No code in the repository
+  reads the table.
+
+Tests: `middleware/test/verifierPipelineStates.test.ts` (including the
+production `ClaimExtractor` over a failing, a truncated and a malformed LLM
+response, and answers checked only in part),
+`middleware/test/verifierExtractionCoverage.test.ts` (the production
+extractor and pipeline over a model that keeps to the claim limit: an answer
+longer than the window, and one with more claims than the cap),
+`middleware/test/verifierExtractionVerbatim.test.ts` (claims whose text
+differs from the answer — whitespace drift, a stitched subject — and a list
+split over several `record_claims` calls, through the extractor, pipeline,
+badge and service),
+`middleware/test/verifierExtractionLongClaim.test.ts` (claims longer than a
+check takes — one whose tail is not in the answer, one the answer holds word
+for word, and the exact length limit — through the same stages),
+`middleware/test/verifierClaimExtractorFailure.test.ts`,
+`middleware/test/verifierVerdictBinding.test.ts` (injected verdicts whose
+status, reason or latency their claims do not back, through the service into
+the stream summary and the stored row),
+`middleware/test/verifierStoreStates.test.ts`,
+`middleware/test/verifierServiceStates.test.ts`,
+`middleware/test/verifierServiceResample.test.ts`,
+`middleware/test/verifierDeterministicChecker.test.ts`,
+`middleware/test/verifierEvidenceJudge.test.ts`,
+`middleware/test/semanticAnswerGates.test.ts`,
+`middleware/test/channelApi/chatRouterVerifierStates.test.ts`,
+`web-ui/app/_lib/__tests__/verifierBadge.test.ts` and
+`web-ui/app/_components/chat/__tests__/VerifierBadge.test.tsx`.
+
 ## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
 
 Three properties of the human-approval gate are security decisions, made
@@ -3401,6 +3592,37 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] A new native tool bound to shared/unscoped state (like memory) is routed
       through the caller's scoped accessor in `ctx.tools.invoke`, or denied
       there (§4, #909).
+- [ ] A new consumer of `VerifierVerdict` or `VerifierResultSummary` shows
+      `verified`, `partial` or `corrected` only when a check settled a claim:
+      `hasVerificationEvidence()` for a verdict, `verifierSummaryHasEvidence()`
+      for a summary (a contradicted claim for `blocked`, otherwise
+      `claimCount - contradictionCount - unverifiedCount > 0`), and green or
+      `corrected` only when every claim was confirmed. `skipped`,
+      `unavailable` and verdicts whose claims all stayed unconfirmed never map
+      to a green badge, and a verifier `reason` stays a closed code (§7c). A
+      verdict from the injected pipeline is bound to its claims
+      (`bindVerdictToClaims`) before anything acts on it. A summary is
+      untrusted input: a gate never reads a missing count as 0 and backs no
+      badge with counts that contradict each other.
+- [ ] A verifier stage that cannot do its work (a failed LLM call, a model
+      response it cannot read, cut off at the token limit or with an entry
+      that breaks the schema) never returns an empty or partial result: claim
+      extraction rejects, so the pipeline reports `unavailable`, and a
+      per-claim checker marks that claim `unverified` with
+      `cause: 'check_failed'`. A claim the pipeline does not check stays in
+      the verdict as `not_checked` instead of being dropped. None of these may
+      look like "nothing to check" or "fully checked" (§7c).
+- [ ] A verifier stage that reads only part of its input by design (a text
+      window, a limit on how many claims a model may list) reports what it
+      left out, and the pipeline keeps it in the verdict as `not_checked`. A
+      prompt never tells a model to stop at a limit unless a list that
+      reaches the limit is recorded as possibly incomplete. A guard that
+      keeps model output from the checkers (the verbatim guard) reports what
+      it kept out as a gap instead of dropping it, and matches the whole
+      claim: a claim's text is never cut to a length before the guard or a
+      check sees it, and a claim too long to check is a gap, not a shortened
+      claim. A model response is read in full — every tool call, not the
+      first one (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
