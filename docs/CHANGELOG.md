@@ -45,8 +45,13 @@ any caller could drive unbounded argon2 work. Every attempt now passes three
 limits first. Per client address, a burst of 100 failures and then one every
 6 s. Per account and client, five free failures and then a wait that doubles
 from 1 s to at most 2 minutes, cleared by a successful sign-in, an admin
-password reset or a re-enable. Process-wide, `AUTH_LOGIN_MAX_INFLIGHT` (new,
-default 4) concurrent verifications and 300 admitted attempts per minute. A
+password reset or a re-enable. The account is the typed address folded at
+least as coarsely as the users table matches it (Postgres `LOWER()`), so
+letter case, a capital dotted İ, a final sigma, accents or compatibility forms
+open no second budget, and a sign-in only succeeds for an account whose
+address folds to the key it was counted under. Process-wide,
+`AUTH_LOGIN_MAX_INFLIGHT` (new, default 4) concurrent verifications and 300
+admitted attempts per minute. A
 refusal answers 429 `auth.rate_limited` or 503 `auth.busy` with `Retry-After`
 and `retry_after_s`, never reaches argon2, and the login page shows a
 localized "wait N seconds". Attempts are counted when they are admitted, so
@@ -59,14 +64,15 @@ None of this lets one client lock others out. The account limit is keyed per
 down. Every browser behind the web-ui proxy reaches the middleware from one
 address, so that shared address is never braked as one client: a single
 sender filling its budget would otherwise lock out every browser. A browser
-that has signed in to an account carries a signed device cookie
-(`omadia_login_device`) bound to the account and its current password, and
-the account's known browsers share a budget of their own. `GET /me` hands one
-to every browser that is signed in, one device id per sign-in however often
-it runs, so existing sessions become known devices within a minute of the
-upgrade. A password reset, a disable or a delete turns the account's earlier
-cookies back into unknown browsers, and more cookies for one account buy no
-more guesses. One of the in-flight slots and the last 60 of the per-minute
+that has signed in to an account with its password carries a signed device
+cookie (`omadia_login_device`), minted once per sign-in for the account the
+sign-in verified (its stored address, never the one typed) and bound to that
+account's current password, and the account's known browsers share a budget
+of their own. A session alone mints none, so browsers that are signed in at
+the upgrade become known devices at their next password sign-in. A password
+reset, a disable or a delete turns the account's earlier cookies back into
+unknown browsers, and more cookies for one account buy no more guesses. One
+of the in-flight slots and the last 60 of the per-minute
 budget are kept for known browsers, so no flood from however many addresses
 (an IPv6 allocation holds thousands of /64s) turns them away, and no pile of
 one account's cookies can take that reserve. A browser without a device

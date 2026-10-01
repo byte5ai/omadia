@@ -1409,8 +1409,8 @@ through `auth/loginRateLimiter.ts` (wired in `routes/authLogin.ts`) before
 of key decides which layers apply:
 
 - `device`: the browser carries a genuine device cookie for this account,
-  minted under the account's current password (see below), so it is one of
-  the browsers that have signed in to the account.
+  minted by a password sign-in to it under its current password (see
+  below), so it is one of the browsers that have signed in to the account.
 - `address`: an address a trusted proxy or edge vouched for
   (`AUTH_LOGIN_CLIENT_ADDRESS=xff:<n>` or `header:<name>`). That is one
   client, or one NAT.
@@ -1434,10 +1434,12 @@ of key decides which layers apply:
    defence. Five free failures, then each further attempt waits
    1 s × 2^(failures − 5) after the last failure, capped at 2 minutes (429
    `auth.rate_limited`). A success clears the pair, and a pair is forgotten
-   30 minutes after its last failure. One client therefore gets about 30
-   guesses per hour against one account. All `device` keys of one account
-   count as one client here, the account's known browsers: a second device
-   id buys no second budget.
+   30 minutes after its last failure. The account is the typed address,
+   folded at least as coarsely as the users table matches it (*The account
+   key* below), so no other spelling of an address opens a second budget.
+   One client therefore gets about 30 guesses per hour against one account.
+   All `device` keys of one account count as one client here, the account's
+   known browsers: a second device id buys no second budget.
 3. **Global**: process-wide argon2 capacity. At most `AUTH_LOGIN_MAX_INFLIGHT`
    (default 4) verifications at once, and a leaky bucket of admitted attempts
    that drains 300 per minute (so Retry-After stays at 1 s). Attempts without
@@ -1463,6 +1465,26 @@ pair's free budget is spent it gets one attempt at a time. Anything but a
 successful sign-in is a failure, a `verify` that throws included. The global
 slot is released in a `finally`.
 
+**The account key.** The users table matches a sign-in by
+`LOWER(email) = LOWER($input)` under the database's collation, and Postgres
+lower-cases differently from JavaScript. On the shipped databases (libc
+en_US.UTF-8, the builtin C.UTF-8 provider) `LOWER()` turns a capital dotted
+İ (U+0130) into a plain i and every capital sigma into σ, where
+`toLowerCase()` gives an i with a combining dot and, at the end of a word, ς.
+A key built with `toLowerCase()` would give each such spelling of an address
+a budget of its own, 2^k of them for an address with k i's. The key
+(`loginAccountKey` in `auth/loginAccount.ts`) folds further than any
+`LOWER()`: compatibility decomposition (NFKD), combining marks dropped, lower
+case, then the dotless ı and the final ς folded to i and σ. Every spelling
+the users table treats as one account is one key. A unit test checks that
+against the `LOWER()` variants collations apply (libc, builtin, ICU, Turkish,
+C), and `loginAccountFold.pg.test.ts` against Postgres itself. Coarser is safe:
+accounts whose addresses fold together only share their limiter state (a
+residual risk below). `LocalPasswordProvider` holds the other end: an attempt
+signs in only to an account whose stored address folds to the key it was
+counted under. Whatever a collation or a newer Unicode version matches beyond
+the fold therefore cannot sign in on a budget of its own.
+
 **Lockout-DoS.** A per-account lock is a gift to an attacker. A few wrong
 passwords lock the real operator out, and on a single-admin install the unlock
 path (an admin session) is exactly what the attack denies. Three mechanisms
@@ -1487,37 +1509,45 @@ answer it, and the two paragraphs after them say what they leave open.
   capacity, so no other client's guesses or floods turn them away, however
   many addresses they come from. Only their own failures, and genuine
   overload by other known browsers, can.
-  - The value is `v2.<id>.<exp>.<ep>.<tag>`. `ep` fingerprints the account's
-    credential epoch when the cookie was minted: SHA-256 over the users row
-    id and its password hash, for an active row. `tag` is an HMAC-SHA256
-    over account, id, expiry and `ep`. Its keys (for the tag, the
-    fingerprint and the `/me` id below) are derived from the session
-    signing key, one per purpose.
-  - It is bound to one account and its current password, and lives one
-    year. It is HttpOnly, SameSite=Lax, Path=/ and Secure behind TLS, like
-    the session cookie.
+  - Only a successful password sign-in mints one, with a fresh id, once per
+    sign-in, and so does the first-user wizard, which sets the password. A
+    session alone does not: `GET /me` and `/renew` set none. Holding one
+    therefore takes the account's password. The cookie survives logout.
+  - It is bound to the account the sign-in VERIFIED, never to the address as
+    typed: to that account's stored address and its current password. It
+    lives one year and is HttpOnly, SameSite=Lax, Path=/ and Secure behind
+    TLS, like the session cookie.
+  - The value is `v3.<id>.<exp>.<ep>.<tag>`. `ep` fingerprints the verified
+    account's credential epoch: SHA-256 over its users row id and its
+    password hash, for an active row. `tag` is an HMAC-SHA256 over the
+    account's device key (its stored address with ASCII letters lower-cased,
+    `loginDeviceAccountKey`), the id, the expiry and `ep`. The tag and
+    fingerprint keys are derived from the session signing key, one per
+    purpose. The device key is a separate identity from the limiter's
+    account key: that one lumps spellings of different accounts together on
+    purpose, and one account's cookie would then count for another. `v2`
+    cookies, bound to the address as typed, no longer read.
+  - A request counts as a known browser when the address it names has the
+    cookie's device key, and the users-table lookup of that key lands on an
+    active row whose epoch is the one the cookie was minted under. The
+    device key lower-cases ASCII letters only, so that lookup lands where
+    the lookup of the typed address lands. A spelling that differs from the
+    stored address beyond ASCII case names no known browser and falls back
+    to the address key.
   - Revocation needs no per-device state. A password reset writes a new hash
-    (argon2 salts are random), so every cookie minted before it is stale. A
-    disabled account has no epoch while it stays disabled, a deleted one has
-    none, and a re-created one gets a new row id. A stale cookie is an
-    unknown browser and falls back to the address key. The admin routes that
+    (argon2 salts are random), so every cookie minted before it is stale,
+    and only a sign-in with the new password mints another. A disabled
+    account has no epoch while it stays disabled, a deleted one has none,
+    and a re-created one gets a new row id. A stale cookie is an unknown
+    browser and falls back to the address key. The admin routes that
     create, reset, disable, re-enable or delete an account drop its cached
     epoch, so this process stops honouring the old one at once.
   - Checking the epoch is a users-table lookup. It runs only for a cookie
-    whose tag checks out, one at a time per account, and is cached per
-    account for 10 seconds, so a stream of requests carrying one stale
+    whose tag checks out, one at a time per device key, and is cached per
+    device key for 10 seconds, so a stream of requests carrying one stale
     cookie is not a stream of queries, however many arrive at once. A failed
     lookup counts the browser as unknown and is logged at most once a
-    minute; it never fails a sign-in or `GET /me`.
-  - Every successful password sign-in mints one with a fresh id, and so does
-    the first-user wizard. `GET /me` sets one when the browser has a valid
-    session for a password account but no current device cookie for it. Its
-    id is derived from the session's sign-in time (`auth_time`), so one
-    sign-in yields one device id however often `/me` runs. The web-ui session
-    watcher calls `/me` every minute, so a browser that is signed in when
-    this version starts, or whose cookie a reset made stale, is a known
-    device again within a minute. `/me` sets none for a disabled or deleted
-    account. The cookie survives logout.
+    minute; it never fails a sign-in.
   - It authenticates nothing: it only picks a rate-limit bucket. A forged,
     expired, foreign or stale cookie falls back to the address key.
   - Rotating the session signing key revokes every device cookie at once,
@@ -1539,13 +1569,12 @@ of that account), a restart, or a client address that tells clients apart
 The known browsers of an account share their pair too. Whoever holds a
 current device cookie for it can make the account's other known browsers
 wait, one wrong guess per 2-minute wait. Getting one takes a successful
-sign-in or a valid session for the account (`GET /me`), so that is someone
-who knows the password or holds a session cookie, a copied one included
-for as long as it stays valid. However many cookies such a holder collects,
-they are one budget. A password reset makes them stale, and a session
-that is still valid gets one cookie back from `/me`. Re-enabling an account
-without a reset lets its earlier cookies count again; reset the password to
-end them for good.
+password sign-in to the account, so that is someone who knows its password.
+However many cookies such a holder collects, they are one budget. A password
+reset makes them stale, and a session from before the reset gets no new one.
+Re-enabling an account without a reset lets its earlier cookies count again,
+which gives their holders nothing: each of them signed in with that same,
+unchanged password. Reset the password to end them for good.
 
 **The client key under `trust proxy`.** `app.set('trust proxy', true)` makes
 `req.ip` the left-most `X-Forwarded-For` entry, which the client writes. The
@@ -1657,14 +1686,24 @@ with the defaults, so a forgotten wiring cannot switch it off.
   is current, and one account's cookies share one pair, so a pile of them
   cannot take it either.
 - **A current device cookie is one more client, never more.** Whoever holds
-  one for an account (it takes the password, or a valid session for the
-  account) shares the account's known-browser pair. While it keeps failing,
-  the owner's known browsers wait too (2 minutes at most per wait), and it
-  gets one budget per account however many cookies it collected. A password
-  reset makes every earlier cookie stale; a session that is still valid gets
-  one back from `GET /me`. Re-enabling an account without a reset lets its
-  earlier cookies count again. Rotating the session signing key ends all
-  device cookies and all sessions at once.
+  one for an account (it takes a sign-in with the account's password)
+  shares the account's known-browser pair. While it keeps failing, the
+  owner's known browsers wait too (2 minutes at most per wait), and it gets
+  one budget per account however many cookies it collected. A password reset
+  makes every earlier cookie stale, and only the new password mints another.
+  Re-enabling an account without a reset lets its earlier cookies count
+  again, all of them minted with that unchanged password. Rotating the
+  session signing key ends all device cookies and all sessions at once.
+- **Accounts that fold together share their limiter state.** Two accounts
+  whose addresses differ only in what the account key folds away (accents,
+  compatibility forms, a combining dot, a dotless ı) share every pair, the
+  known-browser pair included: failures on one count against the other, and
+  a known browser of one can make the other's known browsers wait. Real
+  addresses rarely differ like that, and it shrinks the guessing budget
+  rather than growing it. The same goes for a Turkish or Azerbaijani
+  collation, where `LOWER()` makes a capital I the dotless ı: there the
+  lookup of an address's device key (with a plain i) can land on another
+  account of the same fold than the typed address does.
 - **Distributed guessing.** The account layer is per (account, client). An
   attacker with many client keys (a botnet, an IPv6 allocation under
   `xff`/`header`) gets a budget per key, and the global layer is the
@@ -1688,10 +1727,20 @@ all device ids of one account share one pair and take at most its free
 budget of the reserve; many client keys fill the capacity for unknown
 browsers while a device-keyed attempt still gets in; the reserved in-flight
 slot),
-`middleware/test/auth/loginDevices.test.ts` (the v2 cookie, the epoch it is
-bound to, one id per sign-in, the cached single-flight lookup and `forget`,
-a failing lookup), `middleware/test/auth/loginDeviceRevocation.test.ts` (through the
-routers: `/me` hands out one id per sign-in; more device ids buy no more
+`middleware/test/auth/loginAccount.test.ts` (the account key per character
+Postgres folds differently, and against every simulated `LOWER()` over a
+corpus of spellings; the device key),
+`middleware/test/auth/loginAccountAliases.test.ts` (through the router, over a
+table that matches like Postgres: one budget for every spelling of an
+address, 2^k spellings included; a sign-in to one account under another
+spelling mints no known browser of a second account),
+`middleware/test/auth/loginAccountFold.pg.test.ts` (the same against real
+Postgres, the real `UserStore` and router),
+`middleware/test/auth/loginDevices.test.ts` (the v3 cookie, the epoch it is
+bound to, minting for the verified account and checking by device key, a
+fresh id per sign-in, the cached single-flight lookup and `forget`, a failing
+lookup), `middleware/test/auth/loginDeviceRevocation.test.ts` (through the
+routers: a session alone mints no cookie; more device ids buy no more
 guesses or capacity; after a reset, a disable or a delete through the admin
 routes, earlier cookies are the address key again),
 `middleware/test/auth/clientAddress.test.ts` (policies, the forged left-most
@@ -1705,10 +1754,12 @@ row per episode, the wizard's capacity slot),
 (through the router: one sender cannot stop other users on the shared key; a
 device-cookie holder gets in while the capacity for unknown browsers is
 exhausted from the shared key or from many IPv6 /64s;
-`AUTH_LOGIN_IPV6_PREFIX=48`; `/me` hands out the device cookie),
-`middleware/test/auth/adminUsersRoute.test.ts` (reset and re-enable unlock;
-create, reset, status change and delete drop the cached device epoch),
-`middleware/test/auth/localPasswordProvider.test.ts` (the length cap),
+`AUTH_LOGIN_IPV6_PREFIX=48`),
+`middleware/test/auth/adminUsersRoute.test.ts` (reset and re-enable unlock
+under the account key; create, reset, status change and delete drop the
+cached device epoch under the device key),
+`middleware/test/auth/localPasswordProvider.test.ts` (the length cap; no
+sign-in to an account whose address folds to another key),
 `web-ui/app/login/__tests__/page.test.tsx`.
 
 ---
@@ -1782,14 +1833,20 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       argon2 work reachable without a session takes a global slot
       (`acquireSlot()`). A client key comes from `clientAddressFor`, never
       from `req.ip`, and a key it marks `shared` (the TCP peer) is never
-      braked as if it were one client. Anything that earns a browser its
-      own sign-in budget, like the device cookie, is bound to the account's
-      current credentials, issued at most once per sign-in, and shares one
-      budget per account however many of it a client holds.
+      braked as if it were one client. A per-account limit keys the
+      account at least as coarsely as the users table matches it
+      (`loginAccountKey`), never by a JavaScript lower-case of the typed
+      value. Anything that earns a browser its own sign-in budget, like the
+      device cookie, is bound to the account the sign-in verified (its
+      stored address, never the typed one) and to its current credentials,
+      is issued only by a sign-in that proved the password, at most once per
+      sign-in, and shares one budget per account however many of it a
+      client holds.
 
 ---
 
 *Last reviewed: 2026-10 (§10f password sign-in rate limiting added, then
-hardened against lockout through shared client keys and many IPv6 keys, and
-its device cookies bound to the account's password, one id per sign-in and
-one budget per account; §10 added with issue #669).*
+hardened against lockout through shared client keys and many IPv6 keys, its
+device cookies bound to the verified account and its password, minted only by
+a password sign-in and one budget per account, and its account key folded at
+least as coarsely as the users table; §10 added with issue #669).*

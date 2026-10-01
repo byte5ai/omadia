@@ -182,19 +182,22 @@ topology. What changes for operators:
   account from one client, further attempts wait (1 s, doubling, at most
   2 minutes) and answer 429 `auth.rate_limited`. A busy server answers 503
   `auth.busy`. Both carry `Retry-After`; scripted sign-ins
-  (`curl … /api/v1/auth/login/local`) should honour it.
+  (`curl … /api/v1/auth/login/local`) should honour it. Every spelling of an
+  address counts as that one account: letter case, accents and the like
+  open no second budget.
 - **Unlocking an account.** A successful sign-in, an admin's password reset or
   re-enabling the user clears the wait. When no admin session is available,
   restart the middleware: the limiter lives in memory and a restart clears it.
-- **A new cookie.** A successful sign-in (and the first-user wizard) sets
-  `omadia_login_device`, which makes that browser one of the account's known
-  browsers: they share a sign-in budget of their own and a reserved share of
-  the sign-in capacity. Browsers that are signed in when the new version
-  starts get it from the session check the admin UI runs every minute. It
-  authenticates nothing and survives logout. It is tied to the account's
-  password: after a password reset, a disable or a delete it no longer
-  counts, and a browser gets a new one at its next sign-in or session check.
-  Rotating the session signing key (the vault entry
+- **A new cookie.** A successful password sign-in (and the first-user
+  wizard) sets `omadia_login_device`, once per sign-in, for the account that
+  signed in. It makes that browser one of the account's known browsers: they
+  share a sign-in budget of their own and a reserved share of the sign-in
+  capacity. A session alone does not set it, so browsers that are signed in
+  when the new version starts become known browsers at their next password
+  sign-in. It authenticates nothing and survives logout. It is tied to the
+  account's password: after a password reset, a disable or a delete it no
+  longer counts, and only the next sign-in with the current password sets a
+  new one. Rotating the session signing key (the vault entry
   `core:auth/session_signing_key`) ends every such cookie and every session
   at once.
 - **Passwords over 1024 characters can no longer sign in.** Setting one

@@ -2246,7 +2246,15 @@ Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` 
      Ein `device`-Key sieht nur sein eigenes Konto, dort ist die Paar-Schicht strenger.
    - **Konto × Client** (Paar, alle Arten): 5 freie Fehlversuche, dann Wartezeit
      1 s × 2^(Fehlversuche − 5) ab dem letzten, gedeckelt auf 2 min → 429. Ein Erfolg
-     löscht das Paar, 30 min nach dem letzten Fehlversuch wird es vergessen.
+     löscht das Paar, 30 min nach dem letzten Fehlversuch wird es vergessen. Das Konto
+     ist die eingegebene Adresse, mindestens so grob gefaltet wie die Users-Tabelle
+     vergleicht (`loginAccountKey` in `auth/loginAccount.ts`): Postgres' `LOWER()`
+     macht aus einem großen İ (U+0130) ein schlichtes i und aus jedem Σ ein σ, JS'
+     `toLowerCase()` dagegen i plus Kombinationspunkt bzw. am Wortende ς. Der Schlüssel
+     zerlegt deshalb per NFKD, wirft kombinierende Zeichen weg, schreibt klein und faltet
+     ı zu i und ς zu σ; keine Schreibweise einer Adresse bekommt ein zweites Budget.
+     `LocalPasswordProvider` meldet nur ein Konto an, dessen gespeicherte Adresse auf
+     denselben Schlüssel faltet.
    - **Global**: höchstens `AUTH_LOGIN_MAX_INFLIGHT` argon2-Läufe gleichzeitig und ein
      Leaky Bucket, der 300 zugelassene Versuche pro Minute abfließen lässt → 503
      `auth.busy`. Ohne Geräte-Cookie gibt es höchstens alle Slots bis auf einen und den
@@ -2259,28 +2267,31 @@ Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` 
 3. `provider.verify` (argon2) im zugelassenen Versuch. Alles außer Erfolg ist ein
    Fehlversuch, auch ein Throw. Der globale Slot wird im `finally` frei.
 4. Erfolg: Session-Cookie plus ein frisches **Geräte-Cookie** `omadia_login_device`
-   (`auth/loginDeviceCookie.ts`, `auth/loginDevices.ts`): `v2.<id>.<exp>.<ep>.<tag>`.
-   `ep` ist ein Fingerabdruck der Konto-Epoche beim Ausstellen (SHA-256 über die
-   Users-Zeilen-id und den Passwort-Hash einer aktiven Zeile), `tag` ein HMAC über
-   Konto, id, Ablauf und `ep`; die Schlüssel (für Tag, Fingerabdruck und die
-   `/me`-id) sind aus dem Session-Signing-Key abgeleitet, je einer pro Zweck. An
-   genau ein Konto und dessen aktuelles Passwort gebunden, ein Jahr
-   gültig, HttpOnly/SameSite=Lax/Path=/. Bringt ein Browser ein gültiges Geräte-Cookie
-   für **dieses** Konto unter dessen aktueller Epoche mit, ist sein Client-Key
-   `device:<id>` statt der Adresse. Alle bekannten Browser eines Kontos teilen sich
-   **ein** Paar: Weitere Geräte-ids bringen weder weiteres Budget noch einen weiteren
-   Anteil an der Reserve. Hinter dem web-ui-Proxy teilen sich sonst alle Browser eine
-   Adresse, und die Fehlversuche eines Angreifers würden den Operator mit bremsen.
-   Passwort-Reset, Deaktivieren und Löschen machen frühere Cookies wertlos (neuer Hash
-   bzw. keine Epoche); `routes/adminUsers.ts` ruft dafür (und beim Anlegen)
-   `loginDevices.forget`, damit der 10-s-Cache der Epoche sofort neu liest.
-   Nachgeschlagen wird die Epoche nur für ein Cookie, dessen Tag stimmt, und pro Konto
-   nur einmal gleichzeitig. `GET /me` setzt das Cookie zusätzlich für jeden
-   Browser mit gültiger Session eines Passwort-Kontos, dem ein aktuelles fehlt
-   (`ensureLoginDeviceCookie` in `routes/authLogin.ts`), mit einer aus `auth_time`
-   abgeleiteten id: eine Anmeldung, eine Geräte-id, egal wie oft `/me` läuft. Für
-   deaktivierte oder gelöschte Konten setzt `/me` nichts. Der Session-Watcher der UI
-   fragt `/me` minütlich ab.
+   (`auth/loginDeviceCookie.ts`, `auth/loginDevices.ts`): `v3.<id>.<exp>.<ep>.<tag>`,
+   einmal pro Anmeldung, für das Konto, das der Provider **verifiziert** hat (dessen
+   gespeicherte Adresse, nie die eingegebene). `ep` ist ein Fingerabdruck der
+   Konto-Epoche beim Ausstellen (SHA-256 über die Users-Zeilen-id und den Passwort-Hash
+   einer aktiven Zeile), `tag` ein HMAC über den Geräte-Schlüssel des Kontos
+   (`loginDeviceAccountKey`: gespeicherte Adresse, nur ASCII-Buchstaben klein), id,
+   Ablauf und `ep`; die Schlüssel für Tag und Fingerabdruck sind aus dem
+   Session-Signing-Key abgeleitet, je einer pro Zweck. Der Geräte-Schlüssel ist bewusst
+   **nicht** der gefaltete Konto-Schlüssel des Limiters: Der wirft Schreibweisen
+   verschiedener Konten zusammen, und das Cookie eines Kontos zählte dann für das
+   andere. Ein Jahr gültig, HttpOnly/SameSite=Lax/Path=/. Bekannter Browser ist eine
+   Anfrage, deren Adresse den Geräte-Schlüssel des Cookies hat und deren Users-Lookup
+   über diesen Schlüssel auf der Zeile landet, für die es ausgestellt wurde, unter deren
+   aktueller Epoche; nur ASCII-Kleinschreibung hält diesen Lookup dort, wo der Lookup der
+   eingegebenen Adresse landet. Dann ist der Client-Key `device:<id>` statt der Adresse.
+   Alle bekannten Browser eines Kontos teilen sich **ein** Paar: Weitere Geräte-ids
+   bringen weder weiteres Budget noch einen weiteren Anteil an der Reserve. Hinter dem
+   web-ui-Proxy teilen sich sonst alle Browser eine Adresse, und die Fehlversuche eines
+   Angreifers würden den Operator mit bremsen. Passwort-Reset, Deaktivieren und Löschen
+   machen frühere Cookies wertlos (neuer Hash bzw. keine Epoche); `routes/adminUsers.ts`
+   ruft dafür (und beim Anlegen) `loginDevices.forget` mit dem Geräte-Schlüssel, damit
+   der 10-s-Cache der Epoche sofort neu liest. Nachgeschlagen wird die Epoche nur für
+   ein Cookie, dessen Tag stimmt, und pro Geräte-Schlüssel nur einmal gleichzeitig. Nur
+   eine Passwort-Anmeldung (und der Setup-Wizard) stellt das Cookie aus; eine Session
+   allein nicht, `GET /me` und `/renew` setzen keins.
 
 Der Client-Key kommt aus `AUTH_LOGIN_CLIENT_ADDRESS` (`auth/clientAddress.ts`): `socket`
 (Default), `xff:<n>` (n-ter `X-Forwarded-For`-Eintrag von **rechts**) oder
@@ -2293,15 +2304,19 @@ Bleibt offen: Wer sich einen Key teilt, teilt dessen Paare. Ein Absender, der al
 auf demselben Key zu, etwa für die erste Anmeldung auf einem neuen Gerät. Vor argon2
 lässt sich der Browser nicht vom Absender unterscheiden (§10f „What stays open“).
 Ebenso teilen sich die bekannten Browser eines Kontos ihr Paar: Wer ein aktuelles
-Geräte-Cookie hält (dazu braucht es das Passwort oder eine gültige Session), kann sie
-warten lassen, bekommt aber nur ein Budget pro Konto. Reaktivieren ohne Passwort-Reset
-lässt frühere Cookies wieder gelten.
+Geräte-Cookie hält (dazu braucht es eine Anmeldung mit dem Passwort), kann sie warten
+lassen, bekommt aber nur ein Budget pro Konto. Reaktivieren ohne Passwort-Reset lässt
+frühere Cookies wieder gelten; ihre Inhaber gewinnen dadurch nichts, sie haben sich alle
+mit genau diesem unveränderten Passwort angemeldet. Konten, deren Adressen auf denselben
+Schlüssel falten (Akzente, Kompatibilitätsformen, Kombinationspunkt), teilen sich alle
+Paare, auch das der bekannten Browser.
 
 Weitere Stellen: `/setup` holt sich für seinen argon2-Hash einen globalen Slot
 (`acquireSlot()`, sonst 503 `auth.busy`) und setzt nach Erfolg ebenfalls das
 Geräte-Cookie. Admin-Passwort-Reset und Reaktivierung (`PATCH status: 'active'`) in
-`routes/adminUsers.ts` rufen `clearAccount`; Anlegen, Reset, jede Statusänderung und
-Löschen rufen `loginDevices.forget`. `LocalPasswordProvider` lehnt Passwörter
+`routes/adminUsers.ts` rufen `clearAccount` mit dem gefalteten Konto-Schlüssel (alle
+Schreibweisen); Anlegen, Reset, jede Statusänderung und Löschen rufen
+`loginDevices.forget` mit dem Geräte-Schlüssel. `LocalPasswordProvider` lehnt Passwörter
 über 1024 Zeichen vor dem Users-Lookup ab. Die erste Ablehnung pro (Schicht, Client)
 und Minute schreibt eine Logzeile und eine Audit-Zeile `auth.login_rate_limited`, beide
 ohne das Konto. Boot-Wiring: `createLoginGuard` in `index.ts`, ein Limiter und ein
@@ -2317,9 +2332,11 @@ multiplizieren die Grenzen): `docs/security-architecture.md` §10f. Konfiguratio
 Tests: `test/auth/loginRateLimiter.test.ts`, `test/auth/loginRateLimiterFairness.test.ts`,
 `test/auth/clientAddress.test.ts`, `test/auth/loginRoute.test.ts`,
 `test/auth/loginLockoutDos.test.ts`, `test/auth/loginDevices.test.ts`,
-`test/auth/loginDeviceRevocation.test.ts` (Harness in `test/auth/loginHarness.ts`, mit
-dem echten Admin-Users-Router), `test/auth/adminUsersRoute.test.ts`,
-`test/auth/localPasswordProvider.test.ts`; UI
+`test/auth/loginDeviceRevocation.test.ts`, `test/auth/loginAccount.test.ts`,
+`test/auth/loginAccountAliases.test.ts` (Harness in `test/auth/loginHarness.ts`, mit
+dem echten Admin-Users-Router und einer Users-Tabelle, die wie Postgres' `LOWER()`
+vergleicht), `test/auth/adminUsersRoute.test.ts`, `test/auth/localPasswordProvider.test.ts`;
+Postgres `test/auth/loginAccountFold.pg.test.ts`; UI
 `web-ui/app/login/__tests__/page.test.tsx`.
 
 ## 4. Migration Managed Agents → Lokal
@@ -3176,19 +3193,6 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Socket-Adresse des Browsers nicht, sobald ein `X-Forwarded-For` mitkommt. Denkbar:
   ein eigener Server-Wrapper um Next, der die Socket-Adresse in einen internen Header
   schreibt, den die Middleware nur vom web-ui-Peer annimmt.
-- **Geräte-Cookies von Session-Inhabern.** Eine gültige Session, auch eine kopierte,
-  solange sie gilt, holt sich über `GET /me` ein aktuelles Geräte-Cookie und teilt dann
-  das Paar der bekannten Browser des Kontos: Sie kann die Browser des Inhabers warten
-  lassen (höchstens 2 min pro Wartezeit), bekommt aber nur ein Budget pro Konto. Ein
-  Passwort-Reset macht ihre Cookies wertlos, `/me` stellt aber ein neues aus, solange
-  die Session gilt. Enden Sessions bei Reset, Deaktivieren und Löschen serverseitig,
-  endet auch das; die Geräte-Epoche sollte dann zusätzlich an diese Session-Version
-  gebunden werden.
-- **Reaktivieren ohne Reset belebt frühere Geräte-Cookies.** Die Epoche ist (Zeilen-id,
-  Passwort-Hash) eines aktiven Kontos; Deaktivieren setzt sie nur aus. Ein Konto, das
-  wegen eines Verdachts deaktiviert und ohne Passwort-Reset wieder aktiviert wird,
-  bekommt seine früheren Cookies zurück. Schließen ließe sich das mit einer
-  Epochen-Spalte, die auch bei einer Statusänderung weiterzählt.
 - **Session-Signing-Key rotieren: kein Werkzeug.** Der Notfall-Hebel, der alle
   Geräte-Cookies und alle Sessions auf einmal beendet, ist ein neuer
   `core:auth/session_signing_key` im Vault (fehlt der Eintrag, erzeugt die Middleware
