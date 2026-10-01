@@ -339,11 +339,11 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
-## Upgrading past v0.167.11 — answer check and tool errors behind the Privacy Shield
+## Upgrading past v0.167.11 — answer check and tool errors behind the Privacy Shield, Excel formulas
 
 Nothing to migrate: no schema change and no new variable. What an operator
-notices ([`security-architecture.md`](security-architecture.md) §6c and §6e
-have the full policy):
+notices ([`security-architecture.md`](security-architecture.md) §5a, §6c and
+§6e have the full policy):
 
 ### The chat's completion waits for the answer verifier
 
@@ -418,6 +418,28 @@ unverified). If the middleware log shows `does not implement
 redactToolErrorText` (once per process), such a copy is active; update it to
 the current build. Plugins built against `@omadia/plugin-api` < 1.20 keep
 working: the new service methods are optional.
+
+### Excel exports: the application that opens the file computes the formulas
+
+`create_xlsx` (`@omadia/plugin-office` 0.1.4, bundled with the middleware)
+writes formula cells without a cached result and marks a workbook that holds a
+formula for a full recalculation on open. Excel, LibreOffice or Google Sheets
+compute every figure when they open the file; omadia evaluates no formula
+itself, and a `result` the model sends with a formula is ignored.
+
+- **Previews show formula cells empty.** Viewers that do not calculate (Quick
+  Look, Teams and Outlook previews, Excel's Protected View) show them empty
+  until the file is opened for editing. A generated workbook uploaded as a
+  dataset without being saved in Excel first imports those cells as empty.
+- **Formulas that reach outside the workbook are refused.** A formula may only
+  call Excel's own worksheet functions by their English names and compute over
+  cells of this workbook. A URL fetch (`WEBSERVICE`, `IMPORTXML`, …),
+  `INDIRECT`, `HYPERLINK`, DDE, add-in functions, localised names such as
+  `SUMMEWENNS`, or a reference to another file makes the call fail: no file is
+  written, and the tool answers with an `Error:` naming the cell and the
+  reason, so the model can correct the formula.
+- An installation that runs a Hub copy of the plugin gets this with that
+  copy's update to 0.1.4.
 
 ## Upgrading past v0.167.10 — password sign-in is rate-limited
 
