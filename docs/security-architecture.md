@@ -507,10 +507,19 @@ formula cell displays must come from the application that computes it, never
 from the descriptor.
 
 - **No cached value.** `FormulaCellSchema` has no `result` field, and Zod
-  strips one a caller sends anyway. `renderXlsx` reduces every formula cell to
-  `{ formula }` before exceljs sees it (`coerce`) and writes `{ formula }` again
-  when it sets the cell, so a direct caller that smuggles a `result` past the
-  type still gets `<f>` without `<v>`.
+  strips one a caller sends anyway. `renderXlsx` is exported, so it does not
+  rely on the schema. exceljs decides what a cell is from the shape of the
+  value: any object with a truthy `formula` or `sharedFormula` is a formula,
+  with its `result` as the cached value, and `{ text, hyperlink }` is an
+  external link. The renderer therefore takes only text, numbers, booleans,
+  `null` and `{ formula }` rebuilt from a non-empty formula string as a cell
+  value (`cellValueOf`, which reads only a row's own keys; a date column turns
+  its text into a date), and writes `{ formula }` again when it sets the cell.
+  Any other cell value, a column header that is not text (exceljs writes
+  headers like cell values) and a computed-column formula that is not text
+  fail with `OfficeRenderError` before exceljs sees them. A direct caller that
+  gets past the type therefore gets an error, never a `<v>` next to an `<f>`,
+  a link, or a formula the policy below has not read.
 - **Recalculation on open.** A workbook with at least one formula sets
   `calcPr fullCalcOnLoad="1"`. Clients that do not calculate (previews, Excel's
   Protected View, `data_only` readers) show the cell empty, which is the
@@ -1413,8 +1422,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       and rejects a client-supplied identity field instead of ignoring it
       (§10c, #778).
 - [ ] A new cell or value path in `@omadia/plugin-office` stores no
-      caller-supplied formula result (formula cells are `{ formula }` only) and
-      runs every formula through the formula policy (`formulaPolicy.ts`, §5a:
+      caller-supplied formula result (formula cells are `{ formula }` only),
+      passes no caller-supplied object to exceljs, header included (exceljs
+      reads any object by its shape, §5a; a formula cell is rebuilt as
+      `{ formula }`; `office-cell-values.test.ts` pins it), and runs every
+      formula through the formula policy (`formulaPolicy.ts`, §5a:
       `assertFormulaStaysInWorkbook` for a cell,
       `assertComputedColumnStaysInWorkbook` for a template). A function added
       to `formulaFunctions.ts` has been checked to compute only over the

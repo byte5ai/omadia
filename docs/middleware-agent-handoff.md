@@ -3129,6 +3129,14 @@ Policy wieder einen anderen Text, als in der Datei landet. Der Test „stores
 every formula it accepts exactly as it was checked“ in
 `office-formulas.test.ts` fällt dann auf, aber nur für die Zeichen, die er
 durchprobiert (alle C0-Zeichen, DEL, U+0085, ein Surrogat, U+FFFE).
+Ebenso die Wert-Erkennung (`Value.getType` in `lib/doc/cell.js`): exceljs
+liest jedes Objekt nach seiner Form (`formula`/`sharedFormula` → Formel samt
+`result` als Cache, `{ text, hyperlink }` → Link), deshalb reicht
+`renderXlsx` nur Text, Zahlen, Booleans, `null`, selbst erzeugte Dates und
+neu gebaute `{ formula }` durch (`cellValueOf`, Header nur als Text). Liest
+ein Update einen dieser Werte anders, etwa Text mit führendem `=` als Formel,
+umgeht er die Policy. `office-cell-values.test.ts` prüft die abgelehnten
+Objektformen und dass solcher Text Text bleibt.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

@@ -46,6 +46,15 @@ and server-side evaluation with an MIT engine is a roadmap item
   input schema has no `result` field (one that is sent anyway is stripped), and
   the renderer drops it again before exceljs sees the cell, so a number the
   model supplies can never show up as a formula's value.
+- **Only plain values reach exceljs.** exceljs decides what a cell is from the
+  shape of the value: any object with a truthy `formula` or `sharedFormula` is
+  a formula, with its `result` as the cached value, and `{ text, hyperlink }`
+  is a link. `renderXlsx` is exported and does not rely on the input schema,
+  so it takes only text, numbers, booleans, `null` and `{ formula }` with a
+  non-empty formula string as a cell value, reading only a row's own keys.
+  Any other cell value, a column header that is not text and a computed-column
+  formula that is not text fail with `OfficeRenderError` before exceljs sees
+  them.
 - **Recalculation on open.** A workbook that holds at least one formula sets
   `<calcPr fullCalcOnLoad="1"/>`. Excel recalculates it on open and therefore
   asks to save changes on close. Plain data exports keep a clean `calcPr`.
@@ -75,8 +84,10 @@ cells show depends on where the file is opened:
 Because the file asks to be recalculated, a formula that can reach outside it
 would do so as soon as someone opens the export (or refreshes its data), and
 Excel, LibreOffice and Google Sheets all recalculate an `.xlsx`. `renderXlsx`
-checks every formula in two layers, so that a way out nobody has listed still
-fails closed.
+checks every formula it writes in two layers, so that a way out nobody has
+listed still fails closed. A value that exceljs would turn into a formula
+without that check never gets that far (see *Only plain values reach exceljs*
+above).
 
 **Only Excel's own functions.** A formula may call a function only if it is on
 Microsoft's list of Excel worksheet functions (`src/formulaFunctions.ts`,
@@ -184,7 +195,9 @@ clean, committed tree. Publish steps: `docs/creating-plugins.md` §8
 ## Tests
 
 Central suite: `middleware/test/office.test.ts`, with `office-formulas.test.ts`
-(formula storage and the formula policy) and `office-dataset.test.ts`.
+(formula storage and the formula policy), `office-cell-values.test.ts` (the
+values `renderXlsx` refuses before exceljs sees them) and
+`office-dataset.test.ts`.
 Provenance is verified by reading the properties back out of the produced file
 (ExcelJS load for `.xlsx`, `yauzl` unzip of `docProps/*.xml` for `.docx`), not by
 trusting the renderer input. Formula cells are checked the same way: the tests

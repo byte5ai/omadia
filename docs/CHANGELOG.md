@@ -80,6 +80,19 @@ Excel's grammar reads them (`?` and non-ASCII characters continue a name). The
 used to rescan the template for every placeholder, so a long template cost a
 noticeable amount of CPU per computed column.
 
+None of this relies on the input schema any more. `renderXlsx` is exported,
+and exceljs decides what a cell is from the shape of the value, so a
+descriptor handed to it directly could still store a cached value through a
+shared formula, write a formula the check never read because it was not a
+string, or add an external link, and a column header could do the same. The
+renderer now takes only text, numbers, booleans, `null` and a formula cell
+with a non-empty formula string as a cell value, and refuses any other cell
+value, a header that is not text and a computed-column formula that is not
+text with `OfficeRenderError`. `create_xlsx` itself was not exposed, because
+its input schema already refused these shapes. A column whose key a row lacks
+is now empty even when the key names a property every JavaScript object
+inherits, such as `constructor`; rendering used to fail there.
+
 Viewers that do not calculate (Quick Look, Teams and Outlook previews, Excel's
 Protected View) now show formula cells empty until the file is opened for
 editing. A generated workbook uploaded as a dataset without being saved in
