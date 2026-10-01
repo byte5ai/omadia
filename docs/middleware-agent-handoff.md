@@ -2911,7 +2911,7 @@ Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konst
 
 ### Test-Schalter (nicht von der Middleware gelesen)
 
-Drei Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
+Vier Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
 AGENTS.md jede Env-Variable an einer Stelle dokumentiert haben will:
 
 | Variable | Wirkung |
@@ -2919,6 +2919,7 @@ AGENTS.md jede Env-Variable an einer Stelle dokumentiert haben will:
 | `OMADIA_EXPECT_LOOPBACK=1` | Die Loopback-MCP-Tests **scheitern** statt sich selbst zu überspringen, wenn die Sandbox keinen 127.0.0.1-Listener erlaubt. Ohne das meldet ein Runner ohne Listener die ganze Datei grün, ohne etwas zu prüfen (#1017). CI setzt es. |
 | `OMADIA_CLI_LIVE_PROBE=1` | Startet die Live-Probe: echte `claude`-CLI mit dem Produktions-argv, die einen Shell-Befehl ablehnen muss. Kostet Abo-Kontingent und braucht eine eingeloggte CLI, daher opt-in. |
 | `OMADIA_CLI_NEGATIVE_CONTROL=1` | Ergänzt die Probe um die Gegenprobe mit dem argv von vor #991, das erwartungsgemäß ein Built-in-Tool erreicht. Lässt die CLI dabei bewusst einen Shell-Befehl auf dieser Maschine ausführen, deshalb ein eigener Schalter. |
+| `OMADIA_EMBEDDED_PG_IT=require` | Wird nur vom Desktop-Test `desktop/test/embeddedDb.integration.test.mts` gelesen (läuft mit `npm test` in `desktop/`), nicht von der Desktop-App. Die Datei **scheitert** dann, statt sich zu überspringen, wenn `desktop/node_modules` keine `@embedded-postgres`-Engine für die Plattform enthält oder der Test als root läuft (initdb verweigert root), und statt ihre pgvector-Prüfungen wegzulassen, wenn in der Engine kein pgvector eingespielt ist. Ohne den Schalter meldet ein solcher Lauf die Datei grün, obwohl er weniger oder nichts geprüft hat. Nur der Wert `require` wirkt. Der Workflow `desktop-apps` setzt ihn unter macOS und Linux, nachdem er pgvector eingespielt hat; unter Windows läuft der Test dort nicht, weil die Runner als Administrator laufen und `postgres.exe` unter einem solchen Konto nicht startet. |
 
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 

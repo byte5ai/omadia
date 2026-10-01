@@ -65,7 +65,10 @@ accepts a connection without a password. A rollback to an earlier desktop
 build cannot open a migrated cluster, because that build connects without a
 password; restore the pre-update snapshot
 (`snapshots/pgdata-pre-<version>-<stamp>/` and its `.secrets.enc`) to go back.
-No new environment variable.
+No new runtime environment variable. The desktop-apps workflow sets the test
+switch `OMADIA_EMBEDDED_PG_IT=require`, so that a missing engine or pgvector
+fails the integration test instead of skipping it
+(`docs/middleware-agent-handoff.md` §10, Test-Schalter).
 
 The shell's own maintenance sessions treat the kernel-owned database as
 untrusted. Because `omadia_kernel` owns that database, it can set a
