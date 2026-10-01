@@ -9,7 +9,8 @@ import { LocalPasswordProvider } from '../../src/auth/providers/LocalPasswordPro
 import { ProviderRegistry } from '../../src/auth/providerRegistry.js';
 import { createAuthRouter } from '../../src/routes/auth.js';
 import type {
-  CreateUserInput,
+  CreateFirstAdminInput,
+  FirstAdminResult,
   UserRecord,
   UserStore,
 } from '../../src/auth/userStore.js';
@@ -34,6 +35,13 @@ import { listenLoopback } from '../_helpers/listenLoopback.js';
  *   4. Invalid key format (no "sk-ant-" prefix) → 400, no user created,
  *      no vault touched.
  *
+ * Plus the first-user contract: `/providers` and `/setup` answer from ONE
+ * predicate, the operator setup token is checked before anything else, and the
+ * outcomes of the atomic `createFirstAdmin` map to 410 / 409. Concurrency
+ * itself is proven against a real Postgres in
+ * `setupRouteConcurrency.pg.test.ts` — an in-memory store has no concurrent
+ * writers to lose a race to.
+ *
  * Live network-call to api.anthropic.com is shimmed by monkey-patching
  * `globalThis.fetch` for the duration of each test — keeps the suite
  * hermetic and CI-safe.
@@ -41,32 +49,74 @@ import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 // ─── In-memory test doubles ────────────────────────────────────────────────
 
-class InMemoryUserStore implements Pick<UserStore, 'count' | 'create' | 'markLoginNow' | 'findByProviderUserId'> {
-  rows: Array<UserRecord & { passwordHash: string | null }> = [];
+/** A stored row: the record plus the hash, which the store never hands out. */
+interface StoredUser {
+  user: UserRecord;
+  passwordHash: string;
+}
+
+/**
+ * The subset of `UserStore` the setup path reaches. Deliberately without
+ * `create()`: the first admin may only come out of the atomic
+ * `createFirstAdmin()`, so a handler that fell back to a plain INSERT would
+ * crash here instead of passing.
+ */
+class InMemoryUserStore
+  implements Pick<UserStore, 'count' | 'createFirstAdmin' | 'markLoginNow' | 'findByProviderUserId'>
+{
+  rows: StoredUser[] = [];
+  countCalls = 0;
+  firstAdminCalls = 0;
+  /** When set, `createFirstAdmin` rejects with it (a database-side failure). */
+  firstAdminError: unknown = undefined;
+  /** Simulates a concurrent writer that committed after the fast path ran. */
+  reportNotEmpty = false;
 
   async count(): Promise<number> {
+    this.countCalls += 1;
     return this.rows.length;
   }
 
-  async create(input: CreateUserInput): Promise<UserRecord> {
-    const id = `mock-${this.rows.length + 1}`;
+  async createFirstAdmin(input: CreateFirstAdminInput): Promise<FirstAdminResult> {
+    this.firstAdminCalls += 1;
+    if (this.firstAdminError !== undefined) throw this.firstAdminError;
+    if (this.reportNotEmpty || this.rows.length > 0) {
+      return { outcome: 'not_empty', totalUsers: Math.max(this.rows.length, 1) };
+    }
+    return { outcome: 'created', user: this.pushAdmin(input) };
+  }
+
+  /** An admin that was already there when the process started — the state of
+   *  every restarted install. Bypasses `createFirstAdmin` and its counter. */
+  seedExistingAdmin(email: string): void {
+    this.pushAdmin({
+      email,
+      provider: 'local',
+      providerUserId: email.toLowerCase(),
+      displayName: email,
+      passwordHash: 'argon2-hash-never-checked-here',
+    });
+  }
+
+  private pushAdmin(
+    input: Omit<CreateFirstAdminInput, 'via'>,
+  ): UserRecord {
     const now = new Date();
-    const row: UserRecord & { passwordHash: string | null } = {
-      id,
+    const user: UserRecord = {
+      id: `mock-${String(this.rows.length + 1)}`,
       email: input.email,
       provider: input.provider,
       providerUserId: input.providerUserId,
-      passwordHash: input.passwordHash ?? null,
-      displayName: input.displayName ?? '',
-      role: input.role ?? 'admin',
+      displayName: input.displayName,
+      role: 'admin',
       status: 'active',
       createdAt: now,
       updatedAt: now,
       lastLoginAt: null,
       sessionVersion: 0,
     };
-    this.rows.push(row);
-    return { ...row, passwordHash: row.passwordHash ?? undefined };
+    this.rows.push({ user, passwordHash: input.passwordHash });
+    return user;
   }
 
   async markLoginNow(_id: string): Promise<void> {
@@ -141,15 +191,23 @@ async function startHarness(opts: {
    *  permission block, but a 403 whose body says `authentication_error` is a
    *  genuine rejection, and only the body tells the two apart. */
   anthropicPingBody?: string;
+  /** Boot-time flag from `runAuthBootstrap`; defaults to true (wizard open). */
+  setupAllowed?: boolean;
+  /** Operator setup token; undefined = no token gate on this boot. */
+  setupToken?: string;
+  /** Register the local password provider (default true). */
+  withLocalProvider?: boolean;
 }): Promise<Harness> {
   const store = new InMemoryUserStore();
   const vault = new InMemoryVault();
   const reactivateCalls: string[] = [];
 
   const registry = new ProviderRegistry();
-  registry.replaceActive([
-    new LocalPasswordProvider(store as unknown as UserStore),
-  ]);
+  registry.replaceActive(
+    opts.withLocalProvider === false
+      ? []
+      : [new LocalPasswordProvider(store as unknown as UserStore)],
+  );
 
   // Random 32-byte HMAC key — the test never re-validates the cookie so
   // the actual value doesn't matter; just needs to be the right shape.
@@ -166,7 +224,8 @@ async function startHarness(opts: {
       signingKey,
       publicBaseUrl: 'http://localhost',
       defaultReturnPath: '/',
-      setupAllowed: true,
+      setupAllowed: opts.setupAllowed ?? true,
+      ...(opts.setupToken !== undefined ? { setupToken: opts.setupToken } : {}),
       vault,
       reactivate: async (agentId: string) => {
         reactivateCalls.push(agentId);
@@ -184,7 +243,7 @@ async function startHarness(opts: {
   // expected, but safe).
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (
-    input: string | URL | Request,
+    input: Parameters<typeof fetch>[0],
     init?: RequestInit,
   ): Promise<Response> => {
     const url = typeof input === 'string' ? input : input.toString();
@@ -202,7 +261,7 @@ async function startHarness(opts: {
       }
       return new Response(opts.anthropicPingBody ?? '', { status });
     }
-    return originalFetch(input as RequestInfo, init);
+    return originalFetch(input, init);
   }) as typeof fetch;
 
   const server = await listenLoopback(app);
@@ -254,7 +313,7 @@ describe('POST /api/v1/auth/setup (OB-61)', () => {
 
     // User created
     assert.equal(h.store.rows.length, 1);
-    assert.equal(h.store.rows[0].email, 'admin@example.com');
+    assert.equal(h.store.rows[0]?.user.email, 'admin@example.com');
 
     // Vault writes — exactly 3, one per consumer, all with the same key
     const writes = h.vault.writes;
@@ -478,5 +537,255 @@ describe('POST /api/v1/auth/setup — anthropic-rejects-key path', () => {
     assert.equal(body.code, 'auth.setup_anthropic_key_rejected');
     assert.equal(h.store.rows.length, 0);
     assert.equal(h.vault.writes.length, 0);
+  });
+});
+
+// ─── First-user contract ───────────────────────────────────────────────────
+
+const VALID_SETUP = { email: 'admin@example.com', password: 'pw-with-12-chars' };
+
+interface SetupReply {
+  status: number;
+  code: string | undefined;
+  setCookie: string | null;
+}
+
+async function postSetup(
+  h: Harness,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<SetupReply> {
+  const res = await fetch(`${h.baseUrl}/api/v1/auth/setup`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let code: string | undefined;
+  try {
+    const parsed = JSON.parse(text) as { code?: unknown };
+    code = typeof parsed.code === 'string' ? parsed.code : undefined;
+  } catch {
+    code = undefined;
+  }
+  return { status: res.status, code, setCookie: res.headers.get('set-cookie') };
+}
+
+async function getProviders(
+  h: Harness,
+): Promise<{ setup_required?: unknown; setup_token_required?: unknown }> {
+  const res = await fetch(`${h.baseUrl}/api/v1/auth/providers`);
+  assert.equal(res.status, 200);
+  return (await res.json()) as { setup_required?: unknown; setup_token_required?: unknown };
+}
+
+async function stopHarness(h: Harness): Promise<void> {
+  h.restoreFetch();
+  __clearVerificationCache();
+  await h.close();
+}
+
+describe('POST /api/v1/auth/setup — /providers and /setup answer from one predicate', () => {
+  it('setupAllowed=false, table emptied since boot: discovery says no setup AND the handler refuses (410 auth.setup_disabled)', async () => {
+    // The boot-time flag used to be read by /providers only. A users table
+    // emptied after boot then advertised "no setup" while /setup still minted
+    // an admin for whoever asked.
+    const h = await startHarness({ setupAllowed: false });
+    try {
+      assert.equal((await getProviders(h)).setup_required, false);
+      const res = await postSetup(h, VALID_SETUP);
+      assert.equal(res.status, 410);
+      assert.equal(res.code, 'auth.setup_disabled');
+      assert.equal(res.setCookie, null);
+      assert.equal(h.store.rows.length, 0);
+      assert.equal(h.store.firstAdminCalls, 0, 'the handler must not reach the users-table lock');
+    } finally {
+      await stopHarness(h);
+    }
+  });
+
+  it('setupAllowed=false with a user present: 410 auth.setup_locked, not auth.setup_disabled', async () => {
+    // Every restart of an installed server boots with setupAllowed=false. While
+    // a user exists the answer must stay "setup already completed": scripts
+    // treat that code as done, the wizard sends the browser to /login on it,
+    // and a restart would change nothing, so "restart the middleware" would be
+    // wrong advice.
+    const h = await startHarness({ setupAllowed: false });
+    try {
+      h.store.seedExistingAdmin('existing-admin@example.com');
+      assert.equal((await getProviders(h)).setup_required, false);
+      const res = await postSetup(h, VALID_SETUP);
+      assert.equal(res.status, 410);
+      assert.equal(res.code, 'auth.setup_locked');
+      assert.equal(res.setCookie, null);
+      assert.equal(h.store.rows.length, 1);
+      assert.equal(h.store.firstAdminCalls, 0, 'the handler must not reach the users-table lock');
+    } finally {
+      await stopHarness(h);
+    }
+  });
+
+  it('a user already exists: both report locked, and the fast path answers before the lock', async () => {
+    const h = await startHarness({});
+    try {
+      assert.equal((await postSetup(h, VALID_SETUP)).status, 200);
+      assert.equal((await getProviders(h)).setup_required, false);
+
+      const again = await postSetup(h, { ...VALID_SETUP, email: 'second@example.com' });
+      assert.equal(again.status, 410);
+      assert.equal(again.code, 'auth.setup_locked');
+      assert.equal(h.store.firstAdminCalls, 1, 'only the first request reached createFirstAdmin');
+      assert.equal(h.store.rows.length, 1);
+    } finally {
+      await stopHarness(h);
+    }
+  });
+
+  it('no local provider: discovery says no setup and the handler answers 410 auth.setup_no_local_provider', async () => {
+    const h = await startHarness({ withLocalProvider: false });
+    try {
+      assert.equal((await getProviders(h)).setup_required, false);
+      const res = await postSetup(h, VALID_SETUP);
+      assert.equal(res.status, 410);
+      assert.equal(res.code, 'auth.setup_no_local_provider');
+      assert.equal(h.store.rows.length, 0);
+    } finally {
+      await stopHarness(h);
+    }
+  });
+});
+
+describe('POST /api/v1/auth/setup — operator setup token', () => {
+  const TOKEN = 'test-token-0123456789abcdef';
+  let h: Harness;
+
+  before(async () => {
+    h = await startHarness({ setupToken: TOKEN });
+  });
+  after(async () => {
+    await stopHarness(h);
+  });
+
+  it('/providers advertises that the wizard needs a token', async () => {
+    const providers = await getProviders(h);
+    assert.equal(providers.setup_required, true);
+    assert.equal(providers.setup_token_required, true);
+  });
+
+  it('a missing token is refused with 403 before the store is touched or the body is read', async () => {
+    // Invalid email on purpose: a 400 here would mean the body was validated
+    // (and, for a valid body, argon2 run) for a caller the operator never
+    // authorised.
+    const countBefore = h.store.countCalls;
+    const res = await postSetup(h, { email: 'not-an-email', password: 'x' });
+    assert.equal(res.status, 403);
+    assert.equal(res.code, 'auth.setup_token_invalid');
+    assert.equal(h.store.countCalls, countBefore, 'the token gate runs before the fast path');
+    assert.equal(h.store.firstAdminCalls, 0, 'an unauthorised caller never takes the lock');
+    assert.equal(h.store.rows.length, 0);
+  });
+
+  it('a wrong, truncated or non-string token is refused with 403', async () => {
+    const countBefore = h.store.countCalls;
+    for (const setup_token of [
+      'test-token-0123456789abcdeX',
+      TOKEN.slice(0, -1),
+      `${TOKEN}x`,
+      '',
+      42,
+      null,
+      [TOKEN],
+    ]) {
+      const res = await postSetup(h, { ...VALID_SETUP, setup_token });
+      assert.equal(res.status, 403, `token ${JSON.stringify(setup_token)} must be refused`);
+      assert.equal(res.code, 'auth.setup_token_invalid');
+    }
+    assert.equal(h.store.countCalls, countBefore);
+    assert.equal(h.store.firstAdminCalls, 0);
+    assert.equal(h.store.rows.length, 0);
+  });
+
+  it('the token travels in the body only — a header copy is not a second credential', async () => {
+    const res = await postSetup(h, VALID_SETUP, { 'x-setup-token': TOKEN });
+    assert.equal(res.status, 403);
+    assert.equal(h.store.rows.length, 0);
+  });
+
+  it('the right token creates the first admin and signs them in', async () => {
+    const res = await postSetup(h, { ...VALID_SETUP, setup_token: TOKEN });
+    assert.equal(res.status, 200);
+    assert.ok(res.setCookie, 'the new admin gets a session');
+    assert.equal(h.store.rows.length, 1);
+    assert.equal(h.store.rows[0]?.user.email, 'admin@example.com');
+  });
+
+  it('after setup, the right token still cannot create a second admin', async () => {
+    const res = await postSetup(h, {
+      ...VALID_SETUP,
+      email: 'second@example.com',
+      setup_token: TOKEN,
+    });
+    assert.equal(res.status, 410);
+    assert.equal(res.code, 'auth.setup_locked');
+    assert.equal(h.store.rows.length, 1);
+  });
+});
+
+describe('POST /api/v1/auth/setup — boot without a token gate', () => {
+  it('/providers reports setup_token_required: false', async () => {
+    const h = await startHarness({});
+    try {
+      const providers = await getProviders(h);
+      assert.equal(providers.setup_required, true);
+      assert.equal(providers.setup_token_required, false);
+    } finally {
+      await stopHarness(h);
+    }
+  });
+});
+
+describe('POST /api/v1/auth/setup — outcomes of the atomic create', () => {
+  it('a writer that won between the fast path and the lock → 410 auth.setup_locked, no session', async () => {
+    const h = await startHarness({});
+    h.store.reportNotEmpty = true;
+    try {
+      const res = await postSetup(h, VALID_SETUP);
+      assert.equal(res.status, 410);
+      assert.equal(res.code, 'auth.setup_locked');
+      assert.equal(res.setCookie, null);
+      assert.equal(h.store.firstAdminCalls, 1);
+    } finally {
+      await stopHarness(h);
+    }
+  });
+
+  it('lock_timeout (55P03) → 409 auth.setup_in_progress, no session', async () => {
+    const h = await startHarness({});
+    h.store.firstAdminError = Object.assign(
+      new Error('canceling statement due to lock timeout'),
+      { code: '55P03' },
+    );
+    try {
+      const res = await postSetup(h, VALID_SETUP);
+      assert.equal(res.status, 409);
+      assert.equal(res.code, 'auth.setup_in_progress');
+      assert.equal(res.setCookie, null);
+    } finally {
+      await stopHarness(h);
+    }
+  });
+
+  it('any other database failure is not reported as contention', async () => {
+    const h = await startHarness({});
+    h.store.firstAdminError = Object.assign(new Error('connection terminated'), {
+      code: '08006',
+    });
+    try {
+      const res = await postSetup(h, VALID_SETUP);
+      assert.equal(res.status, 500);
+      assert.equal(res.setCookie, null);
+    } finally {
+      await stopHarness(h);
+    }
   });
 });

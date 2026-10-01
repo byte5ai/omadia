@@ -1,4 +1,3 @@
-import { providerApiKeyVaultKey } from '@omadia/llm-provider';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
@@ -9,7 +8,6 @@ import {
   type AuthSuccess,
   type VerifiedAccount,
 } from '../auth/providers/AuthProvider.js';
-import { hashPassword } from '../auth/passwordHasher.js';
 import {
   LOCAL_PROVIDER_ID,
 } from '../auth/providers/LocalPasswordProvider.js';
@@ -32,12 +30,6 @@ import {
 } from '../auth/sessionJwt.js';
 import type { SessionRevocation } from '../auth/sessionRevocation.js';
 import type { UserStore } from '../auth/userStore.js';
-import {
-  encodeVerifiedRecord,
-  keyFingerprint,
-  providerVerifiedAtVaultKey,
-  verifyProviderCredential,
-} from '../platform/providerCredentialVerifier.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { endSessionsOnLogout } from './authLogout.js';
 import {
@@ -45,6 +37,7 @@ import {
   renewableUntil,
   type SessionRenewalDeps,
 } from './authRenew.js';
+import { createSetupHandler, resolveSetupState } from './authSetup.js';
 
 interface AuthDeps {
   registry: ProviderRegistry;
@@ -56,11 +49,22 @@ interface AuthDeps {
   defaultReturnPath: string;
   /**
    * Set when this boot detected an empty users-table without env-seed
-   * values — the /setup wizard mounts only when this is true. The route
-   * additionally double-checks `userStore.count() === 0` on every call so
-   * the gate stays correct even if the boot-time value drifts.
+   * values. `/providers` and `/setup` read it through the same predicate
+   * (`resolveSetupState` in ./authSetup.ts), which counts users first: while
+   * any exist, both answer "setup already completed" whatever this flag says.
+   * False only matters once the table is empty again — the wizard stays
+   * closed for this boot and a restart re-evaluates it. `/setup` creates the
+   * admin through the atomic `UserStore.createFirstAdmin`.
    */
   setupAllowed: boolean;
+  /**
+   * Operator setup token `POST /setup` demands in its `setup_token` body
+   * field, checked before anything else (`auth/setupToken.ts`). Undefined =
+   * no token gate on this boot: the desktop kernel on a loopback bind, or a
+   * boot without a wizard. Optional so harnesses that never set up keep
+   * compiling.
+   */
+  setupToken?: string;
   /**
    * Slice 1b-channel-web — optional adapter that resolves the just-
    * authenticated identity into a KG `User`-Cluster + `ChannelIdentity`
@@ -141,7 +145,8 @@ const PKCE_COOKIE_MAX_AGE_S = 600;
  *   GET  /api/v1/auth/me               current session (or 401)
  *   POST /api/v1/auth/renew            extend a valid session ("I'm still
  *                                      here", #965; see ./authRenew.ts)
- *   POST /api/v1/auth/setup            first-user wizard (one-shot, 410 once locked)
+ *   POST /api/v1/auth/setup            first-user wizard (one-shot, setup
+ *                                      token, atomic; see ./authSetup.ts)
  *
  * Provider mechanics live in `auth/providers/*` — the router branches
  * exactly twice (password vs. oidc) and is otherwise provider-agnostic.
@@ -151,18 +156,15 @@ export function createAuthRouter(deps: AuthDeps): Router {
 
   // ── GET /providers ───────────────────────────────────────────────────────
   router.get('/providers', async (_req: Request, res: Response) => {
-    // Setup is only "required" when ALL three hold:
-    //   - boot-time `setupAllowed` flag (bootstrap detected empty users +
-    //     no env-seed)
-    //   - the local provider is registered (otherwise the wizard would
-    //     produce a local admin we can't actually log in as)
-    //   - users-table is still empty NOW (re-checked per call so the UI
-    //     reflects state without a server restart)
-    const localActive = deps.registry.get(LOCAL_PROVIDER_ID) !== undefined;
-    const empty = (await deps.userStore.count()) === 0;
+    // `setup_required` is the SAME predicate the /setup handler enforces
+    // (local provider active, users table empty now, boot-time flag), so
+    // the UI never offers a wizard the handler refuses — or the reverse.
+    // `setup_token_required` mirrors the handler's first gate.
+    const state = await resolveSetupState(deps);
     res.json({
       providers: deps.registry.summaries(),
-      setup_required: deps.setupAllowed && localActive && empty,
+      setup_required: state === 'available',
+      setup_token_required: deps.setupToken !== undefined,
     });
   });
 
@@ -448,179 +450,43 @@ export function createAuthRouter(deps: AuthDeps): Router {
   );
 
   // ── POST /setup (one-shot first-user wizard) ─────────────────────────────
-  // Returns 410 Gone in two cases:
-  //   - any user already exists (one-shot lock)
-  //   - the local password provider is not active (no point creating a
-  //     local admin if AUTH_PROVIDERS=entra-only — that would just leave a
-  //     dangling unauthenticated-creation surface for attackers).
-  // The boot-time `setupAllowed` flag is the third gate, advertised in
-  // /providers so the UI flips into "first-time-setup" mode only when
-  // the wizard is actually usable.
-  router.post('/setup', async (req: Request, res: Response) => {
-    const localProvider = deps.registry.get(LOCAL_PROVIDER_ID);
-    if (!localProvider) {
-      res.status(410).json({
-        code: 'auth.setup_no_local_provider',
-        message:
-          'setup wizard requires the "local" auth provider to be active in AUTH_PROVIDERS',
-      });
-      return;
-    }
-    const existing = await deps.userStore.count();
-    if (existing > 0) {
-      res
-        .status(410)
-        .json({ code: 'auth.setup_locked', message: 'setup already completed' });
-      return;
-    }
-
-    const body = (req.body ?? {}) as {
-      email?: unknown;
-      password?: unknown;
-      display_name?: unknown;
-      anthropic_api_key?: unknown;
-    };
-    const email =
-      typeof body.email === 'string' ? body.email.trim() : '';
-    const password = typeof body.password === 'string' ? body.password : '';
-    const displayName =
-      typeof body.display_name === 'string' ? body.display_name.trim() : '';
-    const anthropicApiKey =
-      typeof body.anthropic_api_key === 'string'
-        ? body.anthropic_api_key.trim()
-        : '';
-
-    if (email.length === 0 || !email.includes('@')) {
-      res.status(400).json({ code: 'auth.setup_invalid_email' });
-      return;
-    }
-    if (password.length < 8) {
-      res.status(400).json({ code: 'auth.setup_password_too_short' });
-      return;
-    }
-
-    // OB-61: validate the Anthropic key *before* persisting any state.
-    // Skipping when empty keeps the wizard usable for operators who add
-    // the key later on the LLM access page (the normal path since S4) — the
-    // orchestrator/verifier capabilities simply stay unpublished until
-    // they do.
-    // OM-08: the ping's RESULT is now recorded, not just acted on. Previously an
-    // accepted key was indistinguishable from a never-checked one the moment
-    // this block returned — which is exactly how a working /setup produced a
-    // dashboard that could not tell "verified" from "some string is on file".
-    let anthropicVerifiedAt: string | undefined;
-    if (anthropicApiKey.length > 0) {
-      if (!anthropicApiKey.startsWith('sk-ant-')) {
-        res.status(400).json({
-          code: 'auth.setup_invalid_anthropic_key',
-          message:
-            'Anthropic API keys start with "sk-ant-". Double-check the value from console.anthropic.com.',
-        });
-        return;
-      }
-      // Shared probe (`platform/providerCredentialVerifier`). Semantics are
-      // unchanged: only an outright rejection blocks setup — a 5xx, a
-      // rate-limit or an offline machine still lets the operator through,
-      // because none of those are the operator's fault.
-      const verification = await verifyProviderCredential({
-        providerId: 'anthropic',
-        apiKey: anthropicApiKey,
-        wireFormat: 'anthropic',
-        force: true,
-      });
-      if (verification.status === 'invalid') {
-        res.status(400).json({
-          code: 'auth.setup_anthropic_key_rejected',
-          message:
-            verification.error ??
-            'Anthropic rejected this API key (401/403). Verify the value at console.anthropic.com → API keys.',
-        });
-        return;
-      }
-      if (verification.status !== 'verified') {
-        console.warn(
-          '[auth] /setup: anthropic key-ping inconclusive, accepting key anyway',
-        );
-      }
-      anthropicVerifiedAt = verification.verifiedAt;
-    }
-
-    const passwordHash = await hashPassword(password);
-    const user = await deps.userStore.create({
-      email,
-      provider: LOCAL_PROVIDER_ID,
-      providerUserId: email.toLowerCase(),
-      passwordHash,
-      displayName: displayName.length > 0 ? displayName : email,
-      role: 'admin',
-    });
-
-    // OB-61: seed the validated key into every consumer plugin's vault,
-    // then reactivate each so the plugin picks it up without a server
-    // restart. Failure to write/reactivate one plugin is logged but does
-    // NOT roll back the user creation — the operator can re-seed on the
-    // LLM access page, but they MUST be able to log in afterwards.
-    if (anthropicApiKey.length > 0 && deps.vault) {
-      const consumers = deps.anthropicKeyConsumers ?? [];
-      for (const agentId of consumers) {
-        try {
-          await deps.vault.setMany(agentId, {
-            [providerApiKeyVaultKey('anthropic')]: anthropicApiKey,
-            // Carry the ping's verdict with the key so the providers page can
-            // render "verified" instead of "key stored, not verified".
-            ...(anthropicVerifiedAt !== undefined
-              ? {
-                  [providerVerifiedAtVaultKey('anthropic')]:
-                    encodeVerifiedRecord(
-                      anthropicVerifiedAt,
-                      keyFingerprint(anthropicApiKey),
-                    ),
-                }
-              : {}),
-          });
-          if (deps.reactivate) {
-            await deps.reactivate(agentId);
-          }
-        } catch (err) {
-          console.error(
-            `[auth] /setup: failed to seed anthropic_api_key for ${agentId}:`,
-            err instanceof Error ? err.message : err,
-          );
-        }
-      }
-    }
-
-    // Auto-login the freshly-created admin so the operator lands inside the
-    // UI without a second round-trip. Mirrors the password-login cookie.
-    await mintSessionAndSetCookie({
-      req,
-      res,
-      success: {
-        outcome: 'success',
-        providerUserId: user.providerUserId,
-        email: user.email,
-        displayName: user.displayName,
-      },
-      account: { id: user.id, sessionVersion: user.sessionVersion },
-      provider: { id: LOCAL_PROVIDER_ID, kind: 'password' },
-      signingKey: deps.signingKey,
-      ...(deps.resolveChannelIdentity
-        ? { resolveChannelIdentity: deps.resolveChannelIdentity }
+  // Order: operator setup token → the /providers predicate → the atomic
+  // first-admin transaction. 403 `auth.setup_token_invalid`, 410
+  // `auth.setup_disabled` / `auth.setup_no_local_provider` /
+  // `auth.setup_locked`, 409 `auth.setup_in_progress` — see ./authSetup.ts.
+  router.post(
+    '/setup',
+    createSetupHandler({
+      setupAllowed: deps.setupAllowed,
+      registry: deps.registry,
+      userStore: deps.userStore,
+      ...(deps.setupToken !== undefined ? { setupToken: deps.setupToken } : {}),
+      ...(deps.vault ? { vault: deps.vault } : {}),
+      ...(deps.reactivate ? { reactivate: deps.reactivate } : {}),
+      ...(deps.anthropicKeyConsumers
+        ? { anthropicKeyConsumers: deps.anthropicKeyConsumers }
         : {}),
-    });
-    void deps.userStore.markLoginNow(user.id).catch(() => undefined);
-
-    res.json({
-      ok: true,
-      user: {
-        id: user.id,
-        email: user.email,
-        display_name: user.displayName,
-        role: user.role,
-        provider: user.provider,
-      },
-    });
-  });
+      // Auto-login the freshly-created admin so the operator lands inside
+      // the UI without a second round-trip. Mirrors the password-login cookie.
+      signIn: (req, res, user) =>
+        mintSessionAndSetCookie({
+          req,
+          res,
+          success: {
+            outcome: 'success',
+            providerUserId: user.providerUserId,
+            email: user.email,
+            displayName: user.displayName,
+          },
+          account: { id: user.id, sessionVersion: user.sessionVersion },
+          provider: { id: LOCAL_PROVIDER_ID, kind: 'password' },
+          signingKey: deps.signingKey,
+          ...(deps.resolveChannelIdentity
+            ? { resolveChannelIdentity: deps.resolveChannelIdentity }
+            : {}),
+        }),
+    }),
+  );
 
   return router;
 }

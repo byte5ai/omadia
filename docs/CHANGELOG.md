@@ -36,6 +36,40 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — first-user setup creates exactly one admin and needs the operator's setup token
+
+2026-09-30 — `POST /api/v1/auth/setup` checked `userStore.count()` and then
+ran a plain INSERT on another pool connection, with an argon2 hash in between.
+Parallel requests all saw an empty table: distinct emails created several
+admins, each signed in, and a repeated email surfaced as an unhandled 500.
+The emptiness check and the INSERT now run in one transaction in
+`UserStore.createFirstAdmin`, under `SET LOCAL lock_timeout` and
+`LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`. That lock also waits for the
+writers that bypass this path (an OIDC first sign-in, an admin-UI create), and
+a wait past 2 s answers 409 `auth.setup_in_progress`. The `ADMIN_BOOTSTRAP_*`
+env seed uses the same path, so two replicas booting together no longer crash
+the loser on a unique violation. The first admin's creation is now audited
+(`auth.first_admin_create`) in the same transaction. `GET /providers` and the
+handler share one predicate: a boot that did not allow setup now answers 410
+`auth.setup_disabled` if the users table is emptied later (restart to
+reopen the wizard), where it used to create an admin. While users exist the
+answer stays 410 `auth.setup_locked`.
+
+The wizard also needs operator consent now. It accepts only the setup token
+(`setup_token` body field, else 403 `auth.setup_token_invalid`), checked
+before anything else, so an unauthorised caller never runs argon2 or waits on
+the lock. The token is `ADMIN_SETUP_TOKEN` (new, 16 to 512 characters) or,
+when unset, a generated one. It is stored in `platform_settings` so every
+replica and restart shares it, printed once per start to the middleware log,
+and deleted when the first admin exists. The only install without a token is
+the desktop app, whose supervisor now sets the new `OMADIA_DESKTOP_EMBEDDED`
+together with its loopback bind. Neither half exempts on its own, and no
+request header or `PUBLIC_BASE_URL` is consulted. `/providers` reports
+`setup_token_required`, and the wizard asks for the token and maps 403, 409
+and both 410 codes to their own messages. The unused `/api/v1/setup` prefix
+was removed from the unauthenticated path allowlist. See
+`docs/upgrading.md` for installs whose wizard is still open.
+
 ### Fixed — channel WebSockets end with the session that opened them
 
 2026-09-30 — a channel WebSocket (today the canvas at `/omadia-ui/canvas`) was

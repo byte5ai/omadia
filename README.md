@@ -64,15 +64,22 @@ git clone https://github.com/byte5ai/omadia.git && cd omadia
 #    not a source build. No config needed to start.
 docker compose up -d
 
-# 2. Open the admin UI and complete the first-admin wizard.
-#    The /setup wizard collects your LLM key and stores it encrypted in the vault.
+# 2. Copy the one-time setup token the middleware printed at start.
+#    The first-admin wizard only accepts it, so nobody else can claim
+#    your fresh install.
+docker compose logs middleware | grep "setup token"
+
+# 3. Open the admin UI and complete the first-admin wizard with that token.
 open http://localhost:3333
 ```
 
 `docker compose up -d` pulls exactly three services and nothing else. Open the UI,
-set your LLM key in the wizard, and run your first agent team. The next section is
+create the first admin with the setup token, connect your LLM under
+**Admin → LLM access**, and run your first agent team. The next section is
 the 90-second "wow moment". Diagrams, embeddings, and object storage are opt-in
-(see [Optional features](#optional-features)).
+(see [Optional features](#optional-features)). Prefer to choose the token
+yourself? Set `ADMIN_SETUP_TOKEN` (16+ characters) in `middleware/.env` before
+the first start.
 
 Pin a specific release instead of the latest with the `OMADIA_VERSION` shell
 variable (or a project-root `.env` file, not `middleware/.env`), or build the
@@ -125,7 +132,8 @@ omadia clicks once you watch a team of agents do real work and hand you a receip
 for it:
 
 1. Run **`docker compose up -d`**. The minimal core (postgres, middleware, admin UI) comes up together.
-2. **Open `http://localhost:3333`** and finish the first-admin `/setup` wizard.
+2. **Open `http://localhost:3333`** and finish the first-admin `/setup` wizard
+   with the setup token from `docker compose logs middleware`.
 3. **Start a demo agent team** from a single prompt in the web chat.
 4. **Watch it work.** The orchestrator streams turns and dispatches tools across
    the agents in the team.
@@ -300,9 +308,11 @@ the differentiating logic, and verifying with the smoke runner before install.
 - **Local / single-tenant**: `docker compose up`, see Quickstart above
 - **One-click cloud**: deploy the minimal core into your own Render
   workspace — [`render.yaml`](render.yaml) provisions the middleware,
-  admin UI, and Postgres (pgvector), generates `VAULT_KEY` and
-  `CREDENTIAL_KEYCHAIN_KEY`, and the `/setup` wizard collects your LLM key
-  on first boot. Runs on paid instance types (the middleware needs a persistent disk).
+  admin UI, and Postgres (pgvector), and generates `VAULT_KEY` and
+  `CREDENTIAL_KEYCHAIN_KEY`. On first boot the middleware log shows the one-time
+  setup token the first-admin `/setup` wizard asks for; your LLM is connected
+  afterwards under **Admin → LLM access**. Runs on paid instance types (the
+  middleware needs a persistent disk).
 
   [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/byte5ai/omadia)
 
@@ -314,7 +324,8 @@ the differentiating logic, and verifying with the smoke runner before install.
   offerings either lack pgvector or gate it behind a dashboard toggle) —
   generates `VAULT_KEY`, `CREDENTIAL_KEYCHAIN_KEY` and the database password,
   and deploys the GHCR
-  images. Needs a logged-in `flyctl`; roughly $10/month:
+  images. Needs a logged-in `flyctl`; roughly $10/month. The `/setup` wizard
+  then asks for the setup token from `fly logs -a <middleware-app>`:
 
   ```bash
   git clone https://github.com/byte5ai/omadia.git && cd omadia

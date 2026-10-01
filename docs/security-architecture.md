@@ -2194,6 +2194,121 @@ and `middleware/test/auth/liveSocketRevocation.test.ts` (§10d).
 
 ---
 
+## 10l. First-user setup: one admin, atomically, with operator consent
+
+A fresh install has no operator, so the first-user wizard
+(`POST /api/v1/auth/setup`, `middleware/src/routes/authSetup.ts`) cannot sit
+behind a session. It lives under the public `/api/v1/auth/*` prefix
+(`auth/publicPaths.ts`) and authorises itself. On an install whose wizard is
+still open it is the most valuable endpoint the server has: whoever completes
+it becomes the admin. Two things therefore have to hold. Only the operator may
+complete it, and it must produce exactly one admin no matter how many requests
+race.
+
+**Operator consent: the setup token.** The handler's first step, before the
+body is read, is a constant-time comparison (SHA-256 of both sides,
+`timingSafeEqual`) of the `setup_token` body field against the token for this
+boot (`auth/setupToken.ts`). A miss is 403 `auth.setup_token_invalid` and a
+log line with the socket peer. Putting it first means an unauthorised caller
+cannot make the server validate a body, run argon2id or wait on the table lock
+below. The token comes from one of two places:
+
+- `ADMIN_SETUP_TOKEN` (16 to 512 characters, enforced at boot; an empty value
+  counts as unset). It is never echoed to the log.
+- Otherwise a generated 24-byte base64url token. It is stored set-if-absent in
+  `platform_settings` (`auth.setup_token`), so every replica and every restart
+  serves the same token until setup completes. It is printed once per boot
+  ("setup token: …") and deleted in the transaction that creates the first
+  admin. A boot that finds setup already done clears any leftover. If the
+  store is unreachable the token is replica-local, and the log says so. The
+  wizard stays gated either way.
+
+The token is transported in the body only. A header copy would be a second
+spelling of the same credential with no caller that needs it.
+
+**The one exemption is the desktop app.** Its supervisor
+(`desktop/src/supervisor.ts`) spawns the kernel with
+`OMADIA_DESKTOP_EMBEDDED=true` and `HOST=127.0.0.1`. Only that combination
+opens the wizard without a token: the flag plus a literal loopback bind
+address, where the kernel is reachable from this machine alone. Either half
+alone still needs the token. A loopback bind behind a same-host reverse proxy
+is public, and the flag on a `::` bind is a misconfiguration. The decision is
+made at boot from configuration. It never reads `Host`, `X-Forwarded-For` or
+`PUBLIC_BASE_URL`. Behind a proxy every request can look local, and a check
+that a header can satisfy is decoration (the same reasoning as §10's loopback
+gate for `/api/dev`). The docker-compose stack publishes its ports on
+127.0.0.1 only, but the kernel inside the container binds `::` and cannot see
+how its port is published, so compose installs get a token too.
+
+**One predicate for discovery and handler.** `resolveSetupState` returns
+`available`, `disabled_at_boot`, `no_local_provider` or `locked`. It is the
+only source for `GET /providers.setup_required` and for the handler's fast
+path (410 `auth.setup_disabled` / `auth.setup_no_local_provider` /
+`auth.setup_locked`). The boot-time `setupAllowed` flag used to be read by
+`/providers` alone. A users table emptied after boot, which only direct SQL
+can do because admins cannot delete themselves, then advertised "no setup"
+while `/setup` still minted an admin. Now the wizard stays closed until a
+restart re-evaluates it. The predicate counts users before it reads the flag,
+so an install that has users answers `locked` whatever its boot decided, as it
+always did. `disabled_at_boot` only covers a table that is empty now but was
+not at boot, the one case a restart changes.
+
+**Exactly one admin: `UserStore.createFirstAdmin`.** The old handler ran
+`count()` and then a plain INSERT on different pool connections, with an
+argon2 hash (tens of ms) in between. N parallel requests all saw 0: distinct
+emails produced N admins with N sessions, and the same email produced a
+unique violation that surfaced as a 500. `INSERT … WHERE NOT EXISTS` would not
+have fixed it, because under READ COMMITTED each statement's NOT EXISTS runs
+against a snapshot without the other's uncommitted row. The store now does,
+in one transaction on one connection:
+
+1. `SET LOCAL lock_timeout = '2000ms'` (reverts at COMMIT/ROLLBACK, so the
+   pooled connection comes back clean);
+2. `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`. This lock conflicts with
+   itself and with the ROW EXCLUSIVE lock every INSERT/UPDATE/DELETE takes, so
+   it also waits for writers that do not go through this method: the OIDC
+   first-sign-in upsert and the admin-UI create. Plain SELECTs are not
+   blocked, so `/providers` and sign-in lookups keep working. It is never
+   ACCESS EXCLUSIVE;
+3. `SELECT COUNT(*)`, which gets a fresh snapshot after the lock and so sees
+   every committed writer. If the table is not empty, ROLLBACK and report
+   `not_empty` (410 `auth.setup_locked`);
+4. INSERT the user, INSERT the `admin_audit` row `auth.first_admin_create`
+   (actor = the new admin for the wizard, NULL for the env seed), DELETE the
+   persisted setup token, then COMMIT.
+
+The password is hashed before the transaction, so the lock is held for
+milliseconds. A wait past 2 s throws 55P03 (`isLockTimeout`), which the
+handler answers with 409 `auth.setup_in_progress`: something is holding a
+conflicting lock far longer than a first-admin transaction ever does, and a
+retry is the right move. The `ADMIN_BOOTSTRAP_*` env seed goes through the
+same method, so two replicas booting together seed one admin and the loser
+logs a skip.
+
+**Residual risks (accepted, documented).**
+
+- The generated token sits in the middleware log, and log retention keeps it.
+  It is single-use in effect: the wizard locks with the first admin and the
+  row is deleted then. Operators who object set `ADMIN_SETUP_TOKEN`.
+- Anyone who can read the logs or the database can complete setup first.
+  Both already imply control of the deployment.
+- A token holder can still make the server run argon2 once per request. There
+  is no rate limit on `/setup` yet. The token keeps unauthorised callers out.
+- A desktop kernel on loopback accepts the wizard from any local process.
+  That is the desktop trust model: the local user is the operator.
+
+Tests: `middleware/test/auth/setupRoute.test.ts` (token order, one predicate,
+409/410 mapping), `middleware/test/auth/setupToken.test.ts` (policy including
+both exemption halves, constant-time match, boot wiring),
+`middleware/test/auth/userStoreFirstAdmin.test.ts` (statement sequence without
+Postgres), and against real Postgres
+`middleware/test/auth/userStoreFirstAdmin.pg.test.ts` (N-way race, same-email
+race, uncommitted-OIDC seam, lock timeout, audit row, shared token store) and
+`middleware/test/auth/setupRouteConcurrency.pg.test.ts` (N parallel HTTP
+requests → one 200, the rest 410).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -2324,7 +2439,14 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       preference (§10j).
 - [ ] A store that maps caller-supplied keys onto the filesystem derives the
       path from a digest of the key, never from the key's text (§10j).
+- [ ] A path that creates an install's first principal goes through
+      `UserStore.createFirstAdmin` (one transaction, table lock, count under
+      the lock), never count-then-INSERT. A route that decides whether setup
+      is open uses `resolveSetupState`, the predicate `/providers` reports.
+      Anything that skips the setup token keys on boot configuration (the
+      desktop flag plus a loopback bind), never on a request header or
+      `PUBLIC_BASE_URL` (§10l).
 
 ---
 
-*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation).*
+*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup).*

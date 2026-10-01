@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 
 import type { RegistryConfigEntry } from './api/registry-v1.js';
+import { SETUP_TOKEN_MAX_LENGTH, SETUP_TOKEN_MIN_LENGTH } from './auth/setupToken.js';
 
 // Resolve .env relative to this file so the server works from any CWD.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -143,12 +144,29 @@ const ConfigSchema = z.object({
 
   // OB-49 first-boot seed. When the users table is empty AND both vars
   // are set, the bootstrap creates a single admin user with these creds.
-  // Otherwise the unauthenticated /api/v1/auth/setup wizard is mounted
-  // and the operator completes setup via the browser. Either path is a
-  // one-shot: once any user exists, both paths refuse.
+  // Otherwise the /api/v1/auth/setup wizard opens and the operator
+  // completes setup via the browser. Either path is a one-shot: once any
+  // user exists, both paths refuse.
   ADMIN_BOOTSTRAP_EMAIL: z.string().optional(),
   ADMIN_BOOTSTRAP_PASSWORD: z.string().optional(),
   ADMIN_BOOTSTRAP_DISPLAY_NAME: z.string().optional(),
+  // Operator authorisation for the first-user wizard: POST /api/v1/auth/setup
+  // requires this value in its `setup_token` body field, checked before
+  // anything else (auth/setupToken.ts). Unset → the kernel generates a token
+  // at boot, stores it in platform_settings so every replica and restart
+  // shares it until the first admin exists, and prints it once per boot in
+  // the log ("setup token: …"). One-shot like the wizard itself. 16 to 512
+  // characters; an empty value means unset (optionalNonEmpty).
+  ADMIN_SETUP_TOKEN: optionalNonEmpty(
+    z.string().min(SETUP_TOKEN_MIN_LENGTH).max(SETUP_TOKEN_MAX_LENGTH),
+  ),
+  // Set to 'true' ONLY by the desktop app's supervisor for the kernel it
+  // spawns (desktop/src/supervisor.ts). Honoured solely together with a
+  // literal loopback HOST: then the first-user wizard needs no setup token,
+  // because the kernel is reachable from this machine only. A loopback HOST
+  // without this flag still needs the token (a same-host reverse proxy makes
+  // a loopback kernel public), and so does this flag without loopback.
+  OMADIA_DESKTOP_EMBEDDED: devFlag(),
   // Public base URL the `return` redirect lands on after a successful
   // login. In prod this is the middleware host itself (admin UI eventually
   // moves to its own Fly app → point this at that host). In dev it's the

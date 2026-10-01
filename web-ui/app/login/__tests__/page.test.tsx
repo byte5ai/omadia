@@ -67,7 +67,7 @@ function unauthedSession() {
 }
 
 function noProviders() {
-  return Promise.resolve({ providers: [], setup_required: false });
+  return Promise.resolve({ providers: [], setup_required: false, setup_token_required: false });
 }
 
 function passwordProvider() {
