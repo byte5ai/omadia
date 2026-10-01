@@ -66,6 +66,9 @@ export interface CanvasConnectionDeps {
 
 type Phase = 'awaiting_select' | 'ready' | 'closed';
 
+/** `turn_error` text for a turn the kernel withheld: the HTTP 503 message. */
+const SESSION_UNCHECKED = 'session check unavailable, try again';
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -86,6 +89,8 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * revocation). On close the turn still running is aborted and nothing queued
  * behind it starts: the session that asked for it may be the reason the socket
  * closed. The ack tells the client `session.expiresAt` as `sessionExpiresAt`.
+ * A frame the kernel withheld because it could not check the session runs
+ * nothing (see `onRefusedMessage` below).
  */
 export function handleCanvasSocket(
   socket: ChannelSocket,
@@ -318,6 +323,23 @@ export function handleCanvasSocket(
     turnChain = turnChain.then(() => runTurn(formIncomingTurn(msg, turnId), turnId)).catch(() => {
       /* runTurn never rejects (it sends turn_error); guard the chain anyway. */
     });
+  });
+
+  // The kernel could not check the session for this frame (account lookup
+  // down), so nothing in it may run. A turn is answered so the client can
+  // retry, like after an HTTP 503; an unacked select closes with 1013 so the
+  // reconnect goes through a fresh upgrade check; a stop is still honoured.
+  socket.onRefusedMessage?.((raw) => {
+    const msg = phase === 'closed' ? null : parseClientMessage(raw);
+    if (msg?.type === 'handshake_select' && phase === 'awaiting_select') {
+      phase = 'closed';
+      socket.close(1013, 'session check unavailable');
+    } else if (phase === 'ready' && (msg?.type === 'turn' || msg?.type === 'canvas_refresh')) {
+      const forTurn = typeof msg.turnId === 'string' && msg.turnId.length > 0 ? msg.turnId : undefined;
+      send({ type: 'turn_error', ...(forTurn ? { forTurn } : {}), message: SESSION_UNCHECKED });
+    } else if (msg?.type === 'turn_abort' && activeTurn && activeTurn.turnId === msg.forTurn) {
+      activeTurn.abort();
+    }
   });
 
   function validateTurnInput(msg: ClientTurn): string | null {
