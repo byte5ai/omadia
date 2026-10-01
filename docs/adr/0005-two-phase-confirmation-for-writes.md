@@ -93,3 +93,20 @@ The first write-capable connector to adopt this model demonstrated the pattern:
 writes are presented as a preview, confirmed, and then created as drafts for
 human review. The read/write intent distinction is part of the connector entity
 contract.
+
+### Implementation status (2026-10)
+
+This note records how the decision is implemented; the decision above is
+unchanged. The preview, confirm and draft flow runs in the write-capable
+connector plugins that adopted it. The core does not enforce it across
+connectors and inserts no confirmation step before a tool runs:
+
+- The core's write contract is `writeCapabilities` (`@omadia/plugin-api`). On the
+  public MCP endpoint it lets a caller-supplied idempotency key run a declared
+  write tool at most once per key. It adds no confirmation, and a write tool
+  without the annotation counts as read-only.
+- Conductor human steps treat an absent or malformed response as approval
+  unless the step sets `human.strictApproval`.
+
+Details: [`docs/security-architecture.md`](../security-architecture.md) §4 and
+§7a.

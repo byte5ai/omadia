@@ -37,7 +37,9 @@ const devFlag = () =>
     .transform((v) => v === 'true')
     .default(false);
 
-const ConfigSchema = z.object({
+/** Exported so tests can read a default without going through `process.env`
+ *  (which the `.env` file above may override). Boot parses it via `loadConfig`. */
+export const ConfigSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3979),
 
   // Interface to bind. Defaults to dual-stack `::` (all interfaces) so Fly-Edge

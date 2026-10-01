@@ -478,8 +478,31 @@ the kernel applied, including out-of-range values),
 
 ## 4. Plugin install surface
 
-Plugins are installed as signed ZIPs uploaded through the operator UI, not
-discovered from public registries. This keeps the supply chain explicit:
+Apart from the bundled plugins that ship inside the image, a plugin is installed
+as a ZIP package: uploaded through the operator UI, produced by the Builder, or
+downloaded from a registry configured in `REGISTRY_URLS`. Nothing is discovered
+from a public package manager. Integrity rests on SHA-256 pinning, and there is
+**no publisher signature and no trust root**:
+
+- **Registry downloads.** `RegistryClient.fetchPackage`
+  (`src/plugins/registryClient.ts`) checks the downloaded bytes against the
+  SHA-256 the registry's index lists (`registry.sha256_mismatch`), fetches only
+  from the registry's own host (`registry.host_mismatch`) and follows no
+  redirect. The index comes from the same registry, so the hash proves the
+  bytes are the ones that registry publishes, nothing about who built them.
+  Transport security is whatever the configured URL uses: the client accepts an
+  `http://` registry, so configure `https://`.
+- **Uploads and Builder installs.** `PackageUploadService`
+  (`src/plugins/packageUploadService.ts`) hashes the ZIP at ingest. The hash names the package and keys the scan
+  verdict below; nothing compares it with a published value, and the service
+  lists a remote signature check as out of scope.
+- **No signature anywhere.** The catalog reports `signed: false` and
+  `signed_by: null` for every plugin (`manifestLoader.ts`, `routes/store.ts`),
+  whatever the manifest says, and the store page shows "unsigned". What the
+  operator trusts is the registry and the ZIP they chose. Publisher-signed
+  packages are a roadmap item (`middleware-agent-handoff.md` §13).
+
+This keeps the supply chain explicit:
 
 - The operator chooses which artefacts run.
 - A plugin manifest declares its `permissions` (memory, graph, network,
@@ -512,6 +535,27 @@ discovered from public registries. This keeps the supply chain explicit:
   turning the verdict into a hard install block is deferred until omadia
   has a role model (same policy gap as skill-verdict suppression, see
   `agentBuilder.ts`).
+- Plugin code never comes from npm at runtime. A package carries its own
+  `node_modules`, and `@omadia/plugin-api` resolves from the host. omadia
+  itself runs npm in three places, none of which installs a plugin: the
+  Builder's build template (`ensureBuildTemplate`, `src/plugins/builder/buildTemplate.ts`,
+  installs the boilerplate's dependencies plus `BUILD_TIME_ONLY_DEPS` by semver
+  range under the data directory on first boot and whenever that list changes),
+  the operator-triggered vendor-CLI install (`src/platform/cliInstallService.ts`,
+  package name from a fixed allowlist) and an MCP server whose start command uses
+  `npx`. The MCP catalog (`src/services/mcpRegistryClient.ts`) writes
+  `npx -y -- <package>` for a server published on npm when the operator imports
+  it, and the stdio transport runs that command whenever omadia connects to the
+  server, so npm resolves the package at that moment.
+- Write confirmation is a connector feature. The preview, confirm and draft flow
+  of ADR-0005 runs in the write-capable connector plugins that implement it; the
+  core inserts no confirmation step before a tool runs. The core's write
+  contract, `writeCapabilities` (`@omadia/plugin-api`), adds none either. On the
+  public MCP endpoint it lets a caller-supplied idempotency key run a declared
+  write tool at most once per key (`ToolDispatchService`), and a write tool
+  without the annotation counts as read-only, so it gets no such protection.
+  Conductor human steps treat an absent or malformed response as approval
+  unless the step sets `human.strictApproval` (§7a).
 
 ### Plugin-borne workflow templates (#478)
 
@@ -3374,7 +3418,16 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       workbook. An exceljs upgrade re-checks which characters its XML encoder
       changes against `formulaText.ts`. `office-formulas.test.ts` pins all of it, with rejected-formula
       rows for every refused function family and reference form.
+- [ ] A sentence in the README, `docs/architecture.md`, this document or
+      `CITATION.cff` that promises a security property names the control that
+      enforces it and that control's default. Words like "signed", "verified",
+      "never" and "every" stand only where a check runs on the default path, and
+      an opt-in control (`verifier_enabled`, `mask_user_prompt`,
+      `human.strictApproval`) is called opt-in (§3a, §4, §6d, §7a,
+      `docs/ai-act-transparency.md` §6). `test/docsClaimsGuard.test.ts` keeps
+      the retired claims out and ties the defaults the README names to the code;
+      a new public claim that rests on a default gets a line there.
 
 ---
 
-*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells).*
+*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default).*

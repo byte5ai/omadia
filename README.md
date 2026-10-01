@@ -19,10 +19,14 @@
 enough for real work.** A team of agents runs on infrastructure you own and works
 inside your team's shared channels, so several people collaborate with the same
 agents in one context, not a private one-on-one chatbot. The agents turn your
-data, software, and people into results you can steer, audit, and prove. Sensitive
-data stays in the house and never leaves in clear text. Every answer is checked
-before it ships. Every action carries a receipt. Bring your own LLM key and switch
-providers by config, not code.
+data, software, and people into results you can steer, audit, and prove. By
+default, raw tool results stay on your server behind the Privacy Shield, and the
+model works from an identity-free digest. Your own messages reach the model as
+typed unless you switch on prompt masking. Agents on the Claude subscription CLI
+run without the shield. An optional verifier checks answers that carry figures
+against their sources, and every turn in which the shield acted leaves a
+hash-chained receipt. Bring your own LLM key and switch providers by config, not
+code.
 
 ---
 
@@ -137,8 +141,10 @@ for it:
 3. **Start a demo agent team** from a single prompt in the web chat.
 4. **Watch it work.** The orchestrator streams turns and dispatches tools across
    the agents in the team.
-5. **Open the run's trace.** The per-run call-stack viewer is your audit receipt:
-   every step, every tool call, every decision, replayable.
+5. **Open the run's trace.** The per-run call-stack viewer shows every step, tool
+   call and decision of the run. The trace is telemetry. The audit record is the
+   hash-chained receipt under `/operator/receipts`, written for each turn in which
+   the Privacy Shield acted.
 
 ## Why omadia?
 
@@ -148,14 +154,14 @@ three rows are why teams choose it; the rest is the groundwork done properly.
 
 | Capability | What you get |
 |---|---|
-| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw tool results stay behind a data-plane boundary; the LLM sees only an identity-free digest. `guarded` by default, with `bypass`/`per_tool` opt-in and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Real data can run through omadia without running through the model. |
-| ✅&nbsp;**Answer&nbsp;verification** | A verifier checks each answer's claims against the run's own sources and records a verdict (`approved` / `approved_with_disclaimer`) before it reaches the channel. |
+| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw tool results stay behind a data-plane boundary; the LLM sees only an identity-free digest. `guarded` by default, with `bypass`/`per_tool` opt-in and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Prompt masking (`mask_user_prompt`) is off by default, so your own messages reach the model as typed. The Claude subscription CLI (`claude-cli`) runs without the shield. |
+| ✅&nbsp;**Answer&nbsp;verification** | Optional and off by default (`verifier_enabled`). Once switched on, it checks answers that contain figures, like amounts or dates, against the run's own sources and records a verdict. Its default mode, `shadow`, only records. |
 | 🧮&nbsp;**Excel&nbsp;from&nbsp;real&nbsp;rows** | `create_xlsx` writes the real rows behind a `datasetId` into the workbook server-side, so they never pass through the model, and adds sums and pivots as Excel formulas. omadia runs no spreadsheet engine of its own: the workbook asks the spreadsheet application to recalculate when it opens the file, and that application computes every formula result. |
-| 🧾&nbsp;**A&nbsp;receipt&nbsp;for&nbsp;every&nbsp;action** | Every agent run carries a full per-run trace and call-stack viewer: every step, tool call, and decision, replayable. Privacy receipts (`/operator/receipts`) are separate and are written only for turns in which the privacy shield acted. |
+| 🧾&nbsp;**Traces&nbsp;and&nbsp;receipts** | The call-stack viewer shows a run step by step, with each tool call and decision. That trace is best-effort telemetry, so a run can lack one. Privacy receipts (`/operator/receipts`, Postgres backend) are hash-chained and written for every turn in which the privacy shield acted. |
 | 👥&nbsp;**Multiplayer&nbsp;by&nbsp;design** | Agents run in your team's shared channels (Slack, Teams, Telegram, Discord), so several people work with them in one context, not a private one-on-one chatbot. |
 | 🤖&nbsp;**Agent&nbsp;teams,&nbsp;not&nbsp;one&nbsp;chatbot** | An orchestrator routes each turn to the right specialist plugin agent. Channels, integrations, tools, and capability providers sit behind one stable API. |
 | 🔒&nbsp;**Self-hosted&nbsp;and&nbsp;yours** | One `docker compose up` on a single machine. Your Postgres, your LLM key, all of the data on your own infrastructure. GDPR-aware and made in the EU. |
-| 🧩&nbsp;**Signed&nbsp;plugin&nbsp;distribution** | Plugins ship as verifiable signed packages. The platform never pulls arbitrary npm at runtime. |
+| 🧩&nbsp;**Hash-pinned&nbsp;plugins** | Plugins are ZIP files with their dependencies inside. A registry download must match the SHA-256 listed in that registry's index. There is no publisher signature yet, so trust rests on the registries you configure and the ZIPs you upload. Plugin code never comes from npm at runtime, and §4 of the [security architecture](docs/security-architecture.md) lists where omadia itself runs npm. |
 | 🔌&nbsp;**Enterprise&nbsp;integrations** | Microsoft 365, Odoo, Confluence, Teams, and Telegram, with the LLM provider a swappable plugin. |
 
 ## What's in the box
@@ -164,13 +170,14 @@ three rows are why teams choose it; the rest is the groundwork done properly.
   exposes only an identity-free digest to the LLM
   ([`harness-plugin-privacy-guard`](middleware/packages/harness-plugin-privacy-guard),
   [`privacyMode.ts`](middleware/packages/plugin-api/src/privacyMode.ts))
-- **Answer verifier**: claim-checks each answer against its sources and returns
-  a verdict before it ships
+- **Answer verifier** (optional, off by default): checks answers that contain
+  figures against their sources and records a verdict
   ([`harness-verifier`](middleware/packages/harness-verifier),
   [`verifierService.ts`](middleware/packages/harness-orchestrator/src/verifierService.ts))
-- **Office compute**: `create_xlsx` / `create_docx` build real spreadsheets and
+- **Office files**: `create_xlsx` / `create_docx` build real spreadsheets and
   documents server-side, resolving dataset rows without routing them through the
-  model ([`harness-plugin-office`](middleware/packages/harness-plugin-office))
+  model; the spreadsheet application calculates the formulas when it opens the
+  file ([`harness-plugin-office`](middleware/packages/harness-plugin-office))
 - **Plugin runtime**: channels, integrations, tools, sub-agents, and capability
   providers; everything is a plugin behind a stable API surface
   ([`@omadia/plugin-api`](middleware/packages/plugin-api))
@@ -245,11 +252,18 @@ answer:
   default; `bypass` and `per_tool` are explicit opt-ins, and
   `OMADIA_PRIVACY_FORCE_GUARDED` clamps every plugin to `guarded` org-wide.
   Pseudonyms resolve back to real values only at materialization, and each bypass
-  lands in the receipt. Spec: [`specs/001-privacy-shield-v4/`](specs/001-privacy-shield-v4/).
-- **Answer verification**: before a turn's answer is returned, the verifier checks
-  its claims against the run's sources and emits a verdict (`approved`,
-  `approved_with_disclaimer`, or `blocked`). A borderline verdict attaches a
-  disclaimer instead of silently shipping an unsupported claim.
+  lands in the receipt. Prompt masking (`mask_user_prompt`) is off by default,
+  so the user's own message reaches the model as typed until an operator turns
+  it on.
+  Agents on the Claude subscription CLI (`claude-cli`) run without the shield, and
+  `agents.privacy_profile` is not a shield setting
+  ([`docs/security-architecture.md`](docs/security-architecture.md) §3a, §6d).
+  Spec: [`specs/001-privacy-shield-v4/`](specs/001-privacy-shield-v4/).
+- **Answer verification (optional)**: off by default (`verifier_enabled`). Once
+  switched on, the verifier checks answers that contain figures, like amounts or
+  dates, against the run's sources and records a verdict. In its default
+  `shadow` mode it only records. It does not run for agents on the Claude
+  subscription CLI.
 - **Office files from real rows**: when a specialist agent returns a
   `datasetId`, `create_xlsx` resolves the rows server-side and writes them into
   the workbook without passing them through the model. Sums and pivots go in as
@@ -294,9 +308,9 @@ A ready-to-fork template for your own omadia plugin. Clone it, fill in your logi
 against [`@omadia/plugin-api`](middleware/packages/plugin-api), and ship.
 
 omadia plugins are self-contained ZIP files that the operator uploads through
-the admin UI. The platform never trusts external npm registries at runtime;
-plugins ship `node_modules` baked in, or use the platform's standard library
-via `@omadia/plugin-api`. Two reference plugins are also shipped in-tree as
+the admin UI. Plugins never come from an npm registry at runtime; they ship
+`node_modules` baked in, or use the platform's standard library via
+`@omadia/plugin-api`. Two reference plugins are also shipped in-tree as
 starting points:
 
 - [`agent-reference-maximum`](middleware/packages/agent-reference-maximum):
@@ -372,7 +386,8 @@ Active development tracks:
   action / human steps) with durable human approvals, crash-safe resume,
   operator run cancellation, and a visual designer at `/conductor`. See
   `specs/005-omadia-conductor/` and `docs/architecture.md`.
-- **Plugin marketplace**: discovery and signed-package distribution (post-1.0)
+- **Plugin marketplace**: discovery and publisher-signed packages (post-1.0;
+  today a package is pinned by its SHA-256)
 - **Multi-tenant hosting**: out of scope for v1; a separate fork is planned
 - **Web-IDE for plugin development**: moves the Builder authoring loop into the
   management UI without round-tripping through ZIP uploads (post-1.0)

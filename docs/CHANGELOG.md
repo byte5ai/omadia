@@ -36,6 +36,45 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — README and security docs describe the controls the code enforces
+
+2026-10-01 — the README, `docs/architecture.md`, `docs/security-architecture.md`
+and `CITATION.cff` stated security properties that the code does not enforce,
+or enforces only on some paths. The wording now follows the code.
+
+Plugins are pinned by SHA-256. A registry download must match the hash in the
+registry's index, and an uploaded ZIP is hashed at ingest. Nothing checks a
+publisher signature, and the catalog reports `signed: false` for every plugin,
+so "signed plugins" and "verifiable signed packages" are gone from all four
+files.
+Security architecture §4 says this in its opening and lists the three places
+where omadia itself runs npm. None of them installs plugin code.
+
+The Privacy Shield sentences name their limits. The user's own message reaches
+the model as typed while `mask_user_prompt` is off, which is the default, and
+agents on the Claude subscription CLI (`claude-cli`) run without the shield.
+The answer verifier is described as optional and off by default; switched on,
+it checks answers that contain figures, and its default `shadow` mode only
+records a verdict. Privacy receipts are described as written for the turns in
+which the shield acted, and the run trace as best-effort telemetry, without the
+earlier "audit receipt" and "replayable" wording.
+
+Write confirmation (ADR-0005) is described as a feature of the connector
+plugins that implement it. The core adds no confirmation step; its
+`writeCapabilities` contract gives a declared write tool at-most-once dispatch
+on the public MCP endpoint and asks nobody before the write. ADR-0001 and
+ADR-0005 keep their decision text and gain an implementation-status note.
+
+A new item in the §11 reviewer checklist asks that a public security claim name
+the control that enforces it and that control's default.
+`middleware/test/docsClaimsGuard.test.ts` keeps the retired sentences out of the
+four files and ties the defaults the README names to the code
+(`PRIVACY_MODE_DEFAULT`, the `mask_user_prompt` manifest default, the
+`VERIFIER_ENABLED` and `VERIFIER_MODE` schema defaults, the catalog's `signed`
+field). `ConfigSchema` in `middleware/src/config.ts` is exported for that test;
+boot is unchanged. `middleware/.env.example` now documents
+`OMADIA_PRIVACY_FORCE_GUARDED`, which the README already named.
+
 ### Fixed — create_xlsx no longer persists model-supplied formula results; workbooks with formulas request a full recalculation on open
 
 2026-09-30 — a formula cell in `create_xlsx` accepted a `result` and stored it

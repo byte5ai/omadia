@@ -6,8 +6,9 @@ orientation layer. For the full technical detail, read
 patterns, read [`security-architecture.md`](security-architecture.md).
 
 omadia is a self-hostable agentic operating system. You compose teams of agents
-from signed plugins, run them on one machine, and get an auditable trace for
-every action they take.
+from plugin packages pinned by SHA-256 and run them on one machine. A per-run
+trace shows what they did, and every turn in which the Privacy Shield acted
+leaves a hash-chained receipt.
 
 ## Component map
 
@@ -15,7 +16,7 @@ every action they take.
 |---|---|
 | **Middleware kernel** | The Node process that boots everything, loads plugins, and exposes the HTTP API. Runs on `:3333` in the default compose setup. |
 | **Orchestrator** | Routes each conversation turn to the right agent, dispatches tool calls, and streams the result back. Records a per-run trace. |
-| **Plugin runtime** | Loads agents, tools, capability providers, and integrations behind one stable contract, [`@omadia/plugin-api`](../middleware/packages/plugin-api). Plugins ship as signed ZIPs with their dependencies baked in. |
+| **Plugin runtime** | Loads agents, tools, capability providers, and integrations behind one stable contract, [`@omadia/plugin-api`](../middleware/packages/plugin-api). Plugins ship as ZIPs with their dependencies baked in, pinned by SHA-256; there is no publisher signature yet. |
 | **Knowledge graph** | The agent memory substrate. pgvector on Postgres in production, with an in-memory alternative for tests. |
 | **Embeddings** | Turns content into vectors for retrieval. Local Ollama or an external API, opt-in via a compose overlay. |
 | **Vault** | Encrypted secret storage (AES-256-GCM file). Holds LLM keys and connector credentials; gated by `VAULT_KEY` in production. |
@@ -59,14 +60,19 @@ The reasoning behind the architecture is captured as ADRs under
 [`docs/adr/`](adr/). The load-bearing ones:
 
 - [ADR-0001: Plugin distribution via signed ZIP packages](adr/0001-plugin-distribution-via-signed-zip.md):
-  plugins are verifiable packages, not arbitrary npm pulled at runtime.
+  a plugin is a ZIP, a registry download must match the SHA-256 the registry
+  lists, and plugin code is never pulled from npm at runtime. "Signed" in the
+  title means that hash pin; the ADR's implementation status explains it.
 - [ADR-0003: Capability-based, multi-provider middleware](adr/0003-capability-based-multi-provider-middleware.md):
   agents depend on capabilities, not concrete providers, so LLMs and storage
   stay swappable.
 - [ADR-0004: Knowledge graph as the agent memory substrate](adr/0004-knowledge-graph-as-memory-substrate.md):
   memory is a graph, not a flat log.
 - [ADR-0005: Two-phase confirmation for write-capable connectors](adr/0005-two-phase-confirmation-for-writes.md):
-  write actions are proposed and confirmed, not fired blind.
+  connector plugins that implement it show the exact change and wait for a
+  confirmation before they write. The core adds no confirmation step of its own
+  (see the ADR's implementation status and
+  [`security-architecture.md`](security-architecture.md) §4).
 
 ## Go deeper
 

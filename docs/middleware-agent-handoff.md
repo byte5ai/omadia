@@ -2979,6 +2979,17 @@ AGENTS.md jede Env-Variable an einer Stelle dokumentiert haben will:
 | `OMADIA_CLI_LIVE_PROBE=1` | Startet die Live-Probe: echte `claude`-CLI mit dem Produktions-argv, die einen Shell-Befehl ablehnen muss. Kostet Abo-Kontingent und braucht eine eingeloggte CLI, daher opt-in. |
 | `OMADIA_CLI_NEGATIVE_CONTROL=1` | Ergänzt die Probe um die Gegenprobe mit dem argv von vor #991, das erwartungsgemäß ein Built-in-Tool erreicht. Lässt die CLI dabei bewusst einen Shell-Befehl auf dieser Maschine ausführen, deshalb ein eigener Schalter. |
 
+### Privacy-Shield-Klammer
+
+Wird vom Dispatch-Hook des Orchestrators gelesen
+(`resolveEffectivePrivacyMode()` in `@omadia/plugin-api`, `privacyMode.ts`),
+nicht über `config.ts`. Seit 2026-10-01 auch in `.env.example` dokumentiert,
+weil das README die Variable nennt.
+
+| Variable | Wirkung |
+|---|---|
+| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` wirken dann nicht). Jeder andere Wert ist wirkungslos. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
+
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 
 Wird vom `@omadia/orchestrator`-Package gelesen (`resolveCliSpawnTimeoutMs()` in
@@ -3653,6 +3664,37 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   Vertrauensgrenze; Härtung z. B. per Allowlist der konfigurierten IdP-Hosts.
 - **`/login/:id/start` ohne Längenlimit für `return`.** Der Web-UI-Helper begrenzt auf 2048
   Zeichen; ein direkter Link auf die Middleware-Route ist unbegrenzt (landet im OIDC-State-Cookie).
+
+### Öffentliche Sicherheitsaussagen: was nach dem Abgleich offen ist (2026-10)
+
+README, `docs/architecture.md`, `docs/security-architecture.md` und
+`CITATION.cff` beschreiben seit 2026-10-01 nur noch, was der Code durchsetzt
+(Wächter: `middleware/test/docsClaimsGuard.test.ts`, Checkliste §11). Offen:
+
+- **Publisher-signierte Plugin-Pakete.** Heute gibt es nur SHA-256-Pinning
+  (Registry-Index bzw. Hash beim Upload), keine Signatur und keinen Trust Root;
+  `Plugin.signed` ist fest `false`. Für echte Signaturen: Signatur beim Publish,
+  Prüfung in `RegistryClient` und `PackageUploadService`, `signed`/`signed_by`
+  aus dem Prüfergebnis, Schlüsselverwaltung für Publisher. Danach README-Zeile
+  „Hash-pinned plugins“, ADR-0001-Status und §4 nachziehen.
+- **`http://`-Registries.** `parseRegistries` (`src/config.ts`) nimmt jede URL
+  an, `RegistryClient` erzwingt kein TLS. Nicht-HTTPS außer Loopback ablehnen
+  (mit ausdrücklichem Override für lokale Test-Registries).
+- **Builder-Build-Template aus npm.** `ensureBuildTemplate` installiert beim
+  ersten Boot (und bei geänderter Liste) die Boilerplate-Abhängigkeiten plus
+  `BUILD_TIME_ONLY_DEPS` per Semver-Range, ohne Lockfile. Versionen exakt pinnen
+  oder das Template ins Image legen.
+- **MCP-Server per `npx` ohne Version.** Der MCP-Katalog schreibt
+  `npx -y -- <paket>`; jeder Connect kann eine neuere Paketversion ziehen. Die
+  Version aus dem Registry-Eintrag mitschreiben oder den Operator beim Import
+  darauf hinweisen.
+- **Texte außerhalb dieses Repos.** Marketing-Site und Hub-Beschreibungen tragen
+  die alten Aussagen (signierte Plugins, jede Antwort geprüft, nichts verlässt
+  das Haus im Klartext) noch. Abgleich dort als eigener Schritt.
+- **Verifier-Absätze im README.** Bewusst knapp gehalten (optional, aus per
+  Default, `shadow` als Default-Modus, nur Antworten mit Zahlen). Ändern sich
+  Verdikt-Zustände oder das Enforce-Verhalten, README „Answer verification“ und
+  die Verifier-Prüfung in `docsClaimsGuard.test.ts` im selben PR mitziehen.
 
 ### Self-Update-Steuerungsebene: Vertrauensmodell und offene Härtung (#432 follow-up)
 
