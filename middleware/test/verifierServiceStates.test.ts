@@ -263,6 +263,7 @@ describe('VerifierService.chat — no resample or retry without evidence', () =>
     const orchestrator = {
       agentId: 'default',
       markScreeningReentry: (): void => undefined,
+      bindToolReplayLedger: () => () => undefined,
       runTurn: (): Promise<ChatTurnResult> => {
         runTurns += 1;
         return Promise.resolve({ answer: ANSWER, toolCalls: 1, iterations: 1 });

@@ -9,7 +9,9 @@
  * of `VerifierService` over a scripted orchestrator and pipeline live in
  * `verifierServiceStates.test.ts`, `verifierServiceEnforceChat.test.ts` and
  * `verifierServiceEnforceStream.test.ts` (harness:
- * `_helpers/verifierServiceHarness.ts`).
+ * `_helpers/verifierServiceHarness.ts`). That a resample re-generates the
+ * answer over the first run's tool results — never running a tool twice —
+ * is driven through a REAL orchestrator in `verifierServiceWriteSafety.test.ts`.
  */
 
 import { describe, it } from 'node:test';

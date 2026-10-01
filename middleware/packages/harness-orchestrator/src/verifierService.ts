@@ -9,33 +9,30 @@ import type {
 import { toSemanticAnswer } from './orchestrator.js';
 import { randomUUID } from 'node:crypto';
 import type { ChatStreamObserver, SemanticAnswer } from '@omadia/channel-sdk';
-import type { RunTracePayload } from './runTraceCollector.js';
 import type {
   VerifierPipeline,
   VerifierStore,
   VerifierVerdict,
 } from '@omadia/verifier';
-import {
-  bindVerdictToClaims,
-  buildCorrectionPrompt,
-  isBorderlineVerdict,
-} from '@omadia/verifier';
+import { buildCorrectionPrompt, isBorderlineVerdict } from '@omadia/verifier';
+import type { ToolReplayLedger } from './toolReplayLedger.js';
 import type { TurnHookRunner } from './turnHooks.js';
 import { fireVerifierBlockedHook } from './verifierBlockedHook.js';
 import {
-  enforcedVerifiedStream,
-  mayVerifyAnswer,
-  privacyShieldVerdict,
   releasesWithoutVerification,
   shadowVerifiedStream,
   verdictReleasesAnswer,
   withheldTurnResult,
 } from './verifierDelivery.js';
+import { enforcedVerifierStream } from './verifierEnforceStream.js';
+import { VerifierJudge } from './verifierJudge.js';
 import {
-  extractKnowledgeGraphToolsCalled,
-  extractPostconditionViolations,
-  extractToolsCalled,
-} from './verifierTraceEvidence.js';
+  asRequestResult,
+  bindRequestLedger,
+  prepareReentry,
+  reentryFailureLine,
+  type ReentryPolicy,
+} from './verifierReentry.js';
 import {
   mergeBadges,
   mergeBorderlineVerdicts,
@@ -65,20 +62,28 @@ export {
  * not confirm withhold the answer just like a contradiction, and so does an
  * answer Privacy Shield rendered server-side, which is never sent to the
  * pipeline (`mayVerifyAnswer`). On the stream no content leaves before the
- * verdict (`verifierDelivery.ts`); the non-streaming path first runs its
- * correction retry:
+ * verdict (`verifierDelivery.ts`). Before it delivers, `enforce` may re-enter
+ * the turn: the non-streaming path draws a second sample of a borderline
+ * answer, and both paths run one correction retry on a contradiction
+ * (`verifierEnforceStream.ts` for the stream):
  *
  *   orchestrator.runTurn → verify → blocked → correction hint in the system
  *   prompt → runTurn (retry, maxRetries) → verify → deliver or withhold
  *
- * The stream path never retries — a retry re-runs the turn's tools.
+ * A re-entry re-generates the ANSWER; it never re-runs the turn's tools
+ * (`verifierReentry.ts`, `toolReplayLedger.ts`). Every call the first run
+ * made is replayed from the request's ledger, a call it did not make runs
+ * only when it is a kernel read, and a re-entry that needs any other call is
+ * abandoned before it runs — the first answer stands (a retry's then keeps
+ * its `failed` badge). Canvas turns are not retried on the stream.
  *
  * A failing verifier surfaces as `unavailable`, never as `approved`: "the
  * verifier could not check" must not read as "the verifier checked and found
  * nothing wrong". The pipeline is injected, so its verdict is held to what
- * its claims show (`bindVerdictToClaims`) before it is retried, resampled,
- * stored or streamed: a status its claims do not back, or a reason outside
- * the closed codes, never reaches `verifier_verdicts` or the stream.
+ * its claims show (`bindVerdictToClaims`, `verifierJudge.ts`) before it is
+ * retried, resampled, stored or streamed: a status its claims do not back, or
+ * a reason outside the closed codes, never reaches `verifier_verdicts` or the
+ * stream.
  */
 
 export interface VerifierServiceOptions {
@@ -93,11 +98,13 @@ export interface VerifierServiceOptions {
    * #132 — when the first verdict is borderline (`isBorderlineVerdict`: no
    * contradictions, at least one claim confirmed and one a check could not
    * confirm), draw a second sample from the same orchestrator turn and merge
-   * the two verdicts. Default true.
+   * the two verdicts. Default true; the operator switch is the verifier's
+   * `verifier_resample_on_borderline` setup field.
    *
    * Cost note: each enabled re-sample doubles the LLM cost of a turn that
    * already cleared verification with "almost". `maxResamples` caps the
    * blast radius (hard 1 today). Disable for cost-sensitive deployments.
+   * The re-sample runs no tool again (see the class comment).
    */
   resampleOnBorderline?: boolean;
   /** Hard cap on borderline re-samples per turn. Default 1. */
@@ -124,8 +131,7 @@ const DEFAULTS = {
 
 export class VerifierService implements ChatAgent {
   private readonly orchestrator: Orchestrator;
-  private readonly pipeline: VerifierPipeline;
-  private readonly store?: VerifierStore;
+  private readonly judge: VerifierJudge;
   private readonly enabled: boolean;
   private readonly mode: 'shadow' | 'enforce';
   private readonly maxRetries: number;
@@ -137,8 +143,6 @@ export class VerifierService implements ChatAgent {
 
   constructor(opts: VerifierServiceOptions) {
     this.orchestrator = opts.orchestrator;
-    this.pipeline = opts.pipeline;
-    if (opts.store) this.store = opts.store;
     this.enabled = opts.enabled;
     this.mode = opts.mode;
     this.maxRetries = opts.maxRetries ?? DEFAULTS.maxRetries;
@@ -150,6 +154,12 @@ export class VerifierService implements ChatAgent {
       ((msg: string): void => {
         console.error(msg);
       });
+    this.judge = new VerifierJudge({
+      pipeline: opts.pipeline,
+      ...(opts.store ? { store: opts.store } : {}),
+      mode: this.mode,
+      log: this.log,
+    });
     this.turnHookRegistry = opts.turnHookRegistry;
     this.locale = opts.locale;
   }
@@ -165,52 +175,55 @@ export class VerifierService implements ChatAgent {
     fireVerifierBlockedHook(this.turnHookRegistry, this.orchestrator.agentId, input, verdict);
   }
 
+  private reentryPolicy(): ReentryPolicy {
+    return {
+      mode: this.mode,
+      maxRetries: this.maxRetries,
+      resample: this.resampleOnBorderline && this.maxResamples > 0,
+    };
+  }
+
   /**
    * Stream wrapper. `shadow` passes every event through as produced and
    * reports the verdict as one trailing `verifier` event; `enforce` holds
    * every content event until the verdict, releases an answer as the text
    * the verdict is about (never the raw deltas) and replaces one it does not
-   * release with the withheld-answer notice (`verifierDelivery.ts`). The
-   * route's observer (iteration, token and usage counters — no text) is
-   * forwarded in every mode.
-   *
-   * The stream path never runs a correction retry, in either mode: a retry
-   * re-runs the whole turn including its tool calls, and the stream has no
-   * safeguard against repeating a tool call that already wrote something.
-   * In `enforce` a blocked answer is withheld instead.
+   * release with the withheld-answer notice (`verifierDelivery.ts`). A
+   * contradiction first buys one correction retry over the first run's tool
+   * results — never re-running a tool — whose verdict then decides by the
+   * same rule; canvas turns are not retried (`verifierEnforceStream.ts`).
+   * The route's observer (iteration, token and usage counters — no text) is
+   * forwarded in every mode, for the retry too.
    */
   async *chatStream(
     input: ChatTurnInput,
     observer?: ChatStreamObserver,
   ): AsyncGenerator<ChatStreamEvent> {
-    const base = this.orchestrator.chatStream(input, observer);
     if (!this.enabled) {
-      yield* base;
+      yield* this.orchestrator.chatStream(input, observer);
       return;
     }
     const runId = randomUUID();
     if (this.mode === 'shadow') {
-      yield* shadowVerifiedStream(base, async (done) => {
-        const verdict = await this.safeVerify(runId, input, done.answer, done.runTrace);
-        void this.persist(runId, input, verdict, 0);
+      yield* shadowVerifiedStream(this.orchestrator.chatStream(input, observer), async (done) => {
+        const verdict = await this.judge.safeVerify(runId, input, done.answer, done.runTrace);
+        void this.judge.persist(runId, input, verdict, 0);
         return summarise(verdict, 0, this.mode);
       });
       return;
     }
-    yield* enforcedVerifiedStream(
-      base,
-      async (done) => {
-        const verdict = await this.verdictFor(runId, input, done);
-        // #133 (E6) — record the block on this turn's plan.
-        if (verdict.status === 'blocked') this.fireVerifierBlocked(input, verdict);
-        void this.persist(runId, input, verdict, 0);
-        const releases = verdictReleasesAnswer(verdict);
-        if (!releases) {
-          this.log(`[verifier/service] answer withheld run=${runId} status=${verdict.status}`);
-        }
-        return { summary: summarise(verdict, 0, this.mode), releases };
+    yield* enforcedVerifierStream(
+      {
+        orchestrator: this.orchestrator,
+        judge: this.judge,
+        policy: this.reentryPolicy(),
+        locale: this.locale,
+        log: this.log,
+        fireVerifierBlocked: (turnInput, verdict) => this.fireVerifierBlocked(turnInput, verdict),
       },
-      this.locale,
+      runId,
+      input,
+      observer,
     );
   }
 
@@ -219,8 +232,22 @@ export class VerifierService implements ChatAgent {
     if (!this.enabled) {
       return this.orchestrator.chat(input);
     }
-
     const runId = randomUUID();
+    const request = bindRequestLedger(this.orchestrator, input, this.reentryPolicy(), 'chat');
+    try {
+      return await this.chatVerified(runId, input, request?.ledger);
+    } finally {
+      // The request's ONE receipt row, with every pass's receipt merged in.
+      await request?.ledger.receipts.commit();
+      request?.release();
+    }
+  }
+
+  private async chatVerified(
+    runId: string,
+    input: ChatTurnInput,
+    ledger: ToolReplayLedger | undefined,
+  ): Promise<SemanticAnswer> {
     // Use `runTurn()` (full internal shape) rather than `chat()` — we need
     // access to `runTrace` for the verifier pipeline's evidence fetcher.
     const firstResult = await this.orchestrator.runTurn(input);
@@ -232,13 +259,13 @@ export class VerifierService implements ChatAgent {
       firstResult.pendingUserChoice ||
       (this.mode === 'enforce' && releasesWithoutVerification(firstResult))
     ) {
-      return toSemanticAnswer(firstResult);
+      return toSemanticAnswer(asRequestResult(firstResult, ledger));
     }
-    const firstVerdict = await this.verdictFor(runId, input, firstResult);
+    const firstVerdict = await this.judge.verdictFor(runId, input, firstResult);
 
     // Shadow mode: persist + summarise, never retry / block.
     if (this.mode === 'shadow') {
-      void this.persist(runId, input, firstVerdict, 0);
+      void this.judge.persist(runId, input, firstVerdict, 0);
       return toSemanticAnswer(
         withVerifier(firstResult, summarise(firstVerdict, 0, this.mode)),
       );
@@ -246,22 +273,23 @@ export class VerifierService implements ChatAgent {
 
     // #132 — borderline gate: when the first verdict confirmed claims but
     // could not confirm another one it checked (`isBorderlineVerdict`), draw
-    // a second sample from the same orchestrator turn. Two independent
-    // samples landing on the same disclaimer ⇒ keep. Disagreement ⇒ take
-    // the more conservative reading (blocked wins). Bounded at
-    // `maxResamples` per turn (default 1) so cost stays predictable.
-    // `skipped` / `unavailable`, a disclaimer that confirmed nothing, and one
-    // whose doubt is only claims no checker takes must never trigger this
-    // paid resample: a second sample cannot add evidence there, and
-    // otherwise every small-talk turn would run twice.
+    // a second sample of the answer over the first run's tool results. Two
+    // independent samples landing on the same disclaimer ⇒ keep.
+    // Disagreement ⇒ take the more conservative reading (blocked wins).
+    // Bounded at `maxResamples` per turn (default 1) so cost stays
+    // predictable. `skipped` / `unavailable`, a disclaimer that confirmed
+    // nothing, and one whose doubt is only claims no checker takes must never
+    // trigger this paid resample: a second sample cannot add evidence there,
+    // and otherwise every small-talk turn would run twice.
     let effectiveResult = firstResult;
     let effectiveVerdict = firstVerdict;
     if (
+      ledger !== undefined &&
       this.resampleOnBorderline &&
       this.maxResamples > 0 &&
       isBorderlineVerdict(firstVerdict)
     ) {
-      const merged = await this.tryResample(runId, input, firstVerdict);
+      const merged = await this.tryResample(runId, input, firstVerdict, ledger);
       if (merged) {
         effectiveResult = merged.result ?? firstResult;
         effectiveVerdict = merged.verdict;
@@ -275,15 +303,16 @@ export class VerifierService implements ChatAgent {
       this.fireVerifierBlocked(input, effectiveVerdict);
     }
     const deliverWithoutRetry = (): SemanticAnswer => {
-      void this.persist(runId, input, effectiveVerdict, 0);
+      void this.judge.persist(runId, input, effectiveVerdict, 0);
       return this.deliverEnforced(
         runId,
         effectiveResult,
         effectiveVerdict,
         summarise(effectiveVerdict, 0, this.mode),
+        ledger,
       );
     };
-    if (effectiveVerdict.status !== 'blocked' || this.maxRetries <= 0) {
+    if (effectiveVerdict.status !== 'blocked' || this.maxRetries <= 0 || ledger === undefined) {
       return deliverWithoutRetry();
     }
 
@@ -302,56 +331,61 @@ export class VerifierService implements ChatAgent {
     };
     let secondResult: ChatTurnResult;
     try {
-      // #579 — a correction retry re-runs an already-screened user turn; mark it
-      // so the inbound screening gate does not screen/audit it a second time.
-      this.orchestrator.markScreeningReentry(retryInput);
+      prepareReentry(this.orchestrator, retryInput, ledger);
       secondResult = await this.orchestrator.runTurn(retryInput);
     } catch (err) {
-      this.log(`[verifier/service] retry FAIL: ${errMsg(err)}`);
+      this.log(reentryFailureLine('retry', runId, err));
       return deliverWithoutRetry();
     }
 
-    const secondVerdict = await this.verdictFor(runId, input, secondResult);
+    const secondVerdict = await this.judge.verdictFor(runId, input, secondResult);
 
     // Merge: persist ONE row with the final retry count; contradictions table
     // reflects whichever verdict actually tripped. We log both for telemetry.
-    void this.persist(runId, input, secondVerdict, 1);
+    void this.judge.persist(runId, input, secondVerdict, 1);
 
     // Compute the user-facing badge: `corrected` when the retry confirmed
     // every claim, `partial` when it confirmed only some, `failed` when it is
     // still contradicted, `unverified` / `unavailable` (no connector badge)
     // when the retry's verification confirmed nothing.
     const badge = mergeBadges(effectiveVerdict, secondVerdict);
-    return this.deliverEnforced(runId, secondResult, secondVerdict, {
-      ...summarise(secondVerdict, 1, this.mode),
-      badge,
-    });
+    return this.deliverEnforced(
+      runId,
+      secondResult,
+      secondVerdict,
+      { ...summarise(secondVerdict, 1, this.mode), badge },
+      ledger,
+    );
   }
 
   /**
    * `enforce` delivery on the non-streaming path: the answer with its
    * summary when the verdict releases it, the withheld-answer notice in its
    * place otherwise — the same rule as the stream (`verifierDelivery.ts`).
+   * Either carries the request's receipt: every pass merged.
    */
   private deliverEnforced(
     runId: string,
     result: ChatTurnResult,
     verdict: VerifierVerdict,
     summary: VerifierResultSummary,
+    ledger: ToolReplayLedger | undefined,
   ): SemanticAnswer {
+    const delivered = asRequestResult(result, ledger);
     if (verdictReleasesAnswer(verdict)) {
-      return toSemanticAnswer(withVerifier(result, summary));
+      return toSemanticAnswer(withVerifier(delivered, summary));
     }
     this.log(`[verifier/service] answer withheld run=${runId} status=${verdict.status}`);
-    return toSemanticAnswer(withheldTurnResult(result, summary, this.locale));
+    return toSemanticAnswer(withheldTurnResult(delivered, summary, this.locale));
   }
 
   /**
-   * #132 — borderline re-sample: re-run the same turn against the
-   * orchestrator and merge the two verdicts. Failure to re-run (anything
-   * thrown by the orchestrator, or a clarification-card result that has
-   * no fact claims) returns `undefined` and the caller keeps `firstVerdict`
-   * as the effective verdict — re-sampling is best-effort.
+   * #132 — borderline re-sample: re-enter the same turn over the first run's
+   * tool results and merge the two verdicts. Failure to re-run (anything
+   * thrown by the orchestrator — an abandoned re-entry included — or a
+   * clarification-card result that has no fact claims) returns `undefined`
+   * and the caller keeps `firstVerdict` as the effective verdict —
+   * re-sampling is best-effort.
    *
    * Returns `{ verdict, result }` where `result` is the second sample's
    * orchestrator result iff the merge decided to keep it; `undefined`
@@ -362,6 +396,7 @@ export class VerifierService implements ChatAgent {
     runId: string,
     input: ChatTurnInput,
     firstVerdict: VerifierVerdict,
+    ledger: ToolReplayLedger,
   ): Promise<{
     verdict: VerifierVerdict;
     result?: ChatTurnResult;
@@ -369,12 +404,10 @@ export class VerifierService implements ChatAgent {
     this.log(`[verifier/service] borderline resample run=${runId}`);
     let secondResult: ChatTurnResult;
     try {
-      // #579 — a borderline resample re-runs the same already-screened user
-      // turn; mark it so the inbound gate skips a redundant screen + audit.
-      this.orchestrator.markScreeningReentry(input);
+      prepareReentry(this.orchestrator, input, ledger);
       secondResult = await this.orchestrator.runTurn(input);
     } catch (err) {
-      this.log(`[verifier/service] resample FAIL: ${errMsg(err)}`);
+      this.log(reentryFailureLine('resample', runId, err));
       return undefined;
     }
     if (secondResult.pendingUserChoice) {
@@ -382,7 +415,7 @@ export class VerifierService implements ChatAgent {
       // verdict, the user-facing answer didn't change.
       return undefined;
     }
-    const secondVerdict = await this.verdictFor(runId, input, secondResult);
+    const secondVerdict = await this.judge.verdictFor(runId, input, secondResult);
     const merged = mergeBorderlineVerdicts(firstVerdict, secondVerdict);
     this.log(
       `[verifier/service] resample merge run=${runId} first=${firstVerdict.status} second=${secondVerdict.status} → ${merged.verdict.status}${
@@ -394,100 +427,4 @@ export class VerifierService implements ChatAgent {
       ...(merged.takeSecond ? { result: secondResult } : {}),
     };
   }
-
-  // ------------------------------------------------------------------
-
-  /**
-   * The verdict on one turn's answer (a `done` event or a turn result).
-   * `enforce` never hands the pipeline an answer Privacy Shield rendered
-   * server-side (`mayVerifyAnswer`): its claim extractor would send the real
-   * values the shield kept from the turn's model to the verifier's provider.
-   * That answer gets `unavailable` / `privacy_shield`, which withholds it.
-   * `shadow` verifies as before.
-   */
-  private async verdictFor(
-    runId: string,
-    input: ChatTurnInput,
-    turn: Pick<ChatTurnResult, 'answer' | 'runTrace' | 'answerSource'>,
-  ): Promise<VerifierVerdict> {
-    if (this.mode === 'enforce' && !mayVerifyAnswer(turn)) {
-      this.log(`[verifier/service] not verified run=${runId}: answer rendered by the privacy shield`);
-      return privacyShieldVerdict();
-    }
-    return this.safeVerify(runId, input, turn.answer, turn.runTrace);
-  }
-
-  private async safeVerify(
-    runId: string,
-    input: ChatTurnInput,
-    answer: string,
-    runTrace: RunTracePayload | undefined,
-  ): Promise<VerifierVerdict> {
-    const domainToolsCalled = extractToolsCalled(runTrace);
-    const toolPostconditionViolations = extractPostconditionViolations(runTrace);
-    const knowledgeGraphToolsCalled = extractKnowledgeGraphToolsCalled(runTrace);
-    let returned: unknown;
-    try {
-      returned = await this.pipeline.verify({
-        runId,
-        userMessage: input.userMessage,
-        answer,
-        ...(domainToolsCalled ? { domainToolsCalled } : {}),
-        ...(toolPostconditionViolations.length > 0
-          ? { toolPostconditionViolations }
-          : {}),
-        ...(knowledgeGraphToolsCalled !== undefined
-          ? { knowledgeGraphToolsCalled }
-          : {}),
-      });
-    } catch (err) {
-      this.log(`[verifier/service] pipeline FAIL: ${errMsg(err)}`);
-      // Nothing was checked. The reason is a closed code: this verdict is
-      // summarised onto the stream, the message stays in the log line above.
-      return {
-        status: 'unavailable',
-        reason: 'pipeline_error',
-        claims: [],
-        latencyMs: 0,
-      };
-    }
-    // Everything below acts on this verdict, so it is bound once, here: the
-    // status its claims back, a closed reason. What did not hold is logged
-    // with the raw value; the stream only ever sees the bound verdict.
-    const bound = bindVerdictToClaims(returned);
-    if (bound.problem !== undefined) {
-      this.log(`[verifier/service] pipeline verdict not taken as returned: ${bound.problem}`);
-    }
-    return bound.verdict;
-  }
-
-  private async persist(
-    runId: string,
-    input: ChatTurnInput,
-    verdict: VerifierVerdict,
-    retryCount: number,
-  ): Promise<void> {
-    if (!this.store) return;
-    try {
-      await this.store.persist({
-        input: {
-          runId,
-          userMessage: input.userMessage,
-          answer: '', // intentionally omitted — no PII beyond what's already
-          // captured in session_logger/graph. The store only uses `runId`.
-        },
-        verdict,
-        mode: this.mode,
-        retryCount,
-      });
-    } catch (err) {
-      this.log(`[verifier/service] persist FAIL: ${errMsg(err)}`);
-    }
-  }
-}
-
-// --- helpers --------------------------------------------------------------
-
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

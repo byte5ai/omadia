@@ -461,6 +461,17 @@ export type {
   ToolIdempotencyOutcome,
 } from './toolIdempotency.js';
 export {
+  ToolReplayAbortError,
+  ToolReplayLedger,
+  replayMissNotice,
+} from './toolReplayLedger.js';
+export type {
+  ToolReplayDecision,
+  ToolReplayRecord,
+  ToolReplaySeam,
+} from './toolReplayLedger.js';
+export { RequestReceipts, mergePrivacyReceipts } from './requestReceipts.js';
+export {
   currentDispatchCaller,
   runWithDispatchCaller,
 } from './toolCallerContext.js';

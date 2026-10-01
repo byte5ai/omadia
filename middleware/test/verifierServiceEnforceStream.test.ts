@@ -19,8 +19,10 @@
  *     reaches the verifier pipeline (it holds values the shield kept from the
  *     model) and is withheld; a withheld degraded turn keeps its failure
  *     markers;
- *   - a failed turn releases nothing it held, and the stream path never
- *     starts a correction retry.
+ *   - a failed turn releases nothing it held; a contradiction buys one
+ *     correction retry, which re-enters the turn over its first run's tool
+ *     results (`verifierStreamRetry.test.ts` drives that with real tools)
+ *     and is held and judged by the same rule.
  * `shadow` stays the unchanged pass-through, and never verifies a degraded
  * turn.
  */
@@ -178,12 +180,14 @@ describe('VerifierService.chatStream — enforce withholds an answer it could no
     assert.deepEqual(withheld.agentsConsulted, terminal.agentsConsulted);
     assert.deepEqual(withheld.directLineSession, { active: false });
 
-    // The stream path records the block and stores the verdict once — and
-    // never starts a correction retry (it would re-run the turn's tools).
+    // The stream path records the block, runs ONE correction retry (here
+    // contradicted again, so the notice goes out) and stores the final
+    // verdict once.
     assert.deepEqual(h.hookPoints, ['onVerifierBlocked']);
-    assert.deepEqual(h.persisted, [{ status: 'blocked', retryCount: 0, mode: 'enforce' }]);
-    assert.equal(h.streamCalls.length, 1);
-    assert.equal(h.reentries.length, 0);
+    assert.deepEqual(h.persisted, [{ status: 'blocked', retryCount: 1, mode: 'enforce' }]);
+    assert.equal(h.streamCalls.length, 2);
+    assert.equal(h.reentries.length, 1);
+    assert.match(h.streamCalls[1]?.input.extraSystemHint ?? '', /\S/, 'the retry carries the correction hint');
   });
 
   it('fails closed: unavailable, partly checked and unconfirmed verdicts withhold too', async () => {
@@ -276,7 +280,9 @@ describe('VerifierService.chatStream — enforce release rules without a verdict
 
   it('an answer that only ends with NO_REPLY is verified, and withheld like any other', async () => {
     const { events, h } = await runEnforced([blocked()], turn(done({}, `${ANSWER}\nNO_REPLY`)));
-    assert.equal(h.verifyInputs.length, 1, 'verified');
+    // Verified, and — contradicted like any other answer — re-verified after
+    // its correction retry.
+    assert.equal(h.verifyInputs.length, 2, 'verified, then the retry');
     assert.equal(h.verifyInputs[0]?.answer, `${ANSWER}\nNO_REPLY`);
     assertWithheld(events, 'trailing NO_REPLY');
   });

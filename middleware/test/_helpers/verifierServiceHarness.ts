@@ -98,6 +98,11 @@ export function createVerifierHarness(opts: VerifierHarnessOptions): VerifierHar
     markScreeningReentry(input: ChatTurnInput): void {
       reentries.push(input);
     },
+    // The scripted turns run no tools; the request ledger has nothing to
+    // replay (`verifierServiceWriteSafety.test.ts` drives a real one).
+    bindToolReplayLedger(): () => void {
+      return () => undefined;
+    },
     async *chatStream(
       input: ChatTurnInput,
       observer?: ChatStreamObserver,

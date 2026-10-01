@@ -282,6 +282,7 @@ describe('VerifierService.chat — decisions follow the bound verdict', () => {
     const orchestrator = {
       agentId: 'default',
       markScreeningReentry: (): void => undefined,
+      bindToolReplayLedger: () => () => undefined,
       runTurn: (): Promise<ChatTurnResult> => {
         runTurns += 1;
         return Promise.resolve({ answer: ANSWER, toolCalls: 1, iterations: 1 });

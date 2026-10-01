@@ -48,6 +48,12 @@ import type {
  *    `done` and nothing else ({@link isDeliberateSilence}).
  *  - A turn that fails (an `error` event, or no `done`) releases nothing it
  *    held; the `error` itself goes out.
+ *  - A contradiction may buy one correction retry ({@link EnforcedRetry}):
+ *    the service re-enters the turn over the first run's tool results (no
+ *    tool runs twice, `toolReplayLedger.ts`), the retry is held the same way,
+ *    and its verdict decides by the same rule. Nothing of the first turn is
+ *    released once a retry ran; a retry that fails or is abandoned stays
+ *    internal and the first turn is withheld.
  */
 
 type DoneEvent = Extract<ChatStreamEvent, { type: 'done' }>;
@@ -339,45 +345,119 @@ export async function* shadowVerifiedStream(
 export interface EnforcedVerdict {
   readonly summary: VerifierResultSummary;
   readonly releases: boolean;
+  /**
+   * A correction re-entry to run instead of delivering this verdict. Its
+   * stream is held exactly like the first turn's — liveness passes, nothing
+   * else — and replaces the first turn when its verdict is delivered.
+   */
+  readonly retry?: EnforcedRetry;
 }
+
+/**
+ * The stream's correction retry (`VerifierService`). It re-generates the
+ * answer over the first run's tool results (`toolReplayLedger.ts`), so it
+ * runs no tool twice; the release rule above decides what goes out.
+ */
+export interface EnforcedRetry {
+  readonly stream: AsyncIterable<ChatStreamEvent>;
+  /**
+   * The verdict to deliver once the re-entry drained. `done` is the
+   * re-entry's answer, or `undefined` when it produced none worth judging
+   * (it failed, was abandoned, or ended in a control-flow terminal); then the
+   * verdict is the first turn's and `useRetry` is false.
+   */
+  judge(done: DoneEvent | undefined): Promise<EnforcedVerdict & { readonly useRetry: boolean }>;
+}
+
+/** Adds the request's record to the `done` that goes out (the receipt of
+ *  every pass, the persisted turn) once nothing else can change it. */
+export type FinishDone = (done: DoneEvent) => Promise<DoneEvent>;
+
+interface HeldTurn {
+  readonly held: ChatStreamEvent[];
+  readonly terminal: DoneEvent | undefined;
+  readonly failed: boolean;
+}
+
+/**
+ * Drains one turn: liveness events pass, everything else is held. The first
+ * turn's `error` goes out as it arrives; a re-entry's error — or exception —
+ * stays internal, the first turn's outcome is delivered instead.
+ */
+async function* holdTurn(
+  base: AsyncIterable<ChatStreamEvent>,
+  reentry: boolean,
+): AsyncGenerator<ChatStreamEvent, HeldTurn> {
+  const held: ChatStreamEvent[] = [];
+  let terminal: DoneEvent | undefined;
+  let failed = false;
+  try {
+    // Drained to the end even after the terminal event, as before: the
+    // orchestrator's generator finishes its own work only when it is drained.
+    for await (const event of base) {
+      if (passesBeforeVerdict(event)) {
+        yield event;
+      } else if (event.type === 'error') {
+        failed = true;
+        if (!reentry) yield event;
+      } else if (!failed) {
+        if (event.type === 'done') terminal = event;
+        held.push(event);
+      }
+    }
+  } catch (err) {
+    if (!reentry) throw err;
+    failed = true;
+  }
+  return { held, terminal, failed };
+}
+
+/** A re-entry's answer worth a verdict: not failed, and an ordinary answer. */
+function judgeableAnswer(turn: HeldTurn): DoneEvent | undefined {
+  const done = turn.terminal;
+  if (turn.failed || done === undefined) return undefined;
+  if (isDeliberateSilence(done.answer) || releasesWithoutVerification(done)) return undefined;
+  return done;
+}
+
+const asIs: FinishDone = (done) => Promise.resolve(done);
 
 /** `enforce`: the delivery gate described in the module comment. */
 export async function* enforcedVerifiedStream(
   base: AsyncIterable<ChatStreamEvent>,
   verify: (done: DoneEvent) => Promise<EnforcedVerdict>,
   operatorLocale: string | undefined,
+  finishDone: FinishDone = asIs,
 ): AsyncGenerator<ChatStreamEvent> {
-  const held: ChatStreamEvent[] = [];
-  let terminal: DoneEvent | undefined;
-  let failed = false;
-  // Drained to the end even after the terminal event, as before: the
-  // orchestrator's generator finishes its own work only when it is drained.
-  for await (const event of base) {
-    if (passesBeforeVerdict(event)) {
-      yield event;
-    } else if (event.type === 'error') {
-      failed = true;
-      yield event;
-    } else if (!failed) {
-      if (event.type === 'done') terminal = event;
-      held.push(event);
-    }
-  }
-  if (failed || terminal === undefined) return;
+  const first = yield* holdTurn(base, false);
+  if (first.failed || first.terminal === undefined) return;
+  let held = first.held;
+  let terminal = first.terminal;
   if (isDeliberateSilence(terminal.answer)) {
     // Silence carries nothing: not the text or tool traffic that led to it.
-    yield terminal;
+    yield await finishDone(terminal);
     return;
   }
   if (releasesWithoutVerification(terminal)) {
-    yield* releasedTurn(held, terminal, terminal);
+    yield* releasedTurn(held, terminal, await finishDone(terminal));
     return;
   }
-  const { summary, releases } = await verify(terminal);
+  let outcome: EnforcedVerdict = await verify(terminal);
+  if (outcome.retry) {
+    const second = yield* holdTurn(outcome.retry.stream, true);
+    const answer = judgeableAnswer(second);
+    const judged = await outcome.retry.judge(answer);
+    outcome = judged;
+    if (judged.useRetry && answer !== undefined) {
+      held = second.held;
+      terminal = answer;
+    }
+  }
+  const { summary, releases } = outcome;
   if (releases) {
-    yield* releasedTurn(held, terminal, { ...terminal, verifier: summary });
+    yield* releasedTurn(held, terminal, await finishDone({ ...terminal, verifier: summary }));
   } else {
-    const withheld = withheldDone(terminal, summary, operatorLocale);
+    const withheld = withheldDone(await finishDone(terminal), summary, operatorLocale);
     yield { type: 'text_delta', text: withheld.notice };
     yield withheld.done;
   }

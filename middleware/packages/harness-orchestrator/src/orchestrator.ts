@@ -155,10 +155,20 @@ import type {
 } from '@omadia/plugin-api';
 import {
   agentScopePrefix,
+  isWithheldToolErrorNotice,
   PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
   PRIVACY_MODE_CONFIG_KEY,
   resolveEffectivePrivacyMode,
 } from '@omadia/plugin-api';
+import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
+import {
+  SubEventRecorder,
+  ToolReplayAbortError,
+  ToolReplayLedger,
+  replayMissNotice,
+  replaySubEvents,
+  type ToolReplayRecord,
+} from './toolReplayLedger.js';
 import {
   createNudgeTurnCounter,
   runNudgePipeline,
@@ -1775,12 +1785,32 @@ interface ParallelSlot {
   readonly subEvents: ChatStreamEvent[];
   readonly invocation: InvocationHandle | undefined;
   readonly promise: Promise<string>;
+  readonly meta: ToolDispatchMeta;
   readonly started: number;
   lastHeartbeat: number;
   settled: boolean;
   output?: string;
   isError?: boolean;
   durationMs?: number;
+}
+
+/**
+ * Per-dispatch facts the tool loops need beyond the result string. Written by
+ * `dispatchToolDeadlined`, read once the dispatch settled.
+ */
+interface ToolDispatchMeta {
+  /** A verifier re-entry handed back the first run's result; the handler did
+   *  not run (`toolReplayLedger.ts`). The run trace flags the call. */
+  replayed: boolean;
+}
+
+/** The call's input asks the memory tool to read (`view`), not to write. */
+function isMemoryViewCall(input: unknown): boolean {
+  return (
+    typeof input === 'object' &&
+    input !== null &&
+    (input as { command?: unknown }).command === 'view'
+  );
 }
 
 /**
@@ -2220,6 +2250,14 @@ export class Orchestrator {
    * the public `ChatTurnInput` surface and entries are GC'd with the turn.
    */
   private readonly screeningReentries = new WeakSet<ChatTurnInput>();
+  /**
+   * The tool replay ledger a verifier bound to an input for its request
+   * (`toolReplayLedger.ts`, {@link bindToolReplayLedger}). Same identity
+   * contract as {@link screeningReentries}: keyed on the input OBJECT, read
+   * once at the top of the turn entry point — before the input is re-bound —
+   * and GC'd with it.
+   */
+  private readonly toolReplayLedgers = new WeakMap<ChatTurnInput, ToolReplayLedger>();
   private readonly nativeTools: NativeToolRegistry;
   /**
    * Per-turn scratchpad for the routine list smart-card emitted in-band by
@@ -2633,32 +2671,42 @@ export class Orchestrator {
     // drained ONCE per turn (it clears on read), so we partition by kind in
     // this single pass: `diagram` → inline image (render_diagram), `file` →
     // downloadable document (@omadia/plugin-office).
+    //
+    // A verifier re-entry replays the first run's calls without running
+    // them, so their sinks stay empty: the ledger keeps what each tool
+    // attached in the first run and hands it back for the tools this pass
+    // replayed (`toolReplayLedger.ts`) — the same file, built once.
+    const ledger = turnContext.current()?.toolReplayLedger;
+    const collected: Array<{ readonly kind: string; readonly payload: unknown }> = [];
     for (const entry of this.nativeTools.listWithHandler()) {
       if (!entry.attachmentSink) continue;
       const payloads = entry.attachmentSink();
       if (!payloads?.length) continue;
-      for (const p of payloads) {
-        if (p.kind === 'diagram') {
-          diagrams.push(p.payload as DiagramAttachment);
-        } else if (p.kind === 'file') {
-          const f = p.payload as {
-            url: string;
-            altText: string;
-            mediaType: string;
-            sizeBytes?: number;
-            producer?: string;
-          };
-          files.push({
-            kind: 'file',
-            url: f.url,
-            altText: f.altText,
-            mediaType: f.mediaType,
-            ...(f.sizeBytes !== undefined ? { sizeBytes: f.sizeBytes } : {}),
-            ...(f.producer ? { producer: f.producer } : {}),
-          });
-        }
-        // Unknown kinds flow nowhere today — a future adapter can add a branch.
+      ledger?.recordAttachments(entry.name, payloads);
+      collected.push(...payloads);
+    }
+    collected.push(...(ledger?.takeReplayedAttachments() ?? []));
+    for (const p of collected) {
+      if (p.kind === 'diagram') {
+        diagrams.push(p.payload as DiagramAttachment);
+      } else if (p.kind === 'file') {
+        const f = p.payload as {
+          url: string;
+          altText: string;
+          mediaType: string;
+          sizeBytes?: number;
+          producer?: string;
+        };
+        files.push({
+          kind: 'file',
+          url: f.url,
+          altText: f.altText,
+          mediaType: f.mediaType,
+          ...(f.sizeBytes !== undefined ? { sizeBytes: f.sizeBytes } : {}),
+          ...(f.producer ? { producer: f.producer } : {}),
+        });
       }
+      // Unknown kinds flow nowhere today — a future adapter can add a branch.
     }
     return { diagrams, files };
   }
@@ -3659,6 +3707,31 @@ export class Orchestrator {
     this.screeningReentries.add(input);
   }
 
+  /**
+   * Binds a request's tool replay ledger (`toolReplayLedger.ts`) to an input
+   * object. The verifier binds it before the first run of a request it may
+   * re-enter, and again for every re-entry input — a correction retry is a NEW
+   * object. Keyed on object identity: pass the SAME input to {@link runTurn} or
+   * {@link chatStream}.
+   *
+   * A turn whose input carries a ledger records its tool results into it (the
+   * first run) or replays them (a re-entry, after `beginReentry()`): no tool a
+   * re-entry calls runs twice, and a re-entry that needs a call outside the
+   * first run is abandoned with {@link ToolReplayAbortError}. A re-entry also
+   * writes no session-log row and fires no turn hook of its own. Its privacy
+   * receipt goes to `ledger.receipts` instead of a row of its own: the binder
+   * owns the request and must `ledger.receipts.commit()` once it delivered.
+   *
+   * Returns a function that removes the binding — call it when the request is
+   * over, so an input object a caller reuses never meets a stale ledger.
+   */
+  bindToolReplayLedger(input: ChatTurnInput, ledger: ToolReplayLedger): () => void {
+    this.toolReplayLedgers.set(input, ledger);
+    return () => {
+      if (this.toolReplayLedgers.get(input) === ledger) this.toolReplayLedgers.delete(input);
+    };
+  }
+
   private async screenInboundTurn(
     input: ChatTurnInput,
     opts: { readonly exempt: boolean },
@@ -3782,6 +3855,13 @@ export class Orchestrator {
   }
 
   private async runTurnCore(input: ChatTurnInput): Promise<ChatTurnResult> {
+    // Read on the caller's object, before `input` is re-bound below: a lookup
+    // after the re-binding would silently lose the ledger, and every re-entry
+    // would run its tools again. Without a bound ledger the turn gets one of
+    // its own that keeps no results — it only stops a repeat of a call whose
+    // outcome is unknown (`toolReplayLedger.ts`).
+    const boundLedger = this.toolReplayLedgers.get(input);
+    const toolReplayLedger = boundLedger ?? new ToolReplayLedger({ retainResults: false });
     const turnId = randomUUID();
     // W2-1 (#544) — an MCP input card's answer arrives as a machine envelope in
     // `userMessage`. Normalise it HERE, before anything downstream reads the
@@ -3789,6 +3869,11 @@ export class Orchestrator {
     // privacy receipt or the chat transcript. The replay itself runs inside the
     // turn scope below (it needs the turn context for audit attribution).
     const mcpInputReply = parseMcpInputReply(input.userMessage);
+    if (mcpInputReply && toolReplayLedger.mode === 'replay') {
+      // The parked call is take-once and already ran in the first run: a
+      // re-entry would only learn that the input "no longer exists".
+      throw this.abandonReentryEarly(toolReplayLedger, 'mcp-input-reply');
+    }
     if (mcpInputReply) {
       input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
     }
@@ -3932,6 +4017,7 @@ export class Orchestrator {
         ...(parent?.canvasSentinelSink
           ? { canvasSentinelSink: parent.canvasSentinelSink }
           : {}),
+        toolReplayLedger,
       },
       async () => {
         // W2-1 (#544) — forced replay of the parked MCP tool call, before the
@@ -3951,7 +4037,7 @@ export class Orchestrator {
         // origin the binding is derived from is the origin the turn ran with.
         const turnMemory = this.bindTurnMemory(input);
         const direct = await this.executeDirectLine(input, turnId, turnMemory);
-        let result: ChatTurnResult;
+        let result: ChatTurnResult | undefined;
         try {
           result = direct ?? (await this.chatInContext(input, turnId, turnMemory));
           // #445 — an ordinary turn is by definition an UNBOUND turn (a live
@@ -3967,9 +4053,17 @@ export class Orchestrator {
           if (err instanceof PromptMaskBlockedError) {
             console.error(`[orchestrator] ${err.message}`);
             result = { answer: PROMPT_MASK_BLOCKED_ANSWER, toolCalls: 0, iterations: 0 };
-          } else {
+          } else if (!(err instanceof ToolReplayAbortError)) {
             throw err;
           }
+        }
+        // The ONE authoritative check that a verifier re-entry stayed inside
+        // the first run's results. The tool loop stops at the first refused
+        // miss (post-batch), but a direct-line dispatch and a sub-agent loop
+        // fold the refusal into an answer of their own — this catches those.
+        if (result === undefined || toolReplayLedger.abortedTool !== undefined) {
+          await this.closeAbandonedReentry(toolReplayLedger, privacyHandle, turnId, input);
+          throw new ToolReplayAbortError(toolReplayLedger.abortedTool ?? 'unknown');
         }
         // Privacy Shield v4 — when a v4_render_answer call produced the
         // answer this turn it is final and already safe (real values
@@ -4014,7 +4108,7 @@ export class Orchestrator {
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
-              await this.persistTurnReceipt(turnId, input, receipt);
+              await this.settleTurnReceipt(turnId, input, receipt, boundLedger);
               return { ...result, privacyReceipt: receipt };
             }
           } catch (err) {
@@ -4027,6 +4121,168 @@ export class Orchestrator {
         return result;
       },
     );
+  }
+
+  /**
+   * Writes the turn's receipt row — unless a verifier bound a ledger to the
+   * request (`requestReceipts.ts`): then the request has ONE row, owned by
+   * the first pass that had a receipt (normally the first run) and written
+   * by the binder once it delivered, with the receipt of every pass merged
+   * in. Returns whether a row is (or will be) written under this turn's id.
+   */
+  private async settleTurnReceipt(
+    turnId: string,
+    input: ChatTurnInput,
+    receipt: PrivacyReceipt,
+    boundLedger: ToolReplayLedger | undefined,
+  ): Promise<boolean> {
+    if (boundLedger === undefined) {
+      await this.persistTurnReceipt(turnId, input, receipt);
+      return true;
+    }
+    const owns = boundLedger.receipts.add(receipt, {
+      rowId: turnId,
+      write: (merged) => this.persistTurnReceipt(turnId, input, merged),
+    });
+    // No row of its own, so nothing would consume this pass's attribution.
+    if (!owns) this.turnAttribution.delete(turnId);
+    return owns;
+  }
+
+  /**
+   * Ends a re-entry pass that needed a call outside the first run. Its
+   * privacy scope is finalized — the model did get the replayed results, so
+   * the receipt joins the request's — and nothing of the pass is delivered.
+   */
+  private async closeAbandonedReentry(
+    ledger: ToolReplayLedger,
+    privacyHandle: PrivacyTurnHandle | undefined,
+    turnId: string,
+    input: ChatTurnInput,
+  ): Promise<void> {
+    console.warn(
+      `[orchestrator] verifier re-entry abandoned (turn ${turnId}): tool "${ledger.abortedTool ?? 'unknown'}" is not in the first run's result set`,
+    );
+    this.turnAttribution.delete(turnId);
+    if (privacyHandle === undefined) return;
+    try {
+      const receipt = await privacyHandle.finalize(input.userMessage);
+      if (receipt) ledger.receipts.add(receipt);
+    } catch (err) {
+      console.warn('[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:', err);
+    }
+  }
+
+  /** A re-entry the orchestrator refuses before it starts (`mcp-input-reply`). */
+  private abandonReentryEarly(ledger: ToolReplayLedger, reason: string): ToolReplayAbortError {
+    ledger.abort(reason);
+    console.warn(`[orchestrator] verifier re-entry abandoned before it started: ${reason}`);
+    return new ToolReplayAbortError(reason);
+  }
+
+  /** True while a verifier re-entry runs: the request's first run already
+   *  persisted it (session log, fact extraction) and fired its turn hooks. */
+  private isReentryPass(): boolean {
+    return turnContext.current()?.toolReplayLedger?.mode === 'replay';
+  }
+
+  /**
+   * Post-batch fail-fast of the buffered tool loop: a re-entry that needed a
+   * call outside the first run stops here instead of handing the refusal to
+   * the model. `runTurnCore` re-checks at the end of the turn.
+   */
+  private throwIfReentryAbandoned(): void {
+    const tool = turnContext.current()?.toolReplayLedger?.abortedTool;
+    if (tool !== undefined) throw new ToolReplayAbortError(tool);
+  }
+
+  /** The streaming loop's counterpart of {@link throwIfReentryAbandoned}: the
+   *  event that ends an abandoned re-entry's stream. Only the verifier that
+   *  re-entered sees it; it delivers its first answer's outcome instead. */
+  private abandonedReentryEvent(): Extract<ChatStreamEvent, { type: 'error' }> | undefined {
+    const tool = turnContext.current()?.toolReplayLedger?.abortedTool;
+    if (tool === undefined) return undefined;
+    const correlationId = turnContext.currentTurnId();
+    return {
+      type: 'error',
+      ...(correlationId ? { correlationId } : {}),
+      message: new ToolReplayAbortError(tool).message,
+    };
+  }
+
+  /**
+   * How the replay ledger treats a call (`toolReplayLedger.ts`), in
+   * `dispatchToolInner`'s resolution order:
+   *  - `turn-local` — never recorded or replayed: its only effect is this
+   *    turn's own card state, which every pass sets up again;
+   *  - `read-only` — a kernel tool known not to change data (and a name that
+   *    resolves to the kernel's "unknown tool" refusal): may run on a re-entry
+   *    the first run did not make it on, and may be repeated after it threw;
+   *  - `write` — everything else. Plugin, MCP and domain tools count as writes:
+   *    the plugin contract has no read-only declaration, and a missing
+   *    `writeCapabilities` is not one (`execute` deliberately ships none).
+   */
+  private replayClassOf(
+    name: string,
+    input: unknown,
+    turnMemory: TurnMemoryBinding | undefined,
+  ): 'turn-local' | 'read-only' | 'write' {
+    const memoryHandler = turnMemory ? turnMemory.handler : this.memoryToolHandler;
+    if (name === MEMORY_TOOL_NAME && memoryHandler) {
+      return isMemoryViewCall(input) ? 'read-only' : 'write';
+    }
+    if (this.nativeTools.get(name)?.handler) return 'write';
+    if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) return 'read-only';
+    if (name === QUERY_DATASET_TOOL_NAME && this.queryDatasetTool) return 'read-only';
+    if (name === CHAT_PARTICIPANTS_TOOL_NAME && this.chatParticipantsTool) return 'read-only';
+    if (name === ASK_USER_CHOICE_TOOL_NAME && this.askUserChoiceTool) return 'turn-local';
+    if (name === SUGGEST_FOLLOW_UPS_TOOL_NAME && this.suggestFollowUpsTool) return 'turn-local';
+    if (name === READ_ATTACHMENT_TOOL_NAME && this.readAttachmentTool) return 'read-only';
+    if (name === FIND_FREE_SLOTS_TOOL_NAME && this.findFreeSlotsTool) return 'read-only';
+    if (name === BOOK_MEETING_TOOL_NAME && this.bookMeetingTool) return 'write';
+    if (this.domainToolsByName.has(name)) return 'write';
+    return 'read-only';
+  }
+
+  /**
+   * What the replay ledger keeps of one call this pass executed:
+   *  - an MCP input sentinel or connect prompt the dispatch minted is
+   *    unreplayable: its provenance exists only in the dispatch that produced
+   *    it (replayed, it would be interned as data and its card lost), and a
+   *    re-entry that needs it is abandoned;
+   *  - a domain tool whose sub-agent interned datasets or ran a bypassed tool
+   *    under Privacy Shield is RE-RUN on a re-entry: its answer is prose over
+   *    datasets that lived in the first run's privacy scope, which ended with
+   *    that run. Re-run, its inner calls replay at their own seam and are
+   *    interned again in the re-entry's scope, so the bridge still carries
+   *    real rows;
+   *  - anything else is replayed as the raw result, with the sub-agent events
+   *    its dispatch emitted.
+   */
+  private replayRecordFor(
+    name: string,
+    result: string,
+    shielded: boolean,
+    scope: {
+      readonly sink: readonly string[];
+      readonly bypass: { readonly value: boolean };
+      readonly sentinelMint: McpInputSentinelMint;
+      readonly authPromptMint: McpAuthPromptMint;
+      readonly recorder: SubEventRecorder | undefined;
+    },
+  ): ToolReplayRecord {
+    if (isOwnMintedSentinel(scope.sentinelMint, result) || scope.authPromptMint.minted(result)) {
+      return { kind: 'unreplayable' };
+    }
+    if (
+      shielded &&
+      this.domainToolsByName.has(name) &&
+      (scope.sink.length > 0 || scope.bypass.value)
+    ) {
+      return { kind: 'rerun' };
+    }
+    const events = scope.recorder?.events ?? [];
+    return { kind: 'result', value: result, ...(events.length > 0 ? { subEvents: [...events] } : {}) };
   }
 
   /**
@@ -4413,7 +4669,7 @@ export class Orchestrator {
     // not only via the channel's own prior-turn buffer. Best-effort: a logging
     // failure must never swallow the already-captured answer.
     let persistedTurnId: string | undefined;
-    if (this.sessionLogger && input.sessionScope) {
+    if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
       try {
         const logged = await this.sessionLogger.log({
           scope: input.sessionScope,
@@ -4675,6 +4931,9 @@ export class Orchestrator {
   ): Promise<TurnAnnotation[]> {
     const runner = this.turnHookRegistry;
     if (!runner) return [];
+    // A verifier re-entry is the same user turn: its first run fired every
+    // hook already (a plan, a step update, a turn record), so it fires none.
+    if (this.isReentryPass()) return [];
     const onFail = (err: unknown): TurnAnnotation[] => {
       console.error(
         `[orchestrator] turn-hook ${point} runner threw (continuing):`,
@@ -5182,7 +5441,7 @@ export class Orchestrator {
           // the chat UI (powers the save-as-memory affordance). Stays
           // undefined when session-logging is disabled or threw.
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope) {
+          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
             // Await the log write: previous fire-and-forget let follow-ups
             // race ahead of the session persisting their prior turn, so the
             // verbatim tail came back empty and the bot "forgot" the last
@@ -5314,11 +5573,13 @@ export class Orchestrator {
               )
             : undefined;
         });
+        const metas: ToolDispatchMeta[] = toolUses.map(() => ({ replayed: false }));
         const settled = await Promise.allSettled(
           toolUses.map((use: ContentBlock, i: number) =>
-            this.dispatchTool(use.name, use.input, invocations[i]?.observer, turnMemory),
+            this.dispatchTool(use.name, use.input, invocations[i]?.observer, turnMemory, metas[i]),
           ),
         );
+        this.throwIfReentryAbandoned();
         const toolResults: ContentBlock[] = toolUses.map((use: ContentBlock, i: number) => {
           const r = settled[i]!;
           let output: string;
@@ -5341,10 +5602,12 @@ export class Orchestrator {
           }
           const durationMs = Date.now() - startedTimes[i]!;
           const inv = invocations[i];
+          const replayed = metas[i]?.replayed === true ? { replayed: true } : {};
           if (inv) {
             inv.finish({
               durationMs,
               status: isError ? 'error' : 'success',
+              ...replayed,
             });
           } else if (traceCollector) {
             traceCollector.recordOrchestratorToolCall({
@@ -5352,6 +5615,7 @@ export class Orchestrator {
               toolName: use.name,
               durationMs,
               isError,
+              ...replayed,
             });
           }
           return {
@@ -5463,7 +5727,7 @@ export class Orchestrator {
             status: 'success',
           });
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope) {
+          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
             const entityRefs = entityCollection?.drain() ?? [];
             const loggedAnswer = restoredAnswer.length > 0
               ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
@@ -5516,7 +5780,7 @@ export class Orchestrator {
             status: 'success',
           });
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope) {
+          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
             const entityRefs = entityCollection?.drain() ?? [];
             const loggedAnswer = mcpInputCardLogLine(restoredAnswer, card);
             try {
@@ -5572,10 +5836,19 @@ export class Orchestrator {
     input: ChatTurnInput,
     observer?: AskObserver,
   ): AsyncGenerator<ChatStreamEvent> {
+    // Mirror of `runTurnCore`: the request's replay ledger, read on the
+    // caller's object before `input` is re-bound.
+    const boundLedger = this.toolReplayLedgers.get(input);
+    const toolReplayLedger = boundLedger ?? new ToolReplayLedger({ retainResults: false });
     const turnId = randomUUID();
     // W2-1 (#544) — mirror of `runTurn`: normalise the input-card envelope
     // before any downstream reader sees it. See the comment there.
     const mcpInputReply = parseMcpInputReply(input.userMessage);
+    if (mcpInputReply && toolReplayLedger.mode === 'replay') {
+      const abandoned = this.abandonReentryEarly(toolReplayLedger, 'mcp-input-reply');
+      yield { type: 'error', message: abandoned.message };
+      return;
+    }
     if (mcpInputReply) {
       input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
     }
@@ -5708,6 +5981,7 @@ export class Orchestrator {
       ...(parent?.canvasSentinelSink
         ? { canvasSentinelSink: parent.canvasSentinelSink }
         : {}),
+      toolReplayLedger,
     };
     // `input` is re-bound above (envelope normalisation); capture the final
     // value so the body cannot observe the pre-normalisation message.
@@ -5718,6 +5992,8 @@ export class Orchestrator {
         turnId,
         sessionId,
         mcpInputReply,
+        toolReplayLedger,
+        ...(boundLedger ? { boundLedger } : {}),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(observer ? { observer } : {}),
       }),
@@ -5735,10 +6011,15 @@ export class Orchestrator {
     readonly turnId: string;
     readonly sessionId: string;
     readonly mcpInputReply: McpInputReply | undefined;
+    /** The ledger the turn scope carries (bound or turn-local). */
+    readonly toolReplayLedger: ToolReplayLedger;
+    /** The ledger a verifier bound to the request, if one did. */
+    readonly boundLedger?: ToolReplayLedger;
     readonly privacyHandle?: PrivacyTurnHandle;
     readonly observer?: AskObserver;
   }): AsyncGenerator<ChatStreamEvent> {
     const { input, turnId, sessionId, mcpInputReply, privacyHandle, observer } = args;
+    const { toolReplayLedger, boundLedger } = args;
 
     this.applyTurnAuthContext(input);
     // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
@@ -5775,6 +6056,14 @@ export class Orchestrator {
       // event and decorate it with the privacy receipt + onAfterTurn hook,
       // exactly like the normal done branch below.
       const direct = await this.executeDirectLine(input, turnId, turnMemory);
+      if (direct && toolReplayLedger.abortedTool !== undefined) {
+        // A direct-line dispatch folds a refused re-entry miss into its own
+        // answer; the authoritative check ends the pass here instead.
+        await this.closeAbandonedReentry(toolReplayLedger, privacyHandle, turnId, input);
+        const abandoned = this.abandonedReentryEvent();
+        if (abandoned) yield abandoned;
+        return;
+      }
       if (direct) {
         const directAgentsConsulted = deriveAgentsConsulted(direct.runTrace);
         let doneEvent: Extract<ChatStreamEvent, { type: 'done' }> = {
@@ -5800,12 +6089,16 @@ export class Orchestrator {
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
-              await this.persistTurnReceipt(turnId, input, receipt);
+              const rowed = await this.settleTurnReceipt(turnId, input, receipt, boundLedger);
               // #1107 — surface the receipt-store key (== turnId) so an API
               // caller can correlate this turn with `GET .../receipts/:id`.
-              // Emitted only inside `if (receipt)`, so the id appears exactly
-              // when a row was written.
-              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
+              // Emitted only when a row is written under this turn's id (a
+              // verifier re-entry has none of its own).
+              doneEvent = {
+                ...doneEvent,
+                privacyReceipt: receipt,
+                ...(rowed ? { receiptId: turnId } : {}),
+              };
             }
           } catch (err) {
             console.warn(
@@ -5854,6 +6147,17 @@ export class Orchestrator {
         }
       })();
       for await (const event of guardedInner) {
+        if (
+          (event.type === 'done' || event.type === 'error') &&
+          toolReplayLedger.abortedTool !== undefined
+        ) {
+          // The stream's authoritative re-entry check: a pass that needed a
+          // call outside the first run ends as an error, whichever loop folded
+          // the refusal (the tool loop's post-batch check, or a sub-agent's).
+          await this.closeAbandonedReentry(toolReplayLedger, privacyHandle, turnId, input);
+          yield event.type === 'error' ? event : (this.abandonedReentryEvent() ?? event);
+          continue;
+        }
         if (event.type === 'tool_use') {
           toolNameById.set(event.id, event.name);
         } else if (event.type === 'tool_result') {
@@ -5912,12 +6216,16 @@ export class Orchestrator {
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
-              await this.persistTurnReceipt(turnId, input, receipt);
+              const rowed = await this.settleTurnReceipt(turnId, input, receipt, boundLedger);
               // #1107 — surface the receipt-store key (== turnId) so an API
               // caller can correlate this turn with `GET .../receipts/:id`.
-              // Emitted only inside `if (receipt)`, so the id appears exactly
-              // when a row was written.
-              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
+              // Emitted only when a row is written under this turn's id (a
+              // verifier re-entry has none of its own).
+              doneEvent = {
+                ...doneEvent,
+                privacyReceipt: receipt,
+                ...(rowed ? { receiptId: turnId } : {}),
+              };
             }
           } catch (err) {
             console.warn(
@@ -6379,7 +6687,7 @@ export class Orchestrator {
             answer,
           );
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope) {
+          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
             const entityRefs = entityCollection?.drain() ?? [];
             // See chat(): we await the session log so the next turn's
             // verbatim-tail retrieval can see this turn. Streaming callers
@@ -6598,6 +6906,13 @@ export class Orchestrator {
             if (next) yield next;
           }
         }
+        // Post-batch fail-fast (see `throwIfReentryAbandoned`): a verifier
+        // re-entry that needed a call outside the first run ends here.
+        const abandoned = this.abandonedReentryEvent();
+        if (abandoned) {
+          yield abandoned;
+          return;
+        }
 
         // Submission-order tool_result blocks for the next API request.
         // Anthropic matches by `tool_use_id`, but submission order keeps the
@@ -6694,7 +7009,7 @@ export class Orchestrator {
             status: 'success',
           });
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope) {
+          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
             const entityRefs = entityCollection?.drain() ?? [];
             const loggedAnswer = restoredAnswer.length > 0
               ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
@@ -6754,7 +7069,7 @@ export class Orchestrator {
             status: 'success',
           });
           let persistedTurnId: string | undefined;
-          if (this.sessionLogger && input.sessionScope) {
+          if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
             const entityRefs = entityCollection?.drain() ?? [];
             const loggedAnswer = mcpInputCardLogLine(restoredAnswer, card);
             try {
@@ -6883,7 +7198,7 @@ export class Orchestrator {
           error: err instanceof Error ? err.message : String(err),
         });
         let persistedTurnId: string | undefined;
-        if (this.sessionLogger && input.sessionScope) {
+        if (this.sessionLogger && input.sessionScope && !this.isReentryPass()) {
           const entityRefs = entityCollection?.drain() ?? [];
           try {
             const logged = await this.sessionLogger.log({
@@ -6975,7 +7290,8 @@ export class Orchestrator {
     // the exception MESSAGE on the wire either — the text streamed as the
     // `tool_result` event, sent to the provider and persisted in the session
     // carries the class name, a sanitised code and the log ref.
-    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory).catch(
+    const meta: ToolDispatchMeta = { replayed: false };
+    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory, meta).catch(
       (err: unknown) => {
         // Settling the slot must not cost the operator the STACK: the full
         // error goes to the log under the same ref the notice carries.
@@ -6993,6 +7309,7 @@ export class Orchestrator {
       subEvents,
       invocation,
       promise,
+      meta,
       started,
       lastHeartbeat: started,
       settled: false,
@@ -7058,10 +7375,12 @@ export class Orchestrator {
   ): void {
     const durationMs = slot.durationMs ?? 0;
     const isError = slot.isError ?? false;
+    const replayed = slot.meta.replayed ? { replayed: true } : {};
     if (slot.invocation) {
       slot.invocation.finish({
         durationMs,
         status: isError ? 'error' : 'success',
+        ...replayed,
       });
     } else if (traceCollector) {
       traceCollector.recordOrchestratorToolCall({
@@ -7069,6 +7388,7 @@ export class Orchestrator {
         toolName: slot.use.name,
         durationMs,
         isError,
+        ...replayed,
       });
     }
   }
@@ -7102,9 +7422,11 @@ export class Orchestrator {
      * Callers with genuinely no binding pass an explicit `undefined`.
      */
     turnMemory: TurnMemoryBinding | undefined,
+    /** Filled with what the loop needs beyond the result (a replay). */
+    meta?: ToolDispatchMeta,
   ): Promise<string> {
     try {
-      return await this.dispatchToolWithDeadline(name, input, observer, turnMemory);
+      return await this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta);
     } catch (err) {
       const outcome = await withholdThrownToolError({
         toolName: name,
@@ -7135,6 +7457,7 @@ export class Orchestrator {
     observer: AskObserver | undefined,
     /** Required position — see {@link Orchestrator.dispatchTool}. */
     turnMemory: TurnMemoryBinding | undefined,
+    meta?: ToolDispatchMeta,
   ): Promise<string> {
     // #575 — the audience floor's egress guard, at the ONE choke point every
     // tool dispatch passes through. Placed before the deadline machinery so a
@@ -7159,7 +7482,7 @@ export class Orchestrator {
       // Deadline explicitly disabled by the operator — legacy behaviour.
       // `return await`, not a bare `return`: a rejection must surface inside
       // this frame so `dispatchTool`'s catch withholds its message.
-      return await this.dispatchToolDeadlined(name, input, observer, undefined, turnMemory);
+      return await this.dispatchToolDeadlined(name, input, observer, undefined, turnMemory, meta);
     }
     const controller = new AbortController();
     const work = this.dispatchToolDeadlined(
@@ -7168,6 +7491,7 @@ export class Orchestrator {
       abortGuardedObserver(observer, controller.signal),
       controller.signal,
       turnMemory,
+      meta,
     );
     // A dispatch that rejects AFTER the deadline already resolved the race
     // would otherwise surface as an unhandled rejection and kill the process.
@@ -7198,6 +7522,7 @@ export class Orchestrator {
     deadlineSignal: AbortSignal | undefined,
     /** Required position — see {@link Orchestrator.dispatchTool}. */
     turnMemory: TurnMemoryBinding | undefined,
+    meta?: ToolDispatchMeta,
   ): Promise<string> {
     // Privacy Shield v4 — Data-Plane Boundary. The privacy handle is
     // threaded through `turnContext.privacyHandle`; absent ⇒ no privacy
@@ -7205,11 +7530,37 @@ export class Orchestrator {
     const ctx = turnContext.current();
     const privacy = ctx?.privacyHandle;
     // Verb tools + the terminal render tool are served by the privacy
-    // provider's per-turn data-plane engine, not by a tool handler.
+    // provider's per-turn data-plane engine, not by a tool handler. They stay
+    // outside the replay ledger: pure data-plane over THIS pass's datasets.
     if (privacy !== undefined && name.startsWith('v4_')) {
       const v4Tool = await privacy.runV4Tool({ toolName: name, input });
       return v4Tool.resultText;
     }
+    // The request's tool replay ledger (`toolReplayLedger.ts`), asked BEFORE
+    // the handler runs. A verifier re-entry gets the first run's outcome back
+    // instead of running the tool again; a call the first run did not make
+    // runs only when it is a kernel read, any other is refused and ends the
+    // re-entry; and no pass repeats a write whose outcome is unknown. The
+    // notices are kernel-authored and PII-free, so they skip everything below.
+    const ledger = ctx?.toolReplayLedger;
+    const replayClass = this.replayClassOf(name, input, turnMemory);
+    const tracked = ledger !== undefined && replayClass !== 'turn-local' ? ledger : undefined;
+    const decision = tracked?.decide('orchestrator', name, input, {
+      readOnly: replayClass === 'read-only',
+    });
+    if (decision?.action === 'refuse-repeat') {
+      console.warn(
+        `[orchestrator.dispatchTool:${name}] refused an identical repeat: an earlier call with this input ended in an exception, its outcome is unknown`,
+      );
+      return repeatRefusedNotice(name);
+    }
+    if (decision?.action === 'refuse-miss') {
+      console.warn(
+        `[orchestrator.dispatchTool:${name}] not run: a verifier re-entry needed a call outside the first run's results`,
+      );
+      return replayMissNotice(name);
+    }
+    const replay = decision?.action === 'replay' ? decision.record : undefined;
     // Privacy Shield v4 — sub-agent data-plane bridge. A domain tool wraps a
     // LocalSubAgent that runs its own LLM loop behind the SAME v4 boundary:
     // every result it fetches is interned, so its LLM only ever sees
@@ -7247,44 +7598,75 @@ export class Orchestrator {
     // AsyncLocalStorage, so it survives the turn-context re-scopes of the
     // skill-binding and plugin `ctx.mcp` paths. See `mcpAuthPromptMint.ts`.
     const mcpAuthPromptMint = new McpAuthPromptMint();
+    // A domain tool's sub-agent events are recorded with its result, so a
+    // replay hands the re-entry's trace the same inner calls and postconditions.
+    const recorder =
+      tracked?.mode === 'record' && tracked.retainsResults && this.domainToolsByName.has(name)
+        ? new SubEventRecorder(observer)
+        : undefined;
+    const dispatchObserver = recorder?.observer ?? observer;
+    const execute = async (): Promise<string> => {
+      if (
+        privacy !== undefined &&
+        ctx !== undefined &&
+        this.domainToolsByName.has(name)
+      ) {
+        // Slice 2.5 — stash the domain tool's owning agent plugin id so
+        // the sub-agent's inner tool calls can resolve bypass via the
+        // same plugin's `_privacy_mode` setting.
+        const domainToolAgentId = this.domainToolsByName.get(name)?.agentId;
+        return runWithMcpAuthPromptMint(mcpAuthPromptMint, () =>
+          turnContext.run(
+            {
+              ...ctx,
+              subAgentDatasetSink: subAgentSink,
+              subAgentBypassFlag,
+              mcpInputSentinelMint,
+              ...(domainToolAgentId !== undefined
+                ? { subAgentOwnerPluginId: domainToolAgentId }
+                : {}),
+            },
+            () => this.dispatchToolInner(name, input, dispatchObserver, turnMemory, kernelRefusal),
+          ),
+        );
+      }
+      if (privacy !== undefined && ctx !== undefined) {
+        // #570 — MCP tools reach dispatch as NATIVE tools (`mcpNativeHandler`),
+        // not as domain tools, so the branch above never covers them. They need
+        // the same per-dispatch scope for the mint box and nothing else: the
+        // sub-agent sinks stay out, so this scope is a plain copy of the turn
+        // context plus the receipt.
+        return runWithMcpAuthPromptMint(mcpAuthPromptMint, () =>
+          turnContext.run(
+            { ...ctx, mcpInputSentinelMint },
+            () => this.dispatchToolInner(name, input, dispatchObserver, turnMemory, kernelRefusal),
+          ),
+        );
+      }
+      return this.dispatchToolInner(name, input, dispatchObserver, turnMemory, kernelRefusal);
+    };
     let result: string;
-    if (
-      privacy !== undefined &&
-      ctx !== undefined &&
-      this.domainToolsByName.has(name)
-    ) {
-      // Slice 2.5 — stash the domain tool's owning agent plugin id so
-      // the sub-agent's inner tool calls can resolve bypass via the
-      // same plugin's `_privacy_mode` setting.
-      const domainToolAgentId = this.domainToolsByName.get(name)?.agentId;
-      result = await runWithMcpAuthPromptMint(mcpAuthPromptMint, () =>
-        turnContext.run(
-          {
-            ...ctx,
-            subAgentDatasetSink: subAgentSink,
-            subAgentBypassFlag,
-            mcpInputSentinelMint,
-            ...(domainToolAgentId !== undefined
-              ? { subAgentOwnerPluginId: domainToolAgentId }
-              : {}),
-          },
-          () => this.dispatchToolInner(name, input, observer, turnMemory, kernelRefusal),
-        ),
-      );
-    } else if (privacy !== undefined && ctx !== undefined) {
-      // #570 — MCP tools reach dispatch as NATIVE tools (`mcpNativeHandler`),
-      // not as domain tools, so the branch above never covers them. They need
-      // the same per-dispatch scope for the mint box and nothing else: the
-      // sub-agent sinks stay out, so this scope is a plain copy of the turn
-      // context plus the receipt.
-      result = await runWithMcpAuthPromptMint(mcpAuthPromptMint, () =>
-        turnContext.run(
-          { ...ctx, mcpInputSentinelMint },
-          () => this.dispatchToolInner(name, input, observer, turnMemory, kernelRefusal),
-        ),
-      );
+    if (replay !== undefined) {
+      // The first run's outcome, handed back. A thrown handler replays as the
+      // same rejection, which `dispatchTool` withholds for THIS pass.
+      if (meta) meta.replayed = true;
+      replaySubEvents(observer, replay.kind === 'result' ? replay.subEvents : undefined);
+      if (replay.kind === 'rejection') throw replay.error;
+      result = replay.value as string;
+      // Fresh-Check gate: a replayed memory read fed this pass's answer too.
+      if (name === MEMORY_TOOL_NAME && isMemoryFileRead(input, result)) {
+        const box = turnContext.current()?.memoryFileRead;
+        if (box) box.value = true;
+      }
     } else {
-      result = await this.dispatchToolInner(name, input, observer, turnMemory, kernelRefusal);
+      try {
+        result = await execute();
+      } catch (err) {
+        if (tracked && deadlineSignal?.aborted !== true) {
+          tracked.record('orchestrator', name, input, { kind: 'rejection', error: err });
+        }
+        throw err;
+      }
     }
     // W0-2 — late-result firewall. The deadline already fired for this slot:
     // the turn took `toolDeadlineError` and moved on. Everything below this
@@ -7314,6 +7696,23 @@ export class Orchestrator {
         `[orchestrator.dispatchTool:${name}] result arrived after the dispatch deadline — discarded.`,
       );
       return TOOL_DISPATCH_DISCARDED;
+    }
+    // Recorded only now, after the late-result firewall: a re-entry must get
+    // exactly what this pass used, never a result the first run discarded.
+    if (tracked && replay === undefined) {
+      tracked.record(
+        'orchestrator',
+        name,
+        input,
+        this.replayRecordFor(name, result, privacy !== undefined, {
+          sink: subAgentSink,
+          bypass: subAgentBypassFlag,
+          sentinelMint: mcpInputSentinelMint,
+          authPromptMint: mcpAuthPromptMint,
+          recorder,
+        }),
+      );
+      if (isWithheldToolErrorNotice(result)) tracked.noteUnknownOutcome(name, input);
     }
     // Phase C.2 — Raw tool-result capture. Outer scope (routine runner)
     // may install a callback that stashes the raw result keyed by tool
@@ -7364,7 +7763,9 @@ export class Orchestrator {
       // and the raw result only when the server is privacy-bypassed; always
       // ACL-gated to the turn's user.
       const kgTool = this.domainToolsByName.get(name);
+      // A replayed result was ingested by the run that produced it.
       if (
+        replay === undefined &&
         kgTool?.mcpServerId !== undefined &&
         isMcpServerKgIngest(kgTool.mcpServerId) &&
         this.knowledgeGraph !== undefined
@@ -7404,18 +7805,22 @@ export class Orchestrator {
         // dispatch knows the sub-agent saw real values.
         const flag = turnContext.current()?.subAgentBypassFlag;
         if (flag) flag.value = true;
-        try {
-          await privacy.recordBypassedTool({
-            toolName: name,
-            pluginId: bypass.pluginId,
-            reason: 'operator_setting',
-            bytes: Buffer.byteLength(result, 'utf8'),
-          });
-        } catch (err) {
-          console.warn(
-            `[orchestrator.dispatchTool:${name}] privacy.recordBypassedTool threw — bypass still applied:`,
-            err,
-          );
+        // A replayed bypass is on the first run's receipt already; the
+        // request's merged receipt lists it once (`requestReceipts.ts`).
+        if (replay === undefined) {
+          try {
+            await privacy.recordBypassedTool({
+              toolName: name,
+              pluginId: bypass.pluginId,
+              reason: 'operator_setting',
+              bytes: Buffer.byteLength(result, 'utf8'),
+            });
+          } catch (err) {
+            console.warn(
+              `[orchestrator.dispatchTool:${name}] privacy.recordBypassedTool threw — bypass still applied:`,
+              err,
+            );
+          }
         }
         return result;
       }
