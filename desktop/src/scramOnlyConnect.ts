@@ -96,13 +96,16 @@ class ScramGuard {
 /**
  * A connected pg client that authenticated with SCRAM-SHA-256. Rejects with a
  * ScramRequiredError when the server asked for anything else, or with pg's own
- * error (SQLSTATE in `code`, e.g. 28P01 for a refused password).
+ * error (SQLSTATE in `code`, e.g. 28P01 for a refused password). `onError`
+ * is attached before connecting, so a connection the server drops later never
+ * surfaces as an unhandled 'error' event.
  */
-export async function connectScramOnly(config: ScramOnlyConfig): Promise<Client> {
+export async function connectScramOnly(config: ScramOnlyConfig, onError?: (err: Error) => void): Promise<Client> {
   const { password, ...rest } = config;
   const guard = new ScramGuard();
   // pg asks for the password when the server requests one; the guard decides.
   const client = new Client({ ...rest, password: () => guard.release(password) });
+  if (onError !== undefined) client.on('error', onError);
   guard.attach(client.connection);
   try {
     await client.connect();

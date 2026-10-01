@@ -295,18 +295,20 @@ function realDbAuthIo(dataDir: string, endpoint: DbEndpoint): DbAuthIo {
  * SHELL_SEARCH_PATH_OPTION). Exported for tests.
  */
 export async function connectShellClient(endpoint: DbEndpoint, options: ConnectOptions): Promise<AuthClient> {
-  const client = await connectScramOnly({
-    host: endpoint.host,
-    port: endpoint.port,
-    user: options.user,
-    password: options.password,
-    database: options.database,
-    options: SHELL_SEARCH_PATH_OPTION,
-    connectionTimeoutMillis: 5_000,
-  });
-  // A connection the server drops later (a stop) must not surface as an
-  // unhandled 'error' event.
-  client.on('error', (err) => log.warn(`[db] connection as ${options.user} dropped: ${err.message}`));
+  const client = await connectScramOnly(
+    {
+      host: endpoint.host,
+      port: endpoint.port,
+      user: options.user,
+      password: options.password,
+      database: options.database,
+      options: SHELL_SEARCH_PATH_OPTION,
+      connectionTimeoutMillis: 5_000,
+    },
+    // A connection the server drops later (a stop) must not surface as an
+    // unhandled 'error' event.
+    (err) => log.warn(`[db] connection as ${options.user} dropped: ${err.message}`),
+  );
   return {
     query: async (sql, params) => ({ rows: (await client.query(sql, params ? [...params] : undefined)).rows }),
     end: () => client.end(),
