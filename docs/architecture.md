@@ -18,7 +18,7 @@ failed one is logged and not retried
 |---|---|
 | **Middleware kernel** | The Node process that boots everything, loads plugins, and exposes the HTTP API. Runs on `:3333` in the default compose setup. |
 | **Orchestrator** | Routes each conversation turn to the right agent, dispatches tool calls, and streams the result back. Records a per-run trace. |
-| **Plugin runtime** | Loads agents, tools, capability providers, and integrations behind one stable contract, [`@omadia/plugin-api`](../middleware/packages/plugin-api). Plugins ship as ZIPs with their dependencies baked in, pinned by SHA-256; there is no publisher signature yet. |
+| **Plugin runtime** | Loads agents, tools, capability providers, and integrations behind one stable contract, [`@omadia/plugin-api`](../middleware/packages/plugin-api). Plugins ship as ZIPs pinned by SHA-256. A ZIP can bundle its dependencies, and whatever it does not bundle resolves from the omadia image. There is no publisher signature yet. |
 | **Knowledge graph** | The agent memory substrate. pgvector on Postgres in production, with an in-memory alternative for tests. |
 | **Embeddings** | Turns content into vectors for retrieval. Local Ollama or an external API, opt-in via a compose overlay. |
 | **Vault** | Encrypted secret storage (AES-256-GCM file). Holds LLM keys and connector credentials; gated by `VAULT_KEY` in production. |

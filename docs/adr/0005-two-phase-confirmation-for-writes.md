@@ -101,10 +101,14 @@ unchanged. The preview, confirm and draft flow runs in the write-capable
 connector plugins that adopted it. The core does not enforce it across
 connectors and inserts no confirmation step before a tool runs:
 
-- The core's write contract is `writeCapabilities` (`@omadia/plugin-api`). On the
-  public MCP endpoint it lets a caller-supplied idempotency key run a declared
-  write tool at most once per key. It adds no confirmation, and a write tool
-  without the annotation counts as read-only.
+- The core's write contract is `writeCapabilities` (`@omadia/plugin-api`). It
+  adds no confirmation, and a write tool without the annotation counts as
+  read-only. On the public MCP endpoint, a caller-supplied idempotency key gives
+  a declared write tool process-local deduplication while its record is cached
+  (15 minutes, at most 1,000 records; a failed call is not cached). A restart,
+  a second instance or an expired or evicted record executes the write again,
+  so the key is a retry-safety mitigation and does not make a write run at most
+  once (`middleware/src/mcp/README.md`, Idempotency).
 - Conductor human steps treat an absent or malformed response as approval
   unless the step sets `human.strictApproval`.
 

@@ -21,14 +21,18 @@ inside your team's shared channels, so several people collaborate with the same
 agents in one context, not a private one-on-one chatbot. The agents turn your
 data, software, and people into results you can steer, audit, and prove. By
 default, the Privacy Shield keeps the raw results of data-source tools on your
-server, and the model works from an identity-free digest. Your own messages
-reach the model as typed unless you switch on prompt masking. The
-`read_attachment` tool, which reads an uploaded file, and a short allowlist of
-the agent's own tools, such as `memory`, return their results to the model in
-clear. If interning a result fails, omadia sends the raw result for every tool
-except `query_dataset`. Agents on the Claude subscription CLI run without the
-shield. An optional verifier checks answers that carry figures against their
-sources. On the Postgres backend, each turn in which the shield acted appends a
+server, and the model works from an identity-free digest. Prompt text is not
+masked unless you switch on prompt masking (`mask_user_prompt`, default off).
+Your own messages, text inlined from uploads, recalled context and the chat
+history a channel replays reach the model as typed. A channel that replays
+earlier answers, as the Teams and Telegram channels do, therefore sends the
+model the real values the shield rendered into those answers on later turns.
+The `read_attachment` tool, which reads an uploaded file, and a short allowlist
+of the agent's own tools, such as `memory`, return their results to the model in
+clear. Agents on the Claude subscription CLI run without the shield. An
+optional answer verifier, off by default, checks answers that carry figures
+against their sources. In its default `shadow` mode it only records a verdict.
+On the Postgres backend, each turn in which the shield acted appends a
 hash-chained receipt. Writing it is best-effort: a failed write is logged, and
 the turn completes without a receipt. Bring your own LLM key and switch
 providers by config, not code.
@@ -148,9 +152,9 @@ for it:
    the agents in the team.
 5. **Open the run's trace.** The per-run call-stack viewer shows every step, tool
    call and decision of the run. The trace is telemetry. The audit record is the
-   hash-chained receipt under `/operator/receipts`, written best-effort for each
-   turn in which the Privacy Shield acted. A turn whose receipt write failed has
-   none, and the server log records the failure.
+   hash-chained receipt under `/operator/receipts` (Postgres backend), written
+   best-effort for each turn in which the Privacy Shield acted. A turn whose
+   receipt write failed has none, and the server log records the failure.
 
 ## Why omadia?
 
@@ -160,14 +164,14 @@ three rows are why teams choose it; the rest is the groundwork done properly.
 
 | Capability | What you get |
 |---|---|
-| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary, and the LLM works from an identity-free digest. `guarded` by default, with `bypass`/`per_tool` opt-in and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Prompt masking (`mask_user_prompt`) is off by default, so your own messages reach the model as typed. `read_attachment` (uploaded files) and a short allowlist of the agent's own tools return their results in clear, and a result whose interning fails goes out raw unless it came from `query_dataset`. The Claude subscription CLI (`claude-cli`) runs without the shield. |
-| ✅&nbsp;**Answer&nbsp;verification** | Optional and off by default (`verifier_enabled`). Once switched on, it checks answers that contain figures, like amounts or dates, against the run's own sources and records a verdict. Its default mode, `shadow`, only records. |
+| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary, and the LLM works from an identity-free digest. A result the shield cannot intern is withheld. `guarded` by default, with `bypass`, `per_tool` and a per-MCP-server bypass as opt-ins and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Prompt masking (`mask_user_prompt`) is off by default, so your own messages and the chat history a channel replays reach the model as typed. Replayed answers can carry real values the shield rendered into them. `read_attachment` (uploaded files) and a short allowlist of the agent's own tools return their results in clear. The Claude subscription CLI (`claude-cli`) runs without the shield. |
+| ✅&nbsp;**Answer&nbsp;verification** | Optional and off by default (`verifier_enabled`). Once switched on, it checks answers that contain figures, like amounts or dates, against the run's own sources and records a verdict. An answer with nothing to check is `skipped`, a verifier that could not run is `unavailable`, and `approved` means that every claim the verifier extracted was checked and confirmed. The default mode, `shadow`, only records. `enforce` holds each answer until its verdict and delivers it only when the verifier confirmed it or the answer holds no claim to check. A turn that carries an input card goes out unchecked. |
 | 🧮&nbsp;**Excel&nbsp;from&nbsp;real&nbsp;rows** | `create_xlsx` writes the real rows behind a `datasetId` into the workbook server-side, so they never pass through the model, and adds sums and pivots as Excel formulas. omadia runs no spreadsheet engine of its own: the workbook asks the spreadsheet application to recalculate when it opens the file, and that application computes every formula result. |
 | 🧾&nbsp;**Traces&nbsp;and&nbsp;receipts** | The call-stack viewer shows a run step by step, with each tool call and decision. That trace is best-effort telemetry, so a run can lack one. Privacy receipts (`/operator/receipts`, Postgres backend) are hash-chained and written best-effort, one for each turn in which the privacy shield acted. A failed write is logged and not retried, and a receipt that was never written leaves no gap in the chain. |
 | 👥&nbsp;**Multiplayer&nbsp;by&nbsp;design** | Agents run in your team's shared channels (Slack, Teams, Telegram, Discord), so several people work with them in one context, not a private one-on-one chatbot. |
 | 🤖&nbsp;**Agent&nbsp;teams,&nbsp;not&nbsp;one&nbsp;chatbot** | An orchestrator routes each turn to the right specialist plugin agent. Channels, integrations, tools, and capability providers sit behind one stable API. |
 | 🔒&nbsp;**Self-hosted&nbsp;and&nbsp;yours** | One `docker compose up` on a single machine. Your Postgres, your LLM key, all of the data on your own infrastructure. GDPR-aware and made in the EU. |
-| 🧩&nbsp;**Hash-pinned&nbsp;plugins** | Plugins are ZIP files with their dependencies inside. A registry download must match the SHA-256 listed in that registry's index. There is no publisher signature yet, so trust rests on the registries you configure and the ZIPs you upload. Plugin code never comes from npm at runtime, and §4 of the [security architecture](docs/security-architecture.md) lists where omadia itself runs npm. |
+| 🧩&nbsp;**Hash-pinned&nbsp;plugins** | Plugins are ZIP files. Their dependencies are bundled in the ZIP or come from the omadia image. A registry download must match the SHA-256 listed in that registry's index. There is no publisher signature yet, so trust rests on the registries you configure and the ZIPs you upload. Installed plugin code never comes from npm at runtime. §4 of the [security architecture](docs/security-architecture.md) lists where omadia itself runs npm, including the Builder template that previews load. |
 | 🔌&nbsp;**Enterprise&nbsp;integrations** | Microsoft 365, Odoo, Confluence, Teams, and Telegram, with the LLM provider a swappable plugin. |
 
 ## What's in the box
@@ -178,7 +182,8 @@ three rows are why teams choose it; the rest is the groundwork done properly.
   ([`harness-plugin-privacy-guard`](middleware/packages/harness-plugin-privacy-guard),
   [`privacyMode.ts`](middleware/packages/plugin-api/src/privacyMode.ts))
 - **Answer verifier** (optional, off by default): checks answers that contain
-  figures against their sources and records a verdict
+  figures against their sources and records a verdict, and in `enforce` mode
+  withholds an answer whose claims it could not confirm
   ([`harness-verifier`](middleware/packages/harness-verifier),
   [`verifierService.ts`](middleware/packages/harness-orchestrator/src/verifierService.ts))
 - **Office files**: `create_xlsx` / `create_docx` build real spreadsheets and
@@ -256,36 +261,56 @@ answer:
 
 - **Privacy Shield (data-plane boundary)**: the raw results of data-source tools
   are interned behind the boundary, and the LLM works from an identity-free
-  digest of them. `guarded` is the default; `bypass` and `per_tool` are explicit
-  opt-ins, and `OMADIA_PRIVACY_FORCE_GUARDED` clamps every plugin to `guarded`
-  org-wide. Pseudonyms resolve back to real values only at materialization, and
-  each bypass lands in the receipt. Prompt masking (`mask_user_prompt`) is off by
-  default, so the user's own message reaches the model as typed until an
-  operator turns it on. Two kinds of tool result are never interned and reach
-  the model in clear: the text of an uploaded file that `read_attachment`
-  returns, and the results of a short allowlist of the agent's own tools
-  (`memory`, the stored-process tools, `suggest_follow_ups`, `ask_user_choice`).
-  If interning a result fails, omadia logs a warning and sends the raw result
-  for every tool except `query_dataset`, whose rows it withholds. Agents on the
+  digest of them. A result the shield cannot intern is withheld, and the model
+  gets a notice in its place. `guarded` is the default. Setting a plugin to
+  `bypass` or `per_tool`, or flagging an MCP server for privacy bypass, is an
+  explicit opt-in, and `OMADIA_PRIVACY_FORCE_GUARDED` clamps each of them back
+  to `guarded` org-wide. Pseudonyms resolve back to real values only at
+  materialization. Each bypass is recorded on the turn's receipt, and receipts
+  are persisted best-effort. Prompt text is not masked unless an operator
+  switches on prompt masking (`mask_user_prompt`, default off). Until then the
+  user's own message, text inlined from uploads, recalled context and the chat
+  history a channel replays (`priorTurns`) reach the model as typed. A channel
+  that replays earlier answers, as the Teams and Telegram channels do, sends
+  the model the real values the shield rendered into those answers on later
+  turns. Two kinds of tool result are never interned and reach the model in
+  clear: the text of an uploaded file that `read_attachment` returns, and the
+  results of a short allowlist of the agent's own tools (`memory`, the
+  stored-process tools, `suggest_follow_ups`, `ask_user_choice`). Agents on the
   Claude subscription CLI (`claude-cli`) run without the shield, and
   `agents.privacy_profile` is not a shield setting
   ([`docs/security-architecture.md`](docs/security-architecture.md) §3a, §6b,
-  §6d, §6f).
+  §6d, §6f, §7b).
   Spec: [`specs/001-privacy-shield-v4/`](specs/001-privacy-shield-v4/).
-- **Answer verification (optional)**: off by default (`verifier_enabled`). Once
-  switched on, the verifier checks answers that contain figures, like amounts or
-  dates, against the run's sources and records a verdict. In its default
-  `shadow` mode it only records. It does not run for agents on the Claude
-  subscription CLI. An answer with nothing checkable is `skipped` and a
-  verifier that could not run is `unavailable`; neither is reported as
-  `approved` or shown as verified. An answer the verifier knows it checked only
-  in part is at most partly verified: a claim no checker takes, more claims
-  than the per-answer cap, text beyond the part of the answer the claim
-  extractor reads, and a claim the extractor returns that is not in the answer,
-  or is too long to check whole, each stay in the verdict as not checked — no
-  claim is shortened to fit a check. The verifier checks the claims its
-  extraction model lists; a claim the model leaves out entirely is not seen by
-  any check.
+- **Answer verification (optional)**: off by default (`verifier_enabled`), and
+  switching it on also needs an API key for the verifier's model provider. The
+  verifier checks answers that contain figures, like amounts, references or
+  dates, against the run's sources and records a verdict. An answer with
+  nothing to check is `skipped`, and a verifier that could not run is
+  `unavailable`. Neither is reported as `approved` or shown as verified. A
+  claim no checker takes, claims beyond the per-answer cap, text beyond the
+  part of the answer the claim extractor reads, and a returned claim that does
+  not quote the answer or is too long to check whole all stay in the verdict
+  as not checked, so such an answer is at most partly verified. No claim is
+  shortened to fit a check. The verifier only checks the claims its extraction
+  model lists, and a claim the model leaves out is not seen by any check. In
+  the default `shadow` mode the verifier only records, and every answer goes
+  out as written. `enforce` holds each answer until its verdict, on the stream
+  too. It delivers the answer only when the verifier confirmed it or the answer
+  holds no claim to check, and replaces any other answer with a notice that it
+  was withheld. A withheld answer is still stored and can reach a later turn's
+  context. `enforce` gives a contradiction a correction retry (one by default,
+  none on canvas streams), and on the non-streaming path it gives a borderline
+  answer a second sample. Both re-generate the answer from the first run's
+  recorded tool results. They run no tool again, and a re-entry that needs a
+  new call other than a kernel read is abandoned. Without that replay ledger,
+  which `enforce` binds only when it may re-enter, the MCP client retries a
+  call once after a transport failure, so an MCP write whose reply was lost
+  can run twice. An answer the shield rendered with real values is never sent
+  to the verifier, so `enforce` withholds it. A turn that carries an input
+  card goes out unchecked, and agents on the Claude subscription CLI and
+  routines are not verified
+  ([`docs/security-architecture.md`](docs/security-architecture.md) §6e, §7c).
 - **Office files from real rows**: when a specialist agent returns a
   `datasetId`, `create_xlsx` resolves the rows server-side and writes them into
   the workbook without passing them through the model. Sums and pivots go in as
@@ -329,11 +354,11 @@ docker compose -f docker-compose.yaml \
 A ready-to-fork template for your own omadia plugin. Clone it, fill in your logic
 against [`@omadia/plugin-api`](middleware/packages/plugin-api), and ship.
 
-omadia plugins are self-contained ZIP files that the operator uploads through
-the admin UI. Plugins never come from an npm registry at runtime; they ship
-`node_modules` baked in, or use the platform's standard library via
-`@omadia/plugin-api`. Two reference plugins are also shipped in-tree as
-starting points:
+omadia plugins are ZIP files that the operator uploads through the admin UI.
+Plugins never come from an npm registry at runtime. A package can bundle its
+own `node_modules`, and whatever it does not bundle, `@omadia/plugin-api`
+included, resolves from the omadia image. Two reference plugins are also
+shipped in-tree as starting points:
 
 - [`agent-reference-maximum`](middleware/packages/agent-reference-maximum):
   exercises every capability in the plugin API

@@ -108,8 +108,11 @@ pinned by its SHA-256. No publisher signature and no trust root exist:
 
 - `RegistryClient` (`middleware/src/plugins/registryClient.ts`) checks a
   download against the SHA-256 in the registry index and pins the download to
-  the registry's host. Transport security is whatever the configured registry
-  URL uses.
+  the registry's host and port, not its scheme. An `http://` registry, or an
+  `http://` download URL listed by an `https://` registry, is fetched in clear,
+  with the registry's bearer token when one is configured. TLS therefore
+  depends on the configured registry URL and on the download URLs its index
+  lists.
 - `PackageUploadService` (`middleware/src/plugins/packageUploadService.ts`)
   hashes an uploaded ZIP and lists a remote signature check as out of scope.
 - The catalog reports `signed: false` for every plugin, and the store page shows

@@ -487,11 +487,17 @@ from a public package manager. Integrity rests on SHA-256 pinning, and there is
 - **Registry downloads.** `RegistryClient.fetchPackage`
   (`src/plugins/registryClient.ts`) checks the downloaded bytes against the
   SHA-256 the registry's index lists (`registry.sha256_mismatch`), fetches only
-  from the registry's own host (`registry.host_mismatch`) and follows no
-  redirect. The index comes from the same registry, so the hash proves the
+  from the registry's own host and port (`registry.host_mismatch`) and follows
+  no redirect. The index comes from the same registry, so the hash proves the
   bytes are the ones that registry publishes, nothing about who built them.
-  Transport security is whatever the configured URL uses: the client accepts an
-  `http://` registry, so configure `https://`.
+  Downloads are pinned to the registry's host and port, not its scheme
+  (`assertHostPinned` compares `URL.host`). The client accepts an `http://`
+  registry, whose index and hashes then travel in clear, and an `https://`
+  registry's index can list an `http://` download URL on the same host, which
+  is then fetched in clear with the registry's bearer token attached when one
+  is configured. Configure `https://` and make sure the index lists `https://`
+  download URLs. Pinning the whole origin is open
+  (`middleware-agent-handoff.md` §13).
 - **Uploads and Builder installs.** `PackageUploadService`
   (`src/plugins/packageUploadService.ts`) hashes the ZIP at ingest. The hash names the package and keys the scan
   verdict below; nothing compares it with a published value, and the service
@@ -506,7 +512,11 @@ This keeps the supply chain explicit:
 
 - The operator chooses which artefacts run.
 - A plugin manifest declares its `permissions` (memory, graph, network,
-  filesystem). The runtime enforces the declaration.
+  filesystem). The runtime gates its `PluginContext` accessors (`ctx.http`,
+  `ctx.memory`, the scratch directory, …) on that declaration
+  (`src/platform/pluginContext.ts`). A plugin runs as trusted JavaScript in the
+  middleware process, so the declaration does not sandbox the global `fetch`,
+  `node:fs` or any other Node API.
 - A plugin's `depends_on` is a soft contract, not an automatic install
   trigger.
 - Optionally (issue #453), every ingested package — direct upload, hub
@@ -535,25 +545,47 @@ This keeps the supply chain explicit:
   turning the verdict into a hard install block is deferred until omadia
   has a role model (same policy gap as skill-verdict suppression, see
   `agentBuilder.ts`).
-- Plugin code never comes from npm at runtime. A package carries its own
-  `node_modules`, and `@omadia/plugin-api` resolves from the host. omadia
-  itself runs npm in three places, none of which installs a plugin: the
-  Builder's build template (`ensureBuildTemplate`, `src/plugins/builder/buildTemplate.ts`,
-  installs the boilerplate's dependencies plus `BUILD_TIME_ONLY_DEPS` by semver
-  range under the data directory on first boot and whenever that list changes),
-  the operator-triggered vendor-CLI install (`src/platform/cliInstallService.ts`,
-  package name from a fixed allowlist) and an MCP server whose start command uses
-  `npx`. The MCP catalog (`src/services/mcpRegistryClient.ts`) writes
-  `npx -y -- <package>` for a server published on npm when the operator imports
-  it, and the stdio transport runs that command whenever omadia connects to the
-  server, so npm resolves the package at that moment.
+- Installed plugin code never comes from npm at runtime. A package may bundle
+  its own `node_modules`. Whatever it does not bundle, its peer dependencies and
+  `@omadia/plugin-api` included, resolves from the image's `node_modules`
+  through a link at the packages root (`ensureHostNodeModulesLink`,
+  `src/plugins/uploadedPackageStore.ts`), so the ZIP's hash covers only what
+  the ZIP contains. A Builder ZIP bundles no `node_modules` at all (the
+  boilerplate's `scripts/build-zip.mjs`). omadia itself runs npm, or code that
+  npm installed, in these places, none of which installs a plugin:
+  - The Builder's build template (`ensureBuildTemplate`,
+    `src/plugins/builder/buildTemplate.ts`) installs the boilerplate's
+    dependencies plus `BUILD_TIME_ONLY_DEPS` by semver range, without a
+    lockfile, under the data directory on first boot and whenever that list
+    changes. A Builder preview loads the draft plugin in-process against that
+    template's `node_modules` (`src/plugins/builder/previewRuntime.ts`), so
+    those packages run inside the middleware during a preview, and every
+    Builder build runs `npx tsc` from the template (`scripts/build-zip.mjs`).
+  - The operator-triggered vendor-CLI install
+    (`src/platform/cliInstallService.ts`) installs a package whose name comes
+    from a fixed allowlist.
+  - An MCP server whose start command uses `npx`. The MCP catalog
+    (`src/services/mcpRegistryClient.ts`) writes `npx -y -- <package>` for a
+    server published on npm when the operator imports it, and the stdio
+    transport runs that command whenever omadia connects to the server, so npm
+    resolves the package at that moment.
 - Write confirmation is a connector feature. The preview, confirm and draft flow
   of ADR-0005 runs in the write-capable connector plugins that implement it; the
   core inserts no confirmation step before a tool runs. The core's write
-  contract, `writeCapabilities` (`@omadia/plugin-api`), adds none either. On the
-  public MCP endpoint it lets a caller-supplied idempotency key run a declared
-  write tool at most once per key (`ToolDispatchService`), and a write tool
-  without the annotation counts as read-only, so it gets no such protection.
+  contract, `writeCapabilities` (`@omadia/plugin-api`), adds none either, and a
+  write tool without the annotation counts as read-only. On the public MCP
+  endpoint, a caller-supplied idempotency key gives a declared write tool
+  process-local deduplication while its record is cached (15 minutes,
+  `DEFAULT_IDEMPOTENCY_TTL_MS`; at most 1,000 records,
+  `DEFAULT_IDEMPOTENCY_MAX_ENTRIES`; a failed call is not cached), and the MCP
+  client makes a single attempt for that call (`toolIdempotency.ts`,
+  `ToolDispatchService`). A restart, a second instance or an expired or evicted
+  record executes the write again, so the key is a retry-safety mitigation and
+  does not make a write run at most once (`src/mcp/README.md`, Idempotency).
+  Without a key, the MCP client may retry the call once after a transport
+  failure. On the chat path a verifier re-entry replays the first run's tool
+  results and runs no tool again (§7c); a turn without that replay ledger keeps
+  the same single retry, so an MCP write whose reply was lost can run twice.
   Conductor human steps treat an absent or malformed response as approval
   unless the step sets `human.strictApproval` (§7a).
 
@@ -1210,29 +1242,49 @@ results skip that step; the subscription-CLI path has no shield at all (§3a).
   cells that the dataset import of the same CSV encrypted (§6b).
   `mask_user_prompt` does not reach it: that setting masks prompt text, and a
   tool result is not prompt text.
-- **Operator bypass.** A plugin set to `bypass`, or a tool on its `per_tool`
-  list, passes the raw result and records the tool on the receipt. A sub-agent
-  that read a bypassed result and interned no dataset hands its answer up raw
-  as well. `OMADIA_PRIVACY_FORCE_GUARDED=true` switches both off.
+- **Operator bypass.** A plugin set to `bypass`, a tool on its `per_tool`
+  list, or a tool of an MCP server the operator flagged `privacyBypass`
+  (`mcpPrivacyBypass.ts`; set through the agent builder's MCP server route,
+  loaded by `services/mcpGrantPolicy.ts` and checked first by the bypass
+  resolver) passes the raw result and records the tool on the receipt. The
+  bypass applies even when recording it throws, and the receipt itself is
+  persisted best-effort (§7b). A sub-agent that read a bypassed result and
+  interned no dataset hands its answer up raw as well.
+  `OMADIA_PRIVACY_FORCE_GUARDED=true` switches all three off. The public MCP
+  endpoint applies no bypass (`createFailClosedPrivacyGate` pins `checkBypass`
+  off).
 - **Control flow.** A returned `Error:` text and an MCP connect prompt are not
   interned; §6c says how they are redacted or withheld. An MCP input-required
   sentinel minted by the same dispatch passes unchanged. It holds a random id,
   the server and tool name and at most eight field names, never a value (#570).
-- **Interning failure.** When `internToolResultV4` throws,
-  `Orchestrator.dispatchToolDeadlined`, `LocalSubAgent`,
-  `ToolDispatchService.afterDispatch` and the MCP input replay
-  (`guardReplayResult`) log a warning and send the raw result. Only
-  `query_dataset` fails closed: its page carries decrypted cell values (§6b),
-  so the orchestrator, the only seam that dispatches it, withholds the rows and
-  returns an `Error:` text. Failing closed for every tool is open
-  (`middleware-agent-handoff.md` §13).
+
+A result whose interning fails does not reach the model. When
+`internToolResultV4` throws, every seam that interns
+(`Orchestrator.dispatchToolDeadlined`, `LocalSubAgent`,
+`ToolDispatchService.afterDispatch` and the MCP input replay,
+`guardReplayResult`) logs a warning and hands the model the kernel's notice
+(`internFailedNotice`, `privacyInternPolicy.ts`) instead, on a first run and
+on a verifier re-entry's replay alike. `query_dataset` keeps its own wording,
+because its page carries decrypted cell values (§6b) and repeating a page read
+is safe. The public MCP endpoint discards such a result
+(`createFailClosedPrivacyGate`, `src/mcp/publicMcpPrivacy.ts`) and serves no
+intern-exempt tool at all (`isPubliclyServableTool`). Tests:
+`test/orchestrator/internFailureFailsClosed.test.ts`,
+`test/toolReplaySeams.test.ts` and `test/publicMcp/publicMcpPrivacyGate.test.ts`.
 
 Prompt text is a separate layer. The user's message, document text inlined at
 upload, the chat history a channel replays (`priorTurns`) and recalled context
 are masked only while `mask_user_prompt` is on (default off), and then by the
 C0 baseline and the operator's deny-list, plus names when the C1 detector is
-configured. Without an active privacy-guard provider nothing is interned or
-masked (§6c, residuals).
+configured. An answer rendered by `v4_render_answer` carries real values
+(`maskedValues`, `answerSource: 'privacy-render'`), so a channel that replays
+it in `priorTurns` hands those values to the model on the next turn while
+masking is off. The Teams and Telegram channel plugins build `priorTurns` from
+the answers they delivered, so they do this; the in-tree web chat sends no
+`priorTurns`, and the session log behind recalled context stores the model's
+own answer from before the render. Masking replayed answers regardless of
+`mask_user_prompt` is open (`middleware-agent-handoff.md` §13). Without an
+active privacy-guard provider nothing is interned or masked (§6c, residuals).
 
 ## 7. Conductor generic webhooks (#437)
 
@@ -1328,12 +1380,12 @@ best-effort, because the user's answer outranks the audit row
 (`src/receipts/store.ts`). A failed insert is logged and counted in the process
 (`persistFailures`, `turnReceiptCounters()`), and no endpoint reports that
 count yet. A receipt whose `finalize()` throws is logged and dropped. A turn
-that fails or is abandoned before it reaches finalize leaves no receipt; after
-the verifier hand-over of §6e the wrapper finalizes on errors too. Nothing is
-retried. `seq` is assigned inside the insert transaction, so a missing receipt
-leaves no sequence gap and the chain verifier reports green without it. The
-receipts are also Postgres-only: on the in-memory backend no store is wired
-and nothing is persisted.
+that throws, or whose stream ends before `done`, is still finalized and keeps
+its receipt (`closeUndeliveredPass`, §6e), and a verifier request writes one
+row for all of its passes (§7c). Nothing is retried. `seq` is assigned inside
+the insert transaction, so a missing receipt leaves no sequence gap and the
+chain verifier reports green without it. The receipts are also Postgres-only:
+on the in-memory backend no store is wired and nothing is persisted.
 
 ## 7c. Answer-verifier verdicts and badges are evidence-bound
 
@@ -1344,6 +1396,14 @@ may only follow from claims the verifier actually checked. Five paths check
 nothing: the answer carries no trigger signal, the extractor fails, the
 extractor returns no claims, no extracted claim fits a checker, or the
 pipeline itself throws. None of them is a pass.
+
+The verifier is opt-in. `VERIFIER_ENABLED` (`verifier_enabled`) is off by
+default, and the plugin publishes `verifier@1` only once it is switched on and
+an API key for its model provider and a knowledge graph are available
+(`harness-verifier/src/plugin.ts`); without the capability the bare
+orchestrator is the chat agent (`buildOrchestrator.ts`). `VERIFIER_MODE`
+defaults to `shadow`, which records verdicts and never withholds or changes an
+answer. The subscription-CLI runtime and routines are never verified (below).
 
 **Invariant.** `approved` ⇒ the claim extraction reported no coverage gap,
 and every extracted claim was checked and is `verified`, at least one. No
@@ -4492,9 +4552,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       an opt-in control (`verifier_enabled`, `mask_user_prompt`,
       `human.strictApproval`) is called opt-in (§3a, §4, §6d, §7a,
       `docs/ai-act-transparency.md` §6). A limit the code puts on such a
-      property, like an exemption list, a fail-open branch or a best-effort
-      write, is named where the property is claimed (§6f, §7b), and a tool
-      added to `INTERN_EXEMPT_TOOLS` is listed in §6f.
+      property, like an exemption list, a fail-open branch, a replayed chat
+      history or a best-effort write, is named where the property is claimed
+      (§6f, §7b), and a tool added to `INTERN_EXEMPT_TOOLS` is listed in §6f.
+      A claim that a call runs once names the scope the code gives it: one
+      request for the verifier's replay ledger, one process and the cache
+      window for an idempotency key (§4, §7c).
       `test/docsClaimsGuard.test.ts` keeps the retired claims out and ties the
       defaults and limits the README names to the code; a new public claim
       that rests on a default gets a line there.
@@ -4553,4 +4616,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, a failed interning); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it).*
+*Last reviewed: 2026-10 (§7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope).*

@@ -1,14 +1,14 @@
 /**
- * The root README, the architecture overview, the security architecture and
- * CITATION.cff state security properties in public. This guard ties the
- * load-bearing ones to the code that enforces them: a changed default or a
- * retired overclaim that comes back fails here.
+ * The root README, the architecture overview, the security architecture,
+ * CITATION.cff and the implementation notes of ADR-0001 and ADR-0005 state
+ * security properties in public. This guard ties the load-bearing ones to the
+ * code that enforces them: a changed default or a retired overclaim that comes
+ * back fails here.
  *
  * Kept narrow on purpose. Retired claims are matched as exact phrases, and the
  * positive checks look for the named control (a config key, a default, a
- * catalog field, an exemption list, a failure counter) plus the one word that
- * states its limit, not for the wording around it. The answer verifier is
- * checked through its config defaults only; its README wording is still moving.
+ * catalog field, an exemption list, a cache bound, a failure counter) plus the
+ * one word that states its limit, not for the wording around it.
  */
 
 import { strict as assert } from 'node:assert';
@@ -18,10 +18,20 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { INTERN_EXEMPT_TOOLS } from '@omadia/orchestrator/dist/privacyInternPolicy.js';
-import { QUERY_DATASET_TOOL_NAME } from '@omadia/orchestrator/dist/tools/queryDatasetTool.js';
+import {
+  INTERN_EXEMPT_TOOLS,
+  internFailedNotice,
+} from '@omadia/orchestrator/dist/privacyInternPolicy.js';
+import {
+  DEFAULT_IDEMPOTENCY_MAX_ENTRIES,
+  DEFAULT_IDEMPOTENCY_TTL_MS,
+  ToolIdempotencyStore,
+} from '@omadia/orchestrator/dist/toolIdempotency.js';
 import { isWriteCapableTool, PRIVACY_MODE_DEFAULT } from '@omadia/plugin-api';
-import { MASK_USER_PROMPT_CONFIG_KEY } from '@omadia/plugin-privacy-guard/dist/service.js';
+import {
+  createPrivacyGuardService,
+  MASK_USER_PROMPT_CONFIG_KEY,
+} from '@omadia/plugin-privacy-guard/dist/service.js';
 import { parse as parseYaml } from 'yaml';
 
 import { ConfigSchema } from '../src/config.js';
@@ -68,6 +78,8 @@ const PUBLIC_CLAIM_FILES = [
   'docs/architecture.md',
   'docs/security-architecture.md',
   'CITATION.cff',
+  'docs/adr/0001-plugin-distribution-via-signed-zip.md',
+  'docs/adr/0005-two-phase-confirmation-for-writes.md',
 ] as const;
 
 /** Sentences these files used to carry that the code does not back. */
@@ -75,11 +87,14 @@ const RETIRED_CLAIMS = [
   // The subscription CLI runs without the shield, and prompt masking is opt-in.
   'never leaves in clear text',
   'without running through the model',
-  // Intern-exempt tools, and any result whose interning fails, reach the model
-  // in clear: the digest covers the results of data-source tools only.
+  // Intern-exempt tools reach the model in clear: the digest covers the
+  // results of data-source tools only.
   'the LLM sees only an identity-free digest',
   'exposes only an identity-free digest',
   'raw tool results stay on your server',
+  // A result whose interning fails is withheld at every seam, not sent raw.
+  'the raw result for every tool except',
+  'goes out raw unless it came from',
   // Receipts exist only for turns in which the shield acted, and appending one
   // is best-effort; the run trace is best-effort telemetry and has no replay.
   'every action carries a receipt',
@@ -97,14 +112,22 @@ const RETIRED_CLAIMS = [
   'from signed plugins',
   'ship as signed ZIPs',
   'plugins are verifiable packages',
+  // Unbundled dependencies resolve from the image, and the manifest permissions
+  // gate the context accessors only: a plugin is trusted in-process code.
+  'with their dependencies inside',
+  'with their dependencies baked in',
+  'self-contained ZIP files',
+  'The runtime enforces the declaration',
   // Preview and confirm live in the connector plugins that implement them.
   'write actions are proposed and confirmed',
+  // The idempotency key deduplicates within one process and a cache window.
+  'at most once per key',
   // omadia evaluates no spreadsheet formula.
   'calculated by that engine rather than produced by the model',
 ] as const;
 
 describe('public security claims match the enforced behaviour', () => {
-  it('retired overclaims are gone from the README, the architecture docs and CITATION.cff', () => {
+  it('retired overclaims are gone from the README, the architecture docs, CITATION.cff and the ADR notes', () => {
     const hits: string[] = [];
     for (const file of PUBLIC_CLAIM_FILES) {
       const text = flatten(read(file)).toLowerCase();
@@ -126,14 +149,8 @@ describe('public security claims match the enforced behaviour', () => {
 
     // Prompt masking is a privacy-guard setting that ships switched off.
     assert.equal(MASK_USER_PROMPT_CONFIG_KEY, 'mask_user_prompt');
-    const manifest: unknown = parseYaml(
-      read('middleware/packages/harness-plugin-privacy-guard/manifest.yaml'),
-    );
-    const fields = (manifest as { setup?: { fields?: Array<{ key?: unknown; default?: unknown }> } })
-      .setup?.fields;
-    const maskField = fields?.find((field) => field.key === MASK_USER_PROMPT_CONFIG_KEY);
-    assert.equal(maskField?.default, 'off');
     const maskSentences = sentencesMentioning(readme, '`mask_user_prompt`');
+    assert.equal(maskDefault(), 'off');
     assert.ok(
       maskSentences.some((sentence) => /\boff\b/i.test(sentence)),
       `README must say that \`mask_user_prompt\` is off by default; mentions: ${JSON.stringify(maskSentences)}`,
@@ -144,6 +161,40 @@ describe('public security claims match the enforced behaviour', () => {
     assert.ok(
       cliSentences.some((sentence) => /shield/i.test(sentence)),
       `README must say that the \`claude-cli\` provider runs without the shield; mentions: ${JSON.stringify(cliSentences)}`,
+    );
+  });
+
+  it('the docs say that replayed chat history reaches the model as typed by default', async () => {
+    // With the shipped default the guard reports prompt masking `disabled`, and
+    // the orchestrator then hands every prompt text to the model unchanged
+    // (`maskPromptForWire`), the `priorTurns` a channel replays included. An
+    // answer the shield rendered carries real values, so a channel that stores
+    // it as history sends those values back on the next turn.
+    const service = createPrivacyGuardService({
+      readConfig: (key) => (key === MASK_USER_PROMPT_CONFIG_KEY ? maskDefault() : undefined),
+    });
+    const outcome = await service.maskUserPrompt?.({
+      sessionId: 'docs-claims-session',
+      turnId: 'docs-claims-turn',
+      text: 'Earlier answer: Jane Doe, jane.doe@mail.example, owes 1.234,56 EUR.',
+    });
+    assert.equal(outcome?.outcome, 'disabled');
+
+    const readme = read('README.md');
+    const historySentences = sentencesMentioning(readme, '`priorTurns`');
+    assert.ok(
+      historySentences.some((sentence) => /\bas typed\b/i.test(sentence)),
+      `README must say that the replayed chat history (\`priorTurns\`) reaches the model as typed; mentions: ${JSON.stringify(historySentences)}`,
+    );
+    assert.ok(
+      /\breplays\b[^.]*\breal values\b/i.test(flatten(readme)),
+      'README must say that a replayed answer carries the real values the shield rendered into it',
+    );
+    const security = read('docs/security-architecture.md');
+    const renderSentences = sentencesMentioning(security, '`priorTurns`');
+    assert.ok(
+      renderSentences.some((sentence) => sentence.includes('`maskedValues`')),
+      `docs/security-architecture.md must say that a replayed rendered answer hands its \`maskedValues\` to the model; mentions: ${JSON.stringify(renderSentences)}`,
     );
   });
 
@@ -163,13 +214,14 @@ describe('public security claims match the enforced behaviour', () => {
       `README must say that \`read_attachment\` results reach the model in clear; mentions: ${JSON.stringify(exemptSentences)}`,
     );
 
-    // When interning throws, every seam sends the raw result; only the
-    // orchestrator's `query_dataset` branch withholds the rows.
-    assert.equal(QUERY_DATASET_TOOL_NAME, 'query_dataset');
-    const failSentences = sentencesMentioning(readme, '`query_dataset`');
+    // A result the shield cannot intern is withheld at every seam: the model
+    // reads the kernel's notice instead of the raw result.
+    const notice = internFailedNotice('crm_create_record');
+    assert.match(notice, /^Error: /);
+    assert.match(notice, /\bwithheld\b/);
     assert.ok(
-      failSentences.some((sentence) => /\braw\b/i.test(sentence)),
-      `README must say that a result whose interning fails goes out raw, except from \`query_dataset\`; mentions: ${JSON.stringify(failSentences)}`,
+      security.includes('`internFailedNotice`'),
+      'docs/security-architecture.md must name the notice that replaces a result the shield could not intern',
     );
   });
 
@@ -191,6 +243,18 @@ describe('public security claims match the enforced behaviour', () => {
   it('the answer verifier ships off, and in shadow mode once switched on', () => {
     assert.equal(ConfigSchema.shape.VERIFIER_ENABLED.parse(undefined), false);
     assert.equal(ConfigSchema.shape.VERIFIER_MODE.parse(undefined), 'shadow');
+
+    const readme = read('README.md');
+    const enabledSentences = sentencesMentioning(readme, '`verifier_enabled`');
+    assert.ok(
+      enabledSentences.some((sentence) => /\boff by default\b/i.test(sentence)),
+      `README must call the verifier off by default where it names \`verifier_enabled\`; mentions: ${JSON.stringify(enabledSentences)}`,
+    );
+    const shadowSentences = sentencesMentioning(readme, '`shadow`');
+    assert.ok(
+      shadowSentences.some((sentence) => /\bdefault\b/i.test(sentence)),
+      `README must name \`shadow\` as the verifier's default mode; mentions: ${JSON.stringify(shadowSentences)}`,
+    );
   });
 
   it('plugins are described as hash-pinned, matching a catalog that never reports a signature', async () => {
@@ -237,8 +301,8 @@ describe('public security claims match the enforced behaviour', () => {
   });
 
   it('write protection is described as the per-tool contract the core enforces', () => {
-    // An unannotated tool counts as read-only, so it gets no at-most-once
-    // dispatch either: the core adds no write confirmation of its own.
+    // An unannotated tool counts as read-only, so it gets no idempotency
+    // protection either: the core adds no write confirmation of its own.
     assert.equal(isWriteCapableTool(undefined), false);
     assert.equal(isWriteCapableTool([]), false);
     assert.ok(
@@ -246,4 +310,50 @@ describe('public security claims match the enforced behaviour', () => {
       'docs/security-architecture.md must name the `writeCapabilities` contract',
     );
   });
+
+  it('the idempotency key is described as process-local deduplication within a cache window', async () => {
+    // The window and the size bound the docs name.
+    assert.equal(DEFAULT_IDEMPOTENCY_TTL_MS, 15 * 60 * 1000);
+    assert.equal(DEFAULT_IDEMPOTENCY_MAX_ENTRIES, 1000);
+    for (const file of [
+      'docs/security-architecture.md',
+      'docs/adr/0005-two-phase-confirmation-for-writes.md',
+    ] as const) {
+      const sentences = sentencesMentioning(read(file), 'process-local deduplication');
+      assert.ok(
+        sentences.some((sentence) => /15 minutes/.test(sentence) && /1,000 records/.test(sentence)),
+        `${file} must name the idempotency window and size bound; mentions: ${JSON.stringify(sentences)}`,
+      );
+    }
+
+    // A failed call is not cached, and the cache is one process's memory: a
+    // second store, like a restarted or second instance, runs the write again.
+    let runs = 0;
+    const failing = async (): Promise<{ content: string; isError: boolean }> => {
+      runs += 1;
+      return { content: 'Error: synthetic failure', isError: true };
+    };
+    const store = new ToolIdempotencyStore();
+    await store.run('key-1', 'crm_create_record', { name: 'Example' }, failing, 'principal-1');
+    await store.run('key-1', 'crm_create_record', { name: 'Example' }, failing, 'principal-1');
+    assert.equal(runs, 2, 'a failed call must not be cached');
+
+    const succeeding = async (): Promise<{ content: string }> => {
+      runs += 1;
+      return { content: 'ok' };
+    };
+    await new ToolIdempotencyStore().run('key-2', 'crm_create_record', {}, succeeding, 'principal-1');
+    await new ToolIdempotencyStore().run('key-2', 'crm_create_record', {}, succeeding, 'principal-1');
+    assert.equal(runs, 4, 'a second store must not know the first store\'s record');
+  });
 });
+
+/** The `mask_user_prompt` default the privacy guard's manifest ships. */
+function maskDefault(): unknown {
+  const manifest: unknown = parseYaml(
+    read('middleware/packages/harness-plugin-privacy-guard/manifest.yaml'),
+  );
+  const fields = (manifest as { setup?: { fields?: Array<{ key?: unknown; default?: unknown }> } })
+    .setup?.fields;
+  return fields?.find((field) => field.key === MASK_USER_PROMPT_CONFIG_KEY)?.default;
+}

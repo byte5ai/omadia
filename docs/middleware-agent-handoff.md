@@ -1111,8 +1111,9 @@ bleiben filterbar). `privacyScan.encryptedAtRest` je Tabelle. Grenzen: die
 Spalten über Ciphertext (jede Zelle unterschiedlich, frischer IV) — Filtern
 nach E-Mail funktioniert dort nicht; dafür sind die `__k_*`-Link-Keys da.
 Schlägt das Internieren einer `query_dataset`-Seite fehl, hält der
-Orchestrator die Zeilen **zurück** (fail-closed nur für dieses Tool), weil sie
-Klartext tragen.
+Orchestrator die Zeilen **zurück**, weil sie Klartext tragen. Seit #1267 gilt
+das für jedes Tool an jeder Naht (`internFailedNotice`, Abschnitt
+„Unterhalb des Ledgers“); `query_dataset` behält seinen eigenen Text.
 
 **Identity-Resolution (Fixup Runde 5):** für einen Channel-Turn (Teams/
 Slack/Telegram) ist `ChatTurnInput.userId` die RAW channel-native id, NICHT
@@ -3183,7 +3184,7 @@ weil das README die Variable nennt.
 
 | Variable | Wirkung |
 |---|---|
-| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` wirken dann nicht). Jeder andere Wert ist wirkungslos. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
+| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann nicht). Jeder andere Wert ist wirkungslos. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
 
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 
@@ -4107,13 +4108,23 @@ README, `docs/architecture.md`, `docs/security-architecture.md` und
   Prüfung in `RegistryClient` und `PackageUploadService`, `signed`/`signed_by`
   aus dem Prüfergebnis, Schlüsselverwaltung für Publisher. Danach README-Zeile
   „Hash-pinned plugins“, ADR-0001-Status und §4 nachziehen.
-- **`http://`-Registries.** `parseRegistries` (`src/config.ts`) nimmt jede URL
-  an, `RegistryClient` erzwingt kein TLS. Nicht-HTTPS außer Loopback ablehnen
-  (mit ausdrücklichem Override für lokale Test-Registries).
+- **`http://`-Registries und Schema-Pinning.** `parseRegistries`
+  (`src/config.ts`) nimmt jede URL an, `RegistryClient` erzwingt kein TLS.
+  `assertHostPinned` vergleicht nur `URL.host` (Host und Port), nicht das
+  Schema: Ein `https://`-Index kann eine `http://`-Download-URL auf demselben
+  Host listen, die dann im Klartext geladen wird, mit dem Bearer-Token der
+  Registry, falls eines konfiguriert ist. Die Integrität hält über den Hash im
+  Index, Token und Transport nicht. Nicht-HTTPS außer Loopback ablehnen (mit
+  ausdrücklichem Override für lokale Test-Registries) und im Pin die ganze
+  Origin (Schema + Host + Port) vergleichen, mindestens `http://`-Artefakte
+  einer `https://`-Registry ablehnen.
 - **Builder-Build-Template aus npm.** `ensureBuildTemplate` installiert beim
   ersten Boot (und bei geänderter Liste) die Boilerplate-Abhängigkeiten plus
-  `BUILD_TIME_ONLY_DEPS` per Semver-Range, ohne Lockfile. Versionen exakt pinnen
-  oder das Template ins Image legen.
+  `BUILD_TIME_ONLY_DEPS` per Semver-Range, ohne Lockfile. Eine Builder-Preview
+  lädt den Entwurf in-process gegen genau diese `node_modules`
+  (`src/plugins/builder/previewRuntime.ts`), und jeder Build ruft `npx tsc` aus
+  dem Template auf (`scripts/build-zip.mjs` der Boilerplate). Versionen exakt
+  pinnen oder das Template ins Image legen.
 - **MCP-Server per `npx` ohne Version.** Der MCP-Katalog schreibt
   `npx -y -- <paket>`; jeder Connect kann eine neuere Paketversion ziehen. Die
   Version aus dem Registry-Eintrag mitschreiben oder den Operator beim Import
@@ -4121,18 +4132,14 @@ README, `docs/architecture.md`, `docs/security-architecture.md` und
 - **Texte außerhalb dieses Repos.** Marketing-Site und Hub-Beschreibungen tragen
   die alten Aussagen (signierte Plugins, jede Antwort geprüft, nichts verlässt
   das Haus im Klartext) noch. Abgleich dort als eigener Schritt.
-- **Verifier-Absätze im README.** Bewusst knapp gehalten (optional, aus per
-  Default, `shadow` als Default-Modus, nur Antworten mit Zahlen). Ändern sich
-  Verdikt-Zustände oder das Enforce-Verhalten, README „Answer verification“ und
-  die Verifier-Prüfung in `docsClaimsGuard.test.ts` im selben PR mitziehen.
-- **Internieren schlägt fehl ⇒ Rohdaten.** Wirft `internToolResultV4`, schicken
-  `Orchestrator.dispatchToolDeadlined`, `LocalSubAgent`,
-  `ToolDispatchService.afterDispatch` und der MCP-Input-Replay
-  (`guardReplayResult`) das rohe Ergebnis ans Modell; nur `query_dataset` hält
-  die Zeilen zurück. Für jedes Tool fail-closed machen (zurückhalten mit
-  `Error:`-Text wie im `query_dataset`-Zweig), danach README (Intro,
-  Privacy-Shield-Zeile, „Trust & privacy“), `security-architecture.md` §6f und
-  `docsClaimsGuard.test.ts` im selben PR nachziehen.
+- **Verifier-Absätze im README.** Beschreiben seit dem Verifier-Design aus
+  #1267 die ehrlichen Zustände (`skipped`, `unavailable`, nur teilweise
+  geprüft), `shadow` als Default-Modus und `enforce` als Auslieferungs-Gate mit
+  Retry und Resample über den Replay-Ledger, samt Grenzen (Input-Cards,
+  Shield-gerenderte Antworten, Abo-CLI, Routinen, MCP-Transport-Retry ohne
+  Ledger). Ändern sich Verdikt-Zustände oder das Enforce-Verhalten, README
+  „Answer verification“, §7c und die Verifier-Prüfung in
+  `docsClaimsGuard.test.ts` im selben PR mitziehen.
 - **`read_attachment` liest auch CSV-Uploads im Klartext.** Das Tool ist
   intern-exempt und extrahiert `.csv` als Text aus den Original-Bytes im
   Upload-Store, sobald das Modell den `storage_key` kennt (Teams listet ihn im
@@ -4143,17 +4150,40 @@ README, `docs/architecture.md`, `docs/security-architecture.md` und
   internieren.
 - **Receipt-Verluste sichtbar machen.** `persistFailures` zählt nur im Prozess
   (`turnReceiptCounters()` in `src/receipts/store.ts`), kein Endpunkt meldet
-  ihn. Ein werfendes `finalize()` und ein Turn, der vor dem Finalize scheitert,
-  zählen gar nicht. Zähler auf einer Operator-Oberfläche ausgeben und beide
-  Fälle mitzählen; erst dann darf das README „gezählt“ sagen.
-- **Prüfen: Chat-Verlauf aus Channel-Plugins.** `priorTurns` laufen nur bei
-  `mask_user_prompt` on durch die Prompt-Maske (`maskPriorTurnsForWire`). Baut
-  ein Channel-Plugin den Verlauf aus der ausgelieferten Antwort, enthält er nach
-  einem server-gerenderten v4-Turn (`answerSource: 'privacy-render'`) Realwerte,
-  die das Modell im Folgeturn roh sieht. In diesem Repo setzt kein Channel
-  `priorTurns`; der Web-Chat holt den Verlauf per Recall aus dem Knowledge
-  Graph, in den das Session-Log die Modellantwort vor dem Render schreibt. Teams
-  und Telegram liegen in eigenen Repos und sind darauf zu prüfen.
+  ihn. Ein werfendes `finalize()` zählt gar nicht (ein Turn, der wirft oder
+  vor `done` endet, wird seit #1267 über `closeUndeliveredPass` trotzdem
+  finalisiert). Zähler auf einer Operator-Oberfläche ausgeben und den
+  `finalize()`-Fall mitzählen; erst dann darf das README „gezählt“ sagen.
+- **Channel-Verlauf bringt gerenderte Realwerte zum Modell (bestätigt).**
+  `priorTurns` laufen nur bei `mask_user_prompt` on durch die Prompt-Maske:
+  `maskPriorTurnsForWire` ruft `maskPromptForWire`, das bei `disabled` den
+  Text unverändert zurückgibt. Nach einem server-gerenderten v4-Turn
+  (`answerSource: 'privacy-render'`) trägt die ausgelieferte Antwort Realwerte
+  (`maskedValues`). Teams (`omadia-channel-teams`, `src/teamsBot.ts`:
+  `history.append` mit `answerText`, Folgeturn mit `priorTurns`) und Telegram
+  (`omadia-channel-telegram`, `src/telegramBot.ts`: `history.append` mit
+  `result.text`) bauen ihren Verlauf aus genau dieser Antwort, also sieht das
+  Modell die Werte im Folgeturn im Klartext, und zwar im Default. Der
+  In-Tree-Web-Chat setzt keine `priorTurns`; sein Recall liest das
+  Session-Log, das die Modellantwort vor dem Render speichert. Code-Unit:
+  wiederholte Assistant-Antworten unabhängig von `mask_user_prompt` maskieren
+  (mindestens die `maskedValues` eines gerenderten Turns), oder Channels eine
+  modellseitige Antwort zum Speichern als Verlauf mitgeben (ein Feld neben
+  `text` im `SemanticAnswer`, das die Channel-Plugins übernehmen). Danach
+  README, §6f und `docsClaimsGuard.test.ts` nachziehen.
+- **Plugin-Permissions sind keine Sandbox.** Die Manifest-`permissions`
+  schalten nur die `PluginContext`-Accessoren frei. Ein Plugin läuft als
+  vertrauenswürdiges JavaScript im Middleware-Prozess und erreicht globales
+  `fetch`, `node:fs` und jede andere Node-API (`src/platform/pluginContext.ts`
+  sagt das selbst). Für echte Durchsetzung: Isolation (Worker oder Prozess mit
+  eingeschränkten Modulen) oder ein Import-Gate beim Upload.
+- **Idempotenz am öffentlichen MCP-Endpunkt ist prozesslokal.**
+  `ToolIdempotencyStore` (`toolIdempotency.ts`) hält Einträge 15 Minuten und
+  höchstens 1.000, nur im Speicher, und merkt sich keinen fehlgeschlagenen
+  Aufruf. Neustart, zweite Instanz, abgelaufener oder verdrängter Eintrag
+  führen den Write erneut aus. Für verteilte Idempotenz einen geteilten Store
+  (Postgres) mit demselben Schlüssel einsetzen; die Schlüssel-Komposition ist
+  dafür schon serialisierbar.
 
 ### Self-Update-Steuerungsebene: Vertrauensmodell und offene Härtung (#432 follow-up)
 

@@ -40,47 +40,67 @@ changelog.
 
 2026-10-01 — the README, `docs/architecture.md`, `docs/security-architecture.md`
 and `CITATION.cff` stated security properties that the code does not enforce,
-or enforces only on some paths. The wording now follows the code.
+or enforces only on some paths. The wording now follows the code, including
+the answer-verifier design further down in this release.
 
 Plugins are pinned by SHA-256. A registry download must match the hash in the
 registry's index, and an uploaded ZIP is hashed at ingest. Nothing checks a
 publisher signature, and the catalog reports `signed: false` for every plugin,
 so "signed plugins" and "verifiable signed packages" are gone from all four
-files.
-Security architecture §4 says this in its opening and lists the three places
-where omadia itself runs npm. None of them installs plugin code.
+files. Security architecture §4 says this in its opening. It also states that
+downloads are pinned to the registry's host and port but not to its scheme,
+that manifest permissions gate the `PluginContext` accessors without
+sandboxing any Node API, that whatever a package does not bundle resolves from
+the image's `node_modules`, and where omadia itself runs npm or code npm
+installed, Builder previews and builds included. None of these places installs
+plugin code.
 
 The Privacy Shield sentences name their limits. The digest covers the results
-of data-source tools. The user's own message reaches the model as typed while
-`mask_user_prompt` is off, which is the default. `read_attachment` and a short
-allowlist of the agent's own tools (`INTERN_EXEMPT_TOOLS`) return their results
-in clear, and when interning a result fails, every tool except `query_dataset`
-sends the raw result. Agents on the Claude subscription CLI (`claude-cli`) run
-without the shield. The new security architecture §6f lists everything that
-reaches the model unmasked under `guarded`.
-The answer verifier is described as optional and off by default; switched on,
-it checks answers that contain figures, and its default `shadow` mode only
-records a verdict. Privacy receipts are described as appended best-effort, on
-the Postgres backend, for the turns in which the shield acted: a failed write
-is logged and not retried, and §7b now states that the hash chain cannot show a
-receipt that was never written. The run trace is described as best-effort
-telemetry, without the earlier "audit receipt" and "replayable" wording.
+of data-source tools, and a result the shield cannot intern is withheld.
+Prompt text is masked only while `mask_user_prompt` is on, and it is off by
+default. Until then the user's message, text inlined from uploads, recalled
+context and the chat history a channel replays reach the model as typed. A
+channel that replays its delivered answers, as the Teams and Telegram channels
+do, sends the model the real values the shield rendered into those answers on
+later turns. `read_attachment` and a short allowlist of the agent's own tools
+(`INTERN_EXEMPT_TOOLS`) return their results in clear, an operator can bypass
+the shield per plugin, per tool or per MCP server, and agents on the Claude
+subscription CLI (`claude-cli`) run without the shield. Security architecture
+§6f lists everything that reaches the model unmasked under `guarded`.
+
+The answer verifier is described as optional and off by default, with `shadow`
+as its default mode, which only records. The README names the verdict states
+(`skipped`, `unavailable`, an answer checked only in part), the `enforce` gate
+that withholds an answer it could not confirm, and the gate's limits: turns
+with an input card, answers the shield rendered, the subscription CLI and
+routines. A correction retry or a resample replays the first run's tool
+results and runs no tool again. Without that replay ledger, the MCP client
+still retries a call once after a transport failure.
+
+Privacy receipts are described as appended best-effort, on the Postgres
+backend, for the turns in which the shield acted. A failed write is logged and
+not retried, and §7b states that the hash chain cannot show a receipt that was
+never written. The run trace is described as best-effort telemetry, without the
+earlier "audit receipt" and "replayable" wording.
 
 Write confirmation (ADR-0005) is described as a feature of the connector
-plugins that implement it. The core adds no confirmation step; its
-`writeCapabilities` contract gives a declared write tool at-most-once dispatch
-on the public MCP endpoint and asks nobody before the write. ADR-0001 and
-ADR-0005 keep their decision text and gain an implementation-status note.
+plugins that implement it. The core adds no confirmation step. On the public
+MCP endpoint, an idempotency key gives a declared write tool process-local
+deduplication for 15 minutes and at most 1,000 records, and a failed call is
+not cached, so a restart, a second instance or an evicted record runs the write
+again. ADR-0001 and ADR-0005 keep their decision text and gain an
+implementation-status note.
 
 A new item in the §11 reviewer checklist asks that a public security claim name
 the control that enforces it, that control's default and the limits the code
-puts on it.
+puts on it, and that a claim that a call runs once name its scope.
 `middleware/test/docsClaimsGuard.test.ts` keeps the retired sentences out of the
-four files and ties the defaults and limits the README names to the code
-(`PRIVACY_MODE_DEFAULT`, the `mask_user_prompt` manifest default, the
-`VERIFIER_ENABLED` and `VERIFIER_MODE` schema defaults, the catalog's `signed`
-field, `INTERN_EXEMPT_TOOLS`, which §6f must list in full, `query_dataset` and
-the receipt store's `persistFailures` counter). `ConfigSchema` in
+four files and the two ADR notes, and ties the defaults and limits the README
+names to the code (`PRIVACY_MODE_DEFAULT`, the `mask_user_prompt` manifest
+default, the `VERIFIER_ENABLED` and `VERIFIER_MODE` schema defaults, the
+catalog's `signed` field, `INTERN_EXEMPT_TOOLS`, which §6f must list in full,
+the idempotency store's window and size, the replayed chat history and the
+receipt store's `persistFailures` counter). `ConfigSchema` in
 `middleware/src/config.ts` is exported for that test; boot is unchanged.
 `middleware/.env.example` now documents `OMADIA_PRIVACY_FORCE_GUARDED`, which
 the README already named.
