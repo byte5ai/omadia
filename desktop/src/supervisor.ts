@@ -10,9 +10,17 @@ import {
   webUiCwd,
   platformDataDir,
   embeddingModelsDir,
+  attachmentsDir,
 } from './paths';
 import { findFreePorts, isPortFree } from './ports';
 import { desktopKernelEnvDefaults } from './kernelEnvDefaults';
+import {
+  attachmentReadiness,
+  capabilityKernelEnv,
+  withoutCapabilityEnv,
+  type DesktopCapabilities,
+} from './capabilities';
+import { readSetup } from './setupState';
 import { startEmbeddedDb, stopEmbeddedDb, isEmbeddedDbRunning } from './embeddedDb';
 import type { EmbeddedDb } from './embeddedDb';
 import { stopChild, isConfirmedStopped } from './childLifecycle';
@@ -69,6 +77,14 @@ export interface StopOutcome {
   readonly survivors: readonly string[];
 }
 
+export interface SupervisorOptions {
+  /**
+   * The first-run capability switches, read at every boot. Defaults to what
+   * the wizard saved in setup.json; tests inject their own.
+   */
+  readonly capabilities?: () => DesktopCapabilities;
+}
+
 /**
  * Owns the lifecycle of the local omadia stack: embedded DB → kernel → web-ui.
  * Children are forked from Electron's own binary running in pure-Node mode
@@ -117,9 +133,17 @@ export class Supervisor extends EventEmitter {
    * (or a boot we superseded) is never misreported as a crash.
    */
   private generation = 0;
+  /** The first-run capability switches; see {@link SupervisorOptions.capabilities}. */
+  private readonly readCapabilities: () => DesktopCapabilities;
 
   /** Health-check window — mirrors the compose healthcheck start_period (90s). */
   private static readonly KERNEL_BOOT_TIMEOUT_MS = 90_000;
+
+  /**
+   * The one extra `/health` read after boot that checks the capability
+   * switches took. The kernel has just answered, so this is generous.
+   */
+  private static readonly CAPABILITY_CHECK_TIMEOUT_MS = 2_000;
 
   /**
    * Fixed loopback port for the kernel. The web-ui's `/bot-api` → kernel rewrite
@@ -133,6 +157,16 @@ export class Supervisor extends EventEmitter {
   private static readonly KERNEL_PORT = 8769;
 
   /**
+   * The kernel's browser-facing origin. The app window may navigate to it in
+   * place (`navigationPolicy.ts`): the Entra sign-in callback
+   * (`AUTH_REDIRECT_URI`) and signed diagram URLs (`DIAGRAM_PUBLIC_BASE_URL`)
+   * live there.
+   */
+  static kernelOrigin(): string {
+    return `http://127.0.0.1:${Supervisor.KERNEL_PORT}`;
+  }
+
+  /**
    * Rounds the settle loop may take before it gives up waiting.
    *
    * It cannot spin today: a new operation can only come from start() or
@@ -144,6 +178,12 @@ export class Supervisor extends EventEmitter {
    * needs two).
    */
   private static readonly MAX_SETTLE_ROUNDS = 8;
+
+  constructor(options: SupervisorOptions = {}) {
+    super();
+    this.readCapabilities =
+      options.capabilities ?? ((): DesktopCapabilities => readSetup().capabilities);
+  }
 
   getUiUrl(): string | null {
     return this.uiUrl;
@@ -245,10 +285,13 @@ export class Supervisor extends EventEmitter {
 
       this.assertLiveGeneration(gen);
       this.progress('starting-kernel', 'Starting omadia kernel…');
+      // Read once per boot: the env the kernel gets and the check below must
+      // describe the same selection.
+      const capabilities = this.readCapabilities();
       ownKernel = this.forkNode(
         kernelEntry(),
         kernelCwd(),
-        this.kernelEnv(kernelPort, uiPort),
+        this.kernelEnv(kernelPort, uiPort, capabilities),
         'kernel',
         gen,
       );
@@ -256,6 +299,7 @@ export class Supervisor extends EventEmitter {
 
       this.progress('waiting-kernel', 'Waiting for the kernel to become healthy…');
       await this.waitForKernel(kernelPort, gen, ownKernel);
+      await this.confirmCapabilities(kernelPort, capabilities);
 
       this.assertLiveGeneration(gen);
       this.progress('starting-ui', 'Starting the admin interface…');
@@ -377,10 +421,17 @@ export class Supervisor extends EventEmitter {
   /**
    * `port` is the kernel's own (fixed) port; `uiPort` is the web-ui's, which is
    * allocated per launch and therefore only knowable at runtime (OM-90).
+   * `capabilities` are the wizard's switches for this boot.
    */
-  private kernelEnv(port: number, uiPort: number): NodeJS.ProcessEnv {
+  private kernelEnv(
+    port: number,
+    uiPort: number,
+    capabilities: DesktopCapabilities = this.readCapabilities(),
+  ): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      // Minus the keys the capability switches own (set at the end): an
+      // inherited value must not turn a switched-off capability back on.
+      ...withoutCapabilityEnv(process.env),
       PATH: augmentedPath,
       ELECTRON_RUN_AS_NODE: '1',
       NODE_ENV: 'production',
@@ -411,8 +462,12 @@ export class Supervisor extends EventEmitter {
       // left to the adapter's `PLATFORM_DATA_DIR` fallback, because the thing
       // being prevented is severe and silent — the old default resolved into
       // the signed app bundle and a download there breaks the code signature.
+      // A location, not a switch: the kernel auto-installs that adapter, and
+      // its weights are fetched from the admin UI's Embedding Provider page.
       OMADIA_EMBEDDING_MODEL_DIR: embeddingModelsDir(),
-      // The browser opens signed diagram URLs against this host base.
+      // The browser opens signed diagram URLs against this host base. Also a
+      // location only: diagrams need the Diagrams plugin with a Kroki server
+      // and S3 storage, which a desktop install does not ship.
       DIAGRAM_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
       // OM-90 — the browser-facing origin every auth redirect lands on. The
       // kernel's default is `http://localhost:3979`, its OWN dev port, so
@@ -448,11 +503,37 @@ export class Supervisor extends EventEmitter {
       // (OM-70: the mDNS advertiser renamed the user's Mac on every start).
       ...desktopKernelEnvDefaults(process.env),
       ...allProviderKeys(),
+      // The wizard's capability switches (`capabilities.ts`). Attachments on →
+      // ATTACHMENT_STORE_DIR in the data folder, which the kernel turns into a
+      // local attachment store; `confirmCapabilities` checks that it did.
+      ...capabilityKernelEnv(capabilities, { attachments: attachmentsDir() }),
     };
-    // v1 wires only persistence + LLM. Embeddings (in-process), diagrams (hosted),
-    // and the filesystem attachment store are later milestones; leaving their env
-    // unset means the kernel degrades gracefully rather than failing.
     return env;
+  }
+
+  /**
+   * Check the capability switches against what the kernel reports on
+   * `/health`, and log the verdict: info when they agree, a warning when a
+   * switch did not take. Never throws. A capability that failed to come up
+   * degrades; it does not fail a boot the user is waiting on.
+   */
+  private async confirmCapabilities(
+    port: number,
+    requested: DesktopCapabilities,
+  ): Promise<void> {
+    let health: unknown = null;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(Supervisor.CAPABILITY_CHECK_TIMEOUT_MS),
+      });
+      if (res.ok) health = await res.json();
+    } catch {
+      /* judged below as "did not report" */
+    }
+    const verdict = attachmentReadiness(requested.attachments, health);
+    const line = `[boot] ${verdict.message}`;
+    if (verdict.honoured) log.info(line);
+    else log.warn(line);
   }
 
   private uiEnv(uiPort: number, kernelPort: number): NodeJS.ProcessEnv {

@@ -855,6 +855,81 @@ At a minimum, your deployment vault holds:
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
 
+## 8a. Desktop secret custody (`desktop/src/secrets.ts`)
+
+The desktop app has no deployment vault. It generates the kernel's master keys
+itself and hands them to the kernel as env vars on every spawn:
+
+- `VAULT_KEY` opens the kernel vault `platform-data/vault.enc.json` (session
+  signing key, skill-manifest signing key, plugin secrets) and is the HKDF root
+  for dataset link keys and cell encryption when no explicit secret is set
+  (§6a, §6b).
+- `CREDENTIAL_KEYCHAIN_KEY` encrypts the credential keychain rows in the
+  database, a separate trust domain.
+- The provider API keys entered in the setup wizard.
+
+All three live in `secrets.enc` in the data folder, encrypted at rest with
+Electron `safeStorage` (Keychain on macOS, DPAPI on Windows, Secret Service on
+Linux). A packaged build refuses to write it in plaintext. Only an unpackaged
+dev run may, with a warning, and such a dev blob stays readable once OS
+encryption becomes available.
+
+**Replacing this file with new keys loses the data.** With a different
+`VAULT_KEY` the kernel fails at boot on its own vault, and every §6a/§6b
+ciphertext becomes unreadable. A different `CREDENTIAL_KEYCHAIN_KEY` does the
+same to stored credentials. The recovery key the app shows is `VAULT_KEY`
+itself, and it is display-only: there is no import path yet (handoff §13). The
+rules, in the Electron-free `secretsBlob.ts` and `secretsStore.ts`:
+
+- **Only ENOENT creates keys.** Every other failure throws
+  `SecretsUnreadableError` and writes nothing. The stages are: unreadable
+  (`read`), keychain refused (`decrypt`), no OS encryption in a packaged build
+  (`encryption-unavailable`), not JSON (`parse`), and wrong fields (`shape`,
+  where both keys must base64-decode to 32 bytes, the kernel's own check). Boot
+  then stops at a dialog with advice for the failed stage
+  (`secretsRecovery.ts`) and without "Re-run setup". A refused keychain is
+  presented as "the file is most likely intact; allow access", never as
+  "restore or delete".
+- **The failure text never quotes the file.** The error's reason goes to the
+  log, the setup wizard and the dialog's support details. V8's JSON
+  `SyntaxError` quotes about ten characters on each side of the error, which
+  for a damaged file is a fragment of a key. So a `parse` failure reports only
+  `not valid JSON`, plus the position when V8 gives one, and the
+  `SyntaxError` is not attached as the error's `cause`.
+- **Every rewrite is backup, temp file, rename.** `secrets.enc` is first copied
+  to `secrets.enc.bak`, with mode 0600 set explicitly, and a failed copy aborts
+  the rewrite. The new bytes go to `secrets.enc.tmp-<pid>-<uuid>` (exclusive
+  create, fsync), and a rename replaces the file. Leftover temp files are swept
+  after a successful read, never next to an unreadable file.
+- **Write before cache, re-read before rewrite.** A key reaches the kernel only
+  after it is on disk. A change re-reads the file it replaces, so a file that
+  became unreadable is surfaced, not overwritten.
+- **The cache belongs to one path.** When setup switches the data folder, an
+  existing `secrets.enc` there is adopted. Only a missing one receives the keys
+  already handed out, so the recovery key shown during setup stays the key in
+  use. A file that appears between the ENOENT read and the write is left alone
+  (`SecretsConflictError`).
+
+**Backups and their limits:**
+
+- `.bak` is one generation and sits next to the file, also inside a
+  cloud-synced data folder (only snapshots move to `userData`).
+- The pre-update snapshot (`updater.ts` → `dbSnapshot.ts`) copies `pgdata/`
+  and puts `secrets.enc` beside it as `<snapshot>.secrets.enc` (mode 0600).
+  Pruning removes both, and a failing secrets copy aborts the update like a
+  failing database copy.
+- `.bak` and the snapshot copy are encrypted with the same keychain item as the
+  live file. They protect against a damaged or rewritten file, not against a
+  lost keychain entry or a move to another machine.
+- **Documented gap:** `platform-data/` (the kernel vault `vault.enc.json`,
+  `installed.json`) is not part of the pre-update snapshot. Restoring `pgdata`
+  plus `secrets.enc` brings back the database and the keys for its
+  ciphertexts, not the kernel vault as it was at that time.
+
+**Starting over** is a manual step: move the whole data folder aside, or pick a
+different, empty folder in setup. Deleting only `secrets.enc` produces new keys
+next to the old kernel vault, which the kernel then cannot open.
+
 ## 9. API-key authentication (`@omadia/api-key-auth`, issues #438 / #439)
 
 API keys are omadia's **second authentication method**, alongside the
@@ -1403,12 +1478,14 @@ straight to `/login`, so that back-compat route only serves old bookmarks and
 hand-made links. The password login never sends `return` to the server.
 
 **Desktop shell.** The desktop app loads the web UI from
-`http://127.0.0.1:<port>` (`desktop/src/supervisor.ts`). At the time of
-writing its window restricts no top-level navigation (no `will-navigate` or
-`setWindowOpenHandler` guard in `desktop/src`), so a return value that left
-the origin would replace the app window itself, with no address bar to show
-it. This check is what prevents that. A navigation allowlist in the shell is
-a second layer, not a replacement.
+`http://127.0.0.1:<port>` (`desktop/src/supervisor.ts`) in a window with no
+address bar, so a return value that left the origin would replace the app
+window itself without showing it. The shell's navigation fence (§10i) is a
+second layer, not a replacement: it keeps navigations the web UI starts on
+the app's loopback origins and opens other web targets in the system
+browser, but it lets server redirects between web URLs through, because the
+in-window OIDC sign-in needs them. For the OIDC callback's redirect this
+check is the only layer.
 
 **Not covered here.** Absolute redirect targets that the server supplies,
 such as the IdP end-session URL behind sign-out (`idpLogout.url` in
@@ -1696,6 +1773,174 @@ exemption, override parsing), `web-ui/app/_lib/__tests__/proxySecurityHeaders.te
 (the headers on what `proxy()` returns, and the override read per request) and
 `web-ui/scripts/__tests__/runtimeImageUser.test.ts` (runtime stage `USER`).
 
+## 10i. Desktop shell: the renderer bridge is origin- and phase-gated
+
+The desktop app (`desktop/`) shows everything in one `BrowserWindow` with one
+preload: the bundled first-run wizard and loading screen (`file:`), the
+loopback web UI after boot, and whatever a server redirect lands the window on
+(an IdP page during an in-window OIDC/Entra sign-in).
+`webPreferences.preload` is fixed per webContents, so a preload per phase
+would need a second window. Three layers keep the setup channels with the
+wizard, above all the recovery-key export, which returns the vault master key
+(`VAULT_KEY`):
+
+- **Main decides every call from the sender frame** (`desktop/src/ipcSender.ts`,
+  wired in `ipc.ts`). Each channel is registered through `guardedHandle` /
+  `guardedOn` with exactly one surface. `event.senderFrame` is read
+  synchronously on entry, because Electron answers null for it once the frame
+  has navigated. A frame that is null, destroyed, detached or unreadable is
+  refused, and so is any subframe.
+  - Setup channels (`testLlmKey`, `chooseDataDir`, `exportRecoveryKey`,
+    `complete`) answer only when two things hold. The frame URL must be the
+    bundled `dist/renderer/wizard.html`, compared as a file path against the
+    install (`fileURLToPath`, dot segments resolved, case-insensitive on
+    Windows). And the window navigator must show the `wizard` view, so the key
+    is out of reach once setup is over. The path rule matters on its own: the
+    navigator claims a view before its page has loaded, so the previous
+    document can still be on screen while `view === 'wizard'`.
+  - UI pings (`uiReady`, `uiLocale`) answer only the main frame at the running
+    web UI's exact origin, and nothing while no web UI serves.
+  - A refused invoke rejects with a fixed message; a refused event is dropped.
+    Both are logged without the URL's query or hash. Setup refusals log at warn
+    with the expected and the actual page, so a path mismatch in a packaged
+    build is diagnosable. UI refusals (routine after a stop or restart) log at
+    info.
+- **The preload exposes only the loaded document's surface**
+  (`desktop/src/bridgeSurface.ts`, `preload.ts`). The wizard gets the setup
+  methods and the boot stream, the loading screen the boot stream, the web UI
+  only `uiReady` and `setUiLocale`, and any other document no `window.omadia`
+  at all. This layer carries weight of its own: third-party plugin UIs run in
+  same-origin iframes of the web UI and can reach the bridge through
+  `window.parent.omadia`. Such a call leaves through the parent's bridge, so
+  Electron reports the MAIN frame with the web UI's origin, and no frame check
+  can tell it apart from the web UI. **The `app` surface must never carry a
+  method that returns or writes a secret.** The unused `getState` channel is
+  gone. `bridgeSurface.ts` is inlined into the sandboxed preload and stays
+  import-free; a test asserts the bundle requires nothing but `electron`.
+- **Navigation is fenced** (`navigationPolicy.ts`, `navigationGuards.ts`,
+  installed for every webContents and its session from
+  `app.on('web-contents-created')` before the window exists). Each way a
+  page can reach a new document has its own rule:
+  - `will-navigate` (main frame: links, `window.location`, form posts): the
+    current document decides. From the web UI, the kernel or a bundled page,
+    the window stays on the app's own loopback origins (web UI and kernel).
+    Any other `http(s)` target is prevented and handed to the system browser.
+    Every other scheme is refused, `file:` included. From a foreign page (an
+    IdP reached by a redirect), `http(s)` targets stay in the window so the
+    IdP's own form posts and hops work; script, data and file targets are
+    still refused.
+  - `will-frame-navigate` (subframes: plugin UIs, the builder preview,
+    anything a page embeds): any web page may load, as in a browser, and so
+    may what the browser renders in the page itself (`about:`, `data:`,
+    `blob:`). A custom scheme or `file:` is refused. Subframes never get the
+    bridge; the preload runs in main frames only.
+  - `will-redirect` (server redirects, any frame): web targets pass, so the
+    in-window sign-in keeps working. A redirect to any other scheme cancels
+    the navigation.
+  - `setWindowOpenHandler` decides by target. A same-app popup (attachment,
+    preview, download) opens as a sandboxed, context-isolated child without a
+    preload. Electron merges only security-related webPreferences from the
+    parent into such a child, never the preload, so the explicit flags are
+    belt and braces. `about:blank` and an empty `window.open()` are refused,
+    because Electron gives such a child the parent's webPreferences, preload
+    included. Any other web target is refused in the app and opened in the
+    system browser; any other scheme is just refused.
+    Chromium's implicit `noopener` already applies to `target="_blank"`, so a
+    missing `rel` attribute on such a link adds nothing here.
+  - The session never grants Electron's `openExternal` permission. Electron
+    asks for it before it hands a non-web URL to the OS protocol handler,
+    from any frame and after any redirect, and without a handler it grants
+    every request. Any frame could otherwise launch an installed app's
+    scheme (`ms-settings:`, `search-ms:`, …) without a prompt. This is the
+    backstop behind the event rules above. Every other permission keeps
+    Electron's no-handler answer, which grants it to every frame without the
+    app asking: camera and microphone, clipboard read, notifications and the
+    rest, for plugin iframes, same-app popups and a foreign page reached by
+    a redirect alike. Narrowing that to a deny-by-default allowlist per
+    requesting origin and frame is an open follow-up
+    (`docs/middleware-agent-handoff.md` §13, "Desktop-Shell: Trust-Boundary
+    Renderer → Main").
+  - So only vetted `http:`/`https:` URLs reach the OS. The shell passes
+    nothing else to `shell.openExternal`, and no page can make Electron hand
+    over anything else. The logs carry the target's origin or scheme, never
+    the query (OAuth codes, `id_token_hint`).
+
+Accepted residual: server redirects between web URLs are deliberately not
+guarded, so the in-window OIDC/Entra sign-in keeps working (kernel 302 to the
+IdP, the IdP's own steps, the callback on the kernel origin). A foreign
+document reached that way, or by a navigation from such a document, can be
+shown in the window. It gets no bridge, every handler refuses it, and the
+rules above still keep it from reaching the OS. The IdP end-session hop after
+a sign-out starts from the web UI, so it now opens in the system browser,
+which has its own cookie store.
+
+Main → renderer pushes (`bootProgress`, `bootLog`) are not sender-checked:
+every boot path loads a bundled page first and streams only while it is up,
+and the navigation fence keeps foreign documents off screen meanwhile.
+
+Tests: `desktop/test/ipcSender.test.mts` (the rules, synthetic frames),
+`ipcRegistration.test.mts` (every channel driven through the real
+`registerIpc`, nothing written on a refusal), `bridgeSurface.test.mts`
+(surfaces, what the preload really exposes, the sandbox-safe bundle),
+`navigationPolicy.test.mts` (including: every URL the kernel sends the window
+back to is trusted) and `navigationGuards.test.mts` (every path: main frame,
+subframes, redirects, popups, and the session's `openExternal` refusal).
+
+---
+
+## 10j. Desktop shell: a wizard switch changes the kernel or does not exist
+
+The first-run wizard is where a desktop user decides what the local install
+does with their data, so a switch there has to be enforced, not just recorded.
+Until 2026-09-30 it offered three (attachments on the local disk, semantic
+memory, diagrams through a hosted service); `setup.json` stored them and
+`Supervisor.kernelEnv()` never read them, so every choice booted the same
+stack. The rule now:
+
+- **Every switch maps to kernel env the supervisor sets on each boot**
+  (`desktop/src/capabilities.ts` → `capabilityKernelEnv`, spread last in
+  `kernelEnv()`). The switch owns its keys: `withoutCapabilityEnv` drops an
+  inherited value first, so a switched-off capability cannot come back through
+  the launch environment.
+- **The kernel reports whether it took, and the supervisor checks.** After the
+  kernel answers `/health`, `confirmCapabilities` judges the reported state
+  against the switch (`attachmentReadiness`) and logs a warning on a mismatch.
+  The report carries the backend only, never a path or a bucket, because
+  `/health` is unauthenticated.
+- **main persists only parsed switches.** `complete` refuses a selection whose
+  shape it does not know (`Invalid capability selection.`) and writes the
+  parsed fields, never the renderer's object; `readSetup()` rebuilds the
+  selection from the file and drops keys older builds wrote.
+- **A capability nothing can switch on is not offered.** Semantic memory needs
+  its model fetched from the admin UI (an operator session the shell does not
+  have), and diagrams need a Kroki server and S3 storage a desktop install does
+  not ship. The wizard names where each is set up instead.
+
+**Attachments** is the one switch today. On, it sets `ATTACHMENT_STORE_DIR` to
+`<data folder>/attachments`, and the kernel publishes a filesystem store as its
+`tigrisStore` service when no S3 bucket is configured
+(`middleware/src/platform/attachmentStore.ts`; S3 keeps precedence).
+`/health` reports `attachments.store` as `s3`, `filesystem` or `none`. The
+store (`filesystemObjectStore.ts`) keeps keys out of paths entirely. A storage
+key is caller data (`read_attachment` takes one from the model), and an S3
+bucket answers a hostile key with a harmless 404, whereas a directory joined
+with it would read or overwrite anything the process can reach. So each object
+lives under the SHA-256 of its key, which confines every key to the directory
+by construction. The directory is created 0700 and objects are written 0600
+via temp file and rename. An unusable directory degrades to no store, with the
+reason in the boot log, instead of failing the boot. Accepted limits: nothing
+expires objects (S3 buckets get a 90-day lifecycle rule), and one directory
+serves one instance.
+
+Tests: `desktop/test/supervisorKernelEnv.test.mts` (the switch decides the env,
+inherited values included; the readiness check runs after the kernel is
+healthy and before the web UI), `capabilities.test.mts`,
+`wizardConfig.test.mts` (every offered checkbox reaches the payload),
+`setupState.test.mts`, `ipcRegistration.test.mts`, and
+`middleware/test/filesystemObjectStore.test.ts` (traversal keys stay inside the
+store), `attachmentStore.test.ts` (selection, the `/health` projection, the
+composition-root wiring).
+
 ---
 
 ## 11. Reviewer checklist
@@ -1792,7 +2037,27 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       and sets its own `frame-ancestors`. The exemption in
       `web-ui/app/_lib/securityHeaders.ts` is not widened, and the operator-UI
       headers are not moved into `next.config.ts` `headers()` (§10h).
+- [ ] A change to `desktop/src/secrets.ts` or its `secretsBlob.ts` /
+      `secretsStore.ts` core keeps the ENOENT-only creation rule and the
+      backup + temp file + rename write (§8a): a read, decrypt, parse or shape
+      failure throws `SecretsUnreadableError` and never regenerates keys, a
+      key is cached only after its write succeeded, and neither the error's
+      reason nor its `cause` quotes the file's content.
+- [ ] A new desktop IPC channel is registered through `guardedHandle` /
+      `guardedOn` with an explicit surface, never bare `ipcMain`. The `app`
+      surface (the web UI and every plugin iframe in it) gets no method that
+      returns or writes a secret. A new bundled page is classified in
+      `bridgeSurface.ts` and checked by path in `ipcSender.ts` instead of
+      widening the wizard surface. A new window or session stays covered by
+      the `web-contents-created` guards, including the session's
+      `openExternal` refusal (§10i).
+- [ ] A new desktop wizard control changes what the supervisor hands the
+      kernel (`capabilityKernelEnv`), the kernel reports on `/health` whether
+      it took, and a test pins the wiring. Never a stored-but-unread
+      preference (§10j).
+- [ ] A store that maps caller-supplied keys onto the filesystem derives the
+      path from a digest of the key, never from the key's text (§10j).
 
 ---
 
-*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user).*
+*Last reviewed: 2026-09 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches).*

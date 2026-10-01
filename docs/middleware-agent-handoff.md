@@ -2640,6 +2640,11 @@ DIAGRAM_MAX_SOURCE_BYTES=64000             # Quellcode-Cap
 DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
 # Object-storage (Tigris auf Fly, MinIO lokal — auto-provisioniert via `fly storage create`)
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Lokaler Attachment-Store ohne S3 (platform/attachmentStore.ts). Greift nur, wenn
+# die vier S3-Werte NICHT alle gesetzt sind; wird als `tigrisStore` veröffentlicht.
+# Die Desktop-App setzt ihn, wenn der Wizard-Schalter „Anhänge“ an ist.
+# GET /health → attachments.store: 's3' | 'filesystem' | 'none' (nie Pfad/Bucket).
+ATTACHMENT_STORE_DIR=/data/attachments     # Objekte unter sha256(key), 0700/0600, kein Ablauf
 # Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId
 CONDUCTOR_WEBHOOKS_ENABLED=true
 CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE=60   # Rate-Limit pro Endpoint (rolling minute)
@@ -3038,10 +3043,15 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ### Offene Punkte aus den Security-Härtungen (2026-09-30)
 
-- **Desktop-Navigationsschutz → §10e nachziehen.** Das Desktop-Fenster hat noch keinen
-  `will-navigate`-/`setWindowOpenHandler`-Schutz; die Return-Pfad-Prüfung (§10e) ist dort
-  heute die einzige Schicht. Sobald der Desktop-Trust-Boundary-Change landet, den Absatz „at
-  the time of writing“ in `docs/security-architecture.md` §10e auf „zweite Schicht“ umstellen.
+- **Desktop-Runtime-Refresh (Electron 37 → 44) als eigener PR, nach dem Brücken-Release.**
+  `desktop/` läuft noch auf Electron 37 und hat kein Bein in der `npm audit`-Matrix. Der
+  Refresh (Electron 44, electron-builder 26, `desktop` als Audit-Bein, macOS-13-Floor im
+  Update-Feed) kommt als eigener PR. Er wird erst gemergt, wenn das Release mit dem
+  Updater-Hinweis aus `desktop/src/updateHoldBack.ts` veröffentlicht ist (kein Draft): Nur
+  Installationen mit diesem Release sagen auf macOS 11/12, dass das neue Release macOS 13
+  braucht. Vor dem Merge laufen ein `desktop-apps.yml`-Dispatch-Build aller Targets und je
+  ein Upgrade-Lauf auf macOS, Windows und Linux über das aktuelle Release, bei dem
+  `secrets.enc` byte-identisch bleibt; den genauen Ablauf bringt der PR in diesem Abschnitt mit.
 - **IdP-Logout-URL nicht allowlisted.** Die serverseitig gelieferte absolute End-Session-URL
   (`idpLogout.url`, `web-ui/app/_components/AuthBadge.tsx`) wird ungeprüft angesteuert. Eigene
   Vertrauensgrenze; Härtung z. B. per Allowlist der konfigurierten IdP-Hosts.
@@ -3215,6 +3225,150 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   `navigator.language` zu lesen.
 - **Electrons eigene `role:`-Menüeinträge** folgen der OS-Sprache; außerhalb
   unserer Reichweite, nur zu benennen.
+
+### Desktop: Schlüsseldatei `secrets.enc` — offene Punkte
+
+Die Desktop-App erzeugt neue Schlüssel nur noch, wenn `secrets.enc` fehlt
+(ENOENT). Jede andere Lesestörung stoppt den Boot mit einem
+Wiederherstellungsdialog, und jedes Neuschreiben läuft über `.bak`, Temp-Datei
+und Rename (`desktop/src/secretsBlob.ts`, `secretsStore.ts`,
+security-architecture §8a). Bewusst offen:
+
+- **`platform-data/` im Pre-Update-Snapshot.** Der Snapshot enthält `pgdata/`
+  und `<snapshot>.secrets.enc`, aber nicht den Kernel-Tresor
+  `platform-data/vault.enc.json` und nicht `installed.json`. Ein Restore bringt
+  Datenbank und Schlüssel zurück, nicht den Tresorstand zum Snapshot-Zeitpunkt.
+- **Recovery-Key wieder einspielen.** `exportRecoveryKey` ist reine Anzeige. Es
+  gibt keinen Weg, einen gesicherten Schlüssel zu importieren, etwa nach
+  Verlust des Keychain-Eintrags oder beim Rechnerumzug. `.bak` und
+  Snapshot-Kopie sind mit demselben Keychain-Eintrag verschlüsselt und helfen
+  dort nicht.
+- **Bestätigter Neuanfang mit neuen Schlüsseln.** Der Fehlerdialog bietet
+  absichtlich keinen solchen Button, weil er auch bei einer bloß verweigerten
+  Keychain-Abfrage erscheint. Heute ist der Neuanfang ein manueller Schritt
+  (Datenordner beiseite verschieben). Ein eigener, bestätigter Weg außerhalb
+  dieses Dialogs wäre die Ergänzung, sinnvollerweise zusammen mit dem Import.
+- **Recovery-Key im Wizard erst nach der Ordnerwahl zeigen.** Der
+  Reveal-Button liest den Schlüssel aus `userData`, bevor `complete` den
+  gewählten Datenordner setzt (`ipc.ts`). Liegt dort schon eine `secrets.enc`,
+  gilt deren Schlüssel und nicht der angezeigte. Die Reparatur: den Override
+  zuerst anwenden oder den Schlüssel erst danach anzeigen.
+- **Verwaiste `.secrets.enc`-Kopien.** Das Pruning entfernt die Kopie zusammen
+  mit ihrem Snapshot-Ordner. Wer Snapshot-Ordner von Hand löscht, lässt die
+  Kopie daneben liegen.
+
+### Desktop-Shell: Trust-Boundary Renderer → Main
+
+Wizard, Ladeseite, Web-UI und bei In-Window-OIDC auch IdP-Seiten laufen im
+selben Fenster mit demselben Preload. Seit 2026-09-30 gilt, Begründung und
+Details in [`security-architecture.md` §10i](security-architecture.md):
+
+- **IPC:** Jeder Kanal wird in `desktop/src/ipc.ts` über
+  `guardedHandle`/`guardedOn` mit genau einer Surface registriert, nie direkt
+  über `ipcMain`. `desktop/src/ipcSender.ts` entscheidet pro Aufruf anhand von
+  `event.senderFrame`. Setup-Kanäle antworten nur dem gebündelten
+  `wizard.html` im Main-Frame (Pfadvergleich gegen die Installation), und nur
+  solange der Navigator `wizard` zeigt. UI-Pings antworten nur dem Origin der
+  laufenden Web-UI. `getState` ist entfernt.
+- **Preload:** `desktop/src/bridgeSurface.ts` gibt der Web-UI nur
+  `uiReady`/`setUiLocale`, fremden Seiten gar nichts. Plugin-iframes erreichen
+  die Bridge der Web-UI über `window.parent.omadia`. Deshalb darf die
+  `app`-Surface nie eine Methode bekommen, die ein Geheimnis liefert oder
+  schreibt.
+- **Navigation:** `desktop/src/navigationGuards.ts` hängt an jedem
+  webContents und dessen Session. Fremde Links und Popups gehen in den
+  Systembrowser. `file:`, `javascript:`, `data:` und `about:blank` werden
+  abgelehnt. Same-App-Popups öffnen sandboxed und ohne Preload. Subframes
+  dürfen Webseiten und `about:`/`data:`/`blob:` laden, sonst nichts.
+  Web-Redirects bleiben bewusst offen, damit der In-Window-Login per
+  OIDC/Entra funktioniert; ein Redirect auf ein anderes Schema bricht die
+  Navigation ab.
+- **OS-Protokoll-Handler:** Die Session verweigert Electrons
+  `openExternal`-Permission, die Electron ohne Handler jeder Seite gewährt.
+  Damit startet keine Seite, kein Plugin-iframe und kein Redirect ein
+  Programm über ein eigenes Schema (`ms-settings:`, `search-ms:`, …). Web-Links
+  öffnet die Shell selbst, geprüft, über `shell.openExternal`.
+
+Offen:
+
+- **Manuelle Prüfung auf paketierten Builds (macOS und Windows)** vor dem
+  nächsten Desktop-Release. Den Wizard komplett durchlaufen: Reveal zeigt den
+  Key, Finish bootet. Im Log darf keine `[ipc] … refused`-Zeile zu
+  `wizard.html` stehen, sonst stimmt der Pfadvergleich (asar-Pfad,
+  Laufwerksbuchstabe) nicht. In der Web-UI muss
+  `Object.keys(window.omadia)` genau `uiReady` und `setUiLocale` liefern.
+  Plugin-Autor-Link, GitHub-Hilfe-Link und ein Link in einer Chat-Antwort
+  öffnen im Systembrowser. Ein Same-App-Popup hat kein `window.omadia`. Ein
+  Link mit eigenem Schema in einer Plugin-UI startet kein Programm (Log:
+  `[nav] blocked a subframe navigation`). Der Entra-Login-Rundlauf klappt
+  inklusive Passwort-POST.
+- **Abmelden einer OIDC-Sitzung:** Die IdP-End-Session-URL öffnet jetzt im
+  Systembrowser, der einen eigenen Cookie-Speicher hat. Die IdP-Sitzung im
+  App-Fenster bleibt also bestehen. Folgepunkt für die Web-UI: in
+  `web-ui/app/_components/AuthBadge.tsx` bei vorhandener Desktop-Bridge direkt
+  auf `/login` gehen statt den IdP-Hop zu versuchen.
+- **Web-Redirects auf fremde Seiten** werden nicht blockiert. Das ist die
+  akzeptierte Rest-Ausnahme aus §10i: Solche Seiten bekommen keine Bridge,
+  jeder Handler lehnt sie ab, und auch sie erreichen keinen
+  OS-Protokoll-Handler.
+- **Übrige Session-Permissions: deny-by-default mit Allowlist.** Die Session
+  verweigert nur `openExternal` (`canGrantPermission`/`canPassPermissionCheck`
+  in `desktop/src/navigationPolicy.ts`). Jede andere Permission-Anfrage und
+  -Prüfung bekommt Electrons Antwort ohne Handler: gewährt, für jeden Frame und
+  ohne Rückfrage der App. Das betrifft Kamera und Mikrofon (`media`), das Lesen
+  der Zwischenablage (`clipboard-read`; Wizard und Shell kopieren den
+  Wiederherstellungsschlüssel dorthin), Standort und Benachrichtigungen, auch
+  für Plugin-iframes, Same-App-Popups und fremde Seiten nach einem Redirect.
+  Folgepunkt: Request- und Check-Handler lehnen ab, was nicht auf einer
+  expliziten Allowlist steht, entschieden pro anfragendem Origin
+  (`details.requestingUrl` bzw. `requestingOrigin`) und Frame
+  (`details.isMainFrame`). Gebraucht wird heute nur `clipboard-sanitized-write`
+  (`navigator.clipboard.writeText` im Wizard und in der Web-UI), also für die
+  gebündelten Seiten und den Origin der laufenden Web-UI. Plugin-iframes laufen
+  auf dem Origin der Web-UI und erben jede Freigabe für ihn, solange sie nicht
+  auf den Main-Frame begrenzt ist; ob Plugin-UIs kopieren dürfen, gehört zur
+  Entscheidung. Die Tests „grants every other request …“ und „answers every
+  other check …“ in `desktop/test/navigationPolicy.test.mts` pinnen das heutige
+  Verhalten und kehren sich mit dem Fix um.
+
+### Desktop-Shell: Wizard-Schalter — Folgepunkte
+
+Seit 2026-09-30 gilt [`security-architecture.md` §10j](security-architecture.md):
+Ein Wizard-Schalter ändert die Kernel-Env oder existiert nicht. Übrig ist
+**Anhänge** (`ATTACHMENT_STORE_DIR` → lokaler `tigrisStore`, Readiness über
+`/health` → `attachments.store`, geprüft von `Supervisor.confirmCapabilities`).
+Semantisches Gedächtnis und Diagramme wurden aus dem Wizard entfernt, weil die
+Shell sie nicht einschalten kann. Offen:
+
+- **Semantisches Gedächtnis als echter Opt-in.** Darf nur mit Verdrahtung
+  zurück in den Wizard: Gewichte-Download aus der Shell heraus (heute nur über
+  die Admin-Route `POST /api/v1/admin/embedding-provider/local-model/fetch`,
+  also mit Operator-Session), danach Selbst-Reaktivierung des Adapters,
+  Neubewertung des Embedding-Gates und ein Readiness-Signal auf `/health`, das
+  die Shell prüft — plus ein `supervisorKernelEnv`-Test, der das pinnt.
+- **Diagramme** brauchen eine Owner-Entscheidung: gehosteter Renderer (ein
+  neuer Datenabfluss der Diagramm-Quellen an einen Dienst außerhalb des
+  Rechners) oder ein mitgelieferter Renderer (Kroki ist JVM-basiert und lässt
+  sich nicht bündeln). Selbst dann fehlt Speicher: `@omadia/diagrams` baut
+  einen eigenen S3-Client und nutzt den Kernel-Store nicht.
+- **Office- und Diagramm-Plugin auf den Kernel-Store umstellen.** Beide bauen
+  eigene S3-Clients aus ihrer Plugin-Config; mit dem Kernel-`tigrisStore`
+  liefen `create_xlsx`/`create_docx` auch auf dem Desktop.
+- **Ablauf für den lokalen Store.** S3-Buckets bekommen eine 90-Tage-Lifecycle-
+  Regel, `filesystemObjectStore.ts` löscht nichts.
+- **Schalter nach dem Setup ändern.** Es gibt keinen Einstellungs-Pfad; heute
+  nur „Setup erneut ausführen“ nach einem Boot-Fehler.
+- **Readiness sichtbar machen.** Die Prüfung schreibt heute nur eine Log-Zeile
+  (`[boot] attachments: …`, im Boot-Log des Wizards sichtbar). Eine Warnung
+  könnte zusätzlich in Tray oder Web-UI erscheinen.
+- **Wer schreibt in den Store?** Der Web-Chat hat keinen Datei-Upload. Heute
+  landen dort nur Dateien von Kanälen, die über den Kernel-Store persistieren
+  (Teams mit `TEAMS_ATTACHMENT_STORAGE_ENABLED=true`).
+- **Manuelle Prüfung auf paketierten Builds:** Wizard zeigt einen Schalter
+  plus Hinweis; `setup.json` enthält `capabilities: { attachments }`; das Log
+  zeigt `[boot] attachments: on, kept in the data folder on this computer`;
+  `GET http://127.0.0.1:8769/health` liefert `attachments.store: filesystem`;
+  `<Datenordner>/attachments` existiert mit 0700.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

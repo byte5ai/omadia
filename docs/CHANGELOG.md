@@ -36,6 +36,120 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop updater: an update the OS is too old for is no longer "up to date"
+
+2026-09-30 — electron-updater withholds an update whose feed declares a
+`minimumSystemVersion` above `os.release()`, and then reports
+`update-not-available` with the feed's version: the same event a current
+install gets. The desktop app answered it with "You're already on the latest
+version of omadia" and filled "Current version" from the feed. Once the
+Electron 44 build puts a macOS 13 floor into the macOS update feed, a macOS 11
+or 12 install would have been told it is current, shown the release it cannot
+install as its own version, and left on Electron 37 with no hint that updates,
+security fixes included, had stopped. `desktop/src/updateHoldBack.ts` now tells the two apart.
+"Check for Updates…" names the installed version when the app is current, and
+otherwise warns that omadia X needs macOS 13 or later and that this computer
+gets no further updates until its operating system is updated; the silent
+startup check says the same once per floor (`updater-hold-back.json` in
+userData). The version comparison follows semver's strict grammar and is tested
+against electron-updater's own OS check. Nothing in it depends on Electron 44,
+so it ships first, in a release still built on Electron 37: an install only
+gets the new handler by updating to a build that carries it, and a macOS 11/12
+install that never takes that release keeps reporting "up to date".
+
+### Fixed — desktop: setup wizard switches reach the kernel or are gone
+
+2026-09-30 — the first-run wizard offered three capability switches
+(attachments on the local disk, semantic memory, diagrams through a "hosted
+omadia service"). main stored them in `setup.json` and nothing read them back,
+so every choice booted the same stack; they had been unwired since the
+installer shipped (#341). Attachments now reach the kernel. The supervisor
+reads the switch on every boot and, when it is on, sets `ATTACHMENT_STORE_DIR`
+to `<data folder>/attachments`; when it is off, an inherited value is dropped.
+The kernel turns the variable into a filesystem attachment store, published as
+the same `tigrisStore` service the S3 store fills (S3 keeps precedence).
+Objects are stored owner-only under the SHA-256 of their key, so a storage key
+cannot address a path outside the directory. `/health` gains
+`attachments.store` (`s3`, `filesystem` or `none`, never a bucket or a path),
+and the supervisor checks it after boot and logs a warning when it disagrees
+with the switch. Installs that kept the default (on) start keeping attachments
+in their data folder after the update.
+
+Semantic memory and diagrams are no longer offered, because nothing the shell
+can set switches them on: the keyless embedding adapter is auto-installed and
+downloads its model from Admin → Embedding Provider, and diagrams need the
+Diagrams plugin, a Kroki server and S3 storage (the hosted service the wizard
+named does not exist). The step says where each is set up instead, and no
+longer claims the choice can be changed later, since there is no settings path
+after setup. `readSetup()` drops the `embeddings` / `diagrams` keys older
+builds stored. The new kernel variable `ATTACHMENT_STORE_DIR` is optional (see
+`middleware/.env.example`); a server that does not set it behaves as before.
+See `docs/security-architecture.md` §10j.
+
+### Fixed — desktop: setup and recovery-key IPC no longer reachable from the web UI or foreign documents
+
+2026-09-30 — the desktop shell runs the first-run wizard, the loading screen
+and the web UI in one window with one preload, and every IPC handler answered
+whichever document was loaded. So the web UI, any same-origin plugin iframe in
+it (through `window.parent.omadia`) and any page the window had navigated to
+could call `exportRecoveryKey`, which returns the vault master key, or
+`complete`, which rewrites the data directory and the setup state. Main now
+checks each call against the frame that sent it. The setup channels answer
+only the bundled `wizard.html` in the main frame while the wizard is on
+screen, and the UI pings answer only the running web UI's origin. A vanished,
+destroyed or detached sender frame is refused. The preload also hands each
+document only its own methods: the web UI gets `uiReady` and `setUiLocale`,
+and foreign pages get no bridge. The unused `getState` channel is removed.
+See `docs/security-architecture.md` §10i.
+
+Navigation is now fenced for every window. Links and `window.open` to other
+sites (links in chat answers, plugin author pages, GitHub help) open in the
+system browser instead of replacing the app or spawning Electron windows.
+Same-app popups open sandboxed and without the bridge. `about:blank` popups
+and `file:`, `javascript:` and `data:` targets are refused. No page can make
+the app hand a non-web link to another program any more (`mailto:`,
+`ms-settings:`, `search-ms:`, any installed app's scheme), including from an
+embedded frame such as a plugin UI or through a server redirect. Such
+navigations are cancelled, and the session refuses Electron's `openExternal`
+permission, which Electron grants to every page by default. The in-window
+OIDC/Entra sign-in keeps working, because web redirects and the IdP's own
+steps stay in the window. One visible change: signing out of an OIDC session
+no longer shows the IdP logout page in the app window. That page opens in the
+system browser, and the app window moves to the sign-in page once the web UI
+notices the ended session (its next API call or session heartbeat).
+
+### Fixed — desktop app no longer replaces an unreadable secrets file with new keys
+
+2026-09-30 — the desktop app keeps `VAULT_KEY`, `CREDENTIAL_KEYCHAIN_KEY` and
+the provider API keys in `secrets.enc`, encrypted with the OS keychain. Its
+loader treated any read, decrypt or parse failure like a missing file: it
+generated new keys and wrote them over the file in place. A refused keychain
+prompt, a Linux keyring that was not running, or a write torn by a crash was
+enough to lose every key. The kernel then could not open its own vault, and
+stored credentials, dataset cells and provider keys became unreadable. Now only
+a missing file (ENOENT) creates keys. Any other failure leaves the file
+byte-identical and stops boot with a dialog that names the failed stage and
+the next step: allow keychain access (the file is most likely intact), restore
+`secrets.enc.bak` or the snapshot copy, or move the whole data folder aside to
+start over. The dialog has no "Re-run setup" button, because setup would hit
+the same file. Its support details, the log line and the wizard's error text
+never quote the file: the JSON parser's own message carries a fragment of the
+decrypted text, so a damaged file is reported as `not valid JSON` plus the
+position. The rules live in the Electron-free `secretsBlob.ts` and
+`secretsStore.ts`, so fault-injection tests can assert them.
+
+Every rewrite is now atomic: the current file is copied to `secrets.enc.bak`
+(mode 0600) first, and the new bytes go to a temp file that a rename swaps in.
+A failed backup copy aborts the rewrite. A key is cached only after its write
+succeeded, and every rewrite re-reads the file it replaces. When first-run
+setup switches to a data folder that already holds a `secrets.enc`, that file
+is adopted instead of being overwritten with the keys cached for the default
+folder. The pre-update snapshot now copies `secrets.enc` next to the database
+copy as `<snapshot>.secrets.enc`, and pruning removes both. `platform-data/`
+(the kernel vault) is still not part of the snapshot (security-architecture
+§8a). A dev run that stored its blob unencrypted can still read it after OS
+encryption becomes available. No new environment variable.
+
 ### Security — npm advisories against axios and next
 
 2026-10-01 — new advisories were published against `axios` (middleware,

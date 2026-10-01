@@ -1,146 +1,143 @@
 import { app, safeStorage } from 'electron';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { secretsFile } from './paths';
+import { secretsFile, snapshotDir } from './paths';
 import { log } from './log';
+import type { SecretsBlob, SecretsCodec, SecretsIo } from './secretsBlob';
+import { createSecretsStore } from './secretsStore';
 
 /**
  * Secret custody for the desktop app.
  *
- * Two kinds of secrets live here:
+ * Three kinds of secrets live here:
  *   1. The kernel vault master key (`VAULT_KEY`). The kernel encrypts its own
  *      secrets store with this 32-byte key and, in production mode, refuses to
  *      boot without it. We generate it once and hand it back to the kernel as an
  *      env var on every spawn.
- *   2. Provider API keys (e.g. ANTHROPIC_API_KEY) entered in the onboarding
+ *   2. The credential keychain key (`CREDENTIAL_KEYCHAIN_KEY`), a separate
+ *      trust domain the kernel also requires in production.
+ *   3. Provider API keys (e.g. ANTHROPIC_API_KEY) entered in the onboarding
  *      wizard, so first boot is useful and later boots don't re-prompt.
  *
  * Everything is encrypted at rest with Electron `safeStorage`, which is backed by
  * the OS keychain/credential store (Keychain on macOS, DPAPI on Windows). This is
  * what lets us avoid the kernel's dev fallback that writes a plaintext-equivalent
  * key next to the data — the exact weakness the compose file warns about.
+ *
+ * This file is only the Electron adapter. The rules live in Electron-free
+ * modules so they can be asserted: `secretsBlob.ts` (new keys only for a
+ * missing file; an unreadable file throws `SecretsUnreadableError` and is never
+ * replaced; every rewrite is backup + temp file + rename) and `secretsStore.ts`
+ * (write before cache; the cache follows the data dir).
  */
 
-interface SecretsBlob {
-  /** base64 of 32 random bytes — the kernel's VAULT_KEY value. */
-  vaultKey: string;
-  /**
-   * base64 of 32 random bytes — the kernel's CREDENTIAL_KEYCHAIN_KEY value.
-   * A SEPARATE trust domain from the vault by the kernel's own design (a
-   * compromised key must not unlock both). Optional because installs created
-   * before this field existed have a blob without it — the accessor
-   * generates + persists one lazily, which is also the fresh-install path.
-   */
-  credentialKeychainKey?: string;
-  /** provider key id → value, e.g. { ANTHROPIC_API_KEY: "sk-..." }. */
-  providerKeys: Record<string, string>;
-}
-
-let cache: SecretsBlob | null = null;
-
-function encryptionAvailable(): boolean {
-  return safeStorage.isEncryptionAvailable();
-}
-
-function load(): SecretsBlob {
-  if (cache) return cache;
-  const file = secretsFile();
-  if (fs.existsSync(file)) {
+/** The real filesystem behind the secrets modules' port. */
+const realSecretsIo: SecretsIo = {
+  readFile: (file) => fs.readFileSync(file),
+  writeFile: (file, data, mode) => {
+    // Exclusive create, then flushed before the rename makes it the live file:
+    // a rename that outlives a crash must not point at unwritten blocks.
+    const fd = fs.openSync(file, 'wx', mode);
     try {
-      const cipher = fs.readFileSync(file);
-      const plain = encryptionAvailable()
-        ? safeStorage.decryptString(cipher)
-        : cipher.toString('utf8');
-      cache = JSON.parse(plain) as SecretsBlob;
-      return cache;
-    } catch (err) {
-      log.error(`[secrets] failed to read secrets file: ${String(err)}`);
-      // Fall through and regenerate — a corrupt secrets file must not brick boot,
-      // though it does mean existing vault entries become unrecoverable.
+      fs.writeFileSync(fd, data);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
     }
-  }
-  cache = { vaultKey: generateVaultKey(), providerKeys: {} };
-  try {
-    persist();
-  } catch (err) {
-    // Fail-closed: if we couldn't persist (e.g. OS encryption unavailable in a
-    // packaged build), do NOT leave the unpersisted key cached — a later call
-    // would otherwise return it past the `if (cache)` short-circuit and bypass
-    // the fail-closed guard, diverging from whatever gets persisted next launch.
-    cache = null;
-    throw err;
-  }
-  return cache;
-}
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+  copyFile: (from, to, mode) => {
+    fs.copyFileSync(from, to);
+    // Explicit, not inherited: the backup holds the same secrets as the file.
+    fs.chmodSync(to, mode);
+  },
+  remove: (file) => fs.rmSync(file, { force: true }),
+  exists: (file) => fs.existsSync(file),
+  listDir: (dir) => fs.readdirSync(dir),
+  info: (message) => log.info(`[secrets] ${message}`),
+  warn: (message) => log.warn(`[secrets] ${message}`),
+  error: (message) => log.error(`[secrets] ${message}`),
+};
 
-function persist(): void {
-  if (!cache) return;
-  const json = JSON.stringify(cache);
-  if (!encryptionAvailable()) {
-    // Fail closed in a real (packaged) install: the onboarding UI promises the
-    // key is encrypted in the OS keychain, so we must not silently downgrade to
-    // plaintext. In dev we allow it with a loud warning to keep iteration cheap.
-    if (app.isPackaged) {
-      throw new Error(
-        'OS-backed encryption (keychain/credential store) is unavailable, so ' +
-          'omadia will not store your secrets in plaintext. On Linux, configure ' +
-          'a Secret Service keyring (e.g. gnome-keyring/libsecret) and retry.',
-      );
-    }
-    log.warn('[secrets] OS encryption unavailable — storing secrets UNENCRYPTED (dev only).');
-    fs.writeFileSync(secretsFile(), Buffer.from(json, 'utf8'), { mode: 0o600 });
-    return;
-  }
-  fs.writeFileSync(secretsFile(), safeStorage.encryptString(json), { mode: 0o600 });
-}
+/**
+ * `safeStorage`, looked up on every call rather than destructured: the test
+ * fake swaps these methods on the object this module imported.
+ */
+const safeStorageCodec: SecretsCodec = {
+  encryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+  encrypt: (plain) => safeStorage.encryptString(plain),
+  decrypt: (cipher) => safeStorage.decryptString(cipher),
+};
 
 function generateVaultKey(): string {
   return crypto.randomBytes(32).toString('base64');
 }
 
+const store = createSecretsStore({
+  io: realSecretsIo,
+  codec: safeStorageCodec,
+  file: secretsFile,
+  // Fail closed in a packaged install; plaintext with a loud warning in dev.
+  allowPlaintext: !app.isPackaged,
+  generateKey: generateVaultKey,
+  snapshotDir,
+});
+
 /** The kernel's VAULT_KEY (base64, decodes to 32 bytes). Generated on first call. */
 export function vaultKey(): string {
-  return load().vaultKey;
+  return store.load().vaultKey;
+}
+
+function withCredentialKeychainKey(current: SecretsBlob): SecretsBlob {
+  return current.credentialKeychainKey
+    ? current
+    : { ...current, credentialKeychainKey: generateVaultKey() };
 }
 
 /**
  * The kernel's CREDENTIAL_KEYCHAIN_KEY. The credential keychain (#578)
  * fail-hards in production without it — v0.115.0 shipped with the kernel
  * reading it and the supervisor not passing it, which killed every FRESH
- * install at first boot ("kernel did not become healthy"). Lazily generated
- * and persisted exactly like the vault key.
+ * install at first boot ("kernel did not become healthy"). A fresh blob is
+ * created with it; a blob from before the field existed gets one here, once.
  */
 export function credentialKeychainKey(): string {
-  const blob = load();
-  if (!blob.credentialKeychainKey) {
-    blob.credentialKeychainKey = generateVaultKey();
-    persist();
-  }
-  return blob.credentialKeychainKey;
+  const key =
+    store.load().credentialKeychainKey ??
+    // The value that was persisted, not the stale pre-migration blob's.
+    store.update(withCredentialKeychainKey).credentialKeychainKey;
+  if (!key) throw new Error('[secrets] credential keychain key missing after migration');
+  return key;
 }
 
 /** Store a provider API key (encrypted). */
 export function setProviderKey(id: string, value: string): void {
-  const blob = load();
-  blob.providerKeys[id] = value;
-  persist();
+  store.update((current) => ({
+    ...current,
+    providerKeys: { ...current.providerKeys, [id]: value },
+  }));
 }
 
 /** Read a provider API key, or undefined. */
 export function getProviderKey(id: string): string | undefined {
-  return load().providerKeys[id];
+  return store.load().providerKeys[id];
 }
 
 /** All provider keys, for injecting into the kernel env on spawn. */
 export function allProviderKeys(): Record<string, string> {
-  return { ...load().providerKeys };
+  return { ...store.load().providerKeys };
 }
 
 /** Export the vault master key as a recovery string the user can save. */
 export function exportRecoveryKey(): string {
-  return load().vaultKey;
+  return store.load().vaultKey;
 }
 
 export function isEncryptionAvailable(): boolean {
-  return encryptionAvailable();
+  return safeStorageCodec.encryptionAvailable();
+}
+
+/** Forget the cached blob, so a test starts from what is on disk. */
+export function __resetSecretsCacheForTests(): void {
+  store.reset();
 }
