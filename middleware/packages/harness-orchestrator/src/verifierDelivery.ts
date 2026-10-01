@@ -41,6 +41,8 @@ import type {
  *    and a verifier that could not run all withhold. The client gets one
  *    `text_delta` with the notice and a `done` marked `answerSource:
  *    'verifier-blocked'` ({@link withheldDone}); none of the held events.
+ *  - An answer Privacy Shield rendered server-side never reaches the
+ *    verifier, so it is withheld as well ({@link mayVerifyAnswer}).
  *  - Control-flow terminals are released without a verdict, the same way
  *    ({@link releasesWithoutVerification}); a bare NO_REPLY releases its
  *    `done` and nothing else ({@link isDeliberateSilence}).
@@ -98,13 +100,22 @@ export function isDeliberateSilence(answer: string): boolean {
 }
 
 /**
- * Turns `enforce` releases without a verdict, because their answer states no
- * fact to check: a choice card, an MCP input form, a slot picker or an OAuth
- * consent prompt asks the user for input; a degraded turn's answer is the
- * server-composed turn-incomplete notice — unless the privacy shield had
- * already rendered a real answer (`answerSource: 'privacy-render'`), which is
- * verified like any other; a bare NO_REPLY is the agent's deliberate silence,
- * which a withheld-answer notice would break.
+ * Turns `enforce` releases without a verdict. A choice card, an MCP input
+ * form, a slot picker and an OAuth consent prompt ask the user for input; a
+ * degraded turn's answer is the server-composed turn-incomplete notice; a
+ * bare NO_REPLY is the agent's deliberate silence, which a withheld-answer
+ * notice would break.
+ *
+ * Only the last two are sure to state no fact. A card rides on whatever
+ * answer its turn produced: the text the model wrote before a choice card or
+ * an MCP input form ended the turn, and for a slot picker, an OAuth consent
+ * prompt or a choice card the card-router pass attached, a complete answer —
+ * which then goes out unchecked, without a verdict.
+ *
+ * A degraded turn whose answer Privacy Shield had already rendered
+ * (`answerSource: 'privacy-render'`) is not exempt: it is a real answer, and
+ * `enforce` withholds it without sending it to the verifier
+ * ({@link mayVerifyAnswer}).
  */
 export function releasesWithoutVerification(turn: ControlFlowTurn): boolean {
   return (
@@ -115,6 +126,24 @@ export function releasesWithoutVerification(turn: ControlFlowTurn): boolean {
     (turn.degraded === true && turn.answerSource !== 'privacy-render') ||
     isDeliberateSilence(turn.answer)
   );
+}
+
+/**
+ * Whether `enforce` may hand a turn's answer to the verifier pipeline. Not an
+ * answer Privacy Shield v4 rendered server-side (`answerSource:
+ * 'privacy-render'`), degraded or not: it holds real values the turn's model
+ * never saw, and the pipeline's claim extractor sends the answer to its model
+ * provider as it is. `enforce` cannot confirm such an answer, so it records
+ * {@link privacyShieldVerdict} for it, which withholds it — it fails closed.
+ */
+export function mayVerifyAnswer(turn: { readonly answerSource?: AnswerSource }): boolean {
+  return turn.answerSource !== 'privacy-render';
+}
+
+/** The verdict `enforce` records for an answer it may not verify
+ *  ({@link mayVerifyAnswer}): the verifier did not run on it. */
+export function privacyShieldVerdict(): VerifierVerdict {
+  return { status: 'unavailable', reason: 'privacy_shield', claims: [], latencyMs: 0 };
 }
 
 /**
@@ -146,13 +175,16 @@ export function verdictReleasesAnswer(returned: VerifierVerdict): boolean {
  * `text_delta` carries. Built from an allowlist: the turn's identity and
  * telemetry stay (`toolCalls`, `iterations`, `runTrace`, `turnId`,
  * `receiptId`, `model`, `provenance`, `aiDisclosure`, `directLineSession`,
- * `agentsConsulted`, `privacyReceipt`, `correlationId`); everything that
- * carried the withheld answer's content goes — attachments, files,
- * follow-ups, masked values, the delegated answer, cards, excerpts and any
- * field added later. The notice is in the turn's disclosure locale, then the
- * operator's, German by default; when the turn folded its AI disclosure into
- * `answer` (first turn of a scope), the notice carries the same block — on
- * `done.answer` only, never in the delta, like every disclosure.
+ * `agentsConsulted`, `privacyReceipt`, `correlationId`), and so do a degraded
+ * turn's failure markers (`degraded`, `committedTools` — tool names): the
+ * turn still threw after a tool committed, and the operator health signal,
+ * the API-key audit and the web chat's turn-incomplete row read them.
+ * Everything that carried the withheld answer's content goes — attachments,
+ * files, follow-ups, masked values, the delegated answer, cards, excerpts and
+ * any field added later. The notice is in the turn's disclosure locale, then
+ * the operator's, German by default; when the turn folded its AI disclosure
+ * into `answer` (first turn of a scope), the notice carries the same block —
+ * on `done.answer` only, never in the delta, like every disclosure.
  */
 export function withheldDone(
   done: DoneEvent,
@@ -177,6 +209,12 @@ export function withheldDone(
       ...(done.agentsConsulted ? { agentsConsulted: done.agentsConsulted } : {}),
       ...(done.privacyReceipt ? { privacyReceipt: done.privacyReceipt } : {}),
       ...(done.correlationId ? { correlationId: done.correlationId } : {}),
+      ...(done.degraded === true
+        ? {
+            degraded: true,
+            ...(done.committedTools ? { committedTools: done.committedTools } : {}),
+          }
+        : {}),
       answerSource: 'verifier-blocked',
       answerIsError: true,
       verifier: summary,

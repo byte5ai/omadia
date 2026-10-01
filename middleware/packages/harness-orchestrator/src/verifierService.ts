@@ -24,6 +24,8 @@ import type { TurnHookRunner } from './turnHooks.js';
 import { fireVerifierBlockedHook } from './verifierBlockedHook.js';
 import {
   enforcedVerifiedStream,
+  mayVerifyAnswer,
+  privacyShieldVerdict,
   releasesWithoutVerification,
   shadowVerifiedStream,
   verdictReleasesAnswer,
@@ -60,9 +62,11 @@ export {
  * (`verdictReleasesAnswer`); otherwise the user gets a localized notice that
  * the answer was withheld (`answerSource: 'verifier-blocked'`). It fails
  * closed: a verifier that could not run (`unavailable`) or claims it could
- * not confirm withhold the answer just like a contradiction. On the stream
- * no content leaves before the verdict (`verifierDelivery.ts`); the
- * non-streaming path first runs its correction retry:
+ * not confirm withhold the answer just like a contradiction, and so does an
+ * answer Privacy Shield rendered server-side, which is never sent to the
+ * pipeline (`mayVerifyAnswer`). On the stream no content leaves before the
+ * verdict (`verifierDelivery.ts`); the non-streaming path first runs its
+ * correction retry:
  *
  *   orchestrator.runTurn → verify → blocked → correction hint in the system
  *   prompt → runTurn (retry, maxRetries) → verify → deliver or withhold
@@ -196,7 +200,7 @@ export class VerifierService implements ChatAgent {
     yield* enforcedVerifiedStream(
       base,
       async (done) => {
-        const verdict = await this.safeVerify(runId, input, done.answer, done.runTrace);
+        const verdict = await this.verdictFor(runId, input, done);
         // #133 (E6) — record the block on this turn's plan.
         if (verdict.status === 'blocked') this.fireVerifierBlocked(input, verdict);
         void this.persist(runId, input, verdict, 0);
@@ -230,12 +234,7 @@ export class VerifierService implements ChatAgent {
     ) {
       return toSemanticAnswer(firstResult);
     }
-    const firstVerdict = await this.safeVerify(
-      runId,
-      input,
-      firstResult.answer,
-      firstResult.runTrace,
-    );
+    const firstVerdict = await this.verdictFor(runId, input, firstResult);
 
     // Shadow mode: persist + summarise, never retry / block.
     if (this.mode === 'shadow') {
@@ -312,12 +311,7 @@ export class VerifierService implements ChatAgent {
       return deliverWithoutRetry();
     }
 
-    const secondVerdict = await this.safeVerify(
-      runId,
-      input,
-      secondResult.answer,
-      secondResult.runTrace,
-    );
+    const secondVerdict = await this.verdictFor(runId, input, secondResult);
 
     // Merge: persist ONE row with the final retry count; contradictions table
     // reflects whichever verdict actually tripped. We log both for telemetry.
@@ -388,12 +382,7 @@ export class VerifierService implements ChatAgent {
       // verdict, the user-facing answer didn't change.
       return undefined;
     }
-    const secondVerdict = await this.safeVerify(
-      runId,
-      input,
-      secondResult.answer,
-      secondResult.runTrace,
-    );
+    const secondVerdict = await this.verdictFor(runId, input, secondResult);
     const merged = mergeBorderlineVerdicts(firstVerdict, secondVerdict);
     this.log(
       `[verifier/service] resample merge run=${runId} first=${firstVerdict.status} second=${secondVerdict.status} → ${merged.verdict.status}${
@@ -407,6 +396,26 @@ export class VerifierService implements ChatAgent {
   }
 
   // ------------------------------------------------------------------
+
+  /**
+   * The verdict on one turn's answer (a `done` event or a turn result).
+   * `enforce` never hands the pipeline an answer Privacy Shield rendered
+   * server-side (`mayVerifyAnswer`): its claim extractor would send the real
+   * values the shield kept from the turn's model to the verifier's provider.
+   * That answer gets `unavailable` / `privacy_shield`, which withholds it.
+   * `shadow` verifies as before.
+   */
+  private async verdictFor(
+    runId: string,
+    input: ChatTurnInput,
+    turn: Pick<ChatTurnResult, 'answer' | 'runTrace' | 'answerSource'>,
+  ): Promise<VerifierVerdict> {
+    if (this.mode === 'enforce' && !mayVerifyAnswer(turn)) {
+      this.log(`[verifier/service] not verified run=${runId}: answer rendered by the privacy shield`);
+      return privacyShieldVerdict();
+    }
+    return this.safeVerify(runId, input, turn.answer, turn.runTrace);
+  }
 
   private async safeVerify(
     runId: string,

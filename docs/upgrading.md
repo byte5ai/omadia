@@ -231,6 +231,17 @@ fields of `@omadia/verifier`); `shadow` behaves exactly as before.
   run `shadow` and compare: the share of `verifier_verdicts` rows with status
   `approved`, or `skipped` with reason `no_trigger` / `no_claims`, is the share
   of answers `enforce` would deliver.
+- **Privacy Shield v4 rendering and `enforce` do not combine.** An answer the
+  shield renders server-side holds real values the model never saw, so it is
+  never sent to the verifier; `enforce` withholds it (summary `unavailable`,
+  reason `privacy_shield`, a `verifier_verdicts` row with status
+  `unavailable`). That includes rendered tool errors and sign-in prompts. With
+  v4 rendering active, expect no rendered answer to reach users in `enforce`.
+- **Turns with an input card are delivered unchecked.** A turn that ends with
+  a choice card, an MCP input form, a slot picker or an OAuth consent prompt is
+  released without a verdict, and so is the answer the card rides on — a slot
+  picker, a consent prompt or a choice card added after the answer can come
+  with a complete factual answer.
 - **Streaming clients wait for the verdict.** On `/api/chat/stream`, the
   public API-key stream and the canvas, no answer text arrives before the turn
   and its verification (two LLM calls plus the source checks) have finished;
@@ -250,8 +261,12 @@ fields of `@omadia/verifier`); `shadow` behaves exactly as before.
   handle `"verifier-blocked"` (always with `answerIsError: true`; `answer` is
   the notice). A client that renders `done.answer` needs no change.
   `done.verifier` now carries the verdict in `enforce` mode; the trailing
-  `verifier` event is still sent. Plugins compiled against
-  `@omadia/channel-sdk`'s `AnswerSource` type see the widened union.
+  `verifier` event is still sent, and its `summary.reason` can be
+  `privacy_shield`. A withheld turn that had also failed after a tool
+  committed keeps `degraded: true` and `committedTools`. Plugins compiled
+  against `@omadia/channel-sdk`'s `AnswerSource` and `VerifierSummaryReason`
+  types, or `@omadia/verifier`'s `VerifierUnavailableReason`, see the widened
+  unions.
 - **Not covered:** agents on the subscription-CLI runtime (`claude-cli`
   provider) and proactive routines are not verified, whatever the mode.
 

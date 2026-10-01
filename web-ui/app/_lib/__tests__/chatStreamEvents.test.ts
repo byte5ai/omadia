@@ -317,6 +317,40 @@ describe('applyStreamEvent — enforce-mode verifier verdicts', () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it('a withheld turn that also failed keeps the turn-incomplete row', () => {
+    // A rendered answer the verifier may not see is withheld; when its turn
+    // threw after a tool committed, `done` keeps the degraded markers.
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'Diese Antwort wurde zurückgehalten.',
+      toolCalls: 2,
+      iterations: 2,
+      degraded: true,
+      committedTools: ['create_invoice', 'v4_render_answer'],
+      correlationId: 'turn-token-2',
+      answerSource: 'verifier-blocked',
+      answerIsError: true,
+      verifier: {
+        ...blockedSummary,
+        badge: 'unavailable',
+        status: 'unavailable',
+        reason: 'privacy_shield',
+        claimCount: 0,
+        contradictionCount: 0,
+      },
+    });
+
+    const message = applied(mutateById, session('bg')).messages[1];
+    expect(message?.content).toBe('Diese Antwort wurde zurückgehalten.');
+    expect(message?.verifierBlocked).toBe(true);
+    expect(message?.verifier?.reason).toBe('privacy_shield');
+    expect(message?.degradedTurn?.committedTools).toEqual(['create_invoice', 'v4_render_answer']);
+    expect(message?.degradedTurn?.correlationId).toBe('turn-token-2');
+    expect(message?.error).toBeUndefined();
+  });
+
   it('a released answer carries its verdict from done', () => {
     const { sessions, mutateById } = stubSessions();
 

@@ -8,8 +8,9 @@
  * attachments, cards and follow-ups that carried its claims. Control-flow
  * results (choice card, MCP input form, slot picker, OAuth consent, a bare
  * NO_REPLY) are delivered without verification; an answer that only ends
- * with NO_REPLY is verified like any answer. `shadow` still delivers the
- * answer.
+ * with NO_REPLY is verified like any answer. An answer Privacy Shield
+ * rendered server-side — first answer, resample or retry — never reaches the
+ * verifier pipeline and is withheld. `shadow` still delivers the answer.
  */
 
 import { describe, it } from 'node:test';
@@ -24,6 +25,7 @@ import {
   AMOUNT_TEXT,
   approved,
   blocked,
+  borderline,
   partlyChecked,
   skipped,
   unavailable,
@@ -148,6 +150,31 @@ describe('VerifierService.chat — enforce withholds what it could not confirm',
       assert.equal(sa.answerSource, undefined, `${label}: not withheld`);
       assert.ok(sa.text.startsWith(r.answer), `${label}: answer delivered`);
     }
+  });
+
+  it('never sends an answer the privacy shield rendered to the verifier, and withholds it', async () => {
+    // The pipeline would approve it; it must not be asked at all.
+    const { h, sa } = await chatEnforced([approved()], [result({ answerSource: 'privacy-render' })]);
+    assert.equal(h.verifyInputs.length, 0, 'never sent to the verifier');
+    assertWithheld(sa, 'rendered');
+    assert.match(sa.text, /abgeschlossen/);
+    assert.deepEqual(h.persisted, [{ status: 'unavailable', retryCount: 0, mode: 'enforce' }]);
+  });
+
+  it('nor a rendered correction retry or resample', async () => {
+    const rendered = result({ answerSource: 'privacy-render' }, CORRECTED);
+
+    const retried = await chatEnforced([blocked(), approved()], [result(), rendered]);
+    assert.equal(retried.h.runTurnInputs.length, 2, 'the retry ran');
+    assert.equal(retried.h.verifyInputs.length, 1, 'only the first answer was verified');
+    assertWithheld(retried.sa, 'rendered retry');
+    assert.equal(retried.sa.text.includes('4.100.000'), false, 'the retry answer stays withheld');
+    assert.deepEqual(retried.h.persisted, [{ status: 'unavailable', retryCount: 1, mode: 'enforce' }]);
+
+    const resampled = await chatEnforced([borderline(), approved()], [result(), rendered]);
+    assert.equal(resampled.h.runTurnInputs.length, 2, 'the resample ran');
+    assert.equal(resampled.h.verifyInputs.length, 1, 'only the first answer was verified');
+    assertWithheld(resampled.sa, 'rendered resample');
   });
 
   it('verifies an answer that only ends with NO_REPLY, and withholds it like any other', async () => {

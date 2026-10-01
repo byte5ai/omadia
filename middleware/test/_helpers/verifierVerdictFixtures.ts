@@ -69,6 +69,10 @@ export const partlyChecked = (): VerifierVerdict => disclaimer([VERIFIED, NOT_CH
 /** Checked, but the sources confirmed none: badge `unverified`. */
 export const noneConfirmed = (): VerifierVerdict => disclaimer([UNVERIFIED]);
 
+/** One claim confirmed, one checked without confirmation: borderline
+ *  (`isBorderlineVerdict`), so `enforce chat()` draws a resample. */
+export const borderline = (): VerifierVerdict => disclaimer([VERIFIED, UNVERIFIED]);
+
 export const skipped = (reason: VerifierSkipReason): VerifierVerdict => ({
   status: 'skipped',
   reason,

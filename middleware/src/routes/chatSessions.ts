@@ -66,6 +66,7 @@ const VerifierSummarySchema = z.object({
       'incomplete_coverage',
       'extractor_error',
       'pipeline_error',
+      'privacy_shield',
     ])
     .optional(),
   claimCount: count,

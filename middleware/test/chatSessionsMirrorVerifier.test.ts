@@ -85,6 +85,19 @@ describe('chat-session mirror — verifier fields', () => {
     assert.equal(stored?.['verifierBlocked'], true);
   });
 
+  it('keeps the reason of an answer withheld behind the privacy shield', async () => {
+    const summary = {
+      ...SUMMARY,
+      badge: 'unavailable',
+      status: 'unavailable',
+      reason: 'privacy_shield',
+      claimCount: 0,
+      contradictionCount: 0,
+    };
+    const stored = await put(session({ verifier: summary, verifierBlocked: true }));
+    assert.deepEqual(stored?.['verifier'], summary);
+  });
+
   it('drops a summary that does not fit, and still saves the session', async () => {
     const stored = await put(
       session({ verifier: { ...SUMMARY, badge: 'trust-me' }, verifierBlocked: 'yes' }),

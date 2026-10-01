@@ -15,9 +15,14 @@
  *     consent, a degraded turn's notice) are released without verification;
  *     a bare NO_REPLY releases its `done` and nothing else, and an answer that
  *     only ends with NO_REPLY is verified like any other;
+ *   - an answer Privacy Shield rendered server-side, degraded or not, never
+ *     reaches the verifier pipeline (it holds values the shield kept from the
+ *     model) and is withheld; a withheld degraded turn keeps its failure
+ *     markers;
  *   - a failed turn releases nothing it held, and the stream path never
  *     starts a correction retry.
- * `shadow` stays the unchanged pass-through.
+ * `shadow` stays the unchanged pass-through, and never verifies a degraded
+ * turn.
  */
 
 import { describe, it } from 'node:test';
@@ -276,15 +281,47 @@ describe('VerifierService.chatStream — enforce release rules without a verdict
     assertWithheld(events, 'trailing NO_REPLY');
   });
 
-  it('a degraded turn whose answer the privacy shield rendered is verified like any answer', async () => {
+  it('never sends an answer the privacy shield rendered to the verifier, and withholds it', async () => {
+    const cases: [string, DoneEvent][] = [
+      ['rendered', done({ answerSource: 'privacy-render', maskedValues: [AMOUNT_TEXT] })],
+      [
+        'rendered, then degraded',
+        done({
+          degraded: true,
+          committedTools: ['v4_render_answer'],
+          correlationId: 'corr-4',
+          answerSource: 'privacy-render',
+        }),
+      ],
+    ];
+    for (const [label, terminal] of cases) {
+      // The pipeline would approve it; it must not be asked at all.
+      const { events, h } = await runEnforced([approved()], turn(terminal));
+      assert.equal(h.verifyInputs.length, 0, `${label}: never sent to the verifier`);
+      const withheld = assertWithheld(events, label);
+      assert.match(withheld.answer, /abgeschlossen/, `${label}: the check could not run`);
+      assert.equal(withheld.verifier?.status, 'unavailable', label);
+      assert.equal(withheld.verifier?.reason, 'privacy_shield', label);
+      assert.equal(withheld.verifier?.badge, 'unavailable', label);
+      assert.deepEqual(h.persisted, [{ status: 'unavailable', retryCount: 0, mode: 'enforce' }], label);
+    }
+  });
+
+  it('a withheld degraded turn keeps the markers that report its failure', async () => {
     const rendered = done({
       degraded: true,
-      committedTools: ['v4_render_answer'],
+      committedTools: ['create_invoice', 'v4_render_answer'],
+      correlationId: 'corr-4',
       answerSource: 'privacy-render',
     });
-    const { events, h } = await runEnforced([blocked()], turn(rendered));
-    assert.equal(h.verifyInputs.length, 1, 'verified');
-    assertWithheld(events, 'degraded privacy render');
+    const withheld = assertWithheld((await runEnforced([approved()], turn(rendered))).events, 'degraded');
+    assert.equal(withheld.degraded, true);
+    assert.deepEqual(withheld.committedTools, ['create_invoice', 'v4_render_answer']);
+    assert.equal(withheld.correlationId, 'corr-4');
+
+    const ordinary = assertWithheld((await runEnforced([blocked()])).events, 'not degraded');
+    assert.equal('degraded' in ordinary, false);
+    assert.equal('committedTools' in ordinary, false);
   });
 
   it('a failed turn releases nothing it held', async () => {
@@ -339,5 +376,17 @@ describe('VerifierService.chatStream — observer and the unchanged modes', () =
     assert.equal(events.length, script.length + 1);
     assert.ok(h.receivedAtVerify[0]?.includes('text_delta'), 'shadow delivers before the verdict');
     assert.ok(h.receivedAtVerify[0]?.includes('done'));
+  });
+
+  it('shadow never verifies a degraded turn, rendered by the privacy shield or not', async () => {
+    for (const terminal of [
+      done({ degraded: true, committedTools: ['create_invoice'] }),
+      done({ degraded: true, committedTools: ['v4_render_answer'], answerSource: 'privacy-render' }),
+    ]) {
+      const script = turn(terminal);
+      const h = createVerifierHarness({ mode: 'shadow', streams: [script], verdicts: [approved()] });
+      assert.deepEqual(await h.stream(), script);
+      assert.equal(h.verifyInputs.length, 0);
+    }
   });
 });

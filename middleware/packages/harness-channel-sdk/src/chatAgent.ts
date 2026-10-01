@@ -281,8 +281,11 @@ export interface RunTracePayload {
  * `incomplete_coverage` one whose claim extraction covered only part of the
  * answer and found nothing checkable there; `extractor_error` /
  * `pipeline_error` an `unavailable` one (the verifier could not run, or its
- * pipeline returned no usable verdict). A closed code set: the summary is
- * forwarded verbatim on the stream, so it never carries an error message.
+ * pipeline returned no usable verdict), and `privacy_shield` an `unavailable`
+ * one whose answer was never sent to the verifier: in `enforce` mode an
+ * answer Privacy Shield rendered server-side is withheld unverified. A closed
+ * code set: the summary is forwarded verbatim on the stream, so it never
+ * carries an error message.
  */
 export type VerifierSummaryReason =
   | 'no_trigger'
@@ -290,7 +293,8 @@ export type VerifierSummaryReason =
   | 'no_checkable_claims'
   | 'incomplete_coverage'
   | 'extractor_error'
-  | 'pipeline_error';
+  | 'pipeline_error'
+  | 'privacy_shield';
 
 /**
  * Compact verifier summary attached to `ChatTurnResult` and the streaming

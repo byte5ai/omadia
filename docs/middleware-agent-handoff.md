@@ -2566,7 +2566,7 @@ Setup-Felder, nicht mehr die Env.
 | Variable / Setup-Feld | Wirkung |
 |---|---|
 | `VERIFIER_ENABLED` / `verifier_enabled` | `true` schaltet den Verifier-Wrapper ein. Default `false`. |
-| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht nur bei `approved` oder `skipped` (`no_trigger`/`no_claims`) raus, sonst eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
+| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht nur bei `approved` oder `skipped` (`no_trigger`/`no_claims`) raus, sonst eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort geht nie an den Verifier und wird zurückgehalten (`privacy_shield`). Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
 | `VERIFIER_MODEL` / `verifier_model` | Modell für Claim-Extraktion und Evidence-Judge. |
 | `VERIFIER_MAX_CLAIMS` / `verifier_max_claims` | Höchstzahl geprüfter Claims pro Antwort, Default `20`. |
 | `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Relative Betragstoleranz, Default `0.01`. |
@@ -3082,24 +3082,39 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   Hatte der Turn die KI-Kennzeichnung in `done.answer` gefaltet (erster Turn
   des Scopes), trägt die Notiz in `done.answer` denselben Block — nie im
   Delta.
-- **Ohne Urteil freigegeben** (nur Antworten ohne Faktenaussage):
-  `pendingUserChoice`, `pendingMcpInput`, `pendingSlotCard`,
-  `pendingOAuthConsent`, `degraded` mit der Turn-Incomplete-Notiz —
-  gehaltene Events wie bei der Freigabe (Text als ein Delta aus
-  `done.answer`), kein `verifier`-Event. Ein nacktes `NO_REPLY` (Sentinel als
+- **Ohne Urteil freigegeben:** `pendingUserChoice`, `pendingMcpInput`,
+  `pendingSlotCard`, `pendingOAuthConsent`, `degraded` mit der
+  Turn-Incomplete-Notiz — gehaltene Events wie bei der Freigabe (Text als ein
+  Delta aus `done.answer`), kein `verifier`-Event. Sicher faktenfrei sind nur
+  die Notiz und `NO_REPLY`: eine Karte hängt an der Antwort ihres Turns.
+  Auswahlkarte und MCP-Eingabeformular beenden den Turn am Tool-Call (Antwort
+  = Text davor); `pendingSlotCard`, `pendingOAuthConsent` (turnweit, sobald
+  ein Kalender-Tool `consent_required` meldete) und eine vom Card-Router
+  (`maybeRouteCardsFromText`, Provider ohne Interleaving, Antwort ab 40
+  Zeichen) angehängte Auswahlkarte reiten dagegen auf dem `done` einer
+  vollständigen Antwort — die geht dann samt Tool-Output und Surfaces
+  ungeprüft raus (offener Punkt in §13). Ein nacktes `NO_REPLY` (Sentinel als
   ganze Antwort) gibt nur sein `done` frei, nichts Gehaltenes. Geprüft wie
-  jede Antwort werden eine Antwort, die nur mit `NO_REPLY` **endet**
-  (`isNoReply` akzeptiert die Form, Stream-Clients verwerfen sie aber nicht),
-  und ein `degraded`-Turn mit `answerSource: 'privacy-render'` (eine echte,
-  serverseitig gerenderte Antwort). Endet der Turn mit `error`, geht nur der
-  `error` raus, nichts Gehaltenes.
+  jede Antwort wird eine Antwort, die nur mit `NO_REPLY` **endet**
+  (`isNoReply` akzeptiert die Form, Stream-Clients verwerfen sie aber nicht).
+  Endet der Turn mit `error`, geht nur der `error` raus, nichts Gehaltenes.
+- **Nie an den Verifier: von Privacy Shield gerenderte Antworten.** Eine
+  Antwort mit `answerSource: 'privacy-render'` (auch ein `degraded`-Turn,
+  dessen Antwort der Shield schon gerendert hatte) geht in `enforce` nie an
+  `pipeline.verify` (`mayVerifyAnswer`): der Claim-Extraktor schickte die
+  echten Werte, die der Shield dem Modell vorenthalten hat, an seinen
+  Provider. Stattdessen Verdict `unavailable` / `privacy_shield` →
+  zurückgehalten, auf Stream und `chat()`, dort auch für Resample und Retry.
+  Ein zurückgehaltener `degraded`-Turn behält `degraded`, `committedTools`
+  und `correlationId`.
 - **Kein Retry im Stream** — ein Retry führt die Tools des Turns erneut aus.
   `VerifierService.chat` (Teams, Telegram, `/api/chat`) behält Retry und
   Resample und liefert bei einem nicht freigegebenen Endurteil dieselbe Notiz
   als `SemanticAnswer` (`answerSource`/`answerIsError` gesetzt, Anhänge und
   Karten entfernt).
 - Ein zurückgehaltener Turn zählt als `ok` (Operator-Health in `routes/chat.ts`,
-  API-Key-Audit in `chatRouter.ts`) — eine Policy-Entscheidung, kein Fehler.
+  API-Key-Audit in `chatRouter.ts`) — eine Policy-Entscheidung, kein Fehler;
+  außer er ist zugleich `degraded`, dann bleibt er ein Fehler.
 - **Canvas-Skeleton:** deklariert der Basis-Agent
   `ChatAgent.holdsContentUntilVerdict` (der `VerifierService` in `enforce`),
   hält der Canvas-Composer sein Skeleton zurück (`verdictHold.ts`): es geht
@@ -3524,6 +3539,30 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
 - **Connector-Badge auf der Notiz.** Teams/Telegram zeigen an einer
   zurückgehaltenen Antwort das Badge ihres Verdicts (`failed`, `partial`) neben
   der Notiz. Produktentscheidung, ob es dort entfallen soll.
+- **Karten-Ausnahme lässt Faktenantworten ungeprüft durch.**
+  `releasesWithoutVerification` gibt jeden Turn mit `pendingUserChoice`,
+  `pendingMcpInput`, `pendingSlotCard` oder `pendingOAuthConsent` ohne Urteil
+  frei — auch die vollständige Antwort, an der ein Slot-Picker, ein
+  Consent-Prompt (turnweit) oder eine Card-Router-Auswahlkarte hängt, samt
+  Tool-Output, Surfaces und Canvas-Skeleton, ohne Badge. Engere Regel zur
+  Entscheidung: den Antworttext solcher Turns prüfen und die Karte nur
+  mitliefern, wenn das Urteil die Antwort freigibt — oder nur Turns
+  ausnehmen, die nichts als die Karte sind. Die vier Ausnahmen sind derzeit
+  so gesetzt; Security §7c beschreibt die Lücke.
+- **`enforce` mit Privacy Shield v4 liefert keine gerenderte Antwort.** Eine
+  gerenderte Antwort geht nie an den Verifier und wird zurückgehalten
+  (`unavailable` / `privacy_shield`) — auch ein gerenderter Tool-Fehler oder
+  Anmelde-Prompt (`answerIsError`). Damit `enforce` sie freigeben kann, müsste
+  der Verifier die Antwort über die Privacy-Sicht des Turns prüfen (Prosa und
+  Spaltenlabels maskiert, Werte über Handles statt Klartext).
+- **Zusammenführen mit der Privacy-Bindung der Verifier-Requests.** Sobald die
+  Änderung auf `main` ist, die die Model-Requests des Verifiers an die
+  Privacy-Policy des Turns bindet (`verifierGate`): deren Ergebnis „nicht
+  prüfen“ im `enforce`-Callback auf `releases: false` abbilden (Verdict
+  `unavailable` / `privacy_shield`), nie auf eine Auslieferung ohne Urteil;
+  `mayVerifyAnswer` deckt dann nur noch den ersten Zweig des Gates ab. Bis
+  dahin schickt `shadow` eine gerenderte, nicht degradierte Antwort weiter an
+  den Extraktor.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

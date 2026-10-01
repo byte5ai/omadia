@@ -740,6 +740,7 @@ invariant cannot cover — a claim the model never lists — is stated below.
 | retry after `blocked`, some claims verified, none contradicted | correction confirmed in part | `partial` | partial | amber |
 | `skipped` — `no_trigger`, `no_claims`, `no_checkable_claims`, `incomplete_coverage` | ran, nothing checkable | `unverified` | none | neutral "not verified" |
 | `unavailable` — `extractor_error`, `pipeline_error` | could not run, or the pipeline returned no usable verdict | `unavailable` | none | neutral "unavailable" |
+| `unavailable` — `privacy_shield` | `enforce` only: the answer Privacy Shield rendered was never sent to the verifier (below) | `unavailable` | none | neutral "unavailable" |
 
 - **A failed extraction is not an empty one.** `ClaimExtractor.extract`
   rejects when the LLM call fails, the response was cut off at the token
@@ -921,9 +922,9 @@ not `failed`), so the evidence rules above hold for withheld answers too.
   payloads), `surface_*` and `done`. A released turn's held events go out
   in order, `done` with `verifier` — except its text deltas: the answer goes
   out as one `text_delta` carrying `done.answer` (without the disclosure
-  block) right before `done` (`releasedTurn`) — the same text, and for an
-  answer Privacy Shield rendered the same real values, that `done` hands the
-  same client anyway. The verdict is about
+  block) right before `done` (`releasedTurn`) — the same text, and for a
+  rendered answer a card released (below) the same real values, that `done`
+  hands the same client anyway. The verdict is about
   `done.answer`, and the streamed deltas can say more: the orchestrator
   streams each model response live and may then discard it and run the
   model again (an unmet sub-agent obligation, a file it announced but did
@@ -933,21 +934,46 @@ not `failed`), so the evidence rules above hold for withheld answers too.
   rebuilt from an allowlist of identity and telemetry fields: attachments,
   files, follow-ups, masked values, the delegated answer, cards and excerpts
   are dropped. A turn that ends in an `error` releases nothing it held.
-- **Released without a verdict, on both paths — only answers that state no
-  fact.** A choice card, an MCP input form, a slot picker and an OAuth
-  consent prompt (they ask for input rather than state facts), a degraded
-  turn whose answer is the server's turn-incomplete notice, and a bare
-  `NO_REPLY` (the sentinel as the whole answer: a notice would break the
-  agent's deliberate silence) — `releasesWithoutVerification`. On the stream
-  these turns carry the text of their own `done.answer` like a released
-  turn, and a bare `NO_REPLY` releases its `done` alone, without the tool
-  traffic that led to it. Two look-alikes are verified like any answer: a
-  degraded turn whose answer Privacy Shield had already rendered
-  (`answerSource: 'privacy-render'`) is a real answer, and an answer that
-  only ends with the sentinel on its own line states whatever precedes it —
-  `isNoReply` accepts that form so Teams, Telegram and `/api/chat` stay
-  silent, but no stream consumer drops it. `shadow` keeps its narrower rule
-  (choice card and degraded turn only).
+- **Released without a verdict, on both paths.** A turn that carries a
+  choice card, an MCP input form, a slot picker or an OAuth consent prompt, a
+  degraded turn whose answer is the server's turn-incomplete notice, and a
+  bare `NO_REPLY` (the sentinel as the whole answer: a notice would break the
+  agent's deliberate silence) — `releasesWithoutVerification`. Only the
+  notice and `NO_REPLY` are sure to state no fact. A card asks the user for
+  input, but it rides on whatever answer its turn produced, and that answer
+  goes out unchecked — without a verdict, without a badge, with the tool
+  output, surfaces and canvas skeleton the turn held. A choice card or an MCP
+  input form ends the turn at the tool call, so its answer is the text the
+  model wrote before it. Three cards also ride on the `done` of a complete
+  answer: `pendingSlotCard` whenever `find_free_slots` queued slots,
+  `pendingOAuthConsent` whenever any calendar tool of the turn hit
+  `consent_required`, and `pendingUserChoice` when the card-router pass
+  (`maybeRouteCardsFromText`, for providers without interleaved tool use)
+  attaches a choice card to an answer of 40 characters or more. Narrowing
+  the card exemption is an open point (handoff §13). On the stream these
+  turns carry the text of their own `done.answer` like a released turn, and
+  a bare `NO_REPLY` releases its `done` alone, without the tool traffic that
+  led to it. An answer that only ends with the sentinel on its own line is
+  verified like any answer: it states whatever precedes it — `isNoReply`
+  accepts that form so Teams, Telegram and `/api/chat` stay silent, but no
+  stream consumer drops it. `shadow` keeps its narrower rule (choice card
+  and degraded turn only).
+- **Never verified: an answer Privacy Shield rendered.** An answer with
+  `answerSource: 'privacy-render'` holds real values the shield kept from
+  the turn's model, and the verifier's claim extractor sends the answer it
+  checks to its model provider as it is. So `enforce` never hands such an
+  answer to the pipeline (`mayVerifyAnswer`): it records `unavailable` with
+  reason `privacy_shield` and withholds the answer, on both paths and for
+  every answer it would verify — the first answer, a borderline resample and
+  a correction retry. A degraded turn whose answer the shield had already
+  rendered is a real answer, not the turn-incomplete notice, so it is not
+  exempt and is withheld the same way; its `done` keeps `degraded` and
+  `committedTools`, so the turn still reports its failure. With Privacy
+  Shield v4 rendering active, `enforce` therefore delivers no rendered
+  answer — a rendered tool error or sign-in prompt included. `shadow` skips
+  a degraded turn as before; an answer that is rendered but not degraded is
+  still sent to the extractor in `shadow` until the verifier's model requests
+  are bound to the turn's privacy policy (handoff §13).
 - **Non-streaming path.** `VerifierService.chat` keeps its correction retry
   for a contradiction (`VERIFIER_MAX_RETRIES`, default 1) and its borderline
   resample, and delivers the notice when the final verdict does not release
@@ -964,7 +990,8 @@ not `failed`), so the evidence rules above hold for withheld answers too.
   never with a withheld or failed turn
   (`omadia-ui-orchestrator/src/verdictHold.ts`). A withheld turn counts as
   `ok` for the operator health signal and the API-key audit: it is a policy
-  decision, not a failure.
+  decision, not a failure — unless it is also degraded (it threw after a
+  tool committed), which both still record as a failure.
 - **Not covered — by design or still open:**
   - the subscription-CLI runtime (`claude-cli` provider): `buildOrchestrator`
     returns the CLI chat agent before the verifier wrapper, so `VERIFIER_MODE`
@@ -979,6 +1006,8 @@ not `failed`), so the evidence rules above hold for withheld answers too.
     the verdict is about `done.answer`, and tool output, sub-agent traffic,
     nudges, annotations, surfaces and the canvas skeleton's own text go out
     because of that verdict, not their own;
+  - a turn that carries an input card goes out without any verdict, the
+    answer the card rides on included (above);
   - LLM-free canvas actions and refreshes (a deterministic action or a
     refresh recipe runs the tool directly) involve no model answer and no
     verifier;
@@ -990,12 +1019,14 @@ not `failed`), so the evidence rules above hold for withheld answers too.
 
 Tests: `middleware/test/verifierServiceEnforceStream.test.ts` (what a consumer
 holds when the verifier is asked; release, withhold and fail-closed verdicts;
-control-flow terminals, `NO_REPLY` and its trailing form; failed turns;
-disclosure and locale; observer forwarding; `shadow` unchanged),
+control-flow terminals, `NO_REPLY` and its trailing form; answers Privacy
+Shield rendered, degraded or not; failed turns; disclosure and locale;
+observer forwarding; `shadow` unchanged),
 `middleware/test/verifierServiceEnforceRelease.test.ts` (the released text is
 `done.answer`, never a discarded response's deltas),
 `middleware/test/uiOrchestratorVerifierEnforce.test.ts` (the canvas skeleton),
-`middleware/test/verifierServiceEnforceChat.test.ts`,
+`middleware/test/verifierServiceEnforceChat.test.ts` (including rendered
+first answers, resamples and retries),
 `middleware/test/verifierBlockedText.test.ts`,
 `middleware/test/channelApi/chatRouterVerifierEnforce.test.ts` (the public
 API-key wire), `middleware/test/chatSessionsMirrorVerifier.test.ts`,
@@ -1742,12 +1773,15 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       carries no model or tool output, and a verdict other than `approved` or
       `skipped` with `no_trigger` / `no_claims` withholds the answer. A
       released turn's text is the text of its `done.answer`, never the deltas
-      the model streamed. A turn exempt from verification
-      (`releasesWithoutVerification`) states no fact: an input card or
-      prompt, the server's turn-incomplete notice, or `NO_REPLY` as the whole
-      answer. A turn marked `answerSource: "verifier-blocked"` is a withheld
-      answer: its `answer` is the notice, and nothing of the original answer
-      reaches the client (§7c).
+      the model streamed. A new exemption from verification
+      (`releasesWithoutVerification`) is limited to turns whose answer states
+      no fact; the existing card exemptions already release the answer a
+      card rides on unchecked (§7c), so they are not a precedent to widen.
+      An answer with `answerSource: "privacy-render"` is never passed to the
+      verifier pipeline (`mayVerifyAnswer`); `enforce` withholds it. A turn
+      marked `answerSource: "verifier-blocked"` is a withheld answer: its
+      `answer` is the notice, and nothing of the original answer reaches the
+      client (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it

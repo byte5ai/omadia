@@ -262,14 +262,17 @@ export interface PrivacyReceipt {
 export interface VerifierSummary {
   badge: 'verified' | 'partial' | 'corrected' | 'failed' | 'unverified' | 'unavailable';
   status: 'approved' | 'approved_with_disclaimer' | 'blocked' | 'skipped' | 'unavailable';
-  /** Why a `skipped` / `unavailable` turn has no evidence. A closed code set. */
+  /** Why a `skipped` / `unavailable` turn has no evidence. A closed code set;
+   *  `privacy_shield`: an answer Privacy Shield rendered, withheld in
+   *  `enforce` mode without being sent to the verifier. */
   reason?:
     | 'no_trigger'
     | 'no_claims'
     | 'no_checkable_claims'
     | 'incomplete_coverage'
     | 'extractor_error'
-    | 'pipeline_error';
+    | 'pipeline_error'
+    | 'privacy_shield';
   claimCount: number;
   contradictionCount: number;
   unverifiedCount: number;
