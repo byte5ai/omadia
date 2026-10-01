@@ -242,6 +242,51 @@ the filter cannot see is bounded by `MAX_RECOVERY_ATTEMPTS`, because
 **no automatic retry**: a reload loop against a dead stack is worse than a screen
 that names the problem.
 
+### …and who may talk to main
+
+The same window shows documents of very different trust: the bundled wizard
+and loading pages, the loopback web UI (with third-party plugin UIs in
+same-origin iframes), and, during an in-window OIDC/Entra sign-in, the IdP's
+own pages. One preload serves all of them, so the trust boundary sits in main,
+not in the page:
+
+- **Every IPC channel names its surface.** `src/ipc.ts` registers channels only
+  through `guardedHandle`/`guardedOn`, and `src/ipcSender.ts` decides each call
+  from `event.senderFrame`, read synchronously on entry. The setup channels
+  (`testLlmKey`, `chooseDataDir`, `exportRecoveryKey`, `complete`) answer only
+  the bundled `dist/renderer/wizard.html` (compared as a file path) in the main
+  frame, and only while the navigator above shows `wizard`. The UI pings
+  (`uiReady`, `uiLocale`) answer only the running web UI's origin. A missing,
+  destroyed or detached sender frame is refused, and so is any subframe.
+- **The preload hands out only the document's own surface**
+  (`src/bridgeSurface.ts`): the wizard gets the setup methods and the boot
+  stream, the loading screen the boot stream, the web UI `uiReady` and
+  `setUiLocale`, anything else no `window.omadia` at all. Plugin iframes reach
+  the web UI's bridge through `window.parent`, so never add a method to the
+  `app` surface that returns or writes a secret. `bridgeSurface.ts` is inlined
+  into the sandboxed preload and must stay import-free.
+- **Navigation is fenced** (`src/navigationPolicy.ts`,
+  `src/navigationGuards.ts`, installed for every webContents and its session
+  from `web-contents-created`). In place, the window stays on the web UI and
+  kernel origins. Other web links and popups open in the system browser.
+  `file:`, `javascript:`, `data:` and `about:blank` targets are refused; no
+  page can navigate the window to a file, since main loads the bundled pages
+  itself. Same-app popups open sandboxed and without a preload. Subframes may
+  load web pages and `about:`/`data:`/`blob:` documents, nothing else. Web
+  redirects are left alone so the in-window sign-in works; a foreign page
+  reached that way has no bridge and every handler refuses it. A redirect to
+  any other scheme is cancelled.
+- **Nothing reaches the OS but vetted web links.** Electron hands a custom
+  scheme (`ms-settings:`, `search-ms:`, an installed app's scheme) to the OS
+  only after asking for the `openExternal` permission, and grants it when no
+  handler is set. The session refuses it, whichever frame or redirect asked;
+  the shell opens web links itself through `shell.openExternal`, after
+  checking them. Other permissions keep Electron's defaults.
+
+Adding a bundled page means classifying it in `bridgeSurface.ts` and checking
+it by path in `ipcSender.ts`, never widening the wizard surface. The full
+rationale is in `docs/security-architecture.md` §10i.
+
 ## Secrets and recovery
 
 `secrets.enc` in the data folder holds the kernel's `VAULT_KEY` and

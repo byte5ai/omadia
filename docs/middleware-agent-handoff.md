@@ -3247,6 +3247,61 @@ security-architecture §8a). Bewusst offen:
   mit ihrem Snapshot-Ordner. Wer Snapshot-Ordner von Hand löscht, lässt die
   Kopie daneben liegen.
 
+### Desktop-Shell: Trust-Boundary Renderer → Main
+
+Wizard, Ladeseite, Web-UI und bei In-Window-OIDC auch IdP-Seiten laufen im
+selben Fenster mit demselben Preload. Seit 2026-09-30 gilt, Begründung und
+Details in [`security-architecture.md` §10i](security-architecture.md):
+
+- **IPC:** Jeder Kanal wird in `desktop/src/ipc.ts` über
+  `guardedHandle`/`guardedOn` mit genau einer Surface registriert, nie direkt
+  über `ipcMain`. `desktop/src/ipcSender.ts` entscheidet pro Aufruf anhand von
+  `event.senderFrame`. Setup-Kanäle antworten nur dem gebündelten
+  `wizard.html` im Main-Frame (Pfadvergleich gegen die Installation), und nur
+  solange der Navigator `wizard` zeigt. UI-Pings antworten nur dem Origin der
+  laufenden Web-UI. `getState` ist entfernt.
+- **Preload:** `desktop/src/bridgeSurface.ts` gibt der Web-UI nur
+  `uiReady`/`setUiLocale`, fremden Seiten gar nichts. Plugin-iframes erreichen
+  die Bridge der Web-UI über `window.parent.omadia`. Deshalb darf die
+  `app`-Surface nie eine Methode bekommen, die ein Geheimnis liefert oder
+  schreibt.
+- **Navigation:** `desktop/src/navigationGuards.ts` hängt an jedem
+  webContents und dessen Session. Fremde Links und Popups gehen in den
+  Systembrowser. `file:`, `javascript:`, `data:` und `about:blank` werden
+  abgelehnt. Same-App-Popups öffnen sandboxed und ohne Preload. Subframes
+  dürfen Webseiten und `about:`/`data:`/`blob:` laden, sonst nichts.
+  Web-Redirects bleiben bewusst offen, damit der In-Window-Login per
+  OIDC/Entra funktioniert; ein Redirect auf ein anderes Schema bricht die
+  Navigation ab.
+- **OS-Protokoll-Handler:** Die Session verweigert Electrons
+  `openExternal`-Permission, die Electron ohne Handler jeder Seite gewährt.
+  Damit startet keine Seite, kein Plugin-iframe und kein Redirect ein
+  Programm über ein eigenes Schema (`ms-settings:`, `search-ms:`, …). Web-Links
+  öffnet die Shell selbst, geprüft, über `shell.openExternal`.
+
+Offen:
+
+- **Manuelle Prüfung auf paketierten Builds (macOS und Windows)** vor dem
+  nächsten Desktop-Release. Den Wizard komplett durchlaufen: Reveal zeigt den
+  Key, Finish bootet. Im Log darf keine `[ipc] … refused`-Zeile zu
+  `wizard.html` stehen, sonst stimmt der Pfadvergleich (asar-Pfad,
+  Laufwerksbuchstabe) nicht. In der Web-UI muss
+  `Object.keys(window.omadia)` genau `uiReady` und `setUiLocale` liefern.
+  Plugin-Autor-Link, GitHub-Hilfe-Link und ein Link in einer Chat-Antwort
+  öffnen im Systembrowser. Ein Same-App-Popup hat kein `window.omadia`. Ein
+  Link mit eigenem Schema in einer Plugin-UI startet kein Programm (Log:
+  `[nav] blocked a subframe navigation`). Der Entra-Login-Rundlauf klappt
+  inklusive Passwort-POST.
+- **Abmelden einer OIDC-Sitzung:** Die IdP-End-Session-URL öffnet jetzt im
+  Systembrowser, der einen eigenen Cookie-Speicher hat. Die IdP-Sitzung im
+  App-Fenster bleibt also bestehen. Folgepunkt für die Web-UI: in
+  `web-ui/app/_components/AuthBadge.tsx` bei vorhandener Desktop-Bridge direkt
+  auf `/login` gehen statt den IdP-Hop zu versuchen.
+- **Web-Redirects auf fremde Seiten** werden nicht blockiert. Das ist die
+  akzeptierte Rest-Ausnahme aus §10i: Solche Seiten bekommen keine Bridge,
+  jeder Handler lehnt sie ab, und auch sie erreichen keinen
+  OS-Protokoll-Handler.
+
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
 Alles hier ist **nicht** umgesetzt. Vollständige Darstellung samt Codestellen:
