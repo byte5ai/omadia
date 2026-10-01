@@ -269,9 +269,9 @@ export interface RunTracePayload {
  * `no_checkable_claims` explain a `skipped` turn (nothing checkable), and
  * `incomplete_coverage` one whose claim extraction covered only part of the
  * answer and found nothing checkable there; `extractor_error` /
- * `pipeline_error` an `unavailable` one (the verifier could not run). A closed
- * code set: the summary is forwarded verbatim on the stream, so it never
- * carries an error message.
+ * `pipeline_error` an `unavailable` one (the verifier could not run, or its
+ * pipeline returned no usable verdict). A closed code set: the summary is
+ * forwarded verbatim on the stream, so it never carries an error message.
  */
 export type VerifierSummaryReason =
   | 'no_trigger'

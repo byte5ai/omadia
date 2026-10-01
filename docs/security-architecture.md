@@ -739,7 +739,7 @@ invariant cannot cover — a claim the model never lists — is stated below.
 | retry after `blocked`, every claim verified | correction confirmed | `corrected` | corrected | blue |
 | retry after `blocked`, some claims verified, none contradicted | correction confirmed in part | `partial` | partial | amber |
 | `skipped` — `no_trigger`, `no_claims`, `no_checkable_claims`, `incomplete_coverage` | ran, nothing checkable | `unverified` | none | neutral "not verified" |
-| `unavailable` — `extractor_error`, `pipeline_error` | could not run | `unavailable` | none | neutral "unavailable" |
+| `unavailable` — `extractor_error`, `pipeline_error` | could not run, or the pipeline returned no usable verdict | `unavailable` | none | neutral "unavailable" |
 
 - **A failed extraction is not an empty one.** `ClaimExtractor.extract`
   rejects when the LLM call fails, the response was cut off at the token
@@ -1621,10 +1621,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       reaches the limit is recorded as possibly incomplete. A guard that
       keeps model output from the checkers (the verbatim guard) reports what
       it kept out as a gap instead of dropping it, and matches the whole
-      output: model text is never cut to a length before a guard or a check
-      sees it, and a claim too long to check is a gap, not a shortened claim.
-      A model response is read in full — every tool call, not the first one
-      (§7c).
+      claim: a claim's text is never cut to a length before the guard or a
+      check sees it, and a claim too long to check is a gap, not a shortened
+      claim. A model response is read in full — every tool call, not the
+      first one (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it

@@ -3104,6 +3104,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Floor anheben, sobald die Zahl steigt. `mask_user_prompt` ist ein globaler Schalter (kein
   Locale-Schalter); Betreibern mit überwiegend niederländischen Nutzern bis dahin C1 mit
   aktivieren oder die C0-Lücke bei Adressen bewusst in Kauf nehmen.
+- **Wackelnder Web-UI-Test `QualityPanel.test.tsx` („Aktualisieren button refetches").**
+  Der Test klickt den Refresh-Button, sobald der erste Fetch nur *aufgerufen* wurde; der
+  Button ist aber `disabled={loading}`, bis dieser Fetch fertig ist. Landet der Klick im
+  Ladezustand, kommt kein zweiter Fetch, und das `waitFor` läuft nach 1 s ab — am
+  2026-10-01 einmal im vollen Suite-Lauf rot, isoliert dreimal grün. Fix: vor dem Klick
+  warten, bis der Button wieder aktiv ist.
 
 ### Offene Punkte aus den Security-Härtungen (2026-09-30)
 
@@ -3343,6 +3349,20 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   Extractor. Offen: alle Calls lesen (widersprüchliche Urteile →
   `check_failed`), die Node-ID gegen die gezeigten Snippets prüfen und eine
   abgeschnittene Antwort als `check_failed` werten.
+- **Überlange Claims beobachten.** Ein Claim über `MAX_CLAIM_CHARS` (300
+  Zeichen) wird nicht mehr gekürzt geprüft, sondern ist die Lücke
+  `claims_too_long` — die Antwort ist dann höchstens `partial`. Das
+  Tool-Schema verlangt 1-200 Zeichen, erzwungen wird es im Prompt nicht. Im
+  Shadow-Betrieb die Logzeilen `[claim-extractor] … too_long=` beobachten;
+  sind sie häufig, das Modell im System-Prompt ausdrücklich lange Aussagen in
+  mehrere Claims teilen lassen, statt die Grenze anzuheben.
+- **`verifierService.ts` über der 500-Zeilen-Grenze.** Die Datei hatte vor
+  den evidenzgebundenen Verdicts schon 633 Zeilen und hat jetzt rund 700.
+  Reine Helfer — Summary und Badge (`summarise`, `badgeFor`, `mergeBadges`),
+  Trace-Extraktion (`extractToolsCalled` u. a.) und
+  `mergeBorderlineVerdicts` — in eigene Module ziehen und `badgeFor`,
+  `mergeBadges`, `mergeBorderlineVerdicts` weiter aus `verifierService.ts`
+  exportieren, weil Tests sie von dort importieren.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
