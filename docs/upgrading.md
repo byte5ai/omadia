@@ -339,11 +339,13 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
-## Upgrading past v0.167.9 — sessions, canvas sockets, first-user setup token
+## Upgrading past v0.167.9 — sessions, canvas sockets, setup token, routine card buttons
 
-Three hardening changes an operator may notice. Only one can need action: an
+Four hardening changes an operator may notice. Two can need action: an
 install whose first-user wizard is still open (no admin exists yet) needs the
-setup token the middleware prints to its log.
+setup token the middleware prints to its log, and an install whose Teams
+channel plugin is older than 0.26.1 needs that plugin updated before routine
+card buttons work again.
 
 ### Signing out ends every session of that user
 
@@ -414,6 +416,23 @@ Two behaviour changes worth knowing:
 Parallel wizard submissions now create exactly one admin. A late one gets 410
 `auth.setup_locked`, and one that collides with a slow database gets 409
 `auth.setup_in_progress`, which is safe to retry.
+
+### Routine card buttons need channel-teams 0.26.1 or later
+
+The buttons on a routine card in Teams (Pausieren, Aktivieren, Löschen, Jetzt
+auslösen) now act only for the user who clicked them, and the middleware refuses
+a click whose channel plugin does not say who that was. The Teams channel plugin
+(`@omadia/channel-teams`) sends that identity since **0.26.1**.
+
+- With channel-teams 0.26.1 or later, nothing changes.
+- With an older channel-teams, every routine card button answers *"Konnte die
+  Routine nicht …: Keine Benutzeridentität für diese Karten-Aktion übermittelt …"*
+  until the plugin is updated. Update it from the Hub before or right after the
+  middleware. Routines keep firing on schedule in the meantime, and the Operator
+  UI's Routines page can still pause, resume and delete them.
+- Each refused click is logged at error level as `[security] REFUSED routine card
+  action …`. If those lines keep appearing after the update, some channel plugin
+  still sends clicks without the user's identity.
 
 ## Upgrading past v0.167.7 — self-update overlay, framing, web-ui user, sandbox limits
 
