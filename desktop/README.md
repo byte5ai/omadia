@@ -17,7 +17,7 @@ install. An onboarding wizard collects your AI provider key on first run.
 
 ```
 Electron main
- ├─ embedded PostgreSQL 17 + pgvector on loopback TCP, a SCRAM password for every connection
+ ├─ embedded PostgreSQL 17 + pgvector on a private Unix socket (Windows: loopback TCP), SCRAM for every connection
  ├─ kernel        ← forked from Electron-as-Node, DATABASE_URL → embedded engine as omadia_kernel
  ├─ web-ui (Next) ← forked from Electron-as-Node, MIDDLEWARE_URL → kernel port
  ├─ vault key + keychain key + provider keys + DB passwords ← secrets.enc, OS keychain via Electron safeStorage
@@ -156,9 +156,10 @@ A full adversarial review (Forge / codex, local) was run on this code. Resolved:
   the native PostgreSQL that replaced it was first initialised with `trust`.
   Now every connection needs a SCRAM password and the kernel connects as a role
   without superuser rights; see [Database authentication](#database-authentication).
-  The server still binds loopback only. The kernel previously bound `::` (all
-  interfaces); it now honours `HOST`, and the desktop app sets `HOST=127.0.0.1`
-  so the local install is never reachable on the LAN.
+  The server listens on a Unix socket in a private directory (Windows:
+  loopback only). The kernel previously bound `::` (all interfaces); it now
+  honours `HOST`, and the desktop app sets `HOST=127.0.0.1` so the local
+  install is never reachable on the LAN.
 - **Setup is only marked boot-verified after a successful boot** (`completed`),
   so a failed first boot can't brick the next launch; a failed boot offers
   "Re-run setup" instead of a dead auto-boot loop. The exception is an
@@ -181,8 +182,14 @@ Accepted v1 limitations (tracked for a follow-up):
   attacker already has the data dir, so this is accepted for v1; hardening to a
   stdin/fd handoff is a follow-up. The database superuser's password is not in
   that environment: it never leaves the shell.
-- Free-port selection has a small TOCTOU window (port released before the child
-  binds). Rare on a local machine; surfaces as a boot-timeout, not corruption.
+- Free-port selection has a TOCTOU window: a port is chosen free and released
+  before the child binds it, and the database port is free again while the
+  shell repairs a password in single-user mode. For the database this matters
+  only on Windows (macOS and Linux use a private socket and no TCP port), and
+  there another local user who binds it fails the boot rather than learning a
+  password: the shell trusts only a server whose `postmaster.pid` names the
+  process it started and that completes SCRAM. The kernel's own database
+  connections are not SCRAM-only yet; see [Database authentication](#database-authentication).
 - No app/tray icons shipped yet (Electron defaults used).
 - No Linux target in v1 (mac + win only), though the code paths are cross-platform.
 
@@ -343,12 +350,37 @@ then no longer open.
 ## Database authentication
 
 The embedded PostgreSQL 17 cluster asks every connection for a SCRAM-SHA-256
-password. It listens on `127.0.0.1` only, without a Unix socket, and its
-`pg_hba.conf` belongs to the shell (`src/embeddedDbAuth.ts`): password-only
-rules for exactly two roles, rewritten whenever the file differs but only while
-the server is stopped, and the server starts with `hba_file` pinned to it on
-the command line. Whoever runs a client, under whichever OS account, gets
-nowhere without a password.
+password. Its `pg_hba.conf` belongs to the shell (`src/embeddedDbAuth.ts`):
+password-only rules for exactly two roles, rewritten whenever the file differs
+but only while the server is stopped, and the server starts with `hba_file`
+pinned to it on the command line. Whoever runs a client, under whichever OS
+account, gets nowhere without a password.
+
+Where it listens (`src/embeddedDbEndpoint.ts`):
+
+- **macOS and Linux:** only on a Unix socket in `<app data>/pg-socket`, a
+  directory created `0700` and checked to be owned by the desktop user, with
+  the socket itself `0700` too. There is no TCP listener at all, and the
+  kernel's `DATABASE_URL` names the socket directory as its host. No other OS
+  user can reach the server or put a listener where the shell and the kernel
+  connect. When that path is too long for a socket (about 100 bytes, a long
+  home directory) or cannot be made private, the socket goes into a fresh
+  private directory under the OS temp folder instead, one per start. It is
+  never the chosen data folder, which may be cloud-synced.
+- **Windows:** on `127.0.0.1`, the transport its Postgres build offers.
+
+How the shell knows the server is its own: the server counts as started once
+its own `postmaster.pid` names the process the shell spawned, on the expected
+socket or address, with status `ready`; that check sends no credentials. Every
+connection the shell opens accepts SCRAM and nothing else
+(`src/scramOnlyConnect.ts`): a server that asks for a cleartext or MD5
+password, offers no SCRAM, or lets the client in without an exchange is
+refused before a password is sent, and SCRAM's last step makes the server
+prove it holds the password's verifier. The first login after every start is
+the superuser's and must report this cluster's data directory before the
+kernel's password goes anywhere. Before provisioning, before the verification
+and before the kernel gets its `DATABASE_URL`, the shell checks again that the
+server it started still runs and still holds its endpoint.
 
 | Role | Used by | May |
 |---|---|---|
@@ -371,11 +403,12 @@ otherwise restore a capability the restricted role is meant to lack.
 
 What a start does:
 
-- **Normal start:** the shell's `pg_hba.conf` is in place and the kernel role
-  logs in, so the shell only verifies: a wrong password is refused for both
-  roles, and the kernel role holds no privilege. The server logs those two
-  refused attempts as `FATAL: password authentication failed`. That is the
-  check, not a fault; a failed check stops the start instead.
+- **Normal start:** the shell's `pg_hba.conf` is in place, the superuser login
+  finds this cluster and the kernel role logs in, so the shell only verifies:
+  a wrong password is refused for both roles, and the kernel role holds no
+  privilege. The server logs those two refused attempts as
+  `FATAL: password authentication failed`. That is the check, not a fault; a
+  failed check stops the start instead.
 - **First start of a cluster created before passwords were required:** before
   the server starts, the superuser gets its password in PostgreSQL's
   single-user mode (`postgres --single`, which opens no port), then
@@ -395,6 +428,19 @@ What a start does:
 connects without one, so it cannot open a migrated cluster. Restore the
 pre-update snapshot (`snapshots/pgdata-pre-<version>-<stamp>/` as `pgdata/`,
 its `.secrets.enc` as `secrets.enc`); a later update migrates it again.
+
+**What is left on Windows.** The loopback port is free while the server is
+stopped: between choosing the port and starting the server, and during a
+single-user password repair. Another local user can bind it in that window.
+The server then fails to start, so the boot fails (the next start picks a free
+port); the shell's SCRAM-only logins hand that listener no password, and its
+`postmaster.pid` check never takes it for the server. The kernel's own
+connections use a stock pg client, though: if the server stops while the
+kernel runs and another user binds the port before the kernel reconnects,
+that listener could ask the kernel for its password in cleartext. Closing that
+is a follow-up (`docs/middleware-agent-handoff.md` §13). macOS and Linux are
+not affected: the private socket directory has room for no one else's
+listener.
 
 ## Capability switches
 

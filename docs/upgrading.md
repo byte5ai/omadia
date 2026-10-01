@@ -355,6 +355,12 @@ authentication). Nothing to do beforehand. The start logs
   the next start re-provisions the database passwords with the server stopped
   (single-user mode, no port open) and logs it at warn level. The kernel-vault
   caveat in `desktop/README.md` § Secrets and recovery still applies.
+- **No database port on macOS and Linux.** The embedded server now listens
+  only on a Unix socket in `<app data>/pg-socket` (owner-only; a private
+  temporary directory when that path is too long for a socket), not on
+  `127.0.0.1`. A local tool that used to reach it over TCP has to use the
+  socket directory as its host, and it needs a password like any client.
+  Windows keeps `127.0.0.1`.
 
 ## Upgrading past v0.167.7 — self-update overlay, framing, web-ui user, sandbox limits
 

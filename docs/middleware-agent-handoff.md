@@ -3268,7 +3268,34 @@ als nicht vertrauenswürdig: Jede Wartungsverbindung pinnt einen festen
 der Ownership-Transfer schema-qualifiziert seine Aufrufe (`pg_catalog.format`)
 und pinnt den `search_path` zusätzlich selbst
 (`desktop/src/embeddedDbOwnership.ts`). Die Verifikation lehnt die Kernel-Rolle
-außerdem ab, wenn sie Mitglied irgendeiner Rolle ist. Bewusst offen:
+außerdem ab, wenn sie Mitglied irgendeiner Rolle ist.
+
+Unter macOS und Linux lauscht der Server nur auf einem Unix-Socket in
+`<userData>/pg-socket` (0700, Eigentümer geprüft; bei zu langem Pfad ein
+privates Temp-Verzeichnis pro Start), ohne TCP; die `DATABASE_URL` des Kernels
+nennt das Socket-Verzeichnis als Host (`desktop/src/embeddedDbEndpoint.ts`).
+Die Shell verbindet sich nur per SCRAM (`desktop/src/scramOnlyConnect.ts`:
+Klartext-, MD5- oder Login ohne SCRAM-Austausch wird abgelehnt, bevor ein
+Passwort rausgeht). "Bereit" heißt: `postmaster.pid` nennt den gestarteten
+Prozess mit Status `ready`, ohne Zugangsdaten; danach muss der erste
+Superuser-Login das eigene `data_directory` melden, bevor das Kernel-Passwort
+irgendwohin geht. Bewusst offen:
+
+- **Windows: Kernel-Pools sind nicht SCRAM-only.** Windows bleibt auf
+  `127.0.0.1`. Die Shell-Verbindungen sind dort geschützt, die Pools des
+  Kernels (`createNeonPool`, `coreMigrations`) nutzen aber einen normalen
+  pg-Client. Stirbt der Server, während der Kernel läuft, und bindet ein
+  anderer lokaler Nutzer den Port vor dem nächsten Reconnect, könnte er das
+  Kernel-Passwort im Klartext anfordern. Optionen: ein SCRAM-only-Client für
+  die Kernel-Pools (`new Pool({ Client })`, aktiv bei `OMADIA_EMBEDDED_DB=1`),
+  ein bei jedem Start neu gesetztes Kernel-Passwort, oder auch unter Windows
+  ein Unix-Socket (PostgreSQL ab 13 kann AF_UNIX unter Windows 10 1803+) in
+  einem Verzeichnis mit Nutzer-ACL.
+- **Windows: Port-Besetzung bricht den Start ab.** Zwischen Portwahl und
+  Serverstart sowie während einer Single-User-Reparatur ist der Port frei;
+  ein anderer lokaler Nutzer, der ihn dann bindet, bekommt kein Passwort, lässt
+  aber den Boot scheitern (der nächste Start wählt einen freien Port). Ein
+  automatischer Neuversuch mit neuem Port wäre die Ergänzung.
 
 - **Mitgliedschaft schlägt fehl statt sich zu reparieren.** Erhält
   `omadia_kernel` je eine Rollen-Mitgliedschaft (heute nur über die geschlossene

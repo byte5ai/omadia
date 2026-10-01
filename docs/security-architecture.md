@@ -962,9 +962,41 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
   whenever it differs, and only while the server is stopped, so a running
   server never holds rules the shell did not write and no reload is ever
   needed. The server starts with `-c hba_file=<pgdata>/pg_hba.conf`, so
-  `postgresql.auto.conf` cannot point it elsewhere. It listens on `127.0.0.1`
-  with Unix sockets disabled, so the verdict never depends on the client's OS
-  identity: without the password, nobody gets in.
+  `postgresql.auto.conf` cannot point it elsewhere. No rule depends on the
+  client's OS identity (no `peer`, no `trust`): without the password, nobody
+  gets in.
+- **A private endpoint on macOS and Linux** (`desktop/src/embeddedDbEndpoint.ts`).
+  The server listens only on a Unix socket, `listen_addresses` empty, in
+  `<userData>/pg-socket`: created `0700`, checked to be a plain directory owned
+  by the desktop user, socket `0700` as well. The kernel's `DATABASE_URL` names
+  that directory as its host. Another OS user can neither connect nor put a
+  listener of their own where the shell and the kernel connect, so there is no
+  port to squat while the server is stopped. A socket path too long for
+  `sun_path`, or a directory that cannot be made private, moves the socket to a
+  fresh private directory under the OS temp folder, per start; never into the
+  chosen data folder, which may be cloud-synced. Windows keeps `127.0.0.1`.
+- **The shell trusts a server only after it has proven itself.** Readiness is
+  read from the server's own `postmaster.pid`: the process the shell spawned,
+  the expected port and socket directory or address, status `ready`. That
+  sends no credentials, and an authentication error is never taken as "up".
+  Every shell connection accepts SCRAM-SHA-256 and nothing else
+  (`desktop/src/scramOnlyConnect.ts`): a cleartext or MD5 request, a SASL offer
+  without SCRAM, or an AuthenticationOk without a completed exchange is refused
+  before a password is sent, and pg's server-signature check makes the server
+  prove it holds the role's verifier. The first login after every start is the
+  superuser's and must report this cluster's `data_directory` before the kernel
+  password is offered. Before provisioning, before the verification and before
+  the DSN is handed to the kernel, the shell confirms again that its server
+  still runs and still holds the endpoint.
+- **Residual risk on Windows.** The loopback port is free while the server is
+  stopped (between port selection and start, and during a single-user repair).
+  Another local user who binds it there fails the boot but learns no password
+  and is never taken for the server. The kernel's pools use a stock pg client,
+  though: if the server stops while the kernel runs and another user binds the
+  port before the kernel reconnects, that listener could ask the kernel for its
+  password in cleartext. A SCRAM-only client for the kernel's pools (or a
+  socket on Windows) is the open follow-up
+  (`docs/middleware-agent-handoff.md` §13).
 - **Extensions are created by the shell.** pgvector's control file is not
   `trusted`, so a non-superuser cannot `CREATE EXTENSION vector`. The shell
   creates `vector` and `pg_trgm` as superuser, and the kernel's own
@@ -1025,9 +1057,19 @@ Tests: `desktop/test/embeddedDbAuth.test.mts` (orderings and fail-closed paths
 against a simulated cluster, including that every server start happens on the
 shell's rules, that the ownership transfer schema-qualifies its calls and pins
 its own search_path, and that a kernel role carrying a role membership is
-refused), `desktop/test/embeddedDb.integration.test.mts` (the real engine:
-passwordless and wrong-password clients refused, no `COPY ... TO PROGRAM` for
-the kernel role, the trust-era migration including ownership, the single-user
+refused), `desktop/test/embeddedDbIdentity.test.mts` (the superuser login and
+its data-directory check come before any kernel password, a server reporting
+another data directory or refusing SCRAM stops the start, and the server is
+re-confirmed before provisioning and verification),
+`desktop/test/scramOnlyConnect.test.mts` (a listener on loopback that asks for
+cleartext, MD5, no SCRAM, no authentication at all, or forges the final
+signature gets no password and is refused),
+`desktop/test/embeddedDbEndpoint.test.mts` (the private socket directory, its
+fallback, the server command line and the `postmaster.pid` check),
+`desktop/test/embeddedDb.integration.test.mts` (the real engine:
+passwordless and wrong-password clients refused, on macOS and Linux no TCP
+listener and an owner-only socket directory, no `COPY ... TO PROGRAM` for the
+kernel role, the trust-era migration including ownership, the single-user
 repair, and a kernel that redirects the database `search_path` and plants a
 shadow function still contained after migration; the desktop-apps workflow runs
 it with pgvector staged) and `desktop/test/secrets.test.mts` (persistence and
@@ -2154,7 +2196,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       shell's `search_path` (system catalogs first) on every maintenance
       connection and schema-qualifies the ownership transfer, and keeps the
       fail-closed verification (wrong password refused for both roles, the
-      kernel role unprivileged and a member of no role) with its tests (§8b).
+      kernel role unprivileged and a member of no role) with its tests. The
+      shell's connections stay SCRAM-only (`scramOnlyConnect.ts`), readiness
+      sends no credentials and never counts an authentication error as "up",
+      the superuser login checks `data_directory` before a kernel password goes
+      out, and on macOS and Linux the server stays off TCP, its socket in an
+      owner-only directory outside the data folder (§8b).
 - [ ] A new desktop IPC channel is registered through `guardedHandle` /
       `guardedOn` with an explicit surface, never bare `ipcMain`. The `app`
       surface (the web UI and every plugin iframe in it) gets no method that
