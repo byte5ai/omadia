@@ -82,6 +82,19 @@ Both carriers now go through one helper, `toolErrorRedaction.ts`
 - **Receipts.** Every handled error writes a `toolErrors` entry; a turn whose
   only shield activity was a tool error now writes a receipt row. The web UI
   receipt card lists the entries.
+- **The public MCP endpoint's privacy gate covers a domain tool's sub-agent.**
+  `ToolDispatchService` ran tool handlers outside any turn scope, so a domain
+  tool's `LocalSubAgent` found no privacy handle there: its model provider
+  received inner tool results, inner `Error:` text and — once inner throws
+  became tool results — the raw exception message, while the API caller saw
+  only a masked digest. Handlers now run with the dispatch's handle as the
+  ambient one; the public gate hands them a nested variant
+  (`PrivacyTurnHandle.forNestedCalls`) that masks the same way but does not
+  count toward the endpoint's own masking check, and a nested masking failure
+  discards the call. No tool runs there without the gate: the wired dispatcher
+  runs no handler without a handle (`requirePrivacyHandle`), and the endpoint
+  refuses a dispatcher that cannot receive it before dispatch instead of after.
+  Proven against a real sub-agent in `publicMcpSubAgentPrivacy.test.ts`.
 
 Versions: `@omadia/plugin-api` 1.20.0 (additive) and
 `@omadia/plugin-privacy-guard` 0.6.0. Redaction needs the 0.6.0 provider; with

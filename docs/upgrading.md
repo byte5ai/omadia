@@ -236,6 +236,11 @@ full policy):
 - **More receipt rows.** A turn whose only privacy-shield activity was a
   failing tool now writes a receipt (`/operator/receipts`), reaped by
   `RECEIPT_RETENTION_DAYS` as before.
+- **Public MCP: a domain tool's sub-agent now works on masked data.** When an
+  API key calls an `ask_<agent>` tool, that agent's sub-agent runs under the
+  call's privacy gate: its model reads masked tool results and withheld error
+  notices, as it does in chat, where before it read them in clear. Answers to
+  API-key callers can differ from before. Nothing to configure.
 
 For plugin authors: a tool that catches an exception should return
 `toolErrorFromException(toolName, err)` (`@omadia/plugin-api` 1.20.0) instead

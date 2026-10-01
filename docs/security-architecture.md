@@ -615,10 +615,36 @@ operator bypass and before interning:
   (the returned carrier on the chat path and on MCP input replay).
 - `ToolDispatchService` (loopback and public dispatcher): `thrownResult` for a
   throw — the same withheld notice, no longer an interned dataset — and
-  `afterDispatch` for a returned error.
-- `LocalSubAgent.dispatch`: both carriers. An inner tool throw becomes an
-  `is_error` tool result the sub-agent can answer around, bounded by its
-  repeat-failure guard, instead of aborting the sub-agent.
+  `afterDispatch` for a returned error. The handler itself runs with the
+  dispatch's privacy handle as the ambient `turnContext.privacyHandle`
+  (`runHandlerInPrivacyScope`, `handlerPrivacyScope.ts`), so the sub-agent
+  seam below applies beneath this dispatcher too.
+- `LocalSubAgent.dispatch`: both carriers, under whichever handle its domain
+  tool was dispatched with. An inner tool throw becomes an `is_error` tool
+  result the sub-agent can answer around, bounded by its repeat-failure guard,
+  instead of aborting the sub-agent.
+
+**Per entry point.** What reaches a model provider depends on where the call
+came in:
+
+| Entry point | Handle a sub-agent's model loop runs under | Tool errors on any model wire |
+|---|---|---|
+| Chat turn (`Orchestrator`, privacy provider installed) | The turn's handle, inherited through `turnContext` | Withheld or redacted at every seam, receipted |
+| Public MCP endpoint (`/api/v1/mcp`) | The call's fail-closed gate, as its nested handle `forNestedCalls()` | Withheld for the sub-agent's model (the gate redacts nothing); the API caller gets a masked result, a dispatcher notice for a throw, or a refusal for a returned `Error:` text |
+| Loopback MCP for the subscription CLI | None (§3a, #1087) | Raw — see Residuals |
+| Any path without a privacy provider | None | Raw (parity) |
+
+On the public endpoint the gate's nested handle interns a sub-agent's inner
+tool results through the same fail-closed masking and keeps the operator
+bypass off. Its masking never satisfies the endpoint's `masked()` check — that
+signal stays about the call's own result — but a failure inside the sub-agent
+discards the call (`maskingFailed()`). No tool runs there without a handle: a
+call with no provider installed is refused while masking is required, the
+endpoint refuses a dispatcher that cannot receive the gate (no `withPrivacy`)
+before dispatch, and the wired dispatcher runs no handler without one
+(`requirePrivacyHandle`). `test/publicMcp/publicMcpSubAgentPrivacy.test.ts`
+drives a real `LocalSubAgent` through the production wiring and asserts on
+what its provider receives.
 
 The kernel's own refusals from `dispatchToolInner` (tool unavailable, not
 granted, unknown tool) name only the tool and its plugin; they are exempted by
@@ -670,15 +696,26 @@ then withholds every returned `Error:` text (fail closed) and says so once per
 process in the log. The public MCP gate (`createFailClosedPrivacyGate`)
 answers `redactToolErrorText` with `withheld`, so a returned error is refused
 as unmasked content by `assertMaskingCrossed`, while a thrown error's notice is
-dispatcher-authored (`origin: 'dispatcher'`) and served.
+dispatcher-authored (`origin: 'dispatcher'`) and served. Its nested handle
+gives a domain tool's sub-agent the same answer, so that sub-agent's model
+reads the withheld notice, never a redacted hint, and no per-turn detector
+state builds up for a request that is never finalized.
 
 **Residuals.**
 
 - Parity: without a privacy provider nothing is masked, tool results included,
-  so thrown and returned error text reaches the model raw. The same holds for
+  so thrown and returned error text reaches the model raw — on the public MCP
+  endpoint too, but only when an operator set
+  `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING`. The same holds for
   the intern-exempt self tools (`privacyInternPolicy.ts`), and for a returned
   error of a plugin the operator set to bypass; a thrown message is withheld
   even under bypass.
+- On the public MCP endpoint a sub-agent cannot correct itself from an inner
+  error hint, since the gate withholds that text, and the endpoint has no
+  sub-agent dataset bridge: the sub-agent's answer is interned again as data.
+- A plugin tool that asks a model itself through `ctx.llm` sends its request
+  as it built it, on every entry point: the accessor consults no privacy
+  handle. Only the tool's result crosses the shield (handoff §13).
 - The subscription-CLI path has no Privacy Shield at all (§3a, #1087): its
   loopback dispatcher runs without a privacy handle, so both carriers pass raw
   there.
@@ -1450,7 +1487,14 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       exception returns `toolErrorFromException(...)`, not
       `Error: ${err.message}`; only a message the wrapper authors itself may
       reach the model as text, and the seam still redacts it.
+- [ ] A host that runs tool handlers outside a chat turn makes its privacy
+      handle the ambient `turnContext.privacyHandle` while a handler runs
+      (`runHandlerInPrivacyScope`, as `ToolDispatchService` does), so nothing
+      beneath the handler — a sub-agent's model loop above all — calls a model
+      without the guard; a host that requires masking runs no handler without
+      a handle (`requirePrivacyHandle`). A new `turnContext.run(...)` re-scope
+      on that path carries `privacyHandle` over (§6c).
 
 ---
 
-*Last reviewed: 2026-10 (§6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix).*
+*Last reviewed: 2026-10 (§6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point).*

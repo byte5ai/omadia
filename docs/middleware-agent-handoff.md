@@ -2961,6 +2961,16 @@ lieferten (die drei Tool-Bridges über `bridgedToolError`, Web-Search,
 Diagramme, Discussion, Transkription, `manage_routine`, `query_dataset`, die
 Long-Running-Task-Handler, `createDomainTool`), geben nur noch selbst
 formulierte Meldungen im Klartext zurück und sonst `toolErrorFromException`.
+Auf dem **öffentlichen MCP-Endpunkt** läuft jeder Tool-Handler mit dem
+Privacy-Handle des Dispatches als ambientem `turnContext.privacyHandle`
+(`runHandlerInPrivacyScope`): der Sub-Agent eines Domain-Tools bekommt
+die verschachtelte Gate-Variante (`PrivacyTurnHandle.forNestedCalls`),
+interniert damit seine inneren Ergebnisse und sieht innere Fehler nur als
+Withheld-Notice. Diese Maskierung zählt nicht für `masked()` des
+Call-Ergebnisses, ein Fehlschlag darin verwirft den Call. Ohne Handle läuft
+dort kein Handler (`requirePrivacyHandle`; ein Dispatcher ohne `withPrivacy`
+wird vor dem Dispatch abgewiesen). Vorher fand der Sub-Agent dort keinen
+Handle, und sein Provider bekam innere Daten und Fehlertexte im Klartext.
 Ohne Privacy-Provider (und für intern-exempte Self-Tools) fließt der Text wie
 jedes andere Tool-Ergebnis roh — Parität; auf dem Abo-CLI-Pfad gibt es keinen
 Shield (#1087). Versions-Paarung: `redactToolErrorText` braucht
@@ -3048,6 +3058,21 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   weiter `Error: <message>`; die Naht redigiert oder hält zurück. Umstellung
   auf `toolErrorFromException` zusammen mit der laufenden Office-Arbeit.
 - **Abo-CLI-Pfad** ohne Privacy Shield (#1087): beide Träger fließen dort roh.
+- **Öffentlicher MCP-Endpunkt, Sub-Agent:** das Gate redigiert keine
+  Tool-Fehler, also sieht der Sub-Agent eines Domain-Tools innere
+  `Error:`-Texte nur als Withheld-Notice und kann sich nicht am Hinweis
+  korrigieren. Redigierte Hinweise dort zuzulassen wäre eine eigene
+  Entscheidung: C1-Kosten und Per-Turn-State im Provider für einen Request, der
+  nie finalisiert wird. Außerdem fehlt dem öffentlichen Dispatcher die
+  Sub-Agent-Dataset-Brücke (`subAgentResultV4`); die Antwort des Sub-Agents
+  wird dort erneut als Datum interniert.
+- **Plugin-eigene Modellaufrufe (`ctx.llm`)** laufen auf keinem Einstiegspfad
+  durch den Privacy Shield, im Chat so wenig wie am öffentlichen Endpunkt: der
+  Accessor (`createLlmAccessor`, `platform/pluginContext.ts`) liest keinen
+  Privacy-Handle, ein Plugin-Tool, das Daten holt und selbst ein Modell fragt,
+  schickt sie, wie es sie zusammengebaut hat. Über den Shield geht nur das
+  Ergebnis des Tools. Eine Prompt-Maskierung für diese Aufrufe (nach dem
+  Muster von `maskUserPrompt`) wäre eine eigene Entscheidung.
 - **Connect-Prompt** wird per Provenienz erkannt (`McpAuthPromptMint`), nicht
   mehr am Präfix. Offen: paraphrasiert ein Sub-Agent den Prompt, statt ihn
   byte-gleich weiterzugeben, wird seine Antwort an der Eltern-Naht interniert
