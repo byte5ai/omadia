@@ -36,6 +36,65 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — password sign-in is rate-limited
+
+2026-09-30 — `POST /api/v1/auth/login/:providerId` ran a full argon2id
+verification (19 MiB) for every attempt, an unknown email included, and
+nothing counted attempts: passwords could be guessed online without limit, and
+any caller could drive unbounded argon2 work. Every attempt now passes three
+limits first. Per client address, a burst of 100 failures and then one every
+6 s. Per account and client, five free failures and then a wait that doubles
+from 1 s to at most 2 minutes, cleared by a successful sign-in, an admin
+password reset or a re-enable. The account is the typed address folded at
+least as coarsely as the users table matches it (Postgres `LOWER()`), so
+letter case, a capital dotted İ, a final sigma, accents or compatibility forms
+open no second budget, and a sign-in only succeeds for an account whose
+address folds to the key it was counted under. Process-wide,
+`AUTH_LOGIN_MAX_INFLIGHT` (new, default 4) concurrent verifications and 300
+admitted attempts per minute. A
+refusal answers 429 `auth.rate_limited` or 503 `auth.busy` with `Retry-After`
+and `retry_after_s`, never reaches argon2, and the login page shows a
+localized "wait N seconds". Attempts are counted when they are admitted, so
+parallel requests cannot race past the budget. The first-user wizard
+(`POST /api/v1/auth/setup`) hashes its password inside the same capacity (503
+`auth.busy` when no slot is free), and a sign-in password over 1024 characters
+is refused before the user lookup.
+
+None of this lets one client lock others out. The account limit is keyed per
+(account, client), so another client's wrong guesses do not slow an operator
+down. Every browser behind the web-ui proxy reaches the middleware from one
+address, so that shared address is never braked as one client: a single
+sender filling its budget would otherwise lock out every browser. A browser
+that has signed in to an account with its password carries a signed device
+cookie (`omadia_login_device`), minted once per sign-in for the account the
+sign-in verified (its stored address, never the one typed) and bound to the
+password that sign-in checked, never to one read back afterwards, so a sign-in
+with the old password that is still being checked when a reset lands gets a
+cookie that never counts. The account's known browsers share a budget of
+their own. A session alone mints none, so browsers that are signed in at
+the upgrade become known devices at their next password sign-in. A password
+reset, a disable or a delete turns the account's earlier cookies back into
+unknown browsers, and more cookies for one account buy no more guesses. One
+of the in-flight slots and the last 60 of the per-minute
+budget are kept for known browsers, so no flood from however many addresses
+(an IPv6 allocation holds thousands of /64s) turns them away, and no pile of
+one account's cookies can take that reserve. A browser without a device
+cookie still shares its client address's limits with whoever else uses it.
+
+The client address comes from the new `AUTH_LOGIN_CLIENT_ADDRESS`: `socket`
+(default, the TCP peer), `xff:<n>` (the n-th `X-Forwarded-For` entry from the
+right, e.g. `xff:1` behind a reverse proxy that appends the client) or
+`header:<name>`. On Fly.io it is `header:Fly-Client-IP`, which
+`fly/middleware.fly.toml` now sets: Fly puts the app's own IP address
+right-most in `X-Forwarded-For`. `req.ip`, which `trust proxy` takes from the
+client-written left-most entry, is never used. IPv6 clients are keyed by
+their /64, or by the shorter prefix set in the new `AUTH_LOGIN_IPV6_PREFIX`.
+The first refusal per client and minute is logged and audited
+(`auth.login_rate_limited`, without the account). The limiter lives in memory
+per process: a restart clears it, which is also the unlock when no admin
+session is at hand, and N replicas multiply every ceiling by N. See
+`docs/security-architecture.md` §10m and `docs/upgrading.md`.
+
 ### Fixed — routine card buttons act only for the user who clicked them (#1029 follow-up)
 
 2026-09-30 — the routine smart-card handler (`RoutinesIntegration.handleRoutineAction`)

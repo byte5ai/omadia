@@ -2407,6 +2407,122 @@ Postgres `test/auth/userStoreFirstAdmin.pg.test.ts` und
 `web-ui/app/setup/__tests__/page.test.tsx`; Desktop
 `desktop/test/supervisorKernelEnv.test.mts`.
 
+### Passwort-Anmeldung mit Rate-Limit (`POST /api/v1/auth/login/:providerId`)
+
+Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` und
+`/setup`), der Limiter in `auth/loginRateLimiter.ts`. Reihenfolge, das Billigste zuerst:
+
+1. Unbekannter oder Nicht-Passwort-Provider → 404 `auth.unknown_provider`, ohne Budget
+   und ohne argon2.
+2. **Limiter** mit drei Schichten, nacheinander. Welche greifen, hängt von der Art des
+   Client-Keys ab (`LoginClientKind`): `device` (gültiges Geräte-Cookie für das Konto),
+   `address` (eine Adresse, für die ein vertrauenswürdiger Proxy bürgt: `xff:<n>`,
+   `header:<name>`) oder `shared` (der TCP-Peer, in jeder ausgelieferten Topologie ein
+   Proxy, hinter dem alle Browser stehen).
+   - **Client** (nur `address`): Leaky Bucket über Fehlversuche, Burst 100, danach einer
+     pro 6 s. Voll → 429 `auth.rate_limited`, Retry-After höchstens 15 s. Ein
+     `shared`-Key fällt heraus: Ein einzelner Absender würde ihn füllen und dann jeden
+     6-s-Schritt selbst nehmen, und alle Browser hinter dem web-ui-Proxy bekämen 429.
+     Ein `device`-Key sieht nur sein eigenes Konto, dort ist die Paar-Schicht strenger.
+   - **Konto × Client** (Paar, alle Arten): 5 freie Fehlversuche, dann Wartezeit
+     1 s × 2^(Fehlversuche − 5) ab dem letzten, gedeckelt auf 2 min → 429. Ein Erfolg
+     löscht das Paar, 30 min nach dem letzten Fehlversuch wird es vergessen. Das Konto
+     ist die eingegebene Adresse, mindestens so grob gefaltet wie die Users-Tabelle
+     vergleicht (`loginAccountKey` in `auth/loginAccount.ts`): Postgres' `LOWER()`
+     macht aus einem großen İ (U+0130) ein schlichtes i und aus jedem Σ ein σ, JS'
+     `toLowerCase()` dagegen i plus Kombinationspunkt bzw. am Wortende ς. Der Schlüssel
+     zerlegt deshalb per NFKD, wirft kombinierende Zeichen weg, schreibt klein und faltet
+     ı zu i und ς zu σ; keine Schreibweise einer Adresse bekommt ein zweites Budget.
+     `LocalPasswordProvider` meldet nur ein Konto an, dessen gespeicherte Adresse auf
+     denselben Schlüssel faltet.
+   - **Global**: höchstens `AUTH_LOGIN_MAX_INFLIGHT` argon2-Läufe gleichzeitig und ein
+     Leaky Bucket, der 300 zugelassene Versuche pro Minute abfließen lässt → 503
+     `auth.busy`. Ohne Geräte-Cookie gibt es höchstens alle Slots bis auf einen und den
+     Bucket bis 240; den letzten Slot und die letzten 60 kann nur `device` nehmen.
+     Verbraucht nur, was die ersten beiden Schichten zugelassen haben.
+
+   Jede Ablehnung trägt `Retry-After` und `retry_after_s`, setzt kein Cookie und ruft
+   `verify` nicht auf. Gezählt wird bei der Zulassung: Ein laufender Versuch zählt bis
+   zum Ergebnis als Fehlversuch, parallele Anfragen überholen das Budget also nicht.
+3. `provider.verify` (argon2) im zugelassenen Versuch. Alles außer Erfolg ist ein
+   Fehlversuch, auch ein Throw. Der globale Slot wird im `finally` frei.
+4. Erfolg: Session-Cookie plus ein frisches **Geräte-Cookie** `omadia_login_device`
+   (`auth/loginDeviceCookie.ts`, `auth/loginDevices.ts`): `v3.<id>.<exp>.<ep>.<tag>`,
+   einmal pro Anmeldung, für das Konto, das der Provider **verifiziert** hat (dessen
+   gespeicherte Adresse, nie die eingegebene). `ep` ist ein Fingerabdruck der
+   Konto-Epoche, gegen die die Anmeldung geprüft hat (SHA-256 über die Users-Zeilen-id
+   und den Passwort-Hash, mit dem der Provider verglichen hat:
+   `AuthSuccess.credentialEpoch`; beim Setup-Wizard die gerade geschriebene Zeile), nie
+   einer danach gelesenen: Landet ein Reset, während eine Anmeldung mit dem alten
+   Passwort noch geprüft wird, ist deren Cookie von Anfang an veraltet, statt an das neue
+   Passwort gebunden zu sein, das sie nie bewiesen hat. `tag` ist ein HMAC über den
+   Geräte-Schlüssel des Kontos (`loginDeviceAccountKey`: gespeicherte Adresse, nur
+   ASCII-Buchstaben klein), id, Ablauf und `ep`; die Schlüssel für Tag und Fingerabdruck
+   sind aus dem Session-Signing-Key abgeleitet, je einer pro Zweck. Der Geräte-Schlüssel
+   ist bewusst **nicht** der gefaltete Konto-Schlüssel des Limiters: Der wirft Schreibweisen
+   verschiedener Konten zusammen, und das Cookie eines Kontos zählte dann für das
+   andere. Ein Jahr gültig, HttpOnly/SameSite=Lax/Path=/. Bekannter Browser ist eine
+   Anfrage, deren Adresse den Geräte-Schlüssel des Cookies hat und deren Users-Lookup
+   über diesen Schlüssel auf der Zeile landet, für die es ausgestellt wurde, unter deren
+   aktueller Epoche; nur ASCII-Kleinschreibung hält diesen Lookup dort, wo der Lookup der
+   eingegebenen Adresse landet. Dann ist der Client-Key `device:<id>` statt der Adresse.
+   Alle bekannten Browser eines Kontos teilen sich **ein** Paar: Weitere Geräte-ids
+   bringen weder weiteres Budget noch einen weiteren Anteil an der Reserve. Hinter dem
+   web-ui-Proxy teilen sich sonst alle Browser eine Adresse, und die Fehlversuche eines
+   Angreifers würden den Operator mit bremsen. Passwort-Reset, Deaktivieren und Löschen
+   machen frühere Cookies wertlos (neuer Hash bzw. keine Epoche); `routes/adminUsers.ts`
+   ruft dafür (und beim Anlegen) `loginDevices.forget` mit dem Geräte-Schlüssel, damit
+   der 10-s-Cache der Epoche sofort neu liest. Nachgeschlagen wird die Epoche nur für
+   ein Cookie, dessen Tag stimmt, und pro Geräte-Schlüssel nur einmal gleichzeitig. Nur
+   eine Passwort-Anmeldung (und der Setup-Wizard) stellt das Cookie aus; eine Session
+   allein nicht, `GET /me` und `/renew` setzen keins.
+
+Der Client-Key kommt aus `AUTH_LOGIN_CLIENT_ADDRESS` (`auth/clientAddress.ts`): `socket`
+(Default), `xff:<n>` (n-ter `X-Forwarded-For`-Eintrag von **rechts**) oder
+`header:<name>`, nie `req.ip`. `clientAddressFor` liefert `{ key, shared }`: der
+Socket-Peer (Default oder Rückfall) ist `shared`. Der Wert muss eine IP sein, sonst gilt
+der Socket-Peer. IPv6 zählt pro Präfix, `AUTH_LOGIN_IPV6_PREFIX` Bit lang (Default 64).
+
+Bleibt offen: Wer sich einen Key teilt, teilt dessen Paare. Ein Absender, der alle
+2 Minuten auf ein Konto falsch rät, hält das Paar für jeden Browser ohne Geräte-Cookie
+auf demselben Key zu, etwa für die erste Anmeldung auf einem neuen Gerät. Vor argon2
+lässt sich der Browser nicht vom Absender unterscheiden (§10m „What stays open“).
+Ebenso teilen sich die bekannten Browser eines Kontos ihr Paar: Wer ein aktuelles
+Geräte-Cookie hält (dazu braucht es eine Anmeldung mit dem Passwort), kann sie warten
+lassen, bekommt aber nur ein Budget pro Konto. Reaktivieren ohne Passwort-Reset lässt
+frühere Cookies wieder gelten; ihre Inhaber gewinnen dadurch nichts, sie haben sich alle
+mit genau diesem unveränderten Passwort angemeldet. Konten, deren Adressen auf denselben
+Schlüssel falten (Akzente, Kompatibilitätsformen, Kombinationspunkt), teilen sich alle
+Paare, auch das der bekannten Browser.
+
+Weitere Stellen: `/setup` holt sich für seinen argon2-Hash einen globalen Slot
+(`acquireSlot()`, sonst 503 `auth.busy`) und setzt nach Erfolg ebenfalls das
+Geräte-Cookie. Admin-Passwort-Reset und Reaktivierung (`PATCH status: 'active'`) in
+`routes/adminUsers.ts` rufen `clearAccount` mit dem gefalteten Konto-Schlüssel (alle
+Schreibweisen); Anlegen, Reset, jede Statusänderung und Löschen rufen
+`loginDevices.forget` mit dem Geräte-Schlüssel. `LocalPasswordProvider` lehnt Passwörter
+über 1024 Zeichen vor dem Users-Lookup ab. Die erste Ablehnung pro (Schicht, Client)
+und Minute schreibt eine Logzeile und eine Audit-Zeile `auth.login_rate_limited`, beide
+ohne das Konto. Boot-Wiring: `createLoginGuard` in `index.ts`, ein Limiter und ein
+Geräte-Cookie-Register (`devices`) pro Prozess, dieselben für Auth-Router und
+Admin-Users-Router. Ein Auth-Router ohne `loginLimiter`-Dep baut sich beides selbst mit
+Defaults. Die Login-Seite zeigt für beide Codes „bitte N Sekunden warten“
+(`login.tooManyAttempts`).
+
+Sicherheitsbegründung und Restrisiken (u. a. in-memory pro Prozess, Replicas
+multiplizieren die Grenzen): `docs/security-architecture.md` §10m. Konfiguration: §10
+„Anmelde-Rate-Limit“.
+
+Tests: `test/auth/loginRateLimiter.test.ts`, `test/auth/loginRateLimiterFairness.test.ts`,
+`test/auth/clientAddress.test.ts`, `test/auth/loginRoute.test.ts`,
+`test/auth/loginLockoutDos.test.ts`, `test/auth/loginDevices.test.ts`,
+`test/auth/loginDeviceRevocation.test.ts`, `test/auth/loginAccount.test.ts`,
+`test/auth/loginAccountAliases.test.ts` (Harness in `test/auth/loginHarness.ts`, mit
+dem echten Admin-Users-Router und einer Users-Tabelle, die wie Postgres' `LOWER()`
+vergleicht), `test/auth/adminUsersRoute.test.ts`, `test/auth/localPasswordProvider.test.ts`;
+Postgres `test/auth/loginAccountFold.pg.test.ts`; UI
+`web-ui/app/login/__tests__/page.test.tsx`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -2777,6 +2893,18 @@ Siehe §3 „Ersteinrichtung `POST /api/v1/auth/setup`“ und `docs/security-arc
 | `OMADIA_DESKTOP_EMBEDDED` | `true`/`false`, Default `false`. Setzt **nur** der Supervisor der Desktop-App. Zusammen mit einer Loopback-`HOST` braucht der Wizard kein Token. Allein wirkt der Schalter nicht, und `HOST=127.0.0.1` ohne ihn auch nicht (Reverse-Proxy auf demselben Host). Nicht auf Servern setzen. |
 | `HOST` | Bind-Adresse des Kernels, Default `::`. Für die Setup-Token-Ausnahme zählt nur eine literale Loopback-Adresse (`127.0.0.0/8`, `::1`, `::ffff:127.x`), kein `localhost`. |
 | `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD`, `ADMIN_BOOTSTRAP_DISPLAY_NAME` | Deklarativer Seed statt Wizard: Ist die `users`-Tabelle beim Boot leer und sind E-Mail und Passwort (mindestens 8 Zeichen) gesetzt, legt der Boot diesen Admin über `createFirstAdmin` an. Der Wizard bleibt dann zu. Ungültige Werte loggen den Grund und fallen auf den Wizard zurück. |
+
+### Anmelde-Rate-Limit
+
+Siehe §3 „Passwort-Anmeldung mit Rate-Limit“ und `docs/security-architecture.md` §10m.
+Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konstanten in
+`auth/loginRateLimiter.ts`, nur die drei Einsatz-Fakten sind konfigurierbar.
+
+| Variable | Wirkung |
+|---|---|
+| `AUTH_LOGIN_CLIENT_ADDRESS` | Woher der Limiter die Client-Adresse nimmt. `socket` (Default): der TCP-Peer, nicht fälschbar, gilt als geteilter Key (keine Client-Bremse); hinter einem Proxy teilen sich alle Clients dessen Adresse, das Geräte-Cookie trennt wiederkehrende Operatoren. `xff:<n>` (1..8): der n-te `X-Forwarded-For`-Eintrag von **rechts**, n = Zahl der vertrauenswürdigen Proxies davor, die die Client-Adresse an den Header **anhängen**. Compose hinter Caddy oder Traefik (hängen standardmäßig an) oder nginx mit `$proxy_add_x_forwarded_for`: `xff:1`, sofern nichts an diesem Proxy vorbei zum web-ui kommt; einmal mit ausgedachtem `X-Forwarded-For` prüfen, die Logzeile `[auth] login refused` muss die echte Adresse zeigen. `header:<name>`: ein Header, den die Edge **setzt**, genau eine Adresse. **Fly.io: `header:Fly-Client-IP`** (setzt `fly/middleware.fly.toml`), nicht `xff:1`: Fly stellt laut Doku die eigene IP der App rechts in `X-Forwarded-For`, damit hätten alle Clients denselben Key. Hinter Cloudflare `header:CF-Connecting-IP`, nur wenn die App nicht an Cloudflare vorbei erreichbar ist. Nie der linke `X-Forwarded-For`-Eintrag, den schreibt der Client. Ohne vorgeschalteten Proxy im Compose-Stack beim Default bleiben: Der web-ui-Proxy reicht den Header des Browsers unverändert durch, Next.js füllt ihn nur, wenn er fehlt. Ungültiger Wert → Config-Fehler beim Boot, leerer Wert = Default. |
+| `AUTH_LOGIN_IPV6_PREFIX` | Wie viele führende Bit einer IPv6-Adresse einen Client ausmachen. Default `64`, erlaubt `32`–`64`. Ein /56 enthält 256 /64, ein /48 65.536, bei 64 jedes ein eigener Client-Key mit eigenem Burst. 56 oder 48 fasst so eine Zuteilung zu einem Key zusammen, aber auch fremde Clients, die sich eine teilen (Mobilfunk, Hoster). |
+| `AUTH_LOGIN_MAX_INFLIGHT` | Gleichzeitige argon2-Läufe (Anmeldung und Setup-Hash), danach 503 `auth.busy`; einer davon bleibt Browsern mit Geräte-Cookie vorbehalten (bei `1` keiner). Default `4`, erlaubt `1`–`16`. Jeder Lauf braucht 19 MiB und einen Thread des libuv-Pools (`UV_THREADPOOL_SIZE`, Default 4); mehr Slots als Pool-Threads stehen nur Schlange. 16 × 19 MiB ≈ 300 MiB. |
 
 ### Test-Schalter (nicht von der Middleware gelesen)
 
@@ -3421,10 +3549,11 @@ ein Update auf ein beliebiges Release-Tag anstoßen. Offen:
 
 ### Ersteinrichtung: was nach Setup-Token und atomarem Admin offen ist
 
-- **Rate-Limit auf `POST /api/v1/auth/setup`.** Das Token hält Unbefugte vor argon2
-  und dem Tabellen-Lock. Wer das Token hat, und jeder Prozess auf dem Desktop-Loopback,
-  löst pro Anfrage aber weiterhin einen argon2id-Lauf aus (19 MiB, t=2). Der
-  Login-Rate-Limiter sollte `/setup` mit abdecken.
+- **Setup-Token-Fehlversuche pro Client zählen.** Der argon2-Hash von `/setup` läuft
+  inzwischen im globalen Slot des Anmelde-Limiters (§10m), mehr als
+  `AUTH_LOGIN_MAX_INFLIGHT` parallele Hashes gibt es also nicht. Falsche Tokens zählt
+  der Limiter nicht: Ein generiertes Token hat 192 Bit, ein selbst gesetztes aber nur
+  mindestens 16 Zeichen.
 - **Token vorab erzeugen in `fly/deploy.sh` und `render.yaml`.** Heute holt der
   Operator das generierte Token aus `fly logs` bzw. dem Render-Log. Ein beim Deploy
   erzeugtes `ADMIN_SETUP_TOKEN`, wie schon `VAULT_KEY`, würde den Schritt sparen.
@@ -3445,6 +3574,45 @@ Adapter falsch konfiguriert ist. Offen:
 - **plugin-api 2.0:** `actor` im Typ zur Pflicht machen (heute nur zur Laufzeit,
   damit 1.x-Aufrufer kompilieren). Der Capability-Ref `routinesIntegration@1`
   bleibt davon unberührt.
+
+### Anmelde-Rate-Limit: was offen ist
+
+- **Verteilter Limiter (Redis oder Postgres), sobald die Middleware mit mehr als einer
+  Replica läuft.** Heute zählt jeder Prozess für sich, N Replicas vervielfachen jede
+  Grenze (§10m, wie beim API-Key-Limiter in §9).
+- **Fly: `header:Fly-Client-IP` einmal gegen eine Live-App prüfen.**
+  `fly/middleware.fly.toml` setzt `AUTH_LOGIN_CLIENT_ADDRESS=header:Fly-Client-IP`,
+  gestützt auf Fly's Doku: `Fly-Client-IP` ist die Client-Adresse aus Sicht des
+  Fly-Proxys, und rechts in `X-Forwarded-For` steht die IP der App selbst (`xff:1`
+  wäre deshalb falsch). Nicht geprüft ist, dass die Edge einen vom Client
+  mitgeschickten `Fly-Client-IP` überschreibt. Prüfen: sechs falsche Anmeldungen mit
+  einem ausgedachten Wert in dem Header, direkt und über web-ui; die Logzeile
+  `[auth] login refused` muss die echte Adresse zeigen. Bestehende Fly-Installationen,
+  die über den Updater aktualisieren, bekommen den Wert nicht (der tauscht nur das
+  Image), siehe `docs/upgrading.md`.
+- **Render: Client-Header klären.** `render.yaml` lässt den Default `socket`, weil
+  nicht geprüft ist, welchen Header Render's Edge setzt und ob er überschrieben wird.
+  Bis dahin teilen sich dort alle Browser einen Key (siehe nächster Punkt).
+- **Geteilte Paare ohne Geräte-Cookie.** Wer sich einen Client-Key teilt, teilt dessen
+  Paare: Ein Absender, der alle 2 Minuten auf ein Konto falsch rät, hält es für jeden
+  Browser ohne Geräte-Cookie auf demselben Key zu (§10m „What stays open“). Unter
+  `socket` sind das alle Browser hinter web-ui. Eine echte Lösung braucht eine
+  vertrauenswürdige Browser-Adresse durch web-ui hindurch; der Next.js-Proxy sieht die
+  Socket-Adresse des Browsers nicht, sobald ein `X-Forwarded-For` mitkommt. Denkbar:
+  ein eigener Server-Wrapper um Next, der die Socket-Adresse in einen internen Header
+  schreibt, den die Middleware nur vom web-ui-Peer annimmt.
+- **Session-Signing-Key rotieren: kein Werkzeug.** Der Notfall-Hebel, der alle
+  Geräte-Cookies und alle Sessions auf einmal beendet, ist ein neuer
+  `core:auth/session_signing_key` im Vault (fehlt der Eintrag, erzeugt die Middleware
+  beim Start einen neuen). Der Vault ist eine verschlüsselte Datei; einen einzelnen
+  Eintrag zu ersetzen oder zu löschen, geht heute nur mit eigenem Code. Ein
+  Admin-Kommando dafür fehlt.
+- **Passwort-Obergrenze auch beim Setzen.** Setup-Wizard und Admin-Formulare prüfen nur
+  die Mindestlänge. Ein dort gesetztes Passwort über 1024 Zeichen kann sich nicht
+  anmelden.
+- **`user_disabled` vor der Passwortprüfung.** `LocalPasswordProvider` antwortet für ein
+  deaktiviertes Konto mit `auth.user_disabled`, bevor es das Passwort prüft. Der Status
+  eines Kontos ist damit ohne Passwort ablesbar.
 
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 

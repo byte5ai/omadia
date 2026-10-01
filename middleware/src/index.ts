@@ -252,6 +252,7 @@ import { BuilderModelRegistry } from './plugins/builder/modelRegistry.js';
 import { SlotTypecheckPipeline } from './plugins/builder/slotTypecheckPipeline.js';
 import { BuildQueue } from './plugins/builder/buildQueue.js';
 import { createAuthRouter } from './routes/auth.js';
+import { createLoginGuard } from './routes/authLogin.js';
 import {
   buildPairingDescriptor,
   CANVAS_WS_PATH,
@@ -4675,6 +4676,19 @@ async function main(): Promise<void> {
     // Surface the active providers to the public pairing descriptor (#293).
     pairingProviders = providerRegistry.summaries();
 
+    // Password sign-in limiter (docs/security-architecture.md §10m): one per
+    // process, shared by the login route, the setup wizard's argon2 slot and
+    // the admin paths that unlock (reset password / re-enable) or revoke the
+    // device cookies (reset, status change, delete).
+    const loginGuard = createLoginGuard({
+      clientAddress: config.AUTH_LOGIN_CLIENT_ADDRESS,
+      maxInFlight: config.AUTH_LOGIN_MAX_INFLIGHT,
+      ipv6PrefixBits: config.AUTH_LOGIN_IPV6_PREFIX,
+      signingKey: sessionSigningKey,
+      accounts: userStore,
+      audit: adminAudit,
+    });
+
     app.use(
       '/api/v1/auth',
       createAuthRouter({
@@ -4686,6 +4700,7 @@ async function main(): Promise<void> {
         setupAllowed: bootstrapResult.setupRequired,
         sessions: sessionRevocation,
         ...(setupToken.token !== undefined ? { setupToken: setupToken.token } : {}),
+        loginLimiter: loginGuard,
         // #965 — explicit session renewal ("I'm still here"): re-checks the
         // principal, audits every renewal, bounded by an absolute cap from
         // the original sign-in.
@@ -4775,6 +4790,8 @@ async function main(): Promise<void> {
         userStore,
         audit: adminAudit,
         sessions: sessionRevocation,
+        loginLimiter: loginGuard.limiter,
+        loginDevices: loginGuard.devices,
       }),
     );
     app.use(

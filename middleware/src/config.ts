@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 
 import type { RegistryConfigEntry } from './api/registry-v1.js';
+import { isClientAddressPolicy } from './auth/clientAddress.js';
 import { SETUP_TOKEN_MAX_LENGTH, SETUP_TOKEN_MIN_LENGTH } from './auth/setupToken.js';
 
 // Resolve .env relative to this file so the server works from any CWD.
@@ -213,6 +214,33 @@ const ConfigSchema = z.object({
     (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
     z.coerce.number().int().min(0).max(60_000).default(5_000),
   ),
+  // Password sign-in rate limit (docs/security-architecture.md §10m): where
+  // the limiter takes a client's address from. `socket` = the TCP peer, which
+  // cannot be forged (default; behind a proxy every client shares the proxy's
+  // address, and the limiter treats it as shared). `xff:<n>` = the n-th
+  // X-Forwarded-For entry counted from the RIGHT — set n to the number of
+  // trusted proxies that APPEND the client to the header (a Caddy, Traefik or
+  // suitably configured nginx in front of web-ui: xff:1). `header:<name>` = a
+  // header the edge SETS: on Fly.io header:Fly-Client-IP, NOT xff:1 — Fly
+  // puts the app's own address right-most. Never the left-most
+  // X-Forwarded-For entry, which the client writes. Empty = the default.
+  AUTH_LOGIN_CLIENT_ADDRESS: z
+    .string()
+    .default('socket')
+    .transform((v) => (v.trim() === '' ? 'socket' : v.trim()))
+    .refine(isClientAddressPolicy, 'must be socket, xff:<1..8> or header:<name>'),
+  // IPv6 clients are keyed by this many leading bits: one host controls its
+  // whole /64. A /56 holds 256 /64s and a /48 65,536, so an attacker with a
+  // whole allocation brings that many client keys; 48 or 56 folds it into one
+  // key, at the price of lumping together unrelated clients that share it.
+  AUTH_LOGIN_IPV6_PREFIX: z.coerce.number().int().min(32).max(64).default(64),
+  // Concurrent argon2 verifications password sign-in (and the setup wizard's
+  // hash) may run before further attempts get 503 auth.busy. One of them is
+  // kept for browsers with a sign-in device cookie (none when this is 1).
+  // Each needs 19 MiB and a libuv threadpool thread (UV_THREADPOOL_SIZE,
+  // default 4), so slots beyond the pool size only queue. 1..16:
+  // 16 × 19 MiB ≈ 300 MiB.
+  AUTH_LOGIN_MAX_INFLIGHT: z.coerce.number().int().min(1).max(16).default(4),
 
   // Friction-free desktop pairing (#293). The server owns the mapping
   // "human-facing URL → canvas transport URL"; these knobs let one config

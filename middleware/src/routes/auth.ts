@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { createLoginDevices, usersTableEpochs } from '../auth/loginDevices.js';
 import {
   isOidcProvider,
-  isPasswordProvider,
   type AuthProvider,
   type AuthSuccess,
   type VerifiedAccount,
@@ -37,6 +37,12 @@ import {
   renewableUntil,
   type SessionRenewalDeps,
 } from './authRenew.js';
+import {
+  createPasswordLoginHandler,
+  defaultLoginGuard,
+  httpForAuthErrorCode,
+  type LoginGuardDeps,
+} from './authLogin.js';
 import { createSetupHandler, resolveSetupState } from './authSetup.js';
 
 interface AuthDeps {
@@ -126,6 +132,14 @@ interface AuthDeps {
    * `userStore` and does not depend on it.)
    */
   sessions?: SessionRevocation;
+  /**
+   * Password sign-in rate limiting (`POST /login/:id`, and the argon2 slot of
+   * `POST /setup`; docs/security-architecture.md §10m). Optional so harnesses
+   * keep compiling, but never off: without it the router builds its own
+   * limiter with the defaults and the socket address. Production passes the
+   * process-wide guard so the admin unlock paths reach the same state.
+   */
+  loginLimiter?: LoginGuardDeps;
 }
 
 const PKCE_COOKIE = 'harness_auth_pkce';
@@ -137,12 +151,17 @@ const PKCE_COOKIE_MAX_AGE_S = 600;
  * Endpoints:
  *   GET  /api/v1/auth/providers        list active providers (login UI)
  *   GET  /api/v1/auth/login            back-compat: 302 → /login page
- *   POST /api/v1/auth/login/:id        password-provider form submit
+ *   POST /api/v1/auth/login/:id        password-provider form submit, rate-
+ *                                      limited: 429 `auth.rate_limited` /
+ *                                      503 `auth.busy` + Retry-After (see
+ *                                      ./authLogin.ts)
  *   GET  /api/v1/auth/login/:id/start  oidc-provider redirect to IdP
  *   GET  /api/v1/auth/login/:id/cb     oidc-provider callback handler
  *   POST /api/v1/auth/logout           clear cookie, end every session of
  *                                      the user, optional IdP-logout
- *   GET  /api/v1/auth/me               current session (or 401)
+ *   GET  /api/v1/auth/me               current session (or 401); never sets
+ *                                      the sign-in device cookie (only a
+ *                                      password sign-in does)
  *   POST /api/v1/auth/renew            extend a valid session ("I'm still
  *                                      here", #965; see ./authRenew.ts)
  *   POST /api/v1/auth/setup            first-user wizard (one-shot, setup
@@ -153,6 +172,10 @@ const PKCE_COOKIE_MAX_AGE_S = 600;
  */
 export function createAuthRouter(deps: AuthDeps): Router {
   const router = Router();
+  const loginGuard = deps.loginLimiter ?? defaultLoginGuard();
+  const devices =
+    loginGuard.devices ??
+    createLoginDevices({ signingKey: deps.signingKey, epochs: usersTableEpochs(deps.userStore) });
 
   // ── GET /providers ───────────────────────────────────────────────────────
   router.get('/providers', async (_req: Request, res: Response) => {
@@ -182,38 +205,29 @@ export function createAuthRouter(deps: AuthDeps): Router {
     res.redirect(302, url.toString());
   });
 
-  // ── POST /login/:providerId (password-providers only) ────────────────────
-  router.post('/login/:providerId', async (req: Request, res: Response) => {
-    const id = readParam(req, 'providerId');
-    const provider = id ? deps.registry.get(id) : undefined;
-    if (!provider || !isPasswordProvider(provider)) {
-      res.status(404).json({ code: 'auth.unknown_provider' });
-      return;
-    }
-
-    const result = await provider.verify(req.body);
-    if (result.outcome === 'error') {
-      res.status(httpForAuthErrorCode(result.code)).json({
-        code: `auth.${result.code}`,
-      });
-      return;
-    }
-
-    await mintSessionAndSetCookie({
-      req,
-      res,
-      success: result,
-      // The row the provider checked the password against — see
-      // `VerifiedAccount` for why this is not a second lookup.
-      account: result.account,
-      provider,
-      signingKey: deps.signingKey,
-      ...(deps.resolveChannelIdentity
-        ? { resolveChannelIdentity: deps.resolveChannelIdentity }
-        : {}),
-    });
-    res.json({ ok: true, user: userPayload(result, provider) });
-  });
+  // ── POST /login/:providerId (password-providers only, rate-limited) ──────
+  router.post(
+    '/login/:providerId',
+    createPasswordLoginHandler({
+      registry: deps.registry,
+      guard: loginGuard,
+      devices,
+      signIn: (req, res, success, provider) =>
+        mintSessionAndSetCookie({
+          req,
+          res,
+          success,
+          // The row the provider checked the password against — see
+          // `VerifiedAccount` for why this is not a second lookup.
+          account: success.account,
+          provider,
+          signingKey: deps.signingKey,
+          ...(deps.resolveChannelIdentity
+            ? { resolveChannelIdentity: deps.resolveChannelIdentity }
+            : {}),
+        }),
+    }),
+  );
 
   // ── GET /login/:providerId/start (oidc-providers only) ───────────────────
   router.get('/login/:providerId/start', async (req: Request, res: Response) => {
@@ -453,13 +467,15 @@ export function createAuthRouter(deps: AuthDeps): Router {
   // Order: operator setup token → the /providers predicate → the atomic
   // first-admin transaction. 403 `auth.setup_token_invalid`, 410
   // `auth.setup_disabled` / `auth.setup_no_local_provider` /
-  // `auth.setup_locked`, 409 `auth.setup_in_progress` — see ./authSetup.ts.
+  // `auth.setup_locked`, 409 `auth.setup_in_progress`, 503 `auth.busy` when
+  // the login limiter has no argon2 slot free — see ./authSetup.ts.
   router.post(
     '/setup',
     createSetupHandler({
       setupAllowed: deps.setupAllowed,
       registry: deps.registry,
       userStore: deps.userStore,
+      loginCapacity: loginGuard.limiter,
       ...(deps.setupToken !== undefined ? { setupToken: deps.setupToken } : {}),
       ...(deps.vault ? { vault: deps.vault } : {}),
       ...(deps.reactivate ? { reactivate: deps.reactivate } : {}),
@@ -467,9 +483,11 @@ export function createAuthRouter(deps: AuthDeps): Router {
         ? { anthropicKeyConsumers: deps.anthropicKeyConsumers }
         : {}),
       // Auto-login the freshly-created admin so the operator lands inside
-      // the UI without a second round-trip. Mirrors the password-login cookie.
-      signIn: (req, res, user) =>
-        mintSessionAndSetCookie({
+      // the UI without a second round-trip. Mirrors the password login: the
+      // session cookie plus a device cookie under the epoch of the password
+      // just set, so the browser is a known device from the start.
+      signIn: async (req, res, user, epoch) => {
+        await mintSessionAndSetCookie({
           req,
           res,
           success: {
@@ -484,7 +502,9 @@ export function createAuthRouter(deps: AuthDeps): Router {
           ...(deps.resolveChannelIdentity
             ? { resolveChannelIdentity: deps.resolveChannelIdentity }
             : {}),
-        }),
+        });
+        devices.remember(req, res, { providerId: LOCAL_PROVIDER_ID, email: user.email, epoch });
+      },
     }),
   );
 
@@ -562,21 +582,6 @@ function hasControlChars(value: string): boolean {
   return false;
 }
 
-function httpForAuthErrorCode(code: string): number {
-  switch (code) {
-    case 'invalid_credentials':
-    case 'user_disabled':
-    case 'unknown_user':
-      return 401;
-    case 'state_mismatch':
-    case 'callback_invalid':
-      return 400;
-    case 'idp_error':
-    default:
-      return 502;
-  }
-}
-
 interface MintArgs {
   req: Request;
   res: Response;
@@ -629,23 +634,4 @@ async function mintSessionAndSetCookie(args: MintArgs): Promise<void> {
     `${SESSION_WINDOW_S}s`,
   );
   setSessionCookie(args.req, args.res, session, SESSION_WINDOW_S);
-}
-
-function userPayload(
-  success: AuthSuccess,
-  provider: { id: string },
-): {
-  id: string;
-  email: string;
-  display_name: string;
-  role: 'admin';
-  provider: string;
-} {
-  return {
-    id: success.providerUserId,
-    email: success.email,
-    display_name: success.displayName,
-    role: 'admin',
-    provider: provider.id,
-  };
 }
