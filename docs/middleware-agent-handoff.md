@@ -3191,7 +3191,9 @@ Konfiguration (live pro Call aufgelöst, kein Restart nötig): Setup-Field
 unset). URL nicht gesetzt ⇒ C1 unkonfiguriert, es wird **kein** Call
 versucht (kein Degrade-Audit-Noise). Docker: Overlay
 `docker-compose.pii-detector.yaml` baut den Sidecar (keine published Ports —
-er sieht rohe Prompt-PII, niemals öffentlich exponieren) und setzt die URL.
+er sieht rohe Kundendaten: Prompt-Text bei `mask_user_prompt=on` und,
+unabhängig davon, Tool-Fehlertexte und jede Evidence-Judge-Anfrage des
+Verifiers; niemals öffentlich exponieren) und setzt die URL.
 
 Fail-closed-Verhalten des Clients: Response-Schema wird **positiv**
 validiert (skillspector-Präzedenz); Non-200, `ok:false`, malformed Spans,

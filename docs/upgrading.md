@@ -419,9 +419,21 @@ lacks the new methods, the kernel withholds every returned `Error:` text
 entirely, every evidence-judge request fails closed (claims stay unverified),
 and a second answer whose placeholders the model reworded is no longer held
 back. The middleware log then shows `does not implement redactToolErrorText`
-once per process. Replace that copy with 0.6.0 or later, or remove it so the
-bundled one runs. Plugins built against `@omadia/plugin-api` < 1.20 keep
-working: the new service methods are optional.
+once per process. Upload a 0.6.0 or later build over that copy (with the same
+`PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1` that admitted it): a version-change
+upload keeps the installed entry and carries its settings over. Removing the
+copy instead takes four steps, and no privacy shield runs between the second
+and the third — no redaction, no masking, no receipts:
+
+1. Note `mask_user_prompt`, the deny-lists and the C1 detector URL.
+2. Uninstall the plugin, then delete its package (deleting while it is
+   installed is refused with 409 `package.still_installed`).
+3. Install the bundled plugin from the Store, or restart the middleware.
+4. Enter the settings from step 1 again; the bundled plugin starts with its
+   defaults.
+
+Plugins built against `@omadia/plugin-api` < 1.20 keep working: the new
+service methods are optional.
 
 ### Excel exports: the application that opens the file computes the formulas
 

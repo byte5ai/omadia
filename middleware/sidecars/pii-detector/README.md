@@ -2,19 +2,23 @@
 
 HTTP shim around [urchade/GLiNER](https://github.com/urchade/GLiNER)
 (Apache-2.0) running the `gliner_multi_pii-v1` multilingual PII fine-tune
-(Apache-2.0). It is the C1 transformer tier of the privacy-guard
-`mask_user_prompt` feature: it finds the PII classes regex structurally
-cannot detect — `person` names and free-form `address`es — in en/de/fr/es/it
+(Apache-2.0). It is the C1 transformer tier of the privacy guard (prompt
+masking, tool-error redaction and the answer verifier's evidence
+projection): it finds the PII classes regex structurally cannot detect — `person` names and free-form `address`es — in en/de/fr/es/it
 (the fine-tune's card does not list nl; the per-locale validation gate
 absorbs that honestly).
 
-The middleware posts prompt text to `POST /detect`; the shim runs chunked
-GLiNER inference and answers scored spans. Enable in the middleware via
-`PRIVACY_C1_DETECTOR_URL` (see `docker-compose.pii-detector.yaml`). Sidecar
-unavailable ⇒ the middleware's audited degrade-to-C0 path fires
-(`promptMaskDegraded`) — never a silent unmasked pass-through.
+The middleware posts raw text to `POST /detect`: the turn's prompt text while
+`mask_user_prompt` is on and, regardless of that flag, tool-error text and
+every evidence-judge request of the answer verifier (the restored claim plus
+knowledge-graph evidence). The shim runs chunked GLiNER inference and answers
+scored spans. Enable in the middleware via `PRIVACY_C1_DETECTOR_URL` (see
+`docker-compose.pii-detector.yaml`). Sidecar unavailable ⇒ the middleware's
+audited degrade-to-C0 path fires (`promptMaskDegraded`,
+`toolErrorRedactDegraded`) — never a silent unmasked pass-through.
 
-**This sidecar handles raw user-prompt PII.** It must only ever be reachable
+**This sidecar handles raw customer data** (prompt text, tool-error text,
+verifier evidence). It must only ever be reachable
 from the internal network (the compose overlay publishes no ports), it is
 stateless, and it never logs request text or span values — only lengths,
 counts, and durations.
