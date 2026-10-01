@@ -2629,14 +2629,14 @@ key-rich sender either way.
 **A key the client can choose.** A wrong `xff:<n>`, a header the edge passes
 through instead of overwriting, or a path that reaches web-ui or the
 middleware around the trusted hop lets a client name its own address: any
-valid IP it makes up, a new one for every attempt if it likes. Each new key is a fresh client bucket
-and a fresh pair with five free failures, so neither the client nor the
-account layer slows it down. Against one account only the global layer is
-left. It lets attempts without a device cookie through at up to 300 a minute
-per process, after a first burst of 240, where one client with a fixed key
-gets about 30 an hour. On Fly that is what a forgeable `Fly-Client-IP` would
-mean; the probe above found the edge overwriting it. `socket` cannot fail this
-way and is the safe choice when unsure.
+valid IP it makes up, a new one for every attempt if it likes. Each new key
+is a fresh client bucket and a fresh pair with five free failures, so neither
+the client nor the account layer slows it down. Against one account only the
+global layer is left. It lets attempts without a device cookie through at up
+to 300 a minute per process, after a first burst of 240, where one client
+with a fixed key gets about 30 an hour. On Fly that is what a forgeable
+`Fly-Client-IP` would mean; the probe above found the edge overwriting it.
+`socket` cannot fail this way and is the safe choice when unsure.
 
 **Observability.** The first refusal of a (scope, client) per minute, and of
 the global scope per minute overall, writes one log line
