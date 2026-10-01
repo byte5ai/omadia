@@ -45,18 +45,21 @@
  *
  * A request ledger also holds the request's record (`requestTurnRecord.ts`):
  * its passes offer their session-log row there, and the verifier writes the
- * row of the pass it delivers. Work that outlives the request — a
- * long-running task's detached runner — runs on a turn-local ledger of its
- * own ({@link runDetachedFromRequestLedger}).
+ * row of the pass it delivers. It keeps the first run's attachment ingestion
+ * too ({@link ToolReplayLedger.ingestAttachmentsOnce}): a re-entry reuses it
+ * instead of importing the request's uploads again. Work that outlives the
+ * request — a long-running task's detached runner — runs on a turn-local
+ * ledger of its own ({@link runDetachedFromRequestLedger}).
  *
  * ## What it does NOT guarantee
  *
  *  - **One process, one request.** The ledger is an in-memory object that
  *    lives as long as the request. It is never persisted, logged or attached
  *    to a run trace or receipt: it holds RAW handler results from before the
- *    Privacy Shield, the same sensitivity as `captureRawToolResult`. A
- *    separate user request — a new message, a retried HTTP call — runs its
- *    tools again; so does another middleware instance.
+ *    Privacy Shield, and the request's ingested uploads before masking — the
+ *    same sensitivity as `captureRawToolResult`. A separate user request — a
+ *    new message, a retried HTTP call — runs its tools again; so does another
+ *    middleware instance.
  *  - **Exact inputs.** Keys use the stable-JSON fingerprint of the input
  *    (`fingerprintToolInput`): key order does not matter, any other difference
  *    does. A re-entry whose model asks for a slightly different write is
@@ -73,9 +76,17 @@
 
 import type { AskObserver } from './tools/domainQueryTool.js';
 import { fingerprintToolInput } from './toolIdempotency.js';
+import { REENTRY_ABANDONED } from './reentryAbandonment.js';
 import { RequestReceipts } from './requestReceipts.js';
 import { RequestTurnRecord } from './requestTurnRecord.js';
 import { turnContext } from './turnContext.js';
+
+export {
+  REENTRY_ABANDONED,
+  ToolReplayAbortError,
+  describeAbandonment,
+  replayMissNotice,
+} from './reentryAbandonment.js';
 
 /** Where a handler runs: the orchestrator's dispatch, one sub-agent's inner
  *  loop, or the standalone dispatcher (loopback MCP / CLI sub-agents). */
@@ -143,37 +154,6 @@ export interface ReplayedAttachment {
   readonly payload: unknown;
 }
 
-/** Characters a tool name may keep inside a notice's backticks. */
-const UNSAFE_TOKEN_CHARS = /[^A-Za-z0-9_.:-]/g;
-
-function safeToolName(toolName: string): string {
-  return toolName.replace(UNSAFE_TOKEN_CHARS, '') || 'unknown';
-}
-
-/**
- * The tool result a seam returns for a refused re-entry miss. Kernel-authored
- * and PII-free: the tool name only, never the input. Keeps the `Error:`
- * prefix so every loop flags it `is_error`.
- */
-export function replayMissNotice(toolName: string): string {
-  return (
-    `Error: tool \`${safeToolName(toolName)}\` was not run: this answer is being ` +
-    'regenerated over the results of the first attempt, and this call was not ' +
-    'among them. Answer from the results you have.'
-  );
-}
-
-/** A verifier re-entry needed a tool call outside the first run's results. */
-export class ToolReplayAbortError extends Error {
-  readonly toolName: string;
-
-  constructor(toolName: string) {
-    super(`verifier re-entry abandoned: tool "${safeToolName(toolName)}" is not in the first run's result set`);
-    this.name = 'ToolReplayAbortError';
-    this.toolName = toolName;
-  }
-}
-
 export class ToolReplayLedger {
   readonly #retainResults: boolean;
   #mode: 'record' | 'replay' = 'record';
@@ -192,6 +172,8 @@ export class ToolReplayLedger {
    *  has not been handed yet, and those it has (once per pass). */
   readonly #replayedTools = new Set<string>();
   readonly #attachmentsHandedOut = new Set<string>();
+  /** What the first run's attachment ingestion handed the turn. */
+  #ingestion: { readonly outcome: unknown } | undefined;
   /** The request's privacy receipts, one per pass (`requestReceipts.ts`). */
   readonly receipts = new RequestReceipts();
   /** The request's recorded turn: the row of the pass the verifier delivers
@@ -336,6 +318,29 @@ export class ToolReplayLedger {
     }
     this.#replayedTools.clear();
     return out;
+  }
+
+  /**
+   * The request's attachment ingestion (`Orchestrator.ingestAttachments`),
+   * once per request. The first run ingests and keeps what it got — the
+   * extracted text and `[dataset-imported]` blocks before masking, the image
+   * blocks — and every re-entry gets exactly that back: an upload is fetched
+   * and imported as a dataset once, and a re-entry's model is told the same
+   * dataset ids the replayed first-run results refer to. A re-entry with no
+   * first-run ingestion to reuse is abandoned and gets `abandoned`: ingesting
+   * there would import outside the first run. A turn-local ledger keeps
+   * nothing and ingests every time. `ingest` must not throw.
+   */
+  async ingestAttachmentsOnce<T>(ingest: () => Promise<T>, abandoned: T): Promise<T> {
+    if (!this.#retainResults) return ingest();
+    if (this.#mode === 'record') {
+      const outcome = await ingest();
+      this.#ingestion ??= { outcome };
+      return outcome;
+    }
+    if (this.#ingestion !== undefined) return this.#ingestion.outcome as T;
+    this.abort(REENTRY_ABANDONED.attachmentsNotRecorded);
+    return abandoned;
   }
 
   #markUnknown(key: string): void {

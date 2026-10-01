@@ -4,7 +4,7 @@ import type {
   ChatTurnResult,
   Orchestrator,
 } from './orchestrator.js';
-import { ToolReplayAbortError, ToolReplayLedger } from './toolReplayLedger.js';
+import { ToolReplayAbortError, ToolReplayLedger, describeAbandonment } from './toolReplayLedger.js';
 import type { FinishedDone } from './verifierDelivery.js';
 
 /**
@@ -109,13 +109,14 @@ export function afterRequestRecord(ledger: ToolReplayLedger | undefined, fn: () 
   void ledger.turnRecord.whenCommitted().then(fn);
 }
 
-/** The log line for a re-entry that needed a call outside the first run. */
+/** The log line for a re-entry that could not stay inside the first run:
+ *  `name` is the tool it needed, or one of `REENTRY_ABANDONED`. */
 export function reentryAbandonedLine(
   kind: 'resample' | 'retry',
   runId: string,
-  toolName: string,
+  name: string,
 ): string {
-  return `[verifier/service] ${kind} abandoned run=${runId}: it needed tool "${toolName}", which the first run did not call — the first answer stands`;
+  return `[verifier/service] ${kind} abandoned run=${runId}: ${describeAbandonment(name)} — the first answer stands`;
 }
 
 /** The log line for a re-entry that produced no answer to judge. */

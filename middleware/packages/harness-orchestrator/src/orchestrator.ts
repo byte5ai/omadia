@@ -162,9 +162,11 @@ import {
 } from '@omadia/plugin-api';
 import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
 import {
+  REENTRY_ABANDONED,
   SubEventRecorder,
   ToolReplayAbortError,
   ToolReplayLedger,
+  describeAbandonment,
   replayMissNotice,
   replaySubEvents,
   type ToolReplayRecord,
@@ -982,6 +984,19 @@ interface IngestedImageBlock {
   bytesBase64: string;
 }
 
+/** What {@link Orchestrator.ingestAttachments} hands a turn; see there. */
+interface AttachmentIngestion {
+  text: string;
+  images: IngestedImageBlock[];
+  skippedVisionImageCount: number;
+  rejectedImageReasons: string[];
+}
+
+/** No attachment content: the shape of a turn without uploads. */
+function noAttachments(): AttachmentIngestion {
+  return { text: '', images: [], skippedVisionImageCount: 0, rejectedImageReasons: [] };
+}
+
 /**
  * Build the user-message content for the Anthropic API. Returns a
  * multimodal content array (image source-blocks first, then text) when
@@ -1449,15 +1464,41 @@ ${priorContext}`,
 }
 
 /**
- * Combines the caller-supplied `extraSystemHint` with a turn-scoped
- * fresh-check instruction when the user clicked "🔄 Fresh Check" on the
- * previous card. The fresh-check hint tells the model to bypass the
- * memory-read convention for this turn — both hints (verifier correction
- * + fresh-check bypass) can coexist.
+ * The per-turn system hint as it crosses the wire (#361): the caller's
+ * `extraSystemHint` masked through the turn's prompt map like the user's
+ * message, then composed with the kernel's own fresh-check text. The
+ * caller's hint is wire content, not kernel prose — the verifier's correction
+ * hint quotes claims cut from the RESTORED answer, i.e. the real values the
+ * mask kept from the model — so it gets the message's protection: the same
+ * surrogates (restored in the answer), its masked spans on the turn's
+ * receipt, and a `PromptMaskBlockedError` when masking cannot be guaranteed.
  */
-function composeExtraSystemHint(input: ChatTurnInput): string | undefined {
+async function wireExtraSystemHint(
+  privacy: PrivacyTurnHandle | undefined,
+  input: ChatTurnInput,
+): Promise<string | undefined> {
+  const callerHint = input.extraSystemHint;
+  const wireHint =
+    callerHint !== undefined && callerHint.trim().length > 0
+      ? await maskPromptForWire(privacy, callerHint)
+      : undefined;
+  return composeExtraSystemHint(input.freshCheck, wireHint);
+}
+
+/**
+ * Combines the caller-supplied hint (already masked for the wire, see
+ * {@link wireExtraSystemHint}) with a turn-scoped fresh-check instruction
+ * when the user clicked "🔄 Fresh Check" on the previous card. The
+ * fresh-check hint tells the model to bypass the memory-read convention for
+ * this turn — both hints (verifier correction + fresh-check bypass) can
+ * coexist.
+ */
+function composeExtraSystemHint(
+  freshCheck: ChatTurnInput['freshCheck'],
+  callerHint: string | undefined,
+): string | undefined {
   const parts: string[] = [];
-  if (input.freshCheck) {
+  if (freshCheck) {
     parts.push(
       `# FRESH CHECK MODE (von User per Card-Button aktiviert)
 
@@ -1471,8 +1512,8 @@ Stattdessen:
 Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-Eintrag oder ein FTS-Treffer auf eine falsche Antwort gelockt hat. Jetzt ist die Chance, unabhängig von diesem Altlast-Pfad zu antworten.`,
     );
   }
-  if (input.extraSystemHint && input.extraSystemHint.trim().length > 0) {
-    parts.push(input.extraSystemHint);
+  if (callerHint !== undefined && callerHint.trim().length > 0) {
+    parts.push(callerHint);
   }
   return parts.length > 0 ? parts.join('\n\n---\n\n') : undefined;
 }
@@ -3883,7 +3924,7 @@ export class Orchestrator {
     if (mcpInputReply && toolReplayLedger.mode === 'replay') {
       // The parked call is take-once and already ran in the first run: a
       // re-entry would only learn that the input "no longer exists".
-      throw this.abandonReentryEarly(toolReplayLedger, 'mcp-input-reply');
+      throw this.abandonReentryEarly(toolReplayLedger, REENTRY_ABANDONED.mcpInputReply);
     }
     if (mcpInputReply) {
       input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
@@ -4063,10 +4104,17 @@ export class Orchestrator {
         } catch (err) {
           // #361 — failure-closed prompt masking: the prompt never reached
           // the model; answer with a generic privacy error instead of a raw
-          // 500. Audited above by the guard service itself.
+          // 500. Audited above by the guard service itself. A verifier
+          // re-entry is abandoned instead — its prompt (the correction hint
+          // included) never reached the model either, and the first answer's
+          // verdict decides; the privacy error is no answer to judge.
           if (err instanceof PromptMaskBlockedError) {
             console.error(`[orchestrator] ${err.message}`);
-            result = { answer: PROMPT_MASK_BLOCKED_ANSWER, toolCalls: 0, iterations: 0 };
+            if (toolReplayLedger.mode === 'replay') {
+              toolReplayLedger.abort(REENTRY_ABANDONED.promptMaskBlocked);
+            } else {
+              result = { answer: PROMPT_MASK_BLOCKED_ANSWER, toolCalls: 0, iterations: 0 };
+            }
           } else if (!(err instanceof ToolReplayAbortError)) {
             throw err;
           }
@@ -4175,7 +4223,7 @@ export class Orchestrator {
     input: ChatTurnInput,
   ): Promise<void> {
     console.warn(
-      `[orchestrator] verifier re-entry abandoned (turn ${turnId}): tool "${ledger.abortedTool ?? 'unknown'}" is not in the first run's result set`,
+      `[orchestrator] verifier re-entry abandoned (turn ${turnId}): ${describeAbandonment(ledger.abortedTool ?? 'unknown')}`,
     );
     this.turnAttribution.delete(turnId);
     if (privacyHandle === undefined) return;
@@ -4187,10 +4235,11 @@ export class Orchestrator {
     }
   }
 
-  /** A re-entry the orchestrator refuses before it starts (`mcp-input-reply`). */
+  /** A re-entry the orchestrator refuses before it starts
+   *  (`REENTRY_ABANDONED.mcpInputReply`). */
   private abandonReentryEarly(ledger: ToolReplayLedger, reason: string): ToolReplayAbortError {
     ledger.abort(reason);
-    console.warn(`[orchestrator] verifier re-entry abandoned before it started: ${reason}`);
+    console.warn(`[orchestrator] verifier re-entry abandoned before it started: ${describeAbandonment(reason)}`);
     return new ToolReplayAbortError(reason);
   }
 
@@ -5232,12 +5281,15 @@ export class Orchestrator {
       images: ingestedImages,
       skippedVisionImageCount,
       rejectedImageReasons,
-    } = await this.ingestAttachments(input, visionSupported);
+    } = await this.ingestAttachmentsForPass(input, visionSupported);
+    // A verifier re-entry without a first-run ingestion to reuse ends here,
+    // before the model runs (`runTurnCore` closes it).
+    this.throwIfReentryAbandoned();
     const ingestedText = await maskIngestedForWire(
       privacyForPrompt,
       ingestedRawText,
     );
-    const effectiveExtraSystemHint = composeExtraSystemHint(input);
+    const effectiveExtraSystemHint = await wireExtraSystemHint(privacyForPrompt, input);
     // Palaia Phase 8 (OB-77) — per-turn nudge counter (shared across all
     // tool-call iterations of this turn so NUDGE_MAX_PER_TURN is enforced).
     const nudgeCounter = createNudgeTurnCounter();
@@ -5910,7 +5962,7 @@ export class Orchestrator {
     // before any downstream reader sees it. See the comment there.
     const mcpInputReply = parseMcpInputReply(input.userMessage);
     if (mcpInputReply && toolReplayLedger.mode === 'replay') {
-      const abandoned = this.abandonReentryEarly(toolReplayLedger, 'mcp-input-reply');
+      const abandoned = this.abandonReentryEarly(toolReplayLedger, REENTRY_ABANDONED.mcpInputReply);
       yield { type: 'error', message: abandoned.message };
       return;
     }
@@ -6193,6 +6245,11 @@ export class Orchestrator {
         } catch (err) {
           if (err instanceof PromptMaskBlockedError) {
             console.error(`[orchestrator] ${err.message}`);
+            // A verifier re-entry is abandoned instead (see `runTurnCore`):
+            // the check below turns this `done` into the abandonment error.
+            if (toolReplayLedger.mode === 'replay') {
+              toolReplayLedger.abort(REENTRY_ABANDONED.promptMaskBlocked);
+            }
             yield {
               type: 'done',
               answer: PROMPT_MASK_BLOCKED_ANSWER,
@@ -6361,12 +6418,19 @@ export class Orchestrator {
       images: ingestedImages,
       skippedVisionImageCount,
       rejectedImageReasons,
-    } = await this.ingestAttachments(input, visionSupported);
+    } = await this.ingestAttachmentsForPass(input, visionSupported);
+    // A verifier re-entry without a first-run ingestion to reuse ends here,
+    // before the model runs (see chatInContextInner).
+    const abandonedAtIngestion = this.abandonedReentryEvent();
+    if (abandonedAtIngestion) {
+      yield abandonedAtIngestion;
+      return;
+    }
     const ingestedText = await maskIngestedForWire(
       privacyForPrompt,
       ingestedRawText,
     );
-    const effectiveExtraSystemHint = composeExtraSystemHint(input);
+    const effectiveExtraSystemHint = await wireExtraSystemHint(privacyForPrompt, input);
     // Palaia Phase 8 (OB-77) — see chatInContextInner for rationale.
     const nudgeCounter = createNudgeTurnCounter();
     const nudgeTrace: Array<{
@@ -8444,22 +8508,15 @@ export class Orchestrator {
    * because vision is unsupported), and `rejectedImageReasons` (reasons for
    * fetched image candidates the vision-embeddability guard rejected).
    * NEVER throws — any failure logs a warning and returns the empty shape.
+   *
+   * A turn calls it through {@link ingestAttachmentsForPass}: once per user
+   * request, however often the verifier re-enters the turn.
    */
   private async ingestAttachments(
     input: ChatTurnInput,
     visionSupported: boolean,
-  ): Promise<{
-    text: string;
-    images: IngestedImageBlock[];
-    skippedVisionImageCount: number;
-    rejectedImageReasons: string[];
-  }> {
-    const empty = {
-      text: '',
-      images: [] as IngestedImageBlock[],
-      skippedVisionImageCount: 0,
-      rejectedImageReasons: [] as string[],
-    };
+  ): Promise<AttachmentIngestion> {
+    const empty = noAttachments();
     if (!this.attachmentReader) return empty;
     try {
       type Candidate = {
@@ -8696,6 +8753,27 @@ export class Orchestrator {
       );
       return empty;
     }
+  }
+
+  /**
+   * {@link ingestAttachments} once per user request. A verifier re-entry is a
+   * turn of its own, and a tabular upload's import is a write — a new dataset
+   * per call, no dedupe — so the request's ledger keeps the first run's
+   * outcome and hands it to every re-entry
+   * (`ToolReplayLedger.ingestAttachmentsOnce`): the same dataset ids the
+   * replayed first-run results refer to, masked through the re-entry's own
+   * prompt map by the caller. A re-entry with nothing to reuse is marked
+   * abandoned and gets no attachment content; the caller stops it before the
+   * model runs.
+   */
+  private ingestAttachmentsForPass(
+    input: ChatTurnInput,
+    visionSupported: boolean,
+  ): Promise<AttachmentIngestion> {
+    const ingest = (): Promise<AttachmentIngestion> =>
+      this.ingestAttachments(input, visionSupported);
+    const ledger = turnContext.current()?.toolReplayLedger;
+    return ledger ? ledger.ingestAttachmentsOnce(ingest, noAttachments()) : ingest();
   }
 
   /**

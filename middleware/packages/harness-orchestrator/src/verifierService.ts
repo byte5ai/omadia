@@ -77,9 +77,13 @@ export {
  * made is replayed from the request's ledger, a call it did not make runs
  * only when it is a kernel read, and a re-entry that needs any other call is
  * abandoned before it runs — the first answer stands (a retry's then keeps
- * its `failed` badge). Canvas turns are not retried on the stream. What the
- * request records — its one session-log row, fact extraction, `onAfterTurn`
- * — is the delivered pass's, written once the service decided
+ * its `failed` badge). The uploads' ingestion is reused the same way. The
+ * correction hint names the contradicted claims only — never the evidence
+ * the verifier fetched with its own access (`buildCorrectionPrompt`) — and
+ * the orchestrator masks it like the user's message; a re-entry whose prompt
+ * cannot be masked is abandoned. Canvas turns are not retried on the stream.
+ * What the request records — its one session-log row, fact extraction,
+ * `onAfterTurn` — is the delivered pass's, written once the service decided
  * (commit-on-delivery, `requestTurnRecord.ts`).
  *
  * A failing verifier surfaces as `unavailable`, never as `approved`: "the

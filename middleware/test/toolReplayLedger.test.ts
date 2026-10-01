@@ -19,8 +19,10 @@ import { describe, it } from 'node:test';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
 
 import {
+  REENTRY_ABANDONED,
   ToolReplayAbortError,
   ToolReplayLedger,
+  describeAbandonment,
   replayMissNotice,
 } from '../packages/harness-orchestrator/src/toolReplayLedger.js';
 import {
@@ -201,6 +203,58 @@ describe('the abort error and the miss notice', () => {
     assert.match(err.message, /create_invoice/);
     const notice = replayMissNotice('create`invoice <x>');
     assert.match(notice, /^Error: tool `createinvoicex` was not run/);
+  });
+
+  it('an abandonment without a tool says why instead of naming a tool', () => {
+    assert.match(describeAbandonment(REENTRY_ABANDONED.promptMaskBlocked), /could not be masked/);
+    assert.match(describeAbandonment(REENTRY_ABANDONED.attachmentsNotRecorded), /attachment ingestion/);
+    assert.match(describeAbandonment(REENTRY_ABANDONED.mcpInputReply), /MCP input card/);
+    assert.match(describeAbandonment('create_invoice'), /tool "create_invoice" is not in/);
+    const err = new ToolReplayAbortError(REENTRY_ABANDONED.promptMaskBlocked);
+    assert.equal(err.message.includes('tool "'), false);
+  });
+});
+
+describe('ToolReplayLedger — the request’s attachment ingestion', () => {
+  const counted = () => {
+    let calls = 0;
+    return {
+      ingest: () => {
+        calls += 1;
+        return Promise.resolve({ text: `ingested ${String(calls)}` });
+      },
+      calls: () => calls,
+    };
+  };
+  const NONE = { text: '' };
+
+  it('the first run ingests once and every re-entry gets that outcome back', async () => {
+    const ledger = new ToolReplayLedger();
+    const c = counted();
+    assert.deepEqual(await ledger.ingestAttachmentsOnce(c.ingest, NONE), { text: 'ingested 1' });
+    ledger.beginReentry();
+    assert.deepEqual(await ledger.ingestAttachmentsOnce(c.ingest, NONE), { text: 'ingested 1' });
+    ledger.beginReentry();
+    assert.deepEqual(await ledger.ingestAttachmentsOnce(c.ingest, NONE), { text: 'ingested 1' });
+    assert.equal(c.calls(), 1);
+    assert.equal(ledger.abortedTool, undefined);
+  });
+
+  it('a re-entry with nothing recorded is abandoned and does not ingest', async () => {
+    const ledger = new ToolReplayLedger();
+    ledger.beginReentry();
+    const c = counted();
+    assert.equal(await ledger.ingestAttachmentsOnce(c.ingest, NONE), NONE);
+    assert.equal(c.calls(), 0);
+    assert.equal(ledger.abortedTool, REENTRY_ABANDONED.attachmentsNotRecorded);
+  });
+
+  it('a turn-local ledger keeps nothing and ingests every time', async () => {
+    const ledger = new ToolReplayLedger({ retainResults: false });
+    const c = counted();
+    await ledger.ingestAttachmentsOnce(c.ingest, NONE);
+    await ledger.ingestAttachmentsOnce(c.ingest, NONE);
+    assert.equal(c.calls(), 2);
   });
 });
 

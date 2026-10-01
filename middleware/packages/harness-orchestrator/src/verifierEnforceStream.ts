@@ -110,7 +110,9 @@ function deliver(
  * The correction retry for a contradiction: the turn re-entered with the
  * correction hint, over the first run's tool results. `undefined` when this
  * verdict buys none. A retry that ends without an ordinary answer, or is
- * abandoned, leaves the first verdict in place.
+ * abandoned, leaves the first verdict in place. The hint carries the claims
+ * only, and the orchestrator masks it for the wire like the user's message
+ * (`wireExtraSystemHint`): a retry whose hint cannot be masked is abandoned.
  */
 function streamRetry(
   host: EnforceStreamHost,
