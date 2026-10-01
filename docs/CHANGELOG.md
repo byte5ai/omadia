@@ -36,6 +36,83 @@ changelog.
 
 ## [Unreleased]
 
+### Security — a verifier re-entry never runs a tool twice; the `enforce` stream retries a contradiction too
+
+2026-10-01 — In `enforce` mode the answer verifier re-enters a turn: a
+borderline verdict draws a second sample (non-streaming path), a
+contradiction a correction retry. Each re-entry used to be a complete new
+turn that executed every tool the model called again, so a write the first
+run had already made — creating a record, sending a message — ran twice for
+one user request, or three times when a resample turned up a contradiction
+and the correction retry followed.
+
+A re-entry now re-generates only the answer. The verifier binds a
+per-request replay ledger to the turn: the first run records the outcome of
+every tool call — the raw result the turn used, or the exception the handler
+threw — under the dispatch seam, the tool name and the canonical input, and
+a re-entry gets those outcomes back instead of running the tool. That holds
+at every seam that runs a handler: the orchestrator's dispatch, a
+`LocalSubAgent`'s inner calls and the standalone dispatcher a
+subscription-CLI sub-agent's tool calls go through. The re-entry's model sees
+the same results through its own Privacy Shield pass: a returned tool error
+is redacted again, a thrown one withheld again, never the raw text. A
+replayed diagram or generated file comes back with its call, so a delivered
+retry carries the file the first run built. A call
+the first run did not make runs only when it is one of the kernel's own reads
+(`query_knowledge_graph`, `query_dataset`, `read_attachment`,
+`find_free_slots`, the chat roster, a memory `view`). Any other call — every
+plugin, MCP, domain and sub-agent tool counts, because the plugin contract
+has no read-only declaration and a missing `writeCapabilities` is not one —
+is refused with a neutral notice and the re-entry is abandoned: a resample
+keeps the first answer, a correction retry withholds it with the `failed`
+badge. Under Privacy Shield a sub-agent whose answer rests on datasets of the
+first run's privacy scope runs again, with its inner calls replayed and
+interned afresh, so the dataset bridge still carries real rows; a re-entry of
+an MCP input-card answer is abandoned before the parked call could run again.
+
+A re-entry belongs to the same request: it writes no session-log row and no
+fact extraction, fires no turn hook, ingests no replayed MCP result into the
+Knowledge Graph and records no bypass again. Its run trace keeps every
+replayed call, flagged `replayed` (`RunToolCall.replayed`,
+`RunAgentInvocation.replayed` — `@omadia/plugin-api` 1.21.0). The request's
+privacy receipt is ONE row, written once after the last pass, that merges
+every pass (counts of the largest pass, lists united, an entry every pass
+recorded listed once); the delivered answer carries that receipt, and on the
+stream `done.receiptId` names that row.
+
+With the ledger in place the `enforce` stream retries a contradiction once
+as well (`/api/chat/stream`, the public API-key stream, a channel that streams
+its turns), except on canvas turns. The release rule is unchanged: nothing of either run reaches
+the client before the final verdict, only liveness events (the retry's
+`iteration_start` among them); the answer goes out only when the retry's
+verdict releases it, and a retry that fails or is abandoned stays internal
+and the first answer is withheld.
+
+Two smaller changes ride along. The new setup field
+`verifier_resample_on_borderline` of `@omadia/verifier` (seeded on first
+boot from `VERIFIER_RESAMPLE_ON_BORDERLINE`, default `true`) switches the
+borderline resample off; until now nothing could. And within one request no
+loop repeats a write call that ended in an exception any more: the
+orchestrator's buffered and streaming tool loops and a subscription-CLI
+sub-agent's loopback dispatch refuse an identical repeat (same tool, same
+canonical input) the way `LocalSubAgent` already did, across sub-agent runs
+of the request too. Another input, a repeat after an ordinary returned
+`Error:` hint and the kernel's reads still run.
+
+What operators notice: a correction retry or resample that would need a
+write the first run did not make is abandoned, so `corrected` badges can get
+rarer on turns that wrote something; the verifier logs
+`retry abandoned` / `resample abandoned` with the run id and the tool. A
+request has one receipt row instead of one per pass, and a retry's answer is
+not written to the session log (the first run's is). `shadow` mode, a
+disabled verifier and turns that cannot be re-entered persist exactly as
+before. Tests: `toolReplayLedger.test.ts`, `toolReplaySeams.test.ts`,
+`verifierServiceWriteSafety.test.ts`, `verifierStreamRetry.test.ts`,
+`verifierReentryRecords.test.ts`, `verifierSubAgentReplay.test.ts`,
+`verifierResampleKillSwitch.test.ts`,
+`orchestrator/parentLoopThrownCallRepeat.test.ts`. Details:
+`docs/security-architecture.md` §7c; upgrade note: `docs/upgrading.md`.
+
 ### Security — the answer verifier's `enforce` mode withholds what it could not confirm, on the stream too
 
 2026-10-01 — `VERIFIER_MODE=enforce` was documented to block a contradicted
@@ -94,7 +171,8 @@ answer the shield had already rendered; its `done` keeps `degraded` and
 The canvas composer holds its skeleton — the composer model
 writes its headings, labels and text — until the verdict as well: it leads a
 released turn and never shows with a withheld or failed one. The stream path
-still never retries, because a retry re-runs the turn's tool calls. `chat()`
+did not retry with this change, because a retry re-ran the turn's tool calls;
+it retries since a re-entry replays them (see the entry above). `chat()`
 keeps its correction retry and now delivers the same notice when the final
 verdict does not release the answer.
 

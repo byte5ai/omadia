@@ -631,7 +631,11 @@ operator bypass and before interning:
   `toolErrorFromException`): `isWithheldToolErrorNotice` recognises it by
   shape, so a tool that imitates the shape only blocks its own repeat. A
   different input still runs, and so does a retry after an ordinary returned
-  `Error:` hint.
+  `Error:` hint. Since the replay ledger (§7c) the same refusal holds for the
+  whole request in the orchestrator's buffered and streaming tool loops and
+  in a subscription-CLI sub-agent's loopback dispatch (the request's
+  `turnContext.toolReplayLedger`, any seam), except for a kernel tool known to
+  be read-only; it answers with the same notice.
 
 **Per entry point.** What reaches a model provider depends on where the call
 came in:
@@ -1147,11 +1151,12 @@ not `failed`), so the evidence rules above hold for withheld answers too.
   a degraded turn as before; an answer that is rendered but not degraded is
   still sent to the extractor in `shadow` until the verifier's model requests
   are bound to the turn's privacy policy (handoff §13).
-- **Non-streaming path.** `VerifierService.chat` keeps its correction retry
-  for a contradiction (`VERIFIER_MAX_RETRIES`, default 1) and its borderline
-  resample, and delivers the notice when the final verdict does not release
-  the answer. The stream path never retries: a retry re-runs the turn
-  including its tool calls, without a safeguard against repeating a write.
+- **Re-entries.** `VerifierService.chat` runs a correction retry for a
+  contradiction (`VERIFIER_MAX_RETRIES`, default 1) and a borderline resample
+  (`verifier_resample_on_borderline`, default on); the stream runs the
+  correction retry too, except on canvas turns, and holds it like the first
+  run. Both deliver the notice when the final verdict does not release the
+  answer. No re-entry runs a tool again — see the next subsection.
 - **One gate for every consumer.** The kernel route, channel dispatch (Teams,
   Telegram), the public API-key stream and the canvas composer all resolve
   the same wrapped chat agent. Canvas surfaces synthesised from tool results
@@ -1174,7 +1179,9 @@ not `failed`), so the evidence rules above hold for withheld answers too.
   - persistence: the orchestrator writes the turn (session log,
     knowledge-graph turn node, a possible auto-promoted memory) before `done`,
     so a withheld answer is stored and can reach a later turn's context — the
-    gate acts on delivery only;
+    gate acts on delivery only. A re-entry writes nothing of its own, so the
+    stored answer is the first run's even when a retry's answer is
+    delivered;
   - what a released turn carries besides its answer is not checked itself:
     the verdict is about `done.answer`, and tool output, sub-agent traffic,
     nudges, annotations, surfaces and the canvas skeleton's own text go out
@@ -1205,6 +1212,111 @@ first answers, resamples and retries),
 API-key wire), `middleware/test/chatSessionsMirrorVerifier.test.ts`,
 `web-ui/app/_lib/__tests__/chatStreamEvents.test.ts` and
 `web-ui/app/_components/chat/__tests__/VerifierBlockedNotice.test.tsx`.
+
+### A re-entry re-generates the answer, it never re-runs a tool
+
+A borderline resample and a correction retry used to be complete new turns:
+the model was asked again and every tool it called ran again, so a write the
+first run had made ran twice for one user request — three times when a
+resample turned up a contradiction and the retry followed. The invariant now
+is: **a user-initiated write executes at most once per request**, on every
+path a verifier re-entry takes (`chat()`, the stream, channel dispatch) and in
+every loop beneath it (the orchestrator's tool loops, `LocalSubAgent`, a
+subscription-CLI sub-agent's loopback dispatch).
+
+- **The replay ledger.** `VerifierService` binds a per-request
+  `ToolReplayLedger` (`harness-orchestrator/src/toolReplayLedger.ts`) to the
+  turn input before the first run, whenever the request can be re-entered
+  (`verifierReentry.ts`). It travels through `turnContext.toolReplayLedger` to
+  every seam that runs a handler — `Orchestrator.dispatchToolDeadlined`,
+  `LocalSubAgent.dispatch`, `ToolDispatchService.invoke` — and each seam asks
+  it before the handler runs. The first run records every outcome under
+  (seam, tool name, canonical input): the raw result the turn used (recorded
+  after the dispatch-deadline firewall, so a late result the turn discarded
+  is never handed to a re-entry) or the exception the handler threw. Each
+  re-entry starts with `beginReentry()` and reads the outcomes back through
+  per-key cursors, so N identical first-run calls replay N outcomes in order
+  and a resample followed by a retry replays the first run twice.
+- **Same results, this pass's shield.** A replayed result goes through the
+  re-entry's own Privacy Shield pass: interned again under the re-entry's
+  privacy handle, a returned `Error:` text redacted again, a thrown handler
+  replayed as the same rejection and withheld again — the raw error text
+  never reaches the model. A replayed memory read re-arms the Fresh-Check
+  gate; a domain tool's replay re-emits its sub-agent's inner tool events, so
+  the trace and the postconditions the verifier reads match the first run;
+  and what a replayed tool attached in the first run (a diagram, a generated
+  file — handed over through its attachment sink, which a replay does not
+  fill) is handed back with it, so a delivered retry carries the same file,
+  built once.
+- **What may run, what ends the re-entry.** A call the first run did not make
+  runs only when the orchestrator knows its tool cannot change data — the
+  kernel's `query_knowledge_graph`, `query_dataset`, `read_attachment`,
+  `find_free_slots`, the chat roster and a memory `view`. Every plugin, MCP,
+  domain and sub-agent tool counts as a write: the plugin contract has no
+  read-only declaration, and a missing `writeCapabilities` is not one (the
+  sandbox `execute` tool ships none on purpose). Such a miss is refused with a
+  neutral, PII-free notice and marks the re-entry abandoned. The buffered and
+  the streaming tool loop stop after the batch (post-batch fail-fast), a
+  `LocalSubAgent` stops after its batch, and the one authoritative check at
+  the end of `runTurnCore` (and on the stream's terminal event) catches what
+  a direct-line dispatch or a sub-agent folded into an answer. An abandoned
+  resample keeps the first answer; an abandoned retry withholds it with the
+  `failed` badge. A recorded MCP input sentinel or connect prompt is not
+  replayable (its provenance exists only in the dispatch that produced it),
+  and a re-entry of an MCP input-card answer is abandoned before the parked,
+  take-once call could run again.
+- **Sub-agents under Privacy Shield.** A sub-agent's answer is prose over the
+  datasets it interned in the first run's privacy scope, which ended with
+  that run. When a domain-tool dispatch bridged such datasets, or ran a
+  bypassed inner tool, a re-entry re-runs the sub-agent: its model is asked
+  again, every inner call it repeats is replayed at the `subagent:<name>`
+  seam and interned in the re-entry's scope, and an inner call the first run
+  did not make abandons the re-entry. Any other domain-tool result — and every
+  result without a privacy guard — is replayed as it is.
+- **One request, one record.** A re-entry writes no session-log row and no
+  fact extraction, fires no turn hook (`onBeforeTurn`, `onAfterToolCall`,
+  `onAfterTurn`), ingests no replayed MCP result into the Knowledge Graph and
+  records no bypass again. Its run trace keeps every replayed call, flagged
+  `replayed`. Every pass's privacy receipt goes to the ledger
+  (`requestReceipts.ts`): the delivered answer carries the merge (counts of
+  the largest pass, lists united), and the request has ONE `turn_receipts`
+  row, written once with that merged receipt under the turn id of the first
+  pass that had a receipt; `done.receiptId` names it. An abandoned pass's
+  receipt is merged too: its model saw the replayed results.
+- **No repeat of an unknown outcome.** Every turn carries a ledger — a
+  turn-local one that keeps no results when no verifier bound one. A call
+  whose handler threw, or whose wrapper returned the withheld exception
+  notice, may have taken effect; an identical repeat within the request
+  (same tool, same canonical input, at any seam) is refused unless the tool
+  is a kernel read. That closes the repeat in the orchestrator's own loops
+  and in a subscription-CLI sub-agent's loopback dispatch; `LocalSubAgent`'s
+  own per-run refusal (§6c) stays.
+- **The operator switch.** `verifier_resample_on_borderline` (seeded from
+  `VERIFIER_RESAMPLE_ON_BORDERLINE`, default `true`) turns the borderline
+  resample off.
+
+What the ledger does NOT guarantee: it lives in one process for one request.
+A new message, a retried HTTP call or another middleware instance runs its
+tools again, and a canvas turn is not retried on the stream. Inputs must
+match exactly after key ordering, so a re-sampled model that phrases a write
+differently is abandoned rather than matched loosely. A turn without a
+verifier still runs two identical SUCCESSFUL calls twice (first-run behaviour
+is unchanged), and a subscription-CLI sub-agent's obligation re-prompt (a
+second CLI spawn inside one request) is only told, not prevented, not to
+repeat a write that succeeded. The open points are in handoff §13.
+
+Tests: `middleware/test/toolReplayLedger.test.ts`,
+`middleware/test/toolReplaySeams.test.ts` (the standalone dispatcher with and
+without an ambient ledger, the MCP input-card and direct-line aborts),
+`middleware/test/verifierServiceWriteSafety.test.ts` (resample, chained
+resample and retry, abandoned re-entries, read-only misses, thrown and
+returned errors replayed through the shield),
+`middleware/test/verifierStreamRetry.test.ts`,
+`middleware/test/verifierReentryRecords.test.ts` (trace flag, hooks, session
+log, the one receipt row, Knowledge-Graph ingestion),
+`middleware/test/verifierSubAgentReplay.test.ts`,
+`middleware/test/verifierResampleKillSwitch.test.ts` and
+`middleware/test/orchestrator/parentLoopThrownCallRepeat.test.ts`.
 
 ## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
 
@@ -1994,7 +2106,23 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       without the guard; a host that requires masking runs no handler without
       a handle (`requirePrivacyHandle`). A new `turnContext.run(...)` re-scope
       on that path carries `privacyHandle` over (§6c).
+- [ ] A new seam that runs a tool handler asks the request's
+      `turnContext.toolReplayLedger` before the handler runs and reports the
+      outcome after it, the way `Orchestrator.dispatchToolDeadlined`,
+      `LocalSubAgent.dispatch` and `ToolDispatchService.invoke` do: replay a
+      recorded outcome, refuse a repeat or a miss with the kernel's notice,
+      record only what the turn used. It reports `readOnly` only for a tool it
+      KNOWS cannot change data — never because `writeCapabilities` is missing.
+      A new `turnContext.run(...)` re-scope around a handler spreads the
+      current context (`{ ...ctx }`), so the ledger survives (§7c).
+- [ ] A new caller that re-enters a turn (another sample, another retry)
+      binds a `ToolReplayLedger` to the request before the first run, calls
+      `beginReentry()` and re-binds before every re-entry, treats
+      `ToolReplayAbortError` as "keep the first answer", and commits
+      `ledger.receipts` once and releases the binding when the request is
+      over (`verifierReentry.ts`). A re-entry without a ledger runs every tool
+      again.
 
 ---
 
-*Last reviewed: 2026-10 (§10e added: same-origin return paths; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception).*
+*Last reviewed: 2026-10 (§7c: a verifier re-entry replays the first run's tool results through a per-request ledger and never runs a tool twice, the `enforce` stream retries a contradiction, a request has one receipt row, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing is stated by capability; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception).*
