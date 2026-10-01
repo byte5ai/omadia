@@ -36,6 +36,27 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop updater: an update the OS is too old for is no longer "up to date"
+
+2026-09-30 — electron-updater withholds an update whose feed declares a
+`minimumSystemVersion` above `os.release()`, and then reports
+`update-not-available` with the feed's version: the same event a current
+install gets. The desktop app answered it with "You're already on the latest
+version of omadia" and filled "Current version" from the feed. Once the
+Electron 44 build puts a macOS 13 floor into the macOS update feed, a macOS 11
+or 12 install would have been told it is current, shown the release it cannot
+install as its own version, and left on Electron 37 with no hint that updates,
+security fixes included, had stopped. `desktop/src/updateHoldBack.ts` now tells the two apart.
+"Check for Updates…" names the installed version when the app is current, and
+otherwise warns that omadia X needs macOS 13 or later and that this computer
+gets no further updates until its operating system is updated; the silent
+startup check says the same once per floor (`updater-hold-back.json` in
+userData). The version comparison follows semver's strict grammar and is tested
+against electron-updater's own OS check. Nothing in it depends on Electron 44,
+so it ships first, in a release still built on Electron 37: an install only
+gets the new handler by updating to a build that carries it, and a macOS 11/12
+install that never takes that release keeps reporting "up to date".
+
 ### Fixed — desktop: setup wizard switches reach the kernel or are gone
 
 2026-09-30 — the first-run wizard offered three capability switches

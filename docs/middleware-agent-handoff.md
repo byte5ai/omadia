@@ -3043,10 +3043,6 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ### Offene Punkte aus den Security-Härtungen (2026-09-30)
 
-- **Desktop-Navigationsschutz → §10e nachziehen.** Das Desktop-Fenster hat noch keinen
-  `will-navigate`-/`setWindowOpenHandler`-Schutz; die Return-Pfad-Prüfung (§10e) ist dort
-  heute die einzige Schicht. Sobald der Desktop-Trust-Boundary-Change landet, den Absatz „at
-  the time of writing“ in `docs/security-architecture.md` §10e auf „zweite Schicht“ umstellen.
 - **IdP-Logout-URL nicht allowlisted.** Die serverseitig gelieferte absolute End-Session-URL
   (`idpLogout.url`, `web-ui/app/_components/AuthBadge.tsx`) wird ungeprüft angesteuert. Eigene
   Vertrauensgrenze; Härtung z. B. per Allowlist der konfigurierten IdP-Hosts.
@@ -3306,6 +3302,25 @@ Offen:
   akzeptierte Rest-Ausnahme aus §10i: Solche Seiten bekommen keine Bridge,
   jeder Handler lehnt sie ab, und auch sie erreichen keinen
   OS-Protokoll-Handler.
+- **Übrige Session-Permissions: deny-by-default mit Allowlist.** Die Session
+  verweigert nur `openExternal` (`canGrantPermission`/`canPassPermissionCheck`
+  in `desktop/src/navigationPolicy.ts`). Jede andere Permission-Anfrage und
+  -Prüfung bekommt Electrons Antwort ohne Handler: gewährt, für jeden Frame und
+  ohne Rückfrage der App. Das betrifft Kamera und Mikrofon (`media`), das Lesen
+  der Zwischenablage (`clipboard-read`; Wizard und Shell kopieren den
+  Wiederherstellungsschlüssel dorthin), Standort und Benachrichtigungen, auch
+  für Plugin-iframes, Same-App-Popups und fremde Seiten nach einem Redirect.
+  Folgepunkt: Request- und Check-Handler lehnen ab, was nicht auf einer
+  expliziten Allowlist steht, entschieden pro anfragendem Origin
+  (`details.requestingUrl` bzw. `requestingOrigin`) und Frame
+  (`details.isMainFrame`). Gebraucht wird heute nur `clipboard-sanitized-write`
+  (`navigator.clipboard.writeText` im Wizard und in der Web-UI), also für die
+  gebündelten Seiten und den Origin der laufenden Web-UI. Plugin-iframes laufen
+  auf dem Origin der Web-UI und erben jede Freigabe für ihn, solange sie nicht
+  auf den Main-Frame begrenzt ist; ob Plugin-UIs kopieren dürfen, gehört zur
+  Entscheidung. Die Tests „grants every other request …“ und „answers every
+  other check …“ in `desktop/test/navigationPolicy.test.mts` pinnen das heutige
+  Verhalten und kehren sich mit dem Fix um.
 
 ### Desktop-Shell: Wizard-Schalter — Folgepunkte
 

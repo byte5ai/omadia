@@ -1478,12 +1478,14 @@ straight to `/login`, so that back-compat route only serves old bookmarks and
 hand-made links. The password login never sends `return` to the server.
 
 **Desktop shell.** The desktop app loads the web UI from
-`http://127.0.0.1:<port>` (`desktop/src/supervisor.ts`). At the time of
-writing its window restricts no top-level navigation (no `will-navigate` or
-`setWindowOpenHandler` guard in `desktop/src`), so a return value that left
-the origin would replace the app window itself, with no address bar to show
-it. This check is what prevents that. A navigation allowlist in the shell is
-a second layer, not a replacement.
+`http://127.0.0.1:<port>` (`desktop/src/supervisor.ts`) in a window with no
+address bar, so a return value that left the origin would replace the app
+window itself without showing it. The shell's navigation fence (§10i) is a
+second layer, not a replacement: it keeps navigations the web UI starts on
+the app's loopback origins and opens other web targets in the system
+browser, but it lets server redirects between web URLs through, because the
+in-window OIDC sign-in needs them. For the OIDC callback's redirect this
+check is the only layer.
 
 **Not covered here.** Absolute redirect targets that the server supplies,
 such as the IdP end-session URL behind sign-out (`idpLogout.url` in
@@ -1851,7 +1853,13 @@ wizard, above all the recovery-key export, which returns the vault master key
     every request. Any frame could otherwise launch an installed app's
     scheme (`ms-settings:`, `search-ms:`, …) without a prompt. This is the
     backstop behind the event rules above. Every other permission keeps
-    Electron's no-handler answer; narrowing those is a separate decision.
+    Electron's no-handler answer, which grants it to every frame without the
+    app asking: camera and microphone, clipboard read, notifications and the
+    rest, for plugin iframes, same-app popups and a foreign page reached by
+    a redirect alike. Narrowing that to a deny-by-default allowlist per
+    requesting origin and frame is an open follow-up
+    (`docs/middleware-agent-handoff.md` §13, "Desktop-Shell: Trust-Boundary
+    Renderer → Main").
   - So only vetted `http:`/`https:` URLs reach the OS. The shell passes
     nothing else to `shell.openExternal`, and no page can make Electron hand
     over anything else. The logs carry the target's origin or scheme, never

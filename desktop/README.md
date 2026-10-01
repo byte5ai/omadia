@@ -284,7 +284,10 @@ not in the page:
   only after asking for the `openExternal` permission, and grants it when no
   handler is set. The session refuses it, whichever frame or redirect asked;
   the shell opens web links itself through `shell.openExternal`, after
-  checking them. Other permissions keep Electron's defaults.
+  checking them. Every other permission keeps Electron's no-handler answer,
+  which grants it to every frame; a deny-by-default allowlist per requesting
+  origin and frame is an open follow-up (`docs/middleware-agent-handoff.md`
+  §13, "Desktop-Shell: Trust-Boundary Renderer → Main").
 
 Adding a bundled page means classifying it in `bridgeSurface.ts` and checking
 it by path in `ipcSender.ts`, never widening the wizard surface. The full
