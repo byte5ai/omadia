@@ -1480,14 +1480,14 @@ invariant cannot cover — a claim the model never lists — is stated below.
   `Tage`, `Urlaubstage`, `Arbeitstage`), and an aggregate keyword (`summe`,
   `gesamt`, `total`, `saldo`, `offen`, `fällig`, `ausstehend`, `durchschnitt`,
   `anzahl`, `insgesamt`) in an answer that also holds a number of three or more
-  digits. Any other answer is `skipped` / `no_trigger` without an extraction,
-  whatever figures it holds in other formats: another currency (`USD 50,000`,
-  `$500`), an English-format date (`October 2, 2026`) or a small count
-  (`3 unpaid invoices`). On such an answer only the checks that need no
-  extraction run (failure replay, tool postconditions and missing
-  knowledge-graph citations, `verifierPipeline.ts`), and any of them blocks.
-  `enforce` releases a `no_trigger` verdict, so such an answer goes out
-  unchecked, and `shadow` records it as `skipped`.
+  digits. Any other answer gets no extraction, whatever figures it holds in
+  other formats: another currency (`USD 50,000`, `$500`), an English-format
+  date (`October 2, 2026`) or a small count (`3 unpaid invoices`). On such an
+  answer only the checks that need no extraction run (failure replay, tool
+  postconditions and missing knowledge-graph citations,
+  `verifierPipeline.ts`); any of them blocks it, and otherwise the verdict is
+  `skipped` / `no_trigger`. `enforce` releases a `no_trigger` verdict, so such
+  an answer goes out unchecked, and `shadow` records it as `skipped`.
 - **A failed extraction is not an empty one.** `ClaimExtractor.extract`
   rejects when the LLM call fails, the response was cut off at the token
   limit (`finishReason: 'max_tokens'` — the claims array may parse but is not
