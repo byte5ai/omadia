@@ -23,7 +23,9 @@ primary_region = "fra"
   # attempt to the client address Fly's edge sets in Fly-Client-IP — on the
   # direct path and through web-ui, which forwards the header over .internal.
   # Not xff:1: Fly puts the app's own IP right-most in X-Forwarded-For, which
-  # would give every client the same key.
+  # would give every client the same key. Only right while web-ui's
+  # MIDDLEWARE_URL stays on .internal (fly/deploy.sh): a .flycast hop is Fly
+  # Proxy, which would most likely put web-ui's own address in this header.
   AUTH_LOGIN_CLIENT_ADDRESS = "header:Fly-Client-IP"
 
 [mounts]

@@ -3583,16 +3583,26 @@ Adapter falsch konfiguriert ist. Offen:
 - **Verteilter Limiter (Redis oder Postgres), sobald die Middleware mit mehr als einer
   Replica läuft.** Heute zählt jeder Prozess für sich, N Replicas vervielfachen jede
   Grenze (§10m, wie beim API-Key-Limiter in §9).
-- **Fly: `header:Fly-Client-IP` einmal gegen eine Live-App prüfen.**
-  `fly/middleware.fly.toml` setzt `AUTH_LOGIN_CLIENT_ADDRESS=header:Fly-Client-IP`,
+- **Fly: `header:Fly-Client-IP` einmal Ende-zu-Ende gegen eine omadia-Installation
+  prüfen.** `fly/middleware.fly.toml` setzt `AUTH_LOGIN_CLIENT_ADDRESS=header:Fly-Client-IP`,
   gestützt auf Fly's Doku: `Fly-Client-IP` ist die Client-Adresse aus Sicht des
   Fly-Proxys, und rechts in `X-Forwarded-For` steht die IP der App selbst (`xff:1`
-  wäre deshalb falsch). Nicht geprüft ist, dass die Edge einen vom Client
-  mitgeschickten `Fly-Client-IP` überschreibt. Prüfen: sechs falsche Anmeldungen mit
-  einem ausgedachten Wert in dem Header, direkt und über web-ui; die Logzeile
-  `[auth] login refused` muss die echte Adresse zeigen. Bestehende Fly-Installationen,
-  die über den Updater aktualisieren, bekommen den Wert nicht (der tauscht nur das
-  Image), siehe `docs/upgrading.md`.
+  wäre deshalb falsch). Ob die Edge einen vom Client mitgeschickten `Fly-Client-IP`
+  überschreibt, sagt die Doku nicht. Eine Probe am 2026-10-01 gegen `debug.fly.dev`
+  (öffentliche Fly-App, die die empfangenen Header zurückgibt) zeigt es: Ein
+  ausgedachter Wert (über HTTP/1.1 und HTTP/2, als Einzelwert, Liste, doppelte
+  Zeile oder kleingeschrieben) kam nie bei der App an, sie bekam immer genau einen
+  Header mit der echten Adresse (§10m). Offen ist dieselbe Probe gegen eine omadia-Installation,
+  sobald diese Version auf Fly läuft: sechs falsche Anmeldungen mit einem
+  ausgedachten Wert in dem Header, direkt und über web-ui; die Logzeile
+  `[auth] login refused` muss die echte Adresse zeigen. Wäre der Header fälschbar,
+  bliebe gegen Rateversuche auf ein Konto nur die globale Grenze: bis zu 300 Versuche
+  pro Minute statt etwa 30 pro Stunde (§10m „A key the client can choose“).
+  Voraussetzung bleibt, dass web-ui die Middleware über `.internal` erreicht
+  (`MIDDLEWARE_URL` in `fly/deploy.sh`): Über `.flycast` säße der Fly-Proxy
+  dazwischen und würde den Header vermutlich auf web-ui's eigene Adresse setzen.
+  Bestehende Fly-Installationen, die über den Updater aktualisieren, bekommen den
+  Wert nicht (der tauscht nur das Image), siehe `docs/upgrading.md`.
 - **Render: Client-Header klären.** `render.yaml` lässt den Default `socket`, weil
   nicht geprüft ist, welchen Header Render's Edge setzt und ob er überschrieben wird.
   Bis dahin teilen sich dort alle Browser einen Key (siehe nächster Punkt).

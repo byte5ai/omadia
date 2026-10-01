@@ -2585,20 +2585,34 @@ limiter never reads `req.ip` (the same rule as §10's loopback gate).
   every request (Caddy and Traefik by default, nginx with
   `$proxy_add_x_forwarded_for`): `xff:1`, provided nothing reaches web-ui
   around that proxy. A wrong n on a path without that many honest hops lets a
-  client pick its own key. The account and global layers still hold, so the
-  failure mode is "weaker", never "open".
+  client pick its own key, and then only the global layer is left against
+  guessing (*A key the client can choose* below).
 - `header:<name>`: a header a trusted edge sets and overwrites. It must hold
   exactly one address. **On Fly.io this is the setting:
   `header:Fly-Client-IP`**, and `fly/middleware.fly.toml` sets it. Fly
   documents the right-most `X-Forwarded-For` entry as the app's own shared or
   dedicated IP address, so `xff:1` would give every client the same key
   there. It documents `Fly-Client-IP` as the client's address as its proxy
-  saw it. web-ui reaches the middleware over `.internal` without another
-  proxy hop (`fly/deploy.sh`) and forwards the header, so the direct and the
-  proxied path both carry it. This rests on Fly's documentation, not on a
-  probe from this repo (open item in the handoff §13). Behind Cloudflare use
-  `header:CF-Connecting-IP`, but only if the app cannot be reached around
-  Cloudflare.
+  saw it, but not whether the proxy replaces a value the client sent. A
+  probe on 2026-10-01 says it does. `debug.fly.dev`, a public Fly app that
+  echoes the request headers it receives, was sent a made-up
+  `Fly-Client-IP` over HTTP/1.1 and HTTP/2: as one value, as a list, as two
+  header lines and with a lower-case name. Every time the app received one
+  such header, holding the sender's real address, while a made-up
+  `X-Forwarded-For` arrived unchanged in the left-most place. That is
+  observed behaviour, not a documented guarantee, and no omadia deployment
+  has been probed end to end yet (handoff §13). web-ui reaches the
+  middleware over `.internal` without another proxy hop (`fly/deploy.sh`)
+  and forwards the header, so the direct and the proxied path both carry
+  it. **That holds only while web-ui's `MIDDLEWARE_URL` stays on
+  `.internal`.** A `.flycast` address would route web-ui's requests
+  through Fly Proxy, which would most likely set the header to the address
+  it accepted the connection from: web-ui's own. Every browser behind
+  web-ui would then arrive as one vouched address, and the client layer
+  would brake them as one client: a single sender failing on made-up
+  emails could hold every one of them without a device cookie at 429.
+  Behind Cloudflare use `header:CF-Connecting-IP`, but only if the app
+  cannot be reached around Cloudflare.
 
 Whatever the policy yields must parse as an IP address once a port, IPv6
 brackets and the `::ffff:` prefix are stripped, or the socket peer is used, so
@@ -2611,6 +2625,18 @@ opens with its own client burst. 56 or 48 folds such an allocation into one
 key, but also lumps together unrelated clients that share one (a carrier, a
 hosting provider's range). The global reserve keeps known browsers safe from a
 key-rich sender either way.
+
+**A key the client can choose.** A wrong `xff:<n>`, a header the edge passes
+through instead of overwriting, or a path that reaches web-ui or the
+middleware around the trusted hop lets a client name its own address: any
+valid IP it makes up, a new one for every attempt if it likes. Each new key is a fresh client bucket
+and a fresh pair with five free failures, so neither the client nor the
+account layer slows it down. Against one account only the global layer is
+left. It lets attempts without a device cookie through at up to 300 a minute
+per process, after a first burst of 240, where one client with a fixed key
+gets about 30 an hour. On Fly that is what a forgeable `Fly-Client-IP` would
+mean; the probe above found the edge overwriting it. `socket` cannot fail this
+way and is the safe choice when unsure.
 
 **Observability.** The first refusal of a (scope, client) per minute, and of
 the global scope per minute overall, writes one log line
@@ -2700,8 +2726,10 @@ with the defaults, so a forgotten wiring cannot switch it off.
 - **Distributed guessing.** The account layer is per (account, client). An
   attacker with many client keys (a botnet, an IPv6 allocation under
   `xff`/`header`) gets a budget per key, and the global layer is the
-  ceiling. A per-account ceiling across all clients would bring back the
-  lockout-DoS the pair key avoids.
+  ceiling. A client that can choose its key (*A key the client can choose*
+  above) is the extreme case, with a fresh budget for every attempt. A
+  per-account ceiling across all clients would bring back the lockout-DoS
+  the pair key avoids.
 - **Key-table pressure.** Each map holds at most 10,000 keys, least recently
   used out first. An attacker cycling random emails evicts older pairs and
   weakens the pair layer for those accounts. The client and global layers are

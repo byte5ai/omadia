@@ -69,6 +69,10 @@ PG_PASSWORD="$(openssl rand -hex 16)"
   VAULT_KEY="$(openssl rand -base64 32)" \
   CREDENTIAL_KEYCHAIN_KEY="$(openssl rand -base64 32)" \
   DATABASE_URL="postgresql://omadia:${PG_PASSWORD}@${PG_APP}.internal:5432/omadia"
+# Keep MIDDLEWARE_URL on .internal (machine to machine, no proxy hop): the
+# middleware keys sign-in attempts by Fly-Client-IP (middleware.fly.toml), and
+# a .flycast hop is Fly Proxy, which would most likely overwrite that header
+# with web-ui's own address (docs/security-architecture.md §10m).
 "$FLY" secrets set --app "$UI_APP" \
   MIDDLEWARE_URL="http://${MW_APP}.internal:8080"
 
