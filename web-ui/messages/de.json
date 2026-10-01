@@ -1638,6 +1638,10 @@
       "bodyNoTools": "Beim Abbruch dieses Turns waren bereits Aktionen ausgeführt worden, und der Assistent konnte danach keine Antwort erzeugen — deine Frage ist also weiterhin offen. Stelle die Frage erneut; alles, was Daten verändert, vorher mit deinem Betreiber klären.",
       "completedTools": "Ausgeführte Aktionen:"
     },
+    "verifierBlocked": {
+      "heading": "Antwort von der Faktenprüfung zurückgehalten",
+      "body": "Die Faktenprüfung konnte diese Antwort nicht bestätigen, deshalb wird sie nicht angezeigt. Stelle die Frage erneut oder prüfe die Angaben direkt im Quellsystem."
+    },
     "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber.",
     "errorCorrelationRef": "Referenz für den Support: {id}",
     "routing": {

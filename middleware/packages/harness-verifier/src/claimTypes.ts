@@ -175,12 +175,14 @@ export type VerifierSkipReason =
 /**
  * Why the verifier could not run: `extractor_error` when the claim extraction
  * failed, `pipeline_error` when the pipeline threw or returned a verdict that
- * breaks this contract (see `bindVerdictToClaims`). A closed code on purpose:
- * the reason is forwarded on the stream `verifier` event to API clients, so
- * it never carries an error message — that stays in the log line where the
- * error is caught.
+ * breaks this contract (see `bindVerdictToClaims`), `privacy_shield` when the
+ * answer may not be sent to it — the verifier wrapper sets this in `enforce`
+ * mode for an answer Privacy Shield rendered server-side, which the pipeline
+ * never sees. A closed code on purpose: the reason is forwarded on the stream
+ * `verifier` event to API clients, so it never carries an error message —
+ * that stays in the log line where the error is caught.
  */
-export type VerifierUnavailableReason = 'extractor_error' | 'pipeline_error';
+export type VerifierUnavailableReason = 'extractor_error' | 'pipeline_error' | 'privacy_shield';
 
 /**
  * Aggregated result the orchestrator consumes. Bound to evidence:

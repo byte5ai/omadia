@@ -5,12 +5,11 @@
  *   - `isBorderlineVerdict` for each VerifierVerdict status.
  *   - `mergeBorderlineVerdicts` for every relevant first/second pair.
  *
- * Note: a full end-to-end test of `VerifierService.chat` would need a
- * mock Orchestrator + VerifierPipeline plus a real Anthropic client
- * stand-in (300+ LoC of fixtures). The borderline/merge helpers carry
- * all the new decision logic; the wiring between them and the existing
- * retry path is enforced by the TypeScript compiler (private method
- * signature + `effectiveResult/Verdict` substitution).
+ * The borderline/merge helpers carry the decision logic. End-to-end runs
+ * of `VerifierService` over a scripted orchestrator and pipeline live in
+ * `verifierServiceStates.test.ts`, `verifierServiceEnforceChat.test.ts` and
+ * `verifierServiceEnforceStream.test.ts` (harness:
+ * `_helpers/verifierServiceHarness.ts`).
  */
 
 import { describe, it } from 'node:test';

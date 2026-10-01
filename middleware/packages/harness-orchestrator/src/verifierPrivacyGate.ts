@@ -9,6 +9,8 @@
  *
  *   - {@link EgressLedger}: mark → run → take, and finalize every
  *     continuation once (the returned turn's first, the rest in `finally`).
+ *   - {@link StreamEgress}: the same for one streamed turn, whose `done`
+ *     carries the receipt once the verifier is done.
  *   - {@link verifierGate}: verify with the turn's privacy view, verify as
  *     before (no shield installed), or skip — never verify raw behind a
  *     shield.
@@ -92,6 +94,51 @@ export class EgressLedger {
     const egress = this.host.takePrivacyEgress?.(input);
     if (egress !== undefined) this.open.add(egress);
     return egress;
+  }
+}
+
+/**
+ * The hand-over of one streamed turn: taken once — at its `done`, or at the
+ * latest when the stream is over — and finalized exactly once, after the
+ * verifier or, when the stream ended early or threw, in the caller's
+ * `finally`.
+ */
+export class StreamEgress {
+  #egress: PrivacyEgressContinuation | undefined;
+  #taken = false;
+  #settled = false;
+
+  constructor(
+    private readonly host: PrivacyEgressHost,
+    private readonly input: ChatTurnInput,
+    private readonly log: (msg: string) => void,
+  ) {}
+
+  /** The continuation the turn handed over, or `undefined` (no shield, or
+   *  nothing handed over yet). Taken from the host on the first call. */
+  take(): PrivacyEgressContinuation | undefined {
+    if (!this.#taken) {
+      this.#taken = true;
+      this.#egress = this.host.takePrivacyEgress?.(this.input);
+    }
+    return this.#egress;
+  }
+
+  /** `done` as it goes out: the turn finalized, its receipt attached. */
+  async finishDone<T extends { readonly type: 'done' }>(done: T): Promise<T> {
+    const egress = this.take();
+    if (egress === undefined) return done;
+    this.#settled = true;
+    const receipt = await settleQuietly(egress, this.log);
+    return receipt ? { ...done, privacyReceipt: receipt, receiptId: egress.receiptId } : done;
+  }
+
+  /** Finalizes a continuation nobody finished (an early exit, a throw). */
+  async settleUnfinished(): Promise<void> {
+    const egress = this.take();
+    if (egress === undefined || this.#settled) return;
+    this.#settled = true;
+    await settleQuietly(egress, this.log);
   }
 }
 

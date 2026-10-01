@@ -766,6 +766,63 @@ What that means for an instance installed before v0.115:
 Fresh installs via `render.yaml` or `fly/deploy.sh` generate the key
 themselves; only pre-v0.115 instances have to add it by hand.
 
+## Answer verifier: `enforce` withholds what it could not confirm (releases after 2026-10-01)
+
+No configuration step: no new environment variable, no migration. It matters
+only if the verifier runs in `enforce` mode (`VERIFIER_ENABLED=true` and
+`VERIFIER_MODE=enforce`, or the `verifier_enabled` / `verifier_mode` setup
+fields of `@omadia/verifier`); `shadow` behaves exactly as before.
+
+- **Answers the verifier could not confirm are withheld.** `enforce` delivers
+  an answer only when its verdict is `approved`, or `skipped` because the
+  answer holds nothing to check (no figure, date or reference, or no claim).
+  Every other verdict replaces the answer with a short notice in the operator's
+  disclosure locale: a contradiction, but also a partly confirmed answer, an
+  answer whose claims no checker takes, and a turn in which the verifier could
+  not run. An answer longer than the 6000 characters the claim extractor reads
+  is never fully covered and is therefore always withheld. Before switching,
+  run `shadow` and compare: the share of `verifier_verdicts` rows with status
+  `approved`, or `skipped` with reason `no_trigger` / `no_claims`, is the share
+  of answers `enforce` would deliver.
+- **Privacy Shield v4 rendering and `enforce` do not combine.** An answer the
+  shield renders server-side holds real values the model never saw, so it is
+  never sent to the verifier; `enforce` withholds it (summary `unavailable`,
+  reason `privacy_shield`, a `verifier_verdicts` row with status
+  `unavailable`). That includes rendered tool errors and sign-in prompts. With
+  v4 rendering active, expect no rendered answer to reach users in `enforce`.
+- **Turns with an input card are delivered unchecked.** A turn that ends with
+  a choice card, an MCP input form, a slot picker or an OAuth consent prompt is
+  released without a verdict, and so is the answer the card rides on — a slot
+  picker, a consent prompt or a choice card added after the answer can come
+  with a complete factual answer.
+- **Streaming clients wait for the verdict.** On `/api/chat/stream`, the
+  public API-key stream and the canvas, no answer text arrives before the turn
+  and its verification (two LLM calls plus the source checks) have finished;
+  then the whole answer arrives at once, as a single text delta. The canvas
+  skeleton waits too: it appears with a released answer and not at all with
+  a withheld one. A turn without tool calls sends only its start events
+  (routing, iteration start) in between on the API-key stream — give API
+  clients a read timeout that covers a full turn plus verification.
+- **Teams and Telegram** now show the notice instead of an answer that is
+  still contradicted after the correction retry (previously delivered with a
+  "contradiction found" badge). The retry itself is unchanged and runs only on
+  this non-streaming path; `VERIFIER_MAX_RETRIES` keeps its default of 1. An
+  answer that ends with `NO_REPLY` after other text is checked like any
+  answer; when the verifier withholds it, the channel posts the notice
+  instead of staying silent.
+- **API clients** that switch exhaustively over `done.answerSource` must
+  handle `"verifier-blocked"` (always with `answerIsError: true`; `answer` is
+  the notice). A client that renders `done.answer` needs no change.
+  `done.verifier` now carries the verdict in `enforce` mode; the trailing
+  `verifier` event is still sent, and its `summary.reason` can be
+  `privacy_shield`. A withheld turn that had also failed after a tool
+  committed keeps `degraded: true` and `committedTools`. Plugins compiled
+  against `@omadia/channel-sdk`'s `AnswerSource` and `VerifierSummaryReason`
+  types, or `@omadia/verifier`'s `VerifierUnavailableReason`, see the widened
+  unions.
+- **Not covered:** agents on the subscription-CLI runtime (`claude-cli`
+  provider) and proactive routines are not verified, whatever the mode.
+
 ## Answer verifier: `skipped` and `unavailable` verdicts (releases after 2026-09-30)
 
 No configuration step: no new environment variable, no migration. It matters

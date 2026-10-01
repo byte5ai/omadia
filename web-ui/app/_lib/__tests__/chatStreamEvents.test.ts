@@ -273,3 +273,113 @@ describe('applyStreamEvent — verifier summary', () => {
     expect(next.messages[0]?.verifier).toBeUndefined();
   });
 });
+
+/**
+ * In `enforce` mode the verifier releases `done` only after its verdict and
+ * puts that verdict on `done` itself. When it withheld the answer, `done`
+ * carries a localized notice as `answer` plus `answerSource:
+ * 'verifier-blocked'` and `answerIsError` — the message must keep the notice
+ * as its content and record that it is a withheld answer, so the bubble can
+ * say so instead of rendering the notice as an ordinary reply.
+ */
+describe('applyStreamEvent — enforce-mode verifier verdicts', () => {
+  const blockedSummary = {
+    badge: 'failed' as const,
+    status: 'blocked' as const,
+    claimCount: 1,
+    contradictionCount: 1,
+    unverifiedCount: 0,
+    retryCount: 0,
+    latencyMs: 30,
+    mode: 'enforce' as const,
+  };
+
+  it('a withheld answer keeps the notice, the verdict and the withheld marker', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'Diese Antwort wurde zurückgehalten.',
+      toolCalls: 1,
+      iterations: 1,
+      answerSource: 'verifier-blocked',
+      answerIsError: true,
+      verifier: blockedSummary,
+    });
+
+    const message = applied(mutateById, session('bg')).messages[1];
+    expect(message?.content).toBe('Diese Antwort wurde zurückgehalten.');
+    expect(message?.verifierBlocked).toBe(true);
+    expect(message?.verifier?.status).toBe('blocked');
+    expect(message?.verifier?.badge).toBe('failed');
+    // A policy decision, not a failed turn: no error styling.
+    expect(message?.error).toBeUndefined();
+    expect(message?.streaming).toBe(false);
+  });
+
+  it('a withheld turn that also failed keeps the turn-incomplete row', () => {
+    // A rendered answer the verifier may not see is withheld; when its turn
+    // threw after a tool committed, `done` keeps the degraded markers.
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'Diese Antwort wurde zurückgehalten.',
+      toolCalls: 2,
+      iterations: 2,
+      degraded: true,
+      committedTools: ['create_invoice', 'v4_render_answer'],
+      correlationId: 'turn-token-2',
+      answerSource: 'verifier-blocked',
+      answerIsError: true,
+      verifier: {
+        ...blockedSummary,
+        badge: 'unavailable',
+        status: 'unavailable',
+        reason: 'privacy_shield',
+        claimCount: 0,
+        contradictionCount: 0,
+      },
+    });
+
+    const message = applied(mutateById, session('bg')).messages[1];
+    expect(message?.content).toBe('Diese Antwort wurde zurückgehalten.');
+    expect(message?.verifierBlocked).toBe(true);
+    expect(message?.verifier?.reason).toBe('privacy_shield');
+    expect(message?.degradedTurn?.committedTools).toEqual(['create_invoice', 'v4_render_answer']);
+    expect(message?.degradedTurn?.correlationId).toBe('turn-token-2');
+    expect(message?.error).toBeUndefined();
+  });
+
+  it('a released answer carries its verdict from done', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'the answer',
+      toolCalls: 0,
+      iterations: 1,
+      verifier: { ...blockedSummary, badge: 'verified', status: 'approved', contradictionCount: 0 },
+    });
+
+    const message = applied(mutateById, session('bg')).messages[1];
+    expect(message?.content).toBe('the answer');
+    expect(message?.verifier?.badge).toBe('verified');
+    expect(message?.verifierBlocked).toBeUndefined();
+  });
+
+  it('an ordinary done sets neither field', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'the answer',
+      toolCalls: 0,
+      iterations: 1,
+    });
+
+    const message = applied(mutateById, session('bg')).messages[1];
+    expect(message?.verifier).toBeUndefined();
+    expect(message?.verifierBlocked).toBeUndefined();
+  });
+});

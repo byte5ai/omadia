@@ -267,7 +267,9 @@ export class ClaimExtractor {
         );
         // Nothing was looked for, so this is no empty extraction: the
         // pipeline maps the rejection to `unavailable`, never to `skipped`.
-        throw new Error('claim extraction failed: the request was not admitted');
+        throw new Error('claim extraction failed: the request was not admitted', {
+          cause: err,
+        });
       }
     }
 

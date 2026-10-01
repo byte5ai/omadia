@@ -37,6 +37,7 @@ const SKIP_REASONS: ReadonlySet<unknown> = new Set<VerifierSkipReason>([
 const UNAVAILABLE_REASONS: ReadonlySet<unknown> = new Set<VerifierUnavailableReason>([
   'extractor_error',
   'pipeline_error',
+  'privacy_shield',
 ]);
 
 const CLAIM_STATUSES: ReadonlySet<unknown> = new Set<ClaimVerdict['status']>([

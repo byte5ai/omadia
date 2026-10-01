@@ -36,6 +36,7 @@ import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
 import { TurnIncompleteNotice } from '../_components/chat/TurnIncompleteNotice';
 import { VerifierBadge } from '../_components/chat/VerifierBadge';
+import { VerifierBlockedNotice } from '../_components/chat/VerifierBlockedNotice';
 import { Markdown } from '../_components/Markdown';
 import { resetChatSession, steerActiveTurn } from '../_lib/api';
 import { isSendKey } from '../_lib/composerKeys';
@@ -980,8 +981,9 @@ export function MessageRow({
             : message.error
               ? 'bg-[color:var(--danger)]/8 text-[color:var(--danger)] ring-1 ring-[color:var(--danger-edge)]'
               : // #1094 — a degraded turn is not an error, but it must not
-                // look like an ordinary answer either.
-                degradedTurn
+                // look like an ordinary answer either. Same for an answer
+                // the verifier withheld: the bubble holds its notice.
+                degradedTurn || message.verifierBlocked
                 ? 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--warning)]'
                 : 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--border)]',
         ].join(' ')}
@@ -1022,6 +1024,9 @@ export function MessageRow({
                   ? { correlationId: degradedTurn.correlationId }
                   : {})}
               />
+            )}
+            {message.verifierBlocked && (
+              <VerifierBlockedNotice hasAnswerText={delegatedNote.length > 0} />
             )}
             {delegatedNote.length > 0 ? (
               /* §2.7: agent narration renders in the prose register
@@ -1116,6 +1121,8 @@ export function MessageRow({
               )}
               {!message.streaming &&
                 !message.error &&
+                // A withheld answer is a notice — nothing to keep in memory.
+                !message.verifierBlocked &&
                 message.turnId !== undefined &&
                 (message.autoPromotedMkId !== undefined ? (
                   <AutoPromotedBanner

@@ -183,6 +183,15 @@ export type {
 // marker and persists that.
 export { composeTurnIncompleteText } from './turnIncomplete.js';
 
+// Wording for an answer the answer verifier withheld in `enforce` mode
+// (`answerSource: 'verifier-blocked'`). Composed at the delivery boundary
+// through the same locale mechanism as the turn-incomplete notice above.
+export {
+  composeVerifierBlockedText,
+  verifierBlockedCause,
+} from './verifierBlocked.js';
+export type { VerifierBlockedCause } from './verifierBlocked.js';
+
 // Org security postures + provenance-labelled inbound screening (#579). Shared
 // primitives — the posture model, tighten-only floor math, the provenance
 // bundler + judge-facing legend, the payload renderer, the shipping-default

@@ -338,6 +338,14 @@ User → Orchestrator.chatStream
                           └─ entityRefBus.publish (tagged mit turnId)
 ```
 
+Mit aktivem Answer-Verifier sitzt `VerifierService` vor dem Orchestrator
+(`User → VerifierService.chatStream/chat → Orchestrator`): in `shadow` prüft er
+nur und hängt das Urteil an, in `enforce` ist er ein Auslieferungs-Gate — der
+Stream hält jeden Inhalt bis zum Urteil (der Canvas-Composer sein Skeleton
+ebenso), eine nicht bestätigte Antwort wird durch eine Notiz ersetzt (§11,
+Kontrakt-Erweiterung Verifier-Gate). Agenten auf dem Abo-CLI-Runtime und
+Routinen laufen ohne diesen Wrapper.
+
 ### Channel → Orchestrator-Dispatch (per-Channel, Omadia UI)
 
 Ein Channel-Turn erreicht den Orchestrator über den **`orchestratorDispatcher`**
@@ -469,6 +477,10 @@ Macht den `canvasChatAgent` zum echten Tier-2-Composer. Für einen Canvas-Turn
    Skeleton geht als `surface_snapshot` (Revision `"0"`) raus, **bevor** der
    langsame Hauptturn startet (~500ms-Ziel, implementation-plan Risiko #1;
    Spike-Gate: <95% First-Attempt-Validität → Modell auf Sonnet pinnen).
+   Ausnahme Answer-Verifier in `enforce` (Basis-Agent mit
+   `holdsContentUntilVerdict`): dann wartet das Skeleton auf das Urteil und
+   geht nur mit einem freigegebenen Turn raus (`src/verdictHold.ts`, §11
+   Verifier-Gate).
 2. **Requirement-Handoff**: der delegierte Hauptturn bekommt die
    `dataRequirements` als `[canvas-context]`-Block an die `userMessage`
    angehängt (containerIds + exakte fieldKeys + Instruktion) — Tier-3
@@ -3030,6 +3042,21 @@ Gelesen vom **web-ui**-Prozess, nicht von der Middleware:
 
 Details: `docs/security-architecture.md` §10h.
 
+### Answer-Verifier (`VERIFIER_*`)
+
+Die Variablen werden beim ersten Boot einmal in die Setup-Felder des Plugins
+`@omadia/verifier` migriert (`bootstrap.ts`, `verifier_*`); danach gelten die
+Setup-Felder, nicht mehr die Env.
+
+| Variable / Setup-Feld | Wirkung |
+|---|---|
+| `VERIFIER_ENABLED` / `verifier_enabled` | `true` schaltet den Verifier-Wrapper ein. Default `false`. |
+| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht nur bei `approved` oder `skipped` (`no_trigger`/`no_claims`) raus, sonst eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort geht nie an den Verifier und wird zurückgehalten (`privacy_shield`). Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
+| `VERIFIER_MODEL` / `verifier_model` | Modell für Claim-Extraktion und Evidence-Judge. |
+| `VERIFIER_MAX_CLAIMS` / `verifier_max_claims` | Höchstzahl geprüfter Claims pro Antwort, Default `20`. |
+| `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Relative Betragstoleranz, Default `0.01`. |
+| `VERIFIER_MAX_RETRIES` / `verifier_max_retries` | Correction-Retries nach einem Widerspruch in `enforce`, nur auf dem nicht-streamenden Pfad (Teams, Telegram, `/api/chat`); Default `1`, max `2`. Der Stream versucht keinen Retry. |
+
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 
 ```
@@ -3476,6 +3503,7 @@ widersprüchlich bleiben, trägt `done` (und für den gepufferten Pfad
 weggelassen (bedeutet `'model'`). **`done.answer` ist autoritativ**; ein Client,
 der die Antwort aus Deltas rekonstruiert, muss sie durch `done.answer` ersetzen,
 sobald `answerSource` gesetzt und nicht `'model'` ist. Additiv/optional wie oben.
+Dritter Wert seit dem Verifier-Gate: `'verifier-blocked'` (siehe unten).
 
 **Kontrakt-Erweiterung — `answerIsError` (#1097).** Ein Server-Render kann auch
 ein *Fehler* sein (das Modell hat den Shield gebeten, etwas zu rendern, das in
@@ -3483,7 +3511,8 @@ Wahrheit ein Tool-Fehler oder ein Auth-Prompt ist). Dann trägt `done` (bzw.
 `ChatTurnResult`/`SemanticAnswer`) zusätzlich `answerIsError: true`, gesetzt aus
 `PrivacyRenderedAnswer.isError`. Kanäle dürfen den Turn damit als Fehler
 darstellen, statt den englischen Fehlertext als Ergebnis zu zeigen. Nur
-zusammen mit `answerSource: 'privacy-render'`, nie `false`, additiv/optional.
+zusammen mit `answerSource: 'privacy-render'` oder (immer) mit
+`'verifier-blocked'`, nie `false`, additiv/optional.
 Zweiter, unabhängiger Fix im selben Issue: ein Guarded-Tool, das einen prosaischen
 `Error:`-String **zurückgibt** (die `Error:`-Konvention, aus der auch `is_error`
 abgeleitet wird), wird an den Dispatch-Nähten nicht mehr als 1-Zeilen-Dataset
@@ -3607,6 +3636,92 @@ Ein Provider ohne die Methode lässt den Kernel zurückgegebene `Error:`-Texte
 vollständig zurückhalten, und das Log meldet einmal pro Prozess
 `does not implement redactToolErrorText`. Details, Residuen und Reviewer-Regel:
 `docs/security-architecture.md` §6c und §11.
+
+**Kontrakt-Erweiterung — Verifier-Gate im Stream (`VERIFIER_MODE=enforce`).**
+`shadow` bleibt der unveränderte Pass-through: alle Events wie erzeugt, danach
+ein `verifier`-Event. In `enforce` ist `VerifierService.chatStream` ein
+Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
+`docs/security-architecture.md` §7c):
+
+- **Bis zum Urteil** gehen nur Lebenszeichen raus: `iteration_start`,
+  `turn_routing`, `turn_persona`, `tool_progress`, `heartbeat`,
+  `stream_token_chunk`, `iteration_usage`, `steer_applied` (geschlossene
+  Allowlist `passesBeforeVerdict`). Alles andere — `text_delta`,
+  `tool_use`/`tool_result`, `sub_*` (auch `sub_iteration`, damit es beim
+  Freigeben unter seinem Tool-Call steht), `nudge`, `turn_annotation`,
+  `surface_*`, `done`, jeder künftige Typ — wird gehalten. Der Observer der
+  Route wird jetzt in jedem Modus durchgereicht (vorher verworfen), Token- und
+  Usage-Zähler laufen also live weiter.
+- **Freigabe** nur bei `approved` oder `skipped` mit `no_trigger` /
+  `no_claims`: die gehaltenen Events in Originalreihenfolge, aber ohne die
+  gestreamten `text_delta`s — der Text geht als **ein** `text_delta` mit
+  `done.answer` (ohne gefalteten KI-Kennzeichnungsblock) direkt vor `done`
+  raus, `done` mit `verifier` (dasselbe Summary wie das folgende
+  `verifier`-Event): `…, text_delta(done.answer), done{verifier}, verifier`.
+  Grund: der Orchestrator streamt jede Modellantwort live und verwirft sie
+  ggf. danach (#332-L3-Eskalation, File-Retry: `textParts.length = 0`) — die
+  verworfene Antwort steht in den Deltas, nicht in `done.answer`, und das
+  Urteil gilt nur `done.answer`.
+- **Zurückgehalten** (fail-closed) bei jedem anderen Urteil — `blocked`,
+  `approved_with_disclaimer`, `skipped` mit `no_checkable_claims` /
+  `incomplete_coverage`, `unavailable`: genau ein `text_delta` mit der
+  lokalisierten Notiz (`composeVerifierBlockedText`, Locale: Turn-Disclosure →
+  `ai_disclosure_locale` → `de`), dann `done` mit dieser Notiz als `answer`,
+  `answerSource: 'verifier-blocked'`, `answerIsError: true`, `verifier` und nur
+  Identitäts-/Telemetriefeldern (Allowlist; Anhänge, Dateien, Follow-ups,
+  `maskedValues`, `delegatedAnswer`, Karten, Excerpts fallen weg), dann das
+  `verifier`-Event: `text_delta(Notiz), done{verifier-blocked}, verifier`.
+  Hatte der Turn die KI-Kennzeichnung in `done.answer` gefaltet (erster Turn
+  des Scopes), trägt die Notiz in `done.answer` denselben Block — nie im
+  Delta.
+- **Ohne Urteil freigegeben:** `pendingUserChoice`, `pendingMcpInput`,
+  `pendingSlotCard`, `pendingOAuthConsent`, `degraded` mit der
+  Turn-Incomplete-Notiz — gehaltene Events wie bei der Freigabe (Text als ein
+  Delta aus `done.answer`), kein `verifier`-Event. Sicher faktenfrei sind nur
+  die Notiz und `NO_REPLY`: eine Karte hängt an der Antwort ihres Turns.
+  Auswahlkarte und MCP-Eingabeformular beenden den Turn am Tool-Call (Antwort
+  = Text davor); `pendingSlotCard`, `pendingOAuthConsent` (turnweit, sobald
+  ein Kalender-Tool `consent_required` meldete) und eine vom Card-Router
+  (`maybeRouteCardsFromText`, Provider ohne Interleaving, Antwort ab 40
+  Zeichen) angehängte Auswahlkarte reiten dagegen auf dem `done` einer
+  vollständigen Antwort — die geht dann samt Tool-Output und Surfaces
+  ungeprüft raus (offener Punkt in §13). Ein nacktes `NO_REPLY` (Sentinel als
+  ganze Antwort) gibt nur sein `done` frei, nichts Gehaltenes. Geprüft wie
+  jede Antwort wird eine Antwort, die nur mit `NO_REPLY` **endet**
+  (`isNoReply` akzeptiert die Form, Stream-Clients verwerfen sie aber nicht).
+  Endet der Turn mit `error`, geht nur der `error` raus, nichts Gehaltenes.
+- **Nie an den Verifier: von Privacy Shield gerenderte Antworten.** Eine
+  Antwort mit `answerSource: 'privacy-render'` (auch ein `degraded`-Turn,
+  dessen Antwort der Shield schon gerendert hatte) geht in `enforce` nie an
+  `pipeline.verify` (`mayVerifyAnswer`): der Claim-Extraktor schickte die
+  echten Werte, die der Shield dem Modell vorenthalten hat, an seinen
+  Provider. Stattdessen Verdict `unavailable` / `privacy_shield` →
+  zurückgehalten, auf Stream und `chat()`, dort auch für Resample und Retry.
+  Ein zurückgehaltener `degraded`-Turn behält `degraded`, `committedTools`
+  und `correlationId`.
+- **Kein Retry im Stream** — ein Retry führt die Tools des Turns erneut aus.
+  `VerifierService.chat` (Teams, Telegram, `/api/chat`) behält Retry und
+  Resample und liefert bei einem nicht freigegebenen Endurteil dieselbe Notiz
+  als `SemanticAnswer` (`answerSource`/`answerIsError` gesetzt, Anhänge und
+  Karten entfernt).
+- Ein zurückgehaltener Turn zählt als `ok` (Operator-Health in `routes/chat.ts`,
+  API-Key-Audit in `chatRouter.ts`) — eine Policy-Entscheidung, kein Fehler;
+  außer er ist zugleich `degraded`, dann bleibt er ein Fehler.
+- **Canvas-Skeleton:** deklariert der Basis-Agent
+  `ChatAgent.holdsContentUntilVerdict` (der `VerifierService` in `enforce`),
+  hält der Canvas-Composer sein Skeleton zurück (`verdictHold.ts`): es geht
+  direkt vor dem ersten `surface_*` bzw. dem freigebenden `done` raus, vor
+  dem Antworttext, und nie mit einem zurückgehaltenen oder fehlgeschlagenen
+  Turn. In `shadow` und ohne Verifier bleibt Skeleton-first unverändert.
+- Der Web-Chat faltet `done.verifier` und `verifierBlocked` in die Nachricht
+  (`chatStreamEvents.ts`) und setzt `VerifierBlockedNotice`
+  (`chat.verifierBlocked.*`) über die Notiz; der Server-Mirror
+  (`MessageSchema`) behält beide Felder.
+- **Nicht abgedeckt:** der Abo-CLI-Runtime (`claude-cli`; `buildOrchestrator`
+  gibt den `CliChatAgent` vor dem Verifier-Wrapper zurück) und Routinen (der
+  Routine-Runner ruft `runTurn` auf dem rohen Orchestrator). Persistenz
+  (Session-Log, KG-Turn, Auto-Promotion) passiert vor `done`, also auch für
+  eine zurückgehaltene Antwort.
 
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
@@ -4456,11 +4571,13 @@ Objektformen und dass solcher Text Text bleibt.
 - **Verifier-Aufzählung in der README-Feature-Tabelle.** Die Zeile
   „Answer verification" nennt nur `approved` / `approved_with_disclaimer` und
   „each answer"; beim nächsten Abgleich der README-Aussagen mit dem erzwungenen
-  Verhalten auf `skipped` / `unavailable` erweitern.
-- **Verdict-Zustand im Server-Mirror.** Der Chat-Mirror (`MessageSchema`,
-  `routes/chatSessions.ts`) verwirft `Message.verifier`; ein Mirror-Restore
-  zeigt deshalb keinen Verifier-Chip (nur ein lokaler Reload). Nachziehen,
-  falls der Chip auch geräteübergreifend sichtbar sein soll.
+  Verhalten auf `skipped` / `unavailable` erweitern — und sagen, dass nur
+  `enforce` blockiert (auch im Stream), `shadow` nur beobachtet, und dass der
+  Abo-CLI-Runtime und Routinen nicht verifiziert werden.
+- **Verdict-Zustand im Server-Mirror — erledigt.** Der Chat-Mirror
+  (`MessageSchema`, `routes/chatSessions.ts`) behält `Message.verifier` (ein
+  Summary, das nicht ins Schema passt, fällt einzeln weg) und
+  `verifierBlocked`.
 - **Abdeckung nur im Log, nicht in `verifier_verdicts`.** Die Tabelle hat keine
   Spalte für nicht geprüfte (`not_checked`) oder gescheiterte
   (`check_failed`) Claims; beide zählen dort in `unverified_count`. Eine
@@ -4540,13 +4657,96 @@ Objektformen und dass solcher Text Text bleibt.
   Shadow-Betrieb die Logzeilen `[claim-extractor] … too_long=` beobachten;
   sind sie häufig, das Modell im System-Prompt ausdrücklich lange Aussagen in
   mehrere Claims teilen lassen, statt die Grenze anzuheben.
-- **`verifierService.ts` über der 500-Zeilen-Grenze.** Die Datei hatte vor
-  den evidenzgebundenen Verdicts schon 633 Zeilen und hat jetzt rund 700.
-  Reine Helfer — Summary und Badge (`summarise`, `badgeFor`, `mergeBadges`),
-  Trace-Extraktion (`extractToolsCalled` u. a.) und
-  `mergeBorderlineVerdicts` — in eigene Module ziehen und `badgeFor`,
-  `mergeBadges`, `mergeBorderlineVerdicts` weiter aus `verifierService.ts`
-  exportieren, weil Tests sie von dort importieren.
+- **`verifierService.ts` über der 500-Zeilen-Grenze — erledigt.** Die reinen
+  Helfer liegen jetzt in eigenen Modulen: Summary, Badge und Merge
+  (`summarise`, `badgeFor`, `mergeBadges`, `mergeBorderlineVerdicts`,
+  `withVerifier`) in `verifierVerdicts.ts`, die Trace-Extraktion
+  (`extractToolsCalled` u. a.) in `verifierTraceEvidence.ts`.
+  `verifierService.ts` exportiert `badgeFor`, `mergeBadges` und
+  `mergeBorderlineVerdicts` weiter, weil Tests sie von dort importieren.
+
+### Answer-Verifier: offene Punkte zum `enforce`-Gate (2026-10-01)
+
+- **Kein Correction-Retry im Stream.** Eine im Stream widersprochene Antwort
+  wird zurückgehalten, nicht korrigiert: ein Retry führt die Tool-Calls des
+  Turns erneut aus, und dafür fehlt die Absicherung gegen wiederholte
+  Schreib-Tools (offener Punkt zu Verifier-Retries ohne Write-Replay). Mit
+  dieser Absicherung den Retry wie in `chat()` nachziehen.
+- **Zurückgehaltene Antwort wird trotzdem persistiert.** Der Orchestrator
+  schreibt Session-Log, KG-Turn und ggf. die Auto-Promotion vor `done`; die
+  zurückgehaltene Antwort landet so im Kontext späterer Turns, und ihre
+  `autoPromotedMkId` wird nicht ausgeliefert (der Web-Chat bietet kein
+  Verwerfen an). Nach dem #1094-Muster einen Marker statt der Antwort
+  persistieren oder Persistenz und Promotion in `enforce` bis zum Urteil
+  zurückstellen.
+- **Zurückgehaltener Turn zeigt nicht, welche Tools liefen.** Tool-Trace und
+  Tool-Ergebnisse fallen mit der Antwort weg; der Web-Chat zeigt nur die
+  Anzahl (`tools=N`). Hat ein Schreib-Tool committet, sollte die Notiz es nennen
+  wie die Turn-Incomplete-Notiz (#1094) — `done.runTrace` trägt die Namen.
+- **Keepalive für Public-API- und Canvas-Stream.** Bis zum Urteil gehen nur
+  Lebenszeichen raus; `heartbeat` erzeugt nur die Kernel-Route. Ein Turn ohne
+  Tool-Calls ist auf dem API-Key-Stream bis zum Urteil still — Integratoren mit
+  kurzen Lese-Timeouts brechen ab. Ein Wrapper-Heartbeat während des Haltens
+  wäre die Lösung (die README nennt das Verhalten).
+- **Canvas: erster Paint erst nach dem Urteil.** In `enforce` hält der
+  Composer das Skeleton bis zum Urteil (es ist Modell-Output); der Canvas
+  bleibt bis dahin leer. Ein Platzhalter ohne Modelltext (etwa das
+  deterministische Fallback-Skeleton) könnte live rausgehen, braucht aber
+  eine eigene Revisionsfolge (Modell-Skeleton als Revision 1, Patches darauf)
+  und einen lokalisierten „zurückgehalten“-Status für einen zurückgehaltenen
+  Turn.
+- **Mitausgelieferte Inhalte ungeprüft.** Das Urteil gilt `done.answer`;
+  Tool-Output, Sub-Agent-Antworten, Surfaces und der Skeleton-Text gehen mit
+  einem freigegebenen Turn raus, ohne selbst geprüft zu sein. Erfindet der
+  Composer Zahlen im Skeleton, wäre ein Skeleton ohne Freitext in `enforce`
+  (oder eine Prüfung seines Texts) der nächste Schritt.
+- **Nachgestelltes `NO_REPLY` in Teams/Telegram.** Eine Antwort, die nur mit
+  `NO_REPLY` endet, wird in `enforce` geprüft; hält der Verifier sie zurück,
+  postet der Channel die Notiz statt zu schweigen. Falls das stört: die Form
+  vor dem Verifier auf das strikte `NO_REPLY` normalisieren (Prosa verwerfen)
+  — Produktentscheidung.
+- **`onVerifierBlocked` nur bei Widerspruch.** Der Plan-Hook feuert für
+  `blocked`; eine fail-closed zurückgehaltene Antwort (`partial`,
+  `unavailable`) erscheint im Plan nicht als abgelehnt.
+- **Fail-closed hält lange Antworten immer zurück.** Eine Antwort über 6000
+  Zeichen ist nie `approved` (Abdeckungslücke) und wird in `enforce` stets
+  zurückgehalten, ebenso jede mit einem Claim, den kein Checker nimmt. Die
+  fensterweise Extraktion (Punkt oben) ist damit Voraussetzung für `enforce`
+  bei ERP-Listen.
+- **Borderline-Resample in `enforce chat()`.** Ein Borderline-Verdict ist
+  `approved_with_disclaimer` und wird zurückgehalten; der bezahlte Resample
+  ändert daran nur etwas, wenn er auf `blocked` eskaliert und der Retry dann
+  korrigiert. Kosten gegen Nutzen neu abwägen (zusammen mit Write-Replay).
+- **Abo-CLI-Runtime und Routinen ohne Verifier.** `VERIFIER_MODE` wirkt weder
+  auf `claude-cli`-Agenten (der `CliChatAgent` wird vor dem Wrapper
+  zurückgegeben) noch auf Routinen (`runTurn` auf dem rohen Orchestrator).
+- **Connector-Badge auf der Notiz.** Teams/Telegram zeigen an einer
+  zurückgehaltenen Antwort das Badge ihres Verdicts (`failed`, `partial`) neben
+  der Notiz. Produktentscheidung, ob es dort entfallen soll.
+- **Karten-Ausnahme lässt Faktenantworten ungeprüft durch.**
+  `releasesWithoutVerification` gibt jeden Turn mit `pendingUserChoice`,
+  `pendingMcpInput`, `pendingSlotCard` oder `pendingOAuthConsent` ohne Urteil
+  frei — auch die vollständige Antwort, an der ein Slot-Picker, ein
+  Consent-Prompt (turnweit) oder eine Card-Router-Auswahlkarte hängt, samt
+  Tool-Output, Surfaces und Canvas-Skeleton, ohne Badge. Engere Regel zur
+  Entscheidung: den Antworttext solcher Turns prüfen und die Karte nur
+  mitliefern, wenn das Urteil die Antwort freigibt — oder nur Turns
+  ausnehmen, die nichts als die Karte sind. Die vier Ausnahmen sind derzeit
+  so gesetzt; Security §7c beschreibt die Lücke.
+- **`enforce` mit Privacy Shield v4 liefert keine gerenderte Antwort.** Eine
+  gerenderte Antwort geht nie an den Verifier und wird zurückgehalten
+  (`unavailable` / `privacy_shield`) — auch ein gerenderter Tool-Fehler oder
+  Anmelde-Prompt (`answerIsError`). Damit `enforce` sie freigeben kann, müsste
+  der Verifier die Antwort über die Privacy-Sicht des Turns prüfen (Prosa und
+  Spaltenlabels maskiert, Werte über Handles statt Klartext).
+- **Zusammenführen mit der Privacy-Bindung der Verifier-Requests.** Sobald die
+  Änderung auf `main` ist, die die Model-Requests des Verifiers an die
+  Privacy-Policy des Turns bindet (`verifierGate`): deren Ergebnis „nicht
+  prüfen“ im `enforce`-Callback auf `releases: false` abbilden (Verdict
+  `unavailable` / `privacy_shield`), nie auf eine Auslieferung ohne Urteil;
+  `mayVerifyAnswer` deckt dann nur noch den ersten Zweig des Gates ab. Bis
+  dahin schickt `shadow` eine gerenderte, nicht degradierte Antwort weiter an
+  den Extraktor.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

@@ -81,7 +81,7 @@ setup:
       label: "Verifier Mode"
       type: "string"
       required: false
-      help: "'shadow' loggt nur (kein Block / kein Retry). 'enforce' triggert bei Contradictions einen einmaligen Retry mit Correction-Prompt. Default: 'shadow'."
+      help: "'shadow' prüft und protokolliert nur — die Antwort geht unverändert raus. 'enforce' gibt eine Antwort nur frei, wenn die Prüfung sie bestätigt oder nichts Prüfbares fand; sonst (Widerspruch, nicht bestätigte oder nicht geprüfte Angaben, Prüfung nicht möglich) sieht der Nutzer einen Hinweis statt der Antwort, und im Stream kommt bis zum Urteil kein Antworttext an. Ausnahmen: ein Turn mit Eingabekarte (Auswahl, MCP-Formular, Terminwahl, Anmeldung) geht ungeprüft raus, samt der Antwort, an der die Karte hängt; eine von Privacy Shield gerenderte Antwort geht nie an den Verifier und wird zurückgehalten. Bei einem Widerspruch versucht der nicht-streamende Pfad (Teams, Telegram) vorher einen Retry mit Correction-Prompt. Wirkt nicht auf Agenten mit dem Abo-CLI-Runtime (claude-cli) und nicht auf Routinen. Default: 'shadow'."
     - key: "verifier_model"
       label: "Verifier Model"
       type: "string"
@@ -101,7 +101,7 @@ setup:
       label: "Max Retries (enforce mode)"
       type: "string"
       required: false
-      help: "Maximale Retry-Anzahl im enforce-Mode bei detektierter Contradiction. Default: 1, Max: 2 (vom Kernel-Schema clamped)."
+      help: "Maximale Retry-Anzahl im enforce-Mode bei detektierter Contradiction — nur auf dem nicht-streamenden Pfad (Teams, Telegram, /api/chat); der Stream versucht keinen Retry. Default: 1, Max: 2 (vom Kernel-Schema clamped)."
     - key: "graph_tenant_id"
       label: "Graph Tenant ID"
       type: "string"

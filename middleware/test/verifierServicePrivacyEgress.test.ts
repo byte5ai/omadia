@@ -64,26 +64,30 @@ describe('VerifierService.chat — privacy egress', () => {
     assert.deepEqual(answer.privacyReceipt, state.continuations[2]!.receipt);
   });
 
-  it('still finalizes and delivers the answer when the verifier pipeline throws', async () => {
-    const { orchestrator, state } = stubOrchestrator({
-      results: [turn('Die Rechnung RE-1 beträgt 100 €.')],
-      handOver: true,
-      privacyActive: true,
-    });
-    const service = new VerifierService({
-      orchestrator,
-      pipeline: failingPipeline(),
-      enabled: true,
-      mode: 'enforce',
-      log: SILENT,
-    });
+  for (const mode of ['shadow', 'enforce'] as const) {
+    it(`still finalizes once when the verifier pipeline throws (${mode})`, async () => {
+      const { orchestrator, state } = stubOrchestrator({
+        results: [turn('Die Rechnung RE-1 beträgt 100 €.')],
+        handOver: true,
+        privacyActive: true,
+      });
+      const service = new VerifierService({
+        orchestrator,
+        pipeline: failingPipeline(),
+        enabled: true,
+        mode,
+        log: SILENT,
+      });
 
-    const answer = await service.chat({ userMessage: 'frage' });
+      const answer = await service.chat({ userMessage: 'frage' });
 
-    assert.equal(answer.text.startsWith('Die Rechnung RE-1'), true);
-    assert.equal(state.continuations[0]!.finalizeCalls, 1);
-    assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
-  });
+      // `shadow` delivers the answer; `enforce` fails closed and withholds an
+      // answer the verifier could not check (`unavailable`).
+      assert.equal(answer.text.startsWith('Die Rechnung RE-1'), mode === 'shadow');
+      assert.equal(state.continuations[0]!.finalizeCalls, 1);
+      assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
+    });
+  }
 
   it('sends a correction without truth values or value-bearing details', async () => {
     const { orchestrator, state } = stubOrchestrator({
@@ -146,7 +150,10 @@ describe('VerifierService.chat — privacy egress', () => {
     const answer = await service.chat({ userMessage: 'frage' });
 
     assert.equal(state.runs.length, 2);
-    assert.equal(answer.text.startsWith('Erste Antwort.'), true);
+    // Still blocked: `enforce` withholds the answer. The request is the first
+    // turn's — never the retry's, whose text would show a fake value.
+    assert.equal(answer.answerSource, 'verifier-blocked');
+    assert.equal(answer.text.includes('Platzhalter'), false, 'the retry answer was shown');
     assert.equal(answer.verifier?.status, 'failed');
     assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
     assert.deepEqual(
@@ -158,7 +165,9 @@ describe('VerifierService.chat — privacy egress', () => {
   // A borderline first answer, a re-sample that escalates to blocked and whose
   // restored text still carries a placeholder the model reworded ("10.000 €"
   // for "€10000"): whatever happens to the retry, the re-sample never
-  // replaces the first answer — the user would see a fake value.
+  // replaces the first answer — the user would see a fake value. Blocked in
+  // `enforce`, the answer is withheld either way; the delivered request is
+  // the first turn's (its receipt), never the re-sample's.
   describe('a blocked re-sample with unresolved placeholders', () => {
     const FIRST = 'Die Prämie ist beantragt.';
     const RESAMPLE = 'Die Prämie beträgt 10.000 €.';
@@ -197,7 +206,8 @@ describe('VerifierService.chat — privacy egress', () => {
       const answer = await service.chat({ userMessage: 'Wie hoch ist die Prämie?' });
 
       assert.equal(state.runs.length, 2, 'a retry ran although its hint was withheld');
-      assert.equal(answer.text.startsWith(FIRST), true, 'the re-sample with a placeholder was shown');
+      assert.equal(answer.answerSource, 'verifier-blocked');
+      assert.equal(answer.text.includes(RESAMPLE), false, 'the re-sample with a placeholder was shown');
       assert.equal(answer.verifier?.status, 'failed');
       assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
       assert.deepEqual(state.continuations.map((c) => c.finalizeCalls), [1, 1]);
@@ -209,8 +219,10 @@ describe('VerifierService.chat — privacy egress', () => {
       const answer = await service.chat({ userMessage: 'Wie hoch ist die Prämie?' });
 
       assert.equal(state.runs.length, 2);
-      assert.equal(answer.text.startsWith(FIRST), true, 'the re-sample with a placeholder was shown');
+      assert.equal(answer.answerSource, 'verifier-blocked');
+      assert.equal(answer.text.includes(RESAMPLE), false, 'the re-sample with a placeholder was shown');
       assert.equal(answer.verifier?.status, 'failed');
+      assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
     });
 
     it('is not shown when the retry is still blocked with placeholders too', async () => {
@@ -219,18 +231,22 @@ describe('VerifierService.chat — privacy egress', () => {
       const answer = await service.chat({ userMessage: 'Wie hoch ist die Prämie?' });
 
       assert.equal(state.runs.length, 3);
-      assert.equal(answer.text.startsWith(FIRST), true, 'an answer with a placeholder was shown');
+      assert.equal(answer.answerSource, 'verifier-blocked');
+      assert.equal(answer.text.includes('10.000'), false, 'an answer with a placeholder was shown');
       assert.equal(answer.verifier?.status, 'failed');
+      assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
       assert.deepEqual(state.continuations.map((c) => c.finalizeCalls), [1, 1, 1]);
     });
 
     it('control: a re-sample whose placeholders all resolved still replaces the first answer', async () => {
-      const { service } = resampleCase({ unresolved: 0, withholdRetry: true });
+      const { service, state } = resampleCase({ unresolved: 0, withholdRetry: true });
 
       const answer = await service.chat({ userMessage: 'Wie hoch ist die Prämie?' });
 
-      assert.equal(answer.text.startsWith(RESAMPLE), true);
+      // Withheld as blocked, but the delivered request is the re-sample's.
+      assert.equal(answer.answerSource, 'verifier-blocked');
       assert.equal(answer.verifier?.status, 'failed');
+      assert.deepEqual(answer.privacyReceipt, state.continuations[1]!.receipt);
     });
   });
 
