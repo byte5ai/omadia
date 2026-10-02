@@ -142,6 +142,43 @@ macOS):
 the Windows/macOS runners has only been exercised locally on macOS — the first
 real Release run is the acceptance test.
 
+## Install and upgrade smoke
+
+`.github/workflows/desktop-upgrade-smoke.yml` installs the installers of one
+`desktop-apps.yml` run on clean GitHub-hosted runners (macOS arm64, Windows x64,
+Linux x64) and drives the app through Playwright's Electron support, so nobody
+has to sit at three machines before a runtime change merges. Dispatch it with
+the build's run id and the release to upgrade from:
+
+    gh workflow run desktop-upgrade-smoke.yml -f candidate_run_id=<run id> -f baseline_tag=v0.167.13
+
+Each platform runs two jobs. `fresh` installs the candidate and completes the
+wizard with the `ANTHROPIC_API_KEY` repository secret. It then creates the first
+admin through the kernel API, signs in, asks the kernel to verify the stored key
+and waits for an update check that reaches the release feed. `upgrade` does the
+same on the baseline release, quits it, installs the candidate over it and
+starts it again. That second start must log no boot failure and no secret-store
+refusal, leave `secrets.enc` byte-identical, keep the recovery key the baseline
+wizard showed, and still sign in and verify the stored key.
+
+The recovery key and the stored keys are hashed inside the app, so no key
+reaches the job log or the uploaded evidence. Each job uploads
+`desktop-smoke-<platform>-<scenario>` with the report, the desktop log and
+screenshots, after checking the log for the provider key and the admin password.
+
+Each runner is set up the way a user's machine looks. Windows runners run jobs
+elevated, and `postgres.exe` refuses an administrator token, so the driver runs
+with the Basic User token (`runas /trustlevel:0x20000`) an administrator gets
+under UAC. Linux gets Xvfb and an unlocked gnome-keyring in a GNOME session,
+because the packaged app keeps no secrets without OS encryption. On macOS a
+keychain of its own keeps unlock prompts out of the run. The baseline starts
+with a dead proxy for Chromium's network stack, so its updater cannot download
+a newer release mid-test.
+
+Gatekeeper and notarization are out of its reach, because nothing the runner
+downloads is quarantined. Installs through the auto-updater and Intel Macs are
+not covered either.
+
 ## Review findings & v1 decisions
 
 A full adversarial review (Forge / codex, local) was run on this code. Resolved:
