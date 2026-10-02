@@ -24,11 +24,13 @@ default, the Privacy Shield keeps the raw results of data-source tools on your
 server. It acts only in the model requests a turn makes itself, from the
 agent's model loop and its sub-agents to the answer verifier's checks. There
 the model works from an identity-free digest of each tool result and gets tool
-errors redacted, apart from a few exempt tools such as `read_attachment` and
-any tool an operator sets to bypass the shield. Your own messages, text from
-uploads, recalled context and the chat history a channel replays are masked
-there only once you switch on prompt masking (`mask_user_prompt`, default
-off). Every other model call sends its text as it is, with prompt masking on
+errors redacted, apart from a few exempt tools such as `read_attachment` (it
+refuses tables) and any tool an operator sets to bypass the shield. The
+earlier answers a channel replays and recalled context are masked there
+whatever the settings. Your own messages, text from uploads and the user
+messages a channel replays are masked there only once you switch on prompt
+masking
+(`mask_user_prompt`, default off). Every other model call sends its text as it is, with prompt masking on
 or off. That covers the inbound security screener, turn scoring and the other
 memory jobs, and plugin calls through `ctx.llm` such as the canvas composer
 and the plan runner. Images you attach go to an image-capable model unmasked,
@@ -173,7 +175,7 @@ three rows are why teams choose it; the rest is the groundwork done properly.
 
 | Capability | What you get |
 |---|---|
-| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary. The shield acts only in a turn's own model requests, from the agent's loop and its sub-agents to the verifier's checks. There the LLM works from an identity-free digest of each tool result and gets tool errors redacted or withheld, and a result the shield cannot intern is withheld. `guarded` by default, with `bypass`, `per_tool` and a per-MCP-server bypass as opt-ins and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`) that does not cover knowledge-graph ingestion of MCP results. `read_attachment` (uploaded files) and a short allowlist of the agent's own tools return their results in clear, and the errors these tools return or throw reach the model as they are, like the errors a bypassed tool returns. Your messages, recalled context and the chat history a channel replays are masked there only while prompt masking (`mask_user_prompt`, off by default) is on, so by default they reach the model as typed. Replayed answers can carry real values the shield rendered into them. Every other model call sends its text as it is, with masking on or off, from the inbound security screener, turn scoring and the other memory jobs to plugin calls through `ctx.llm` such as the canvas composer and the plan runner. Attached images go to an image-capable model unmasked, and the Claude subscription CLI (`claude-cli`) runs without the shield. |
+| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary. The shield acts only in a turn's own model requests, from the agent's loop and its sub-agents to the verifier's checks. There the LLM works from an identity-free digest of each tool result and gets tool errors redacted or withheld, and a result the shield cannot intern is withheld. `guarded` by default, with `bypass`, `per_tool` and a per-MCP-server bypass as opt-ins and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`) that does not cover knowledge-graph ingestion of MCP results. `read_attachment` (uploaded documents; it refuses tables and points the model to `query_dataset`) and a short allowlist of the agent's own tools return their results in clear, and the errors these tools return or throw reach the model as they are, like the errors a bypassed tool returns. The answers a channel replays as chat history are masked there whatever the settings, because an answer the shield rendered carries real values. Your messages, recalled context and the user messages a channel replays are masked there only while prompt masking (`mask_user_prompt`, off by default) is on, so by default they reach the model as typed. Every other model call sends its text as it is, with masking on or off, from the inbound security screener, turn scoring and the other memory jobs to plugin calls through `ctx.llm` such as the canvas composer and the plan runner. Attached images go to an image-capable model unmasked, and the Claude subscription CLI (`claude-cli`) runs without the shield. |
 | ✅&nbsp;**Answer&nbsp;verification** | Optional and off by default (`verifier_enabled`). Once switched on, it checks an answer against the run's own sources only if one of its trigger patterns matches, such as a euro amount, an accounting reference like `INV/2026/0042` or a date written as `2026-10-02`, and records a verdict. Figures in other formats, such as other currencies or English-format dates, match no trigger pattern unless the answer also holds an aggregate keyword such as `total` and a number of three or more digits. An answer in which the verifier finds nothing to check is `skipped`, a verifier that could not run is `unavailable`, and `approved` means that every claim the verifier extracted was checked and confirmed. The default mode, `shadow`, only records. `enforce` holds each answer until its verdict, delivers an answer the verifier confirmed and withholds one it could not confirm. An answer that no trigger pattern matched, or in which the extraction found no claim, goes out unchecked in `enforce` too, and so does a turn that carries an input card. |
 | 🧮&nbsp;**Excel&nbsp;from&nbsp;real&nbsp;rows** | `create_xlsx` writes the real rows behind a `datasetId` into the workbook server-side, so they never pass through the model, and adds sums and pivots as Excel formulas. omadia runs no spreadsheet engine of its own: the workbook asks the spreadsheet application to recalculate when it opens the file, and that application computes every formula result. |
 | 🧾&nbsp;**Traces&nbsp;and&nbsp;receipts** | The call-stack viewer shows a run step by step, with each tool call and decision. That trace is best-effort telemetry, so a run can lack one. Privacy receipts (`/operator/receipts`, Postgres backend) are hash-chained and written best-effort, one for each turn in which the privacy shield acted. A failed write is logged and not retried, and a receipt that was never written leaves no gap in the chain. |
@@ -291,8 +293,8 @@ answer:
   digest. It redacts the `Error:` text a tool returns, or withholds it whole,
   and it withholds the message of a tool that throws. It masks prompt text
   only while an operator has switched on prompt masking (`mask_user_prompt`,
-  default off). The user's message, text inlined from uploads, recalled
-  context, the chat history a channel replays and a direct-line relay are
+  default off). The user's message, text inlined from uploads, the user
+  messages a channel replays and a direct-line relay are
   then masked, and so is the text the turn's routing, fact-extraction and
   memory-excerpt passes read. Masking finds values such as e-mail addresses,
   IBANs, phone numbers, amounts and dates by pattern, plus the terms on the
@@ -300,14 +302,19 @@ answer:
   the pattern pass fails, the request is blocked instead of being sent
   unmasked. If C1 fails during a turn, the rest of that turn runs on the
   patterns alone, and names only C1 would find reach the model as typed.
-  With masking off, the user's own message, text inlined from uploads,
-  recalled context and the chat history a channel replays (`priorTurns`)
-  reach the model as typed. A channel that replays earlier answers, as the
-  Teams and Telegram channels do, sends the model the real values the shield
-  rendered into those answers on later turns.
+  With masking off, the user's own message, text inlined from uploads and
+  the user messages a channel replays (`priorTurns`) reach the model as
+  typed. The earlier answers a channel replays, as the Teams and Telegram
+  channels do, and recalled context, which carries answers stored with their
+  real values, are masked whether prompt masking is on or off, because an
+  answer the shield rendered carries real values the model never saw: e-mail addresses, IBANs, phone numbers, postal addresses and ID
+  numbers by pattern, the deny-list terms and names through C1, while dates
+  and amounts stay readable. The reply gets the real values back.
 
   Some tool results skip the digest and the redaction. The text of an
-  uploaded file that `read_attachment` returns and the results of a short
+  uploaded document that `read_attachment` returns (it refuses an upload it
+  recognises as a table by type or name, CSV or XLSX, and points the model
+  to `query_dataset`) and the results of a short
   allowlist of the agent's own tools (`memory`, the stored-process tools,
   `suggest_follow_ups`, `ask_user_choice`) reach the model in clear, and so
   do the errors these tools return or throw. A tool an operator set to bypass

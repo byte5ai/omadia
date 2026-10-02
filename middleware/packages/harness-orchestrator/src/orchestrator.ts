@@ -1252,11 +1252,14 @@ async function maskIngestedForWire(
   return maskPromptForWire(privacy, ingestedText);
 }
 
-/** `maskPromptForWire` for the recalled prior-context block. The recalled
- *  TEXT is injected into the next prompt, so it is LLM-bound wire content:
- *  a raw span recalled from turn N would undo the masking of turn N. Runs
- *  through the SAME turn map, so answer-side restore covers these spans
- *  too. Server-side stores stay raw — only the injected copy is masked. */
+/** The recalled prior-context block (knowledge-graph recall and the session
+ *  tail). The recalled TEXT is injected into the next prompt, so it is
+ *  LLM-bound wire content, and it carries answers that were persisted with
+ *  their real values restored: a span recalled from turn N would undo the
+ *  masking of turn N. So it is masked like a replayed answer
+ *  ({@link maskReplayedAnswerForWire}), whatever `mask_user_prompt` says,
+ *  through the SAME turn map, so answer-side restore covers these spans too.
+ *  Server-side stores stay raw — only the injected copy is masked. */
 async function maskRecalledForWire(
   privacy: PrivacyTurnHandle | undefined,
   recalledText: string | undefined,
@@ -1264,7 +1267,28 @@ async function maskRecalledForWire(
   if (recalledText === undefined || recalledText.trim().length === 0) {
     return recalledText;
   }
-  return maskPromptForWire(privacy, recalledText);
+  return maskReplayedAnswerForWire(privacy, recalledText);
+}
+
+/**
+ * Mask an assistant answer a channel replays in `priorTurns`, whatever
+ * `mask_user_prompt` says: that flag is about the user's own words, and Teams
+ * and Telegram replay the answer they delivered — after a `v4_render_answer`
+ * turn, real values the turn's model never saw. Through the turn's map, so
+ * answer-side restore covers these spans. A handle without
+ * `maskReplayedAnswer` falls back to {@link maskPromptForWire}. Throws
+ * `PromptMaskBlockedError` on the failure-closed `blocked` outcome.
+ */
+async function maskReplayedAnswerForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  answer: string,
+): Promise<string> {
+  if (privacy?.maskReplayedAnswer === undefined) return maskPromptForWire(privacy, answer);
+  const result = await privacy.maskReplayedAnswer(answer);
+  if (result.outcome === 'blocked') {
+    throw new PromptMaskBlockedError(result.reason);
+  }
+  return result.outcome === 'masked' ? result.maskedText : answer;
 }
 
 /** #361 second-review fix — live chat history (`input.priorTurns`) is
@@ -1272,8 +1296,10 @@ async function maskRecalledForWire(
  *  by design, and channels replay them verbatim as priorTurns, so turn-N
  *  PII would reach the model raw on turn N+1. Mask every prior userMessage
  *  AND assistant answer through the SAME turn map before message assembly
- *  (answer-side restore covers these spans as well). Empty pairs are
- *  filtered so a failed prior turn can't poison context. */
+ *  (answer-side restore covers these spans as well): a user message under
+ *  `mask_user_prompt`, an answer whatever that flag says
+ *  ({@link maskReplayedAnswerForWire}). Empty pairs are filtered so a failed
+ *  prior turn can't poison context. */
 async function maskPriorTurnsForWire(
   privacy: PrivacyTurnHandle | undefined,
   priorTurns: ChatTurnInput['priorTurns'],
@@ -1289,7 +1315,7 @@ async function maskPriorTurnsForWire(
     if (t.assistantAnswer.trim().length > 0) {
       pairs.push({
         role: 'assistant',
-        content: await maskPromptForWire(privacy, t.assistantAnswer),
+        content: await maskReplayedAnswerForWire(privacy, t.assistantAnswer),
       });
     }
   }

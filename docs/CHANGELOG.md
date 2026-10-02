@@ -62,6 +62,30 @@ Checked before the merge: a dispatch build of all desktop targets (run
 37027925333) and the install smoke on macOS, Windows and Linux, fresh install
 and upgrade from v0.167.15, 6 of 6 (run 37030116438).
 
+### Security — replayed answers and tabular uploads reach the model masked
+
+2026-10-02 — Teams and Telegram send the answer they delivered back as chat
+history. After a `v4_render_answer` turn that answer carries real values the
+turn's model never saw, and with `mask_user_prompt` off, the default, the next
+turn handed them to the model in clear. Replayed assistant answers now go
+through the privacy guard's new `maskReplayedAnswer`, whatever
+`mask_user_prompt` says: identity shapes, the operator deny-list and C1 when it
+is configured, through the turn's surrogate map, so the reply still shows the
+real values. Recalled context, the knowledge-graph recall and the session
+tail that stores answers with their real values restored, goes through the
+same mask. A replayed user message still follows `mask_user_prompt`.
+`@omadia/plugin-api` 1.23.0 adds the optional handle member; the bundled
+privacy guard implements it (0.7.0). A privacy plugin without it falls back to
+the prompt mask.
+
+`read_attachment` no longer returns a table upload (CSV, XLSX) as text. It
+points the model to the dataset path, where the same file is imported with its
+sensitive cells masked. The automatic attachment ingest already sends files
+marked as a table by type or name to the dataset import, never as text.
+
+The README and `docs/security-architecture.md` (§6b, §6f) no longer list these
+two as open gaps.
+
 ### Security — tool plugins load on older hosts; an incompatible plugin is refused at install
 
 2026-10-02 — web-search, diagrams and discussion imported the tool-error

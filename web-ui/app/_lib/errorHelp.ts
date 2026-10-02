@@ -46,6 +46,7 @@ export const ERROR_HELP_CODES = [
   'install.blocked',
   'install.capability_already_provided',
   'install.has_dependents',
+  'install.incompatible_core',
   'install.invalid_body',
   'install.invalid_job_id',
   'install.invalid_plugin_id',
@@ -91,6 +92,9 @@ export const ERROR_HELP_CODES = [
   // `providers.key_rejected` is: the ingest service builds the envelope and
   // routes/packages.ts + builder/installCommit.ts only forward it.
   'package.id_conflict_bundled',
+  // The compat.core check — emitted by packageUploadService.ts as well, so
+  // it is registered in NON_ROUTE_CODES the same way.
+  'package.incompatible_core',
   // runtime.ts
   'runtime.agent_inactive',
   // #1076 — same as providers.dependent_rebuild_failed, on the generic
