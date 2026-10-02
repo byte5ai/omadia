@@ -43,13 +43,13 @@ model or a log:
 
 - `OMADIA_PRIVACY_FORCE_GUARDED=true` now also covers the MCP-to-knowledge-graph
   ingestion. A server flagged for both ingestion and privacy bypass stored up
-  to 8,000 characters of each raw result as a memory even with the clamp set;
-  it now stores only the value-free note of the result's shape while the clamp
+  to 8,000 characters of each raw result as a memory even with the clamp set.
+  It now stores only the value-free note of the result's shape while the clamp
   is on. Every seam that reads a server's bypass flag decides the same way.
 - The errors of intern-exempt tools (`memory`, `read_attachment`, the
   stored-process tools, …) are no longer handed to the model as they are. A
   returned `Error:` text is redacted (or withheld whole) and a thrown message
-  is withheld, as for any other tool; their normal results stay exempt. This
+  is withheld, as for any other tool. Their normal results stay exempt. This
   applies on the chat path, in sub-agents and in `ToolDispatchService`,
   including a sub-agent nested in a public MCP call.
 - Returned tool errors that print a record positionally
@@ -58,7 +58,7 @@ model or a log:
 - Diagnostic logs no longer carry turn or result text: the claim extractor's
   zero-claim line logs lengths only, and the interning-failure warnings log
   the provider error's class name and code, not its message.
-- Comments in the public MCP gate describe the fail-closed interning path; the
+- Comments in the public MCP gate describe the fail-closed interning path. The
   endpoint still refuses a call whose result could not be masked.
 
 ### Security — memory jobs mask the stored text they send to their model
