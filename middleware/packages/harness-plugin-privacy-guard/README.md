@@ -102,6 +102,21 @@ C1 degrades to C0, a detection failure or a surviving value answers `blocked`
 and the orchestrator fails the turn rather than replay the answer unmasked. The
 replayed user messages still follow `mask_user_prompt`.
 
+### Memory jobs (always on, from 0.8.0)
+
+The memory jobs of `@omadia/orchestrator-extras` send stored text, which holds
+real values, through that plugin's own provider. The jobs a turn awaits (the
+recall relevance judge, the session briefing) mask their request through the
+turn's handle, `maskReplayedAnswer`, so the spans count as the turn's own. A job
+outside a turn (topic-cluster naming, the inconsistency detector, the Teams
+topic detector) opens `openStoredTextScope({ job })` per run: the detector
+assembly of `maskReplayedAnswer`, whatever `mask_user_prompt` says, through the
+run's own surrogate map, which `restoreStoredText` inverts over the job's output
+(a cluster name, an inconsistency summary). No receipt books these spans; each
+call logs `storedTextMask job=… spans=…`. Failure-closed: a detection failure or
+a surviving value answers `blocked` and the job skips its model call, and a
+provider without the member makes the jobs skip their model calls.
+
 ### Answer-verifier requests (stage `verifier`)
 
 The answer verifier's post-turn model requests run under the same turn map

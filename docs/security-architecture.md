@@ -1346,8 +1346,9 @@ gap), `verifierEvidenceHandles.test.ts` and
 ### 6f. What the shield masks, and what reaches the model as it is
 
 For omadia's own model requests, the Privacy Shield works through the turn's
-privacy handle and nowhere else (the public MCP endpoint has a gate of its
-own, `createFailClosedPrivacyGate`, §6c). When a `privacy.redact@1` provider
+privacy handle and, for the memory jobs that run outside a turn, through a
+job-scoped mask (see "Memory jobs" below), and nowhere else (the public MCP
+endpoint has a gate of its own, `createFailClosedPrivacyGate`, §6c). When a `privacy.redact@1` provider
 is active, the orchestrator mints that handle for each turn
 (`buildPrivacyHandle`, before the inbound screening gate) and threads it
 through `turnContext` to the model requests of the turn's own call tree, the
@@ -1409,6 +1410,44 @@ whatever `mask_user_prompt` says (§6e). The subscription-CLI path has no
 shield at all (§3a), and without an active privacy-guard provider nothing is
 interned or masked (§6c, residuals).
 
+**Memory jobs, independent of `mask_user_prompt`.** The memory jobs of
+`@omadia/orchestrator-extras` send stored text, which holds real values,
+through that plugin's own provider, and with a privacy-guard provider active
+they mask it whatever `mask_user_prompt` says
+(`harness-orchestrator-extras/src/jobPrivacy.ts`; the plugin declares
+`turnContext@1` and `privacyRedact@1` under `optional_requires`). Two routes:
+
+- **Inside a turn.** The recall relevance judge (`recallRelevanceJudge.ts`)
+  and the session briefing (`sessionBriefing.ts`, `sessionSummaryGenerator.ts`)
+  run while the orchestrator assembles the turn's context. They read the
+  turn's handle from the kernel's `turnContext` service and mask their request
+  through `maskReplayedAnswer`, never through the flag-gated `maskUserPrompt`:
+  the identity shapes of the C0 baseline, the deny-list and C1 through the
+  turn's prompt map, counted on the receipt as the turn's own
+  (`maskedPromptSpans`). The briefing restores its summary through the same
+  map before it stores it.
+- **Outside a turn.** Topic-cluster naming (`topicClustering.ts`), the
+  inconsistency detector (`inconsistencyDetector.ts`, which runs
+  fire-and-forget after a memory write, possibly after the writing turn
+  finalized its map) and the topic detector the Teams channel calls before a
+  turn (`topicDetector.ts`) open one scope per run with `openStoredTextScope`
+  (`@omadia/plugin-api` 1.25.0, privacy-guard 0.8.0, `storedTextScope.ts`):
+  the same detectors through the run's own surrogate map, which restores the
+  cluster name and description and the inconsistency summary before they are
+  stored. No receipt books these spans; each call logs
+  `storedTextMask job=… spans=…`. The judge and the briefing take this route
+  too when no turn is active.
+
+Both routes fail closed: anything but `masked` skips the job's model call. The
+judge then keeps every candidate the cheaper recall legs found, the briefing
+writes no summary, a cluster gets its numbered fallback name, the
+inconsistency pass leaves the memory unchecked for the next sweep, and the
+topic detector asks the user. A privacy provider without `openStoredTextScope`
+(or a turn handle without `maskReplayedAnswer`) skips the job's model call the
+same way. Only a host with no privacy-guard provider sends the stored text as
+stored. The capture filter's significance score and the embeddings below are
+not covered.
+
 Replayed answers are masked whatever `mask_user_prompt` says because an
 answer rendered by `v4_render_answer` carries real values (`maskedValues`,
 `answerSource: 'privacy-render'`) its model never saw, and the Teams and
@@ -1452,7 +1491,7 @@ These tool results skip the digest:
   flagged both `kgIngest` and `privacyBypass` still stores up to 8,000
   characters of each raw result as a memory (`createMemorableKnowledge`, as
   its `rationale`), which later turns can recall into prompt context, the
-  memory jobs send to their provider and an embedding provider embeds
+  memory jobs send, masked, to their provider and an embedding provider embeds
   (below). A
   server flagged `kgIngest` alone stores a value-free note of the result's
   shape (`mcpObservationDigest`). Routing the ingestion's decision through the
@@ -1517,28 +1556,18 @@ their requests; the kernel hands them text the handle already masked.
 Tests: `test/securityPosture579.test.ts`,
 `test/orchestrator/promptMaskPipeline.test.ts` and `test/captureFilter.test.ts`.
 
-**Every other model call sends its text as it is.** A model request that does
-not run under the turn's handle reaches its provider as its caller built it,
-with prompt masking on or off: `mask_user_prompt` reaches none of the texts
+**Every other model call sends its text as it is.** A model request that runs
+neither under the turn's handle nor through a memory job's mask reaches its
+provider as its caller built it, with prompt masking on or off: `mask_user_prompt` reaches none of the texts
 below (the embedded recall query in the last entry aside), and the shield
 masks text only, so it reads no image block. In-tree these are:
 
-- **The other memory jobs.** `@omadia/orchestrator-extras` calls the model
-  through that plugin's own provider and sends stored text, which holds real
-  values: the session log keeps the user's original message and the restored
-  answer, and a memory excerpt is restored before it is stored. The
-  significance backfill an operator starts over stored turns
-  (`bulkPromotion.ts`) and the scratch-promotion reaper
-  (`scratchPromotionReaper.ts`) score stored text with the same scorer. The
-  recall relevance judge (`recallRelevanceJudge.ts`, on whenever a model is configured, off
-  only with `KG_RECALL_RELEVANCE_JUDGE_ENABLED=false` or the plugin config key
-  `kg_recall_relevance_judge_enabled`) sends the texts of recalled memories,
-  plans and processes next to the turn's wire message. The session briefing
-  (`sessionBriefing.ts`) sends a session's stored turns to be summarised, the
-  inconsistency detector sends pairs of stored memories, cluster naming sends
-  memory summaries, and the topic detector that the Teams channel calls
-  (`topicDetector.ts`) sends the previous exchange and the new message as the
-  channel hands them over.
+- **Operator backfill and the scratch-promotion reaper.** The significance
+  backfill an operator starts over stored turns (`bulkPromotion.ts`) and the
+  scratch-promotion reaper (`scratchPromotionReaper.ts`) score stored text,
+  which holds real values, with the turn scorer through the own provider of
+  `@omadia/orchestrator-extras`. The plugin's other memory jobs mask what they
+  send (see "Memory jobs" above).
 - **Plugin requests through `ctx.llm`.** A plugin that holds the `llm`
   permission sends its `ctx.llm` requests itself, and the accessor
   (`createLlmAccessor`, `src/platform/pluginContext.ts`) consults no privacy
@@ -1561,10 +1590,13 @@ masks text only, so it reads no image block. In-tree these are:
   ingestion above stored included, are embedded at that provider as stored,
   real values included (`neonKnowledgeGraph.ts`). Only the recall query is
   the turn's wire text (`retrievePriorContext`), so it alone follows
-  `mask_user_prompt`. The Ollama sidecar and the local adapter embed
-  in-tenant.
+  `mask_user_prompt`. The memory jobs above mask what they send to a model,
+  not what they embed: the inconsistency detector embeds the memory it
+  checks, and the Teams topic detector the messages it compares, as stored.
+  The Ollama sidecar and the local adapter embed in-tenant.
 
-Masking these calls is open (`middleware-agent-handoff.md` §13).
+Masking these calls is open, embeddings included (`middleware-agent-handoff.md`
+§13).
 
 ## 7. Conductor generic webhooks (#437)
 
@@ -5048,10 +5080,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       history or a best-effort write, is named where the property is claimed
       (§6f, §7b), and a tool added to `INTERN_EXEMPT_TOOLS` is listed in §6f.
       A claim about what the shield keeps from the model names the model
-      requests it masks and the setting each one needs, and then says that
-      every other model call sends its text as it is, naming the in-tree
-      ones: the inbound security screener, turn scoring and the other memory
-      jobs, `ctx.llm` calls, images and embeddings (§6f). A claim that tool
+      requests it masks and the setting each one needs, the memory jobs'
+      stored text among them, and then says that every other model call
+      sends its text as it is, naming the in-tree ones: the inbound security
+      screener, turn scoring, `ctx.llm` calls, images and embeddings (§6f).
+      A claim that tool
       errors are redacted or withheld names the tools it skips, intern-exempt
       and bypassed ones (§6c residuals, §6f), and a claim that prompt masking
       fails closed says that a failed C1 detector falls back to C0 for the
@@ -5121,4 +5154,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*
+*Last reviewed: 2026-10 (§6f: the memory jobs mask the stored text they send to their model whatever `mask_user_prompt` says, in a turn through its handle and outside one through `openStoredTextScope`, and masking embeddings stays open; §4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*
