@@ -1267,13 +1267,36 @@ async function maskRecalledForWire(
   return maskPromptForWire(privacy, recalledText);
 }
 
+/**
+ * Mask an assistant answer a channel replays in `priorTurns`, whatever
+ * `mask_user_prompt` says: that flag is about the user's own words, and Teams
+ * and Telegram replay the answer they delivered — after a `v4_render_answer`
+ * turn, real values the turn's model never saw. Through the turn's map, so
+ * answer-side restore covers these spans. A handle without
+ * `maskReplayedAnswer` falls back to {@link maskPromptForWire}. Throws
+ * `PromptMaskBlockedError` on the failure-closed `blocked` outcome.
+ */
+async function maskReplayedAnswerForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  answer: string,
+): Promise<string> {
+  if (privacy?.maskReplayedAnswer === undefined) return maskPromptForWire(privacy, answer);
+  const result = await privacy.maskReplayedAnswer(answer);
+  if (result.outcome === 'blocked') {
+    throw new PromptMaskBlockedError(result.reason);
+  }
+  return result.outcome === 'masked' ? result.maskedText : answer;
+}
+
 /** #361 second-review fix — live chat history (`input.priorTurns`) is
  *  LLM-bound wire content too: persisted turns store restored REAL values
  *  by design, and channels replay them verbatim as priorTurns, so turn-N
  *  PII would reach the model raw on turn N+1. Mask every prior userMessage
  *  AND assistant answer through the SAME turn map before message assembly
- *  (answer-side restore covers these spans as well). Empty pairs are
- *  filtered so a failed prior turn can't poison context. */
+ *  (answer-side restore covers these spans as well): a user message under
+ *  `mask_user_prompt`, an answer whatever that flag says
+ *  ({@link maskReplayedAnswerForWire}). Empty pairs are filtered so a failed
+ *  prior turn can't poison context. */
 async function maskPriorTurnsForWire(
   privacy: PrivacyTurnHandle | undefined,
   priorTurns: ChatTurnInput['priorTurns'],
@@ -1289,7 +1312,7 @@ async function maskPriorTurnsForWire(
     if (t.assistantAnswer.trim().length > 0) {
       pairs.push({
         role: 'assistant',
-        content: await maskPromptForWire(privacy, t.assistantAnswer),
+        content: await maskReplayedAnswerForWire(privacy, t.assistantAnswer),
       });
     }
   }
