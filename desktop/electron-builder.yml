@@ -41,16 +41,25 @@ files:
 # which copies the built middleware + web-ui + the bundled Postgres engine here.
 # electron-builder 26 leaves out the top-level node_modules of every
 # extraResources source (app-builder-lib util/filter.js), and the kernel and the
-# web UI load everything from theirs, so each node_modules has an entry of its
-# own. afterPack fails the build when either is missing from the package
-# (scripts/check-packaged-runtime.mjs).
+# web UI load everything from theirs. So each node_modules is an entry of its
+# own, and its parent entry excludes it, which keeps any electron-builder
+# version from copying it twice. afterPack fails the build when the package
+# lacks what the kernel or the web UI loads at startup
+# (scripts/check-packaged-runtime.mjs), and its test runs this block through
+# electron-builder's own copy code.
 extraResources:
   - from: runtime/middleware
     to: omadia/middleware
+    filter:
+      - "**/*"
+      - "!node_modules{,/**/*}"
   - from: runtime/middleware/node_modules
     to: omadia/middleware/node_modules
   - from: runtime/web-ui
     to: omadia/web-ui
+    filter:
+      - "**/*"
+      - "!node_modules{,/**/*}"
   - from: runtime/web-ui/node_modules
     to: omadia/web-ui/node_modules
   - from: runtime/omadia-pg

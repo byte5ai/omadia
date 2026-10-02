@@ -105,8 +105,10 @@ needed or done), stages the runtime, then runs electron-builder.
 electron-builder 26 leaves the top-level `node_modules` of an `extraResources`
 source out of the package, so `electron-builder.yml` lists the kernel's and the
 web UI's `node_modules` as entries of their own. `afterPack` checks on every
-platform that both made it into the package and fails the build otherwise
-(`scripts/check-packaged-runtime.mjs`).
+platform that the package carries what both load at startup and fails the
+build otherwise (`scripts/check-packaged-runtime.mjs`). Its test runs the
+`extraResources` block through the installed electron-builder's copy code, so
+an electron-builder bump that copies differently fails in PR CI already.
 
 Signing is **fail-soft** — without secrets it still ships installers (ad-hoc on
 macOS):

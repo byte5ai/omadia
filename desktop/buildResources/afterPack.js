@@ -15,8 +15,8 @@
 //
 // It also checks the macOS floor of the update feed against the packaged app
 // (see assertUpdateFeedFloor) — that one is never fail-soft — and, on every
-// platform, that the package carries the kernel's and the web UI's node_modules
-// (see assertPackagedRuntime).
+// platform, that the package carries what the kernel and the web UI load at
+// startup (see assertPackagedRuntime).
 
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -43,18 +43,16 @@ async function assertUpdateFeedFloor(appPath) {
 }
 
 /**
- * electron-builder 26 leaves out the top-level node_modules of an
- * extraResources source unless electron-builder.yml lists it as an entry of its
- * own. Such a package installs and then fails at its first start with
- * ERR_MODULE_NOT_FOUND, so fail the build instead, on every platform.
+ * A package without the runtime's node_modules installs and then fails at its
+ * first start with ERR_MODULE_NOT_FOUND (electron-builder.yml says how that
+ * happens), so fail the build instead, on every platform. The directory is
+ * electron-builder's own resources dir, the one extraResources were copied to.
  */
 async function assertPackagedRuntime(context) {
   const script = path.join(__dirname, '..', 'scripts', 'check-packaged-runtime.mjs');
-  const { assertRuntimeComplete, packagedResourcesDir } = await import(pathToFileURL(script).href);
-  assertRuntimeComplete(
-    packagedResourcesDir(context.electronPlatformName, context.appOutDir, context.packager.appInfo.productFilename),
-  );
-  console.log("[afterPack] the package carries the kernel's and the web UI's node_modules.");
+  const { assertRuntimeComplete } = await import(pathToFileURL(script).href);
+  assertRuntimeComplete(context.packager.getResourcesDir(context.appOutDir));
+  console.log('[afterPack] the package carries what the kernel and the web UI load at startup.');
 }
 
 /**
