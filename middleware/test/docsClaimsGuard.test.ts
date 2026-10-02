@@ -168,6 +168,11 @@ const RETIRED_CLAIMS = [
   'tool errors, whatever the settings',
   'digest and redacts tool errors',
   'There it interns tool results and redacts tool errors',
+  // The memory jobs mask the stored text they send to their model whatever
+  // `mask_user_prompt` says (§6f, "Memory jobs"); only turn scoring and
+  // embeddings still send stored text as it is.
+  'turn scoring and the other memory jobs',
+  'other memory jobs send stored memories',
 ] as const;
 
 /** Retired sentences in operator- and API-caller-facing files outside the
@@ -348,6 +353,56 @@ describe('public security claims match the enforced behaviour', () => {
         sentence.includes('never the restored answer'),
       ),
       '§6f must say that the scorer gets the masked view, never the restored answer',
+    );
+  });
+
+  it('the docs say which memory jobs mask their stored text, and that embeddings are still open', async () => {
+    // A memory job outside a turn masks through `openStoredTextScope`, whatever
+    // `mask_user_prompt` says (the jobs a turn awaits use `maskReplayedAnswer`,
+    // pinned above).
+    const service = createPrivacyGuardService({
+      readConfig: (key) => (key === MASK_USER_PROMPT_CONFIG_KEY ? maskDefault() : undefined),
+    });
+    const scope = service.openStoredTextScope?.({ job: 'docs-claims' });
+    const masked = await scope?.maskStoredText('Stored memory: jane.doe@mail.example owes 1.234,56 EUR.');
+    assert.equal(masked?.outcome, 'masked');
+    assert.equal(
+      masked?.outcome === 'masked' && masked.maskedText.includes('jane.doe@mail.example'),
+      false,
+      'a memory job must reach its model without the e-mail address',
+    );
+
+    const readme = read('README.md');
+    const jobSentences = sentencesMentioning(readme, 'memory jobs');
+    assert.ok(
+      jobSentences.some(
+        (sentence) => /\bmasked\b/i.test(sentence) && /\bwhatever the settings\b|\bon or off\b/i.test(sentence),
+      ),
+      `README must say that the memory jobs' stored text is masked whatever the settings; mentions: ${JSON.stringify(jobSentences)}`,
+    );
+    assert.ok(
+      sentencesMentioning(readme, 'embedd').some((sentence) => /\bas (?:it is|stored)\b/i.test(sentence)),
+      'README must say that embeddings still carry stored text as it is',
+    );
+
+    const security = read('docs/security-architecture.md');
+    for (const job of [
+      'recallRelevanceJudge.ts',
+      'sessionSummaryGenerator.ts',
+      'topicClustering.ts',
+      'inconsistencyDetector.ts',
+      'topicDetector.ts',
+    ]) {
+      assert.ok(security.includes(`\`${job}\``), `docs/security-architecture.md must name the masked memory job \`${job}\``);
+    }
+    const scopeSentences = sentencesMentioning(security, '`openStoredTextScope`');
+    assert.ok(
+      scopeSentences.length > 0 && security.includes('**Memory jobs, independent of `mask_user_prompt`.**'),
+      `docs/security-architecture.md must say that the memory jobs mask through \`openStoredTextScope\` independent of \`mask_user_prompt\`; mentions: ${JSON.stringify(scopeSentences)}`,
+    );
+    assert.ok(
+      sentencesMentioning(security, 'embeddings included').some((sentence) => /\bopen\b/i.test(sentence)),
+      'docs/security-architecture.md must say that masking embeddings is still open',
     );
   });
 
