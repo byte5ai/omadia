@@ -8,6 +8,37 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.25.0 — 2026-10-02
+
+Additive. A Privacy Shield provider can mask the stored text a background
+memory job sends to its own model outside a turn. The memory jobs of
+`@omadia/orchestrator-extras` (topic-cluster naming, the inconsistency
+detector, the Teams topic detector) sent stored memories and earlier exchanges,
+which hold real values, through that plugin's provider whether
+`mask_user_prompt` was on or off. The in-tree privacy-guard plugin implements
+the new member from 0.8.0.
+
+### Added
+
+- **`PrivacyGuardService.openStoredTextScope?(request)`** with
+  `PrivacyStoredTextScopeRequest` (`{ job }`, a PII-free job name for the log),
+  returning a `PrivacyStoredTextScope` for one job run:
+  `maskStoredText(text)` returns the failure-closed `PrivacyPromptMaskResult`
+  (the identity shapes of the C0 baseline, the operator deny-list and the C1
+  detector when configured, always on; never `disabled`; `blocked` means the
+  job must not send the text), and `restoreStoredText(text)` inverts the run's
+  surrogate map over the job's output, so a result a user reads carries the
+  real values. The map lives in the scope object: nothing to finalize, and no
+  turn receipt books these spans. OPTIONAL, so an existing provider still
+  compiles and loads; a job that finds a provider without it skips its model
+  call instead of sending the stored text unmasked.
+
+### Documentation
+
+- `PrivacyGuardService.maskReplayedAnswer` is also the mask for the memory jobs
+  a turn awaits (the recall relevance judge, the session briefing): their
+  spans count as the turn's own egress (`maskedPromptSpans`).
+
 ## 1.24.0 — 2026-10-02
 
 Additive. A turn the kernel stores can carry its masked wire texts, so a
