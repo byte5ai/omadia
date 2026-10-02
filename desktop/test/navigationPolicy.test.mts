@@ -7,8 +7,10 @@
  * windows. The policy now keeps the window on the app's own loopback origins,
  * sends other web links to the system browser, and refuses every other scheme,
  * `file:` included. Subframes and server redirects may not reach the OS
- * protocol handler either, and the `openExternal` permission that Electron asks
- * before handing a URL to the OS is never granted.
+ * protocol handler either. Session permissions are deny by default: only an
+ * allowlisted one, asked for by a main frame showing the app's own document,
+ * is granted, and the `openExternal` permission that Electron asks before
+ * handing a URL to the OS never is.
  */
 import { describe, it, before } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -16,8 +18,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  GRANTABLE_PERMISSIONS,
   canGrantPermission,
-  canPassPermissionCheck,
   canRedirectTo,
   canSubframeLoad,
   decideNavigation,
@@ -25,6 +27,8 @@ import {
   isSafeForExternalOpen,
   originOf,
   trustedTargetsFor,
+  type AppDocuments,
+  type PermissionRequester,
   type TrustedTargets,
 } from '../src/navigationPolicy.ts';
 import { Supervisor } from '../src/supervisor.ts';
@@ -34,6 +38,7 @@ const KERNEL = 'http://127.0.0.1:8769';
 const TRUSTED: TrustedTargets = { origins: [KERNEL, UI] };
 const RENDERER = path.resolve('/opt/omadia/resources/app.asar/dist/renderer');
 const WIZARD = `${pathToFileURL(path.join(RENDERER, 'wizard.html')).href}?log=x#recovered`;
+const LOADING = `${pathToFileURL(path.join(RENDERER, 'loading.html')).href}?log=x`;
 const IDP_PAGE = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=synthetic';
 
 describe('decideNavigation', () => {
@@ -166,26 +171,108 @@ describe('canRedirectTo — server redirects in any frame', () => {
   });
 });
 
-describe('session permissions — the OS protocol handler is never a way out', () => {
-  it('never grants openExternal, whatever it would open', () => {
-    // Electron asks for it before handing a non-web URL to the OS, and grants
-    // every request when no handler is set.
-    assert.equal(canGrantPermission('openExternal'), false);
-    assert.equal(canPassPermissionCheck('openExternal'), false);
+/**
+ * Without a handler Electron grants every permission (camera, microphone,
+ * location, notifications, ...) to every frame: plugin iframes, same-app
+ * popups and a foreign page reached by a redirect included. Now a page gets
+ * only what is on the allowlist, and only in the main frame of one of the
+ * app's own documents. Requests and checks share this one rule.
+ */
+describe('session permissions — deny by default, an allowlist for the app\'s own main frames', () => {
+  const APP: AppDocuments = { trusted: TRUSTED, rendererDir: RENDERER };
+  const CLIPBOARD_WRITE = 'clipboard-sanitized-write';
+  const mainFrame = (url: string): PermissionRequester => ({ url, isMainFrame: true });
+  const subframe = (url: string): PermissionRequester => ({ url, isMainFrame: false });
+
+  it("allows only what the app's own pages use: the clipboard write behind their copy buttons", () => {
+    // `navigator.clipboard.writeText` in the web UI and the wizard. Anything
+    // added here needs a call site, and a test that names it.
+    assert.deepEqual([...GRANTABLE_PERMISSIONS], [CLIPBOARD_WRITE]);
   });
 
-  it('grants every other request, as Electron does without a handler', () => {
-    // The wizard and the web UI copy to the clipboard; nothing else changes.
-    for (const permission of ['clipboard-sanitized-write', 'clipboard-read', 'fullscreen', 'media', 'notifications']) {
-      assert.equal(canGrantPermission(permission), true, permission);
+  it('grants it to the main frame of the web UI, the kernel and the bundled wizard', () => {
+    for (const url of [`${UI}/admin/api-keys`, `${UI}/memories/synthetic?x=1#y`, `${KERNEL}/health`, WIZARD]) {
+      assert.equal(canGrantPermission(CLIPBOARD_WRITE, mainFrame(url), APP), true, url);
     }
   });
 
-  it('answers every other check as Electron does without a handler', () => {
-    for (const permission of ['clipboard-sanitized-write', 'fullscreen', 'media', 'geolocation']) {
-      assert.equal(canPassPermissionCheck(permission), true, permission);
+  it("refuses it to every subframe, a plugin UI on the web UI's own origin included", () => {
+    for (const url of [
+      `${UI}/p/synthetic-plugin/ui/index.html?theme=dark`,
+      `${UI}/bot-api/v1/builder/drafts/synthetic/preview`,
+      WIZARD,
+      'https://maps.example/embed?q=synthetic',
+    ]) {
+      assert.equal(canGrantPermission(CLIPBOARD_WRITE, subframe(url), APP), false, url);
     }
-    assert.equal(canPassPermissionCheck('deprecated-sync-clipboard-read'), false);
+  });
+
+  it('refuses it to a main frame showing anything else', () => {
+    for (const url of [
+      IDP_PAGE,
+      'https://evil.example/',
+      'http://127.0.0.1:9999/',
+      'https://127.0.0.1:4567/',
+      'http://localhost:4567/',
+      'http://127.0.0.1.evil.example:4567/',
+      // Bundled, but it copies nothing.
+      LOADING,
+      // A `wizard.html` anywhere but the install, also by dot segments.
+      pathToFileURL(path.resolve('/tmp/synthetic/wizard.html')).href,
+      `${pathToFileURL(RENDERER).href}/../wizard.html`,
+      'about:blank',
+      'data:text/html,<p>synthetic</p>',
+      `blob:${UI}/5d9c7c2e-0000-4000-8000-000000000000`,
+      'not a url',
+      '',
+    ]) {
+      assert.equal(canGrantPermission(CLIPBOARD_WRITE, mainFrame(url), APP), false, url);
+    }
+  });
+
+  it("refuses every other permission, even to the web UI's main frame and the wizard", () => {
+    for (const permission of [
+      'media',
+      'display-capture',
+      'geolocation',
+      'notifications',
+      'fullscreen',
+      'pointerLock',
+      'keyboardLock',
+      'clipboard-read',
+      'midi',
+      'midiSysex',
+      'hid',
+      'serial',
+      'usb',
+      'idle-detection',
+      'storage-access',
+      'window-management',
+      'fileSystem',
+      'background-sync',
+      'local-network-access',
+      'unknown',
+    ]) {
+      for (const url of [`${UI}/chat`, WIZARD]) {
+        assert.equal(canGrantPermission(permission, mainFrame(url), APP), false, `${permission} for ${url}`);
+      }
+    }
+  });
+
+  it('never grants openExternal or the deprecated synchronous clipboard read', () => {
+    // Electron asks for openExternal before handing a non-web URL to the OS
+    // protocol handler; the shell opens vetted web links itself.
+    for (const permission of ['openExternal', 'deprecated-sync-clipboard-read']) {
+      for (const requester of [mainFrame(`${UI}/chat`), mainFrame(WIZARD), mainFrame(IDP_PAGE), subframe(`${UI}/chat`)]) {
+        assert.equal(canGrantPermission(permission, requester, APP), false, `${permission} for ${requester.url}`);
+      }
+    }
+  });
+
+  it('trusts the web UI only while it is serving', () => {
+    const booting: AppDocuments = { trusted: trustedTargetsFor(KERNEL, null), rendererDir: RENDERER };
+    assert.equal(canGrantPermission(CLIPBOARD_WRITE, mainFrame(`${UI}/chat`), booting), false);
+    assert.equal(canGrantPermission(CLIPBOARD_WRITE, mainFrame(WIZARD), booting), true);
   });
 });
 
