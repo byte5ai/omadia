@@ -42,8 +42,13 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     discovery: {
       include: ['^claude-'],
       // Mythos: access-program only (Project Glasswing). Fable is offered —
-      // its one breaking request difference (forced tool_choice → 400, shared
-      // with Opus 5.5) is degraded to `auto` in the adapter. `claude-3-*` /
+      // the breaking request difference we handle (forced tool_choice → 400,
+      // shared with the other models `supportsForcedToolChoice()` lists) is
+      // degraded to `auto` in the adapter. It is not
+      // the only difference on that family: thinking-block behaviour diverges
+      // too (see the flagged list in #1219), which costs us nothing today only
+      // because the adapter drops thinking blocks from the neutral view. Verify
+      // against the live API before relying on either. `claude-3-*` /
       // `claude-2*`: retired families.
       exclude: ['mythos', '^claude-[23]([.-]|$)', '^claude-instant'],
       classify: [

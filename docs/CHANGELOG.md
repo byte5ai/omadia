@@ -1793,6 +1793,134 @@ the slice leaves open for #778 S2/S3b (short-secret floor, the unenforced
 `credential:broker:use` gate, the unsalted `fingerprintSecret`, per-credential
 vendor headers) is tracked in `docs/middleware-agent-handoff.md` §13.
 
+### Changed — dated prompt patterns and thin tool descriptions cleaned up (#1219)
+
+2026-09-29 — cleanups from a prompt audit against the current Claude models.
+Three of them change what goes on the wire — the effort beta, the
+structured-output seam and the refusal handling below; the rest are prompt and
+tool-description text.
+
+`output_config.effort` has been GA since the 4.6 generation, but the Anthropic
+adapter attached the `effort-2025-11-24` beta to **every** request that carried
+an effort, pinning GA models to a beta surface for no reason. Opus 4.5 is not
+retired and still needs the opt-in, so the header is now gated on that family
+through `requiresEffortBeta()`, which follows the `supportsTemperature()`
+convention (substring match, so dated and provider-qualified ids resolve). A
+caller that passes the beta explicitly in `LlmRequest.betas` still gets it on
+any model, exactly once. The adapter test asserted the old behaviour on
+`claude-opus-4-8` and is inverted.
+
+The `<at>…</at>` @-mention contract lived in three places: the
+`get_chat_participants` block of the system prompt, the tool description, and
+the tool response itself (`usage_example` + `rendering_rule`, built from a real
+`displayName` in the current chat). The prompt copy was the weakest — it taught
+the syntax on a made-up roster entry (`Jane Doe - ACME`) where the response
+carries the actual name; the `<at>Max Mustermann</at>` placeholder belongs to
+the tool description, which keeps it — and three copies of one syntax rule
+drift apart. The system-prompt block keeps only its routing
+guidance (when to call, once per turn, not in 1:1 chats) and points at the
+other two.
+
+The synthetic obligation reminder lost its `IMPORTANT:` prefix. Forced
+`tool_choice` degrades to `auto` on the models that reject it, so that reminder
+is what actually steers the consult; it should be clear, not loud. Its sibling
+in `LocalSubAgent` never carried a prefix. `claude-sonnet-5-5` joins the
+models `supportsForcedToolChoice()` lists: it answers a forced choice with the
+same 400 as Opus 5.5 and Fable 5.1, so its forced paths now degrade instead of
+failing. The code comments point at that function instead of naming models.
+
+DB-defined sub-agents described their delegation tool as "Delegate a focused
+question to the `<name>` sub-agent." and nothing else — while that same string
+is the routing text in the system prompt's Fach-Agenten roster, and
+`SkillRow.description` sat unread. It now carries the skill's own description
+plus the delegation contract (no conversation context, no follow-up questions,
+one answer), collapsed to a single line because the roster renders one
+`- name: description` entry per tool. Because that text now reaches the
+parent's system prompt and tool list, it is sanitized on the way in (control,
+invisible and bidi characters, backticks and angle brackets dropped) and capped
+at 300 characters; `scanSkillForRisks` scans it with the body, and
+`computeSkillHash` covers it whenever it differs from the frontmatter's own
+`description`. A description-only edit therefore gets a new content hash and a
+fresh verdict instead of the cached one, while an imported skill — whose
+description is its frontmatter's — keeps its hash.
+
+In `agent-reference-maximum`, three tool descriptions opened with an internal
+ticket ID and the word "Demo" (`OB-29-4`/`-3`/`-1`), and one closed by naming
+the pattern it demonstrates. None of that tells a model when to call the tool,
+and the builder uses this package as its primary reference, so the style
+propagated into generated agents. Each description now leads with the behaviour
+and states a call trigger; the behavioural facts are kept, and the pattern
+framing stays in `INTEGRATION.md`, which is the canonical index. The
+`reference-expert` skill also carried a prose `Kern-Tools` list naming one of
+the four registered tools, next to the real schemas the model already receives;
+it is gone, and the behaviour section stands on its own. `query_notes_by_person`
+says when its choice card actually renders — the orchestrator calls the tool
+itself and the Privacy Shield does not intern the result — and that the model
+otherwise asks which note is meant instead of guessing; the `disambiguate-policy`
+skill says the same, and the manifest's capability descriptions mirror the
+toolkit's, without the ticket IDs, the "Demo" framing and the model name.
+
+The issue-triage workflow's plan prompt no longer caps its comment at ~90
+lines. It asks the same prompt for verified file paths, real symbols and
+acceptance criteria, and a numeric ceiling trades that evidence for brevity.
+The rules that carry the quality stay: every path and symbol must exist, and an
+already-shipped issue gets a verify+close recommendation instead of a plan.
+
+Two API seams were added for the audit's "flagged only" items.
+
+**Structured outputs.** About ten prompts asked for JSON in prose because no
+request type could carry a schema. `LlmRequest.outputFormat` and
+`LlmCompleteRequest.outputFormat` now can, and the Anthropic adapter maps them
+to `output_config.format` — the current shape, not the deprecated top-level
+`output_format`. It shares one `output_config` object with `effort`, so both are
+built together rather than spread separately, where the second would silently
+drop the first. The format object carries exactly `type` and `schema`: the API
+rejects unknown nested body fields with a 400, so there is no `name`. Modelled
+on `effort`, an adapter without the concept ignores the field with a one-time
+note instead of failing — the OpenAI and OpenAI Responses adapters do exactly
+that today, so a caller asking for a schema must still parse tolerantly.
+Anthropic itself is stricter than "ignore": a model without structured-output
+support and a schema with keywords the API cannot compile (`minimum`/`maximum`,
+`minLength`/`maxLength`, an object without `additionalProperties: false`)
+answer 400, and a refusal comes back as a normal response whose text need not
+match the schema; `pluginContext.ts` and the `@omadia/plugin-api` changelog
+say so. No prompt has been migrated onto it yet; that is a decision per call
+site.
+
+**Refusals.** `stop_details` was never read, so a declined turn was opaque —
+a `bio` decline and a `reasoning_extraction` one looked identical.
+`LlmResponse.refusal` now carries the category and explanation, gated on
+`stop_reason` because the API leaves `stop_details` null on every other outcome.
+It travels through the orchestrator's provider seam, so the chat loop and
+`LocalSubAgent` log the category with the refusal, and `ctx.llm.complete`
+reports it to plugins as `LlmCompleteResult.refusal` (category only) with
+`stopReason: 'refusal'` — the plugin wrapper used to call a decline `end_turn`
+(`@omadia/plugin-api` 1.22.0). The chat path was already honest about refusals (`MODEL_REFUSAL_NOTICE`), but
+`LocalSubAgent` reported one as "returned an empty answer", which reads as a
+harness bug — and the delegation tool turns every exception from a sub-agent
+into the data-free withheld notice, so the parent model only learned that a
+tool had failed. `LocalSubAgent` now ends the run the moment a response comes
+back refused, whatever earlier iterations produced: before the response is
+kept, before a tool_use in it is dispatched and before the OB-31 escalation
+(which re-sent the refused turn; on a BuilderAgent build turn the API answered
+that with a 400). It throws a typed `SubAgentRefusalError`, and the delegation
+tool maps exactly that type to a fixed, harness-authored notice with the
+`Error:` prefix — "the `ask_…` sub-agent's model declined this question for
+safety reasons (category …)" — so the parent can rephrase or tell the user. The
+error's message never reaches the model; every other exception keeps the
+withheld notice.
+
+Not applied from the same audit: the `MANDATORY:` markers in the high-tier
+sycophancy guard are deliberately byte-identical to the upstream kemia source
+(`sycophancyGuard.test.ts` asserts exactly that, alongside the preset tests
+that lock kemia byte-identity), so rewording them would fork the mirror
+silently. The vendor's server-side refusal fallback is not wired either: no
+route would enable it yet, and its response side (dropping a pre-fallback
+tool_use, summing `usage.iterations`) does not exist. The audit's remaining
+items — the conductor word caps, the incident histories in `builder-system.md`
+and the shipped boilerplate, the JSON-only pressure wording, and moving the
+repo agent-rule files out — are tracked separately.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no

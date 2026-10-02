@@ -606,9 +606,9 @@ Modell-Whitelist + Per-Call Token-Cap zwingend.
 if (ctx.llm) {
   const out = await ctx.llm.complete({
     // Bevorzugt eine Klasse statt eines Vendor-Modells: der Host löst sie zur
-    // Laufzeit auf das Modell des aktiven Providers auf (Anthropic-Default:
-    // claude-haiku; OpenAI: gpt-5.4-mini). Muss zur `models_allowed`-Klasse
-    // unten passen. Konkrete Vendor-Ids bleiben erlaubt (vendor-gelockt).
+    // Laufzeit auf das Fast-Modell des aktiven Providers auf. Muss zur
+    // `models_allowed`-Klasse unten passen. Konkrete Vendor-Ids bleiben
+    // erlaubt (vendor-gelockt).
     model: 'class:fast',
     system: 'Du extrahierst nur strukturiert genannte Personen-Namen.',
     messages: [{ role: 'user', content: turnText }],
@@ -631,11 +631,11 @@ patch_spec({ patches: [
 
 `models_allowed` nutzt bevorzugt **provider-agnostische Klassen**:
 `'class:fast' | 'class:balanced' | 'class:frontier'`. Eine Klasse wird zur
-Laufzeit gegen den **aktiven** Provider aufgelöst — `class:fast` matcht das
-Fast-Modell des aktiven Providers (Anthropic-Default: `claude-haiku-4-5`;
-OpenAI: `gpt-5.4-mini`). So läuft der Agent auf jedem konfigurierten Provider,
-ohne ihn an einen Vendor zu binden. Konkrete Vendor-Ids und `*`-Suffix-
-Wildcards (`'claude-haiku-4-5*'`) bleiben für Back-Compat erlaubt, locken den
+Laufzeit gegen den **aktiven** Provider aufgelöst — `class:fast` matcht dessen
+Fast-Modell, `class:frontier` dessen stärkstes. Welches Modell das konkret ist,
+entscheidet der Katalog per Live-Discovery, nicht dieses Dokument. So läuft der
+Agent auf jedem konfigurierten Provider, ohne ihn an einen Vendor zu binden.
+Konkrete Vendor-Ids und `*`-Suffix-Wildcards bleiben für Back-Compat erlaubt, locken den
 Agent aber auf einen Vendor — bevorzuge daher Klassen. Defaults bei Auslassung:
 5 calls / 4096 tokens. **Strategie:** `class:fast` für extract/classify
 (billig), `class:balanced`/`class:frontier` nur wenn echte Reasoning-Tiefe
