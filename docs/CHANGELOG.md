@@ -1717,9 +1717,18 @@ a `bio` decline and a `reasoning_extraction` one looked identical.
 `stop_reason` because the API leaves `stop_details` null on every other outcome.
 The chat path was already honest about refusals (`MODEL_REFUSAL_NOTICE`), but
 `LocalSubAgent` reported one as "returned an empty answer", which reads as a
-harness bug; it now says what happened, with the `Error:` prefix that keeps a
-tool failure readable to the parent model instead of interned by the privacy
-guard. `LlmRequest.fallbacks: 'default'` opts into the vendor's server-side
+harness bug — and the delegation tool turns every exception from a sub-agent
+into the data-free withheld notice, so the parent model only learned that a
+tool had failed. `LocalSubAgent` now ends the run the moment a response comes
+back refused, whatever earlier iterations produced: before the response is
+kept, before a tool_use in it is dispatched and before the OB-31 escalation
+(which re-sent the refused turn; on a BuilderAgent build turn the API answered
+that with a 400). It throws a typed `SubAgentRefusalError`, and the delegation
+tool maps exactly that type to a fixed, harness-authored notice with the
+`Error:` prefix — "the `ask_…` sub-agent's model declined this question for
+safety reasons (category …)" — so the parent can rephrase or tell the user. The
+error's message never reaches the model; every other exception keeps the
+withheld notice. `LlmRequest.fallbacks: 'default'` opts into the vendor's server-side
 refusal fallback (routing by category, so no model list goes stale here) and
 attaches `server-side-fallback-2026-07-01`. It is off unless a caller asks: a
 fallback answers on a different model, which is right for a chat turn and wrong

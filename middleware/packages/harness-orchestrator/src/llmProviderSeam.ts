@@ -33,6 +33,7 @@ import type {
   ImagePart,
   LlmRequest,
   LlmResponse,
+  RefusalDetails,
   SystemBlock,
   TextPart,
   ToolCallPart,
@@ -304,15 +305,25 @@ export interface SeamMessage {
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
   };
+  /**
+   * #1219 — present only when the model's safety classifiers declined the
+   * turn; `stop_reason` is then `'refusal'`. Carries the vendor's category so
+   * the loops can log and report WHY, not just that it happened.
+   */
+  refusal?: RefusalDetails;
 }
 
 export function fromLlmResponse(response: LlmResponse): SeamMessage {
   return {
     content: response.content.map(fromContentPart),
-    stop_reason: toStopReason(
-      response.finishReason,
-      response.providerFinishReason,
-    ),
+    // A neutral `refusal` IS the refusal signal (#1219): the loops branch on
+    // `stop_reason === 'refusal'`, so an adapter that reports one without the
+    // Anthropic vocabulary in `providerFinishReason` must still land there.
+    stop_reason:
+      response.refusal !== undefined
+        ? 'refusal'
+        : toStopReason(response.finishReason, response.providerFinishReason),
+    ...(response.refusal !== undefined ? { refusal: response.refusal } : {}),
     model: response.model,
     usage: {
       input_tokens: response.usage.inputTokens,
