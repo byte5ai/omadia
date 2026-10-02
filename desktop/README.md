@@ -153,6 +153,53 @@ macOS):
 the Windows/macOS runners has only been exercised locally on macOS — the first
 real Release run is the acceptance test.
 
+## Install and upgrade smoke
+
+`.github/workflows/desktop-upgrade-smoke.yml` installs the installers of one
+`desktop-apps.yml` run on clean GitHub-hosted runners (macOS arm64, Windows x64,
+Linux x64) and drives the app through Playwright's Electron support, so nobody
+has to sit at three machines before a runtime change merges. Dispatch it with
+the build's run id:
+
+    gh workflow run desktop-upgrade-smoke.yml -f candidate_run_id=<run id>
+
+The upgrade starts from the latest published release unless `baseline_tag`
+names another one. v0.167.13 is the earliest it accepts, because older releases
+get fields added to `secrets.enc` on the candidate's first start. When a PR
+changes the wizard or the log lines the smoke reads, dispatch it from that
+branch (`--ref <branch>`) so the driver matches the build.
+
+Each platform runs two jobs. `fresh` installs the candidate and completes the
+wizard with the `ANTHROPIC_API_KEY` repository secret. It then creates the first
+admin through the kernel API, signs in, asks the kernel to verify the stored key
+and waits for an update check that reads the release feed. `upgrade` runs the
+same on the baseline release, without the update check, quits it, installs the
+candidate over it and starts it again. That second start must log no boot
+failure and no secret-store refusal, leave `secrets.enc` byte-identical, keep
+the recovery key the baseline wizard showed and every other stored secret, and
+still sign in and verify the stored key.
+
+The installers receive the real key, so the workflow accepts only finished
+`desktop-apps.yml` or `auto-release.yml` runs of this repository. The recovery
+key and the stored keys are hashed inside the app. Each job uploads
+`desktop-smoke-<platform>-<scenario>` with the report, a redacted copy of the
+desktop log and screenshots.
+
+Each runner is set up the way a user's machine looks. Windows runners run jobs
+elevated, and `postgres.exe` refuses an administrator token, so the driver runs
+with the Basic User token (`runas /trustlevel:0x20000`) an administrator gets
+under UAC. Linux gets Xvfb and an unlocked gnome-keyring in a GNOME session,
+because the packaged app keeps no secrets without OS encryption. On macOS a
+keychain of its own keeps unlock prompts out of the run. The baseline starts
+with a dead proxy for Chromium's network stack, so its updater cannot download
+a newer release mid-test. One thing differs from a user's machine: the kernel
+gets 300 s for its first boot instead of 90 s, and the report warns when a
+start needed more than 90 s.
+
+Gatekeeper and notarization are out of its reach, because nothing the runner
+downloads is quarantined. Installs through the auto-updater, the `.deb` package
+and Intel Macs are not covered either.
+
 ## Review findings & v1 decisions
 
 A full adversarial review (Forge / codex, local) was run on this code. Resolved:
