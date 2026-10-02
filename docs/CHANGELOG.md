@@ -36,6 +36,149 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — README and security docs describe the controls the code enforces
+
+2026-10-01 — the README, `docs/architecture.md`, `docs/security-architecture.md`
+and `CITATION.cff` stated security properties that the code does not enforce,
+or enforces only on some paths. The wording now follows the code, including
+the answer-verifier design further down in this release.
+
+Plugins are pinned by SHA-256. A registry download must match the hash in the
+registry's index, and an uploaded ZIP is hashed at ingest. Nothing checks a
+publisher signature, and the catalog reports `signed: false` for every plugin,
+so "signed plugins" and "verifiable signed packages" are gone from all four
+files. Security architecture §4 says this in its opening. It also states that
+downloads are pinned to the registry's host and port but not to its scheme,
+that manifest permissions gate the `PluginContext` accessors without
+sandboxing any Node API, that whatever a package does not bundle resolves from
+the image's `node_modules`, and where omadia itself runs npm or code npm
+installed, Builder previews and builds included. None of these places installs
+plugin code.
+
+The Privacy Shield sentences first say which model requests the shield covers
+and under which setting, then state in one sentence that every other model
+call sends its text as it is. The shield acts only in a turn's own model
+requests, which are the agent's model loop, its sub-agents and the verifier's
+requests about the answer. There it gives the model a digest of each tool
+result under `guarded` and withholds a result it cannot intern. It redacts
+the `Error:` text of a tool that is neither intern-exempt nor bypassed, or
+withholds it whole, and withholds the message of such a tool when it throws.
+The errors an intern-exempt tool returns or throws, and those a bypassed
+tool returns, reach the model as they are. Prompt text is masked there only
+while `mask_user_prompt` is on, and it is off by default. Until then the user's
+message, text inlined from uploads, recalled context and the chat history a
+channel replays reach the model as typed, and a channel that replays its
+delivered answers, as the Teams and Telegram channels do, sends the model the
+real values the shield rendered into those answers on later turns. With
+masking on, a request is blocked only when the C0 baseline fails. A failed C1
+detector leaves the rest of the turn on C0, so names only C1 detects reach
+the model unmasked, and restoring the real values afterwards is best-effort.
+`read_attachment` and a short allowlist of the agent's own tools
+(`INTERN_EXEMPT_TOOLS`) return their results in clear, an operator can bypass
+the shield per plugin, per tool or per MCP server, and agents on the Claude
+subscription CLI (`claude-cli`) run without the shield.
+
+Every other model call sends its text as it is, with prompt masking on or off,
+and the docs say so in one sentence before naming the known cases. Under the
+default security posture `auto`, the inbound security screener sends the
+user's message as typed, the user messages a channel replays and the names and
+types of attached files to the agent's own model, or to the configured
+screening proxy, on every turn that carries an attachment. It runs before the
+turn's privacy handle exists. At the default `capture_level` (`normal`), the
+memory plugin sends each turn it stores, the user's message as typed plus the
+answer, to its provider for a significance score. The other memory jobs send
+stored memories and earlier turns, the canvas composer and the plan runner
+send the user's message through `ctx.llm` before the turn starts, attached
+images reach an image-capable model unmasked, and an external embedding
+provider embeds stored turns and memories as stored. The org clamp
+`OMADIA_PRIVACY_FORCE_GUARDED` switches the bypasses off for the results the
+model gets. It does not reach the knowledge-graph ingestion of MCP results: a
+server flagged for both ingestion and privacy bypass still stores up to 8,000
+characters of each raw result as a memory. Security architecture §6f lists all
+of this, and `docs/middleware-agent-handoff.md` §13 holds the code follow-ups
+for the screener and the scorer, the ingestion clamp, the errors of
+intern-exempt tools and the C1 fallback.
+
+The answer verifier is described as optional and off by default, with `shadow`
+as its default mode, which only records. It checks an answer only when one of
+its trigger patterns matches: euro amounts, accounting references,
+`yyyy-mm-dd` and `dd.mm.yyyy` dates, percentages, hour and day counts, and an
+aggregate keyword such as `Summe` or `total` in an answer that also holds a
+number of three or more digits. An answer none of them matches is `skipped`
+and goes out unchecked in `enforce` too, so an answer whose only figures are a
+dollar amount or an English-format date is not checked unless it also holds
+such a keyword (`Total: $500` is checked). The README names the verdict states
+(`skipped`, `unavailable`, an answer checked only in part), the `enforce` gate
+that withholds an answer it could not confirm, and the gate's limits. A turn
+with an input card goes out unchecked, an answer the shield rendered included,
+because that exemption is checked first. Other rendered answers are withheld,
+and the subscription CLI and routines are not verified. A contradiction gets
+at most one correction retry, also when `verifier_max_retries` is set to 2,
+none on canvas streams and none when masking would change its correction hint.
+The borderline resample runs on the non-streaming path only, and
+`middleware/.env.example` now says all of this. A correction retry or a
+resample replays every external call the first run recorded and executes none
+of them again. A sub-agent that interned data behind the shield runs again,
+with its own calls replayed. Without that replay ledger, the MCP client still
+retries a call once after a transport failure.
+
+Privacy receipts are described as appended best-effort, on the Postgres
+backend, for the turns in which the shield acted. A failed write is logged and
+not retried, and §7b states that the hash chain cannot show a receipt that was
+never written. The run trace is described as best-effort telemetry, without the
+earlier "audit receipt" and "replayable" wording.
+
+Write confirmation (ADR-0005) is described as a feature of the connector
+plugins that implement it. The core adds no confirmation step. On the public
+MCP endpoint, an idempotency key gives a declared write tool process-local
+deduplication for 15 minutes, with an eviction target of 1,000 records. A call
+still running inside its 15-minute window is never evicted, and a failed call
+is not cached. A restart, a second instance or an expired or evicted record
+runs the write again. The idempotency section of `middleware/src/mcp/README.md`,
+which promised API callers that a retry inside the window never runs the tool
+twice, now says the same: a retry after a failed call or an evicted record runs
+it again, and a retry joins a call still running only within 15 minutes of
+that call's start. ADR-0001 and ADR-0005 keep their decision text and gain an
+implementation-status note.
+
+A new item in the §11 reviewer checklist asks that a public security claim name
+the control that enforces it, that control's default and the limits the code
+puts on it, that a claim that a call runs once name its scope, and that a
+claim about the shield or the verifier name what passes outside it. A privacy
+claim names the model requests the shield masks and the setting each needs,
+then states that every other model call sends its text as it is, and a claim
+about tool errors or a failure-closed mask names what it skips. The privacy
+guard's `mask_user_prompt` help text, which promised every model-bound copy of
+the turn, a blocked turn whenever masking "cannot be guaranteed" and a
+restore in everything persisted, now names the turn's model requests it
+masks, blocks only on a failed C0 pass, says that a failed C1 detector falls
+back to C0 for the rest of the turn and calls the restore best-effort; the
+`c1_detector_url` help and `middleware/.env.example` say the same about C1.
+The plugin's store description, which said it keeps personal data away from
+the model, now names the raw results of data-source tools and calls masking
+the user's own messages a separate setting, off by default.
+Code comments that contradicted the code are corrected, with no behaviour
+change: the default capture level, the failure handling of the MCP input
+replay, the text the memory-excerpt pass receives, the orchestrator's and
+`@omadia/plugin-api`'s claims that a thrown tool error never reaches the
+model and that `guarded` shows the model only a digest (both untrue for
+intern-exempt tools), the doc comment of `PromptMaskBlockedError`, and the
+MCP-to-knowledge-graph ingestion branch, which now notes that it ignores the
+org clamp.
+`middleware/test/docsClaimsGuard.test.ts` keeps the retired sentences out of the
+four files, the two ADR notes, the privacy guard's setup help,
+`middleware/.env.example` and the MCP endpoint guide
+(`middleware/src/mcp/README.md`), and ties the defaults and limits the README
+names to the code (`PRIVACY_MODE_DEFAULT`, the `mask_user_prompt` manifest
+default, the `VERIFIER_ENABLED` and `VERIFIER_MODE` schema defaults, the
+catalog's `signed` field, `INTERN_EXEMPT_TOOLS`, which §6f must list in full,
+the idempotency store's window and size, the replayed chat history, the
+receipt store's `persistFailures` counter, and the trigger router whose
+unmatched answers `enforce` releases). `ConfigSchema` in
+`middleware/src/config.ts` is exported for that test; boot is unchanged.
+`middleware/.env.example` now documents `OMADIA_PRIVACY_FORCE_GUARDED`, which
+the README already named.
+
 ### Changed — the answer verifier's verdicts, `enforce` gate and re-entries work behind the Privacy Shield
 
 2026-10-01 — the verifier changes below were built next to the change that
@@ -75,7 +218,9 @@ and now work as one design:
   shield — a server-rendered answer, and a pass that handed over no privacy
   view, such as a Direct Line relay — as `unavailable` / `privacy_shield`,
   for a resample and a retry as well; `shadow` records no verdict for them
-  and no longer sends a rendered answer to the extractor. The shield's
+  and no longer sends a rendered answer to the extractor. A turn that carries
+  an input card is released before this gate, unchecked, whatever its
+  answer. The shield's
   refusal of a prompt it cannot mask and the inbound-screening quarantine
   notice are server-composed and state no fact, so `enforce` releases them
   without a verdict instead of replacing one notice with another.
@@ -312,14 +457,15 @@ surface events and `done` — is held until the verdict. Iteration, routing,
 persona, tool-progress, heartbeat, token and usage events still pass live, and
 the route's observer (which the wrapper used to drop) is now forwarded in
 every mode, so the web chat's liveness line keeps moving. A verdict releases
-the answer only when it is `approved`, or `skipped` because the answer holds
-nothing to check (`no_trigger`, `no_claims`); the held events then go out in
-order, the answer's text as one `text_delta` carrying `done.answer`, and
-`done` carries the verdict as `done.verifier`. The deltas the model streamed
-never go out in `enforce`: the orchestrator can discard a streamed response
-and run the model again (an unmet sub-agent obligation, a file it announced
-but did not build), and the verdict is about the answer it kept, not the one
-it discarded.
+the answer only when it is `approved`, or `skipped` because no trigger pattern
+matched the answer or the extraction found no claim in it (`no_trigger`,
+`no_claims`), in which case the answer goes out unchecked; the held events
+then go out in order, the answer's text as one `text_delta` carrying
+`done.answer`, and `done` carries the verdict as `done.verifier`. The deltas
+the model streamed never go out in `enforce`: the orchestrator can discard a
+streamed response and run the model again (an unmet sub-agent obligation, a
+file it announced but did not build), and the verdict is about the answer it
+kept, not the one it discarded.
 Every other verdict withholds the answer — the gate fails closed: a
 contradiction, claims the verifier could not confirm, did not check or did not
 cover (`approved_with_disclaimer`, `skipped` with `no_checkable_claims` /
@@ -347,7 +493,8 @@ answer Privacy Shield rendered server-side (`answerSource: "privacy-render"`)
 is never sent to the verifier, whose claim extractor would pass the real
 values the shield kept from the model to its model provider: `enforce`
 withholds it with the verdict `unavailable` / `privacy_shield`, on both paths
-and for a resample or retry as well. That includes a degraded turn whose
+and for a resample or retry as well, unless the turn also carries an input
+card, whose exemption is checked first. That includes a degraded turn whose
 answer the shield had already rendered; its `done` keeps `degraded` and
 `committedTools`. A turn that ends in an `error` releases nothing it held.
 The canvas composer holds its skeleton — the composer model
