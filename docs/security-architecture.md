@@ -1236,10 +1236,11 @@ privacy handle and nowhere else (the public MCP endpoint has a gate of its
 own, `createFailClosedPrivacyGate`, §6c). When a `privacy.redact@1` provider
 is active, the orchestrator mints that handle for each turn
 (`buildPrivacyHandle`, after the inbound screening gate) and threads it
-through `turnContext` to the model requests of the turn's own call tree: the
-agent's model loop, its sub-agents (`LocalSubAgent`, a domain tool's
-sub-agent) and the answer verifier's requests about the turn's answer (§6e).
-In those requests, and only there, the shield acts on three kinds of text:
+through `turnContext` to the model requests of the turn's own call tree, the
+agent's model loop and its sub-agents (`LocalSubAgent`, a domain tool's
+sub-agent). The answer verifier's requests about the turn's answer go
+through the same handle, which the turn hands over to them (§6e). In those
+requests, and only there, the shield acts on three kinds of text:
 
 - **Tool results, under `guarded` (the default).** A tool's result is interned
   into the turn's dataset store and the model gets an identity-free digest in
@@ -1299,8 +1300,9 @@ These tool results skip the digest:
   (`isMcpServerPrivacyBypassed`, not `resolveEffectivePrivacyMode`): a server
   flagged both `kgIngest` and `privacyBypass` still stores up to 8,000
   characters of each raw result as a memory (`createMemorableKnowledge`, as
-  its `rationale`), which later turns recall into prompt context, the memory
-  jobs send to their provider and an embedding provider embeds (below). A
+  its `rationale`), which later turns can recall into prompt context, the
+  memory jobs send to their provider and an embedding provider embeds
+  (below). A
   server flagged `kgIngest` alone stores a value-free note of the result's
   shape (`mcpObservationDigest`). Routing the ingestion's decision through the
   clamp is open (`middleware-agent-handoff.md` §13). The public MCP endpoint

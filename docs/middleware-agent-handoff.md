@@ -3184,7 +3184,7 @@ weil das README die Variable nennt.
 
 | Variable | Wirkung |
 |---|---|
-| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Nicht erfasst ist die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Sie läuft vor dem Bypass-Resolver und liest das Server-Flag direkt (`isMcpServerPrivacyBypassed`, nicht `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` auch mit Klammer bis zu 8.000 Zeichen jedes Rohergebnisses als Memory; spätere Turns holen sie in den Prompt-Kontext, die Memory-Jobs schicken sie an ihren Provider (offen, §13). Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
+| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Nicht erfasst ist die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Sie läuft vor dem Bypass-Resolver und liest das Server-Flag direkt (`isMcpServerPrivacyBypassed`, nicht `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` auch mit Klammer bis zu 8.000 Zeichen jedes Rohergebnisses als Memory; spätere Turns können sie in den Prompt-Kontext holen, die Memory-Jobs schicken sie an ihren Provider (offen, §13). Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
 
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 
@@ -4251,9 +4251,9 @@ Embeddings). Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   `resolveEffectivePrivacyMode`. Ein Server mit `kgIngest` und
   `privacyBypass` speichert so auch mit gesetzter Klammer bis zu 8.000 Zeichen
   jedes Rohergebnisses als `rationale` einer Memory
-  (`createMemorableKnowledge`). Spätere Turns holen sie in den
-  Prompt-Kontext, der Recall-Relevance-Judge schickt sie ungemaskt an den
-  Extras-Provider, und sie wird eingebettet. Der Kommentar in
+  (`createMemorableKnowledge`). Spätere Turns können sie in den
+  Prompt-Kontext holen, der Recall-Relevance-Judge schickt sie dann ungemaskt
+  an den Extras-Provider, und sie wird eingebettet. Der Kommentar in
   `middleware/migrations/0017_mcp_server_privacy_bypass.sql` verspricht, dass
   die Klammer alles abdeckt (angewandte Migration, nicht editieren; die
   Korrektur steht in §6f). Code-Unit: die Bypass-Entscheidung des Ingest-Zweigs

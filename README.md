@@ -282,8 +282,8 @@ answer:
   to `guarded` org-wide for the results the model gets. The clamp does not
   reach the knowledge-graph ingestion of MCP results: an MCP server flagged
   for both ingestion and privacy bypass still stores up to 8,000 characters of
-  each raw result as a memory, which later turns recall into their context and
-  the memory jobs send to their provider. Pseudonyms resolve back to real
+  each raw result as a memory, which later turns can recall into their context
+  and the memory jobs send to their provider. Pseudonyms resolve back to real
   values only at materialization. Each bypass is recorded on the turn's
   receipt on a best-effort basis (the bypass applies even when recording it
   fails), and receipts are persisted best-effort.
