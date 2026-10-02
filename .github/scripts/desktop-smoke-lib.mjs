@@ -13,21 +13,46 @@ import path from 'node:path';
 
 export const KERNEL_URL = 'http://127.0.0.1:8769';
 export const READY_LINE = '[boot] ready: omadia is ready.';
-// Lines the desktop writes right before its failure dialog, or when the secret
-// store refuses a file (desktop/src/main.ts, ipc.ts, secretsBlob.ts, supervisor.ts).
+// Lines the desktop writes right before its failure dialog, when the secret
+// store refuses a file, or when quitting leaves processes behind
+// (desktop/src/main.ts, ipc.ts, secretsBlob.ts, supervisor.ts).
 export const FAILURE_RE =
   /\[main\] boot failed: |\[main\] fatal during startup: |\[ipc\] complete failed: |\[secrets\] .* failed for |\[boot\] shutdown incomplete/;
+// A child that died after the ready line, or a stop that threw.
+export const AFTER_READY_FAILURE_RE = /\[boot\] error: |\[main\] shutdown error: /;
 export const SECRETS_WRITE_RE = /\[secrets\] (?:created|rewrote) /;
-export const UPDATER_LINE_RE = /\[updater\] (?!skipped \(not packaged\))/;
-// electron-updater answered from the release feed (an update, no update, or no
-// release for this build's channel) instead of failing on the network.
-export const UPDATER_FEED_RE =
-  /update available|is not available|No published versions|Unable to find latest version|Cannot find .*\.yml|Found version/i;
+export const UPDATER_LINE_RE = /\[updater\] /;
+// The app's own verdicts after a check that read the release feed (updater.ts, updateHoldBack.ts).
+export const UPDATER_VERDICT_RE = /\[updater\] (?:update available: |up to date: running |\S+ needs OS )/;
+// A throwaway prerelease build has no release of its own. electron-updater picks
+// its tag from the release feed, which lists bare tags too, and then finds no
+// feed file under that prerelease tag. Only a prerelease tag in the URL counts:
+// the same error under a release tag is a broken update channel.
+export const UPDATER_PRERELEASE_FEED_RE =
+  /\[updater\] .*(?:No published versions on GitHub|Cannot find \S+\.yml in the latest release artifacts \(https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/releases\/download\/v\d+\.\d+\.\d+-[^/\s]+\/)/;
+// v0.167.13 is the first release whose secrets.enc holds every field the app reads, so the
+// upgrade must leave the file untouched; an older baseline gets fields added on its first start.
+export const MIN_BASELINE = '0.167.13';
 
 export class FatalError extends Error {}
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+
+/** Resolves with `value` after `ms` without keeping the process alive. */
+export function after(ms, value) {
+  return new Promise((resolve) => setTimeout(resolve, ms, value).unref());
+}
+
+/** -1, 0 or 1 for two x.y.z versions; a prerelease suffix is ignored. */
+export function compareVersions(a, b) {
+  const parts = (v) => v.split('-')[0].split('.').map(Number);
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < 3; i += 1) {
+    if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+  }
+  return 0;
+}
 
 export function loadPlaywright() {
   const dir = process.env.SMOKE_PW_DIR;
@@ -123,15 +148,16 @@ function installMac(dmg) {
   const binary = run('plutil', ['-extract', 'CFBundleExecutable', 'raw', plist]).trim();
   // codesign prints the signature details on stderr.
   const sig = spawnSync('codesign', ['-dv', '--verbose=2', bundle], { encoding: 'utf8' }).stderr ?? '';
+  const team = /^TeamIdentifier=(.+)$/m.exec(sig)?.[1]?.trim();
   return {
     executable: path.join(bundle, 'Contents', 'MacOS', binary),
-    team: /^TeamIdentifier=(.+)$/m.exec(sig)?.[1]?.trim() ?? 'none',
+    team: team && team !== 'not set' ? team : null,
   };
 }
 
 function installWindows(setup) {
-  // The per-user NSIS install, silent, as the updater runs it. It keeps
-  // %APPDATA%\omadia and replaces an older version in place.
+  // The per-user NSIS install, silent. It keeps %APPDATA%\omadia and replaces
+  // an older version in place.
   run(setup, ['/S', '/currentuser'], { timeout: 15 * 60_000 });
   const exe = path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'omadia', 'omadia.exe');
   if (!fs.existsSync(exe)) throw new Error(`the installer finished but ${exe} is missing`);
@@ -156,8 +182,36 @@ export function windowsProcesses(image) {
   return (out ?? '').split(/\r?\n/).filter((line) => line.toLowerCase().includes(image));
 }
 
-export function killWindowsImage(image) {
-  spawnSync('taskkill', ['/F', '/T', '/IM', image], { encoding: 'utf8' });
+// Every process of the installed app runs from inside the bundle or the
+// AppImage mount; the driver never does.
+const APP_PROCESS_PATTERN = {
+  macos: '/Applications/omadia\\.app/',
+  linux: '\\.mount_omadia|Applications/omadia\\.AppImage',
+};
+const WINDOWS_IMAGES = ['omadia.exe', 'postgres.exe'];
+
+/** Processes of the installed app that are still running: the app, its kernel, web UI and Postgres. */
+export function leftoverProcesses(platform) {
+  if (platform === 'windows') return WINDOWS_IMAGES.flatMap(windowsProcesses);
+  const out = spawnSync('pgrep', ['-fl', APP_PROCESS_PATTERN[platform]], { encoding: 'utf8' }).stdout ?? '';
+  return out.split('\n').filter(Boolean);
+}
+
+/** Ends the app and everything it started; on Windows Playwright starts the app through a shell. */
+export function killTree(platform, pid) {
+  if (platform === 'windows') {
+    if (pid) spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], { encoding: 'utf8' });
+    for (const image of WINDOWS_IMAGES) spawnSync('taskkill', ['/F', '/T', '/IM', image], { encoding: 'utf8' });
+    return;
+  }
+  if (pid) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // already gone
+    }
+  }
+  spawnSync('pkill', ['-9', '-f', APP_PROCESS_PATTERN[platform]], { encoding: 'utf8' });
 }
 
 /** Where Electron puts userData for an app named `omadia`; checked against the app later. */
@@ -201,6 +255,20 @@ export class DesktopLog {
   }
 }
 
+// Shapes of the secrets the app keeps: provider keys, the base64 vault and
+// keychain keys (32 bytes), and the hex database passwords.
+const SECRET_SHAPES = [
+  /sk-ant-[A-Za-z0-9_-]{10,}/g,
+  /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{43}=/g,
+  /(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])/g,
+];
+
+/** The text with every known secret and every secret-shaped token replaced. */
+export function redact(text, known) {
+  const named = known.filter(Boolean).reduce((acc, secret) => acc.split(secret).join('[redacted]'), text);
+  return SECRET_SHAPES.reduce((acc, re) => acc.replace(re, '[redacted]'), named);
+}
+
 export async function http(url, { method = 'GET', body, cookie, timeoutMs = 20_000 } = {}) {
   const headers = { accept: 'application/json' };
   if (body !== undefined) headers['content-type'] = 'application/json';
@@ -241,7 +309,8 @@ export async function kernelListening() {
 
 /**
  * Read the app's own view of its secret store from inside its main process.
- * Only hashes and booleans come back; no key leaves the app as plaintext.
+ * Only hashes, booleans and the failing stage come back: no key, and no error
+ * text, because a parse error would quote the decrypted blob.
  */
 export async function probeSecrets(app, logFile) {
   return app.evaluate(async ({ app: electronApp, safeStorage }, file) => {
@@ -256,27 +325,37 @@ export async function probeSecrets(app, logFile) {
     } catch {
       // no custom data directory
     }
-    const out = { version: electronApp.getVersion(), electron: process.versions.electron, userData, dataRoot };
+    const out = { version: electronApp.getVersion(), electron: process.versions.electron, userData, dataRoot, readable: false };
+    let raw;
     try {
-      const blob = JSON.parse(safeStorage.decryptString(fs.readFileSync(path.join(dataRoot, 'secrets.enc'))));
-      const logText = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-      const secrets = [
-        blob.vaultKey,
-        blob.credentialKeychainKey,
-        ...Object.values(blob.providerKeys ?? {}),
-        ...Object.values(blob.embeddedDb ?? {}),
-      ].filter((v) => typeof v === 'string' && v.length >= 8);
-      Object.assign(out, {
-        readable: true,
-        vaultKeyHash: hash(blob.vaultKey),
-        anthropicKeyHash: hash(blob.providerKeys?.ANTHROPIC_API_KEY),
-        hasDbPasswords: Boolean(blob.embeddedDb?.superuserPassword && blob.embeddedDb?.kernelPassword),
-        secretInLog: secrets.some((v) => logText.includes(v)),
-      });
+      raw = fs.readFileSync(path.join(dataRoot, 'secrets.enc'));
     } catch (err) {
-      Object.assign(out, { readable: false, error: String(err && err.message ? err.message : err) });
+      return { ...out, stage: `read ${err && err.code ? err.code : 'failed'}` };
     }
-    return out;
+    let plaintext;
+    try {
+      plaintext = safeStorage.decryptString(raw);
+    } catch {
+      return { ...out, stage: 'decrypt failed' };
+    }
+    let blob;
+    try {
+      blob = JSON.parse(plaintext);
+    } catch {
+      return { ...out, stage: 'parse failed' };
+    }
+    const fields = { vaultKey: blob.vaultKey, credentialKeychainKey: blob.credentialKeychainKey };
+    for (const [name, value] of Object.entries(blob.providerKeys ?? {})) fields[`providerKeys.${name}`] = value;
+    for (const [name, value] of Object.entries(blob.embeddedDb ?? {})) fields[`embeddedDb.${name}`] = value;
+    const logText = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    const secrets = Object.values(fields).filter((v) => typeof v === 'string' && v.length >= 8);
+    return {
+      ...out,
+      readable: true,
+      fieldHashes: Object.fromEntries(Object.entries(fields).map(([name, value]) => [name, hash(value)])),
+      hasDbPasswords: Boolean(blob.embeddedDb?.superuserPassword && blob.embeddedDb?.kernelPassword),
+      secretInLog: secrets.some((v) => logText.includes(v)),
+    };
   }, logFile);
 }
 

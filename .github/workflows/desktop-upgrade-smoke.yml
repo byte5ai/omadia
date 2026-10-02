@@ -5,25 +5,27 @@ name: Desktop upgrade smoke
 #   fresh    the candidate's first-run wizard with a real provider key, then the
 #            kernel, the web UI, the first admin, sign-in, the stored key and the
 #            update check.
-#   upgrade  the same on the baseline release, then the candidate installed over
-#            it: it must boot without a failure, keep secrets.enc byte-identical
-#            (and so the recovery key), and still sign in and use the stored key.
+#   upgrade  the same on the baseline release (minus the update check), then the
+#            candidate installed over it: it must boot without a failure, keep
+#            secrets.enc byte-identical (and so the recovery key), and still sign
+#            in and use the stored key.
 # Dispatch it with the run id of a desktop-apps.yml build, for example a
 # throwaway-tag dispatch of a PR head, before merging a change that alters what
-# installed apps run. Evidence (report, desktop logs, screenshots) is uploaded
-# per job; keys are compared as hashes and never written out.
+# installed apps run. Only this repository's own desktop builds are accepted,
+# because the installers get the real provider key. Evidence (report, redacted
+# desktop logs, screenshots) is uploaded per job; keys are compared as hashes.
 
 on:
   workflow_dispatch:
     inputs:
       candidate_run_id:
-        description: 'desktop-apps.yml run whose installers are the candidate'
+        description: 'desktop-apps.yml (or auto-release.yml) run whose installers are the candidate'
         required: true
         type: string
       baseline_tag:
-        description: 'Release installed first in the upgrade scenario'
-        required: true
-        default: 'v0.167.13'
+        description: 'Release installed first in the upgrade scenario (empty: the latest release; v0.167.13 at the earliest)'
+        required: false
+        default: ''
         type: string
   # TEMP: iteration trigger while the smoke is built; removed before the PR.
   push:
@@ -56,6 +58,8 @@ jobs:
             os: ubuntu-latest
             artifact: omadia-installers-ubuntu-latest
             baseline_glob: 'omadia-*.AppImage'
+    env:
+      CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id || '36984867502' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -76,16 +80,44 @@ jobs:
             exit 1
           fi
 
+      - name: Check where the candidate comes from
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The installers get the real provider key, so only a finished desktop
+          # build of this repository qualifies, never a fork's or another workflow's.
+          IFS=$'\t' read -r wf repo conclusion < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" \
+            --jq '[.path, .head_repository.full_name, (.conclusion // "unfinished")] | @tsv')
+          case "$wf" in
+            .github/workflows/desktop-apps.yml|.github/workflows/auto-release.yml) ;;
+            *) echo "::error::run $CANDIDATE_RUN_ID is $wf, not a desktop build"; exit 1 ;;
+          esac
+          if [ "$repo" != "$GITHUB_REPOSITORY" ]; then echo "::error::run $CANDIDATE_RUN_ID built $repo"; exit 1; fi
+          if [ "$conclusion" != "success" ]; then echo "::error::run $CANDIDATE_RUN_ID is $conclusion"; exit 1; fi
+          echo "candidate: run $CANDIDATE_RUN_ID of $wf on $repo ($conclusion)"
+
       - name: Install the automation driver
         shell: bash
-        run: npm install --prefix "$RUNNER_TEMP/pw" --no-save --ignore-scripts --no-audit --no-fund playwright-core@1.63.0
+        env:
+          # playwright-core has no dependencies; the tarball is pinned by its registry integrity.
+          PW_SPEC: playwright-core@1.63.0
+          PW_INTEGRITY: sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg==
+        run: |
+          cd "$RUNNER_TEMP"
+          tarball=$(npm pack "$PW_SPEC" --silent)
+          node -e "
+            const actual = 'sha512-' + require('node:crypto').createHash('sha512').update(require('node:fs').readFileSync(process.argv[1])).digest('base64');
+            if (actual !== process.env.PW_INTEGRITY) { console.error('playwright-core integrity mismatch: ' + actual); process.exit(1); }
+          " "$tarball"
+          npm install --prefix "$RUNNER_TEMP/pw" --no-save --ignore-scripts --no-audit --no-fund "./$tarball"
 
       - name: Download the candidate installers
         uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.artifact }}
           path: ${{ runner.temp }}/candidate
-          run-id: ${{ inputs.candidate_run_id || '36982606980' }}
+          run-id: ${{ env.CANDIDATE_RUN_ID }}
           github-token: ${{ github.token }}
 
       - name: Download the baseline installer
@@ -93,9 +125,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          BASELINE_TAG: ${{ inputs.baseline_tag || 'v0.167.13' }}
+          BASELINE_TAG: ${{ inputs.baseline_tag }}
           BASELINE_GLOB: ${{ matrix.baseline_glob }}
-        run: gh release download "$BASELINE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$BASELINE_GLOB" --dir "$RUNNER_TEMP/baseline"
+        run: |
+          # The latest published release unless the dispatch names another; the
+          # driver refuses one before v0.167.13.
+          tag="${BASELINE_TAG:-$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)}"
+          echo "baseline: $tag"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$BASELINE_GLOB" --dir "$RUNNER_TEMP/baseline"
 
       - name: Use a dedicated unlocked keychain (macOS)
         if: matrix.platform == 'macos'
@@ -179,19 +216,22 @@ jobs:
             "`"$node`" `"$script`" --scenario $env:SCENARIO --platform windows --candidate `"$tmp\candidate`" --baseline `"$tmp\baseline`" --out `"$out`" > `"$out\driver.log`" 2>&1",
             ">`"$out\exit-code.txt`" echo %ERRORLEVEL%"
           ) | Set-Content -Path $cmd -Encoding ascii
-          runas /trustlevel:0x20000 "cmd.exe /c $cmd"
-          if ($LASTEXITCODE -ne 0) { throw "runas failed with exit code $LASTEXITCODE" }
-          $done = Join-Path $out 'exit-code.txt'
-          $deadline = (Get-Date).AddMinutes(40)
-          while (-not (Test-Path $done)) {
-            if ((Get-Date) -gt $deadline) {
-              Get-Content (Join-Path $out 'driver.log') -ErrorAction SilentlyContinue
-              throw 'the smoke driver did not finish within 40 minutes'
+          $code = 1
+          try {
+            runas /trustlevel:0x20000 "cmd.exe /c $cmd"
+            if ($LASTEXITCODE -ne 0) { throw "runas failed with exit code $LASTEXITCODE" }
+            $done = Join-Path $out 'exit-code.txt'
+            $deadline = (Get-Date).AddMinutes(40)
+            while (-not (Test-Path $done)) {
+              if ((Get-Date) -gt $deadline) { throw 'the smoke driver did not finish within 40 minutes' }
+              Start-Sleep -Seconds 15
             }
-            Start-Sleep -Seconds 15
+            $code = [int](Get-Content $done).Trim()
+          } finally {
+            Remove-Item $keyFile -Force -ErrorAction SilentlyContinue
+            Get-Content (Join-Path $out 'driver.log') -ErrorAction SilentlyContinue
           }
-          Get-Content (Join-Path $out 'driver.log')
-          exit [int](Get-Content $done).Trim()
+          exit $code
 
       - name: Summary
         if: always()
@@ -209,3 +249,4 @@ jobs:
           path: ${{ runner.temp }}/smoke-out
           retention-days: 30
           if-no-files-found: warn
+          overwrite: true
