@@ -2180,6 +2180,25 @@ function mcpObservationDigest(raw: string): string {
 }
 
 /**
+ * Whether an MCP server's operator `privacy_bypass` is in force for this tool.
+ * The flag is read LIVE by server id (a reload is additive and won't update a
+ * baked marker), then routed through `resolveEffectivePrivacyMode`, so the org
+ * clamp `OMADIA_PRIVACY_FORCE_GUARDED` holds it back to guarded at every seam
+ * that reads it: masking, the input replay and Knowledge-Graph ingestion.
+ */
+function isMcpServerBypassInForce(serverId: string | undefined, toolName: string): boolean {
+  if (!isMcpServerPrivacyBypassed(serverId)) return false;
+  return (
+    resolveEffectivePrivacyMode({
+      storedMode: 'bypass',
+      storedScopes: undefined,
+      toolName,
+      env: process.env,
+    }) === 'bypass'
+  );
+}
+
+/**
  * Per-tool dispatch deadline (W0-2). Every tool of an iteration is dispatched
  * into one `Promise.allSettled` (non-streaming) / race loop (streaming), so a
  * single sub-agent that never returns used to pin the WHOLE parallel batch for
@@ -3152,29 +3171,21 @@ export class Orchestrator {
     const privacy = turnContext.current()?.privacyHandle;
     if (privacy === undefined) return rawResult;
 
-    if (isMcpServerPrivacyBypassed(record.serverId)) {
-      const effective = resolveEffectivePrivacyMode({
-        storedMode: 'bypass',
-        storedScopes: undefined,
-        toolName: record.toolName,
-        env: process.env,
-      });
-      if (effective === 'bypass') {
-        try {
-          await privacy.recordBypassedTool({
-            toolName: record.toolName,
-            pluginId: mcpDomainForServer(record.serverName),
-            reason: 'operator_setting',
-            bytes: Buffer.byteLength(rawResult, 'utf8'),
-          });
-        } catch (err) {
-          console.warn(
-            `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.recordBypassedTool threw — bypass still applied:`,
-            err,
-          );
-        }
-        return rawResult;
+    if (isMcpServerBypassInForce(record.serverId, record.toolName)) {
+      try {
+        await privacy.recordBypassedTool({
+          toolName: record.toolName,
+          pluginId: mcpDomainForServer(record.serverName),
+          reason: 'operator_setting',
+          bytes: Buffer.byteLength(rawResult, 'utf8'),
+        });
+      } catch (err) {
+        console.warn(
+          `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.recordBypassedTool threw — bypass still applied:`,
+          err,
+        );
       }
+      return rawResult;
     }
 
     // #1097 — a replay the server answered with `isError`, or that failed in
@@ -8490,11 +8501,10 @@ export class Orchestrator {
       // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
       // before masking so it sees the raw result; fire-and-forget so it never
       // affects the tool call. Stores a value-free structural digest by default
-      // and the raw result only when the server is privacy-bypassed; always
-      // ACL-gated to the turn's user. The bypass flag is read directly here,
-      // not through `resolveEffectivePrivacyMode`, so the org clamp
-      // `OMADIA_PRIVACY_FORCE_GUARDED` does not stop a bypassed server's raw
-      // result from being stored (open: handoff §13, security-architecture §6f).
+      // and the raw result only when the server's privacy bypass is in force —
+      // decided like masking (`isMcpServerBypassInForce`), so under the org
+      // clamp `OMADIA_PRIVACY_FORCE_GUARDED` only the digest is stored; always
+      // ACL-gated to the turn's user.
       const kgTool = this.domainToolsByName.get(name);
       // A replayed result was ingested by the run that produced it.
       if (
@@ -8506,7 +8516,7 @@ export class Orchestrator {
         const tc = turnContext.current();
         const userId = tc?.userId;
         if (userId) {
-          const bypassed = isMcpServerPrivacyBypassed(kgTool.mcpServerId);
+          const bypassed = isMcpServerBypassInForce(kgTool.mcpServerId, name);
           const detail = bypassed
             ? result.slice(0, 8000)
             : mcpObservationDigest(result);
@@ -8706,19 +8716,11 @@ export class Orchestrator {
     ): { pluginId: string } | undefined => {
       // Path 0 — per-MCP-server operator bypass (epic #459). A server flagged
       // `privacy_bypass` opts its tool results out of masking regardless of any
-      // owning-agent `_privacy_mode`. The flag is read LIVE by server id (a
-      // reload is additive and won't update a baked marker), then routed through
-      // resolveEffectivePrivacyMode so `OMADIA_PRIVACY_FORCE_GUARDED` can still
-      // clamp it back to guarded org-wide.
+      // owning-agent `_privacy_mode`, unless `OMADIA_PRIVACY_FORCE_GUARDED`
+      // clamps it back to guarded org-wide (`isMcpServerBypassInForce`).
       const bypassTool = domainTools.get(toolName);
-      if (isMcpServerPrivacyBypassed(bypassTool?.mcpServerId)) {
-        const effective = resolveEffectivePrivacyMode({
-          storedMode: 'bypass',
-          storedScopes: undefined,
-          toolName,
-          env: process.env,
-        });
-        if (effective === 'bypass') return { pluginId: bypassTool?.domain ?? toolName };
+      if (isMcpServerBypassInForce(bypassTool?.mcpServerId, toolName)) {
+        return { pluginId: bypassTool?.domain ?? toolName };
       }
       // Path 1 — kernel tool with attached config closure.
       const reg = nativeTools.get(toolName);
