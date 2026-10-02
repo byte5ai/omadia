@@ -1,4 +1,8 @@
-import { buildEmailColdStartTarget } from '@omadia/plugin-api';
+import {
+  JobValidationError,
+  buildEmailColdStartTarget,
+  toolErrorFromException,
+} from '@omadia/plugin-api';
 import { z } from 'zod';
 
 import {
@@ -378,11 +382,12 @@ function formatError(err: unknown): string {
   if (err instanceof UnknownChannelError) {
     return `Error: ${err.message}`;
   }
-  if (err instanceof Error) {
-    // Preserve JobValidationError messages (cron parse failures) and other
-    // unexpected errors. Tag them so the model can distinguish from
-    // success-payload JSON.
+  if (err instanceof JobValidationError) {
+    // Cron / schedule validation: the scheduler's own message about the
+    // model's input — the hint it needs to correct the call.
     return `Error: ${err.message}`;
   }
-  return `Error: ${String(err)}`;
+  // Anything else (a store or database failure, a bug) is exception text
+  // nobody sanitized: withheld from the model, logged in full under a ref.
+  return toolErrorFromException(MANAGE_ROUTINE_TOOL_NAME, err, { site: 'routines' });
 }

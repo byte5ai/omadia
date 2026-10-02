@@ -540,10 +540,15 @@ export async function activate(
   // ---------------------------------------------------------------------
   // OB-71 — palaia capture-filter wiring.
   //
-  // The filter ALWAYS runs (default level=minimal: deterministic privacy +
-  // hint stripping, no LLM, no drop). At level=normal/aggressive the Haiku
-  // significance-scorer kicks in — we build it only when an Anthropic key
-  // is configured. The filter wraps `knowledgeGraph` via
+  // The filter ALWAYS runs. At level=minimal it only does deterministic
+  // privacy + hint stripping (no LLM, no drop). At level=normal (the default,
+  // `DEFAULT_CAPTURE_LEVEL`) and level=aggressive the significance scorer
+  // also runs: it is built whenever this plugin's LLM provider resolves, and
+  // it sends each captured turn — the user's message as the session log
+  // stores it, plus the answer — to that provider, outside the turn's
+  // privacy handle (docs/security-architecture.md §6f).
+  //
+  // The filter wraps `knowledgeGraph` via
   // `CaptureFilteringKnowledgeGraph` and replaces the registry entry, so
   // every consumer that activates AFTER us (orchestrator, channel-plugins,
   // …) sees the filtered KG transparently. The original KG stays live

@@ -78,11 +78,21 @@ export function platformDataDir(): string {
   return dir;
 }
 
-/** Directory the embedded Postgres (PGlite) persists into. */
+/** The embedded PostgreSQL 17 cluster's data directory (`initdb -D`). */
 export function embeddedDbDir(): string {
   const dir = path.join(dataRoot(), 'pgdata');
   ensureDir(dir);
   return dir;
+}
+
+/**
+ * Where the embedded Postgres' private socket directory goes (macOS/Linux,
+ * see `embeddedDbEndpoint.ts`). `userData`, never the chosen data folder: that
+ * one may be cloud-synced (#934), and a sync client has no business with a
+ * socket (some cannot hold one at all).
+ */
+export function dbSocketParentDir(): string {
+  return app.getPath('userData');
 }
 
 /**
@@ -104,6 +114,19 @@ export function embeddingModelsDir(): string {
   const dir = path.join(app.getPath('userData'), 'embedding-models');
   ensureDir(dir);
   return dir;
+}
+
+/**
+ * Where the kernel keeps attachments when the wizard's "Attachments" switch is
+ * on (`ATTACHMENT_STORE_DIR`, see `capabilities.ts`).
+ *
+ * Under the chosen data folder, next to the database: these are the user's
+ * files, not re-downloadable cache like {@link embeddingModelsDir}. Not created
+ * here. The kernel creates it owner-only when it opens the store, so the store
+ * it reports on `/health` is one that could actually create its directory.
+ */
+export function attachmentsDir(): string {
+  return path.join(dataRoot(), 'attachments');
 }
 
 /** Encrypted secrets blob (vault master key + provider API keys). */

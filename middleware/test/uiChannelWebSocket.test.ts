@@ -9,7 +9,10 @@
  *   - version mismatch → handshake_error, and a second mismatch closes;
  *   - after ack, a `turn` forms a well-shaped IncomingTurn and the orchestrator
  *     stream fans out — surface_* 1:1, text_delta → agent_text_delta, then
- *     turn_complete.
+ *     turn_complete;
+ *   - the ack carries the session's `sessionExpiresAt` when the kernel set
+ *     one, and a close (the kernel ending the session) aborts the running
+ *     turn and never starts the one queued behind it.
  */
 
 import { strict as assert } from 'node:assert';
@@ -498,5 +501,87 @@ describe('omadia-ui-channel — per-user canvas registry (canvas_list)', () => {
     const list = m.sent.find((f) => f.type === 'canvas_list');
     assert.ok(list);
     assert.deepEqual(list.canvases, []);
+  });
+});
+
+describe('omadia-ui-channel canvas WebSocket — session lifetime', () => {
+  function select(m: ReturnType<typeof makeSocket>): void {
+    const offer = m.sent[0] as SentFrame;
+    m.client({
+      type: 'handshake_select',
+      handshakeId: offer.handshakeId,
+      protocolVersion: '1.0',
+      opsCatalogVersion: '1.0',
+    });
+  }
+
+  it('handshake_ack carries sessionExpiresAt when the session has one, and omits it otherwise', () => {
+    const cases: Array<[ChannelSessionClaims, number | undefined]> = [
+      [{ ...SESSION, expiresAt: 1_234_567_890 }, 1_234_567_890],
+      [SESSION, undefined],
+    ];
+    for (const [session, expected] of cases) {
+      const m = makeSocket();
+      handleCanvasSocket(m.socket, session, {
+        channelId: '@omadia/ui-channel',
+        protocolVersions: ['1.0'],
+        opsCatalogVersions: ['1.0'],
+        handleTurnStream: () => emptyStream(),
+        mintId: idMinter(),
+      });
+      select(m);
+      const ack = m.sent.find((f) => f.type === 'handshake_ack');
+      assert.ok(ack, 'handshake_ack sent');
+      assert.equal(ack.sessionExpiresAt, expected);
+      assert.equal('sessionExpiresAt' in ack, expected !== undefined);
+    }
+  });
+
+  it('a close aborts the in-flight turn and never starts a queued one', async () => {
+    const m = makeSocket();
+    let calls = 0;
+    let unwound = 0;
+    let finish: (r: IteratorResult<ChatStreamEvent>) => void = () => undefined;
+    // An orchestrator turn that is still running (a slow tool call) when the
+    // kernel ends the session.
+    const stream = (): AsyncIterable<ChatStreamEvent> => {
+      calls += 1;
+      return {
+        [Symbol.asyncIterator]: () => ({
+          next: () =>
+            new Promise<IteratorResult<ChatStreamEvent>>((resolve) => {
+              finish = resolve;
+            }),
+          return: () => {
+            unwound += 1;
+            return Promise.resolve({ done: true as const, value: undefined });
+          },
+        }),
+      };
+    };
+    handleCanvasSocket(m.socket, SESSION, {
+      channelId: '@omadia/ui-channel',
+      protocolVersions: ['1.0'],
+      opsCatalogVersions: ['1.0'],
+      handleTurnStream: stream,
+      mintId: idMinter(),
+    });
+    select(m);
+    m.client({ type: 'turn', turnId: 't1', text: 'first' });
+    await flush();
+    assert.equal(calls, 1, 'the first turn is in flight');
+    m.client({ type: 'turn', turnId: 't2', text: 'queued behind it' });
+
+    const sentBeforeClose = m.sent.length;
+    m.socket.close(4401, 'session expired');
+    await flush();
+    assert.equal(unwound, 1, 'the in-flight orchestrator stream was unwound');
+
+    // The orchestrator only now gives up its step; the queue must not move on.
+    finish({ done: true, value: undefined });
+    await flush();
+    await flush();
+    assert.equal(calls, 1, 'the queued turn never started');
+    assert.equal(m.sent.length, sentBeforeClose, 'nothing is sent after the close');
   });
 });

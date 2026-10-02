@@ -2,13 +2,43 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import type { AdminAuditLog } from '../auth/adminAuditLog.js';
+import { loginAccountKey, loginDeviceAccountKey } from '../auth/loginAccount.js';
+import type { LoginDevices } from '../auth/loginDevices.js';
+import type { LoginRateLimiter } from '../auth/loginRateLimiter.js';
 import { hashPassword } from '../auth/passwordHasher.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
+import type { SessionRevocation } from '../auth/sessionRevocation.js';
 import type { UserRecord, UserStore } from '../auth/userStore.js';
 
 interface AdminUsersDeps {
   userStore: UserStore;
   audit: AdminAuditLog;
+  /**
+   * Server-side session revocation — told whose sessions a reset, disable or
+   * delete just ended, for consumers that hold sessions open (live sockets).
+   * The revocation itself is the `revokeSessions` bump (or the row's
+   * absence) and does not depend on it.
+   */
+  sessions?: Pick<SessionRevocation, 'announce'>;
+  /**
+   * The password sign-in limiter (docs/security-architecture.md §10m). A
+   * password reset or a re-enable clears the account's backoff on every
+   * client — the operator's in-band unlock — under its folded account key
+   * (`loginAccountKey`), so every spelling of the address is unlocked.
+   * Optional so harnesses without a limiter keep compiling; production
+   * passes the process-wide instance.
+   */
+  loginLimiter?: Pick<LoginRateLimiter, 'clearAccount'>;
+  /**
+   * The limiter's device cookies (§10m). They are bound to the account's
+   * password and status, so a create, a reset, a status change or a delete
+   * makes this process re-read the account at once instead of after its
+   * cache entry expires: old cookies stop counting as known browsers
+   * immediately. Addressed by the account's device key
+   * (`loginDeviceAccountKey`), not by the folded one. Optional like
+   * `loginLimiter`; production passes the process-wide one.
+   */
+  loginDevices?: Pick<LoginDevices, 'forget'>;
 }
 
 /**
@@ -26,6 +56,12 @@ interface AdminUsersDeps {
  * lock the operator out of their own deployment with no recovery path
  * short of the bootstrap env-vars (which would re-create the same email
  * but lose the audit trail).
+ *
+ * Server-side session revocation: a password reset and a disable move the
+ * user's session version (`revokeSessions`, in the same UPDATE as the change
+ * itself), and a delete removes the row the session is checked against —
+ * each ends every outstanding session of that user on the next request.
+ * Resetting your OWN password therefore signs you out too, everywhere.
  */
 export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
   const router = Router();
@@ -91,6 +127,8 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       displayName: displayName.length > 0 ? displayName : email,
       role: 'admin',
     });
+    // No cached "no such account" may outlive the account's creation (§10m).
+    forgetDevices(deps, created);
 
     await deps.audit.record({
       actor: { id: undefined, email: req.session?.email },
@@ -140,11 +178,30 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       }
     }
 
-    const updated = await deps.userStore.update(id, patch);
+    // Disabling ends the user's sessions now, not at their next renewal, and
+    // moves the version so a later re-enable cannot revive an old cookie.
+    // Re-enabling and renaming leave sessions alone.
+    const revokes = patch.status === 'disabled';
+    const updated = await deps.userStore.update(
+      id,
+      revokes ? { ...patch, revokeSessions: true } : patch,
+    );
     if (!updated) {
       // Race: row vanished between findById and update.
       res.status(404).json({ code: 'admin_users.not_found' });
       return;
+    }
+    if (revokes) {
+      deps.sessions?.announce({
+        provider: updated.provider,
+        sub: updated.providerUserId,
+      });
+    }
+    // A status change moves the account's device-cookie epoch (§10m); a
+    // re-enable is also the operator unlock of its sign-in backoff.
+    if (patch.status !== undefined) forgetDevices(deps, updated);
+    if (patch.status === 'active') {
+      deps.loginLimiter?.clearAccount(loginAccountKey(updated.provider, updated.email));
     }
 
     await deps.audit.record({
@@ -181,7 +238,21 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       return;
     }
     const passwordHash = await hashPassword(password);
-    await deps.userStore.update(id, { passwordHash });
+    // One statement: the new hash and the end of every session issued under
+    // the old one land together or not at all.
+    const updated = await deps.userStore.update(id, {
+      passwordHash,
+      revokeSessions: true,
+    });
+    if (!updated) {
+      // Race: row vanished between findById and update.
+      res.status(404).json({ code: 'admin_users.not_found' });
+      return;
+    }
+    deps.sessions?.announce({ provider: user.provider, sub: user.providerUserId });
+    // The new hash is a new epoch: device cookies minted before it are stale.
+    forgetDevices(deps, user);
+    deps.loginLimiter?.clearAccount(loginAccountKey(user.provider, user.email));
 
     await deps.audit.record({
       actor: { email: req.session?.email },
@@ -217,6 +288,12 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       res.status(404).json({ code: 'admin_users.not_found' });
       return;
     }
+    // No version bump needed: a session whose row is gone is refused.
+    deps.sessions?.announce({
+      provider: target.provider,
+      sub: target.providerUserId,
+    });
+    forgetDevices(deps, target);
     await deps.audit.record({
       actor: { email: req.session?.email },
       action: 'user.delete',
@@ -263,6 +340,12 @@ function readParam(req: Request, key: string): string | undefined {
   const v = (req.params as Record<string, string | string[] | undefined>)[key];
   if (typeof v === 'string' && v.length > 0) return v;
   return undefined;
+}
+
+/** Make the device cookies re-read `user` at once (§10m), under its device key. */
+function forgetDevices(deps: AdminUsersDeps, user: UserRecord): void {
+  const deviceKey = loginDeviceAccountKey(user.provider, user.email);
+  if (deviceKey !== undefined) deps.loginDevices?.forget(deviceKey);
 }
 
 function parseIntQuery(value: unknown, fallback: number): number {

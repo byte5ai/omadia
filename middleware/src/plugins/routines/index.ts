@@ -104,3 +104,7 @@ export { runRoutineMigrations } from './migrator.js';
 // The kernel publishes the result; channel plugins consume via
 // `ctx.services.get<RoutinesIntegration>(...)` instead of constructor deps.
 export { createRoutinesIntegration } from './integration.js';
+
+// What a smart-card action rejects with when the channel names no principal
+// (#1025 / #1029): a refusal, distinct from `RoutineNotFoundError`.
+export { RoutineActorRequiredError } from './routineCardActor.js';

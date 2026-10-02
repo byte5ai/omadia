@@ -831,7 +831,7 @@
   "operatorReceipts": {
     "metaTitle": "Receipts · omadia",
     "title": "Privacy-Receipts",
-    "subtitle": "Für jeden abgeschlossenen Turn, in dem der Privacy Shield aktiv war (Tool-Daten interniert, Prompt maskiert, Bypass protokolliert oder strukturierte Tool-Ausgabe protokolliert), wird hier ein PII-freier Privacy-Receipt geschrieben. Turns ohne Shield-Aktivität schreiben keinen Receipt. Agenten, die über das Claude-Abo (Claude-CLI) laufen, durchlaufen den Privacy Shield nicht; ihre Turns schreiben daher nie einen Receipt. Der Beleg überlebt die Chat-Ansicht; die Aufbewahrung begrenzt RECEIPT_RETENTION_DAYS der Middleware.",
+    "subtitle": "Für jeden abgeschlossenen Turn, in dem der Privacy Shield aktiv war (Tool-Daten interniert, Prompt maskiert, Bypass protokolliert, strukturierte Tool-Ausgabe protokolliert, einen Tool-Fehler zurückgehalten bzw. redigiert oder die Modellanfragen der Antwortprüfung abgesichert), wird hier ein PII-freier Privacy-Receipt geschrieben. Turns ohne Shield-Aktivität schreiben keinen Receipt. Agenten, die über das Claude-Abo (Claude-CLI) laufen, durchlaufen den Privacy Shield nicht; ihre Turns schreiben daher nie einen Receipt. Der Beleg überlebt die Chat-Ansicht; die Aufbewahrung begrenzt RECEIPT_RETENTION_DAYS der Middleware.",
     "loadError": "Receipts konnten nicht geladen werden",
     "empty": "Noch keine Receipts vorhanden. Sobald ein Turn mit Privacy-Shield-Aktivität abschließt, erscheint sein Receipt hier. Turns, in denen der Shield nichts zu tun hatte (etwa eine reine Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt), schreiben keinen Receipt. Eine leere Liste allein heißt also nicht, dass die Receipts kaputt sind.",
     "scopeLabel": "Scope",
@@ -928,6 +928,7 @@
     "submit": "Anmelden",
     "submitting": "Anmeldung läuft…",
     "incorrectCredentials": "E-Mail oder Passwort ist falsch.",
+    "tooManyAttempts": "Zu viele Anmeldeversuche. Bitte {seconds, plural, one {# Sekunde} other {# Sekunden}} warten und erneut versuchen.",
     "or": "oder",
     "continueWith": "Weiter mit {provider}"
   },
@@ -949,7 +950,12 @@
     "passwordTooShort": "Das Passwort muss mindestens 8 Zeichen lang sein.",
     "alreadyLocked": "Setup ist bereits abgeschlossen — ein anderer Nutzer wurde angelegt.",
     "credentialsRejected": "E-Mail oder Passwort wurde vom Server abgelehnt (gültige E-Mail + mindestens 8 Zeichen erforderlich).",
-    "providerHint": "Hier ist kein LLM-Schlüssel nötig. Nachdem du das Admin-Konto angelegt hast, verbinde unter Admin → LLM-Zugang einen Provider (Anthropic, OpenAI, …)."
+    "providerHint": "Hier ist kein LLM-Schlüssel nötig. Nachdem du das Admin-Konto angelegt hast, verbinde unter Admin → LLM-Zugang einen Provider (Anthropic, OpenAI, …).",
+    "setupTokenLabel": "Setup-Token",
+    "setupTokenHint": "Die Middleware schreibt dieses einmalige Token beim Start in ihr Log (mit Docker: docker compose logs middleware). Wenn du ADMIN_SETUP_TOKEN gesetzt hast, nimm diesen Wert.",
+    "setupTokenRejected": "Das Setup-Token fehlt oder ist falsch. Kopiere es aus dem Middleware-Log und versuche es erneut.",
+    "setupInProgress": "Eine andere Setup-Anfrage wird gerade verarbeitet. Warte einen Moment und versuche es erneut.",
+    "setupDisabled": "Setup ist bei diesem Serverstart nicht verfügbar. Starte die Middleware neu und lade diese Seite dann erneut."
   },
   "onboarding": {
     "ariaLabel": "Erste Einrichtung",
@@ -1632,6 +1638,10 @@
       "bodyNoTools": "Beim Abbruch dieses Turns waren bereits Aktionen ausgeführt worden, und der Assistent konnte danach keine Antwort erzeugen — deine Frage ist also weiterhin offen. Stelle die Frage erneut; alles, was Daten verändert, vorher mit deinem Betreiber klären.",
       "completedTools": "Ausgeführte Aktionen:"
     },
+    "verifierBlocked": {
+      "heading": "Antwort von der Faktenprüfung zurückgehalten",
+      "body": "Die Faktenprüfung konnte diese Antwort nicht bestätigen, deshalb wird sie nicht angezeigt. Stelle die Frage erneut oder prüfe die Angaben direkt im Quellsystem."
+    },
     "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber.",
     "errorCorrelationRef": "Referenz für den Support: {id}",
     "routing": {
@@ -1641,6 +1651,32 @@
       "bucketFallback": "Fallback",
       "providerFallback": "Fallback-Modell",
       "providerFallbackTooltip": "Das primäre Modell war nicht verfügbar — diese Antwort kam vom Fallback des Agenten ({model} bei {provider})."
+    },
+    "verifier": {
+      "label": {
+        "verified": "Antwort geprüft",
+        "partial": "Teilweise geprüft",
+        "corrected": "Antwort korrigiert",
+        "failed": "Widerspruch gefunden",
+        "unverified": "Nicht geprüft",
+        "unavailable": "Prüfung nicht verfügbar"
+      },
+      "hint": {
+        "verified": "Der Verifier hat {count, plural, one {# Aussage} other {# Aussagen}} dieser Antwort gegen die Quellen geprüft und alle bestätigt.",
+        "partial": "Keine Aussage widerspricht den Quellen, aber {count, plural, one {# Aussage konnte} other {# Aussagen konnten}} nicht bestätigt werden.",
+        "partialUnchecked": "Der Verifier hat die übrigen Aussagen bestätigt, aber {count, plural, one {# Aussage dieser Antwort konnte} other {# Aussagen dieser Antwort konnten}} nicht geprüft werden.",
+        "partialCoverage": "Der Verifier hat {count, plural, one {# Aussage} other {# Aussagen}} bestätigt, aber nicht die ganze Antwort geprüft.",
+        "corrected": "Die erste Antwort widersprach den Quellen; der Verifier hat {count, plural, one {die # Aussage} other {alle # Aussagen}} dieser korrigierten Antwort bestätigt.",
+        "failed": "{count, plural, one {# Aussage widerspricht} other {# Aussagen widersprechen}} den Quellen.",
+        "unverified": "Nicht geprüft: Keine Prüfung hat diese Antwort bestätigt.",
+        "noneConfirmed": "Nicht bestätigt: Der Verifier hat {count, plural, one {# Aussage} other {# Aussagen}} dieser Antwort geprüft, konnte aber keine bestätigen.",
+        "noTrigger": "Nicht geprüft: Die Antwort enthält keine Beträge, Daten oder Referenzen, die der Verifier prüft.",
+        "noClaims": "Nicht geprüft: Der Verifier hat in dieser Antwort keine Faktenaussagen gefunden.",
+        "noCheckableClaims": "Nicht geprüft: Keine Aussage dieser Antwort lässt sich gegen eine Quelle prüfen.",
+        "incompleteCoverage": "Nicht geprüft: Der Verifier hat nur einen Teil dieser Antwort erfasst und darin nichts Prüfbares gefunden.",
+        "unavailable": "Der Verifier konnte für diese Antwort nicht laufen, es wurde nichts geprüft.",
+        "checkFailed": "Die Prüfungen des Verifiers sind für diese Antwort fehlgeschlagen, es wurde keine Aussage bestätigt."
+      }
     }
   },
   "privacyReceipt": {
@@ -1675,6 +1711,22 @@
     "structuredSchemaYes": "Output-Schema",
     "structuredSchemaNo": "kein Schema",
     "explainerStructured": "Ein verbundenes Tool lieferte strukturierte Daten. Sie erreichten den Browser — die vertrauenswürdige Seite — aber nie das Modell, das nur den internen Digest sah. Hier zur Transparenz aufgeführt; es wurde nichts maskiert, weil auf diesem Pfad nichts zu maskieren war.",
+    "summaryVerifier": "Antwortprüfung: {count, plural, one {# Anfrage} other {# Anfragen}}",
+    "factVerifier": "Antwortprüfung",
+    "verifierRequests": "{count, plural, one {# Modellanfrage} other {# Modellanfragen}}",
+    "verifierRequestsMasked": "{count, plural, one {# Modellanfrage} other {# Modellanfragen}} · {spans} maskiert",
+    "explainerVerifier": "Die Antwortprüfung hat ihre Modellanfragen unter den Datenschutzregeln dieser Anfrage gestellt: deine Nachricht so, wie das Modell sie gesehen hat, die Antwort des Modells und Belege aus dem Wissensgraphen, in denen Namen und Kennungen durch Platzhalter ersetzt wurden. Dieser Beleg wurde erst nach diesen Anfragen abgeschlossen.",
+    "summaryToolErrors": "{count, plural, one {# Tool-Fehler behandelt} other {# Tool-Fehler behandelt}}",
+    "factToolErrors": "Behandelte Tool-Fehler",
+    "toolErrorCarrierThrown": "Exception",
+    "toolErrorCarrierReturned": "zurückgegebener Fehler",
+    "toolErrorCarrierMcpAuthPrompt": "Verbindungsaufforderung",
+    "toolErrorWithheld": "Text zurückgehalten",
+    "toolErrorRedacted": "redigiert: {spans}",
+    "toolErrorChecked": "geprüft, nichts zu maskieren",
+    "toolErrorPassed": "unverändert weitergegeben",
+    "toolErrorBytes": "{kb} KB Original",
+    "explainerToolErrors": "In diesem Turn ist ein Tool fehlgeschlagen. Den Text einer Exception hat das Modell nie gesehen — nur die Fehlerklasse, einen Code und eine Referenz, unter der ein Operator den Fehler im Server-Log findet. Einen Fehlertext, den ein Tool zurückgab, hat der Privacy Shield auf personenbezogene Daten geprüft und maskiert oder zurückgehalten, wenn er sich nicht prüfen ließ. Die Anmeldeaufforderung eines verbundenen Servers geht unverändert weiter; sie enthält keine Tool-Daten.",
     "missReportSummary": "Übersehenen Wert melden",
     "missReportTermPlaceholder": "Der Wert, der hätte maskiert werden sollen",
     "missReportDescriptionPlaceholder": "Kontext (optional)",
@@ -4553,6 +4605,8 @@
       "invalidName": "Der Name darf nur Buchstaben, Zahlen, . _ - enthalten.",
       "notFound": "Registry nicht gefunden — Liste neu geladen.",
       "missingFields": "Name und URL sind erforderlich.",
+      "sessionExpired": "Die Sitzung ist nicht mehr gültig. Weiterleitung zur Anmeldung …",
+      "authUnavailable": "Die Sitzung kann gerade nicht geprüft werden. Bitte in Kürze erneut versuchen.",
       "generic": "Fehler {status}."
     }
   },

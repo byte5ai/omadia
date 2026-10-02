@@ -47,6 +47,11 @@ export interface HandshakeAck {
   handshakeId: string;
   /** the resolved canvas session id (client-supplied or server-minted) */
   canvasSessionId: string;
+  /** when the session behind this socket expires, Unix epoch seconds. The
+   *  kernel closes the socket with 4401 at that moment; the client can warn
+   *  the user before it (renewal stays an explicit user action), then
+   *  reconnects with its current cookie. Absent when the host set no expiry. */
+  sessionExpiresAt?: number;
 }
 
 /** A non-surface stream event (agent prose) folded for the canvas client. */

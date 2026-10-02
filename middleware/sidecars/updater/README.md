@@ -27,11 +27,33 @@ capability is isolated into this container:
 
 | Boundary | Enforcement |
 |---|---|
-| No Docker socket in an application container | Only this sidecar talks to the Engine, and only through `docker-socket-proxy` |
+| No Docker socket in an application container | The socket is mounted, read-only, into `docker-socket-proxy` alone; only this sidecar talks to the Engine, and only through that proxy |
+| The proxy is not reachable by application containers | `docker-socket-proxy` joins only `omadia-control`: an `internal` network without a host-side bridge address, which no service but this sidecar joins. From `omadia` its name does not resolve and its address does not route |
+| The middleware cannot relay a request to the proxy through this sidecar | The health gate reads the middleware's `/health` with redirects off: a 3xx counts as not healthy and its `Location` is never requested |
 | Not reachable from the internet or the browser | No `ports:` mapping — compose-network only |
-| Not reachable by anything else on that network | Shared bearer token, constant-time compared; refuses to start without one |
+| This sidecar's API is not usable by other services on `omadia` | Shared bearer token, constant-time compared; refuses to start without one |
 | Cannot be aimed at an arbitrary image | Target must be a release tag (`vX.Y.Z`); floating tags are rejected |
 | Cannot touch the database | `postgres` is on a hard-coded protected list, alongside the sidecar itself and the proxy |
+
+The proxy's flags in `docker-compose.update.yaml` are not a sandbox.
+`tecnativa/docker-socket-proxy` has no authentication and filters by URL
+prefix, and the calls this sidecar needs (`CONTAINERS` + `POST`) are
+host-root-equivalent on their own: creating a privileged container with host
+mounts, and reading or writing any container's files through
+`/containers/{id}/archive`, both sit under `/containers`. The flags shrink what
+a compromised updater can do; they do not make the proxy safe to reach. So
+reachability is the boundary, and the network matters more than the token. The
+bearer token, the tag check and the protected list only guard this sidecar's
+own HTTP API, and a plugin's egress allow-list is no boundary for internal
+hostnames (`ctx.http` trusts every host its manifest names). While the proxy
+sat on `omadia`, a plugin that named `docker-socket-proxy` could drive the
+Engine directly. Outside `omadia-control` that name no longer resolves, and the
+proxy's address no longer routes.
+
+Two consequences hold by design. This sidecar is host-root-equivalent. And the
+middleware holds its token, so anything that controls the middleware process
+(in-process plugins included) can read `/status` and start an update to any
+release tag, an older one included. See `docs/security-architecture.md` §10f.
 
 ## Wire contract
 
@@ -68,7 +90,8 @@ decoded failure reason without parsing the English `steps` trail. A health
 gate `never_reachable` with `observedVersion: null` means the new image never
 answered `/health` at all — in practice almost always a boot-time failure of the
 new version (a newly required secret, see `docs/upgrading.md`), not a network
-problem.
+problem. A `/health` that answers with a redirect ends the same way, because
+the probe never follows one; the `steps` trail then says so.
 
 `POST /update` answers **before** the work starts, on purpose: the update
 recreates the middleware container that is waiting on the response, so holding
@@ -102,7 +125,7 @@ the `postgres-data` volume before a major bump — see `docs/upgrading.md`.
 | Variable | Default | Notes |
 |---|---|---|
 | `UPDATER_TOKEN` | — | **Required**, ≥16 chars. Refuses to start without it. |
-| `UPDATER_DOCKER_API` | `http://docker-socket-proxy:2375` | Engine API base URL |
+| `UPDATER_DOCKER_API` | `http://docker-socket-proxy:2375` | Engine API base URL — the proxy, on `omadia-control` |
 | `UPDATER_SERVICES` | `middleware,web-ui` | Update order. Protected services are refused. |
 | `UPDATER_COMPOSE_PROJECT` | auto-detected | From this container's own compose labels |
 | `UPDATER_ENV_FILE` | `/workspace/.env` | Bind-mounted project-root `.env` |
@@ -129,7 +152,7 @@ instance is replaced.
 
 | | `docker` (default) | `fly` (#696) |
 |---|---|---|
-| Reaches the platform via | docker-socket-proxy | Machines API, app-scoped token |
+| Reaches the platform via | docker-socket-proxy, on the internal `omadia-control` network | Machines API, app-scoped token |
 | Finds instances by | compose labels | one machine per configured app |
 | Verifies the tag first by | pulling every image | registry manifest check |
 | Replaces an instance by | stop → remove → create → start | read machine, change `config.image`, write back with `current_version` |

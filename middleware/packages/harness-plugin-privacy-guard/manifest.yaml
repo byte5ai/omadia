@@ -3,12 +3,12 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.5.0"
+  version: "0.6.0"
   kind: "tool"
   domain: "privacy.redact"
   description:
-    en: "Keeps personal data away from the language model. Raw results stay on the server and the model works with an anonymised summary, while the final answer is built from the real data. Each turn reports what was protected."
-    de: "Hält personenbezogene Daten vom Sprachmodell fern. Rohdaten bleiben auf dem Server, das Modell arbeitet mit einer anonymisierten Zusammenfassung, und die endgültige Antwort entsteht aus den echten Daten. Zu jedem Zug wird ausgewiesen, was geschützt wurde."
+    en: "Keeps the raw results of data-source tools away from the language model. They stay on the server, the model works with an anonymised summary, and the final answer can be built from the real data. Masking the user's own messages is a separate setting, off by default. A turn in which the shield acted reports what was protected."
+    de: "Hält die Rohergebnisse von Datenquellen-Tools vom Sprachmodell fern. Sie bleiben auf dem Server, das Modell arbeitet mit einer anonymisierten Zusammenfassung, und die endgültige Antwort kann aus den echten Daten entstehen. Das Maskieren der eigenen Nachrichten des Users ist eine eigene Einstellung, standardmäßig aus. Ein Zug, in dem der Schutz gegriffen hat, weist aus, was geschützt wurde."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -42,7 +42,7 @@ setup:
     - key: "mask_user_prompt"
       type: "enum"
       label: "Free-text user-prompt PII masking"
-      help: "EXPERIMENTAL, default off. When on, PII spans detected in the user's own message (email, IBAN, phone, address, amounts, dates — C0 regex baseline) are replaced by realistic pseudonyms in every LLM-bound copy of the turn (main prompt, live chat history/priorTurns, ingested attachment text, recalled prior context, direct-line relay payloads, fact-extraction/routing/excerpt passes); the real values are restored server-side in the final answer and in everything persisted (session log, knowledge graph, promoted memories). Failure-closed: if masking cannot be guaranteed, the turn is blocked rather than sent unmasked — this includes direct-line (#specialist) turns. Names/free-form entities require the C1 transformer detector — set `c1_detector_url` (or the `PRIVACY_C1_DETECTOR_URL` env var) to enable it; unset, only the C0 regex baseline runs."
+      help: "EXPERIMENTAL, default off. When on, PII spans detected in the user's own message (email, IBAN, phone, address, ID numbers, amounts and dates by the C0 regex baseline, plus the custom deny-list) are replaced by realistic pseudonyms in the turn's own model requests (main prompt, live chat history/priorTurns, ingested attachment text, recalled prior context, live steering text, direct-line relay payloads, a verifier correction hint, and the fact-extraction/routing/excerpt passes that read this text); the real values are restored server-side, best-effort, in the final answer and in what is persisted (session log, knowledge graph, promoted memories). Failure-closed for those requests when the C0 baseline cannot run: if C0 detection or substitution fails, the request is blocked rather than sent unmasked, direct-line (#specialist) turns included. Names and free-form entities need the C1 transformer detector: set `c1_detector_url` (or the `PRIVACY_C1_DETECTOR_URL` env var) to enable it; unset, only the C0 regex baseline runs. If the configured C1 detector fails, the rest of the turn falls back to the C0 baseline (logged as degraded), so names only C1 detects reach the model unmasked. Model calls outside the turn's privacy handle send their text as it is, whether this is on or off: the inbound security screener, the memory jobs (turn scoring included) and plugin ctx.llm calls such as the canvas composer and the plan runner. Attached images reach the model unmasked either way. docs/security-architecture.md §6f lists all of it."
       required: false
       default: "off"
       enum:
@@ -53,28 +53,33 @@ setup:
     - key: "custom_terms"
       type: "string"
       label: "Custom deny-list terms"
-      help: "Operator-defined literal terms that are ALWAYS masked in free-text prompts when prompt masking is on — project code names, customer names, internal identifiers. Separate entries with ';' or newlines; matched case-insensitively on word boundaries. Spans report type 'custom' in the privacy receipt and flow through the same fail-closed surrogate machinery as the built-in patterns. No effect while mask_user_prompt is off."
+      help: "Operator-defined literal terms that are ALWAYS masked in free-text prompts when prompt masking is on — project code names, customer names, internal identifiers. Separate entries with ';' or newlines; matched case-insensitively on word boundaries. Spans report type 'custom' in the privacy receipt and flow through the same fail-closed surrogate machinery as the built-in patterns. Prompts are untouched while mask_user_prompt is off. Regardless of that flag, the terms are ALSO applied to tool-error text (a tool's returned 'Error: …' string) and to every evidence-judge request of the answer verifier (the restored claim plus knowledge-graph evidence) before it reaches a model."
       required: false
       default: ""
     - key: "custom_patterns"
       type: "string"
       label: "Custom deny-list patterns (advanced)"
-      help: "Operator-defined regular expressions (one per NEWLINE — ';' is legal regex syntax and is not treated as a separator), each masked like a built-in pattern. Every pattern is vetted when the config changes: invalid syntax or catastrophic-backtracking candidates (probe budget exceeded) are REJECTED with a loud log line ('customPatternRejected') and are NOT active — check the middleware log after saving. No effect while mask_user_prompt is off."
+      help: "Operator-defined regular expressions (one per NEWLINE — ';' is legal regex syntax and is not treated as a separator), each masked like a built-in pattern. Every pattern is vetted when the config changes: invalid syntax or catastrophic-backtracking candidates (probe budget exceeded) are REJECTED with a loud log line ('customPatternRejected') and are NOT active — check the middleware log after saving. Prompts are untouched while mask_user_prompt is off. Regardless of that flag, the patterns are ALSO applied to tool-error text and to every evidence-judge request of the answer verifier (the restored claim plus knowledge-graph evidence) before it reaches a model."
       required: false
       default: ""
     - key: "c1_detector_url"
       type: "string"
       label: "C1 PII-detector sidecar URL"
-      help: "Base URL of the GLiNER PII-inference sidecar (middleware/sidecars/pii-detector) that detects person names and free-form addresses — the C1 tier on top of the C0 regex baseline. Under the docker-compose.pii-detector.yaml overlay: http://pii-detector:8812. Leave empty to run only the C0 regex baseline (no C1 call is attempted). The sidecar receives raw prompt PII — keep it internal-network-only, never public. Sidecar unreachable at runtime => audited degrade to C0 (promptMaskDegraded), never a silent unmasked pass-through. Falls back to the PRIVACY_C1_DETECTOR_URL env var when empty."
+      help: "Base URL of the GLiNER PII-inference sidecar (middleware/sidecars/pii-detector) that detects person names and free-form addresses — the C1 tier on top of the C0 regex baseline. Under the docker-compose.pii-detector.yaml overlay: http://pii-detector:8812. Leave empty to run only the C0 regex baseline (no C1 call is attempted). The sidecar receives raw text: the turn's prompt text while mask_user_prompt is on and, regardless of that flag, tool-error text and every evidence-judge request of the answer verifier (the restored claim plus knowledge-graph evidence). Keep it internal-network-only, never public. If the sidecar fails at runtime, C1 is off for the rest of that turn and each of these paths runs on the C0 baseline and the deny-list alone (logged as promptMaskDegraded or toolErrorRedactDegraded), so names only C1 detects reach the model unmasked; no text skips C0. Falls back to the PRIVACY_C1_DETECTOR_URL env var when empty."
       required: false
       default: ""
 
 playbook:
   when_to_use: |
-    Aktiviere dieses Plugin, damit rohe Tool-Ergebnisse niemals im Klartext
-    an Public-LLMs (Anthropic, OpenAI) gelangen. Das Plugin published die
-    `privacy.redact@1`-Capability; der Orchestrator-Hook ruft sie am
-    Tool-Dispatch-Seam auf:
+    Aktiviere dieses Plugin, damit die Modellanfragen eines Turns statt der
+    Rohergebnisse von Datenquellen-Tools einen identitätsfreien Digest an
+    Public-LLMs (Anthropic, OpenAI) schicken. Was trotzdem im Klartext
+    rausgeht (intern-exempte Tools samt ihrer Fehlertexte, Operator-Bypass,
+    Prompt-Text bei `mask_user_prompt: off`, Namen ohne oder bei
+    ausgefallenem C1-Detektor, Bilder, Modellaufrufe außerhalb des
+    Privacy-Handles), steht in docs/security-architecture.md §6f. Das Plugin
+    published die `privacy.redact@1`-Capability; der Orchestrator-Hook ruft
+    sie am Tool-Dispatch-Seam auf:
       - `internToolResultV4` interniert das rohe Tool-Ergebnis server-seitig
         hinter einer `datasetId` und gibt dem LLM nur einen identitätsfreien
         Digest.
@@ -83,8 +88,33 @@ playbook:
         Server-Code aus.
       - `finalizeTurn` verwirft die Turn-Datasets und liefert eine PII-freie
         `PrivacyReceipt` für die UI-Disclosure.
+      - `redactToolErrorText` redigiert zurückgegebene `Error:`-Texte
+        irreversibel (`[masked:<typ>]`), bevor das Modell sie liest;
+        `recordToolError` listet jeden behandelten Tool-Fehler unter
+        `PrivacyReceipt.toolErrors`.
+      - `projectVerifierText` maskiert jede Evidence-Judge-Anfrage des
+        Antwort-Verifiers (wiederhergestellter Claim plus
+        Knowledge-Graph-Evidenz) immer, auch bei `mask_user_prompt: off`,
+        über die Platzhalter-Map des Turns: C0-Identitätsmuster, Deny-Liste,
+        die vom Verifier benannten Identitätswerte und C1, falls konfiguriert.
+        `countUnresolvedSurrogates` zählt Platzhalter, die ein Modell
+        so umgeschrieben hat, dass die Wiederherstellung sie nicht mehr
+        zurückbildet.
     Die Receipt landet als Message-Metadata im Channel-Output (Teams + Web)
     und kann dort als Collapsed-/Expanded-Card gerendert werden.
+
+    Versions-Paarung: Ein Orchestrator ab @omadia/plugin-api 1.20.0 erwartet
+    vom Provider `redactToolErrorText`, `recordToolError`,
+    `projectVerifierText` und `countUnresolvedSurrogates`. Dieses Plugin hat
+    alle vier ab 0.6.0. Fehlen sie (bei einer älteren Kopie, die das
+    gebündelte Plugin ersetzt, etwa per Upload mit
+    `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`, oder bei einem anderen
+    `privacy.redact@1`-Provider), hält der Orchestrator zurückgegebene
+    `Error:`-Texte vollständig zurück und loggt einmal pro Prozess
+    `does not implement redactToolErrorText`. Jede Evidence-Judge-Anfrage des
+    Antwort-Verifiers scheitert dann geschlossen (Claims bleiben ungeprüft),
+    und die Prüfung auf ungelöste Platzhalter zählt 0, hält also eine zweite
+    Antwort mit umgeschriebenen Platzhaltern nicht zurück.
 
 # ---------------------------------------------------------------------------
 # Permissions. Server-side compute plus ONE deliberate network target
@@ -102,7 +132,10 @@ permissions:
     outbound:
       # #361 — the GLiNER PII-detector sidecar (`c1_detector_url` setup
       # field / PRIVACY_C1_DETECTOR_URL). Operator-configured, on-prem,
-      # internal-network-only — it receives raw prompt text, so this is a
+      # internal-network-only. It receives raw text: prompt text while
+      # mask_user_prompt is on and, regardless of that flag, tool-error text
+      # and every evidence-judge request of the answer verifier (the
+      # restored claim plus knowledge-graph evidence). That makes it a
       # deliberate, security-reviewable exception to the plugin's
       # previously pure-compute posture.
       - "pii-detector-sidecar"

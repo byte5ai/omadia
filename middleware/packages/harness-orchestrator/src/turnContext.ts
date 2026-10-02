@@ -4,6 +4,7 @@ import type { CommandPolicyProvider } from './commandPolicyGuard.js';
 import type { ChatParticipantsProvider } from './chatParticipants.js';
 import type { McpInputSentinelMint } from './mcp/pendingMcpInput.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
+import type { ToolReplayLedger } from './toolReplayLedger.js';
 
 /**
  * Per-turn context that propagates implicitly through every `await` triggered
@@ -271,6 +272,17 @@ export interface TurnContextValue {
    */
   memoryFileRead?: { value: boolean };
   /**
+   * The turn's wire view: its user message exactly as the model received it
+   * (normalised — an MCP input-card reply is its label by then — and masked
+   * under the turn's policy) and its final answer exactly as the model wrote
+   * it, BEFORE surrogate restore. Written by the answer loops, read once when
+   * a verifier-wrapped turn hands its privacy state over: the answer verifier
+   * may see only this view — never the caller's raw text, never restored
+   * values. Mutable holder for the same shallow-copy reason as
+   * {@link memoryFileRead}.
+   */
+  wireView?: { userMessage?: string; answer?: string };
+  /**
    * #904 — the memory-tool handler bound to the turn that is currently
    * delegating to a sub-agent.
    *
@@ -290,6 +302,21 @@ export interface TurnContextValue {
    * would have silently reopened a wider store.
    */
   subAgentMemoryHandler?: SubAgentMemoryHandler;
+  /**
+   * The request's tool replay ledger (`toolReplayLedger.ts`). Set by the
+   * orchestrator's turn entry point (`runTurnCore`, `chatStream`): the ledger a
+   * verifier bound to the input for this request, or a turn-local one that
+   * keeps no results. Every seam that runs a tool handler consults it before
+   * the handler runs — `Orchestrator.dispatchToolDeadlined`,
+   * `LocalSubAgent.dispatch`, `ToolDispatchService.invoke` — so a re-entry
+   * replays the first run's results and nothing repeats a call whose outcome
+   * is unknown. Carried into every nested scope by the `{ ...ctx }` spread —
+   * but not into work that outlives the turn (a long-running task's runner),
+   * which gets a ledger of its own (`runDetachedFromRequestLedger`);
+   * undefined outside a turn (the public MCP endpoint), where every dispatch
+   * executes as before. Holds raw handler results: never log or persist it.
+   */
+  toolReplayLedger?: ToolReplayLedger;
 }
 
 /**

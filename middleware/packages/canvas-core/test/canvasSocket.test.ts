@@ -65,4 +65,45 @@ describe('CanvasSocket', () => {
     expect(messages.some((m) => m.type === 'surface_snapshot')).toBe(true);
     socket.close();
   }, 25_000);
+
+  it('surfaces the session expiry and stops on a 4401 close from a real server', async () => {
+    const expiring = await startStubServer(0, { sessionExpiresAt: 1_900_000_000 });
+    const statuses: ConnectionStatus[] = [];
+    const socket = new CanvasSocket({
+      url: `ws://127.0.0.1:${expiring.port}/omadia-ui/canvas`,
+      cookie: () => 'omadia_session=stub',
+      localOperations: [],
+      createWebSocket: nodeWsFactory,
+      session: { load: () => undefined, save: () => undefined },
+      onMessage: () => undefined,
+      onStatus: (s) => statuses.push(s),
+    });
+    try {
+      socket.connect();
+      await waitFor(() => statuses.some((s) => s.state === 'ready'), 5000, 'never ready');
+      expect(statuses.find((s) => s.state === 'ready')?.sessionExpiresAt).toBe(1_900_000_000);
+
+      expiring.closeSockets(4401, 'session expired');
+      await waitFor(() => statuses.some((s) => s.state === 'unauthenticated'), 5000, 'no 4401 status');
+      // Longer than the first backoff step: a reconnect would have happened.
+      await new Promise((r) => setTimeout(r, 1300));
+      expect(expiring.connections()).toBe(1);
+      expect(statuses.at(-1)).toEqual({
+        state: 'unauthenticated',
+        closeCode: 4401,
+        detail: 'session expired',
+      });
+    } finally {
+      socket.close();
+      await expiring.close();
+    }
+  }, 15_000);
 });
+
+async function waitFor(cond: () => boolean, ms: number, what: string): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error(what);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}

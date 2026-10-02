@@ -28,7 +28,9 @@ export interface InvocationHandle {
   readonly agentName: string;
   readonly index: number;
   readonly observer: AskObserver;
-  finish(opts: { durationMs: number; status: RunStatus }): void;
+  /** `replayed`: a verifier re-entry handed back the first run's result,
+   *  the sub-agent did not run in this pass. */
+  finish(opts: { durationMs: number; status: RunStatus; replayed?: boolean }): void;
 }
 
 export interface RunTraceCollectorOptions {
@@ -97,6 +99,7 @@ export class RunTraceCollector {
           isError: ev.isError,
           agentContext: agentName,
           ...(ev.postcondition ? { postcondition: ev.postcondition } : {}),
+          ...(ev.replayed === true ? { replayed: true } : {}),
         });
         toolCallStarts.delete(ev.id);
       },
@@ -106,7 +109,7 @@ export class RunTraceCollector {
       agentName,
       index,
       observer,
-      finish({ durationMs, status }): void {
+      finish({ durationMs, status, replayed }): void {
         if (finished) return;
         finished = true;
         push({
@@ -117,6 +120,7 @@ export class RunTraceCollector {
           subIterations,
           status,
           toolCalls: subToolCalls,
+          ...(replayed === true ? { replayed: true } : {}),
         });
       },
     };

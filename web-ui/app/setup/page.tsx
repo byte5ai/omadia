@@ -12,10 +12,12 @@ import {
   postAuthSetup,
 } from '../_lib/api';
 import { signalDesktopUiReady } from '../_lib/desktopShell';
+import { sanitiseReturnPath } from '../_lib/returnPath';
 
 type State =
   | { kind: 'loading' }
-  | { kind: 'ready' }
+  /** `tokenRequired`: the server demands the operator setup token. */
+  | { kind: 'ready'; tokenRequired: boolean }
   | { kind: 'locked' }
   | { kind: 'error'; message: string };
 
@@ -26,6 +28,11 @@ type State =
  * the wizard has already run; redirect to /login. Otherwise render a form
  * that POSTs `{email, password, display_name}` to /api/v1/auth/setup.
  *
+ * Setup token: a server install only accepts the wizard together with the
+ * one-time token the middleware prints to its log at boot (or the value of
+ * ADMIN_SETUP_TOKEN). `setup_token_required` tells the page whether to ask;
+ * the desktop app's kernel is the one install that does not.
+ *
  * S4 (provider v2): the LLM-key step is GONE — provider connection now lives on
  * its own admin page (/admin/providers), where any provider (Anthropic, OpenAI,
  * …) is connected and assigned per agent. Setup is just "create the first admin
@@ -35,7 +42,8 @@ type State =
  * longer sends one.)
  *
  * On success the server mints + sets the session cookie itself, so we
- * just bounce the browser to the originally-requested path.
+ * just bounce the browser to the originally-requested path (`?return=`,
+ * sanitised to a same-origin path by `_lib/returnPath.ts`).
  */
 export default function SetupPage(): React.ReactElement {
   // Same Next-15 SSG bail as /login: useSearchParams() needs a Suspense
@@ -60,18 +68,17 @@ function SetupPageInner(): React.ReactElement {
   const t = useTranslations('setup');
   const router = useRouter();
   const searchParams = useSearchParams();
-  const returnPath = useMemo(() => {
-    const raw = searchParams.get('return');
-    if (typeof raw !== 'string') return '/';
-    if (!raw.startsWith('/') || raw.startsWith('//')) return '/';
-    return raw;
-  }, [searchParams]);
+  const returnPath = useMemo(
+    () => sanitiseReturnPath(searchParams.get('return')),
+    [searchParams],
+  );
 
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [setupToken, setSetupToken] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -90,7 +97,7 @@ function SetupPageInner(): React.ReactElement {
           setState({ kind: 'locked' });
           return;
         }
-        setState({ kind: 'ready' });
+        setState({ kind: 'ready', tokenRequired: res.setup_token_required === true });
       } catch (err) {
         if (cancelled) return;
         setState({
@@ -118,15 +125,26 @@ function SetupPageInner(): React.ReactElement {
       return;
     }
     setSubmitting(true);
+    const tokenRequired = state.kind === 'ready' && state.tokenRequired;
     try {
       await postAuthSetup({
         email,
         password,
         ...(displayName.length > 0 ? { display_name: displayName } : {}),
+        ...(tokenRequired ? { setup_token: setupToken.trim() } : {}),
       });
       window.location.href = returnPath;
     } catch (err) {
-      if (err instanceof ApiError && err.status === 410) {
+      if (err instanceof ApiError && err.status === 403) {
+        setSubmitError(t('setupTokenRejected'));
+      } else if (err instanceof ApiError && err.status === 409) {
+        setSubmitError(t('setupInProgress'));
+      } else if (err instanceof ApiError && err.status === 410 && err.code === 'auth.setup_disabled') {
+        // Closed for this server start, not finished: the server sends this
+        // code only while the users table is empty, so a login page would be
+        // a dead end; the restart is what reopens the wizard.
+        setSubmitError(t('setupDisabled'));
+      } else if (err instanceof ApiError && err.status === 410) {
         setSubmitError(t('alreadyLocked'));
         setTimeout(() => router.replace('/login'), 1500);
       } else if (err instanceof ApiError && err.status === 400) {
@@ -172,6 +190,26 @@ function SetupPageInner(): React.ReactElement {
     <PageShell>
       <p className="mb-4 text-sm opacity-70">{t('intro')}</p>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+        {state.tokenRequired && (
+          <div className="flex flex-col gap-1">
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="font-medium">{t('setupTokenLabel')}</span>
+              <input
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                required
+                value={setupToken}
+                onChange={(e) => setSetupToken(e.target.value)}
+                aria-describedby="setup-token-hint"
+                className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 font-mono text-sm outline-none focus:border-[color:var(--accent)]"
+              />
+            </label>
+            <p id="setup-token-hint" className="text-xs leading-[1.5] opacity-70">
+              {t('setupTokenHint')}
+            </p>
+          </div>
+        )}
         <label className="flex flex-col gap-1 text-sm">
           <span className="font-medium">{t('emailLabel')}</span>
           <input

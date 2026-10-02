@@ -70,12 +70,18 @@ app/                   Next.js App Router pages + components
   system/              Health + diagnostics
   memory/              Operator memory browser
   graph/               Knowledge-graph viewer
+  pairing-discovery/   Pairing descriptor served at /.well-known/omadia-ui (no session needed)
 i18n/                  Locale config + per-request resolution
 messages/              Translation JSON (en, de) + convention doc
 scripts/i18n-validate.mjs  CI-runnable parity gate
 proxy.ts               Auth-cookie gate (Next 16 proxy convention)
 next.config.ts         Build config + next-intl plugin wiring
 ```
+
+`proxy.ts` sends every request without a live `omadia_session` cookie to
+`/login`, except the paths in `isPublicPath`. Each exemption is justified in
+[`docs/security-architecture.md` §10g](../docs/security-architecture.md) and
+pinned by `app/__tests__/proxy.test.ts`; a new one needs both.
 
 ## Tests
 

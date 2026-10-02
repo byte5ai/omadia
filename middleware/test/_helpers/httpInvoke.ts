@@ -35,6 +35,17 @@ export interface InvokeOptions {
    * expects a 304 would pass or fail for the wrong reason.
    */
   readonly headers?: Readonly<Record<string, string>>;
+  /**
+   * A JSON request body. Sets `content-type` / `content-length` and feeds the
+   * bytes through the request stream, so `express.json()` parses it for real.
+   */
+  readonly json?: unknown;
+  /**
+   * The TCP peer the request appears to come from (`req.socket.remoteAddress`).
+   * The unconnected socket has none by default; a test of an address-keyed
+   * guard needs one that a header cannot fake.
+   */
+  readonly remoteAddress?: string;
 }
 
 export function invoke(
@@ -44,14 +55,29 @@ export function invoke(
   options: InvokeOptions = {},
 ): Promise<InvokeResult> {
   const socket = new Socket();
+  if (options.remoteAddress !== undefined) {
+    Object.defineProperty(socket, 'remoteAddress', { value: options.remoteAddress });
+  }
   const req = new IncomingMessage(socket);
   req.method = method;
   req.url = url;
-  for (const [name, value] of Object.entries(options.headers ?? {})) {
+  const body =
+    options.json === undefined ? undefined : Buffer.from(JSON.stringify(options.json), 'utf8');
+  const headers: Record<string, string> = {
+    ...(body
+      ? { 'content-type': 'application/json', 'content-length': String(body.length) }
+      : {}),
+    ...options.headers,
+  };
+  for (const [name, value] of Object.entries(headers)) {
     // `IncomingMessage.headers` is the object Express reads; populate both it
     // and `rawHeaders` so anything reaching for either sees the same request.
     req.headers[name.toLowerCase()] = value;
     req.rawHeaders.push(name, value);
+  }
+  if (body) {
+    req.push(body);
+    req.push(null);
   }
 
   const res = new ServerResponse(req);

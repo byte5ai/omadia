@@ -16,7 +16,7 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
  * The core verifies the session cookie at upgrade time — BEFORE the WebSocket
  * handshake completes — so a handler only ever sees an authenticated peer.
  * Mirrors the kernel's session claims without coupling the SDK to its JWT
- * types.
+ * types. Claims only: the session token itself never reaches a handler.
  */
 export interface ChannelSessionClaims {
   /** Stable per-user id within the issuing provider (the session `sub`). */
@@ -27,6 +27,14 @@ export interface ChannelSessionClaims {
   provider: string;
   /** Omadia-Identity cluster root in the knowledge graph, when resolved. */
   omadiaUserId?: string;
+  /**
+   * When the session that opened this socket expires, Unix epoch seconds. The
+   * kernel closes the socket with 4401 at that moment; a handler never has to
+   * enforce it and may only use it as a hint (e.g. to tell its client when the
+   * socket will end). Optional only for hosts and tests that build claims by
+   * hand — the kernel always sets it.
+   */
+  expiresAt?: number;
 }
 
 /**
@@ -38,13 +46,38 @@ export interface ChannelSessionClaims {
 export interface ChannelSocket {
   /** Send one text frame. */
   send(data: string): void;
-  /** Subscribe to inbound text frames. */
+  /**
+   * Subscribe to inbound text frames. The kernel delivers a frame only once it
+   * has confirmed, shortly before, that the session still stands: when its
+   * last check is older than a few seconds (`WS_SESSION_FRAME_RECHECK_MS`,
+   * 5 s by default) the frame waits for a new one, and frames keep their
+   * order. A revoked session closes the socket instead; a frame that arrives
+   * while the session cannot be checked goes to `onRefusedMessage`.
+   */
   onMessage(cb: (data: string) => void): void;
-  /** Subscribe to socket close. */
+  /**
+   * Subscribe to inbound frames the kernel withheld from `onMessage` because
+   * it could not check the session at that moment (the account lookup failed
+   * or timed out). The socket stays open, and the next frame is checked
+   * again. Such a frame is not authorised: a handler may tell its client the
+   * request did not run, so it can retry, or stop work this socket already
+   * started, but must never start, read or change anything because of it.
+   * Optional: without a subscriber a withheld frame is dropped.
+   */
+  onRefusedMessage?(cb: (data: string) => void): void;
+  /**
+   * Subscribe to socket close. Also fires the moment the kernel ends the
+   * socket's session (expiry, revocation, channel deactivation), before the
+   * peer has acknowledged the close.
+   */
   onClose(cb: () => void): void;
   /** Close the socket (optional close code + reason). */
   close(code?: number, reason?: string): void;
-  /** The upgrade request that opened this socket (read-only). */
+  /**
+   * The upgrade request that opened this socket (read-only). The session
+   * cookie is removed from `headers.cookie`: handlers get the verified
+   * claims, never the token.
+   */
   readonly request: {
     url: string;
     headers: Record<string, string | string[] | undefined>;
@@ -120,6 +153,20 @@ export interface CoreApi {
    * frame above the cap closes the socket with code 1009 (message too big).
    * Channel sockets always use session-cookie auth — custom authenticators
    * are a kernel-only capability.
+   *
+   * The socket lives no longer than the session that opened it. The kernel
+   * closes it with **4401** at the session's `exp` (`session.expiresAt`) and
+   * with **4403** once the session is revoked (sign-out, password reset,
+   * disable, delete) or the identity is no longer authorised — on this
+   * replica at once; on any other before the socket's next frame reaches the
+   * handler (every frame rides on a session check at most a few seconds
+   * old), and within a minute for a socket that sends nothing. From that
+   * moment no further frame reaches the handler and `onClose` fires. While
+   * the session cannot be checked at all, frames are withheld
+   * (`onRefusedMessage`) and the socket stays open. A renewal extends the
+   * cookie, not an open socket: the client reconnects with its current
+   * cookie. Handlers must not cache authorisation beyond the socket's life,
+   * and must not re-implement this check.
    *
    * Optional: present only when the kernel wired a WebSocket registry into
    * `createCoreApi`. Channels MUST feature-detect

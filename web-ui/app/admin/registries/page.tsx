@@ -328,6 +328,18 @@ function TokenBadge({ hasToken }: { hasToken: boolean }): React.ReactElement {
 
 function toFriendlyError(err: unknown, t: TFn): string {
   if (err instanceof ApiError) {
+    // Session refusals from the kernel's requireAuth: a failed session check
+    // is an outage (503), everything else means sign in again (401).
+    if (err.body.includes('auth.unavailable')) {
+      return t('errors.authUnavailable');
+    }
+    if (
+      err.body.includes('auth.missing') ||
+      err.body.includes('auth.invalid') ||
+      err.body.includes('auth.revoked')
+    ) {
+      return t('errors.sessionExpired');
+    }
     if (err.body.includes('registry_config.duplicate')) {
       return t('errors.duplicate');
     }

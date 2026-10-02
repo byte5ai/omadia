@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { setupFile } from './paths';
+import { DEFAULT_CAPABILITIES, parseCapabilities, type DesktopCapabilities } from './capabilities';
 
 /**
  * Non-secret first-run configuration. Secrets (vault key, provider API keys) live
@@ -11,14 +12,12 @@ export interface SetupState {
   /** The stack has booted successfully at least once (boot-verified). */
   completed: boolean;
   llmProvider: 'anthropic' | 'openai' | 'subscription';
-  capabilities: {
-    /** in-process embeddings for semantic memory / topic detection */
-    embeddings: boolean;
-    /** diagram rendering (off by default — kroki is a JVM service, unbundlable) */
-    diagrams: boolean;
-    /** local-filesystem attachment store */
-    attachments: boolean;
-  };
+  /**
+   * The wizard's capability switches, read by the supervisor on every boot and
+   * turned into kernel env (`capabilities.ts`). Only switches it reads are kept:
+   * `embeddings` and `diagrams` from older builds are dropped by `readSetup`.
+   */
+  capabilities: DesktopCapabilities;
   /**
    * The user has actually SEEN their recovery key (OM-58).
    *
@@ -40,7 +39,7 @@ const DEFAULT: SetupState = {
   configured: false,
   completed: false,
   llmProvider: 'anthropic',
-  capabilities: { embeddings: false, diagrams: false, attachments: true },
+  capabilities: DEFAULT_CAPABILITIES,
   recoveryKeyShown: false,
 };
 
@@ -51,7 +50,10 @@ export function readSetup(): SetupState {
     return {
       ...DEFAULT,
       ...parsed,
-      capabilities: { ...DEFAULT.capabilities, ...(parsed.capabilities ?? {}) },
+      // Rebuilt rather than merged: older builds also stored `embeddings` and
+      // `diagrams`, which nothing reads, and a merge carried them into every
+      // later write. A missing or malformed selection falls back to the default.
+      capabilities: parseCapabilities(parsed.capabilities) ?? DEFAULT.capabilities,
     };
   } catch {
     return { ...DEFAULT };

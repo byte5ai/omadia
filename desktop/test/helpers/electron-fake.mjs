@@ -37,11 +37,25 @@ export function __setLocale(next) {
   locale = next;
 }
 
-export const safeStorage = {
+const SAFE_STORAGE_DEFAULTS = {
   isEncryptionAvailable: () => false,
   encryptString: () => Buffer.from(''),
   decryptString: () => '',
 };
+
+export const safeStorage = { ...SAFE_STORAGE_DEFAULTS };
+
+/**
+ * Replace `safeStorage` methods for a test (null restores the defaults), e.g. to
+ * make encryption available and decryption throw like a refused keychain.
+ *
+ * The methods are swapped ON the exported object rather than the export being
+ * reassigned: `secrets.ts` imports `safeStorage` by name, so only a mutation of
+ * the object it already holds reaches it.
+ */
+export function __setSafeStorage(impl) {
+  Object.assign(safeStorage, SAFE_STORAGE_DEFAULTS, impl ?? {});
+}
 
 function unavailable(name) {
   return new Proxy(
@@ -77,21 +91,68 @@ export const dialog = {
 
 /** Records the last text written, so a "copy" button can be asserted on. */
 let clipboardText = null;
+let clipboardFailure = null;
 export function __lastClipboardText() {
   return clipboardText;
 }
+/** Make the next `clipboard.writeText` reject with `error`. */
+export function __failNextClipboardWrite(error) {
+  clipboardFailure = error;
+}
+// Async like Electron 44's W3C-shaped clipboard, so a caller that drops the
+// promise is caught by a test instead of by a user.
 export const clipboard = {
-  writeText: (text) => {
+  writeText: async (text) => {
+    if (clipboardFailure) {
+      const error = clipboardFailure;
+      clipboardFailure = null;
+      throw error;
+    }
     clipboardText = text;
   },
 };
-export const ipcMain = unavailable('ipcMain');
+
+/**
+ * A surface a test can opt into, like `dialog`: every property read is
+ * forwarded to the fake installed with the named setter, so the production code
+ * runs against the calls it really makes (`registerIpc` registering its
+ * channels, the preload exposing its bridge). Without a fake it throws like
+ * every other unstubbed surface.
+ */
+function optIn(name, setter, current) {
+  return new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        const fake = current();
+        if (fake === null) {
+          throw new Error(`electron.${name}.${String(prop)} is not stubbed; call ${setter} first`);
+        }
+        return fake[prop];
+      },
+    },
+  );
+}
+
+let ipcMainFake = null;
+/** Install the object `ipcMain.handle` / `ipcMain.on` are forwarded to. */
+export function __setIpcMain(fake) {
+  ipcMainFake = fake;
+}
+export const ipcMain = optIn('ipcMain', '__setIpcMain', () => ipcMainFake);
+
+let contextBridgeFake = null;
+/** Install the object `contextBridge.exposeInMainWorld` is forwarded to. */
+export function __setContextBridge(fake) {
+  contextBridgeFake = fake;
+}
+export const contextBridge = optIn('contextBridge', '__setContextBridge', () => contextBridgeFake);
+
 export const Menu = unavailable('Menu');
 export const Tray = unavailable('Tray');
 export const shell = unavailable('shell');
 export const nativeImage = unavailable('nativeImage');
 export const BrowserWindow = unavailable('BrowserWindow');
-export const contextBridge = unavailable('contextBridge');
 export const ipcRenderer = unavailable('ipcRenderer');
 
 export default {

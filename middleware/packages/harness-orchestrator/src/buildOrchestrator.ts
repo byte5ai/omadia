@@ -962,9 +962,18 @@ export function buildOrchestratorForAgent(
       enabled: true,
       mode: deps.verifierBundle.mode,
       maxRetries: deps.verifierBundle.maxRetries,
+      // The operator's switch for the borderline resample
+      // (`verifier_resample_on_borderline`); absent → the service default (on).
+      ...(deps.verifierBundle.resampleOnBorderline !== undefined
+        ? { resampleOnBorderline: deps.verifierBundle.resampleOnBorderline }
+        : {}),
       ...(deps.turnHookRegistry
         ? { turnHookRegistry: deps.turnHookRegistry }
         : {}),
+      // The notice for an answer `enforce` withholds is worded in the turn's
+      // disclosure locale; this is the fallback when the operator turned the
+      // disclosure off (same rule as the turn-incomplete notice).
+      ...(deps.aiDisclosure?.locale ? { locale: deps.aiDisclosure.locale } : {}),
     });
   }
 

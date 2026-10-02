@@ -2,6 +2,7 @@ import type {
   ChatTurnResult,
   PendingMcpInputCard,
   RunTracePayload,
+  VerifierResultSummary,
 } from './chatAgent.js';
 import type {
   AgentConsultation,
@@ -14,6 +15,105 @@ import {
   applyAiDisclosure,
   type ApplyAiDisclosureContext,
 } from './aiDisclosure.js';
+
+/** Claims the verifier confirmed: every claim it neither found contradicted
+ *  nor left unconfirmed. */
+function confirmedClaims(summary: VerifierResultSummary): number {
+  return Math.max(0, summary.claimCount - summary.contradictionCount - summary.unverifiedCount);
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * Whether the summary's counts can describe one claim list: each a
+ * nonnegative integer (the optional `uncheckedCount` / `uncoveredCount` count
+ * as 0 when absent), `uncoveredCount ≤ uncheckedCount ≤ unverifiedCount`, and
+ * `contradictionCount + unverifiedCount ≤ claimCount`. The verifier never
+ * builds any other; a summary that breaks this comes from elsewhere and backs
+ * no badge.
+ */
+function countsAgree(summary: VerifierResultSummary): boolean {
+  const { claimCount, contradictionCount, unverifiedCount } = summary;
+  const unchecked = summary.uncheckedCount ?? 0;
+  const uncovered = summary.uncoveredCount ?? 0;
+  return (
+    [claimCount, contradictionCount, unverifiedCount, unchecked, uncovered].every(isCount) &&
+    uncovered <= unchecked &&
+    unchecked <= unverifiedCount &&
+    contradictionCount + unverifiedCount <= claimCount
+  );
+}
+
+/**
+ * True when a check settled at least one claim of the summary: a contradicted
+ * claim for `blocked`, a confirmed one for `approved` /
+ * `approved_with_disclaimer` — and its counts agree with each other. A
+ * summary whose claims all stayed unconfirmed, one whose counts contradict
+ * each other, `skipped` and `unavailable` never do. Any consumer that renders
+ * a verification signal from a `VerifierResultSummary` gates on this.
+ */
+export function verifierSummaryHasEvidence(summary: VerifierResultSummary): boolean {
+  if (!countsAgree(summary)) return false;
+  switch (summary.status) {
+    case 'approved':
+    case 'approved_with_disclaimer':
+      return confirmedClaims(summary) > 0;
+    case 'blocked':
+      return summary.contradictionCount > 0;
+    case 'skipped':
+    case 'unavailable':
+      return false;
+  }
+}
+
+/**
+ * Whether the summary's counts back the badge it carries, beyond having
+ * evidence at all: `verified` and `corrected` need every claim confirmed on
+ * an `approved` summary, `partial` an answer that is not contradicted.
+ */
+function countsBackBadge(
+  summary: VerifierResultSummary,
+  badge: VerifierBadge['status'],
+): boolean {
+  switch (badge) {
+    case 'verified':
+    case 'corrected':
+      return summary.status === 'approved' && confirmedClaims(summary) === summary.claimCount;
+    case 'partial':
+      return summary.status !== 'blocked' && summary.contradictionCount === 0;
+    case 'failed':
+      return summary.contradictionCount > 0;
+  }
+}
+
+/** Narrows a summary badge to the connector wire union (`outgoing.ts`). */
+function isConnectorBadge(
+  badge: VerifierResultSummary['badge'],
+): badge is VerifierBadge['status'] {
+  switch (badge) {
+    case 'verified':
+    case 'partial':
+    case 'corrected':
+    case 'failed':
+      return true;
+    case 'unverified':
+    case 'unavailable':
+      return false;
+  }
+}
+
+/** The connector badge for a turn, or undefined when no check settled a
+ *  claim or the counts do not back the badge. */
+function connectorVerifierBadge(
+  summary: VerifierResultSummary | undefined,
+): VerifierBadge | undefined {
+  if (!summary || !verifierSummaryHasEvidence(summary)) return undefined;
+  const { badge } = summary;
+  if (!isConnectorBadge(badge) || !countsBackBadge(summary, badge)) return undefined;
+  return { status: badge };
+}
 
 /**
  * #332 Layer 1 — plain-text fallback footer for connectors without rich-card
@@ -202,14 +302,17 @@ export function toSemanticAnswer(
     };
   }
 
-  // The badge is only an honest signal when the verifier actually CHECKED
-  // something: with zero extracted claims (small talk, greetings) — and on the
-  // pipeline-failure fallback, which reports `approved` with an empty claim
-  // list — a "✓ geprüft" chip would assert a verification that never happened.
-  const verifier: VerifierBadge | undefined =
-    r.verifier && r.verifier.claimCount > 0
-      ? { status: r.verifier.badge }
-      : undefined;
+  // The badge is only an honest signal when a check actually SETTLED a claim.
+  // `skipped` (small talk, greetings, nothing checkable), `unavailable`
+  // (extractor or pipeline failure) and checks that confirmed nothing carry no
+  // evidence, and their `unverified` / `unavailable` badges have no value in
+  // the connector wire union: a "✓ geprüft" chip — or any chip — would assert
+  // a verification that never happened. Connectors get no badge for them, and
+  // none whose summary counts do not back it (`verified` and `corrected` need
+  // every claim confirmed, so a coverage gap or an unchecked claim keeps the
+  // answer at `partial`) or contradict each other. This is the single badge
+  // gate for every connector (Teams card, Telegram, …).
+  const verifier = connectorVerifierBadge(r.verifier);
 
   // #332 Layer 1 — curate a tamper-evident consulted-agents footer from the
   // deterministic run-trace. This is the ONLY sub-agent signal Teams/Telegram

@@ -148,10 +148,9 @@ function collectConfig() {
   return {
     provider,
     apiKey,
+    /* Only switches the supervisor turns into kernel env (capabilities.ts). */
     capabilities: {
       attachments: $('#capAttachments').checked,
-      embeddings: $('#capEmbeddings').checked,
-      diagrams: $('#capDiagrams').checked,
     },
     dataDir: state.dataDir,
   };

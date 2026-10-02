@@ -38,7 +38,7 @@ oder **Integration** (reine Credentials/HTTP-Client, kein Toolkit).
   `/data/vault/vault.enc.json`, agentId-namespaced, `VAULT_KEY` als Fly-Secret,
   nightly Tigris-Backup. Platform-Scope `core:auth` hält Session-Signing-Key +
   per-user Refresh-Tokens.
-- **Admin-UI**: `odoo-bot-harness.fly.dev` — Store + Install-Drawer rendern
+- **Admin-UI**: `<your-omadia-host>` — Store + Install-Drawer rendern
   automatisch aus `setup.fields`.
 
 Feld nicht im Schema → **nicht rein**. Lieber kurz fragen.
@@ -636,7 +636,7 @@ User sagt: "Bau mir einen Agent `de.byte5.agent.sharepoint` für Dokument-Suche.
    node scripts/build-zip.mjs
    # → out/de.byte5.agent.sharepoint-0.1.0.zip
 
-   # Upload via Admin-UI (odoo-bot-harness.fly.dev → Store → Upload)
+   # Upload via Admin-UI (<your-omadia-host> → Store → Upload)
    # oder via Admin-API POST /api/v1/install/plugins/:id (job-basiert).
    ```
 

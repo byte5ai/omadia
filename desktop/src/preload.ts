@@ -1,27 +1,31 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
   CH,
-  AppState,
-  TestLlmKeyRequest,
-  TestLlmKeyResult,
-  WizardConfig,
-  CompleteResult,
-  BootLogLine,
+  type TestLlmKeyRequest,
+  type TestLlmKeyResult,
+  type WizardConfig,
+  type CompleteResult,
+  type BootLogLine,
 } from './ipcTypes';
 import type { BootProgress } from './supervisor';
+import { bridgeSurfaceFor } from './bridgeSurface';
 
 /**
- * Secure bridge for the onboarding wizard renderer. contextIsolation is on and
- * nodeIntegration off; the renderer only ever sees this narrow, typed surface.
+ * The renderer bridge, cut down to what the loaded document is entitled to.
+ * contextIsolation is on and nodeIntegration off; a page only ever sees the
+ * narrow, typed surface picked here (see `bridgeSurface.ts`):
+ *
+ *  - the bundled wizard gets the setup methods and the boot stream;
+ *  - the bundled loading screen gets the boot stream only;
+ *  - the loopback web UI gets `uiReady` and `setUiLocale` — nothing that
+ *    returns or writes a secret, because third-party plugin UIs run in
+ *    same-origin iframes there and reach this bridge via `window.parent`;
+ *  - any other document gets no bridge at all.
+ *
+ * Main refuses every call from a document that is not entitled to its channel
+ * (`ipcSender.ts`); this split keeps the methods out of reach in the first place.
  */
-const api = {
-  getState: (): Promise<AppState> => ipcRenderer.invoke(CH.getState),
-  testLlmKey: (req: TestLlmKeyRequest): Promise<TestLlmKeyResult> =>
-    ipcRenderer.invoke(CH.testLlmKey, req),
-  chooseDataDir: (): Promise<string | null> => ipcRenderer.invoke(CH.chooseDataDir),
-  exportRecoveryKey: (): Promise<string> => ipcRenderer.invoke(CH.exportRecoveryKey),
-  complete: (config: WizardConfig): Promise<CompleteResult> =>
-    ipcRenderer.invoke(CH.complete, config),
+const bootApi = {
   onBootProgress: (cb: (p: BootProgress) => void): (() => void) => {
     const listener = (_e: unknown, p: BootProgress): void => cb(p);
     ipcRenderer.on(CH.bootProgress, listener);
@@ -32,6 +36,19 @@ const api = {
     ipcRenderer.on(CH.bootLog, listener);
     return () => ipcRenderer.removeListener(CH.bootLog, listener);
   },
+};
+
+const wizardApi = {
+  testLlmKey: (req: TestLlmKeyRequest): Promise<TestLlmKeyResult> =>
+    ipcRenderer.invoke(CH.testLlmKey, req),
+  chooseDataDir: (): Promise<string | null> => ipcRenderer.invoke(CH.chooseDataDir),
+  exportRecoveryKey: (): Promise<string> => ipcRenderer.invoke(CH.exportRecoveryKey),
+  complete: (config: WizardConfig): Promise<CompleteResult> =>
+    ipcRenderer.invoke(CH.complete, config),
+  ...bootApi,
+};
+
+const appApi = {
   /**
    * OM-71 — the web UI calls this once its first real screen is up, so shell
    * dialogs (the recovery-key reminder) wait for a page rather than a
@@ -48,6 +65,21 @@ const api = {
   setUiLocale: (locale: string): void => ipcRenderer.send(CH.uiLocale, locale),
 };
 
-contextBridge.exposeInMainWorld('omadia', api);
+switch (bridgeSurfaceFor(window.location.href)) {
+  case 'wizard':
+    contextBridge.exposeInMainWorld('omadia', wizardApi);
+    break;
+  case 'boot':
+    contextBridge.exposeInMainWorld('omadia', bootApi);
+    break;
+  case 'app':
+    contextBridge.exposeInMainWorld('omadia', appApi);
+    break;
+  case 'none':
+    // A foreign document (an IdP page reached by a redirect, about:blank, …)
+    // gets no `window.omadia`. The web UI, wizard.js and loading.js all
+    // tolerate a missing bridge.
+    break;
+}
 
-export type OmadiaBridge = typeof api;
+export type OmadiaBridge = typeof wizardApi;

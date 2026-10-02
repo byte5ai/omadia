@@ -1,7 +1,7 @@
 import { app, dialog, type MessageBoxOptions } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import fs from 'node:fs';
-import { embeddedDbDir, snapshotDir, updateAttemptsFile } from './paths';
+import { embeddedDbDir, secretsFile, snapshotDir, updateAttemptsFile } from './paths';
 import { getActiveSupervisor } from './supervisor';
 import { log, logFile } from './log';
 import {
@@ -17,6 +17,7 @@ import { prepareInstall } from './installPreflight';
 import { recordCheckFailed, recordCheckReachedFeed } from './updaterCheckHealth';
 import { fillPlaceholders, type ShellTranslate } from './shellStrings';
 import { shellLocale } from './shellLocale';
+import { decideNoUpdate, type HoldBack } from './updateHoldBack';
 
 /** Where a user is sent when the automatic path has given up. */
 const RELEASES_URL = 'https://github.com/byte5ai/omadia/releases';
@@ -78,6 +79,12 @@ async function showUpdaterDialog(options: MessageBoxOptions): Promise<void> {
  * directory, because a new app version may ship newer (idempotent) kernel
  * migrations that run on first boot, and an embedded DB has no managed backups.
  * If a migration goes wrong, the user can restore the snapshot.
+ *
+ * The snapshot holds `pgdata` plus the encrypted `secrets.enc` beside it
+ * (`<snapshot>.secrets.enc`), because the database's credentials and dataset
+ * cells are encrypted with keys that live only in that file. It does NOT hold
+ * `platform-data/` (the kernel's own vault, installed plugins); that gap is
+ * documented in docs/security-architecture.md §8a.
  */
 export function initUpdater(): void {
   if (!app.isPackaged) {
@@ -153,10 +160,16 @@ export function initUpdater(): void {
     });
   });
   autoUpdater.on('update-not-available', (info) => {
-    log.info(`[updater] up to date: ${info.version}`);
     recordCheckReachedFeed();
-    if (!takeManualCheckPending()) return;
+    // Not always "up to date": electron-updater sends this same event, with the
+    // FEED's version, when the feed's minimumSystemVersion is above this OS.
+    const outcome = decideNoUpdate(info, takeManualCheckPending());
+    if (outcome.kind === 'silent') return;
     const t = shellT();
+    if (outcome.kind === 'heldBack') {
+      void showUpdaterDialog(holdBackDialog(t, outcome.holdBack, outcome.current));
+      return;
+    }
     void showUpdaterDialog({
       type: 'info',
       title: t('updater.upToDate.title', 'No update available'),
@@ -166,7 +179,7 @@ export function initUpdater(): void {
       ),
       detail: fillPlaceholders(
         t('updater.upToDate.detail', 'Current version: {version}'),
-        { version: info.version },
+        { version: outcome.current },
       ),
     });
   });
@@ -307,6 +320,43 @@ export async function checkForUpdatesManually(): Promise<void> {
 }
 
 /**
+ * The feed has a release this computer's OS cannot run (`updateHoldBack.ts`):
+ * say which OS it needs, and that updates stop here — security fixes included —
+ * until the OS moves. Telling this user "you are up to date" is what hid it.
+ */
+function holdBackDialog(
+  t: ShellTranslate,
+  holdBack: HoldBack,
+  current: string,
+): MessageBoxOptions {
+  const message =
+    holdBack.macos === null
+      ? fillPlaceholders(
+          t(
+            'updater.osTooOld.messageGeneric',
+            "omadia {version} needs a newer version of this computer's operating system.",
+          ),
+          { version: holdBack.version },
+        )
+      : fillPlaceholders(
+          t('updater.osTooOld.message', 'omadia {version} needs macOS {macos} or later.'),
+          { version: holdBack.version, macos: holdBack.macos },
+        );
+  return {
+    type: 'warning',
+    title: t('updater.osTooOld.title', 'Update needs a newer operating system'),
+    message,
+    detail: fillPlaceholders(
+      t(
+        'updater.osTooOld.detail',
+        'This computer stays on omadia {current} and gets no further updates, security fixes included, until its operating system is updated. After that, omadia offers {version} on its own.',
+      ),
+      { current, version: holdBack.version },
+    ),
+  };
+}
+
+/**
  * Clear the marker once the version it recorded is the one we are running.
  *
  * Running that version at all proves the handoff finally worked, so the count
@@ -393,10 +443,14 @@ async function quiesceForInstall(version: string): Promise<boolean> {
   return false;
 }
 
-/** Copy the embedded DB directory into a snapshot unique to this attempt. */
+/**
+ * Copy the embedded DB directory, and the secrets file its ciphertexts depend
+ * on, into a snapshot unique to this attempt.
+ */
 function snapshotDbDir(version: string): void {
   takeDbSnapshot(realSnapshotIo, {
     sourceDir: embeddedDbDir(),
+    secretsFile: secretsFile(),
     snapshotRoot: snapshotDir(),
     version,
     now: new Date(),
@@ -406,14 +460,19 @@ function snapshotDbDir(version: string): void {
 
 /** The real filesystem, behind the snapshot module's port. */
 const realSnapshotIo: SnapshotIo = {
-  exists: (dir) => fs.existsSync(dir),
+  exists: (target) => fs.existsSync(target),
   listDirectories: (root) =>
     fs
       .readdirSync(root, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name),
   copy: (source, destination) => fs.cpSync(source, destination, { recursive: true }),
-  remove: (dir) => fs.rmSync(dir, { recursive: true, force: true }),
+  copyFile: (source, destination) => {
+    fs.copyFileSync(source, destination);
+    // Explicit, not inherited: the copy holds the same secrets as the original.
+    fs.chmodSync(destination, 0o600);
+  },
+  remove: (target) => fs.rmSync(target, { recursive: true, force: true }),
   info: (message) => log.info(`[updater] ${message}`),
   error: (message) => log.warn(`[updater] ${message}`),
 };

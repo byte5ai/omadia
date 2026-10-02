@@ -32,20 +32,43 @@
  * `paths.ts`, so a Node test cannot import it — and it fails if the message is
  * renamed OR removed. The clean end state is one shared exported constant, or a
  * typed rejection; both belong to whoever owns the supervisor next.
+ *
+ * An unreadable secrets file IS a typed rejection, and is classified from the
+ * error itself, before it is flattened to text. It needs its own dialog: the
+ * generic one offers "Re-run setup" as its default, and setup would only hit
+ * the same file again. What helps is a keychain prompt or a restore, and that
+ * dialog says which (see `secretsRecovery.ts`).
  */
+import { isSecretsUnreadableError, type SecretsUnreadableStage } from './secretsBlob';
 
 /** What the shell should do about a rejected boot. */
 export type BootFailureKind =
   /** Deliberately discarded by a newer boot/stop. Explain and wait. */
   | 'superseded'
+  /** The secrets file exists but cannot be used. Explain the restore; never re-run setup. */
+  | 'secrets-unreadable'
   /** A genuine failure the user has to act on. */
   | 'fatal';
 
-export interface BootFailure {
-  readonly kind: BootFailureKind;
-  /** The raw text, for the log and the support detail — never the headline. */
-  readonly detail: string;
+/** What the secrets dialog has to name, copied off `SecretsUnreadableError`. */
+export interface SecretsFailure {
+  readonly file: string;
+  readonly stage: SecretsUnreadableStage;
+  readonly reason: string;
+  readonly snapshotDir: string | null;
 }
+
+export type BootFailure =
+  | {
+      readonly kind: 'superseded' | 'fatal';
+      /** The raw text, for the log and the support detail — never the headline. */
+      readonly detail: string;
+    }
+  | {
+      readonly kind: 'secrets-unreadable';
+      readonly detail: string;
+      readonly secrets: SecretsFailure;
+    };
 
 const SUPERSEDED_MARKER = /superseded/i;
 
@@ -63,6 +86,19 @@ export function describeError(err: unknown): string {
 
 export function classifyBootFailure(err: unknown): BootFailure {
   const detail = describeError(err);
+  // Typed first: the code and fields survive any rewording of the message.
+  if (isSecretsUnreadableError(err)) {
+    return {
+      kind: 'secrets-unreadable',
+      detail,
+      secrets: {
+        file: err.file,
+        stage: err.stage,
+        reason: err.reason,
+        snapshotDir: err.snapshotDir,
+      },
+    };
+  }
   return {
     kind: SUPERSEDED_MARKER.test(detail) ? 'superseded' : 'fatal',
     detail,

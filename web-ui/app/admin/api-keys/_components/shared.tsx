@@ -49,8 +49,19 @@ type TFn = (key: string, values?: Record<string, string | number>) => string;
 export function toFriendlyError(err: unknown, t: TFn): string {
   if (err instanceof ApiError) {
     if (err.body.includes('not_found')) return t('errors.notFound');
-    if (err.body.includes('operator_auth.unavailable')) return t('errors.authUnavailable');
-    if (err.body.includes('auth.missing') || err.body.includes('auth.invalid')) {
+    // The plugin's `operator_auth.unavailable` and the kernel's
+    // `auth.unavailable` (the session could not be checked) are both outages.
+    if (
+      err.body.includes('operator_auth.unavailable') ||
+      err.body.includes('auth.unavailable')
+    ) {
+      return t('errors.authUnavailable');
+    }
+    if (
+      err.body.includes('auth.missing') ||
+      err.body.includes('auth.invalid') ||
+      err.body.includes('auth.revoked')
+    ) {
       return t('errors.sessionExpired');
     }
     if (err.body.includes('invalid_request')) return t('errors.invalidRequest');

@@ -11,12 +11,25 @@
  */
 
 import type {
+  PrivacyEgressStage,
   PrivacyGuardService,
   PrivacyPromptMaskResult,
   PrivacyReceipt,
   PrivacyRenderedAnswer,
+  PrivacyToolErrorRedactResult,
   PrivacyV4ToolSpec,
+  PromptMaskedSpanInfo,
+  ToolErrorCarrier,
+  ToolErrorOutcome,
 } from '@omadia/plugin-api';
+
+/** Options for {@link PrivacyTurnHandle.maskUserPrompt}. */
+export interface PromptMaskOptions {
+  /** Egress the text is bound for; absent ⇒ the turn's own model calls. */
+  readonly stage?: PrivacyEgressStage;
+  /** Compute the outcome without extending the map or booking anything. */
+  readonly preview?: boolean;
+}
 
 export interface PrivacyTurnHandle {
   /**
@@ -52,6 +65,28 @@ export interface PrivacyTurnHandle {
    */
   checkBypass(toolName: string): { readonly pluginId: string } | undefined;
   /**
+   * Record a tool error a dispatch seam withheld, redacted or passed this
+   * turn; drained into the receipt's `toolErrors`. A no-op when the provider
+   * predates the contract. PII-free input only.
+   */
+  recordToolError(input: {
+    readonly toolName: string;
+    readonly carrier: ToolErrorCarrier;
+    readonly outcome: ToolErrorOutcome;
+    readonly bytes: number;
+    readonly redactedSpans?: readonly PromptMaskedSpanInfo[];
+  }): Promise<void>;
+  /**
+   * Redact a returned `Error:` text (the part after the prefix) through the
+   * provider's free-text detectors. `undefined` when the provider predates the
+   * contract — the caller must then fail CLOSED (withhold), never forward the
+   * text unchecked. See `toolErrorRedaction.ts`.
+   */
+  redactToolErrorText(input: {
+    readonly toolName: string;
+    readonly text: string;
+  }): Promise<PrivacyToolErrorRedactResult | undefined>;
+  /**
    * Run a v4 verb tool or the terminal render tool the LLM called; returns
    * the `tool_result` text.
    */
@@ -85,9 +120,32 @@ export interface PrivacyTurnHandle {
    * the provider predates the contract — the caller uses the original text
    * (byte-identical legacy behavior). `blocked` = failure-closed: the turn
    * MUST fail instead of sending the prompt. Repeated calls within the
-   * turn share one server-held surrogate map.
+   * turn share one server-held surrogate map. `opts.stage: 'verifier'` books
+   * the call as an answer-verifier request; `opts.preview` asks whether the
+   * text WOULD change without keeping anything.
    */
-  maskUserPrompt(text: string): Promise<PrivacyPromptMaskResult>;
+  maskUserPrompt(
+    text: string,
+    opts?: PromptMaskOptions,
+  ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * Project a verifier-composed text (claim + knowledge-graph evidence)
+   * through this turn's surrogate map, independent of `mask_user_prompt`.
+   * `blocked` when the provider cannot guarantee it — including a provider
+   * that predates the contract: evidence is never sent unprojected.
+   * Optional so hand-built handles (tests, wrappers) stay valid; absent ⇒
+   * callers must treat it as blocked.
+   */
+  projectVerifierText?(
+    text: string,
+    identityValues: readonly string[],
+  ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * How many of this turn's surrogates still occur in `text` (see
+   * `PrivacyGuardService.countUnresolvedSurrogates`). `0` when the provider
+   * predates the contract. Optional like `projectVerifierText`.
+   */
+  countUnresolvedSurrogates?(text: string): Promise<number>;
   /**
    * #361 — invert this turn's prompt-surrogate map over the final answer.
    * Identity when nothing was masked. Must run BEFORE `finalize` (which
@@ -109,6 +167,16 @@ export interface PrivacyTurnHandle {
    * when the turn interned no tool results.
    */
   finalize(turnInput?: string): Promise<PrivacyReceipt | undefined>;
+  /**
+   * The handle for code running INSIDE a tool call this handle guards: a
+   * domain tool's sub-agent model loop, a plugin tool that asks a sub-agent, a
+   * dispatcher the handler calls. `ToolDispatchService` installs it as the
+   * ambient `turnContext.privacyHandle` while the handler runs. Absent ⇒ the
+   * handle itself. A wrapper that keeps per-result bookkeeping (the public MCP
+   * gate's positive `masked()` signal) returns a variant that guards the same
+   * way without counting toward the outer result.
+   */
+  forNestedCalls?(): PrivacyTurnHandle;
 }
 
 export function createPrivacyTurnHandle(deps: {
@@ -150,6 +218,31 @@ export function createPrivacyTurnHandle(deps: {
       return deps.resolveBypass?.(toolName);
     },
 
+    async recordToolError(input) {
+      // Optional on the service contract — a provider that predates it simply
+      // writes no receipt entry.
+      if (deps.service.recordToolError === undefined) return;
+      await deps.service.recordToolError({
+        turnId: deps.turnId,
+        toolName: input.toolName,
+        carrier: input.carrier,
+        outcome: input.outcome,
+        bytes: input.bytes,
+        ...(input.redactedSpans !== undefined ? { redactedSpans: input.redactedSpans } : {}),
+      });
+    },
+
+    async redactToolErrorText(input) {
+      // Optional on the service contract. `undefined` makes the caller
+      // withhold — the failure-closed direction.
+      if (deps.service.redactToolErrorText === undefined) return undefined;
+      return deps.service.redactToolErrorText({
+        turnId: deps.turnId,
+        toolName: input.toolName,
+        text: input.text,
+      });
+    },
+
     async runV4Tool(input) {
       return deps.service.runV4Tool({
         sessionId: deps.sessionId,
@@ -175,7 +268,7 @@ export function createPrivacyTurnHandle(deps: {
       return deps.service.v4ToolSpecs();
     },
 
-    async maskUserPrompt(text) {
+    async maskUserPrompt(text, opts) {
       // Optional on the service contract — providers (and test stubs) that
       // predate #361 simply never mask.
       if (deps.service.maskUserPrompt === undefined) {
@@ -185,7 +278,28 @@ export function createPrivacyTurnHandle(deps: {
         sessionId: deps.sessionId,
         turnId: deps.turnId,
         text,
+        ...(opts?.stage !== undefined ? { stage: opts.stage } : {}),
+        ...(opts?.preview === true ? { preview: true } : {}),
       });
+    },
+
+    async projectVerifierText(text, identityValues) {
+      if (deps.service.projectVerifierText === undefined) {
+        return {
+          outcome: 'blocked',
+          reason: 'privacy provider cannot project verifier text',
+        };
+      }
+      return deps.service.projectVerifierText({
+        sessionId: deps.sessionId,
+        turnId: deps.turnId,
+        text,
+        identityValues,
+      });
+    },
+
+    async countUnresolvedSurrogates(text) {
+      return (await deps.service.countUnresolvedSurrogates?.(deps.turnId, text)) ?? 0;
     },
 
     async restorePromptPseudonyms(text) {

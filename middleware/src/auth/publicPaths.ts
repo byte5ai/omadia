@@ -29,8 +29,10 @@ function pathPrefixPattern(path: string): RegExp {
 
 /** Public paths that are constant regardless of configuration. */
 export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
+  // Sign-in, renewal and the first-user wizard. Every route under it
+  // authenticates itself; the wizard (`POST /api/v1/auth/setup`) with the
+  // operator's setup token (routes/authSetup.ts).
   /^\/api\/v1\/auth(?:\/|$|\?)/,
-  /^\/api\/v1\/setup(?:\/|$|\?)/,
   /^\/api\/auth(?:\/|$|\?)/,
   // Spec 005 — kernel OAuth broker callback. The IdP redirects the operator's
   // browser back here after consent; the session cookie may have lapsed during
