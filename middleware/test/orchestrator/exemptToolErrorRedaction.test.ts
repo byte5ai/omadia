@@ -269,7 +269,8 @@ describe('exempt tool errors — sub-agent dispatch', () => {
 
   it('public gate — a sub-agent nested in a public call gets the withheld notice', async () => {
     const gate = createFailClosedPrivacyGate(privacyHandle());
-    const nested = gate.handle.forNestedCalls();
+    const nested = gate.handle.forNestedCalls?.();
+    assert.ok(nested, 'the gate hands nested calls a handle');
 
     const returned = await subAgentToolResult(() => Promise.resolve(ERROR_RESULT), nested);
     assert.equal(returned.includes(EMAIL), false, `returned text reached the model: ${returned}`);
