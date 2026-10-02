@@ -30,14 +30,14 @@
   "dependencies": {
     "electron-updater": "^6.3.9",
     "embedded-postgres": "^17.10.0-beta.17",
-    "pg": "^8.13.0"
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "@types/node": "^24.9.0",
-    "@types/pg": "^8.11.10",
+    "@types/pg": "^8.23.1",
     "electron": "^44.5.1",
     "electron-builder": "^26.17.0",
-    "esbuild": "^0.28.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.2"
   }
 }
