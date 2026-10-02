@@ -4853,19 +4853,21 @@ Sub-Agent, der nach „Partner 42“ fragt, bekommt so auch 142, 420 oder
 
 ### Finalize-Pass: offene Punkte aus #1211
 
-- **Zweite Directive-Kopie bei ignoriertem `tool_choice: none`.** Der Finalize-Pass
-  hängt `FINALIZE_DIRECTIVE` an den neuesten User-Turn (append-only, damit `system`
-  und `tools` byte-identisch bleiben). Emittiert das Modell trotz Suppression noch
-  ein `tool_use`, läuft eine weitere Finalize-Iteration und hängt eine zweite Kopie
-  an. Vor #1211 konnte das nicht passieren (der Hint wurde pro Iteration neu
-  gebaut). Harmlos, aber unschön — ein Idempotenz-Flag pro Turn würde es schließen,
-  kostet dafür die frische Platzierung am Ende des Transcripts.
-- **Provider ohne `tool_choice`: Cache-Verlust im Finalize-Pass.** Server mit dem
-  `dropToolChoice`-Quirk (MiniMax) melden `capabilities.toolChoiceNone === false`;
-  dort schickt der Finalize-Pass `tools: []` wie vor #1211 — die Garantie „Turn
-  endet in Text“ bleibt, der Prompt-Cache dieses einen Calls ist futsch. Besser
-  wäre ein serverseitig akzeptiertes Äquivalent, sobald es eins gibt.
-- **`forcedToolChoice` lügt unter demselben Quirk.** `DEFAULT_CAPABILITIES` der
+- **`tool_use` trotz `tool_choice: none` ist nicht harmlos.** Der Finalize-Pass
+  behält `tools` nur bei Providern mit `capabilities.toolChoiceNone === true`
+  (bisher nur der Anthropic-Adapter) und unterdrückt dort Tool-Use per
+  `tool_choice: { type: 'none' }`. Emittiert ein Modell trotzdem ein `tool_use`,
+  wird es dispatcht (mit Seiteneffekten), und in der letzten Iteration endet der
+  Turn im rohen „exceeded maxToolIterations“. Darum ist das Flag opt-in: nur
+  setzen, wenn der Server das Feld nachweislich befolgt, nicht nur annimmt. Die
+  Directive steht weiter im per-Turn-System-Hint (letzter `system`-Block, hinter
+  allen Cache-Breakpoints) und wird pro Iteration neu gebaut, kann also nicht
+  doppelt auftauchen.
+- **Provider ohne `toolChoiceNone: true`: Cache-Verlust im Finalize-Pass.** Alle
+  anderen Adapter (OpenAI, OpenAI-kompatibel wie Ollama oder Mistral, Responses,
+  Claude-CLI) schicken im Finalize-Pass `tools: []` wie vor #1211 — die Garantie
+  „Turn endet in Text“ bleibt, der Prompt-Cache dieses einen Calls ist futsch.
+- **`forcedToolChoice` lügt unter dem `dropToolChoice`-Quirk (MiniMax).** `DEFAULT_CAPABILITIES` der
   OpenAI-Adapter meldet `forcedToolChoice: true`, obwohl der Quirk auch
   `{type:'required'|'tool'}` verschluckt — Card-Router und `#332`-Obligation
   glauben dort an ein Forcing, das nie auf der Leitung landet. #1211 hat nur

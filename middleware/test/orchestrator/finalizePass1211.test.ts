@@ -1,16 +1,16 @@
 /**
- * #1211 — the finalize pass must not rewrite the request prefix.
+ * #1211 — what the finalize pass (the last tool-loop iteration, which must end
+ * the turn in text) sends, in both tool loops.
  *
- * Both tool loops used to send `tools: []` on the last iteration and append the
- * finalize directive to `system`. `tools` comes FIRST in the Anthropic cache
- * order, so emptying it (and rewriting `system`) invalidated the prompt cache
- * for the finalize call and, on models that replay preserved thinking, every
- * thinking block bound to that prefix.
- *
- * The replacement is append-only: the tool list and the system blocks stay
- * byte-identical across the turn's requests, the directive rides as a text
- * block on the newest user turn, and tool use is suppressed with
- * `tool_choice: { type: 'none' }`.
+ * A provider that declares `capabilities.toolChoiceNone === true` keeps the
+ * full tool list and gets `tool_choice: { type: 'none' }`: `tools` comes first
+ * in Anthropic's cache order, so the unchanged list keeps the turn's cached
+ * prefix. Every other provider gets `tools: []`, the pre-#1211 shape. Opt-in,
+ * because an OpenAI-compatible server may accept `tool_choice` and ignore it —
+ * a `tool_use` on the last iteration would then be dispatched and the turn
+ * would end in "exceeded maxToolIterations". Either way the finalize directive
+ * rides in the per-turn system hint, never in a user message, and a fallback
+ * request gets the pair computed for its own provider.
  */
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -22,6 +22,7 @@ import type {
   LlmResponse,
   LlmStreamEvent,
 } from '@omadia/llm-provider';
+import { createProviderHealth } from '@omadia/llm-provider';
 import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -36,19 +37,30 @@ const providerCapabilities = {
   parallelToolCalls: true,
 } as const;
 
+/** Declares that `tool_choice: { type: 'none' }` is honoured (as the Anthropic
+ *  adapter does). */
+const SUPPRESSES = { ...providerCapabilities, toolChoiceNone: true };
+
+/** The OpenAI-compatible adapter under its `dropToolChoice` quirk (MiniMax). */
+const CANT_SUPPRESS = { ...providerCapabilities, toolChoiceNone: false };
+
 const TOOL_NAME = 'probe_tool';
 
+/** The opening of `FINALIZE_DIRECTIVE` (the stable prompt mentions "Tool-Budget" on its own). */
+const DIRECTIVE_MARKER = 'Das Tool-Budget für diesen Turn ist aufgebraucht';
+
+const TOOL_CALL_TURN: AnyMessage = {
+  content: [{ type: 'tool_use', id: 'call-1', name: TOOL_NAME, input: {} }],
+  stop_reason: 'tool_use',
+};
+
+const BEST_EFFORT_TURN: AnyMessage = {
+  content: [{ type: 'text', text: 'best effort' }],
+  stop_reason: 'end_turn',
+};
+
 /** Iteration 0 asks for a tool; iteration 1 is the finalize pass and answers. */
-const SCRIPT: AnyMessage[] = [
-  {
-    content: [{ type: 'tool_use', id: 'call-1', name: TOOL_NAME, input: {} }],
-    stop_reason: 'tool_use',
-  },
-  {
-    content: [{ type: 'text', text: 'best effort' }],
-    stop_reason: 'end_turn',
-  },
-];
+const SCRIPT: AnyMessage[] = [TOOL_CALL_TURN, BEST_EFFORT_TURN];
 
 function toLlmResponse(msg: AnyMessage): LlmResponse {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,17 +92,19 @@ function toLlmResponse(msg: AnyMessage): LlmResponse {
 function scriptedProvider(
   seen: LlmRequest[],
   capabilities: Record<string, unknown> = providerCapabilities,
+  script: AnyMessage[] = SCRIPT,
+  id = 'anthropic',
 ): LlmProvider {
   let idx = 0;
   const next = (req: LlmRequest): LlmResponse => {
     seen.push(req);
-    const msg = SCRIPT[idx];
+    const msg = script[idx];
     idx += 1;
     assert.ok(msg, `provider called ${String(idx)}× — script exhausted`);
     return toLlmResponse(msg);
   };
   const provider = {
-    id: 'anthropic',
+    id,
     capabilities,
     complete: async (req: LlmRequest): Promise<LlmResponse> => next(req),
     stream: (req: LlmRequest): AsyncIterable<LlmStreamEvent> => {
@@ -111,10 +125,34 @@ function scriptedProvider(
   return provider as unknown as LlmProvider;
 }
 
-function orchestratorWithTool(
+/** A primary whose endpoint refuses the connection. `fallbackReasonFor` maps
+ *  that to `unreachable`, so both loops hop to the fallback at once instead of
+ *  spending the stream retry budget first. */
+function unreachableProvider(
   seen: LlmRequest[],
-  capabilities: Record<string, unknown> = providerCapabilities,
-): Orchestrator {
+  capabilities: Record<string, unknown>,
+): LlmProvider {
+  const refuse = (req: LlmRequest): never => {
+    seen.push(req);
+    throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), {
+      code: 'ECONNREFUSED',
+    });
+  };
+  const provider = {
+    id: 'anthropic',
+    capabilities,
+    complete: async (req: LlmRequest): Promise<LlmResponse> => refuse(req),
+    stream: (req: LlmRequest): AsyncIterable<LlmStreamEvent> => ({
+      async *[Symbol.asyncIterator]() {
+        refuse(req);
+      },
+    }),
+    classifyError: () => ({ retryable: false, kind: 'other' as const }),
+  };
+  return provider as unknown as LlmProvider;
+}
+
+function registryWithProbeTool(): NativeToolRegistry {
   const registry = new NativeToolRegistry();
   registry.register(TOOL_NAME, {
     handler: async () => 'probe output',
@@ -126,6 +164,13 @@ function orchestratorWithTool(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });
+  return registry;
+}
+
+function orchestratorWithTool(
+  seen: LlmRequest[],
+  capabilities: Record<string, unknown>,
+): Orchestrator {
   return new Orchestrator({
     provider: scriptedProvider(seen, capabilities),
     model: 'test',
@@ -133,113 +178,218 @@ function orchestratorWithTool(
     // Two iterations: the first calls the tool, the second IS the finalize pass.
     maxToolIterations: 2,
     domainTools: [],
-    nativeToolRegistry: registry,
+    nativeToolRegistry: registryWithProbeTool(),
   });
+}
+
+/** A primary that refuses the connection, with a fallback on ANOTHER provider
+ *  that answers in text. */
+function orchestratorWithFallback(opts: {
+  primarySeen: LlmRequest[];
+  fallbackSeen: LlmRequest[];
+  primaryCapabilities: Record<string, unknown>;
+  fallbackCapabilities: Record<string, unknown>;
+}): Orchestrator {
+  const primary = unreachableProvider(opts.primarySeen, opts.primaryCapabilities);
+  const fallback = scriptedProvider(
+    opts.fallbackSeen,
+    opts.fallbackCapabilities,
+    [BEST_EFFORT_TURN],
+    'openai',
+  );
+  return new Orchestrator({
+    provider: primary,
+    model: 'claude-opus-4-8',
+    maxTokens: 1024,
+    // One iteration: iteration 0 is the finalize pass, and the only one on
+    // which a cross-provider hop may happen.
+    maxToolIterations: 1,
+    domainTools: [],
+    nativeToolRegistry: registryWithProbeTool(),
+    providerPool: {
+      get: async (id: string) =>
+        id === 'openai' ? fallback : id === 'anthropic' ? primary : undefined,
+      health: createProviderHealth({ now: () => 1_000 }),
+    },
+    fallbackRef: { provider: 'openai', model: 'gpt-5.5' },
+  } as never);
+}
+
+type Loop = 'buffered' | 'streaming';
+const LOOPS: readonly Loop[] = ['buffered', 'streaming'];
+
+/** Runs one turn through the chosen tool loop; returns the answer text. */
+async function runTurn(orchestrator: Orchestrator, loop: Loop): Promise<string> {
+  if (loop === 'buffered') {
+    const answer = await orchestrator.chat({ userMessage: 'go' });
+    return answer.text;
+  }
+  let text = '';
+  for await (const ev of orchestrator.chatStream({ userMessage: 'go' })) {
+    if (ev.type === 'text_delta') text += ev.text;
+  }
+  return text;
 }
 
 const toolNames = (req: LlmRequest): string[] =>
   (req.tools ?? []).map((tool) => tool.name);
 
-/** Assert the finalize-pass invariants on a recorded [normal, finalize] pair. */
-function assertFinalizePrefixStable(seen: LlmRequest[]): void {
-  assert.equal(seen.length, 2, 'expected exactly two model calls');
-  const first = seen[0]!;
-  const finalize = seen[1]!;
+function systemBlocks(req: LlmRequest): unknown[] {
+  const { system } = req;
+  if (system === undefined) return [];
+  return typeof system === 'string' ? [system] : [...system];
+}
 
-  // 1. The tool block is unchanged — same names, same order, still non-empty.
-  assert.ok(toolNames(first).length > 0, 'first call must advertise tools');
-  assert.deepEqual(
-    toolNames(finalize),
-    toolNames(first),
-    'finalize pass must keep the tool list byte-stable (it prefixes the cache)',
-  );
+function systemTexts(req: LlmRequest): string[] {
+  const { system } = req;
+  if (system === undefined) return [];
+  return typeof system === 'string' ? [system] : system.map((block) => block.text);
+}
+
+function assertNormalIteration(req: LlmRequest): void {
   assert.ok(
-    toolNames(finalize).includes(TOOL_NAME),
-    'finalize pass must still advertise the registered tool',
+    toolNames(req).includes(TOOL_NAME),
+    'a normal iteration advertises the registered tool',
   );
-
-  // 2. The system blocks are unchanged — the directive no longer rides there.
-  assert.deepEqual(
-    finalize.system,
-    first.system,
-    'finalize pass must not rewrite `system`',
-  );
-
-  // 3. Tool use is suppressed via tool_choice instead of an empty array.
-  assert.equal(first.toolChoice, undefined, 'normal iteration forces nothing');
-  assert.deepEqual(finalize.toolChoice, { type: 'none' });
-
-  // 4. The directive is appended to the newest user turn, AFTER its
-  //    tool_result blocks — append-only, so every earlier turn is untouched.
-  const last = finalize.messages[finalize.messages.length - 1]!;
-  assert.equal(last.role, 'user');
-  const parts = [...last.content];
-  const directive = parts[parts.length - 1]!;
-  assert.equal(directive.type, 'text');
+  assert.equal(req.toolChoice, undefined, 'a normal iteration forces nothing');
   assert.ok(
-    directive.type === 'text' && directive.text.includes('Tool-Budget'),
-    `last block must be the finalize directive, got: ${JSON.stringify(directive)}`,
-  );
-  assert.ok(
-    parts.some((p) => p.type === 'tool_result'),
-    'the directive must ride on the tool_results turn, not a fresh one',
-  );
-
-  // 5. Everything before that turn is byte-identical to the first request.
-  assert.deepEqual(
-    finalize.messages.slice(0, finalize.messages.length - 2),
-    first.messages,
-    'earlier turns must not be rewritten',
+    !systemTexts(req).some((text) => text.includes(DIRECTIVE_MARKER)),
+    'a normal iteration carries no finalize directive',
   );
 }
 
-/** A provider whose adapter drops `tool_choice` before the wire (the
- *  OpenAI-compatible `dropToolChoice` quirk, e.g. MiniMax). */
-const CANT_SUPPRESS = { ...providerCapabilities, toolChoiceNone: false };
+/** The directive rides in the per-turn system hint — the LAST `system` block —
+ *  and in no message of the transcript. */
+function assertDirectiveInSystemHint(req: LlmRequest): void {
+  const last = systemTexts(req).at(-1);
+  assert.ok(
+    last !== undefined && last.includes(DIRECTIVE_MARKER),
+    `the last system block must carry the finalize directive, got: ${JSON.stringify(last)}`,
+  );
+  assert.ok(
+    !JSON.stringify(req.messages).includes(DIRECTIVE_MARKER),
+    'the finalize directive must not ride in any message',
+  );
+}
 
-describe('#1211 — finalize pass keeps the request prefix stable', () => {
-  it('buffered loop: same tools, same system, tool_choice none', async () => {
-    const seen: LlmRequest[] = [];
-    const answer = await orchestratorWithTool(seen).chat({
-      userMessage: 'go',
+describe('#1211 — finalize pass: tool suppression is opt-in per provider', () => {
+  for (const loop of LOOPS) {
+    it(`${loop} loop: toolChoiceNone=true keeps the tools and sends tool_choice none`, async () => {
+      const seen: LlmRequest[] = [];
+      const text = await runTurn(orchestratorWithTool(seen, SUPPRESSES), loop);
+      assert.ok(text.includes('best effort'), 'the finalize answer must reach the caller');
+      assert.equal(seen.length, 2, 'expected exactly two model calls');
+      const first = seen[0]!;
+      const finalize = seen[1]!;
+
+      assertNormalIteration(first);
+      assert.deepEqual(
+        toolNames(finalize),
+        toolNames(first),
+        'the finalize pass keeps the tool list unchanged (it prefixes the cache)',
+      );
+      assert.deepEqual(finalize.toolChoice, { type: 'none' });
+      assertDirectiveInSystemHint(finalize);
+
+      // Only the trailing hint block differs: every block before it — the
+      // cache-marked ones included — goes out as the first request sent it.
+      const finalizeBlocks = systemBlocks(finalize);
+      assert.deepEqual(
+        finalizeBlocks.slice(0, -1),
+        systemBlocks(first).slice(0, finalizeBlocks.length - 1),
+        'system blocks before the hint must not change',
+      );
+      // The transcript is append-only: the first request's turns are untouched.
+      assert.deepEqual(
+        finalize.messages.slice(0, first.messages.length),
+        first.messages,
+        'earlier turns must not be rewritten',
+      );
     });
-    assert.ok(answer.text.includes('best effort'), 'finalize answer must reach the caller');
-    assertFinalizePrefixStable(seen);
-  });
 
-  it('streaming loop: same tools, same system, tool_choice none', async () => {
-    const seen: LlmRequest[] = [];
-    for await (const _ev of orchestratorWithTool(seen).chatStream({
-      userMessage: 'go',
-    })) {
-      // drain
-    }
-    assertFinalizePrefixStable(seen);
-  });
+    for (const [label, capabilities] of [
+      ['unset', providerCapabilities],
+      ['false', CANT_SUPPRESS],
+    ] as const) {
+      it(`${loop} loop: toolChoiceNone ${label} → no tools and no tool_choice on the finalize pass`, async () => {
+        const seen: LlmRequest[] = [];
+        const text = await runTurn(orchestratorWithTool(seen, capabilities), loop);
+        assert.ok(text.includes('best effort'), 'the finalize answer must reach the caller');
+        assert.equal(seen.length, 2, 'expected exactly two model calls');
+        const finalize = seen[1]!;
 
-  it('falls back to no tools when the provider cannot honour tool_choice none', async () => {
-    // A `tool_choice` the adapter drops would leave the model holding every
-    // tool on the last iteration — a `tool_use` there ends the turn in the raw
-    // "exceeded maxToolIterations" error instead of a best-effort answer. The
-    // pass gives up the cache on that one call rather than the guarantee.
-    const seen: LlmRequest[] = [];
-    for await (const _ev of orchestratorWithTool(seen, CANT_SUPPRESS).chatStream({
-      userMessage: 'go',
-    })) {
-      // drain
+        assertNormalIteration(seen[0]!);
+        assert.deepEqual(toolNames(finalize), [], 'the finalize pass must offer no tools');
+        assert.equal(
+          finalize.toolChoice,
+          undefined,
+          'no tool_choice without tools — a server may ignore it anyway',
+        );
+        assertDirectiveInSystemHint(finalize);
+      });
     }
-    assert.equal(seen.length, 2, 'expected exactly two model calls');
-    assert.ok(toolNames(seen[0]!).length > 0, 'first call must advertise tools');
-    assert.deepEqual(toolNames(seen[1]!), [], 'finalize pass must offer no tools');
-    assert.equal(
-      seen[1]!.toolChoice,
-      undefined,
-      'no tool_choice without tools — the adapter would drop it anyway',
-    );
-    // The directive still rides on the newest user turn, not in `system`.
-    assert.deepEqual(seen[1]!.system, seen[0]!.system);
-    const last = seen[1]!.messages[seen[1]!.messages.length - 1]!;
-    const directive = last.content[last.content.length - 1]!;
-    assert.ok(directive.type === 'text' && directive.text.includes('Tool-Budget'));
-  });
+  }
+});
+
+describe('#1211 — a cross-provider fallback on the finalize pass gets its own tool params', () => {
+  for (const loop of LOOPS) {
+    it(`${loop} loop: primary suppresses, fallback cannot → the fallback gets no tools and no tool_choice`, async () => {
+      const primarySeen: LlmRequest[] = [];
+      const fallbackSeen: LlmRequest[] = [];
+      const text = await runTurn(
+        orchestratorWithFallback({
+          primarySeen,
+          fallbackSeen,
+          primaryCapabilities: SUPPRESSES,
+          fallbackCapabilities: providerCapabilities,
+        }),
+        loop,
+      );
+      assert.ok(text.includes('best effort'), 'the fallback answer must reach the caller');
+
+      assert.equal(primarySeen.length, 1, 'the primary is tried once');
+      assert.ok(toolNames(primarySeen[0]!).includes(TOOL_NAME));
+      assert.deepEqual(primarySeen[0]!.toolChoice, { type: 'none' });
+
+      assert.equal(fallbackSeen.length, 1, 'the fallback answers the finalize pass');
+      const hop = fallbackSeen[0]!;
+      assert.equal(hop.model, 'gpt-5.5');
+      assert.deepEqual(toolNames(hop), [], 'the fallback must not inherit the primary’s tools');
+      assert.equal(
+        hop.toolChoice,
+        undefined,
+        'the primary’s tool_choice must not leak into the fallback request',
+      );
+      assertDirectiveInSystemHint(hop);
+    });
+
+    it(`${loop} loop: primary cannot suppress, fallback can → the fallback keeps the tools with tool_choice none`, async () => {
+      const primarySeen: LlmRequest[] = [];
+      const fallbackSeen: LlmRequest[] = [];
+      const text = await runTurn(
+        orchestratorWithFallback({
+          primarySeen,
+          fallbackSeen,
+          primaryCapabilities: providerCapabilities,
+          fallbackCapabilities: SUPPRESSES,
+        }),
+        loop,
+      );
+      assert.ok(text.includes('best effort'), 'the fallback answer must reach the caller');
+
+      assert.equal(primarySeen.length, 1, 'the primary is tried once');
+      assert.deepEqual(toolNames(primarySeen[0]!), []);
+      assert.equal(primarySeen[0]!.toolChoice, undefined);
+
+      assert.equal(fallbackSeen.length, 1, 'the fallback answers the finalize pass');
+      const hop = fallbackSeen[0]!;
+      assert.equal(hop.model, 'gpt-5.5');
+      assert.ok(
+        toolNames(hop).includes(TOOL_NAME),
+        'the fallback must not inherit the primary’s empty tool list',
+      );
+      assert.deepEqual(hop.toolChoice, { type: 'none' });
+      assertDirectiveInSystemHint(hop);
+    });
+  }
 });

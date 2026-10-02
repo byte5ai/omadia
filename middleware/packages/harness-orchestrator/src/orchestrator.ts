@@ -5705,10 +5705,9 @@ export class Orchestrator {
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
         // Final pass: the loop guard stopped, the wall-clock budget is spent,
-        // or this is the last allowed iteration. Suppress tool use (#1211:
-        // `tool_choice: none` wherever the provider honours it, see
+        // or this is the last allowed iteration. Suppress tool use (#1211, see
         // `toolParamsFor`) so the model MUST answer in text, and append the
-        // finalize directive.
+        // finalize directive to the per-turn system hint.
         const finalizeThisIter =
           forceFinalize ||
           iteration === this.maxIterations - 1 ||
@@ -5717,6 +5716,7 @@ export class Orchestrator {
         // consumed here so a still-mute model only re-escalates within budget.
         const forceObligation = forceObligationNext && !obligationMet;
         forceObligationNext = false;
+        const finalizePass = finalizeThisIter && !forceObligation;
         // #1033 W3 — the system prompt for a given persona: the routed
         // persona skill outranks everything; otherwise the execution's own
         // identity (the fallback family's compiled prompt after a hop).
@@ -5724,33 +5724,35 @@ export class Orchestrator {
           buildSystemBlocks(
             this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
             priorContext,
-            effectiveExtraSystemHint,
+            withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
-        // #1211 — finalize pass: the directive rides as a text block on the
-        // newest user turn (after its tool_results) instead of being appended
-        // to `system`. Rewriting `system` mid-turn invalidates the prompt
-        // cache and every replayed thinking block bound to that prefix.
-        const finalizePass = finalizeThisIter && !forceObligation;
-        if (finalizePass) appendFinalizeDirective(messages);
+        // #1211 — `tools` / `tool_choice` depend on the provider a request
+        // goes to, so the primary request and the fallback below each get
+        // their own pair instead of sharing the primary's.
+        const iterationTools = this.buildToolsList();
+        const toolParamsForProvider = (provider: LlmProvider) =>
+          toolParamsFor({
+            tools: iterationTools,
+            finalizePass,
+            provider,
+            ...(forceObligation && obligationTool
+              ? { forcedChoice: forceObligationFor }
+              : {}),
+          });
         const baseParams = {
           model: turnExec.model,
           ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
           max_tokens: this.maxTokens,
           system: systemFor(turnPersonaBody ?? turnExec.identity),
-          ...toolParamsFor({
-            tools: this.buildToolsList(),
-            finalizePass,
-            provider: turnExec.provider,
-            ...(forceObligation && obligationTool
-              ? { forcedChoice: forceObligationFor }
-              : {}),
-          }),
           messages,
         };
         // Last-resort guard: repair any lone UTF-16 surrogate before the
         // SDK serialises the body — the Anthropic API rejects it as
         // invalid JSON. See ensureWellFormedParams.
-        const safeParams = ensureWellFormedParams(baseParams);
+        const safeParams = ensureWellFormedParams({
+          ...baseParams,
+          ...toolParamsForProvider(turnExec.provider),
+        });
         // #1033 W3 — a hop to ANOTHER provider is only taken before the first
         // model call of the turn: from iteration 1 on the transcript carries
         // tool_use/tool_result pairs and cache markers shaped by the primary's
@@ -5777,6 +5779,7 @@ export class Orchestrator {
                       model: fb.model,
                       ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
                       system: systemFor(turnPersonaBody ?? fb.identity),
+                      ...toolParamsForProvider(fb.provider),
                     }),
                     [MEMORY_BETA_HEADER],
                   ),
@@ -7023,32 +7026,34 @@ export class Orchestrator {
         }
 
         let finalMessage: Message | undefined;
+        // #1211 — see the buffered path: the finalize directive rides in the
+        // per-turn system hint, and `tools` / `tool_choice` come from the
+        // shared `toolParamsFor`, computed per provider (the fallback gets its
+        // own pair).
+        const finalizePass = finalizeThisIter && !forceObligation;
         // #1033 W3 — see the buffered path: persona skill first, else the
         // execution's own identity (the fallback family's prompt after a hop).
         const systemFor = (persona: string | undefined) =>
           buildSystemBlocks(
             this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
             priorContext,
-            effectiveExtraSystemHint,
+            withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
-        // #1211 — see the buffered path: the finalize directive is appended to
-        // the newest user turn, never to `system`, and the tool params for the
-        // iteration come from the shared `toolParamsFor`.
-        const finalizePass = finalizeThisIter && !forceObligation;
-        if (finalizePass) appendFinalizeDirective(messages);
+        const iterationTools = this.buildToolsList();
+        const toolParamsForProvider = (provider: LlmProvider) =>
+          toolParamsFor({
+            tools: iterationTools,
+            finalizePass,
+            provider,
+            ...(forceObligation && obligationTool
+              ? { forcedChoice: forceObligationFor }
+              : {}),
+          });
         const streamParams = {
           model: turnExec.model,
           ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
           max_tokens: this.maxTokens,
           system: systemFor(turnPersonaBody ?? turnExec.identity),
-          ...toolParamsFor({
-            tools: this.buildToolsList(),
-            finalizePass,
-            provider: turnExec.provider,
-            ...(forceObligation && obligationTool
-              ? { forcedChoice: forceObligationFor }
-              : {}),
-          }),
           messages,
         };
         // #1033 W3 — a hop to ANOTHER provider is only taken before the first
@@ -7065,7 +7070,7 @@ export class Orchestrator {
             : undefined;
         for await (const ev of streamMessageEvents({
           provider: turnExec.provider,
-          params: streamParams,
+          params: { ...streamParams, ...toolParamsForProvider(turnExec.provider) },
           ...(fb
             ? {
                 fallback: {
@@ -7075,6 +7080,7 @@ export class Orchestrator {
                     model: fb.model,
                     ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
                     system: systemFor(turnPersonaBody ?? fb.identity),
+                    ...toolParamsForProvider(fb.provider),
                   },
                   ...(this.providerPool?.health ? { health: this.providerPool.health } : {}),
                 },
@@ -9549,12 +9555,11 @@ const FILE_RETRY_NUDGE =
   'Du hast angekündigt, eine Datei (Excel/Word) zu bauen, aber das Tool `create_xlsx`/`create_docx` NICHT aufgerufen — der User hat dadurch nichts erhalten. Beschreibe den Plan NICHT erneut. Rufe JETZT in diesem Schritt das passende Tool auf und baue die Datei wirklich. Wenn du sie nicht bauen kannst, sag dem User in EINEM Satz klar, dass und warum nicht.';
 
 /**
- * Appended to the newest user turn on the FINAL, tool-suppressed iteration
- * (iteration cap reached, loop guard stopped, or wall-clock budget exceeded).
- * That pass suppresses tool use (see {@link toolParamsFor}), so the model must
- * produce text — this turns what used to be a raw "exceeded maxToolIterations"
- * error into a best-effort answer. #1211: append-only, so `system` and `tools`
- * stay byte-identical across the turn's requests.
+ * Appended to the per-turn system hint (see {@link withFinalizeHint}) on the
+ * FINAL iteration (iteration cap reached, loop guard stopped, or wall-clock
+ * budget exceeded). That pass suppresses tool use (see {@link toolParamsFor}),
+ * so the model must produce text — this turns what used to be a raw "exceeded
+ * maxToolIterations" error into a best-effort answer.
  */
 const FINALIZE_DIRECTIVE =
   'Das Tool-Budget für diesen Turn ist aufgebraucht: Rufe ab jetzt keine Tools mehr auf. Fasse zusammen, was du bereits herausgefunden hast, und gib jetzt die bestmögliche Antwort mit den vorhandenen Informationen. Wenn etwas unklar oder unvollständig bleibt, sag dem User in einem Satz, was noch offen ist. Beschreibe keine weiteren geplanten Tool-Aufrufe.';
@@ -9592,30 +9597,26 @@ const CARD_ROUTER_INSTRUCTION =
   'Entscheide jetzt für die obige Assistenten-Antwort: Rufe genau eines von `ask_user_choice`, `suggest_follow_ups` oder `no_card` auf.';
 
 /**
- * #1211 — the `tools` / `tool_choice` pair for ONE iteration of either tool
- * loop. Kept as a free function so both loops decide identically.
+ * #1211 — the `tools` / `tool_choice` pair for ONE request of either tool
+ * loop, decided for the provider that request goes to (the primary, or the
+ * fallback when one is attached). Kept as a free function so both loops decide
+ * identically.
  *
  * Normal iterations (and the forced-obligation pass, which carries its own
- * `tool_choice`) send `buildToolsList()` unchanged: `tools` comes FIRST in the
- * Anthropic cache order, so rebuilding it mid-turn is a total prompt-cache miss
- * and invalidates every replayed thinking block bound to that prefix.
+ * `tool_choice`) send `buildToolsList()` unchanged.
  *
- * The finalize pass must END the turn in text, so it suppresses tool use with
- * `tool_choice: { type: 'none' }` — same append-only shape, cache intact. Two
- * cases can't have it:
- *   - an empty tool set (a tool choice without tools is invalid), and
- *   - a provider that drops `tool_choice` before the wire (the OpenAI-compatible
- *     `dropToolChoice` quirk, reported as `capabilities.toolChoiceNone === false`).
- * There, suppression would be a no-op the model silently ignores, and a
- * `tool_use` on the last iteration ends the turn in the raw "exceeded
- * maxToolIterations" error the finalize pass exists to replace — so that pass
- * falls back to the pre-#1211 behaviour and offers no tools at all. The cache
- * is lost on that one call, which is the lesser damage and only hits providers
- * that couldn't honour the field anyway.
- *
- * `provider` is the turn's PRIMARY provider. A same-provider fallback shares its
- * capabilities; a cross-provider hop only happens before the first model call,
- * where an expensive finalize pass is not in flight.
+ * The finalize pass must END the turn in text. A provider that declares
+ * `capabilities.toolChoiceNone === true` keeps the full tool list and gets
+ * `tool_choice: { type: 'none' }`: `tools` comes first in Anthropic's cache
+ * order, so an unchanged list keeps the cached prefix the turn's earlier
+ * requests wrote, while `tools: []` changes its first segment and misses all of
+ * it. Every other provider gets `tools: []`, the pre-#1211 shape. Opt-in,
+ * because an OpenAI-compatible server may accept `tool_choice` and ignore it:
+ * the model would still emit a `tool_use` on the last iteration, the loop would
+ * dispatch it (side effects included), and the turn would end in the raw
+ * "exceeded maxToolIterations" error the finalize pass exists to replace. An
+ * empty tool set never gets a `tool_choice` (a tool choice without tools is
+ * invalid).
  */
 function toolParamsFor(opts: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -9631,29 +9632,22 @@ function toolParamsFor(opts: {
   if (!opts.finalizePass || opts.tools.length === 0) {
     return { tools: opts.tools };
   }
-  return opts.provider.capabilities.toolChoiceNone === false
-    ? { tools: [] }
-    : { tools: opts.tools, tool_choice: { type: 'none' } };
+  return opts.provider.capabilities.toolChoiceNone === true
+    ? { tools: opts.tools, tool_choice: { type: 'none' } }
+    : { tools: [] };
 }
 
-/** #1211 — append the finalize directive to the newest user turn (after its
- *  tool_result blocks). Append-only: `system`, `tools` and every earlier turn
- *  stay byte-identical within the turn, so the prompt cache and the thinking
- *  blocks bound to that prefix survive the finalize pass. Mirrors how live
- *  steering is folded in. Shared by both tool loops. */
-function appendFinalizeDirective(
-  messages: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] | string }>,
-): void {
-  const note = { type: 'text' as const, text: FINALIZE_DIRECTIVE };
-  const last = messages[messages.length - 1];
-  if (last && last.role === 'user') {
-    last.content =
-      typeof last.content === 'string'
-        ? [{ type: 'text' as const, text: last.content }, note]
-        : [...last.content, note];
-  } else {
-    messages.push({ role: 'user', content: [note] });
-  }
+/** Compose the per-iteration system hint, appending the finalize directive on
+ *  the finalize pass. The hint is the last `system` block, after every cache
+ *  breakpoint (see `buildSystemBlocks`), so changing it per iteration costs no
+ *  cache entry, and rebuilding it per iteration means the directive can never
+ *  appear twice. Kept as a free function so both tool loops build the hint
+ *  identically. */
+function withFinalizeHint(baseHint: string | undefined, finalize: boolean): string | undefined {
+  if (!finalize) return baseHint;
+  return baseHint && baseHint.trim().length > 0
+    ? `${baseHint}\n\n${FINALIZE_DIRECTIVE}`
+    : FINALIZE_DIRECTIVE;
 }
 
 function appendToolDigest(

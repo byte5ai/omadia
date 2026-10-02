@@ -1563,40 +1563,34 @@ no longer copies such a value into the `/login?return=` link it redirects to.
 Its own redirects already stayed on `publicBaseUrl`. The rules are written up
 in `docs/security-architecture.md` §10e.
 
-### Fixed — the finalize pass no longer rewrites `system` or empties `tools` (#1211)
+### Fixed — the finalize pass keeps `tools` on providers that honour `tool_choice: none` (#1211)
 
 2026-09-30 — on the last iteration both tool loops in
 `middleware/packages/harness-orchestrator/src/orchestrator.ts` sent
-`tools: []` and appended the finalize directive to the system prompt. `tools`
-comes first in the Anthropic cache order, so that call lost the prompt cache
-for the whole request, and rewriting `system` mid-turn invalidates every
-preserved thinking block of the turn on models that replay them (Opus 5.5 /
-Fable 5.1). The pass is now append-only: `buildToolsList()` output goes out
-unchanged on every iteration, tool use is switched off with
-`tool_choice: { type: 'none' }` (as `LocalSubAgent` already does), and the
-directive rides as a text block on the newest user turn, after its
-`tool_result` blocks — the same shape live steering uses. Both loops now build
-that `tools`/`tool_choice` pair through one shared `toolParamsFor`.
+`tools: []`. `tools` comes first in Anthropic's cache order, so that call
+missed the cached prefix the turn's earlier requests had written. A provider
+that declares `capabilities.toolChoiceNone: true` now gets the unchanged
+`buildToolsList()` output on that pass, with tool use switched off by
+`tool_choice: { type: 'none' }` (as `LocalSubAgent` already does). Only the
+Anthropic adapter declares it. Every other provider still gets `tools: []`:
+the flag is opt-in because an OpenAI-compatible server may accept
+`tool_choice` and ignore it, and a `tool_use` on the last iteration would be
+dispatched and end the turn in the raw "exceeded maxToolIterations" error the
+pass exists to replace. `createOpenAiProvider` reports `toolChoiceNone: false`
+under its `dropToolChoice` quirk (MiniMax). Both loops build the
+`tools`/`tool_choice` pair through one shared `toolParamsFor`, and a fallback
+request gets the pair computed for its own provider instead of a copy of the
+primary's.
 
-Two cases can't be suppressed that way and keep the old `tools: []`: an empty
-tool set, and a provider whose adapter drops `tool_choice` before the wire (the
-OpenAI-compatible `dropToolChoice` quirk, e.g. MiniMax). The latter is new:
-`createOpenAiProvider` now reports `capabilities.toolChoiceNone: false` under
-that quirk instead of silently promising a suppression that never reaches the
-server — without it the finalize pass would have handed such a model the full
-tool list, and a `tool_use` there ends the turn in the raw "exceeded
-maxToolIterations" error the pass exists to replace. Those calls lose the cache,
-as they did before.
-
-The directive itself lost its shouted caps and now says "rufe ab jetzt keine
-Tools mehr auf" rather than claiming tools are gone — they are still on the
-wire. Remaining open point (handoff §13): a model that ignores
-`tool_choice: none` and emits `tool_use` anyway gets a second directive copy on
-the next pass — new with the append-only shape, since the old per-iteration
-hint could not duplicate. New tests
-`middleware/test/orchestrator/finalizePass1211.test.ts` pin tools, `system`,
-`tool_choice`, the directive's position and the no-suppression fallback for both
-loops; `middleware/test/llmProviderMinimaxQuirks.test.ts` pins the capability.
+The finalize directive stays in the per-turn system hint. That block is the
+last `system` block, after every cache breakpoint, so adding it there never
+cost a cache entry, and the adapter does not replay thinking blocks. The
+directive itself lost its shouted caps and now says "rufe ab jetzt keine Tools
+mehr auf" rather than claiming tools are gone — they may still be on the wire.
+`middleware/test/orchestrator/finalizePass1211.test.ts` pins both shapes and
+the fallback for both loops; `middleware/test/llmProviderMinimaxQuirks.test.ts`
+and `middleware/test/llmProviderAnthropicAdapter.test.ts` pin the
+capabilities.
 
 ### Changed — Kalender-Block im System-Prompt folgt wieder dem `find_free_slots`-Kontrakt (#1214)
 
