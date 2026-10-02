@@ -21,15 +21,27 @@ import type {
   LlmResponse,
   LlmStreamEvent,
 } from '@omadia/llm-provider';
-import { NativeToolRegistry, Orchestrator, steeringBus } from '@omadia/orchestrator';
+import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
+import { InMemoryMemoryStore } from '@omadia/memory';
+import {
+  NativeToolRegistry,
+  Orchestrator,
+  SessionLogger,
+  steeringBus,
+} from '@omadia/orchestrator';
 import { PROMPT_MASK_BLOCKED_ANSWER } from '@omadia/orchestrator/dist/orchestrator.js';
-import { FactExtractor } from '@omadia/orchestrator-extras';
+import {
+  CaptureFilter,
+  CaptureFilteringKnowledgeGraph,
+  FactExtractor,
+} from '@omadia/orchestrator-extras';
 import type {
   FactIngest,
   KnowledgeGraph,
   PrivacyGuardService,
   PromptPiiDetector,
   PromptPiiSpan,
+  TurnIngest,
 } from '@omadia/plugin-api';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 
@@ -662,4 +674,119 @@ describe('#361 prompt masking — orchestrator pipeline', () => {
     assert.ok(String(done!['answer']).includes(RAW_IBAN));
     assert.ok(!String(done!['answer']).includes(surrogate!));
   });
+});
+
+/** Main-call fake for both paths: answers by echoing the first e-mail-shaped
+ *  token of its own request — the surrogate, when the request was masked. */
+function echoingStreamProvider(requests: string[]): LlmProvider {
+  const answerFor = (req: LlmRequest): LlmResponse => {
+    const serialized = JSON.stringify(req);
+    requests.push(serialized);
+    const email = EMAIL_RE.exec(serialized)?.[0] ?? 'no-email-in-request';
+    return textResponse(`Notiert. Ich schreibe an ${email}.`);
+  };
+  const provider = {
+    id: 'anthropic',
+    capabilities: providerCapabilities,
+    complete: async (req: LlmRequest): Promise<LlmResponse> => answerFor(req),
+    stream: (req: LlmRequest): AsyncIterable<LlmStreamEvent> => {
+      const response = answerFor(req);
+      const text = (response.content[0] as { text: string }).text;
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'text_delta', text } as LlmStreamEvent;
+          yield { type: 'final', response } as LlmStreamEvent;
+        },
+      };
+    },
+    classifyError: () => ({ retryable: false, kind: 'other' as const }),
+  };
+  return provider as unknown as LlmProvider;
+}
+
+describe('WP-09 — the capture filter scores the masked turn', () => {
+  /** A real session logger over the extras capture filter (level `normal`,
+   *  the default), with a scorer that keeps what it was sent and an inner
+   *  graph that keeps what it stored. */
+  function capturePipeline(): {
+    sessionLogger: SessionLogger;
+    scored: string[];
+    stored: TurnIngest[];
+  } {
+    const scored: string[] = [];
+    const stored: TurnIngest[] = [];
+    const inner = new InMemoryKnowledgeGraph();
+    const recordingInner = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'ingestTurn') {
+          return async (turn: TurnIngest) => {
+            stored.push(turn);
+            return target.ingestTurn(turn);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const filter = new CaptureFilter({
+      captureLevel: 'normal',
+      defaultVisibility: 'team',
+      significanceThreshold: 0.2,
+      significanceScorer: {
+        async score(text: string) {
+          scored.push(text);
+          return { score: 0.9 };
+        },
+      },
+    });
+    const graph = new CaptureFilteringKnowledgeGraph({ inner: recordingInner, filter, log: () => {} });
+    return { sessionLogger: new SessionLogger(new InMemoryMemoryStore(), graph), scored, stored };
+  }
+
+  function assertScoredMasked(
+    mainRequests: readonly string[],
+    scored: readonly string[],
+    stored: readonly TurnIngest[],
+  ): void {
+    const surrogate = EMAIL_RE.exec(mainRequests[0] ?? '')?.[0];
+    assert.ok(surrogate && surrogate !== RAW_EMAIL, 'the model got a surrogate');
+    assert.equal(scored.length, 1, 'the stored turn is scored once');
+    assert.ok(!scored[0]!.includes(RAW_EMAIL), `the scorer got the real e-mail: ${scored[0]!}`);
+    assert.ok(
+      scored[0]!.includes(`Ich schreibe an ${surrogate}`),
+      'the scorer gets the answer as the model wrote it, surrogate included',
+    );
+    assert.equal(stored.length, 1);
+    assert.ok(stored[0]!.userMessage.includes(RAW_EMAIL), 'the stored message keeps the real value');
+    assert.ok(stored[0]!.assistantAnswer.includes(RAW_EMAIL), 'the stored answer is restored');
+    assert.equal('maskedView' in stored[0]!, false, 'the masked view is never stored');
+  }
+
+  for (const path of ['non-streaming', 'streaming'] as const) {
+    it(`${path}: the scorer gets the masked message and the unrestored answer`, async () => {
+      const mainRequests: string[] = [];
+      const { sessionLogger, scored, stored } = capturePipeline();
+      const orch = new Orchestrator({
+        provider: echoingStreamProvider(mainRequests),
+        model: 'test',
+        maxTokens: 1024,
+        maxToolIterations: 3,
+        domainTools: [],
+        nativeToolRegistry: new NativeToolRegistry(),
+        sessionLogger,
+        privacyGuard: () => maskingService(),
+      });
+      const input = {
+        userMessage: `Bitte schreibe an ${RAW_EMAIL} wegen des Vertrags.`,
+        sessionScope: `wp09-score-${path}`,
+        userId: 'u1',
+      };
+      if (path === 'streaming') {
+        for await (const ev of orch.chatStream(input)) void ev;
+      } else {
+        await orch.runTurn(input);
+      }
+      assertScoredMasked(mainRequests, scored, stored);
+    });
+  }
 });

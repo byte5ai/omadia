@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Security — the inbound screener and the significance scorer get the turn's masked text
+
+2026-10-02 — The inbound screener ran before the turn's privacy handle
+existed, so under the default posture `auto` a turn with an upload sent the
+message, earlier user messages and the upload names to the screening model as
+typed, even with `mask_user_prompt` on. The handle is now minted first, and the
+screener gets what the model gets: the user message and the replayed user
+messages through the turn's prompt mask, and the upload names through the same
+mask, with the same placeholders. A blocked mask fails the turn closed before
+the screener or the model is called.
+
+The significance scorer, which decides what is kept as a memory, scored every
+saved turn with its restored answer through the extras provider. It now scores
+the turn as the model saw it, the masked view the fact extraction already gets
+(`TurnIngest.maskedView`, `@omadia/plugin-api` 1.24.0), and the stored turn
+keeps its real values. An operator-started backfill and the scratch promotion
+reaper still score stored text as it is.
+
 ### Security — the desktop app grants web permissions only to its own pages
 
 2026-10-02 — Without a permission handler Electron grants every web permission
