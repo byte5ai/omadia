@@ -1638,17 +1638,18 @@ text only — no code path and no test changed.
 PAT-direct issue creation "gibt es in v1 nicht — nur Browser-Submit", written
 before the GitHub App direct-create path landed. The prompt contradicted itself:
 step 4 of the same section documents `mode='created-pending'`, where the server
-files the issue through the App. All three now state the real constraint — issues
-come about only through `omadia_report_core_bug`, on whichever path the server
-provides, and there is deliberately no PAT code path and no vault lookup, so the
-tool cannot regress into a half-working insecure mode. The header of
+files the issue through the App. All three now state the real constraint — the
+builder agent files issues only through `omadia_report_core_bug`, on whichever
+path the server provides, and that tool has deliberately no PAT code path and
+no vault lookup, so it cannot regress into a half-working insecure mode. The header of
 `reportPlatformIssue.ts` also picked up the two branches it was missing
 (`created-pending` / `browser-submit`, chosen server-side, not by the agent) and
 the `mode='unavailable'` guard for an instance where the deps are not wired; its
 stale pre-#206 tool id and a citation of the never-committed
-`docs/plans/native-issue-reporting.md` are gone. Documentation only — no
-behaviour change; that same dead plan path is still cited in five other builder
-files.
+`docs/plans/native-issue-reporting.md` are gone. On the rebase the citation
+was dropped from the other builder files too, the header's account of the two
+submit paths was corrected, the route header lists all four endpoints, and the
+tool description says what each path checks. No behaviour change.
 
 ### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
 
@@ -1836,15 +1837,19 @@ turn — the tool description (`v4/toolDefs.ts`), the dataset digest
 and they had drifted: only two of the three named the export tool the model can
 actually call, and the third named none. Both halves now live once in
 `v4/promptText.ts` (`RENDER_CONTRACT`, `FILE_EXPORT_EXCEPTION`) and all three
-surfaces interpolate them, so a renamed export tool or a changed contract is
-one edit. The imperative is stated plainly rather than capitalised.
+surfaces interpolate them, so within the plugin a renamed export tool or a
+changed contract is one edit; the orchestrator's rules a) and 14 and the
+office plugin's prompts still state the contract on their own. The imperative
+is stated plainly rather than capitalised.
 
-The exception names `create_xlsx` only, not `create_docx`: the `datasetId`
-hand-off exists on xlsx sheets alone (`plugin-office/src/types.ts` —
-`XlsxToolSheetSchema`), so pointing a download at `create_docx` with a
-datasetId would not resolve. Model-facing strings only; no behaviour or schema
-change, no test touched (`privacyV4ToolDefs.test.ts` pins
-`RENDER_TOOL_SPEC.name`, never the description).
+The exception covers spreadsheet downloads only and names `create_xlsx` as an
+example, "when it is offered": the `datasetId` hand-off exists on xlsx sheets
+alone (`plugin-office/src/types.ts` — `XlsxToolSheetSchema`), and the v4 tools
+load whenever the shield is on, also without the office plugin. A request for a
+Word document gets the data as a spreadsheet or inline, because `create_docx`
+takes no datasetId. Model-facing strings only; no behaviour or schema change.
+`privacyV4RenderContract.test.ts` pins that the tool description and the
+dataset digest carry both halves and that ALWAYS stays out.
 
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 

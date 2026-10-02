@@ -33,16 +33,19 @@ import type { BuilderTool } from './types.js';
  *      a. `mode='created-pending'`, when a GitHub App is wired for an
  *         allowlisted upstream: the operator confirms the sanitized
  *         body, then the create-issue route files the issue as the bot.
+ *         That route sanitizes the body again, adds the fingerprint
+ *         marker if it is missing, dedups by fingerprint and sets the
+ *         required labels itself.
  *      b. `mode='browser-submit'` otherwise: the tool builds the
  *         pre-populated `github.com/.../issues/new?...` URL, the UI
- *         opens it in a new tab, and the operator submits under their
- *         own account; the confirm-issue route POSTs the resulting
- *         issue-number back.
+ *         opens it in a new tab, and the operator creates the issue on
+ *         github.com under their own account. The UI then posts the
+ *         issue number to the confirm-issue route, which checks the
+ *         issue's bot label and fingerprint marker before it persists
+ *         the workaround.
  *
- *      Both paths validate the bot-label + fingerprint marker before
- *      persisting the workaround, and the irreversible POST always
- *      happens in a route after an explicit operator confirm — never
- *      autonomously in `run`.
+ *      Nothing is filed autonomously in `run`: the App path waits for
+ *      the operator's confirm, the browser path for their own submit.
  *
  * There is deliberately no PAT code path and no vault lookup here, so
  * the tool cannot regress into a half-working insecure mode.
@@ -132,11 +135,11 @@ export const reportPlatformIssueTool: BuilderTool<Input, ReportPlatformIssueResu
     'checks for a duplicate via fingerprint, then enforces the per-' +
     'operator daily rate limit, then sanitizes the body. When the server ' +
     'has a GitHub App wired (mode=created-pending) the operator confirms ' +
-    'the sanitized body and the issue is filed directly by the bot; ' +
-    'otherwise (mode=browser-submit) a pre-populated GitHub tab opens and ' +
-    'the operator submits under their own account. Either way the round-' +
-    'trip validates the bot-label + fingerprint marker before the ' +
-    'workaround is persisted — nothing reaches the public repo unconfirmed.',
+    'the sanitized body and the bot files the issue with its label and ' +
+    'fingerprint marker; otherwise (mode=browser-submit) a pre-populated ' +
+    'GitHub tab opens, the operator submits under their own account, and ' +
+    'the issue is checked for the label and marker before the workaround ' +
+    'is persisted. Nothing reaches the public repo without the operator.',
   input: InputSchema,
   async run(input, ctx): Promise<ReportPlatformIssueResult> {
     if (!ctx.upstreamIssueConfig || !ctx.githubIssueCache || !ctx.triageLog) {

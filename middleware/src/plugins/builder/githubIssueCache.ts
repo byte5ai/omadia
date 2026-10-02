@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import type { Database as SqliteDatabase } from 'better-sqlite3';
 
 /**
- * GitHub issue cache (concept plan: docs/plans/native-issue-reporting.md).
+ * GitHub issue cache.
  *
  * Two responsibilities:
  *

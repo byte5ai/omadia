@@ -5562,12 +5562,12 @@ confidence-Kanten mit Flag speichern, UI zeigt sie anders an.
 Feature ist lokal fertig (2026-04-19, siehe CHANGELOG für Architektur-Zusammenfassung). Offen:
 
 Platzhalter unten: `<middleware-app>`, `<kroki-app>`, `<kroki-mermaid-app>` sind die
-Fly-App-Namen der eigenen Installation, `<your-omadia-host>` deren öffentlicher
-Host — vor dem Ausführen durch die echten Werte ersetzen.
+Fly-App-Namen der eigenen Installation — vor dem Ausführen durch die echten
+Werte ersetzen.
 
 1. Zwei Fly-Apps `<kroki-app>` + `<kroki-mermaid-app>` mit flycast-only Services (keine öffentlichen IPs). Dockerfile/fly-toml vorbereiten, z.B. unter `kroki/`.
 2. Tigris-Bucket über `fly storage create -a <middleware-app>`, dann einmalig `PutBucketLifecycleConfigurationCommand` mit 90-Tage-Expiration.
-3. Fly-Secrets setzen: `DIAGRAM_URL_SECRET`, `KROKI_BASE_URL=http://<kroki-app>.flycast:8000`, `DIAGRAM_PUBLIC_BASE_URL=https://<your-omadia-host>`.
+3. Fly-Secrets setzen: `DIAGRAM_URL_SECRET`, `KROKI_BASE_URL=http://<kroki-app>.flycast:8000`, `DIAGRAM_PUBLIC_BASE_URL=https://<middleware-app>.fly.dev`.
 4. Smoke-Probe in Teams: "Flow A→B→C als Mermaid" → Card mit PNG.
 
 Lokale Reproduktion jederzeit via `docker compose up -d` + `npm run smoke:diagrams`.

@@ -8,7 +8,9 @@
  * "ALWAYS end a data question with this call" while the others carried the
  * file/download exception, and only two of the three named the export tool
  * the model can actually call (#1215). Both halves of the contract live here
- * once, so renaming an export tool or changing the contract is one edit.
+ * once for this plugin's three surfaces. The orchestrator's system prompt
+ * (rules a and 14) and the office plugin's prompts state the same contract in
+ * their own words, so a change to it has to follow there too.
  */
 
 /**
@@ -21,9 +23,17 @@ export const RENDER_CONTRACT =
   'The server renders the data table/list from the datasetId, so do not write ' +
   'it yourself.';
 
-/** The file half: a download leaves the inline path entirely. */
+/**
+ * The file half: a download leaves the inline path entirely. Only the
+ * spreadsheet export takes a `datasetId` (`create_docx` has no such hand-off),
+ * so a Word document cannot carry the real rows. The tool is named as an
+ * example: the v4 tools are offered whenever the shield is on, also on
+ * installs without the office plugin.
+ */
 export const FILE_EXPORT_EXCEPTION =
-  'If the user wants a downloadable FILE (an Excel/.xlsx export, a report ' +
-  'document) rather than an inline answer, do not use v4_render_answer — call ' +
-  'the file-export tool (`create_xlsx`) with the same datasetId and the ' +
-  'server materializes the real rows into the file.';
+  'If the user wants the data as a downloadable spreadsheet (Excel/.xlsx) ' +
+  'rather than an inline answer, do not use v4_render_answer — call the ' +
+  'spreadsheet export tool (e.g. `create_xlsx`, when it is offered) with the ' +
+  'same datasetId and the server materializes the real rows into the file. ' +
+  'A Word document cannot take a datasetId: offer the data as a spreadsheet ' +
+  'or inline instead.';
