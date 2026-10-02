@@ -10,7 +10,7 @@
  * completely, so re-running is safe.
  *
  * Production usage (from any machine with `flyctl` + the repo):
- *   fly ssh console -a odoo-bot-middleware \
+ *   fly ssh console -a <middleware-app> \
  *     -C 'sh -c "cd /app && node dist/scripts/setup-tigris-lifecycle.js"'
  *
  * Local (against compose.yml's MinIO — already provisioned by minio-init):
