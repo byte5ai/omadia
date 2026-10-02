@@ -27,9 +27,6 @@ on:
         required: false
         default: ''
         type: string
-  # TEMP: iteration trigger while the smoke is built; removed before the PR.
-  push:
-    branches: [ci/desktop-upgrade-smoke]
 
 permissions:
   contents: read
@@ -59,7 +56,7 @@ jobs:
             artifact: omadia-installers-ubuntu-latest
             baseline_glob: 'omadia-*.AppImage'
     env:
-      CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id || '36984867502' }}
+      CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
     steps:
       - uses: actions/checkout@v7
         with:
