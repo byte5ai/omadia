@@ -6,15 +6,21 @@
  * The operator selects how the orchestrator's dispatch hook should treat
  * raw tool results from that plugin:
  *
- *   - `guarded`  default — every raw result is interned behind the
- *                Privacy Shield v4 Data-Plane Boundary; the LLM sees only
- *                an identity-free digest. Safe-by-default.
+ *   - `guarded`  default — the plugin's raw results are interned behind the
+ *                Privacy Shield v4 Data-Plane Boundary and the LLM gets an
+ *                identity-free digest in their place. Not interned: the
+ *                kernel's intern-exempt tools (results and errors) and
+ *                control-flow results (an `Error:` text is redacted or
+ *                withheld instead, an MCP connect prompt passes as it is),
+ *                see `privacyInternPolicy.ts` and `toolErrorRedaction.ts`
+ *                in `@omadia/orchestrator`.
  *   - `bypass`   the orchestrator passes raw results through unmasked;
  *                the LLM sees real values. Operator opt-in for sources
  *                the operator trusts AND whose shape v4 cannot usefully
  *                summarise (document-shaped pages, binary blobs, …).
- *                A `BypassedToolEntry` lands in the receipt for every
- *                dispatch so the user sees a transparency notice.
+ *                A `BypassedToolEntry` lands in the receipt for each
+ *                dispatch, best-effort, so the user sees a transparency
+ *                notice.
  *   - `per_tool` advanced — the operator picks specific tool names via
  *                `_privacy_bypass_scopes`; non-listed tools stay
  *                `guarded`. Use when one plugin contributes both
@@ -23,8 +29,10 @@
  *
  * Compliance override — the org-level env var
  * `OMADIA_PRIVACY_FORCE_GUARDED=true` clamps every plugin to `guarded`
- * regardless of operator settings. UI MUST surface the override as a
- * "Locked by org policy" badge.
+ * regardless of operator settings, for the results the model gets. The
+ * orchestrator's MCP-to-knowledge-graph ingestion reads a server's bypass
+ * flag directly and is not clamped (docs/security-architecture.md §6f). UI
+ * MUST surface the override as a "Locked by org policy" badge.
  *
  * The constants here are imported by both the orchestrator dispatch hook
  * (to resolve the mode at dispatch time) AND the install service (to

@@ -117,6 +117,7 @@ export type {
   ChatTurnAttachment,
   ChatTurnResult,
   VerifierResultSummary,
+  VerifierSummaryReason,
   RunTracePayload,
   RunStatus,
   RunToolCall,
@@ -148,6 +149,10 @@ export { withMcpInputPrompt } from './toSemanticAnswer.js';
 // the IDENTICAL curated agentsConsulted array from the same run-trace.
 export { deriveAgentsConsulted } from './toSemanticAnswer.js';
 
+// The evidence rule behind every verifier badge: a summary without a checked
+// claim (`skipped`, `unavailable`, or zero claims) is never rendered as a check.
+export { verifierSummaryHasEvidence } from './toSemanticAnswer.js';
+
 // AI-Act Art. 50 channel-agnostic AI disclosure carrier (#643, epic #642). The
 // structured field rides `SemanticAnswer.aiDisclosure`; the same line is folded
 // into `text` (the one field connectors MUST render) by `toSemanticAnswer`. This
@@ -177,6 +182,15 @@ export type {
 // AI-Act marking above; the orchestrator itself emits only a language-free
 // marker and persists that.
 export { composeTurnIncompleteText } from './turnIncomplete.js';
+
+// Wording for an answer the answer verifier withheld in `enforce` mode
+// (`answerSource: 'verifier-blocked'`). Composed at the delivery boundary
+// through the same locale mechanism as the turn-incomplete notice above.
+export {
+  composeVerifierBlockedText,
+  verifierBlockedCause,
+} from './verifierBlocked.js';
+export type { VerifierBlockedCause } from './verifierBlocked.js';
 
 // Org security postures + provenance-labelled inbound screening (#579). Shared
 // primitives — the posture model, tighten-only floor math, the provenance

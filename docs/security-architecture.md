@@ -478,12 +478,45 @@ the kernel applied, including out-of-range values),
 
 ## 4. Plugin install surface
 
-Plugins are installed as signed ZIPs uploaded through the operator UI, not
-discovered from public registries. This keeps the supply chain explicit:
+Apart from the bundled plugins that ship inside the image, a plugin is installed
+as a ZIP package: uploaded through the operator UI, produced by the Builder, or
+downloaded from a registry configured in `REGISTRY_URLS`. Nothing is discovered
+from a public package manager. Integrity rests on SHA-256 pinning, and there is
+**no publisher signature and no trust root**:
+
+- **Registry downloads.** `RegistryClient.fetchPackage`
+  (`src/plugins/registryClient.ts`) checks the downloaded bytes against the
+  SHA-256 the registry's index lists (`registry.sha256_mismatch`), fetches only
+  from the registry's own host and port (`registry.host_mismatch`) and follows
+  no redirect. The index comes from the same registry, so the hash proves the
+  bytes are the ones that registry publishes, nothing about who built them.
+  Downloads are pinned to the registry's host and port, not its scheme
+  (`assertHostPinned` compares `URL.host`). The client accepts an `http://`
+  registry, whose index and hashes then travel in clear, and an `https://`
+  registry's index can list an `http://` download URL on the same host, which
+  is then fetched in clear with the registry's bearer token attached when one
+  is configured. Configure `https://` and make sure the index lists `https://`
+  download URLs. Pinning the whole origin is open
+  (`middleware-agent-handoff.md` §13).
+- **Uploads and Builder installs.** `PackageUploadService`
+  (`src/plugins/packageUploadService.ts`) hashes the ZIP at ingest. The hash names the package and keys the scan
+  verdict below; nothing compares it with a published value, and the service
+  lists a remote signature check as out of scope.
+- **No signature anywhere.** The catalog reports `signed: false` and
+  `signed_by: null` for every plugin (`manifestLoader.ts`, `routes/store.ts`),
+  whatever the manifest says, and the store page shows "unsigned". What the
+  operator trusts is the registry and the ZIP they chose. Publisher-signed
+  packages are a roadmap item (`middleware-agent-handoff.md` §13).
+
+This keeps the supply chain explicit:
 
 - The operator chooses which artefacts run.
 - A plugin manifest declares its `permissions` (memory, graph, network,
-  filesystem). The runtime enforces the declaration.
+  filesystem). The runtime gates its `PluginContext` accessors (`ctx.http`,
+  `ctx.memory`, the scratch directory, …) on that declaration
+  (`src/platform/pluginContext.ts`). A plugin runs as trusted JavaScript in the
+  middleware process, so the declaration does not sandbox the global `fetch`,
+  `node:fs` or any other Node API.
 - A plugin's `depends_on` is a soft contract, not an automatic install
   trigger.
 - Optionally (issue #453), every ingested package — direct upload, hub
@@ -512,6 +545,52 @@ discovered from public registries. This keeps the supply chain explicit:
   turning the verdict into a hard install block is deferred until omadia
   has a role model (same policy gap as skill-verdict suppression, see
   `agentBuilder.ts`).
+- Installed plugin code never comes from npm at runtime. A package may bundle
+  its own `node_modules`. Whatever it does not bundle, its peer dependencies and
+  `@omadia/plugin-api` included, resolves from the image's `node_modules`
+  through a link at the packages root (`ensureHostNodeModulesLink`,
+  `src/plugins/uploadedPackageStore.ts`), so the ZIP's hash covers only what
+  the ZIP contains. A Builder ZIP bundles no `node_modules` at all (the
+  boilerplate's `scripts/build-zip.mjs`). omadia itself runs npm, or code that
+  npm installed, in these places, none of which installs a plugin:
+  - The Builder's build template (`ensureBuildTemplate`,
+    `src/plugins/builder/buildTemplate.ts`) installs the boilerplate's
+    dependencies plus `BUILD_TIME_ONLY_DEPS` by semver range, without a
+    lockfile, under the data directory on first boot and whenever that list
+    changes. A Builder preview loads the draft plugin in-process against that
+    template's `node_modules` (`src/plugins/builder/previewRuntime.ts`), so
+    those packages run inside the middleware during a preview, and every
+    Builder build runs `npx tsc` from the template (`scripts/build-zip.mjs`).
+  - The operator-triggered vendor-CLI install
+    (`src/platform/cliInstallService.ts`) installs a package whose name comes
+    from a fixed allowlist.
+  - An MCP server whose start command uses `npx`. The MCP catalog
+    (`src/services/mcpRegistryClient.ts`) writes `npx -y -- <package>` for a
+    server published on npm when the operator imports it, and the stdio
+    transport runs that command whenever omadia connects to the server, so npm
+    resolves the package at that moment.
+- Write confirmation is a connector feature. The preview, confirm and draft flow
+  of ADR-0005 runs in the write-capable connector plugins that implement it; the
+  core inserts no confirmation step before a tool runs. The core's write
+  contract, `writeCapabilities` (`@omadia/plugin-api`), adds none either, and a
+  write tool without the annotation counts as read-only. On the public MCP
+  endpoint, a caller-supplied idempotency key gives a declared write tool
+  process-local deduplication while its record is cached (15 minutes,
+  `DEFAULT_IDEMPOTENCY_TTL_MS`; eviction target 1,000 records,
+  `DEFAULT_IDEMPOTENCY_MAX_ENTRIES`, and a call still running inside its window
+  is never evicted, so the store can briefly hold more; a failed call is not
+  cached), and the MCP client makes a single attempt for that call
+  (`toolIdempotency.ts`, `ToolDispatchService`). A restart, a second instance
+  or an expired or evicted record executes the write again, so the key is a
+  retry-safety mitigation and does not make a write run at most once
+  (`src/mcp/README.md`, Idempotency). Without a key, the MCP client may retry
+  the call once after a transport failure. On the chat path a verifier
+  re-entry replays every external call the first run recorded and executes
+  none of them again (a sub-agent whose data the shield interned runs again,
+  with its own calls replayed, §7c); a turn without that replay ledger keeps
+  the same single retry, so an MCP write whose reply was lost can run twice.
+  Conductor human steps treat an absent or malformed response as approval
+  unless the step sets `human.strictApproval` (§7a).
 
 ### Plugin-borne workflow templates (#478)
 
@@ -847,9 +926,10 @@ Two things this rests on: (1) `query_dataset` is **not** intern-exempt
 branch above is a leak; the test `datasetCellCrypto.test.ts` pins the reveal
 condition to the presence of the turn's privacy handle, which is the same
 signal the orchestrator uses to intern — and when that interning THROWS, the
-orchestrator withholds this tool's rows instead of falling open to the raw
-result as it does for other tools (`dispatchTool`, `QUERY_DATASET_TOOL_NAME`
-branch): the rows carry cleartext precisely because interning was expected.
+orchestrator withholds this tool's rows, as it withholds every tool's result
+it could not intern (`dispatchTool`, `internFailedNotice`; `query_dataset`
+keeps its own notice): the rows carry cleartext precisely because interning
+was expected.
 (2) The v4 shape classifier now runs the C0 baseline's identity types (e-mail,
 IBAN, phone, address, id number — deliberately not `date`/`amount`, which must
 stay filterable) as its one-way `detector` booster: a digits-only phone column
@@ -910,7 +990,11 @@ operator bypass and before interning:
   `toolErrorFromException`): `isWithheldToolErrorNotice` recognises it by
   shape, so a tool that imitates the shape only blocks its own repeat. A
   different input still runs, and so does a retry after an ordinary returned
-  `Error:` hint.
+  `Error:` hint. Since the replay ledger (§7c) the same refusal holds for the
+  whole request in the orchestrator's buffered and streaming tool loops and
+  in a subscription-CLI sub-agent's loopback dispatch (the request's
+  `turnContext.toolReplayLedger`, any seam), except for a kernel tool known to
+  be read-only; it answers with the same notice.
 
 **Per entry point.** What reaches a model provider depends on where the call
 came in:
@@ -1011,8 +1095,8 @@ finalized.
   endpoint too, but only when an operator set
   `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING`. The same holds for
   the intern-exempt self tools (`privacyInternPolicy.ts`), and for a returned
-  error of a plugin the operator set to bypass; a thrown message is withheld
-  even under bypass.
+  error of a plugin, tool or MCP server the operator set to bypass; a thrown
+  message is withheld even under bypass.
 - On the public MCP endpoint a sub-agent cannot correct itself from an inner
   error hint, since the gate withholds that text, and the endpoint has no
   sub-agent dataset bridge: the sub-agent's answer is interned again as data.
@@ -1027,14 +1111,16 @@ finalized.
   classifier does not recognise as one: positional fields
   (`Partner(42, 'Jane Doe')`, Go's `%v`) or `name=…` pairs outside any
   record. A record echo in one of the shapes in the table is withheld whole.
-- Only `LocalSubAgent` refuses to repeat a call that ended in an exception.
-  The parent chat loops and the subscription-CLI sub-agent (whose loop the
-  `claude` CLI owns) do not block a repeat; their model reads the notice's
-  warning only where it reads the notice. No loop blocks a repeat with
-  another input, or one after a returned failure whose outcome is just as
-  unknown (an MCP request timeout). Tools carry no write-capability metadata;
-  running a write at most once needs it, together with an idempotency key
-  (handoff §13).
+- An identical repeat (same tool, same canonical input) of a call that ended
+  in an exception is refused within a request — by `LocalSubAgent` per run,
+  and by the request's ledger in the parent chat loops and in a
+  subscription-CLI sub-agent's loopback dispatch (§7c). The subscription-CLI
+  chat agent itself runs no orchestrator turn and refuses nothing, two
+  identical calls in the same parallel batch both run, and no loop blocks a
+  repeat with another input, or one after a returned failure whose outcome
+  is just as unknown (an MCP request timeout). Tools carry no
+  write-capability metadata; running a write at most once needs it, together
+  with an idempotency key (handoff §13).
 - A connect prompt produced by a sub-agent's tool call passes the parent seam
   as control flow only when the sub-agent's answer repeats it byte for byte.
   Any other answer takes the ordinary sub-agent path: interned, or bridged
@@ -1070,24 +1156,45 @@ Since #978 a change to the value is a metadata `update` (registry row refreshed,
 
 The answer verifier (`verifier@1`, wrapped around the orchestrator by
 `VerifierService` whenever the bundle is published) sends model requests
-AFTER the turn produced its answer: one claim extraction, one evidence-judge
-request per soft claim (two on a confirmed contradiction), and in enforce mode
-a correction retry. They used to run outside the turn's privacy scope, on the
-restored answer, with raw knowledge-graph evidence, after the receipt had been
-written. They are now bound to the turn's own privacy handle:
+AFTER the turn produced its answer: one claim extraction and one
+evidence-judge request per soft claim (two on a confirmed contradiction). In
+`enforce` mode it may re-enter the turn — a borderline resample, a correction
+retry (§7c) — and each re-entry is a pass of its own whose answer is verified
+the same way. The requests used to run outside the turn's privacy scope, on
+the restored answer, with raw knowledge-graph evidence, after the receipt had
+been written. They are now bound to the privacy handle of the pass whose
+answer they check:
 
-- **Hand-over instead of finalize.** Before every turn it runs (first sample,
-  borderline re-sample, correction retry), the wrapper calls
-  `markPrivacyFinalizeHeld(input)`. The turn then does not finalize: it returns
-  without a receipt and hands a `PrivacyEgressContinuation`
-  (`harness-orchestrator/src/privacyEgress.ts`) over, keyed on the caller's
-  input object (one-shot mark, weak maps). All three finalize sites hand over —
-  buffered `runTurn`, streaming `done`, streaming Direct Line. The wrapper
-  verifies through the continuation and then calls `finalize()` exactly once
-  per turn (`EgressLedger`, also on errors and early client exits), which
-  drops the surrogate map, dataset store and C1 cache and writes the
-  `turn_receipts` row with the model attribution captured at hand-over. One
-  receipt and one hash-chained row cover the turn and its verifier.
+- **Hand-over instead of finalize.** Before every pass it runs (first run,
+  borderline resample, correction retry — on `chat()` and on the stream), the
+  wrapper calls `markPrivacyFinalizeHeld(input)`. The pass then does not
+  finalize: it returns without a receipt and hands a
+  `PrivacyEgressContinuation` (`harness-orchestrator/src/privacyEgress.ts`)
+  over, keyed on the caller's input object (one-shot mark, weak maps). All
+  three finalize sites hand over — buffered `runTurn`, streaming `done`,
+  streaming Direct Line. Every verifier request about a pass's answer goes
+  through that pass's continuation, and every pass that handed over is
+  finalized exactly once, after them (`EgressLedger` on `chat()`,
+  `StreamPasses` on the stream; also on errors, abandoned re-entries and
+  early client exits). That drops the pass's surrogate map, dataset store and
+  C1 cache, and its receipt covers the pass and the verifier's requests about
+  it, with the model attribution captured at hand-over. A pass that throws,
+  or whose stream ends before `done` (an `error`, a client that leaves —
+  also during the stream's prelude, at the `onBeforeTurn` annotations, after
+  an MCP input-card replay put its result into the turn's privacy state),
+  hands nothing over: the orchestrator finalizes it itself
+  (`closeUndeliveredPass`), clears the turn's auth context and keeps its
+  receipt like any other pass's — it used to drop it. A request has one
+  hash-chained `turn_receipts` row: the pass writes it when the request
+  cannot be re-entered; otherwise every pass's receipt — a pass that threw,
+  was abandoned or was cut off by the client included — is merged into the
+  request's one row, written once when the verifier is done with the request
+  (`requestReceipts.ts`, §7c). Every pass with a receipt offers to own that
+  row, and the earliest pass owns it — in pass order, not in the order the
+  passes are finalized: the first run whenever it had a receipt, also when
+  its continuation is finalized after a re-entry; otherwise the earliest
+  re-entry that had one, so a request whose only receipt is a failed or
+  abandoned re-entry's still gets its row.
 - **What the verifier sees.** The extractor gets the turn's WIRE view, as the
   turn recorded it (`TurnContextValue.wireView`): the prompt exactly as the
   turn's model received it — normalised (an MCP input-card reply is its label,
@@ -1101,14 +1208,20 @@ written. They are now bound to the turn's own privacy handle:
   no shield is installed) is the same normalised text, never the envelope.
   A server-rendered v4 answer (`answerSource: 'privacy-render'`, real values
   the model never saw), a Direct Line relay and the privacy refusal are never
-  verified. Claims come back with placeholders and are restored server-side
-  (`harness-verifier/src/claimRestore.ts`); a claim whose span cut through a
-  placeholder is dropped, and an amount or date the model parsed from a
-  placeholder is re-read from the real literal it stands for — dropped when no
-  single literal can be tied to it, never compared as the placeholder's
-  value; a date or graph-id claim whose check would then read the whole
-  restored sentence is not checked at all. The deterministic re-query and the
-  graph lookup run on real values and never leave the process.
+  verified (`verifierGate`; what `enforce` delivers instead is in §7c). The
+  extraction window and the verbatim guard (§7c) apply to the wire answer,
+  the text the model saw. Claims come back with placeholders and are
+  restored server-side (`harness-verifier/src/claimRestore.ts`); an amount or
+  date the model parsed from a placeholder is re-read from the real literal
+  it stands for, never compared as the placeholder's value. A claim that
+  does not map back onto the answer the user was shown never reaches a
+  checker — one whose span cut through a placeholder, an amount or date no
+  single real literal can be tied to, and a date or graph-id claim whose
+  check would then read the whole restored sentence — and it is not dropped
+  without a trace: the extraction reports it as the `claims_not_restored`
+  coverage gap, so such an answer is never `approved` (§7c). The
+  deterministic re-query and the graph lookup run on real values and never
+  leave the process.
 - **Evidence is projected regardless of the flag.** The judge's claim,
   context and knowledge-graph evidence are projected in ONE call per request
   through the turn's surrogate map (`projectVerifierText`): identity-shaped C0
@@ -1128,25 +1241,33 @@ written. They are now bound to the turn's own privacy handle:
   Evidence is capped (3 snippets × 1200 chars) and the C1 timeout/degrade
   latch applies as for the prompt. Because a contradiction judged on
   placeholders can be an artefact of the substitution, it is reported as
-  `unverified` and never blocks an answer.
-- **Fail closed.** A blocked mask or projection sends nothing (the stage
-  returns no claims / `unverified`). With a shield installed but no
-  continuation handed back, the wrapper does not verify at all. A provider
-  without `projectVerifierText` blocks every judge request. One without
-  `countUnresolvedSurrogates` reports no placeholders, so the check under
-  **Correction retry** never keeps a second answer back. The bundled privacy
-  guard implements both from 0.6.0 on.
-- **Correction retry.** Behind a shield the hint names the contradicted claims
-  but carries no truth values and no value-bearing detail (`Δ=…`, the judge's
-  rationale); when the turn's policy would still alter the hint, the retry is
-  withheld (badge `failed`). The retry turn masks the caller-supplied hint like
-  its prompt (`composeWireExtraSystemHint`). A second answer that still carries
-  unresolved placeholders (`countUnresolvedSurrogates` — the model reworded one
-  and restore could not map it back) never replaces the first: neither a
-  still-blocked retry answer nor a blocked re-sample taken over a borderline
-  first answer, whether the retry then ran, failed or was withheld. The first
-  answer is shown with the badge the verdict earned (`failed`). Without a
-  shield the hint is unchanged: tool results reach that model raw anyway.
+  `unverified`, never as a contradiction: it buys no correction retry, and
+  `enforce` withholds the answer as unconfirmed (§7c).
+- **Fail closed.** A blocked mask or projection sends nothing: a blocked
+  extraction request rejects, so the verdict is `unavailable` /
+  `extractor_error`, never an empty extraction; a blocked judge request
+  leaves its claim `unverified` with `cause: 'check_failed'`. With a shield
+  installed but no continuation handed back, the wrapper does not verify at
+  all (`verifierGate`; `enforce` withholds the answer as `unavailable` /
+  `privacy_shield`). A provider without `projectVerifierText` blocks every
+  judge request. One without `countUnresolvedSurrogates` reports no
+  placeholders, so the check under **Correction retry** never keeps a second
+  answer back. The bundled privacy guard implements both from 0.6.0 on.
+- **Correction retry.** The hint carries no verifier evidence, with or
+  without a shield (§7c): it names the contradicted claims, the turn's own
+  tool names and call ids and fixed text — no truth values, no value-bearing
+  detail (`Δ=…`, the judge's rationale). The claims are cut from the restored
+  answer, so they can hold real values: when the contradicted pass's policy
+  would still alter the hint (`maskWouldAlter`, a preview that adds nothing
+  to the receipt), the retry is withheld (badge `failed`). A hint that passes
+  is masked once, by the retry's own pass, like its prompt
+  (`wireExtraSystemHint`) — never twice with different maps. A second answer
+  that still carries unresolved placeholders (`countUnresolvedSurrogates` —
+  the model reworded one and restore could not map it back) never replaces
+  the first: a retry answer is then not even judged, and a blocked re-sample
+  taken over a borderline first answer is not shown, whether the retry then
+  ran, failed or was withheld. The verdict stays the one the earlier passes
+  earned (`failed`), and `enforce` withholds a contradicted answer (§7c).
   Restore only maps a placeholder's exact string back, so the check also
   compares dates and amounts by value (`valueLiterals.ts`): a date placeholder
   written as ISO, slashed, unpadded or with a written month (six locales), or
@@ -1160,10 +1281,12 @@ written. They are now bound to the turn's own privacy handle:
   answer.
 - **Receipt.** Verifier spans are booked in `PrivacyReceipt.verifierEgress`
   (request count + span types), never in `maskedPromptSpans`; a turn whose
-  only privacy-relevant event was the verifier still gets a receipt. On
-  streaming turns `done` is held until the inner stream has drained (steering
-  and turn-auth cleanup run first) and the verifier finished, then goes out
-  with the receipt, followed by the `verifier` event.
+  only privacy-relevant event was the verifier still gets a receipt. Merged
+  over a request's passes, the request counts add up and the span types are
+  united (`mergePrivacyReceipts`). On streaming turns `done` is held until
+  the inner stream has drained (steering and turn-auth cleanup run first)
+  and the verifier finished — in `enforce` until every pass was finalized —
+  then goes out with the receipt, followed by the `verifier` event.
 
 Callers: every `bundle.agent` caller goes through the wrapper — chat routes,
 channel adapters, the scheduler (`scheduleWorker.ts`) and conductor steps
@@ -1176,6 +1299,202 @@ default-off, so the extraction request carries the raw prompt when the
 operator chose so. Why a continuation and not the in-turn snapshot used for
 fact extraction: the judge masks evidence fetched after the turn with the
 live detectors and the same map, and only an unfinalized turn still has both.
+
+Tests: `middleware/test/verifierServicePrivacyEgress.test.ts` and
+`verifierServiceStreamPrivacyEgress.test.ts` (every pass of both modes
+verified through its own view and finalized once, one receipt row per
+request — a pass that threw or that the client left included — the privacy
+refusal and the screening quarantine released in `enforce`),
+`orchestratorPrivacyEgress.test.ts` and `verifierReentryRecords.test.ts` (a
+pass that throws or is cut off keeps its receipt: its own row, or the
+request's without taking it), `verifierPrivacyEgressEndToEnd.test.ts`,
+`verifierCorrectionHintPrivacy.test.ts` (a hint the masking would alter is
+not sent; one that passes is masked once, by the retry),
+`verifierPipeline.test.ts` (a claim that does not restore is a coverage
+gap), `verifierEvidenceHandles.test.ts` and
+`privacyVerifierProjection.test.ts`.
+
+### 6f. What the shield masks, and what reaches the model as it is
+
+For omadia's own model requests, the Privacy Shield works through the turn's
+privacy handle and nowhere else (the public MCP endpoint has a gate of its
+own, `createFailClosedPrivacyGate`, §6c). When a `privacy.redact@1` provider
+is active, the orchestrator mints that handle for each turn
+(`buildPrivacyHandle`, after the inbound screening gate) and threads it
+through `turnContext` to the model requests of the turn's own call tree, the
+agent's model loop and its sub-agents (`LocalSubAgent`, a domain tool's
+sub-agent). The answer verifier's requests about the turn's answer go
+through the same handle, which the turn hands over to them (§6e). In those
+requests, and only there, the shield acts on three kinds of text:
+
+- **Tool results, under `guarded` (the default).** A tool's result is interned
+  into the turn's dataset store and the model gets an identity-free digest in
+  its place (`internToolResultV4`). The results that skip this step are
+  listed further down.
+- **Tool errors, independent of `mask_user_prompt`.** For a tool that is
+  neither intern-exempt nor bypassed, a returned `Error:` text is redacted (or
+  withheld whole) and a thrown one is withheld (§6c). A returned error of an
+  intern-exempt tool, or of a plugin, tool or MCP server the operator set to
+  bypass, reaches the model as returned, and so does a thrown error of an
+  intern-exempt tool. A thrown error is withheld even under bypass (§6c,
+  residuals). The seams check the bypass, and `Orchestrator.dispatchTool`,
+  `LocalSubAgent` and `ToolDispatchService` the intern exemption as well,
+  before they look for an `Error:` text (`guardReplayResult`, the MCP input
+  replay, checks the bypass only), and `withholdThrownToolError` withholds
+  only for a tool that is not intern-exempt.
+- **Prompt text, only while `mask_user_prompt` is on.** The setting is off by
+  default. While it is on, the user's message, document text inlined at
+  upload, recalled context, the chat history a channel replays (`priorTurns`,
+  user messages and answers), live steering text, a direct-line relay's
+  payload and a verifier correction hint are masked in the turn's own model
+  requests through the turn's prompt map (`maskPromptForWire`): the C0
+  baseline and the operator's deny-list, plus names when the C1 detector is
+  configured. The turn's model and persona routing, its card routing, fact
+  extraction and the memory-excerpt pass read that wire text, so they follow
+  the setting too. While it is off, all of this reaches the model as typed.
+  Masking fails closed only where the C0 baseline cannot run: if C0
+  detection or the deny-list fails, or a detected span survives
+  substitution, the guard reports `blocked` and the request is not sent
+  unmasked (`PromptMaskBlockedError`: the turn answers with a privacy
+  notice, a direct-line (#specialist) turn included, a fact-extraction pass
+  is skipped and a verifier re-entry is abandoned, §7c). If the configured
+  C1 detector fails, C1 stays off for the rest of the turn and masking falls
+  back to the C0 baseline (`c1DetectorFor`, logged as `promptMaskDegraded`),
+  so names only C1 detects reach the model unmasked. Restoring real values
+  in the final answer and in what is persisted is best-effort: a restore
+  that throws is logged and leaves the surrogates in place
+  (`restorePromptForPersistence`).
+
+The verifier's evidence-judge requests are projected through the turn's map
+whatever `mask_user_prompt` says (§6e). The subscription-CLI path has no
+shield at all (§3a), and without an active privacy-guard provider nothing is
+interned or masked (§6c, residuals).
+
+An answer rendered by `v4_render_answer` carries real values
+(`maskedValues`, `answerSource: 'privacy-render'`), so a channel that replays
+it in `priorTurns` hands those values to the model on the next turn while
+masking is off. The Teams and Telegram channel plugins build `priorTurns` from
+the answers they delivered, so they do this; the in-tree web chat sends no
+`priorTurns`, and the session log behind recalled context stores the model's
+own answer from before the render. Masking replayed answers regardless of
+`mask_user_prompt` is open (`middleware-agent-handoff.md` §13).
+
+These tool results skip the digest:
+
+- **Intern-exempt tools.** `INTERN_EXEMPT_TOOLS`
+  (`harness-orchestrator/src/privacyInternPolicy.ts`, pinned by
+  `test/privacyInternPolicy.test.ts`) lists `memory`, the stored-process tools
+  `query_processes`, `run_stored_process`, `write_process` and `edit_process`,
+  then `suggest_follow_ups`, `ask_user_choice` and `read_attachment`. The model
+  gets their results as the tool returned them. `read_attachment` returns the
+  extracted text of an uploaded file, a CSV included, so it can hand over
+  cells that the dataset import of the same CSV encrypted (§6b).
+  `mask_user_prompt` does not reach it: that setting masks prompt text, and a
+  tool result is not prompt text.
+- **Operator bypass.** A plugin set to `bypass`, a tool on its `per_tool`
+  list, or a tool of an MCP server the operator flagged `privacyBypass`
+  (`mcpPrivacyBypass.ts`; set through the agent builder's MCP server route,
+  loaded by `services/mcpGrantPolicy.ts` and checked first by the bypass
+  resolver) passes the raw result and records the tool on the receipt. The
+  bypass applies even when recording it throws, and the receipt itself is
+  persisted best-effort (§7b). A sub-agent that read a bypassed result and
+  interned no dataset hands its answer up raw as well.
+  `OMADIA_PRIVACY_FORCE_GUARDED=true` switches all three off for the result
+  the model gets. It does not reach the MCP-to-knowledge-graph ingestion
+  branch (`Orchestrator.dispatchTool`, epic #459), which runs before the
+  bypass resolver and reads the server's flag directly
+  (`isMcpServerPrivacyBypassed`, not `resolveEffectivePrivacyMode`): a server
+  flagged both `kgIngest` and `privacyBypass` still stores up to 8,000
+  characters of each raw result as a memory (`createMemorableKnowledge`, as
+  its `rationale`), which later turns can recall into prompt context, the
+  memory jobs send to their provider and an embedding provider embeds
+  (below). A
+  server flagged `kgIngest` alone stores a value-free note of the result's
+  shape (`mcpObservationDigest`). Routing the ingestion's decision through the
+  clamp is open (`middleware-agent-handoff.md` §13). The public MCP endpoint
+  applies no bypass (`createFailClosedPrivacyGate` pins `checkBypass` off).
+- **Control flow.** A returned `Error:` text and an MCP connect prompt are not
+  interned; §6c says how they are redacted or withheld. An MCP input-required
+  sentinel minted by the same dispatch passes unchanged. It holds a random id,
+  the server and tool name and at most eight field names, never a value (#570).
+
+A result whose interning fails does not reach the model. When
+`internToolResultV4` throws, every seam that interns
+(`Orchestrator.dispatchToolDeadlined`, `LocalSubAgent`,
+`ToolDispatchService.afterDispatch` and the MCP input replay,
+`guardReplayResult`) logs a warning and hands the model the kernel's notice
+(`internFailedNotice`, `privacyInternPolicy.ts`) instead, on a first run and
+on a verifier re-entry's replay alike. `query_dataset` keeps its own wording,
+because its page carries decrypted cell values (§6b) and repeating a page read
+is safe. The public MCP endpoint discards such a result
+(`createFailClosedPrivacyGate`, `src/mcp/publicMcpPrivacy.ts`) and serves no
+intern-exempt tool at all (`isPubliclyServableTool`). Tests:
+`test/orchestrator/internFailureFailsClosed.test.ts`,
+`test/toolReplaySeams.test.ts` and `test/publicMcp/publicMcpPrivacyGate.test.ts`.
+
+**Every other model call sends its text as it is.** A model request that does
+not run under the turn's handle reaches its provider as its caller built it,
+with prompt masking on or off: `mask_user_prompt` reaches none of the texts
+below (the embedded recall query in the last entry aside), and the shield
+masks text only, so it reads no image block. In-tree these are:
+
+- **Inbound security screening (#579).** Under the default security posture
+  `auto` (`DEFAULT_SECURITY_POSTURE_POLICY`, `@omadia/channel-sdk`), and under
+  `strict`, `screenInboundTurn` (`harness-orchestrator/src/orchestrator.ts`)
+  screens every turn that carries an attachment, before the turn mints its
+  privacy handle. The payload (`bundleProvenance`, `renderScreeningPayload`)
+  holds the user's message as typed, each user message the channel replays in
+  `priorTurns` and the attachments' names and media types. `LlmScreener`
+  (`securityScreener.ts`) sends it to the agent's own provider and model, or
+  `HttpProxyScreener` to the operator's `security_screen_url`. A turn without
+  an attachment sends nothing, and the posture `dangerous`
+  (`security_posture` in the orchestrator plugin's settings) switches
+  screening off.
+- **Turn scoring and the other memory jobs.** `@omadia/orchestrator-extras`
+  calls the model through that plugin's own provider and sends stored text,
+  which holds real values: the session log keeps the user's original message,
+  and a memory excerpt is restored before it is stored. At the default
+  `capture_level`, `normal` (`DEFAULT_CAPTURE_LEVEL`,
+  `harness-orchestrator-extras/src/plugin.ts`), the capture filter sends each
+  turn the session log stores, the user's message as typed plus the answer,
+  for a significance score (`captureFilter.ts`, `significanceScorer.ts`);
+  `capture_level: minimal` switches the scorer off. The recall relevance
+  judge (`recallRelevanceJudge.ts`, on whenever a model is configured, off
+  only with `KG_RECALL_RELEVANCE_JUDGE_ENABLED=false` or the plugin config key
+  `kg_recall_relevance_judge_enabled`) sends the texts of recalled memories,
+  plans and processes next to the turn's wire message. The session briefing
+  (`sessionBriefing.ts`) sends a session's stored turns to be summarised, the
+  inconsistency detector sends pairs of stored memories, cluster naming sends
+  memory summaries, and the topic detector that the Teams channel calls
+  (`topicDetector.ts`) sends the previous exchange and the new message as the
+  channel hands them over.
+- **Plugin requests through `ctx.llm`.** A plugin that holds the `llm`
+  permission sends its `ctx.llm` requests itself, and the accessor
+  (`createLlmAccessor`, `src/platform/pluginContext.ts`) consults no privacy
+  handle, so a request reaches the provider as the plugin built it (§6c,
+  residuals). In-tree, the canvas composer sends the user's message, or the
+  serialised UI action, to its composition model before the turn starts
+  (`composeSkeleton`, `omadia-ui-orchestrator/src/composition.ts`). The
+  plan-runner's planning gate and planner send the user's message from the
+  `onBeforeTurn` hook, which fires before the turn masks anything
+  (`harness-plugin-plan-runner/src/gate.ts`, `materializer.ts`). A tool that
+  fetches data and asks a model about it sends that data the same way, and
+  only the tool's result crosses the shield.
+- **Images.** Images the user attaches go into the turn's own request to a
+  model with image input as base64 blocks (`buildUserContent`,
+  `harness-orchestrator/src/orchestrator.ts`), and a verifier re-entry sends
+  the first run's image blocks again (§7c).
+- **Embeddings.** With the OpenAI-compatible embedding adapter
+  (`@omadia/embedding-adapter-openai`, default endpoint
+  `https://api.openai.com`), stored turns and memories, a raw MCP result the
+  ingestion above stored included, are embedded at that provider as stored,
+  real values included (`neonKnowledgeGraph.ts`). Only the recall query is
+  the turn's wire text (`retrievePriorContext`), so it alone follows
+  `mask_user_prompt`. The Ollama sidecar and the local adapter embed
+  in-tenant.
+
+Masking these calls is open (`middleware-agent-handoff.md` §13, where the
+screener and the scorer have an item of their own).
 
 ## 7. Conductor generic webhooks (#437)
 
@@ -1265,6 +1584,796 @@ tail-truncated table can never report green (`empty_chain_with_history`,
 `head_beyond_rows`). Verify surface: `GET /api/v1/operator/provenance/
 verify`, signed export + zero-dependency offline verifier — see
 `docs/provenance-verification.md`.
+
+What the chain cannot show is a receipt that was never written. Appending is
+best-effort, because the user's answer outranks the audit row
+(`src/receipts/store.ts`). A failed insert is logged and counted in the process
+(`persistFailures`, `turnReceiptCounters()`), and no endpoint reports that
+count yet. A receipt whose `finalize()` throws is logged and dropped. A turn
+that throws, or whose stream ends before `done`, is still finalized and keeps
+its receipt (`closeUndeliveredPass`, §6e), and a verifier request writes one
+row for all of its passes (§7c). Nothing is retried. `seq` is assigned inside
+the insert transaction, so a missing receipt leaves no sequence gap and the
+chain verifier reports green without it. The receipts are also Postgres-only:
+on the in-memory backend no store is wired and nothing is persisted.
+
+## 7c. Answer-verifier verdicts and badges are evidence-bound
+
+The answer verifier (`@omadia/verifier`, wrapped by `VerifierService` in
+`@omadia/orchestrator`) puts a trust signal on a turn: a verdict, and from it
+a badge. A badge that says "verified" is a statement about the answer, so it
+may only follow from claims the verifier actually checked. Five paths check
+nothing: the answer carries no trigger signal, the extractor fails, the
+extractor returns no claims, no extracted claim fits a checker, or the
+pipeline itself throws. None of them is a pass.
+
+The verifier is opt-in. `VERIFIER_ENABLED` (`verifier_enabled`) is off by
+default, and the plugin publishes `verifier@1` only once it is switched on and
+an API key for its model provider and a knowledge graph are available
+(`harness-verifier/src/plugin.ts`); without the capability the bare
+orchestrator is the chat agent (`buildOrchestrator.ts`). `VERIFIER_MODE`
+defaults to `shadow`, which records verdicts and never withholds or changes an
+answer. The subscription-CLI runtime and routines are never verified (below).
+
+**Invariant.** `approved` ⇒ the claim extraction reported no coverage gap,
+and every extracted claim was checked and is `verified`, at least one. No
+coverage gap means: the extraction model read the whole answer, its claim
+list stayed below the request limit, every `record_claims` call in its
+response was read, and every claim it returned quotes the answer in full
+(case and whitespace aside) and is short enough to check (`MAX_CLAIM_CHARS`,
+300 characters); no claim is shortened to fit. The `approved` variant's claim
+list is typed non-empty (`NonEmptyClaimVerdicts`), the pipeline's aggregate
+returns `skipped` for an empty list, and whatever the pipeline did not check
+stays in the verdict as `unverified` (`cause: 'not_checked'`) instead of
+being dropped: a claim no checker takes, a claim over the cap, and a
+`coverage_gap` entry for each part of the answer the extraction did not
+cover. A badge other than `unverified` /
+`unavailable` needs a check that settled a claim (`hasVerificationEvidence`):
+a confirmed claim for `verified` / `partial` / `corrected`, a contradicted one
+for `failed`; `verified` and `corrected` need every claim confirmed. What the
+invariant cannot cover — a claim the model never lists — is stated below.
+
+| Verdict status | Meaning | Summary badge | Connector badge | Web chat chip |
+|---|---|---|---|---|
+| `approved` | no coverage gap, every claim checked and verified | `verified` | verified | green |
+| `approved_with_disclaimer`, ≥ 1 claim verified | none contradicted, ≥ 1 unconfirmed, not checked, or part of the answer not covered | `partial` | partial | amber |
+| `approved_with_disclaimer`, no claim verified | none contradicted, nothing confirmed | `unverified`; `unavailable` when every check that ran failed | none | neutral |
+| `blocked` | ≥ 1 claim contradicted | `failed` | failed | red |
+| retry after `blocked`, every claim verified | correction confirmed | `corrected` | corrected | blue |
+| retry after `blocked`, some claims verified, none contradicted | correction confirmed in part | `partial` | partial | amber |
+| `skipped` — `no_trigger`, `no_claims`, `no_checkable_claims`, `incomplete_coverage` | ran, nothing checkable | `unverified` | none | neutral "not verified" |
+| `unavailable` — `extractor_error`, `pipeline_error` | could not run, or the pipeline returned no usable verdict | `unavailable` | none | neutral "unavailable" |
+| `unavailable` — `privacy_shield` | `enforce` only: an answer the verifier may not see behind Privacy Shield — one the shield rendered, or a pass without a privacy view — was never sent to it (below) | `unavailable` | none | neutral "unavailable" |
+
+- **The trigger patterns decide whether an answer is checked at all.**
+  `shouldTriggerVerifier` (`harness-verifier/src/triggerRouter.ts`) hands an
+  answer to the claim extractor only when one of its regular expressions
+  matches somewhere in the answer's text. They look for a euro amount (`€` or
+  `EUR` next to a number), an accounting reference (`INV`, `SO`, `PO`, `RECH`,
+  `MOVE`, `BILL`, `RG` or `CR` followed by at least two digits), a date
+  written `yyyy-mm-dd` or `dd.mm.yyyy`, a percentage with one to three digits
+  before the decimal mark, a number followed by an hour or day unit (`Stunde`
+  or `Stunden`, `Std`, `h`, `Tag` or `Tage`, `Urlaubstag` or `Urlaubstage`,
+  `Arbeitstag` or `Arbeitstage`), and an aggregate keyword (`summe`, `gesamt`,
+  `total`, `saldo`, `offen`, `fällig` or `faellig`, `ausstehend`,
+  `durchschnitt`, `anzahl`, `insgesamt`) in an answer that also holds a number
+  of three or more digits anywhere. These are pattern matches, not a reading
+  of the figures: the keyword and the number need not belong together, so
+  `Total: $500` is checked. Any other answer gets no extraction, whatever
+  figures it holds in other formats: another currency (`USD 50,000`, `$500`),
+  an English-format date (`October 2, 2026`) or a small count
+  (`3 unpaid invoices`). On such an
+  answer only the checks that need no extraction run (failure replay, tool
+  postconditions and missing knowledge-graph citations,
+  `verifierPipeline.ts`); any of them blocks it, and otherwise the verdict is
+  `skipped` / `no_trigger`. `enforce` releases a `no_trigger` verdict, so such
+  an answer goes out unchecked, and `shadow` records it as `skipped`.
+- **A failed extraction is not an empty one.** `ClaimExtractor.extract`
+  rejects when the LLM call fails, the response was cut off at the token
+  limit (`finishReason: 'max_tokens'` — the claims array may parse but is not
+  the whole answer), the response carries no usable `record_claims` call
+  (none, or any one of them without a `claims` array), or an entry breaks the
+  `record_claims` schema (no text, unknown type or source); the pipeline maps
+  the rejection to `unavailable` / `extractor_error`. It resolves no claims
+  and no gap only when the model reported none, which is `skipped` /
+  `no_claims`; when none of the claims it returned is in the answer, the
+  result carries a coverage gap, and without any other finding the verdict
+  is `skipped` / `incomplete_coverage` (below). No extraction failure comes
+  back as an empty or partial result, so an outage never reads as a clean
+  run.
+- **Coverage is explicit.** An extraction that covers only part of the
+  answer says so. The extractor sends the model the first 6000 characters of
+  the answer (`EXTRACTION_WINDOW_CHARS`) and asks for at most
+  `VERIFIER_MAX_CLAIMS + 1` claims; its result names what it did not cover
+  (`ClaimExtraction.gaps`): `answer_beyond_window` for a longer answer;
+  `claim_list_full` when the model's list reached that limit — a model that
+  keeps to the limit may have left claims out, so a full list never passes
+  for a complete one, while an answer with exactly `VERIFIER_MAX_CLAIMS`
+  claims still gets its whole list; `claims_not_in_answer` when the model
+  returned a well-formed claim that is not in the answer;
+  `claims_too_long` when it returned a claim that quotes the answer but is
+  longer than a check takes; and, behind a Privacy Shield,
+  `claims_not_restored` when a claim does not map back onto the answer the
+  user was shown (§6e). The pipeline adds one `not_checked` verdict
+  over a synthetic `coverage_gap` claim per gap, so
+  such an answer is `approved_with_disclaimer` / `partial` at best. When
+  nothing in the covered part could be checked, the verdict is `skipped` with
+  reason `incomplete_coverage` rather than `no_claims`, which would say more
+  than was looked at. The summary counts the entries as `uncoveredCount`, and
+  the web chat's tooltip says the verifier did not check all of the answer.
+- **The verbatim guard reports what it keeps out.** A claim must quote the
+  answer: the guard compares case-insensitively and lets any run of whitespace
+  match any other (a line break the model writes as a space, a non-breaking
+  space written as a plain one), and the claim then carries the answer's own
+  span. A claim that quotes nothing — a paraphrase, or a subject stitched in
+  from elsewhere in the sentence — never reaches a checker, since a check on
+  text the answer does not hold proves nothing about the answer. Dropping it
+  silently would let the rest verifying make the answer `approved`, so the
+  part of the answer it stood for is reported as the `claims_not_in_answer`
+  gap. The guard matches the whole claim, never a prefix of it: a claim cut to
+  a length before the match would be checked on its head while its tail — in
+  the answer or not — went unchecked. A claim that quotes the answer but is
+  longer than a check takes (`MAX_CLAIM_CHARS`, 300 characters; the tool
+  schema asks for 1-200) is not cut to fit either; it is kept from the
+  checkers and reported as the `claims_too_long` gap. Likewise every
+  `record_claims` call in the response is read: a model that splits its list
+  over several calls gets every part checked, where reading only the first
+  call would leave the rest unchecked without a trace.
+- **What no check can see.** The verifier checks the claims its extraction
+  model lists. A claim the model leaves out of a list that stays below the
+  request limit leaves no trace in the response, so `approved` / `verified`
+  says that every claim the extraction found was confirmed and nothing marks
+  the extraction as incomplete — not that the answer holds no further claim.
+  How reliably the model lists every claim is a property of the model and
+  its prompt (which asks for every claim, in order); the golden-set eval
+  (`middleware/test/golden/`) runs the real extractor over known answers and
+  fails when the pinned model stops finding a claim that decides the verdict.
+- **A claim nobody checked still counts.** A claim no checker accepts (an
+  amount, id, date or aggregate whose source is neither Odoo nor the graph)
+  and a claim beyond the per-answer cap (`VERIFIER_MAX_CLAIMS`, applied by
+  the pipeline) stay in the verdict as `not_checked`. An answer checked only
+  in part is therefore `approved_with_disclaimer` / `partial`, and the
+  summary reports them, with the coverage entries, as `uncheckedCount`.
+- **A failed check is not evidence.** The deterministic re-query and the
+  evidence judge mark a claim they could not check `unverified` with
+  `cause: 'check_failed'`. A verdict in which every check that ran failed
+  that way is badged `unavailable`; one whose claims all stayed unconfirmed
+  for any other reason is `unverified`, never `partial`.
+- **An injected verdict is held to its claims.** The pipeline is injected
+  (`verifier@1`), so `VerifierService` binds the verdict it returns to its
+  claims (`bindVerdictToClaims`) before it retries, resamples, stores or
+  streams anything on it, and `summarise` binds again where the summary
+  leaves for the stream. A status is never higher than its claims earn: an
+  `approved` over an unconfirmed claim is `approved_with_disclaimer`, over a
+  contradicted one `blocked`, and a status is never raised above the one
+  reported. `approved`, `approved_with_disclaimer` or `blocked` over zero
+  claims, an unknown status, entries that are not claim verdicts, and a
+  `skipped` / `unavailable` reason outside the closed codes are
+  `unavailable` / `pipeline_error`; the raw value goes to the operator log
+  (JSON-escaped, cut short), never onto the stream. A latency that is not a
+  duration is 0. The built-in pipeline's verdicts pass unchanged.
+- **Badges are derived under the evidence gate, not from the status alone.**
+  `badgeFor` (`verifierService.ts`) checks `hasVerificationEvidence()` and
+  gives `verified` only when every claim was confirmed, so even a verdict
+  that bypassed the binding cannot earn more. A correction retry earns
+  `corrected` only when the retry's own verdict confirmed every claim; a
+  retry that confirmed only some — the rest unconfirmed, not checked or not
+  covered — is `partial`, as the same verdict is on a first pass.
+- **`toSemanticAnswer` is the single connector badge gate.** It forwards a
+  badge only when `verifierSummaryHasEvidence()` holds, the badge is in the
+  unchanged wire union `verified | partial | corrected | failed`
+  (`SemanticAnswer.verifier`) and the summary's counts back it (`verified`
+  and `corrected` need every claim confirmed). `verifierSummaryHasEvidence()`
+  also needs counts that can describe one claim list — nonnegative integers
+  with `uncoveredCount ≤ uncheckedCount ≤ unverifiedCount` and
+  `contradictionCount + unverifiedCount ≤ claimCount` (absent optional counts
+  are 0) — so a summary from a foreign `ChatAgent` cannot buy a badge with
+  counts that contradict each other. Connectors (Teams card, Telegram) need
+  no change: a turn without evidence renders no chip there.
+- **The stream event carries every state.** The trailing `verifier` event is
+  forwarded verbatim by `/api/chat/stream` and by the public API-key stream
+  (in `enforce` mode `done.verifier` carries the same summary, see below),
+  so its `status` / `badge` can be `skipped` / `unverified` and
+  `unavailable`. Its `reason` is a closed code set, never an error message:
+  the message stays in the log line where the failure is caught. The web chat
+  renders the event as a footer chip (`web-ui/app/_components/chat/VerifierBadge.tsx`),
+  green only for a `verified` summary whose every claim was confirmed, blue
+  `corrected` under the same condition, never stronger than the summary's
+  counts back (a `verified` or `corrected` badge whose counts back only part
+  of the answer shows as partly verified), and applies the same rules to a
+  summary restored from local storage — a summary with a missing count, or
+  counts that contradict each other, gets a neutral chip.
+- **A resample needs something a second sample could change.**
+  `isBorderlineVerdict` holds only for an `approved_with_disclaimer` that
+  confirmed at least one claim and left another one unconfirmed after a
+  check. `skipped` / `unavailable`, a verdict that confirmed nothing and one
+  whose only doubt is `not_checked` claims never buy a resample — it is a
+  second paid orchestrator turn.
+- **Telemetry keeps the distinction.** `verifier_verdicts.status` stores
+  `skipped` / `unavailable` as their own values (free `TEXT` column), so a
+  calibration query no longer counts an outage as a clean turn, and
+  `verifier_verdicts.reason` (knowledge-graph migration 0034) holds their
+  closed reason code, so it can tell a `skipped` answer `enforce` delivers
+  (`no_trigger`, `no_claims`) from one it withholds. The row carries the
+  bound verdict, and `unverified_count` is counted from its claims, never
+  inferred from its status. `shadow` writes no row for an answer the
+  verifier may not see behind the shield (it logs `verification skipped`
+  instead). No code in the repository reads the table.
+
+Tests: `middleware/test/verifierPipelineStates.test.ts` (including the
+production `ClaimExtractor` over a failing, a truncated and a malformed LLM
+response, and answers checked only in part),
+`middleware/test/verifierExtractionCoverage.test.ts` (the production
+extractor and pipeline over a model that keeps to the claim limit: an answer
+longer than the window, and one with more claims than the cap),
+`middleware/test/verifierExtractionVerbatim.test.ts` (claims whose text
+differs from the answer — whitespace drift, a stitched subject — and a list
+split over several `record_claims` calls, through the extractor, pipeline,
+badge and service),
+`middleware/test/verifierExtractionLongClaim.test.ts` (claims longer than a
+check takes — one whose tail is not in the answer, one the answer holds word
+for word, and the exact length limit — through the same stages),
+`middleware/test/verifierClaimExtractorFailure.test.ts`,
+`middleware/test/verifierVerdictBinding.test.ts` (injected verdicts whose
+status, reason or latency their claims do not back, through the service into
+the stream summary and the stored row),
+`middleware/test/verifierStoreStates.test.ts`,
+`middleware/test/verifierServiceStates.test.ts`,
+`middleware/test/verifierServiceResample.test.ts`,
+`middleware/test/verifierDeterministicChecker.test.ts`,
+`middleware/test/verifierEvidenceJudge.test.ts`,
+`middleware/test/semanticAnswerGates.test.ts`,
+`middleware/test/channelApi/chatRouterVerifierStates.test.ts`,
+`web-ui/app/_lib/__tests__/verifierBadge.test.ts` and
+`web-ui/app/_components/chat/__tests__/VerifierBadge.test.tsx`.
+
+### `enforce` is a delivery gate, not a badge
+
+`VERIFIER_MODE=shadow` observes; `enforce` decides whether the user sees an
+answer. The wrapper releases an answer only when its bound verdict is
+`approved`, or `skipped` because no trigger pattern matched the answer or the
+extraction listed no claim in it (`no_trigger`, `no_claims`), and an answer
+released on either reason goes out unchecked (`verdictReleasesAnswer` in
+`harness-orchestrator/src/verifierDelivery.ts`). That includes an answer whose
+figures are all in formats the trigger patterns do not cover (above). Every
+other verdict withholds
+it; the gate fails closed: `blocked`, `approved_with_disclaimer` (a claim not
+confirmed, not checked or not covered), `skipped` with `no_checkable_claims` /
+`incomplete_coverage`, and `unavailable`. A withheld answer is replaced by a
+localized notice (`composeVerifierBlockedText`, `@omadia/channel-sdk`) marked
+`answerSource: 'verifier-blocked'` + `answerIsError: true`. The summary keeps
+the badge its verdict earns (a withheld, partly confirmed answer is `partial`,
+not `failed`), so the evidence rules above hold for withheld answers too.
+
+- **Stream: no content before the verdict.** `enforcedVerifiedStream` passes
+  a closed allowlist of events while the verdict is pending
+  (`passesBeforeVerdict`: iteration, routing, persona, tool progress,
+  heartbeat, token and usage counters, and `steer_applied`, which echoes the
+  user's own steering message) — none carries model or tool output.
+  Everything else is held, including any event type added later:
+  `text_delta`, `tool_use`, `tool_result`, the sub-agent events
+  (`sub_iteration` with its parent call), `nudge` (nudge text derived from
+  tool results), `turn_annotation` (plan, recall and knowledge-graph
+  payloads), `surface_*` and `done`. A released turn's held events go out
+  in order, `done` with `verifier` — except its text deltas: the answer goes
+  out as one `text_delta` carrying `done.answer` (without the disclosure
+  block) right before `done` (`releasedTurn`) — the same text, and for a
+  rendered answer a card released (below) the same real values, that `done`
+  hands the same client anyway. The verdict is about
+  `done.answer`, and the streamed deltas can say more: the orchestrator
+  streams each model response live and may then discard it and run the
+  model again (an unmet sub-agent obligation, a file it announced but did
+  not build), so a discarded response is in the deltas but never in
+  `done.answer`. A withheld turn's held events never go out. The client gets
+  one `text_delta` (the notice, without the disclosure block) and a `done`
+  rebuilt from an allowlist of identity and telemetry fields: attachments,
+  files, follow-ups, masked values, the delegated answer, cards and excerpts
+  are dropped. A turn that ends in an `error` releases nothing it held.
+- **Released without a verdict, on both paths.** A turn that carries a
+  choice card, an MCP input form, a slot picker or an OAuth consent prompt, a
+  degraded turn whose answer is the server's turn-incomplete notice, the
+  server's privacy refusal (`PROMPT_MASK_BLOCKED_ANSWER`) and inbound
+  screening quarantine (`SECURITY_QUARANTINE_NOTICE`) — turns whose model
+  never ran; the disclosure block a first turn folds in is set aside to
+  recognise them — and a bare `NO_REPLY` (the sentinel as the whole answer:
+  a notice would break the agent's deliberate silence) —
+  `releasesWithoutVerification`. Only the server notices and `NO_REPLY` are
+  sure to state no fact. A card asks the user for
+  input, but it rides on whatever answer its turn produced, and that answer
+  goes out unchecked — without a verdict, without a badge, with the tool
+  output, surfaces and canvas skeleton the turn held. The exemption is
+  checked before the privacy gate below, so on such a turn an answer the
+  shield rendered goes out unchecked as well. A choice card or an MCP
+  input form ends the turn at the tool call, so its answer is the text the
+  model wrote before it. Three cards also ride on the `done` of a complete
+  answer: `pendingSlotCard` whenever `find_free_slots` queued slots,
+  `pendingOAuthConsent` whenever any calendar tool of the turn hit
+  `consent_required`, and `pendingUserChoice` when the card-router pass
+  (`maybeRouteCardsFromText`, for providers without interleaved tool use)
+  attaches a choice card to an answer of 40 characters or more. Narrowing
+  the card exemption is an open point (handoff §13). On the stream these
+  turns carry the text of their own `done.answer` like a released turn, and
+  a bare `NO_REPLY` releases its `done` alone, without the tool traffic that
+  led to it. An answer that only ends with the sentinel on its own line is
+  verified like any answer: it states whatever precedes it — `isNoReply`
+  accepts that form so Teams, Telegram and `/api/chat` stay silent, but no
+  stream consumer drops it. `shadow` keeps its narrower rule (choice card
+  and degraded turn only).
+- **Never verified: what the verifier may not see.** An answer with
+  `answerSource: 'privacy-render'` holds real values the shield kept from
+  the turn's model, and behind a shield a pass that handed over no privacy
+  view (a Direct Line relay) leaves nothing the verifier may read (§6e).
+  Neither reaches the pipeline (`verifierGate`): `enforce` records
+  `unavailable` with reason `privacy_shield` and withholds the answer, on
+  both paths and for every answer it would verify — the first answer, a
+  borderline resample and a correction retry; `shadow` records no verdict.
+  A degraded turn whose answer the shield had already rendered is a real
+  answer, not the turn-incomplete notice, so it is not exempt and is
+  withheld the same way; its `done` keeps `degraded` and `committedTools`,
+  so the turn still reports its failure. With Privacy Shield v4 rendering
+  active, `enforce` therefore delivers a rendered answer, a rendered tool
+  error or sign-in prompt included, only on a turn that also carries an
+  input card: the card exemption (above) runs first and releases that turn
+  unchecked (`releasesWithoutVerification` before `verifierGate`, in
+  `VerifierService.chat` and in `enforcedVerifiedStream`).
+- **Re-entries.** `VerifierService.chat` runs at most one correction retry for
+  a contradiction (`VERIFIER_MAX_RETRIES`, default 1: 0 switches it off, and
+  the schema's maximum of 2 still runs one) and a borderline resample
+  (`verifier_resample_on_borderline`, default on); the stream runs the
+  correction retry too, at most once and not on canvas turns, and holds it
+  like the first run. Both deliver the notice when the final verdict does not
+  release the answer. No re-entry executes an external call the first run
+  recorded again: each one is replayed. A sub-agent whose data the shield
+  interned runs again, and its own calls are replayed in turn (next
+  subsection).
+- **One gate for every consumer.** The kernel route, channel dispatch (Teams,
+  Telegram), the public API-key stream and the canvas composer all resolve
+  the same wrapped chat agent. Canvas surfaces synthesised from tool results
+  are held with those results. The canvas skeleton is model output as well
+  (the composer model writes its headings, labels and text from the user's
+  request — sent through the plugin's LLM accessor before the turn starts,
+  outside the turn's prompt masking; open, handoff §13), so the composer
+  holds it while its base declares
+  `ChatAgent.holdsContentUntilVerdict` (an enabled `enforce` wrapper): it
+  goes out right before a released turn's first surface, or its `done`, and
+  never with a withheld or failed turn
+  (`omadia-ui-orchestrator/src/verdictHold.ts`). A withheld turn counts as
+  `ok` for the operator health signal and the API-key audit: it is a policy
+  decision, not a failure — unless it is also degraded (it threw after a
+  tool committed), which both still record as a failure.
+- **Not covered — by design or still open:**
+  - the subscription-CLI runtime (`claude-cli` provider): `buildOrchestrator`
+    returns the CLI chat agent before the verifier wrapper, so `VERIFIER_MODE`
+    has no effect on CLI-backed agents;
+  - proactive routines: the routine runner calls `runTurn` on the raw
+    orchestrator, so routine output is neither verified nor gated;
+  - persistence: the turn is written (session log, knowledge-graph turn
+    node, a possible auto-promoted memory) before `done` — inside the turn
+    when no re-entry can follow, otherwise right after the verdict, for the
+    pass whose verdict decided (commit-on-delivery, next subsection) — so a
+    withheld answer is stored and can reach a later turn's context; the gate
+    acts on delivery only;
+  - what a released turn carries besides its answer is not checked itself:
+    the verdict is about `done.answer`, and tool output, sub-agent traffic,
+    nudges, annotations, surfaces and the canvas skeleton's own text go out
+    because of that verdict, not their own;
+  - a turn that carries an input card goes out without any verdict, the
+    answer the card rides on included (above);
+  - LLM-free canvas actions and refreshes (a deterministic action or a
+    refresh recipe runs the tool directly) involve no model answer and no
+    verifier;
+  - latency: no answer text arrives before the turn and its verification have
+    finished, and on the canvas no skeleton either (its first paint waits for
+    the verdict). The kernel route keeps sending heartbeats; the public
+    API-key stream and the canvas get only the live events above, so a turn
+    without tool calls is silent until the verdict.
+
+Tests: `middleware/test/verifierServiceEnforceStream.test.ts` (what a consumer
+holds when the verifier is asked; release, withhold and fail-closed verdicts;
+control-flow terminals, `NO_REPLY` and its trailing form; answers Privacy
+Shield rendered, degraded or not; failed turns; disclosure and locale;
+observer forwarding; `shadow` unchanged),
+`middleware/test/verifierServiceEnforceRelease.test.ts` (the released text is
+`done.answer`, never a discarded response's deltas),
+`middleware/test/uiOrchestratorVerifierEnforce.test.ts` (the canvas skeleton),
+`middleware/test/verifierServiceEnforceChat.test.ts` (including rendered
+first answers, resamples and retries),
+`middleware/test/verifierBlockedText.test.ts`,
+`middleware/test/channelApi/chatRouterVerifierEnforce.test.ts` (the public
+API-key wire), `middleware/test/chatSessionsMirrorVerifier.test.ts`,
+`web-ui/app/_lib/__tests__/chatStreamEvents.test.ts` and
+`web-ui/app/_components/chat/__tests__/VerifierBlockedNotice.test.tsx`.
+
+### A re-entry re-generates the answer and replays the first run's calls
+
+A borderline resample and a correction retry used to be complete new turns:
+the model was asked again and every tool it called ran again, so a write the
+first run had made ran twice for one user request — three times when a
+resample turned up a contradiction and the retry followed. The invariant now
+is scoped to those re-entries: **a verifier re-entry executes no write** — a
+call the request's first run made comes back from the request's ledger (a
+sub-agent that interned data behind the shield or ran a bypassed tool runs
+again, its own calls replayed: "Sub-agents under Privacy Shield" below), any
+other call runs only when it is one of the kernel's reads — on every path a
+re-entry takes (`chat()`, the stream, channel dispatch) and in every loop
+beneath it (the orchestrator's tool loops, `LocalSubAgent`, a
+subscription-CLI sub-agent's loopback dispatch), the dataset import of the
+request's uploads included.
+Below the ledger nothing re-sends a call while the ledger is bound: every
+seam runs its handler sending each call once, so the MCP transport does not
+repeat a call after a transient failure ("Below the ledger", further down).
+What the ledger does not cover is listed under "What the ledger does NOT
+guarantee". A re-entry also sends the model nothing the first run's privacy
+rules would have kept from it: its correction hint carries no verifier
+evidence and crosses the wire masked like the user's message (§6e), and a
+replayed result the shield cannot intern again is withheld, never sent raw.
+
+- **The replay ledger.** `VerifierService` binds a per-request
+  `ToolReplayLedger` (`harness-orchestrator/src/toolReplayLedger.ts`) to the
+  turn input before the first run, whenever the request can be re-entered
+  (`verifierReentry.ts`). It travels through `turnContext.toolReplayLedger` to
+  every seam that runs a handler — `Orchestrator.dispatchToolDeadlined`,
+  `LocalSubAgent.dispatch`, `ToolDispatchService.invoke` — and each seam asks
+  it before the handler runs. The first run records every outcome under
+  (seam, tool name, canonical input): the raw result the turn used (recorded
+  after the dispatch-deadline firewall, so a late result the turn discarded
+  is never handed to a re-entry) or the exception the handler threw. Each
+  re-entry starts with `beginReentry()` and reads the outcomes back through
+  per-key cursors, so N identical first-run calls replay N outcomes in order
+  and a resample followed by a retry replays the first run twice.
+- **Same results, this pass's shield.** A replayed result goes through the
+  re-entry's own Privacy Shield pass: interned again under the re-entry's
+  privacy handle (withheld when that interning fails, as in a first run —
+  below), a returned `Error:` text redacted again, a thrown handler
+  replayed as the same rejection and withheld again — the raw error text
+  never reaches the model. A replayed memory read re-arms the Fresh-Check
+  gate; a domain tool's replay re-emits its sub-agent's inner tool events, so
+  the trace and the postconditions the verifier reads match the first run;
+  and what a replayed tool attached in the first run (a diagram, a generated
+  file — handed over through its attachment sink, which a replay does not
+  fill) is handed back with it, so a delivered retry carries the same file,
+  built once.
+- **Uploads are ingested once.** Before the model runs, a turn reads the
+  request's uploads, and a tabular one (CSV, XLSX) is imported as a dataset —
+  `ingestAttachments` → `importTabularDataset` →
+  `KnowledgeGraph.ingestDataset`, an insert with no dedupe. That happens
+  outside tool dispatch, so the ledger keeps it separately
+  (`ToolReplayLedger.ingestAttachmentsOnce`): the first run's ingestion — the
+  extracted text and `[dataset-imported]` blocks before masking, the image
+  blocks — goes to every re-entry; the text is masked through the
+  re-entry's own prompt map, the image blocks go to the provider as they
+  are, as in the first run (the shield masks text only; handoff §13). The
+  file is fetched and imported once, and a re-entry's model sees the dataset
+  ids the replayed first-run results refer to. A re-entry that
+  finds no first-run ingestion to reuse is abandoned before the model runs.
+  The ingestion is single-flight: a pass that asks while the first import is
+  still running awaits that import instead of starting another.
+- **The correction hint is wire content.** The retry's hint quotes the
+  contradicted claims, and claims are cut from the answer after the #361
+  restore — they can hold the real values the prompt mask kept from the
+  model. So the orchestrator masks a caller's `extraSystemHint` through the
+  pass's prompt map like the user's message (`wireExtraSystemHint`, both
+  paths): the same surrogates, restored in the delivered answer; its masked
+  spans on the pass's receipt and so on the request's merged receipt
+  (`maskedPromptSpans`); and failure-closed — a re-entry whose prompt cannot
+  be masked is abandoned instead of answered with the privacy error, and the
+  first answer's verdict decides. The kernel's fresh-check text is not
+  masked. Behind a shield the verifier does not send a hint the contradicted
+  pass's masking would alter at all (§6e), so a hint is masked once, by the
+  retry's own pass.
+- **No verifier evidence in the hint.** The checks fetch their evidence with
+  the verifier's own access, not with the grants of the user whose turn they
+  check: the graph evidence fetcher looks entities up tenant-wide by model
+  and name (`res.partner` and `hr.employee` name probes included), the
+  deterministic checker re-queries Odoo through the verifier plugin's reader.
+  The hint goes to that user's turn model, so `buildCorrectionPrompt` puts
+  nothing of it there — no `truth`, no `detail`, not a postcondition's schema
+  issues (read off the tool's raw output). It names the claims (the answer's
+  own words), the call ids of the turn's own trace and fixed instructions;
+  the retry corrects from the turn's own tool results, which it replays, or
+  says that a claim could not be confirmed. Evidence content stays with the
+  verifier: its judge model and the `verifier_contradictions` table (operator
+  database; no route reads it). The retrieval itself stays tenant-wide
+  (handoff §13).
+- **What may run, what ends the re-entry.** A call the first run did not make
+  runs only when the orchestrator knows its tool cannot change data — the
+  kernel's `query_knowledge_graph`, `query_dataset`, `read_attachment`,
+  `find_free_slots`, the chat roster and a memory `view`. Every plugin, MCP,
+  domain and sub-agent tool counts as a write: the plugin contract has no
+  read-only declaration, and a missing `writeCapabilities` is not one (the
+  sandbox `execute` tool ships none on purpose). Such a miss is refused with a
+  neutral, PII-free notice and marks the re-entry abandoned. The buffered and
+  the streaming tool loop stop after the batch (post-batch fail-fast), a
+  `LocalSubAgent` stops after its batch, and the one authoritative check at
+  the end of `runTurnCore` (and on the stream's terminal event) catches what
+  a direct-line dispatch or a sub-agent folded into an answer. An abandoned
+  resample keeps the first answer; an abandoned retry withholds it with the
+  `failed` badge. A recorded MCP input sentinel or connect prompt is not
+  replayable (its provenance exists only in the dispatch that produced it),
+  and a re-entry of an MCP input-card answer is abandoned before the parked,
+  take-once call could run again. So is a re-entry whose prompt cannot be
+  masked, and one with no first-run upload ingestion to reuse (above); the
+  log names the reason (`REENTRY_ABANDONED`, `describeAbandonment`).
+- **Sub-agents under Privacy Shield.** A sub-agent's answer is prose over the
+  datasets it interned in the first run's privacy scope, which ended with
+  that run. When a domain-tool dispatch bridged such datasets, or ran a
+  bypassed inner tool, a re-entry re-runs the sub-agent: its model is asked
+  again, every inner call it repeats is replayed at the `subagent:<name>`
+  seam and interned in the re-entry's scope, and an inner call the first run
+  did not make abandons the re-entry. Any other domain-tool result — and every
+  result without a privacy guard — is replayed as it is.
+- **One request, one record — the delivered one.** A re-entry fires no
+  per-call turn hook (`onBeforeTurn`, `onAfterToolCall`), ingests no replayed
+  MCP result into the Knowledge Graph and records no bypass again. Its run
+  trace keeps every replayed call, flagged `replayed`. The request's record
+  is written once, for the answer the user got (commit-on-delivery,
+  `requestTurnRecord.ts`): while a request ledger is bound, no pass — the
+  first run included — writes its session-log row or fires `onAfterTurn`;
+  each offers the row to `ledger.turnRecord` and notes its answer, and the
+  verifier commits the pass it delivers, or for a withheld answer the pass
+  its final verdict was about. The commit writes that pass's row with the
+  entities of every pass, inside that pass's turn scope (usage attribution,
+  identity), then fact extraction and auto-promotion over it, then the
+  request's `onAfterTurn` in the first run's hook context;
+  `onVerifierBlocked` waits for the commit, so it still follows
+  `onAfterTurn`. The stream's `done.turnId` names the committed row, which
+  is what save-as-memory promotes. Before, the first run wrote its row as
+  soon as it ended, so a delivered retry left the contradicted first answer
+  in the session log, the next turn's context and the extracted facts. A
+  re-entry no longer sees its own request's first answer in its history.
+  Every pass's privacy receipt goes to the ledger (`requestReceipts.ts`) —
+  behind a shield once the verifier is done with that pass, so it covers the
+  verifier's requests about it (§6e). The delivered answer carries the merge
+  (counts of the largest pass, the verifier's request counts summed, lists
+  united), and the request has ONE `turn_receipts` row, written once with
+  that merged receipt under the turn id of the first pass that had a
+  receipt — first in pass order (the pass number is taken when the pass
+  starts), whatever order the passes are finalized in; `done.receiptId`
+  names it. An abandoned pass's receipt is merged too — its model saw the
+  replayed results — and so is the receipt of a pass that threw or that the
+  client left before `done`, which the orchestrator closes itself (§6e).
+  Each offers to own the row like any pass. Neither takes it from a first
+  run that had a receipt; a request whose only receipt is theirs still gets
+  its row (the first run had no shield activity, and a retry read live and
+  was then abandoned), and so does a request whose first run threw.
+- **Detached work keeps out of the request.** A long-running task's runner
+  (`<tool>_start`, e.g. a deferred sub-agent) keeps working after the turn —
+  in `enforce` also while the verifier re-enters the request — so it starts
+  under `runDetachedFromRequestLedger` with a turn-local ledger of its own:
+  its inner calls execute, only an identical repeat of a call whose outcome
+  is unknown is refused, within the task. Inheriting the request's ledger,
+  every call it made after `beginReentry()` was refused as a miss (failing
+  the task and abandoning the running re-entry) or handed a first-run
+  result, and the request's raw results stayed alive with the runner.
+- **No repeat of an unknown outcome.** Every turn carries a ledger — a
+  turn-local one that keeps no results when no verifier bound one. A call
+  whose handler threw, or whose wrapper returned the withheld exception
+  notice, may have taken effect; an identical repeat within the request
+  (same tool, same canonical input, at any seam) is refused unless the tool
+  is a kernel read. That closes the repeat in the orchestrator's own loops
+  and in a subscription-CLI sub-agent's loopback dispatch; `LocalSubAgent`'s
+  own per-run refusal (§6c) stays.
+- **The operator switch.** `verifier_resample_on_borderline` (seeded from
+  `VERIFIER_RESAMPLE_ON_BORDERLINE`, default `true`) turns the borderline
+  resample off.
+- **One ledger per request; failures logged without content.** A request's
+  ledger is bound to the request's own input object, and an input that
+  already carries another ledger is refused (`bindToolReplayLedger` throws):
+  two requests sharing one input object would replay each other's tool
+  results. A resample re-binds the request's own ledger. A re-entry that
+  threw is logged with the run id, the error's class and a closed code
+  (`reentryFailureLine`, `reentry_turn_failed`), never with the error's
+  message, which can quote a tool's or a provider's output.
+
+What the ledger does NOT guarantee: it lives in one process for one request.
+A new message, a retried HTTP call or another middleware instance runs its
+tools again, and a canvas turn is not retried on the stream. Inputs must
+match exactly after key ordering, so a re-sampled model that phrases a write
+differently is abandoned rather than matched loosely. A turn without a
+verifier still runs two identical SUCCESSFUL calls twice (first-run behaviour
+is unchanged), and a subscription-CLI sub-agent's obligation re-prompt (a
+second CLI spawn inside one request) is only told, not prevented, not to
+repeat a write that succeeded. Below the ledger, for a first run and a
+replay alike:
+
+- **MCP transport retry.** The MCP client retries a call once after a
+  transient transport failure (`mcp/mcpClient.ts`, `MCP_CALL_MAX_ATTEMPTS`),
+  and a transient failure cannot tell "never executed" from "executed, reply
+  lost". It makes one attempt only under an exactly-once idempotency scope
+  (`ToolDispatchService`, for a write-capable tool dispatched with an
+  idempotency key — today the public MCP endpoint's `_meta.idempotencyKey`)
+  or while a request ledger is bound: every seam — the orchestrator's
+  dispatch, `LocalSubAgent`, `ToolDispatchService`, the MCP input-card
+  replay — runs its handler through `runHandlerAtMostOnce`
+  (`toolReplayLedger.ts`), which publishes `sendsEachCallOnce`
+  (`toolIdempotency.ts`). That signal has its own AsyncLocalStorage, so the
+  turn-context re-scopes of the skill-binding and plugin `ctx.mcp` paths keep
+  it; a long-running task's runner started inside the request inherits it.
+  A lost reply then reaches the model as the MCP error. A turn without a
+  request ledger — `shadow`, a disabled verifier, `enforce` with no re-entry
+  allowed, a canvas stream — keeps the one retry (#542), so there an MCP
+  write whose reply was lost can still run twice (handoff §13).
+- **Interning failures fail closed.** When interning a tool result under the
+  shield throws (`internToolResultV4`), every seam that interns — the
+  orchestrator's dispatch, `LocalSubAgent`, `ToolDispatchService`, the MCP
+  input-card replay — hands the model the kernel's notice instead
+  (`internFailedNotice`, `privacyInternPolicy.ts`: the call ran, its result
+  was withheld, do not call it again for the result; `query_dataset` keeps
+  its own wording), on a replay as on a first run. The raw result used to go
+  to the model, so on a re-entry a result the first run had interned could
+  reach the model raw, and from its answer the verifier's claim extractor.
+
+The correction hint is masked with the same detectors as the user's message,
+so a value no detector recognises reaches the model as it does in the
+message; with prompt masking off (the default) nothing is masked, but the
+hint still carries no verifier evidence. The open points are in handoff §13.
+
+Tests: `middleware/test/toolReplayLedger.test.ts`,
+`middleware/test/toolReplaySeams.test.ts` (the standalone dispatcher with and
+without an ambient ledger, the MCP input-card and direct-line aborts),
+`middleware/test/verifierServiceWriteSafety.test.ts` (resample, chained
+resample and retry, abandoned re-entries, read-only misses, thrown and
+returned errors replayed through the shield),
+`middleware/test/verifierStreamRetry.test.ts`,
+`middleware/test/verifierReentryRecords.test.ts` (trace flag, hooks, session
+log, the one receipt row, Knowledge-Graph ingestion),
+`middleware/test/verifierDeliveredTurnRecord.test.ts` (the delivered pass's
+row, facts, `onAfterTurn` and `done.turnId`; withheld and abandoned
+re-entries; the pass's turn scope), `middleware/test/requestTurnRecord.test.ts`,
+`middleware/test/longRunningTaskReplayLedger.test.ts` (a detached task runner
+across a re-entry), `middleware/test/verifierSubAgentReplay.test.ts`,
+`middleware/test/verifierResampleKillSwitch.test.ts`,
+`middleware/test/orchestrator/parentLoopThrownCallRepeat.test.ts`,
+`middleware/test/verifierReentryAttachments.test.ts` (one dataset import
+across a resample and a retry on `chat()` and the stream; a re-entry without a
+first-run ingestion), `middleware/test/mcpWriteIdempotency.test.ts` and
+`toolReplaySeams.test.ts` (no transport re-send while a request ledger is
+bound, at every seam), `middleware/test/orchestrator/internFailureFailsClosed.test.ts`
+(an uninternable result withheld, on a replay too),
+`middleware/test/verifierCorrectionHintPrivacy.test.ts`
+(a hint the masking would alter never reaches the wire, on both paths; one
+that passes reaches the retry once masked, without evidence),
+`middleware/test/correctionPromptEvidence.test.ts` and
+`middleware/test/verifierReentryHardening.test.ts` (the failure log line, a
+second ledger on one input).
+
+### Evidence judge: a verdict counts only with a citation its request printed
+
+The answer verifier (`@omadia/verifier`) hands every soft claim (names,
+qualitative statements) to `EvidenceJudge`: an LLM call that sees the claim and
+a bundle of evidence snippets, never the answer, and must reply through the
+forced `record_verdict` tool. Each snippet appears in the prompt as
+`Evidence #N [nodeId=<ref>, source=…]`, and a `verified` or `contradicted`
+verdict has to name the snippet it rests on in `evidence_node_id`. The ref is
+the snippet's node id without a Privacy Shield; behind one it is a handle
+minted for that one request (`ev-1`, `ev-2`, …), and the node id never leaves
+the process (§6e).
+
+That tool input is untrusted model output. The provider interface does not
+guarantee schema conformance, so any string can come back as the id. Checking
+only that the id is non-empty is not enough: an id that names no snippet would
+still yield a `verified` verdict, with its `source` taken from the claim's own
+`expectedSource`, and a made-up citation would earn the `verified` badge and
+skip the #132 borderline resample. The rules:
+
+- The citable refs are exactly the ones the request printed — the handles of
+  the snippets it carried behind a shield (at most three), the node ids
+  without one — and the cited ref is checked against them by exact match
+  after trimming. Refs are opaque (for example `odoo:hr.employee:7` or
+  `ev-2`), so there is no case-folding or prefix matching. Behind a shield a
+  node id is therefore never citable, and a handle beyond the snippets the
+  request carried is not either.
+- A ref outside that set demotes the verdict to `unverified`, the same
+  outcome as a missing one. A printed ref resolves server-side to the snippet
+  printed under it; nothing falls back to a value derived from the claim: a
+  verdict's `source` and `truth` come only from that snippet.
+- The contradiction recheck (the second, independent call that must agree
+  before a contradiction blocks) is parsed under the same rule, so a recheck
+  citing an unknown id does not confirm the contradiction. `check()` resolves
+  the snippet again before a recheck is spent, so the rule holds even if the
+  parser changes.
+- There is no switch to turn the check off. The tool schema already declares
+  the id required for `verified` and `contradicted`, and the check's off-state
+  is exactly the unearned badge described above.
+
+Trade-off: a genuine contradiction whose citation the model mistypes counts
+as an unconfirmed claim, not as a contradiction: `partial` in `shadow`; in
+`enforce` the answer is withheld like any answer with an unconfirmed claim,
+but no correction retry is bought for it. That is accepted because a
+contradiction must point at evidence by contract, and the deterministic
+checker (hard claims, anchored Odoo records, the trace cross-check) still
+blocks on its own.
+
+Each unknown-ref demotion is logged as `[verifier/judge] evidence_node_id not in
+evidence set, downgrading to unverified claim=<id> cited_len=<n>`: the claim id
+the extractor assigned (`c_001`, …) and the length of the cited ref, nothing
+else. The cited ref itself is never logged. It is model output and can repeat
+anything the judge was shown, including claim text and evidence content that
+may hold personal data or credentials. It can also carry characters that break
+or disguise a log line, such as U+2028/U+2029 line separators, ANSI escape
+sequences or bidi overrides, and JSON quoting leaves some of those intact. An
+id-shaped value is not echoed either, because a name or a token can look like
+an id. The claim text is not logged, and the demoted verdict carries a fixed
+reason string, so the cited id goes no further in the verdict.
+
+The check proves that the judge cited a snippet it was shown, not that the
+snippet supports the verdict; that remains the judge's call. Asserted by
+`test/verifierEvidenceJudge.test.ts` and, behind a shield,
+`test/verifierEvidenceHandles.test.ts`.
+
+### Evidence lookup: an entity handle resolves exactly its record
+
+The answer verifier's evidence judge (`EvidenceJudge`) sees only the snippets
+`GraphEvidenceFetcher` hands it — never the answer, never the graph itself. So
+which node the fetcher picks decides what "verified" means. The claim
+extractor attaches entity handles to each claim (`related_entities`:
+`odoo:hr.employee:7`, `hr.employee:7`, or a bare model such as
+`hr.department`), and the fetcher treats them as follows
+(`middleware/packages/harness-verifier/src/graphEvidenceFetcher.ts`,
+`entityHandle.ts`):
+
+- **An id-bearing handle names one record.** It is resolved with
+  `findEntities({ model, id })` (plugin-api 1.21.0; both backends compare
+  `props.id` as a string, so `7` and `'7'` are the same record). The fetcher
+  re-checks `props.model`, `props.id` and, for a three-part handle,
+  `props.system` on whatever comes back: `knowledgeGraph` is a plugin-provided
+  capability, and a provider compiled against the contract before `id` existed
+  ignores the option and returns any record of the model. A record that is not
+  in the graph contributes nothing; another record of the same model is never
+  substituted.
+- **A claim that pins a record gets only its pinned records.** No model-wide
+  sample and no name search is added, so a claim whose records are all missing
+  has no evidence and ends `unverified` — fail closed, never a sibling record
+  that happens to verify or contradict it.
+- **Search results are labelled.** Only claims without an id get a model sample
+  (bare `hr.department`, or the system-qualified `odoo:res.partner`) and the
+  capitalised-name search on `res.partner` / `hr.employee`. Those snippets say
+  "model sample, not a referenced record" or "name match, not a referenced
+  record" in title and content, so the judge — and a stored contradiction that
+  falls back to snippet content — can tell a search hit from a resolved record.
+- **The judge is bound to the pinned record.** Its prompt states that a snippet
+  about another record of a model RELATED pins is a different entity, and
+  `EvidenceJudge` enforces it deterministically: a `verified` or `contradicted`
+  verdict citing a node of a pinned model with a different id is demoted to
+  `unverified`, on the first call and on the contradiction recheck alike.
+  Behind a Privacy Shield the judge cites per-request handles; the check runs
+  server-side on the node id the cited handle resolves to, so it holds there
+  too.
+- **`nameContains` is a search, not an identity.** `'7'` matches records 7, 17
+  and 70 and every display name containing it. Code that starts from an entity
+  handle passes `id`.
+
+The deterministic checker applies the same primitive: `checkGraph` looks an
+`odooRecord.id` up by exact id and re-checks the hit (it used to substring-match
+the claim value, so "42" was also satisfied by 142 or "Halle 42"). A miss leaves
+that claim `unverified` too. The graph is a partial mirror of Odoo master data,
+synced periodically, so a record missing from it is not shown to be false; a
+`contradicted` verdict would hand the correction retry a "record not found"
+together with the instruction not to re-check it, which is wrong for any record
+created since the last sync. The substring path for claims without an id (a
+document reference or name) is unchanged and still reports a miss as
+`contradicted`.
+
+Why a filter on `findEntities` rather than a node-by-id read: two-part handles
+(`hr.employee:7`) carry no `system`, so an external-id read of
+`odoo:hr.employee:7` would have to guess the namespace. The Neon backend's
+private external-id lookup is therefore not the fix for this path and should not
+be "rediscovered" as one.
+
+Limits, stated so nobody reads more into "exact id" than it covers:
+
+- `findEntities` returns `OdooEntity` and `ConfluencePage` nodes only. A handle
+  in a plugin namespace (`PluginEntity`, e.g. `dataset:…`) never resolves, with
+  or without `id`, and such claims get no graph evidence.
+- This is an integrity rule for verifier evidence, not an access control.
+  `findEntities` returns every match in the graph's tenant and applies no
+  per-user, per-chat or per-agent scope.
+
+Tests: `middleware/test/verifierGraphEvidenceFetcher.test.ts` (fetcher and
+judge, including a provider that ignores `id`),
+`kgFindEntitiesById.test.ts` / `kgFindEntitiesById.pg.test.ts` (the exact-id
+contract on both backends, tenant scope on Neon), and the graph cases in
+`verifierDeterministicChecker.test.ts`.
 
 ## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
 
@@ -3421,6 +4530,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] Any new proxy route validates the response shape before returning it
       to the agent (defends against prompt injection from upstream).
 - [ ] Any new sub-agent tool is scope-locked at construction time.
+- [ ] A graph lookup that starts from an entity handle (`model:id`,
+      `system:model:id`) passes the id as `findEntities({ id })` and re-checks
+      the returned node's model and id; it never feeds the id to `nameContains`
+      and never falls back to a model-wide or name search for that record
+      (§7c).
 - [ ] A change to either CLI spawn argv keeps the deny gate (`--tools ""`,
       `--disallowedTools`, `--permission-mode dontAsk`, `--setting-sources ""`,
       `--restricted` where the CLI version allows it plus the
@@ -3486,6 +4600,56 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] A new native tool bound to shared/unscoped state (like memory) is routed
       through the caller's scoped accessor in `ctx.tools.invoke`, or denied
       there (§4, #909).
+- [ ] A new consumer of `VerifierVerdict` or `VerifierResultSummary` shows
+      `verified`, `partial` or `corrected` only when a check settled a claim:
+      `hasVerificationEvidence()` for a verdict, `verifierSummaryHasEvidence()`
+      for a summary (a contradicted claim for `blocked`, otherwise
+      `claimCount - contradictionCount - unverifiedCount > 0`), and green or
+      `corrected` only when every claim was confirmed. `skipped`,
+      `unavailable` and verdicts whose claims all stayed unconfirmed never map
+      to a green badge, and a verifier `reason` stays a closed code (§7c). A
+      verdict from the injected pipeline is bound to its claims
+      (`bindVerdictToClaims`) before anything acts on it. A summary is
+      untrusted input: a gate never reads a missing count as 0 and backs no
+      badge with counts that contradict each other.
+- [ ] A verifier stage that cannot do its work (a failed LLM call, a model
+      response it cannot read, cut off at the token limit or with an entry
+      that breaks the schema) never returns an empty or partial result: claim
+      extraction rejects, so the pipeline reports `unavailable`, and a
+      per-claim checker marks that claim `unverified` with
+      `cause: 'check_failed'`. A claim the pipeline does not check stays in
+      the verdict as `not_checked` instead of being dropped. None of these may
+      look like "nothing to check" or "fully checked" (§7c).
+- [ ] A verifier stage that reads only part of its input by design (a text
+      window, a limit on how many claims a model may list) reports what it
+      left out, and the pipeline keeps it in the verdict as `not_checked`. A
+      prompt never tells a model to stop at a limit unless a list that
+      reaches the limit is recorded as possibly incomplete. A guard that
+      keeps model output from the checkers (the verbatim guard) reports what
+      it kept out as a gap instead of dropping it, and matches the whole
+      claim: a claim's text is never cut to a length before the guard or a
+      check sees it, and a claim too long to check is a gap, not a shortened
+      claim. A model response is read in full — every tool call, not the
+      first one (§7c).
+- [ ] A new `ChatAgent` wrapper or stream consumer releases nothing of an
+      `enforce`-mode turn before the verdict: no `text_delta`, tool output,
+      surface or `done` — nor content the wrapper adds itself (like the
+      canvas skeleton) while its base declares `holdsContentUntilVerdict`.
+      An event type added to the live allowlist (`passesBeforeVerdict`)
+      carries no model or tool output, and a verdict other than `approved` or
+      `skipped` with `no_trigger` / `no_claims` withholds the answer. A
+      released turn's text is the text of its `done.answer`, never the deltas
+      the model streamed. A new exemption from verification
+      (`releasesWithoutVerification`) is limited to turns whose answer states
+      no fact; the existing card exemptions already release the answer a
+      card rides on unchecked (§7c), so they are not a precedent to widen.
+      An answer the verifier may not see — `answerSource: "privacy-render"`,
+      or behind a shield a pass that handed over no privacy view — is never
+      passed to the verifier pipeline (`verifierGate`); `enforce` withholds
+      it. A turn
+      marked `answerSource: "verifier-blocked"` is a withheld answer: its
+      `answer` is the notice, and nothing of the original answer reaches the
+      client (§7c).
 - [ ] An admin route takes the caller identity from
       `req.session.omadia_user_id`, never from the body or the query string,
       and rejects a client-supplied identity field instead of ignoring it
@@ -3585,11 +4749,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       shares one budget per account however many of it a client holds.
 - [ ] A new model call made after `runTurn` / `chatStream` produced the
       answer (verifier stages, extractors, judges, any post-turn pass) sends
-      only what a `PrivacyEgressContinuation` view holds or returns (the
-      turn's recorded wire view, a projection) — never the caller's own input
-      (it may still be an MCP input-card envelope) and never text handed to a
-      bare `LlmProvider` — and the continuation's `finalize` runs after that
-      call, exactly once, also on the error path (§6e). A new finalize site in
+      only what the `PrivacyEgressContinuation` view of the pass whose answer
+      it checks holds or returns (the pass's recorded wire view, a
+      projection) — never the caller's own input (it may still be an MCP
+      input-card envelope) and never text handed to a bare `LlmProvider` —
+      and that pass's `finalize` runs after the call, exactly once, also on
+      the error path (§6e). A new finalize site in
       the orchestrator hands over when the turn was held. An item such a
       request asks the model to cite (an evidence snippet) is named by a
       handle minted for that request and resolved server-side, never by its
@@ -3648,7 +4813,88 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       cannot must stop the app, never re-key it. Never on real data: a build
       installed by hand takes no pre-update snapshot (only the updater's
       install preflight does), and its kernel migrations run forward-only.
+- [ ] A sentence in the README, `docs/architecture.md`, this document or
+      `CITATION.cff` that promises a security property names the control that
+      enforces it and that control's default. Words like "signed", "verified",
+      "never" and "every" stand only where a check runs on the default path, and
+      an opt-in control (`verifier_enabled`, `mask_user_prompt`,
+      `human.strictApproval`) is called opt-in (§3a, §4, §6d, §7a,
+      `docs/ai-act-transparency.md` §6). A limit the code puts on such a
+      property, like an exemption list, a fail-open branch, a replayed chat
+      history or a best-effort write, is named where the property is claimed
+      (§6f, §7b), and a tool added to `INTERN_EXEMPT_TOOLS` is listed in §6f.
+      A claim about what the shield keeps from the model names the model
+      requests it masks and the setting each one needs, and then says that
+      every other model call sends its text as it is, naming the in-tree
+      ones: the inbound security screener, turn scoring and the other memory
+      jobs, `ctx.llm` calls, images and embeddings (§6f). A claim that tool
+      errors are redacted or withheld names the tools it skips, intern-exempt
+      and bypassed ones (§6c residuals, §6f), and a claim that prompt masking
+      fails closed says that a failed C1 detector falls back to C0 for the
+      rest of the turn (§6f). A claim about the org clamp says that it does
+      not reach the MCP-to-knowledge-graph ingestion (§6f). A claim about
+      what the verifier checks names its trigger patterns and the answers
+      `enforce` delivers unchecked, an input-card turn's rendered answer
+      included (§7c).
+      A claim that a call runs once names the scope the code gives it: one
+      request for the verifier's replay ledger, one process and the cache
+      window for an idempotency key (§4, §7c).
+      `test/docsClaimsGuard.test.ts` keeps the retired claims out and ties the
+      defaults and limits the README names to the code; a new public claim
+      that rests on a default gets a line there.
+
+- [ ] A new seam that runs a tool handler asks the request's
+      `turnContext.toolReplayLedger` before the handler runs and reports the
+      outcome after it, the way `Orchestrator.dispatchToolDeadlined`,
+      `LocalSubAgent.dispatch` and `ToolDispatchService.invoke` do: replay a
+      recorded outcome, refuse a repeat or a miss with the kernel's notice,
+      record only what the turn used, and run the handler through
+      `runHandlerAtMostOnce` so nothing beneath it is re-sent while a request
+      ledger is bound. A seam that interns fails closed when interning throws
+      (`internFailedNotice`), never forwards the raw result. It reports
+      `readOnly` only for a tool it KNOWS cannot change data — never because
+      `writeCapabilities` is missing.
+      A new `turnContext.run(...)` re-scope around a handler spreads the
+      current context (`{ ...ctx }`), so the ledger survives (§7c). Work that
+      outlives the turn — a detached runner, a timer — must NOT keep the
+      request's ledger: it starts under `runDetachedFromRequestLedger`.
+- [ ] A new caller that re-enters a turn (another sample, another retry)
+      binds a `ToolReplayLedger` to the request's own input object before the
+      first run (`bindToolReplayLedger` refuses an input that carries another
+      ledger), logs a re-entry that threw by error class and closed code
+      (`reentryFailureLine`), never by its message, calls
+      `beginReentry()` and re-binds before every re-entry (keeping the pass
+      number it returns), treats `ToolReplayAbortError` as "keep the first
+      answer", commits `ledger.turnRecord` for the pass it delivers — on
+      every exit path, the first pass when it delivers nothing — commits
+      `ledger.receipts` once and releases the binding when the request is
+      over (`verifierReentry.ts`). A re-entry without a ledger runs every tool
+      again; a request that never commits its record loses its session-log
+      row.
+- [ ] A new place that writes a turn's record (session-log row, fact
+      extraction, auto-promotion, `onAfterTurn`) goes through
+      `TurnRecordWriter` (`recordRow`, `offerRow`) and
+      `Orchestrator.afterTurn`, so a pass a verifier may re-enter offers it
+      instead of writing it (commit-on-delivery, §7c); a signal that must
+      follow the request's `onAfterTurn` waits for the commit
+      (`afterRequestRecord`).
+- [ ] A new turn step outside tool dispatch that changes data (like the
+      upload import in `ingestAttachments`) runs once per request: a verifier
+      re-entry gets the first run's outcome from the request's ledger
+      (`ToolReplayLedger.ingestAttachmentsOnce`) or is abandoned — it never
+      performs the step a second time (§7c).
+- [ ] Text a caller hands a turn for its system prompt (`extraSystemHint`)
+      reaches the model only through `wireExtraSystemHint`, which masks it
+      through the turn's prompt map and fails closed. A correction hint or
+      any other text built from a verifier verdict carries the claims only —
+      never `truth`, `detail` or other evidence the verifier fetched with its
+      own access (§7c).
+
+- [ ] An LLM judge or classifier output that references an input item by id
+      resolves that id deterministically against the concrete input set of
+      that call. An unknown id yields the conservative verdict, never a
+      fallback derived from the claim itself (§7c).
 
 ---
 
-*Last reviewed: 2026-10 (§10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4a added: npm dependency audit scope and the desktop runtime).*
+*Last reviewed: 2026-10 (§4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*

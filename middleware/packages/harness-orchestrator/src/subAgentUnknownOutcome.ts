@@ -33,6 +33,9 @@ export interface SubToolOutcome {
   postcondition?: { issues: readonly string[] };
   /** The call ended in an exception; an identical repeat is refused. */
   outcomeUnknown?: true;
+  /** A verifier re-entry handed back the first run's outcome; the handler
+   *  did not run (`toolReplayLedger.ts`). */
+  replayed?: true;
 }
 
 /** The calls of one sub-agent run that ended in an exception. */

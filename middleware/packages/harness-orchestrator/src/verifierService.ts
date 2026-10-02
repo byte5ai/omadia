@@ -6,55 +6,113 @@ import type {
   Orchestrator,
   VerifierResultSummary,
 } from './orchestrator.js';
-import { PROMPT_MASK_BLOCKED_ANSWER, toSemanticAnswer } from './orchestrator.js';
+import { toSemanticAnswer } from './orchestrator.js';
 import { randomUUID } from 'node:crypto';
-import type { SemanticAnswer } from '@omadia/channel-sdk';
-import type { RunTracePayload } from './runTraceCollector.js';
+import type { ChatStreamObserver, SemanticAnswer } from '@omadia/channel-sdk';
 import type {
-  VerifierBadge,
   VerifierPipeline,
   VerifierStore,
   VerifierVerdict,
 } from '@omadia/verifier';
 import { isBorderlineVerdict } from '@omadia/verifier';
+import type { ToolReplayLedger } from './toolReplayLedger.js';
 import type { TurnHookRunner } from './turnHooks.js';
-import type { PrivacyEgressContinuation } from './privacyEgress.js';
+import { fireVerifierBlockedHook } from './verifierBlockedHook.js';
+import {
+  releasesWithoutVerification,
+  shadowVerifiedStream,
+  verdictReleasesAnswer,
+  withheldTurnResult,
+} from './verifierDelivery.js';
+import { enforcedVerifierStream } from './verifierEnforceStream.js';
+import { VerifierJudge } from './verifierJudge.js';
 import {
   EgressLedger,
+  StreamPasses,
   carriesUnresolvedPlaceholders,
-  modelFacingUserMessage,
   privacySafeCorrection,
-  settleQuietly,
-  verifierGate,
   type EgressTurn,
   type PrivacyEgressHost,
-  type VerifierGate,
 } from './verifierPrivacyGate.js';
+import {
+  afterRequestRecord,
+  asRequestResult,
+  bindRequestLedger,
+  FIRST_PASS,
+  prepareReentry,
+  reentryFailureLine,
+  type ReentryPolicy,
+} from './verifierReentry.js';
+import {
+  mergeBadges,
+  mergeBorderlineVerdicts,
+  summarise,
+  withVerifier,
+} from './verifierVerdicts.js';
+
+// Re-exported: tests and callers import these from this module.
+export {
+  badgeFor,
+  mergeBadges,
+  mergeBorderlineVerdicts,
+} from './verifierVerdicts.js';
 
 /**
  * End-to-end wrapper around the orchestrator that adds answer verification.
  *
- *   user turn → orchestrator.chat → verifier.verify
- *                                   ├─ approved              → return
- *                                   ├─ approved_with_disclaimer → return + disclaimer badge
- *                                   └─ blocked (enforce only)
- *                                        → inject correction into system hint
- *                                        → orchestrator.chat (retry, max 1x)
- *                                        → verify again
- *                                        → return (badge = corrected | failed)
+ * `shadow` observes: the verifier runs and persists, the answer goes out
+ * unchanged with the verdict as a badge. That is how the trigger router and
+ * extractor are calibrated in production without touching delivery.
  *
- * In shadow mode the verifier runs + persists but never blocks / retries.
- * That's how we calibrate the trigger router and extractor in production
- * without risking UX regressions.
+ * `enforce` is a delivery gate. An answer is delivered only when its verdict
+ * releases it — `approved`, or `skipped` because it holds nothing to check
+ * (`verdictReleasesAnswer`); otherwise the user gets a localized notice that
+ * the answer was withheld (`answerSource: 'verifier-blocked'`). It fails
+ * closed: a verifier that could not run (`unavailable`) or claims it could
+ * not confirm withhold the answer just like a contradiction, and so does an
+ * answer the verifier may not see behind a Privacy Shield, which is never
+ * sent to the pipeline (`verifierGate`, `privacyShieldVerdict`). On the
+ * stream no content leaves before the verdict (`verifierDelivery.ts`).
+ * Before it delivers, `enforce` may re-enter the turn: the non-streaming path
+ * draws a second sample of a borderline answer, and both paths run one
+ * correction retry on a contradiction (`verifierEnforceStream.ts` for the
+ * stream):
  *
- * Errors in the verifier itself never surface to the user — we always fall
- * back to returning the original orchestrator reply. The failure mode the
- * user experiences is "verifier didn't help", not "verifier broke my bot".
+ *   orchestrator.runTurn → verify → blocked → correction hint in the system
+ *   prompt → runTurn (retry, maxRetries) → verify → deliver or withhold
  *
- * Behind a Privacy Shield every turn this wrapper runs hands its privacy
- * finalisation over (see `privacyEgress.ts` / `verifierPrivacyGate.ts`): the
- * verifier's model requests go through that turn's own privacy view, and the
- * turn's receipt is finalized only after them — exactly once per turn.
+ * A re-entry re-generates the ANSWER; it never re-runs the turn's tools
+ * (`verifierReentry.ts`, `toolReplayLedger.ts`). Every call the first run
+ * made is replayed from the request's ledger, a call it did not make runs
+ * only when it is a kernel read, and a re-entry that needs any other call is
+ * abandoned before it runs — the first answer stands (a retry's then keeps
+ * its `failed` badge). The uploads' ingestion is reused the same way. The
+ * correction hint names the contradicted claims only — never the evidence
+ * the verifier fetched with its own access (`buildCorrectionPrompt`) — and
+ * the orchestrator masks it like the user's message; a re-entry whose prompt
+ * cannot be masked is abandoned. Canvas turns are not retried on the stream.
+ * What the request records — its one session-log row, fact extraction,
+ * `onAfterTurn` — is the delivered pass's, written once the service decided
+ * (commit-on-delivery, `requestTurnRecord.ts`).
+ *
+ * Behind a Privacy Shield every pass this wrapper runs — first run,
+ * resample, retry — hands its privacy finalisation over
+ * (`privacyEgress.ts`, `verifierPrivacyGate.ts`): the verifier's model
+ * requests go through that pass's own privacy view, and the pass is
+ * finalized only after them, exactly once. A request the verifier may
+ * re-enter keeps ONE receipt row, every pass's receipt merged in (verifier
+ * requests and tool errors included); the answer carries that merged
+ * receipt. The hint is withheld when the turn's masking would still alter it,
+ * and a second answer whose restored text still carries placeholders never
+ * replaces the first.
+ *
+ * A failing verifier surfaces as `unavailable`, never as `approved`: "the
+ * verifier could not check" must not read as "the verifier checked and found
+ * nothing wrong". The pipeline is injected, so its verdict is held to what
+ * its claims show (`bindVerdictToClaims`, `verifierJudge.ts`) before it is
+ * retried, resampled, stored or streamed: a status its claims do not back, or
+ * a reason outside the closed codes, never reaches `verifier_verdicts` or the
+ * stream.
  */
 
 export interface VerifierServiceOptions {
@@ -66,14 +124,16 @@ export interface VerifierServiceOptions {
   /** Hard cap on retries after a contradiction. Default 1. */
   maxRetries?: number;
   /**
-   * #132 — when the first verdict is borderline (`approved_with_disclaimer`,
-   * i.e. no contradictions but at least one unverified claim), draw a
-   * second sample from the same orchestrator turn and merge the two
-   * verdicts. Default true.
+   * #132 — when the first verdict is borderline (`isBorderlineVerdict`: no
+   * contradictions, at least one claim confirmed and one a check could not
+   * confirm), draw a second sample from the same orchestrator turn and merge
+   * the two verdicts. Default true; the operator switch is the verifier's
+   * `verifier_resample_on_borderline` setup field.
    *
    * Cost note: each enabled re-sample doubles the LLM cost of a turn that
    * already cleared verification with "almost". `maxResamples` caps the
    * blast radius (hard 1 today). Disable for cost-sensitive deployments.
+   * The re-sample runs no tool again (see the class comment).
    */
   resampleOnBorderline?: boolean;
   /** Hard cap on borderline re-samples per turn. Default 1. */
@@ -83,6 +143,13 @@ export interface VerifierServiceOptions {
    *  turn-hook so the plan-runner can record the rejection on the turn's plan.
    *  Fire-and-forget; never gates the response. */
   turnHookRegistry?: TurnHookRunner;
+  /**
+   * Operator locale (the AI-disclosure setup's `locale`) for the notice that
+   * replaces a withheld answer in `enforce` mode. A turn's own
+   * `aiDisclosure.locale` wins; this covers turns without one (disclosure
+   * set to `off`). Neither → German, like the turn-incomplete notice.
+   */
+  locale?: string;
 }
 
 const DEFAULTS = {
@@ -95,8 +162,7 @@ export class VerifierService implements ChatAgent {
   private readonly orchestrator: Orchestrator;
   /** The orchestrator's privacy hand-over surface (feature-detected). */
   private readonly host: PrivacyEgressHost;
-  private readonly pipeline: VerifierPipeline;
-  private readonly store?: VerifierStore;
+  private readonly judge: VerifierJudge;
   private readonly enabled: boolean;
   private readonly mode: 'shadow' | 'enforce';
   private readonly maxRetries: number;
@@ -104,12 +170,11 @@ export class VerifierService implements ChatAgent {
   private readonly maxResamples: number;
   private readonly log: (msg: string) => void;
   private readonly turnHookRegistry: TurnHookRunner | undefined;
+  private readonly locale: string | undefined;
 
   constructor(opts: VerifierServiceOptions) {
     this.orchestrator = opts.orchestrator;
     this.host = opts.orchestrator;
-    this.pipeline = opts.pipeline;
-    if (opts.store) this.store = opts.store;
     this.enabled = opts.enabled;
     this.mode = opts.mode;
     this.maxRetries = opts.maxRetries ?? DEFAULTS.maxRetries;
@@ -121,165 +186,108 @@ export class VerifierService implements ChatAgent {
       ((msg: string): void => {
         console.error(msg);
       });
+    this.judge = new VerifierJudge({
+      pipeline: opts.pipeline,
+      ...(opts.store ? { store: opts.store } : {}),
+      mode: this.mode,
+      host: this.host,
+      log: this.log,
+    });
     this.turnHookRegistry = opts.turnHookRegistry;
+    this.locale = opts.locale;
   }
 
-  /**
-   * #133 (E6) — fire-and-forget signal that this turn's answer was
-   * verifier-blocked. Keyed by session scope (the plan-runner looks up the
-   * scope's latest plan). Never throws, never blocks the response.
-   */
-  private fireVerifierBlocked(
-    input: ChatTurnInput,
-    verdict: VerifierVerdict,
-  ): void {
-    const reg = this.turnHookRegistry;
-    const scope = input.sessionScope;
-    if (!reg || !scope) return;
-    const contradictions = (verdict as { contradictions?: unknown[] })
-      .contradictions;
-    const n = Array.isArray(contradictions) ? contradictions.length : 0;
-    const reason = `verifier blocked (${String(n)} contradiction${
-      n === 1 ? '' : 's'
-    })`;
-    void reg
-      .run(
-        'onVerifierBlocked',
-        {
-          turnId: scope,
-          sessionScope: scope,
-          ...(input.userId ? { userId: input.userId } : {}),
-          // Per-orchestrator isolation: same Agent slug the orchestrator
-          // stamps on its hooks, so the plan-runner qualifies the scope
-          // identically and finds this Agent's plan.
-          agentSlug: this.orchestrator.agentId,
-        },
-        { blockReason: reason },
-      )
-      .catch(() => undefined);
+  /** `ChatAgent.holdsContentUntilVerdict`: true in `enforce`, so a wrapper
+   *  holds content of its own (a canvas skeleton) until the verdict too. */
+  get holdsContentUntilVerdict(): boolean {
+    return this.enabled && this.mode === 'enforce';
   }
 
-  /**
-   * Stream wrapper: proxies every event from the underlying orchestrator
-   * unchanged, then — after the base `done` event — runs the verifier on
-   * the completed answer and emits ONE additional `verifier` event. The
-   * client can render a badge or stay silent; the orchestrator's answer
-   * stream is not rewritten mid-flight.
-   *
-   * Note on enforce mode: we intentionally DO NOT retry on the stream
-   * path. The user has already seen the tokens as they were generated;
-   * replacing the answer after the fact would be a worse UX than a
-   * clearly labelled "verifier-widerspruch" badge. Retries remain the
-   * non-stream (`/api/chat`) endpoint's territory.
-   *
-   * Behind a Privacy Shield the orchestrator hands the turn's finalisation
-   * over, and `done` — which carries the receipt — is HELD: the inner stream
-   * is drained first (so its steering / auth cleanup runs), then the answer
-   * is verified through the turn's privacy view, then the turn is finalized
-   * and `done` goes out with the receipt, followed by the `verifier` event.
-   * The streamed text is already on screen; only completion waits.
-   */
-  async *chatStream(input: ChatTurnInput): AsyncGenerator<ChatStreamEvent> {
-    if (!this.enabled) {
-      yield* this.orchestrator.chatStream(input);
-      return;
-    }
-
-    const runId = randomUUID();
-    let done: Extract<ChatStreamEvent, { type: 'done' }> | undefined;
-    let egress: PrivacyEgressContinuation | undefined;
-    let settled = false;
-    let skipVerification = false;
-
-    this.host.markPrivacyFinalizeHeld?.(input);
-    try {
-      for await (const event of this.orchestrator.chatStream(input)) {
-        if (event.type === 'done') {
-          done = event;
-          // The turn ended with a clarification-request card — there are no
-          // fact claims to verify. Suppress the verifier pass entirely so the
-          // Smart-Card doesn't get adorned with a stray badge.
-          if (event.pendingUserChoice) skipVerification = true;
-          // #1094 — same reasoning for a degraded turn: its `answer` is the
-          // composed turn-incomplete notice (or a server-rendered v4 answer),
-          // not model prose, so there is nothing to fact-check. Without this the
-          // verifier would stamp a "verified" badge onto a turn that failed.
-          if (event.degraded) skipVerification = true;
-          // The orchestrator handed the continuation over before `done`.
-          egress = this.host.takePrivacyEgress?.(input);
-          // Held: the receipt only exists once the verifier is done.
-          if (egress !== undefined) continue;
-        }
-        yield event;
-      }
-
-      if (done === undefined) return;
-      const gate = skipVerification
-        ? undefined
-        : this.gateFor(done.answerSource, egress);
-      if (egress === undefined) {
-        // `done` already went out, as without a shield.
-        if (gate === undefined || !gate.verify) return;
-        yield* this.verifyAfterStream(runId, input, done, gate);
-        return;
-      }
-      const verdict =
-        gate?.verify === true
-          ? await this.safeVerify(runId, input, done.answer, done.runTrace, gate)
-          : undefined;
-      settled = true;
-      const receipt = await settleQuietly(egress, this.log);
-      yield {
-        ...done,
-        ...(receipt ? { privacyReceipt: receipt, receiptId: egress.receiptId } : {}),
-      };
-      if (verdict !== undefined) yield* this.streamVerdict(runId, input, verdict);
-    } finally {
-      // A client that leaves early, or a throw, must not strand the turn's
-      // privacy state until restart.
-      egress ??= this.host.takePrivacyEgress?.(input);
-      if (egress !== undefined && !settled) await settleQuietly(egress, this.log);
-    }
+  /** #133 (E6) — record a verifier block on this turn's plan (`verifierBlockedHook.ts`). */
+  private fireVerifierBlocked(input: ChatTurnInput, verdict: VerifierVerdict): void {
+    fireVerifierBlockedHook(this.turnHookRegistry, this.orchestrator.agentId, input, verdict);
   }
 
-  /** Verify a `done` that was already delivered (no hand-over). */
-  private async *verifyAfterStream(
-    runId: string,
-    input: ChatTurnInput,
-    done: Extract<ChatStreamEvent, { type: 'done' }>,
-    gate: Extract<VerifierGate, { verify: true }>,
-  ): AsyncGenerator<ChatStreamEvent> {
-    const verdict = await this.safeVerify(runId, input, done.answer, done.runTrace, gate);
-    yield* this.streamVerdict(runId, input, verdict);
-  }
-
-  private async *streamVerdict(
-    runId: string,
-    input: ChatTurnInput,
-    verdict: VerifierVerdict,
-  ): AsyncGenerator<ChatStreamEvent> {
-    // #133 (E6) — record a verifier block on this turn's plan, same as the
-    // non-streaming enforce path. The stream path still does NOT retry (see the
-    // method doc — the user already saw the tokens); this only surfaces the
-    // rejection on the plan DAG. Shadow mode never blocks, so it never records.
-    if (this.mode !== 'shadow' && verdict.status === 'blocked') {
-      this.fireVerifierBlocked(input, verdict);
-    }
-    void this.persist(runId, input, verdict, 0);
-    yield {
-      type: 'verifier',
-      summary: summarise(verdict, 0, this.mode),
+  private reentryPolicy(): ReentryPolicy {
+    return {
+      mode: this.mode,
+      maxRetries: this.maxRetries,
+      resample: this.resampleOnBorderline && this.maxResamples > 0,
     };
   }
 
-  /** {@link verifierGate}, logging why a turn is not verified. */
-  private gateFor(
-    answerSource: ChatTurnResult['answerSource'],
-    egress: PrivacyEgressContinuation | undefined,
-  ): VerifierGate {
-    const gate = verifierGate(answerSource, egress, this.host);
-    if (!gate.verify) this.log(`[verifier/service] verification skipped: ${gate.reason}`);
-    return gate;
+  /**
+   * Stream wrapper. `shadow` passes every event through as produced and
+   * reports the verdict as one trailing `verifier` event; `enforce` holds
+   * every content event until the verdict, releases an answer as the text
+   * the verdict is about (never the raw deltas) and replaces one it does not
+   * release with the withheld-answer notice (`verifierDelivery.ts`). A
+   * contradiction first buys one correction retry over the first run's tool
+   * results — never re-running a tool — whose verdict then decides by the
+   * same rule; canvas turns are not retried (`verifierEnforceStream.ts`).
+   * The route's observer (iteration, token and usage counters — no text) is
+   * forwarded in every mode, for the retry too.
+   *
+   * Behind a Privacy Shield every pass hands its finalisation over, and
+   * `done` — which carries the receipt — waits in both modes: the pass's
+   * stream is drained first (so its steering / auth cleanup runs), the
+   * answer is verified through the pass's privacy view, then the pass is
+   * finalized and `done` goes out with the receipt.
+   */
+  async *chatStream(
+    input: ChatTurnInput,
+    observer?: ChatStreamObserver,
+  ): AsyncGenerator<ChatStreamEvent> {
+    if (!this.enabled) {
+      yield* this.orchestrator.chatStream(input, observer);
+      return;
+    }
+    const runId = randomUUID();
+    if (this.mode === 'shadow') {
+      yield* this.shadowStream(runId, input, observer);
+      return;
+    }
+    yield* enforcedVerifierStream(
+      {
+        orchestrator: this.orchestrator,
+        egressHost: this.host,
+        judge: this.judge,
+        policy: this.reentryPolicy(),
+        locale: this.locale,
+        log: this.log,
+        fireVerifierBlocked: (turnInput, verdict) => this.fireVerifierBlocked(turnInput, verdict),
+      },
+      runId,
+      input,
+      observer,
+    );
+  }
+
+  /** `shadow` on the stream: one pass, `done` held only behind a shield. */
+  private async *shadowStream(
+    runId: string,
+    input: ChatTurnInput,
+    observer: ChatStreamObserver | undefined,
+  ): AsyncGenerator<ChatStreamEvent> {
+    const passes = new StreamPasses(this.host, this.log);
+    try {
+      const egress = passes.open(input);
+      yield* shadowVerifiedStream(this.orchestrator.chatStream(input, observer), {
+        // The orchestrator handed the continuation over before `done`.
+        holdDone: () => egress.take() !== undefined,
+        verify: async (done) => {
+          const verdict = await this.judge.verdictFor(runId, input, done, egress.take());
+          if (verdict === undefined) return undefined;
+          void this.judge.persist(runId, input, verdict, 0);
+          return summarise(verdict, 0, this.mode);
+        },
+        finish: (done) => egress.finishDone(done),
+      });
+    } finally {
+      // A client that leaves early, or a throw, must not strand the turn's
+      // privacy state until restart.
+      await passes.settleAll();
+    }
   }
 
   /** Drop-in replacement for `orchestrator.chat` with verification. */
@@ -287,76 +295,118 @@ export class VerifierService implements ChatAgent {
     if (!this.enabled) {
       return this.orchestrator.chat(input);
     }
-    // Every turn run below hands its privacy finalisation to this ledger;
+    const runId = randomUUID();
+    const request = bindRequestLedger(this.orchestrator, input, this.reentryPolicy(), 'chat');
+    // Every pass run below hands its privacy finalisation to this ledger;
     // whatever path returns (or throws), each one is finalized exactly once.
-    const ledger = new EgressLedger(this.host, this.log);
+    const egress = new EgressLedger(this.host, this.log);
     try {
-      return await this.chatVerified(randomUUID(), input, ledger);
+      return await this.chatVerified(runId, input, request?.ledger, egress);
     } finally {
-      await ledger.settleAll();
+      // Every pass finalized — its receipt joins the request's. Delivery
+      // committed the delivered pass's record already; a request that ended
+      // without delivering keeps its first run's record, as before
+      // commit-on-delivery. Then the ONE receipt row, every pass's receipt
+      // merged in.
+      await egress.settleAll();
+      await request?.ledger.turnRecord.commit(FIRST_PASS);
+      await request?.ledger.receipts.commit();
+      request?.release();
     }
   }
 
   private async chatVerified(
     runId: string,
     input: ChatTurnInput,
-    ledger: EgressLedger,
+    ledger: ToolReplayLedger | undefined,
+    egress: EgressLedger,
   ): Promise<SemanticAnswer> {
     // Use `runTurn()` (full internal shape) rather than `chat()` — we need
     // access to `runTrace` for the verifier pipeline's evidence fetcher.
-    const first = await ledger.runTurn(input, () => this.orchestrator.runTurn(input));
+    const first = await runPass(egress, input, FIRST_PASS, () => this.orchestrator.runTurn(input));
     // Clarification-request turns have no fact claims — skip verification.
     // The Smart-Card UX is the "answer" here; there is nothing to check.
-    if (first.result.pendingUserChoice) {
-      return this.deliver(ledger, first);
+    // `enforce` releases every control-flow result this way, as the stream
+    // does (`releasesWithoutVerification`).
+    if (
+      first.result.pendingUserChoice ||
+      (this.mode === 'enforce' && releasesWithoutVerification(first.result))
+    ) {
+      return toSemanticAnswer(await this.delivered(first, ledger, egress));
     }
-    const firstVerdict = await this.verifyTurn(runId, input, first);
-    // Behind a shield without a usable privacy view: not verified at all.
-    if (firstVerdict === undefined) return this.deliver(ledger, first);
+    const firstVerdict = await this.judge.verdictFor(runId, input, first.result, first.egress);
+    // `shadow` behind a shield without a usable privacy view: not verified at
+    // all. (`enforce` gets `privacyShieldVerdict` instead and withholds.)
+    if (firstVerdict === undefined) {
+      return toSemanticAnswer(await this.delivered(first, ledger, egress));
+    }
 
     // Shadow mode: persist + summarise, never retry / block.
     if (this.mode === 'shadow') {
-      void this.persist(runId, input, firstVerdict, 0);
-      return this.deliver(ledger, first, summarise(firstVerdict, 0, this.mode));
+      void this.judge.persist(runId, input, firstVerdict, 0);
+      return toSemanticAnswer(
+        withVerifier(
+          await this.delivered(first, ledger, egress),
+          summarise(firstVerdict, 0, this.mode),
+        ),
+      );
     }
 
-    // #132 — borderline gate: when the first verdict is
-    // `approved_with_disclaimer` (no contradictions but unverified claims),
-    // draw a second sample from the same orchestrator turn. Two independent
-    // samples landing on the same disclaimer ⇒ keep. Disagreement ⇒ take
-    // the more conservative reading (blocked wins). Bounded at
-    // `maxResamples` per turn (default 1) so cost stays predictable.
+    // #132 — borderline gate: when the first verdict confirmed claims but
+    // could not confirm another one it checked (`isBorderlineVerdict`), draw
+    // a second sample of the answer over the first run's tool results. Two
+    // independent samples landing on the same disclaimer ⇒ keep.
+    // Disagreement ⇒ take the more conservative reading (blocked wins).
+    // Bounded at `maxResamples` per turn (default 1) so cost stays
+    // predictable. `skipped` / `unavailable`, a disclaimer that confirmed
+    // nothing, and one whose doubt is only claims no checker takes must never
+    // trigger this paid resample: a second sample cannot add evidence there,
+    // and otherwise every small-talk turn would run twice.
+    // The pass the effective verdict is about — the pass whose record the
+    // request keeps if it goes out.
     let effective = first;
     let effectiveVerdict = firstVerdict;
     if (
+      ledger !== undefined &&
       this.resampleOnBorderline &&
       this.maxResamples > 0 &&
       isBorderlineVerdict(firstVerdict)
     ) {
-      const merged = await this.tryResample(runId, input, firstVerdict, ledger);
+      const merged = await this.tryResample(runId, input, firstVerdict, ledger, egress);
       if (merged) {
-        effective = merged.turn ?? first;
+        effective = merged.second ?? effective;
         effectiveVerdict = merged.verdict;
       }
     }
 
-    // Enforce mode: only contradictions trigger a retry. `unverified` flows
-    // through with the disclaimer badge — the router already caught enough
-    // to make the user aware.
+    // Enforce mode: only contradictions trigger a retry — a correction hint
+    // needs something to correct. Every other verdict is delivered or
+    // withheld as it stands (`deliverEnforced`). The block is recorded on
+    // the turn's plan once the request's record (its `onAfterTurn`) is in.
     if (effectiveVerdict.status === 'blocked') {
-      this.fireVerifierBlocked(input, effectiveVerdict);
+      const blockedVerdict = effectiveVerdict;
+      afterRequestRecord(ledger, () => {
+        this.fireVerifierBlocked(input, blockedVerdict);
+      });
     }
-    const keepEffective = async (): Promise<SemanticAnswer> => {
-      void this.persist(runId, input, effectiveVerdict, 0);
+    const deliverWithoutRetry = async (): Promise<SemanticAnswer> => {
+      void this.judge.persist(runId, input, effectiveVerdict, 0);
       const shown = await this.shownTurn(runId, first, effective);
-      return this.deliver(ledger, shown, summarise(effectiveVerdict, 0, this.mode));
+      return this.deliverEnforced(
+        runId,
+        shown,
+        effectiveVerdict,
+        summarise(effectiveVerdict, 0, this.mode),
+        ledger,
+        egress,
+      );
     };
-    if (effectiveVerdict.status !== 'blocked' || this.maxRetries <= 0) {
-      return keepEffective();
+    if (effectiveVerdict.status !== 'blocked' || this.maxRetries <= 0 || ledger === undefined) {
+      return deliverWithoutRetry();
     }
 
-    // Behind a shield the hint carries no truth values, and the retry is
-    // withheld when the turn's masking would still alter it (badge `failed`).
+    // The hint names the claims only; behind a shield the retry is withheld
+    // when the turn's masking would still alter it.
     const { correction, withheld } = await privacySafeCorrection(
       effectiveVerdict,
       effective.egress,
@@ -367,7 +417,7 @@ export class VerifierService implements ChatAgent {
       );
     }
     // No correction: shouldn't happen for status=blocked unless withheld.
-    if (!correction) return keepEffective();
+    if (!correction) return deliverWithoutRetry();
 
     this.log(
       `[verifier/service] retry run=${runId} contradictions=${String(
@@ -378,61 +428,61 @@ export class VerifierService implements ChatAgent {
       ...input,
       extraSystemHint: correction,
     };
-    let second: EgressTurn;
+    let retry: PassTurn;
     try {
-      // #579 — a correction retry re-runs an already-screened user turn; mark it
-      // so the inbound screening gate does not screen/audit it a second time.
-      this.orchestrator.markScreeningReentry(retryInput);
-      second = await ledger.runTurn(retryInput, () => this.orchestrator.runTurn(retryInput));
+      const pass = prepareReentry(this.orchestrator, retryInput, ledger);
+      retry = await runPass(egress, retryInput, pass, () => this.orchestrator.runTurn(retryInput));
     } catch (err) {
-      this.log(`[verifier/service] retry FAIL: ${errMsg(err)}`);
-      return keepEffective();
+      this.log(reentryFailureLine('retry', runId, err));
+      return deliverWithoutRetry();
+    }
+    // A retry answer whose restored text still carries placeholders the
+    // model reworded (so restore could not map them back) would show fake
+    // values: it never replaces the earlier answer, and is not judged.
+    if (await carriesUnresolvedPlaceholders(retry)) {
+      this.log(
+        `[verifier/service] retry answer carries unresolved placeholders — keeping the earlier answer run=${runId}`,
+      );
+      return deliverWithoutRetry();
     }
 
-    const secondVerdict =
-      second.result.answer === PROMPT_MASK_BLOCKED_ANSWER
-        ? undefined
-        : await this.verifyTurn(runId, input, second);
-    // A retry that could not be verified (or was refused by the privacy
-    // guard) is no correction: keep the first answer, badge `failed`.
-    if (secondVerdict === undefined) return keepEffective();
+    const secondVerdict = await this.judge.verdictFor(runId, input, retry.result, retry.egress);
+    // `enforce` never gets `undefined` (an unverifiable retry is
+    // `privacy_shield`); kept for the type.
+    if (secondVerdict === undefined) return deliverWithoutRetry();
 
     // Merge: persist ONE row with the final retry count; contradictions table
     // reflects whichever verdict actually tripped. We log both for telemetry.
-    void this.persist(runId, input, secondVerdict, 1);
+    void this.judge.persist(runId, input, secondVerdict, 1);
 
-    // A still-blocked retry whose restored answer carries placeholders the
-    // model reworded (so restore could not map them back) would show fake
-    // values: keep the earlier answer instead.
-    if (secondVerdict.status === 'blocked' && (await carriesUnresolvedPlaceholders(second))) {
-      this.log(
-        `[verifier/service] retry answer still blocked and carries unresolved placeholders — keeping the earlier answer run=${runId}`,
-      );
-      const shown = await this.shownTurn(runId, first, effective);
-      return this.deliver(ledger, shown, summarise(effectiveVerdict, 1, this.mode));
-    }
-
-    // Compute the user-facing badge: `corrected` when retry fixed it,
-    // `failed` when it did not.
+    // Compute the user-facing badge: `corrected` when the retry confirmed
+    // every claim, `partial` when it confirmed only some, `failed` when it is
+    // still contradicted, `unverified` / `unavailable` (no connector badge)
+    // when the retry's verification confirmed nothing.
     const badge = mergeBadges(effectiveVerdict, secondVerdict);
-    return this.deliver(ledger, second, {
-      ...summarise(secondVerdict, 1, this.mode),
-      badge,
-    });
+    return this.deliverEnforced(
+      runId,
+      retry,
+      secondVerdict,
+      { ...summarise(secondVerdict, 1, this.mode), badge },
+      ledger,
+      egress,
+    );
   }
 
   /**
-   * The turn shown while the verdict stays the one `effective` produced. A
+   * The pass shown while the verdict stays the one `effective` produced. A
    * blocked re-sample replaces the first answer only when it can be shown:
    * one whose restored text still carries a placeholder the model reworded
-   * would put a fake value in front of the user, so the first answer is shown
-   * instead — the verdict, and with it the badge, stay the re-sample's.
+   * would put a fake value in front of the user, so the first pass is
+   * delivered instead — the verdict, and with it the badge, stay the
+   * re-sample's. Must run before the passes are finalized.
    */
   private async shownTurn(
     runId: string,
-    first: EgressTurn,
-    effective: EgressTurn,
-  ): Promise<EgressTurn> {
+    first: PassTurn,
+    effective: PassTurn,
+  ): Promise<PassTurn> {
     if (effective === first || !(await carriesUnresolvedPlaceholders(effective))) {
       return effective;
     }
@@ -443,61 +493,80 @@ export class VerifierService implements ChatAgent {
   }
 
   /**
-   * Finalize the returned turn's privacy state and attach its receipt (the
-   * orchestrator attached none while the finalisation was handed over).
+   * The delivered pass as the request's result. Without a request ledger
+   * (one pass): that pass finalized, its receipt attached. With one: every
+   * pass finalized first — each receipt joins the request's — then the
+   * delivered pass's record committed and the merged receipt attached
+   * (`asRequestResult`).
    */
-  private async deliver(
-    ledger: EgressLedger,
-    turn: EgressTurn,
-    verifier?: VerifierResultSummary,
-  ): Promise<SemanticAnswer> {
-    const receipt = await ledger.settle(turn);
-    const result = verifier ? withVerifier(turn.result, verifier) : turn.result;
-    return toSemanticAnswer(receipt ? { ...result, privacyReceipt: receipt } : result);
-  }
-
-  /** Verify one turn through its privacy gate; `undefined` = not verified. */
-  private async verifyTurn(
-    runId: string,
-    input: ChatTurnInput,
-    turn: EgressTurn,
-  ): Promise<VerifierVerdict | undefined> {
-    const gate = this.gateFor(turn.result.answerSource, turn.egress);
-    if (!gate.verify) return undefined;
-    return this.safeVerify(runId, input, turn.result.answer, turn.result.runTrace, gate);
+  private async delivered(
+    turn: PassTurn,
+    ledger: ToolReplayLedger | undefined,
+    egress: EgressLedger,
+  ): Promise<ChatTurnResult> {
+    if (ledger === undefined) {
+      const receipt = await egress.settle(turn);
+      return receipt ? { ...turn.result, privacyReceipt: receipt } : turn.result;
+    }
+    await egress.settleAll();
+    return asRequestResult(turn.result, turn.pass, ledger);
   }
 
   /**
-   * #132 — borderline re-sample: re-run the same turn against the
-   * orchestrator and merge the two verdicts. Failure to re-run (anything
-   * thrown by the orchestrator, or a clarification-card result that has
-   * no fact claims) returns `undefined` and the caller keeps `firstVerdict`
-   * as the effective verdict — re-sampling is best-effort.
+   * `enforce` delivery on the non-streaming path: the answer with its
+   * summary when the verdict releases it, the withheld-answer notice in its
+   * place otherwise — the same rule as the stream (`verifierDelivery.ts`).
+   * Either is the request's: the record of the pass the verdict is about,
+   * committed (commit-on-delivery), and every pass's receipt merged.
+   */
+  private async deliverEnforced(
+    runId: string,
+    turn: PassTurn,
+    verdict: VerifierVerdict,
+    summary: VerifierResultSummary,
+    ledger: ToolReplayLedger | undefined,
+    egress: EgressLedger,
+  ): Promise<SemanticAnswer> {
+    const delivered = await this.delivered(turn, ledger, egress);
+    if (verdictReleasesAnswer(verdict)) {
+      return toSemanticAnswer(withVerifier(delivered, summary));
+    }
+    this.log(`[verifier/service] answer withheld run=${runId} status=${verdict.status}`);
+    return toSemanticAnswer(withheldTurnResult(delivered, summary, this.locale));
+  }
+
+  /**
+   * #132 — borderline re-sample: re-enter the same turn over the first run's
+   * tool results and merge the two verdicts. Failure to re-run (anything
+   * thrown by the orchestrator — an abandoned re-entry included — or a
+   * clarification-card result that has no fact claims) returns `undefined`
+   * and the caller keeps `firstVerdict` as the effective verdict —
+   * re-sampling is best-effort.
    *
-   * Returns `{ verdict, result }` where `result` is the second sample's
-   * orchestrator result iff the merge decided to keep it; `undefined`
-   * means "keep firstResult". The caller plugs both straight into the
-   * existing persist + correction-retry path.
+   * Returns `{ verdict, second }` where `second` is the second sample's pass
+   * iff the merge decided to keep it; `undefined` means "keep the first
+   * pass". The caller plugs both straight into the existing persist +
+   * correction-retry path.
    */
   private async tryResample(
     runId: string,
     input: ChatTurnInput,
     firstVerdict: VerifierVerdict,
-    ledger: EgressLedger,
+    ledger: ToolReplayLedger,
+    egress: EgressLedger,
   ): Promise<{
     verdict: VerifierVerdict;
-    turn?: EgressTurn;
+    second?: PassTurn;
   } | undefined> {
     this.log(`[verifier/service] borderline resample run=${runId}`);
-    let second: EgressTurn;
+    let second: PassTurn;
     try {
-      // #579 — a borderline resample re-runs the same already-screened user
-      // turn; mark it so the inbound gate skips a redundant screen + audit.
-      // The privacy hand-over mark is one-shot, so the ledger sets it again.
-      this.orchestrator.markScreeningReentry(input);
-      second = await ledger.runTurn(input, () => this.orchestrator.runTurn(input));
+      const pass = prepareReentry(this.orchestrator, input, ledger);
+      // The privacy hand-over mark is one-shot, so the egress ledger sets it
+      // again for the same input object.
+      second = await runPass(egress, input, pass, () => this.orchestrator.runTurn(input));
     } catch (err) {
-      this.log(`[verifier/service] resample FAIL: ${errMsg(err)}`);
+      this.log(reentryFailureLine('resample', runId, err));
       return undefined;
     }
     if (second.result.pendingUserChoice) {
@@ -505,8 +574,8 @@ export class VerifierService implements ChatAgent {
       // verdict, the user-facing answer didn't change.
       return undefined;
     }
-    const secondVerdict = await this.verifyTurn(runId, input, second);
-    // Not verifiable behind the shield: re-sampling is best-effort.
+    const secondVerdict = await this.judge.verdictFor(runId, input, second.result, second.egress);
+    // `enforce` never gets `undefined`; re-sampling is best-effort anyway.
     if (secondVerdict === undefined) return undefined;
     const merged = mergeBorderlineVerdicts(firstVerdict, secondVerdict);
     this.log(
@@ -516,261 +585,23 @@ export class VerifierService implements ChatAgent {
     );
     return {
       verdict: merged.verdict,
-      ...(merged.takeSecond ? { turn: second } : {}),
+      ...(merged.takeSecond ? { second } : {}),
     };
   }
-
-  // ------------------------------------------------------------------
-
-  private async safeVerify(
-    runId: string,
-    input: ChatTurnInput,
-    answer: string,
-    runTrace: RunTracePayload | undefined,
-    gate: Extract<VerifierGate, { verify: true }>,
-  ): Promise<VerifierVerdict> {
-    const domainToolsCalled = extractToolsCalled(runTrace);
-    const toolPostconditionViolations = extractPostconditionViolations(runTrace);
-    const knowledgeGraphToolsCalled = extractKnowledgeGraphToolsCalled(runTrace);
-    try {
-      return await this.pipeline.verify({
-        runId,
-        // What the turn's model saw — never an MCP input-card envelope.
-        userMessage: modelFacingUserMessage(input.userMessage),
-        answer,
-        ...(domainToolsCalled ? { domainToolsCalled } : {}),
-        ...(toolPostconditionViolations.length > 0
-          ? { toolPostconditionViolations }
-          : {}),
-        ...(knowledgeGraphToolsCalled !== undefined
-          ? { knowledgeGraphToolsCalled }
-          : {}),
-        // The turn's privacy view: every model request of the verifier
-        // goes through it (absent only when no shield is installed).
-        ...(gate.privacy ? { privacy: gate.privacy } : {}),
-      });
-    } catch (err) {
-      this.log(`[verifier/service] pipeline FAIL: ${errMsg(err)}`);
-      return {
-        status: 'approved',
-        claims: [],
-        latencyMs: 0,
-      };
-    }
-  }
-
-  private async persist(
-    runId: string,
-    input: ChatTurnInput,
-    verdict: VerifierVerdict,
-    retryCount: number,
-  ): Promise<void> {
-    if (!this.store) return;
-    try {
-      await this.store.persist({
-        input: {
-          runId,
-          userMessage: input.userMessage,
-          answer: '', // intentionally omitted — no PII beyond what's already
-          // captured in session_logger/graph. The store only uses `runId`.
-        },
-        verdict,
-        mode: this.mode,
-        retryCount,
-      });
-    } catch (err) {
-      this.log(`[verifier/service] persist FAIL: ${errMsg(err)}`);
-    }
-  }
 }
 
-// --- helpers --------------------------------------------------------------
-
-function withVerifier(
-  result: ChatTurnResult,
-  verifier: VerifierResultSummary,
-): ChatTurnResult {
-  return { ...result, verifier };
+/** One pass of a request: its turn result, the privacy continuation it
+ *  handed over, and which pass it was (`FIRST_PASS`, then 1, 2, …). */
+interface PassTurn extends EgressTurn {
+  readonly pass: number;
 }
 
-function summarise(
-  verdict: VerifierVerdict,
-  retryCount: number,
-  mode: 'shadow' | 'enforce',
-): VerifierResultSummary {
-  const contradictionCount =
-    verdict.status === 'blocked' ? verdict.contradictions.length : 0;
-  const unverifiedCount =
-    verdict.status === 'approved_with_disclaimer'
-      ? verdict.unverified.length
-      : verdict.claims.filter((v) => v.status === 'unverified').length;
-
-  return {
-    badge: badgeFor(verdict, retryCount),
-    status: verdict.status,
-    claimCount: verdict.claims.length,
-    contradictionCount,
-    unverifiedCount,
-    retryCount,
-    latencyMs: verdict.latencyMs,
-    mode,
-  };
-}
-
-function badgeFor(
-  verdict: VerifierVerdict,
-  retryCount: number,
-): VerifierBadge {
-  if (retryCount > 0) {
-    // Retry already happened — outcome defines badge.
-    return verdict.status === 'blocked' ? 'failed' : 'corrected';
-  }
-  switch (verdict.status) {
-    case 'approved':
-      return 'verified';
-    case 'approved_with_disclaimer':
-      return 'partial';
-    case 'blocked':
-      return 'failed';
-  }
-}
-
-function mergeBadges(
-  first: VerifierVerdict,
-  second: VerifierVerdict,
-): VerifierBadge {
-  if (first.status === 'blocked' && second.status !== 'blocked') return 'corrected';
-  if (first.status === 'blocked' && second.status === 'blocked') return 'failed';
-  return badgeFor(second, 1);
-}
-
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-/**
- * Flatten a RunTrace into the list of tool / sub-agent names invoked in
- * this turn. Used by the pipeline's trace-cross-check rule to spot
- * accounting/HR numeric claims that arrived WITHOUT a fresh fach-agent
- * call — i.e. the orchestrator replayed numbers from the context block.
- *
- * Returns `undefined` when no trace is available — the pipeline then
- * skips the check rather than treating "no evidence" as "no tool call".
- */
-function extractToolsCalled(
-  trace: RunTracePayload | undefined,
-): string[] | undefined {
-  if (!trace) return undefined;
-  const names = new Set<string>();
-  for (const invocation of trace.agentInvocations) {
-    names.add(invocation.agentName);
-    for (const call of invocation.toolCalls) {
-      names.add(call.toolName);
-    }
-  }
-  for (const call of trace.orchestratorToolCalls) {
-    names.add(call.toolName);
-  }
-  return [...names];
-}
-
-/**
- * #131 — true when this turn invoked the knowledge-graph (or any of the
- * KG-backed sub-agent / orchestrator tools the verifier counts as
- * "fetched evidence"). The pipeline uses this as the gate for the
- * citation-missing check: no KG call ⇒ citations are irrelevant.
- */
-function extractKnowledgeGraphToolsCalled(
-  trace: RunTracePayload | undefined,
-): boolean | undefined {
-  if (!trace) return undefined;
-  const KG_NAMES: ReadonlySet<string> = new Set(['query_knowledge_graph']);
-  for (const call of trace.orchestratorToolCalls) {
-    if (KG_NAMES.has(call.toolName)) return true;
-  }
-  for (const inv of trace.agentInvocations) {
-    for (const call of inv.toolCalls) {
-      if (KG_NAMES.has(call.toolName)) return true;
-    }
-  }
-  return false;
-}
-
-/**
- * #130 — collect every postcondition violation the bridgeTool stamped onto
- * the runTrace. The verifier turns each entry into a synthetic
- * `tool_postcondition` ClaimVerdict (status='contradicted'), which flips the
- * verdict to `blocked` and drives the existing correctionPrompt retry loop.
- */
-function extractPostconditionViolations(
-  trace: RunTracePayload | undefined,
-): {
-  toolName: string;
-  callId: string;
-  agentContext: string;
-  issues: readonly string[];
-}[] {
-  if (!trace) return [];
-  const out: {
-    toolName: string;
-    callId: string;
-    agentContext: string;
-    issues: readonly string[];
-  }[] = [];
-  for (const invocation of trace.agentInvocations) {
-    for (const call of invocation.toolCalls) {
-      if (call.postcondition) {
-        out.push({
-          toolName: call.toolName,
-          callId: call.callId,
-          agentContext: call.agentContext,
-          issues: call.postcondition.issues,
-        });
-      }
-    }
-  }
-  for (const call of trace.orchestratorToolCalls) {
-    if (call.postcondition) {
-      out.push({
-        toolName: call.toolName,
-        callId: call.callId,
-        agentContext: call.agentContext,
-        issues: call.postcondition.issues,
-      });
-    }
-  }
-  return out;
-}
-
-/**
- * #132 — merge two verdicts when the first was borderline
- * (`approved_with_disclaimer`) and the second one was drawn from a re-run
- * of the same turn. Strategy:
- *
- * 1. Both agree on borderline → keep first (the two independent samples
- *    confirmed the same level of uncertainty; treat the disclaimer as
- *    earned signal, not noise).
- * 2. Second sample escalated to `blocked` → flip to second so the
- *    correctionPrompt retry can run on the contradictions the second
- *    sample exposed. Conservative bias.
- * 3. Second sample relaxed to `approved` → keep first. Two contradictory
- *    samples + one finding stuff we didn't is exactly the noise signal
- *    that the disclaimer exists to communicate; don't upgrade.
- * 4. Second sample also borderline (fell back to safeVerify's
- *    `approved` fallback after a pipeline error) → keep first.
- *
- * `takeSecond` is true only when we propagate the second sample's
- * orchestrator result onward (its answer string is what the LLM
- * generated for that verdict).
- */
-export function mergeBorderlineVerdicts(
-  first: VerifierVerdict,
-  second: VerifierVerdict,
-): { verdict: VerifierVerdict; takeSecond: boolean } {
-  if (second.status === 'blocked') {
-    return { verdict: second, takeSecond: true };
-  }
-  // Anything else (approved, approved_with_disclaimer): trust the first
-  // sample's disclaimer signal.
-  return { verdict: first, takeSecond: false };
+/** Runs one pass through the egress ledger (mark held → run → collect). */
+async function runPass(
+  egress: EgressLedger,
+  input: ChatTurnInput,
+  pass: number,
+  run: () => Promise<ChatTurnResult>,
+): Promise<PassTurn> {
+  return { ...(await egress.runTurn(input, run)), pass };
 }

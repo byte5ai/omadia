@@ -99,3 +99,25 @@ See [ADR-0003](0003-capability-based-multi-provider-middleware.md) for how loade
 plugins register themselves as capability providers, and
 [ADR-0002](0002-mit-license-for-oss-core.md) for licensing of the core vs.
 distributed plugins.
+
+### Implementation status (2026-10)
+
+This note records how the decision is implemented; the decision above is
+unchanged. In this record's title and in option A, "signed" stands for a ZIP
+pinned by its SHA-256. No publisher signature and no trust root exist:
+
+- `RegistryClient` (`middleware/src/plugins/registryClient.ts`) checks a
+  download against the SHA-256 in the registry index and pins the download to
+  the registry's host and port, not its scheme. An `http://` registry, or an
+  `http://` download URL listed by an `https://` registry, is fetched in clear,
+  with the registry's bearer token when one is configured. TLS therefore
+  depends on the configured registry URL and on the download URLs its index
+  lists.
+- `PackageUploadService` (`middleware/src/plugins/packageUploadService.ts`)
+  hashes an uploaded ZIP and lists a remote signature check as out of scope.
+- The catalog reports `signed: false` for every plugin, and the store page shows
+  "unsigned".
+
+Publisher-signed packages are a roadmap item (README, Status & Roadmap). The
+current trust model is described in
+[`docs/security-architecture.md`](../security-architecture.md) §4.
