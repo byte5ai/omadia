@@ -152,23 +152,30 @@ const RETIRED_CLAIMS = [
   'runs no tool again',
   'runs a tool again',
   'never re-runs a tool',
-  // 1,000 records is an eviction target: a call still running is never evicted.
+  // 1,000 records is an eviction target: a call still running inside its
+  // 15-minute window is never evicted, so the store can briefly hold more.
   'at most 1,000 records',
+  // Past that window a running call's record expires or is evicted like any
+  // other, and a retry under the same key runs the write again.
+  'a call still running is never evicted',
   // Prompt masking reaches only the turn's own model requests (§6f).
   'context are masked only while',
 ] as const;
 
-/** Retired sentences in operator-facing files outside the public claim files,
- *  each kept to one line of its file. */
+/** Retired sentences in operator- and API-caller-facing files outside the
+ *  public claim files, each kept to one line of its file. */
 const RETIRED_OPERATOR_CLAIMS: ReadonlyArray<readonly [file: string, phrase: string]> = [
   // The prompt mask covers the turn's own model requests, not every copy.
   ['middleware/packages/harness-plugin-privacy-guard/manifest.yaml', 'every LLM-bound copy of the turn'],
   ['middleware/.env.example', 'clamps all of them back to `guarded`, whatever'],
   ['middleware/.env.example', 'runs a tool again'],
+  // A failed call leaves no record and the store evicts its oldest records, so
+  // a retry inside the window can run a write again.
+  ['middleware/src/mcp/README.md', 'will not execute the tool twice'],
 ];
 
 describe('public security claims match the enforced behaviour', () => {
-  it('retired overclaims are gone from the README, the architecture docs, CITATION.cff, the ADR notes and the operator setup texts', () => {
+  it('retired overclaims are gone from the README, the architecture docs, CITATION.cff, the ADR notes, the operator setup texts and the MCP endpoint guide', () => {
     const hits: string[] = [];
     for (const file of PUBLIC_CLAIM_FILES) {
       const text = flatten(read(file)).toLowerCase();

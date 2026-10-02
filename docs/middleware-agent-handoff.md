@@ -4187,12 +4187,14 @@ Embeddings). Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
 - **Idempotenz am öffentlichen MCP-Endpunkt ist prozesslokal.**
   `ToolIdempotencyStore` (`toolIdempotency.ts`) hält Einträge 15 Minuten, mit
   1.000 Einträgen als Verdrängungsziel (`evictOverflow` überspringt Calls, die
-  noch laufen, der Store kann also kurz mehr halten), nur im Speicher, und
-  merkt sich keinen fehlgeschlagenen Aufruf. Neustart, zweite Instanz,
-  abgelaufener oder verdrängter Eintrag führen den Write erneut aus. Für
-  verteilte Idempotenz einen geteilten Store (Postgres) mit demselben
-  Schlüssel einsetzen; die Schlüssel-Komposition ist dafür schon
-  serialisierbar.
+  innerhalb ihres 15-Minuten-Fensters noch laufen, der Store kann also kurz
+  mehr halten), nur im Speicher, und merkt sich keinen fehlgeschlagenen
+  Aufruf. Neustart, zweite Instanz, abgelaufener oder verdrängter Eintrag
+  führen den Write erneut aus. Abgelaufen ist auch der Eintrag eines Calls,
+  der nach 15 Minuten noch läuft (`isLiveInFlight`), ein Retry mit demselben
+  Schlüssel startet den Write dann ein zweites Mal. Für verteilte Idempotenz
+  einen geteilten Store (Postgres) mit demselben Schlüssel einsetzen; die
+  Schlüssel-Komposition ist dafür schon serialisierbar.
 - **Modellaufrufe außerhalb des Privacy-Handles (eigene Code-Unit).** Der
   Shield wirkt nur in den Modellanfragen des Turns selbst. Ungemaskt, mit
   `mask_user_prompt` an oder aus, gehen: plugin-eigene `ctx.llm`-Anfragen (der

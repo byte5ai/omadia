@@ -105,11 +105,11 @@ connectors and inserts no confirmation step before a tool runs:
   adds no confirmation, and a write tool without the annotation counts as
   read-only. On the public MCP endpoint, a caller-supplied idempotency key gives
   a declared write tool process-local deduplication while its record is cached
-  (15 minutes; eviction target 1,000 records, and a call still running is
-  never evicted; a failed call is not cached). A restart,
-  a second instance or an expired or evicted record executes the write again,
-  so the key is a retry-safety mitigation and does not make a write run at most
-  once (`middleware/src/mcp/README.md`, Idempotency).
+  (15 minutes; eviction target 1,000 records, and a call still running inside
+  its 15-minute window is never evicted; a failed call is not cached). A
+  restart, a second instance or an expired or evicted record executes the write
+  again, so the key is a retry-safety mitigation and does not make a write run
+  at most once (`middleware/src/mcp/README.md`, Idempotency).
 - Conductor human steps treat an absent or malformed response as approval
   unless the step sets `human.strictApproval`.
 

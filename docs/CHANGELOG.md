@@ -123,10 +123,14 @@ earlier "audit receipt" and "replayable" wording.
 Write confirmation (ADR-0005) is described as a feature of the connector
 plugins that implement it. The core adds no confirmation step. On the public
 MCP endpoint, an idempotency key gives a declared write tool process-local
-deduplication for 15 minutes, with an eviction target of 1,000 records that
-never evicts a call still running, and a failed call is not cached, so a
-restart, a second instance or an evicted record runs the write again.
-ADR-0001 and ADR-0005 keep their decision text and gain an
+deduplication for 15 minutes, with an eviction target of 1,000 records. A call
+still running inside its 15-minute window is never evicted, and a failed call
+is not cached. A restart, a second instance or an expired or evicted record
+runs the write again. The idempotency section of `middleware/src/mcp/README.md`,
+which promised API callers that a retry inside the window never runs the tool
+twice, now says the same: a retry after a failed call or an evicted record runs
+it again, and a retry joins a call still running only within 15 minutes of
+that call's start. ADR-0001 and ADR-0005 keep their decision text and gain an
 implementation-status note.
 
 A new item in the §11 reviewer checklist asks that a public security claim name
@@ -141,8 +145,9 @@ three code comments that contradicted the code are corrected: the default
 capture level, the failure handling of the MCP input replay and the text the
 memory-excerpt pass receives.
 `middleware/test/docsClaimsGuard.test.ts` keeps the retired sentences out of the
-four files, the two ADR notes, the privacy guard's setup help and
-`middleware/.env.example`, and ties the defaults and limits the README
+four files, the two ADR notes, the privacy guard's setup help,
+`middleware/.env.example` and the MCP endpoint guide
+(`middleware/src/mcp/README.md`), and ties the defaults and limits the README
 names to the code (`PRIVACY_MODE_DEFAULT`, the `mask_user_prompt` manifest
 default, the `VERIFIER_ENABLED` and `VERIFIER_MODE` schema defaults, the
 catalog's `signed` field, `INTERN_EXEMPT_TOOLS`, which §6f must list in full,
