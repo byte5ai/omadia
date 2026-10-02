@@ -58,6 +58,7 @@ class InMemoryUserStore {
       createdAt: now,
       updatedAt: now,
       lastLoginAt: null,
+      sessionVersion: 0,
     };
     this.byProviderUid.set(key, created);
     return created;

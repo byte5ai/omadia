@@ -398,6 +398,7 @@ export * from './pkce.js';
 export * from './conversation.js';
 export * from './limitSignal.js';
 export * from './toolControlFlowText.js';
+export * from './toolErrorNotice.js';
 export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
 export * from './piiAnnotation.js';
@@ -905,6 +906,7 @@ producedEntityIds?: string[];
 postcondition?: {
 issues: readonly string[];
 };
+replayed?: boolean;
 }
 export interface RunAgentInvocation {
 index: number;
@@ -914,6 +916,7 @@ durationMs: number;
 subIterations: number;
 status: RunStatus;
 toolCalls: RunToolCall[];
+replayed?: boolean;
 }
 export interface RunTrace {
 turnId: string;
@@ -1049,6 +1052,7 @@ entityLimit?: number;
 }
 export interface FindEntitiesOptions {
 model: string;
+id?: string | number;
 nameContains?: string;
 limit?: number;
 }
@@ -1930,6 +1934,15 @@ readonly serverName: string;
 readonly bytes: number;
 readonly hasOutputSchema: boolean;
 }
+export type ToolErrorCarrier = 'thrown' | 'returned' | 'mcp_auth_prompt';
+export type ToolErrorOutcome = 'withheld' | 'redacted' | 'passed';
+export interface ToolErrorEntry {
+readonly toolName: string;
+readonly carrier: ToolErrorCarrier;
+readonly outcome: ToolErrorOutcome;
+readonly bytes: number;
+readonly redactedSpans?: readonly PromptMaskedSpanInfo[];
+}
 export interface PrivacyReceipt {
 readonly datasetsInterned: number;
 readonly fieldsMasked: number;
@@ -1940,6 +1953,12 @@ readonly identityValuesOnWire?: number;
 readonly bypassedTools?: readonly BypassedToolEntry[];
 readonly maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
 readonly structuredPayloads?: readonly StructuredPayloadEntry[];
+readonly verifierEgress?: VerifierEgressSummary;
+readonly toolErrors?: readonly ToolErrorEntry[];
+}
+export interface VerifierEgressSummary {
+readonly requests: number;
+readonly maskedSpans: readonly PromptMaskedSpanInfo[];
 }
 export interface PrivacyToolResultV4Request {
 readonly sessionId: string;
@@ -2009,10 +2028,19 @@ export interface PromptMaskedSpanInfo {
 readonly type: string;
 readonly detector: string;
 }
+export type PrivacyEgressStage = 'turn' | 'verifier';
 export interface PrivacyPromptMaskRequest {
 readonly sessionId: string;
 readonly turnId: string;
 readonly text: string;
+readonly stage?: PrivacyEgressStage;
+readonly preview?: boolean;
+}
+export interface PrivacyVerifierProjectionRequest {
+readonly sessionId: string;
+readonly turnId: string;
+readonly text: string;
+readonly identityValues?: readonly string[];
 }
 export type PrivacyPromptMaskResult = {
 readonly outcome: 'disabled';
@@ -2025,10 +2053,34 @@ readonly degraded: boolean;
 readonly outcome: 'blocked';
 readonly reason: string;
 };
+export interface PrivacyToolErrorRequest {
+readonly turnId: string;
+readonly toolName: string;
+readonly carrier: ToolErrorCarrier;
+readonly outcome: ToolErrorOutcome;
+readonly bytes: number;
+readonly redactedSpans?: readonly PromptMaskedSpanInfo[];
+}
+export interface PrivacyToolErrorRedactRequest {
+readonly turnId: string;
+readonly toolName: string;
+readonly text: string;
+}
+export type PrivacyToolErrorRedactResult = {
+readonly outcome: 'redacted';
+readonly text: string;
+readonly spans: readonly PromptMaskedSpanInfo[];
+readonly degraded: boolean;
+} | {
+readonly outcome: 'withheld';
+readonly reason: string;
+};
 export interface PrivacyGuardService {
 internToolResultV4(request: PrivacyToolResultV4Request): Promise<PrivacyToolResultV4Result>;
 recordBypassedTool(request: PrivacyBypassedToolRequest): Promise<void>;
 recordStructuredPayload?(request: PrivacyStructuredPayloadRequest): Promise<void>;
+recordToolError?(request: PrivacyToolErrorRequest): Promise<void>;
+redactToolErrorText?(request: PrivacyToolErrorRedactRequest): Promise<PrivacyToolErrorRedactResult>;
 runV4Tool(request: PrivacyV4ToolRequest): Promise<{
 readonly resultText: string;
 }>;
@@ -2040,6 +2092,8 @@ resolveDatasetForRender?(turnId: string, datasetId: string): PrivacyResolvedData
 maskUserPrompt?(request: PrivacyPromptMaskRequest): Promise<PrivacyPromptMaskResult>;
 restorePromptPseudonyms?(turnId: string, text: string): Promise<string>;
 snapshotPromptRestorer?(turnId: string): ((text: string) => string) | undefined;
+projectVerifierText?(request: PrivacyVerifierProjectionRequest): Promise<PrivacyPromptMaskResult>;
+countUnresolvedSurrogates?(turnId: string, text: string): Promise<number>;
 v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
 finalizeTurn(turnId: string, turnInput?: string): Promise<PrivacyReceipt | undefined>;
 }
@@ -2049,6 +2103,7 @@ import type { PrivacyReceipt } from './privacyReceipt.js';
 export declare const RECEIPT_FIXTURE_QUIET: PrivacyReceipt;
 export declare const RECEIPT_FIXTURE_RANKED: PrivacyReceipt;
 export declare const RECEIPT_FIXTURE_PSEUDONYM: PrivacyReceipt;
+export declare const RECEIPT_FIXTURE_TOOL_ERRORS: PrivacyReceipt;
 export declare const ALL_PRIVACY_RECEIPT_FIXTURES: readonly PrivacyReceipt[];
 
 // ===== processMemory.d.ts =====
@@ -2435,6 +2490,22 @@ sendToPrincipal(request: TargetedSendRequest): Promise<TargetedSendResult>;
 export declare const TOOL_ERROR_PREFIX = "Error:";
 export declare const MCP_AUTH_PROMPT_PREFIX = "\uD83D\uDD12 The MCP server \"";
 export declare function isControlFlowToolResult(result: string): boolean;
+
+// ===== toolErrorNotice.d.ts =====
+export interface ThrownErrorDescription {
+readonly name: string;
+readonly code?: string;
+}
+export declare function describeThrownError(err: unknown): ThrownErrorDescription;
+export declare function newToolErrorRef(): string;
+export declare function withheldToolErrorNotice(toolName: string, err: unknown, ref: string): string;
+export declare function isWithheldToolErrorNotice(text: string): boolean;
+export interface ToolErrorFromExceptionOptions {
+readonly ref?: string;
+readonly site?: string;
+readonly log?: ((line: string, err: unknown) => void) | null;
+}
+export declare function toolErrorFromException(toolName: string, err: unknown, options?: ToolErrorFromExceptionOptions): string;
 
 // ===== topic.d.ts =====
 import type { GraphNode } from './knowledgeGraph.js';

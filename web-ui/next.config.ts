@@ -2,6 +2,11 @@ import path from 'node:path';
 import type { NextConfig } from 'next';
 import createNextIntlPlugin from 'next-intl/plugin';
 
+import {
+  PAIRING_DISCOVERY_HANDLER_PATH,
+  PAIRING_DISCOVERY_WELL_KNOWN_PATH,
+} from './app/_lib/pairingDiscoveryPaths';
+
 // next-intl plugin: wires `i18n/request.ts` into the Next compile so that
 // `getRequestConfig` is invoked on every RSC request and the resolved
 // messages reach `<NextIntlClientProvider>`.
@@ -41,10 +46,12 @@ const nextConfig: NextConfig = {
       // served by the `/pairing-discovery` route handler via this rewrite. The
       // desktop app GETs the operator URL it already knows and gets back a
       // connect-ready descriptor (absolute wsUrl + auth). Static destination,
-      // so the build-time freeze is harmless here.
+      // so the build-time freeze is harmless here. The login gate in proxy.ts
+      // exempts both paths, from the same constants, because the client has
+      // no session yet when it asks.
       {
-        source: '/.well-known/omadia-ui',
-        destination: '/pairing-discovery',
+        source: PAIRING_DISCOVERY_WELL_KNOWN_PATH,
+        destination: PAIRING_DISCOVERY_HANDLER_PATH,
       },
     ];
   },

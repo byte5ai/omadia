@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 
-import { execDockerViaSpawn, type DockerExec } from '@omadia/sandbox';
+import {
+  dockerResourceLimitArgs,
+  execDockerViaSpawn,
+  resolveSandboxResourceLimits,
+  type DockerExec,
+  type SandboxResourceLimits,
+} from '@omadia/sandbox';
 
 import type { PublishRuntime } from './publish.js';
 
@@ -37,6 +43,14 @@ import type { PublishRuntime } from './publish.js';
  * `docker port <container> <containerPort>/tcp` — the same "Docker is the
  * durable store" posture `DockerSandboxBackend` takes for container
  * naming.
+ *
+ * ## Resource limits
+ *
+ * A published app is agent-written code running for as long as its version
+ * is live, so its container gets the same ceilings as a sandbox, from the
+ * same `dockerResourceLimitArgs()` builder in `@omadia/sandbox`. A version's
+ * container is never re-created (see above), so one that predates the limits
+ * keeps running without them until a new version replaces it.
  */
 export interface DockerPublishRuntimeOptions {
   /** Must have Node on PATH — v1 supports only a Node entrypoint (a static
@@ -48,6 +62,9 @@ export interface DockerPublishRuntimeOptions {
   readonly appPort?: number;
   /** In-container path for the durable data volume (`DATA_DIR`). */
   readonly dataDir?: string;
+  /** Container ceilings; a field left out or invalid comes from its
+   *  `OMADIA_SANDBOX_*` env variable, then from the built-in default. */
+  readonly resourceLimits?: Partial<SandboxResourceLimits>;
 }
 
 const DEFAULT_IMAGE = 'node:20-alpine';
@@ -72,12 +89,14 @@ export class DockerPublishRuntime implements PublishRuntime {
   private readonly execDocker: DockerExec;
   private readonly appPort: number;
   private readonly dataDir: string;
+  private readonly resourceLimits: SandboxResourceLimits;
 
   constructor(options: DockerPublishRuntimeOptions = {}) {
     this.image = options.image ?? DEFAULT_IMAGE;
     this.execDocker = options.execDocker ?? execDockerViaSpawn;
     this.appPort = options.appPort ?? DEFAULT_APP_PORT;
     this.dataDir = options.dataDir ?? DEFAULT_DATA_DIR;
+    this.resourceLimits = resolveSandboxResourceLimits(options.resourceLimits);
   }
 
   async deploy(args: {
@@ -107,6 +126,7 @@ export class DockerPublishRuntime implements PublishRuntime {
       `${volume}:${this.dataDir}`,
       '--workdir',
       APP_ROOT,
+      ...dockerResourceLimitArgs(this.resourceLimits),
       this.image,
       'sh',
       '-c',

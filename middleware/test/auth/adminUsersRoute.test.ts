@@ -7,6 +7,7 @@ import express from 'express';
 import { AdminAuditLog, type AuditEntry } from '../../src/auth/adminAuditLog.js';
 import { LOCAL_PROVIDER_ID } from '../../src/auth/providers/LocalPasswordProvider.js';
 import { hashPassword } from '../../src/auth/passwordHasher.js';
+import type { RevokedPrincipal } from '../../src/auth/sessionRevocation.js';
 import type {
   CreateUserInput,
   UpdateUserInput,
@@ -30,6 +31,8 @@ import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 class InMemoryUserStore {
   rows: UserRecord[] = [];
+  /** Every `update` call, verbatim — the revocation must ride in the SAME call. */
+  patches: Array<{ id: string; patch: UpdateUserInput }> = [];
 
   async count(): Promise<number> {
     return this.rows.length;
@@ -72,6 +75,7 @@ class InMemoryUserStore {
       createdAt: now,
       updatedAt: now,
       lastLoginAt: null,
+      sessionVersion: 0,
     };
     if (input.passwordHash !== undefined) {
       (row as UserRecord & { passwordHash?: string }).passwordHash = input.passwordHash;
@@ -80,6 +84,7 @@ class InMemoryUserStore {
     return row;
   }
   async update(id: string, patch: UpdateUserInput): Promise<UserRecord | null> {
+    this.patches.push({ id, patch });
     const idx = this.rows.findIndex((r) => r.id === id);
     if (idx === -1) return null;
     const cur = this.rows[idx]!;
@@ -89,6 +94,7 @@ class InMemoryUserStore {
       role: patch.role ?? cur.role,
       status: patch.status ?? cur.status,
       updatedAt: new Date(),
+      sessionVersion: cur.sessionVersion + (patch.revokeSessions ? 1 : 0),
     };
     this.rows[idx] = next;
     return next;
@@ -137,11 +143,20 @@ describe('/api/v1/admin/users router', () => {
   let store: InMemoryUserStore;
   let audit: InMemoryAuditLog;
   let session: ForgedSession | null;
+  /** Whose sessions the router announced as ended. */
+  let announced: RevokedPrincipal[];
+  /** Account keys the router asked the sign-in limiter to forget (§10m unlock). */
+  let clearedAccounts: string[];
+  /** Account keys whose device-cookie epoch the router asked to re-read (§10m revocation). */
+  let forgottenAccounts: string[];
 
   before(async () => {
     store = new InMemoryUserStore();
     audit = new InMemoryAuditLog();
     session = null;
+    announced = [];
+    clearedAccounts = [];
+    forgottenAccounts = [];
 
     // Pre-seed an existing local admin so list/edit/delete tests have a
     // target without exercising create-side every time.
@@ -166,6 +181,21 @@ describe('/api/v1/admin/users router', () => {
       createAdminUsersRouter({
         userStore: store as unknown as UserStore,
         audit: audit as unknown as AdminAuditLog,
+        sessions: {
+          announce: (who) => {
+            announced.push(who);
+          },
+        },
+        loginLimiter: {
+          clearAccount: (accountKey: string) => {
+            clearedAccounts.push(accountKey);
+          },
+        },
+        loginDevices: {
+          forget: (accountKey: string) => {
+            forgottenAccounts.push(accountKey);
+          },
+        },
       }),
     );
     server = await listenLoopback(app);
@@ -205,6 +235,7 @@ describe('/api/v1/admin/users router', () => {
   it('POST / creates a local user, hashes the password, audits', async () => {
     setSession(adminSession());
     const before = audit.entries.length;
+    const forgottenBefore = forgottenAccounts.length;
     const res = await fetch(`${baseUrl}/api/v1/admin/users`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -219,6 +250,11 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(body.user.email, 'new@example.com');
     assert.equal(audit.entries.length, before + 1);
     assert.equal(audit.entries.at(-1)?.action, 'user.create');
+    assert.deepEqual(
+      forgottenAccounts.slice(forgottenBefore),
+      ['local:new@example.com'],
+      'no cached "no such account" outlives the create',
+    );
   });
 
   it('POST / rejects duplicate email with 409', async () => {
@@ -246,6 +282,7 @@ describe('/api/v1/admin/users router', () => {
 
   it('PATCH /:id updates display_name + audits', async () => {
     setSession(adminSession());
+    const forgottenBefore = forgottenAccounts.length;
     const target = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}`, {
       method: 'PATCH',
@@ -256,10 +293,17 @@ describe('/api/v1/admin/users router', () => {
     const body = (await res.json()) as { user: { display_name: string } };
     assert.equal(body.user.display_name, 'Renamed');
     assert.equal(audit.entries.at(-1)?.action, 'user.update');
+    // An unrelated profile edit leaves the user's sessions alone.
+    assert.equal(store.patches.at(-1)?.patch.revokeSessions, undefined);
+    assert.equal(store.rows.find((r) => r.id === target.id)?.sessionVersion, 0);
+    assert.deepEqual(announced, []);
+    assert.deepEqual(clearedAccounts, [], 'a rename does not touch the sign-in limiter');
+    assert.equal(forgottenAccounts.length, forgottenBefore, 'nor the device cookies');
   });
 
   it('PATCH /:id refuses to disable yourself with 409 self_lockout', async () => {
     setSession(adminSession());
+    const forgottenBefore = forgottenAccounts.length;
     const self = store.rows.find((r) => r.email === 'admin@example.com')!;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${self.id}`, {
       method: 'PATCH',
@@ -269,10 +313,12 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 409);
     const body = (await res.json()) as { code: string };
     assert.equal(body.code, 'admin_users.self_lockout');
+    assert.equal(forgottenAccounts.length, forgottenBefore, 'a refused change revokes nothing');
   });
 
-  it('PATCH /:id allows disabling someone else', async () => {
+  it('PATCH /:id allows disabling someone else — and ends their sessions', async () => {
     setSession(adminSession());
+    const forgottenBefore = forgottenAccounts.length;
     const other = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
       method: 'PATCH',
@@ -282,11 +328,42 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 200);
     const body = (await res.json()) as { user: { status: string } };
     assert.equal(body.user.status, 'disabled');
+    assert.deepEqual(store.patches.at(-1)?.patch, { status: 'disabled', revokeSessions: true });
+    assert.equal(store.rows.find((r) => r.id === other.id)?.sessionVersion, 1);
+    assert.deepEqual(announced, [{ provider: LOCAL_PROVIDER_ID, sub: 'new@example.com' }]);
+    assert.deepEqual(clearedAccounts, [], 'disabling is not an unlock');
+    assert.deepEqual(
+      forgottenAccounts.slice(forgottenBefore),
+      ['local:new@example.com'],
+      'but its device cookies stop counting at once',
+    );
+  });
+
+  it('PATCH /:id re-enabling does not revoke (and cannot revive old cookies) but clears the sign-in backoff', async () => {
+    setSession(adminSession());
+    const other = store.rows.find((r) => r.email === 'new@example.com')!;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'active' }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(store.patches.at(-1)?.patch, { status: 'active' });
+    // Still at the version the disable moved it to: cookies from before the
+    // disable stay dead after the re-enable.
+    assert.equal(store.rows.find((r) => r.id === other.id)?.sessionVersion, 1);
+    assert.equal(announced.length, 1);
+    // The re-enable is also the operator unlock of the account's sign-in
+    // backoff, and makes this process re-read its device-cookie epoch.
+    assert.deepEqual(clearedAccounts, ['local:new@example.com']);
+    assert.equal(forgottenAccounts.at(-1), 'local:new@example.com');
   });
 
   it('POST /:id/reset-password updates the hash + audits without leaking material', async () => {
     setSession(adminSession());
     const before = audit.entries.length;
+    const patchesBefore = store.patches.length;
+    const forgottenBefore = forgottenAccounts.length;
     const target = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(
       `${baseUrl}/api/v1/admin/users/${target.id}/reset-password`,
@@ -302,6 +379,78 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(last.action, 'user.reset_password');
     assert.equal(last.before, null);
     assert.equal(last.after, null);
+
+    // The new hash and the end of every session issued under the old one go
+    // out in ONE update call — they can never land apart.
+    const calls = store.patches.slice(patchesBefore);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.id, target.id);
+    assert.equal(calls[0]?.patch.revokeSessions, true);
+    assert.match(calls[0]?.patch.passwordHash ?? '', /^\$argon2id\$/);
+    assert.equal(store.rows.find((r) => r.id === target.id)?.sessionVersion, 2);
+    assert.deepEqual(announced.at(-1), { provider: LOCAL_PROVIDER_ID, sub: 'new@example.com' });
+    assert.equal(clearedAccounts.at(-1), 'local:new@example.com');
+    assert.deepEqual(
+      forgottenAccounts.slice(forgottenBefore),
+      ['local:new@example.com'],
+      'the new hash revokes the account’s device cookies',
+    );
+  });
+
+  it('POST /:id/reset-password clears the backoff under the folded (lower-cased) account key', async () => {
+    setSession(adminSession());
+    const mixed = await store.create({
+      email: 'Mixed.Case@Example.com',
+      provider: LOCAL_PROVIDER_ID,
+      providerUserId: 'mixed.case@example.com',
+      passwordHash: await hashPassword('seed-pass-2'),
+      displayName: 'Mixed',
+      role: 'admin',
+    });
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${mixed.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'pw-resetted-2' }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(clearedAccounts.at(-1), 'local:mixed.case@example.com');
+  });
+
+  it('POST /:id/reset-password unlocks every spelling but revokes only this account’s cookies', async () => {
+    setSession(adminSession());
+    const accented = await store.create({
+      email: '\u00c9lise.Dupont@Example.com',
+      provider: LOCAL_PROVIDER_ID,
+      providerUserId: '\u00e9lise.dupont@example.com',
+      passwordHash: await hashPassword('seed-pass-3'),
+      displayName: '\u00c9lise',
+      role: 'admin',
+    });
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${accented.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'pw-resetted-3' }),
+    });
+    assert.equal(res.status, 200);
+    // Two identities (§10m): the limiter's bucket folds the address, the
+    // device cookies are bound to the address as stored, ASCII case aside.
+    assert.equal(clearedAccounts.at(-1), 'local:elise.dupont@example.com');
+    assert.equal(forgottenAccounts.at(-1), 'local:\u00c9lise.dupont@example.com');
+  });
+
+  it('POST /:id/reset-password with a too-short password does not unlock', async () => {
+    setSession(adminSession());
+    const cleared = clearedAccounts.length;
+    const forgotten = forgottenAccounts.length;
+    const target = store.rows.find((r) => r.email === 'new@example.com')!;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'short' }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(clearedAccounts.length, cleared);
+    assert.equal(forgottenAccounts.length, forgotten, 'nor revokes anything');
   });
 
   it('DELETE /:id refuses self-delete with 409', async () => {
@@ -316,11 +465,17 @@ describe('/api/v1/admin/users router', () => {
   it('DELETE /:id removes another user + audits', async () => {
     setSession(adminSession());
     const other = store.rows.find((r) => r.email === 'new@example.com')!;
+    const announcedBefore = announced.length;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
       method: 'DELETE',
     });
     assert.equal(res.status, 204);
     assert.equal(store.rows.find((r) => r.id === other.id), undefined);
     assert.equal(audit.entries.at(-1)?.action, 'user.delete');
+    // No bump possible (the row is gone) — its absence revokes; still announced.
+    assert.deepEqual(announced.slice(announcedBefore), [
+      { provider: LOCAL_PROVIDER_ID, sub: 'new@example.com' },
+    ]);
+    assert.equal(forgottenAccounts.at(-1), 'local:new@example.com', 'its device cookies with it');
   });
 });

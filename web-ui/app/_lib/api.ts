@@ -1378,9 +1378,15 @@ export interface AuthProviderSummary {
 
 export interface AuthProvidersResponse {
   providers: AuthProviderSummary[];
-  /** True iff users-table is empty AND no env-seed values were given.
-   *  The login UI flips into "first-time-setup" mode when this is true. */
+  /** True iff the first-user wizard is open: this boot allowed setup, the
+   *  local provider is active and the users table is still empty. The same
+   *  predicate `POST /setup` enforces. The login UI flips into
+   *  "first-time-setup" mode when this is true. */
   setup_required: boolean;
+  /** True when `POST /setup` demands the operator setup token (every server
+   *  install; the desktop app's loopback kernel is the one exception). The
+   *  middleware prints it to its log at boot unless ADMIN_SETUP_TOKEN is set. */
+  setup_token_required: boolean;
 }
 
 export interface AuthLogoutEntry {
@@ -1516,6 +1522,9 @@ export async function postAuthSetup(body: {
   email: string;
   password: string;
   display_name?: string;
+  /** Operator setup token; required when `/providers` reports
+   *  `setup_token_required`. Refused with 403 `auth.setup_token_invalid`. */
+  setup_token?: string;
   /** OB-61 — operator-supplied Anthropic key, seeded into the
    *  orchestrator/verifier/extras vault on first-user setup. Back-compat
    *  only: the wizard's key field was removed in S4 and this client never

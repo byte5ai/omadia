@@ -3,8 +3,7 @@
 <plist version="1.0">
 <dict>
   <!-- Electron + a forked Node kernel need JIT/unsigned-executable-memory under
-       the hardened runtime. PGlite is WASM (no native JIT) but the bundled
-       V8/Node still requires these. -->
+       the hardened runtime: the bundled V8/Node requires these. -->
   <key>com.apple.security.cs.allow-jit</key>
   <true/>
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>

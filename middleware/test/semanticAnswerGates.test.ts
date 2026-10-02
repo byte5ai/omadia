@@ -3,7 +3,10 @@ import { strict as assert } from 'node:assert';
 
 // Imported from source (not the `@omadia/channel-sdk` dist barrel) — same
 // rationale as aiDisclosure.test.ts: fields added after the last dist build.
-import { toSemanticAnswer } from '../packages/harness-channel-sdk/src/toSemanticAnswer.js';
+import {
+  toSemanticAnswer,
+  verifierSummaryHasEvidence,
+} from '../packages/harness-channel-sdk/src/toSemanticAnswer.js';
 import type {
   ChatTurnResult,
   VerifierResultSummary,
@@ -41,14 +44,36 @@ describe('toSemanticAnswer — verifier badge gate', () => {
     assert.equal(sa.verifier, undefined);
   });
 
-  it('suppresses the pipeline-failure fallback (approved with empty claim list)', () => {
-    // verifierService returns `{ status: 'approved', claims: [] }` when the
-    // pipeline throws — that must never render as "✓ Antwort geprüft".
+  it('suppresses a pipeline failure (unavailable, nothing checked)', () => {
+    // verifierService reports a pipeline that threw as `unavailable` — that
+    // must never render as "✓ Antwort geprüft", nor as any other chip.
     const sa = toSemanticAnswer({
       ...base,
-      verifier: verifierSummary({ claimCount: 0, latencyMs: 0 }),
+      verifier: verifierSummary({
+        badge: 'unavailable',
+        status: 'unavailable',
+        reason: 'pipeline_error',
+        claimCount: 0,
+        latencyMs: 0,
+      }),
     });
     assert.equal(sa.verifier, undefined);
+  });
+
+  it('never forwards the unverified / unavailable badges to a connector', () => {
+    for (const summary of [
+      verifierSummary({ badge: 'unverified', status: 'skipped', reason: 'no_trigger', claimCount: 0 }),
+      verifierSummary({ badge: 'unavailable', status: 'unavailable', reason: 'extractor_error', claimCount: 0 }),
+      // Defensive: the gate is not a claim count alone. A summary claiming
+      // checked claims but carrying a no-evidence badge or status still gets
+      // no chip — the connector wire union has no value for it.
+      verifierSummary({ badge: 'unverified', status: 'skipped', claimCount: 3 }),
+      verifierSummary({ badge: 'verified', status: 'skipped', claimCount: 3 }),
+      verifierSummary({ badge: 'verified', status: 'unavailable', claimCount: 3 }),
+    ]) {
+      const sa = toSemanticAnswer({ ...base, verifier: summary });
+      assert.equal(sa.verifier, undefined, `${summary.status}/${summary.badge}`);
+    }
   });
 
   it('keeps corrected/failed badges as long as claims were checked', () => {
@@ -57,6 +82,98 @@ describe('toSemanticAnswer — verifier badge gate', () => {
       verifier: verifierSummary({ badge: 'corrected', retryCount: 1 }),
     });
     assert.deepEqual(sa.verifier, { status: 'corrected' });
+    const failed = toSemanticAnswer({
+      ...base,
+      verifier: verifierSummary({ badge: 'failed', status: 'blocked', contradictionCount: 1 }),
+    });
+    assert.deepEqual(failed.verifier, { status: 'failed' });
+  });
+
+  it('forwards partial for an answer checked only in part', () => {
+    const sa = toSemanticAnswer({
+      ...base,
+      verifier: verifierSummary({
+        badge: 'partial',
+        status: 'approved_with_disclaimer',
+        unverifiedCount: 1,
+        uncheckedCount: 1,
+      }),
+    });
+    assert.deepEqual(sa.verifier, { status: 'partial' });
+  });
+
+  it('never forwards a badge the summary counts do not back', () => {
+    for (const summary of [
+      // Green needs every claim confirmed on an approved verdict.
+      verifierSummary({ badge: 'verified', unverifiedCount: 1 }),
+      verifierSummary({ badge: 'verified', status: 'approved_with_disclaimer', unverifiedCount: 1 }),
+      // Claims were checked, but none was confirmed.
+      verifierSummary({ badge: 'partial', status: 'approved_with_disclaimer', unverifiedCount: 2 }),
+      verifierSummary({ badge: 'corrected', status: 'approved_with_disclaimer', unverifiedCount: 2, retryCount: 1 }),
+      // Blocked without a contradiction settles nothing.
+      verifierSummary({ badge: 'failed', status: 'blocked', unverifiedCount: 2 }),
+      // A corrected answer is not still contradicted.
+      verifierSummary({ badge: 'corrected', status: 'blocked', contradictionCount: 1, retryCount: 1 }),
+      // Corrected, like verified, needs every claim confirmed: a retry that
+      // confirmed one claim and left three unchecked is only partly verified.
+      verifierSummary({
+        badge: 'corrected',
+        status: 'approved_with_disclaimer',
+        claimCount: 4,
+        unverifiedCount: 3,
+        uncheckedCount: 3,
+        retryCount: 1,
+      }),
+    ]) {
+      const sa = toSemanticAnswer({ ...base, verifier: summary });
+      assert.equal(sa.verifier, undefined, JSON.stringify(summary));
+    }
+  });
+
+  it('never forwards a badge whose counts contradict each other', () => {
+    // The verifier never builds such a summary; one from elsewhere (a foreign
+    // ChatAgent) backs no badge, however its badge and status read.
+    const inconsistent: VerifierResultSummary[] = [
+      // Every claim confirmed, yet one unchecked and one not covered.
+      verifierSummary({ claimCount: 1, uncheckedCount: 1, uncoveredCount: 1 }),
+      // More coverage entries than unchecked claims.
+      verifierSummary({
+        badge: 'partial',
+        status: 'approved_with_disclaimer',
+        claimCount: 3,
+        unverifiedCount: 1,
+        uncheckedCount: 0,
+        uncoveredCount: 1,
+      }),
+      // More contradicted and unconfirmed claims than claims.
+      verifierSummary({
+        badge: 'failed',
+        status: 'blocked',
+        claimCount: 1,
+        contradictionCount: 1,
+        unverifiedCount: 1,
+      }),
+      // Counts that are not nonnegative integers.
+      verifierSummary({ claimCount: 1.5 }),
+      verifierSummary({ claimCount: Number.NaN }),
+      verifierSummary({ contradictionCount: -1 }),
+      verifierSummary({ uncheckedCount: 0.5, unverifiedCount: 1, status: 'approved_with_disclaimer', badge: 'partial' }),
+      verifierSummary({ unverifiedCount: '0' as unknown as number }),
+      // Required counts missing: never read as 0.
+      {
+        badge: 'verified',
+        status: 'approved',
+        claimCount: 1,
+        retryCount: 0,
+        latencyMs: 1,
+        mode: 'enforce',
+      } as unknown as VerifierResultSummary,
+    ];
+    for (const summary of inconsistent) {
+      assert.equal(verifierSummaryHasEvidence(summary), false, JSON.stringify(summary));
+      const sa = toSemanticAnswer({ ...base, verifier: summary });
+      assert.equal(sa.verifier, undefined, JSON.stringify(summary));
+    }
   });
 });
 

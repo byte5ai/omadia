@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 
 import { NativeToolRegistry } from '../../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import {
@@ -46,32 +46,54 @@ interface RecordedBypass {
   readonly bytes: number;
 }
 
+type RecordedToolError = Parameters<PrivacyTurnHandle['recordToolError']>[0];
+
+function redactPii(text: string): string {
+  return text
+    .replaceAll(EMAIL, '[masked:email]')
+    .replaceAll(IBAN, '[masked:iban]')
+    .replaceAll('Erika Mustermann', '[masked:person]');
+}
+
 /**
  * A privacy handle that genuinely redacts. `internToolResultV4` strips the email
  * and IBAN and returns a digest — so if the dispatcher fails to call it, the raw
- * values survive into the output and the assertions below fail.
+ * values survive into the output and the assertions below fail. Its tool-error
+ * redactor does the same without the digest envelope, and every tool-error
+ * receipt entry lands in `toolErrors`.
  */
 function redactingPrivacyHandle(options?: {
   readonly bypassTools?: ReadonlySet<string>;
   readonly bypassReceipts?: RecordedBypass[];
   readonly internThrows?: boolean;
+  readonly toolErrors?: RecordedToolError[];
+  readonly recordThrows?: boolean;
 }): PrivacyTurnHandle {
   return {
     async internToolResultV4({ toolName, rawResult }) {
       if (options?.internThrows === true) {
         throw new Error('privacy provider unavailable');
       }
-      const redacted = rawResult
-        .replaceAll(EMAIL, '[masked:email]')
-        .replaceAll(IBAN, '[masked:iban]')
-        .replaceAll('Erika Mustermann', '[masked:person]');
       return {
-        digestText: `«dataset:${toolName}» ${redacted}`,
+        digestText: `«dataset:${toolName}» ${redactPii(rawResult)}`,
         datasetId: `ds-${toolName}`,
       };
     },
     async recordBypassedTool({ toolName, pluginId, bytes }) {
       options?.bypassReceipts?.push({ toolName, pluginId, bytes });
+    },
+    async recordToolError(entry) {
+      if (options?.recordThrows === true) throw new Error('receipt store down');
+      options?.toolErrors?.push(entry);
+    },
+    async redactToolErrorText({ text }) {
+      const redacted = redactPii(text);
+      return {
+        outcome: 'redacted',
+        text: redacted,
+        spans: redacted === text ? [] : [{ type: 'email', detector: 'c0-regex' }],
+        degraded: false,
+      };
     },
     checkBypass(toolName) {
       return options?.bypassTools?.has(toolName) === true
@@ -256,7 +278,8 @@ describe('ToolDispatchService — privacy data-plane boundary (#542 prerequisite
     ]);
   });
 
-  it('fails OPEN when the privacy provider throws — documented parity with the chat path', async () => {
+  it('fails CLOSED when the privacy provider throws — parity with the chat path', async () => {
+    const warn = mock.method(console, 'warn', () => undefined);
     const service = new ToolDispatchService({
       nativeTools: registryWith('odoo_read_partner', PII_RESULT),
       domainTools: [],
@@ -264,26 +287,33 @@ describe('ToolDispatchService — privacy data-plane boundary (#542 prerequisite
     });
 
     const result = await service.dispatch('odoo_read_partner', {});
+    warn.mock.restore();
 
-    // `Orchestrator.dispatchToolDeadlined` logs and sends the raw result when
-    // interning throws. This path matches it deliberately rather than silently
-    // diverging; a fail-CLOSED policy for untrusted callers is its own decision.
-    assert.equal(result.content, PII_RESULT);
-    assert.equal(result.isError, undefined);
+    // `Orchestrator.dispatchToolDeadlined` withholds a result it could not
+    // intern, and so does this path: the raw values never leave the
+    // dispatcher, and the caller learns the call ran but its result is gone.
+    assert.equal(result.content.includes(EMAIL), false, 'the email left the dispatcher raw');
+    assert.equal(result.content.includes(IBAN), false, 'the IBAN left the dispatcher raw');
+    assert.match(result.content, /^Error: tool `odoo_read_partner` ran, but the privacy boundary/);
+    assert.equal(result.isError, true);
+    assert.equal(result.origin, 'dispatcher');
   });
 });
 
 /**
- * W4 — the ERROR path of the same boundary.
+ * W4 — the ERROR path of the same boundary, now under the one thrown-error
+ * policy every seam shares (`toolErrorRedaction.ts`).
  *
- * `afterDispatch` ran only on the success branch; a THROWING handler returned
- * `error.message` verbatim. Handler exceptions are not sanitized: ORMs echo the
- * failing row and drivers echo bound parameters, so the message below is an
- * ordinary shape for a real Odoo/psql failure — and it went out unmasked.
+ * `afterDispatch` runs only on the success branch; a THROWING handler used to
+ * return `error.message` verbatim, then (W4) an interned digest of it. Handler
+ * exceptions are not sanitized: ORMs echo the failing row and drivers echo
+ * bound parameters, so the message below is an ordinary shape for a real
+ * Odoo/psql failure. Under a privacy handle the caller now gets the withheld
+ * notice — class name, sanitised code, log ref — and nothing of the message.
  *
  * Same mutation-check discipline as above: every assertion inspects the CONTENT
- * that leaves the dispatcher. Deleting the `maskErrorText` call, or making it
- * return its input, fails these.
+ * that leaves the dispatcher. Deleting the `thrownResult` call, or forwarding
+ * the message, fails these.
  */
 const PII_ERROR = `Fault: Invalid field 'x' on record {"name":"Erika Mustermann","email":"${EMAIL}","iban":"${IBAN}"}`;
 
@@ -321,12 +351,12 @@ function throwingDomainTool(name: string, message: string): DomainTool {
 }
 
 /**
- * #1097 — the public dispatch seam must also let an MCP auth prompt through.
- * `McpManager.handleFailure` answers an auth-shaped failure with the app
- * layer's connect prompt (`🔒 …` plus the `<mcp-auth-required>` machine block
- * the chat UI parses into a Connect card) instead of a raw failure, and that
- * prompt carries no `Error:` prefix — so the #1105 guard missed it and the
- * prompt was interned: no card, and a model narrating success over a digest.
+ * #1097 — the public dispatch seam lets an MCP connect prompt (`🔒 …` plus the
+ * `<mcp-auth-required>` machine block the chat UI parses into a Connect card)
+ * through only when `McpManager.handleFailure` produced it in that dispatch;
+ * `mcpAuthPromptProvenance.test.ts` drives that producer. The same bytes
+ * returned by a handler are data: a remote server or a stored record can start
+ * with the prefix, so the prefix alone must not switch the shield off.
  */
 const AUTH_PROMPT =
   '🔒 The MCP server "Strava" needs authorization before it can be used. Ask the ' +
@@ -335,25 +365,39 @@ const AUTH_PROMPT =
   '<mcp-auth-required serverId="s-1" server="Strava" needsClient="false"></mcp-auth-required>';
 
 describe('ToolDispatchService — control-flow passthrough (#1097)', () => {
-  it('passes an MCP auth prompt through unmasked so the Connect card survives', async () => {
+  it('interns connect-prompt text a handler returns itself, and does not receipt it', async () => {
+    const toolErrors: RecordedToolError[] = [];
     const service = new ToolDispatchService({
       nativeTools: registryWith('mcp__Strava__list_activities', AUTH_PROMPT),
       domainTools: [],
-      privacy: () => redactingPrivacyHandle(),
+      privacy: () => redactingPrivacyHandle({ toolErrors }),
     });
 
     const result = await service.dispatch('mcp__Strava__list_activities', {});
 
-    assert.equal(result.content, AUTH_PROMPT, 'the connect prompt must reach the caller verbatim');
-    assert.ok(
-      result.content.includes('<mcp-auth-required'),
-      'the machine block the Connect card is parsed from must survive the boundary',
+    assert.match(
+      result.content,
+      /^«dataset:mcp__Strava__list_activities»/,
+      'prompt-shaped text without the manager as its producer is interned like any result',
     );
-    assert.equal(
-      result.content.includes('«dataset:'),
-      false,
-      'an auth prompt must not be interned as a renderable dataset',
-    );
+    assert.equal(result.origin, 'tool');
+    assert.deepEqual(toolErrors, [], 'not receipted as a connect prompt');
+  });
+
+  it('REDACTS a PII-bearing returned `Error:` text on the loopback path, keeping the hint', async () => {
+    const toolErrors: RecordedToolError[] = [];
+    const service = new ToolDispatchService({
+      nativeTools: registryWith('mail_send', `Error: mailbox ${EMAIL} is over quota`),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle({ toolErrors }),
+    });
+
+    const result = await service.dispatch('mail_send', {});
+
+    assert.equal(result.content, 'Error: mailbox [masked:email] is over quota');
+    assert.equal(result.origin, 'tool', 'handler-authored content, redacted — not dispatcher text');
+    assert.equal(toolErrors[0]?.carrier, 'returned');
+    assert.equal(toolErrors[0]?.outcome, 'redacted');
   });
 
   it('control — a PII-bearing result from the same tool IS still interned', async () => {
@@ -370,12 +414,25 @@ describe('ToolDispatchService — control-flow passthrough (#1097)', () => {
   });
 });
 
+/** The withheld notice's shape for a plain `Error` throw. */
+function withheldNotice(tool: string): RegExp {
+  return new RegExp(`^Error: tool \`${tool}\` failed with Error \\[ref [^\\]]+\\]\\. `);
+}
+
 describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
-  it('MASKS PII out of a NATIVE handler exception message', async () => {
+  beforeEach(() => {
+    mock.method(console, 'error', () => {});
+  });
+  afterEach(() => {
+    mock.restoreAll();
+  });
+
+  it('WITHHOLDS a NATIVE handler exception message and receipts it', async () => {
+    const toolErrors: RecordedToolError[] = [];
     const service = new ToolDispatchService({
       nativeTools: throwingRegistryWith('odoo_search_partner', PII_ERROR),
       domainTools: [],
-      privacy: () => redactingPrivacyHandle(),
+      privacy: () => redactingPrivacyHandle({ toolErrors }),
     });
 
     const result = await service.dispatch('odoo_search_partner', {});
@@ -387,11 +444,19 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
       false,
       'error path leaked the person name',
     );
-    assert.match(result.content, /\[masked:email\]/, 'the masked digest should have replaced it');
-    assert.equal(result.isError, true, 'masking must not swallow the error signal');
+    assert.match(result.content, withheldNotice('odoo_search_partner'));
+    assert.equal(result.isError, true, 'withholding must not swallow the error signal');
+    assert.deepEqual(toolErrors, [
+      {
+        toolName: 'odoo_search_partner',
+        carrier: 'thrown',
+        outcome: 'withheld',
+        bytes: Buffer.byteLength(PII_ERROR),
+      },
+    ]);
   });
 
-  it('MASKS PII out of a DOMAIN tool exception message too (both branches)', async () => {
+  it('WITHHOLDS a DOMAIN tool exception message too (both branches)', async () => {
     const service = new ToolDispatchService({
       nativeTools: new NativeToolRegistry(),
       domainTools: [throwingDomainTool('ask_hr', PII_ERROR)],
@@ -402,19 +467,33 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
 
     assert.equal(result.content.includes(EMAIL), false, 'domain-tool error path leaked the email');
     assert.equal(result.content.includes(IBAN), false, 'domain-tool error path leaked the IBAN');
-    assert.match(result.content, /\[masked:email\]/);
+    assert.match(result.content, withheldNotice('ask_hr'));
     assert.equal(result.isError, true);
   });
 
+  it("uses the caller's request id as the log ref when one was sent", async () => {
+    const service = new ToolDispatchService({
+      nativeTools: throwingRegistryWith('odoo_search_partner', PII_ERROR),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    const result = await service.dispatch('odoo_search_partner', {}, {
+      caller: { requestId: 'req-42' },
+    });
+
+    assert.match(result.content, /\[ref req-42\]/);
+  });
+
   /**
-   * #1097 — the fulfilled-result paths stopped interning strings that follow
-   * the `Error:` tool-error convention (those are sanitized control-flow text
-   * the model must read). A THROWN exception is a different animal: nothing
-   * sanitized it, and its message may well start with the same prefix. Pinning
-   * this here so the exception path is not "fixed" later by pattern-matching on
-   * that prefix — the leak below is exactly what would come back.
+   * #1097 — the fulfilled-result paths treat a string that follows the
+   * `Error:` tool-error convention as control flow. A THROWN exception is a
+   * different animal: nothing sanitized it, and its message may well start
+   * with the same prefix. Pinning this here so the exception path is not
+   * "fixed" later by pattern-matching on that prefix — the leak below is
+   * exactly what would come back.
    */
-  it('still MASKS a thrown exception whose message starts with `Error:` (not the tool-error convention)', async () => {
+  it('still WITHHOLDS a thrown exception whose message starts with `Error:` (not the tool-error convention)', async () => {
     const service = new ToolDispatchService({
       nativeTools: throwingRegistryWith('odoo_search_partner', `Error: ${PII_ERROR}`),
       domainTools: [],
@@ -430,21 +509,20 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
       false,
       'a thrown `Error:` message leaked the person name',
     );
-    assert.match(result.content, /\[masked:email\]/, 'the masked digest should have replaced it');
-    assert.equal(result.isError, true, 'masking must not swallow the error signal');
+    assert.match(result.content, withheldNotice('odoo_search_partner'));
+    assert.equal(result.isError, true, 'withholding must not swallow the error signal');
   });
 
   /**
-   * #1097 / triage AC3 — the same pin against the REAL privacy-guard service.
-   * The stub above redacts by string replace, so it stays green whatever the
-   * shape classifier does. This message carries no email, IBAN or phone — only
-   * a name and a salary, which only the classifier's deny-by-default rule
-   * masks. An `Error:`-prefix exemption in the classifier would put both on
-   * the wire.
+   * #1097 / triage AC3 — the same pin against the REAL privacy-guard service,
+   * whose receipt must then list the withheld error. This message carries no
+   * email, IBAN or phone — only a name and a salary, which no regex detector
+   * sees; withholding does not depend on detection.
    */
-  it('still MASKS a thrown `Error:` message through the real privacy-guard service', async () => {
+  it('still WITHHOLDS a thrown `Error:` message through the real privacy-guard service', async () => {
+    const guard = createPrivacyGuardService();
     const turnHandle = createPrivacyTurnHandle({
-      service: createPrivacyGuardService(),
+      service: guard,
       sessionId: 's-1097',
       turnId: 't-1097-thrown',
     });
@@ -459,17 +537,25 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
 
     const result = await service.dispatch('odoo_search_partner', {});
 
-    assert.equal(result.isError, true, 'masking must not swallow the error signal');
-    assert.ok(result.content.includes('[privacy-shield-v4]'), 'the message was interned');
+    assert.equal(result.isError, true, 'withholding must not swallow the error signal');
+    assert.match(result.content, withheldNotice('odoo_search_partner'));
     assert.equal(
       result.content.includes('Erika Mustermann'),
       false,
-      'a thrown `Error:` message leaked the person name past the real classifier',
+      'a thrown `Error:` message leaked the person name',
     );
     assert.equal(result.content.includes('7.450 EUR'), false, 'the salary leaked');
+    const receipt = await turnHandle.finalize();
+    assert.deepEqual(
+      receipt?.toolErrors?.map((e) => [e.carrier, e.outcome]),
+      [['thrown', 'withheld']],
+    );
   });
 
-  it('marks a masked error as `origin: tool` so a consumer knows it had to cross the boundary', async () => {
+  it('marks the withheld notice as `origin: dispatcher` — this service authored it', async () => {
+    // The notice carries the tool name, the exception class and a ref — never
+    // tool data — so a consumer (the public endpoint) may return it without a
+    // masking pass, like this service's own refusals.
     const service = new ToolDispatchService({
       nativeTools: throwingRegistryWith('odoo_search_partner', PII_ERROR),
       domainTools: [],
@@ -478,7 +564,7 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
 
     const result = await service.dispatch('odoo_search_partner', {});
 
-    assert.equal(result.origin, 'tool');
+    assert.equal(result.origin, 'dispatcher');
   });
 
   it("marks this service's OWN refusals as `origin: dispatcher` — they carry no tool data", async () => {
@@ -539,7 +625,7 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
     const result = await service.dispatch('odoo_search_partner', {});
 
     assert.equal(result.content.includes(EMAIL), false, 'a bypass let raw error text through');
-    assert.match(result.content, /\[masked:email\]/);
+    assert.match(result.content, withheldNotice('odoo_search_partner'));
     assert.deepEqual(receipts, []);
   });
 
@@ -574,28 +660,29 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
     assert.equal(result.isError, true);
   });
 
-  it('falls back to the raw message when masking itself throws — and still flags the error', async () => {
-    // Documented fail-OPEN, safe ONLY because `publicMcpPrivacy.ts`'s gate never
-    // lets `internToolResultV4` throw and `PublicMcpServer` refuses an unmasked
-    // result. Asserted so the branch cannot change silently.
+  it('withholds even when the provider is failing — nothing on this path depends on interning', async () => {
+    // The old path interned the message and fell OPEN to the raw text when
+    // interning threw. The notice needs no provider call, and a failing receipt
+    // write only drops the entry.
     const service = new ToolDispatchService({
       nativeTools: throwingRegistryWith('odoo_search_partner', PII_ERROR),
       domainTools: [],
-      privacy: () => redactingPrivacyHandle({ internThrows: true }),
+      privacy: () => redactingPrivacyHandle({ internThrows: true, recordThrows: true }),
     });
 
     const result = await service.dispatch('odoo_search_partner', {});
 
-    assert.equal(result.content, PII_ERROR);
+    assert.equal(result.content.includes(EMAIL), false);
+    assert.match(result.content, withheldNotice('odoo_search_partner'));
     assert.equal(result.isError, true);
   });
 
-  it('masks a non-Error throw (a bare string) too — `errMsg` stringifies, it does not sanitize', async () => {
+  it('withholds a non-Error throw (a bare string) too — it is never stringified onto the wire', async () => {
     const nativeTools = new NativeToolRegistry();
     nativeTools.register('odoo_search_partner', {
       handler: () => {
-        // Deliberately not an Error: `errMsg` falls back to `String(error)`,
-        // which stringifies without sanitizing anything.
+        // Deliberately not an Error: a thrown string IS a message, and
+        // stringifying it would put it on the wire unchanged.
         throw PII_ERROR;
       },
       spec: {
@@ -614,7 +701,7 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
     const result = await service.dispatch('odoo_search_partner', {});
 
     assert.equal(result.content.includes(EMAIL), false);
-    assert.match(result.content, /\[masked:email\]/);
+    assert.match(result.content, withheldNotice('odoo_search_partner'));
   });
 });
 

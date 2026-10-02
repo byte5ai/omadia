@@ -12,29 +12,40 @@ every tool result:
 4. The final answer is **materialized from ground truth** via
    `v4_render_answer`; real values are resolved behind the boundary.
 5. Each turn in which the shield acted (interned a dataset, recorded a bypass
-   or a tool's structured payload, or masked the prompt) emits a PII-free
-   **PrivacyReceipt** that the channel renderers (Teams Adaptive Card, web
-   inline disclosure) surface to the user. A turn without shield activity
-   emits none (#1081).
+   or a tool's structured payload, masked the prompt, withheld or redacted a
+   tool error's text, or sent an answer-verifier request under the turn's
+   privacy view) emits a PII-free **PrivacyReceipt** that the channel
+   renderers (Teams Adaptive Card, web inline disclosure) surface to the
+   user. A turn without shield activity emits none (#1081).
 
-**Control-flow results are not interned (#1105, #1097).** A tool result that
-is control flow rather than data — the orchestrator's `Error:`-prefix
-convention (the same prefix that derives the `is_error` flag on the
-tool_result), or an MCP auth prompt starting with `🔒 The MCP server "` — is
-passed to the LLM verbatim instead of being interned. Interning it would both
-hide the failure behind a masked digest (the model would narrate success) and
-register a renderable 1-row dataset that a later `v4_render_answer` could
-materialize as if the error were data. The skip lives at the four dispatch
-seams (`Orchestrator.dispatchTool`, `Orchestrator.guardReplayResult`,
-`ToolDispatchService.afterDispatch`, `LocalSubAgent.dispatch`), not in this
-package; all four call `isControlFlowToolResult` from `@omadia/plugin-api`.
-**Limitations:** the predicate is an anchored prefix match, never a substring
-match — a *successful* result whose data happens to begin with `Error:` or the
-auth-prompt prefix also skips interning and reaches the LLM unmasked, so a
-guarded tool must not emit real rows that start with either. A passed-through
-result writes no receipt entry. The shape classifier itself has no
-control-flow exemption: an interned `Error:` string (a masked thrown
-exception, say) is masked like any other free text.
+**Control-flow results are not interned, but they are checked (#1105,
+#1097).** A tool result that is control flow rather than data — the
+orchestrator's `Error:`-prefix convention (the same prefix that derives the
+`is_error` flag on the tool_result), or the MCP connect prompt `McpManager`
+produced in the same dispatch — reaches the LLM as text instead of being
+interned. Interning it would both hide the failure behind a masked digest (the
+model would narrate success) and register a renderable 1-row dataset that a
+later `v4_render_answer` could materialize as if the error were data. The
+decision lives at the dispatch seams (`Orchestrator.dispatchTool`,
+`Orchestrator.guardReplayResult`, `ToolDispatchService`,
+`LocalSubAgent.dispatch`), which use `isGuardedControlFlowResult` and
+`guardControlFlowResult` from `@omadia/orchestrator` (`toolErrorRedaction.ts`).
+The text behind `Error:` comes back to this package through
+`redactToolErrorText` (`src/toolErrorRedact.ts`): identity-type C0 spans (dates
+and amounts stay readable), the operator deny-list and C1, each replaced
+irreversibly by `[masked:<type>]`. The turn's surrogate map is read for the
+known-value sweep but never extended, and the call does not depend on
+`mask_user_prompt`. A detector failure or a surviving value answers
+`withheld`, never the input text. Every handled error — thrown text withheld,
+returned text redacted or withheld, connect prompt passed — is recorded through
+`recordToolError` and lands in the receipt's `toolErrors`. **Limitations:** the
+`Error:` match is an anchored prefix, never a substring, so a *successful*
+result whose data begins with `Error:` is handled as an error (redacted or
+withheld, not interned); the connect prompt counts only by provenance, so text
+that merely starts like it is interned. The shape classifier itself has no
+control-flow exemption: an interned string that happens to read like an error
+is masked like any other free text. Details and residuals:
+`docs/security-architecture.md` §6c.
 
 The boundary itself has no configuration: it is generic over JSON shape and
 value statistics — no per-tenant policy, allowlist, or detector tuning. The
@@ -76,6 +87,28 @@ NOT an on-wire token map (deleted for cause by #119/#126/#153).
   pass-through-unmasked path.
 - **Transparency:** masked spans surface (type + detector only, PII-free)
   as `maskedPromptSpans` on the turn's `PrivacyReceipt`.
+
+### Answer-verifier requests (stage `verifier`)
+
+The answer verifier's post-turn model requests run under the same turn map
+(security-architecture §6e). `maskUserPrompt({ stage: 'verifier' })` masks
+under the operator's policy and books spans in `PrivacyReceipt.verifierEgress`
+(request count + span types), never in `maskedPromptSpans`; `preview: true`
+answers "would this text change?" without keeping anything. A request that
+carries only the turn's own wire view (the claim extraction) is admitted with an
+empty verifier-stage text: one request booked, nothing masked twice, no C1 call.
+`projectVerifierText` projects verifier-composed text (claim + knowledge-graph
+evidence) regardless of `mask_user_prompt`: identity-shaped C0 spans, the
+operator deny-list, C1 when wired and caller-named identity values — dates and
+amounts stay, as in a v4 digest — and blocks when a real value equals a
+surrogate minted earlier in the turn. `countUnresolvedSurrogates` reports
+placeholders a model reworded so restore could not map them back
+(`src/verifierProjection.ts`): verbatim, in another case, with regrouped
+digits, or — for a date or an amount — in any other spelling of the same
+value (`src/valueLiterals.ts`: ISO, dotted, slashed and written-month dates in
+the six locales, thousands groupings, "k" / "Tsd." / "T€" / "Mio."). A date or
+amount it cannot read counts as a hit (fail closed); spelled-out numbers and
+dates without a year are not read.
 
 ## Canonical implementation path (resolved in #431)
 

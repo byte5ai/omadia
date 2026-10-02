@@ -57,6 +57,22 @@ Determine which installer this machine needs:
 
 On macOS, `uname -m` returns `arm64` (Apple Silicon) or `x86_64` (Intel).
 
+**On macOS, also check the version before you download anything.** The desktop
+app needs **macOS 13 (Ventura) or later**; on macOS 12 or earlier it does not
+start.
+
+```bash
+sw_vers -productVersion    # e.g. 12.7.6 (too old), 14.7.1 or 26.0 (fine)
+[ "$(sw_vers -productVersion | cut -d. -f1)" -ge 13 ] && echo ok || echo too-old
+```
+
+If it prints `too-old`, **stop and tell the user**: "omadia needs macOS 13
+(Ventura) or later; this Mac runs macOS <version>." If Apple offers this Mac a
+newer macOS (System Preferences → Software Update), updating macOS is the way
+to install omadia. Do not look for an older omadia release that still
+starts on this Mac: those builds run on an Electron version that no longer gets
+security fixes.
+
 ## Step 3 — List recent releases from the GitHub API
 
 No `gh` CLI is required — plain `curl` works. **Do not use `/releases/latest`.** A

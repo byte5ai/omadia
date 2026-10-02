@@ -19,6 +19,16 @@ export interface AuthSuccess {
   /** Optional refresh-token to persist into the vault for later renew.
    *  Local auth never returns one; OIDC providers do. */
   refreshToken?: string;
+  /**
+   * Password providers only: the credential epoch this verification checked
+   * (`credentialEpoch` in `auth/loginDevices.ts` of the users row and the
+   * hash the password was compared with). The sign-in limiter's device
+   * cookie is minted under it (docs/security-architecture.md §10m), never
+   * under an epoch read afterwards, so a password reset that lands while the
+   * verification runs leaves that cookie stale. Absent → no device cookie.
+   * Never logged and never part of a response.
+   */
+  credentialEpoch?: string;
 }
 
 export interface AuthError {
@@ -38,6 +48,27 @@ export interface AuthError {
 }
 
 export type AuthResult = AuthSuccess | AuthError;
+
+/**
+ * The `users` row a password provider verified the credential against. The
+ * session is minted for exactly this row: its id becomes the token's `uid`
+ * claim and its `session_version` the `sv` claim (server-side revocation, see
+ * `auth/sessionRevocation.ts`). Taken from the SAME read that checked the
+ * password, so a reset that lands after the check still ends this session —
+ * a second lookup could return the already-bumped version and let a login
+ * with the old password survive the reset.
+ */
+export interface VerifiedAccount {
+  id: string;
+  sessionVersion: number;
+}
+
+/** A password provider's success: always tied to a `users` row. */
+export interface PasswordAuthSuccess extends AuthSuccess {
+  account: VerifiedAccount;
+}
+
+export type PasswordAuthResult = PasswordAuthSuccess | AuthError;
 
 /**
  * #965 — outcome of re-checking an existing session's identity against the
@@ -70,7 +101,7 @@ export interface PasswordProvider {
    * concrete provider (LocalPasswordProvider expects `{email, password}`).
    * Routers pass `req.body` as-is — providers validate.
    */
-  verify(body: unknown): Promise<AuthResult>;
+  verify(body: unknown): Promise<PasswordAuthResult>;
 }
 
 /** Marks a provider as "user redirects to an external IdP" — login is a

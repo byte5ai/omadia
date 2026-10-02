@@ -42,8 +42,13 @@
     },
     {
       "type": "object", "additionalProperties": false,
-      "required": ["type", "handshakeId"],
-      "properties": { "type": { "const": "handshake_ack" }, "handshakeId": { "type": "string" } }
+      "required": ["type", "handshakeId", "canvasSessionId"],
+      "properties": {
+        "type": { "const": "handshake_ack" },
+        "handshakeId": { "type": "string" },
+        "canvasSessionId": { "type": "string", "description": "the resolved canvas session id (client-supplied or server-minted)" },
+        "sessionExpiresAt": { "type": "number", "description": "when the session behind the socket expires, Unix epoch seconds; the server closes the socket with 4401 then (4403 on revocation). Optional: servers before the session-lifetime contract omit it" }
+      }
     }
   ]
 }

@@ -461,6 +461,25 @@ export type {
   ToolIdempotencyOutcome,
 } from './toolIdempotency.js';
 export {
+  ToolReplayAbortError,
+  ToolReplayLedger,
+  replayMissNotice,
+  runDetachedFromRequestLedger,
+} from './toolReplayLedger.js';
+export type {
+  ToolReplayDecision,
+  ToolReplayRecord,
+  ToolReplaySeam,
+} from './toolReplayLedger.js';
+export { RequestReceipts, mergePrivacyReceipts } from './requestReceipts.js';
+export { RequestTurnRecord } from './requestTurnRecord.js';
+export type {
+  CommittedTurn,
+  RequestAfterTurn,
+  TurnRecordDraft,
+  WrittenTurn,
+} from './requestTurnRecord.js';
+export {
   currentDispatchCaller,
   runWithDispatchCaller,
 } from './toolCallerContext.js';
@@ -471,8 +490,29 @@ export {
 // for the agent's own infra tools inside a turn and unacceptable for an
 // internet-facing caller — so the endpoint refuses to serve those names at all.
 export { createPrivacyTurnHandle } from './privacyHandle.js';
-export type { PrivacyTurnHandle } from './privacyHandle.js';
+export type { PrivacyTurnHandle, PromptMaskOptions } from './privacyHandle.js';
+// Verifier privacy hand-over: the continuation a held turn hands to the
+// answer-verifier wrapper (see privacyEgress.ts).
+export type { PrivacyEgressContinuation } from './privacyEgress.js';
 export { INTERN_EXEMPT_TOOLS, isInternExemptTool } from './privacyInternPolicy.js';
+// Tool errors on their way to a model: the one helper every dispatch seam
+// routes a thrown exception or a returned `Error:` text through. The MCP
+// connect prompt passes on per-dispatch provenance (`McpAuthPromptMint`).
+export { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
+export {
+  MAX_REDACTABLE_TOOL_ERROR_CHARS,
+  guardControlFlowResult,
+  isGuardedControlFlowResult,
+  looksExceptionShaped,
+  returnedToolErrorWithheldNotice,
+  thrownToolErrorForModel,
+  toolErrorRef,
+  withholdThrownToolError,
+} from './toolErrorRedaction.js';
+export type {
+  ThrownToolErrorOutcome,
+  ToolErrorWithholdReason,
+} from './toolErrorRedaction.js';
 export { LoopbackMcpServer } from './loopbackMcpServer.js';
 export type {
   LoopbackMcpServerDeps,

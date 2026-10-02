@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { PrivacyReceipt } from '../../../_lib/chatSessions';
 import { renderWithIntl } from '../../../_lib/test-utils';
 import {
+  describeToolErrorOutcome,
   formatMaskedPromptSpans,
   PrivacyReceiptCard,
   summarisePrivacyReceipt,
@@ -63,6 +64,75 @@ const STRUCTURED: PrivacyReceipt = {
   ],
 };
 
+/** The answer verifier sent two requests under the turn's privacy rules. */
+const VERIFIED: PrivacyReceipt = {
+  ...RANKED,
+  verifierEgress: {
+    requests: 2,
+    maskedSpans: [
+      { type: 'name', detector: 'identity-values' },
+      { type: 'email', detector: 'c0-regex' },
+    ],
+  },
+};
+
+describe('<PrivacyReceiptCard /> — answer check', () => {
+  it('shows the verifier row with its request count and masked spans', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={VERIFIED} />, { locale: 'de' });
+    expect(screen.getByText('Antwortprüfung')).toBeInTheDocument();
+    expect(
+      screen.getByText('2 Modellanfragen · 2 (1 × name, 1 × email) maskiert'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Privacy Shield/).textContent).toContain(
+      'Antwortprüfung: 2 Anfragen',
+    );
+    expect(screen.getByText(/nach diesen Anfragen abgeschlossen/)).toBeInTheDocument();
+  });
+
+  it('keeps verifier spans out of the prompt row', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={VERIFIED} />, { locale: 'en' });
+    expect(screen.queryByText('PII masked in your prompt')).not.toBeInTheDocument();
+    expect(screen.getByText('2 model requests · 2 (1 × name, 1 × email) masked')).toBeInTheDocument();
+  });
+
+  it('shows the request count alone when nothing was masked', () => {
+    renderWithIntl(
+      <PrivacyReceiptCard receipt={{ ...RANKED, verifierEgress: { requests: 1, maskedSpans: [] } }} />,
+      { locale: 'en' },
+    );
+    expect(screen.getByText('1 model request')).toBeInTheDocument();
+  });
+
+  it('renders byte-identically to today when verifierEgress is absent', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'en' });
+    expect(screen.queryByText('Answer check')).not.toBeInTheDocument();
+  });
+});
+
+/** A failing-tool turn: nothing interned, four tool errors handled at the
+ *  dispatch seams — one of each carrier/outcome the backend emits. */
+const TOOL_ERRORS: PrivacyReceipt = {
+  datasetsInterned: 0,
+  fieldsMasked: 0,
+  fieldsCleartext: 0,
+  verbsExecuted: [],
+  pseudonymProjectionUsed: false,
+  toolErrors: [
+    { toolName: 'odoo_search_partner', carrier: 'thrown', outcome: 'withheld', bytes: 212 },
+    {
+      toolName: 'crm_lookup_customer',
+      carrier: 'returned',
+      outcome: 'redacted',
+      bytes: 96,
+      redactedSpans: [
+        { type: 'email', detector: 'c0-regex' },
+        { type: 'iban', detector: 'c0-regex' },
+      ],
+    },
+    { toolName: 'manage_routine', carrier: 'returned', outcome: 'redacted', bytes: 40 },
+    { toolName: 'mcp__Strava__list_activities', carrier: 'mcp_auth_prompt', outcome: 'passed', bytes: 301 },
+  ],
+};
 describe('<PrivacyReceiptCard />', () => {
   it('renders the collapsed summary with dataset + masked-field counts', () => {
     renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'de' });
@@ -231,17 +301,68 @@ describe('<PrivacyReceiptCard />', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('never leaks a PII-shaped value — the receipt carries only counts', () => {
-    // The v4 receipt is PII-free by construction: counts and verb names
-    // only. This pins the contract — if the schema ever regains a value
-    // field, this test fails before it ships.
+  it('lists handled tool errors with carrier and outcome', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={TOOL_ERRORS} />, { locale: 'de' });
+    expect(screen.getByText('Behandelte Tool-Fehler')).toBeInTheDocument();
+    expect(screen.getByText('odoo_search_partner')).toBeInTheDocument();
+    expect(screen.getByText('Exception')).toBeInTheDocument();
+    expect(screen.getByText('Text zurückgehalten')).toBeInTheDocument();
+    expect(screen.getAllByText('zurückgegebener Fehler')).toHaveLength(2);
+    expect(screen.getByText('redigiert: 2 (1 × email, 1 × iban)')).toBeInTheDocument();
+    expect(screen.getByText('geprüft, nichts zu maskieren')).toBeInTheDocument();
+    expect(screen.getByText('Verbindungsaufforderung')).toBeInTheDocument();
+    expect(screen.getByText('unverändert weitergegeben')).toBeInTheDocument();
+    // 212 B -> 0.2 KB.
+    expect(screen.getByText('0.2 KB Original')).toBeInTheDocument();
+    expect(screen.getByText(/Den Text einer Exception hat das Modell nie gesehen/)).toBeInTheDocument();
+  });
+
+  it('shows the tool-error summary chunk, in English too', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={TOOL_ERRORS} />, { locale: 'en' });
+    const summary = screen.getByText(/Privacy Shield/);
+    expect(summary.textContent).toContain('4 tool errors handled');
+    expect(summary.textContent).not.toContain('processed server-side');
+    expect(screen.getByText('Tool errors handled')).toBeInTheDocument();
+  });
+
+  it('stays emerald for tool errors — the text was withheld or redacted', () => {
     const { container } = renderWithIntl(
-      <PrivacyReceiptCard receipt={PSEUDONYM} />,
+      <PrivacyReceiptCard receipt={TOOL_ERRORS} />,
       { locale: 'de' },
     );
-    expect(container.textContent).not.toMatch(/@/);
-    expect(container.textContent).not.toMatch(/DE\d{20}/);
+    const root = container.querySelector('details');
+    expect(root?.className).toMatch(/success/);
+    expect(root?.className).not.toMatch(/warning|danger/);
   });
+
+  it('renders byte-identically when toolErrors is absent or empty', () => {
+    const absent = renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'de' });
+    const html = absent.container.innerHTML;
+    absent.unmount();
+    const empty = renderWithIntl(
+      <PrivacyReceiptCard receipt={{ ...RANKED, toolErrors: [] }} />,
+      { locale: 'de' },
+    );
+    expect(empty.container.innerHTML).toBe(html);
+    expect(html).not.toContain('Tool-Fehler');
+  });
+
+  for (const [label, fixture] of [
+    ['pseudonym', PSEUDONYM],
+    ['tool errors', TOOL_ERRORS],
+  ] as const) {
+    it(`never leaks a PII-shaped value — the receipt carries only counts (${label})`, () => {
+      // The v4 receipt is PII-free by construction: counts, verb names, tool
+      // names and span TYPES only. This pins the contract — if the schema
+      // ever regains a value field, this test fails before it ships.
+      const { container } = renderWithIntl(
+        <PrivacyReceiptCard receipt={fixture} />,
+        { locale: 'de' },
+      );
+      expect(container.textContent).not.toMatch(/@/);
+      expect(container.textContent).not.toMatch(/DE\d{20}/);
+    });
+  }
 });
 
 describe('summarisePrivacyReceipt()', () => {
@@ -303,6 +424,34 @@ describe('summarisePrivacyReceipt()', () => {
     expect(
       summarisePrivacyReceipt({ ...RANKED, structuredPayloads: [] }, t),
     ).not.toContain('summaryStructured');
+  });
+
+  it('adds the verifier clause when the answer check sent requests', () => {
+    expect(summarisePrivacyReceipt(VERIFIED, t)).toContain('summaryVerifier:2');
+    expect(summarisePrivacyReceipt(RANKED, t)).not.toContain('summaryVerifier');
+  });
+
+  it('adds the tool-error clause when entries exist, and only then', () => {
+    expect(summarisePrivacyReceipt(TOOL_ERRORS, t)).toBe('summaryToolErrors:4');
+    expect(summarisePrivacyReceipt(RANKED, t)).not.toContain('summaryToolErrors');
+    expect(
+      summarisePrivacyReceipt({ ...RANKED, toolErrors: [] }, t),
+    ).not.toContain('summaryToolErrors');
+  });
+});
+
+describe('describeToolErrorOutcome()', () => {
+  const t = (k: string, v?: Record<string, string | number>): string =>
+    v ? `${k}(${Object.values(v).join('|')})` : k;
+  const entries = TOOL_ERRORS.toolErrors ?? [];
+
+  it('names each outcome, with the masked span types for a redaction', () => {
+    expect(entries.map((e) => describeToolErrorOutcome(e, t))).toEqual([
+      'toolErrorWithheld',
+      'toolErrorRedacted(2 (1 × email, 1 × iban))',
+      'toolErrorChecked',
+      'toolErrorPassed',
+    ]);
   });
 });
 

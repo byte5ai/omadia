@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-office"
   name: "Headless Office"
-  version: "0.1.3"
+  version: "0.1.4"
   kind: "tool"
   domain: "productivity.office"
   description:

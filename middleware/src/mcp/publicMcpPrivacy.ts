@@ -42,7 +42,25 @@
  *     `isPubliclyServableTool` and its use in `PublicMcpServer`.
  *
  * A fourth path — no privacy provider installed at all, so results flow through
- * unchanged — is closed in `PublicMcpServer` by refusing the call.
+ * unchanged — is closed in `PublicMcpServer` by refusing the call. Without the
+ * gate no tool runs at all: `PublicMcpServer` refuses a dispatcher that cannot
+ * receive it, and the wired dispatcher runs no handler without a handle
+ * (`requirePrivacyHandle`).
+ *
+ * Tool errors: a handler that THROWS gets the dispatcher's withheld notice
+ * (class name, sanitised code, the request id as log ref — `origin:
+ * 'dispatcher'`, so it is served as the error it is). A returned `Error:` text
+ * is never served: the gate answers tool-error redaction with `withheld`, and
+ * the result is refused like any other unmasked one.
+ *
+ * Model calls INSIDE a tool: a domain tool wraps a sub-agent with its own model
+ * loop. `ToolDispatchService` runs the handler with `handle.forNestedCalls()` as
+ * the ambient turn handle, so that loop runs under this gate too: inner tool
+ * results are interned before the sub-agent's model sees them, an inner throw
+ * and an inner `Error:` text reach it only as the withheld notice, and the
+ * operator bypass stays off. That masking guards the sub-agent's provider wire
+ * only — it does not set `masked()`, which stays the signal that the call's
+ * OWN result crossed the boundary — while a failure there fails the whole call.
  */
 
 import type { PrivacyTurnHandle } from '@omadia/orchestrator';
@@ -62,7 +80,8 @@ export interface PublicMcpPrivacyGate {
   /** True when masking failed during this dispatch — DISCARD the result. */
   maskingFailed(): boolean;
   /**
-   * True when masking RAN and produced a digest for this dispatch.
+   * True when masking RAN and produced a digest for this dispatch's own result
+   * (masking nested inside the call, through `forNestedCalls()`, does not count).
    *
    * The positive signal, and the one `PublicMcpServer` actually gates on:
    * `maskingFailed()` is false both when masking succeeded and when it never
@@ -92,26 +111,34 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
   let failed = false;
   let didMask = false;
 
-  const handle: PrivacyTurnHandle = {
-    ...base,
+  /**
+   * Masking that cannot fail open. `ownResult` is false for code nested inside
+   * the call (a sub-agent's inner tool results): that masking guards the
+   * sub-agent's provider wire and says nothing about the text the call hands
+   * back, so it must not satisfy `masked()`. A failure anywhere fails the call.
+   */
+  const intern = async (
+    input: Parameters<PrivacyTurnHandle['internToolResultV4']>[0],
+    ownResult: boolean,
+  ): ReturnType<PrivacyTurnHandle['internToolResultV4']> => {
+    try {
+      const result = await base.internToolResultV4(input);
+      if (ownResult) didMask = true;
+      return result;
+    } catch (err) {
+      failed = true;
+      // Logged, not rethrown. Rethrowing would reach the dispatcher's
+      // fail-open catch, which returns `rawResult` — i.e. the leak.
+      console.warn(
+        `[public-mcp] privacy masking FAILED for tool \`${input.toolName}\` — refusing the call (fail-closed):`,
+        err,
+      );
+      return { digestText: MASKING_FAILED_PLACEHOLDER, datasetId: '' };
+    }
+  };
 
-    async internToolResultV4(input) {
-      try {
-        const result = await base.internToolResultV4(input);
-        didMask = true;
-        return result;
-      } catch (err) {
-        failed = true;
-        // Logged, not rethrown. Rethrowing would reach the dispatcher's
-        // fail-open catch, which returns `rawResult` — i.e. the leak.
-        console.warn(
-          `[public-mcp] privacy masking FAILED for tool \`${input.toolName}\` — refusing the call (fail-closed):`,
-          err,
-        );
-        return { digestText: MASKING_FAILED_PLACEHOLDER, datasetId: '' };
-      }
-    },
-
+  /** The same for the call and for code nested inside it. */
+  const pinned: Pick<PrivacyTurnHandle, 'checkBypass' | 'redactToolErrorText' | 'recordToolError'> = {
     /**
      * Pinned off. An operator's per-plugin `_privacy_mode: bypass` is a decision
      * about their own agent's chat behaviour; nobody consented to extending it
@@ -119,9 +146,56 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
      * unconditionally means the dispatcher always takes the intern branch, so
      * `recordBypassedTool` is never reached from this path either.
      */
-    checkBypass(): undefined {
-      return undefined;
+    checkBypass: () => undefined,
+
+    /**
+     * Pinned to `withheld`. For the call's own result: a redacted text still
+     * would not set `didMask`, so `assertMaskingCrossed` would discard it
+     * anyway; answering `withheld` makes that fail-closed outcome explicit and
+     * spends no detector — or C1 sidecar call — on text that is never served.
+     * For a sub-agent's inner tool error: the sub-agent model gets the
+     * withheld notice instead of a redacted hint, and no per-turn detector
+     * state builds up for a request that is never finalized. Serving redacted
+     * error hints here would be a separate decision.
+     */
+    async redactToolErrorText() {
+      return {
+        outcome: 'withheld' as const,
+        reason: 'the public MCP endpoint does not serve tool-error text',
+      };
     },
+
+    /**
+     * Not forwarded. A public request is never finalized into a turn receipt, so
+     * an entry handed to the provider would sit in its per-turn state with
+     * nothing to drain it. This path's record of a failed call is its
+     * `mcp_call_log` row; the line below is PII-free (names and a byte count).
+     */
+    async recordToolError(input) {
+      console.log(
+        `[public-mcp] tool error ${input.outcome} tool=${input.toolName} ` +
+          `carrier=${input.carrier} bytes=${String(input.bytes)}`,
+      );
+    },
+  };
+
+  /**
+   * For code nested inside the call — a domain tool's sub-agent loop, which
+   * `ToolDispatchService` runs under this handle (`forNestedCalls`). Same
+   * guard, but its masking leaves `masked()` alone.
+   */
+  const nested: PrivacyTurnHandle = {
+    ...base,
+    ...pinned,
+    internToolResultV4: (input) => intern(input, false),
+    forNestedCalls: () => nested,
+  };
+
+  const handle: PrivacyTurnHandle = {
+    ...base,
+    ...pinned,
+    internToolResultV4: (input) => intern(input, true),
+    forNestedCalls: () => nested,
   };
 
   return {

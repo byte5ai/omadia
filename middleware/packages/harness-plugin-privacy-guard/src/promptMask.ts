@@ -220,12 +220,22 @@ export function baselineHasIdentityPii(value: string): boolean {
   // Fast path: a bare ISO date/datetime is never an identity, however many
   // digit runs the phone pattern finds in it ("01-10" starts with `\b0`).
   if (ISO_DATE_VALUE.test(value.trim())) return false;
-  const spans = detectBaselineSync(value);
+  return detectIdentityBaselineSync(value).length > 0;
+}
+
+/**
+ * The C0 baseline's IDENTITY spans only (e-mail, IBAN, phone, address, id
+ * number) — `date` and `amount` dropped, and a phone/idnum hit that lies
+ * entirely inside a date span dropped with them (it IS the date). What a text
+ * that must keep its dates and amounts readable (a tool error saying "no slot
+ * on 2026-10-01", "budget of € 1.200 exhausted") gets masked for.
+ */
+export function detectIdentityBaselineSync(text: string): PromptPiiSpan[] {
+  const spans = detectBaselineSync(text);
   const dates = spans.filter((s) => s.type === 'date');
-  return spans.some(
+  return spans.filter(
     (s) =>
       IDENTITY_PII_TYPES.has(s.type) &&
-      // A phone/idnum hit that lies entirely inside a date span IS the date.
       !dates.some((d) => d.start <= s.start && d.end >= s.end),
   );
 }
@@ -607,6 +617,21 @@ export interface MaskPromptResult {
   readonly spans: readonly ResolvedSpan[];
 }
 
+/** Run every detector over `text`, in order, tagging each span with its
+ *  detector id. A throwing detector propagates — callers decide whether that
+ *  blocks (prompt masking) or withholds (tool-error redaction). */
+export async function collectDetectorSpans(
+  text: string,
+  detectors: readonly PromptPiiDetector[],
+): Promise<Array<{ span: PromptPiiSpan; detector: string }>> {
+  const detected: Array<{ span: PromptPiiSpan; detector: string }> = [];
+  for (const detector of detectors) {
+    const spans = await detector.detect(text);
+    for (const span of spans) detected.push({ span, detector: detector.id });
+  }
+  return detected;
+}
+
 /**
  * Run the detectors over `text` and substitute every resolved span with its
  * stable pseudonym. Replacement runs right-to-left over the original
@@ -622,11 +647,7 @@ export async function maskPrompt(
   detectors: readonly PromptPiiDetector[],
   existingMap?: PseudonymMap,
 ): Promise<MaskPromptResult> {
-  const detected: Array<{ span: PromptPiiSpan; detector: string }> = [];
-  for (const detector of detectors) {
-    const spans = await detector.detect(text);
-    for (const span of spans) detected.push({ span, detector: detector.id });
-  }
+  const detected = await collectDetectorSpans(text, detectors);
   const spans = dedupSpans(text, detected);
   if (spans.length === 0) {
     // NOTHING DETECTED IN *THIS* TEXT IS NOT NOTHING TO MASK.

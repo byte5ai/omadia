@@ -14,6 +14,7 @@ import {
   type AuthProviderSummary,
 } from '../_lib/api';
 import { signalDesktopUiReady } from '../_lib/desktopShell';
+import { sanitiseReturnPath } from '../_lib/returnPath';
 
 type State =
   | { kind: 'loading' }
@@ -34,8 +35,10 @@ type State =
  *   2. Render the active providers. Password-providers get an inline form;
  *      OIDC-providers get a button that does a server-rendered redirect to
  *      /api/v1/auth/login/<id>/start (which 302s to the IdP).
- *   3. On successful password login, redirect to `?return=` (sanitised by
- *      the server side via cookie-based session) or '/'.
+ *   3. On successful password login, redirect to `?return=` or '/'. The
+ *      page sanitises `?return=` itself (`_lib/returnPath.ts`) to a
+ *      same-origin path + query + fragment; the password login never hands
+ *      it to the server.
  */
 export default function LoginPage(): React.ReactElement {
   // Next 15 SSG bails when `useSearchParams()` is reached without a
@@ -61,12 +64,10 @@ function LoginPageInner(): React.ReactElement {
   const t = useTranslations('login');
   const router = useRouter();
   const searchParams = useSearchParams();
-  const returnPath = useMemo(() => {
-    const raw = searchParams.get('return');
-    if (typeof raw !== 'string') return '/';
-    if (!raw.startsWith('/') || raw.startsWith('//')) return '/';
-    return raw;
-  }, [searchParams]);
+  const returnPath = useMemo(
+    () => sanitiseReturnPath(searchParams.get('return')),
+    [searchParams],
+  );
 
   // Explicit re-login request (SessionWatcher's "Relogin now" button). The
   // current session may still be valid, but the operator asked to mint a
@@ -100,9 +101,10 @@ function LoginPageInner(): React.ReactElement {
         ]);
         if (cancelled) return;
         if (session.authenticated && !forceReauth) {
-          // Guard against ?return=/login which would re-enter this page
-          // and loop. Only reachable via hand-crafted URLs today.
-          router.replace(returnPath === '/login' ? '/' : returnPath);
+          // ?return=/login would re-enter this page and loop; the helper
+          // already maps it (with any query or trailing slash, and /setup)
+          // to '/'. Only reachable via hand-crafted URLs today.
+          router.replace(returnPath);
           return;
         }
         if (providers.setup_required) {
@@ -146,8 +148,11 @@ function LoginPageInner(): React.ReactElement {
       // Cookie set by the server; bounce to the originally-requested path.
       window.location.href = returnPath;
     } catch (err) {
+      const retryAfterS = signInRetryAfterSeconds(err);
       if (err instanceof ApiError && err.status === 401) {
         setSubmitError(t('incorrectCredentials'));
+      } else if (retryAfterS !== null) {
+        setSubmitError(t('tooManyAttempts', { seconds: retryAfterS }));
       } else {
         setSubmitError(
           err instanceof Error ? err.message : String(err),
@@ -255,6 +260,29 @@ function LoginPageInner(): React.ReactElement {
       )}
     </PageShell>
   );
+}
+
+/** Refusals of the middleware's sign-in rate limiter: 429 and 503. */
+const SIGN_IN_LIMIT_CODES: ReadonlySet<string> = new Set(['auth.rate_limited', 'auth.busy']);
+
+/**
+ * Seconds to wait when the sign-in rate limiter refused the attempt, or null
+ * for any other error. The middleware always sends `retry_after_s`; a body
+ * without a usable value still reads as "wait a second" rather than falling
+ * back to the raw, untranslated error text.
+ */
+function signInRetryAfterSeconds(err: unknown): number | null {
+  if (!(err instanceof ApiError) || err.code === null || !SIGN_IN_LIMIT_CODES.has(err.code)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(err.body) as { retry_after_s?: unknown };
+    const seconds = parsed.retry_after_s;
+    if (typeof seconds === 'number' && Number.isInteger(seconds) && seconds >= 1) return seconds;
+  } catch {
+    // Not JSON — use the minimum below.
+  }
+  return 1;
 }
 
 function PageShell({ children }: { children: React.ReactNode }): React.ReactElement {

@@ -36,6 +36,1607 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — the desktop install smoke waits for the web UI's first load and checks the shell's boundaries
+
+2026-10-02: the first dispatch of `desktop-upgrade-smoke.yml` from `main` quit a
+Windows upgrade 15 seconds after launch, while the web UI's first page load was
+still running. The app then reported that aborted load as `[main] boot failed`,
+and the smoke failed its quit check although every upgrade check had passed.
+The smoke now waits until the page has loaded, the way a user works with it. A
+page that never loads still fails the run. The app behaviour itself is a
+follow-up in handoff §13: quitting during that first load should not count as
+a boot failure.
+
+Every start in the smoke now also checks part of the packaged-build list from
+handoff §13: no IPC call from the app was refused, the web UI page sees only
+`uiReady` and `setUiLocale`, and the attachments switch reached the kernel with
+a private folder. External links, popups, custom schemes and the Entra sign-in
+still need a person.
+
+### Fixed — desktop dependencies refreshed to Electron 44 and electron-builder 26; `desktop` joins the CI audit
+
+2026-09-30 — `desktop/` has its own lockfile but had no leg in the
+`audit (high+critical block)` job, and `npm audit` there reported 18 findings
+(17 high, 1 critical): Electron 37.10.3, out of support and the shipped runtime
+although it is a devDependency (the app, and through `ELECTRON_RUN_AS_NODE` the
+kernel and the web-ui, run on it); js-yaml 4.2.0, which electron-updater uses to
+parse the update feed inside the installed app; and a critical tar plus
+node-gyp, cacache, make-fetch-happen, ip-address and builder-util-runtime in the
+build tree of electron-builder 25.1.8 and a direct `@electron/rebuild` 3.6.1
+pin. Electron moves to 44.5.1 (embedded Node 22.21.1 → 24.21.0; the desktop's
+`@types/node` follows it to 24), electron-builder to 26.17.0 — not the
+`latest`-tagged 26.15.3, whose NSIS installer silently skips every executable
+and native module at install time (electron-builder#9983) — and js-yaml to
+4.3.2; the unused `@electron/rebuild` pin is dropped. `npm audit` in `desktop/`
+now reports 0, `desktop` is the third leg of the audit matrix, and
+`.github/scripts/audit-scope.test.mjs` fails the job when a tracked lockfile
+directory is missing from it (`docs/security-architecture.md` §4a).
+
+What changes with it: the desktop app needs macOS 13 or later (Electron 44
+dropped macOS 12, see `docs/upgrading.md`). The install skill the README hands
+to AI assistants (`docs/onboarding/SKILL.md`) now checks the macOS version
+before it downloads anything and stops below macOS 13 with that message,
+instead of installing an app that does not start. electron-builder writes no
+macOS minimum into `latest-mac.yml`, so the merged feed now declares
+`minimumSystemVersion: 22.0.0`, the Darwin kernel of macOS 13, which is what
+electron-updater compares with `os.release()`. macOS 11 and 12 installs are
+therefore not offered the Electron 44 build and keep the version they run,
+instead of installing an update that does not start, and are told so rather
+than reported current (desktop updater entry below); `afterPack` fails every
+mac build whose packaged `LSMinimumSystemVersion` no longer matches that floor.
+electron-builder 26 requires `win.azureSignOptions.publisherName`; the release
+workflow reads it from the signing certificate, and because it also lands in
+the Windows app's `app-update.yml`, installed Windows apps now refuse updates
+that are not Authenticode-signed under that name. Electron 44's
+`clipboard.writeText` returns a promise that can reject: a failed recovery-key
+copy is now logged and shows the key again to write down, where it would
+otherwise have ended the boot of a running app in the boot-failure dialog.
+`npm install` no longer downloads the Electron binary (it is fetched on first
+run). The `desktop (typecheck + test)` CI job moves to Node 24 with it; the
+kernel and the web-ui are still built and tested on Node 22, although inside
+the desktop app they now run on Node 24 (`docs/security-architecture.md` §4a).
+electron-builder 26 also leaves the top-level `node_modules` of every
+`extraResources` source out of the package. The first dispatch build of this
+branch was missing the kernel's and the web UI's modules, and its kernel
+stopped at the first start with `ERR_MODULE_NOT_FOUND`. Both folders are now
+`extraResources` entries of their own. `afterPack` fails a package that lacks
+what the kernel or the web UI loads at startup, on every platform, and a test
+runs the `extraResources` block through electron-builder's own copy code.
+Before it merged, a `desktop-apps.yml` dispatch build of the branch (run
+36984867502, throwaway tag, `notarize=false`) passed on all four targets,
+because a push to `main` releases through the same workflow.
+`desktop-upgrade-smoke.yml` (entry below) then ran that build on clean macOS
+arm64, Windows x64 and Linux runners (run 36989068863). A fresh install finished
+the wizard, ran the kernel and the web UI, signed in, verified the stored
+provider key and read the release feed. Installed over v0.167.14, the build
+started without a failure and kept `secrets.enc` byte-identical and the recovery
+key unchanged, although the runtime that decrypts the file moved from Electron
+37's `safeStorage` to Electron 44's. The stored key still verified. The fix that
+keeps an unreadable `secrets.enc` and stops the app instead of re-keying it
+shipped before this change, in v0.167.9 (entry below), so a file the new runtime
+cannot decrypt stops the app at the secrets dialog instead of losing the vault,
+the credential keychain and the provider keys. The updater fix (entry below)
+landed on `main` first as well and shipped in the same release, built on
+Electron 37 like every release before this change. With this merge `audit
+(high+critical block) (desktop)` and `desktop (typecheck + test)` become
+required checks on `main` (handoff §13).
+
+### Added — a smoke test that installs desktop builds and upgrades them over a release
+
+2026-10-02: `.github/workflows/desktop-upgrade-smoke.yml` takes the installers
+of a `desktop-apps.yml` run and installs them on clean GitHub runners for macOS
+arm64, Windows x64 and Linux. Playwright's Electron driver clicks through the
+first-run wizard with a real Anthropic key. The job then creates the first
+admin, signs in, has the kernel verify the stored key and waits for an update
+check against the release feed.
+
+The upgrade scenario starts from a published release, the latest one unless
+the dispatch names another, and installs the candidate over it. It fails on a
+boot or secret-store error in the desktop log, on a changed SHA-256 of
+`secrets.enc`, and on a recovery key that differs from the one the old wizard
+showed. Keys are compared as hashes computed inside the app. Only finished
+desktop builds of this repository are accepted, because their installers get
+the real key. The first run caught the first Electron 44 build, which installed
+cleanly and then could not start its kernel. It runs on dispatch only, and
+`desktop/README.md` § Install and upgrade smoke has the details.
+
+### Changed — README and security docs describe the controls the code enforces
+
+2026-10-01 — the README, `docs/architecture.md`, `docs/security-architecture.md`
+and `CITATION.cff` stated security properties that the code does not enforce,
+or enforces only on some paths. The wording now follows the code, including
+the answer-verifier design further down in this release.
+
+Plugins are pinned by SHA-256. A registry download must match the hash in the
+registry's index, and an uploaded ZIP is hashed at ingest. Nothing checks a
+publisher signature, and the catalog reports `signed: false` for every plugin,
+so "signed plugins" and "verifiable signed packages" are gone from all four
+files. Security architecture §4 says this in its opening. It also states that
+downloads are pinned to the registry's host and port but not to its scheme,
+that manifest permissions gate the `PluginContext` accessors without
+sandboxing any Node API, that whatever a package does not bundle resolves from
+the image's `node_modules`, and where omadia itself runs npm or code npm
+installed, Builder previews and builds included. None of these places installs
+plugin code.
+
+The Privacy Shield sentences first say which model requests the shield covers
+and under which setting, then state in one sentence that every other model
+call sends its text as it is. The shield acts only in a turn's own model
+requests, which are the agent's model loop, its sub-agents and the verifier's
+requests about the answer. There it gives the model a digest of each tool
+result under `guarded` and withholds a result it cannot intern. It redacts
+the `Error:` text of a tool that is neither intern-exempt nor bypassed, or
+withholds it whole, and withholds the message of such a tool when it throws.
+The errors an intern-exempt tool returns or throws, and those a bypassed
+tool returns, reach the model as they are. Prompt text is masked there only
+while `mask_user_prompt` is on, and it is off by default. Until then the user's
+message, text inlined from uploads, recalled context and the chat history a
+channel replays reach the model as typed, and a channel that replays its
+delivered answers, as the Teams and Telegram channels do, sends the model the
+real values the shield rendered into those answers on later turns. With
+masking on, a request is blocked only when the C0 baseline fails. A failed C1
+detector leaves the rest of the turn on C0, so names only C1 detects reach
+the model unmasked, and restoring the real values afterwards is best-effort.
+`read_attachment` and a short allowlist of the agent's own tools
+(`INTERN_EXEMPT_TOOLS`) return their results in clear, an operator can bypass
+the shield per plugin, per tool or per MCP server, and agents on the Claude
+subscription CLI (`claude-cli`) run without the shield.
+
+Every other model call sends its text as it is, with prompt masking on or off,
+and the docs say so in one sentence before naming the known cases. Under the
+default security posture `auto`, the inbound security screener sends the
+user's message as typed, the user messages a channel replays and the names and
+types of attached files to the agent's own model, or to the configured
+screening proxy, on every turn that carries an attachment. It runs before the
+turn's privacy handle exists. At the default `capture_level` (`normal`), the
+memory plugin sends each turn it stores, the user's message as typed plus the
+answer, to its provider for a significance score. The other memory jobs send
+stored memories and earlier turns, the canvas composer and the plan runner
+send the user's message through `ctx.llm` before the turn starts, attached
+images reach an image-capable model unmasked, and an external embedding
+provider embeds stored turns and memories as stored. The org clamp
+`OMADIA_PRIVACY_FORCE_GUARDED` switches the bypasses off for the results the
+model gets. It does not reach the knowledge-graph ingestion of MCP results: a
+server flagged for both ingestion and privacy bypass still stores up to 8,000
+characters of each raw result as a memory. Security architecture §6f lists all
+of this, and `docs/middleware-agent-handoff.md` §13 holds the code follow-ups
+for the screener and the scorer, the ingestion clamp, the errors of
+intern-exempt tools and the C1 fallback.
+
+The answer verifier is described as optional and off by default, with `shadow`
+as its default mode, which only records. It checks an answer only when one of
+its trigger patterns matches: euro amounts, accounting references,
+`yyyy-mm-dd` and `dd.mm.yyyy` dates, percentages, hour and day counts, and an
+aggregate keyword such as `Summe` or `total` in an answer that also holds a
+number of three or more digits. An answer none of them matches is `skipped`
+and goes out unchecked in `enforce` too, so an answer whose only figures are a
+dollar amount or an English-format date is not checked unless it also holds
+such a keyword (`Total: $500` is checked). The README names the verdict states
+(`skipped`, `unavailable`, an answer checked only in part), the `enforce` gate
+that withholds an answer it could not confirm, and the gate's limits. A turn
+with an input card goes out unchecked, an answer the shield rendered included,
+because that exemption is checked first. Other rendered answers are withheld,
+and the subscription CLI and routines are not verified. A contradiction gets
+at most one correction retry, also when `verifier_max_retries` is set to 2,
+none on canvas streams and none when masking would change its correction hint.
+The borderline resample runs on the non-streaming path only, and
+`middleware/.env.example` now says all of this. A correction retry or a
+resample replays every external call the first run recorded and executes none
+of them again. A sub-agent that interned data behind the shield runs again,
+with its own calls replayed. Without that replay ledger, the MCP client still
+retries a call once after a transport failure.
+
+Privacy receipts are described as appended best-effort, on the Postgres
+backend, for the turns in which the shield acted. A failed write is logged and
+not retried, and §7b states that the hash chain cannot show a receipt that was
+never written. The run trace is described as best-effort telemetry, without the
+earlier "audit receipt" and "replayable" wording.
+
+Write confirmation (ADR-0005) is described as a feature of the connector
+plugins that implement it. The core adds no confirmation step. On the public
+MCP endpoint, an idempotency key gives a declared write tool process-local
+deduplication for 15 minutes, with an eviction target of 1,000 records. A call
+still running inside its 15-minute window is never evicted, and a failed call
+is not cached. A restart, a second instance or an expired or evicted record
+runs the write again. The idempotency section of `middleware/src/mcp/README.md`,
+which promised API callers that a retry inside the window never runs the tool
+twice, now says the same: a retry after a failed call or an evicted record runs
+it again, and a retry joins a call still running only within 15 minutes of
+that call's start. ADR-0001 and ADR-0005 keep their decision text and gain an
+implementation-status note.
+
+A new item in the §11 reviewer checklist asks that a public security claim name
+the control that enforces it, that control's default and the limits the code
+puts on it, that a claim that a call runs once name its scope, and that a
+claim about the shield or the verifier name what passes outside it. A privacy
+claim names the model requests the shield masks and the setting each needs,
+then states that every other model call sends its text as it is, and a claim
+about tool errors or a failure-closed mask names what it skips. The privacy
+guard's `mask_user_prompt` help text, which promised every model-bound copy of
+the turn, a blocked turn whenever masking "cannot be guaranteed" and a
+restore in everything persisted, now names the turn's model requests it
+masks, blocks only on a failed C0 pass, says that a failed C1 detector falls
+back to C0 for the rest of the turn and calls the restore best-effort; the
+`c1_detector_url` help and `middleware/.env.example` say the same about C1.
+The plugin's store description, which said it keeps personal data away from
+the model, now names the raw results of data-source tools and calls masking
+the user's own messages a separate setting, off by default.
+Code comments that contradicted the code are corrected, with no behaviour
+change: the default capture level, the failure handling of the MCP input
+replay, the text the memory-excerpt pass receives, the orchestrator's and
+`@omadia/plugin-api`'s claims that a thrown tool error never reaches the
+model and that `guarded` shows the model only a digest (both untrue for
+intern-exempt tools), the doc comment of `PromptMaskBlockedError`, and the
+MCP-to-knowledge-graph ingestion branch, which now notes that it ignores the
+org clamp.
+`middleware/test/docsClaimsGuard.test.ts` keeps the retired sentences out of the
+four files, the two ADR notes, the privacy guard's setup help,
+`middleware/.env.example` and the MCP endpoint guide
+(`middleware/src/mcp/README.md`), and ties the defaults and limits the README
+names to the code (`PRIVACY_MODE_DEFAULT`, the `mask_user_prompt` manifest
+default, the `VERIFIER_ENABLED` and `VERIFIER_MODE` schema defaults, the
+catalog's `signed` field, `INTERN_EXEMPT_TOOLS`, which §6f must list in full,
+the idempotency store's window and size, the replayed chat history, the
+receipt store's `persistFailures` counter, and the trigger router whose
+unmatched answers `enforce` releases). `ConfigSchema` in
+`middleware/src/config.ts` is exported for that test; boot is unchanged.
+`middleware/.env.example` now documents `OMADIA_PRIVACY_FORCE_GUARDED`, which
+the README already named.
+
+### Changed — the answer verifier's verdicts, `enforce` gate and re-entries work behind the Privacy Shield
+
+2026-10-01 — the verifier changes below were built next to the change that
+runs the verifier's model requests behind the Privacy Shield (further down)
+and now work as one design:
+
+- Every pass the verifier runs — the first run, a borderline resample, a
+  correction retry, on `chat()` and on the stream — hands its privacy
+  finalisation over. The verifier's requests about a pass's answer go
+  through that pass's own privacy view, and the pass is finalised exactly
+  once afterwards, also when the request errors, a re-entry is abandoned or
+  the client leaves. A request that can be re-entered keeps one
+  `turn_receipts` row with every pass's receipt merged in, the verifier's
+  request counts summed over the passes. A pass that throws or whose stream
+  ends before `done` hands nothing over; the orchestrator finalises it
+  itself and keeps its receipt — in the request's row, or as the turn's own
+  row when no verifier can re-enter it. Such receipts used to be dropped, so
+  a retry that failed or that the client left was missing from the request's
+  row, and a request whose first run failed had no row at all. The request's
+  row belongs to its earliest pass with a receipt, counted in pass order,
+  not in the order the passes are finalised: the first run whenever it had
+  one, otherwise the earliest re-entry that had one. A request whose only
+  receipt came from a re-entry that was abandoned, threw or was cut off used
+  to get no row although its answer carried that receipt. A stream whose
+  consumer stops in the prelude — at the `onBeforeTurn` annotations, after
+  an MCP input-card replay — is closed the same way; it used to keep the
+  replayed values in the privacy service until restart, write no receipt and
+  leave the turn's calendar auth context installed. Tests:
+  `verifierRequestReceiptRow.test.ts`, `chatStreamPreludeClosesPass.test.ts`.
+- Behind the shield the claim extractor reads the turn's wire view, so the
+  extraction window and the verbatim guard apply to the text the model saw.
+  A claim that cannot be mapped back onto the answer the user saw is no
+  longer dropped without a trace: it is the new coverage gap
+  `claims_not_restored`, so such an answer is at most partly verified and
+  `enforce` does not release it.
+- `enforce` withholds every answer the verifier may not see behind the
+  shield — a server-rendered answer, and a pass that handed over no privacy
+  view, such as a Direct Line relay — as `unavailable` / `privacy_shield`,
+  for a resample and a retry as well; `shadow` records no verdict for them
+  and no longer sends a rendered answer to the extractor. A turn that carries
+  an input card is released before this gate, unchecked, whatever its
+  answer. The shield's
+  refusal of a prompt it cannot mask and the inbound-screening quarantine
+  notice are server-composed and state no fact, so `enforce` releases them
+  without a verdict instead of replacing one notice with another.
+- The correction hint carries no verifier evidence on any path. Behind the
+  shield the retry is withheld when the contradicted pass's masking would
+  still alter the hint; a hint that passes is masked once, by the retry's
+  own pass. A retry or resample answer that still carries unresolved
+  placeholders is never shown in place of the earlier answer, and such a
+  retry answer is not judged at all.
+- A re-entry that throws is logged with its run id, the error's class and
+  the closed code `reentry_turn_failed`, never with the error's message. A
+  request's replay ledger is no longer bound to an input object that already
+  carries another one, and the uploads' import is single-flight across
+  passes.
+- The write-once guarantee is scoped to verifier re-entries: a resample or a
+  retry executes no write. Below the replay ledger, while a request ledger
+  is bound, every dispatch seam now runs its handler sending each call once
+  (`runHandlerAtMostOnce`), so the MCP client no longer re-sends a call after
+  a transient transport failure — a reply lost after the server executed a
+  write used to run it twice; turns without a request ledger keep that retry
+  (#542). And for every turn, a tool result the Privacy Shield cannot intern
+  is withheld at every seam (the orchestrator's dispatch, `LocalSubAgent`,
+  `ToolDispatchService`, the MCP input-card replay) with a notice that the
+  call ran, where the raw result used to reach the model — on a re-entry
+  also a result the first run had interned. `query_dataset` keeps its own
+  notice.
+- `verifier_verdicts` gains a nullable `reason` column (knowledge-graph
+  migration `0034_verifier_verdict_reason`) holding the closed reason code
+  of a `skipped` or `unavailable` verdict, so the share of answers `enforce`
+  would deliver can be read from `shadow` rows (`docs/upgrading.md`).
+
+`@omadia/plugin-api` 1.21.0 carries the additive API these changes need
+(`RunToolCall.replayed`, `RunAgentInvocation.replayed`,
+`FindEntitiesOptions.id`). Upgrade notes: `docs/upgrading.md`, "Upgrading
+past v0.167.13".
+
+### Fixed — verifier evidence resolves the exact entity reference
+
+2026-09-30 — the answer verifier's graph evidence ignored the id in an entity
+handle. A soft claim about `hr.employee:7` (or `odoo:hr.employee:7`) was
+looked up as "any `hr.employee`", so the evidence judge — which sees nothing
+but those snippets — received up to three unrelated employees as evidence for
+record 7, plus whatever the capitalised-name search on `res.partner` /
+`hr.employee` turned up. The graph API had no exact-id lookup at all:
+`findEntities` only knew a model and a substring over display name and id, so
+the deterministic checker's graph `id` check matched "42" against 142, 420 or
+"Halle 42" as well. `FindEntitiesOptions.id` (plugin-api 1.21.0) now addresses
+one record by its source-system id, string-compared, in both the in-memory and
+the Neon backend; the extras wrappers forward it unchanged.
+
+An id-bearing handle now resolves exactly that record, and the fetcher
+re-checks model, id and (for three-part handles) system on the result, so a
+graph provider that ignores the new option yields no evidence instead of a
+substitute. A claim that pins a record gets only its pinned records: no model
+sample, no name search. When the record is not in the graph the claim ends
+`unverified` ("no evidence available") — in enforce mode an
+`approved_with_disclaimer` where a sibling record used to be able to verify or
+contradict it. Model-wide samples (for a bare `hr.department` handle) and the
+name search remain for claims without an id and are labelled as search results
+in the judge prompt; the judge is told, and `EvidenceJudge` enforces, that a
+verdict citing another record of a pinned model is demoted to `unverified`.
+`DeterministicChecker` checks an `odooRecord.id` against the graph by exact id
+and leaves a miss `unverified` as well: the graph is a periodically synced
+partial mirror, so a record missing from it is not shown to be false (see
+`docs/security-architecture.md` §7c). Shadow-mode verdict metrics recorded
+before this change are not comparable with those after it: id-anchored claims
+about records outside the graph move from spurious `verified`/`contradicted`
+to `unverified`.
+
+### Fixed — evidence judge counts a verdict only with a citation it was shown
+
+2026-09-30 — the answer verifier's evidence judge accepted any non-empty
+`evidence_node_id` on a `verified` or `contradicted` verdict. It never checked
+that the id named one of the evidence snippets the judge had been shown. When
+it named none, the verdict kept its status and took its `source` from the
+claim's own `expectedSource`. So a citation the model made up counted as fully
+verified: the turn got the `verified` badge, and in enforce mode the #132
+borderline resample, which only runs on `approved_with_disclaimer`, was
+skipped. A contradiction with a made-up citation blocked the answer all the
+same and stored the claim's expected source as the contradiction's source.
+
+The judge now checks the cited id against the exact snippets it printed into
+the prompt, by exact match after trimming (ids are opaque, so there is no
+case-folding). An unknown id demotes the verdict to `unverified` with the
+reason `evidence_node_id not in evidence set` and logs
+`[verifier/judge] evidence_node_id not in evidence set, … claim=<id> cited_len=<n>`,
+which makes the rate observable. The cited id is model output and can repeat
+claim or evidence text, so only its length is logged, never the id itself. The
+contradiction recheck follows the same rule, and an unknown id on the first
+call no longer spends a recheck. Affected turns show `partial` instead of
+`verified` and, in enforce mode, can trigger the borderline resample. A
+contradiction whose citation names no shown snippet no longer blocks; it
+counts as an unconfirmed claim with the `partial` badge, as a contradiction
+without any citation already did (in `enforce` the answer is withheld
+without a correction retry). For judge contradictions, `verifier_contradictions.source` now
+records the cited snippet's source (a `confluence` snippet still lands as
+`graph`) instead of the claim's expected source. The rule is written up in
+`docs/security-architecture.md` §7c.
+
+### Security — a verifier re-entry replays the first run's tool results instead of running the tools again; the `enforce` stream retries a contradiction too
+
+2026-10-01 — In `enforce` mode the answer verifier re-enters a turn: a
+borderline verdict draws a second sample (non-streaming path), a
+contradiction a correction retry. Each re-entry used to be a complete new
+turn that executed every tool the model called again, so a write the first
+run had already made — creating a record, sending a message — ran twice for
+one user request, or three times when a resample turned up a contradiction
+and the correction retry followed.
+
+A re-entry now re-generates only the answer. The verifier binds a
+per-request replay ledger to the turn: the first run records the outcome of
+every tool call — the raw result the turn used, or the exception the handler
+threw — under the dispatch seam, the tool name and the canonical input, and
+a re-entry gets those outcomes back instead of running the tool. That holds
+at every seam that runs a handler: the orchestrator's dispatch, a
+`LocalSubAgent`'s inner calls and the standalone dispatcher a
+subscription-CLI sub-agent's tool calls go through. The re-entry's model sees
+the same results through its own Privacy Shield pass: a returned tool error
+is redacted again, a thrown one withheld again, never the raw text. A
+replayed diagram or generated file comes back with its call, so a delivered
+retry carries the file the first run built. A call
+the first run did not make runs only when it is one of the kernel's own reads
+(`query_knowledge_graph`, `query_dataset`, `read_attachment`,
+`find_free_slots`, the chat roster, a memory `view`). Any other call — every
+plugin, MCP, domain and sub-agent tool counts, because the plugin contract
+has no read-only declaration and a missing `writeCapabilities` is not one —
+is refused with a neutral notice and the re-entry is abandoned: a resample
+keeps the first answer, a correction retry withholds it with the `failed`
+badge. Under Privacy Shield a sub-agent whose answer rests on datasets of the
+first run's privacy scope runs again, with its inner calls replayed and
+interned afresh, so the dataset bridge still carries real rows; a re-entry of
+an MCP input-card answer is abandoned before the parked call could run again.
+
+A re-entry belongs to the same request: it fires no per-call turn hook,
+ingests no replayed MCP result into the Knowledge Graph and records no bypass
+again. Its run trace keeps every replayed call, flagged `replayed`
+(`RunToolCall.replayed`, `RunAgentInvocation.replayed` — `@omadia/plugin-api`
+1.21.0). The request also has ONE record, and it holds the answer the user
+got: no pass — the first run included — writes its session-log row while the
+verifier may still re-enter; each offers it to the request's ledger, and the
+verifier writes the row of the pass it delivers once it has decided
+(commit-on-delivery). A delivered correction retry or resample is therefore
+what the session log, the Knowledge-Graph turn, the next turn's verbatim
+context, fact extraction, an auto-promoted memory and `onAfterTurn` see, and
+the stream's `done.turnId` names its row, so saving the answer as a memory
+saves the delivered one. A withheld answer records the pass its final verdict
+was about. The row carries the entities of every pass, its writes run in the
+turn scope of the pass that produced it, and `onAfterTurn` runs once, in the
+first run's hook context, with `onVerifierBlocked` after it as before. A
+re-entry now also sees the same conversation history as the first run (the
+first answer is no longer in it). The request's privacy receipt is ONE row,
+written once after the last pass, that merges every pass (counts of the
+largest pass, lists united, an entry every pass recorded listed once); the
+delivered answer carries that receipt, and on the stream `done.receiptId`
+names that row. A long-running task started in the request runs its own tool
+calls outside the request's ledger: its detached runner used to inherit the
+ledger, so once the verifier re-entered the request every later call of the
+background task was refused as a miss — failing the task and abandoning the
+re-entry running at that moment — or handed a first-run result.
+
+With the ledger in place the `enforce` stream retries a contradiction once
+as well (`/api/chat/stream`, the public API-key stream, a channel that streams
+its turns), except on canvas turns. The release rule is unchanged: nothing of either run reaches
+the client before the final verdict, only liveness events (the retry's
+`iteration_start` among them); the answer goes out only when the retry's
+verdict releases it, and a retry that fails or is abandoned stays internal
+and the first answer is withheld.
+
+Two things outside tool dispatch follow the same rule. A tabular upload
+(CSV, XLSX) is imported as a dataset before the model runs — a new dataset
+per import, with no dedupe — so each re-entry imported the file again and
+told its model a dataset id none of the replayed first-run results referred
+to. The request's ledger now keeps the first run's attachment ingestion and
+hands it to every re-entry, masked through the re-entry's own prompt map; a
+re-entry that finds none to reuse is abandoned before the model runs. And
+the correction hint quoted what the verifier measured whenever no Privacy
+Shield was installed: Odoo values, knowledge-graph snippets and lookup
+details, fetched with the verifier's own access rather than the user's
+grants. The hint now names the claims only — no measured value, no check
+detail, no postcondition issues — on every path, and the retry corrects from
+the turn's own tool results. Like the user's message it is masked through
+the pass's own prompt map, on the stream retry too, its masked spans are on
+the request's receipt, and a re-entry whose prompt cannot be masked is
+abandoned.
+
+Two smaller changes ride along. The new setup field
+`verifier_resample_on_borderline` of `@omadia/verifier` (seeded on first
+boot from `VERIFIER_RESAMPLE_ON_BORDERLINE`, default `true`) switches the
+borderline resample off; until now nothing could. And within one request no
+loop repeats a write call that ended in an exception any more: the
+orchestrator's buffered and streaming tool loops and a subscription-CLI
+sub-agent's loopback dispatch refuse an identical repeat (same tool, same
+canonical input) the way `LocalSubAgent` already did, across sub-agent runs
+of the request too. Another input, a repeat after an ordinary returned
+`Error:` hint and the kernel's reads still run.
+
+What operators notice: a correction retry or resample that would need a
+write the first run did not make is abandoned, so `corrected` badges can get
+rarer on turns that wrote something; the verifier logs
+`retry abandoned` / `resample abandoned` with the run id and the tool (or the
+reason: an unmaskable prompt, an MCP input-card answer, no upload ingestion
+to reuse). A retry no longer gets the verifier's measured value to copy, so
+it corrects from the turn's own results or says it could not confirm the
+claim. A request has one receipt row and one session-log row instead of one
+per pass, both written after the verdict when the request can be re-entered,
+and one dataset per uploaded file, imported by the first run.
+`shadow` mode, a disabled verifier and turns that cannot be re-entered persist
+as before, except that a turn that fails now keeps its receipt row too (see the
+first entry above). Tests: `toolReplayLedger.test.ts`, `toolReplaySeams.test.ts`,
+`verifierServiceWriteSafety.test.ts`, `verifierStreamRetry.test.ts`,
+`verifierReentryRecords.test.ts`, `verifierDeliveredTurnRecord.test.ts`,
+`requestTurnRecord.test.ts`,
+`verifierSubAgentReplay.test.ts`, `verifierResampleKillSwitch.test.ts`,
+`longRunningTaskReplayLedger.test.ts`,
+`orchestrator/parentLoopThrownCallRepeat.test.ts`,
+`verifierReentryAttachments.test.ts`, `verifierCorrectionHintPrivacy.test.ts`,
+`correctionPromptEvidence.test.ts`. Details:
+`docs/security-architecture.md` §7c; upgrade note: `docs/upgrading.md`.
+
+### Security — the answer verifier's `enforce` mode withholds what it could not confirm, on the stream too
+
+2026-10-01 — `VERIFIER_MODE=enforce` was documented to block a contradicted
+answer, but on the streaming path (`/api/chat/stream`, the public API-key
+stream, the canvas) the verifier wrapper passed every `text_delta` and the
+terminal `done` to the client first and ran the verifier afterwards: `enforce`
+changed only the badge of a `verifier` event that arrived after the answer.
+The non-streaming path (Teams, Telegram, `/api/chat`) delivered an answer that
+was still contradicted after its correction retry, with a `failed` badge.
+
+In `enforce` mode the verifier is now a delivery gate on both paths. On the
+stream, every event that carries model or tool content — text deltas, tool
+calls and results, sub-agent tool traffic, nudges, turn annotations, canvas
+surface events and `done` — is held until the verdict. Iteration, routing,
+persona, tool-progress, heartbeat, token and usage events still pass live, and
+the route's observer (which the wrapper used to drop) is now forwarded in
+every mode, so the web chat's liveness line keeps moving. A verdict releases
+the answer only when it is `approved`, or `skipped` because no trigger pattern
+matched the answer or the extraction found no claim in it (`no_trigger`,
+`no_claims`), in which case the answer goes out unchecked; the held events
+then go out in order, the answer's text as one `text_delta` carrying
+`done.answer`, and `done` carries the verdict as `done.verifier`. The deltas
+the model streamed never go out in `enforce`: the orchestrator can discard a
+streamed response and run the model again (an unmet sub-agent obligation, a
+file it announced but did not build), and the verdict is about the answer it
+kept, not the one it discarded.
+Every other verdict withholds the answer — the gate fails closed: a
+contradiction, claims the verifier could not confirm, did not check or did not
+cover (`approved_with_disclaimer`, `skipped` with `no_checkable_claims` /
+`incomplete_coverage`) and a verifier that could not run (`unavailable`). The
+client then gets exactly one `text_delta` with a localized notice ("Diese
+Antwort wurde zurückgehalten: …" / "This answer was withheld: …", naming
+contradictions, unconfirmed claims or an incomplete check, and what to do
+next) and a `done` with that notice as `answer`, `answerSource:
+"verifier-blocked"`, `answerIsError: true` and the verdict — without the
+attachments, files, follow-ups, masked values, delegated answer, cards and
+excerpts the withheld answer carried. The notice is worded in the turn's
+disclosure locale, then the operator's (`ai_disclosure_locale`), German by
+default; the AI-disclosure paragraph a first turn folds into `done.answer`
+stays there, never in the delta. A turn that carries a choice card, an MCP
+input form, a slot picker or an OAuth consent prompt, a degraded turn's
+turn-incomplete notice and a bare `NO_REPLY` (the sentinel as the whole
+answer) are released without verification — on the stream a bare `NO_REPLY`
+releases its `done` alone, without the tool traffic before it. A card does
+not make the answer it rides on free of facts: a slot picker, an OAuth consent
+prompt (set when any calendar tool of the turn needed consent) and a choice
+card the card-router pass attaches can ride on a complete answer, which then
+goes out unchecked. An answer that only ends with `NO_REPLY` after other text
+is verified like any answer, because stream clients do not drop it. An
+answer Privacy Shield rendered server-side (`answerSource: "privacy-render"`)
+is never sent to the verifier, whose claim extractor would pass the real
+values the shield kept from the model to its model provider: `enforce`
+withholds it with the verdict `unavailable` / `privacy_shield`, on both paths
+and for a resample or retry as well, unless the turn also carries an input
+card, whose exemption is checked first. That includes a degraded turn whose
+answer the shield had already rendered; its `done` keeps `degraded` and
+`committedTools`. A turn that ends in an `error` releases nothing it held.
+The canvas composer holds its skeleton — the composer model
+writes its headings, labels and text — until the verdict as well: it leads a
+released turn and never shows with a withheld or failed one. The stream path
+did not retry with this change, because a retry re-ran the turn's tool calls;
+it retries since a re-entry replays them (see the entry above). `chat()`
+keeps its correction retry and now delivers the same notice when the final
+verdict does not release the answer.
+
+What does not change: `shadow` streams exactly as before, and the trailing
+`verifier` event still follows `done` in both modes. A withheld turn is a
+policy decision, not a failure: the kernel route's health signal and the
+public API-key audit record it as `ok` — unless it is also degraded, which
+both still record as a failure.
+
+What clients see: in `enforce` mode no answer text arrives until the turn
+and its verification (two LLM calls plus the source checks) have finished,
+then all of it at once, as a single `text_delta`; on the canvas the skeleton
+arrives with it, not before. `done.answerSource` can be `"verifier-blocked"`
+(always with `answerIsError: true`), and `done.verifier` carries the summary,
+whose `reason` can now also be `privacy_shield`. A client that renders
+`done.answer`, as the API documentation recommends,
+shows the notice without any change. The web chat shows a "withheld by the
+fact-check" heading above the notice (new `chat.verifierBlocked.*` keys in en
+and de), and the server-side session mirror (`PUT /api/chat/sessions/:id`) now
+keeps a message's verifier summary and withheld marker. `@omadia/channel-sdk`
+gains `composeVerifierBlockedText`, `AnswerSource` the value
+`"verifier-blocked"`, the `done` event the `verifier` field and `ChatAgent`
+the optional `holdsContentUntilVerdict` flag (how a wrapper such as the
+canvas composer learns that its base holds content until the verdict);
+`VerifierSummaryReason` and `@omadia/verifier`'s `VerifierUnavailableReason`
+gain `privacy_shield` — all additive.
+
+What operators should expect: fail-closed `enforce` delivers only fully
+confirmed answers and answers without checkable claims. An answer longer than
+the 6000 characters the claim extractor reads is never `approved` and is
+therefore always withheld, as is one with a claim no checker takes, and, with
+Privacy Shield v4 rendering active, every answer the shield renders. Run
+`shadow` first: of the answers `shadow` verified, `enforce` delivers the
+`verifier_verdicts` rows with status `approved` and the `skipped` rows whose
+reason is `no_trigger` or `no_claims` (the `reason` column arrived with the
+combined entry above; the query is in `docs/upgrading.md`). `shadow` writes
+no row for an answer the verifier may not see behind the shield, all of
+which `enforce` withholds; they show in the log as `verification skipped`.
+
+Not covered: the subscription-CLI runtime (`claude-cli` provider) never passes
+through the verifier wrapper, and proactive routines call the raw
+orchestrator, so `VERIFIER_MODE` changes neither. A withheld answer is still
+written to the session log and the knowledge graph — before the verdict, or
+right after it when the request can be re-entered (commit-on-delivery, see
+the entry above) — and can be auto-promoted to memory. What a released turn
+carries besides its answer —
+tool output, surfaces, the canvas skeleton's own text — is released on the
+verdict about the answer, not checked itself. Details:
+`docs/security-architecture.md` §7c, upgrade notes in `docs/upgrading.md`.
+
+### Security — answer-verifier verdicts are evidence-bound: `skipped` / `unavailable` are no longer `approved`
+
+2026-09-30 — the answer verifier reported five situations in which it checked
+nothing as `approved` with an empty claim list: an answer without a trigger
+signal, an extractor that failed, an extractor that returned no claims,
+extracted claims that fit no checker, and a pipeline that threw. The badge
+mapping turned each of them into `verified`, and that is what the trailing
+`verifier` stream event told stream clients and what `verifier_verdicts`
+recorded. Connector badges were already held back by a claim-count check, which
+also kept the internal `corrected` badge of a retry whose own verification
+failed off Teams. Verdicts are now bound to evidence: `approved` requires a
+claim extraction without a coverage gap — the model read the whole answer, its
+list stayed below the request limit, every `record_claims` call was read and
+every claim it returned is in the answer in full and short enough to check —
+and every extracted claim to be checked and verified, at least one (its claim
+list is typed non-empty);
+nothing checkable is `skipped` (reason `no_trigger`, `no_claims`,
+`no_checkable_claims` or `incomplete_coverage`), and a verifier that could not
+run is `unavailable` (reason `extractor_error` or `pipeline_error`). An answer
+the verifier can check only in part used to pass as fully verified: a claim no
+checker accepts (an amount, date, id or total whose source is neither Odoo nor
+the knowledge graph) and a claim beyond the per-answer cap were dropped without
+a trace, the extractor told the model to return no more claims than the cap
+(so a model that kept to it left the rest out before the pipeline saw them),
+it read only the first 6000 characters of the answer, its verbatim guard
+dropped a well-formed claim whose text is not in the answer as written (a line
+break the model wrote as a space, a subject stitched in from elsewhere in the
+sentence), it read only the first `record_claims` call of a response, and it
+cut every claim to its first 300 characters before the verbatim guard looked
+at it — so a longer claim was checked on its head alone, even when the rest of
+it is not in the answer; the rest verifying gave `approved` / `verified`. Such
+claims now stay in the verdict as unverified (`cause: 'not_checked'`), and the
+extraction reports what it did not cover: it asks the model for one claim
+more than `VERIFIER_MAX_CLAIMS`, treats a list that reaches that limit as
+possibly incomplete, names answer text beyond its window, and reports claims
+that are not in the answer (`claims_not_in_answer`) and claims longer than a
+check takes (`claims_too_long`, over 300 characters — matched in full, never
+cut to fit). Each such gap becomes a
+`not_checked` coverage entry (claim type `coverage_gap`), so the answer is
+`approved_with_disclaimer` and badged `partial`, or `skipped` /
+`incomplete_coverage` when nothing in the part it covered could be checked.
+The verbatim guard now lets any run of whitespace match any other, so a claim
+the model re-wrapped is checked instead of dropped, and the extractor reads
+every `record_claims` call of a response. The verifier still sees only the
+claims its extraction model lists: a claim the model leaves out of a list
+below the limit leaves no trace, so `verified` means every claim found was
+confirmed and the extraction is not known to be incomplete.
+`VERIFIER_MAX_CLAIMS` bounds how many claims are checked. The claim extractor
+used to turn its own failures (an LLM error, a response without a usable
+`record_claims` call) into an empty claim list, and
+it accepted a response cut off at the token limit and dropped malformed
+entries, so an extractor outage or a partial extraction could still read as
+`skipped` / `no_claims` or even `approved`; it now rejects in each case, and
+the outcome is `unavailable` / `extractor_error`. Badges are derived under an
+evidence gate (`hasVerificationEvidence`): a badge needs a check that settled a
+claim — a confirmed one for `verified` / `partial` / `corrected` (every claim
+confirmed for `verified` and `corrected`), a contradicted one for `failed`. A
+verdict whose claims all stayed unconfirmed — the sources were silent, or the
+re-query or judge call failed — is `unverified`, or `unavailable` when every
+check that ran failed (the checkers now mark a failed check as
+`cause: 'check_failed'`). That also covers the correction retry: a retry earns
+`corrected` only when its own verification confirmed every claim, and one that
+confirmed only some is `partial`, as the same verdict is on a first pass; any
+retry without a contradiction used to be badged `corrected`, including one
+whose checks all failed or that confirmed one claim and left the rest
+unchecked. The pipeline is injected, so its verdict is now held to what its
+claims show before the service retries, resamples, stores or streams it: a
+status is lowered to the one its claims earn (`approved` over an unconfirmed
+claim is `approved_with_disclaimer`, over a contradicted one `blocked`) and
+never raised, and `approved` over zero claims, an unknown status and a
+`reason` outside the closed codes are `unavailable` / `pipeline_error` — the
+raw value goes to the operator log, never onto the stream. The stored
+`unverified_count` is counted from the claims. The connector badge gate and
+the web chat chip also need the summary's counts to be nonnegative integers
+that agree with each other (no more unchecked than unverified claims, no
+more coverage entries than unchecked claims, no more contradicted and
+unverified claims than claims, no missing count read as 0); a summary that
+breaks this — only a foreign `ChatAgent` or edited local storage can produce
+one — gets no connector badge and a neutral chip. Contradictions found
+without extraction (tool postconditions, missing citations, failure replay)
+still block on every path. The paid
+borderline resample now runs only when a verdict confirmed some claims and a
+check left another unconfirmed: `skipped` / `unavailable`, a verdict that
+confirmed nothing, and one whose only doubt is claims no checker takes never
+trigger it.
+
+What clients see: the `verifier` event on `/api/chat/stream` and on the public
+API-key stream can now carry `summary.status` `skipped` / `unavailable`,
+`summary.badge` `unverified` / `unavailable`, a `summary.reason` code,
+`summary.uncheckedCount` (claims no check ran on, also counted in
+`unverifiedCount`) and `summary.uncoveredCount` (of those, the coverage
+entries: the answer was not checked in full). The reason is a closed code set,
+never an error message.
+Clients that switch exhaustively on these fields must handle the new values,
+and anything other than `verified` / `partial` / `corrected` / `failed` with
+`claimCount > 0` must not be shown as a check; `badge` is `unverified` or
+`unavailable` whenever no claim was settled, whatever the `status`. The
+connector wire type `SemanticAnswer.verifier` is unchanged: `toSemanticAnswer`
+is the single badge gate and forwards a badge only when the summary's counts
+back it, and Teams / Telegram get no badge for turns without evidence, so those
+plugin repositories need no release. Code that switches on `@omadia/verifier`'s
+`VerifierVerdict['status']` stops compiling until it handles the two new
+statuses — deliberately. `ClaimExtractor.extract` now resolves
+`{ claims, gaps }` (`ClaimExtraction`) instead of a claim list, and no longer
+cuts its result at `maxClaims`; the pipeline applies the cap and turns the gaps
+into coverage entries. A claim's `text` is now the span of the answer it
+quotes, which can differ from the model's text in case and whitespace, and is
+at most `MAX_CLAIM_CHARS` (300, exported) long — a longer claim is the new
+`ExtractionGap` value `claims_too_long`, never a shortened claim. The web
+chat previously dropped the `verifier` event and
+had no answer-verifier badge at all; it now shows a footer chip that is green
+only for a verified answer whose every claim was confirmed, blue for a
+corrected answer under the same condition, neutral for "not verified" and
+"verification unavailable" (the tooltip names the reason), amber for partly
+verified (the tooltip names claims that could not be checked, or says the
+verifier did not check all of the answer) and red for a contradiction (new
+`chat.verifier.*` keys in en and de).
+
+Operators: `verifier_verdicts.status` now stores `skipped` / `unavailable` as
+their own values (free `TEXT` column, no migration), so the share of
+`approved` rows drops — small talk and outages no longer count as clean turns,
+and answers checked only in part are `approved_with_disclaimer` (an answer
+longer than 6000 characters is never `approved` any more). Ad-hoc SQL or
+dashboards that read `status = 'approved'` as "clean turn" need a second look.
+No new environment variable; `VERIFIER_MAX_CLAIMS` keeps its default of 20.
+The golden corpus file `approve.jsonl` is now `skipped.jsonl` and expects
+`skipped`. Details: `docs/security-architecture.md` §7c.
+
+### Fixed — desktop database requires passwords; the kernel runs without superuser rights
+
+2026-09-30 — the desktop app's embedded PostgreSQL cluster was initialised with
+`initdb -A trust`. Any local process, under any OS user, that reached its
+loopback port could log in as the bootstrap superuser without a password, and
+the kernel's own `DATABASE_URL` named that superuser, which can run
+`COPY ... TO PROGRAM`. New clusters are now created with SCRAM-SHA-256
+authentication, and the shell owns `pg_hba.conf`: password-only rules for its
+two roles, no `trust` rule, `hba_file` pinned on the server's command line. The
+kernel connects as `omadia_kernel`, which owns the `omadia` database but is not
+a superuser. Both passwords are random, live in `secrets.enc`, and are read back
+from it before the cluster is touched. The shell creates the `vector` and
+`pg_trgm` extensions itself, because pgvector is not a trusted extension. Every
+start ends with a fail-closed check that a wrong password is refused and the
+kernel role holds no privilege (desktop/README.md § Database authentication,
+security-architecture §8b).
+
+An existing cluster is migrated before the updated app first starts it: the
+superuser password is set in PostgreSQL's single-user mode, which opens no
+port, then `pg_hba.conf` switches to passwords, and once the server runs,
+every object the old kernel created as superuser moves to the kernel role.
+When the cluster refuses the stored password (a lost `secrets.enc`, a snapshot
+restored without its secrets copy), the shell stops the server, sets the
+password the same way and starts it again, logged at warn level; pg_hba.conf
+is only ever rewritten while the server is stopped, so no running server
+accepts a connection without a password. A rollback to an earlier desktop
+build cannot open a migrated cluster, because that build connects without a
+password; restore the pre-update snapshot
+(`snapshots/pgdata-pre-<version>-<stamp>/` and its `.secrets.enc`) to go back.
+No new runtime environment variable. The desktop-apps workflow sets the test
+switch `OMADIA_EMBEDDED_PG_IT=require`, so that a missing engine or pgvector
+fails the integration test instead of skipping it
+(`docs/middleware-agent-handoff.md` §10, Test-Schalter).
+
+The shell's own maintenance sessions treat the kernel-owned database as
+untrusted. Because `omadia_kernel` owns that database, it can set a
+per-database `search_path` and create objects in schemas it controls; left
+unchecked, a statement the shell runs there as the superuser could resolve an
+unqualified call to one of those objects and run it with the shell's rights.
+Every connection the shell opens now pins a fixed `search_path` (system
+catalogs first) as a startup option, which outranks any per-database or
+per-role default, and the ownership transfer schema-qualifies every call and
+pins its own search_path as well. The start-up verification is the backstop: it
+refuses the kernel role a database URL unless it holds none of the privileged
+attributes and is a member of no role, because a role membership can restore a
+capability without setting an attribute.
+
+Passwords alone would not keep another local user out of the picture: while
+the server is stopped, someone else could take its loopback port and ask the
+connecting client for a password, or pose as the cluster. So on macOS and
+Linux the server no longer listens on TCP at all, only on a Unix socket in an
+owner-only directory under the app data folder (a private temp directory when
+that path is too long for a socket), and the kernel's `DATABASE_URL` names that
+socket. On every platform the shell's own connections accept SCRAM-SHA-256 and
+nothing else, so no password goes to a server that asks for anything less, and
+a server that cannot prove it holds the verifier is refused. The shell counts
+the server as started when its `postmaster.pid` names the process the shell
+spawned, a check that needs no credentials; the first login after every start
+must report this cluster's data directory before the kernel's password is
+offered; and the server is re-confirmed before provisioning, before the
+verification and before the kernel gets its DSN. Windows keeps loopback TCP:
+another local user who takes the port while the server is stopped fails the
+boot instead of learning a password, and the kernel's own pools are not yet
+SCRAM-only (desktop/README.md § Database authentication).
+
+### Fixed — create_xlsx no longer persists model-supplied formula results; workbooks with formulas request a full recalculation on open
+
+2026-09-30 — a formula cell in `create_xlsx` accepted a `result` and stored it
+as the cell's cached value, so a workbook could hold the formula `1+1` showing
+999. Nothing on the server evaluates formulas, so that number was never computed
+by anyone, and every viewer that does not recalculate showed it as the figure.
+The input schema now has no `result` field (a sent one is stripped), the
+renderer writes formula cells as `<f>` without `<v>`, and a workbook that holds
+a formula sets `fullCalcOnLoad`, so the spreadsheet application computes each
+value when it opens the file. The tool description now asks for English
+function names (`SUMIFS`), which is what a recalculating Excel understands.
+
+Because Excel, LibreOffice and Google Sheets all recalculate such a file, every
+formula is checked before anything is stored, and a refused one fails with
+`OfficeUnsafeFormulaError`. A formula may only call Excel's own worksheet
+functions by their English names, from Microsoft's catalogue. Add-in and
+user-defined functions (`_xll.`, `_xludf.`), Excel 4 macro functions, other
+applications' functions, localised names and anything Excel adds later are
+refused until someone reviews them, so a new way out fails closed. Known ways
+out are also refused by name wherever they appear: URL fetches (`WEBSERVICE`,
+`FILTERXML`, `IMAGE`, and Google Sheets' `IMPORTDATA`, `IMPORTXML`,
+`IMPORTHTML`, `IMPORTFEED` and `IMPORTRANGE`), `IMPORTTEXT` and `IMPORTCSV`
+(local files, UNC paths and URLs), vendor services (`STOCKHISTORY`,
+`TRANSLATE`, `DETECTLANGUAGE`, `GOOGLEFINANCE`, `GOOGLETRANSLATE`), the `CUBE`
+functions, `HYPERLINK`, COM and DLL calls (`RTD`, `CALL`, `REGISTER`,
+`REGISTER.ID`), DDE as a function and as an `app|topic!item` reference, and
+references to another file by index, name or path, quoted or not. `INDIRECT`
+and `__xludf.DUMMYFUNCTION` are refused whatever their argument. Both turn text
+into a reference or a formula, and that text is invisible to the check and can
+be built from cell values. In a computed column, `{row}` may only follow a
+column letter, so a row number cannot complete a function name.
+
+The check reads the text the spreadsheet application reads. exceljs's XML
+encoder silently drops most control characters, and the file format lets
+formula text carry `_xHHHH_` escapes that a reader decodes, so such a formula
+could be checked as one text and stored as another. Both are now refused, by
+the input schema as well as by the renderer, and so are unpaired surrogates,
+U+FFFE and U+FFFF. Outside quotes a formula may only use letters, digits, plain
+spaces and the formula operators, on one line, and names are read the way
+Excel's grammar reads them (`?` and non-ASCII characters continue a name). The
+`{row}` check now reads only the characters just before each placeholder: it
+used to rescan the template for every placeholder, so a long template cost a
+noticeable amount of CPU per computed column.
+
+None of this relies on the input schema any more. `renderXlsx` is exported,
+and exceljs decides what a cell is from the shape of the value, so a
+descriptor handed to it directly could still store a cached value through a
+shared formula, write a formula the check never read because it was not a
+string, or add an external link, and a column header could do the same. The
+renderer now takes only text, numbers, booleans, `null` and a formula cell
+with a non-empty formula string as a cell value, and refuses any other cell
+value, a header that is not text and a computed-column formula that is not
+text with `OfficeRenderError`. `create_xlsx` itself was not exposed, because
+its input schema already refused these shapes. A column whose key a row lacks
+is now empty even when the key names a property every JavaScript object
+inherits, such as `constructor`; rendering used to fail there.
+
+Viewers that do not calculate (Quick Look, Teams and Outlook previews, Excel's
+Protected View) now show formula cells empty until the file is opened for
+editing. A generated workbook uploaded as a dataset without being saved in
+Excel first imports those cells as empty strings, because the importer reads
+cached results. Both are deliberate: an empty cell beats a number nobody
+computed. `@omadia/plugin-office` 0.1.4 ships as the bundled built-in with the
+middleware, so the fix is live with the next deploy. The Hub ZIP only matters
+for installations that took the plugin from the Hub. Server-side evaluation
+with an MIT-licensed engine is on the roadmap (handoff §13).
+
+### Changed — README no longer claims a server-side spreadsheet engine
+
+2026-09-30 — the root README said Office and Excel output came from "a real
+spreadsheet engine, server-side" and that the figures were "calculated by that
+engine rather than produced by the model". omadia has no such engine. The
+feature row "Computed, not guessed" is now called "Excel from real rows", and
+both it and the Office bullet describe what `create_xlsx` does. It writes the
+rows behind a `datasetId` into the workbook server-side, so they never pass
+through the model, and adds sums and pivots as Excel formulas that the
+spreadsheet application computes when it opens the file. `.docx` output
+computes nothing, and the bullet says so.
+
+### Security — tool errors no longer reach the model or the chat stream raw
+
+2026-09-30 — a tool error reached the model, the streamed `tool_result` event
+and the persisted chat session verbatim on two routes. A handler that THREW had
+its message folded into `Error: ${err.message}` by both chat loops, the
+Direct-Line relay and, inside a sub-agent, by the domain-tool wrapper. A
+RETURNED `Error:` string — an MCP server's error body, or any wrapper that
+returned `Error: ${err.message}` — passed the four control-flow seams
+(#1105/#1097) un-interned and unchecked. Driver and ORM messages quote the row
+they failed on, and neither route wrote a receipt entry.
+
+Both carriers now go through one helper, `toolErrorRedaction.ts`
+(`@omadia/orchestrator`):
+
+- **Thrown text is withheld.** Under a privacy provider the model gets
+  ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …``
+  and the full error, stack included, is logged once under that ref — the
+  turn's correlation id, the same id a degraded turn shows as
+  `<turn-incomplete ref>`. **To recover a driver message, grep the middleware
+  log for `ref=<ref>`**: the chat tool card no longer shows it.
+  `Orchestrator.dispatchTool` no longer rejects (also with
+  `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=0`), an inner tool throw no longer aborts a
+  `LocalSubAgent` run, and `ToolDispatchService` uses the same notice instead of
+  interning the message as a one-row dataset.
+- **A sub-agent does not repeat a call that ended in an exception.** Such a
+  call may have taken effect before it failed (a write commits, then its
+  response times out), so the notice says the outcome is unknown and not to
+  repeat a call that changes data, and a `LocalSubAgent` refuses an identical
+  repeat (same tool, same input) for the rest of the run with an `Error:`
+  result instead of running it. That includes a tool bridge that caught the
+  exception and returned the notice. Before, a bridged tool's exception came
+  back as text, and the sub-agent's model could run the same write up to three
+  times before the repeat-failure guard stopped it. Another input, or a retry
+  after an ordinary returned `Error:` hint, still runs.
+- **Returned `Error:` text is redacted** by the provider's new
+  `redactToolErrorText` (C0 identity types — dates and amounts stay readable —,
+  the operator deny-list and C1; irreversible `[masked:<type>]`), or withheld
+  whole when it looks like a record dump (JSON, a Python dict, or a JavaScript
+  object or `Map` as `util.inspect` and `%o` print it; a record printed with
+  keyword fields, such as a dataclass, Kotlin, Lombok or Java record dump, or
+  with Go's `Key:value` fields; a Postgres `DETAIL:` line or failing row, as
+  psycopg and Odoo's JSON-RPC errors carry it) or a stack trace, is longer
+  than 4096 characters, or cannot be checked. The kernel's own refusals are
+  exempt by per-dispatch provenance.
+- **The MCP connect prompt passes on provenance, not on its prefix.** It still
+  reaches the model unchanged, but only the exact text `McpManager` produced in
+  the same dispatch (`McpAuthPromptMint`). Before, any result that merely
+  started with the prompt's prefix skipped interning and redaction for all of
+  its text and was receipted as a connect prompt. A remote MCP server can put
+  that prefix at the start of a text block, so such text is now interned like
+  any other tool result.
+- **In-tree wrappers** (the three tool bridges, web search, diagrams,
+  discussion, transcription, `manage_routine`, `query_dataset`, the
+  long-running task handlers, domain tools) keep only text they author and
+  return the withheld notice for any other exception (`toolErrorFromException`).
+  A schema miss on the model's own input still comes back as a readable hint.
+  The web-search providers and the Kroki client no longer fold a caught
+  transport exception or an upstream response body into their typed errors'
+  messages; those ride on `cause` / `body` for the log, and `web_search` and
+  `render_diagram` answer with the provider id or diagram kind, the HTTP
+  status and a log ref.
+- **Receipts.** Every handled error writes a `toolErrors` entry; a turn whose
+  only shield activity was a tool error now writes a receipt row. The web UI
+  receipt card lists the entries.
+- **The public MCP endpoint's privacy gate covers a domain tool's sub-agent.**
+  `ToolDispatchService` ran tool handlers outside any turn scope, so a domain
+  tool's `LocalSubAgent` found no privacy handle there: its model provider
+  received inner tool results, inner `Error:` text and — once inner throws
+  became tool results — the raw exception message, while the API caller saw
+  only a masked digest. Handlers now run with the dispatch's handle as the
+  ambient one; the public gate hands them a nested variant
+  (`PrivacyTurnHandle.forNestedCalls`) that masks the same way but does not
+  count toward the endpoint's own masking check, and a nested masking failure
+  discards the call. No tool runs there without the gate: the wired dispatcher
+  runs no handler without a handle (`requirePrivacyHandle`), and the endpoint
+  refuses a dispatcher that cannot receive it before dispatch instead of after.
+  Proven against a real sub-agent in `publicMcpSubAgentPrivacy.test.ts`.
+
+Versions: `@omadia/plugin-api` 1.20.0 (additive) and
+`@omadia/plugin-privacy-guard` 0.6.0, which implements the new members. With a
+provider that lacks `redactToolErrorText`, the kernel withholds every returned
+`Error:` text and logs `does not implement redactToolErrorText` once per
+process. `@omadia/plugin-web-search`, `@omadia/diagrams` and
+`@omadia/plugin-discussion` move to 0.2.0: they now import
+`toolErrorFromException` from `@omadia/plugin-api` at runtime, so a build of
+them needs a host at plugin-api 1.20.0 or later.
+Without a privacy provider, and on the subscription-CLI path (#1087), error
+text still flows raw. Fences inverted or narrowed:
+`chatPathToolErrorText.test.ts` (asserted the raw e-mail on the wire),
+`streamToolRejection1095` and `streamingToolThrow1093` (asserted the raw driver
+text), `toolDispatchPrivacySeam.test.ts` and the public MCP privacy tests
+(asserted an interned digest of a thrown message), `queryDatasetTool.test.ts`
+and `manageRoutineTool.test.ts` (asserted the raw exception message), and the
+connect-prompt cases of `guardedToolErrorNotInterned1105`,
+`toolDispatchPrivacySeam` and `subAgentToolErrorNotInterned1097` (asserted that
+prompt text a handler returned itself passed verbatim; the producer-driven
+cases are in `mcpAuthPromptProvenance.test.ts`). Details and residuals:
+`docs/security-architecture.md` §6c; upgrade note: `docs/upgrading.md`.
+
+### Security — answer-verifier requests run behind the Privacy Shield; the receipt is finalised after them
+
+2026-09-30 — with the privacy plugin installed and the answer verifier
+enabled, every turn the trigger router picked produced one to three extra model
+requests that bypassed the shield. The verifier ran after the orchestrator had
+restored the answer and finalised the turn, so its claim extractor got the
+unmasked prompt and the restored (or v4-rendered) answer, its evidence judge got
+raw knowledge-graph node content, and the enforce-mode retry put the re-queried
+truth into the system prompt verbatim. None of it reached the turn's receipt,
+which had already been written. A turn the verifier wraps now hands its privacy
+state over instead of finalising it: the extractor sees the turn's wire view
+(the prompt exactly as the turn's model received it — an MCP input-card reply
+only as its label, never the envelope with the values typed for a third-party
+server — and the answer as its model wrote it; amounts and dates parsed from a
+placeholder are re-read from the real literal), the judge projects claim and
+evidence through the same surrogate map in one call — also with
+`mask_user_prompt` off — and names each evidence snippet by a handle minted for
+that request, so no node id and no string record key reaches its provider, and
+the continuation finalises exactly once
+afterwards, so one receipt and one `turn_receipts` row cover the turn and the
+verifier (new receipt field `verifierEgress`, shown as "Answer check" on the web
+card). Server-rendered answers and Direct Line relays are not verified; with a
+shield installed but no privacy view handed over, nothing is verified raw.
+
+Behind the shield the correction retry carries no truth values and is withheld
+(badge `failed`) when masking would still alter its hint, and a second answer
+with unresolved placeholders — a still-blocked retry, or a blocked re-sample
+taken over a borderline first answer — never replaces the first one. Since
+restore only maps a placeholder's exact string back, a date or amount
+placeholder the model wrote back in another spelling of the same value (a
+dotted date as ISO or with a written month, an amount with a scale word such
+as "Tsd.") counts as unresolved too — otherwise the user would read a fake
+value — and a date or amount the check cannot read counts as well. A
+contradiction the judge found on placeholder values is reported as `unverified`
+rather than blocking. On streaming turns `done` — which carries the receipt — now arrives
+after the verifier finished, so the chat's "thinking" state lasts until then
+(heartbeats keep the connection alive); the streamed text is unchanged. The
+caller-supplied system hint is masked like the prompt, and a turn that throws or
+a stream the client abandons now drops its privacy state instead of keeping it
+until restart. `@omadia/plugin-api` 1.20.0 (additive: mask `stage`/`preview`,
+`projectVerifierText`, `countUnresolvedSurrogates`, `verifierEgress`), and
+`@omadia/plugin-privacy-guard` 0.6.0 implements them.
+
+### Fixed — password sign-in is rate-limited
+
+2026-09-30 — `POST /api/v1/auth/login/:providerId` ran a full argon2id
+verification (19 MiB) for every attempt, an unknown email included, and
+nothing counted attempts: passwords could be guessed online without limit, and
+any caller could drive unbounded argon2 work. Every attempt now passes three
+limits first. Per client address, a burst of 100 failures and then one every
+6 s. Per account and client, five free failures and then a wait that doubles
+from 1 s to at most 2 minutes, cleared by a successful sign-in, an admin
+password reset or a re-enable. The account is the typed address folded at
+least as coarsely as the users table matches it (Postgres `LOWER()`), so
+letter case, a capital dotted İ, a final sigma, accents or compatibility forms
+open no second budget, and a sign-in only succeeds for an account whose
+address folds to the key it was counted under. Process-wide,
+`AUTH_LOGIN_MAX_INFLIGHT` (new, default 4) concurrent verifications and 300
+admitted attempts per minute. A
+refusal answers 429 `auth.rate_limited` or 503 `auth.busy` with `Retry-After`
+and `retry_after_s`, never reaches argon2, and the login page shows a
+localized "wait N seconds". Attempts are counted when they are admitted, so
+parallel requests cannot race past the budget. The first-user wizard
+(`POST /api/v1/auth/setup`) hashes its password inside the same capacity (503
+`auth.busy` when no slot is free), and a sign-in password over 1024 characters
+is refused before the user lookup.
+
+None of this lets one client lock others out. The account limit is keyed per
+(account, client), so another client's wrong guesses do not slow an operator
+down. Every browser behind the web-ui proxy reaches the middleware from one
+address, so that shared address is never braked as one client: a single
+sender filling its budget would otherwise lock out every browser. A browser
+that has signed in to an account with its password carries a signed device
+cookie (`omadia_login_device`), minted once per sign-in for the account the
+sign-in verified (its stored address, never the one typed) and bound to the
+password that sign-in checked, never to one read back afterwards, so a sign-in
+with the old password that is still being checked when a reset lands gets a
+cookie that never counts. The account's known browsers share a budget of
+their own. A session alone mints none, so browsers that are signed in at
+the upgrade become known devices at their next password sign-in. A password
+reset, a disable or a delete turns the account's earlier cookies back into
+unknown browsers, and more cookies for one account buy no more guesses. One
+of the in-flight slots and the last 60 of the per-minute
+budget are kept for known browsers, so no flood from however many addresses
+(an IPv6 allocation holds thousands of /64s) turns them away, and no pile of
+one account's cookies can take that reserve. A browser without a device
+cookie still shares its client address's limits with whoever else uses it.
+
+The client address comes from the new `AUTH_LOGIN_CLIENT_ADDRESS`: `socket`
+(default, the TCP peer), `xff:<n>` (the n-th `X-Forwarded-For` entry from the
+right, e.g. `xff:1` behind a reverse proxy that appends the client) or
+`header:<name>`. On Fly.io it is `header:Fly-Client-IP`, which
+`fly/middleware.fly.toml` now sets: Fly puts the app's own IP address
+right-most in `X-Forwarded-For`. `req.ip`, which `trust proxy` takes from the
+client-written left-most entry, is never used. IPv6 clients are keyed by
+their /64, or by the shorter prefix set in the new `AUTH_LOGIN_IPV6_PREFIX`.
+The first refusal per client and minute is logged and audited
+(`auth.login_rate_limited`, without the account). The limiter lives in memory
+per process: a restart clears it, which is also the unlock when no admin
+session is at hand, and N replicas multiply every ceiling by N. See
+`docs/security-architecture.md` §10m and `docs/upgrading.md`.
+
+### Fixed — routine card buttons act only for the user who clicked them (#1029 follow-up)
+
+2026-09-30 — the routine smart-card handler (`RoutinesIntegration.handleRoutineAction`)
+still carried the interim fallback from #1029: when a channel sent a card click
+without an `actor` and no turn context was active, the action ran unscoped. A
+missing principal therefore widened rights instead of narrowing them — pause,
+resume, delete and "Jetzt auslösen" could act on any tenant's routine by id, and a
+manual trigger delivered into that routine's own conversation. Such a click is now
+refused with `RoutineActorRequiredError` before any routine is read, and so is an
+actor with a blank tenant or user id. The turn context is no longer consulted on
+this path: card clicks arrive out-of-band, so a context there could only be one
+leaked forward from an earlier turn. `{ kind: 'operator' }` now has a single
+producer, the `requireAuth`-gated `/api/v1/routines` router, and a new structural
+test (`routineOperatorScope.test.ts`) fails on a second one. The counter that
+tracked unscoped runs now counts refusals (`refusedRoutineActionMetrics`) and is
+expected to stay at zero.
+
+The Teams channel plugin has sent `actor` since 0.26.1. An installation still on an
+older channel-teams gets "Keine Benutzeridentität für diese Karten-Aktion
+übermittelt …" on every routine card button until the plugin is updated; routines
+keep firing, and the Operator UI's Routines page still manages them (see
+`docs/upgrading.md`). `@omadia/plugin-api` 1.19.2 documents the rule: `actor` stays
+optional in the type so 1.x callers compile, is required at runtime, and becomes a
+required field in 2.0.
+
+### Fixed — first-user setup creates exactly one admin and needs the operator's setup token
+
+2026-09-30 — `POST /api/v1/auth/setup` checked `userStore.count()` and then
+ran a plain INSERT on another pool connection, with an argon2 hash in between.
+Parallel requests all saw an empty table: distinct emails created several
+admins, each signed in, and a repeated email surfaced as an unhandled 500.
+The emptiness check and the INSERT now run in one transaction in
+`UserStore.createFirstAdmin`, under `SET LOCAL lock_timeout` and
+`LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`. That lock also waits for the
+writers that bypass this path (an OIDC first sign-in, an admin-UI create), and
+a wait past 2 s answers 409 `auth.setup_in_progress`. The `ADMIN_BOOTSTRAP_*`
+env seed uses the same path, so two replicas booting together no longer crash
+the loser on a unique violation. The first admin's creation is now audited
+(`auth.first_admin_create`) in the same transaction. `GET /providers` and the
+handler share one predicate: a boot that did not allow setup now answers 410
+`auth.setup_disabled` if the users table is emptied later (restart to
+reopen the wizard), where it used to create an admin. While users exist the
+answer stays 410 `auth.setup_locked`.
+
+The wizard also needs operator consent now. It accepts only the setup token
+(`setup_token` body field, else 403 `auth.setup_token_invalid`), checked
+before anything else, so an unauthorised caller never runs argon2 or waits on
+the lock. The token is `ADMIN_SETUP_TOKEN` (new, 16 to 512 characters) or,
+when unset, a generated one. It is stored in `platform_settings` so every
+replica and restart shares it, printed once per start to the middleware log,
+and deleted when the first admin exists. The only install without a token is
+the desktop app, whose supervisor now sets the new `OMADIA_DESKTOP_EMBEDDED`
+together with its loopback bind. Neither half exempts on its own, and no
+request header or `PUBLIC_BASE_URL` is consulted. `/providers` reports
+`setup_token_required`, and the wizard asks for the token and maps 403, 409
+and both 410 codes to their own messages. The unused `/api/v1/setup` prefix
+was removed from the unauthenticated path allowlist. See
+`docs/upgrading.md` for installs whose wizard is still open.
+
+### Fixed — channel WebSockets end with the session that opened them
+
+2026-09-30 — a channel WebSocket (today the canvas at `/omadia-ui/canvas`) was
+authenticated once, at the upgrade, and then stayed authorised until the client
+disconnected, the channel was deactivated or the process restarted. Cookie
+expiry, sign-out, an admin password reset, disabling or deleting the user and
+withdrawing an Entra identity from the whitelist never reached a socket that was
+already open, so its frames kept starting orchestrator turns as that user. The
+registry now keeps each socket's token and `exp` beside it and closes the socket
+with 4401 `session expired` at `exp`; a token without `exp`, or one that expires
+during the upgrade check, is closed before the handler runs, and a frame the
+handler sends after `exp` is dropped like an inbound one, even while the expiry
+timer runs late. Handlers get the
+claims (now with `expiresAt`), never the token, and the session cookie is
+stripped from `socket.request.headers`. A revocation announced on this replica
+closes that user's sockets at once with 4403, including a socket whose upgrade
+was still being checked at that moment; if more than 256 revocations were
+announced during that check, the socket closes with 1013 before its handler
+runs and the client's reconnect is checked afresh. Announcements are process-local, so
+every inbound frame is also authorised on its own: it reaches the handler only
+on a session check that started at most `WS_SESSION_FRAME_RECHECK_MS` (new env
+variable, default 5000, 0 = every frame) before the frame arrived, both moments
+read from a monotonic clock so a wall-clock step cannot stretch that bound. With an older
+verdict the frame waits, in order, while `evaluateSessionToken` runs again and
+the socket stops reading. That is what carries a sign-out, disable or delete
+made on another replica, or directly in SQL, to the next frame (4403), and a
+de-whitelisted Entra identity likewise. A socket that sends nothing is re-checked
+every 60 s. A failed, throwing or hung account lookup (10 s deadline) is an
+outage, not a verdict: the socket stays open, but the frames that waited on it
+are refused instead of handled, as HTTP answers 503. The canvas answers a
+refused turn with `turn_error`, still honours a refused `turn_abort`, and closes
+with 1013 instead of acking a refused handshake so the client reconnects.
+Channel handlers can see refused frames through the new optional
+`ChannelSocket.onRefusedMessage`. After the close no frame reaches the handler,
+and the canvas channel aborts the turn still running and starts none that was
+queued behind it.
+
+A renewal extends the cookie, not an open socket: the client reconnects with
+its current cookie, so an active canvas reconnects once per session window, and
+signing out anywhere closes that user's canvas too. `handshake_ack` now carries
+`sessionExpiresAt` so the client can warn the user in time (renewal stays an
+explicit click). `@omadia/canvas-core` 0.2.0 stops reconnecting on 4401
+(`unauthenticated`) and 4403 (`forbidden`) instead of retrying a cookie that can
+only be refused (a canvas switch in that state waits for the host's next
+`connect()` as well), reads its cookie from an optional provider on every
+connect, reports `sessionExpiresAt` in its `ready` status, and its stub server
+can send the field and simulate both closes (`docs/security-architecture.md`
+§10d).
+
+### Fixed — sign-out, password reset, disable and delete end sessions on the server
+
+2026-09-30 — the admin session is a stateless JWT, and nothing on the server
+could end one early. Signing out only cleared the browser's cookie (Entra
+sessions also dropped their refresh token), an admin password reset only
+replaced the hash, and disabling or deleting a user took effect at the next
+renewal at the earliest. A copy of the cookie taken before any of these kept
+working until its own expiry and, while the row stayed `active`, could be
+renewed up to `AUTH_SESSION_MAX_LIFETIME_HOURS`. Every session token now
+carries the account's session version (`sv`), the id of the `users` row it was
+minted for (`uid`) and a random per-sign-in id (`sid`, not checked yet).
+`evaluateSessionToken`, the one verdict path behind `requireAuth`,
+`ctx.operatorAuth`, the channel WebSocket upgrade and `POST
+/api/v1/auth/renew`, re-reads that row (one indexed point read, no cache) and
+answers 401 `auth.revoked` once the row is gone, disabled, re-created or has
+moved its version on. `GET /api/v1/auth/me` runs the same check, so the UI's
+heartbeat shows the expired overlay within a minute. A failed lookup is an
+outage, not a verdict: 503 `auth.unavailable` (a raw 503 on a WebSocket
+upgrade, `false` from `hasValidSession`), so a database blip does not sign
+operators out.
+
+`POST /api/v1/auth/logout` now moves the version, which signs the user out on
+every device, not just in this browser. An admin password reset and disabling
+a user move it in the same UPDATE as the change itself; deleting the row needs
+no bump. A cookie that is already revoked changes nothing server-side when it
+reaches the public `/logout` route, so a stale copy cannot sign its owner out of
+their current session. The OIDC callback no longer mints a session for a
+disabled account, and an admin who resets their own password is signed out as
+well. Tokens minted before this change carry no `sv` and count as version 0,
+where every existing row starts, so the upgrade signs nobody out. They carry no
+`uid` either, so they are tied to their row by sign-in time: a row deleted and
+re-created after that sign-in does not revive them, and their first renewal
+stamps the `uid` of the row it verified. Migration
+`auth/migrations/0003_users_session_version.sql` adds `users.session_version
+INTEGER NOT NULL DEFAULT 0`; it lives in the auth series because `users` is that
+series' own table (AGENTS.md, new SQL migrations), and it runs automatically at
+boot, including on the desktop app's embedded Postgres. The builder's SSE
+stream that is already open when a session is revoked stays open for now; open
+channel WebSockets close with their session (see "channel WebSockets end with
+the session that opened them", `docs/security-architecture.md` §10k).
+
+### Fixed — desktop updater: an update the OS is too old for is no longer "up to date"
+
+2026-09-30 — electron-updater withholds an update whose feed declares a
+`minimumSystemVersion` above `os.release()`, and then reports
+`update-not-available` with the feed's version: the same event a current
+install gets. The desktop app answered it with "You're already on the latest
+version of omadia" and filled "Current version" from the feed. Once the
+Electron 44 build puts a macOS 13 floor into the macOS update feed, a macOS 11
+or 12 install would have been told it is current, shown the release it cannot
+install as its own version, and left on Electron 37 with no hint that updates,
+security fixes included, had stopped. `desktop/src/updateHoldBack.ts` now tells the two apart.
+"Check for Updates…" names the installed version when the app is current, and
+otherwise warns that omadia X needs macOS 13 or later and that this computer
+gets no further updates until its operating system is updated; the silent
+startup check says the same once per floor (`updater-hold-back.json` in
+userData). The version comparison follows semver's strict grammar and is tested
+against electron-updater's own OS check. Nothing in it depends on Electron 44,
+so it ships first, in a release still built on Electron 37: an install only
+gets the new handler by updating to a build that carries it, and a macOS 11/12
+install that never takes that release keeps reporting "up to date"
+(`docs/upgrading.md`).
+
+### Fixed — desktop: setup wizard switches reach the kernel or are gone
+
+2026-09-30 — the first-run wizard offered three capability switches
+(attachments on the local disk, semantic memory, diagrams through a "hosted
+omadia service"). main stored them in `setup.json` and nothing read them back,
+so every choice booted the same stack; they had been unwired since the
+installer shipped (#341). Attachments now reach the kernel. The supervisor
+reads the switch on every boot and, when it is on, sets `ATTACHMENT_STORE_DIR`
+to `<data folder>/attachments`; when it is off, an inherited value is dropped.
+The kernel turns the variable into a filesystem attachment store, published as
+the same `tigrisStore` service the S3 store fills (S3 keeps precedence).
+Objects are stored owner-only under the SHA-256 of their key, so a storage key
+cannot address a path outside the directory. `/health` gains
+`attachments.store` (`s3`, `filesystem` or `none`, never a bucket or a path),
+and the supervisor checks it after boot and logs a warning when it disagrees
+with the switch. Installs that kept the default (on) start keeping attachments
+in their data folder after the update.
+
+Semantic memory and diagrams are no longer offered, because nothing the shell
+can set switches them on: the keyless embedding adapter is auto-installed and
+downloads its model from Admin → Embedding Provider, and diagrams need the
+Diagrams plugin, a Kroki server and S3 storage (the hosted service the wizard
+named does not exist). The step says where each is set up instead, and no
+longer claims the choice can be changed later, since there is no settings path
+after setup. `readSetup()` drops the `embeddings` / `diagrams` keys older
+builds stored. The new kernel variable `ATTACHMENT_STORE_DIR` is optional (see
+`middleware/.env.example`); a server that does not set it behaves as before.
+See `docs/security-architecture.md` §10j.
+
+### Fixed — desktop: setup and recovery-key IPC no longer reachable from the web UI or foreign documents
+
+2026-09-30 — the desktop shell runs the first-run wizard, the loading screen
+and the web UI in one window with one preload, and every IPC handler answered
+whichever document was loaded. So the web UI, any same-origin plugin iframe in
+it (through `window.parent.omadia`) and any page the window had navigated to
+could call `exportRecoveryKey`, which returns the vault master key, or
+`complete`, which rewrites the data directory and the setup state. Main now
+checks each call against the frame that sent it. The setup channels answer
+only the bundled `wizard.html` in the main frame while the wizard is on
+screen, and the UI pings answer only the running web UI's origin. A vanished,
+destroyed or detached sender frame is refused. The preload also hands each
+document only its own methods: the web UI gets `uiReady` and `setUiLocale`,
+and foreign pages get no bridge. The unused `getState` channel is removed.
+See `docs/security-architecture.md` §10i.
+
+Navigation is now fenced for every window. Links and `window.open` to other
+sites (links in chat answers, plugin author pages, GitHub help) open in the
+system browser instead of replacing the app or spawning Electron windows.
+Same-app popups open sandboxed and without the bridge. `about:blank` popups
+and `file:`, `javascript:` and `data:` targets are refused. No page can make
+the app hand a non-web link to another program any more (`mailto:`,
+`ms-settings:`, `search-ms:`, any installed app's scheme), including from an
+embedded frame such as a plugin UI or through a server redirect. Such
+navigations are cancelled, and the session refuses Electron's `openExternal`
+permission, which Electron grants to every page by default. The in-window
+OIDC/Entra sign-in keeps working, because web redirects and the IdP's own
+steps stay in the window. One visible change: signing out of an OIDC session
+no longer shows the IdP logout page in the app window. That page opens in the
+system browser, and the app window moves to the sign-in page once the web UI
+notices the ended session (its next API call or session heartbeat).
+
+### Fixed — desktop app no longer replaces an unreadable secrets file with new keys
+
+2026-09-30 — the desktop app keeps `VAULT_KEY`, `CREDENTIAL_KEYCHAIN_KEY` and
+the provider API keys in `secrets.enc`, encrypted with the OS keychain. Its
+loader treated any read, decrypt or parse failure like a missing file: it
+generated new keys and wrote them over the file in place. A refused keychain
+prompt, a Linux keyring that was not running, or a write torn by a crash was
+enough to lose every key. The kernel then could not open its own vault, and
+stored credentials, dataset cells and provider keys became unreadable. Now only
+a missing file (ENOENT) creates keys. Any other failure leaves the file
+byte-identical and stops boot with a dialog that names the failed stage and
+the next step: allow keychain access (the file is most likely intact), restore
+`secrets.enc.bak` or the snapshot copy, or move the whole data folder aside to
+start over. The dialog has no "Re-run setup" button, because setup would hit
+the same file. Its support details, the log line and the wizard's error text
+never quote the file: the JSON parser's own message carries a fragment of the
+decrypted text, so a damaged file is reported as `not valid JSON` plus the
+position. The rules live in the Electron-free `secretsBlob.ts` and
+`secretsStore.ts`, so fault-injection tests can assert them.
+
+Every rewrite is now atomic: the current file is copied to `secrets.enc.bak`
+(mode 0600) first, and the new bytes go to a temp file that a rename swaps in.
+A failed backup copy aborts the rewrite. A key is cached only after its write
+succeeded, and every rewrite re-reads the file it replaces. When first-run
+setup switches to a data folder that already holds a `secrets.enc`, that file
+is adopted instead of being overwritten with the keys cached for the default
+folder. The pre-update snapshot now copies `secrets.enc` next to the database
+copy as `<snapshot>.secrets.enc`, and pruning removes both. `platform-data/`
+(the kernel vault) is still not part of the snapshot (security-architecture
+§8a). A dev run that stored its blob unencrypted can still read it after OS
+encryption becomes available. No new environment variable.
+
+### Security — npm advisories against axios and next
+
+2026-10-01 — new advisories were published against `axios` (middleware,
+through `botbuilder`) and `next` (web-ui), so the required
+`audit (high+critical block)` check failed on every branch again.
+
+- middleware — the `overrides` pin for `axios` moves from 1.18.1 to 1.20.0.
+  The advisories cover prototype-pollution gadgets, header injection,
+  proxy-exclusion and redirect-limit bypasses and two ReDoS paths, all fixed in
+  1.20.0. `npm audit fix` cannot move an override pin, so it is raised by hand.
+- web-ui — `next` and its `@next/*` packages move from 16.3.5 to 16.3.8, and
+  `eslint-config-next` and `@next/eslint-plugin-next` from 16.3.7 to 16.3.8.
+  16.3.6 fixes a critical advisory in `next/og` image responses; the ranges in
+  `package.json` now start at 16.3.8.
+
+Both workspaces are free of high/critical advisories again. The remaining
+moderate findings need breaking upgrades and are left for their own changes.
+
+### Fixed — operator UI response headers, non-root web-ui image, sandbox container limits
+
+2026-09-30 — operator pages were served without a frame policy, nosniff or
+Referrer-Policy, the web-ui image ran `node server.js` as root, and the Docker
+containers behind `execute` and `publish` had no memory, CPU or process
+ceiling, so one runaway command competed with the middleware for the whole
+host. Operator pages now carry `Content-Security-Policy: frame-ancestors
+'none'; object-src 'none'; base-uri 'none'`, `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff` and `Referrer-Policy:
+strict-origin-when-cross-origin`. `web-ui/proxy.ts` sets them per request, so
+the new `UI_FRAME_ANCESTORS` variable works on a published image: it replaces
+`'none'` for deployments that embed operator pages and drops `X-Frame-Options`.
+`/p/*` and `/bot-api/*` stay untouched, because they carry the framed plugin
+UIs and previews whose middleware headers a proxy header would override. The
+web-ui image now runs as `USER node`.
+
+Every sandbox and publish container gets `--memory` and `--memory-swap`
+(512 MiB), `--cpus` (1) and `--pids-limit` (256) from one builder in
+`@omadia/sandbox`. Each value comes from the orchestrator setup fields
+`sandbox_memory_mb`, `sandbox_cpus` and `sandbox_pids_limit`, else from
+`OMADIA_SANDBOX_MEMORY_MB`, `OMADIA_SANDBOX_CPUS` and
+`OMADIA_SANDBOX_PIDS_LIMIT`, else the default. A value only counts inside its
+range (6 to 1048576 MiB, 0.01 to 1024 CPUs, 1 to 4194304 PIDs); `0`, junk
+and anything out of range fall back instead of meaning "unlimited". The
+ranges matter because Docker starts some positive values with no limit and
+no error: `--cpus 0.000001` or `--cpus 1e64` leave the container without a
+CPU quota, and a memory value of 2^43 MiB or more (or `1e+21m`) is recorded
+as no limit on arm64. An existing persistent sandbox gets the current limits
+through `docker update` when it is next re-attached, while a publish container
+created before this change keeps running without them until a new version
+replaces it. Details in `docs/security-architecture.md` §3b and §10h and in
+`docs/upgrading.md`.
+
+### Fixed — pairing discovery answers 503 instead of claiming no sign-in is needed (#293)
+
+2026-09-30 — the pairing descriptor on the operator origin
+(`web-ui/app/pairing-discovery/route.ts`) reads the sign-in providers from
+the middleware. When that read failed (middleware unreachable, an error
+status, a response without a provider list), the handler still returned a
+descriptor, with `auth.mode: 'none'`. The pairing protocol defines `none` as
+"this host accepts unauthenticated connects", so an outage told a client
+that no sign-in was needed. Nothing was bypassed, since the API and the
+canvas WebSocket check the session themselves, but the client was sent down
+the wrong path. Since the route now answers without a session (entry below),
+it reaches exactly the clients that act on that field. The handler now
+answers `503` with `Retry-After: 5` and `{ "code": "pairing.auth_unavailable" }`
+instead, and logs the reason. `none` remains the answer only when the
+middleware returns an empty provider list, which is what the middleware's
+own descriptor says in that state.
+
+The provider read also had no deadline: a middleware that accepted the
+connection and never replied held every discovery request open for minutes.
+It now gives up after 5 seconds and answers the same `503`. Every answer
+carries `Cache-Control: no-store`, because the descriptor echoes the
+caller's host into `wsUrl` and `loginStartUrl`, and `force-dynamic` only
+turns off Next's own caching, not a shared cache in front of it.
+`docs/security-architecture.md` §10g describes the failure path.
+
+### Fixed — pairing discovery on the operator origin no longer bounces to /login (#293)
+
+2026-09-30 — a desktop client that knows only the operator URL could not
+find out where to connect. It fetches the pairing descriptor at
+`/.well-known/omadia-ui` before it has signed in, since the descriptor is
+what tells it where to sign in. `next.config.ts` rewrites that path to the
+`/pairing-discovery` route handler, but the web-ui login gate
+(`web-ui/proxy.ts`) runs before rewrites and had neither path on its
+allowlist, so a client without a session got `302 /login` instead of the
+JSON. On split deployments, where the middleware's own copy of the endpoint
+is not publicly reachable, pairing through the operator URL could not work.
+
+Both paths are now exempt from the gate, by exact match. They are defined
+once in `web-ui/app/_lib/pairingDiscoveryPaths.ts`, which the rewrite imports
+too, so the two cannot drift apart. The descriptor carries nothing
+confidential: the middleware serves a descriptor of the same shape without
+authentication, its provider list is already public through
+`/bot-api/v1/auth/providers`, and the canvas WebSocket its `wsUrl` points at
+authenticates every upgrade. Every other previously gated route keeps
+redirecting to `/login` without a session.
+`web-ui/app/__tests__/proxy.test.ts` pins the allowlist from both sides, and
+`docs/security-architecture.md` §10g documents the gate and its exemptions.
+
+### Fixed — Docker socket proxy moved to an internal control network (#432)
+
+2026-09-30 — with the opt-in self-update overlay, `docker-socket-proxy` sat on
+the shared `omadia` network next to the middleware, web-ui, postgres and every
+overlay sidecar. The proxy has no authentication, and the Engine calls an
+update needs are host-root-equivalent on their own, so who can reach the proxy,
+not its allowlist, decides who controls the host. The updater's bearer token,
+release-tag check and protected-service list guard only the updater's own API,
+and a direct call to the proxy skipped all three. The overlay now declares an
+internal network, `omadia-control`, that only the proxy and the updater join.
+The proxy has left `omadia`, so its name no longer resolves there. The new
+network has no host-side bridge address
+(`com.docker.network.bridge.inhibit_ipv4`) and no IPv6, so the proxy's address
+does not route from `omadia` either, including on runtimes such as OrbStack
+that do not firewall traffic between Docker networks. The updater keeps
+`omadia` for the middleware's calls and its own health gate. All 27 section
+flags of the pinned proxy image are now set explicitly: `VERSION` changes from
+1 to 0, and `EVENTS`, on by image default, is now 0 (the updater calls
+neither). The overlay header no longer claims that a compromised updater cannot
+read secrets or spawn a shell. It documents the proxy as root-equivalent and
+the network as the boundary (`docs/security-architecture.md` §10f).
+
+The updater is now the one route from `omadia` to the proxy, so its health
+gate no longer follows redirects. The probe used fetch's default
+`redirect: 'follow'` on a `/health` answer the middleware writes, and a
+redirect to `http://docker-socket-proxy:2375/…` made the updater send that GET
+onto `omadia-control`; a JSON 2xx from the Engine even passed the gate as an
+unstamped build. A 3xx now counts as not healthy and is noted once in the step
+trail (`sidecars/updater/test/health.test.mjs`).
+
+Existing overlay installs re-run
+`docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d`
+with both files, plus their other overlays. Admin → Update cannot do this for
+them: the updater never replaces the compose files, the proxy or itself.
+Compose creates `omadia-control` and recreates `docker-socket-proxy` and
+`updater`. Data is untouched. If Admin → Update installed the running
+release, the middleware and web-ui restart once, on the same images, because
+they still carry compose's configuration label from the previous release. An
+update running at that moment is aborted. `docs/upgrading.md` lists this step
+in its upgrade notes for this release, and has a check that first proves the
+updater reaches the proxy, then that the middleware and web-ui cannot, by name
+or by address. It ends in `PASS`, `FAIL` or `INCONCLUSIVE` with a matching
+exit code, and an error it cannot classify is inconclusive, never blocked.
+`middleware/test/composeUpdateOverlay.test.ts` guards the layout, and CI
+renders the merged overlay with `docker compose … config --quiet`.
+
+### Fixed — /login and /setup only follow same-origin return paths
+
+2026-09-30 — after a password sign-in, and after the first administrator is
+created, the web UI navigates to the page's `?return=` value; a visitor who is
+already signed in is forwarded to it straight away. Both pages accepted any
+value that started with `/` but not with `//`. Browsers normalise a URL before
+they follow it: they read `\` as `/` and drop TAB, LF and CR, so values shaped
+like `/\host` or `/<TAB>/host` passed that check and still resolved to another
+origin. Both pages now use one helper, `web-ui/app/_lib/returnPath.ts`. The
+value must start with exactly one `/`, contain no control characters and be at
+most 2048 characters long. It is then parsed the way the browser will parse
+it, and only the normalised path, query and fragment are used, once they pass
+the same checks (dot segments would otherwise turn `/..//host` into `//host`).
+Anything else leads to `/`. The helper also sends `?return=/login?…`, `/login/`
+and `/setup` to `/`; the old guard caught only the exact string `/login`, and
+return values that are auth pages or longer than 2048 characters now land on
+`/` as well. The app's own redirects to `/login` never produce such values.
+
+The middleware's own check for the OIDC round trip (`sanitiseReturnPath` in
+`middleware/src/routes/auth.ts`) now also rejects a `\` right after the leading
+`/` and every control character, so the back-compat `GET /api/v1/auth/login`
+no longer copies such a value into the `/login?return=` link it redirects to.
+Its own redirects already stayed on `publicBaseUrl`. The rules are written up
+in `docs/security-architecture.md` §10e.
+
+### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
+
+2026-09-29 — the `audit (high+critical block)` step treated an npm registry
+outage ("audit endpoint returned an error") as a pass, so an unknown audit
+state was indistinguishable from a clean one. It now gets three attempts (two
+retries, 20 s then 40 s backoff), each registry fetch capped at 60 s, and then
+fails. For a confirmed upstream outage an admin can set the repository
+variable `AUDIT_ALLOW_REGISTRY_OUTAGE=true`, which downgrades that to a
+warning until the registry is back (reviewer checklist,
+`docs/security-architecture.md` §11). Every run archives `audit-report.json`
+as a workflow artifact for 30 days; the upload overwrites on a re-run, so
+"Re-run failed jobs" cannot turn the required check red by itself. Dependabot
+gets a `/desktop` npm block — the Electron shell had no dependency updates at
+all, and `electron` is a devDependency that ships as the runtime, so its
+patch/minor releases stay out of the tooling group. Adding `desktop` to the
+audit matrix is tracked in the handoff's §13 and lands with the desktop
+dependency refresh that makes it pass. Local audit working files under
+`docs/audits/` are git-ignored.
+
+### Changed — CI schema gate covers every live SQL migration series (#1239)
+
+2026-09-29 — the `schema (migrations on pgvector)` job listed six migration
+domains and named three as "still uncovered". Two of them are live and are
+now applied and re-applied by the job: `middleware/src/conductor/migrations`
+(11 files, applied at boot through the `_conductor_migrations` ledger) and
+`middleware/packages/harness-memory-postgres/src/migrations` (1 file,
+`_memory_migrations`). The third, `middleware/src/services/graph/migrations`,
+is read by no runtime migrator — its four files are byte-identical copies of
+knowledge-graph-neon 0002/0004/0012/0013 — so applying it would only turn
+files that never run in production green. Instead a new step fails the job if
+that directory holds anything but those four copies, which closes the trap
+that stranded a migration there before (#875). A local reproduction of the
+job (every live file applied twice against a throwaway pgvector 16) exposed
+no latent schema defect. `AGENTS.md` no longer names that directory as an
+example for subsystem migrations. The remaining debts — deleting the inert
+graph directory, the 347 allowed test-tree type errors of the typecheck
+ratchet, and the `nl` prompt-PII floor of 0.84 against the 0.97 release gate —
+are recorded in the handoff's §13 roadmap.
+
+### Fixed — SessionWatcher test no longer races framer-motion's exit animation
+
+2026-09-30 — `SessionWatcher.test.tsx` "drops a warning back to normal when
+another tab renewed" failed intermittently in CI (twice on 2026-09-28 on
+Dependabot branches, twice on 2026-09-30). framer-motion's frame loop captures
+`requestAnimationFrame` when the module loads — jsdom's real one, not the fake
+timers the suite installs — so whether the warning card's exit animation
+finished inside a fake-time `flush()` depended on real wall-clock time.
+Removing the one-second slack made the unchanged test fail deterministically.
+The suite now renders `AnimatePresence`'s children directly, so a card leaves
+the DOM in the same commit that its phase ends; the component is unchanged.
+
+### Security — npm advisories in middleware and web-ui dependencies
+
+2026-09-30 — new advisories were published against packages both workspaces
+resolve, so the required `audit (high+critical block)` check failed on every
+branch. The `overrides` pins for `brace-expansion` (both workspaces,
+5.0.9 → 5.0.12: three high-severity advisories on quadratic and recursive
+expansion) and `fast-uri` (middleware, 3.1.7 → 3.1.8) cannot be moved by
+`npm audit fix`, so they are raised by hand. `npm audit fix` then refreshed,
+within the existing semver ranges:
+
+- middleware — `hono` 4.12.32 → 4.13.11, `multer` 2.3.0 → 2.4.0, `qs`
+  6.15.3 → 6.16.0, `ip-address` 10.3.1 → 10.7.2, `minimatch` 10.2.5 → 10.2.6;
+  the no longer needed `concat-stream`, `buffer-from` and `typedarray` drop out.
+- web-ui — `undici` 7.29.0 → 7.30.0, `typescript-eslint` and every
+  `@typescript-eslint/*` package 8.65.0 → 8.71.0, `eslint-config-next` and
+  `@next/eslint-plugin-next` 16.3.5 → 16.3.7, `@eslint/eslintrc` 3.3.6 → 3.3.7.
+
+The lockfile's stale workspace entry for `packages/plugin-api` (1.13.0) now
+matches its `package.json` (1.19.1). Both workspaces are free of
+high/critical advisories again. The remaining moderate findings (`uuid` via
+`exceljs`/`botbuilder`, `dompurify` via `monaco-editor`) need breaking
+upgrades and are left for their own changes.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
@@ -2202,7 +3803,6 @@ Not reproduced and deliberately left open: the setup-wizard overwrite (#930) is
 plausible from the code and matches the observed timing, but provoking the race
 would have required a build that still started.
 
-
 ---
 
 ## Hand-written notes awaiting a mirror refresh (2026-07-06 to 2026-08-28)
@@ -2337,7 +3937,6 @@ Two consequences worth knowing:
 
 Unchanged and still true: the `claude-cli` provider never constructs the
 `Orchestrator`, so `context_memory` remains inert there (#899).
-
 
 ### Added — team uninstall for provisioned agent identities (#900, part of #860)
 
@@ -2832,7 +4431,6 @@ shallow copy of the turn store.
   an empty box: the panel renders nothing when the listing is empty, and treats a
   pre-feature kernel's 501 exactly like "feature not present". Real load errors stay visible.
 
-
 ### Changed — facilitation panel readability + tick nudge discipline (#330 round 4 follow-up)
 
 - The "Laufende Facilitations" card is structured now: conversation line, goal as title, the
@@ -2842,7 +4440,6 @@ shallow copy of the turn store.
 - The assess tick's prompt carries an explicit nudge discipline: nudge ONLY when the progress
   log has not moved since the previous tick — an actively working group needs no impulse, and
   a second facilitator voice mid-conversation reads as a duplicate bot.
-
 
 ### Added — Admin lens + stop for running facilitations (#330 round 4)
 
@@ -2857,7 +4454,6 @@ shallow copy of the turn store.
   idempotent, refuses non-ephemeral workflows.
 - Conductor page: new "Laufende Facilitations" panel with the overview and a confirmed
   Stop & remove action (en+de).
-
 
 ### Added — channel directory entries can carry resolved member names
 
@@ -2968,7 +4564,6 @@ shallow copy of the turn store.
 - Agent steps now carry a structured verdict: the LAST fenced ```json block of an agent answer becomes `stepResult.data` (mirror of the action-step's `data`; size-capped, tolerant — a missing verdict just keeps the bounded loop going). The bundled `facilitation` pattern is **v2**: hourly assess tick (moderate → wait PT1H → moderate, max 24 rounds) that routes a met DoD to the initiator's confirmation and exhausted rounds to the abort report.
 - `conductorEphemeralRuns.poke(runId)` early-fires a run's open timer await ("the group is done — don't wait out the interval").
 - New deny-by-default kernel service **`conversationSend`** (+ channel-SDK seam `registerConversationSendProvider`, plugin-api **1.9.0**): conversation-addressed proactive send — the Facilitator's stall-nudges post INTO the group, distinct from targetedSend's user-addressed DMs. First-registrant ownership per channel type, named unreachable outcomes, never a throw.
-
 
 ### Added — zero-touch Facilitator setup: agent provisioning, invite-guarded auto-bind, scoped role assignments (#330 C2a)
 
@@ -3111,7 +4706,6 @@ shallow copy of the turn store.
 - `@omadia/plugin-api` **1.3.0** (additive): `SqlAccessor.seedLedger` (optional, so
   a plugin still activates against a 1.2.0 core), `LedgerSeedEntry`,
   `SeedLedgerOptions`, `LedgerSeedReport`.
-
 
 ### Removed — Dev Platform moved to byte5ai/omadia-dev-platform (install via Hub/ZIP) (#470 C10)
 
@@ -3776,7 +5370,6 @@ shallow copy of the turn store.
 - Removed 23 now-dead `await once('listening')` waits that followed a
   converted site. The helper already resolves after `listening`, so a second
   wait could never fire — it hung 12 files to the 120s test timeout.
-
 
 ### Added — the public MCP endpoint serves MRTR to 2026-07-28 clients (#700)
 

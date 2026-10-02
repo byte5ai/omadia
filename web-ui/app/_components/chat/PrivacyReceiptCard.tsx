@@ -5,6 +5,8 @@ import { useTranslations } from 'next-intl';
 import type {
   PrivacyReceipt,
   PromptMaskedSpanInfo,
+  ToolErrorCarrier,
+  ToolErrorEntry,
 } from '../../_lib/chatSessions';
 import { MissReportForm } from './MissReportForm';
 
@@ -29,6 +31,10 @@ interface PrivacyReceiptCardProps {
  * a real personal identity in their own request — `identityValuesOnWire > 0`,
  * i.e. a real name reached the model — the WHOLE card switches to red so the
  * transparency notice is impossible to miss.
+ *
+ * Handled tool errors (`toolErrors`) are accounting, like structured output:
+ * the shield withheld or redacted the error text before the model saw it, so
+ * they never change the palette.
  */
 
 // `useTranslations` is a hook so we cannot call it from the pure helper
@@ -46,6 +52,9 @@ export function PrivacyReceiptCard({
   const bypassed = receipt.bypassedTools ?? [];
   const promptSpans = receipt.maskedPromptSpans ?? [];
   const structured = receipt.structuredPayloads ?? [];
+  const verifier = receipt.verifierEgress;
+  const hasVerifier = verifier !== undefined && verifier.requests > 0;
+  const toolErrors = receipt.toolErrors ?? [];
 
   // Palette precedence: identity-breach (red) wins over bypass-warning
   // (amber) wins over default (emerald). Breach is a transparency notice
@@ -115,6 +124,20 @@ export function PrivacyReceiptCard({
             <Fact
               label={t('factPromptMasked')}
               value={formatMaskedPromptSpans(promptSpans)}
+              labelClass={palette.label}
+            />
+          )}
+          {hasVerifier && (
+            <Fact
+              label={t('factVerifier')}
+              value={
+                verifier.maskedSpans.length > 0
+                  ? t('verifierRequestsMasked', {
+                      count: verifier.requests,
+                      spans: formatMaskedPromptSpans(verifier.maskedSpans),
+                    })
+                  : t('verifierRequests', { count: verifier.requests })
+              }
               labelClass={palette.label}
             />
           )}
@@ -189,6 +212,37 @@ export function PrivacyReceiptCard({
             </ul>
           </div>
         )}
+        {toolErrors.length > 0 && (
+          <div>
+            <div
+              className={[
+                'text-[10px] font-semibold uppercase tracking-wider',
+                palette.label,
+              ].join(' ')}
+            >
+              {t('factToolErrors')}
+            </div>
+            <ul className="mt-1 space-y-0.5">
+              {toolErrors.map((entry, i) => (
+                <li
+                  key={`${entry.toolName}-${entry.carrier}-${String(i)}`}
+                  className="font-mono-num flex flex-wrap items-baseline gap-x-2"
+                >
+                  <span className="font-medium">{entry.toolName}</span>
+                  <span className={palette.label}>
+                    {describeToolErrorCarrier(entry.carrier, t)}
+                  </span>
+                  <span className={['text-[10px]', palette.label].join(' ')}>
+                    {describeToolErrorOutcome(entry, t)}
+                  </span>
+                  <span className={['text-[10px]', palette.label].join(' ')}>
+                    {t('toolErrorBytes', { kb: (entry.bytes / 1024).toFixed(1) })}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <div className={['text-[11px] italic', palette.muted].join(' ')}>
           {t(explainerKey)}
         </div>
@@ -205,6 +259,16 @@ export function PrivacyReceiptCard({
         {structured.length > 0 && (
           <div className={['text-[11px] italic', palette.muted].join(' ')}>
             {t('explainerStructured')}
+          </div>
+        )}
+        {hasVerifier && (
+          <div className={['text-[11px] italic', palette.muted].join(' ')}>
+            {t('explainerVerifier')}
+          </div>
+        )}
+        {toolErrors.length > 0 && (
+          <div className={['text-[11px] italic', palette.muted].join(' ')}>
+            {t('explainerToolErrors')}
           </div>
         )}
         {/* #760 — the catch basin's intake: report a value the shield missed. */}
@@ -284,6 +348,14 @@ export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
   if (structured.length > 0) {
     parts.push(t('summaryStructured', { count: structured.length }));
   }
+  const verifierRequests = r.verifierEgress?.requests ?? 0;
+  if (verifierRequests > 0) {
+    parts.push(t('summaryVerifier', { count: verifierRequests }));
+  }
+  const toolErrors = r.toolErrors ?? [];
+  if (toolErrors.length > 0) {
+    parts.push(t('summaryToolErrors', { count: toolErrors.length }));
+  }
   const onWire = r.identityValuesOnWire ?? 0;
   if (onWire > 0) {
     // Lead with the breach clause so it is the first thing read.
@@ -312,6 +384,38 @@ export function formatMaskedPromptSpans(
     .map(([type, count]) => `${String(count)} × ${type}`)
     .join(', ');
   return `${String(spans.length)} (${breakdown})`;
+}
+
+const TOOL_ERROR_CARRIER_KEYS: Readonly<Record<ToolErrorCarrier, string>> = {
+  thrown: 'toolErrorCarrierThrown',
+  returned: 'toolErrorCarrierReturned',
+  mcp_auth_prompt: 'toolErrorCarrierMcpAuthPrompt',
+};
+
+/** Label for how a tool error arrived. An unknown value from a newer backend
+ *  renders verbatim — it is a PII-free enum token, not text. */
+export function describeToolErrorCarrier(carrier: ToolErrorCarrier, t: TFn): string {
+  const key = TOOL_ERROR_CARRIER_KEYS[carrier] as string | undefined;
+  return key === undefined ? carrier : t(key);
+}
+
+/** What reached the model: withheld, redacted (with the masked span types),
+ *  checked with nothing to mask, or passed unchanged. Pure, for unit tests. */
+export function describeToolErrorOutcome(entry: ToolErrorEntry, t: TFn): string {
+  switch (entry.outcome) {
+    case 'withheld':
+      return t('toolErrorWithheld');
+    case 'redacted': {
+      const spans = entry.redactedSpans ?? [];
+      return spans.length > 0
+        ? t('toolErrorRedacted', { spans: formatMaskedPromptSpans(spans) })
+        : t('toolErrorChecked');
+    }
+    case 'passed':
+      return t('toolErrorPassed');
+    default:
+      return String(entry.outcome);
+  }
 }
 
 // ---------------------------------------------------------------------------

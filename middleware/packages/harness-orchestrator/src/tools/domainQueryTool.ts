@@ -21,6 +21,10 @@ export interface AskObserver {
     postcondition?: {
       issues: readonly string[];
     };
+    /** The call did not run in this pass: a verifier re-entry handed back
+     *  the first run's result (`toolReplayLedger.ts`). RunTraceCollector
+     *  copies it onto the RunToolCall. */
+    replayed?: boolean;
   }): void;
   onIterationPhase?(ev: {
     iteration: number;
@@ -121,6 +125,7 @@ export interface Askable {
  * the Nudge-Pipeline's multi-domain trigger can count distinct domains.
  */
 import type { ToolPIIField, WriteCapability } from '@omadia/plugin-api';
+import { toolErrorFromException } from '@omadia/plugin-api';
 
 export interface DomainTool {
   name: string;
@@ -252,9 +257,18 @@ export function createDomainTool(options: DomainToolOptions): DomainTool {
         return answer;
       } catch (err) {
         const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`${logTag} ${options.name} → ERROR (${elapsed}s): ${message}`);
-        return `Error while querying ${options.name}: ${message}`;
+        // An exception out of `ask()` (a provider error, an empty answer, the
+        // iteration limit) reaches the parent's model as the data-free
+        // withheld notice, never as its message: the parent hands this text
+        // on unchanged when the sub-agent already interned a dataset
+        // (`subAgentResultV4` concatenates it). The notice keeps the `Error:`
+        // prefix, so the parent flags it `is_error`. Full error in the log.
+        return toolErrorFromException(options.name, err, {
+          site: `domain:${options.domain}`,
+          log: (line, e) => {
+            console.error(`${logTag} ${options.name} → ERROR (${elapsed}s) ${line}`, e);
+          },
+        });
       }
     },
   };

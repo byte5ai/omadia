@@ -254,11 +254,17 @@ That makes it advisory, and the guarantee is narrower than the name suggests:
   no dedupe state.
 - It is therefore a **retry-safety mitigation, not distributed exactly-once**.
 
-What you can rely on: retrying the *same* call with the *same* key against the
-*same* instance inside the window will not execute the tool twice. What you
-cannot rely on: that a write happened at most once globally. If at-most-once
-matters for your use case, make the underlying operation idempotent on your side
-(natural keys, upserts, reconciliation) and treat this field as a bonus.
+What you can rely on: once a call has succeeded, retrying it with the *same*
+idempotency key and API key against the *same* instance inside the window
+returns the first result without running the tool again, as long as that
+instance still holds the record. An instance keeps about 1,000 records and
+evicts the oldest first. A retry that arrives while the first call is still
+running joins that call instead of starting another, but only within 15 minutes
+of the first call's start. A call that failed leaves no record, so a retry after
+a failure runs the tool again. What you cannot rely on: that a write happened at
+most once globally. If at-most-once matters for your use case, make the
+underlying operation idempotent on your side (natural keys, upserts,
+reconciliation) and treat this field as a bonus.
 
 ## Audit
 

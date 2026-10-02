@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 
 import {
   searchToolSpec,
@@ -460,5 +460,34 @@ describe('web_search tool spec + handler', () => {
     const handler = createWebSearchToolHandler(svc);
     const r = await handler({ query: 'foo' });
     assert.match(r, /^Error: web_search authentication failed/);
+  });
+
+  it('withholds the text of an exception the plugin did not author', async () => {
+    const EMAIL = 'erika.mustermann@example.com';
+    const provider = {
+      id: 'tavily' as const,
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async search(): Promise<never> {
+        throw new TypeError(`cannot read 'hits' of response for ${EMAIL}`);
+      },
+    };
+    const cache = new TtlLruCache<SearchResponse>(10, 1000);
+    const svc = createWebSearchService({
+      provider,
+      cache,
+      defaultTopK: 5,
+      searchTtlMs: 1000,
+    });
+    const handler = createWebSearchToolHandler(svc);
+    const errorLog = mock.method(console, 'error', () => {});
+    let r: string;
+    try {
+      r = await handler({ query: 'foo' });
+    } finally {
+      errorLog.mock.restore();
+    }
+    assert.equal(r.includes(EMAIL), false, `the exception text reached the model: ${r}`);
+    assert.match(r, /^Error: tool `web_search` failed with TypeError \[ref err_[0-9a-f]{12}\]/);
+    assert.equal(errorLog.mock.callCount(), 1, 'the full error is logged');
   });
 });

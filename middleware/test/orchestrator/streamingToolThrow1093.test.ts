@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import type {
@@ -8,6 +8,7 @@ import type {
   LlmStreamEvent,
 } from '@omadia/llm-provider';
 import type { ChatStreamEvent } from '@omadia/channel-sdk';
+import type { PrivacyGuardService } from '@omadia/plugin-api';
 import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
 
 /** A scripted stream: the ordered neutral `LlmStreamEvent`s the fake provider
@@ -174,9 +175,11 @@ describe('Orchestrator streaming dispatch — a throwing tool (#1093)', () => {
     assert.ok(result && result.type === 'tool_result', 'a tool_result must be yielded');
     assert.equal(result.id, 'use-throw');
     assert.equal(result.isError, true, 'a throwing tool is an errored tool call');
+    // The SHAPE is the contract here. Whether the exception text itself is in
+    // the output depends on the privacy provider: without one (this setup) it
+    // flows as every tool result does; with one it is withheld — see the next
+    // describe block and `chatPathToolErrorText.test.ts`.
     assert.match(result.output, /^Error: /);
-    // The model must be able to read WHAT failed, not just that something did.
-    assert.match(result.output, /invalid input syntax for type uuid/);
 
     assert.equal(
       events.filter((e) => e.type === 'error').length,
@@ -230,6 +233,74 @@ describe('Orchestrator streaming dispatch — a throwing tool (#1093)', () => {
     assert.equal(thrown.isError, true);
     assert.equal(ok.isError, false);
     assert.equal(ok.output, 'ok-output');
+    assert.ok(events.some((e) => e.type === 'done'), 'the turn must finish');
+  });
+
+  it('under a privacy provider the settled slot carries the withheld notice, not the driver text', async () => {
+    const registry = new NativeToolRegistry();
+    registry.register('throwing_tool', {
+      handler: (): Promise<string> => {
+        throw Object.assign(new Error('invalid input syntax for type uuid: "ds_0000"'), {
+          name: 'DatabaseError',
+          code: '22P02',
+        });
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('throwing_tool') as any,
+    });
+    const service = {
+      async internToolResultV4(request: { toolName: string }) {
+        return { digestText: `«dataset:${request.toolName}»`, datasetId: 'ds-x' };
+      },
+      async recordBypassedTool() {},
+      async runV4Tool() {
+        return { resultText: '' };
+      },
+      async subAgentResultV4() {
+        return { resultText: '' };
+      },
+      async takeRenderedAnswerV4() {
+        return undefined;
+      },
+      v4ToolSpecs() {
+        return [];
+      },
+      async finalizeTurn() {
+        return undefined;
+      },
+    } as unknown as PrivacyGuardService;
+    const orchestrator = new Orchestrator({
+      provider: fakeStreamProvider([
+        streamWithTools([{ id: 'use-throw', name: 'throwing_tool', input: {} }]),
+        finalTextStream,
+      ]),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      privacyGuard: () => service,
+    });
+
+    const errorLog = mock.method(console, 'error', () => {});
+    const events: ChatStreamEvent[] = [];
+    try {
+      for await (const ev of orchestrator.chatStream({ userMessage: 'go' })) {
+        events.push(ev);
+      }
+    } finally {
+      errorLog.mock.restore();
+    }
+
+    const result = events.find((e) => e.type === 'tool_result');
+    assert.ok(result && result.type === 'tool_result');
+    assert.equal(result.isError, true);
+    assert.equal(result.output.includes('invalid input syntax'), false);
+    assert.match(
+      result.output,
+      /^Error: tool `throwing_tool` failed with DatabaseError \(code 22P02\) \[ref /,
+      'the class name and the SQLSTATE still tell the model what kind of failure it was',
+    );
     assert.ok(events.some((e) => e.type === 'done'), 'the turn must finish');
   });
 });
