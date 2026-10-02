@@ -1,6 +1,5 @@
 import { inspect } from 'node:util';
 
-import { newToolErrorRef, toolErrorFromException } from '@omadia/plugin-api';
 import { z } from 'zod';
 import {
   ALLOWED_DIAGRAM_KINDS,
@@ -13,6 +12,12 @@ import {
   type RenderOutput,
 } from './types.js';
 import type { DiagramService } from './diagramService.js';
+import {
+  compatToolErrorFromException,
+  hostToolErrorHelpers,
+  legacyHostToolError,
+  type ToolErrorHelpers,
+} from './toolErrorCompat.js';
 
 /**
  * Subset of the kernel MemoryStore interface the DiagramTool relies on for
@@ -119,6 +124,8 @@ export class DiagramTool {
     private readonly log: (msg: string) => void = (msg) => {
       console.error(msg);
     },
+    /** The host's tool-error helpers; `null` on a host before plugin-api 1.20.0. */
+    private readonly toolErrorHelpers: ToolErrorHelpers | null = hostToolErrorHelpers,
   ) {}
 
   async handle(input: unknown): Promise<string> {
@@ -178,13 +185,18 @@ export class DiagramTool {
       }
       // An exception this tool did not author (storage, memory lookup, a
       // bug): its text is withheld from the model and logged in full.
-      return toolErrorFromException(DIAGRAM_TOOL_NAME, err, {
+      return compatToolErrorFromException(this.toolErrorHelpers, DIAGRAM_TOOL_NAME, err, {
         site: 'diagrams',
         log: (line, e) => {
-          this.log(`${line} ${formatForLog(e)}`);
+          this.logError(line, e);
         },
       });
     }
+  }
+
+  /** A log line followed by the full error, as {@link formatForLog} prints it. */
+  private logError(line: string, err: unknown): void {
+    this.log(`${line} ${formatForLog(err)}`);
   }
 
   /**
@@ -194,10 +206,20 @@ export class DiagramTool {
    * notice's ref: `body` quotes the diagram source back (and the source can
    * carry values restored for this call), `cause` is a transport exception.
    * The message is not echoed either — a KrokiClient implemented elsewhere
-   * may still fold foreign text into it.
+   * may still fold foreign text into it. On a host without the tool-error
+   * helpers (plugin-api < 1.20.0) the answer is the fixed
+   * {@link legacyHostToolError} text instead.
    */
   private rendererFailure(kind: DiagramKind, err: DiagramRenderError): string {
-    const ref = newToolErrorRef();
+    if (this.toolErrorHelpers === null) {
+      return legacyHostToolError(DIAGRAM_TOOL_NAME, err, {
+        site: 'diagrams',
+        log: (line, e) => {
+          this.logError(line, e);
+        },
+      });
+    }
+    const ref = this.toolErrorHelpers.newToolErrorRef();
     this.log(
       `[diagrams:${DIAGRAM_TOOL_NAME}] renderer failed (ref=${ref}) — error text withheld from the model: ${formatForLog(err)}`,
     );

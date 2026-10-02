@@ -1,6 +1,11 @@
 import type { NativeToolSpec } from '@omadia/plugin-api';
-import { toolErrorFromException } from '@omadia/plugin-api';
 import { z } from 'zod';
+
+import {
+  compatToolErrorFromException,
+  hostToolErrorHelpers,
+  type ToolErrorHelpers,
+} from './toolErrorCompat.js';
 
 /**
  * `discussion_start` — the chat-side entry point to an agent topic discussion.
@@ -140,7 +145,11 @@ const NOT_AVAILABLE =
 export function createDiscussionStartHandler(deps: {
   resolveDiscussions: ResolveDiscussions;
   log?: (msg: string) => void;
+  /** Default: the host's. `null` = a host before plugin-api 1.20.0. */
+  toolErrorHelpers?: ToolErrorHelpers | null;
 }): (raw: unknown) => Promise<string> {
+  const toolErrorHelpers =
+    deps.toolErrorHelpers === undefined ? hostToolErrorHelpers : deps.toolErrorHelpers;
   return async (raw: unknown): Promise<string> => {
     const parsed = DiscussionStartInputSchema.safeParse(raw);
     if (!parsed.success) {
@@ -189,7 +198,9 @@ export function createDiscussionStartHandler(deps: {
       // Anything but a kernel refusal (a database or runtime failure) is
       // exception text nobody sanitized: withheld from the model, logged.
       if (!isKernelRefusal(err)) {
-        return toolErrorFromException(DISCUSSION_START_TOOL_NAME, err, { site: 'discussion' });
+        return compatToolErrorFromException(toolErrorHelpers, DISCUSSION_START_TOOL_NAME, err, {
+          site: 'discussion',
+        });
       }
       // Every refusal from the kernel is a named, explainable outcome — hand it
       // to the model as prose so it can tell the person WHY, rather than
@@ -213,7 +224,11 @@ export function createDiscussionStartHandler(deps: {
 export function createDiscussionPartnersHandler(deps: {
   resolveDiscussions: ResolveDiscussions;
   log?: (msg: string) => void;
+  /** Default: the host's. `null` = a host before plugin-api 1.20.0. */
+  toolErrorHelpers?: ToolErrorHelpers | null;
 }): (raw: unknown) => Promise<string> {
+  const toolErrorHelpers =
+    deps.toolErrorHelpers === undefined ? hostToolErrorHelpers : deps.toolErrorHelpers;
   return async (): Promise<string> => {
     const discussions = deps.resolveDiscussions();
     if (!discussions) return NOT_AVAILABLE;
@@ -229,7 +244,9 @@ export function createDiscussionPartnersHandler(deps: {
       });
     } catch (err) {
       if (isKernelRefusal(err)) return `Error: ${err.message}`;
-      return toolErrorFromException(DISCUSSION_PARTNERS_TOOL_NAME, err, { site: 'discussion' });
+      return compatToolErrorFromException(toolErrorHelpers, DISCUSSION_PARTNERS_TOOL_NAME, err, {
+        site: 'discussion',
+      });
     }
   };
 }
