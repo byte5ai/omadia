@@ -4076,6 +4076,13 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   **Nächster Electron-Major:** Dispatch-Build mit Wegwerf-Tag, dann `desktop-upgrade-smoke.yml` mit
   dessen Run-ID (`desktop/README.md` § Install and upgrade smoke); nie auf einer produktiven
   Installation.
+- **Beenden während des ersten UI-Ladens meldet einen Boot-Fehler.** Beendet man die App, während
+  das erste `loadURL` der Web-UI noch läuft, lehnt `loadURL` ab, und `bootExistingInstall` reicht das
+  an `presentBootFailure` weiter: `[main] boot failed: ERR_FAILED (-2) loading …`, im ungünstigen
+  Fall mit Fehlerdialog im Shutdown, dessen Standard-Knopf „Re-run setup“ ist. Gesehen im
+  Install-Smoke 36989068863 (Windows-Upgrade, Versuch 1); unabhängig von der Electron-Version.
+  `presentBootFailure` sollte bei gesetztem `quitting` nur loggen und zurückkehren. Der Smoke wartet
+  seither auf das erste fertige Laden, bevor er beendet.
 - **Synchrones `safeStorage` endet mit Electron 46.** Electron 45 markiert
   `safeStorage.isEncryptionAvailable`/`encryptString`/`decryptString` als deprecated, Electron 46
   entfernt sie zusammen mit Chromiums synchronem OSCrypt-Backend (Electron

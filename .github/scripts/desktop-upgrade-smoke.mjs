@@ -275,6 +275,9 @@ async function drive(app, ctx, phase, log, result) {
   const { label, firstRun, blockUpdates, before } = phase;
   if (firstRun) result.recovery = await completeWizard(app, ctx, label);
   const page = await waitForUi(app, log, !firstRun);
+  // A user works with a loaded page. Quitting while the first load still runs
+  // makes the app report that aborted load as a boot failure (handoff §13).
+  await page.waitForLoadState('load', { timeout: BOOT_TIMEOUT_MS });
   await checkReady(log, label, result.launchedAt);
   await pageShot(page, ctx, `${label}-2-ui`);
   screenshotScreen(ctx.platform, path.join(ctx.out, 'screens', `${label}-3-screen.png`));
