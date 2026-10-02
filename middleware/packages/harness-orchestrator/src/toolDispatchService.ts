@@ -38,9 +38,9 @@ import type { ToolIdempotencyStore } from './toolIdempotency.js';
  * cross the privacy boundary.
  *
  *  - `'tool'`       — produced by a tool handler: its return value, or — only
- *                     where nothing is withheld (no privacy provider, an
- *                     intern-exempt self tool) — the message of the exception
- *                     it threw. UNTRUSTED. It carries whatever the handler (and
+ *                     where nothing is withheld (no privacy provider) — the
+ *                     message of the exception it threw. UNTRUSTED. It carries
+ *                     whatever the handler (and
  *                     the ORM/driver beneath it) chose to put in it, so it must
  *                     be masked before it reaches an untrusted caller.
  *  - `'dispatcher'` — produced by this service itself: its own guards (unknown
@@ -578,11 +578,12 @@ export class ToolDispatchService {
    *    plugin's DECLARED output shape, not about arbitrary exception text, and a
    *    `recordBypassedTool` receipt would mis-describe what happened.
    *
-   * Parity: with no privacy provider installed, or for an intern-exempt self
-   * tool (the agent's own operational state), the raw message is returned as
-   * before, as `origin: 'tool'` content. The public endpoint refuses to call
-   * without a provider (`requirePrivacyMasking`) and never serves an
-   * intern-exempt tool (`isPubliclyServableTool`).
+   * Parity: with no privacy provider installed the raw message is returned as
+   * before, as `origin: 'tool'` content. Intern-exempt self tools get no such
+   * pass, because their thrown message can quote what they failed on. The
+   * public endpoint refuses to call without a provider
+   * (`requirePrivacyMasking`) and never serves an intern-exempt tool
+   * (`isPubliclyServableTool`).
    */
   private async thrownResult(
     name: string,

@@ -126,12 +126,16 @@ function registryWith(name: string): NativeToolRegistry {
 }
 
 let warnLines: string[] = [];
+let errorLines: string[] = [];
 beforeEach(() => {
   warnLines = [];
+  errorLines = [];
   mock.method(console, 'warn', (...args: unknown[]) => {
     warnLines.push(format(...args));
   });
-  mock.method(console, 'error', () => {});
+  mock.method(console, 'error', (...args: unknown[]) => {
+    errorLines.push(format(...args));
+  });
 });
 afterEach(() => {
   mock.restoreAll();
@@ -140,7 +144,7 @@ afterEach(() => {
 function assertClassOnly(): void {
   const lines = warnLines.filter((l) => l.includes('InternError'));
   assert.ok(lines.length > 0, `no interning-failure warning: ${JSON.stringify(warnLines)}`);
-  for (const line of warnLines) {
+  for (const line of [...warnLines, ...errorLines]) {
     assert.equal(line.includes(EMAIL), false, `the provider error message reached the log: ${line}`);
   }
   assert.ok(lines.some((l) => l.includes('(code E_INTERN)')), 'the sanitised code is logged');

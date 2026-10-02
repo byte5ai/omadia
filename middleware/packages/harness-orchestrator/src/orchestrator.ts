@@ -6199,8 +6199,8 @@ export class Orchestrator {
           } else {
             // Unreachable by construction — `dispatchTool` never rejects; it
             // resolves a handler exception itself (`withholdThrownToolError`:
-            // the withheld notice under a privacy handle for a tool that is
-            // not intern-exempt). Kept as a backstop that can never put an
+            // the withheld notice under a privacy handle, intern-exempt tools
+            // included). Kept as a backstop that can never put an
             // exception MESSAGE on the wire: class name, sanitised code and
             // the log ref only.
             const ref = toolErrorRef();
@@ -8022,7 +8022,7 @@ export class Orchestrator {
     //
     // A handler exception no longer rejects at all: `dispatchTool` resolves it
     // through `withholdThrownToolError` (`toolErrorRedaction.ts`; the withheld
-    // notice under a privacy handle for a tool that is not intern-exempt), so
+    // notice under a privacy handle, intern-exempt tools included), so
     // this catch is a backstop for a throw outside that choke point. The
     // backstop never puts the exception MESSAGE on the wire — the text
     // streamed as the `tool_result` event, sent to the provider and persisted
@@ -8136,11 +8136,11 @@ export class Orchestrator {
    * exception — or any other throw beneath this point — resolves through
    * `withholdThrownToolError` (`toolErrorRedaction.ts`), so no caller folds an
    * exception MESSAGE into a tool result on its own. Under the turn's privacy
-   * handle, for a tool that is not intern-exempt, that is the withheld
-   * notice: the message is logged with the turn's correlation ref and
-   * receipted, and the model sees the class name, a sanitised code and that
-   * ref. Without a handle, or for an intern-exempt tool, the model gets
-   * `Error: <message>` (security-architecture §6c residuals, §6f).
+   * handle, intern-exempt tools included, that is the withheld notice: the
+   * message is logged with the turn's correlation ref and receipted, and the
+   * model sees the class name, a sanitised code and that ref. Without a
+   * handle the model gets `Error: <message>` (security-architecture §6c
+   * residuals, §6f).
    */
   private async dispatchTool(
     name: string,
@@ -8594,9 +8594,10 @@ export class Orchestrator {
           });
           return bridged.resultText;
         } catch (err) {
+          // The provider was handed the sub-agent's narration, which its error
+          // can quote: class and code only in the log.
           console.warn(
-            `[orchestrator.dispatchTool:${name}] privacy.subAgentResultV4 threw — interning prose instead:`,
-            err,
+            `[orchestrator.dispatchTool:${name}] privacy.subAgentResultV4 threw ${errorClassForLog(err)} — interning prose instead`,
           );
         }
       }
