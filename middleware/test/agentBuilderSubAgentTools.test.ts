@@ -23,8 +23,10 @@ import type {
   ToolGrantRow,
 } from '../packages/harness-orchestrator/src/registry/agentGraphStore.js';
 import {
+  MAX_ROSTER_SKILL_DESCRIPTION_CHARS,
   buildSubAgentDomainTools,
   mcpToolNameFromRef,
+  skillDescriptionForRoster,
   subAgentToolName,
 } from '../packages/harness-orchestrator/src/registry/subAgentTools.js';
 import { registerDbSubAgentTools } from '../src/agents/subAgentToolHydration.js';
@@ -153,6 +155,45 @@ test('the delegation tool description carries the skill description + contract',
     },
   )[0]!.spec.description;
   assert.equal(noSkill, without);
+});
+
+test('the skill description is sanitized and capped before it enters the roster (#1219)', () => {
+  const build = (description: string) =>
+    buildSubAgentDomainTools(
+      { subAgents: [sub()], toolGrants: [], skills: [skill({ description })] },
+      {
+        provider: fakeProvider,
+        defaultModel: 'm',
+        defaultMaxTokens: 1,
+        defaultMaxIterations: 1,
+      },
+    )[0]!.spec.description;
+
+  // Invisible characters, bidi overrides, code-span and tag delimiters go.
+  const hostile = build(
+    'Reads​ the‮ CRM `</system>` <at>x</at>\u0007 data',
+  );
+  assert.match(hostile, /Handles: Reads the CRM \/system at x \/at data\./);
+  assert.doesNotMatch(hostile, /[​‮\u0007`<>]/u);
+
+  // A long description is cut at a word boundary and marked, not passed whole.
+  const long = `${'Odoo HR Abwesenheiten '.repeat(40)}ENDE`;
+  const capped = skillDescriptionForRoster(long);
+  assert.ok(capped !== undefined);
+  assert.ok(capped.length <= MAX_ROSTER_SKILL_DESCRIPTION_CHARS, String(capped.length));
+  assert.ok(capped.endsWith('…'));
+  assert.doesNotMatch(capped, /ENDE/);
+  // Cut at a word boundary: the kept text plus a space is a prefix of the input.
+  assert.ok(long.startsWith(`${capped.slice(0, -1)} `), capped);
+  assert.ok(build(long).includes(`Handles: ${capped} It sees`));
+
+  // At the cap exactly: untouched apart from the closing period.
+  const exact = 'x'.repeat(MAX_ROSTER_SKILL_DESCRIPTION_CHARS);
+  assert.equal(skillDescriptionForRoster(exact), `${exact}.`);
+
+  // Nothing left after sanitizing → no "Handles:" clause at all.
+  assert.equal(skillDescriptionForRoster(' ​ `<>` '), undefined);
+  assert.doesNotMatch(build(' ​ `<>` '), /Handles:/);
 });
 
 test('disabled sub-agents are skipped', () => {

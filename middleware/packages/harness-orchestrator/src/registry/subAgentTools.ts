@@ -153,23 +153,58 @@ export function buildSubAgentDomainTools(
  * Stays on a single line for that reason, and states the delegation contract —
  * the sub-agent starts from an empty conversation and answers exactly once, so
  * a question that leans on context the parent has will come back wrong.
+ *
+ * The skill description is operator- or import-supplied text that lands in
+ * the PARENT's system prompt and tool list, so it goes through
+ * {@link skillDescriptionForRoster} first (#1219 review). The risk scan and
+ * the skill's content hash cover it as well (`scanSkillForRisks`,
+ * `computeSkillHash`).
  */
 export function subAgentToolDescription(
   name: string,
   skillDescription?: string | null,
 ): string {
-  const collapsed = skillDescription?.replace(/\s+/g, ' ').trim();
-  const scope = collapsed
-    ? /[.!?]$/.test(collapsed)
-      ? collapsed
-      : `${collapsed}.`
-    : undefined;
+  const scope = skillDescriptionForRoster(skillDescription);
   return [
     `Delegate a focused question to the "${name}" sub-agent.`,
     ...(scope ? [`Handles: ${scope}`] : []),
     'It sees none of this conversation and cannot ask follow-up questions, so' +
       ' send one self-contained question and expect a single answer back.',
   ].join(' ');
+}
+
+/** Upper bound for a skill description in the roster: a routing hint, not a
+ *  second system prompt smuggled into the parent's. */
+export const MAX_ROSTER_SKILL_DESCRIPTION_CHARS = 300;
+
+/**
+ * Control and invisible format characters (zero-width, bidi overrides, BOM),
+ * plus the characters that could break the roster line's framing: backticks
+ * (the tool name sits in a code span) and angle brackets (tag-shaped text).
+ */
+const UNSAFE_ROSTER_CHARS = /[\p{Cc}\p{Cf}`<>]/gu;
+
+/**
+ * A skill description as it may enter the parent's roster: unsafe characters
+ * replaced, whitespace collapsed to one line, capped at
+ * {@link MAX_ROSTER_SKILL_DESCRIPTION_CHARS} (cut at a word boundary, marked
+ * with `…`) and ending in punctuation. Undefined when nothing is left.
+ */
+export function skillDescriptionForRoster(
+  description?: string | null,
+): string | undefined {
+  if (typeof description !== 'string') return undefined;
+  const plain = description
+    .replace(UNSAFE_ROSTER_CHARS, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (plain.length === 0) return undefined;
+  if (plain.length > MAX_ROSTER_SKILL_DESCRIPTION_CHARS) {
+    const cut = plain.slice(0, MAX_ROSTER_SKILL_DESCRIPTION_CHARS - 1);
+    const atWord = cut.replace(/\s+\S*$/, '');
+    return `${(atWord.length > 0 ? atWord : cut).trimEnd()}…`;
+  }
+  return /[.!?]$/.test(plain) ? plain : `${plain}.`;
 }
 
 /**

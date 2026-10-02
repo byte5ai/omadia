@@ -1677,7 +1677,14 @@ is the routing text in the system prompt's Fach-Agenten roster, and
 `SkillRow.description` sat unread. It now carries the skill's own description
 plus the delegation contract (no conversation context, no follow-up questions,
 one answer), collapsed to a single line because the roster renders one
-`- name: description` entry per tool.
+`- name: description` entry per tool. Because that text now reaches the
+parent's system prompt and tool list, it is sanitized on the way in (control,
+invisible and bidi characters, backticks and angle brackets dropped) and capped
+at 300 characters; `scanSkillForRisks` scans it with the body, and
+`computeSkillHash` covers it whenever it differs from the frontmatter's own
+`description`. A description-only edit therefore gets a new content hash and a
+fresh verdict instead of the cached one, while an imported skill — whose
+description is its frontmatter's — keeps its hash.
 
 In `agent-reference-maximum`, three tool descriptions opened with an internal
 ticket ID and the word "Demo" (`OB-29-4`/`-3`/`-1`), and one closed by naming
