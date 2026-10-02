@@ -151,6 +151,7 @@ import type {
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
+  TurnMaskedView,
   TurnReceiptStore,
 } from '@omadia/plugin-api';
 import {
@@ -1416,6 +1417,29 @@ function recordedWireView(): TurnWireView | undefined {
   const box = turnContext.current()?.wireView;
   if (box?.userMessage === undefined || box.answer === undefined) return undefined;
   return { userMessage: box.userMessage, answer: box.answer };
+}
+
+/**
+ * The masked view of a session-log row (`SessionLogEntry.maskedView`) for a
+ * turn under a privacy handle: the row's texts as the turn's model calls
+ * carried them — the prompt as the model received it, the answer as the
+ * model wrote it — the same texts the fact extraction gets. The capture
+ * filter's significance scorer sends these to its provider instead of the
+ * row, whose answer holds restored real values. Nothing without a handle.
+ */
+function maskedRowView(
+  privacy: PrivacyTurnHandle | undefined,
+  wireUserMessage: string,
+  wireAnswer: string,
+): { readonly maskedView?: TurnMaskedView } {
+  return privacy === undefined
+    ? {}
+    : { maskedView: { userMessage: wireUserMessage, assistantAnswer: wireAnswer } };
+}
+
+/** What the session log records for a turn that ended on a choice card. */
+function choiceCardLogLine(answer: string, question: string): string {
+  return answer.length > 0 ? `${answer}\n\n[Rückfrage] ${question}` : `[Rückfrage] ${question}`;
 }
 
 /**
@@ -4643,35 +4667,45 @@ export class Orchestrator {
   }
 
   /**
-   * #361 — the direct-line fact-extraction prompt: both texts masked through
-   * the turn's prompt map (a direct-line turn masked nothing up to here),
-   * with the restorer snapshot that turns extracted facts back into real
-   * values. Undefined without a fact extractor, or when masking is `blocked`
-   * — extraction is then skipped (audited) rather than sent unmasked; the
+   * #361 — a direct-line turn's texts for its LLM-bound extra passes (fact
+   * extraction, the capture filter's scorer), masked through the turn's map
+   * (a direct-line turn masked nothing up to here): the user message like the
+   * turn's prompt, the restored specialist answer like a replayed answer —
+   * whatever `mask_user_prompt` says, since it carries real values. Without a
+   * handle, the texts as they are. Undefined when masking is `blocked`: both
+   * passes are then skipped (audited) rather than sent unmasked; the
    * user-visible answer is unaffected.
    */
-  private async directLineFacts(
+  private async directLineWireTexts(
     privacy: PrivacyTurnHandle | undefined,
     userMessage: string,
     answer: string,
-  ): Promise<TurnFacts | undefined> {
-    if (!this.factExtractor) return undefined;
+  ): Promise<TurnMaskedView | undefined> {
     try {
-      const maskedUserMessage = await maskPromptForWire(privacy, userMessage);
-      const maskedAnswer = await maskPromptForWire(privacy, answer);
-      const restoreFacts = privacy?.snapshotPromptRestorer();
       return {
-        userMessage: maskedUserMessage,
-        assistantAnswer: maskedAnswer,
-        ...(restoreFacts ? { restoreFacts } : {}),
+        userMessage: await maskPromptForWire(privacy, userMessage),
+        assistantAnswer: await maskReplayedAnswerForWire(privacy, answer),
       };
     } catch (err) {
       if (!(err instanceof PromptMaskBlockedError)) throw err;
       console.error(
-        `[orchestrator] direct-line fact extraction skipped — prompt masking blocked: ${err.message}`,
+        `[orchestrator] direct-line fact extraction and scoring skipped — prompt masking blocked: ${err.message}`,
       );
       return undefined;
     }
+  }
+
+  /** #361 — the direct-line fact-extraction prompt over the turn's masked
+   *  texts ({@link directLineWireTexts}), with the restorer snapshot that turns
+   *  extracted facts back into real values. Undefined without a fact
+   *  extractor, or when masking was `blocked`. */
+  private directLineFacts(
+    privacy: PrivacyTurnHandle | undefined,
+    wire: TurnMaskedView | undefined,
+  ): TurnFacts | undefined {
+    if (!this.factExtractor || wire === undefined) return undefined;
+    const restoreFacts = privacy?.snapshotPromptRestorer();
+    return { ...wire, ...(restoreFacts ? { restoreFacts } : {}) };
   }
 
   /**
@@ -5235,6 +5269,10 @@ export class Orchestrator {
     // relay issues no orchestrator-level tool calls of its own).
     let persistedTurnId: string | undefined;
     if (this.sessionLogger && input.sessionScope) {
+      // Masked now: the prompt map belongs to this pass and ends with it. The
+      // fact extraction and the row's masked view (the capture filter's
+      // scorer) get the same texts; a blocked mask leaves both empty-handed.
+      const wire = await this.directLineWireTexts(privacyForPrompt, input.userMessage, answer);
       const entry = {
         scope: input.sessionScope,
         userMessage: input.userMessage,
@@ -5243,22 +5281,19 @@ export class Orchestrator {
         iterations: 1,
         ...(input.userId ? { userId: input.userId } : {}),
         runTrace,
+        ...maskedRowView(privacyForPrompt, wire?.userMessage ?? '', wire?.assistantAnswer ?? ''),
       };
+      const facts = this.directLineFacts(privacyForPrompt, wire);
       const ledger = this.turnRecords.deferringLedger();
       if (ledger !== undefined) {
-        // Masked now: the prompt map belongs to this pass and ends with it.
-        const facts = await this.directLineFacts(privacyForPrompt, input.userMessage, answer);
         this.turnRecords.offerRow(ledger, { entry, entityRefs: [] }, 'direct-line answer', (turnId, refs) => {
           this.turnRecords.startFactExtraction(turnId, facts, refs);
           return Promise.resolve({});
         });
       } else {
         persistedTurnId = await this.turnRecords.writeRow(entry, 'direct-line answer');
+        this.turnRecords.startFactExtraction(persistedTurnId, facts, []);
       }
-    }
-    if (this.factExtractor && persistedTurnId) {
-      const facts = await this.directLineFacts(privacyForPrompt, input.userMessage, answer);
-      this.turnRecords.startFactExtraction(persistedTurnId, facts, []);
     }
 
     return {
@@ -6020,6 +6055,11 @@ export class Orchestrator {
               iterations,
               ...(input.userId ? { userId: input.userId } : {}),
               ...(runTrace ? { runTrace } : {}),
+              ...maskedRowView(
+                privacyForPrompt,
+                wireUserMessage,
+                appendToolDigest(answer, attachments, fileAttachments),
+              ),
             };
             // Fact extraction: fire-and-forget against Haiku, after the
             // session log lands in the graph (so the Fact → Turn
@@ -6237,10 +6277,12 @@ export class Orchestrator {
         this.extractToolEmittedRoutineList(toolResults);
         // #361 — the choice card is user-facing AND its question is
         // persisted in the session log; restore surrogates → real values.
+        // The question as the model wrote it goes into the row's masked view.
+        const wireChoice =
+          this.drainPendingChoice() ?? this.extractToolEmittedChoice(toolResults);
         const pendingUserChoice = await restorePendingChoiceForUser(
           privacyForPrompt,
-          this.drainPendingChoice() ??
-            this.extractToolEmittedChoice(toolResults),
+          wireChoice,
         );
         // W2-1 (#544) — the MCP input card rides the SAME short-circuit.
         //
@@ -6287,19 +6329,21 @@ export class Orchestrator {
           });
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
-            const loggedAnswer = restoredAnswer.length > 0
-              ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
-              : `[Rückfrage] ${pendingUserChoice.question}`;
             persistedTurnId = await this.turnRecords.recordRow(
               {
                 entry: {
                   scope: input.sessionScope,
                   userMessage: input.userMessage,
-                  assistantAnswer: loggedAnswer,
+                  assistantAnswer: choiceCardLogLine(restoredAnswer, pendingUserChoice.question),
                   toolCalls,
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
                   ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    choiceCardLogLine(answer, wireChoice?.question ?? ''),
+                  ),
                 },
                 entityRefs: entityCollection?.drain() ?? [],
               },
@@ -6346,6 +6390,11 @@ export class Orchestrator {
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
                   ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    mcpInputCardLogLine(answer, card),
+                  ),
                 },
                 entityRefs: entityCollection?.drain() ?? [],
               },
@@ -7364,6 +7413,11 @@ export class Orchestrator {
                 iterations,
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
+                ...maskedRowView(
+                  privacyForPrompt,
+                  wireUserMessage,
+                  appendToolDigest(answer, attachments, fileAttachments),
+                ),
               },
               entityRefs: entityCollection?.drain() ?? [],
             };
@@ -7651,10 +7705,12 @@ export class Orchestrator {
         this.extractToolEmittedRoutineList(toolResults);
         // #361 — the choice card is user-facing AND its question is
         // persisted in the session log; restore surrogates → real values.
+        // The question as the model wrote it goes into the row's masked view.
+        const wireChoice =
+          this.drainPendingChoice() ?? this.extractToolEmittedChoice(toolResults);
         const pendingUserChoice = await restorePendingChoiceForUser(
           privacyForPrompt,
-          this.drainPendingChoice() ??
-            this.extractToolEmittedChoice(toolResults),
+          wireChoice,
         );
         // W2-1 (#544) — mirror of chatInContextInner, including the
         // deterministic winner rule. See the comment there.
@@ -7683,19 +7739,21 @@ export class Orchestrator {
           });
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
-            const loggedAnswer = restoredAnswer.length > 0
-              ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
-              : `[Rückfrage] ${pendingUserChoice.question}`;
             persistedTurnId = await this.turnRecords.recordRow(
               {
                 entry: {
                   scope: input.sessionScope,
                   userMessage: input.userMessage,
-                  assistantAnswer: loggedAnswer,
+                  assistantAnswer: choiceCardLogLine(restoredAnswer, pendingUserChoice.question),
                   toolCalls,
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
                   ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    choiceCardLogLine(answer, wireChoice?.question ?? ''),
+                  ),
                 },
                 entityRefs: entityCollection?.drain() ?? [],
               },
@@ -7749,6 +7807,11 @@ export class Orchestrator {
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
                   ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    mcpInputCardLogLine(answer, card),
+                  ),
                 },
                 entityRefs: entityCollection?.drain() ?? [],
               },
@@ -7873,6 +7936,7 @@ export class Orchestrator {
                 iterations,
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
+                ...maskedRowView(privacyForPrompt, wireUserMessage, answer),
               },
               entityRefs: entityCollection?.drain() ?? [],
             },

@@ -1625,6 +1625,27 @@ export interface TurnIngest {
    * that ignore the flag stay correct, just less economical.
    */
   tailOnly?: boolean;
+  /**
+   * The turn as the Privacy Shield masked it for the turn's own model calls
+   * (see {@link TurnMaskedView}). Set by the kernel for a turn that ran under
+   * a privacy handle, whose `userMessage` / `assistantAnswer` hold restored
+   * real values. A decorator that sends the turn to a model of its own (the
+   * capture filter's significance scorer) sends THESE texts instead, and an
+   * empty view means it may send none. Never stored: backends ignore it.
+   * Absent for a turn without a shield, which has nothing to mask.
+   */
+  maskedView?: TurnMaskedView;
+}
+
+/**
+ * A turn's wire texts under the Privacy Shield: the user message as the
+ * turn's model received it and the answer as the model wrote it, surrogates
+ * in place of the values the shield masked — the same texts the kernel's fact
+ * extraction gets.
+ */
+export interface TurnMaskedView {
+  readonly userMessage: string;
+  readonly assistantAnswer: string;
 }
 
 export interface TurnIngestResult {

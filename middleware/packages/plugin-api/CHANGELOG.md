@@ -8,6 +8,24 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.24.0 — 2026-10-02
+
+Additive. A turn the kernel stores can carry its masked wire texts, so a
+capture decorator that scores the turn with a model of its own no longer
+sends the stored texts, whose answer holds the real values the Privacy Shield
+restored. The capture filter of `@omadia/orchestrator-extras` sends the
+masked view to its significance scorer.
+
+### Added
+
+- **`TurnIngest.maskedView?`** with **`TurnMaskedView`**
+  (`{ userMessage, assistantAnswer }`): the user message as the turn's model
+  received it and the answer as the model wrote it, the texts the kernel's
+  fact extraction gets. Set by the kernel for a turn that ran under a privacy
+  handle; an empty view means nothing may be sent. Never stored: a backend
+  ignores it, and the capture decorator strips it before the inner graph.
+  OPTIONAL, so an existing backend or caller compiles unchanged.
+
 ## 1.23.0 — 2026-10-02
 
 Additive. A Privacy Shield provider can mask the answers a channel replays as
