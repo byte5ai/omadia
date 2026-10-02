@@ -4076,6 +4076,13 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   **Nächster Electron-Major:** Dispatch-Build mit Wegwerf-Tag, dann `desktop-upgrade-smoke.yml` mit
   dessen Run-ID (`desktop/README.md` § Install and upgrade smoke); nie auf einer produktiven
   Installation.
+- **Beenden während des ersten UI-Ladens meldet einen Boot-Fehler.** Beendet man die App, während
+  das erste `loadURL` der Web-UI noch läuft, lehnt `loadURL` ab, und `bootExistingInstall` reicht das
+  an `presentBootFailure` weiter: `[main] boot failed: ERR_FAILED (-2) loading …`, im ungünstigen
+  Fall mit Fehlerdialog im Shutdown, dessen Standard-Knopf „Re-run setup“ ist. Gesehen im
+  Install-Smoke 36989068863 (Windows-Upgrade, Versuch 1); unabhängig von der Electron-Version.
+  `presentBootFailure` sollte bei gesetztem `quitting` nur loggen und zurückkehren. Der Smoke wartet
+  seither auf das erste fertige Laden, bevor er beendet.
 - **Synchrones `safeStorage` endet mit Electron 46.** Electron 45 markiert
   `safeStorage.isEncryptionAvailable`/`encryptString`/`decryptString` als deprecated, Electron 46
   entfernt sie zusammen mit Chromiums synchronem OSCrypt-Backend (Electron
@@ -5064,16 +5071,19 @@ Details in [`security-architecture.md` §10i](security-architecture.md):
 
 Offen:
 
-- **Manuelle Prüfung auf paketierten Builds (macOS und Windows)** vor dem
-  nächsten Desktop-Release. Den Wizard komplett durchlaufen: Reveal zeigt den
-  Key, Finish bootet. Im Log darf keine `[ipc] … refused`-Zeile zu
-  `wizard.html` stehen, sonst stimmt der Pfadvergleich (asar-Pfad,
-  Laufwerksbuchstabe) nicht. In der Web-UI muss
-  `Object.keys(window.omadia)` genau `uiReady` und `setUiLocale` liefern.
+- **Prüfung auf paketierten Builds (macOS und Windows)** vor dem nächsten
+  Desktop-Release. Automatisch im Install-Smoke (`desktop-upgrade-smoke.yml`):
+  der Wizard komplett (Reveal zeigt den Key, Finish bootet), keine
+  `[ipc] … refused`-Zeile im Log (sonst stimmt der Pfadvergleich nicht:
+  asar-Pfad, Laufwerksbuchstabe), `Object.keys(window.omadia)` in der Web-UI
+  genau `uiReady` und `setUiLocale`, der Anhänge-Schalter (`/health` →
+  `attachments.store: filesystem`, Boot-Zeile, Ordner 0700 auf macOS/Linux).
+  Für Electron 44 belegt Lauf 36989068863 keine `[ipc]`-Zeile und die
+  Anhänge-Boot-Zeile auf allen drei Plattformen. Von Hand bleiben:
   Plugin-Autor-Link, GitHub-Hilfe-Link und ein Link in einer Chat-Antwort
-  öffnen im Systembrowser. Ein Same-App-Popup hat kein `window.omadia`. Ein
+  öffnen im Systembrowser; ein Same-App-Popup hat kein `window.omadia`; ein
   Link mit eigenem Schema in einer Plugin-UI startet kein Programm (Log:
-  `[nav] blocked a subframe navigation`). Der Entra-Login-Rundlauf klappt
+  `[nav] blocked a subframe navigation`); der Entra-Login-Rundlauf klappt
   inklusive Passwort-POST.
 - **Abmelden einer OIDC-Sitzung:** Die IdP-End-Session-URL öffnet jetzt im
   Systembrowser, der einen eigenen Cookie-Speicher hat. Die IdP-Sitzung im

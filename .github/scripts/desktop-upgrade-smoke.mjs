@@ -271,10 +271,29 @@ function checkSecrets(label, probe, phase, result, ctx) {
   }
 }
 
+/**
+ * The checks of the packaged-build list in handoff §13 that need no person:
+ * the wizard's (and the shell's) IPC calls were all accepted, the web UI page
+ * gets only the narrow bridge, and the wizard's attachments switch reached the
+ * kernel. Links, popups, custom schemes and the Entra round trip stay manual.
+ */
+async function checkShell(page, kernel, log, label) {
+  const refusals = log.lines(/\[ipc\] \S+ refused/);
+  check(`${label}.no-ipc-refusal`, 'no IPC call from the app was refused', refusals.length === 0, refusals[0]?.trim().slice(0, 200));
+  const bridge = await page.evaluate(() => Object.keys(window.omadia ?? {}).sort()).catch((err) => [`error: ${err.message}`]);
+  check(`${label}.ui-bridge`, 'the web UI page sees only uiReady and setUiLocale', bridge.join(',') === 'setUiLocale,uiReady', bridge.join(', ') || 'none');
+  const store = kernel.json?.attachments?.store;
+  const honoured = log.text().includes('[boot] attachments: on, kept in the data folder');
+  check(`${label}.attachments`, 'the attachments switch reaches the kernel', store === 'filesystem' && honoured, `store ${store ?? 'missing'}${honoured ? '' : ', no boot line'}`);
+}
+
 async function drive(app, ctx, phase, log, result) {
   const { label, firstRun, blockUpdates, before } = phase;
   if (firstRun) result.recovery = await completeWizard(app, ctx, label);
   const page = await waitForUi(app, log, !firstRun);
+  // A user works with a loaded page. Quitting while the first load still runs
+  // makes the app report that aborted load as a boot failure (handoff §13).
+  await page.waitForLoadState('load', { timeout: BOOT_TIMEOUT_MS });
   await checkReady(log, label, result.launchedAt);
   await pageShot(page, ctx, `${label}-2-ui`);
   screenshotScreen(ctx.platform, path.join(ctx.out, 'screens', `${label}-3-screen.png`));
@@ -284,6 +303,7 @@ async function drive(app, ctx, phase, log, result) {
   const uiOrigin = new URL(page.url()).origin;
   const ui = await http(`${uiOrigin}/health`);
   check(`${label}.ui-health`, 'the web UI answers /health', ui.status === 200, `HTTP ${ui.status} on ${uiOrigin}`);
+  await checkShell(page, kernel, log, label);
 
   await checkAccounts(ctx, label, firstRun);
 
@@ -291,6 +311,11 @@ async function drive(app, ctx, phase, log, result) {
   result.probe = probe;
   result.dataRoot = probe.dataRoot;
   checkSecrets(label, probe, phase, result, ctx);
+  if (ctx.platform !== 'windows' && probe.dataRoot) {
+    const dir = path.join(probe.dataRoot, 'attachments');
+    const mode = fs.existsSync(dir) ? fs.statSync(dir).mode & 0o777 : null;
+    check(`${label}.attachments-folder`, 'the attachments folder is private (0700)', mode === 0o700, mode === null ? 'missing' : `0${mode.toString(8)}`);
+  }
   if (before) {
     const writes = log.lines(SECRETS_WRITE_RE);
     check(`${label}.secrets-not-rewritten`, 'the upgraded app neither creates nor rewrites secrets.enc', writes.length === 0, writes[0]?.trim().slice(0, 200));
