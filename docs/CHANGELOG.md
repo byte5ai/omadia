@@ -58,7 +58,9 @@ case is now logged as a boot stopped by the quit, without the dialog. The
 desktop log is flushed before the app exits, so shutdown lines are no longer
 lost.
 
-Before the merge, a dispatch build of all desktop targets and the install smoke on macOS, Windows and Linux checked this change.
+Checked before the merge: a dispatch build of all desktop targets (run
+37027925333) and the install smoke on macOS, Windows and Linux, fresh install
+and upgrade from v0.167.15, 6 of 6 (run 37030116438).
 
 ### Changed — the desktop install smoke waits for the web UI's first load and checks the shell's boundaries
 
