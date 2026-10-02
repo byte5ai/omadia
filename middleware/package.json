@@ -73,7 +73,7 @@
     "cookie": "^2.0.1",
     "cookie-parser": "^1.4.7",
     "croner": "^9.1.0",
-    "dotenv": "^18.0.0",
+    "dotenv": "^18.0.4",
     "eslint": "^10.8.1",
     "express": "^5.2.1",
     "jose": "^6.2.12",
@@ -90,20 +90,20 @@
     "yaml": "^2.9.1",
     "yauzl": "^3.3.2",
     "yazl": "^3.3.1",
-    "zod": "^4.4.3"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/express": "^5.0.6",
-    "@types/node": "^26.6.1",
+    "@types/node": "^26.6.3",
     "@types/pg": "^8.23.1",
-    "@types/semver": "^7.7.1",
+    "@types/semver": "^7.8.0",
     "@types/ws": "^8.5.13",
     "@types/yazl": "^3.3.1",
     "nodemon": "^3.1.14",
-    "prettier": "^3.9.8",
+    "prettier": "^3.9.9",
     "ts-node": "^10.9.2",
-    "tsx": "^4.23.13",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.2"
   },
   "overrides": {
