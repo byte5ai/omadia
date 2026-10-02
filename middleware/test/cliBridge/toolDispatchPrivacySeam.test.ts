@@ -629,10 +629,11 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
     assert.deepEqual(receipts, []);
   });
 
-  it('honours the intern EXEMPTION for an error, exactly as for a result', async () => {
-    // A self/infra tool's failure IS the agent's own operational state — the
-    // case the allowlist exists for. (Such tools are unreachable from the public
-    // endpoint anyway; `isPubliclyServableTool` filters them at the allowlist.)
+  it('WITHHOLDS an intern-exempt tool exception too — the exemption covers results, not errors', async () => {
+    // A self/infra tool's result is the agent's own operational state, but its
+    // exception message can echo what it failed on, like any other tool's.
+    // (Such tools are unreachable from the public endpoint anyway;
+    // `isPubliclyServableTool` filters them at the allowlist.)
     const service = new ToolDispatchService({
       nativeTools: throwingRegistryWith('memory', PII_ERROR),
       domainTools: [],
@@ -641,7 +642,8 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
 
     const result = await service.dispatch('memory', {});
 
-    assert.equal(result.content, PII_ERROR);
+    assert.equal(result.content.includes(EMAIL), false, 'exempt-tool error path leaked the email');
+    assert.match(result.content, withheldNotice('memory'));
     assert.equal(result.isError, true);
   });
 
