@@ -3,28 +3,25 @@
  *
  * ─── The decision this module exists to make ─────────────────────────────────
  *
- * The dispatch privacy seam is CLOSED: `ToolDispatchService` now replicates the
- * chat path's data-plane boundary (raw capture → intern-exemption → operator
- * bypass + receipt → intern). But it closed it at PARITY with the chat path, and
- * its own comment hands one consequence to this issue:
+ * The dispatch privacy seam is CLOSED: `ToolDispatchService` replicates the chat
+ * path's data-plane boundary (raw capture → intern-exemption → operator bypass +
+ * receipt → intern), at PARITY with the chat path. Parity is not the right bar
+ * for a third party calling over HTTP, so this module decides the rest.
  *
- *     // Fail-OPEN, matching `Orchestrator.dispatchToolDeadlined` exactly. This
- *     // is parity, not an endorsement: for a PUBLIC endpoint a masking failure
- *     // that emits raw rows is a leak, and a fail-CLOSED policy for untrusted
- *     // callers is worth its own decision (#542) …
+ * DECISION: the public endpoint fails CLOSED. Three separate paths exist between
+ * a tool's raw result and an internet caller, and this module closes all three —
+ * WITHOUT changing `toolDispatchService.ts`, so the chat path's behaviour is
+ * untouched.
  *
- * DECISION: the public endpoint fails CLOSED. Three separate fail-open paths
- * exist between a tool's raw result and an internet caller, and this module
- * closes all three — WITHOUT changing `toolDispatchService.ts`, so the chat
- * path's behaviour is untouched and the sibling unit's parity argument stands.
- *
- *  1. **Masking throws.** The dispatcher catches and returns the raw result.
- *     Closed by wrapping `internToolResultV4` so it never throws: on failure it
- *     records the failure and returns a placeholder digest. The dispatcher's
- *     fail-open branch is therefore never reached, and the endpoint discards the
- *     result entirely. Not a nicety — the failure mode being defended against is
- *     "the privacy provider is having a bad minute and every Odoo row goes out
- *     over HTTP to a third party".
+ *  1. **Masking throws.** The dispatcher fails closed on its own: it catches
+ *     the throw and returns `internFailedNotice`, an error saying the result
+ *     was withheld. The endpoint goes one step further and refuses the call
+ *     instead of serving that notice as the tool's answer: `internToolResultV4`
+ *     is wrapped so it never throws, records the failure and returns a
+ *     placeholder digest, so the dispatcher's catch is never reached, and the
+ *     endpoint discards the result entirely. The failure mode being defended
+ *     against is "the privacy provider is having a bad minute": the caller
+ *     learns the call failed, nothing of the result.
  *
  *  2. **Operator per-plugin bypass.** `checkBypass` returning a pluginId means
  *     raw passthrough. That setting was made for internal/chat use by an
@@ -37,8 +34,9 @@
  *     IN CLEAR, by design — masking them blinds the agent to its own state. That
  *     reasoning is about the AGENT reading its own scaffolding; it does not
  *     survive contact with a third party reading it over HTTP. This one cannot
- *     be closed from the handle (the dispatcher checks it BEFORE consulting the
- *     handle), so it is closed at the allowlist instead: see
+ *     be closed from the handle (the dispatcher hands an exempt tool's result
+ *     over BEFORE consulting the handle; only its `Error:` text goes through
+ *     it), so it is closed at the allowlist instead: see
  *     `isPubliclyServableTool` and its use in `PublicMcpServer`.
  *
  * A fourth path — no privacy provider installed at all, so results flow through
@@ -65,12 +63,14 @@
 
 import type { PrivacyTurnHandle } from '@omadia/orchestrator';
 import { isInternExemptTool } from '@omadia/orchestrator';
+import { describeThrownError } from '@omadia/plugin-api';
 
 /**
  * Never reaches a caller: the endpoint checks `maskingFailed()` and replaces the
  * whole result. It exists only so the wrapper can satisfy the handle's return
- * type without throwing (a throw would hit the dispatcher's fail-OPEN branch and
- * emit the raw rows — the exact leak this module prevents).
+ * type without throwing (a throw would hit the dispatcher's catch, which answers
+ * with `internFailedNotice` — a withheld-result error the endpoint would serve
+ * instead of refusing the call).
  */
 export const MASKING_FAILED_PLACEHOLDER = '[omadia:public-mcp:masking-failed]';
 
@@ -99,8 +99,8 @@ export interface PublicMcpPrivacyGate {
 }
 
 /**
- * Wraps a real handle so masking cannot fail open, and an operator bypass cannot
- * reach a public caller.
+ * Wraps a real handle so a masking failure refuses the call, and an operator
+ * bypass cannot reach a public caller.
  *
  * One gate per DISPATCH, not per process — `maskingFailed()` is per-call state,
  * and a shared gate would make one caller's masking failure discard another
@@ -112,7 +112,7 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
   let didMask = false;
 
   /**
-   * Masking that cannot fail open. `ownResult` is false for code nested inside
+   * Masking that never throws. `ownResult` is false for code nested inside
    * the call (a sub-agent's inner tool results): that masking guards the
    * sub-agent's provider wire and says nothing about the text the call hands
    * back, so it must not satisfy `masked()`. A failure anywhere fails the call.
@@ -127,11 +127,15 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
       return result;
     } catch (err) {
       failed = true;
-      // Logged, not rethrown. Rethrowing would reach the dispatcher's
-      // fail-open catch, which returns `rawResult` — i.e. the leak.
+      // Logged, not rethrown. Rethrowing would reach the dispatcher's catch,
+      // which fails closed with `internFailedNotice`; the endpoint would serve
+      // that notice as an error. `maskingFailed()` makes it refuse the call.
+      // The provider's error can quote the result it was handed: the log line
+      // carries its class and code only.
+      const { name, code } = describeThrownError(err);
       console.warn(
-        `[public-mcp] privacy masking FAILED for tool \`${input.toolName}\` — refusing the call (fail-closed):`,
-        err,
+        `[public-mcp] privacy masking FAILED for tool \`${input.toolName}\` with ${name}` +
+          `${code === undefined ? '' : ` (code ${code})`} — refusing the call (fail-closed)`,
       );
       return { digestText: MASKING_FAILED_PLACEHOLDER, datasetId: '' };
     }

@@ -367,14 +367,12 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
       }`,
     );
     // Diagnostic: when the extractor returns zero claims even though the
-    // trigger router fired, we want to see WHY. Log the first 300 chars
-    // of the answer + user message — that's enough to tell whether the
-    // bot was honest ("I cannot answer") or Haiku under-extracted a
-    // valid numeric response. Logs the wire view (what the model saw), so
-    // this line carries no more than the extraction request did.
+    // trigger router fired, log the shape of the exchange. Lengths only: the
+    // user message and the answer are turn content, and a log sink keeps
+    // them in clear outside the privacy receipt's reach.
     if (rawClaims.length === 0) {
       this.opts.log(
-        `[claim-extractor] zero-raw diag user="${shortSnippet(userMessage, 200)}" answerLen=${String(answer.length)} answerHead="${shortSnippet(answer, 400)}" answerTail="${shortSnippet(tail(answer, 400), 400)}"`,
+        `[claim-extractor] zero-raw diag userLen=${String(userMessage.length)} answerLen=${String(answer.length)}`,
       );
     }
     return { claims: out, gaps };
@@ -404,15 +402,6 @@ function coverageGaps(extraction: {
   if (extraction.tooLong > 0) gaps.push('claims_too_long');
   if (extraction.notRestored > 0) gaps.push('claims_not_restored');
   return gaps;
-}
-
-function shortSnippet(value: string, max = 300): string {
-  const flat = value.replace(/\s+/g, ' ').trim();
-  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
-}
-
-function tail(value: string, max: number): string {
-  return value.length <= max ? value : value.slice(value.length - max);
 }
 
 /**

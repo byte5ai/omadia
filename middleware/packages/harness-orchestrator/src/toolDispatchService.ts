@@ -17,6 +17,7 @@ import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
 import { replayMissNotice, runHandlerAtMostOnce } from './toolReplayLedger.js';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import {
+  errorClassForLog,
   guardControlFlowResult,
   isGuardedControlFlowResult,
   withholdThrownToolError,
@@ -37,9 +38,9 @@ import type { ToolIdempotencyStore } from './toolIdempotency.js';
  * cross the privacy boundary.
  *
  *  - `'tool'`       — produced by a tool handler: its return value, or — only
- *                     where nothing is withheld (no privacy provider, an
- *                     intern-exempt self tool) — the message of the exception
- *                     it threw. UNTRUSTED. It carries whatever the handler (and
+ *                     where nothing is withheld (no privacy provider) — the
+ *                     message of the exception it threw. UNTRUSTED. It carries
+ *                     whatever the handler (and
  *                     the ORM/driver beneath it) chose to put in it, so it must
  *                     be masked before it reaches an untrusted caller.
  *  - `'dispatcher'` — produced by this service itself: its own guards (unknown
@@ -464,7 +465,22 @@ export class ToolDispatchService {
     // stored-process CRUD, self-produced meta output) are never interned —
     // masking them blinds the agent to its own operational state. Same
     // auditable allowlist the orchestrator uses.
-    if (isInternExemptTool(name)) return fromTool(result);
+    // The exemption covers the normal result only: an exempt tool's `Error:`
+    // text takes the same redaction as below.
+    if (isInternExemptTool(name)) {
+      if (isGuardedControlFlowResult(result, authPromptMint)) {
+        return fromTool(
+          await guardControlFlowResult({
+            toolName: name,
+            result,
+            privacy,
+            site: 'toolDispatchService',
+            authPromptMint,
+          }),
+        );
+      }
+      return fromTool(result);
+    }
 
     // Operator-owned per-plugin bypass (Slice 2.5). Raw passthrough, but the
     // receipt entry keeps it transparent.
@@ -520,10 +536,10 @@ export class ToolDispatchService {
       // Fail CLOSED, like `Orchestrator.dispatchToolDeadlined` and every other
       // seam (`internFailedNotice`): the caller gets the kernel's withheld
       // notice, never the raw result. The public MCP endpoint's privacy gate
-      // refuses such a call on its own as well (`publicMcpPrivacy.ts`).
+      // refuses such a call on its own as well (`publicMcpPrivacy.ts`). The
+      // provider's error can quote the result: class and code only in the log.
       console.warn(
-        `[toolDispatchService:${name}] privacy.internToolResultV4 threw — result WITHHELD:`,
-        err,
+        `[toolDispatchService:${name}] privacy.internToolResultV4 threw ${errorClassForLog(err)} — result WITHHELD`,
       );
       return { content: internFailedNotice(name), isError: true, origin: 'dispatcher' };
     }
@@ -562,11 +578,12 @@ export class ToolDispatchService {
    *    plugin's DECLARED output shape, not about arbitrary exception text, and a
    *    `recordBypassedTool` receipt would mis-describe what happened.
    *
-   * Parity: with no privacy provider installed, or for an intern-exempt self
-   * tool (the agent's own operational state), the raw message is returned as
-   * before, as `origin: 'tool'` content. The public endpoint refuses to call
-   * without a provider (`requirePrivacyMasking`) and never serves an
-   * intern-exempt tool (`isPubliclyServableTool`).
+   * Parity: with no privacy provider installed the raw message is returned as
+   * before, as `origin: 'tool'` content. Intern-exempt self tools get no such
+   * pass, because their thrown message can quote what they failed on. The
+   * public endpoint refuses to call without a provider
+   * (`requirePrivacyMasking`) and never serves an intern-exempt tool
+   * (`isPubliclyServableTool`).
    */
   private async thrownResult(
     name: string,

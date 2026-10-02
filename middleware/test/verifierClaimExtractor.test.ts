@@ -120,6 +120,29 @@ describe('verifier/claimExtractor - extract', () => {
     );
     assert.equal(claims[1]!.context, undefined);
   });
+
+  it('logs only lengths when the extraction returns no claims', async () => {
+    const lines: string[] = [];
+    const extractor = new ClaimExtractor({
+      llm: stubLlm([]) as never,
+      log: (line: string) => {
+        lines.push(line);
+      },
+    });
+    const userMessage = 'Wo arbeitet Anna Müller, erreichbar unter anna.mueller@example.com?';
+    const { claims } = await extractor.extract({ userMessage, answer: ANSWER });
+    assert.equal(claims.length, 0);
+    const diag = lines.find((l) => l.includes('zero-raw diag'));
+    assert.equal(
+      diag,
+      `[claim-extractor] zero-raw diag userLen=${String(userMessage.length)} answerLen=${String(ANSWER.length)}`,
+    );
+    for (const line of lines) {
+      assert.equal(line.includes('Anna'), false, `turn text in the log: ${line}`);
+      assert.equal(line.includes('anna.mueller@example.com'), false, `turn text in the log: ${line}`);
+      assert.equal(line.includes('IT-Abteilung'), false, `turn text in the log: ${line}`);
+    }
+  });
 });
 
 // The turn behind a Privacy Shield put surrogates on the wire; the verifier's

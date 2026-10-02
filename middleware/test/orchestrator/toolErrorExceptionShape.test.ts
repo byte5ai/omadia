@@ -96,6 +96,47 @@ describe('looksExceptionShaped — keyword and bare-key records', () => {
   });
 });
 
+describe('looksExceptionShaped — positional records and personal key=value pairs', () => {
+  it('flags a record printed with positional values', () => {
+    for (const text of [
+      ` could not sync Record(42, '${NAME}', '${EMAIL}')`, // Python namedtuple
+      ` could not sync Row('${NAME}', 42)`, // quoted value first
+      ` could not sync res.partner.Row(42, "${NAME}")`, // dotted name, double quotes
+      ` UserError('${NAME} is archived', None)`, // an exception repr
+      ` could not sync [Record(42, '${NAME}'), Record(43, 'John Roe')]`,
+    ]) {
+      assert.equal(looksExceptionShaped(text), true, text);
+    }
+  });
+
+  it('flags a personal field printed as a bare `key=value` pair', () => {
+    for (const text of [
+      ` sync failed for partner id=42 name=${NAME} email=${EMAIL}`, // logfmt
+      ' sync failed: first_name=Jane, last_name=Doe',
+      ` sync failed: email='${EMAIL}'`,
+      ` lookup failed for partner.name="${NAME}"`,
+      ' sync failed: Phone=+49301234567',
+    ]) {
+      assert.equal(looksExceptionShaped(text), true, text);
+    }
+  });
+
+  it('leaves calls, id tuples and infrastructure pairs alone', () => {
+    for (const text of [
+      " call lower('abc') on the column instead",
+      ' the recordset res.partner(42, 43) is empty',
+      ' could not connect: hostname=db.internal port=5432',
+      ' filename=report.pdf is larger than 10 MB',
+      ' use name=<text> to filter by name.',
+      ' name==draft is not a valid filter',
+      ' the name field is required.',
+      " search for name 'Umsatz' returned no rows.",
+    ]) {
+      assert.equal(looksExceptionShaped(text), false, text);
+    }
+  });
+});
+
 describe('looksExceptionShaped — hints stay readable', () => {
   it('leaves driver hints, Odoo hints and kernel notices alone', () => {
     const notice = withheldToolErrorNotice(
@@ -131,6 +172,8 @@ describe('guardControlFlowResult — the real provider would leave the name', ()
       `Error: Odoo: ${ODOO_RPC_MESSAGE}`,
       `Error: could not sync Partner(id=42, name=${NAME}, email=${EMAIL})`,
       `Error: could not sync {Name:${NAME} Email:${EMAIL}}`,
+      `Error: could not sync Record(42, '${NAME}', '${EMAIL}')`,
+      `Error: sync failed for partner id=42 name=${NAME} email=${EMAIL}`,
     ];
     for (const result of results) {
       // Premise: C0 masks the e-mail but detects no name, so redaction alone
