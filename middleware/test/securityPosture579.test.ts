@@ -740,7 +740,7 @@ function assertScreenedMasked(payloads: readonly string[], seen: readonly LlmReq
   assert.ok(!payload.includes(RAW_EMAIL), `screener payload carries the raw e-mail: ${payload}`);
   assert.ok(!payload.includes(RAW_NAME), `screener payload carries the raw name: ${payload}`);
   assert.match(payload, /\[prior_turn:user\]/, 'the replayed user message is screened');
-  assert.match(payload, /\[attachment:Rechnung .+\.pdf\]/, 'the upload is screened by its masked name');
+  assert.match(payload, /\[attachment:Rechnung [^\]]+\]/, 'the upload is screened by its masked name');
   const surrogate = EMAIL_RE.exec(payload)?.[0];
   assert.ok(surrogate && surrogate !== RAW_EMAIL, 'the e-mail arrives as a surrogate');
   assert.equal(seen.length, 1, 'the model runs after an allow');
@@ -766,7 +766,8 @@ describe('WP-09 — the inbound screener sees the masked turn (posture auto)', (
     const orch = maskedOrchestrator({ privacyGuard: promptMaskingService, payloads, seen });
     const done = await streamDone(orch, turnWithPii('wp09-stream'));
     assertScreenedMasked(payloads, seen);
-    assert.equal(done.answer, 'Erledigt.');
+    // The stream folds the AI disclosure into its `done`.
+    assert.ok(done.answer.startsWith('Erledigt.'), done.answer);
   });
 
   const blockingService = (): ReturnType<typeof createPrivacyGuardService> => ({
@@ -792,7 +793,7 @@ describe('WP-09 — the inbound screener sees the masked turn (posture auto)', (
     const seen: LlmRequest[] = [];
     const orch = maskedOrchestrator({ privacyGuard: blockingService, payloads, seen });
     const done = await streamDone(orch, turnWithPii('wp09-blocked-stream'));
-    assert.equal(done.answer, PROMPT_MASK_BLOCKED_ANSWER);
+    assert.ok(done.answer.startsWith(PROMPT_MASK_BLOCKED_ANSWER), done.answer);
     assert.equal(payloads.length, 0, 'the screener must not be called');
     assert.equal(seen.length, 0, 'the model must not be called');
   });

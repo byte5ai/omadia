@@ -1323,6 +1323,40 @@ async function maskPriorTurnsForWire(
 }
 
 /**
+ * The provenance bundle the inbound screener receives (#579,
+ * {@link bundleProvenance}), masked the way the turn's model call masks it:
+ * the user message and every user message a channel replays through
+ * {@link maskPromptForWire}, each upload's name through the same mask. One
+ * turn map, so the screener sees the surrogates the model will see. A
+ * replayed answer is not part of the bundle. Throws `PromptMaskBlockedError`
+ * on the failure-closed `blocked` outcome.
+ */
+async function screeningBundleForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  input: ChatTurnInput,
+): Promise<ReturnType<typeof bundleProvenance>> {
+  const priorTurns: NonNullable<ChatTurnInput['priorTurns']> = [];
+  for (const t of input.priorTurns ?? []) {
+    // The bundle reads the user message only; the answer stays out of it.
+    priorTurns.push({
+      userMessage: await maskPromptForWire(privacy, t.userMessage),
+      assistantAnswer: '',
+    });
+  }
+  const attachments: NonNullable<ChatTurnInput['attachments']> = [];
+  for (const att of input.attachments ?? []) {
+    attachments.push(
+      att.name === undefined ? att : { ...att, name: await maskPromptForWire(privacy, att.name) },
+    );
+  }
+  return bundleProvenance({
+    userMessage: await maskPromptForWire(privacy, input.userMessage),
+    priorTurns,
+    attachments,
+  });
+}
+
+/**
  * Restore prompt surrogates → real values in a text that is about to be
  * PERSISTED (session log / KG / promoted memory) or returned as the final
  * answer. Identity when no handle is present or nothing was masked.
@@ -3877,11 +3911,17 @@ export class Orchestrator {
    * — runs the screener. Returns the decision the caller acts on:
    *   - `proceed` with the input to run, possibly augmented with the untrusted
    *     marker on `extraSystemHint` (fail-open evidence);
-   *   - `quarantine` with a refusal answer — the turn must NOT run.
+   *   - `quarantine` with a refusal answer — the turn must NOT run;
+   *   - `blocked` when the text for the screener could not be masked — the
+   *     turn fails closed with the privacy refusal, as a blocked model call
+   *     does, and nothing reaches the screener.
    *
-   * `exempt` short-circuits to `proceed` for an MCP input-card reply: that is a
-   * machine envelope this harness produced, not untrusted inbound content.
-   * Never throws — a screener failure fails open (screenProvenance contract).
+   * The screener gets the turn's masked text: the caller mints the privacy
+   * handle before the gate. `exempt` short-circuits to `proceed` for an MCP
+   * input-card reply: that is a machine envelope this harness produced, not
+   * untrusted inbound content. A screener failure fails open
+   * (screenProvenance contract); only a privacy provider that throws while
+   * masking propagates.
    */
   /**
    * #579 — mark an input object as a re-entry of an already-screened user turn.
@@ -3964,8 +4004,9 @@ export class Orchestrator {
 
   /**
    * Closes a pass that neither finalized nor handed its privacy state over:
-   * it threw, or its stream ended before `done` (an `error`, or a client
-   * that left). Finalizing drops the surrogate map and cached spans — real
+   * it threw, its stream ended before `done` (an `error`, or a client that
+   * left), or the inbound screening quarantined it after masking its text
+   * for the screener. Finalizing drops the surrogate map and cached spans — real
    * values must not outlive the turn — and drains the receipt of what the
    * pass did put on the wire. That receipt is kept like a delivered pass's
    * (`settleTurnReceipt`): the turn's own row, or the request's one row when
@@ -4031,10 +4072,16 @@ export class Orchestrator {
 
   private async screenInboundTurn(
     input: ChatTurnInput,
-    opts: { readonly exempt: boolean },
+    opts: {
+      readonly exempt: boolean;
+      /** The turn's privacy handle, minted before the gate: the screener gets
+       *  the bundle masked through it ({@link screeningBundleForWire}). */
+      readonly privacy: PrivacyTurnHandle | undefined;
+    },
   ): Promise<
     | { readonly action: 'proceed'; readonly input: ChatTurnInput }
     | { readonly action: 'quarantine'; readonly answer: string }
+    | { readonly action: 'blocked'; readonly error: PromptMaskBlockedError }
   > {
     if (opts.exempt) return { action: 'proceed', input };
 
@@ -4055,7 +4102,20 @@ export class Orchestrator {
     const screener = this.securityScreener?.();
     let outcome: ScreenOutcome;
     if (screener) {
-      outcome = await screenProvenance(screener, pairs);
+      // The screener is an egress like the model call, so it gets the turn's
+      // masked text — masked only when it is called at all. A blocked mask
+      // fails the turn closed before anything is sent. The audit's
+      // `sourceTags` stay raw: they are a server-side record.
+      let screened = pairs;
+      if (hasScreenableContent(pairs)) {
+        try {
+          screened = await screeningBundleForWire(opts.privacy, input);
+        } catch (err) {
+          if (err instanceof PromptMaskBlockedError) return { action: 'blocked', error: err };
+          throw err;
+        }
+      }
+      outcome = await screenProvenance(screener, screened);
     } else if (hasScreenableContent(pairs)) {
       // Screening is ON and there is non-human content, but no screener is
       // wired → UNSCREENABLE. Fail open with evidence, never silently clear.
@@ -4180,33 +4240,44 @@ export class Orchestrator {
     if (mcpInputReply) {
       input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
     }
+    // Privacy-Proxy Slice 2.1 hook. When a `privacy.redact@1` provider is
+    // registered, mint a per-turn handle scoped to (sessionScope, turnId)
+    // and thread it through the AsyncLocalStorage so every `messages.create`
+    // / `messages.stream` site in the call tree (main + sub-agents) picks
+    // it up implicitly. After `chatInContext` returns we drain the
+    // turn-aggregated receipt and attach it to the result. Minted before the
+    // screening gate: the screener gets the turn's masked text too.
+    const sessionId = input.sessionScope ?? turnId;
+    const privacyService = this.privacyGuard?.();
+    const privacyHandle = privacyService
+      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
+      : undefined;
+    const gatePass: UndeliveredPass | undefined = privacyHandle
+      ? { handle: privacyHandle, turnId, input, bound }
+      : undefined;
     // #579 — inbound screening gate. Quarantine short-circuits BEFORE the turn
-    // scope opens, so a quarantined turn never runs the model or any tool.
-    // Proceed may hand back a marker-augmented input (fail-open evidence).
-    const gate = await this.screenInboundTurn(input, {
-      exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
-    });
+    // scope opens, so a quarantined turn never runs the model or any tool; its
+    // privacy state is closed here. Proceed may hand back a marker-augmented
+    // input (fail-open evidence). A blocked screening mask runs the turn into
+    // the privacy refusal below, the exit a blocked model call takes.
+    const gate = await this.closePassOnThrow(gatePass, () =>
+      this.screenInboundTurn(input, {
+        exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
+        privacy: privacyHandle,
+      }),
+    );
     if (gate.action === 'quarantine') {
+      if (gatePass) await this.closeUndeliveredPass(gatePass);
       return { answer: gate.answer, toolCalls: 0, iterations: 0 };
     }
-    input = gate.input;
+    const screeningBlocked = gate.action === 'blocked' ? gate.error : undefined;
+    if (gate.action === 'proceed') input = gate.input;
     // Inherit optional fields the channel adapter (e.g. Teams bot) set in an
     // outer ALS scope. The new child scope replaces turnId/turnDate for this
     // turn; carry-through fields like `chatParticipants` must be threaded
     // explicitly or the tool handlers would see them as undefined.
     const parent = turnContext.current();
 
-    // Privacy-Proxy Slice 2.1 hook. When a `privacy.redact@1` provider is
-    // registered, mint a per-turn handle scoped to (sessionScope, turnId)
-    // and thread it through the AsyncLocalStorage so every `messages.create`
-    // / `messages.stream` site in the call tree (main + sub-agents) picks
-    // it up implicitly. After `chatInContext` returns we drain the
-    // turn-aggregated receipt and attach it to the result.
-    const sessionId = input.sessionScope ?? turnId;
-    const privacyService = this.privacyGuard?.();
-    const privacyHandle = privacyService
-      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
-      : undefined;
     // #430 fixup (reviewer round 5) — resolve the canonical omadiaUserId ONCE
     // for the whole turn; see `resolveTurnOwnerIdentity` for the fallback
     // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
@@ -4349,10 +4420,14 @@ export class Orchestrator {
         // Commit-on-delivery: the request's `onAfterTurn` runs in the first
         // run's hook context, whichever pass the verifier delivers.
         this.bindRequestAfterTurn(boundLedger, turnId, input);
-        const direct = await this.executeDirectLine(input, turnId, turnMemory);
+        const direct = screeningBlocked
+          ? undefined
+          : await this.executeDirectLine(input, turnId, turnMemory);
         let result: ChatTurnResult | undefined;
         let promptMaskBlocked = false;
         try {
+          // The screening gate could not mask: fail closed right here.
+          if (screeningBlocked) throw screeningBlocked;
           result = direct ?? (await this.chatInContext(input, turnId, turnMemory));
           // #445 — an ordinary turn is by definition an UNBOUND turn (a live
           // binding would have produced a sticky dispatch), so stamp the
@@ -6332,14 +6407,34 @@ export class Orchestrator {
     if (mcpInputReply) {
       input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
     }
+    // Privacy-Proxy Slice 2.1: same handle pattern as `runTurn`. The handle
+    // is bound to the AsyncLocalStorage-scoped context below; every
+    // `streamMessageEvents` site downstream picks it up implicitly. After
+    // `chatStreamInner` yields its `done` event we intercept and decorate
+    // with the aggregated receipt. Minted before the screening gate, as in
+    // `runTurnCore`: the screener gets the turn's masked text.
+    const sessionId = input.sessionScope ?? turnId;
+    const privacyService = this.privacyGuard?.();
+    const privacyHandle = privacyService
+      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
+      : undefined;
+    const gatePass: UndeliveredPass | undefined = privacyHandle
+      ? { handle: privacyHandle, turnId, input, bound }
+      : undefined;
     // #579 — inbound screening gate (streaming mirror of `runTurnCore`). A
-    // quarantine yields a single terminal `done` and returns — the model and
-    // tools never run — like the prompt-mask refusal path below. `proceed` may
-    // hand back a marker-augmented input (fail-open evidence).
-    const streamGate = await this.screenInboundTurn(input, {
-      exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
-    });
+    // quarantine closes the turn's privacy state, yields a single terminal
+    // `done` and returns — the model and tools never run — like the
+    // prompt-mask refusal path below. `proceed` may hand back a
+    // marker-augmented input (fail-open evidence); a blocked screening mask
+    // runs into that refusal path.
+    const streamGate = await this.closePassOnThrow(gatePass, () =>
+      this.screenInboundTurn(input, {
+        exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
+        privacy: privacyHandle,
+      }),
+    );
     if (streamGate.action === 'quarantine') {
+      if (gatePass) await this.closeUndeliveredPass(gatePass);
       // Fold the AI disclosure the same way the non-streaming quarantine does
       // (chat() folds it via toSemanticAnswer), so both paths deliver the refusal
       // byte-identically.
@@ -6354,7 +6449,8 @@ export class Orchestrator {
       );
       return;
     }
-    input = streamGate.input;
+    const screeningBlocked = streamGate.action === 'blocked' ? streamGate.error : undefined;
+    if (streamGate.action === 'proceed') input = streamGate.input;
     // W3-A — this used to be `turnContext.enter` (AsyncLocalStorage.enterWith).
     // That does NOT survive a generator's first `yield`: the generator is
     // resumed in the async context of whoever called `.next()`, so by the time
@@ -6367,16 +6463,6 @@ export class Orchestrator {
     // advance of the inner generator in `storage.run`.
     const parent = turnContext.current();
 
-    // Privacy-Proxy Slice 2.1: same handle pattern as `runTurn`. The handle
-    // is bound to the AsyncLocalStorage-scoped context here; every
-    // `streamMessageEvents` site downstream picks it up implicitly. After
-    // `chatStreamInner` yields its `done` event we intercept and decorate
-    // with the aggregated receipt.
-    const sessionId = input.sessionScope ?? turnId;
-    const privacyService = this.privacyGuard?.();
-    const privacyHandle = privacyService
-      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
-      : undefined;
     // #430 fixup (reviewer round 5) — same per-turn resolution as `runTurn`
     // above. This streaming entry point is what channel adapters (Teams/
     // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
@@ -6480,6 +6566,7 @@ export class Orchestrator {
         ...(bound ? { bound } : {}),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(observer ? { observer } : {}),
+        ...(screeningBlocked ? { screeningBlocked } : {}),
       }),
     );
   }
@@ -6505,8 +6592,12 @@ export class Orchestrator {
     readonly bound?: BoundPass;
     readonly privacyHandle?: PrivacyTurnHandle;
     readonly observer?: AskObserver;
+    /** The screening gate could not mask the turn's text: the turn fails
+     *  closed with the privacy refusal, as a blocked model call does. */
+    readonly screeningBlocked?: PromptMaskBlockedError;
   }): AsyncGenerator<ChatStreamEvent> {
     const { input, turnId, sessionId, mcpInputReply, privacyHandle, observer } = args;
+    const { screeningBlocked } = args;
     const { toolReplayLedger, bound } = args;
     // Set once the turn's privacy state was finalized or handed over. A
     // stream that ends otherwise (thrown, abandoned by the client) drops the
@@ -6573,7 +6664,9 @@ export class Orchestrator {
       // harness; the orchestrator LLM never runs. We synthesize the `done`
       // event and decorate it with the privacy receipt + onAfterTurn hook,
       // exactly like the normal done branch below.
-      const direct = await this.executeDirectLine(input, turnId, turnMemory);
+      const direct = screeningBlocked
+        ? undefined
+        : await this.executeDirectLine(input, turnId, turnMemory);
       if (direct && toolReplayLedger.abortedTool !== undefined) {
         // A direct-line dispatch folds a refused re-entry miss into its own
         // answer; the authoritative check ends the pass here instead.
@@ -6649,9 +6742,13 @@ export class Orchestrator {
       // generator throws before any model call when masking cannot be
       // guaranteed; convert that into a graceful privacy-error `done` event
       // instead of tearing the stream down with a raw 500.
-      const inner = this.chatStreamInner(input, turnId, observer, turnMemory);
+      // A blocked screening mask takes the same exit before the model runs.
+      const inner = screeningBlocked
+        ? undefined
+        : this.chatStreamInner(input, turnId, observer, turnMemory);
       const guardedInner = (async function* () {
         try {
+          if (inner === undefined) throw screeningBlocked;
           yield* inner;
         } catch (err) {
           if (err instanceof PromptMaskBlockedError) {
