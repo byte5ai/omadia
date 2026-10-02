@@ -164,6 +164,37 @@ src/
   gilt für Plugin-Tools mit `agentId`; `get_chat_participants` ist
   kernel-intern und wird stattdessen am Turn-Roster gegatet.
 
+### `find_free_slots` + `book_meeting` — M365-Kalender-Tools (#1214)
+
+- **Dateien:** `packages/harness-orchestrator/src/tools/findFreeSlotsTool.ts`
+  (Slot-Suche via Graph `getSchedule` auf dem Kalender des Hosts; Teilnehmer
+  werden nur eingeladen; dazu die Slot-Card) und
+  `.../bookMeetingTool.ts` (Kalendereintrag auf einen zuvor gefundenen Slot).
+  Beide hängen an `hasCalendar` in `buildSystemPrompt`.
+- **Arbeitsteilung Prompt ↔ Tool-Beschreibung (der Kern von #1214):** Der
+  `calendarBlock` im System-Prompt ist bewusst **eine** Zeile und trägt nur,
+  was keine Tool-Beschreibung tragen kann: (a) das Routing — Termin-, Slot-
+  und Verfügbarkeitsanfragen gehen an diese Tools, auch wenn der User sie wie
+  eine Nachricht formuliert ("schicke X drei Vorschläge"); (b) den
+  Cross-Tool-Hop — Namen erst über einen Personen-/HR-Fach-Agenten zu Emails
+  auflösen; (c) die 1-Satz-Zusammenfassung der Slots im Antworttext; (d) den
+  `consent_required` / `sso_unavailable`-Hinweis, dessen OAuthCard das System
+  anhängt. **Alles andere — Host-Logik (`hostEmail` nur bei Suche im Auftrag
+  Dritter), `durationMinutes` 15–480, `windowDays` 1–14 Default 5, „bereits
+  gebuchte Termine ansehen ist nicht implementiert" — steht ausschließlich in
+  der Tool-Beschreibung und wird im Prompt nicht dupliziert.**
+- **Warum:** Der alte Block schrieb „egal wie die Formulierung lautet — RUFE
+  `find_free_slots`" plus Pflicht-Schritte mit „Default 30 min wenn User keine
+  Dauer nennt". Die Tool-Beschreibung sagt das Gegenteil (`durationMinutes`
+  ist Pflichtfeld; „keine konkreten Teilnehmer oder Dauer → zuerst klären"),
+  und die Host-Logik stand doppelt. Ein Widerspruch zwischen Prompt und
+  Tool-Kontrakt ist durch keinen weiteren Prompt-Text zu reparieren, und
+  „egal wie — RUFE X"-Booster stammen aus einer Modell-Generation, die
+  *unter*getriggert hat; die aktuellen Modelle übertriggern damit.
+- **Regel für künftige Änderungen:** Parameter-Defaults und Grenzwerte gehören
+  in die Tool-Beschreibung, nicht in den System-Prompt. Nur echte
+  Cross-Tool-Orchestrierung (wie der HR-Agent-Hop) gehört in den Prompt.
+
 ### Turn-Owner-Guard für den Subscription-CLI-Pfad (`routineTurnOwnerGuard`, #1016)
 
 Neue Kernel-Service-Registrierung neben `installedPluginConfigReader` und
@@ -4820,6 +4851,30 @@ Sub-Agent, der nach „Partner 42“ fragt, bekommt so auch 142, 420 oder
 „Halle 42“. Offen: einen optionalen `id`-Input an beide Tools, Beschreibung und
 §7 entsprechend anpassen.
 
+### Finalize-Pass: offene Punkte aus #1211
+
+- **`tool_use` trotz `tool_choice: none` ist nicht harmlos.** Der Finalize-Pass
+  behält `tools` nur bei Providern mit `capabilities.toolChoiceNone === true`
+  (bisher nur der Anthropic-Adapter) und unterdrückt dort Tool-Use per
+  `tool_choice: { type: 'none' }`. Emittiert ein Modell trotzdem ein `tool_use`,
+  wird es dispatcht (mit Seiteneffekten), und in der letzten Iteration endet der
+  Turn im rohen „exceeded maxToolIterations“. Darum ist das Flag opt-in: nur
+  setzen, wenn der Server das Feld nachweislich befolgt, nicht nur annimmt. Die
+  Directive steht weiter im per-Turn-System-Hint (letzter `system`-Block, hinter
+  allen Cache-Breakpoints) und wird pro Iteration neu gebaut, kann also nicht
+  doppelt auftauchen.
+- **Provider ohne `toolChoiceNone: true`: Cache-Verlust im Finalize-Pass.** Alle
+  anderen Adapter (OpenAI, OpenAI-kompatibel wie Ollama oder Mistral, Responses,
+  Claude-CLI) schicken im Finalize-Pass `tools: []` wie vor #1211 — die Garantie
+  „Turn endet in Text“ bleibt, der Prompt-Cache dieses einen Calls ist futsch.
+- **`forcedToolChoice` lügt unter dem `dropToolChoice`-Quirk (MiniMax).** `DEFAULT_CAPABILITIES` der
+  OpenAI-Adapter meldet `forcedToolChoice: true`, obwohl der Quirk auch
+  `{type:'required'|'tool'}` verschluckt — Card-Router und `#332`-Obligation
+  glauben dort an ein Forcing, das nie auf der Leitung landet. #1211 hat nur
+  `toolChoiceNone` ehrlich gemacht; die beiden anderen Pfade brauchen je eine
+  eigene Entscheidung (Capability ehrlich melden **und** Fallback bauen), darum
+  nicht mitgezogen.
+
 ### Credential-Broker: offen nach der Egress-Härtung (#778 S3a follow-up)
 
 S3a härtet Anfrage- und Antwortseite von `CredentialBroker.request`
@@ -5577,12 +5632,12 @@ confidence-Kanten mit Flag speichern, UI zeigt sie anders an.
 Feature ist lokal fertig (2026-04-19, siehe CHANGELOG für Architektur-Zusammenfassung). Offen:
 
 Platzhalter unten: `<middleware-app>`, `<kroki-app>`, `<kroki-mermaid-app>` sind die
-Fly-App-Namen der eigenen Installation, `<your-omadia-host>` deren öffentlicher
-Host — vor dem Ausführen durch die echten Werte ersetzen.
+Fly-App-Namen der eigenen Installation — vor dem Ausführen durch die echten
+Werte ersetzen.
 
 1. Zwei Fly-Apps `<kroki-app>` + `<kroki-mermaid-app>` mit flycast-only Services (keine öffentlichen IPs). Dockerfile/fly-toml vorbereiten, z.B. unter `kroki/`.
 2. Tigris-Bucket über `fly storage create -a <middleware-app>`, dann einmalig `PutBucketLifecycleConfigurationCommand` mit 90-Tage-Expiration.
-3. Fly-Secrets setzen: `DIAGRAM_URL_SECRET`, `KROKI_BASE_URL=http://<kroki-app>.flycast:8000`, `DIAGRAM_PUBLIC_BASE_URL=https://<your-omadia-host>`.
+3. Fly-Secrets setzen: `DIAGRAM_URL_SECRET`, `KROKI_BASE_URL=http://<kroki-app>.flycast:8000`, `DIAGRAM_PUBLIC_BASE_URL=https://<middleware-app>.fly.dev`.
 4. Smoke-Probe in Teams: "Flow A→B→C als Mermaid" → Card mit PNG.
 
 Lokale Reproduktion jederzeit via `docker compose up -d` + `npm run smoke:diagrams`.

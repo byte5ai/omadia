@@ -6,7 +6,7 @@ import type { ToolSmokeResult, AdminRouteSmokeResult } from './runtimeSmoke.js';
 import { FORBIDDEN_INTERNAL_PACKAGES } from './forbiddenInternalPackages.js';
 
 /**
- * Platform-issue triage (concept plan: docs/plans/native-issue-reporting.md).
+ * Platform-issue triage.
  *
  * Two-stage pipeline that decides whether a build/runtime failure
  * represents a platform bug worth reporting as a GitHub issue, or merely
