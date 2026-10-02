@@ -37,7 +37,7 @@
     "@types/pg": "^8.11.10",
     "electron": "^44.5.1",
     "electron-builder": "^26.17.0",
-    "esbuild": "^0.28.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.2"
   }
 }
