@@ -4245,37 +4245,31 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   ungeprüft ausliefert. Ändern sich Verdikt-Zustände, Trigger-Muster oder das
   Enforce-Verhalten, README „Answer verification“, §7c und die
   Verifier-Prüfungen in `docsClaimsGuard.test.ts` im selben PR mitziehen.
-- **`read_attachment` liest auch CSV-Uploads im Klartext.** Das Tool ist
-  intern-exempt und extrahiert `.csv` als Text aus den Original-Bytes im
-  Upload-Store, sobald das Modell den `storage_key` kennt (Teams listet ihn im
-  `[attachments-info]`-Block). Zellen, die der Dataset-Import derselben Datei
-  als PII verschlüsselt (`security-architecture.md` §6b), kommen so roh beim
-  Modell an, unabhängig von `mask_user_prompt`. Tabellarische Uploads dort
-  ablehnen und auf `query_dataset` verweisen, oder das Ergebnis für Tabellen
-  internieren.
+- **`read_attachment` und tabellarische Uploads — erledigt.** Das Tool lehnt
+  eine Tabelle (CSV, XLSX; `detectTabularFormat`, dieselbe Regel wie der
+  Attachment-Ingest, der Storage-Key ersetzt einen fehlenden Dateinamen) mit
+  einem `Error:` ab, der auf `query_dataset` verweist; die Beschreibung bietet
+  `.csv` nicht mehr an. Der automatische Ingest der Nachricht schickte schon
+  vorher keine Tabelle als `[attachment-content]`-Text: sie wird Dataset oder
+  abgelehnt. Tests: `test/readAttachmentTabular.test.ts`,
+  `test/orchestrator/tabularUploadPrivacy.test.ts`.
 - **Receipt-Verluste sichtbar machen.** `persistFailures` zählt nur im Prozess
   (`turnReceiptCounters()` in `src/receipts/store.ts`), kein Endpunkt meldet
   ihn. Ein werfendes `finalize()` zählt gar nicht (ein Turn, der wirft oder
   vor `done` endet, wird seit #1267 über `closeUndeliveredPass` trotzdem
   finalisiert). Zähler auf einer Operator-Oberfläche ausgeben und den
   `finalize()`-Fall mitzählen; erst dann darf das README „gezählt“ sagen.
-- **Channel-Verlauf bringt gerenderte Realwerte zum Modell (bestätigt).**
-  `priorTurns` laufen nur bei `mask_user_prompt` on durch die Prompt-Maske:
-  `maskPriorTurnsForWire` ruft `maskPromptForWire`, das bei `disabled` den
-  Text unverändert zurückgibt. Nach einem server-gerenderten v4-Turn
-  (`answerSource: 'privacy-render'`) trägt die ausgelieferte Antwort Realwerte
-  (`maskedValues`). Teams (`omadia-channel-teams`, `src/teamsBot.ts`:
-  `history.append` mit `answerText`, Folgeturn mit `priorTurns`) und Telegram
-  (`omadia-channel-telegram`, `src/telegramBot.ts`: `history.append` mit
-  `result.text`) bauen ihren Verlauf aus genau dieser Antwort, also sieht das
-  Modell die Werte im Folgeturn im Klartext, und zwar im Default. Der
-  In-Tree-Web-Chat setzt keine `priorTurns`; sein Recall liest das
-  Session-Log, das die Modellantwort vor dem Render speichert. Code-Unit:
-  wiederholte Assistant-Antworten unabhängig von `mask_user_prompt` maskieren
-  (mindestens die `maskedValues` eines gerenderten Turns), oder Channels eine
-  modellseitige Antwort zum Speichern als Verlauf mitgeben (ein Feld neben
-  `text` im `SemanticAnswer`, das die Channel-Plugins übernehmen). Danach
-  README, §6f und `docsClaimsGuard.test.ts` nachziehen.
+- **Channel-Verlauf und gerenderte Realwerte — erledigt.**
+  `maskPriorTurnsForWire` maskiert jede wiederholte Assistant-Antwort über
+  `maskReplayedAnswer` (`@omadia/plugin-api` 1.22.0, Privacy-Guard 0.7.0),
+  unabhängig von `mask_user_prompt`: C0-Identitätsmuster, Deny-Liste, C1,
+  über die Platzhalter-Map des Turns (Restore in der Antwort), als eigener
+  Egress des Turns gebucht; `blocked` lässt den Turn scheitern. Wiederholte
+  User-Nachrichten folgen weiter dem Flag. Offen: Ein Provider ohne
+  `maskReplayedAnswer` maskiert über `maskUserPrompt` (nur bei Flag an), und
+  der Abo-CLI-Replay (`CliChatAgent.maskHistory`, heute ohne Handle und damit
+  inert) maskiert Antworten noch über `maskUserPrompt`; beim Einbau eines
+  Handles dort (#1087) dieselbe Regel übernehmen.
 - **Plugin-Permissions sind keine Sandbox.** Die Manifest-`permissions`
   schalten nur die `PluginContext`-Accessoren frei. Ein Plugin läuft als
   vertrauenswürdiges JavaScript im Middleware-Prozess und erreicht globales

@@ -28,6 +28,7 @@ import {
   DEFAULT_IDEMPOTENCY_TTL_MS,
   ToolIdempotencyStore,
 } from '@omadia/orchestrator/dist/toolIdempotency.js';
+import { ReadAttachmentTool } from '@omadia/orchestrator/dist/tools/readAttachmentTool.js';
 import { verdictReleasesAnswer } from '@omadia/orchestrator/dist/verifierDelivery.js';
 import { isWriteCapableTool, PRIVACY_MODE_DEFAULT } from '@omadia/plugin-api';
 import {
@@ -233,41 +234,54 @@ describe('public security claims match the enforced behaviour', () => {
     );
   });
 
-  it('the docs say that replayed chat history reaches the model as typed by default', async () => {
+  it('the docs say that replayed user messages reach the model as typed by default, replayed answers masked', async () => {
     // With the shipped default the guard reports prompt masking `disabled`, and
-    // the orchestrator then hands every prompt text to the model unchanged
-    // (`maskPromptForWire`), the `priorTurns` a channel replays included. An
-    // answer the shield rendered carries real values, so a channel that stores
-    // it as history sends those values back on the next turn.
+    // the orchestrator hands the user's own words to the model unchanged
+    // (`maskPromptForWire`), the user messages a channel replays in
+    // `priorTurns` included. A replayed ANSWER goes through
+    // `maskReplayedAnswer` whatever the flag says: an answer the shield
+    // rendered carries real values the model never saw.
     const service = createPrivacyGuardService({
       readConfig: (key) => (key === MASK_USER_PROMPT_CONFIG_KEY ? maskDefault() : undefined),
     });
-    const outcome = await service.maskUserPrompt?.({
-      sessionId: 'docs-claims-session',
-      turnId: 'docs-claims-turn',
-      text: 'Earlier answer: Jane Doe, jane.doe@mail.example, owes 1.234,56 EUR.',
-    });
-    assert.equal(outcome?.outcome, 'disabled');
+    const turn = { sessionId: 'docs-claims-session', turnId: 'docs-claims-turn' };
+    const text = 'Earlier answer: Jane Doe, jane.doe@mail.example, owes 1.234,56 EUR.';
+    const asPrompt = await service.maskUserPrompt?.({ ...turn, text });
+    assert.equal(asPrompt?.outcome, 'disabled');
+    const asAnswer = await service.maskReplayedAnswer?.({ ...turn, text });
+    assert.equal(asAnswer?.outcome, 'masked');
+    assert.equal(
+      asAnswer?.outcome === 'masked' && asAnswer.maskedText.includes('jane.doe@mail.example'),
+      false,
+      'a replayed answer must reach the model without the e-mail address',
+    );
 
     const readme = read('README.md');
     const historySentences = sentencesMentioning(readme, '`priorTurns`');
     assert.ok(
-      historySentences.some((sentence) => /\bas typed\b/i.test(sentence)),
-      `README must say that the replayed chat history (\`priorTurns\`) reaches the model as typed; mentions: ${JSON.stringify(historySentences)}`,
+      historySentences.some(
+        (sentence) => /\bas typed\b/i.test(sentence) && /\buser messages\b/i.test(sentence),
+      ),
+      `README must say that the user messages a channel replays (\`priorTurns\`) reach the model as typed; mentions: ${JSON.stringify(historySentences)}`,
     );
+    const answerSentences = sentencesMentioning(readme, 'answers a channel replays');
     assert.ok(
-      /\breplays\b[^.]*\breal values\b/i.test(flatten(readme)),
-      'README must say that a replayed answer carries the real values the shield rendered into it',
+      answerSentences.some(
+        (sentence) => /\bmasked\b/i.test(sentence) && /\bwhatever the settings\b|\bon or off\b/i.test(sentence),
+      ),
+      `README must say that the answers a channel replays are masked whatever the settings; mentions: ${JSON.stringify(answerSentences)}`,
     );
     const security = read('docs/security-architecture.md');
-    const renderSentences = sentencesMentioning(security, '`priorTurns`');
+    const replaySentences = sentencesMentioning(security, '`maskReplayedAnswer`');
     assert.ok(
-      renderSentences.some((sentence) => sentence.includes('`maskedValues`')),
-      `docs/security-architecture.md must say that a replayed rendered answer hands its \`maskedValues\` to the model; mentions: ${JSON.stringify(renderSentences)}`,
+      replaySentences.some(
+        (sentence) => sentence.includes('`priorTurns`') && sentence.includes('`mask_user_prompt`'),
+      ),
+      `docs/security-architecture.md must say that replayed answers go through \`maskReplayedAnswer\` independent of \`mask_user_prompt\`; mentions: ${JSON.stringify(replaySentences)}`,
     );
   });
 
-  it('the docs name the results that reach the model without a digest', () => {
+  it('the docs name the results that reach the model without a digest', async () => {
     const readme = read('README.md');
 
     // Intern-exempt tools hand their results to the model as returned. The
@@ -281,6 +295,27 @@ describe('public security claims match the enforced behaviour', () => {
     assert.ok(
       exemptSentences.some((sentence) => /\bin clear\b/i.test(sentence)),
       `README must say that \`read_attachment\` results reach the model in clear; mentions: ${JSON.stringify(exemptSentences)}`,
+    );
+    // ...apart from a table, which it refuses: an uploaded table's cells reach
+    // the model only through `query_dataset`.
+    const refusal = await new ReadAttachmentTool({
+      readByStorageKey: async () => ({
+        bytes: Buffer.from('name,email\nJane Doe,jane.doe@mail.example\n', 'utf8'),
+        contentType: 'text/csv',
+        fileName: 'contacts.csv',
+      }),
+      readByUrl: async () => undefined,
+    }).handle({ storage_key: 'uploads/contacts.csv' });
+    assert.match(refusal, /^Error: /);
+    assert.ok(refusal.includes('query_dataset') && !refusal.includes('jane.doe@mail.example'));
+    assert.ok(
+      exemptSentences.some((sentence) => /\brefuses\b/i.test(sentence) && sentence.includes('`query_dataset`')),
+      `README must say that \`read_attachment\` refuses tables and points to \`query_dataset\`; mentions: ${JSON.stringify(exemptSentences)}`,
+    );
+    const tableSentences = sentencesMentioning(security, '`query_dataset`');
+    assert.ok(
+      tableSentences.some((sentence) => /\brefuses\b/.test(sentence) && /\btable\b/i.test(sentence)),
+      `docs/security-architecture.md must say that \`read_attachment\` refuses a table; mentions: ${JSON.stringify(tableSentences)}`,
     );
 
     // A result the shield cannot intern is withheld at every seam: the model
