@@ -15,7 +15,6 @@ export {
   supportsForcedToolChoice,
   supportsTemperature,
   EFFORT_BETA,
-  SERVER_SIDE_FALLBACK_BETA,
   type AnthropicProviderOptions,
 } from './anthropicProvider.js';
 

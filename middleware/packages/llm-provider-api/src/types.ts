@@ -160,17 +160,6 @@ export interface LlmRequest {
    * parameter; the adapter emits the current `output_config.format` shape.
    */
   readonly outputFormat?: OutputFormat;
-  /**
-   * Opt into the vendor's SERVER-side refusal fallback (#1219). `'default'`
-   * lets the vendor route a declined turn to a suitable other model by refusal
-   * category, so no model list has to be maintained here.
-   *
-   * Off unless a caller asks: a fallback silently answers on a different model,
-   * which is the right trade for a chat turn and the wrong one for a judge or
-   * an extractor whose output is compared across runs. Adapters without the
-   * concept ignore it — the turn then comes back as a normal refusal.
-   */
-  readonly fallbacks?: 'default';
 }
 
 /**

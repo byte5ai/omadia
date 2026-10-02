@@ -16,7 +16,6 @@ import {
   requiresEffortBeta,
   supportsForcedToolChoice,
   EFFORT_BETA,
-  SERVER_SIDE_FALLBACK_BETA,
 } from '@omadia/llm-adapter-anthropic';
 import {
   collectText,
@@ -956,40 +955,6 @@ test('a refusal surfaces stop_details; every other stop reason carries none', as
 
   const normal = await ask();
   assert.equal(normal.refusal, undefined);
-});
-
-test('fallbacks is opt-in and carries its beta', async () => {
-  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
-  const client = {
-    messages: {
-      create: async (params: Record<string, unknown>, options?: unknown) => {
-        calls.push({ params, options });
-        return textResponse();
-      },
-    },
-  } as unknown as Anthropic;
-  const provider = createAnthropicProvider({ client });
-
-  await provider.complete({
-    model: 'claude-opus-5-5',
-    maxTokens: 64,
-    fallbacks: 'default',
-    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
-  });
-  assert.equal(calls[0]?.params['fallbacks'], 'default');
-  assert.deepEqual(calls[0]?.options, {
-    headers: { 'anthropic-beta': SERVER_SIDE_FALLBACK_BETA },
-  });
-
-  // Not asked for → neither the param nor the beta, so no turn silently
-  // answers on another model.
-  await provider.complete({
-    model: 'claude-opus-5-5',
-    maxTokens: 64,
-    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
-  });
-  assert.equal('fallbacks' in (calls[1]?.params ?? {}), false);
-  assert.equal(calls[1]?.options, undefined);
 });
 
 test('requiresEffortBeta matches only the Opus 4.5 family', () => {

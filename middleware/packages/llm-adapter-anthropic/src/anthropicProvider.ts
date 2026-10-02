@@ -367,9 +367,6 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
     // #1219 — `outputFormat` shares that object, so both are built together:
     // two spreads would make the second overwrite the first.
     ...(outputConfig !== undefined ? { output_config: outputConfig } : {}),
-    // #1219 — server-side refusal fallback. `'default'` routes by refusal
-    // category, so no model list is maintained here and none goes stale.
-    ...(req.fallbacks !== undefined ? { fallbacks: req.fallbacks } : {}),
   };
 }
 
@@ -400,10 +397,6 @@ function toOutputConfig(req: LlmRequest): Record<string, unknown> | undefined {
   };
   return Object.keys(cfg).length > 0 ? cfg : undefined;
 }
-
-/** The beta that unlocks the server-side refusal fallback (`fallbacks`).
- *  Attached only when a caller opts in, so the common path is untouched. */
-export const SERVER_SIDE_FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
 /** The beta that unlocked `output_config.effort`. Attached only when a request
  *  carries an effort AND the model still needs the opt-in, so the common path
@@ -442,10 +435,6 @@ function toRequestOptions(
     requiresEffortBeta(req.model) &&
     !(req.betas ?? []).includes(EFFORT_BETA)
       ? [EFFORT_BETA]
-      : []),
-    ...(req.fallbacks !== undefined &&
-    !(req.betas ?? []).includes(SERVER_SIDE_FALLBACK_BETA)
-      ? [SERVER_SIDE_FALLBACK_BETA]
       : []),
   ];
   return betas.length > 0

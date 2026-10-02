@@ -1732,21 +1732,18 @@ tool maps exactly that type to a fixed, harness-authored notice with the
 `Error:` prefix — "the `ask_…` sub-agent's model declined this question for
 safety reasons (category …)" — so the parent can rephrase or tell the user. The
 error's message never reaches the model; every other exception keeps the
-withheld notice. `LlmRequest.fallbacks: 'default'` opts into the vendor's server-side
-refusal fallback (routing by category, so no model list goes stale here) and
-attaches `server-side-fallback-2026-07-01`. It is off unless a caller asks: a
-fallback answers on a different model, which is right for a chat turn and wrong
-for a judge or an extractor whose output is compared across runs. No route
-enables it.
+withheld notice.
 
 Not applied from the same audit: the `MANDATORY:` markers in the high-tier
 sycophancy guard are deliberately byte-identical to the upstream kemia source
 (`sycophancyGuard.test.ts` asserts exactly that, alongside the preset tests
 that lock kemia byte-identity), so rewording them would fork the mirror
-silently. The audit's remaining items — the conductor word caps, the incident
-histories in `builder-system.md` and the shipped boilerplate, the JSON-only
-pressure wording, and moving the repo agent-rule files out — are tracked
-separately.
+silently. The vendor's server-side refusal fallback is not wired either: no
+route would enable it yet, and its response side (dropping a pre-fallback
+tool_use, summing `usage.iterations`) does not exist. The audit's remaining
+items — the conductor word caps, the incident histories in `builder-system.md`
+and the shipped boilerplate, the JSON-only pressure wording, and moving the
+repo agent-rule files out — are tracked separately.
 
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
