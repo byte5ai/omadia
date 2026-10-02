@@ -741,7 +741,7 @@ one rule about what counts as a runtime.
   Electron 37 build, a runtime without further Electron security fixes; an
   OS update is the only remedy. Only builds that carry the handler can say
   this, so a raised floor ships its message first, in a release the held-back
-  OS can still install (for macOS 13: v0.167.9 through v0.167.13, the last
+  OS can still install (for macOS 13: v0.167.9 through v0.167.14, the last
   release built on Electron 37).
 
 ## 5. Signed artefact URLs
@@ -4804,13 +4804,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       embedded Node major in the same PR. Before it merges, a `desktop-apps.yml`
       dispatch build of the PR branch (throwaway tag) has passed on all four
       targets, including "Verify native modules load under the Electron ABI"
-      and afterPack's check of the macOS update floor (§4a): a push to `main`
-      releases through that same workflow. That build has also been installed
-      over the current release on macOS, Windows and Linux, each on a machine
-      or user account without a productive omadia install (a fresh install of
-      the current release first), with `secrets.enc` left byte-identical: the
-      new runtime's `safeStorage` decrypts the vault key, and a runtime that
-      cannot must stop the app, never re-key it. Never on real data: a build
+      and afterPack's checks of the packaged runtime and the macOS update floor
+      (§4a): a push to `main` releases through that same workflow. That build
+      has also passed `desktop-upgrade-smoke.yml` (`desktop/README.md`): a fresh
+      install and an install over the latest release on macOS, Windows and
+      Linux, with `secrets.enc` left byte-identical. The new runtime's
+      `safeStorage` has to decrypt the vault key, and a runtime that cannot must
+      stop the app, never re-key it. A build is never tried on real data: one
       installed by hand takes no pre-update snapshot (only the updater's
       install preflight does), and its kernel migrations run forward-only.
 - [ ] A sentence in the README, `docs/architecture.md`, this document or

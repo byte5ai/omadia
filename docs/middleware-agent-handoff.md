@@ -4054,78 +4054,28 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   Eintrag in `scripts/copy-build-assets.mjs` + dieser CI-Schritt + der Pfad in
   `test/mcpDelegationBackfillMigration.pg.test.ts` (liest das Verzeichnis und nennt es noch
   „live migration series“); das Dockerfile kopiert es nicht.
-- **Desktop-Refresh (Electron 44.5.1, electron-builder 26.17.0): Release-Build vor dem Merge
-  prüfen, Required Check erst danach.** `desktop` ist das dritte Bein der Audit-Matrix und
-  `npm audit` dort bei 0. Ein Push auf `main` startet `auto-release.yml`, das die Installer im
-  selben Lauf baut, signiert und samt Update-Feeds an ein Release hängt. Der erste echte Lauf von
-  sieben Electron-Majors, des macOS-Signatur-Umwegs unter electron-builder 26, des Azure-
-  `publisherName` und des `minimumSystemVersion`-Felds in `latest-mac.yml` darf deshalb kein
-  User-Release sein.
-  **Vorher auf `main` — erledigt:** (0a) **Brücken-Release — erledigt.** Der Updater-Hinweis
-  (`updateHoldBack.ts`, die `update-not-available`-Behandlung in `updater.ts`, Strings, Tests;
-  CHANGELOG-Eintrag „desktop updater: an update the OS is too old for …“) hängt nicht an
-  Electron 44, kam mit #1257 auf `main` und ist mit v0.167.9 veröffentlicht (kein Draft,
-  2026-10-01), gebaut noch auf Electron 37 wie jedes Release vor diesem Merge (v0.167.10
-  ebenso). Nur Installationen ab v0.167.9 sagen auf macOS 11/12 „omadia X braucht macOS 13“ —
-  der alte Handler meldet den Hold-back als „bereits aktuell“ und zeigt die Feed-Version als
-  eigene. Wie lange man vor dem Merge noch wartet, ist eine Produktentscheidung, denn jede
-  macOS-11/12-Installation, die bis dahin kein Release ab v0.167.9 installiert hat, meldet
-  weiter „aktuell“.
-  (0b) **Secrets-Fix — seit #1257 auf `main`.** Dieser Branch tauscht das Electron, dessen
-  `safeStorage` die Datei entschlüsselt (37 → 44; laut Electrons Breaking-Changes-Liste ohne
-  `safeStorage`-Änderung in 38–44, aber ungetestet). Der Fix „fix: keep an unreadable desktop
-  secrets file instead of re-keying“ (samt `secrets.enc` im Pre-Update-Snapshot) ist mit #1257
-  auf `main` und seit v0.167.9 ausgeliefert, das erste Electron-44-Release trägt ihn also: Ein
-  fehlgeschlagenes Entschlüsseln hält die App mit dem Secrets-Dialog an, statt neue Schlüssel
-  zu erzeugen.
-  **Vor dem Merge**, Run-IDs in den PR — offen, und für den mit `main` integrierten Stand
-  dieses PRs (eingebettetes Postgres aus #1264 eingeschlossen) neu zu machen; Läufe von
-  früheren Ständen des Refresh-Branches zählen nicht: (1) einen Wegwerf-Tag auf den Branch-Head
-  setzen und pushen (semver, z. B. `v0.0.0-desktop-refresh.1`; kein Workflow startet auf
-  Tag-Pushes) und `desktop-apps.yml` per `workflow_dispatch` vom Branch mit
-  `tag=<Wegwerf-Tag>` und `notarize=false` starten. Ohne Release zu diesem Tag lädt der Lauf
-  nichts hoch. Alle vier
-  Targets müssen grün sein; genau hinsehen bei „Verify native modules load under the Electron
-  ABI“, bei afterPack (prüft jetzt `LSMinimumSystemVersion` gegen den Feed-Floor), beim
-  Pre-warm-Schritt, der `WIN_PUBLISHER_NAME` aus dem Azure-Zertifikat liest, bei der
-  Windows-Signaturprüfung gegen `app-update.yml` und beim Job `mac-update-feed` (das gemergte
-  `latest-mac.yml` trägt `minimumSystemVersion: 22.0.0`). (2) Die arm64-App aus diesem Lauf
-  einmal starten, auf einem Mac ohne produktive omadia-Installation (gleiches Datenverzeichnis):
-  Wizard → Kernel und Web-UI laufen → Update-Check. Nicht notarisiert, also Rechtsklick →
-  Öffnen; der Update-Check findet das aktuelle Release, den Neustart ablehnen. (2b)
-  **Upgrade-Lauf je Plattform** — macOS arm64, Windows x64, Linux-AppImage mit
-  gnome-keyring/libsecret —, jeweils auf einem Rechner oder Benutzerkonto ohne produktive
-  omadia-Installation: das neueste Release vor dem Merge installieren, frühestens v0.167.13
-  (Stand 2026-10-01 auch das letzte auf Electron 37), Einrichtung abschließen, einen
-  Provider-Key speichern; dann `sha256` von `secrets.enc` (macOS
-  `~/Library/Application Support/omadia/`, Windows `%APPDATA%\omadia\`, Linux
-  `~/.config/omadia/`, sofern kein eigener Datenordner gewählt wurde) und den Schlüssel aus
-  Hilfe → „Wiederherstellungsschlüssel anzeigen…“ notieren. Den Build aus (1) darüber
-  installieren und starten. Bestanden: kein Boot-Fehler-Dialog, Kernel und Web-UI laufen, der
-  gespeicherte Provider-Key funktioniert, `secrets.enc` hat denselben Hash, der
-  Wiederherstellungsschlüssel ist derselbe, und `logs/omadia-desktop.log` im userData-Ordner
-  enthält keine Zeile `[secrets] … failed for …`. Ein Release vor v0.167.13 taugt nicht als
-  Ausgangspunkt: Erst #1264 legt die Datenbank-Passwörter in `secrets.enc` ab, über einem
-  älteren Release schreibt der erste Start des Builds sie hinein (`embeddedDbCredentials()` in
-  `desktop/src/secrets.ts`), und „derselbe Hash“ prüft dann nichts mehr. Fragt macOS beim
-  ersten Start nach dem Schlüsselbund, passt die Code-Signatur des Builds nicht mehr zu der des
-  Releases; das träfe jede Installation beim Update und zählt als Fehlschlag. Schlägt etwas
-  davon fehl: nicht mergen. Danach den Wegwerf-Tag löschen. (2c) Als letzten Commit vor dem Merge im
-  CHANGELOG-Eintrag „desktop dependencies refreshed to Electron 44 …“ die Vor-dem-Merge-Sätze
-  („Before this merges …“ bis „… whatever data folder it finds.“) durch die Run-ID des
-  validierenden `desktop-apps.yml`-Laufs aus (1) und die Ergebnisse aus (2) und (2b) ersetzen
-  (je Plattform bestanden, `secrets.enc`-Hash und Wiederherstellungsschlüssel unverändert);
-  sonst liest sich die Anweisung in der Historie, als stünde sie noch aus. Im selben Commit die
-  Versionsangaben gegen die Tags auf `main` prüfen: Die Überschrift „Upgrading past v0.167.13 —
-  desktop app: macOS 13 …“ in `docs/upgrading.md` nennt den letzten Tag vor dem Merge; der
-  Abschnitt darunter (Einleitung und macOS-11/12-Absatz) und der Hold-back-Absatz in
-  `docs/security-architecture.md` §4a („v0.167.9 through v0.167.13“) nennen das letzte
-  veröffentlichte Release auf Electron 37 (Stand 2026-10-01 jeweils v0.167.13, dessen
-  Auto-Release noch lief). Ist seither ein Release dazugekommen oder v0.167.13 ein Draft
-  geblieben, diese Stellen nachziehen.
-  **Nach dem Merge** (Admin): (3) den Kontext `audit (high+critical block) (desktop)`, am besten
-  zusammen mit `desktop (typecheck + test)`, in die Branch-Protection von `main` aufnehmen und
-  per `GET /repos/byte5ai/omadia/branches/main/protection/required_status_checks` prüfen.
+- **Desktop-Refresh (Electron 44.5.1, electron-builder 26.17.0) — erledigt (#1259).** `desktop` ist
+  das dritte Bein der Audit-Matrix, `npm audit` dort bei 0. Weil jeder Push auf `main` über
+  `auto-release.yml` sofort ein signiertes Release samt Update-Feeds baut, lief der Refresh vor dem
+  Merge als Dispatch-Build mit Wegwerf-Tag und durch `desktop-upgrade-smoke.yml` (#1270). Der Smoke
+  ersetzt die früher manuellen Schritte (2) und (2b): frische GitHub-Runner (macOS arm64, Windows x64
+  mit Basic-User-Token, Linux-AppImage mit gnome-keyring), keine produktive Installation.
+  (0a)/(0b) Brücken-Release v0.167.9 mit Hold-back-Hinweis und Secrets-Fix. (1) Der erste
+  Dispatch-Build (36899325147) war in allen Targets grün und trotzdem nicht startfähig: electron-builder
+  26 lässt das oberste `node_modules` jeder `extraResources`-Quelle weg (`app-builder-lib`
+  `util/filter.js`), der Kernel starb mit `ERR_MODULE_NOT_FOUND`. Gefunden hat das der erste
+  Smoke-Lauf (36981332723). Fix: eigene `extraResources`-Einträge für beide `node_modules`, Ausschluss
+  in den Eltern-Einträgen, `afterPack` prüft das Paket auf jeder Plattform, und
+  `scripts/check-packaged-runtime.test.mjs` lässt den Block durch electron-builders eigenen Kopiercode
+  laufen. Finaler Build 36984867502 (Tag `v0.0.0-desktop-refresh.5`), alle vier Targets grün.
+  (2)/(2b) Smoke-Lauf 36989068863: frische Installation und Upgrade über v0.167.14 auf allen drei
+  Plattformen grün, `secrets.enc` byte-identisch, jedes gespeicherte Secret feldweise gleich,
+  Recovery-Key unverändert, Provider-Key verifiziert. (2c) dieser Eintrag, CHANGELOG, `docs/upgrading.md`
+  und §4a nennen v0.167.14 als letztes Release auf Electron 37. (3) Required Checks
+  `audit (high+critical block) (desktop)` und `desktop (typecheck + test)` nach dem Merge.
+  **Nächster Electron-Major:** Dispatch-Build mit Wegwerf-Tag, dann `desktop-upgrade-smoke.yml` mit
+  dessen Run-ID (`desktop/README.md` § Install and upgrade smoke); nie auf einer produktiven
+  Installation.
 - **Synchrones `safeStorage` endet mit Electron 46.** Electron 45 markiert
   `safeStorage.isEncryptionAvailable`/`encryptString`/`decryptString` als deprecated, Electron 46
   entfernt sie zusammen mit Chromiums synchronem OSCrypt-Backend (Electron

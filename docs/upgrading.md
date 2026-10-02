@@ -343,17 +343,17 @@ bump: it holds the data volume, exactly as with the compose stack.
 
 The desktop app's runtime moved from Electron 37 to Electron 44 (2026-09-30).
 Electron 44 does not run on macOS 12 or earlier, and the packaged app declares
-macOS 13 (Ventura) as its minimum. v0.167.13 is the last release built on
+macOS 13 (Ventura) as its minimum. v0.167.14 is the last release built on
 Electron 37.
 
 - **macOS 11 and 12:** the update feed declares macOS 13 as its minimum, so
   these Macs are no longer offered updates. Each keeps the version it runs;
-  the newest one that still starts there is v0.167.13, which gets no further
+  the newest one that still starts there is v0.167.14, which gets no further
   Electron security fixes. The updater of every release from v0.167.9 on says
   so: once at startup when the first Electron 44 release appears, and on every
   "Check for Updates…" ("omadia X needs macOS 13 or later"). An app still on a
   release before v0.167.9 reports "already on the latest version" instead,
-  because its updater predates the notice; install v0.167.13 by hand to get
+  because its updater predates the notice; install v0.167.14 by hand to get
   it. Updating macOS to 13 or later brings the next update. An app installed
   by hand from a newer DMG does not start on macOS 11 or 12.
 - **Windows:** nothing to do. From this build on, the app pins the publisher

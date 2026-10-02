@@ -85,26 +85,24 @@ stopped at the first start with `ERR_MODULE_NOT_FOUND`. Both folders are now
 `extraResources` entries of their own. `afterPack` fails a package that lacks
 what the kernel or the web UI loads at startup, on every platform, and a test
 runs the `extraResources` block through electron-builder's own copy code.
-Before this merges, a `desktop-apps.yml` dispatch build of the branch
-(throwaway tag, `notarize=false`) has to pass on all four targets and its arm64
-app has to start (wizard, kernel and web-ui up, update check): a push to `main`
-releases through the same workflow, so its first run must not be a
-user-facing release. That build is also installed over the current release on
-macOS, Windows and Linux, and `secrets.enc` has to come through byte-identical
-with the same recovery key: the runtime that decrypts it moves from Electron
-37's `safeStorage` to Electron 44's. The arm64 start and the upgrade installs
-run only on a machine or user account without a productive omadia install
-(for an upgrade run, the current release is freshly installed there first): a
-build installed by hand takes no pre-update snapshot, and its kernel
-migrations run forward-only on whatever data folder it finds. The fix that
+Before it merged, a `desktop-apps.yml` dispatch build of the branch (run
+36984867502, throwaway tag, `notarize=false`) passed on all four targets,
+because a push to `main` releases through the same workflow.
+`desktop-upgrade-smoke.yml` (entry below) then ran that build on clean macOS
+arm64, Windows x64 and Linux runners (run 36989068863). A fresh install finished
+the wizard, ran the kernel and the web UI, signed in, verified the stored
+provider key and read the release feed. Installed over v0.167.14, the build
+started without a failure and kept `secrets.enc` byte-identical and the recovery
+key unchanged, although the runtime that decrypts the file moved from Electron
+37's `safeStorage` to Electron 44's. The stored key still verified. The fix that
 keeps an unreadable `secrets.enc` and stops the app instead of re-keying it
-shipped before this change, in v0.167.9 (entry below), so a file the new
-runtime cannot decrypt stops the app at the secrets dialog instead of losing
-the vault, the credential keychain and the provider keys. The updater fix
-(entry below) landed on `main` first as well and shipped in the same release,
-built on Electron 37 like every release before this change. After the merge an
-admin adds the `audit (high+critical block) (desktop)` context to `main`'s
-required checks (handoff §13).
+shipped before this change, in v0.167.9 (entry below), so a file the new runtime
+cannot decrypt stops the app at the secrets dialog instead of losing the vault,
+the credential keychain and the provider keys. The updater fix (entry below)
+landed on `main` first as well and shipped in the same release, built on
+Electron 37 like every release before this change. With this merge `audit
+(high+critical block) (desktop)` and `desktop (typecheck + test)` become
+required checks on `main` (handoff §13).
 
 ### Added — a smoke test that installs desktop builds and upgrades them over a release
 
