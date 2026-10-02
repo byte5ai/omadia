@@ -21,6 +21,7 @@ import {
   collectText,
   textMessage,
   type LlmProvider as NeutralLlmProvider,
+  type RefusalDetails,
 } from '@omadia/llm-provider';
 import type {
   LlmCompleteRequest,
@@ -35,11 +36,18 @@ export interface AnthropicLlmProviderOptions {
 
 /** Neutral finishReason → legacy v1 `stopReason` union. The raw vendor
  *  value wins when it is one of the legacy literals (preserves
- *  `stop_sequence`, which the neutral union collapses into `stop`). */
+ *  `stop_sequence`, which the neutral union collapses into `stop`). A
+ *  refusal (#1219) is a neutral `'stop'` and used to come out as
+ *  `'end_turn'` — a decline reported as a normal turn end; the neutral
+ *  `refusal` object is the signal, so it wins over every other mapping. */
 function toLegacyStopReason(
   finishReason: 'stop' | 'tool_calls' | 'max_tokens',
   providerFinishReason: string | undefined,
+  refusal: RefusalDetails | undefined,
 ): LlmCompleteResult['stopReason'] {
+  if (refusal !== undefined || providerFinishReason === 'refusal') {
+    return 'refusal';
+  }
   if (
     providerFinishReason === 'end_turn' ||
     providerFinishReason === 'max_tokens' ||
@@ -92,6 +100,14 @@ export function createLlmProviderFromNeutral(
       log(
         `complete ok model=${response.model} in=${String(response.usage.inputTokens)} out=${String(response.usage.outputTokens)} ms=${String(elapsed)}`,
       );
+      // #1219 — only the category crosses into the plugin contract; the
+      // vendor's free-text explanation stays in this log line.
+      const refusal = response.refusal;
+      if (refusal !== undefined) {
+        log(
+          `complete declined by the model's safety classifiers model=${response.model} category=${refusal.category ?? 'none'}`,
+        );
+      }
       return {
         text: collectText(response.content),
         model: response.model,
@@ -101,7 +117,16 @@ export function createLlmProviderFromNeutral(
         stopReason: toLegacyStopReason(
           response.finishReason,
           response.providerFinishReason,
+          refusal,
         ),
+        ...(refusal !== undefined
+          ? {
+              refusal:
+                refusal.category !== undefined
+                  ? { category: refusal.category }
+                  : {},
+            }
+          : {}),
       };
     },
   };

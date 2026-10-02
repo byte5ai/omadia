@@ -1715,7 +1715,11 @@ migrated onto it yet; that is a decision per call site.
 a `bio` decline and a `reasoning_extraction` one looked identical.
 `LlmResponse.refusal` now carries the category and explanation, gated on
 `stop_reason` because the API leaves `stop_details` null on every other outcome.
-The chat path was already honest about refusals (`MODEL_REFUSAL_NOTICE`), but
+It travels through the orchestrator's provider seam, so the chat loop and
+`LocalSubAgent` log the category with the refusal, and `ctx.llm.complete`
+reports it to plugins as `LlmCompleteResult.refusal` (category only) with
+`stopReason: 'refusal'` — the plugin wrapper used to call a decline `end_turn`
+(`@omadia/plugin-api` 1.22.0). The chat path was already honest about refusals (`MODEL_REFUSAL_NOTICE`), but
 `LocalSubAgent` reported one as "returned an empty answer", which reads as a
 harness bug — and the delegation tool turns every exception from a sub-agent
 into the data-free withheld notice, so the parent model only learned that a

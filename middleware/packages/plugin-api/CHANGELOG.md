@@ -10,7 +10,8 @@ implements, is a major.
 
 ## 1.22.0 — 2026-10-02
 
-Additive: one optional field on a request type (#1219).
+Additive (#1219): an optional field on the request, an optional field on the
+result, and one more literal on the deprecated `stopReason`.
 
 ### Added
 
@@ -28,6 +29,22 @@ Additive: one optional field on a request type (#1219).
   per model that it dropped it.
 
   Optional and additive — existing plugins are unaffected.
+
+- **`LlmCompleteResult.refusal?: { category?: string }`** — set when the
+  model's safety classifiers declined the request. The call still succeeds and
+  `finishReason` is `'stop'`, but `text` is empty or only a fragment, so a
+  plugin that reads `text` as the answer should check this first. `category`
+  is the provider's reason (`bio`, `cyber`, …) — an open set that may be
+  absent, so never switch on it exhaustively. Only the category crosses the
+  contract; the provider's free-text explanation stays in the host log.
+
+### Changed
+
+- **`LlmCompleteResult.stopReason`** (deprecated) gains `'refusal'`. A decline
+  used to come back as `'end_turn'`, indistinguishable from a normal turn end.
+  Comparing against the existing literals keeps compiling; a plugin that
+  switches exhaustively over this field needs one more arm — or, better, moves
+  to `finishReason` plus `refusal`.
 
 ## 1.21.0 — 2026-10-01
 

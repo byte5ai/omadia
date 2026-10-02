@@ -1812,7 +1812,10 @@ readonly model: string;
 readonly inputTokens: number;
 readonly outputTokens: number;
 readonly finishReason: 'stop' | 'tool_calls' | 'max_tokens';
-readonly stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use';
+readonly stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use' | 'refusal';
+readonly refusal?: {
+readonly category?: string;
+};
 }
 export declare class LlmServiceUnavailableError extends Error {
 constructor(callerAgentId: string);

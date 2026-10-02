@@ -1653,6 +1653,21 @@ export function finalAnswerText(
 }
 
 /**
+ * #1219 — the refusal clause of the non-`end_turn` finalize log line, so a
+ * declined turn says WHY (`bio`, `cyber`, …; the seam carries the vendor's
+ * category) instead of only that it was declined. Empty for every other
+ * stop reason.
+ */
+function refusalLogClause(message: {
+  readonly stop_reason?: unknown;
+  readonly refusal?: { readonly category?: unknown };
+}): string {
+  if (message.stop_reason !== 'refusal') return '';
+  const category = message.refusal?.category;
+  return ` refusal_category=${typeof category === 'string' ? category : 'none'}`;
+}
+
+/**
  * #579 — fail-open evidence. Fold the untrusted-data marker into the turn's
  * `extraSystemHint` (a non-cached system block, wire-only — NOT persisted to the
  * session log, honouring "persist raw, disclose at boundary"), so an
@@ -5801,7 +5816,7 @@ export class Orchestrator {
           // a normal turn end.
           if (response.stop_reason !== 'end_turn') {
             console.error(
-              `[orchestrator] finalized with stop_reason=${String(response.stop_reason)} ` +
+              `[orchestrator] finalized with stop_reason=${String(response.stop_reason)}${refusalLogClause(response)} ` +
                 `iterations=${iteration + 1}/${this.maxIterations}` +
                 (responseHasToolUse
                   ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'
@@ -7112,7 +7127,7 @@ export class Orchestrator {
           // cut mid-tool_use silently drops the calls of this response.
           if (finalMessage.stop_reason !== 'end_turn') {
             console.error(
-              `[orchestrator] finalized with stop_reason=${String(finalMessage.stop_reason)} ` +
+              `[orchestrator] finalized with stop_reason=${String(finalMessage.stop_reason)}${refusalLogClause(finalMessage)} ` +
                 `iterations=${iteration + 1}/${this.maxIterations}` +
                 (responseHasToolUse
                   ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'

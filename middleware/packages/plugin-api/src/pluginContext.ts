@@ -1872,19 +1872,32 @@ export interface LlmCompleteResult {
   readonly outputTokens: number;
   /** Provider-neutral completion-end signal — branch on THIS, not the legacy
    *  vendor `stopReason`. `end_turn`/`stop_sequence` collapse to `'stop'`;
-   *  `tool_use` → `'tool_calls'`. Always populated by the host. */
+   *  `tool_use` → `'tool_calls'`. A refusal is a `'stop'` too: check
+   *  {@link LlmCompleteResult.refusal} before treating an empty or short
+   *  `text` as the model's answer. Always populated by the host. */
   readonly finishReason: 'stop' | 'tool_calls' | 'max_tokens';
   /**
    * @deprecated Anthropic-specific stop reason, kept for v1 back-compat. Use
    * `finishReason` instead — it is provider-neutral. Still populated by the
    * host (the Anthropic adapter passes its raw value through) and remains
-   * valid for installs pinned to Anthropic.
+   * valid for installs pinned to Anthropic. `'refusal'` (1.22.0) when the
+   * model's safety classifiers declined the request — formerly reported as
+   * `'end_turn'`.
    */
   readonly stopReason:
     | 'end_turn'
     | 'max_tokens'
     | 'stop_sequence'
-    | 'tool_use';
+    | 'tool_use'
+    | 'refusal';
+  /**
+   * Set when the model's safety classifiers declined the request (#1219). The
+   * call still succeeds, but `text` is then empty or only a fragment — not an
+   * answer. `category` is the provider's reason (`bio`, `cyber`, …), an OPEN
+   * set that may be absent: never switch on it exhaustively. Absent on every
+   * other outcome.
+   */
+  readonly refusal?: { readonly category?: string };
 }
 
 export class LlmServiceUnavailableError extends Error {

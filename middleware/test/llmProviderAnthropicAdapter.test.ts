@@ -650,6 +650,52 @@ test('legacy plugin wrapper preserves stop_sequence', async () => {
   assert.equal(res.stopReason, 'stop_sequence');
 });
 
+test('legacy plugin wrapper reports a refusal as refusal, with its category only (#1219)', async () => {
+  const lines: string[] = [];
+  const provider = createAnthropicLlmProvider({
+    client: mockClient(
+      {},
+      textResponse({
+        content: [],
+        stop_reason: 'refusal',
+        stop_details: { type: 'refusal', category: 'cyber', explanation: 'vendor prose' },
+      }),
+    ),
+    log: (...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    },
+  });
+  const res = await provider.complete({
+    model: 'claude-haiku-4-5-20251001',
+    messages: [{ role: 'user', content: 'Hi' }],
+  });
+  // Was `end_turn`: a decline reported as a normal turn end.
+  assert.equal(res.stopReason, 'refusal');
+  assert.equal(res.finishReason, 'stop');
+  assert.equal(res.text, '');
+  // Only the category crosses the plugin contract — not the explanation.
+  assert.deepEqual(res.refusal, { category: 'cyber' });
+  assert.ok(lines.some((l) => l.includes('category=cyber')), lines.join('\n'));
+
+  // No category: the object is still there, because its presence is the signal.
+  const bare = await createAnthropicLlmProvider({
+    client: mockClient(
+      {},
+      textResponse({ content: [], stop_reason: 'refusal', stop_details: null }),
+    ),
+    log: () => {},
+  }).complete({ model: 'claude-haiku-4-5-20251001', messages: [{ role: 'user', content: 'Hi' }] });
+  assert.equal(bare.stopReason, 'refusal');
+  assert.deepEqual(bare.refusal, {});
+
+  // An ordinary turn carries no `refusal` key at all.
+  const normal = await createAnthropicLlmProvider({
+    client: mockClient({}, textResponse()),
+    log: () => {},
+  }).complete({ model: 'claude-haiku-4-5-20251001', messages: [{ role: 'user', content: 'Hi' }] });
+  assert.equal('refusal' in normal, false);
+});
+
 /**
  * Regression: `temperature` is a hard 400 on some models, and the adapter is
  * the layer that knows the wire contract.
