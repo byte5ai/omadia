@@ -162,9 +162,9 @@ const RETIRED_CLAIMS = [
   'a call still running is never evicted',
   // Prompt masking reaches only the turn's own model requests (§6f).
   'context are masked only while',
-  // Tool errors are redacted or withheld only for tools that are neither
-  // intern-exempt nor bypassed: the seams return those results before they
-  // look for an `Error:` text (§6c residuals, §6f).
+  // Tool errors are redacted or withheld only for tools that are not
+  // bypassed: the seams return a bypassed result before they look for an
+  // `Error:` text (§6c residuals, §6f).
   'tool errors, whatever the settings',
   'digest and redacts tool errors',
   'There it interns tool results and redacts tool errors',

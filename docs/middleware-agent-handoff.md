@@ -3239,7 +3239,7 @@ weil das README die Variable nennt.
 
 | Variable | Wirkung |
 |---|---|
-| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Nicht erfasst ist die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Sie läuft vor dem Bypass-Resolver und liest das Server-Flag direkt (`isMcpServerPrivacyBypassed`, nicht `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` auch mit Klammer bis zu 8.000 Zeichen jedes Rohergebnisses als Memory; spätere Turns können sie in den Prompt-Kontext holen, die Memory-Jobs schicken sie an ihren Provider (offen, §13). Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
+| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Erfasst ist auch die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Jede Stelle, die das Bypass-Flag eines MCP-Servers liest, entscheidet über `isMcpServerBypassInForce` (Flag → `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` mit Klammer nur die wertfreie Form-Notiz (`mcpObservationDigest`) statt bis zu 8.000 Zeichen des Rohergebnisses. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
 
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 
@@ -3879,8 +3879,9 @@ Call-Ergebnisses, ein Fehlschlag darin verwirft den Call. Ohne Handle läuft
 dort kein Handler (`requirePrivacyHandle`; ein Dispatcher ohne `withPrivacy`
 wird vor dem Dispatch abgewiesen). Vorher fand der Sub-Agent dort keinen
 Handle, und sein Provider bekam innere Daten und Fehlertexte im Klartext.
-Ohne Privacy-Provider (und für intern-exempte Self-Tools) fließt der Text wie
-jedes andere Tool-Ergebnis roh — Parität; auf dem Abo-CLI-Pfad gibt es keinen
+Ohne Privacy-Provider fließt der Text wie jedes andere Tool-Ergebnis roh —
+Parität; intern-exempte Self-Tools bekommen diese Ausnahme nicht, ihre
+Fehlertexte werden redigiert bzw. zurückgehalten. Auf dem Abo-CLI-Pfad gibt es keinen
 Shield (#1087). Versions-Paarung: der gebündelte
 `@omadia/plugin-privacy-guard` implementiert `redactToolErrorText` ab 0.6.0.
 Ein Provider ohne die Methode lässt den Kernel zurückgegebene `Error:`-Texte
@@ -4221,8 +4222,8 @@ selbst), dann ein Satz, dass jeder andere Modellaufruf seinen Text so
 schickt, wie er ist, mit den bekannten Fällen (Inbound-Screener,
 Signifikanz-Scorer und die übrigen Memory-Jobs, `ctx.llm`, Bilder,
 Embeddings). Auch innerhalb des Turns nennen sie die Lücken: Tool-Fehler
-werden nur für Tools redigiert oder zurückgehalten, die weder intern-exempt
-noch per Bypass freigegeben sind (ein geworfener Fehler bleibt auch unter
+werden nur für Tools redigiert oder zurückgehalten, die nicht per Bypass
+freigegeben sind (ein geworfener Fehler bleibt auch unter
 Bypass zurückgehalten), und Prompt-Masking blockiert eine Anfrage nur, wenn
 C0 scheitert; ein ausgefallener C1-Detektor lässt den Rest des Turns auf C0
 laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
@@ -4344,43 +4345,6 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   der gespeicherte Turn behält die Realwerte. Offen: Der vom Operator
   gestartete Backfill (`bulkPromotion.ts`) und der Scratch-Promotion-Reaper
   bewerten gespeicherten Text weiter unmaskiert (§6f nennt beide).
-- **MCP→KG-Ingestion ignoriert die Klammer `OMADIA_PRIVACY_FORCE_GUARDED`
-  (eigene Code-Unit).** Der Ingest-Zweig in `Orchestrator.dispatchTool`
-  (Epic #459) läuft vor dem Bypass-Resolver und vor dem Internieren und fragt
-  `isMcpServerPrivacyBypassed(kgTool.mcpServerId)` direkt
-  (`mcpPrivacyBypass.ts`, ein reiner Set-Lookup), nicht über
-  `resolveEffectivePrivacyMode`. Ein Server mit `kgIngest` und
-  `privacyBypass` speichert so auch mit gesetzter Klammer bis zu 8.000 Zeichen
-  jedes Rohergebnisses als `rationale` einer Memory
-  (`createMemorableKnowledge`). Spätere Turns können sie in den
-  Prompt-Kontext holen, der Recall-Relevance-Judge schickt sie dann ungemaskt
-  an den Extras-Provider, und sie wird eingebettet. Der Kommentar in
-  `middleware/migrations/0017_mcp_server_privacy_bypass.sql` verspricht, dass
-  die Klammer alles abdeckt (angewandte Migration, nicht editieren; die
-  Korrektur steht in §6f). Code-Unit: die Bypass-Entscheidung des Ingest-Zweigs
-  wie Pfad 0 von `resolveBypass` über `resolveEffectivePrivacyMode` (mit
-  `process.env`) führen, sodass er mit Klammer nur den wertfreien
-  `mcpObservationDigest` speichert, plus Test mit
-  `OMADIA_PRIVACY_FORCE_GUARDED=true` auf den gespeicherten `rationale`.
-  Danach README (Zeile „Privacy Shield“, Abschnitt „Trust & privacy“), §6f,
-  `.env.example`, §10 („Privacy-Shield-Klammer“) und
-  `docsClaimsGuard.test.ts` nachziehen.
-- **Fehlertexte intern-exempter Tools gehen ungefiltert ans Modell.**
-  `Orchestrator.dispatchTool`, `LocalSubAgent` und `ToolDispatchService`
-  geben das Ergebnis eines Tools aus `INTERN_EXEMPT_TOOLS` zurück, bevor sie
-  auf den `Error:`-Träger prüfen, und `withholdThrownToolError` hält nur für
-  nicht-exempte Tools zurück. Ein `Error:`-Text von `memory` oder
-  `read_attachment` und die geworfene Message eines solchen Tools erreichen
-  das Modell daher wie geliefert. Unter Operator-Bypass gilt das für den
-  zurückgegebenen Fehler (auch in `guardReplayResult`); die geworfene Message
-  bleibt dort zurückgehalten, das ist Operator-Vertrag und steht in §6c.
-  Code-Unit: für intern-exempte Tools den Control-Flow-Zweig
-  (`isGuardedControlFlowResult` → `guardControlFlowResult`) vor die Exemption
-  ziehen, sodass nur der `Error:`-Träger redigiert wird und das normale
-  Ergebnis exempt bleibt, und in `withholdThrownToolError` die
-  Exempt-Ausnahme streichen; Test je Seam mit einem exempten Tool, das einen
-  Fehler mit synthetischer E-Mail-Adresse liefert bzw. wirft. Danach §6c,
-  §6f, README und `docsClaimsGuard.test.ts` nachziehen.
 - **Ausgefallener C1-Detektor: der Rest des Turns läuft still auf C0.**
   Wirft der konfigurierte C1-Detektor, sperrt `c1DetectorFor`
   (`harness-plugin-privacy-guard/src/service.ts`) C1 für den Rest des Turns.
@@ -4648,12 +4612,16 @@ Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
   (d) eine Wiederholung mit anderem Input läuft. Ein Write genau einmal
   auszuführen braucht dafür Write-Metadaten plus Idempotenz-Key (wie
   `ToolDispatchService` sie für das MCP-`exactlyOnce` setzt).
-- **Exception-Formen ohne C1:** positionale Datensatz-Dumps
-  (`Partner(42, 'Jane Doe')`, Gos `%v`) und `name=…`-Paare außerhalb eines
-  Datensatzes erkennt `looksExceptionShaped` nicht; ein Name darin geht ohne
-  C1 an das Modell. Jedes weitere Muster kostet Hinweise, die heute lesbar
-  bleiben — vor einer Erweiterung die Negativliste in
-  `toolErrorExceptionShape.test.ts` prüfen.
+- **Exception-Formen ohne C1:** positionale Datensatz-Dumps mit Typnamen und
+  einem gequoteten Wert (`Partner(42, 'Jane Doe')`) und personenbezogene
+  `key=value`-Paare außerhalb eines Datensatzes (`name=`, `email=`, `phone=`
+  …) hält `looksExceptionShaped` zurück. Nicht erkannt werden positionale
+  Dumps ohne gequoteten Wert oder ohne Typnamen (Gos `%v` wie
+  `{42 Jane Doe}`, ein nacktes Tupel `(42, 'Jane Doe')`, das sich von einem
+  Odoo-Domain-Term nicht unterscheiden lässt) und Paare mit anderen Schlüsseln;
+  ein Name darin geht ohne C1 an das Modell. Jedes weitere Muster kostet
+  Hinweise, die heute lesbar bleiben — vor einer Erweiterung die Negativliste
+  in `toolErrorExceptionShape.test.ts` prüfen.
 
 ### Hub-Publish der In-Tree-Plugins (#1075)
 
