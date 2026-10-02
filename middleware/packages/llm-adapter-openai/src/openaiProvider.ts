@@ -615,6 +615,13 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
   const id = opts.id ?? (usesBaseURL ? 'openai-compatible' : 'openai');
   const capabilities: ProviderCapabilities = {
     ...DEFAULT_CAPABILITIES,
+    // #1211 — a server whose `dropToolChoice` quirk is set never receives
+    // `tool_choice` at all, so it cannot honour `{ type: 'none' }`. Report that
+    // instead of letting callers believe tool use was suppressed: the
+    // orchestrator's finalize pass sends no tools when this is false. An
+    // explicit `opts.capabilities` still wins — a descriptor that knows better
+    // about its own server keeps the last word.
+    ...(opts.dropToolChoice === true ? { toolChoiceNone: false } : {}),
     ...(opts.capabilities ?? {}),
   };
   const strictTools = opts.strictTools === true;

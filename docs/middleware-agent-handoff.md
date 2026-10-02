@@ -164,6 +164,37 @@ src/
   gilt für Plugin-Tools mit `agentId`; `get_chat_participants` ist
   kernel-intern und wird stattdessen am Turn-Roster gegatet.
 
+### `find_free_slots` + `book_meeting` — M365-Kalender-Tools (#1214)
+
+- **Dateien:** `packages/harness-orchestrator/src/tools/findFreeSlotsTool.ts`
+  (Slot-Suche via Graph `getSchedule` auf dem Kalender des Hosts; Teilnehmer
+  werden nur eingeladen; dazu die Slot-Card) und
+  `.../bookMeetingTool.ts` (Kalendereintrag auf einen zuvor gefundenen Slot).
+  Beide hängen an `hasCalendar` in `buildSystemPrompt`.
+- **Arbeitsteilung Prompt ↔ Tool-Beschreibung (der Kern von #1214):** Der
+  `calendarBlock` im System-Prompt ist bewusst **eine** Zeile und trägt nur,
+  was keine Tool-Beschreibung tragen kann: (a) das Routing — Termin-, Slot-
+  und Verfügbarkeitsanfragen gehen an diese Tools, auch wenn der User sie wie
+  eine Nachricht formuliert ("schicke X drei Vorschläge"); (b) den
+  Cross-Tool-Hop — Namen erst über einen Personen-/HR-Fach-Agenten zu Emails
+  auflösen; (c) die 1-Satz-Zusammenfassung der Slots im Antworttext; (d) den
+  `consent_required` / `sso_unavailable`-Hinweis, dessen OAuthCard das System
+  anhängt. **Alles andere — Host-Logik (`hostEmail` nur bei Suche im Auftrag
+  Dritter), `durationMinutes` 15–480, `windowDays` 1–14 Default 5, „bereits
+  gebuchte Termine ansehen ist nicht implementiert" — steht ausschließlich in
+  der Tool-Beschreibung und wird im Prompt nicht dupliziert.**
+- **Warum:** Der alte Block schrieb „egal wie die Formulierung lautet — RUFE
+  `find_free_slots`" plus Pflicht-Schritte mit „Default 30 min wenn User keine
+  Dauer nennt". Die Tool-Beschreibung sagt das Gegenteil (`durationMinutes`
+  ist Pflichtfeld; „keine konkreten Teilnehmer oder Dauer → zuerst klären"),
+  und die Host-Logik stand doppelt. Ein Widerspruch zwischen Prompt und
+  Tool-Kontrakt ist durch keinen weiteren Prompt-Text zu reparieren, und
+  „egal wie — RUFE X"-Booster stammen aus einer Modell-Generation, die
+  *unter*getriggert hat; die aktuellen Modelle übertriggern damit.
+- **Regel für künftige Änderungen:** Parameter-Defaults und Grenzwerte gehören
+  in die Tool-Beschreibung, nicht in den System-Prompt. Nur echte
+  Cross-Tool-Orchestrierung (wie der HR-Agent-Hop) gehört in den Prompt.
+
 ### Turn-Owner-Guard für den Subscription-CLI-Pfad (`routineTurnOwnerGuard`, #1016)
 
 Neue Kernel-Service-Registrierung neben `installedPluginConfigReader` und
@@ -1474,6 +1505,30 @@ explizite Wahl (`openai`, OAuth, lokaler keyless Server) wird nie überschrieben
 `applyProviderAssignment` ist dieselbe Funktion, die `POST /admin/providers/assignment`
 benutzt (Fail-closed-Regeln: tool-loser Provider vs. tool-treibendes Plugin,
 Modell/Provider-Mismatch, Routing-Disable bei Nicht-Anthropic).
+
+**Klassen-Refs bleiben stehen (#1083).** Eine Klassen-Referenz
+(`class:frontier` / `class:balanced` / `class:fast`) speichert
+`applyProviderAssignment` wörtlich — wie der Runtime-`PATCH` — statt sie auf die
+heutige konkrete `modelId` festzunageln; die Konsumenten lösen sie über
+`resolveConfiguredModel` / `resolveModelRefStrict` auf (#1079) — Orchestrator,
+Verifier und Extras einmal bei der Aktivierung (das Assignment reaktiviert das
+Plugin), die Issue-Umformulierung (`issuesRouter`, liest `orchestrator_model`)
+pro Aufruf. Die Sub-Agents lesen keinen dieser Keys (`SUB_AGENT_MODEL` bzw. das
+Manifest) und lösen in `DynamicAgentRuntime.activate()` auf. Kann der Provider
+gar kein Modell liefern (auch keine Nachbarklasse), antwortet der
+POST fail-closed mit `400 providers.model_class_unavailable`. Qualifizierte IDs
+(`openai:gpt-5.5`) und Aliase (`opus`) werden weiterhin auf die nackte
+`modelId` normalisiert. Das Ergebnis trägt zusätzlich `resolvedModel` (auch in
+der POST-Antwort). `GET /admin/providers` liefert pro Assignment `model` (der
+gespeicherte Ref) plus `resolvedModel` (derselbe Resolver wie zur Laufzeit,
+gegen den AKTUELLEN Katalog; Plugins, die bei der Aktivierung auflösen, behalten
+ihr Modell bis zur nächsten Reaktivierung — verschiebt die Model-Discovery
+(`modelCatalogSync`) danach das Ziel einer Klasse, kann das Label vom laufenden
+Modell abweichen, siehe §13 „Klassen-Refs veralten nach Discovery“; `null` wenn nichts gesetzt ist oder der
+Ref nicht auflösbar ist) und pro Provider `classDefaults` (Klasse →
+`modelId` via `modelForClass`). Die Admin-UI rendert Klassen als eigene,
+beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
+Provider-Wechsel einen Klassen-Ref bei.
 
 ### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
 
@@ -4820,6 +4875,97 @@ Sub-Agent, der nach „Partner 42“ fragt, bekommt so auch 142, 420 oder
 „Halle 42“. Offen: einen optionalen `id`-Input an beide Tools, Beschreibung und
 §7 entsprechend anpassen.
 
+### Finalize-Pass: offene Punkte aus #1211
+
+- **`tool_use` trotz `tool_choice: none` ist nicht harmlos.** Der Finalize-Pass
+  behält `tools` nur bei Providern mit `capabilities.toolChoiceNone === true`
+  (bisher nur der Anthropic-Adapter) und unterdrückt dort Tool-Use per
+  `tool_choice: { type: 'none' }`. Emittiert ein Modell trotzdem ein `tool_use`,
+  wird es dispatcht (mit Seiteneffekten), und in der letzten Iteration endet der
+  Turn im rohen „exceeded maxToolIterations“. Darum ist das Flag opt-in: nur
+  setzen, wenn der Server das Feld nachweislich befolgt, nicht nur annimmt. Die
+  Directive steht weiter im per-Turn-System-Hint (letzter `system`-Block, hinter
+  allen Cache-Breakpoints) und wird pro Iteration neu gebaut, kann also nicht
+  doppelt auftauchen.
+- **Provider ohne `toolChoiceNone: true`: Cache-Verlust im Finalize-Pass.** Alle
+  anderen Adapter (OpenAI, OpenAI-kompatibel wie Ollama oder Mistral, Responses,
+  Claude-CLI) schicken im Finalize-Pass `tools: []` wie vor #1211 — die Garantie
+  „Turn endet in Text“ bleibt, der Prompt-Cache dieses einen Calls ist futsch.
+- **`forcedToolChoice` lügt unter dem `dropToolChoice`-Quirk (MiniMax).** `DEFAULT_CAPABILITIES` der
+  OpenAI-Adapter meldet `forcedToolChoice: true`, obwohl der Quirk auch
+  `{type:'required'|'tool'}` verschluckt — Card-Router und `#332`-Obligation
+  glauben dort an ein Forcing, das nie auf der Leitung landet. #1211 hat nur
+  `toolChoiceNone` ehrlich gemacht; die beiden anderen Pfade brauchen je eine
+  eigene Entscheidung (Capability ehrlich melden **und** Fallback bauen), darum
+  nicht mitgezogen.
+
+### Credential-Broker: offen nach der Egress-Härtung (#778 S3a follow-up)
+
+S3a härtet Anfrage- und Antwortseite von `CredentialBroker.request`
+(`docs/security-architecture.md` §10n): auf der Anfrageseite die
+Caller-Header-Allow-List samt undici-Wertprüfung, die Ablehnung von GET/HEAD
+mit Body (`invalid-request`), den Abgleich der `pathPrefixes` mit dem
+Wire-Pfad und die Prüfung des deklarierten Hosts; auf der Antwortseite
+manuelle Redirects, Timeout und Byte-Cap, den Secret-Scrub und bereinigte
+Upstream-Fehler. Die folgenden Punkte lässt der Slice
+bewusst offen; sie müssen stehen, **bevor** das Agent-Tool (#778 S3b) den
+Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
+
+- **Kurze Secrets werden nicht gescrubbt (S2).** `brokerResponse.ts`
+  scrubbt Secrets und `basic-password`-Passwortsegmente erst ab
+  `MIN_SCRUBBABLE_SECRET_LENGTH` = 8 Zeichen; ein kürzeres Secret, das ein
+  Upstream zurückspiegelt, geht unverändert an den Aufrufer. Reparatur:
+  S2 lehnt solche Secrets (und bei `basic-password` ein zu kurzes
+  Passwortsegment) schon beim Anlegen ab, damit die Untergrenze nie greift.
+- **Die grobe Capability `credential:broker:use` wird nicht geprüft
+  (S3b).** Der Header von `harness-channel-sdk/src/credentials.ts` beschreibt
+  sie als Gate vor jeder Broker-Nutzung, aufgelöst über den normalen
+  #575-`GrantStore`. `broker.ts` prüft heute nur den feinen
+  `CredentialGrant`. S3b muss das Gate vor dem Tool-Aufruf durchsetzen,
+  sonst reicht ein Credential-Grant allein.
+- **`fingerprintSecret` ist ungesalzen (S2).** Der Log-Surrogat
+  (`harness-channel-sdk/src/credentials.ts`, SHA-256 gekürzt auf 64 Bit)
+  begründet seine Sicherheit damit, dass das Secret zufällig ist. Für
+  menschlich gewählte Secrets (vor allem `basic-password`, `user:pass`)
+  stimmt das nicht; ein Fingerprint in Audit-Events und Logs erlaubt dann
+  einen Wörterbuchabgleich. Reparatur: HMAC mit einem Server-Schlüssel statt
+  nacktem SHA-256, inklusive Umgang mit bestehenden `fingerprint`-Spalten.
+- **Vendor-Header brauchen ein `allowedHeaders` pro Credential (S2/S3b).**
+  Die Caller-Header-Allow-List in `brokerOutbound.ts` ist statisch;
+  `Notion-Version` o. ä. wird verworfen (und nur als Name auditiert). Das ist
+  eine Schema-Änderung am Credential.
+- **Nicht gescrubbte Transformationen.** Der Scrub deckt roh, base64 (des
+  ganzen Secrets), URL-kodiert (inkl. WHATWG-Form mit `%27`), JSON-escaped
+  (`\"`, `\\`, `\n`), die PHP-`json_encode`-Form mit `\/` (für roh und
+  base64) und jeweils die whitespace-getrimmte Wire-Form ab, nicht
+  JSON-`\u`-Escapes, teilweise URL-Kodierung (`/` unkodiert), base64 des
+  Passwortsegments allein oder Hashes des Secrets. Vor S3b entscheiden, ob
+  das Agent-Tool dafür eine zweite Schicht braucht.
+- **Upstream-`set-cookie` geht durch (S3b).** `sanitizeResponseHeaders`
+  scrubbt nur Secret-Formen. Die Request-Seite verwirft `Cookie` als
+  ambiente Autorität, aber ein Session-Cookie, das der Upstream ausstellt,
+  erreicht den Aufrufer. S3b entscheidet, ob es verworfen wird.
+- **`upstream-*` heißt „gesendet, Ausgang unbekannt“ (S3b).**
+  `upstream-timeout` / `upstream-unreachable` werden als `BrokerDenialError`
+  geworfen, nachdem das Secret raus ist (Audit: `allow`, dann `deny`). Das
+  Agent-Tool darf das nicht als Ablehnung darstellen, sonst wird ein nicht
+  idempotenter POST blind wiederholt. Eigene Fehlerklasse oder ein
+  `dispatched`-Flag erwägen und ein sicheres `cause.code` (`ENOTFOUND`,
+  `UND_ERR_*`) als Diagnose loggen.
+- **`pathPrefixes` gegen serverseitiges `%2F`-Dekodieren (S3b).** Seit S3a
+  prüft, auditiert und sendet der Broker den Pfad genau so, wie fetch ihn
+  auflöst (`resolveWirePath`: `%2e%2e`, `\`, Tab/LF/CR sind zu). Ein
+  Upstream oder Proxy, der `%2F` dekodiert und danach erneut normalisiert,
+  lässt sich mit `..%2F` trotzdem aus einem Präfix führen; `%2F` pauschal
+  abzulehnen würde GitLab-artige IDs brechen. S3b/S2: in der Anlage-UI
+  darauf hinweisen, das engste Präfix zu deklarieren, und den deklarierten
+  Host beim Anlegen validieren (heute erst beim Request als
+  `invalid-broker-declaration`).
+- **Standard-`fetch` ist nicht `guardedOutboundFetch`.** Bewusst: der Host
+  ist vom Operator deklariert und muss exakt passen, Intranet-Ziele sind
+  erlaubt. Mit S3b prüfen, ob ein per-Credential-Opt-in für den SSRF-Guard
+  nötig ist.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
@@ -4900,6 +5046,24 @@ Budget seit der Aktivierung (das ui-orchestrator-Manifest setzt deshalb
 Modellaufrufen `LlmBudgetExceededError`; `shouldPlan` fängt ihn und plant bis
 zur nächsten Aktivierung nichts mehr, ohne Meldung. Budget pro Turn zählen oder
 die Obergrenze des Plan-Runners anheben.
+
+**Klassen-Refs veralten nach Discovery (#1083, offen).** Orchestrator, Verifier
+und extras lösen einen Klassen-Ref (`class:frontier` …) **einmal bei der
+Aktivierung** auf. Verschiebt `modelCatalogSync` danach das Ziel der Klasse,
+laufen sie auf dem alten Modell weiter, während `GET /admin/providers` das
+`resolvedModel` (und damit das Label `Frontier (auto → X)`) gegen den
+AKTUELLEN Katalog berechnet — das Label kann dem laufenden Modell also
+vorauseilen. Ein Neustart repariert das nicht verlässlich: Discovery-Ergebnisse
+werden nicht persistiert, und `void modelCatalogSync.refreshAll()` in
+`src/index.ts` läuft beim Boot fire-and-forget, während die Plugin-Aktivierung
+später awaited wird — sie kann gegen den gebündelten Katalog auflösen. Eine
+automatische Reaktivierung nach Discovery wurde in #1083 bewusst wieder
+entfernt, weil sie so nicht sicher ist. Voraussetzungen für eine sichere
+Variante: (1) nach einer Orchestrator-Reaktivierung die Kernel-Hydration erneut
+ausführen (Domain-Tools, `dynamicAgentRuntime.attachOrchestrator`,
+`setOnAgentBuilt`) — heute läuft sie nur beim Boot; (2) den Status nach der
+Reaktivierung prüfen, statt Erfolg anzunehmen; (3) den Orchestrator **nach**
+Verifier und extras reaktivieren, damit er deren neue Instanzen bindet.
 
 ### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
 
@@ -5510,12 +5674,12 @@ confidence-Kanten mit Flag speichern, UI zeigt sie anders an.
 Feature ist lokal fertig (2026-04-19, siehe CHANGELOG für Architektur-Zusammenfassung). Offen:
 
 Platzhalter unten: `<middleware-app>`, `<kroki-app>`, `<kroki-mermaid-app>` sind die
-Fly-App-Namen der eigenen Installation, `<your-omadia-host>` deren öffentlicher
-Host — vor dem Ausführen durch die echten Werte ersetzen.
+Fly-App-Namen der eigenen Installation — vor dem Ausführen durch die echten
+Werte ersetzen.
 
 1. Zwei Fly-Apps `<kroki-app>` + `<kroki-mermaid-app>` mit flycast-only Services (keine öffentlichen IPs). Dockerfile/fly-toml vorbereiten, z.B. unter `kroki/`.
 2. Tigris-Bucket über `fly storage create -a <middleware-app>`, dann einmalig `PutBucketLifecycleConfigurationCommand` mit 90-Tage-Expiration.
-3. Fly-Secrets setzen: `DIAGRAM_URL_SECRET`, `KROKI_BASE_URL=http://<kroki-app>.flycast:8000`, `DIAGRAM_PUBLIC_BASE_URL=https://<your-omadia-host>`.
+3. Fly-Secrets setzen: `DIAGRAM_URL_SECRET`, `KROKI_BASE_URL=http://<kroki-app>.flycast:8000`, `DIAGRAM_PUBLIC_BASE_URL=https://<middleware-app>.fly.dev`.
 4. Smoke-Probe in Teams: "Flow A→B→C als Mermaid" → Card mit PNG.
 
 Lokale Reproduktion jederzeit via `docker compose up -d` + `npm run smoke:diagrams`.

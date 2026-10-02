@@ -1563,6 +1563,95 @@ no longer copies such a value into the `/login?return=` link it redirects to.
 Its own redirects already stayed on `publicBaseUrl`. The rules are written up
 in `docs/security-architecture.md` §10e.
 
+### Fixed — the finalize pass keeps `tools` on providers that honour `tool_choice: none` (#1211)
+
+2026-09-30 — on the last iteration both tool loops in
+`middleware/packages/harness-orchestrator/src/orchestrator.ts` sent
+`tools: []`. `tools` comes first in Anthropic's cache order, so that call
+missed the cached prefix the turn's earlier requests had written. A provider
+that declares `capabilities.toolChoiceNone: true` now gets the unchanged
+`buildToolsList()` output on that pass, with tool use switched off by
+`tool_choice: { type: 'none' }` (as `LocalSubAgent` already does). Only the
+Anthropic adapter declares it. Every other provider still gets `tools: []`:
+the flag is opt-in because an OpenAI-compatible server may accept
+`tool_choice` and ignore it, and a `tool_use` on the last iteration would be
+dispatched and end the turn in the raw "exceeded maxToolIterations" error the
+pass exists to replace. `createOpenAiProvider` reports `toolChoiceNone: false`
+under its `dropToolChoice` quirk (MiniMax). Both loops build the
+`tools`/`tool_choice` pair through one shared `toolParamsFor`, and a fallback
+request gets the pair computed for its own provider instead of a copy of the
+primary's.
+
+The finalize directive stays in the per-turn system hint. That block is the
+last `system` block, after every cache breakpoint, so adding it there never
+cost a cache entry, and the adapter does not replay thinking blocks. The
+directive itself lost its shouted caps and now says "rufe ab jetzt keine Tools
+mehr auf" rather than claiming tools are gone — they may still be on the wire.
+`middleware/test/orchestrator/finalizePass1211.test.ts` pins both shapes and
+the fallback for both loops; `middleware/test/llmProviderMinimaxQuirks.test.ts`
+and `middleware/test/llmProviderAnthropicAdapter.test.ts` pin the
+capabilities.
+
+### Changed — Kalender-Block im System-Prompt folgt wieder dem `find_free_slots`-Kontrakt (#1214)
+
+2026-09-30 — der `calendarBlock` in
+`middleware/packages/harness-orchestrator/src/orchestrator.ts` wies das Modell
+an, „egal wie die Formulierung lautet" `find_free_slots` zu rufen, und schrieb
+in Pflicht-Schritten „Default 30 min wenn User keine Dauer nennt" vor. Die
+Tool-Beschreibung sagt das Gegenteil — `durationMinutes` ist Pflichtfeld und
+„User nennt keine konkreten Teilnehmer oder Dauer → zuerst klären" —, und die
+Host-Logik (`hostEmail`) stand doppelt in Prompt und Tool-Beschreibung. Der
+Block ist jetzt eine Zeile: Routing zu den beiden Tools (auch wenn die Anfrage
+wie eine Nachricht formuliert ist), der Hop „Namen erst über einen
+Personen-/HR-Fach-Agenten zu Emails auflösen", die 1-Satz-Zusammenfassung der
+gefundenen Slots und der `consent_required` / `sso_unavailable`-Hinweis.
+Parameter, Grenzwerte und Host-Logik stehen nur noch in der
+Tool-Beschreibung. Hintergrund: „egal wie — RUFE X"-Booster wurden für
+Modelle geschrieben, die untertriggerten; die aktuellen Modelle übertriggern
+damit, und ein Widerspruch zwischen Prompt und Tool-Kontrakt ist durch
+weiteren Prompt-Text nicht zu heilen. Kein Test hängt am Prompt-Text; die
+Arbeitsteilung ist in `docs/middleware-agent-handoff.md` §3 festgehalten.
+Beim Rebase wurde die Tool-Beschreibung an den Handler angepasst: Die Slots
+kommen per `getSchedule` nur aus dem Kalender des Hosts, `attendees` werden
+nur eingeladen, „wann hat X Zeit?“ setzt `hostEmail`, und
+`minimumAttendeePercentage` ist als wirkungslos markiert.
+
+### Fixed — `disambiguate-policy` skill now teaches the shipped `_pendingUserChoice` contract (#1213)
+
+2026-09-30 — `middleware/packages/agent-reference-maximum/skills/disambiguate-policy.md`
+still described a `disambiguate` hint in tool-results and told the model to call
+`ask_user_choice` itself, with `_pendingUserChoice` filed as future work under a
+"Ab Etappe 4" heading. That stage shipped: `query_notes_by_person` emits
+`_pendingUserChoice`, the orchestrator parses it (`parseToolEmittedChoice`),
+short-circuits the turn and renders the Smart-Card, and no tool emits
+`disambiguate` any more. The skill is `shareable: true`, so the dead contract
+reached other agents too. Body replaced with the current contract, including
+that a click starts a fresh turn with the chosen `value` as the user message;
+the manifest's skill `description` no longer names `ask_user_choice`. On the
+rebase the contract sentence was qualified: the card only renders when the
+orchestrator calls the tool itself and the Privacy Shield does not intern the
+result; otherwise the model asks. Prompt text only — no code path and no test
+changed.
+
+### Changed — builder issue-reporting docs no longer claim browser-submit is the only path (#1216)
+
+2026-09-30 — the builder system prompt and two source-file headers still said
+PAT-direct issue creation "gibt es in v1 nicht — nur Browser-Submit", written
+before the GitHub App direct-create path landed. The prompt contradicted itself:
+step 4 of the same section documents `mode='created-pending'`, where the server
+files the issue through the App. All three now state the real constraint — the
+builder agent files issues only through `omadia_report_core_bug`, on whichever
+path the server provides, and that tool has deliberately no PAT code path and
+no vault lookup, so it cannot regress into a half-working insecure mode. The header of
+`reportPlatformIssue.ts` also picked up the two branches it was missing
+(`created-pending` / `browser-submit`, chosen server-side, not by the agent) and
+the `mode='unavailable'` guard for an instance where the deps are not wired; its
+stale pre-#206 tool id and a citation of the never-committed
+`docs/plans/native-issue-reporting.md` are gone. On the rebase the citation
+was dropped from the other builder files too, the header's account of the two
+submit paths was corrected, the route header lists all four endpoints, and the
+tool description says what each path checks. No behaviour change.
+
 ### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
 
 2026-09-29 — the `audit (high+critical block)` step treated an npm registry
@@ -1636,6 +1725,73 @@ matches its `package.json` (1.19.1). Both workspaces are free of
 high/critical advisories again. The remaining moderate findings (`uuid` via
 `exceljs`/`botbuilder`, `dompurify` via `monaco-editor`) need breaking
 upgrades and are left for their own changes.
+
+### Fixed — privacy v4 states the render-vs-export contract once, plainly (#1215)
+
+2026-09-30 — the `v4_render_answer` tool description said "ALWAYS end a data
+question with this call; never write the data table/list yourself". The digest
+the model receives with every dataset says the opposite for downloads
+("EXCEPTION — file/download: … do NOT use v4_render_answer"), and rule 14 of
+the orchestrator system prompt then had to override the tool description
+explicitly. A capitalised ALWAYS in a tool description over-triggers on the
+current Claude models, so the model reached for the inline render even when the
+user had asked for a file.
+
+The contract reached the model from three hand-maintained copies in the same
+turn — the tool description (`v4/toolDefs.ts`), the dataset digest
+(`v4/digest.ts`) and the sub-agent dataset hand-off header (`service.ts`) —
+and they had drifted: only two of the three named the export tool the model can
+actually call, and the third named none. Both halves now live once in
+`v4/promptText.ts` (`RENDER_CONTRACT`, `FILE_EXPORT_EXCEPTION`) and all three
+surfaces interpolate them, so within the plugin a renamed export tool or a
+changed contract is one edit; the orchestrator's rules a) and 14 and the
+office plugin's prompts still state the contract on their own. The imperative
+is stated plainly rather than capitalised.
+
+The exception covers spreadsheet downloads only and names `create_xlsx` as an
+example, "when it is offered": the `datasetId` hand-off exists on xlsx sheets
+alone (`plugin-office/src/types.ts` — `XlsxToolSheetSchema`), and the v4 tools
+load whenever the shield is on, also without the office plugin. A request for a
+Word document gets the data as a spreadsheet or inline, because `create_docx`
+takes no datasetId. Model-facing strings only; no behaviour or schema change.
+`privacyV4RenderContract.test.ts` pins that the tool description and the
+dataset digest carry both halves and that ALWAYS stays out.
+
+### Security — credential broker hardened for agent-driven use (#778 S3a)
+
+2026-09-25 — `CredentialBroker.request` sent the stamped request with a plain
+`fetch` and returned the upstream answer verbatim. It followed redirects (a
+302 carried an `X-Api-Key` to the host the upstream named), had no timeout,
+buffered any body size, spread caller headers next to the injected one (a
+lowercase `authorization` was joined into `forged, Bearer <secret>`), returned
+headers and body unscrubbed (an echoing upstream handed the secret back), and
+let a raw fetch error escape (for `query-param`, its URL is the secret). Nothing
+instantiates the broker yet, so nothing was exposed. This is the precondition
+for the agent tool (#778 S3b).
+
+The broker now dispatches with `redirect: 'manual'` and a 20 s timeout, reads
+the body under a 1 MiB streaming cap (`truncated: true` on overflow), scrubs the
+secret from header values and body in raw, base64, URL-encoded,
+JSON-escaped and PHP `json_encode` (`\/`) form, built from what goes on the wire (the whitespace-trimmed
+header value undici sends, the `%27` the URL parser adds; secrets of 8+
+characters), filters caller headers against a static allow-list plus
+undici's own value check and audits the dropped names, refuses a GET/HEAD with
+a body as `invalid-request` before a `once` grant is consumed, and maps
+failures to sanitized `upstream-timeout` / `upstream-unreachable` denials.
+It also closes a `pathPrefixes` bypass that predates the slice: the prefix
+check ran on `path.posix` output, but fetch's WHATWG parser resolves
+`%2e%2e` / `.%2E`, reads `\` as `/` and strips tab/LF/CR, so
+`/v1/messages/%2e%2e/%2e%2e/admin` passed a `/v1/messages` check and sent the
+secret to `/admin`. The broker now refuses backslashes and control characters
+in the path and matches, audits and sends the path exactly as fetch resolves
+it (`resolveWirePath`), before a `once` grant is consumed, against prefixes
+serialised the same way (so `/drive/My Files` or `/v1/über` still match); a declared host
+that is not a plain `host[:port]` is denied as `invalid-broker-declaration`,
+and `timeoutMs` is capped at Node's timer limit (2^31 - 1). `dispatch-failed`, which had no call site, is
+replaced by those two reasons. See `docs/security-architecture.md` §10n. What
+the slice leaves open for #778 S2/S3b (short-secret floor, the unenforced
+`credential:broker:use` gate, the unsalted `fingerprintSecret`, per-credential
+vendor headers) is tracked in `docs/middleware-agent-handoff.md` §13.
 
 ### Changed — dated prompt patterns and thin tool descriptions cleaned up (#1219)
 
@@ -2236,6 +2392,34 @@ longer marks the server session `invalid`: that status made `markAuthorized`
 refuse the correct retry, so the post-login auto-assign hook (OM-79) never ran
 and the exit handler dropped the session instead of confirming it. The fixtures
 are now the verbatim 2.1.187 output from the container.
+
+### Fixed — per-agent model select showed the first list entry for a class ref (#1083)
+
+On `/admin/providers` → "Per-agent assignment" the model select could not
+display a model class ref such as `class:frontier` — the platform default the
+orchestrator is auto-installed with. No option matched the stored value, so the
+browser showed the first entry of the model list, which could name a model the
+agent was not using, and switching the provider or re-saving silently pinned a
+concrete model. The model classes are now first-class options, grouped above
+the pinned models and labelled with what they resolve to right now (e.g.
+`Frontier (auto → Claude Opus 5)`); any other stored value that is not in the
+list (a legacy alias, a qualified or dropped id) gets its own selected option.
+Switching the provider keeps a class ref. `GET /api/v1/admin/providers` adds
+`resolvedModel` to each assignment (computed with the runtime's own resolver)
+and `classDefaults` to each provider. `POST /api/v1/admin/providers/assignment`
+now stores a class ref as given — like the runtime config PATCH already did —
+instead of normalising it to a concrete id, returns `resolvedModel`, and
+rejects a class ref the provider cannot serve with any model with
+`400 providers.model_class_unavailable`. Qualified ids and aliases are still
+normalised. The orchestrator, verifier and background scorer resolve a class
+ref once, at activation, and keep that model until the plugin is reactivated
+(e.g. by re-saving the assignment). The admin label is computed from the
+current catalog, so when model discovery later moves a class, the
+`(auto → X)` label can run ahead of the model the plugin is actually running
+until it is reactivated. A server restart does not reliably converge either:
+discovery results are not persisted and boot discovery runs fire-and-forget,
+so activation can resolve against the bundled catalog. The in-app issue reporter's reformulation now resolves the
+orchestrator's model ref too, instead of sending a class ref raw to the vendor.
 
 ### Fixed — dynamic sub-agents on the Anthropic host sent `class:frontier` raw (404) (#1079)
 

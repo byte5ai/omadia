@@ -434,6 +434,26 @@ test('toolChoice disableParallel maps to disable_parallel_tool_use', async () =>
   });
 });
 
+test('#1211 declares toolChoiceNone and sends tool_choice none with the tools intact', async () => {
+  // The orchestrator's finalize pass only keeps the tool list (and with it the
+  // cached prefix) for providers that opt in; without the flag it sends none.
+  const captured: Captured = {};
+  const provider = createAnthropicProvider({
+    client: mockClient(captured, textResponse()),
+  });
+  assert.equal(provider.capabilities.toolChoiceNone, true);
+  await provider.complete({
+    model: 'claude-opus-4-8',
+    maxTokens: 64,
+    tools: [{ name: 'a', description: 'A', inputSchema: { type: 'object' } }],
+    toolChoice: { type: 'none' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  const params = captured.params as Record<string, unknown>;
+  assert.deepEqual(params['tool_choice'], { type: 'none' });
+  assert.equal((params['tools'] as unknown[]).length, 1);
+});
+
 /**
  * `claude-opus-5-5` and `claude-fable-5-1` 400 on a forced `tool_choice`
  * (measured 2026-09-23), and so does `claude-sonnet-5-5`. Opus 5.5 was already

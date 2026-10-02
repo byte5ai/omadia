@@ -1775,7 +1775,7 @@ function buildSystemPrompt(
     ? '\n- `ask_user_choice`: Stellt dem User eine Rückfrage mit 2–4 vordefinierten Button-Optionen als Smart Card. Nur aufrufen, wenn die User-Eingabe **genuin mehrdeutig** ist UND es eine **endliche, kleine Menge plausibler Interpretationen** gibt (z.B. zwei Module tracken Umsatz, zwei Kunden haben ähnlichen Namen). **NICHT** nutzen für: offene "was meinst du?"-Fragen, Trivial-Bestätigungen, oder wenn der Kontext die Intention bereits eindeutig macht. Max 1× pro Turn — der Turn endet direkt nach dem Call; die Auswahl kommt im nächsten Turn als normale User-Nachricht.\n'
     : '';
   const calendarBlock = hasCalendar
-    ? '\n- `find_free_slots` + `book_meeting`: **M365-Kalender-Integration.** Wenn der User Termin/Meeting/Sprechstunde/Slot/Zeit-mit-<Person> anfragt — egal wie die Formulierung lautet ("schicke X drei Vorschläge", "wann hat Y Zeit?", "buche Termin mit Z", "finde Slot morgen") — **RUFE `find_free_slots`**. NICHT als Email interpretieren, NICHT nur HR-Kontakt nachschlagen und Prose zurückschreiben. Der Tool-Output liefert klickbare Slot-Buttons; der User wählt, dann folgt automatisch `book_meeting`.\n  **Host-Logik (wichtig):**\n  - Die Slots kommen aus dem Kalender des **Hosts** (Meeting-Organizers). Default = Caller selbst.\n  - Wenn der Caller eigene Zeit anbietet ("schicke Tita 3 Vorschläge", "biete Max Termine", "finde Slot morgen") → **hostEmail NICHT setzen** (Caller ist Host).\n  - Wenn der Caller im Auftrag einer anderen Person sucht ("such bei John Termin", "wann hat die GF Zeit?") → `hostEmail` auf die Ziel-Email setzen.\n  **Pflicht-Schritte bei jedem Termin-Intent:**\n  1. Teilnehmer-Emails resolven (ggf. über einen Personen-/HR-Fach-Agenten nach Vorname/Nachname → email).\n  2. `find_free_slots({durationMinutes, attendees, hostEmail?, windowDays?})` aufrufen — Default 5 Tage, Default 30 min wenn User keine Dauer nennt.\n  3. Die gefundenen Slots im Antwort-Text in **1 Satz** zusammenfassen ("Hier 3 freie Slots für …"). Die Buttons erscheinen automatisch als Card darunter.\n  4. Bei `consent_required` / `sso_unavailable` Fehler: kurz erklären dass einmalig Zustimmung nötig ist — die OAuthCard wird automatisch vom System angehängt.\n  **NICHT nutzen:** wenn der User nach bereits gebuchten Terminen fragt (nicht implementiert).\n'
+    ? '\n- `find_free_slots` + `book_meeting`: M365-Kalender. Nutze sie für Termin-, Meeting-, Slot- und Verfügbarkeitsanfragen, auch wenn der User sie wie eine Nachricht formuliert ("schicke X drei Vorschläge") — nicht stattdessen nur den Kontakt nachschlagen und Prose zurückschreiben. Nennt der User Namen statt Emails, löse sie vorher über einen Personen-/HR-Fach-Agenten auf. Host-Logik, Parameter und Limits stehen in den Tool-Beschreibungen. Fasse gefundene Slots im Antworttext in einem Satz zusammen — die Buttons erscheinen automatisch als Card. Bei `consent_required` / `sso_unavailable` erkläre kurz, dass einmalig eine Zustimmung nötig ist; die OAuthCard hängt das System an.\n'
     : '';
 
   const suggestFollowUpsBlock = hasSuggestFollowUps
@@ -5716,8 +5716,9 @@ export class Orchestrator {
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
         // Final pass: the loop guard stopped, the wall-clock budget is spent,
-        // or this is the last allowed iteration. Disable tools so the model
-        // MUST answer in text, and append the finalize directive.
+        // or this is the last allowed iteration. Suppress tool use (#1211, see
+        // `toolParamsFor`) so the model MUST answer in text, and append the
+        // finalize directive to the per-turn system hint.
         const finalizeThisIter =
           forceFinalize ||
           iteration === this.maxIterations - 1 ||
@@ -5726,6 +5727,7 @@ export class Orchestrator {
         // consumed here so a still-mute model only re-escalates within budget.
         const forceObligation = forceObligationNext && !obligationMet;
         forceObligationNext = false;
+        const finalizePass = finalizeThisIter && !forceObligation;
         // #1033 W3 — the system prompt for a given persona: the routed
         // persona skill outranks everything; otherwise the execution's own
         // identity (the fallback family's compiled prompt after a hop).
@@ -5733,26 +5735,35 @@ export class Orchestrator {
           buildSystemBlocks(
             this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
             priorContext,
-            withFinalizeHint(
-              effectiveExtraSystemHint,
-              finalizeThisIter && !forceObligation,
-            ),
+            withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
+        // #1211 — `tools` / `tool_choice` depend on the provider a request
+        // goes to, so the primary request and the fallback below each get
+        // their own pair instead of sharing the primary's.
+        const iterationTools = this.buildToolsList();
+        const toolParamsForProvider = (provider: LlmProvider) =>
+          toolParamsFor({
+            tools: iterationTools,
+            finalizePass,
+            provider,
+            ...(forceObligation && obligationTool
+              ? { forcedChoice: forceObligationFor }
+              : {}),
+          });
         const baseParams = {
           model: turnExec.model,
           ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
           max_tokens: this.maxTokens,
           system: systemFor(turnPersonaBody ?? turnExec.identity),
-          tools: finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
-          ...(forceObligation && obligationTool
-            ? { tool_choice: forceObligationFor }
-            : {}),
           messages,
         };
         // Last-resort guard: repair any lone UTF-16 surrogate before the
         // SDK serialises the body — the Anthropic API rejects it as
         // invalid JSON. See ensureWellFormedParams.
-        const safeParams = ensureWellFormedParams(baseParams);
+        const safeParams = ensureWellFormedParams({
+          ...baseParams,
+          ...toolParamsForProvider(turnExec.provider),
+        });
         // #1033 W3 — a hop to ANOTHER provider is only taken before the first
         // model call of the turn: from iteration 1 on the transcript carries
         // tool_use/tool_result pairs and cache markers shaped by the primary's
@@ -5779,6 +5790,7 @@ export class Orchestrator {
                       model: fb.model,
                       ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
                       system: systemFor(turnPersonaBody ?? fb.identity),
+                      ...toolParamsForProvider(fb.provider),
                     }),
                     [MEMORY_BETA_HEADER],
                   ),
@@ -6985,7 +6997,8 @@ export class Orchestrator {
         }
 
         // Final pass: loop guard stopped, wall-clock budget spent, or last
-        // allowed iteration → answer tools-disabled (best-effort finalize).
+        // allowed iteration → answer with tool use suppressed (#1211, see
+        // `toolParamsFor`) — best-effort finalize.
         const finalizeThisIter =
           forceFinalize ||
           iteration === this.maxIterations - 1 ||
@@ -7028,27 +7041,34 @@ export class Orchestrator {
         }
 
         let finalMessage: Message | undefined;
+        // #1211 — see the buffered path: the finalize directive rides in the
+        // per-turn system hint, and `tools` / `tool_choice` come from the
+        // shared `toolParamsFor`, computed per provider (the fallback gets its
+        // own pair).
+        const finalizePass = finalizeThisIter && !forceObligation;
         // #1033 W3 — see the buffered path: persona skill first, else the
         // execution's own identity (the fallback family's prompt after a hop).
         const systemFor = (persona: string | undefined) =>
           buildSystemBlocks(
             this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
             priorContext,
-            withFinalizeHint(
-              effectiveExtraSystemHint,
-              finalizeThisIter && !forceObligation,
-            ),
+            withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
+        const iterationTools = this.buildToolsList();
+        const toolParamsForProvider = (provider: LlmProvider) =>
+          toolParamsFor({
+            tools: iterationTools,
+            finalizePass,
+            provider,
+            ...(forceObligation && obligationTool
+              ? { forcedChoice: forceObligationFor }
+              : {}),
+          });
         const streamParams = {
           model: turnExec.model,
           ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
           max_tokens: this.maxTokens,
           system: systemFor(turnPersonaBody ?? turnExec.identity),
-          tools:
-            finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
-          ...(forceObligation && obligationTool
-            ? { tool_choice: forceObligationFor }
-            : {}),
           messages,
         };
         // #1033 W3 — a hop to ANOTHER provider is only taken before the first
@@ -7065,7 +7085,7 @@ export class Orchestrator {
             : undefined;
         for await (const ev of streamMessageEvents({
           provider: turnExec.provider,
-          params: streamParams,
+          params: { ...streamParams, ...toolParamsForProvider(turnExec.provider) },
           ...(fb
             ? {
                 fallback: {
@@ -7075,6 +7095,7 @@ export class Orchestrator {
                     model: fb.model,
                     ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
                     system: systemFor(turnPersonaBody ?? fb.identity),
+                    ...toolParamsForProvider(fb.provider),
                   },
                   ...(this.providerPool?.health ? { health: this.providerPool.health } : {}),
                 },
@@ -9553,13 +9574,14 @@ const FILE_RETRY_NUDGE =
   'Du hast angekündigt, eine Datei (Excel/Word) zu bauen, aber das Tool `create_xlsx`/`create_docx` NICHT aufgerufen — der User hat dadurch nichts erhalten. Beschreibe den Plan NICHT erneut. Rufe JETZT in diesem Schritt das passende Tool auf und baue die Datei wirklich. Wenn du sie nicht bauen kannst, sag dem User in EINEM Satz klar, dass und warum nicht.';
 
 /**
- * Appended to the per-turn system hint on the FINAL, tools-disabled iteration
- * (iteration cap reached, loop guard stopped, or wall-clock budget exceeded).
- * With no tools offered the model must produce text, so this turns what used to
- * be a raw "exceeded maxToolIterations" error into a best-effort answer.
+ * Appended to the per-turn system hint (see {@link withFinalizeHint}) on the
+ * FINAL iteration (iteration cap reached, loop guard stopped, or wall-clock
+ * budget exceeded). That pass suppresses tool use (see {@link toolParamsFor}),
+ * so the model must produce text — this turns what used to be a raw "exceeded
+ * maxToolIterations" error into a best-effort answer.
  */
 const FINALIZE_DIRECTIVE =
-  'Du hast das Tool-Budget für diesen Turn aufgebraucht und kannst KEINE weiteren Tools aufrufen. Fasse zusammen, was du bereits herausgefunden hast, und gib JETZT die bestmögliche Antwort mit den vorhandenen Informationen. Wenn etwas unklar oder unvollständig bleibt, sag dem User in einem Satz klar, was noch offen ist. Beschreibe keine weiteren geplanten Tool-Aufrufe.';
+  'Das Tool-Budget für diesen Turn ist aufgebraucht: Rufe ab jetzt keine Tools mehr auf. Fasse zusammen, was du bereits herausgefunden hast, und gib jetzt die bestmögliche Antwort mit den vorhandenen Informationen. Wenn etwas unklar oder unvollständig bleibt, sag dem User in einem Satz, was noch offen ist. Beschreibe keine weiteren geplanten Tool-Aufrufe.';
 
 // ---------------------------------------------------------------------------
 // Card-router pass (non-interleaving providers, e.g. Mistral / OpenAI-compatible)
@@ -9593,9 +9615,53 @@ const CARD_ROUTER_SYSTEM =
 const CARD_ROUTER_INSTRUCTION =
   'Entscheide jetzt für die obige Assistenten-Antwort: Rufe genau eines von `ask_user_choice`, `suggest_follow_ups` oder `no_card` auf.';
 
+/**
+ * #1211 — the `tools` / `tool_choice` pair for ONE request of either tool
+ * loop, decided for the provider that request goes to (the primary, or the
+ * fallback when one is attached). Kept as a free function so both loops decide
+ * identically.
+ *
+ * Normal iterations (and the forced-obligation pass, which carries its own
+ * `tool_choice`) send `buildToolsList()` unchanged.
+ *
+ * The finalize pass must END the turn in text. A provider that declares
+ * `capabilities.toolChoiceNone === true` keeps the full tool list and gets
+ * `tool_choice: { type: 'none' }`: `tools` comes first in Anthropic's cache
+ * order, so an unchanged list keeps the cached prefix the turn's earlier
+ * requests wrote, while `tools: []` changes its first segment and misses all of
+ * it. Every other provider gets `tools: []`, the pre-#1211 shape. Opt-in,
+ * because an OpenAI-compatible server may accept `tool_choice` and ignore it:
+ * the model would still emit a `tool_use` on the last iteration, the loop would
+ * dispatch it (side effects included), and the turn would end in the raw
+ * "exceeded maxToolIterations" error the finalize pass exists to replace. An
+ * empty tool set never gets a `tool_choice` (a tool choice without tools is
+ * invalid).
+ */
+function toolParamsFor(opts: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tools: any[];
+  finalizePass: boolean;
+  provider: LlmProvider;
+  forcedChoice?: { type: 'tool'; name: string } | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+}): { tools: any[]; tool_choice?: Record<string, unknown> } {
+  if (opts.forcedChoice) {
+    return { tools: opts.tools, tool_choice: opts.forcedChoice };
+  }
+  if (!opts.finalizePass || opts.tools.length === 0) {
+    return { tools: opts.tools };
+  }
+  return opts.provider.capabilities.toolChoiceNone === true
+    ? { tools: opts.tools, tool_choice: { type: 'none' } }
+    : { tools: [] };
+}
+
 /** Compose the per-iteration system hint, appending the finalize directive on
- *  the final tools-disabled pass. Kept as a free function so both tool loops
- *  build the hint identically. */
+ *  the finalize pass. The hint is the last `system` block, after every cache
+ *  breakpoint (see `buildSystemBlocks`), so changing it per iteration costs no
+ *  cache entry, and rebuilding it per iteration means the directive can never
+ *  appear twice. Kept as a free function so both tool loops build the hint
+ *  identically. */
 function withFinalizeHint(baseHint: string | undefined, finalize: boolean): string | undefined {
   if (!finalize) return baseHint;
   return baseHint && baseHint.trim().length > 0
