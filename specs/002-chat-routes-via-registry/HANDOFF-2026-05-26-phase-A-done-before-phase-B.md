@@ -16,10 +16,10 @@ and `spec.md` (Phase A spec).
 
 Phase A is deployed:
 
-- `https://odoo-bot-middleware.fly.dev` — v224+ (per-deploy bumps), routes
+- `https://<middleware-app>.fly.dev` — v224+ (per-deploy bumps), routes
   every chat turn through `OrchestratorRegistry` via the new
   `resolveAgentForRequest()`.
-- `https://odoo-bot-harness.fly.dev` — Agent picker in the chat header,
+- `https://<your-omadia-host>` — Agent picker in the chat header,
   empty-config CTA, 503-recovery banner, /operator/agents dashboard.
 
 ### Commit chain on `001-multi-orchestrator-runtime`
@@ -227,7 +227,7 @@ These remain deferred and unchanged by Phase A:
   Recipe: `fly deploy --remote-only` from
   `~/sources/odoo-bot-multi-orchestrator/` (middleware) or `web-ui/`
   (harness). Monitor: `fly logs -a <app> 2>&1 | grep -vE "capture-filter|hook 'on"`.
-- **Fly app names**: `odoo-bot-middleware`, `odoo-bot-harness`.
+- **Fly app names**: `<middleware-app>`, `<web-ui-app>` (the installation's own).
 - **Fly configs** live ONLY in `~/sources/odoo-bot` (gitignored;
   copied into the worktree on-demand for deploys).
 - **Pool max** on the kg pool is still 5. The reloadBus has LISTEN

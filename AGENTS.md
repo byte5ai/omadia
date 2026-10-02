@@ -97,7 +97,7 @@ Build artefacts (`target/`, `node_modules/`, etc.) live per worktree — first b
 
 ## Git Workflow & Engineering Standards
 
-Diese Regeln gelten für alle AI-Agenten (Claude, Codex, Copilot, …) und für menschliche Contributors gleichermaßen. Source of truth: `byte5ai/engineering-standards`. Status dieses Repos: `.github/engineering-standards.yml` (`status: applied`).
+Diese Regeln gelten für alle AI-Agenten (Claude, Codex, Copilot, …) und für menschliche Contributors gleichermaßen. Source of truth: das `engineering-standards`-Repo des Accounts (nicht öffentlich — die hier relevanten Regeln stehen vollständig unten). Status dieses Repos: `.github/engineering-standards.yml` (`status: applied`).
 
 - **Niemals direkt auf `main` pushen.** Feature-Branch + PR. Lokal blockt `.hooks/pre-push`, serverseitig Branch Protection.
 - **Branch-Naming:** `feat/<desc>`, `fix/<desc>`, `refactor/<desc>`, `docs/<desc>`, `chore/<desc>`, `test/<desc>`, `ci/<desc>`, `perf/<desc>`, `release/vX.Y`, `dev/vX.Y.devN`.
