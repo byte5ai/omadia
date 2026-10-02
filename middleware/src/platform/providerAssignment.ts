@@ -7,10 +7,25 @@
  * very same fail-closed checks (tool-less provider vs tool-driving plugin,
  * model/provider mismatch, routing-disable on a non-Anthropic switch), so they
  * moved here instead of being duplicated.
+ *
+ * Model refs (#1083): a class ref (`class:frontier`) is stored VERBATIM — the
+ * same as the runtime config PATCH does — so the agent follows the provider's
+ * catalog instead of being pinned to today's frontier model. The consumers of
+ * the keys written here resolve it with `resolveConfiguredModel` /
+ * `resolveModelRefStrict` (#1079): the orchestrator, verifier and extras once
+ * at activation (the assignment reactivates the plugin; they keep that model
+ * until the next reactivation, even if a later discovery run moves the class —
+ * see handoff §13 "Klassen-Refs veralten nach Discovery"), the issue reformulation (`issuesRouter`, reading
+ * `orchestrator_model`) per call.
+ * It fails closed only when the provider serves no model at all.
+ * Provider-qualified ids and legacy aliases are still normalised to the bare
+ * vendor `modelId`.
  */
 import {
+  isClassRef,
   listModelsByProvider,
   modelForClass,
+  resolveConfiguredModel,
   resolveModelRef,
   type ModelInfo,
   type ProviderId,
@@ -52,8 +67,11 @@ export type ProviderAssignmentResult =
       readonly ok: true;
       readonly pluginId: string;
       readonly provider: string;
-      /** The bare vendor model id that was persisted. */
+      /** What was persisted: a class ref as given, else the bare vendor id. */
       readonly model: string;
+      /** The concrete model `model` resolves to for `provider` right now —
+       *  equal to `model` unless that is a class ref. */
+      readonly resolvedModel: string;
     }
   | {
       readonly ok: false;
@@ -125,23 +143,9 @@ export async function applyProviderAssignment(
       message: `${desc.label} needs tool support; the subscription CLI provider is tool-less. Use it only for tool-less roles (e.g. extraction/classification).`,
     };
   }
-  // Resolve against the CHOSEN provider so class refs (`class:frontier`),
-  // provider-qualified ids (`openai:gpt-5.5`) and legacy aliases (`opus`) all
-  // disambiguate to it. Guard the classic mistake: a known model that belongs
-  // to a DIFFERENT provider (e.g. claude-* assigned to openai). Unknown models
-  // (custom / openai-compatible) are allowed through.
-  const known = resolveModelRef(model, { defaultProvider: provider as ProviderId });
-  if (known !== undefined && known.provider !== provider) {
-    return {
-      ok: false,
-      status: 400,
-      code: 'providers.model_provider_mismatch',
-      message: `model '${model}' belongs to provider '${known.provider}', not '${provider}'`,
-    };
-  }
-  // Persist the bare vendor id the adapter expects — normalise qualified ids /
-  // class refs / aliases to `modelId`; pass unknown custom ids through as-is.
-  const storeModel = known?.modelId ?? model;
+  const resolution = resolveAssignedModel(model, provider);
+  if (!resolution.ok) return resolution;
+  const { storeModel, resolvedModel } = resolution;
 
   const entry = deps.installedRegistry.get(pluginId);
   const nextConfig: Record<string, unknown> = { ...(entry?.config ?? {}) };
@@ -193,7 +197,50 @@ export async function applyProviderAssignment(
       primaryApplied: false,
     };
   }
-  return { ok: true, pluginId, provider, model: storeModel };
+  return { ok: true, pluginId, provider, model: storeModel, resolvedModel };
+}
+
+type AssignedModelResolution =
+  | { readonly ok: true; readonly storeModel: string; readonly resolvedModel: string }
+  | Extract<ProviderAssignmentResult, { ok: false }>;
+
+/**
+ * Decide what to persist for `model` under `provider`, and what it resolves
+ * to right now.
+ *
+ *  - class ref → kept verbatim (#1083); resolved with the runtime's own
+ *    resolver, which falls back to the nearest class and then to any model the
+ *    provider serves. Nothing at all → `providers.model_class_unavailable`.
+ *  - anything else → resolved against the CHOSEN provider so qualified ids
+ *    (`openai:gpt-5.5`) and legacy aliases (`opus`) disambiguate to it and are
+ *    stored as the bare vendor id. A known model of a DIFFERENT provider is the
+ *    classic mistake and is rejected; unknown (custom / openai-compatible) ids
+ *    pass through as-is.
+ */
+function resolveAssignedModel(model: string, provider: string): AssignedModelResolution {
+  if (isClassRef(model)) {
+    const resolved = resolveConfiguredModel(model, provider);
+    if (resolved === undefined || isClassRef(resolved)) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'providers.model_class_unavailable',
+        message: `provider '${provider}' serves no model for '${model}'`,
+      };
+    }
+    return { ok: true, storeModel: model, resolvedModel: resolved };
+  }
+  const known = resolveModelRef(model, { defaultProvider: provider as ProviderId });
+  if (known !== undefined && known.provider !== provider) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'providers.model_provider_mismatch',
+      message: `model '${model}' belongs to provider '${known.provider}', not '${provider}'`,
+    };
+  }
+  const storeModel = known?.modelId ?? model;
+  return { ok: true, storeModel, resolvedModel: storeModel };
 }
 
 // ---------------------------------------------------------------------------

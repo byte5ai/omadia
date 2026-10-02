@@ -451,6 +451,10 @@ export interface AdminProvider {
    *  there are some; absent on older middleware payloads. */
   unclassifiedModels?: string[];
   models: AdminProviderModel[];
+  /** #1083 — the `modelId` each model class resolves to on this provider;
+   *  classes it does not serve are absent. Labels the class options of the
+   *  per-agent model select. Absent on pre-#1083 middleware payloads. */
+  classDefaults?: Partial<Record<ModelClass, string>>;
 }
 
 export interface ProviderAssignment {
@@ -458,7 +462,13 @@ export interface ProviderAssignment {
   label: string;
   installed: boolean;
   provider: string;
+  /** The stored model ref: a concrete id, or a class ref (`class:frontier`)
+   *  that follows the provider's catalog. */
   model: string | null;
+  /** #1083 — the concrete model `model` currently resolves to; `null` when
+   *  nothing is stored or it cannot be resolved. Absent on pre-#1083
+   *  middleware payloads. */
+  resolvedModel?: string | null;
   modelKey: string;
   /** Orchestrator only: per-turn model-routing flag ('true' | 'false'). */
   modelRouting?: string;
@@ -482,7 +492,11 @@ export interface AssignProviderResponse {
   ok: boolean;
   pluginId: string;
   provider: string;
+  /** What was stored: a class ref as given, else the bare vendor id. */
   model: string;
+  /** #1083 — the concrete model the stored ref resolves to right now. Absent
+   *  on pre-#1083 middleware payloads. */
+  resolvedModel?: string;
 }
 
 export async function getProviders(): Promise<ProvidersResponse> {
@@ -4047,32 +4061,6 @@ export async function uploadDataset(
     throw new ApiError(res.status, `POST /v1/datasets failed: ${res.status}`, text);
   }
   return JSON.parse(text) as DatasetUploadResponse;
-}
-
-// -----------------------------------------------------------------------------
-// Chat session reset (2026-05-26).
-// -----------------------------------------------------------------------------
-
-export interface ResetChatSessionResponse {
-  sessionId: string;
-  /** New conversation pointer minted by the orchestrator. */
-  newConversationId: string;
-  resetAt: number;
-}
-
-/**
- * Rotates the conversation pointer for a chat session. The backend keeps
- * the session-id stable (so KG / memory references stay valid) but starts
- * a fresh conversation-id so the agent's context window is empty on the
- * next turn. Memory and Knowledge-Graph entries are NOT touched.
- */
-export async function resetChatSession(
-  sessionId: string,
-): Promise<ResetChatSessionResponse> {
-  return postJson<ResetChatSessionResponse>(
-    `/chat/sessions/${encodeURIComponent(sessionId)}/reset`,
-    {},
-  );
 }
 
 // -----------------------------------------------------------------------------

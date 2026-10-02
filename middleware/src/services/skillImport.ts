@@ -229,8 +229,18 @@ export async function importSkillMarkdown(
   opts: { dryRun?: boolean } = {},
 ): Promise<SkillImportResult> {
   const { skill: normalized, unparsedFrontmatter } = detectAndNormalize(req);
-  const contentHash = computeSkillHash(normalized.frontmatter, normalized.body);
-  const risks = scanSkillForRisks(normalized.frontmatter, normalized.body);
+  // Same inputs the store hashes (#1219): the description joins only when it
+  // differs from the frontmatter's, so an import's dedup hash is unchanged.
+  const contentHash = computeSkillHash(
+    normalized.frontmatter,
+    normalized.body,
+    normalized.description,
+  );
+  const risks = scanSkillForRisks(
+    normalized.frontmatter,
+    normalized.body,
+    normalized.description,
+  );
   // Distinguish "no resources key sent" (leave bundle untouched) from an
   // explicit array (replace it, empty = clear). Dedupe by name.
   const providedResources = req.resources;

@@ -121,7 +121,7 @@ playbook:
     Antwort-Verifiers scheitert dann geschlossen (Claims bleiben ungeprüft),
     und die Prüfung auf ungelöste Platzhalter zählt 0, hält also eine zweite
     Antwort mit umgeschriebenen Platzhaltern nicht zurück.
-    Ab @omadia/plugin-api 1.22.0 maskiert der Orchestrator wiederholte
+    Ab @omadia/plugin-api 1.23.0 maskiert der Orchestrator wiederholte
     Antworten über `maskReplayedAnswer` (dieses Plugin ab 0.7.0). Fehlt es,
     maskiert er sie über `maskUserPrompt`, also nur bei
     `mask_user_prompt: on`.

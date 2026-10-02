@@ -42,7 +42,11 @@ async function main(): Promise<void> {
     for (const skill of skills) {
       let contentHash = skill.contentHash;
       if (contentHash === null) {
-        const expectedHash = computeSkillHash(skill.frontmatter, skill.body);
+        const expectedHash = computeSkillHash(
+          skill.frontmatter,
+          skill.body,
+          skill.description,
+        );
         const updated = await graph.updateSkill(skill.id, {});
         contentHash = updated.contentHash;
         if (contentHash !== expectedHash) {
@@ -69,6 +73,7 @@ async function main(): Promise<void> {
         contentHash,
         skill.frontmatter,
         skill.body,
+        skill.description,
       );
       verdictsComputed++;
       log(

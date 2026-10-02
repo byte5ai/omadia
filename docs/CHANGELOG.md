@@ -48,7 +48,7 @@ is configured, through the turn's surrogate map, so the reply still shows the
 real values. Recalled context, the knowledge-graph recall and the session
 tail that stores answers with their real values restored, goes through the
 same mask. A replayed user message still follows `mask_user_prompt`.
-`@omadia/plugin-api` 1.22.0 adds the optional handle member; the bundled
+`@omadia/plugin-api` 1.23.0 adds the optional handle member; the bundled
 privacy guard implements it (0.7.0). A privacy plugin without it falls back to
 the prompt mask.
 
@@ -1781,6 +1781,170 @@ takes no datasetId. Model-facing strings only; no behaviour or schema change.
 `privacyV4RenderContract.test.ts` pins that the tool description and the
 dataset digest carry both halves and that ALWAYS stays out.
 
+### Security — credential broker hardened for agent-driven use (#778 S3a)
+
+2026-09-25 — `CredentialBroker.request` sent the stamped request with a plain
+`fetch` and returned the upstream answer verbatim. It followed redirects (a
+302 carried an `X-Api-Key` to the host the upstream named), had no timeout,
+buffered any body size, spread caller headers next to the injected one (a
+lowercase `authorization` was joined into `forged, Bearer <secret>`), returned
+headers and body unscrubbed (an echoing upstream handed the secret back), and
+let a raw fetch error escape (for `query-param`, its URL is the secret). Nothing
+instantiates the broker yet, so nothing was exposed. This is the precondition
+for the agent tool (#778 S3b).
+
+The broker now dispatches with `redirect: 'manual'` and a 20 s timeout, reads
+the body under a 1 MiB streaming cap (`truncated: true` on overflow), scrubs the
+secret from header values and body in raw, base64, URL-encoded,
+JSON-escaped and PHP `json_encode` (`\/`) form, built from what goes on the wire (the whitespace-trimmed
+header value undici sends, the `%27` the URL parser adds; secrets of 8+
+characters), filters caller headers against a static allow-list plus
+undici's own value check and audits the dropped names, refuses a GET/HEAD with
+a body as `invalid-request` before a `once` grant is consumed, and maps
+failures to sanitized `upstream-timeout` / `upstream-unreachable` denials.
+It also closes a `pathPrefixes` bypass that predates the slice: the prefix
+check ran on `path.posix` output, but fetch's WHATWG parser resolves
+`%2e%2e` / `.%2E`, reads `\` as `/` and strips tab/LF/CR, so
+`/v1/messages/%2e%2e/%2e%2e/admin` passed a `/v1/messages` check and sent the
+secret to `/admin`. The broker now refuses backslashes and control characters
+in the path and matches, audits and sends the path exactly as fetch resolves
+it (`resolveWirePath`), before a `once` grant is consumed, against prefixes
+serialised the same way (so `/drive/My Files` or `/v1/über` still match); a declared host
+that is not a plain `host[:port]` is denied as `invalid-broker-declaration`,
+and `timeoutMs` is capped at Node's timer limit (2^31 - 1). `dispatch-failed`, which had no call site, is
+replaced by those two reasons. See `docs/security-architecture.md` §10n. What
+the slice leaves open for #778 S2/S3b (short-secret floor, the unenforced
+`credential:broker:use` gate, the unsalted `fingerprintSecret`, per-credential
+vendor headers) is tracked in `docs/middleware-agent-handoff.md` §13.
+
+### Changed — dated prompt patterns and thin tool descriptions cleaned up (#1219)
+
+2026-09-29 — cleanups from a prompt audit against the current Claude models.
+Three of them change what goes on the wire — the effort beta, the
+structured-output seam and the refusal handling below; the rest are prompt and
+tool-description text.
+
+`output_config.effort` has been GA since the 4.6 generation, but the Anthropic
+adapter attached the `effort-2025-11-24` beta to **every** request that carried
+an effort, pinning GA models to a beta surface for no reason. Opus 4.5 is not
+retired and still needs the opt-in, so the header is now gated on that family
+through `requiresEffortBeta()`, which follows the `supportsTemperature()`
+convention (substring match, so dated and provider-qualified ids resolve). A
+caller that passes the beta explicitly in `LlmRequest.betas` still gets it on
+any model, exactly once. The adapter test asserted the old behaviour on
+`claude-opus-4-8` and is inverted.
+
+The `<at>…</at>` @-mention contract lived in three places: the
+`get_chat_participants` block of the system prompt, the tool description, and
+the tool response itself (`usage_example` + `rendering_rule`, built from a real
+`displayName` in the current chat). The prompt copy was the weakest — it taught
+the syntax on a made-up roster entry (`Jane Doe - ACME`) where the response
+carries the actual name; the `<at>Max Mustermann</at>` placeholder belongs to
+the tool description, which keeps it — and three copies of one syntax rule
+drift apart. The system-prompt block keeps only its routing
+guidance (when to call, once per turn, not in 1:1 chats) and points at the
+other two.
+
+The synthetic obligation reminder lost its `IMPORTANT:` prefix. Forced
+`tool_choice` degrades to `auto` on the models that reject it, so that reminder
+is what actually steers the consult; it should be clear, not loud. Its sibling
+in `LocalSubAgent` never carried a prefix. `claude-sonnet-5-5` joins the
+models `supportsForcedToolChoice()` lists: it answers a forced choice with the
+same 400 as Opus 5.5 and Fable 5.1, so its forced paths now degrade instead of
+failing. The code comments point at that function instead of naming models.
+
+DB-defined sub-agents described their delegation tool as "Delegate a focused
+question to the `<name>` sub-agent." and nothing else — while that same string
+is the routing text in the system prompt's Fach-Agenten roster, and
+`SkillRow.description` sat unread. It now carries the skill's own description
+plus the delegation contract (no conversation context, no follow-up questions,
+one answer), collapsed to a single line because the roster renders one
+`- name: description` entry per tool. Because that text now reaches the
+parent's system prompt and tool list, it is sanitized on the way in (control,
+invisible and bidi characters, backticks and angle brackets dropped) and capped
+at 300 characters; `scanSkillForRisks` scans it with the body, and
+`computeSkillHash` covers it whenever it differs from the frontmatter's own
+`description`. A description-only edit therefore gets a new content hash and a
+fresh verdict instead of the cached one, while an imported skill — whose
+description is its frontmatter's — keeps its hash.
+
+In `agent-reference-maximum`, three tool descriptions opened with an internal
+ticket ID and the word "Demo" (`OB-29-4`/`-3`/`-1`), and one closed by naming
+the pattern it demonstrates. None of that tells a model when to call the tool,
+and the builder uses this package as its primary reference, so the style
+propagated into generated agents. Each description now leads with the behaviour
+and states a call trigger; the behavioural facts are kept, and the pattern
+framing stays in `INTEGRATION.md`, which is the canonical index. The
+`reference-expert` skill also carried a prose `Kern-Tools` list naming one of
+the four registered tools, next to the real schemas the model already receives;
+it is gone, and the behaviour section stands on its own. `query_notes_by_person`
+says when its choice card actually renders — the orchestrator calls the tool
+itself and the Privacy Shield does not intern the result — and that the model
+otherwise asks which note is meant instead of guessing; the `disambiguate-policy`
+skill says the same, and the manifest's capability descriptions mirror the
+toolkit's, without the ticket IDs, the "Demo" framing and the model name.
+
+The issue-triage workflow's plan prompt no longer caps its comment at ~90
+lines. It asks the same prompt for verified file paths, real symbols and
+acceptance criteria, and a numeric ceiling trades that evidence for brevity.
+The rules that carry the quality stay: every path and symbol must exist, and an
+already-shipped issue gets a verify+close recommendation instead of a plan.
+
+Two API seams were added for the audit's "flagged only" items.
+
+**Structured outputs.** About ten prompts asked for JSON in prose because no
+request type could carry a schema. `LlmRequest.outputFormat` and
+`LlmCompleteRequest.outputFormat` now can, and the Anthropic adapter maps them
+to `output_config.format` — the current shape, not the deprecated top-level
+`output_format`. It shares one `output_config` object with `effort`, so both are
+built together rather than spread separately, where the second would silently
+drop the first. The format object carries exactly `type` and `schema`: the API
+rejects unknown nested body fields with a 400, so there is no `name`. Modelled
+on `effort`, an adapter without the concept ignores the field with a one-time
+note instead of failing — the OpenAI and OpenAI Responses adapters do exactly
+that today, so a caller asking for a schema must still parse tolerantly.
+Anthropic itself is stricter than "ignore": a model without structured-output
+support and a schema with keywords the API cannot compile (`minimum`/`maximum`,
+`minLength`/`maxLength`, an object without `additionalProperties: false`)
+answer 400, and a refusal comes back as a normal response whose text need not
+match the schema; `pluginContext.ts` and the `@omadia/plugin-api` changelog
+say so. No prompt has been migrated onto it yet; that is a decision per call
+site.
+
+**Refusals.** `stop_details` was never read, so a declined turn was opaque —
+a `bio` decline and a `reasoning_extraction` one looked identical.
+`LlmResponse.refusal` now carries the category and explanation, gated on
+`stop_reason` because the API leaves `stop_details` null on every other outcome.
+It travels through the orchestrator's provider seam, so the chat loop and
+`LocalSubAgent` log the category with the refusal, and `ctx.llm.complete`
+reports it to plugins as `LlmCompleteResult.refusal` (category only) with
+`stopReason: 'refusal'` — the plugin wrapper used to call a decline `end_turn`
+(`@omadia/plugin-api` 1.22.0). The chat path was already honest about refusals (`MODEL_REFUSAL_NOTICE`), but
+`LocalSubAgent` reported one as "returned an empty answer", which reads as a
+harness bug — and the delegation tool turns every exception from a sub-agent
+into the data-free withheld notice, so the parent model only learned that a
+tool had failed. `LocalSubAgent` now ends the run the moment a response comes
+back refused, whatever earlier iterations produced: before the response is
+kept, before a tool_use in it is dispatched and before the OB-31 escalation
+(which re-sent the refused turn; on a BuilderAgent build turn the API answered
+that with a 400). It throws a typed `SubAgentRefusalError`, and the delegation
+tool maps exactly that type to a fixed, harness-authored notice with the
+`Error:` prefix — "the `ask_…` sub-agent's model declined this question for
+safety reasons (category …)" — so the parent can rephrase or tell the user. The
+error's message never reaches the model; every other exception keeps the
+withheld notice.
+
+Not applied from the same audit: the `MANDATORY:` markers in the high-tier
+sycophancy guard are deliberately byte-identical to the upstream kemia source
+(`sycophancyGuard.test.ts` asserts exactly that, alongside the preset tests
+that lock kemia byte-identity), so rewording them would fork the mirror
+silently. The vendor's server-side refusal fallback is not wired either: no
+route would enable it yet, and its response side (dropping a pre-fallback
+tool_use, summing `usage.iterations`) does not exist. The audit's remaining
+items — the conductor word caps, the incident histories in `builder-system.md`
+and the shipped boilerplate, the JSON-only pressure wording, and moving the
+repo agent-rule files out — are tracked separately.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
@@ -2043,6 +2207,137 @@ pre-existing defects, both fixed by the companion change in the entry above:
 `buildForAgent` did not forward `cliTurnSeconds` to registry-built Agents, and
 `TurnBudgetField` could wipe the stored budget after a failed load.
 
+### Fixed — routines created from the browser chat deliver into that chat (#1071)
+
+2026-09-25 — `manage_routine create` from the web chat failed with *"no
+proactive sender registered for channel 'web'"*: the browser chat had no
+`ProactiveSender`, so a routine could be listed, paused and deleted there but
+never created.
+
+- **Web sender, Postgres only.** `plugins/routines/webChatProactiveSender.ts`
+  is registered by the kernel through `initRoutines({ proactiveSenders })`,
+  inside `if (graphPool)`. Without `DATABASE_URL` routines and the tool stay
+  unwired, exactly as before.
+- **Delivery is persisted into the originating chat.** `/chat` and
+  `/chat/stream` capture the chat tab's `sessionId` in the routine's
+  `conversationRef`; a run appends an assistant message with a
+  `proactive: { deliveredAt, routineId?, routineName? }` marker to that chat in
+  `ChatSessionStore` (`appendProactiveMessage`), the same store the web UI
+  hydrates from. A deleted chat is never recreated: a pre-flight
+  (`ProactiveSender.checkDeliverable`) notices it BEFORE the agent turn runs,
+  and the runner pauses the routine with "no longer exists; the routine was
+  paused — if the chat still exists in your browser, open it and resume the
+  routine; otherwise delete the routine and create it again …" in
+  `last_run_error`, so cron stops paying a turn on every fire
+  (the same happens when the chat vanishes during the turn). A request
+  without a saved chat (debug `scope`, `http-default`) is refused at create
+  time. An empty answer (for example a diagram-only turn) fails the run
+  instead of being recorded as `ok` with nothing delivered; dropped
+  attachments and interactive cards are logged at warn level and recorded on
+  the marker (`droppedAttachments`, `droppedInteractive`), which the web UI
+  names under the badge from the en + de catalog — the stored text stays the
+  routine's own output. A `NO_REPLY` answer (the orchestrator's default for a
+  routine with nothing to report) is dropped like on every other channel:
+  nothing is written and the run counts as `ok`. There is no live push (the
+  web chat has no realtime channel): the web UI re-reads the active chat when
+  `/chat` mounts, after hydration, on chat switch, when the browser tab becomes
+  visible and when the window regains focus (a desktop window can be refocused
+  without ever turning hidden), and folds in deliveries the server returns on
+  a PUT. The message carries a "Scheduled routine" badge (en + de).
+- **Hydration folds, it no longer replaces.** A delivery makes the server copy
+  newer. When that copy differs from the browser's only by deliveries, the web
+  UI now keeps its own copy and adds the deliveries; replacing it would have
+  dropped every client-only field (attachments, privacy receipts, routing,
+  persona, follow-ups …) that the PUT schema strips. When the browser is
+  AHEAD — a turn's fire-and-forget PUT failed and a delivery then made the
+  server copy newer — it keeps its turns, folds the deliveries in and PUTs a
+  catch-up copy, as it did before deliveries could bump `updatedAt`. That
+  includes a server copy with no turns but a delivery (the chat's first turn
+  created the routine and its PUT failed). A clear on ANOTHER device followed
+  by a delivery leaves the same shape; the server's `resetAt` (stamped by
+  `POST …/reset`, server-owned, returned by GET) tells them apart: a reset
+  this browser did not perform and that is not older than its copy's last
+  change lets the clear win, so a stale device no longer pushes cleared turns
+  back for the subscription-CLI tail to replay. A catch-up PUT keeps the browser's title, since the server's may still be
+  the "Neuer Chat" default the failed PUT would have replaced. On the
+  in-process runtime the server copy holds such a turn under the SessionLogger
+  mirror's `srv-u-…` / `srv-a-…` ids; a mirrored message matches the finished
+  local one with the same role and trimmed content, and the catch-up PUT swaps
+  the `srv-*` ids for the client's. A turn with the same id matches only when
+  the local copy is finished and its trimmed content equals the server's. Any
+  other difference (a turn from another device, a partial local answer after a
+  mid-stream reload or a tab closed before its local write caught up, a clear
+  with nothing delivered since) is still resolved in favour of the newer server
+  copy; dropping local turns for a copy with no messages is logged.
+- **Re-reads never rewrite what they did not change.** A re-read that finds no
+  delivery leaves the session state untouched (no re-render, no localStorage
+  write). A re-read that does fold a delivery stores only that delivery, into
+  the one chat as currently stored (re-read from localStorage first); the
+  tab's whole in-memory array is not written. So a stale tab regaining focus
+  (every omadia page mounts the chat-sessions provider) cannot overwrite what
+  another tab stored since, nor bring back a chat another tab deleted. A re-read or PUT answer requested before "clear chat", or answered
+  while its server reset is still in flight, is discarded, so a cleared
+  delivery does not come back. A fold keeps the browser's own
+  `updatedAt`, so a turn whose PUT failed still triggers the next hydration's
+  catch-up PUT (which carries the server's clock). A rename folds in the
+  deliveries the server's merging PUT answer carries. A chat holding only
+  deliveries still counts as empty, so its first real turn names it and ships
+  the selected agent. The re-read / fold / clear-epoch / visibility logic lives
+  in `useProactiveRefresh` (`web-ui/app/_lib/chatProactiveRefresh.ts`).
+- **The "Run now" notice no longer promises ~30 seconds** for a web routine:
+  the result shows when that chat is next opened or focused.
+- **`PUT /api/chat/sessions/:id` merges instead of overwriting**
+  (`ChatSessionStore.saveFromClient` → `mergeServerProactiveMessages`) and
+  answers with the stored document: server-written deliveries the body lacks are
+  kept — also for `messages: []`, which is no longer read as "clear chat" (a
+  rename of a cleared chat, a stale tab's catch-up and a new chat all PUT that,
+  and each silently dropped unseen deliveries). Clearing is explicit:
+  `POST /api/chat/sessions/:id/reset`, which the web UI's `clearMessages` now
+  calls itself before PUTting the cleared copy. A failed reset is retried
+  once; if it still fails, the chat is cleared in the browser only and the
+  chat page says that the server may still hold the conversation — at least
+  its scheduled routine messages, which may reappear (en + de),
+  instead of letting them come back unexplained. A corrupt stored file
+  (unparseable JSON) is still overwritten (repaired) rather than failing the
+  PUT; any other read failure fails the PUT instead of dropping deliveries.
+- **The `proactive` marker is server-trusted.** It counts only from the
+  server's own copy; a PUT message carrying a marker the stored copy does not
+  hold (a delivery cleared or deleted on another device, or a forged one) is
+  dropped with a warning — kept as a plain answer it would outlive the clear,
+  reach the model tail and make the browser's next hydration replace its copy
+  (and its attachments). The web UI never counts a `proactive-*` message as a
+  turn either.
+- **An unsynced rename survives a delivery.** A rename whose PUT failed is
+  remembered locally (`titleUnsynced`, never sent); a delivery that makes the
+  server copy newer no longer reverts it at the next page load — the local
+  title is kept and pushed.
+- **Deliveries stay out of the model tail.** `chatSessionTailTurns` skips them,
+  so a report behind an unanswered question is never replayed as its answer,
+  and the subscription-CLI tail treats a chat holding only deliveries as empty
+  (`[]`), not as unreadable history. The SessionLogger mirror's idempotency
+  check looks past deliveries too, so a delivery landing between a client PUT
+  and the mirror of the same turn no longer stores that turn twice.
+- **"Run now" on a paused routine is refused, not recorded as `ok`.** A fire on
+  a routine that is no longer active is skipped without recording a run — it
+  used to record `ok` and overwrite the `last_run_error` explaining an
+  auto-pause (deleted chat). `POST /api/v1/routines/:id/trigger` answers 409
+  `routines.not_active` (the routines page names it, en + de, with both ways
+  out of an auto-pause: reopen the chat and resume, or recreate), and the smart
+  card's "trigger now" says the routine is paused.
+- **One per-session lock for every `ChatSessionStore` instance.** Each
+  orchestrator builds its own store over the same chat-sessions directory, so
+  the lock is now module-level and also covers `delete`, `captureSnapshot`,
+  `clearSnapshot` and `resetMessages`. The lock only orders concurrent
+  writers: a read-modify-write racing another can no longer drop a delivery or
+  bring a deleted chat back. A later, non-concurrent mirror turn or client PUT
+  can still recreate a deleted chat (as before), and a web routine then
+  delivers into it again. It is in-process only.
+
+Known limit, recorded in `docs/security-architecture.md` §3a and as a
+follow-up in `docs/middleware-agent-handoff.md` §13 (Web-Routine-Zustellung):
+chat sessions still have no per-user owner, so the target chat of a web routine
+is whatever chat id the creating user's turn named.
+
 ### Fixed — plugin-office/web-search Hub drift: lost setup guide restored, versions bumped, build-zip + drift guards (#1075)
 
 2026-09-24 — the Hub served `@omadia/plugin-office` 0.1.2, a version no commit
@@ -2252,6 +2547,34 @@ longer marks the server session `invalid`: that status made `markAuthorized`
 refuse the correct retry, so the post-login auto-assign hook (OM-79) never ran
 and the exit handler dropped the session instead of confirming it. The fixtures
 are now the verbatim 2.1.187 output from the container.
+
+### Fixed — per-agent model select showed the first list entry for a class ref (#1083)
+
+On `/admin/providers` → "Per-agent assignment" the model select could not
+display a model class ref such as `class:frontier` — the platform default the
+orchestrator is auto-installed with. No option matched the stored value, so the
+browser showed the first entry of the model list, which could name a model the
+agent was not using, and switching the provider or re-saving silently pinned a
+concrete model. The model classes are now first-class options, grouped above
+the pinned models and labelled with what they resolve to right now (e.g.
+`Frontier (auto → Claude Opus 5)`); any other stored value that is not in the
+list (a legacy alias, a qualified or dropped id) gets its own selected option.
+Switching the provider keeps a class ref. `GET /api/v1/admin/providers` adds
+`resolvedModel` to each assignment (computed with the runtime's own resolver)
+and `classDefaults` to each provider. `POST /api/v1/admin/providers/assignment`
+now stores a class ref as given — like the runtime config PATCH already did —
+instead of normalising it to a concrete id, returns `resolvedModel`, and
+rejects a class ref the provider cannot serve with any model with
+`400 providers.model_class_unavailable`. Qualified ids and aliases are still
+normalised. The orchestrator, verifier and background scorer resolve a class
+ref once, at activation, and keep that model until the plugin is reactivated
+(e.g. by re-saving the assignment). The admin label is computed from the
+current catalog, so when model discovery later moves a class, the
+`(auto → X)` label can run ahead of the model the plugin is actually running
+until it is reactivated. A server restart does not reliably converge either:
+discovery results are not persisted and boot discovery runs fire-and-forget,
+so activation can resolve against the bundled catalog. The in-app issue reporter's reformulation now resolves the
+orchestrator's model ref too, instead of sending a class ref raw to the vendor.
 
 ### Fixed — dynamic sub-agents on the Anthropic host sent `class:frontier` raw (404) (#1079)
 

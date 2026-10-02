@@ -1679,6 +1679,21 @@ export function finalAnswerText(
 }
 
 /**
+ * #1219 — the refusal clause of the non-`end_turn` finalize log line, so a
+ * declined turn says WHY (`bio`, `cyber`, …; the seam carries the vendor's
+ * category) instead of only that it was declined. Empty for every other
+ * stop reason.
+ */
+function refusalLogClause(message: {
+  readonly stop_reason?: unknown;
+  readonly refusal?: { readonly category?: unknown };
+}): string {
+  if (message.stop_reason !== 'refusal') return '';
+  const category = message.refusal?.category;
+  return ` refusal_category=${typeof category === 'string' ? category : 'none'}`;
+}
+
+/**
  * #579 — fail-open evidence. Fold the untrusted-data marker into the turn's
  * `extraSystemHint` (a non-cached system block, wire-only — NOT persisted to the
  * session log, honouring "persist raw, disclose at boundary"), so an
@@ -1794,11 +1809,7 @@ function buildSystemPrompt(
     : '';
   const chatParticipantsBlock = hasChatParticipants
     ? '\n- `get_chat_participants`: Liefert die Teilnehmer des aktuellen Teams-Chats. Nur aufrufen, wenn du jemanden im Antworttext **per @-Mention ansprechen** willst — Handoff, Rückfrage, Zuständigkeits-Tag. Max 1× pro Turn. In 1:1-Chats nicht nutzen.\n' +
-      '\n  **PFLICHT nach dem Tool-Call — sonst war der Call umsonst:**\n' +
-      '  1. Den Namen im Antworttext in der Form `<at>EXAKTER_DISPLAY_NAME</at>` schreiben.\n' +
-      '  2. `EXAKTER_DISPLAY_NAME` muss byte-für-byte dem `displayName`-Feld aus der Tool-Response entsprechen — inklusive Firmensuffix, Bindestriche, Großschreibung.\n' +
-      '  3. Ohne diese `<at>…</at>`-Tags wird KEINE Mention gerendert und die Person NICHT benachrichtigt — das Schreiben des Namens allein reicht NICHT.\n' +
-      '  4. Beispiel: wenn der Roster `displayName: "Jane Doe - ACME"` zurückgibt und du sie ansprechen willst, schreibst du `Hey <at>Jane Doe - ACME</at>, kannst du das übernehmen?` — nicht `Hey Jane Doe` und auch nicht `Hey @Jane`.\n'
+      '\n  Die exakte Mention-Syntax steht in der Beschreibung des Tools, und die Tool-Response liefert sie in `usage_example` / `rendering_rule` noch einmal mit einem echten `displayName` aus diesem Chat. Halte dich daran: ohne diese Form wird keine Mention gerendert, die Person nicht benachrichtigt, und der Call war umsonst.\n'
     : '';
 
   const graphBlock = hasGraph
@@ -5302,7 +5313,7 @@ export class Orchestrator {
   /** #332 Layer 3 — synthetic reminder pushed when an obligation is unmet. */
   private obligationReminder(toolName: string): string {
     return (
-      `IMPORTANT: Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
+      `Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
       `(\`${toolName}\`) zu konsultieren. Dieser Consult ist für diesen Turn ` +
       `verpflichtend. Rufe \`${toolName}\` jetzt auf, bevor du dem Nutzer antwortest.`
     );
@@ -5843,7 +5854,7 @@ export class Orchestrator {
           // a normal turn end.
           if (response.stop_reason !== 'end_turn') {
             console.error(
-              `[orchestrator] finalized with stop_reason=${String(response.stop_reason)} ` +
+              `[orchestrator] finalized with stop_reason=${String(response.stop_reason)}${refusalLogClause(response)} ` +
                 `iterations=${iteration + 1}/${this.maxIterations}` +
                 (responseHasToolUse
                   ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'
@@ -5852,8 +5863,12 @@ export class Orchestrator {
           }
           // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
           // turn end: escalate ONCE with a forced tool_choice + synthetic
-          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
-          // tool-enabled iteration follows within the iteration budget.
+          // reminder (OB-31). On the models that reject a forced choice (see
+          // `supportsForcedToolChoice()` in the Anthropic adapter) it degrades
+          // to `auto`, so the reminder text is what actually steers the call.
+          // Guarded by
+          // `!finalizeThisIter` so a normal tool-enabled iteration follows
+          // within the iteration budget.
           if (
             obligationTool &&
             !obligationMet &&
@@ -7159,7 +7174,7 @@ export class Orchestrator {
           // cut mid-tool_use silently drops the calls of this response.
           if (finalMessage.stop_reason !== 'end_turn') {
             console.error(
-              `[orchestrator] finalized with stop_reason=${String(finalMessage.stop_reason)} ` +
+              `[orchestrator] finalized with stop_reason=${String(finalMessage.stop_reason)}${refusalLogClause(finalMessage)} ` +
                 `iterations=${iteration + 1}/${this.maxIterations}` +
                 (responseHasToolUse
                   ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'
@@ -7168,8 +7183,12 @@ export class Orchestrator {
           }
           // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
           // turn end: escalate ONCE with a forced tool_choice + synthetic
-          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
-          // tool-enabled iteration follows within the iteration budget.
+          // reminder (OB-31). On the models that reject a forced choice (see
+          // `supportsForcedToolChoice()` in the Anthropic adapter) it degrades
+          // to `auto`, so the reminder text is what actually steers the call.
+          // Guarded by
+          // `!finalizeThisIter` so a normal tool-enabled iteration follows
+          // within the iteration budget.
           if (
             obligationTool &&
             !obligationMet &&
