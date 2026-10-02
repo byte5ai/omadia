@@ -164,6 +164,36 @@ src/
   gilt für Plugin-Tools mit `agentId`; `get_chat_participants` ist
   kernel-intern und wird stattdessen am Turn-Roster gegatet.
 
+### `find_free_slots` + `book_meeting` — M365-Kalender-Tools (#1214)
+
+- **Dateien:** `packages/harness-orchestrator/src/tools/findFreeSlotsTool.ts`
+  (Slot-Suche via Microsoft Graph `findMeetingTimes` + Slot-Card) und
+  `.../bookMeetingTool.ts` (Kalendereintrag auf einen zuvor gefundenen Slot).
+  Beide hängen an `hasCalendar` in `buildSystemPrompt`.
+- **Arbeitsteilung Prompt ↔ Tool-Beschreibung (der Kern von #1214):** Der
+  `calendarBlock` im System-Prompt ist bewusst **eine** Zeile und trägt nur,
+  was keine Tool-Beschreibung tragen kann: (a) das Routing — Termin-, Slot-
+  und Verfügbarkeitsanfragen gehen an diese Tools, auch wenn der User sie wie
+  eine Nachricht formuliert ("schicke X drei Vorschläge"); (b) den
+  Cross-Tool-Hop — Namen erst über einen Personen-/HR-Fach-Agenten zu Emails
+  auflösen; (c) die 1-Satz-Zusammenfassung der Slots im Antworttext; (d) den
+  `consent_required` / `sso_unavailable`-Hinweis, dessen OAuthCard das System
+  anhängt. **Alles andere — Host-Logik (`hostEmail` nur bei Suche im Auftrag
+  Dritter), `durationMinutes` 15–480, `windowDays` 1–14 Default 5, „bereits
+  gebuchte Termine ansehen ist nicht implementiert" — steht ausschließlich in
+  der Tool-Beschreibung und wird im Prompt nicht dupliziert.**
+- **Warum:** Der alte Block schrieb „egal wie die Formulierung lautet — RUFE
+  `find_free_slots`" plus Pflicht-Schritte mit „Default 30 min wenn User keine
+  Dauer nennt". Die Tool-Beschreibung sagt das Gegenteil (`durationMinutes`
+  ist Pflichtfeld; „keine konkreten Teilnehmer oder Dauer → zuerst klären"),
+  und die Host-Logik stand doppelt. Ein Widerspruch zwischen Prompt und
+  Tool-Kontrakt ist durch keinen weiteren Prompt-Text zu reparieren, und
+  „egal wie — RUFE X"-Booster stammen aus einer Modell-Generation, die
+  *unter*getriggert hat; die aktuellen Modelle übertriggern damit.
+- **Regel für künftige Änderungen:** Parameter-Defaults und Grenzwerte gehören
+  in die Tool-Beschreibung, nicht in den System-Prompt. Nur echte
+  Cross-Tool-Orchestrierung (wie der HR-Agent-Hop) gehört in den Prompt.
+
 ### Turn-Owner-Guard für den Subscription-CLI-Pfad (`routineTurnOwnerGuard`, #1016)
 
 Neue Kernel-Service-Registrierung neben `installedPluginConfigReader` und

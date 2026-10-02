@@ -1598,6 +1598,26 @@ hint could not duplicate. New tests
 `tool_choice`, the directive's position and the no-suppression fallback for both
 loops; `middleware/test/llmProviderMinimaxQuirks.test.ts` pins the capability.
 
+### Changed — Kalender-Block im System-Prompt folgt wieder dem `find_free_slots`-Kontrakt (#1214)
+
+2026-09-30 — der `calendarBlock` in
+`middleware/packages/harness-orchestrator/src/orchestrator.ts` wies das Modell
+an, „egal wie die Formulierung lautet" `find_free_slots` zu rufen, und schrieb
+in Pflicht-Schritten „Default 30 min wenn User keine Dauer nennt" vor. Die
+Tool-Beschreibung sagt das Gegenteil — `durationMinutes` ist Pflichtfeld und
+„User nennt keine konkreten Teilnehmer oder Dauer → zuerst klären" —, und die
+Host-Logik (`hostEmail`) stand doppelt in Prompt und Tool-Beschreibung. Der
+Block ist jetzt eine Zeile: Routing zu den beiden Tools (auch wenn die Anfrage
+wie eine Nachricht formuliert ist), der Hop „Namen erst über einen
+Personen-/HR-Fach-Agenten zu Emails auflösen", die 1-Satz-Zusammenfassung der
+gefundenen Slots und der `consent_required` / `sso_unavailable`-Hinweis.
+Parameter, Grenzwerte und Host-Logik stehen nur noch in der
+Tool-Beschreibung. Hintergrund: „egal wie — RUFE X"-Booster wurden für
+Modelle geschrieben, die untertriggerten; die aktuellen Modelle übertriggern
+damit, und ein Widerspruch zwischen Prompt und Tool-Kontrakt ist durch
+weiteren Prompt-Text nicht zu heilen. Kein Test hängt am Prompt-Text; die
+Arbeitsteilung ist in `docs/middleware-agent-handoff.md` §3 festgehalten.
+
 ### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
 
 2026-09-29 — the `audit (high+critical block)` step treated an npm registry
