@@ -4106,7 +4106,12 @@ Modellanfragen der Shield bei welcher Einstellung maskiert (die des Turns
 selbst), dann ein Satz, dass jeder andere Modellaufruf seinen Text so
 schickt, wie er ist, mit den bekannten Fällen (Inbound-Screener,
 Signifikanz-Scorer und die übrigen Memory-Jobs, `ctx.llm`, Bilder,
-Embeddings). Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
+Embeddings). Auch innerhalb des Turns nennen sie die Lücken: Tool-Fehler
+werden nur für Tools redigiert oder zurückgehalten, die weder intern-exempt
+noch per Bypass freigegeben sind (ein geworfener Fehler bleibt auch unter
+Bypass zurückgehalten), und Prompt-Masking blockiert eine Anfrage nur, wenn
+C0 scheitert; ein ausgefallener C1-Detektor lässt den Rest des Turns auf C0
+laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
 
 - **Publisher-signierte Plugin-Pakete.** Heute gibt es nur SHA-256-Pinning
   (Registry-Index bzw. Hash beim Upload), keine Signatur und keinen Trust Root;
@@ -4235,8 +4240,10 @@ Embeddings). Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   `security_screen_url`. Der Capture-Filter von `@omadia/orchestrator-extras`
   schickt beim Default-`capture_level` `normal` (`DEFAULT_CAPTURE_LEVEL`)
   jeden gespeicherten Turn, die Nachricht wie getippt (`userMessage` des
-  Session-Logs) plus Antwort, an den Extras-Provider (`captureFilter.ts`,
-  `significanceScorer.ts`). Code-Unit: beide über den Wire-Text des Turns
+  Session-Logs, `input.userMessage`) plus die wiederhergestellte Antwort
+  (`assistantAnswer`), über `CaptureFilteringKnowledgeGraph.ingestTurn` an den
+  Extras-Provider (`captureFilter.ts`, `significanceScorer.ts`), auch mit
+  `mask_user_prompt` an. Code-Unit: beide über den Wire-Text des Turns
   führen (Screening nach dem Minten des Handles über die maskierte Nachricht
   und maskierte `priorTurns`, Scoring über die maskierten Texte, die schon
   die Fakten-Extraktion bekommt) oder beide in den Turn-Scope verlegen.
@@ -4266,6 +4273,35 @@ Embeddings). Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   Danach README (Zeile „Privacy Shield“, Abschnitt „Trust & privacy“), §6f,
   `.env.example`, §10 („Privacy-Shield-Klammer“) und
   `docsClaimsGuard.test.ts` nachziehen.
+- **Fehlertexte intern-exempter Tools gehen ungefiltert ans Modell.**
+  `Orchestrator.dispatchTool`, `LocalSubAgent` und `ToolDispatchService`
+  geben das Ergebnis eines Tools aus `INTERN_EXEMPT_TOOLS` zurück, bevor sie
+  auf den `Error:`-Träger prüfen, und `withholdThrownToolError` hält nur für
+  nicht-exempte Tools zurück. Ein `Error:`-Text von `memory` oder
+  `read_attachment` und die geworfene Message eines solchen Tools erreichen
+  das Modell daher wie geliefert. Unter Operator-Bypass gilt das für den
+  zurückgegebenen Fehler (auch in `guardReplayResult`); die geworfene Message
+  bleibt dort zurückgehalten, das ist Operator-Vertrag und steht in §6c.
+  Code-Unit: für intern-exempte Tools den Control-Flow-Zweig
+  (`isGuardedControlFlowResult` → `guardControlFlowResult`) vor die Exemption
+  ziehen, sodass nur der `Error:`-Träger redigiert wird und das normale
+  Ergebnis exempt bleibt, und in `withholdThrownToolError` die
+  Exempt-Ausnahme streichen; Test je Seam mit einem exempten Tool, das einen
+  Fehler mit synthetischer E-Mail-Adresse liefert bzw. wirft. Danach §6c,
+  §6f, README und `docsClaimsGuard.test.ts` nachziehen.
+- **Ausgefallener C1-Detektor: der Rest des Turns läuft still auf C0.**
+  Wirft der konfigurierte C1-Detektor, sperrt `c1DetectorFor`
+  (`harness-plugin-privacy-guard/src/service.ts`) C1 für den Rest des Turns.
+  Prompt-Masking, Tool-Fehler-Redaktion und Verifier-Projektion laufen dann
+  nur auf C0 und der Deny-Liste (`outcome: 'masked'` mit `degraded: true`,
+  im Log `promptMaskDegraded`/`toolErrorRedactDegraded`), und
+  `maskPromptForWire` blockiert nur bei `blocked`. Namen, die nur C1 findet,
+  gehen ungemaskt ans Modell, und die `PrivacyReceipt` zeigt den Degrade
+  nicht. Code-Unit: den Degrade in die Receipt schreiben und eine
+  Operator-Einstellung anbieten, die bei konfiguriertem, aber ausgefallenem
+  C1 die Anfrage blockiert, wie ein gescheitertes C0; Test mit einem
+  werfenden Fake-Detektor. Danach Manifest-Hilfe (`mask_user_prompt`,
+  `c1_detector_url`), `.env.example` und §6f nachziehen.
 - **Verifier prüft nur, was ein Trigger-Muster trifft.** `shouldTriggerVerifier`
   (`harness-verifier/src/triggerRouter.ts`) kennt Euro-Beträge,
   Buchungsreferenzen, ISO- und `dd.mm.yyyy`-Daten, Prozente, deutsche

@@ -1174,8 +1174,11 @@ function buildUserContent(
 // #361 — free-text user-prompt PII masking (wire side).
 // ---------------------------------------------------------------------------
 
-/** Thrown when prompt masking was requested but could not be guaranteed —
- *  failure-closed: the turn is blocked instead of sending PII to the model. */
+/** Thrown on the guard's `blocked` outcome: prompt masking is on and its C0
+ *  pass (pattern baseline plus deny-list) failed, or a detected span survived
+ *  substitution. Failure-closed: the request is not sent to the model. A
+ *  failed C1 detector does not throw — the guard falls back to C0 for the
+ *  rest of the turn (`degraded`), so names only C1 detects go out unmasked. */
 export class PromptMaskBlockedError extends Error {
   constructor(reason: string) {
     super(`[privacy] user-prompt masking failed (${reason}) — turn blocked`);
@@ -6015,9 +6018,11 @@ export class Orchestrator {
             isError = output.startsWith('Error:');
           } else {
             // Unreachable by construction — `dispatchTool` never rejects; it
-            // resolves a handler exception as the withheld notice itself. Kept
-            // as a backstop that can never put an exception MESSAGE on the
-            // wire: class name, sanitised code and the log ref only.
+            // resolves a handler exception itself (`withholdThrownToolError`:
+            // the withheld notice under a privacy handle for a tool that is
+            // not intern-exempt). Kept as a backstop that can never put an
+            // exception MESSAGE on the wire: class name, sanitised code and
+            // the log ref only.
             const ref = toolErrorRef();
             console.error(
               `[orchestrator.toolLoop:${String(use.name)}] dispatch rejected (ref=${ref}) — message withheld from the model:`,
@@ -7777,11 +7782,12 @@ export class Orchestrator {
     // the one this loop already reads (`output.startsWith('Error:')`).
     //
     // A handler exception no longer rejects at all: `dispatchTool` resolves it
-    // as the withheld tool-error notice (`toolErrorRedaction.ts`), so this
-    // catch is a backstop for a throw outside that choke point. It never puts
-    // the exception MESSAGE on the wire either — the text streamed as the
-    // `tool_result` event, sent to the provider and persisted in the session
-    // carries the class name, a sanitised code and the log ref.
+    // through `withholdThrownToolError` (`toolErrorRedaction.ts`; the withheld
+    // notice under a privacy handle for a tool that is not intern-exempt), so
+    // this catch is a backstop for a throw outside that choke point. The
+    // backstop never puts the exception MESSAGE on the wire — the text
+    // streamed as the `tool_result` event, sent to the provider and persisted
+    // in the session carries the class name, a sanitised code and the log ref.
     const meta: ToolDispatchMeta = { replayed: false };
     const promise = this.dispatchTool(use.name, use.input, observer, turnMemory, meta).catch(
       (err: unknown) => {
@@ -7888,11 +7894,14 @@ export class Orchestrator {
   /**
    * The ONE choke point every tool dispatch passes through (the tool loops,
    * the streaming slots, the direct-line relay). It never rejects: a handler
-   * exception — or any other throw beneath this point — resolves as the
-   * withheld tool-error notice (`toolErrorRedaction.ts`), so no caller ever
-   * folds an exception MESSAGE into a tool result again. The message is
-   * logged with the turn's correlation ref and receipted; the model sees the
-   * class name, a sanitised code and that ref.
+   * exception — or any other throw beneath this point — resolves through
+   * `withholdThrownToolError` (`toolErrorRedaction.ts`), so no caller folds an
+   * exception MESSAGE into a tool result on its own. Under the turn's privacy
+   * handle, for a tool that is not intern-exempt, that is the withheld
+   * notice: the message is logged with the turn's correlation ref and
+   * receipted, and the model sees the class name, a sanitised code and that
+   * ref. Without a handle, or for an intern-exempt tool, the model gets
+   * `Error: <message>` (security-architecture §6c residuals, §6f).
    */
   private async dispatchTool(
     name: string,
@@ -8255,7 +8264,10 @@ export class Orchestrator {
       // before masking so it sees the raw result; fire-and-forget so it never
       // affects the tool call. Stores a value-free structural digest by default
       // and the raw result only when the server is privacy-bypassed; always
-      // ACL-gated to the turn's user.
+      // ACL-gated to the turn's user. The bypass flag is read directly here,
+      // not through `resolveEffectivePrivacyMode`, so the org clamp
+      // `OMADIA_PRIVACY_FORCE_GUARDED` does not stop a bypassed server's raw
+      // result from being stored (open: handoff §13, security-architecture §6f).
       const kgTool = this.domainToolsByName.get(name);
       // A replayed result was ingested by the run that produced it.
       if (

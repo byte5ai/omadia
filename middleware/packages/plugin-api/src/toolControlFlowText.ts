@@ -38,8 +38,11 @@
  * shield's free-text detectors before the model reads it
  * (`guardControlFlowResult` in `@omadia/orchestrator`; exception-shaped text —
  * a JSON row echo, a stack trace — is withheld whole), a message a handler
- * THREW never reaches the model at all (`toolErrorNotice.ts`), and each
- * handled error writes a `toolErrors` entry into the turn's privacy receipt.
+ * THREW is withheld from the model (`toolErrorNotice.ts`), and each handled
+ * error writes a `toolErrors` entry into the turn's privacy receipt. That
+ * holds under a privacy handle for a tool that is neither intern-exempt nor
+ * bypassed (a thrown message is withheld under bypass too); the kernel's
+ * intern-exempt tools hand both carriers to the model as they are.
  * The in-tree wrappers that caught exceptions return the withheld notice via
  * `toolErrorFromException` and keep only messages they author themselves;
  * any producer that still returns exception text relies on the seam.

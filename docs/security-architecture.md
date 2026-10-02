@@ -1010,8 +1010,8 @@ finalized.
   endpoint too, but only when an operator set
   `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING`. The same holds for
   the intern-exempt self tools (`privacyInternPolicy.ts`), and for a returned
-  error of a plugin the operator set to bypass; a thrown message is withheld
-  even under bypass.
+  error of a plugin, tool or MCP server the operator set to bypass; a thrown
+  message is withheld even under bypass.
 - On the public MCP endpoint a sub-agent cannot correct itself from an inner
   error hint, since the gate withholds that text, and the endpoint has no
   sub-agent dataset bridge: the sub-agent's answer is interned again as data.
@@ -1246,8 +1246,17 @@ requests, and only there, the shield acts on three kinds of text:
   into the turn's dataset store and the model gets an identity-free digest in
   its place (`internToolResultV4`). The results that skip this step are
   listed further down.
-- **Tool errors, whatever the settings.** A returned `Error:` text is redacted
-  and a thrown one is withheld (§6c), with `mask_user_prompt` on or off.
+- **Tool errors, independent of `mask_user_prompt`.** For a tool that is
+  neither intern-exempt nor bypassed, a returned `Error:` text is redacted (or
+  withheld whole) and a thrown one is withheld (§6c). A returned error of an
+  intern-exempt tool, or of a plugin, tool or MCP server the operator set to
+  bypass, reaches the model as returned, and so does a thrown error of an
+  intern-exempt tool. A thrown error is withheld even under bypass (§6c,
+  residuals). The seams check the bypass, and `Orchestrator.dispatchTool`,
+  `LocalSubAgent` and `ToolDispatchService` the intern exemption as well,
+  before they look for an `Error:` text (`guardReplayResult`, the MCP input
+  replay, checks the bypass only), and `withholdThrownToolError` withholds
+  only for a tool that is not intern-exempt.
 - **Prompt text, only while `mask_user_prompt` is on.** The setting is off by
   default. While it is on, the user's message, document text inlined at
   upload, recalled context, the chat history a channel replays (`priorTurns`,
@@ -1258,6 +1267,18 @@ requests, and only there, the shield acts on three kinds of text:
   configured. The turn's model and persona routing, its card routing, fact
   extraction and the memory-excerpt pass read that wire text, so they follow
   the setting too. While it is off, all of this reaches the model as typed.
+  Masking fails closed only where the C0 baseline cannot run: if C0
+  detection or the deny-list fails, or a detected span survives
+  substitution, the guard reports `blocked` and the request is not sent
+  unmasked (`PromptMaskBlockedError`: the turn answers with a privacy
+  notice, a direct-line (#specialist) turn included, a fact-extraction pass
+  is skipped and a verifier re-entry is abandoned, §7c). If the configured
+  C1 detector fails, C1 stays off for the rest of the turn and masking falls
+  back to the C0 baseline (`c1DetectorFor`, logged as `promptMaskDegraded`),
+  so names only C1 detects reach the model unmasked. Restoring real values
+  in the final answer and in what is persisted is best-effort: a restore
+  that throws is logged and leaves the surrogates in place
+  (`restorePromptForPersistence`).
 
 The verifier's evidence-judge requests are projected through the turn's map
 whatever `mask_user_prompt` says (§6e). The subscription-CLI path has no
@@ -4700,11 +4721,15 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       requests it masks and the setting each one needs, and then says that
       every other model call sends its text as it is, naming the in-tree
       ones: the inbound security screener, turn scoring and the other memory
-      jobs, `ctx.llm` calls, images and embeddings (§6f). A claim about the
-      org clamp says that it does not reach the MCP-to-knowledge-graph
-      ingestion (§6f). A claim about what the verifier checks names its
-      trigger patterns and the answers `enforce` delivers unchecked, an
-      input-card turn's rendered answer included (§7c).
+      jobs, `ctx.llm` calls, images and embeddings (§6f). A claim that tool
+      errors are redacted or withheld names the tools it skips, intern-exempt
+      and bypassed ones (§6c residuals, §6f), and a claim that prompt masking
+      fails closed says that a failed C1 detector falls back to C0 for the
+      rest of the turn (§6f). A claim about the org clamp says that it does
+      not reach the MCP-to-knowledge-graph ingestion (§6f). A claim about
+      what the verifier checks names its trigger patterns and the answers
+      `enforce` delivers unchecked, an input-card turn's rendered answer
+      included (§7c).
       A claim that a call runs once names the scope the code gives it: one
       request for the verifier's replay ledger, one process and the cache
       window for an idempotency key (§4, §7c).
@@ -4766,4 +4791,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target).*
+*Last reviewed: 2026-10 (§7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*

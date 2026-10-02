@@ -55,17 +55,24 @@ the image's `node_modules`, and where omadia itself runs npm or code npm
 installed, Builder previews and builds included. None of these places installs
 plugin code.
 
-The Privacy Shield sentences first say what the shield masks and under which
-setting, then name what passes outside it. The shield works only inside a
-turn's own model requests, which are the agent's model loop, its sub-agents
-and the verifier's requests about the answer. There it gives the model a
-digest of each data-source tool's result, withholds a result it cannot intern
-and redacts tool errors. Prompt text is masked there only while
-`mask_user_prompt` is on, and it is off by default. Until then the user's
+The Privacy Shield sentences first say which model requests the shield covers
+and under which setting, then state in one sentence that every other model
+call sends its text as it is. The shield acts only in a turn's own model
+requests, which are the agent's model loop, its sub-agents and the verifier's
+requests about the answer. There it gives the model a digest of each tool
+result under `guarded` and withholds a result it cannot intern. It redacts
+the `Error:` text of a tool that is neither intern-exempt nor bypassed, or
+withholds it whole, and withholds the message of such a tool when it throws.
+The errors an intern-exempt tool returns or throws, and those a bypassed
+tool returns, reach the model as they are. Prompt text is masked there only
+while `mask_user_prompt` is on, and it is off by default. Until then the user's
 message, text inlined from uploads, recalled context and the chat history a
 channel replays reach the model as typed, and a channel that replays its
 delivered answers, as the Teams and Telegram channels do, sends the model the
-real values the shield rendered into those answers on later turns.
+real values the shield rendered into those answers on later turns. With
+masking on, a request is blocked only when the C0 baseline fails. A failed C1
+detector leaves the rest of the turn on C0, so names only C1 detects reach
+the model unmasked, and restoring the real values afterwards is best-effort.
 `read_attachment` and a short allowlist of the agent's own tools
 (`INTERN_EXEMPT_TOOLS`) return their results in clear, an operator can bypass
 the shield per plugin, per tool or per MCP server, and agents on the Claude
@@ -89,7 +96,8 @@ model gets. It does not reach the knowledge-graph ingestion of MCP results: a
 server flagged for both ingestion and privacy bypass still stores up to 8,000
 characters of each raw result as a memory. Security architecture §6f lists all
 of this, and `docs/middleware-agent-handoff.md` §13 holds the code follow-ups
-for the screener and the scorer and for the ingestion clamp.
+for the screener and the scorer, the ingestion clamp, the errors of
+intern-exempt tools and the C1 fallback.
 
 The answer verifier is described as optional and off by default, with `shadow`
 as its default mode, which only records. It checks an answer only when one of
@@ -138,12 +146,25 @@ the control that enforces it, that control's default and the limits the code
 puts on it, that a claim that a call runs once name its scope, and that a
 claim about the shield or the verifier name what passes outside it. A privacy
 claim names the model requests the shield masks and the setting each needs,
-then states that every other model call sends its text as it is. The privacy
+then states that every other model call sends its text as it is, and a claim
+about tool errors or a failure-closed mask names what it skips. The privacy
 guard's `mask_user_prompt` help text, which promised every model-bound copy of
-the turn, now names the turn's model requests it masks and points to §6f, and
-three code comments that contradicted the code are corrected: the default
-capture level, the failure handling of the MCP input replay and the text the
-memory-excerpt pass receives.
+the turn, a blocked turn whenever masking "cannot be guaranteed" and a
+restore in everything persisted, now names the turn's model requests it
+masks, blocks only on a failed C0 pass, says that a failed C1 detector falls
+back to C0 for the rest of the turn and calls the restore best-effort; the
+`c1_detector_url` help and `middleware/.env.example` say the same about C1.
+The plugin's store description, which said it keeps personal data away from
+the model, now names the raw results of data-source tools and calls masking
+the user's own messages a separate setting, off by default.
+Code comments that contradicted the code are corrected, with no behaviour
+change: the default capture level, the failure handling of the MCP input
+replay, the text the memory-excerpt pass receives, the orchestrator's and
+`@omadia/plugin-api`'s claims that a thrown tool error never reaches the
+model and that `guarded` shows the model only a digest (both untrue for
+intern-exempt tools), the doc comment of `PromptMaskBlockedError`, and the
+MCP-to-knowledge-graph ingestion branch, which now notes that it ignores the
+org clamp.
 `middleware/test/docsClaimsGuard.test.ts` keeps the retired sentences out of the
 four files, the two ADR notes, the privacy guard's setup help,
 `middleware/.env.example` and the MCP endpoint guide

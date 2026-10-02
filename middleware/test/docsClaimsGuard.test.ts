@@ -160,6 +160,12 @@ const RETIRED_CLAIMS = [
   'a call still running is never evicted',
   // Prompt masking reaches only the turn's own model requests (§6f).
   'context are masked only while',
+  // Tool errors are redacted or withheld only for tools that are neither
+  // intern-exempt nor bypassed: the seams return those results before they
+  // look for an `Error:` text (§6c residuals, §6f).
+  'tool errors, whatever the settings',
+  'digest and redacts tool errors',
+  'There it interns tool results and redacts tool errors',
 ] as const;
 
 /** Retired sentences in operator- and API-caller-facing files outside the
@@ -167,6 +173,16 @@ const RETIRED_CLAIMS = [
 const RETIRED_OPERATOR_CLAIMS: ReadonlyArray<readonly [file: string, phrase: string]> = [
   // The prompt mask covers the turn's own model requests, not every copy.
   ['middleware/packages/harness-plugin-privacy-guard/manifest.yaml', 'every LLM-bound copy of the turn'],
+  // The shield keeps the raw results of data-source tools from the model; the
+  // user's own messages are masked only with `mask_user_prompt` on.
+  ['middleware/packages/harness-plugin-privacy-guard/manifest.yaml', 'Keeps personal data away from the language model'],
+  // Only a failed C0 pass blocks a request: a failed C1 detector falls back to
+  // C0 for the rest of the turn, and restoring the real values is best-effort.
+  [
+    'middleware/packages/harness-plugin-privacy-guard/manifest.yaml',
+    'if masking cannot be guaranteed, the turn is blocked rather than sent unmasked',
+  ],
+  ['middleware/packages/harness-plugin-privacy-guard/manifest.yaml', 'in the final answer and in everything persisted'],
   ['middleware/.env.example', 'clamps all of them back to `guarded`, whatever'],
   ['middleware/.env.example', 'runs a tool again'],
   // A failed call leaves no record and the store evicts its oldest records, so
