@@ -1349,7 +1349,7 @@ For omadia's own model requests, the Privacy Shield works through the turn's
 privacy handle and nowhere else (the public MCP endpoint has a gate of its
 own, `createFailClosedPrivacyGate`, §6c). When a `privacy.redact@1` provider
 is active, the orchestrator mints that handle for each turn
-(`buildPrivacyHandle`, after the inbound screening gate) and threads it
+(`buildPrivacyHandle`, before the inbound screening gate) and threads it
 through `turnContext` to the model requests of the turn's own call tree, the
 agent's model loop and its sub-agents (`LocalSubAgent`, a domain tool's
 sub-agent). The answer verifier's requests about the turn's answer go
@@ -1477,34 +1477,60 @@ intern-exempt tool at all (`isPubliclyServableTool`). Tests:
 `test/orchestrator/internFailureFailsClosed.test.ts`,
 `test/toolReplaySeams.test.ts` and `test/publicMcp/publicMcpPrivacyGate.test.ts`.
 
+**The inbound screener and the significance scorer get the turn's masked
+text.** Neither runs in the turn's call tree, so the handle does not reach
+their requests; the kernel hands them text the handle already masked.
+
+- **Inbound security screening (#579).** Under the default security posture
+  `auto` (`DEFAULT_SECURITY_POSTURE_POLICY`, `@omadia/channel-sdk`), and under
+  `strict`, `screenInboundTurn` (`harness-orchestrator/src/orchestrator.ts`)
+  screens every turn that carries an attachment, after the turn minted its
+  privacy handle, in `runTurn` and `chatStream` alike. The payload
+  (`bundleProvenance`, `renderScreeningPayload`) holds the user's message,
+  each user message the channel replays in `priorTurns` and the attachments'
+  names and media types, never a replayed answer. `screeningBundleForWire`
+  masks the messages and the attachment names through the turn's map with
+  `maskPromptForWire`, as the turn's model call masks its prompt: the screener
+  sees the model's surrogates, the messages follow `mask_user_prompt` as they
+  do for the model, and a media type goes as declared. A `blocked` mask fails
+  the turn closed with the privacy refusal before the screener is called,
+  through the exit a blocked model call takes. `LlmScreener`
+  (`securityScreener.ts`) sends the payload to the agent's own provider and
+  model, or `HttpProxyScreener` to the operator's `security_screen_url`. A
+  turn without an attachment sends nothing, and the posture `dangerous`
+  (`security_posture` in the orchestrator plugin's settings) switches
+  screening off. The audit record keeps the raw source tags on the server.
+- **Turn scoring.** At the default `capture_level`, `normal`
+  (`DEFAULT_CAPTURE_LEVEL`, `harness-orchestrator-extras/src/plugin.ts`), the
+  capture filter of `@omadia/orchestrator-extras` sends each turn the session
+  log stores to that plugin's own provider for a significance score
+  (`captureFilter.ts`, `significanceScorer.ts`). For a turn under a privacy
+  handle the orchestrator hands the row its masked view
+  (`TurnIngest.maskedView`): the user message as the model received it and
+  the answer as the model wrote it, the texts the fact extraction gets, never
+  the restored answer. A direct-line turn's specialist answer is masked like
+  a replayed answer, whatever `mask_user_prompt` says.
+  `CaptureFilteringKnowledgeGraph` strips the view before the turn is stored,
+  and an empty view (its masking was `blocked`) skips the scorer.
+  `capture_level: minimal` switches the scorer off.
+
+Tests: `test/securityPosture579.test.ts`,
+`test/orchestrator/promptMaskPipeline.test.ts` and `test/captureFilter.test.ts`.
+
 **Every other model call sends its text as it is.** A model request that does
 not run under the turn's handle reaches its provider as its caller built it,
 with prompt masking on or off: `mask_user_prompt` reaches none of the texts
 below (the embedded recall query in the last entry aside), and the shield
 masks text only, so it reads no image block. In-tree these are:
 
-- **Inbound security screening (#579).** Under the default security posture
-  `auto` (`DEFAULT_SECURITY_POSTURE_POLICY`, `@omadia/channel-sdk`), and under
-  `strict`, `screenInboundTurn` (`harness-orchestrator/src/orchestrator.ts`)
-  screens every turn that carries an attachment, before the turn mints its
-  privacy handle. The payload (`bundleProvenance`, `renderScreeningPayload`)
-  holds the user's message as typed, each user message the channel replays in
-  `priorTurns` and the attachments' names and media types. `LlmScreener`
-  (`securityScreener.ts`) sends it to the agent's own provider and model, or
-  `HttpProxyScreener` to the operator's `security_screen_url`. A turn without
-  an attachment sends nothing, and the posture `dangerous`
-  (`security_posture` in the orchestrator plugin's settings) switches
-  screening off.
-- **Turn scoring and the other memory jobs.** `@omadia/orchestrator-extras`
-  calls the model through that plugin's own provider and sends stored text,
-  which holds real values: the session log keeps the user's original message,
-  and a memory excerpt is restored before it is stored. At the default
-  `capture_level`, `normal` (`DEFAULT_CAPTURE_LEVEL`,
-  `harness-orchestrator-extras/src/plugin.ts`), the capture filter sends each
-  turn the session log stores, the user's message as typed plus the answer,
-  for a significance score (`captureFilter.ts`, `significanceScorer.ts`);
-  `capture_level: minimal` switches the scorer off. The recall relevance
-  judge (`recallRelevanceJudge.ts`, on whenever a model is configured, off
+- **The other memory jobs.** `@omadia/orchestrator-extras` calls the model
+  through that plugin's own provider and sends stored text, which holds real
+  values: the session log keeps the user's original message and the restored
+  answer, and a memory excerpt is restored before it is stored. The
+  significance backfill an operator starts over stored turns
+  (`bulkPromotion.ts`) and the scratch-promotion reaper
+  (`scratchPromotionReaper.ts`) score stored text with the same scorer. The
+  recall relevance judge (`recallRelevanceJudge.ts`, on whenever a model is configured, off
   only with `KG_RECALL_RELEVANCE_JUDGE_ENABLED=false` or the plugin config key
   `kg_recall_relevance_judge_enabled`) sends the texts of recalled memories,
   plans and processes next to the turn's wire message. The session briefing
@@ -1538,8 +1564,7 @@ masks text only, so it reads no image block. In-tree these are:
   `mask_user_prompt`. The Ollama sidecar and the local adapter embed
   in-tenant.
 
-Masking these calls is open (`middleware-agent-handoff.md` §13, where the
-screener and the scorer have an item of their own).
+Masking these calls is open (`middleware-agent-handoff.md` §13).
 
 ## 7. Conductor generic webhooks (#437)
 

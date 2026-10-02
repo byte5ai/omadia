@@ -873,6 +873,11 @@ entryType?: EntryType;
 visibility?: Visibility;
 significance?: number | null;
 tailOnly?: boolean;
+maskedView?: TurnMaskedView;
+}
+export interface TurnMaskedView {
+readonly userMessage: string;
+readonly assistantAnswer: string;
 }
 export interface TurnIngestResult {
 sessionId: string;
