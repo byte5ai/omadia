@@ -8,6 +8,37 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.23.0 — 2026-10-02
+
+Additive. A Privacy Shield provider can mask the answers a channel replays as
+chat history whether or not `mask_user_prompt` is on. Teams and Telegram replay
+the answer they delivered as `priorTurns`, and an answer `v4_render_answer`
+materialized server-side carries real values the turn's model never saw, so
+with the flag off (the default) those values reached the next turn's model in
+clear. The in-tree privacy-guard plugin implements the new member from 0.7.0.
+
+### Added
+
+- **`PrivacyGuardService.maskReplayedAnswer?(request)`** with
+  `PrivacyReplayedAnswerRequest` (`{ sessionId, turnId, text }`), returning the
+  failure-closed `PrivacyPromptMaskResult`. Always on: the identity shapes of
+  the C0 baseline (e-mail, IBAN, phone, address, id number; dates and amounts
+  stay, as in a v4 digest), the operator deny-list and the C1 detector when
+  configured. The spans go through the turn's surrogate map, so
+  `restorePromptPseudonyms` restores them in the answer, and they count as the
+  turn's own egress (`maskedPromptSpans`, not `verifierEgress`). Never
+  `disabled`; `blocked` (a detector failed, or a detected value survived
+  substitution) means the answer must not be sent, and the kernel fails the
+  turn with its privacy notice. OPTIONAL, so an existing provider still
+  compiles and loads: the kernel then masks a replayed answer through
+  `maskUserPrompt`, i.e. only while `mask_user_prompt` is on, as before.
+
+### Documentation
+
+- `PrivacyReceipt.maskedPromptSpans` now also covers the replayed answers
+  masked whatever `mask_user_prompt` says, so it can be present with prompt
+  masking off.
+
 ## 1.22.0 — 2026-10-02
 
 Additive (#1219): an optional field on the request, an optional field on the

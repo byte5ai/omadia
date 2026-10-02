@@ -2049,6 +2049,11 @@ readonly turnId: string;
 readonly text: string;
 readonly identityValues?: readonly string[];
 }
+export interface PrivacyReplayedAnswerRequest {
+readonly sessionId: string;
+readonly turnId: string;
+readonly text: string;
+}
 export type PrivacyPromptMaskResult = {
 readonly outcome: 'disabled';
 } | {
@@ -2100,6 +2105,7 @@ maskUserPrompt?(request: PrivacyPromptMaskRequest): Promise<PrivacyPromptMaskRes
 restorePromptPseudonyms?(turnId: string, text: string): Promise<string>;
 snapshotPromptRestorer?(turnId: string): ((text: string) => string) | undefined;
 projectVerifierText?(request: PrivacyVerifierProjectionRequest): Promise<PrivacyPromptMaskResult>;
+maskReplayedAnswer?(request: PrivacyReplayedAnswerRequest): Promise<PrivacyPromptMaskResult>;
 countUnresolvedSurrogates?(turnId: string, text: string): Promise<number>;
 v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
 finalizeTurn(turnId: string, turnInput?: string): Promise<PrivacyReceipt | undefined>;

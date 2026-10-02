@@ -57,8 +57,9 @@ The one setup field is `mask_user_prompt` (enum `off`/`on`, **default
 `off`** — flag-off is byte-identical to pre-#361 behavior). When on, PII
 spans detected in the user's own message are substituted with realistic,
 type-shaped pseudonyms in **every LLM-bound copy of the turn** — the main
-prompt, the **live chat history** (`priorTurns`, which replays persisted
-REAL values from earlier turns), the ingested attachment tail, the
+prompt, the user messages of the **live chat history** (`priorTurns`, which
+replays persisted REAL values from earlier turns; its answers are masked
+whether the flag is on or not, see below), the ingested attachment tail, the
 recalled prior-context block, the **direct-line relay payload** (a
 `#specialist question` turn hands the question to an LLM-backed
 sub-agent), and auxiliary LLM passes (fact extraction, model/persona
@@ -87,6 +88,19 @@ NOT an on-wire token map (deleted for cause by #119/#126/#153).
   pass-through-unmasked path.
 - **Transparency:** masked spans surface (type + detector only, PII-free)
   as `maskedPromptSpans` on the turn's `PrivacyReceipt`.
+
+### Replayed answers (always on)
+
+A channel replays the answers it delivered as `priorTurns` (Teams, Telegram),
+and an answer `v4_render_answer` materialized server-side carries real values
+the turn's model never saw. `maskReplayedAnswer` masks such an answer whatever
+`mask_user_prompt` says: identity-shaped C0 spans (dates and amounts stay, as
+in a v4 digest), the operator deny-list and C1 when wired, through the turn's
+map, so the answer-side restore covers these spans. The spans count as the
+turn's own (`maskedPromptSpans`). Failure-closed like prompt masking: a failing
+C1 degrades to C0, a detection failure or a surviving value answers `blocked`
+and the orchestrator fails the turn rather than replay the answer unmasked. The
+replayed user messages still follow `mask_user_prompt`.
 
 ### Answer-verifier requests (stage `verifier`)
 

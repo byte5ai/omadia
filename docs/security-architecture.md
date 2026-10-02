@@ -942,7 +942,13 @@ dataset or another column. Who gets cleartext:
 | `query_dataset` **behind** the Privacy Shield (turn carries a privacy handle ⇒ result is interned) | real values — into the turn store; the model gets a digest, `v4_render_answer`/`create_xlsx` resolve them server-side |
 | `query_dataset` **without** a guard (result would reach the model in clear) | re-masked on read, one pseudonym map per page |
 | owner's `GET /api/v1/datasets/:id/rows` | real values (it is their data) |
+| `read_attachment` on the uploaded file (intern-exempt: its result reaches the model as returned) | nothing — refused with an `Error:` that points to `query_dataset` (§6f) |
 | any reader without the key | `[verschlüsselt — Schlüssel nicht verfügbar]`, never garbage, never a throw |
+
+The chat-attachment ingest applies the same rule (`detectTabularFormat`): a
+table becomes a dataset or is refused (`[attachment-not-ingested]`), and is
+never inlined into the prompt as `[attachment-content]` text, with prompt
+masking on or off.
 
 Two things this rests on: (1) `query_dataset` is **not** intern-exempt
 (`privacyInternPolicy.ts`) — the day it becomes exempt, the "behind the shield"
@@ -1348,7 +1354,7 @@ through `turnContext` to the model requests of the turn's own call tree, the
 agent's model loop and its sub-agents (`LocalSubAgent`, a domain tool's
 sub-agent). The answer verifier's requests about the turn's answer go
 through the same handle, which the turn hands over to them (§6e). In those
-requests, and only there, the shield acts on three kinds of text:
+requests, and only there, the shield acts on four kinds of text:
 
 - **Tool results, under `guarded` (the default).** A tool's result is interned
   into the turn's dataset store and the model gets an identity-free digest in
@@ -1365,10 +1371,20 @@ requests, and only there, the shield acts on three kinds of text:
   before they look for an `Error:` text (`guardReplayResult`, the MCP input
   replay, checks the bypass only), and `withholdThrownToolError` withholds
   only for a tool that is not intern-exempt.
+- **Replayed answers, independent of `mask_user_prompt`.** Every assistant
+  answer a channel replays in `priorTurns` goes through
+  `maskReplayedAnswer` before it reaches the turn's model
+  (`maskPriorTurnsForWire`): the identity shapes of the C0 baseline (e-mail,
+  IBAN, phone, address, ID number), the operator's deny-list and names when
+  the C1 detector is configured, through the turn's prompt map, so the final
+  answer gets the real values back. Dates and amounts stay, as in a v4
+  digest. The spans count on the receipt as the turn's own
+  (`maskedPromptSpans`). It fails closed like prompt masking (below): a
+  failing C1 falls back to C0, and a detection failure or a surviving value
+  blocks the turn (`PromptMaskBlockedError`).
 - **Prompt text, only while `mask_user_prompt` is on.** The setting is off by
   default. While it is on, the user's message, document text inlined at
-  upload, recalled context, the chat history a channel replays (`priorTurns`,
-  user messages and answers), live steering text, a direct-line relay's
+  upload, the user messages a channel replays in `priorTurns`, live steering text, a direct-line relay's
   payload and a verifier correction hint are masked in the turn's own model
   requests through the turn's prompt map (`maskPromptForWire`): the C0
   baseline and the operator's deny-list, plus names when the C1 detector is
@@ -1393,14 +1409,18 @@ whatever `mask_user_prompt` says (§6e). The subscription-CLI path has no
 shield at all (§3a), and without an active privacy-guard provider nothing is
 interned or masked (§6c, residuals).
 
-An answer rendered by `v4_render_answer` carries real values
-(`maskedValues`, `answerSource: 'privacy-render'`), so a channel that replays
-it in `priorTurns` hands those values to the model on the next turn while
-masking is off. The Teams and Telegram channel plugins build `priorTurns` from
-the answers they delivered, so they do this; the in-tree web chat sends no
-`priorTurns`, and the session log behind recalled context stores the model's
-own answer from before the render. Masking replayed answers regardless of
-`mask_user_prompt` is open (`middleware-agent-handoff.md` §13).
+Replayed answers are masked whatever `mask_user_prompt` says because an
+answer rendered by `v4_render_answer` carries real values (`maskedValues`,
+`answerSource: 'privacy-render'`) its model never saw, and the Teams and
+Telegram channel plugins build `priorTurns` from the answers they delivered.
+A privacy provider without `maskReplayedAnswer` (it arrived with
+`@omadia/plugin-api` 1.23.0 and privacy-guard 0.7.0) masks a replayed answer
+through `maskUserPrompt`, so with masking off it hands those values to the
+model on the next turn in `priorTurns`. Recalled context, the knowledge-graph recall and the session tail, goes
+through `maskReplayedAnswer` as well, whatever `mask_user_prompt` says: the
+session log behind it stores each answer with its real values restored, so
+a recalled answer would otherwise hand them to the model two turns later. A user message a channel replays still
+follows `mask_user_prompt`.
 
 These tool results skip the digest:
 
@@ -1410,10 +1430,12 @@ These tool results skip the digest:
   `query_processes`, `run_stored_process`, `write_process` and `edit_process`,
   then `suggest_follow_ups`, `ask_user_choice` and `read_attachment`. The model
   gets their results as the tool returned them. `read_attachment` returns the
-  extracted text of an uploaded file, a CSV included, so it can hand over
-  cells that the dataset import of the same CSV encrypted (§6b).
-  `mask_user_prompt` does not reach it: that setting masks prompt text, and a
-  tool result is not prompt text.
+  extracted text of an uploaded document. A table (CSV or XLSX, recognised by
+  `detectTabularFormat`, the rule the chat-attachment ingest applies) it
+  refuses with an `Error:` that points the model to `query_dataset`, so the
+  cells the dataset import of that file scanned and encrypted (§6b) do not
+  reach the model through it. `mask_user_prompt` does not reach the tool:
+  that setting masks prompt text, and a tool result is not prompt text.
 - **Operator bypass.** A plugin set to `bypass`, a tool on its `per_tool`
   list, or a tool of an MCP server the operator flagged `privacyBypass`
   (`mcpPrivacyBypass.ts`; set through the agent builder's MCP server route,
