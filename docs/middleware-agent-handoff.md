@@ -4334,32 +4334,16 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   unter aktivem Shield nur nach Policy zulassen. Danach README (Intro, Zeile
   „Privacy Shield“, Abschnitt „Trust & privacy“), §6f und
   `docsClaimsGuard.test.ts` nachziehen.
-- **Inbound-Screener und Signifikanz-Scorer schicken Prompt-Text ungemaskt
-  (eigene Code-Unit).** Beide laufen außerhalb des Privacy-Handles, auch mit
-  `mask_user_prompt` an. Der #579-Screener (`screenInboundTurn`,
-  `orchestrator.ts`) läuft in `runTurn` und `chatStream` vor
-  `buildPrivacyHandle` und vor `maskTurnPromptForWire`. Unter der
-  Default-Posture `auto` (`DEFAULT_SECURITY_POSTURE_POLICY`,
-  `harness-channel-sdk/src/securityPosture.ts`) und unter `strict` schickt er
-  bei jedem Turn mit Anhang `renderScreeningPayload(bundleProvenance(input))`
-  ab: die Nachricht wie getippt, jede `priorTurns[].userMessage`, Namen und
-  Typen der Anhänge, an `LlmScreener` auf Provider und Modell des Agenten
-  (`buildOrchestrator.ts`) oder an den HTTP-Proxy unter
-  `security_screen_url`. Der Capture-Filter von `@omadia/orchestrator-extras`
-  schickt beim Default-`capture_level` `normal` (`DEFAULT_CAPTURE_LEVEL`)
-  jeden gespeicherten Turn, die Nachricht wie getippt (`userMessage` des
-  Session-Logs, `input.userMessage`) plus die wiederhergestellte Antwort
-  (`assistantAnswer`), über `CaptureFilteringKnowledgeGraph.ingestTurn` an den
-  Extras-Provider (`captureFilter.ts`, `significanceScorer.ts`), auch mit
-  `mask_user_prompt` an. Code-Unit: beide über den Wire-Text des Turns
-  führen (Screening nach dem Minten des Handles über die maskierte Nachricht
-  und maskierte `priorTurns`, Scoring über die maskierten Texte, die schon
-  die Fakten-Extraktion bekommt) oder beide in den Turn-Scope verlegen.
-  Danach README (Intro, Zeile „Privacy Shield“, Abschnitt „Trust &
-  privacy“), §6f und `docsClaimsGuard.test.ts` nachziehen; dort dann auch
-  `DEFAULT_SECURITY_POSTURE_POLICY.posture === 'auto'` und den Inhalt von
-  `bundleProvenance` festhalten und prüfen, dass README und §6f Screener und
-  Scorer nennen.
+- **Inbound-Screener und Signifikanz-Scorer: erledigt.** Der Screener läuft in
+  `runTurn` und `chatStream` erst nach `buildPrivacyHandle` und bekommt über
+  `screeningBundleForWire` die Nachricht, die wiederholten Nutzernachrichten
+  und die Anhangnamen durch die Prompt-Maske des Turns, dieselben Platzhalter
+  wie das Modell; eine blockierte Maske endet geschlossen ohne Screener- und
+  Modell-Aufruf. Der Capture-Filter bewertet `TurnIngest.maskedView`
+  (`@omadia/plugin-api` 1.24.0), also den Turn so, wie das Modell ihn sah;
+  der gespeicherte Turn behält die Realwerte. Offen: Der vom Operator
+  gestartete Backfill (`bulkPromotion.ts`) und der Scratch-Promotion-Reaper
+  bewerten gespeicherten Text weiter unmaskiert (§6f nennt beide).
 - **MCP→KG-Ingestion ignoriert die Klammer `OMADIA_PRIVACY_FORCE_GUARDED`
   (eigene Code-Unit).** Der Ingest-Zweig in `Orchestrator.dispatchTool`
   (Epic #459) läuft vor dem Bypass-Resolver und vor dem Internieren und fragt
