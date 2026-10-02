@@ -132,9 +132,11 @@ const queryNotesByPersonSpec: NativeToolSpec = {
     'Sucht gespeicherte Notizen, die einen Personen-Namen erwähnen — ' +
     'case-insensitive Substring über Body und Title. Nutze das Tool, wenn der ' +
     'Nutzer nach Notizen zu einer Person fragt. Bei Mehrdeutigkeit (≥2 ' +
-    'Matches) rät das Tool nicht, sondern emittiert `_pendingUserChoice`: der ' +
-    'Orchestrator beendet die Turn und rendert eine Auswahl-Smart-Card, der ' +
-    'Nutzer entscheidet.',
+    'Matches) rät das Tool nicht, sondern meldet die Treffer als ' +
+    '`_pendingUserChoice`. Ruft der Orchestrator das Tool selbst auf und ' +
+    'interniert der Privacy Shield das Ergebnis nicht, beendet er den Turn ' +
+    'und rendert eine Auswahl-Smart-Card. Kommt keine Karte, frag den Nutzer, ' +
+    'welche Notiz er meint — rate nie.',
   input_schema: {
     type: 'object',
     properties: {

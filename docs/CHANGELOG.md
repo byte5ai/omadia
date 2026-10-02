@@ -1695,7 +1695,12 @@ and states a call trigger; the behavioural facts are kept, and the pattern
 framing stays in `INTEGRATION.md`, which is the canonical index. The
 `reference-expert` skill also carried a prose `Kern-Tools` list naming one of
 the four registered tools, next to the real schemas the model already receives;
-it is gone, and the behaviour section stands on its own.
+it is gone, and the behaviour section stands on its own. `query_notes_by_person`
+says when its choice card actually renders — the orchestrator calls the tool
+itself and the Privacy Shield does not intern the result — and that the model
+otherwise asks which note is meant instead of guessing; the `disambiguate-policy`
+skill says the same, and the manifest's capability descriptions mirror the
+toolkit's, without the ticket IDs, the "Demo" framing and the model name.
 
 The issue-triage workflow's plan prompt no longer caps its comment at ~90
 lines. It asks the same prompt for verified file paths, real symbols and

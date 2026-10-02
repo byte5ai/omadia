@@ -70,7 +70,7 @@ capabilities:
     timeout_ms: 5000
 
   - id: "analyze_url"
-    description: "OB-29-1 Sub-Agent-Delegations-Demo: delegiert eine SEO-Analyse einer URL an @omadia/agent-seo-analyst und persistiert die Antwort als Notiz im Plugin-Memory-Scope. Demonstriert das ctx.subAgent.ask-Pattern."
+    description: "Lässt eine URL vom SEO-Analyst-Agenten (@omadia/agent-seo-analyst) prüfen und speichert dessen Antwort als Notiz im Plugin-Memory-Scope. Nutze das Tool, wenn der Nutzer eine konkrete URL analysieren lassen will — die Analyse macht der Sub-Agent, nicht dieses Plugin."
     input_schema:
       type: "object"
       required: ["url"]
@@ -86,7 +86,7 @@ capabilities:
     timeout_ms: 60000
 
   - id: "smart_extract_entities"
-    description: "OB-29-3 LLM-Service-Demo: extrahiert Personen/Topics aus einer ambigen Notiz via Haiku (ctx.llm.complete) und liefert die Treffer als JSON. Komplementär zur deterministischen Regex-Extraction in add_note: löst Mehrdeutigkeit, die Regex nicht erkennen kann."
+    description: "Extrahiert Personen und Topics aus einem Notiz-Text per LLM-Call. Nutze das Tool, wenn ein Text Personen oder Themen nur implizit nennt: `add_note` extrahiert selbst nur deterministisch per Regex und erkennt deshalb \"John hat das gut gemacht\" ohne `Person:`-Prefix nicht. Bei explizit markierten Entities ist der Aufruf unnötig."
     input_schema:
       type: "object"
       required: ["body"]
@@ -102,7 +102,7 @@ capabilities:
     timeout_ms: 30000
 
   - id: "query_notes_by_person"
-    description: "OB-29-4 Tool-emittiertes-pendingUserChoice-Demo: sucht Notizen die einen Personen-Namen erwähnen. Bei Mehrdeutigkeit (mehrere matches) emittiert das Tool _pendingUserChoice statt zu raten — der Orchestrator short-circuitet die Turn und rendert eine Smart-Card."
+    description: "Sucht gespeicherte Notizen, die einen Personen-Namen erwähnen — case-insensitive Substring über Body und Title. Nutze das Tool, wenn der Nutzer nach Notizen zu einer Person fragt. Bei Mehrdeutigkeit (≥2 Matches) rät das Tool nicht, sondern meldet die Treffer als `_pendingUserChoice`. Ruft der Orchestrator das Tool selbst auf und interniert der Privacy Shield das Ergebnis nicht, beendet er den Turn und rendert eine Auswahl-Smart-Card. Kommt keine Karte, frag den Nutzer, welche Notiz er meint — rate nie."
     input_schema:
       type: "object"
       required: ["personName"]
@@ -170,7 +170,7 @@ skills:
   - id: "disambiguate_policy"
     kind: "prompt_partial"
     path: "skills/disambiguate-policy.md"
-    description: "Wann das Modell ask_user_choice anstoßen soll, wenn dieses Plugin Mehrdeutigkeit zurückmeldet."
+    description: "Wie das Modell reagiert, wenn ein Tool dieses Plugins Mehrdeutigkeit zurückmeldet: Smart-Card oder Rückfrage, nie raten."
     shareable: true
 
 jobs:
