@@ -42,7 +42,11 @@ export {
   textMessage,
   toolCalls,
 } from '@omadia/llm-provider-api';
-export type { EffortLevel } from '@omadia/llm-provider-api';
+export type {
+  EffortLevel,
+  OutputFormat,
+  RefusalDetails,
+} from '@omadia/llm-provider-api';
 
 // ---- Runtime: credentials ----
 export {
