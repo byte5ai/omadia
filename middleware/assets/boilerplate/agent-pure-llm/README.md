@@ -44,7 +44,7 @@ node scripts/build-zip.mjs
 # → out/<AGENT_ID>-<version>.zip   ← uploadbar via Admin-UI
 ```
 
-Upload: `odoo-bot-harness.fly.dev` → Store → Upload, oder Admin-API
+Upload: `<your-omadia-host>` → Store → Upload, oder Admin-API
 `POST /api/v1/install/plugins/:id` → `POST /api/v1/install/jobs/:id/configure`.
 
 ## Was die Runtime macht (und der Agent NICHT)

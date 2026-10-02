@@ -170,7 +170,7 @@ skills:
   - id: "disambiguate_policy"
     kind: "prompt_partial"
     path: "skills/disambiguate-policy.md"
-    description: "Wann das Modell ask_user_choice anstoßen soll, wenn dieses Plugin Mehrdeutigkeit zurückmeldet."
+    description: "Wie das Modell reagiert, wenn ein Tool dieses Plugins Mehrdeutigkeit über _pendingUserChoice zurückmeldet."
     shareable: true
 
 jobs:

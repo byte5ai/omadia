@@ -6,10 +6,14 @@ import { sanitizeIssueBody } from '../issueBodySanitizer.js';
 import type { BuilderTool } from './types.js';
 
 /**
- * `report_platform_issue` — browser-submit-only path for v1 (concept
- * plan: docs/plans/native-issue-reporting.md).
+ * `omadia_report_core_bug` — operator-confirmed reporting of core bugs
+ * into the upstream repo. (Renamed off `report_platform_issue`; see the
+ * id comment on the tool below.)
  *
  * Run logic:
+ *
+ *   0. Wiring. Without upstream-issue config, issue cache and triage
+ *      log the tool does nothing and returns `mode='unavailable'`.
  *
  *   1. Dedup. If the GitHub issue cache finds an open or closed issue
  *      matching the fingerprint, return `mode='reused'` with the
@@ -24,16 +28,27 @@ import type { BuilderTool } from './types.js';
  *   3. Sanitize. Body is run through the secret/URL/size sanitizer;
  *      the sanitized body is what the operator approves.
  *
- *   4. Browser submit. The tool builds the pre-populated
- *      `github.com/.../issues/new?...` URL and returns it. The UI
- *      opens it in a new tab, waits for the operator to submit, then
- *      POSTs the resulting issue-number back via the confirm-issue
- *      route. That route validates the marker + label, then persists
- *      the workaround.
+ *   4. Submit, on one of two paths — the server picks, not the agent:
  *
- * v1 does NOT support PAT-backed direct creation — that lands in
- * v1.2b with the encrypted vault. The tool deliberately has no PAT
- * code path so it cannot regress into a half-working insecure mode.
+ *      a. `mode='created-pending'`, when a GitHub App is wired for an
+ *         allowlisted upstream: the operator confirms the sanitized
+ *         body, then the create-issue route files the issue as the bot.
+ *         That route sanitizes the body again, adds the fingerprint
+ *         marker if it is missing, dedups by fingerprint and sets the
+ *         required labels itself.
+ *      b. `mode='browser-submit'` otherwise: the tool builds the
+ *         pre-populated `github.com/.../issues/new?...` URL, the UI
+ *         opens it in a new tab, and the operator creates the issue on
+ *         github.com under their own account. The UI then posts the
+ *         issue number to the confirm-issue route, which checks the
+ *         issue's bot label and fingerprint marker before it persists
+ *         the workaround.
+ *
+ *      Nothing is filed autonomously in `run`: the App path waits for
+ *      the operator's confirm, the browser path for their own submit.
+ *
+ * There is deliberately no PAT code path and no vault lookup here, so
+ * the tool cannot regress into a half-working insecure mode.
  */
 
 const InputSchema = z
@@ -120,11 +135,11 @@ export const reportPlatformIssueTool: BuilderTool<Input, ReportPlatformIssueResu
     'checks for a duplicate via fingerprint, then enforces the per-' +
     'operator daily rate limit, then sanitizes the body. When the server ' +
     'has a GitHub App wired (mode=created-pending) the operator confirms ' +
-    'the sanitized body and the issue is filed directly by the bot; ' +
-    'otherwise (mode=browser-submit) a pre-populated GitHub tab opens and ' +
-    'the operator submits under their own account. Either way the round-' +
-    'trip validates the bot-label + fingerprint marker before the ' +
-    'workaround is persisted — nothing reaches the public repo unconfirmed.',
+    'the sanitized body and the bot files the issue with its label and ' +
+    'fingerprint marker; otherwise (mode=browser-submit) a pre-populated ' +
+    'GitHub tab opens, the operator submits under their own account, and ' +
+    'the issue is checked for the label and marker before the workaround ' +
+    'is persisted. Nothing reaches the public repo without the operator.',
   input: InputSchema,
   async run(input, ctx): Promise<ReportPlatformIssueResult> {
     if (!ctx.upstreamIssueConfig || !ctx.githubIssueCache || !ctx.triageLog) {
