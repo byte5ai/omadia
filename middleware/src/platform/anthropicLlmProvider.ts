@@ -81,6 +81,11 @@ export function createLlmProviderFromNeutral(
         ...(req.temperature !== undefined
           ? { temperature: req.temperature }
           : {}),
+        // #1219 — forwarded as-is; an adapter without a structured-output
+        // channel drops it, so a plugin asking for a schema never breaks a turn.
+        ...(req.outputFormat !== undefined
+          ? { outputFormat: req.outputFormat }
+          : {}),
         messages: req.messages.map((m) => textMessage(m.role, m.content)),
       });
       const elapsed = Date.now() - started;

@@ -286,9 +286,12 @@ export class LocalSubAgent {
           // OB-31 escalation: caller declared an obligation tool, model
           // would exit without ever calling it, escalation budget unspent,
           // and we have iteration headroom. Synthesize a user-message
-          // reminder + flip `tool_choice` for next iteration so the API
-          // *forces* the call. After the escalation iteration we honor
-          // whatever stop_reason comes back — no second-chance loop.
+          // reminder + flip `tool_choice` for next iteration. On models that
+          // honour a forced choice the API then *requires* the call; on the
+          // ones that reject it (Opus 5.5 / Fable 5.1) the adapter degrades it
+          // to `auto`, and the reminder text is the whole mechanism. After the
+          // escalation iteration we honor whatever stop_reason comes back —
+          // no second-chance loop.
           if (
             expectedTurnToolUse !== undefined &&
             !calledExpectedTool &&
@@ -311,6 +314,16 @@ export class LocalSubAgent {
           }
           const answer = textParts.join('\n\n').trim();
           if (answer.length === 0) {
+            // #1219 — a safety classifier declining the turn (HTTP 200,
+            // `stop_reason: 'refusal'`) also arrives as no text. Reported as
+            // "empty answer" it reads like a harness bug and sends whoever
+            // debugs it into the tool loop; name it instead, so the parent's
+            // tool result says what actually happened.
+            if (response.stop_reason === 'refusal') {
+              throw new Error(
+                `Sub-agent ${this.name}: the model declined this request for safety reasons (stop_reason: refusal). Rephrase the delegated question or run this sub-agent on a different model.`,
+              );
+            }
             throw new Error(`Sub-agent ${this.name} returned an empty answer.`);
           }
           return answer;

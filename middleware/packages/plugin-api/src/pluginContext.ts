@@ -1799,6 +1799,19 @@ export interface LlmCompleteRequest {
    *  `permissions.llm.max_tokens_per_call` when manifest sets a smaller cap. */
   readonly maxTokens?: number;
   readonly temperature?: number;
+  /**
+   * Ask for a schema-constrained JSON response (#1219) instead of instructing
+   * the model to emit JSON in the prompt.
+   *
+   * `schema` is a JSON Schema object, forwarded to the provider untouched.
+   * Providers that have no such channel IGNORE it rather than failing, so a
+   * plugin must still parse the result tolerantly — this narrows the output,
+   * it does not guarantee it everywhere.
+   */
+  readonly outputFormat?: {
+    readonly type: 'json_schema';
+    readonly schema: Record<string, unknown>;
+  };
 }
 
 /** One discovered MCP tool, as the host's manager reports it (issue #458). */

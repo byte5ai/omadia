@@ -93,9 +93,8 @@ export function buildSubAgentDomainTools(
   for (const sub of graph.subAgents) {
     if (sub.status !== 'enabled') continue;
 
-    const skillBody = sub.skillId
-      ? skillsById.get(sub.skillId)?.body
-      : undefined;
+    const skill = sub.skillId ? skillsById.get(sub.skillId) : undefined;
+    const skillBody = skill?.body;
     const systemPrompt =
       sub.systemPromptOverride?.trim() ||
       skillBody?.trim() ||
@@ -134,13 +133,43 @@ export function buildSubAgentDomainTools(
     tools.push(
       createDomainTool({
         name: subAgentToolName(sub.name),
-        description: `Delegate a focused question to the "${sub.name}" sub-agent.`,
+        description: subAgentToolDescription(sub.name, skill?.description),
         agent,
         domain: `subagent.${slugifyDomain(sub.name)}`,
       }),
     );
   }
   return tools;
+}
+
+/**
+ * Description of a sub-agent delegation tool.
+ *
+ * Doubles as routing text: the orchestrator renders its Fach-Agenten roster as
+ * one `- \`name\`: description` line per domain tool, so this string is what the
+ * model picks a specialist by. The sub-agent's name alone carries no domain
+ * information; its skill description does, when the skill has one.
+ *
+ * Stays on a single line for that reason, and states the delegation contract —
+ * the sub-agent starts from an empty conversation and answers exactly once, so
+ * a question that leans on context the parent has will come back wrong.
+ */
+export function subAgentToolDescription(
+  name: string,
+  skillDescription?: string | null,
+): string {
+  const collapsed = skillDescription?.replace(/\s+/g, ' ').trim();
+  const scope = collapsed
+    ? /[.!?]$/.test(collapsed)
+      ? collapsed
+      : `${collapsed}.`
+    : undefined;
+  return [
+    `Delegate a focused question to the "${name}" sub-agent.`,
+    ...(scope ? [`Handles: ${scope}`] : []),
+    'It sees none of this conversation and cannot ask follow-up questions, so' +
+      ' send one self-contained question and expect a single answer back.',
+  ].join(' ');
 }
 
 /**

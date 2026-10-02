@@ -331,6 +331,7 @@ function buildParams(
 }
 
 const effortIgnoredWarned = new Set<string>();
+const outputFormatIgnoredWarned = new Set<string>();
 
 /** Note once per model when an effort is asked of a server that has no such
  *  knob. Goes through the provider's own `log` (the adapter has no console
@@ -344,6 +345,21 @@ function noteEffortIgnored(
   effortIgnoredWarned.add(req.model);
   log(
     `[llm-adapter-openai] model '${req.model}' is served by an OpenAI-compatible endpoint without a reasoning-effort field — effort '${req.effort}' ignored`,
+  );
+}
+
+/** #1219 — same contract as the effort knob: this adapter does not map
+ *  `outputFormat` onto OpenAI's `response_format` yet, so a caller asking for a
+ *  schema gets an unconstrained answer it must parse tolerantly. Noted once per
+ *  model rather than raised, so a JSON-shaped request never breaks a turn. */
+function noteOutputFormatIgnored(
+  log: (...args: unknown[]) => void,
+  req: LlmRequest,
+): void {
+  if (req.outputFormat === undefined || outputFormatIgnoredWarned.has(req.model)) return;
+  outputFormatIgnoredWarned.add(req.model);
+  log(
+    `[llm-adapter-openai] model '${req.model}' — outputFormat is not mapped by this adapter; the response is NOT schema-constrained, parse it tolerantly`,
   );
 }
 
@@ -615,6 +631,7 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
 
   const paramsFor = (req: LlmRequest): Record<string, unknown> => {
     noteEffortIgnored(log, req, id === 'openai');
+    noteOutputFormatIgnored(log, req);
     return buildParams(req, strictTools, id === 'openai', quirks);
   };
 

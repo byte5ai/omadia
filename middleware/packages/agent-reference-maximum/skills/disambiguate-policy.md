@@ -1,18 +1,20 @@
 # Disambiguation Policy
 
-Wenn ein Tool aus diesem Plugin (oder ein Sub-Agent, Etappe 1+) eine
-strukturierte Mehrdeutigkeits-Antwort zurückgibt — erkennbar an einem
-`disambiguate`-Hint im Tool-Result — soll das Modell die `ask_user_choice`-
-Built-in aufrufen, statt eine der Optionen einfach zu raten.
+Wenn ein Tool aus diesem Plugin oder ein delegierter Sub-Agent eine
+Mehrdeutigkeit zurückmeldet, soll das Modell den Nutzer entscheiden lassen
+statt eine der Optionen zu raten. Es gibt zwei Formen, je nachdem was das
+Tool zurückgibt.
 
-## Heute (vor Etappe 4)
+## `_pendingUserChoice` im Tool-Result
 
-Tool-Results in der Form `{ ok: true, disambiguate: { question, options } }`
-sind ein Hinweis: bitte `ask_user_choice({ question, options })` als nächsten
-Tool-Call. Die `options` sind bereits im Smart-Card-fähigen Format.
+Die bevorzugte Form: das Tool sendet `_pendingUserChoice` direkt im Result
+mit. Der Orchestrator beendet die Turn daraufhin selbst und rendert die
+Smart-Card — das Modell muss nichts weiter tun und schreibt insbesondere
+keinen eigenen Antworttext dazu.
 
-## Ab Etappe 4
+## `disambiguate`-Hint im Tool-Result
 
-Plugins können `_pendingUserChoice` direkt im Tool-Result mitsenden; der
-Orchestrator short-circuitet automatisch und rendert die Smart-Card. Diese
-Skill-Datei wird dann an die neue Form angepasst.
+Die ältere Form, erkennbar an `{ ok: true, disambiguate: { question, options } }`.
+Sie ist ein Hinweis an das Modell: rufe als nächsten Tool-Call
+`ask_user_choice({ question, options })` auf. Die `options` sind bereits im
+Smart-Card-fähigen Format, sie werden nicht umgebaut.
