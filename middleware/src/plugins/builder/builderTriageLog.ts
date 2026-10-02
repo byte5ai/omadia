@@ -6,7 +6,7 @@ import type { Database as SqliteDatabase } from 'better-sqlite3';
 import type { TriageClassification } from './platformIssueTriage.js';
 
 /**
- * Persisted triage log (concept plan: docs/plans/native-issue-reporting.md).
+ * Persisted triage log.
  *
  * Two responsibilities:
  *
