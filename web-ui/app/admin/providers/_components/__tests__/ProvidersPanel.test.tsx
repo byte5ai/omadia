@@ -1103,4 +1103,180 @@ describe('<ProvidersPanel />', () => {
       expect(toggle.checked).toBe(true);
     });
   });
+
+  describe('model classes in the per-agent model select (#1083)', () => {
+    const modelLabel = en.adminProviders.assignments.modelLabel;
+    const providerLabel = en.adminProviders.assignments.providerLabel;
+    const row = (modelId: string, cls: 'fast' | 'balanced' | 'frontier', label: string) => ({
+      id: `x:${modelId}`,
+      modelId,
+      label,
+      class: cls,
+      contextWindow: 200_000,
+      maxTokens: 8_192,
+      vision: false,
+    });
+    const anthropic = () =>
+      provider({
+        connected: true,
+        models: [
+          row('claude-opus-5', 'frontier', 'Claude Opus 5'),
+          row('claude-haiku-x', 'fast', 'Claude Haiku X'),
+        ],
+        classDefaults: { frontier: 'claude-opus-5', fast: 'claude-haiku-x' },
+      });
+    const openai = () =>
+      provider({
+        id: 'openai',
+        label: 'OpenAI',
+        connected: true,
+        models: [row('gpt-5.5', 'frontier', 'GPT-5.5'), row('gpt-5.4-mini', 'fast', 'GPT-5.4 mini')],
+        classDefaults: { frontier: 'gpt-5.5', fast: 'gpt-5.4-mini' },
+      });
+
+    it('shows a stored class ref as its own selected option, labelled with the resolved model', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic()],
+          assignments: [
+            orchestratorAssignment({ model: 'class:fast', resolvedModel: 'claude-haiku-x' }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const select = (await screen.findByLabelText(modelLabel)) as HTMLSelectElement;
+      // The issue's DOM check: before the fix this was the first option.
+      expect(select.value).toBe('class:fast');
+      expect(select.options[select.selectedIndex]?.textContent).toBe('Fast (auto → Claude Haiku X)');
+      // Unselected classes are offered too, labelled with their class default.
+      expect(screen.getByRole('option', { name: 'Frontier (auto → Claude Opus 5)' })).toBeTruthy();
+    });
+
+    it('keeps a class ref when the provider changes instead of pinning the first model', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic(), openai()],
+          assignments: [
+            orchestratorAssignment({ model: 'class:fast', resolvedModel: 'claude-haiku-x' }),
+          ],
+        }),
+      );
+      mockAssignProvider.mockResolvedValue({
+        ok: true,
+        pluginId: '@omadia/orchestrator',
+        provider: 'openai',
+        model: 'class:fast',
+        resolvedModel: 'gpt-5.4-mini',
+      });
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      fireEvent.change(await screen.findByLabelText(providerLabel), {
+        target: { value: 'openai' },
+      });
+
+      await waitFor(() =>
+        expect(mockAssignProvider).toHaveBeenCalledWith({
+          pluginId: '@omadia/orchestrator',
+          provider: 'openai',
+          model: 'class:fast',
+        }),
+      );
+      const select = screen.getByLabelText(modelLabel) as HTMLSelectElement;
+      await waitFor(() =>
+        expect(select.options[select.selectedIndex]?.textContent).toBe(
+          'Fast (auto → GPT-5.4 mini)',
+        ),
+      );
+    });
+
+    it('still applies the first model when the provider changes from a pinned model', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic(), openai()],
+          assignments: [orchestratorAssignment({ model: 'claude-opus-5' })],
+        }),
+      );
+      mockAssignProvider.mockResolvedValue({});
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      fireEvent.change(await screen.findByLabelText(providerLabel), {
+        target: { value: 'openai' },
+      });
+
+      await waitFor(() =>
+        expect(mockAssignProvider).toHaveBeenCalledWith({
+          pluginId: '@omadia/orchestrator',
+          provider: 'openai',
+          model: 'gpt-5.5',
+        }),
+      );
+    });
+
+    it('stores a picked class ref as the class, not as its current model', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic()],
+          assignments: [orchestratorAssignment({ model: 'claude-opus-5' })],
+        }),
+      );
+      mockAssignProvider.mockResolvedValue({});
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const select = (await screen.findByLabelText(modelLabel)) as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: 'class:frontier' } });
+
+      await waitFor(() =>
+        expect(mockAssignProvider).toHaveBeenCalledWith({
+          pluginId: '@omadia/orchestrator',
+          provider: 'anthropic',
+          model: 'class:frontier',
+        }),
+      );
+      await waitFor(() => expect(select.value).toBe('class:frontier'));
+    });
+
+    it('never labels an unresolvable class ref with another provider’s model', async () => {
+      // The stored provider has no models, so it is missing from `providers[]`
+      // and the server reports `resolvedModel: null`. The row must not borrow
+      // the first listed provider's class defaults or models.
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic()],
+          assignments: [
+            orchestratorAssignment({
+              provider: 'gone-provider',
+              model: 'class:frontier',
+              resolvedModel: null,
+            }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const select = (await screen.findByLabelText(modelLabel)) as HTMLSelectElement;
+      expect(select.value).toBe('class:frontier');
+      expect(select.options[select.selectedIndex]?.textContent).toBe(
+        'Frontier (unresolved — no model available)',
+      );
+      expect(screen.queryByRole('option', { name: /Claude Opus 5/ })).toBeNull();
+      expect(select.disabled).toBe(true);
+    });
+
+    it('shows a stored alias as its own selected option, never as option 0', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic()],
+          assignments: [orchestratorAssignment({ model: 'opus', resolvedModel: 'claude-opus-5' })],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const select = (await screen.findByLabelText(modelLabel)) as HTMLSelectElement;
+      expect(select.value).toBe('opus');
+      expect(select.options[select.selectedIndex]?.textContent).toBe(
+        'opus (not in the model list)',
+      );
+    });
+  });
 });

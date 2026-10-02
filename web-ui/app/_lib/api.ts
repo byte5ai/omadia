@@ -451,6 +451,10 @@ export interface AdminProvider {
    *  there are some; absent on older middleware payloads. */
   unclassifiedModels?: string[];
   models: AdminProviderModel[];
+  /** #1083 — the `modelId` each model class resolves to on this provider;
+   *  classes it does not serve are absent. Labels the class options of the
+   *  per-agent model select. Absent on pre-#1083 middleware payloads. */
+  classDefaults?: Partial<Record<ModelClass, string>>;
 }
 
 export interface ProviderAssignment {
@@ -458,7 +462,13 @@ export interface ProviderAssignment {
   label: string;
   installed: boolean;
   provider: string;
+  /** The stored model ref: a concrete id, or a class ref (`class:frontier`)
+   *  that follows the provider's catalog. */
   model: string | null;
+  /** #1083 — the concrete model `model` currently resolves to; `null` when
+   *  nothing is stored or it cannot be resolved. Absent on pre-#1083
+   *  middleware payloads. */
+  resolvedModel?: string | null;
   modelKey: string;
   /** Orchestrator only: per-turn model-routing flag ('true' | 'false'). */
   modelRouting?: string;
@@ -482,7 +492,11 @@ export interface AssignProviderResponse {
   ok: boolean;
   pluginId: string;
   provider: string;
+  /** What was stored: a class ref as given, else the bare vendor id. */
   model: string;
+  /** #1083 — the concrete model the stored ref resolves to right now. Absent
+   *  on pre-#1083 middleware payloads. */
+  resolvedModel?: string;
 }
 
 export async function getProviders(): Promise<ProvidersResponse> {
