@@ -383,10 +383,11 @@ describe('public MCP endpoint — privacy', () => {
   // ── fail CLOSED when masking errors ──────────────────────────────────────
 
   /**
-   * The decision. `ToolDispatchService` catches a masking throw and returns the
-   * RAW result (parity with the chat path). The endpoint's gate turns that
-   * throw into a placeholder so the dispatcher's fail-open branch is never
-   * reached, then discards the result and refuses.
+   * The decision. `ToolDispatchService` catches a masking throw and fails
+   * closed with `internFailedNotice` (parity with the chat path). The
+   * endpoint's gate turns that throw into a placeholder so the dispatcher's
+   * catch is never reached, then discards the result and refuses the call
+   * instead of serving the notice.
    */
   it('refuses the call when the privacy provider throws — and never returns the raw result', async (t) => {
     const h = await start(

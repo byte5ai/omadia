@@ -267,7 +267,8 @@ export function realDispatcher(
  * `mask` replaces every email-looking span with `[email]`, so a test can assert
  * the real address never reaches the wire. `failOn` makes `internToolResultV4`
  * throw for one tool, which is the provider-error case the endpoint must fail
- * CLOSED on (the dispatch layer's own behaviour there is fail-OPEN).
+ * CLOSED on by refusing the call (the dispatch layer on its own answers with
+ * the `internFailedNotice` error instead).
  */
 export function maskingPrivacyService(opts?: { failOn?: string }): PrivacyGuardService {
   return {
