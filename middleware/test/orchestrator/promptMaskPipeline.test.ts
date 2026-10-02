@@ -298,6 +298,49 @@ describe('#361 prompt masking — orchestrator pipeline', () => {
     assert.ok(result.answer.includes(RAW_EMAIL));
   });
 
+  it('turn N+2: a recalled answer with restored values is masked with mask_user_prompt off', async () => {
+    // The session tail recalls an answer as persisted, with its real values
+    // restored. It goes to the model like a replayed answer: masked whatever
+    // `mask_user_prompt` says (off here, as shipped).
+    const RAW_NAME = 'Jana Beispielfrau';
+    const mainRequests: string[] = [];
+    const contextRetriever = {
+      assembleForBudget: async (): Promise<unknown> => ({
+        text: `## Letzte Turns in diesem Chat\nAssistant: ${RAW_NAME} leitet das Team, erreichbar unter ${RAW_EMAIL}.`,
+        included: [],
+        excluded: [],
+        stats: { candidatePool: 1, compactMode: false, tokensUsed: 10 },
+        recalled: undefined,
+      }),
+    } as unknown as OrchestratorOptions['contextRetriever'];
+
+    const orch = new Orchestrator({
+      provider: echoingMainProvider(mainRequests),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      contextRetriever,
+      // No `mask_user_prompt` in the config; C1 finds names.
+      privacyGuard: () => createPrivacyGuardService({ c1Detector: namesC1(RAW_NAME) }),
+    });
+
+    const result = await orch.runTurn({
+      userMessage: 'Wer war nochmal die Ansprechpartnerin?',
+      sessionScope: 'sess-recalled-answer',
+      userId: 'u1',
+    });
+
+    assert.equal(mainRequests.length, 1);
+    assert.ok(!mainRequests[0]!.includes(RAW_EMAIL), 'the recalled answer must not carry the real e-mail');
+    assert.ok(!mainRequests[0]!.includes(RAW_NAME), 'the recalled answer must not carry the real name');
+    assert.ok(EMAIL_RE.exec(mainRequests[0]!)?.[0], 'the recalled answer must carry an e-mail-shaped surrogate');
+    // Answer-side restore covers the recalled spans: the provider echoed the
+    // surrogate, the user sees the real value.
+    assert.ok(result.answer.includes(RAW_EMAIL), result.answer);
+  });
+
   it('turn N+1: priorTurns (live chat history) are masked before assembly', async () => {
     // Second-review fix — persisted turns store restored REAL values by
     // design, and channels replay them verbatim as `priorTurns`. Turn 1

@@ -1252,11 +1252,14 @@ async function maskIngestedForWire(
   return maskPromptForWire(privacy, ingestedText);
 }
 
-/** `maskPromptForWire` for the recalled prior-context block. The recalled
- *  TEXT is injected into the next prompt, so it is LLM-bound wire content:
- *  a raw span recalled from turn N would undo the masking of turn N. Runs
- *  through the SAME turn map, so answer-side restore covers these spans
- *  too. Server-side stores stay raw — only the injected copy is masked. */
+/** The recalled prior-context block (knowledge-graph recall and the session
+ *  tail). The recalled TEXT is injected into the next prompt, so it is
+ *  LLM-bound wire content, and it carries answers that were persisted with
+ *  their real values restored: a span recalled from turn N would undo the
+ *  masking of turn N. So it is masked like a replayed answer
+ *  ({@link maskReplayedAnswerForWire}), whatever `mask_user_prompt` says,
+ *  through the SAME turn map, so answer-side restore covers these spans too.
+ *  Server-side stores stay raw — only the injected copy is masked. */
 async function maskRecalledForWire(
   privacy: PrivacyTurnHandle | undefined,
   recalledText: string | undefined,
@@ -1264,7 +1267,7 @@ async function maskRecalledForWire(
   if (recalledText === undefined || recalledText.trim().length === 0) {
     return recalledText;
   }
-  return maskPromptForWire(privacy, recalledText);
+  return maskReplayedAnswerForWire(privacy, recalledText);
 }
 
 /**

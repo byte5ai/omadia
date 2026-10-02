@@ -1361,8 +1361,7 @@ requests, and only there, the shield acts on four kinds of text:
   blocks the turn (`PromptMaskBlockedError`).
 - **Prompt text, only while `mask_user_prompt` is on.** The setting is off by
   default. While it is on, the user's message, document text inlined at
-  upload, recalled context, the user messages a channel replays in
-  `priorTurns`, live steering text, a direct-line relay's
+  upload, the user messages a channel replays in `priorTurns`, live steering text, a direct-line relay's
   payload and a verifier correction hint are masked in the turn's own model
   requests through the turn's prompt map (`maskPromptForWire`): the C0
   baseline and the operator's deny-list, plus names when the C1 detector is
@@ -1394,9 +1393,10 @@ Telegram channel plugins build `priorTurns` from the answers they delivered.
 A privacy provider without `maskReplayedAnswer` (it arrived with
 `@omadia/plugin-api` 1.22.0 and privacy-guard 0.7.0) masks a replayed answer
 through `maskUserPrompt`, so with masking off it hands those values to the
-model on the next turn in `priorTurns`. The in-tree web chat sends no
-`priorTurns`, and the session log behind recalled context stores the model's
-own answer from before the render. A user message a channel replays still
+model on the next turn in `priorTurns`. Recalled context, the knowledge-graph recall and the session tail, goes
+through `maskReplayedAnswer` as well, whatever `mask_user_prompt` says: the
+session log behind it stores each answer with its real values restored, so
+a recalled answer would otherwise hand them to the model two turns later. A user message a channel replays still
 follows `mask_user_prompt`.
 
 These tool results skip the digest:

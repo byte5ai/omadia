@@ -26,9 +26,10 @@ agent's model loop and its sub-agents to the answer verifier's checks. There
 the model works from an identity-free digest of each tool result and gets tool
 errors redacted, apart from a few exempt tools such as `read_attachment` (it
 refuses tables) and any tool an operator sets to bypass the shield. The
-earlier answers a channel replays are masked there whatever the settings.
-Your own messages, text from uploads, recalled context and the user messages a
-channel replays are masked there only once you switch on prompt masking
+earlier answers a channel replays and recalled context are masked there
+whatever the settings. Your own messages, text from uploads and the user
+messages a channel replays are masked there only once you switch on prompt
+masking
 (`mask_user_prompt`, default off). Every other model call sends its text as it is, with prompt masking on
 or off. That covers the inbound security screener, turn scoring and the other
 memory jobs, and plugin calls through `ctx.llm` such as the canvas composer
@@ -292,8 +293,8 @@ answer:
   digest. It redacts the `Error:` text a tool returns, or withholds it whole,
   and it withholds the message of a tool that throws. It masks prompt text
   only while an operator has switched on prompt masking (`mask_user_prompt`,
-  default off). The user's message, text inlined from uploads, recalled
-  context, the user messages a channel replays and a direct-line relay are
+  default off). The user's message, text inlined from uploads, the user
+  messages a channel replays and a direct-line relay are
   then masked, and so is the text the turn's routing, fact-extraction and
   memory-excerpt passes read. Masking finds values such as e-mail addresses,
   IBANs, phone numbers, amounts and dates by pattern, plus the terms on the
@@ -301,18 +302,19 @@ answer:
   the pattern pass fails, the request is blocked instead of being sent
   unmasked. If C1 fails during a turn, the rest of that turn runs on the
   patterns alone, and names only C1 would find reach the model as typed.
-  With masking off, the user's own message, text inlined from uploads,
-  recalled context and the user messages a channel replays (`priorTurns`)
-  reach the model as typed. The earlier answers a channel replays, as the
-  Teams and Telegram channels do, are masked whether prompt masking is on or
-  off, because an answer the shield rendered carries real values the model
-  never saw: e-mail addresses, IBANs, phone numbers, postal addresses and ID
+  With masking off, the user's own message, text inlined from uploads and
+  the user messages a channel replays (`priorTurns`) reach the model as
+  typed. The earlier answers a channel replays, as the Teams and Telegram
+  channels do, and recalled context, which carries answers stored with their
+  real values, are masked whether prompt masking is on or off, because an
+  answer the shield rendered carries real values the model never saw: e-mail addresses, IBANs, phone numbers, postal addresses and ID
   numbers by pattern, the deny-list terms and names through C1, while dates
   and amounts stay readable. The reply gets the real values back.
 
   Some tool results skip the digest and the redaction. The text of an
-  uploaded document that `read_attachment` returns (it refuses a table, CSV
-  or XLSX, and points the model to `query_dataset`) and the results of a short
+  uploaded document that `read_attachment` returns (it refuses an upload it
+  recognises as a table by type or name, CSV or XLSX, and points the model
+  to `query_dataset`) and the results of a short
   allowlist of the agent's own tools (`memory`, the stored-process tools,
   `suggest_follow_ups`, `ask_user_choice`) reach the model in clear, and so
   do the errors these tools return or throw. A tool an operator set to bypass

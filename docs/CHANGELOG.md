@@ -45,7 +45,9 @@ turn handed them to the model in clear. Replayed assistant answers now go
 through the privacy guard's new `maskReplayedAnswer`, whatever
 `mask_user_prompt` says: identity shapes, the operator deny-list and C1 when it
 is configured, through the turn's surrogate map, so the reply still shows the
-real values. A replayed user message still follows `mask_user_prompt`.
+real values. Recalled context, the knowledge-graph recall and the session
+tail that stores answers with their real values restored, goes through the
+same mask. A replayed user message still follows `mask_user_prompt`.
 `@omadia/plugin-api` 1.22.0 adds the optional handle member; the bundled
 privacy guard implements it (0.7.0). A privacy plugin without it falls back to
 the prompt mask.
