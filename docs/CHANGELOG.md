@@ -1617,6 +1617,10 @@ Modelle geschrieben, die untertriggerten; die aktuellen Modelle übertriggern
 damit, und ein Widerspruch zwischen Prompt und Tool-Kontrakt ist durch
 weiteren Prompt-Text nicht zu heilen. Kein Test hängt am Prompt-Text; die
 Arbeitsteilung ist in `docs/middleware-agent-handoff.md` §3 festgehalten.
+Beim Rebase wurde die Tool-Beschreibung an den Handler angepasst: Die Slots
+kommen per `getSchedule` nur aus dem Kalender des Hosts, `attendees` werden
+nur eingeladen, „wann hat X Zeit?“ setzt `hostEmail`, und
+`minimumAttendeePercentage` ist als wirkungslos markiert.
 
 ### Fixed — `disambiguate-policy` skill now teaches the shipped `_pendingUserChoice` contract (#1213)
 
@@ -1629,8 +1633,11 @@ short-circuits the turn and renders the Smart-Card, and no tool emits
 `disambiguate` any more. The skill is `shareable: true`, so the dead contract
 reached other agents too. Body replaced with the current contract, including
 that a click starts a fresh turn with the chosen `value` as the user message;
-the manifest's skill `description` no longer names `ask_user_choice`. Prompt
-text only — no code path and no test changed.
+the manifest's skill `description` no longer names `ask_user_choice`. On the
+rebase the contract sentence was qualified: the card only renders when the
+orchestrator calls the tool itself and the Privacy Shield does not intern the
+result; otherwise the model asks. Prompt text only — no code path and no test
+changed.
 
 ### Changed — builder issue-reporting docs no longer claim browser-submit is the only path (#1216)
 

@@ -167,7 +167,8 @@ src/
 ### `find_free_slots` + `book_meeting` — M365-Kalender-Tools (#1214)
 
 - **Dateien:** `packages/harness-orchestrator/src/tools/findFreeSlotsTool.ts`
-  (Slot-Suche via Microsoft Graph `findMeetingTimes` + Slot-Card) und
+  (Slot-Suche via Graph `getSchedule` auf dem Kalender des Hosts; Teilnehmer
+  werden nur eingeladen; dazu die Slot-Card) und
   `.../bookMeetingTool.ts` (Kalendereintrag auf einen zuvor gefundenen Slot).
   Beide hängen an `hasCalendar` in `buildSystemPrompt`.
 - **Arbeitsteilung Prompt ↔ Tool-Beschreibung (der Kern von #1214):** Der
