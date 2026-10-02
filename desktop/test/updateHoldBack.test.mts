@@ -36,6 +36,16 @@ const updaterSemver = createRequire(require.resolve('electron-updater'))('semver
   compare(a: string, b: string): number;
 };
 
+// The release build's side of the floor: the script that writes it into
+// latest-mac.yml. Imported by URL because it is untyped JavaScript.
+const feedScript = (await import(
+  new URL('../scripts/merge-mac-update-feed.mjs', import.meta.url).href
+)) as {
+  darwinFloorFor(macosVersion: string): string;
+  MACOS_MINIMUM: string;
+  MINIMUM_SYSTEM_VERSION: string;
+};
+
 /** electron-updater's own verdict: would this OS be offered `floor`'s update? */
 function updaterOffers(osRelease: string, floor: string): boolean {
   const release = mock.method(os, 'release', () => osRelease);
@@ -126,6 +136,23 @@ test('names a macOS release only for a whole-major floor it knows', () => {
   assert.equal(at('22.4.0')?.macos, null);
   assert.equal(at('26.0.0')?.macos, null);
   assert.equal(at('22.0.0', 'win32')?.macos, null);
+});
+
+test('names the macOS release of every floor the release build can write', () => {
+  // The dialog maps the Darwin floor back to a macOS name; the feed script maps
+  // a macOS name to the floor. Raising MACOS_MINIMUM must keep the two in step,
+  // or a held-back Mac is told the wrong macOS (or none).
+  const named = (floor: string) =>
+    holdBackOf({ version: '0.151.0', minimumSystemVersion: floor }, '0.150.2', '19.6.0', 'darwin')
+      ?.macos;
+  for (const macos of ['11', '12', '13', '14', '15', '26']) {
+    assert.equal(named(feedScript.darwinFloorFor(macos)), macos, `macOS ${macos}`);
+  }
+  assert.equal(
+    named(feedScript.MINIMUM_SYSTEM_VERSION),
+    feedScript.MACOS_MINIMUM.split('.')[0],
+    'the floor the merged feed declares today',
+  );
 });
 
 test('agrees with electron-updater on which operating systems are held back', () => {

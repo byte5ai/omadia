@@ -343,9 +343,14 @@ jobs:
   # Added for issue #932. Until now desktop/src was the only source tree in
   # the repo with no tests and no CI job -- and the only one that produced a
   # blocker in three rounds of beta testing, because it is the whole of the
-  # user's first impression. Electron's own binary is deliberately NOT
-  # downloaded: nothing here launches the app, so the ~100MB fetch would only
-  # slow the job down.
+  # user's first impression. Electron's own binary is not downloaded: since
+  # Electron 42 `npm ci` no longer fetches it (it arrives on first run), and
+  # nothing here launches the app.
+  #
+  # Node 24, unlike the other jobs: this code runs in Electron's main process
+  # on Electron's embedded Node (24 since Electron 44), and the desktop's
+  # @types/node follows that Node. The kernel's suite stays on Node 22 in the
+  # middleware job (docs/security-architecture.md §4a).
   # ------------------------------------------------------------------
   desktop:
     name: desktop (typecheck + test)
@@ -354,14 +359,12 @@ jobs:
     defaults:
       run:
         working-directory: desktop
-    env:
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: desktop/package-lock.json
 
@@ -495,6 +498,22 @@ jobs:
   # findings remain warnings (some of ours are dev-tools that need a
   # Next.js major to clear). Acts as the canary for new CVE bumps in
   # transitive deps.
+  #
+  # The matrix names every directory git tracks with its own package.json
+  # AND package-lock.json (desktop, middleware, web-ui); a step before the
+  # audit fails every leg when one is missing. A new package directory also
+  # needs an npm block in .github/dependabot.yml and its
+  # `audit (high+critical block) (<dir>)` context among main's required
+  # status checks, added by an admin only after the PR that adds the leg is
+  # on main: a required context that never reports blocks every open PR.
+  # The root package-lock.json is an empty stub with no package.json beside
+  # it, so it is not a leg.
+  #
+  # desktop is audited like the others because its devDependency `electron`
+  # is the shipped runtime (the supervisor runs kernel and web-ui under it via
+  # ELECTRON_RUN_AS_NODE) and electron-updater parses the update feed inside
+  # the installed app. Its `npm ci` downloads no Electron binary: since
+  # Electron 42 the binary is fetched on first run, not in postinstall.
   # ------------------------------------------------------------------
   audit:
     name: audit (high+critical block)
@@ -511,12 +530,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        workspace: [middleware, web-ui]
+        workspace: [middleware, web-ui, desktop]
     defaults:
       run:
         working-directory: ${{ matrix.workspace }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Audit scope covers every lockfile
+        working-directory: .
+        run: node --test .github/scripts/audit-scope.test.mjs
 
       - uses: actions/setup-node@v7
         with:

@@ -122,7 +122,8 @@ another AI assistant that can run commands on your machine, such as Codex), past
 the prompt below into a chat. The assistant fetches a public skill file and
 installs the native omadia desktop app (no Docker, no build tools) from the
 newest GitHub Release that has a build for your OS, then opens the onboarding
-wizard for you.
+wizard for you. On a Mac the app needs macOS 13 (Ventura) or later; the skill
+checks this before it downloads anything.
 
 ```text
 Install omadia on my machine by following this skill file, step by step:

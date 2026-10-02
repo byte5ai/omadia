@@ -4054,10 +4054,74 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   Eintrag in `scripts/copy-build-assets.mjs` + dieser CI-Schritt + der Pfad in
   `test/mcpDelegationBackfillMigration.pg.test.ts` (liest das Verzeichnis und nennt es noch
   „live migration series“); das Dockerfile kopiert es nicht.
-- **`desktop` in die Audit-Matrix aufnehmen.** Der `audit (high+critical block)`-Job prüft
-  nur `middleware` und `web-ui`; Dependabot deckt `desktop/` seit 2026-09-29 ab. Die Matrix
-  bekommt `desktop` zusammen mit dem Desktop-Dependency-Refresh (Electron, Builder-Toolchain),
-  der das Gate grün macht — danach den neuen Status-Check als Required eintragen.
+- **Desktop-Refresh (Electron 44.5.1, electron-builder 26.17.0) — erledigt (#1259).** `desktop` ist
+  das dritte Bein der Audit-Matrix, `npm audit` dort bei 0. Weil jeder Push auf `main` über
+  `auto-release.yml` sofort ein signiertes Release samt Update-Feeds baut, lief der Refresh vor dem
+  Merge als Dispatch-Build mit Wegwerf-Tag und durch `desktop-upgrade-smoke.yml` (#1270). Der Smoke
+  ersetzt die früher manuellen Schritte (2) und (2b): frische GitHub-Runner (macOS arm64, Windows x64
+  mit Basic-User-Token, Linux-AppImage mit gnome-keyring), keine produktive Installation.
+  (0a)/(0b) Brücken-Release v0.167.9 mit Hold-back-Hinweis und Secrets-Fix. (1) Der erste
+  Dispatch-Build (36899325147) war in allen Targets grün und trotzdem nicht startfähig: electron-builder
+  26 lässt das oberste `node_modules` jeder `extraResources`-Quelle weg (`app-builder-lib`
+  `util/filter.js`), der Kernel starb mit `ERR_MODULE_NOT_FOUND`. Gefunden hat das der erste
+  Smoke-Lauf (36981332723). Fix: eigene `extraResources`-Einträge für beide `node_modules`, Ausschluss
+  in den Eltern-Einträgen, `afterPack` prüft das Paket auf jeder Plattform, und
+  `scripts/check-packaged-runtime.test.mjs` lässt den Block durch electron-builders eigenen Kopiercode
+  laufen. Finaler Build 36984867502 (Tag `v0.0.0-desktop-refresh.5`), alle vier Targets grün.
+  (2)/(2b) Smoke-Lauf 36989068863: frische Installation und Upgrade über v0.167.14 auf allen drei
+  Plattformen grün, `secrets.enc` byte-identisch, jedes gespeicherte Secret feldweise gleich,
+  Recovery-Key unverändert, Provider-Key verifiziert. (2c) dieser Eintrag, CHANGELOG, `docs/upgrading.md`
+  und §4a nennen v0.167.14 als letztes Release auf Electron 37. (3) Required Checks
+  `audit (high+critical block) (desktop)` und `desktop (typecheck + test)` nach dem Merge.
+  **Nächster Electron-Major:** Dispatch-Build mit Wegwerf-Tag, dann `desktop-upgrade-smoke.yml` mit
+  dessen Run-ID (`desktop/README.md` § Install and upgrade smoke); nie auf einer produktiven
+  Installation.
+- **Synchrones `safeStorage` endet mit Electron 46.** Electron 45 markiert
+  `safeStorage.isEncryptionAvailable`/`encryptString`/`decryptString` als deprecated, Electron 46
+  entfernt sie zusammen mit Chromiums synchronem OSCrypt-Backend (Electron
+  `docs/breaking-changes.md`). `desktop/src/secrets.ts` nutzt genau diese drei. Vor dem Sprung
+  auf 46 auf `isAsyncEncryptionAvailable`/`encryptStringAsync`/`decryptStringAsync` umstellen
+  (laut Electron dieselben Key-Stores, alte `secrets.enc` bleibt lesbar) und den Upgrade-Lauf
+  (2b) oben wiederholen. Dependabot ignoriert Electron-Majors nicht, der Bump-PR kommt also.
+- **Datenverzeichnis-Dialog ohne `defaultPath`** (`desktop/src/ipc.ts`): seit Electron 43 öffnet
+  `showOpenDialog` ohne `defaultPath` im Downloads-Ordner — für ein Postgres-Datenverzeichnis ein
+  schlechter Startpunkt. `defaultPath` auf das Home- oder das aktuelle Datenverzeichnis setzen.
+- **`test/graphBackfill.test.ts` ist zeitabhängig.** Zwei direkt nacheinander geloggte Turns
+  bekommen dieselbe Turn-ID, wenn sie in dieselbe Millisekunde fallen (`SessionLogger`,
+  millisekundengenaue Zeit); dann trägt der zweite rekonstruierte Turn die Entity des ersten. Im
+  warmen Prozess passiert das auf Node 22 und 24 fast immer. Grün ist der Test nur, weil der
+  kalte erste Aufruf meist über die Millisekunde hinaus dauert — unter Electron 44s Node 24 in
+  rund 15–25 % der Läufe nicht. Test mit festen `time`-Werten schreiben oder die Turn-ID
+  kollisionsfrei machen.
+- **Zwei Node-Majors für denselben Kernel; auf Electrons Node läuft seine Test-Suite in keinem
+  CI-Job.** Entscheidung mit dem Desktop-Refresh: Die Desktop-App startet Kernel und Web-UI mit
+  Electrons eingebettetem Node (`ELECTRON_RUN_AS_NODE`, `desktop/src/supervisor.ts`), seit
+  Electron 44 also Node 24.21.0 — keine Electron-Linie, die noch Sicherheitsfixes bekommt, hat
+  Node 22. Server-Images, Entwicklung, CI und der Desktop-Release-Build, der den Kernel
+  installiert und baut, bleiben auf Node 22 (`docs/security-architecture.md` §4a). `engines` in
+  `middleware/package.json` bleibt deshalb `>=22.13.0 <23`: Mit `engine-strict`
+  (`middleware/.npmrc`) ist es ein Install-Gate für genau diese Toolchain, wie
+  `scripts/check-node-version.mjs` vor `npm install` und `npm test`. Die Desktop-Laufzeit geht
+  durch keins von beiden; eine Node-24-Freigabe dort öffnete nur die Toolchain. Der Job
+  `desktop (typecheck + test)` läuft auf Node 24, weil der Shell-Code im Electron-Hauptprozess
+  läuft. Den Kernel prüfen unter Electrons Node bisher nur „Verify native modules load under the
+  Electron ABI“ (`desktop-apps.yml`) und der Start einer gebauten App. **Offen:** ein CI-Bein,
+  das wie der Release-Build unter Node 22 installiert und baut und dann die Unit-Suite mit
+  Electrons Binary startet, an `npm test` und seinem `pretest`-Guard vorbei, aus `middleware/`:
+  `ELECTRON_RUN_AS_NODE=1 ../desktop/node_modules/.bin/electron --import tsx --test …`
+  (Electron lädt sein Binary beim ersten Aufruf herunter). Electrons Binary statt
+  `setup-node@24`, weil Electrons Node gegen BoringSSL gebaut ist: `node:crypto` kennt dort 28
+  Cipher, 9 Hashes und 4 Kurven (Node 24: 130/52/82), und fehlt dem Kernel oder einer
+  Abhängigkeit davon etwas, fällt es nur dort auf. Die Primitive des Kernels selbst
+  (sha1/sha256 als Hash und HMAC, `aes-256-gcm`, `hkdfSync`, `RSA-SHA256`, Ed25519) laufen
+  unter Electron 44.5.1, und die Unit-Suite lief dort lokal mit diesem Aufruf durch
+  (2026-10-01, macOS arm64): 10324 Tests, 2 rot — `cliSpawnGate` (liest die lokal installierte
+  `claude`-CLI, unter Node 22 genauso rot) und der `graphBackfill`-Flake. Required erst, wenn
+  der Flake behoben ist.
+- **Kleinkram aus dem Desktop-Refresh:** der Schritt „Allow git-https for git dependencies“ in
+  `desktop-apps.yml` ist tot (kein Lockfile zieht mehr eine git-Abhängigkeit); das leere
+  Root-`package-lock.json` ohne `package.json` kann weg; der Audit-Schritt installiert
+  `npm@latest` ungepinnt.
 - **Typecheck-Ratchet `test/` + `scripts/` (#573): 347 bekannte Fehler in 120 Dateien**
   (`middleware/test-typecheck-baseline.json`, Stand 2026-09-29). `npm run typecheck:test`
   blockt nur *neue* Fehler. Abbau: `npm run typecheck:test -- --report`, fixen,
@@ -4081,15 +4145,6 @@ Request und bei jedem WebSocket-Upgrade. Offen:
 
 ### Offene Punkte aus den Security-Härtungen (2026-09-30)
 
-- **Desktop-Runtime-Refresh (Electron 37 → 44) als eigener PR, nach dem Brücken-Release.**
-  `desktop/` läuft noch auf Electron 37 und hat kein Bein in der `npm audit`-Matrix. Der
-  Refresh (Electron 44, electron-builder 26, `desktop` als Audit-Bein, macOS-13-Floor im
-  Update-Feed) kommt als eigener PR. Er wird erst gemergt, wenn das Release mit dem
-  Updater-Hinweis aus `desktop/src/updateHoldBack.ts` veröffentlicht ist (kein Draft): Nur
-  Installationen mit diesem Release sagen auf macOS 11/12, dass das neue Release macOS 13
-  braucht. Vor dem Merge laufen ein `desktop-apps.yml`-Dispatch-Build aller Targets und je
-  ein Upgrade-Lauf auf macOS, Windows und Linux über das aktuelle Release, bei dem
-  `secrets.enc` byte-identisch bleibt; den genauen Ablauf bringt der PR in diesem Abschnitt mit.
 - **IdP-Logout-URL nicht allowlisted.** Die serverseitig gelieferte absolute End-Session-URL
   (`idpLogout.url`, `web-ui/app/_components/AuthBadge.tsx`) wird ungeprüft angesteuert. Eigene
   Vertrauensgrenze; Härtung z. B. per Allowlist der konfigurierten IdP-Hosts.

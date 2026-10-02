@@ -659,6 +659,91 @@ registry handler (`src/platform/pluginContext.ts`):
   A new native tool bound to shared or unscoped state must be routed or denied
   the same way before it is registered.
 
+## 4a. Third-party npm dependencies: audit gate, Dependabot scope, the desktop runtime
+
+Plugins are operator-curated (§4); the npm dependencies of the kernel, the
+web-ui and the desktop shell are not, so they rest on automated controls and on
+one rule about what counts as a runtime.
+
+- **Audit gate.** The `audit (high+critical block)` job in
+  `.github/workflows/ci.yml` runs `npm audit --audit-level=high` in every
+  directory that has its own `package.json` and `package-lock.json`:
+  `desktop`, `middleware` and `web-ui`. Before it audits, every leg runs
+  `.github/scripts/audit-scope.test.mjs`, which fails when a lockfile directory
+  git tracks is missing from the matrix, or a leg names a directory without
+  one. The root `package-lock.json` is an empty stub with no
+  `package.json` beside it and is not a leg. Each leg reports its own
+  `audit (high+critical block) (<dir>)` status context, and each has to be a
+  required check on `main`: a context that is not required reports findings
+  but blocks nothing. An admin adds a new leg's context to `main`'s required
+  checks only after the PR that adds the leg is on `main`: a required context
+  that never reports blocks every open PR, and a PR's checks run on its merge
+  with `main`, which has no such leg before then.
+- **A registry error is not a result.** The audit step gives the npm registry
+  three attempts and then fails the leg. Only the repository variable
+  `AUDIT_ALLOW_REGISTRY_OUTAGE`, set by an admin for a confirmed upstream
+  outage, downgrades that to a warning (§11). It is a GitHub Actions variable,
+  not an application setting, so it does not belong in
+  `middleware/.env.example`. Every run archives its report as the
+  `npm-audit-<dir>` workflow artifact.
+- **Dependabot** has an npm block for every audited directory (`/desktop`,
+  `/middleware`, `/web-ui`); a new package directory gets one together with its
+  audit leg. GitHub's repository-level alerting is not counted on as a
+  backstop: the audit gate and the weekly version updates are the controls,
+  which is why every audit leg has to be a required check.
+- **`electron` is a runtime, not a build tool.** It sits in the desktop's
+  `devDependencies` because electron-builder packages the installed binary, but
+  the app runs on it and the supervisor starts the kernel and the web-ui under
+  its Node (`ELECTRON_RUN_AS_NODE`, `desktop/src/supervisor.ts`). Its
+  advisories count like production ones, its majors are never ignored in
+  Dependabot (Electron only patches its three newest majors), and the desktop's
+  `@types/node` follows Electron's embedded Node (Node 24 for Electron 44), not
+  the Node 22 of the server image. The release build's "Verify native modules
+  load under the Electron ABI" step is the check that the middleware's native
+  modules still load under that Node.
+- **Two Node majors run the same kernel.** The server images, development and
+  CI run the kernel and the web-ui on Node 22; the desktop app runs the same
+  builds on Electron's embedded Node, Node 24 since Electron 44, because no
+  Electron line that still gets security fixes embeds Node 22. `engines` in
+  `middleware/package.json` (an install gate through `engine-strict` in
+  `middleware/.npmrc`) and `middleware/scripts/check-node-version.mjs` pin the
+  toolchain that installs, builds and tests the kernel to Node 22, the desktop
+  release build included. The desktop runtime passes through neither, so
+  `engines` does not list Node 24. Plain Node 24 does not stand in for it
+  either: Electron's Node is built against BoringSSL, and its `node:crypto`
+  offers a fraction of Node's ciphers, hashes and curves. On Electron's Node
+  the kernel is checked only by that native-module step and by starting a
+  built app; no CI job runs its test suite there yet
+  (`docs/middleware-agent-handoff.md` §13).
+- **Windows update signatures.** electron-builder writes a `publisherName` into
+  the Windows app's `app-update.yml`; the release build reads it from the
+  certificate that signs the installer (Azure Trusted Signing), and
+  electron-updater refuses a downloaded update that is not Authenticode-signed
+  under that name. Apps installed from builds before electron-builder 26 carry
+  no `publisherName` and take their next update unchecked; every update after
+  that is checked.
+- **macOS update floor.** electron-builder writes no macOS minimum into
+  `latest-mac.yml`, so `desktop/scripts/merge-mac-update-feed.mjs` adds
+  `minimumSystemVersion` to the merged feed. It is the Darwin kernel version
+  (`22.0.0` for macOS 13, Electron 44's minimum), because electron-updater
+  compares it with `os.release()`; a product version such as `13.0` fails its
+  semver parse and lets every Mac update. Macs below the floor are not offered
+  the update and keep the version they run. `desktop/buildResources/afterPack.js`
+  fails every mac build whose packaged `LSMinimumSystemVersion` does not match
+  the floor, so an Electron major that raises the minimum cannot reach Macs it
+  does not start on.
+- **A held-back Mac is told, not reported current.** electron-updater answers
+  a feed above the OS floor with the same `update-not-available` event, and
+  the same feed version, as a current install. `desktop/src/updateHoldBack.ts`
+  tells the two apart: the user learns which macOS the release needs and that
+  updates, security fixes included, stop until the OS is updated — once per
+  floor at startup, and on every "Check for Updates…". Those Macs stay on an
+  Electron 37 build, a runtime without further Electron security fixes; an
+  OS update is the only remedy. Only builds that carry the handler can say
+  this, so a raised floor ships its message first, in a release the held-back
+  OS can still install (for macOS 13: v0.167.9 through v0.167.14, the last
+  release built on Electron 37).
+
 ## 5. Signed artefact URLs
 
 User-visible artefacts (rendered diagrams, attachments, exports) are stored
@@ -4707,6 +4792,27 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       workbook. An exceljs upgrade re-checks which characters its XML encoder
       changes against `formulaText.ts`. `office-formulas.test.ts` pins all of it, with rejected-formula
       rows for every refused function family and reference form.
+- [ ] A new directory with its own `package.json` + `package-lock.json` is a
+      leg of the `audit (high+critical block)` matrix and has an npm block in
+      `.github/dependabot.yml` (§4a). `audit-scope.test.mjs` catches a missing
+      matrix leg; the Dependabot block is on the reviewer. Its `(<dir>)`
+      status context becomes a required check on `main` after the merge, not
+      before: an admin adds it only once the PR that adds the leg is on
+      `main`, because a required context that never reports blocks every open
+      PR. The PR records that admin step as an open point (handoff §13).
+- [ ] An Electron major bump in `desktop/` moves `@types/node` to Electron's
+      embedded Node major in the same PR. Before it merges, a `desktop-apps.yml`
+      dispatch build of the PR branch (throwaway tag) has passed on all four
+      targets, including "Verify native modules load under the Electron ABI"
+      and afterPack's checks of the packaged runtime and the macOS update floor
+      (§4a): a push to `main` releases through that same workflow. That build
+      has also passed `desktop-upgrade-smoke.yml` (`desktop/README.md`): a fresh
+      install and an install over the latest release on macOS, Windows and
+      Linux, with `secrets.enc` left byte-identical. The new runtime's
+      `safeStorage` has to decrypt the vault key, and a runtime that cannot must
+      stop the app, never re-key it. A build is never tried on real data: one
+      installed by hand takes no pre-update snapshot (only the updater's
+      install preflight does), and its kernel migrations run forward-only.
 - [ ] A sentence in the README, `docs/architecture.md`, this document or
       `CITATION.cff` that promises a security property names the control that
       enforces it and that control's default. Words like "signed", "verified",
@@ -4791,4 +4897,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*
+*Last reviewed: 2026-10 (§4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*
