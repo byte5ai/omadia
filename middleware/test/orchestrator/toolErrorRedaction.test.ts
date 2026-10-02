@@ -394,16 +394,25 @@ describe('withholdThrownToolError', () => {
     assert.match(out.text, /\[ref turn-42\]/);
   });
 
-  it('keeps the raw message for an intern-exempt self tool (the agent\'s own state)', async () => {
+  it('withholds an intern-exempt self tool too (the exemption covers its result, not its error)', async () => {
     const recorded: RecordedEntry[] = [];
     const out = await withholdThrownToolError({
       toolName: 'memory',
       err,
       privacy: fakeHandle(recorded, []),
       site: 'test',
+      ref: 'r-2',
     });
-    assert.deepEqual(out, { text: `Error: ${err.message}`, withheld: false });
-    assert.deepEqual(recorded, []);
+    assert.deepEqual(out, { text: thrownToolErrorForModel('memory', err, 'r-2'), withheld: true });
+    assert.equal(out.text.includes(EMAIL), false);
+    assert.deepEqual(recorded, [
+      {
+        toolName: 'memory',
+        carrier: 'thrown',
+        outcome: 'withheld',
+        bytes: Buffer.byteLength(err.message),
+      },
+    ]);
   });
 
   it('keeps the raw message without a privacy provider (parity), formatted by the caller', async () => {
