@@ -129,12 +129,11 @@ const queryNotesByPersonInput = z
 const queryNotesByPersonSpec: NativeToolSpec = {
   name: 'query_notes_by_person',
   description:
-    'Sucht gespeicherte Notizen, die einen Personen-Namen erwähnen — ' +
-    'case-insensitive Substring über Body und Title. Nutze das Tool, wenn der ' +
-    'Nutzer nach Notizen zu einer Person fragt. Bei Mehrdeutigkeit (≥2 ' +
-    'Matches) rät das Tool nicht, sondern emittiert `_pendingUserChoice`: der ' +
-    'Orchestrator beendet die Turn und rendert eine Auswahl-Smart-Card, der ' +
-    'Nutzer entscheidet.',
+    'OB-29-4 Tool-emittiertes-pendingUserChoice-Demo: sucht Notizen, die ' +
+    'einen Personen-Namen erwähnen (case-insensitive substring auf Body + ' +
+    'Title). Bei Mehrdeutigkeit (≥2 Matches) emittiert das Tool ' +
+    '`_pendingUserChoice` statt zu raten — der Orchestrator short-circuitet ' +
+    'die Turn und rendert eine Smart-Card.',
   input_schema: {
     type: 'object',
     properties: {
@@ -150,11 +149,11 @@ const queryNotesByPersonSpec: NativeToolSpec = {
 const smartExtractSpec: NativeToolSpec = {
   name: 'smart_extract_entities',
   description:
-    'Extrahiert Personen und Topics aus einem Notiz-Text per LLM-Call. Nutze ' +
-    'das Tool, wenn ein Text Personen oder Themen nur implizit nennt: ' +
-    '`add_note` extrahiert selbst nur deterministisch per Regex und erkennt ' +
-    'deshalb "John hat das gut gemacht" ohne `Person:`-Prefix nicht. Bei ' +
-    'explizit markierten Entities ist der Aufruf unnötig.',
+    'OB-29-3 LLM-Service-Demo: extrahiert Personen/Topics aus einer ' +
+    'ambigen Notiz via Haiku (ctx.llm.complete). Komplementär zur ' +
+    'deterministischen Regex-Extraction in add_note: löst Mehrdeutigkeit, ' +
+    'die Regex nicht erkennen kann (z.B. "John hat das gut gemacht" ' +
+    'ohne Person:-Prefix).',
   input_schema: {
     type: 'object',
     properties: {
@@ -170,11 +169,10 @@ const smartExtractSpec: NativeToolSpec = {
 const analyzeUrlSpec: NativeToolSpec = {
   name: 'analyze_url',
   description:
-    'Lässt eine URL vom SEO-Analyst-Agenten ' +
-    `(${SEO_ANALYST_AGENT_ID}) prüfen und speichert dessen Antwort als Notiz ` +
-    'im Plugin-Memory-Scope. Nutze das Tool, wenn der Nutzer eine konkrete ' +
-    'URL analysieren lassen will — die Analyse macht der Sub-Agent, nicht ' +
-    'dieses Plugin.',
+    'OB-29-1 Sub-Agent-Delegations-Demo: delegiert die SEO-Analyse einer ' +
+    `URL an ${SEO_ANALYST_AGENT_ID} via ctx.subAgent.ask, persistiert die ` +
+    'Antwort als Notiz im Plugin-Memory-Scope. Demonstriert das ' +
+    'cross-agent-delegation-Pattern.',
   input_schema: {
     type: 'object',
     properties: {

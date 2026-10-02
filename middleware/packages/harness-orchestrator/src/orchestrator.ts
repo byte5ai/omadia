@@ -1768,7 +1768,11 @@ function buildSystemPrompt(
     : '';
   const chatParticipantsBlock = hasChatParticipants
     ? '\n- `get_chat_participants`: Liefert die Teilnehmer des aktuellen Teams-Chats. Nur aufrufen, wenn du jemanden im Antworttext **per @-Mention ansprechen** willst — Handoff, Rückfrage, Zuständigkeits-Tag. Max 1× pro Turn. In 1:1-Chats nicht nutzen.\n' +
-      '\n  Die exakte Mention-Syntax steht in der Beschreibung des Tools, und die Tool-Response liefert sie in `usage_example` / `rendering_rule` noch einmal mit einem echten `displayName` aus diesem Chat. Halte dich daran: ohne diese Form wird keine Mention gerendert, die Person nicht benachrichtigt, und der Call war umsonst.\n'
+      '\n  **PFLICHT nach dem Tool-Call — sonst war der Call umsonst:**\n' +
+      '  1. Den Namen im Antworttext in der Form `<at>EXAKTER_DISPLAY_NAME</at>` schreiben.\n' +
+      '  2. `EXAKTER_DISPLAY_NAME` muss byte-für-byte dem `displayName`-Feld aus der Tool-Response entsprechen — inklusive Firmensuffix, Bindestriche, Großschreibung.\n' +
+      '  3. Ohne diese `<at>…</at>`-Tags wird KEINE Mention gerendert und die Person NICHT benachrichtigt — das Schreiben des Namens allein reicht NICHT.\n' +
+      '  4. Beispiel: wenn der Roster `displayName: "Jane Doe - ACME"` zurückgibt und du sie ansprechen willst, schreibst du `Hey <at>Jane Doe - ACME</at>, kannst du das übernehmen?` — nicht `Hey Jane Doe` und auch nicht `Hey @Jane`.\n'
     : '';
 
   const graphBlock = hasGraph
@@ -5272,7 +5276,7 @@ export class Orchestrator {
   /** #332 Layer 3 — synthetic reminder pushed when an obligation is unmet. */
   private obligationReminder(toolName: string): string {
     return (
-      `Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
+      `IMPORTANT: Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
       `(\`${toolName}\`) zu konsultieren. Dieser Consult ist für diesen Turn ` +
       `verpflichtend. Rufe \`${toolName}\` jetzt auf, bevor du dem Nutzer antwortest.`
     );
@@ -5819,11 +5823,8 @@ export class Orchestrator {
           }
           // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
           // turn end: escalate ONCE with a forced tool_choice + synthetic
-          // reminder (OB-31). On the models that reject a forced choice
-          // (Opus 5.5 / Fable 5.1) the adapter degrades it to `auto`, so the
-          // reminder text is what actually steers the call. Guarded by
-          // `!finalizeThisIter` so a normal tool-enabled iteration follows
-          // within the iteration budget.
+          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
+          // tool-enabled iteration follows within the iteration budget.
           if (
             obligationTool &&
             !obligationMet &&
@@ -7135,11 +7136,8 @@ export class Orchestrator {
           }
           // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
           // turn end: escalate ONCE with a forced tool_choice + synthetic
-          // reminder (OB-31). On the models that reject a forced choice
-          // (Opus 5.5 / Fable 5.1) the adapter degrades it to `auto`, so the
-          // reminder text is what actually steers the call. Guarded by
-          // `!finalizeThisIter` so a normal tool-enabled iteration follows
-          // within the iteration budget.
+          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
+          // tool-enabled iteration follows within the iteration budget.
           if (
             obligationTool &&
             !obligationMet &&

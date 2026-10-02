@@ -142,18 +142,7 @@ export function createRequestSelfExtensionTool(
   const spec: NativeToolSpec = {
     name: REQUEST_SELF_EXTENSION_TOOL,
     description:
-      'Propose an operator-approved self-extension for a plugin whose tool hit a ' +
-      'structural limit (a "[tool-limit:…]" note).\n' +
-      '\n' +
-      'Call it only when such a note appeared AND that limit is what blocks the ' +
-      "user's request. Not for a tool that merely returned nothing useful, not to " +
-      'widen a limit you expect to hit later, and not speculatively.\n' +
-      '\n' +
-      'The proposal goes to a human operator as `pending` and never takes effect ' +
-      'on its own, so it does not unblock the current turn — say what is blocked ' +
-      'instead of waiting. A proposal that would exceed the plugin\'s existing ' +
-      'permissions is auto-denied. A plugin that offers no templates cannot be ' +
-      'extended this way at all and must be extended by an operator.',
+      'Propose an operator-approved self-extension for a plugin whose tool hit a structural limit (a "[tool-limit:…]" note). Submits for operator approval; never takes effect on its own.',
     input_schema: {
       type: 'object',
       properties: {

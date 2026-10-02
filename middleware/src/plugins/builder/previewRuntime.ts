@@ -98,13 +98,6 @@ export interface PreviewLlmCompleteRequest {
   }>;
   readonly maxTokens?: number;
   readonly temperature?: number;
-  /** #1219 — schema-constrained response. Mirrors
-   *  `LlmCompleteRequest.outputFormat`; exactly `type` + `schema`, since
-   *  Anthropic rejects unknown nested body fields. */
-  readonly outputFormat?: {
-    readonly type: 'json_schema';
-    readonly schema: Record<string, unknown>;
-  };
 }
 
 /** Mirror of `LlmCompleteResult` from the boilerplate contract. */
