@@ -46,10 +46,13 @@
  * privacy receipt (`recordToolError`).
  *
  * Parity default: with no privacy provider installed nothing is masked at all,
- * tool results included, so a thrown message still flows raw there; the same
- * holds for intern-exempt self tools (`privacyInternPolicy.ts`), whose errors
- * are the agent's own operational state. Seams must call these helpers AFTER
- * the intern exemption and the operator bypass, and BEFORE interning.
+ * tool results included, so a thrown message still flows raw there. Intern-
+ * exempt self tools (`privacyInternPolicy.ts`) get no such pass: the exemption
+ * covers their normal result, not an error text, which can quote what the tool
+ * failed on (a memory file, an attachment's rows). Seams call
+ * `guardControlFlowResult` BEFORE the intern exemption for an exempt tool's
+ * control-flow result, and otherwise AFTER the operator bypass and BEFORE
+ * interning.
  */
 
 import {
@@ -65,7 +68,6 @@ import type {
 
 import type { McpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
-import { isInternExemptTool } from './privacyInternPolicy.js';
 import { turnContext } from './turnContext.js';
 
 /**
@@ -278,8 +280,8 @@ export interface ThrownToolErrorOutcome {
 
 /**
  * For an exception a tool handler THREW. Logs the full error under the ref and,
- * under a privacy handle (and for a tool that is not intern-exempt), returns the
- * withheld notice and records a `thrown`/`withheld` receipt entry. Never throws.
+ * under a privacy handle (intern-exempt tools included), returns the withheld
+ * notice and records a `thrown`/`withheld` receipt entry. Never throws.
  */
 export async function withholdThrownToolError(input: {
   readonly toolName: string;
@@ -295,7 +297,7 @@ export async function withholdThrownToolError(input: {
   const { toolName, err, privacy, site } = input;
   const ref = input.ref !== undefined && input.ref !== '' ? input.ref : toolErrorRef();
   const message = messageOf(err);
-  const withhold = privacy !== undefined && !isInternExemptTool(toolName);
+  const withhold = privacy !== undefined;
   console.error(
     `[${site}:${toolName}] tool threw (ref=${ref})` +
       `${withhold ? ' — message withheld from the model' : ''}:`,

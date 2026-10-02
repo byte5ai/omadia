@@ -463,8 +463,23 @@ export class ToolDispatchService {
     // Interning-exemption: the agent's own infrastructure/self tools (memory,
     // stored-process CRUD, self-produced meta output) are never interned —
     // masking them blinds the agent to its own operational state. Same
-    // auditable allowlist the orchestrator uses.
-    if (isInternExemptTool(name)) return fromTool(result);
+    // auditable allowlist the orchestrator uses. The exemption covers the
+    // normal result only: an exempt tool's `Error:` text takes the same
+    // redaction as below.
+    if (isInternExemptTool(name)) {
+      if (isGuardedControlFlowResult(result, authPromptMint)) {
+        return fromTool(
+          await guardControlFlowResult({
+            toolName: name,
+            result,
+            privacy,
+            site: 'toolDispatchService',
+            authPromptMint,
+          }),
+        );
+      }
+      return fromTool(result);
+    }
 
     // Operator-owned per-plugin bypass (Slice 2.5). Raw passthrough, but the
     // receipt entry keeps it transparent.

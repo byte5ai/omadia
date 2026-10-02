@@ -8494,8 +8494,23 @@ export class Orchestrator {
       // (memory, stored-process CRUD, self-produced meta output) are never
       // interned — masking them blinds the agent to its own operational
       // state. See `privacyInternPolicy.ts` for the auditable allowlist and
-      // rationale. Checked first so it wins over every other branch.
+      // rationale. Checked first so it wins over every other branch. The
+      // exemption covers the normal result only: an exempt tool's `Error:`
+      // text can quote what it failed on (a memory file, an attachment's
+      // rows), so it takes the same redaction as below.
       if (isInternExemptTool(name)) {
+        if (
+          isGuardedControlFlowResult(result, mcpAuthPromptMint) &&
+          result !== kernelRefusal.text
+        ) {
+          return guardControlFlowResult({
+            toolName: name,
+            result,
+            privacy,
+            site: 'orchestrator.dispatchTool',
+            authPromptMint: mcpAuthPromptMint,
+          });
+        }
         return result;
       }
       // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
