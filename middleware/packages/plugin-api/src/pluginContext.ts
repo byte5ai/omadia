@@ -1799,6 +1799,26 @@ export interface LlmCompleteRequest {
    *  `permissions.llm.max_tokens_per_call` when manifest sets a smaller cap. */
   readonly maxTokens?: number;
   readonly temperature?: number;
+  /**
+   * Ask for a schema-constrained JSON response (#1219) instead of instructing
+   * the model to emit JSON in the prompt.
+   *
+   * `schema` is a JSON Schema object, forwarded to the provider untouched.
+   * Providers that have no such channel IGNORE it rather than failing, so a
+   * plugin must still parse the result tolerantly — this narrows the output,
+   * it does not guarantee it everywhere.
+   *
+   * On Anthropic the call FAILS (HTTP 400) for a model without
+   * structured-output support, and for a schema using keywords the API cannot
+   * compile: `minimum`/`maximum`, `minLength`/`maxLength`, or an object
+   * without `additionalProperties: false`. Nothing validates the schema before
+   * it is sent. And a refusal ({@link LlmCompleteResult.refusal}) still returns
+   * normally — its `text` need not match the schema.
+   */
+  readonly outputFormat?: {
+    readonly type: 'json_schema';
+    readonly schema: Record<string, unknown>;
+  };
 }
 
 /** One discovered MCP tool, as the host's manager reports it (issue #458). */
@@ -1859,19 +1879,32 @@ export interface LlmCompleteResult {
   readonly outputTokens: number;
   /** Provider-neutral completion-end signal — branch on THIS, not the legacy
    *  vendor `stopReason`. `end_turn`/`stop_sequence` collapse to `'stop'`;
-   *  `tool_use` → `'tool_calls'`. Always populated by the host. */
+   *  `tool_use` → `'tool_calls'`. A refusal is a `'stop'` too: check
+   *  {@link LlmCompleteResult.refusal} before treating an empty or short
+   *  `text` as the model's answer. Always populated by the host. */
   readonly finishReason: 'stop' | 'tool_calls' | 'max_tokens';
   /**
    * @deprecated Anthropic-specific stop reason, kept for v1 back-compat. Use
    * `finishReason` instead — it is provider-neutral. Still populated by the
    * host (the Anthropic adapter passes its raw value through) and remains
-   * valid for installs pinned to Anthropic.
+   * valid for installs pinned to Anthropic. `'refusal'` (1.22.0) when the
+   * model's safety classifiers declined the request — formerly reported as
+   * `'end_turn'`.
    */
   readonly stopReason:
     | 'end_turn'
     | 'max_tokens'
     | 'stop_sequence'
-    | 'tool_use';
+    | 'tool_use'
+    | 'refusal';
+  /**
+   * Set when the model's safety classifiers declined the request (#1219). The
+   * call still succeeds, but `text` is then empty or only a fragment — not an
+   * answer. `category` is the provider's reason (`bio`, `cyber`, …), an OPEN
+   * set that may be absent: never switch on it exhaustively. Absent on every
+   * other outcome.
+   */
+  readonly refusal?: { readonly category?: string };
 }
 
 export class LlmServiceUnavailableError extends Error {

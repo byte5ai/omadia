@@ -9,6 +9,7 @@ import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPrompt
 import { streamMessageWithObserver } from './streaming.js';
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import { SubAgentRefusalError } from './subAgentRefusal.js';
 import {
   UnknownOutcomeCalls,
   refusedRepeat,
@@ -232,15 +233,13 @@ export class LocalSubAgent {
           `sub-agent ${this.name}`,
         );
 
-        messages.push({ role: 'assistant', content: response.content });
         const iterationTextBlocks = collectTextBlocks(response.content);
-        textParts.push(...iterationTextBlocks);
 
         // Iteration-end telemetry. Fires before any stop/dispatch decision
         // so consumers see every iteration's stop_reason — including the
         // pathological `end_turn` + 0 tool_use case the BuilderAgent
-        // wants to trap (OB-31). Wrapped in try/catch like every other
-        // observer hook: a buggy listener must not kill the turn.
+        // wants to trap (OB-31) and a refusal. Wrapped in try/catch like
+        // every other observer hook: a buggy listener must not kill the turn.
         try {
           const toolUseCount = response.content.filter(
             (b: ContentBlock) => b.type === 'tool_use',
@@ -266,6 +265,30 @@ export class LocalSubAgent {
           );
         }
 
+        // #1219 — the model's safety classifiers declined this turn (HTTP
+        // 200, `stop_reason: 'refusal'`). Nothing in this response is an
+        // answer: a pre-output refusal carries no text, a mid-stream one a
+        // fragment, and a refused partial can still hold tool_use blocks. So
+        // the run ends HERE — before the response joins `messages`, before
+        // any tool dispatch and before the OB-31 escalation (which would
+        // re-send the refused turn and earn a 400), and regardless of what
+        // earlier iterations produced: their text is a preamble to this
+        // question, not its answer. The typed error lets the domain tool
+        // hand the parent a refusal notice instead of the withheld one.
+        if (response.stop_reason === 'refusal') {
+          const rawCategory: unknown = response.refusal?.category;
+          const category =
+            typeof rawCategory === 'string' ? rawCategory : undefined;
+          console.warn(
+            `[sub-agent ${this.name}] iter ${String(iteration)} → declined by the model's safety classifiers` +
+              ` (category=${category ?? 'none'}) — ending the run without dispatching or escalating`,
+          );
+          throw new SubAgentRefusalError(this.name, category);
+        }
+
+        messages.push({ role: 'assistant', content: response.content });
+        textParts.push(...iterationTextBlocks);
+
         // Detect tool_use blocks in this iteration's content regardless of
         // stop_reason. The Anthropic API contract requires that any
         // assistant message with tool_use blocks be immediately followed
@@ -286,9 +309,13 @@ export class LocalSubAgent {
           // OB-31 escalation: caller declared an obligation tool, model
           // would exit without ever calling it, escalation budget unspent,
           // and we have iteration headroom. Synthesize a user-message
-          // reminder + flip `tool_choice` for next iteration so the API
-          // *forces* the call. After the escalation iteration we honor
-          // whatever stop_reason comes back — no second-chance loop.
+          // reminder + flip `tool_choice` for next iteration. On models that
+          // honour a forced choice the API then *requires* the call; on the
+          // ones that reject it (see `supportsForcedToolChoice()` in the
+          // Anthropic adapter) it degrades to `auto`, and the reminder text is
+          // the whole mechanism. After the escalation iteration we honor
+          // whatever stop_reason comes back — no second-chance loop. A
+          // refusal never gets here; it ended the run above.
           if (
             expectedTurnToolUse !== undefined &&
             !calledExpectedTool &&
