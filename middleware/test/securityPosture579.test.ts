@@ -31,9 +31,14 @@ import {
   type ChatTurnInput,
   type ChatTurnAttachment,
 } from '@omadia/channel-sdk';
-// Internal refusal notice — imported from source for an exact read-back (it is
-// module-scoped in orchestrator.ts, not part of the built barrel).
-import { SECURITY_QUARANTINE_NOTICE } from '../packages/harness-orchestrator/src/orchestrator.js';
+import type { PromptPiiDetector, PromptPiiSpan } from '@omadia/plugin-api';
+import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
+// Internal refusal notices — imported from source for an exact read-back (they
+// are module-scoped in orchestrator.ts, not part of the built barrel).
+import {
+  PROMPT_MASK_BLOCKED_ANSWER,
+  SECURITY_QUARANTINE_NOTICE,
+} from '../packages/harness-orchestrator/src/orchestrator.js';
 import { loadManifestFromPath } from '../src/plugins/manifestLoader.js';
 
 const DE_STANDARD = 'Diese Antwort wurde von einem KI-System erzeugt.';
@@ -650,5 +655,145 @@ describe('#579 manifest — security posture setup fields', () => {
         `manifest declares "${key}" but plugin.ts never reads it — the setting would be silently ignored`,
       );
     }
+  });
+});
+
+// ── WP-09 — the screener gets the turn's masked text ─────────────────────────
+
+const RAW_EMAIL = 'anna.schmidt@firma.de';
+const RAW_NAME = 'Max Mustermann';
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
+
+/** A C1 stand-in that finds the given names, as the GLiNER sidecar would. */
+function namesC1(...names: readonly string[]): PromptPiiDetector {
+  return {
+    id: 'c1-test',
+    async detect(text: string): Promise<readonly PromptPiiSpan[]> {
+      const spans: PromptPiiSpan[] = [];
+      for (const name of names) {
+        for (let at = text.indexOf(name); at >= 0; at = text.indexOf(name, at + name.length)) {
+          spans.push({ start: at, end: at + name.length, type: 'person', confidence: 0.99 });
+        }
+      }
+      return spans;
+    },
+  };
+}
+
+/** The privacy-guard service with prompt masking on and a C1 that finds names. */
+function promptMaskingService(): ReturnType<typeof createPrivacyGuardService> {
+  return createPrivacyGuardService({
+    readConfig: (key: string) => (key === 'mask_user_prompt' ? 'on' : undefined),
+    c1Detector: namesC1(RAW_NAME),
+  });
+}
+
+/** A screener that allows every turn and keeps the payloads it was sent. */
+function payloadScreener(payloads: string[]): SecurityScreener {
+  return {
+    async screen(payload: string): Promise<{ decision: 'allow'; reason: string }> {
+      payloads.push(payload);
+      return { decision: 'allow', reason: '' };
+    },
+  };
+}
+
+/** A turn that carries a real name and e-mail in the message, in a replayed
+ *  user message and in the name of its upload. */
+function turnWithPii(sessionScope: string): ChatTurnInput {
+  return {
+    userMessage: `Bitte prüfe die Rechnung von ${RAW_NAME}, Rückfragen an ${RAW_EMAIL}.`,
+    sessionScope,
+    priorTurns: [
+      {
+        userMessage: `${RAW_NAME} hat geschrieben, Kontakt ${RAW_EMAIL}.`,
+        assistantAnswer: 'Notiert.',
+      },
+    ],
+    attachments: [{ ...PDF_ATTACHMENT, name: `Rechnung ${RAW_NAME}.pdf` }],
+  };
+}
+
+function maskedOrchestrator(opts: {
+  privacyGuard: () => ReturnType<typeof createPrivacyGuardService>;
+  payloads: string[];
+  seen: LlmRequest[];
+}): Orchestrator {
+  return new Orchestrator({
+    provider: recordingProvider('Erledigt.', opts.seen),
+    model: 'test',
+    maxTokens: 1024,
+    maxToolIterations: 3,
+    domainTools: [],
+    nativeToolRegistry: new NativeToolRegistry(),
+    // No `securityPosture`: the shipping default `auto` screens uploads.
+    securityScreener: () => payloadScreener(opts.payloads),
+    privacyGuard: opts.privacyGuard,
+  });
+}
+
+/** The screener payload carries no real value, and its e-mail surrogate is
+ *  the one the model got: the screener sees the turn's wire text. */
+function assertScreenedMasked(payloads: readonly string[], seen: readonly LlmRequest[]): void {
+  assert.equal(payloads.length, 1, 'the upload turn is screened once');
+  const payload = payloads[0]!;
+  assert.ok(!payload.includes(RAW_EMAIL), `screener payload carries the raw e-mail: ${payload}`);
+  assert.ok(!payload.includes(RAW_NAME), `screener payload carries the raw name: ${payload}`);
+  assert.match(payload, /\[prior_turn:user\]/, 'the replayed user message is screened');
+  assert.match(payload, /\[attachment:Rechnung .+\.pdf\]/, 'the upload is screened by its masked name');
+  const surrogate = EMAIL_RE.exec(payload)?.[0];
+  assert.ok(surrogate && surrogate !== RAW_EMAIL, 'the e-mail arrives as a surrogate');
+  assert.equal(seen.length, 1, 'the model runs after an allow');
+  assert.ok(
+    JSON.stringify(seen[0]).includes(surrogate),
+    'the screener sees the same surrogate as the model',
+  );
+}
+
+describe('WP-09 — the inbound screener sees the masked turn (posture auto)', () => {
+  it('non-streaming: message, replayed user message and upload name arrive masked', async () => {
+    const payloads: string[] = [];
+    const seen: LlmRequest[] = [];
+    const orch = maskedOrchestrator({ privacyGuard: promptMaskingService, payloads, seen });
+    const result = await orch.runTurn(turnWithPii('wp09-buffered'));
+    assertScreenedMasked(payloads, seen);
+    assert.equal(result.answer, 'Erledigt.');
+  });
+
+  it('streaming: message, replayed user message and upload name arrive masked', async () => {
+    const payloads: string[] = [];
+    const seen: LlmRequest[] = [];
+    const orch = maskedOrchestrator({ privacyGuard: promptMaskingService, payloads, seen });
+    const done = await streamDone(orch, turnWithPii('wp09-stream'));
+    assertScreenedMasked(payloads, seen);
+    assert.equal(done.answer, 'Erledigt.');
+  });
+
+  const blockingService = (): ReturnType<typeof createPrivacyGuardService> => ({
+    ...promptMaskingService(),
+    maskUserPrompt: async () => ({
+      outcome: 'blocked' as const,
+      reason: 'test: masking could not be guaranteed',
+    }),
+  });
+
+  it('non-streaming: a blocked mask fails the turn closed before the screener is called', async () => {
+    const payloads: string[] = [];
+    const seen: LlmRequest[] = [];
+    const orch = maskedOrchestrator({ privacyGuard: blockingService, payloads, seen });
+    const result = await orch.runTurn(turnWithPii('wp09-blocked'));
+    assert.equal(result.answer, PROMPT_MASK_BLOCKED_ANSWER);
+    assert.equal(payloads.length, 0, 'the screener must not be called');
+    assert.equal(seen.length, 0, 'the model must not be called');
+  });
+
+  it('streaming: a blocked mask fails the turn closed before the screener is called', async () => {
+    const payloads: string[] = [];
+    const seen: LlmRequest[] = [];
+    const orch = maskedOrchestrator({ privacyGuard: blockingService, payloads, seen });
+    const done = await streamDone(orch, turnWithPii('wp09-blocked-stream'));
+    assert.equal(done.answer, PROMPT_MASK_BLOCKED_ANSWER);
+    assert.equal(payloads.length, 0, 'the screener must not be called');
+    assert.equal(seen.length, 0, 'the model must not be called');
   });
 });
