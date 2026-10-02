@@ -21,6 +21,12 @@ import { NextResponse } from 'next/server';
  *                    `/bot-api/v1/auth` proxy — so the desktop app authenticates
  *                    without the middleware needing a public edge.
  *
+ * Anyone can call this: `proxy.ts` exempts it from the login gate, because
+ * the client has no session yet. So the handler neither waits long on the
+ * middleware nor guesses. When it cannot read the provider list, it answers
+ * `503` with `Retry-After` instead of a descriptor. It never falls back to
+ * `auth.mode: 'none'`, which tells a client that no sign-in is needed.
+ *
  * Runs in the Node runtime so it can reach the flycast-internal middleware.
  */
 
@@ -30,6 +36,25 @@ export const dynamic = 'force-dynamic';
 const PROTOCOL_VERSION = '1.0';
 const CANVAS_WS_PATH = '/omadia-ui/canvas';
 
+/**
+ * Deadline for the provider read, body included. A healthy middleware answers
+ * in milliseconds on the private network. Without a deadline, one that
+ * accepts the connection and never replies would hold every discovery request
+ * open for as long as undici's own timeouts allow, which is minutes.
+ */
+const PROVIDERS_FETCH_TIMEOUT_MS = 5_000;
+
+/** How long a client should wait before it asks again after a `503`. */
+const RETRY_AFTER_SECONDS = 5;
+
+/**
+ * Sent with every answer. The descriptor echoes the caller's host into
+ * `wsUrl` and `loginStartUrl`, so no shared cache may replay one caller's copy
+ * to another, and a `503` is only true for the moment. `force-dynamic` turns
+ * off Next's own caching, not a cache in front of it.
+ */
+const NO_STORE = { 'Cache-Control': 'no-store' } as const;
+
 const middlewareUrl = process.env.MIDDLEWARE_URL ?? 'http://localhost:3979';
 
 interface ProviderSummary {
@@ -37,6 +62,11 @@ interface ProviderSummary {
   displayName: string;
   kind: 'password' | 'oidc';
 }
+
+/** The provider read yields either the list or the reason it could not. */
+type ProvidersRead =
+  | { readonly ok: true; readonly providers: ProviderSummary[] }
+  | { readonly ok: false; readonly reason: string };
 
 function operatorOrigin(req: Request): { httpProto: string; host: string } {
   const headers = req.headers;
@@ -51,23 +81,50 @@ function operatorOrigin(req: Request): { httpProto: string; host: string } {
   return { httpProto, host };
 }
 
-async function fetchProviders(): Promise<ProviderSummary[] | undefined> {
+/** `fetch failed` alone tells an operator nothing; the cause code does. */
+function describeFailure(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const code = (err as { cause?: { code?: unknown } }).cause?.code;
+  return `${err.name}: ${err.message}${typeof code === 'string' ? ` (${code})` : ''}`;
+}
+
+async function readProviders(): Promise<ProvidersRead> {
   try {
     const res = await fetch(`${middlewareUrl}/api/v1/auth/providers`, {
       // Server-to-server on the private network; never cache auth state.
       cache: 'no-store',
+      signal: AbortSignal.timeout(PROVIDERS_FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) return undefined;
-    const body = (await res.json()) as { providers?: ProviderSummary[] };
-    return Array.isArray(body.providers) ? body.providers : undefined;
-  } catch {
-    // Middleware unreachable at discovery time — degrade to "auth unknown"
-    // rather than failing the whole pairing handshake.
-    return undefined;
+    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+    const body = (await res.json()) as { providers?: unknown };
+    if (!Array.isArray(body.providers)) {
+      return { ok: false, reason: 'the response carries no provider list' };
+    }
+    return { ok: true, providers: body.providers as ProviderSummary[] };
+  } catch (err) {
+    // Unreachable, past the deadline, or a body that is not JSON.
+    return { ok: false, reason: describeFailure(err) };
   }
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
+  const read = await readProviders();
+  if (!read.ok) {
+    console.warn(
+      `[pairing-discovery] provider list unavailable (${read.reason}); answering 503`,
+    );
+    return NextResponse.json(
+      {
+        code: 'pairing.auth_unavailable',
+        message: 'The sign-in providers could not be determined. Try again shortly.',
+      },
+      {
+        status: 503,
+        headers: { ...NO_STORE, 'Retry-After': String(RETRY_AFTER_SECONDS) },
+      },
+    );
+  }
+
   const { httpProto, host } = operatorOrigin(req);
   const origin = `${httpProto}://${host}`;
 
@@ -76,28 +133,35 @@ export async function GET(req: Request): Promise<NextResponse> {
     override ||
     `${httpProto === 'https' ? 'wss' : 'ws'}://${host}${CANVAS_WS_PATH}`;
 
-  const providers = await fetchProviders();
-  const mode = providers?.length
-    ? providers.some((p) => p.kind === 'oidc')
-      ? 'oidc'
-      : 'password'
-    : 'none';
+  // `none` only for a list the middleware returned empty, which is how its own
+  // `buildPairingDescriptor` reads that state. A list that could not be read
+  // never gets this far.
+  const { providers } = read;
+  const mode =
+    providers.length === 0
+      ? 'none'
+      : providers.some((p) => p.kind === 'oidc')
+        ? 'oidc'
+        : 'password';
 
-  return NextResponse.json({
-    name: process.env.OMADIA_UI_INSTANCE_NAME?.trim() || host,
-    protocolVersion: PROTOCOL_VERSION,
-    protocolVersions: [PROTOCOL_VERSION],
-    wsUrl,
-    auth:
-      mode === 'none'
-        ? { mode }
-        : {
-            mode,
-            providers,
-            // The operator proxies `/bot-api/*` → middleware `/api/*`; the
-            // desktop app uses this absolute base directly, so the middleware
-            // never needs a public edge.
-            loginStartUrl: `${origin}/bot-api/v1/auth`,
-          },
-  });
+  return NextResponse.json(
+    {
+      name: process.env.OMADIA_UI_INSTANCE_NAME?.trim() || host,
+      protocolVersion: PROTOCOL_VERSION,
+      protocolVersions: [PROTOCOL_VERSION],
+      wsUrl,
+      auth:
+        mode === 'none'
+          ? { mode }
+          : {
+              mode,
+              providers,
+              // The operator proxies `/bot-api/*` → middleware `/api/*`; the
+              // desktop app uses this absolute base directly, so the middleware
+              // never needs a public edge.
+              loginStartUrl: `${origin}/bot-api/v1/auth`,
+            },
+    },
+    { headers: NO_STORE },
+  );
 }

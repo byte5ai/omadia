@@ -831,7 +831,7 @@
   "operatorReceipts": {
     "metaTitle": "Receipts · omadia",
     "title": "Privacy receipts",
-    "subtitle": "A PII-free privacy receipt is written here for every completed turn in which the privacy shield acted: it interned tool data, masked the prompt, recorded a bypass, or recorded a connected tool's structured output. Turns where the shield had nothing to do write no receipt. Agents running on the Claude subscription CLI do not pass through the privacy shield, so their turns never write a receipt. The record survives the chat view; retention is bounded by the middleware's RECEIPT_RETENTION_DAYS.",
+    "subtitle": "A PII-free privacy receipt is written here for every completed turn in which the privacy shield acted: it interned tool data, masked the prompt, recorded a bypass, recorded a connected tool's structured output, withheld or redacted a tool error, or guarded the answer check's model requests. Turns where the shield had nothing to do write no receipt. Agents running on the Claude subscription CLI do not pass through the privacy shield, so their turns never write a receipt. The record survives the chat view; retention is bounded by the middleware's RECEIPT_RETENTION_DAYS.",
     "loadError": "Failed to load receipts",
     "empty": "No receipts recorded yet. A receipt appears here as soon as a turn with privacy-shield activity completes. Turns in which the shield had nothing to do (for example a plain answer without tool calls whose prompt contained nothing to mask) write no receipt, so an empty list alone does not mean receipts are broken.",
     "scopeLabel": "Scope",
@@ -928,6 +928,7 @@
     "submit": "Sign in",
     "submitting": "Signing in…",
     "incorrectCredentials": "Incorrect email or password.",
+    "tooManyAttempts": "Too many sign-in attempts. Please wait {seconds, plural, one {# second} other {# seconds}} and try again.",
     "or": "or",
     "continueWith": "Continue with {provider}"
   },
@@ -949,7 +950,12 @@
     "passwordTooShort": "Password must be at least 8 characters.",
     "alreadyLocked": "Setup is already locked — another user has been created.",
     "credentialsRejected": "Email or password rejected by the server (must be valid email + 8+ chars).",
-    "providerHint": "No LLM key needed here. After you create the admin account, connect a provider (Anthropic, OpenAI, …) under Admin → LLM access."
+    "providerHint": "No LLM key needed here. After you create the admin account, connect a provider (Anthropic, OpenAI, …) under Admin → LLM access.",
+    "setupTokenLabel": "Setup token",
+    "setupTokenHint": "The middleware prints this one-time token to its log when it starts (with Docker: docker compose logs middleware). If you set ADMIN_SETUP_TOKEN, use that value.",
+    "setupTokenRejected": "The setup token is missing or wrong. Copy it from the middleware log and try again.",
+    "setupInProgress": "Another setup request is being processed. Wait a moment and try again.",
+    "setupDisabled": "Setup is not available on this server start. Restart the middleware, then reload this page."
   },
   "onboarding": {
     "ariaLabel": "First-time setup",
@@ -1637,6 +1643,10 @@
       "bodyNoTools": "Some actions had already run when this turn failed, and the assistant could not produce an answer afterwards, so your question is still unanswered. Repeat the question; check with your operator before repeating anything that changes data.",
       "completedTools": "Completed actions:"
     },
+    "verifierBlocked": {
+      "heading": "Answer withheld by the fact-check",
+      "body": "The fact-check could not confirm this answer, so it is not shown. Ask the question again, or check the details directly in the source system."
+    },
     "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
     "errorCorrelationRef": "Reference for support: {id}",
     "routing": {
@@ -1646,6 +1656,32 @@
       "bucketFallback": "Fallback",
       "providerFallback": "Fallback model",
       "providerFallbackTooltip": "The primary model was unavailable — this answer came from the agent's fallback ({model} on {provider})."
+    },
+    "verifier": {
+      "label": {
+        "verified": "Answer verified",
+        "partial": "Partly verified",
+        "corrected": "Answer corrected",
+        "failed": "Contradiction found",
+        "unverified": "Not verified",
+        "unavailable": "Verification unavailable"
+      },
+      "hint": {
+        "verified": "The verifier checked {count, plural, one {# claim} other {# claims}} in this answer against the sources and confirmed all of them.",
+        "partial": "No claim contradicts the sources, but {count, plural, one {# claim} other {# claims}} could not be confirmed.",
+        "partialUnchecked": "The verifier confirmed the other claims, but {count, plural, one {# claim} other {# claims}} in this answer could not be checked.",
+        "partialCoverage": "The verifier confirmed {count, plural, one {# claim} other {# claims}}, but did not check all of this answer.",
+        "corrected": "The first answer contradicted the sources; the verifier confirmed {count, plural, one {the # claim} other {all # claims}} in this corrected answer.",
+        "failed": "{count, plural, one {# claim contradicts} other {# claims contradict}} the sources.",
+        "unverified": "Not verified: no check confirmed this answer.",
+        "noneConfirmed": "Not verified: the verifier checked {count, plural, one {# claim} other {# claims}} in this answer but could not confirm any.",
+        "noTrigger": "Not checked: the answer contains no figures, dates or references the verifier checks.",
+        "noClaims": "Not checked: the verifier found no factual claims in this answer.",
+        "noCheckableClaims": "Not checked: none of the claims in this answer can be checked against a source.",
+        "incompleteCoverage": "Not checked: the verifier covered only part of this answer and found nothing it could check there.",
+        "unavailable": "The verifier could not run for this answer, so nothing was checked.",
+        "checkFailed": "The verifier's checks failed for this answer, so no claim was confirmed."
+      }
     }
   },
   "privacyReceipt": {
@@ -1680,6 +1716,22 @@
     "structuredSchemaYes": "output schema",
     "structuredSchemaNo": "no schema",
     "explainerStructured": "A connected tool returned structured data. It reached the browser — the trusted side — but never the model, which saw only the interned digest. Listed here for transparency; nothing was masked because none was owed on this path.",
+    "summaryVerifier": "answer check: {count, plural, one {# request} other {# requests}}",
+    "factVerifier": "Answer check",
+    "verifierRequests": "{count, plural, one {# model request} other {# model requests}}",
+    "verifierRequestsMasked": "{count, plural, one {# model request} other {# model requests}} · {spans} masked",
+    "explainerVerifier": "The answer check sent its model requests under this turn's privacy rules: your message as the model saw it, the model's own answer, and knowledge-graph evidence with names and identifiers replaced by placeholders. This receipt was completed only after these requests.",
+    "summaryToolErrors": "{count, plural, one {# tool error handled} other {# tool errors handled}}",
+    "factToolErrors": "Tool errors handled",
+    "toolErrorCarrierThrown": "exception",
+    "toolErrorCarrierReturned": "returned error",
+    "toolErrorCarrierMcpAuthPrompt": "connect prompt",
+    "toolErrorWithheld": "text withheld",
+    "toolErrorRedacted": "redacted: {spans}",
+    "toolErrorChecked": "checked, nothing to mask",
+    "toolErrorPassed": "passed unchanged",
+    "toolErrorBytes": "{kb} KB original",
+    "explainerToolErrors": "A tool failed this turn. The model never saw an exception's text — only the error class, a code and a reference an operator can look up in the server log. Error text a tool returned was checked for personal data and masked, or withheld when it could not be checked. A connected server's sign-in prompt passes unchanged; it carries no tool data.",
     "missReportSummary": "Report a value the shield missed",
     "missReportTermPlaceholder": "The value that should have been masked",
     "missReportDescriptionPlaceholder": "Context (optional)",
@@ -4558,6 +4610,8 @@
       "invalidName": "The name may only contain letters, numbers, . _ -",
       "notFound": "Registry not found — list reloaded.",
       "missingFields": "Name and URL are required.",
+      "sessionExpired": "Your session is no longer valid. Redirecting to sign in…",
+      "authUnavailable": "Your session can't be checked right now. Try again shortly.",
       "generic": "Error {status}."
     }
   },

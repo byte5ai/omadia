@@ -151,6 +151,7 @@ import {
 } from './tools/publishGrantedTools.js';
 import { DockerSandboxBackend } from '@omadia/sandbox';
 import { DockerPublishRuntime, InMemoryPublishStore, PostgresPublishStore, type PublishStore } from '@omadia/publish';
+import { describeSandboxResourceLimits, readSandboxResourceLimits } from './sandboxLimitsConfig.js';
 /**
  * @omadia/orchestrator — plugin entry point.
  *
@@ -994,10 +995,17 @@ export async function activate(
   // independently of the turn-context `commandPolicy` seam (see that
   // module's doc) — belt AND braces, not a replacement for the existing
   // `guardToolCommands` choke point in `orchestrator.ts`'s `dispatchTool`.
+  //
+  // Container ceilings for BOTH Docker paths below (execute + publish), read
+  // once so they cannot drift: setup field > OMADIA_SANDBOX_* env > default
+  // (see sandboxLimitsConfig.ts).
+  const sandboxLimits = readSandboxResourceLimits((key) => ctx.config.get<unknown>(key));
+  const sandboxLimitsSummary = describeSandboxResourceLimits(sandboxLimits);
+  const logSandboxWarning = (msg: string): void => ctx.log(`[harness-orchestrator] ${msg}`);
   const disposeExecuteTool: Array<() => void> = [];
   const sandboxExecuteEnabled = ctx.config.get<boolean>('sandbox_execute_enabled') === true;
   if (sandboxExecuteEnabled) {
-    const sandboxBackend = new DockerSandboxBackend();
+    const sandboxBackend = new DockerSandboxBackend({ resourceLimits: sandboxLimits, log: logSandboxWarning });
     // No `writeCapabilities` annotation: that contract is a `{dataClass,
     // operation}` pair for canvas inline-edit + idempotency dedupe of
     // STRUCTURED writes (an Odoo record, a Jira ticket) — `execute`'s
@@ -1012,7 +1020,9 @@ export async function activate(
         promptDoc: EXECUTE_SYSTEM_PROMPT_DOC,
       }),
     );
-    ctx.log('[harness-orchestrator] sandbox_execute_enabled=true — registered execute native tool (Docker backend)');
+    ctx.log(
+      `[harness-orchestrator] sandbox_execute_enabled=true — registered execute native tool (Docker backend, ${sandboxLimitsSummary})`,
+    );
   } else {
     ctx.log('[harness-orchestrator] sandbox_execute_enabled not set — skipping execute native tool');
   }
@@ -1046,8 +1056,8 @@ export async function activate(
   const disposePublishTools: Array<() => void> = [];
   const sandboxPublishEnabled = ctx.config.get<boolean>('sandbox_publish_enabled') === true;
   if (sandboxPublishEnabled) {
-    const publishSandboxBackend = new DockerSandboxBackend();
-    const publishRuntime = new DockerPublishRuntime();
+    const publishSandboxBackend = new DockerSandboxBackend({ resourceLimits: sandboxLimits, log: logSandboxWarning });
+    const publishRuntime = new DockerPublishRuntime({ resourceLimits: sandboxLimits });
     const publishStore: PublishStore = graphPool ? new PostgresPublishStore(graphPool) : new InMemoryPublishStore();
     const publishSharing = audienceGrants
       ? { grants: audienceGrants, roles: new RoleSourceRegistryImpl() }
@@ -1078,7 +1088,7 @@ export async function activate(
       }),
     );
     ctx.log(
-      `[harness-orchestrator] sandbox_publish_enabled=true — registered publish/publish_rollback native tools (${graphPool ? 'Postgres' : 'in-memory'} store, sharing ${publishSharing ? 'ON' : 'off (no GrantStore configured)'})`,
+      `[harness-orchestrator] sandbox_publish_enabled=true — registered publish/publish_rollback native tools (${graphPool ? 'Postgres' : 'in-memory'} store, sharing ${publishSharing ? 'ON' : 'off (no GrantStore configured)'}, ${sandboxLimitsSummary})`,
     );
   } else {
     ctx.log('[harness-orchestrator] sandbox_publish_enabled not set — skipping publish/publish_rollback native tools');

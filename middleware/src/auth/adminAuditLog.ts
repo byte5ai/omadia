@@ -35,7 +35,16 @@ export type AuditAction =
   | 'conductor.facilitation_terminate'
   // #965 — an operator extended their own session ("I'm still here"). One
   // row per renewal keeps a renewal chain visible after the fact.
-  | 'auth.session_renew';
+  | 'auth.session_renew'
+  // The first principal of an install came into being (setup wizard or the
+  // ADMIN_BOOTSTRAP_* env seed). Written in the SAME transaction as the users
+  // row, so an install can never have a first admin without this record.
+  | 'auth.first_admin_create'
+  // The password sign-in limiter refused a client (§10m). One row per refusal
+  // episode (the first refusal of a scope + client per minute), system actor;
+  // `target` is the client key, `after` the scope and Retry-After. Never the
+  // account that was tried.
+  | 'auth.login_rate_limited';
 
 export interface AuditActor {
   id?: string;
@@ -74,22 +83,36 @@ interface AuditRow {
   created_at: Date;
 }
 
+/**
+ * The INSERT for one audit row, as text + values. Shared by
+ * `AdminAuditLog.record` (its own pool query) and by writers that must put
+ * the row into a transaction they already hold (`UserStore.createFirstAdmin`),
+ * so the column mapping exists exactly once.
+ */
+export function auditInsertStatement(entry: AuditEntryInput): {
+  text: string;
+  values: unknown[];
+} {
+  return {
+    text: `INSERT INTO admin_audit (actor_id, actor_email, action, target, before, after)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+    values: [
+      entry.actor.id ?? null,
+      entry.actor.email ?? null,
+      entry.action,
+      entry.target,
+      entry.before === undefined ? null : JSON.stringify(entry.before),
+      entry.after === undefined ? null : JSON.stringify(entry.after),
+    ],
+  };
+}
+
 export class AdminAuditLog {
   constructor(private readonly pool: Pool) {}
 
   async record(entry: AuditEntryInput): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO admin_audit (actor_id, actor_email, action, target, before, after)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        entry.actor.id ?? null,
-        entry.actor.email ?? null,
-        entry.action,
-        entry.target,
-        entry.before === undefined ? null : JSON.stringify(entry.before),
-        entry.after === undefined ? null : JSON.stringify(entry.after),
-      ],
-    );
+    const { text, values } = auditInsertStatement(entry);
+    await this.pool.query(text, values);
   }
 
   async list(opts: { limit?: number; offset?: number } = {}): Promise<AuditEntry[]> {

@@ -14,7 +14,11 @@
  * locale) and no dialog can silently fall back to English.
  */
 import { BrowserWindow, clipboard, dialog, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron';
+import { describeError } from './bootFailure';
+import { log } from './log';
 import { fillPlaceholders, type ShellTranslate } from './shellStrings';
+import type { SecretsFailure } from './bootFailure';
+import { secretsRemedy, secretsStartOver } from './secretsRecovery';
 
 /**
  * Every dialog goes through here so it is attached to the main window (OM-71).
@@ -85,6 +89,56 @@ export async function showBootFailure(
     cancelId: 1,
   });
   return response === 0 ? 'rerun-setup' : 'quit';
+}
+
+/**
+ * The secrets file exists but cannot be used, and was left untouched.
+ *
+ * No "Re-run setup": setup would hit the same file, so the generic dialog's
+ * default button could only fail again. No "start over" either: this dialog
+ * also appears when a keychain prompt was merely denied, and a destructive
+ * shortcut here is how an intact file gets thrown away. Starting over is
+ * described as a manual step instead, next to the stage-specific advice.
+ *
+ * "Show file" does not end the conversation: the file manager opens and the
+ * dialog comes back, so the instructions stay readable during the restore.
+ */
+export async function showSecretsUnreadable(
+  win: BrowserWindow,
+  t: ShellTranslate,
+  failure: SecretsFailure,
+  logPath: string,
+  showFile: (file: string) => void,
+): Promise<void> {
+  const detail = fillPlaceholders(
+    t(
+      'secrets.unreadable.detail',
+      'The file {file} holds the key to your local vault, your stored credentials and your provider keys. New keys would make all of them unrecoverable, so it was left untouched.\n\n{remedy}\n\n{startOver}\n\nTechnical details for support:\n{reason}\n\nLog file: {logFile}',
+    ),
+    {
+      file: failure.file,
+      remedy: secretsRemedy(failure, t),
+      startOver: secretsStartOver(failure.file, t),
+      reason: `${failure.stage}: ${failure.reason}`,
+      logFile: logPath,
+    },
+  );
+  for (;;) {
+    const { response } = await messageBox(win, {
+      type: 'error',
+      title: t('secrets.unreadable.title', 'omadia cannot open its secrets file'),
+      message: t('secrets.unreadable.message', 'omadia stopped instead of creating new keys.'),
+      detail,
+      buttons: [
+        t('secrets.unreadable.showFile', 'Show file'),
+        t('secrets.unreadable.quit', 'Quit'),
+      ],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response !== 0) return;
+    showFile(failure.file);
+  }
 }
 
 /**
@@ -161,7 +215,47 @@ export async function showRecoveryKey(
     defaultId: 0,
     cancelId: 1,
   });
-  if (response === 0) clipboard.writeText(key);
+  if (response !== 0) return;
+  // Electron 44's clipboard writers return promises (W3C Clipboard API shape)
+  // that can reject, e.g. on a Linux session without a clipboard. This dialog
+  // runs inside the boot sequence (the reminder that `showAppPage` awaits),
+  // where a rejection is reported as a failed boot of a working app, and from
+  // the Help menu, where nothing awaits it. So the failure ends here: logged,
+  // and the user, who now believes the key is on the clipboard, is told it is
+  // not.
+  try {
+    await clipboard.writeText(key);
+  } catch (err) {
+    // Never the key itself: this log is what users attach to bug reports.
+    log.error(`[main] could not copy the recovery key to the clipboard: ${describeError(err)}`);
+    await showRecoveryKeyCopyFailed(win, t, key);
+  }
+}
+
+/**
+ * The copy button did not copy. The key dialog has closed by then, so this note
+ * carries the key again for the user to write down.
+ */
+async function showRecoveryKeyCopyFailed(
+  win: BrowserWindow,
+  t: ShellTranslate,
+  key: string,
+): Promise<void> {
+  await messageBox(win, {
+    type: 'warning',
+    title: t('recovery.copyFailed.title', 'Copy failed'),
+    message: t(
+      'recovery.copyFailed.message',
+      'The recovery key was not copied to the clipboard.',
+    ),
+    detail: fillPlaceholders(
+      t('recovery.copyFailed.detail', 'Write it down now and keep it somewhere safe:\n\n{key}'),
+      { key },
+    ),
+    buttons: [t('recovery.close', 'Close')],
+    defaultId: 0,
+    cancelId: 0,
+  });
 }
 
 export async function showRecoveryKeyUnavailable(

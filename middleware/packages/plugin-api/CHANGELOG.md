@@ -8,6 +8,133 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.21.0 — 2026-10-01
+
+Additive. A run trace can now say that a call did not run in its pass, and
+`findEntities` can address one record by its source-system id, so a caller
+holding an entity handle such as `hr.employee:7` no longer has to turn the id
+into a substring search.
+
+### Added
+
+- **`RunToolCall.replayed?: boolean`** and **`RunAgentInvocation.replayed?: boolean`**:
+  set on the trace of an answer-verifier re-entry (a borderline resample or a
+  correction retry) for every call whose first-run result was handed back
+  instead of the tool running again. Absent on every call that ran in that
+  pass. A request records one trace, the delivered pass's
+  (commit-on-delivery): when the verifier delivers a re-entry, the session
+  log writes that pass's trace, and the first run's — where the flagged calls
+  actually ran — is not recorded. So a flagged entry stands for an execution
+  of the request, not of its pass, and its `durationMs` is the replay's, not
+  the tool's. Counting a request's executions from its recorded trace counts
+  the flagged entries too, and is a lower bound: a first-run call the
+  re-entry did not repeat is in no recorded trace. The Knowledge Graph does
+  not keep the flag yet — both bundled backends write a flagged call as an
+  ordinary `ToolCall` / `AgentInvocation` node (follow-up in
+  `docs/middleware-agent-handoff.md` §13).
+- **`FindEntitiesOptions.id?: string | number`** — exact match on the node's
+  `props.id` (Odoo record id, Confluence page id), compared as strings after
+  trimming, so `7` and `'7'` address the same record. An id that is not in
+  the graph, or an empty id, returns `[]`, never another record of the model;
+  without `id` the search stays model-wide, as before. Combinable with
+  `nameContains` (both must hold). Both in-tree backends implement it. The
+  answer verifier resolves every id-bearing entity handle through it and
+  re-checks `props.model`/`props.id` on the result, so a provider that ignores
+  the option yields no evidence rather than a substitute record.
+
+Why a filter on `findEntities` and not a node-by-id read: the handles the
+verifier sees are often two-part (`hr.employee:7`) and carry no `system`, so an
+external-id read (`odoo:hr.employee:7`) would have to guess the namespace. The
+Neon backend's private external-id lookup and the in-memory node map stay
+internal for that reason. `findEntities` still covers only `OdooEntity` and
+`ConfluencePage` nodes; plugin-namespaced entities (`PluginEntity`) are not
+reachable through it, with or without `id`.
+
+## 1.20.0 — 2026-10-01
+
+Additive. Two Privacy Shield seams gain optional contract members. The answer
+verifier's model requests run under the turn's privacy view and are accounted
+on the turn's own receipt. Tool errors are handled at the dispatch seams
+instead of reaching the model raw: a message a handler threw is withheld, a
+returned `Error:` text is redacted through the Privacy Shield, and both are
+receipted. The in-tree privacy-guard plugin implements every new member.
+
+### Added
+
+- **`PrivacyReceipt.verifierEgress?: VerifierEgressSummary`**
+  (`{ requests, maskedSpans }`): the answer verifier's post-turn model
+  requests, kept apart from `maskedPromptSpans`, which covers only the turn's
+  own model calls. PII-free: a request count plus span types and detector ids.
+- **`PrivacyPromptMaskRequest.stage?`** (`PrivacyEgressStage`,
+  `'turn' | 'verifier'`; absent means `turn`) and
+  **`PrivacyPromptMaskRequest.preview?`**, which computes the outcome without
+  extending the turn's surrogate map or recording anything in the receipt.
+- **`PrivacyGuardService.projectVerifierText?(request)`** with
+  `PrivacyVerifierProjectionRequest`: projects text the verifier composed from
+  real values (a restored claim and its evidence) through the turn's surrogate
+  map, whether or not `mask_user_prompt` is on. `blocked` means the text must
+  not be sent; a caller whose provider lacks the member sends no evidence.
+- **`PrivacyGuardService.countUnresolvedSurrogates?(turnId, text)`**: how many
+  of the turn's prompt placeholders still occur in a restored text. Dates and
+  amounts match by value in any spelling, and a date or amount the check
+  cannot read counts as a hit (fail closed).
+- **`PrivacyReceipt.toolErrors?: readonly ToolErrorEntry[]`** with
+  `ToolErrorEntry { toolName, carrier, outcome, bytes, redactedSpans? }`,
+  `ToolErrorCarrier` (`'thrown' | 'returned' | 'mcp_auth_prompt'`) and
+  `ToolErrorOutcome` (`'withheld' | 'redacted' | 'passed'`). PII-free by
+  contract: names, counts and masked span types only.
+- **`PrivacyGuardService.recordToolError?(request)`** and
+  **`PrivacyGuardService.redactToolErrorText?(request)`** with
+  `PrivacyToolErrorRequest`, `PrivacyToolErrorRedactRequest` and the
+  failure-closed union `PrivacyToolErrorRedactResult` (`redacted` | `withheld`).
+  Both members are OPTIONAL, so an existing provider still compiles and loads;
+  the kernel withholds returned `Error:` text when a provider lacks
+  `redactToolErrorText` rather than forwarding it unchecked.
+- **Runtime helpers** `describeThrownError`, `withheldToolErrorNotice`,
+  `newToolErrorRef` and `toolErrorFromException` (`toolErrorNotice.ts`): the one
+  way to turn a caught exception into a tool result — class name, sanitised
+  code and a log reference, never the message. A tool wrapper that returned
+  `Error: ${err.message}` should call `toolErrorFromException` instead. The
+  notice also tells the model that the call's outcome is unknown and not to
+  repeat a call that changes data. These are runtime exports: a plugin ZIP
+  that imports them resolves `@omadia/plugin-api` from the host, so it needs a
+  host at 1.20.0 or later.
+- **`isWithheldToolErrorNotice(text)`**: true for a notice
+  `withheldToolErrorNotice` built. Recognised by shape, so only for
+  restricting what happens next: the kernel's sub-agent loop uses it to refuse
+  an identical repeat of a call whose wrapper caught the exception itself.
+- **`RECEIPT_FIXTURE_TOOL_ERRORS`**, a receipt fixture for channel renderers.
+
+### Documentation
+
+- `toolControlFlowText.ts` no longer describes the `Error:` carrier as passing
+  to the model unchecked; see its module comment for the seam policy.
+
+## 1.19.2 — 2026-09-30
+
+Documentation only: no change to the exported type surface (the API snapshot is
+unchanged). The documented contract of `RoutinesIntegration.handleRoutineAction`
+tightens at runtime.
+
+### Changed
+
+- **`handleRoutineAction` without a usable `actor` is refused.** Kernels from
+  this release on reject the call when `actor` is absent or its `tenant` or
+  `userId` is blank. The rejection carries a German, user-facing message, no
+  routine is read or changed, and the kernel counts and logs the refusal.
+  Before, such a call ran unscoped, i.e. across tenants. The per-turn routine
+  context is no longer consulted on this path either: card clicks arrive
+  out-of-band, so a context there could only be a stale one.
+- **`actor` stays optional in the type**, so every 1.x caller keeps compiling.
+  The runtime refusal, not the type, is what protects a caller built against an
+  older 1.x contract. The optional form is deprecated, and `actor` becomes a
+  required field in 2.0. It is deliberately not tagged `@deprecated`: on the
+  property that tag would strike through every call that passes `actor`, which
+  is the correct usage.
+- Nothing to change for channel-teams 0.26.1 or later, which already passes
+  `actor`. The service name and capability ref (`routinesIntegration@1`) are
+  unchanged, so no plugin manifest needs an edit.
+
 ## 1.19.1 — 2026-09-25
 
 Documentation only. No change to the exported type surface (#978).

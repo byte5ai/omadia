@@ -4,10 +4,26 @@ import type {
   LocalSubAgentToolResult,
   LocalSubAgentToolSpec,
 } from '@omadia/plugin-api';
-import { appendLimitSignalNote, isControlFlowToolResult } from '@omadia/plugin-api';
+import { appendLimitSignalNote, isWithheldToolErrorNotice } from '@omadia/plugin-api';
+import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import { streamMessageWithObserver } from './streaming.js';
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
-import { isInternExemptTool } from './privacyInternPolicy.js';
+import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  UnknownOutcomeCalls,
+  refusedRepeat,
+  type SubToolOutcome,
+} from './subAgentUnknownOutcome.js';
+import {
+  guardControlFlowResult,
+  isGuardedControlFlowResult,
+  withholdThrownToolError,
+} from './toolErrorRedaction.js';
+import {
+  ToolReplayAbortError,
+  replayMissNotice,
+  runHandlerAtMostOnce,
+} from './toolReplayLedger.js';
 import { buildDateHeader, turnContext } from './turnContext.js';
 
 // `LocalSubAgentTool` and `LocalSubAgentToolSpec` were inlined here
@@ -121,6 +137,10 @@ export class LocalSubAgent {
     }> = [];
     let repeatFailureDetected = false;
     let lastIteration = 0;
+    // Calls that ended in an exception: whether they took effect is unknown,
+    // so an identical repeat is refused for the rest of this run, before the
+    // repeat-failure guard would allow it (`subAgentUnknownOutcome.ts`).
+    const unknownOutcome = new UnknownOutcomeCalls();
 
     // OB-31: per-turn tool obligation. When the caller declares a tool
     // that *must* be invoked at least once during this turn (e.g.
@@ -340,11 +360,16 @@ export class LocalSubAgent {
           } catch (err) {
             console.warn(`[sub-agent ${this.name}] observer.onSubToolUse threw:`, err);
           }
+          const toolName = String(use.name);
+          const inputHash = canonicalHash(use.input);
           const started = Date.now();
-          const { output, postcondition } = await this.dispatch(
-            use.name,
-            use.input,
-          );
+          const { output, postcondition, outcomeUnknown, replayed } = unknownOutcome.has(
+            toolName,
+            inputHash,
+          )
+            ? refusedRepeat(this.name, toolName)
+            : await this.dispatch(use.name, use.input);
+          if (outcomeUnknown === true) unknownOutcome.add(toolName, inputHash);
           const elapsed = Date.now() - started;
           const isError = output.startsWith('Error:') || postcondition !== undefined;
           console.log(
@@ -357,6 +382,7 @@ export class LocalSubAgent {
               durationMs: elapsed,
               isError,
               ...(postcondition ? { postcondition } : {}),
+              ...(replayed === true ? { replayed: true } : {}),
             });
           } catch (err) {
             console.warn(`[sub-agent ${this.name}] observer.onSubToolResult threw:`, err);
@@ -367,12 +393,14 @@ export class LocalSubAgent {
             content: output,
             ...(isError ? { is_error: true } : {}),
           });
-          recentToolCalls.push({
-            name: String(use.name),
-            inputHash: canonicalHash(use.input),
-            isError,
-          });
+          recentToolCalls.push({ name: toolName, inputHash, isError });
         }
+        // A verifier re-entry that needed an inner call outside the first run
+        // is abandoned (`toolReplayLedger.ts`): stop here rather than pay a
+        // model call to answer around the refusal. The parent's checks end
+        // the re-entry either way.
+        const abandoned = turnContext.current()?.toolReplayLedger?.abortedTool;
+        if (abandoned !== undefined) throw new ToolReplayAbortError(abandoned);
         messages.push({ role: 'user', content: toolResults });
 
         // Detect "stuck": last N tool calls all matched on (name, input)
@@ -425,23 +453,71 @@ export class LocalSubAgent {
     }
   }
 
-  private async dispatch(
-    toolName: string,
-    input: unknown,
-  ): Promise<{ output: string; postcondition?: { issues: readonly string[] } }> {
+  private async dispatch(toolName: string, input: unknown): Promise<SubToolOutcome> {
     const tool = this.toolsByName.get(toolName);
     if (!tool) return { output: `Error: unknown tool \`${toolName}\`.` };
 
     // Privacy Shield v4 — Data-Plane Boundary for sub-agent inner calls.
-    // The privacy handle is threaded through `turnContext.privacyHandle`;
-    // sub-agents inherit it from the parent orchestrator's turn scope.
-    // Absent ⇒ no privacy provider installed and the result flows through.
+    // The privacy handle is threaded through `turnContext.privacyHandle`:
+    // sub-agents inherit it from the parent orchestrator's turn scope, or from
+    // the dispatcher that ran their domain tool outside a turn (the public MCP
+    // endpoint's per-call gate — `handlerPrivacyScope.ts`). Absent ⇒ no
+    // privacy provider installed and the result flows through.
     const privacy = turnContext.current()?.privacyHandle;
+    // A THROWING inner tool used to abort this whole sub-agent run, and the
+    // parent's domain-tool wrapper then re-wrapped the exception message as
+    // prose. Now the throw resolves as a tool result here, like it does in the
+    // parent loops since #1095: the message is withheld from this sub-agent's
+    // model (class name, code, log ref — `toolErrorRedaction.ts`), the
+    // sub-agent continues and can answer without the tool. The call may have
+    // taken effect before it threw, so `ask` refuses an identical repeat for
+    // the rest of the run (`outcomeUnknown`, `subAgentUnknownOutcome.ts`). The
+    // notice is PII-free, so it skips the capture and privacy steps below.
+    //
+    // The mint records a connect prompt the MCP manager produces during this
+    // inner call (the parent dispatch's mint records it too), so only that
+    // exact text skips interning below (`mcpAuthPromptMint.ts`).
+    const authPromptMint = new McpAuthPromptMint();
+    // The request's tool replay ledger (`toolReplayLedger.ts`), asked before
+    // the inner handler runs. Inner tools declare nothing, so on a verifier
+    // re-entry every call outside the first run counts as a write: refused,
+    // and the whole re-entry is abandoned (the parent checks the shared flag).
+    // A repeat of a call whose outcome is unknown is refused in every pass,
+    // across sub-agent runs of the same request.
+    const ledger = turnContext.current()?.toolReplayLedger;
+    const seam = `subagent:${this.name}` as const;
+    const decision = ledger?.decide(seam, toolName, input, { readOnly: false });
+    if (decision?.action === 'refuse-repeat') return refusedRepeat(this.name, toolName);
+    if (decision?.action === 'refuse-miss') return { output: replayMissNotice(toolName) };
+    const replay = decision?.action === 'replay' ? decision.record : undefined;
+    let raw: Awaited<ReturnType<LocalSubAgentTool['handle']>>;
+    try {
+      if (replay?.kind === 'rejection') throw replay.error;
+      raw =
+        replay?.kind === 'result'
+          ? (replay.value as Awaited<ReturnType<LocalSubAgentTool['handle']>>)
+          : await runHandlerAtMostOnce(ledger, () =>
+              runWithMcpAuthPromptMint(authPromptMint, () => tool.handle(input)),
+            );
+    } catch (err) {
+      if (replay === undefined) ledger?.record(seam, toolName, input, { kind: 'rejection', error: err });
+      const withheld = await withholdThrownToolError({
+        toolName,
+        err,
+        privacy,
+        site: `sub-agent ${this.name}`,
+      });
+      return {
+        output: withheld.text,
+        outcomeUnknown: true,
+        ...(replay !== undefined ? { replayed: true as const } : {}),
+      };
+    }
+    if (replay === undefined) ledger?.record(seam, toolName, input, { kind: 'result', value: raw });
     // #130 — unwrap the structured tool-result union at the boundary so
     // every privacy / capture path downstream keeps seeing a plain string,
     // while we still surface the optional postcondition marker upward to
     // the observer (which the RunTraceCollector copies onto the trace).
-    const raw = await tool.handle(input);
     const rawOutput = typeof raw === 'string' ? raw : raw.output;
     const limitSignal = typeof raw === 'string' ? undefined : raw.limitSignal;
     // Plugin self-extension (Layer 1) — fold the runtime limit note into the
@@ -449,6 +525,17 @@ export class LocalSubAgent {
     // fall-through). PII-free + deterministic, safe through the data-plane.
     const result = appendLimitSignalNote(rawOutput, limitSignal);
     const postcondition = typeof raw === 'string' ? undefined : raw.postcondition;
+    // Carried by every return below. A wrapper that caught the exception
+    // itself (the tool bridges, `toolErrorFromException`) returns the withheld
+    // notice instead of throwing: that call's outcome is just as unknown.
+    const carried = {
+      ...(postcondition ? { postcondition } : {}),
+      ...(isWithheldToolErrorNotice(rawOutput) ? { outcomeUnknown: true as const } : {}),
+      ...(replay !== undefined ? { replayed: true as const } : {}),
+    };
+    if (replay === undefined && isWithheldToolErrorNotice(rawOutput)) {
+      ledger?.noteUnknownOutcome(toolName, input);
+    }
     // Phase C.2 — Raw tool-result capture (parallel to orchestrator.dispatchTool).
     // Sub-agent tool calls also feed routine templates, so the capture
     // hook must fire here too. Absent callback ⇒ no capture.
@@ -470,7 +557,7 @@ export class LocalSubAgent {
       // reading memory / stored processes sees them in clear too. Checked
       // first so it wins over every other branch.
       if (isInternExemptTool(toolName)) {
-        return { output: result, ...(postcondition ? { postcondition } : {}) };
+        return { output: result, ...carried };
       }
       // Slice 2.5 — same operator-owned bypass check the orchestrator's
       // outer dispatch consults. If the tool's plugin opted into `bypass`,
@@ -481,20 +568,23 @@ export class LocalSubAgent {
       if (bypass !== undefined) {
         const flag = turnContext.current()?.subAgentBypassFlag;
         if (flag) flag.value = true;
-        try {
-          await privacy.recordBypassedTool({
-            toolName,
-            pluginId: bypass.pluginId,
-            reason: 'operator_setting',
-            bytes: Buffer.byteLength(result, 'utf8'),
-          });
-        } catch (err) {
-          console.warn(
-            `[sub-agent ${this.name}] privacy.recordBypassedTool threw on '${toolName}' — bypass still applied:`,
-            err,
-          );
+        // A replayed bypass is on the first run's receipt already.
+        if (replay === undefined) {
+          try {
+            await privacy.recordBypassedTool({
+              toolName,
+              pluginId: bypass.pluginId,
+              reason: 'operator_setting',
+              bytes: Buffer.byteLength(result, 'utf8'),
+            });
+          } catch (err) {
+            console.warn(
+              `[sub-agent ${this.name}] privacy.recordBypassedTool threw on '${toolName}' — bypass still applied:`,
+              err,
+            );
+          }
         }
-        return { output: result, ...(postcondition ? { postcondition } : {}) };
+        return { output: result, ...carried };
       }
       // Canvas sentinel tap — sub-tools (e.g. an agent plugin's deterministic
       // canvas tree) emit `_pending*` directives too; the synthesis needs the
@@ -509,19 +599,31 @@ export class LocalSubAgent {
         }
       }
       // #1097 — a guarded tool that returned control-flow prose (the `Error:`
-      // tool-error convention, or an MCP auth prompt) must reach this
-      // sub-agent's model AS that text, not be interned. Interning it would (a) hide the failure
-      // behind a masked digest, so the sub-agent never learns the call failed
-      // and cannot act on the hint the error carries, and (b) register a
-      // renderable 1-row dataset that a later `v4_render_answer` materializes
-      // as if the error were data. Same guard, same position as the one on
-      // `Orchestrator.dispatchTool` and `ToolDispatchService.afterDispatch`:
-      // after the intern exemption and the operator bypass, before interning.
-      // The `is_error` flag on the tool_result block is derived from this very
-      // prefix (see `dispatch`'s caller), so passing it through keeps the
-      // string and the flag telling the same story.
-      if (isControlFlowToolResult(result)) {
-        return { output: result, ...(postcondition ? { postcondition } : {}) };
+      // tool-error convention, or the MCP connect prompt this inner call
+      // produced — by provenance, never by its prefix) must reach this
+      // sub-agent's model AS that text, not be interned. Interning it would
+      // (a) hide the failure behind a masked digest, so the sub-agent never
+      // learns the call failed and cannot act on the hint the error carries,
+      // and (b) register a renderable 1-row dataset that a later
+      // `v4_render_answer` materializes as if the error were data. Same guard,
+      // same position as the one on `Orchestrator.dispatchTool` and
+      // `ToolDispatchService.afterDispatch`: after the intern exemption and the
+      // operator bypass, before interning. Not interned is not unchecked: the
+      // `Error:` text is redacted through the shield (or withheld whole) and
+      // receipted — `bridgeTool` hands plugin output straight here. The
+      // `is_error` flag on the tool_result block is derived from the prefix
+      // (see `dispatch`'s caller), and the redaction keeps it.
+      if (isGuardedControlFlowResult(result, authPromptMint)) {
+        return {
+          output: await guardControlFlowResult({
+            toolName,
+            result,
+            privacy,
+            site: `sub-agent ${this.name}`,
+            authPromptMint,
+          }),
+          ...carried,
+        };
       }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
@@ -540,16 +642,19 @@ export class LocalSubAgent {
           // The raw result is interned away; re-attach the (PII-free) limit
           // note to the digest so the agent still learns the result is bounded.
           output: appendLimitSignalNote(v4.digestText, limitSignal),
-          ...(postcondition ? { postcondition } : {}),
+          ...carried,
         };
       } catch (err) {
+        // Fail closed, like the parent's dispatch (`internFailedNotice`):
+        // this sub-agent's model never reads the raw result.
         console.warn(
-          `[sub-agent ${this.name}] privacy.internToolResultV4 threw on '${toolName}' — sending raw result:`,
+          `[sub-agent ${this.name}] privacy.internToolResultV4 threw on '${toolName}' — result WITHHELD:`,
           err,
         );
+        return { output: internFailedNotice(toolName), ...carried };
       }
     }
-    return { output: result, ...(postcondition ? { postcondition } : {}) };
+    return { output: result, ...carried };
   }
 }
 

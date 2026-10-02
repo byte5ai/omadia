@@ -181,9 +181,12 @@ export interface KnowledgeGraph {
     opts: SearchTurnsByEmbeddingOptions,
   ): Promise<TurnSearchHit[]>;
   /**
-   * Lookup of business entities by model + optional name substring. Used by
-   * the sub-agents' `query_graph` tool to resolve stable master data
-   * (journals, departments, partners, etc.) without round-tripping to Odoo.
+   * Lookup of business entities by model + optional exact id and/or name
+   * substring. Used by the sub-agents' `query_graph` tool to resolve stable
+   * master data (journals, departments, partners, etc.) without
+   * round-tripping to Odoo, and by the answer verifier to resolve the exact
+   * record an entity handle names (`FindEntitiesOptions.id`). Covers
+   * `OdooEntity` and `ConfluencePage` nodes only.
    * Scope-filtering is up to the caller — the graph returns every match.
    */
   findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]>;
@@ -1732,6 +1735,10 @@ export interface RunToolCall {
   postcondition?: {
     issues: readonly string[];
   };
+  /** The call did not run in this pass: a verifier re-entry (borderline
+   * resample, correction retry) handed back the first run's result instead
+   * of executing the tool again. Absent on every call that ran. */
+  replayed?: boolean;
 }
 
 export interface RunAgentInvocation {
@@ -1747,6 +1754,9 @@ export interface RunAgentInvocation {
   subIterations: number;
   status: RunStatus;
   toolCalls: RunToolCall[];
+  /** The sub-agent did not run in this pass: a verifier re-entry handed back
+   *  the first run's answer and inner calls (see `RunToolCall.replayed`). */
+  replayed?: boolean;
 }
 
 /**
@@ -2077,7 +2087,25 @@ export interface EntityCapturedTurnsOptions {
 export interface FindEntitiesOptions {
   /** Odoo/Confluence model name, e.g. `res.partner`, `hr.department`. */
   model: string;
-  /** Optional case-insensitive substring match against `displayName` or `id`. */
+  /**
+   * Exact match on the source-system record id stored in the node's
+   * `props.id` (an Odoo record id, a Confluence page id). Both sides are
+   * compared as strings after trimming, so `7` and `'7'` address the same
+   * record whether it was ingested with a numeric or a string id.
+   *
+   * This is an identity, not a search: an id that is not in the graph — or
+   * an empty one — returns `[]`, never a neighbouring record of the model.
+   * Resolve an entity handle (`hr.employee:7`) through this option; passing
+   * the id as `nameContains` would also match `17`, `70` and every display
+   * name containing it. Combinable with `nameContains` (both must hold).
+   *
+   * @since 1.21.0
+   */
+  id?: string | number;
+  /**
+   * Optional case-insensitive substring match against `displayName` or `id`.
+   * A search, not an identity — use `id` to address one record.
+   */
   nameContains?: string;
   /** Hard cap. Default 25, max 200. */
   limit?: number;

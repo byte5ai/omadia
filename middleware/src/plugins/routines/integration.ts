@@ -6,9 +6,9 @@ import {
 
 import type { RoutinesHandle } from './initRoutines.js';
 import { createProactiveSender } from './genericProactiveSender.js';
-import { actorScope, type ManageRoutineContext } from './manageRoutineTool.js';
-import { RoutineNotActiveError, type RoutineActorScope } from './routineRunner.js';
-import { recordUnscopedRoutineAction } from './unscopedActionMetrics.js';
+import type { ManageRoutineContext } from './manageRoutineTool.js';
+import { cardActorScope } from './routineCardActor.js';
+import { RoutineNotActiveError } from './routineRunner.js';
 import {
   ADAPTIVE_CARD_CONTENT_TYPE,
   buildRoutineListSmartCard,
@@ -102,39 +102,21 @@ export function createRoutinesIntegration(
 
     /**
      * #1025 — the smart-card buttons are the SECOND door onto the same
-     * mutations as `manage_routine`, and they were equally unscoped: the
-     * card carries the routine id, so a replayed or hand-crafted action
-     * payload reached pause/resume/trigger/delete for any id.
+     * mutations as `manage_routine`: the card carries the routine id, so a
+     * replayed or hand-crafted action payload reached pause/resume/trigger/
+     * delete for any id until this door was scoped too.
      *
-     * #1029 — the first version of this refused when no turn context was
-     * present, which would have broken all four buttons in production.
-     * The Teams adapter dispatches card clicks out-of-band: `handleMessage`
-     * takes the routine branch and returns before `runOrchestratorTurn`,
-     * so `captureRoutineTurn` never fires and `current()` is always
-     * undefined on this path. Refusing there is not a safe default, it is
-     * an outage.
-     *
-     * Precedence, documented in the contract next to the `actor` field:
-     *   1. `actor` from the channel — the only source that is correct on
-     *      the out-of-band path, because the adapter holds the activity.
-     *   2. the per-turn context, for clicks that do arrive inside a
-     *      captured turn.
-     *   3. neither ⇒ proceed UNSCOPED as before #1025, and record it.
-     *
-     * Case 3 keeps a known hole open on purpose, and counts every use so
-     * it is observable rather than silent. It disappears the moment the
-     * adapter passes `actor`.
+     * The principal is the channel's `actor` and nothing else. Card clicks
+     * are dispatched out-of-band (#1029: `handleMessage` returns before
+     * `runOrchestratorTurn`), so there is no turn context to scope by here —
+     * only, at worst, a stale one. A click that names no usable principal is
+     * refused with `RoutineActorRequiredError` before any row is read
+     * (`cardActorScope`), and it is never run as `{ kind: 'operator' }`:
+     * cross-tenant mutations belong to the `requireAuth`-gated
+     * `/api/v1/routines` router alone.
      */
     async handleRoutineAction({ action, id, actor }) {
-      const ctx = routineTurnContext.current();
-      const scope: RoutineActorScope = actor
-        ? { kind: 'channel-user', tenant: actor.tenant, userId: actor.userId }
-        : ctx
-          ? actorScope(ctx)
-          : { kind: 'operator' };
-      if (!actor && !ctx) {
-        recordUnscopedRoutineAction(action, id);
-      }
+      const scope = cardActorScope(action, id, actor);
       if (action === 'pause') {
         const updated = await handle.runner.pauseRoutine(id, scope);
         return `Routine "${updated.name}" pausiert.`;

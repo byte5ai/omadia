@@ -3,6 +3,11 @@ import { createHash } from 'node:crypto';
 import type { AgentComputerProfile } from './agentComputerProfile.js';
 import { execDockerViaSpawn, type DockerExec } from './dockerExec.js';
 import { clampSandboxPathPosix } from './pathGuard.js';
+import {
+  dockerResourceLimitArgs,
+  resolveSandboxResourceLimits,
+  type SandboxResourceLimits,
+} from './resourceLimits.js';
 import type { SandboxRegistry } from './sandboxRegistry.js';
 import type {
   Sandbox,
@@ -37,6 +42,21 @@ import type {
  * argv, AND (behind `SANDBOX_DOCKER_TEST=1`) by a real container attempting
  * an outbound request and observing it fail. See `agentComputerProfile.ts`
  * for why this distinction is load-bearing.
+ *
+ * ## Resource limits are WIRED, not declared
+ *
+ * Every container gets `--memory`, `--memory-swap`, `--cpus` and
+ * `--pids-limit` from `dockerResourceLimitArgs()` (see `resourceLimits.ts`):
+ * the per-call `timeout` stops one command, not a fork bomb or a runaway
+ * allocation left running in the long-lived container. Limits are fixed at
+ * `docker run`, so a container that already exists (created by an older
+ * build, or under different limits) gets the current ones via `docker update`
+ * before it is started again. That update is best-effort: a daemon that
+ * refuses it is logged, and the container keeps the limits it has.
+ * Same two-tier proof as egress (`dockerSandboxLimits.test.ts`): the stub
+ * tests assert the argv, the real-Docker tier asserts what the daemon and the
+ * kernel applied, including for out-of-range values, and that an oversized
+ * allocation is killed.
  */
 export interface DockerSandboxBackendOptions {
   /** Container image. Small, POSIX shell, busybox coreutils (`ls -1p`, `cat`,
@@ -59,6 +79,15 @@ export interface DockerSandboxBackendOptions {
    * exercised now via the Docker backend's own deterministic case.
    */
   readonly registry?: SandboxRegistry;
+  /**
+   * Ceilings for every container this backend creates or re-attaches. A field
+   * left out, or given an invalid value, comes from its `OMADIA_SANDBOX_*`
+   * env variable and then from `DEFAULT_SANDBOX_RESOURCE_LIMITS`. There is no
+   * way to switch a limit off.
+   */
+  readonly resourceLimits?: Partial<SandboxResourceLimits>;
+  /** Warnings (a refused `docker update` on re-attach). Defaults to `console.warn`. */
+  readonly log?: (msg: string) => void;
 }
 
 const DEFAULT_IMAGE = 'alpine:3.20';
@@ -81,12 +110,16 @@ export class DockerSandboxBackend implements SandboxBackend {
    *  the deterministic container name, not from this map. */
   private readonly live = new Map<string, DockerSandbox>();
   private readonly registry: SandboxRegistry | undefined;
+  private readonly resourceLimits: SandboxResourceLimits;
+  private readonly log: (msg: string) => void;
 
   constructor(options: DockerSandboxBackendOptions = {}) {
     this.image = options.image ?? DEFAULT_IMAGE;
     this.workDir = options.workDir ?? DEFAULT_WORK_DIR;
     this.execDocker = options.execDocker ?? execDockerViaSpawn;
     this.registry = options.registry;
+    this.resourceLimits = resolveSandboxResourceLimits(options.resourceLimits);
+    this.log = options.log ?? ((msg) => console.warn(msg));
   }
 
   async provision(args: {
@@ -113,6 +146,9 @@ export class DockerSandboxBackend implements SandboxBackend {
     if (!exists) {
       await this.runContainer(name, args.profile);
     } else {
+      // Limits are fixed at `docker run`; bring an existing container up to
+      // the current ones before it runs anything again.
+      await this.updateResourceLimits(name);
       // Idempotent re-attach: bring an existing-but-stopped container back
       // up. `docker start` on an already-running container is a harmless
       // no-op (exit 0).
@@ -164,11 +200,31 @@ export class DockerSandboxBackend implements SandboxBackend {
     if (!profile.egress) {
       args.push('--network', 'none');
     }
+    // Resource ceilings, wired the same way: before the image, or Docker
+    // would hand them to the container's command as arguments.
+    args.push(...dockerResourceLimitArgs(this.resourceLimits));
     args.push(this.image, 'sh', '-c', `mkdir -p '${this.workDir}' && exec sleep infinity`);
     const result = await this.exec(args, { timeoutMs: 60_000 });
     if (result.exitCode !== 0) {
       throw new Error(
         `DockerSandboxBackend: failed to provision container '${name}': ${result.stderr || result.stdout}`,
+      );
+    }
+  }
+
+  /** Best-effort: a refused update is logged, never thrown, so a re-attach
+   *  still works on a daemon that cannot change a limit in place. */
+  private async updateResourceLimits(name: string): Promise<void> {
+    const args = ['update', ...dockerResourceLimitArgs(this.resourceLimits), name];
+    try {
+      const result = await this.exec(args, { timeoutMs: 15_000 });
+      if (result.exitCode === 0) return;
+      this.log(
+        `[sandbox] docker update for '${name}' failed (exit ${String(result.exitCode)}); it keeps the limits it was created with: ${(result.stderr || result.stdout).trim()}`,
+      );
+    } catch (err) {
+      this.log(
+        `[sandbox] docker update for '${name}' failed; it keeps the limits it was created with: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

@@ -34,6 +34,7 @@ import {
 } from '@omadia/orchestrator';
 
 import { parseAgentMd } from './agentMdFrontmatter.js';
+import { bridgedToolError, type BridgeStage } from './bridgedToolError.js';
 import { selectSubAgentHost } from './subAgentHostModel.js';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
 import type { InstalledRegistry } from './installedRegistry.js';
@@ -831,7 +832,15 @@ function toolIdentifier(t: UploadedToolkit['tools'][number] | LocalSubAgentTool)
   return isLocalSubAgentTool(t) ? t.spec.name : t.id;
 }
 
-function bridgeTool(
+/**
+ * Bridge an uploaded toolkit tool onto the `LocalSubAgentTool` contract. A
+ * failure comes back as an `Error:` result from `bridgedToolError`: a readable
+ * hint when the model's input failed the schema, the withheld notice when the
+ * tool's own code threw.
+ *
+ * @internal Exported for tests only.
+ */
+export function bridgeTool(
   td: UploadedToolkit['tools'][number] | LocalSubAgentTool,
 ): LocalSubAgentTool {
   if (isLocalSubAgentTool(td)) return td;
@@ -855,8 +864,10 @@ function bridgeTool(
     async handle(
       input: unknown,
     ): Promise<string | LocalSubAgentToolResult> {
+      let stage: BridgeStage = 'input';
       try {
         const parsed = td.input.parse(input);
+        stage = 'run';
         const result = await td.run(parsed);
         if (td.output) {
           const outCheck = td.output.safeParse(result);
@@ -880,7 +891,7 @@ function bridgeTool(
           ? result
           : JSON.stringify(result, null, 2);
       } catch (err) {
-        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+        return bridgedToolError(td.id, err, stage, 'dynamic-agent');
       }
     },
   };

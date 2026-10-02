@@ -1,6 +1,7 @@
 import {
   TranscriptionQuotaExceededError,
   TranscriptionRealtimeDisabledError,
+  toolErrorFromException,
   type TranscriptionService,
 } from '@omadia/plugin-api';
 import { z } from 'zod';
@@ -140,8 +141,11 @@ export class TranscribeRecordingTool {
       if (err instanceof TranscriptionRealtimeDisabledError) {
         return `Error: ${err.message}`;
       }
-      const msg = err instanceof Error ? err.message : String(err);
-      return `Error: failed to transcribe attachment \`${key}\` — ${msg}.`;
+      // A provider or storage exception: its text (an upstream response body,
+      // a file path) is withheld from the model and logged in full.
+      return toolErrorFromException(TRANSCRIBE_RECORDING_TOOL_NAME, err, {
+        site: 'transcribe',
+      });
     }
 
     // Ingest failures must NOT discard the transcript: the provider call is

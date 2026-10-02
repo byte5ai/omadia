@@ -338,6 +338,14 @@ User → Orchestrator.chatStream
                           └─ entityRefBus.publish (tagged mit turnId)
 ```
 
+Mit aktivem Answer-Verifier sitzt `VerifierService` vor dem Orchestrator
+(`User → VerifierService.chatStream/chat → Orchestrator`): in `shadow` prüft er
+nur und hängt das Urteil an, in `enforce` ist er ein Auslieferungs-Gate — der
+Stream hält jeden Inhalt bis zum Urteil (der Canvas-Composer sein Skeleton
+ebenso), eine nicht bestätigte Antwort wird durch eine Notiz ersetzt (§11,
+Kontrakt-Erweiterung Verifier-Gate). Agenten auf dem Abo-CLI-Runtime und
+Routinen laufen ohne diesen Wrapper.
+
 ### Channel → Orchestrator-Dispatch (per-Channel, Omadia UI)
 
 Ein Channel-Turn erreicht den Orchestrator über den **`orchestratorDispatcher`**
@@ -469,6 +477,10 @@ Macht den `canvasChatAgent` zum echten Tier-2-Composer. Für einen Canvas-Turn
    Skeleton geht als `surface_snapshot` (Revision `"0"`) raus, **bevor** der
    langsame Hauptturn startet (~500ms-Ziel, implementation-plan Risiko #1;
    Spike-Gate: <95% First-Attempt-Validität → Modell auf Sonnet pinnen).
+   Ausnahme Answer-Verifier in `enforce` (Basis-Agent mit
+   `holdsContentUntilVerdict`): dann wartet das Skeleton auf das Urteil und
+   geht nur mit einem freigegebenen Turn raus (`src/verdictHold.ts`, §11
+   Verifier-Gate).
 2. **Requirement-Handoff**: der delegierte Hauptturn bekommt die
    `dataRequirements` als `[canvas-context]`-Block an die `userMessage`
    angehängt (containerIds + exakte fieldKeys + Instruktion) — Tier-3
@@ -575,8 +587,10 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   Fehlt/ungültig → rohes `401` + `socket.destroy()` **vor** dem `101`; für einen
   unauthentifizierten Peer wird kein WebSocket allokiert. Nur authentifizierte
   Upgrades werden zu `ChannelSocket`s; die verifizierten `ChannelSessionClaims`
-  (`subject`/`email`/`displayName`/`provider`/`omadiaUserId?`) gehen an den
-  Handler. Zusätzlich der **gleiche Entra-Whitelist-Gate** wie `requireAuth`:
+  (`subject`/`email`/`displayName`/`provider`/`omadiaUserId?`/`expiresAt`) gehen
+  an den Handler — **nie das Token**: das bleibt in der Registry, und das
+  Session-Cookie wird aus `socket.request.headers.cookie` entfernt (andere
+  Cookies bleiben). Zusätzlich der **gleiche Entra-Whitelist-Gate** wie `requireAuth`:
   eine OIDC-(`entra`)-Session mit nicht (mehr) whitelisteter E-Mail → `403`
   (Auth-Parität zu den HTTP-Routes; der `EmailWhitelist` wird mitinjiziert).
   (Hinweis: `CoreApi.resolveIdentity` ist channel-natives User-Mapping,
@@ -584,15 +598,82 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   Nach der asynchronen Cookie-Prüfung wird das Active-Flag **erneut** geprüft:
   ein `deactivateChannel` im Auth-Fenster führt zu `503` statt zu einem Socket,
   der an `deactivateChannel` vorbeigerutscht ist.
+- **Lebensdauer nach dem Upgrade** (`src/channels/channelSessionLifetime.ts`,
+  `ChannelSessionTracker`): ein Channel-Socket lebt nicht länger als die
+  Sitzung, die ihn geöffnet hat.
+  - Am `exp` des Tokens → Close **4401** `session expired`. Ein Token ohne
+    `exp` oder eines, das zwischen Upgrade-Prüfung und Handshake abläuft, wird
+    mit 4401 geschlossen, **bevor** der Handler läuft; ein Frame nach `exp`
+    wird verworfen, eingehend wie ausgehend (`socket.send` des Handlers), auch
+    wenn der Timer spät dran ist — `exp` ist Wanduhrzeit, die Wanduhr
+    entscheidet.
+  - Widerruf auf dieser Replica: `SessionRevocation.onRevoked` (Logout,
+    Passwort-Reset, Deaktivieren, Löschen, siehe „Serverseitiger
+    Sitzungs-Widerruf“ in §3) schließt die Sockets des Users sofort mit **4403**
+    `session revoked`. `WebSocketRegistry.closeSessions(match)` ist derselbe
+    Hebel für andere Kernel-Pfade. Ein `announce`, das während der
+    Upgrade-Prüfung eintrifft, findet noch keinen Socket: die Registry merkt
+    sich davor den Widerrufszähler (`ChannelSessionTracker.mark()`), und
+    `accept` schließt mit 4403, **bevor** der Handler läuft
+    (`RevocationLog` in `src/channels/channelSessionCheck.ts`). Das Log hält
+    die letzten 256 Ankündigungen (`RECENT_REVOCATIONS_KEPT`); kamen während
+    einer Upgrade-Prüfung mehr, lässt sich ein Widerruf dieses Users nicht
+    ausschließen → Close **1013** `session unverified`, ebenfalls **bevor**
+    der Handler läuft, und der Reconnect des Clients wird frisch geprüft.
+    Nicht „erst beim ersten Frame prüfen“: Arbeit beim Verbindungsaufbau und
+    Pushes des Handlers brauchen keinen Frame.
+  - Widerruf auf anderen Replicas — **der nächste Frame**: `announce` ist
+    prozesslokal, deshalb wird jeder eingehende Frame einzeln geprüft. Er
+    erreicht den Handler nur auf einem Urteil, dessen Prüfung höchstens
+    `WS_SESSION_FRAME_RECHECK_MS` (Env, Default 5 s, 0 = jeder Frame) vor
+    seiner Ankunft begann; die Upgrade-Prüfung zählt mit. Ist das Urteil
+    älter, wartet der Frame (und jeder dahinter, in Reihenfolge), bis
+    `evaluateSessionToken` (derselbe Pfad wie HTTP) erneut gelaufen ist; der
+    Socket liest so lange nicht weiter (`ws.pause()`, TCP-Backpressure statt
+    wachsendem Puffer). Widerrufen → 4403 `session revoked`, Entra-Whitelist
+    entzogen → 4403 `session forbidden`, Token nicht mehr gültig → 4401; die
+    wartenden Frames verfallen. Prüfbeginn und Frame-Ankunft misst der
+    Tracker mit einer monotonen Uhr (`performance.now`, injizierbar als
+    `monotonicNow`): ein Zurückstellen der Wanduhr (NTP, VM-Resume) kann ein
+    Urteil nicht über die Grenze hinaus strecken.
+  - Leerlauf: ein Sweep alle `WS_SESSION_RECHECK_MS` (60 s) prüft jeden
+    offenen Socket genauso. Das begrenzt, was ein Socket ohne eigene Frames
+    noch bekommt (Notification-Pushes).
+  - Kein Urteil, kein Frame: `auth.unavailable` (DB-Ausfall), ein Wurf und
+    eine verpasste Deadline (`WS_SESSION_CHECK_TIMEOUT_MS`, 10 s) sind kein
+    Urteil — der Socket bleibt offen (begrenzt durch `exp`; Pings beantwortet
+    er wieder, sobald der Check aufgegeben hat), aber die wartenden Frames
+    erreichen `onMessage` nicht, sondern `onRefusedMessage` (das
+    WS-Gegenstück zu HTTP 503). Ein Ausfall beendet auch die Gnadenfrist des
+    Urteils davor, der nächste Frame prüft neu; eine Ablehnung, die erst nach
+    der Deadline kommt, schließt trotzdem. Sweep und Frames teilen sich einen
+    Check pro Socket.
+  - Ab dem Close erreicht kein Frame mehr den Handler, seine Sends werden
+    verworfen, und sein `onClose` feuert sofort (nicht erst nach dem
+    Close-Handshake des Peers).
+  - Ein `/renew` verlängert das Cookie, **nicht** den offenen Socket; der
+    Client verbindet sich mit dem aktuellen Cookie neu. Renewal bewegt die
+    Session-Version nicht, der Socket bleibt also bis zum `exp` seines Tokens
+    offen.
+  - Kernel-Routen bekommen nichts davon: ihr Principal ist für die Registry
+    opak, eine Kernel-Route muss Ablauf und Widerruf ihres Credentials selbst
+    durchsetzen.
 - **Wiring** (`index.ts`, per `grep -n WebSocketRegistry src/index.ts` finden —
   Zeilennummern driften): `new WebSocketRegistry({ signingKey:
-  sessionSigningKey, whitelist: emailWhitelist })` vor
-  `createCoreApi({ … webSockets })`, zusätzlich an die `DefaultChannelRegistry`
+  sessionSigningKey, whitelist: emailWhitelist, sessions: sessionRevocation })`
+  vor `createCoreApi({ … webSockets })`, zusätzlich an die `DefaultChannelRegistry`
   gereicht (Lifecycle-Spiegel zu `routes`), und
   `webSocketRegistry.attach(server)` nach `const server = app.listen(PORT, '::')`
-  — dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit.
-  `channelMaxPayloadBytes` bleibt in Prod ungesetzt, also greift der
-  32-MiB-Default; nur Tests setzen einen kleinen Cap.
+  — dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit. Über
+  `sessions` (derselbe `SessionRevocationGuard` wie `requireAuth`) kommen sowohl
+  der Upgrade-Check als auch `onRevoked`, die Frame-Prüfung und der Sweep.
+  `channelFrameRecheckMs` kommt aus `config.WS_SESSION_FRAME_RECHECK_MS`;
+  `channelMaxPayloadBytes`, `channelSessionRecheckMs` und
+  `channelSessionCheckTimeoutMs` bleiben in Prod ungesetzt, also greifen
+  32 MiB, 60 s bzw. 10 s; nur Tests setzen kleinere Werte. Der
+  Channel-Authenticator selbst (`authenticateChannelSession`, Cookie-Parsing,
+  Entfernen des Session-Cookies aus den Handler-Headern) liegt in
+  `src/channels/channelSessionAuth.ts`.
 - **Dependency:** `ws` + `@types/ws` nur im Kernel, nicht im SDK.
 
 Test: `test/webSocketRegistry.test.ts` fährt einen echten `http.Server` + echten
@@ -605,9 +686,29 @@ lässt Kernel-Sockets offen, 32-MiB-Default; Statuscodes werden exakt geprüft,
 nicht per `|unexpected server response`). `test/webSocketRegistryHardening.test.ts`
 deckt `503` bei Exception/Deadline/Nicht-Ergebnis (auch ein spätes `ok` nach
 der Deadline öffnet nichts), die rohen Status-Line-Bytes bei CR/LF im
-`message`, die Grenzen für `maxPayload`/`authTimeoutMs`/`channelMaxPayloadBytes`,
-das kaputte Cookie-Escape und das Deaktivieren im Auth-Fenster ab. Gemeinsame
-Fixtures: `test/_helpers/wsRegistryKit.ts`. Damit ist der
+`message`, die Grenzen für `maxPayload`/`authTimeoutMs`/`channelMaxPayloadBytes`/`channelSessionRecheckMs`,
+das kaputte Cookie-Escape und das Deaktivieren im Auth-Fenster ab. Die
+Lebensdauer prüfen `test/webSocketRegistrySession.test.ts` (echte Sockets:
+4401 am `exp`, Token ohne `exp` bzw. im Upgrade abgelaufen, Claims ohne Token,
+`closeSessions`, Widerruf per `announce` und per Sweep, Whitelist-Entzug,
+Ausfall hält Frames zurück, schließt aber nicht, keine Timer/Re-Checks nach
+Close oder Deaktivierung), `test/webSocketRegistryFrameGate.test.ts` (echte
+Sockets: Widerruf auf einer anderen Replica stoppt den nächsten Frame samt
+den dahinter wartenden, `announce` während der Upgrade-Prüfung schließt vor
+dem Handler, mehr Ankündigungen als gehalten → 1013 vor dem Handler und der
+Reconnect klappt, fehlgeschlagener bzw. hängender Lookup hält Frames zurück
+und der Socket beantwortet weiter Pings, Grenze 0 prüft jeden Frame),
+`test/channelSessionTracker.test.ts` (Mock-Timer: exakt am `exp`, später
+Timer für ein- und ausgehende Frames, setTimeout-Obergrenze, Verdict-Mapping),
+`test/channelSessionFrameGate.test.ts` (Mock-Timer: Frame-Grenze und
+Default, Reihenfolge, Backpressure, Ausfall und Deadline, späte Ablehnung,
+Upgrade-Fenster samt Überlauf, zurückgestellte Wanduhr), `test/uiChannelSessionRefusal.test.ts` (was der Canvas mit
+einem zurückgehaltenen Frame macht), `test/uiChannelSessionGate.test.ts`
+(Canvas an einer echten Registry: ein Turn nach einem Widerruf anderswo
+startet nie, im Ausfall gibt es `turn_error` und der Socket bleibt) und
+`test/auth/liveSocketRevocation.test.ts` (echte Auth-/Admin-Router:
+`/renew` lässt den Socket offen, Logout und Deaktivieren schließen ihn).
+Gemeinsame Fixtures: `test/_helpers/wsRegistryKit.ts`. Damit ist der
 Transport bereit für **PR-10b** (echter Canvas-Channel: Handshake-`offer→select→
 ack`, `IncomingTurn`-Bildung, `surface_*`-Fan-out).
 
@@ -630,6 +731,29 @@ PR-11s `CoreApi.registerWebSocket` aufsetzend. Drei neue Module im Package
      `handshake_select` Versions-Match (Protokoll **und** Ops-Catalog) → mintet/
      übernimmt `canvasSessionId` und schickt `handshake_ack`; Mismatch →
      `handshake_error` (eine Downgrade-Chance, zweiter Mismatch → `close`).
+     Das Ack trägt `sessionExpiresAt` (Epoch-Sekunden, aus
+     `session.expiresAt`), wann der Kernel den Socket mit 4401 schließt —
+     additiv und optional, also ohne Protokoll-Versionssprung.
+     **Client-Vertrag:** vor diesem Zeitpunkt den User warnen (Verlängern
+     bleibt ein expliziter Klick, wie im `SessionWatcher`), bei 4401 mit dem
+     aktuellen Cookie neu verbinden (ein 401 auf diesem Upgrade heißt neu
+     anmelden), bei 4403 aufhören. `@omadia/canvas-core` 0.2.0 setzt das um:
+     `CanvasSocket` meldet bei 4401 `unauthenticated`, bei 4403 `forbidden`,
+     beides ohne Backoff-Schleife; der Host verlängert bzw. meldet neu an und
+     ruft `connect()`. Bis dahin öffnet nichts anderes einen Socket:
+     `switchCanvas()` merkt sich nur die Canvas, die das nächste `connect()`
+     fortsetzt (ein Reopen mit dem beendeten Cookie scheitert schon vor dem
+     Upgrade und sähe für den Client wie ein Netzabbruch aus, also wieder
+     Backoff). `cookie` darf eine Funktion sein, die bei jedem Connect
+     das aktuelle Cookie liefert. Der Stub-Server (`tools/stubServer.ts`) kann
+     `sessionExpiresAt` senden und mit `closeSockets(4401 | 4403, …)` beide
+     Closes simulieren. Kann der Kernel die Sitzung gerade nicht prüfen
+     (DB-Ausfall, siehe PR-11-Abschnitt), läuft ein zurückgehaltener Frame
+     nicht: ein `turn`/`canvas_refresh` bekommt `turn_error` `session check
+     unavailable, try again`, ein `turn_abort` stoppt den laufenden Turn
+     trotzdem, und auf ein zurückgehaltenes `handshake_select` folgt statt
+     des Acks ein Close **1013** — der Client verbindet im normalen Backoff
+     neu, durch eine frische Upgrade-Prüfung.
   2. **Turn-Bildung:** je `turn`-Nachricht ein `IncomingTurn` —
      `channelId`, `userRef` (`kind: 'custom'`, `id = session.subject`), `text`,
      optional `target`/`viewState`/`viewStateTruncated`, `tenantId` aus
@@ -649,6 +773,10 @@ PR-11s `CoreApi.registerWebSocket` aufsetzend. Drei neue Module im Package
      `turn_complete`). Orchestrator-Telemetrie (`iteration_start`, `tool_*`,
      `verifier`, …) wird **verworfen**. Turns sind **pro Verbindung
      serialisiert** (Promise-Chain), damit Surface-Frames nicht interleaven.
+     Schließt der Socket (auch weil der Kernel die Sitzung beendet), bricht
+     `onClose` den laufenden Turn ab (der Orchestrator-Generator wird per
+     `return()` abgewickelt), und in der Kette wartende Turns starten nicht
+     mehr.
 - **`plugin.ts`** — `activate` registriert zusätzlich zur Discovery-Route
   (`GET /omadia-ui/info`, jetzt `websocket: /omadia-ui/canvas`) den WS-Endpoint
   via `core.registerWebSocket` — **feature-detected**: fehlt die Methode (kein
@@ -672,8 +800,12 @@ Mock-`ChannelSocket` + Mock-`handleTurnStream` (offer; matching select → ack m
 client-`canvasSessionId`; Versions-Mismatch → error, zweiter → close; Turn →
 korrekt geformter `IncomingTurn` + `surface_*`/`agent_text_delta`/`turn_complete`
 Fan-out; Turn vor Handshake wird verworfen; `localOperations`/`action` landen in
-`metadata`, malformed `action` → `turn_error`). Real-Socket-Pfad ist durch PR-11s
-`webSocketRegistry.test.ts` abgedeckt. **Damit kann der Agent live UI über den
+`metadata`, malformed `action` → `turn_error`; `sessionExpiresAt` im Ack nur mit
+`session.expiresAt`; Close bricht den laufenden Turn ab und startet keinen
+wartenden). Real-Socket-Pfad ist durch PR-11s
+`webSocketRegistry.test.ts` abgedeckt; die Client-Seite des Lebensdauer-Vertrags
+durch `packages/canvas-core/test/canvasSocketSession.test.ts` und
+`canvasSocket.test.ts`. **Damit kann der Agent live UI über den
 Canvas synthetisieren, sobald Tier 2 (`omadia-ui-orchestrator`) `surface_*`
 emittiert** — der Transport ist vollständig.
 
@@ -979,8 +1111,9 @@ bleiben filterbar). `privacyScan.encryptedAtRest` je Tabelle. Grenzen: die
 Spalten über Ciphertext (jede Zelle unterschiedlich, frischer IV) — Filtern
 nach E-Mail funktioniert dort nicht; dafür sind die `__k_*`-Link-Keys da.
 Schlägt das Internieren einer `query_dataset`-Seite fehl, hält der
-Orchestrator die Zeilen **zurück** (fail-closed nur für dieses Tool), weil sie
-Klartext tragen.
+Orchestrator die Zeilen **zurück**, weil sie Klartext tragen. Seit #1267 gilt
+das für jedes Tool an jeder Naht (`internFailedNotice`, Abschnitt
+„Unterhalb des Ledgers“); `query_dataset` behält seinen eigenen Text.
 
 **Identity-Resolution (Fixup Runde 5):** für einen Channel-Turn (Teams/
 Slack/Telegram) ist `ChatTurnInput.userId` die RAW channel-native id, NICHT
@@ -1531,10 +1664,14 @@ Ein Turn persistiert seinen PII-freien `PrivacyReceipt` synchron nach
 der Privacy Shield in diesem Turn aktiv war**: `finalizeTurn()` in
 `harness-plugin-privacy-guard/src/service.ts` liefert nur dann einen Receipt,
 wenn der Turn ein Dataset interniert, einen Bypass oder die strukturierte
-Ausgabe eines angebundenen Tools protokolliert oder den Prompt maskiert hat
-(Letzteres nur bei mindestens einem erkannten PII-Span); der Orchestrator
-persistiert nur `if (receipt)`. Ein Turn ohne Shield-Aktivität (z. B. reine
-Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt;
+Ausgabe eines angebundenen Tools protokolliert, den Prompt maskiert
+(Letzteres nur bei mindestens einem erkannten PII-Span), einen Tool-Fehler
+behandelt hat (`toolErrors`: Exception-Text zurückgehalten, `Error:`-Text
+redigiert oder zurückgehalten, MCP-Connect-Prompt durchgereicht — siehe §11
+„Tool-Fehler an den Dispatch-Nähten“) oder der Antwort-Verifier unter seiner
+Privacy-Sicht Modellanfragen gestellt hat (`verifierEgress`, siehe unten); der
+Orchestrator persistiert nur `if (receipt)`. Ein Turn ohne Shield-Aktivität
+(z. B. reine Antwort ohne Tool-Aufrufe, deren Prompt nichts zu maskieren enthielt;
 `mask_user_prompt` ist per Default ohnehin aus) schreibt weder eine Zeile
 noch eine Log-Zeile. UI-Copy und README sagen das seit #1081 so. Ein
 Null-Aktivitäts-Receipt pro Turn wurde bewusst verworfen: er würde die
@@ -1550,6 +1687,71 @@ auth-gated **`GET /api/v1/operator/receipts`** (Liste, Composite-Keyset-Cursor
 `/operator/receipts`. Retention: `RECEIPT_RETENTION_DAYS` (Default 90),
 Reaper mit Eager-Boot-Tick, Cutoff auf der DB-Uhr. Tests:
 `test/turnReceipts.test.ts`, `test/orchestrator/turnReceiptPersistence.test.ts`.
+
+#### Verifier-gewrappte Turns finalisieren erst nach dem Verifier
+
+Läuft ein Turn über `VerifierService` (Bundle `verifier@1` publiziert) und ist
+der Privacy Shield aktiv, finalisiert der Turn **nicht selbst**: Der Wrapper
+setzt vor jedem `runTurn`/`chatStream` `markPrivacyFinalizeHeld(input)`
+(One-Shot, gekeyt auf das Input-Objekt des Aufrufers), der Turn liefert sein
+Ergebnis ohne `privacyReceipt` und übergibt eine
+`PrivacyEgressContinuation` (`harness-orchestrator/src/privacyEgress.ts`),
+die der Wrapper mit `takePrivacyEgress(input)` abholt. Alle drei
+Finalize-Stellen übergeben (gepuffert, Streaming-`done`, Streaming-Direct-Line).
+Über `continuation.verifierPrivacy` laufen Extractor- und Judge-Requests unter
+der Surrogat-Map des Turns; danach ruft der Wrapper `finalize()` **genau
+einmal** pro Lauf (`EgressLedger` in `verifierPrivacyGate.ts` für `chat()`,
+`StreamPasses` im Stream; auch bei Fehlern, abgebrochenen Wiedereintritten
+und Client-Abbruch) — erst dann entsteht der Receipt des Laufs. Jeder Lauf
+(erster Lauf, Resample, Retry) wird über seine eigene Sicht verifiziert. Kann
+die Anfrage wieder betreten werden (Request-Ledger, §3 „Replay-Ledger“),
+gehen die Receipts aller Läufe in die **eine** `turn_receipts`-Zeile der
+Anfrage, nach dem Urteil geschrieben (`requestReceipts.ts`, die
+Verifier-Requests der Läufe summiert); sonst schreibt der Lauf die Zeile
+selbst.
+Das Modell-Attribut wird bei der Übergabe gesichert (die 512er-FIFO
+`turnAttribution` könnte es sonst verdrängen). Der Receipt trägt die
+Verifier-Requests getrennt in `verifierEgress` (Anzahl + Span-Typen); ein Turn,
+dessen einzige Shield-Aktivität der Verifier war, bekommt dadurch ebenfalls
+eine Zeile. Beim Streaming hält der Wrapper `done` zurück, bis der innere
+Stream gedrained ist und der Verifier fertig ist, und sendet es dann mit
+`privacyReceipt` + `receiptId`, gefolgt vom `verifier`-Event. Ein Turn, der
+wirft, oder ein abgebrochener Stream verwirft seinen Privacy-State jetzt
+sofort (vorher blieb er bis zum Neustart im Speicher). Sicherheitsseite:
+`docs/security-architecture.md` §6e. Die Wire-Sicht zeichnet der Turn selbst
+auf (`TurnContextValue.wireView`): den Prompt so, wie ihn das Modell bekam —
+eine MCP-Input-Card-Antwort also nur als Label, nie als Envelope mit den
+eingegebenen Werten — und die Antwort vor dem Restore. Der Extractor schickt
+genau das und maskiert es nicht erneut (`admitWireView` bucht den Request nur);
+`VerifierService` gibt der Pipeline auch als `userMessage` nie den Envelope
+(`modelFacingUserMessage`). Claims aus der Wire-Sicht stellt
+`harness-verifier/src/claimRestore.ts` serverseitig wieder her (Beträge/Daten
+aus Platzhaltern werden aus dem echten Literal neu gelesen); ein Claim, der
+sich nicht auf die gezeigte Antwort zurückführen lässt, erreicht keinen
+Checker und ist die Abdeckungslücke `claims_not_restored` — die Antwort ist
+dann nie `approved`. Der Judge bekommt
+keine Node-IDs: Jede Evidenz heißt im Request `ev-1`, `ev-2`, … (pro Request
+vergeben, die zitierte Kennung wird serverseitig auf das Snippet
+zurückgeführt), und eine Node-ID oder ein String-Schlüssel (`id=…`) im
+Evidenztext wird wie ein Anzeigename ersetzt. Eine zweite
+Antwort mit ungelösten Platzhaltern (`countUnresolvedSurrogates`) ersetzt die
+erste nie — weder ein Retry (er wird dann gar nicht beurteilt) noch ein
+blockiertes Re-Sample nach einer Borderline-Antwort. Ungelöst heißt: wörtlich, in anderer
+Groß-/Kleinschreibung, mit umgruppierten Ziffern oder — bei Datum und Betrag —
+als anderes Literal desselben Werts (`harness-plugin-privacy-guard/src/valueLiterals.ts`:
+ISO, Punkt/Slash, ohne führende Null, zweistelliges Jahr, ausgeschriebener
+Monat in sechs Locales, Tausendergruppen, „k“/„Tsd.“/„T€“/„Mio.“); denn Restore
+ersetzt nur den exakten Platzhalter-String. Ein Datums- oder Betragsliteral
+ohne lesbaren Wert passt auf jeden Platzhalter seiner Art (fail closed).
+Tests:
+`test/orchestratorPrivacyEgress.test.ts` (Übergabe),
+`test/verifierPrivacyEgressEndToEnd.test.ts` (Verifier um den echten
+Orchestrator, auch ein als ISO umgeschriebener Datums-Platzhalter in Retry und
+Re-Sample), `test/privacyValueLiterals.test.ts` (Wert-Grammatik),
+`test/verifierEvidenceHandles.test.ts` (Judge-Kennungen),
+`test/verifierServicePrivacyEgress.test.ts` /
+`test/verifierServiceStreamPrivacyEgress.test.ts` (Wrapper, Harness in
+`test/_helpers/`).
 
 #### API-Turn-Attribution + Korrelations-Id (#1107)
 
@@ -2135,13 +2337,16 @@ Sitzung ohne Navigation.
   Tokens ohne den Claim auf `iat` zurück.
 - **Route** (`routes/authRenew.ts`, gemountet im Auth-Router). Reihenfolge,
   jeder Schritt fail-closed:
-  1. `evaluateSessionToken` wie `requireAuth` (Cookie gültig, Whitelist):
-     401 `auth.missing` / `auth.invalid`, 403 `auth.not_whitelisted`.
-     Eine abgelaufene Sitzung ist nicht verlängerbar, nur ersetzbar.
+  1. `evaluateSessionToken` wie `requireAuth` (Cookie gültig, Whitelist,
+     serverseitiger Widerruf): 401 `auth.missing` / `auth.invalid` /
+     `auth.revoked`, 403 `auth.not_whitelisted`, 503 `auth.unavailable`
+     (Widerrufs-Lookup fehlgeschlagen). Eine abgelaufene oder widerrufene
+     Sitzung ist nicht verlängerbar, nur ersetzbar.
   2. Absolute Obergrenze: `now >= auth_time + cap` bzw. `exp` liegt schon auf
      der Grenze → 401 `auth.renew_expired`.
-  3. Provider noch aktiv, `users`-Zeile vorhanden und `active` → sonst 401
-     `auth.renew_denied`. Gilt für lokale und Entra-Zeilen.
+  3. Provider noch aktiv, `users`-Zeile vorhanden und `active`, und sie deckt
+     die Sitzung noch (gleiche Zeile `uid`, gleiche `session_version` `sv`)
+     → sonst 401 `auth.renew_denied`. Gilt für lokale und Entra-Zeilen.
   4. OIDC: `OidcProvider.revalidateSession` (Entra: Refresh-Token einlösen,
      `oid`/E-Mail/Whitelist prüfen, rotierten Token speichern). `denied` →
      401 `auth.renew_denied`, `unavailable` (Netz, 5xx, 429) → 502
@@ -2150,16 +2355,22 @@ Sitzung ohne Navigation.
   5. Audit-Zeile `auth.session_renew` (`actor.id` = users-UUID, #775),
      **vor** dem Cookie: scheitert der Audit-Write, gibt es 500 und kein
      neues Cookie.
-  6. Gleiche Claims neu signiert, `exp = min(now + 4h, auth_time + cap)`.
+  6. Gleiche Claims neu signiert (`auth_time`, `sv`, `sid` werden
+     übernommen; `uid` ist die Zeile, die Schritt 3 geprüft hat — dieselbe
+     `id`, bei einem Alt-Token ohne `uid` erstmals gesetzt),
+     `exp = min(now + 4h, auth_time + cap)`.
      Antwort `{ expires_at, server_now, renewable_until }`.
 - Ohne `renewal`-Deps im `AuthDeps` (Test-Harnesses) antwortet `/renew` mit
   503 `auth.renew_unavailable`.
 - **`GET /me`** liefert zusätzlich `renewable_until` (`auth_time + cap`,
   `null` ohne Renewal). Die UI zeigt damit im letzten Fenster vor der Grenze
   direkt „Neu anmelden“ statt eines Klicks, der sicher abgelehnt wird.
-- **`POST /logout`** vergisst bei Entra-Sitzungen den Refresh-Token
-  (`RefreshStore.forget`), damit ein vor dem Logout kopiertes Cookie sich
-  nicht weiter über den IdP verlängern kann.
+- **`POST /logout`** beendet die Sitzung serverseitig (siehe unten): ist das
+  vorgelegte Cookie noch gültig, zählt es `users.session_version` hoch und
+  beendet damit **alle** Sitzungen dieses Users auf allen Geräten; bei
+  Entra-Sitzungen wird zusätzlich der Refresh-Token vergessen
+  (`RefreshStore.forget`). Ein schon widerrufenes Cookie ändert serverseitig
+  nichts (die Route ist öffentlich), es bekommt nur sein Cookie gelöscht.
 - **UI** (`web-ui/app/_components/SessionWatcher.tsx`, `renewSession()` in
   `_lib/api.ts`): Erfolg setzt die Phase von `warning` zurück auf `normal`
   und plant die Timer neu. Ein Heartbeat, der vor der Verlängerung losging,
@@ -2172,6 +2383,380 @@ und Restrisiken: `docs/security-architecture.md` → „Session renewal“.
 
 Tests: `test/auth/renewRoute.test.ts`, `test/auth/entraProviderRevalidate.test.ts`,
 `test/auth/sessionJwt.test.ts`, `web-ui/app/_components/__tests__/SessionWatcher.test.tsx`.
+
+#### Serverseitiger Sitzungs-Widerruf (`users.session_version`)
+
+Ohne Serverzustand konnte nichts eine Sitzung vorzeitig beenden: Abmelden
+löschte nur das Browser-Cookie, ein Admin-Passwort-Reset nur den Hash, und eine
+Kopie des Cookies lief bis `exp` weiter (und ließ sich bis zur Obergrenze
+verlängern). Jetzt gibt es einen Marker pro User.
+
+- **Migration** `src/auth/migrations/0003_users_session_version.sql`:
+  `users.session_version INTEGER NOT NULL DEFAULT 0`, additiv und idempotent.
+- **Claims** (`auth/sessionJwt.ts`): `sv` (Version der Zeile beim Minten),
+  `uid` (`users.id`, bindet das Token an genau diese Zeile) und `sid`
+  (Zufalls-ID pro Anmeldung, wird noch nicht geprüft). Alte Tokens ohne `sv`
+  gelten als Version 0 — so startet jede bestehende Zeile, das Upgrade meldet
+  also niemanden ab. Ohne `uid` bindet ihre Anmeldezeit (`auth_time`, ganze
+  Sekunden) sie an die Zeile: eine später angelegte Zeile (gelöscht und neu
+  angelegt) trägt sie nicht, obwohl sie wieder bei Version 0 startet. Die
+  erste Verlängerung setzt die `uid` der geprüften Zeile.
+- **Prüfung** in `evaluateSessionToken` über `SessionRevocationGuard`
+  (`auth/sessionRevocation.ts`, in `index.ts` einmal gebaut und nach
+  `new UserStore(graphPool)` per `attach` verdrahtet): Zeile weg, `disabled`,
+  andere `id` oder andere Version → 401 `auth.revoked`. Lookup fehlgeschlagen
+  → 503 `auth.unavailable` (Ausfall, kein Urteil über das Cookie). Gilt für
+  `requireAuth`, `ctx.operatorAuth` (`false`), das Channel-WebSocket-Upgrade
+  (roh 401 bzw. 503), `POST /renew` und `GET /me` (60-s-Heartbeat des
+  `SessionWatcher`). Kein Cache: ein Point-Read pro Request.
+- **Wer hochzählt**: `POST /logout` (nur mit noch gültigem Cookie),
+  Admin-Passwort-Reset und Deaktivieren (`UserStore.update(id, {…,
+  revokeSessions: true })`, im selben UPDATE wie Hash bzw. Status). Löschen
+  braucht keinen Bump — ohne Zeile keine Sitzung, und eine neu angelegte
+  Zeile hat eine neue `id` (und für Alt-Tokens ohne `uid` ein jüngeres
+  `created_at` als deren Anmeldung). Das eigene Passwort zurückzusetzen meldet
+  auch einen selbst ab.
+- **Login-Pfade** stempeln `sv`/`uid` aus der geprüften Zeile: Passwort-Login
+  aus demselben Read wie die Hash-Prüfung (`PasswordAuthSuccess.account`),
+  OIDC-Callback aus der upserteten Zeile (für eine deaktivierte Zeile wird
+  keine Sitzung mehr gemintet), `/setup` aus der neu angelegten.
+- **Offene Verbindungen**: Channel-WebSockets schließt die Registry über
+  denselben Guard (`WebSocketRegistryDeps.sessions`): `onRevoked` sofort auf
+  dieser Replica (4403), auf allen anderen vor dem nächsten Frame, sobald
+  dessen letzte Prüfung älter als `WS_SESSION_FRAME_RECHECK_MS` (5 s) ist,
+  bzw. im 60-s-Sweep, solange der Socket schweigt, und am `exp` des Tokens
+  mit 4401 — Details im Abschnitt „Canvas WebSocket-Transport (Omadia UI,
+  PR-11)“. Der Builder-SSE-Stream bleibt nach einem Widerruf noch offen —
+  siehe §13.
+
+Tests: `test/auth/sessionRevocation.test.ts`,
+`test/auth/logoutRevokesSession.test.ts`,
+`test/auth/userStoreSessionVersion.test.ts` (+ `.pg.test.ts`),
+`test/auth/adminUsersRoute.test.ts`, `test/webSocketRegistry.test.ts`.
+
+### Ersteinrichtung `POST /api/v1/auth/setup`: atomar und mit Setup-Token
+
+Der Wizard legt den ersten Admin an und liegt unter dem öffentlichen
+`/api/v1/auth/*`-Präfix, weil es noch keinen Operator gibt. Die Route steckt seit
+dieser Änderung in `routes/authSetup.ts` (wie `/renew` in `authRenew.ts`) und prüft in
+dieser Reihenfolge:
+
+1. **Setup-Token** (`auth/setupToken.ts`), vor allem anderen: Body-Feld
+   `setup_token`, konstant-zeitlicher Vergleich. Fehlt es oder ist es falsch, gibt es
+   403 `auth.setup_token_invalid`. Ein Aufrufer ohne Token bringt den Server damit
+   weder zum Body-Validieren noch zu argon2 noch zum Tabellen-Lock. Einen Header gibt
+   es nicht.
+2. **`resolveSetupState`**, dasselbe Prädikat, das `GET /providers` als
+   `setup_required` meldet, in dieser Reihenfolge: 410
+   `auth.setup_no_local_provider`, 410 `auth.setup_locked` (es gibt Nutzer, egal was
+   der Boot entschieden hat, also wie bisher), 410 `auth.setup_disabled` (Tabelle
+   jetzt leer, beim Boot aber nicht; ein Neustart öffnet den Wizard wieder).
+3. Body-Validierung und optionaler Anthropic-Key-Ping (OB-61, unverändert), dann
+   argon2 **außerhalb** des Locks, in einem Slot der globalen argon2-Kapazität des
+   Anmelde-Limiters (`acquireSlot()`; keiner frei → 503 `auth.busy` mit
+   `Retry-After`, siehe „Passwort-Anmeldung mit Rate-Limit“).
+4. **`UserStore.createFirstAdmin`**: eine Transaktion mit `SET LOCAL lock_timeout =
+   '2000ms'`, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`, `COUNT(*)` unter dem
+   Lock, INSERT, Audit-Zeile `auth.first_admin_create`, Löschen des gespeicherten
+   Setup-Tokens, COMMIT. `not_empty` wird zu 410 `auth.setup_locked`, ein Lock-Timeout
+   (55P03) zu 409 `auth.setup_in_progress`. Der Lock wartet auch auf Writer außerhalb
+   dieses Pfads (OIDC-Erstanmeldung, Admin-UI-Create). Plain-SELECTs blockiert er nicht.
+5. Session-Cookie, das Geräte-Cookie des Anmelde-Limiters (an die eben geschriebene
+   Zeile und ihren Hash gebunden), `markLoginNow`, Antwort wie bisher.
+
+Woher das Token kommt (Boot-Wiring `initSetupToken` in `index.ts`):
+
+- `ADMIN_SETUP_TOKEN` gesetzt → dieses Token, es wird nie geloggt.
+- Kein Setup auf diesem Boot → kein Token, ein altes gespeichertes wird gelöscht.
+- Desktop-Kernel (`OMADIA_DESKTOP_EMBEDDED=true` **und** Loopback-`HOST`) → kein Token.
+  Eine Hälfte allein reicht nicht.
+- Sonst generiert, set-if-absent in `platform_settings` (`auth.setup_token`)
+  gespeichert, also auf allen Replicas und über Neustarts gleich, und einmal pro Start
+  geloggt: `[auth] bootstrap: /setup wizard unlocked — setup token: …`.
+
+`GET /providers` liefert zusätzlich `setup_token_required`. Die Setup-Seite der Web-UI
+fragt das Token nur dann ab und zeigt für 403, 409 und beide 410-Codes eigene Texte.
+Der Env-Seed (`ADMIN_BOOTSTRAP_*`, `auth/bootstrap.ts`) läuft ebenfalls über
+`createFirstAdmin`. Verliert eine Replica das Rennen, loggt sie einen Skip statt an
+23505 zu sterben. Den ungenutzten Präfix `/api/v1/setup` gibt es in
+`auth/publicPaths.ts` nicht mehr; in `CORE_RESERVED_ROOTS` bleibt er, damit kein
+Plugin ihn beanspruchen kann.
+
+Sicherheitsbegründung und Restrisiken: `docs/security-architecture.md` §10l.
+Konfiguration: §10 „Ersteinrichtung“.
+
+Tests: `test/auth/setupRoute.test.ts`, `test/auth/setupToken.test.ts`,
+`test/auth/userStoreFirstAdmin.test.ts`, `test/auth/bootstrap.test.ts`, gegen echtes
+Postgres `test/auth/userStoreFirstAdmin.pg.test.ts` und
+`test/auth/setupRouteConcurrency.pg.test.ts`; UI
+`web-ui/app/setup/__tests__/page.test.tsx`; Desktop
+`desktop/test/supervisorKernelEnv.test.mts`.
+
+### Passwort-Anmeldung mit Rate-Limit (`POST /api/v1/auth/login/:providerId`)
+
+Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` und
+`/setup`), der Limiter in `auth/loginRateLimiter.ts`. Reihenfolge, das Billigste zuerst:
+
+1. Unbekannter oder Nicht-Passwort-Provider → 404 `auth.unknown_provider`, ohne Budget
+   und ohne argon2.
+2. **Limiter** mit drei Schichten, nacheinander. Welche greifen, hängt von der Art des
+   Client-Keys ab (`LoginClientKind`): `device` (gültiges Geräte-Cookie für das Konto),
+   `address` (eine Adresse, für die ein vertrauenswürdiger Proxy bürgt: `xff:<n>`,
+   `header:<name>`) oder `shared` (der TCP-Peer, in jeder ausgelieferten Topologie ein
+   Proxy, hinter dem alle Browser stehen).
+   - **Client** (nur `address`): Leaky Bucket über Fehlversuche, Burst 100, danach einer
+     pro 6 s. Voll → 429 `auth.rate_limited`, Retry-After höchstens 15 s. Ein
+     `shared`-Key fällt heraus: Ein einzelner Absender würde ihn füllen und dann jeden
+     6-s-Schritt selbst nehmen, und alle Browser hinter dem web-ui-Proxy bekämen 429.
+     Ein `device`-Key sieht nur sein eigenes Konto, dort ist die Paar-Schicht strenger.
+   - **Konto × Client** (Paar, alle Arten): 5 freie Fehlversuche, dann Wartezeit
+     1 s × 2^(Fehlversuche − 5) ab dem letzten, gedeckelt auf 2 min → 429. Ein Erfolg
+     löscht das Paar, 30 min nach dem letzten Fehlversuch wird es vergessen. Das Konto
+     ist die eingegebene Adresse, mindestens so grob gefaltet wie die Users-Tabelle
+     vergleicht (`loginAccountKey` in `auth/loginAccount.ts`): Postgres' `LOWER()`
+     macht aus einem großen İ (U+0130) ein schlichtes i und aus jedem Σ ein σ, JS'
+     `toLowerCase()` dagegen i plus Kombinationspunkt bzw. am Wortende ς. Der Schlüssel
+     zerlegt deshalb per NFKD, wirft kombinierende Zeichen weg, schreibt klein und faltet
+     ı zu i und ς zu σ; keine Schreibweise einer Adresse bekommt ein zweites Budget.
+     `LocalPasswordProvider` meldet nur ein Konto an, dessen gespeicherte Adresse auf
+     denselben Schlüssel faltet.
+   - **Global**: höchstens `AUTH_LOGIN_MAX_INFLIGHT` argon2-Läufe gleichzeitig und ein
+     Leaky Bucket, der 300 zugelassene Versuche pro Minute abfließen lässt → 503
+     `auth.busy`. Ohne Geräte-Cookie gibt es höchstens alle Slots bis auf einen und den
+     Bucket bis 240; den letzten Slot und die letzten 60 kann nur `device` nehmen.
+     Verbraucht nur, was die ersten beiden Schichten zugelassen haben.
+
+   Jede Ablehnung trägt `Retry-After` und `retry_after_s`, setzt kein Cookie und ruft
+   `verify` nicht auf. Gezählt wird bei der Zulassung: Ein laufender Versuch zählt bis
+   zum Ergebnis als Fehlversuch, parallele Anfragen überholen das Budget also nicht.
+3. `provider.verify` (argon2) im zugelassenen Versuch. Alles außer Erfolg ist ein
+   Fehlversuch, auch ein Throw. Der globale Slot wird im `finally` frei.
+4. Erfolg: Session-Cookie plus ein frisches **Geräte-Cookie** `omadia_login_device`
+   (`auth/loginDeviceCookie.ts`, `auth/loginDevices.ts`): `v3.<id>.<exp>.<ep>.<tag>`,
+   einmal pro Anmeldung, für das Konto, das der Provider **verifiziert** hat (dessen
+   gespeicherte Adresse, nie die eingegebene). `ep` ist ein Fingerabdruck der
+   Konto-Epoche, gegen die die Anmeldung geprüft hat (SHA-256 über die Users-Zeilen-id
+   und den Passwort-Hash, mit dem der Provider verglichen hat:
+   `AuthSuccess.credentialEpoch`; beim Setup-Wizard die gerade geschriebene Zeile), nie
+   einer danach gelesenen: Landet ein Reset, während eine Anmeldung mit dem alten
+   Passwort noch geprüft wird, ist deren Cookie von Anfang an veraltet, statt an das neue
+   Passwort gebunden zu sein, das sie nie bewiesen hat. `tag` ist ein HMAC über den
+   Geräte-Schlüssel des Kontos (`loginDeviceAccountKey`: gespeicherte Adresse, nur
+   ASCII-Buchstaben klein), id, Ablauf und `ep`; die Schlüssel für Tag und Fingerabdruck
+   sind aus dem Session-Signing-Key abgeleitet, je einer pro Zweck. Der Geräte-Schlüssel
+   ist bewusst **nicht** der gefaltete Konto-Schlüssel des Limiters: Der wirft Schreibweisen
+   verschiedener Konten zusammen, und das Cookie eines Kontos zählte dann für das
+   andere. Ein Jahr gültig, HttpOnly/SameSite=Lax/Path=/. Bekannter Browser ist eine
+   Anfrage, deren Adresse den Geräte-Schlüssel des Cookies hat und deren Users-Lookup
+   über diesen Schlüssel auf der Zeile landet, für die es ausgestellt wurde, unter deren
+   aktueller Epoche; nur ASCII-Kleinschreibung hält diesen Lookup dort, wo der Lookup der
+   eingegebenen Adresse landet. Dann ist der Client-Key `device:<id>` statt der Adresse.
+   Alle bekannten Browser eines Kontos teilen sich **ein** Paar: Weitere Geräte-ids
+   bringen weder weiteres Budget noch einen weiteren Anteil an der Reserve. Hinter dem
+   web-ui-Proxy teilen sich sonst alle Browser eine Adresse, und die Fehlversuche eines
+   Angreifers würden den Operator mit bremsen. Passwort-Reset, Deaktivieren und Löschen
+   machen frühere Cookies wertlos (neuer Hash bzw. keine Epoche); `routes/adminUsers.ts`
+   ruft dafür (und beim Anlegen) `loginDevices.forget` mit dem Geräte-Schlüssel, damit
+   der 10-s-Cache der Epoche sofort neu liest. Nachgeschlagen wird die Epoche nur für
+   ein Cookie, dessen Tag stimmt, und pro Geräte-Schlüssel nur einmal gleichzeitig. Nur
+   eine Passwort-Anmeldung (und der Setup-Wizard) stellt das Cookie aus; eine Session
+   allein nicht, `GET /me` und `/renew` setzen keins.
+
+Der Client-Key kommt aus `AUTH_LOGIN_CLIENT_ADDRESS` (`auth/clientAddress.ts`): `socket`
+(Default), `xff:<n>` (n-ter `X-Forwarded-For`-Eintrag von **rechts**) oder
+`header:<name>`, nie `req.ip`. `clientAddressFor` liefert `{ key, shared }`: der
+Socket-Peer (Default oder Rückfall) ist `shared`. Der Wert muss eine IP sein, sonst gilt
+der Socket-Peer. IPv6 zählt pro Präfix, `AUTH_LOGIN_IPV6_PREFIX` Bit lang (Default 64).
+
+Bleibt offen: Wer sich einen Key teilt, teilt dessen Paare. Ein Absender, der alle
+2 Minuten auf ein Konto falsch rät, hält das Paar für jeden Browser ohne Geräte-Cookie
+auf demselben Key zu, etwa für die erste Anmeldung auf einem neuen Gerät. Vor argon2
+lässt sich der Browser nicht vom Absender unterscheiden (§10m „What stays open“).
+Ebenso teilen sich die bekannten Browser eines Kontos ihr Paar: Wer ein aktuelles
+Geräte-Cookie hält (dazu braucht es eine Anmeldung mit dem Passwort), kann sie warten
+lassen, bekommt aber nur ein Budget pro Konto. Reaktivieren ohne Passwort-Reset lässt
+frühere Cookies wieder gelten; ihre Inhaber gewinnen dadurch nichts, sie haben sich alle
+mit genau diesem unveränderten Passwort angemeldet. Konten, deren Adressen auf denselben
+Schlüssel falten (Akzente, Kompatibilitätsformen, Kombinationspunkt), teilen sich alle
+Paare, auch das der bekannten Browser.
+
+Weitere Stellen: `/setup` holt sich für seinen argon2-Hash einen globalen Slot
+(`acquireSlot()`, sonst 503 `auth.busy`) und setzt nach Erfolg ebenfalls das
+Geräte-Cookie. Admin-Passwort-Reset und Reaktivierung (`PATCH status: 'active'`) in
+`routes/adminUsers.ts` rufen `clearAccount` mit dem gefalteten Konto-Schlüssel (alle
+Schreibweisen); Anlegen, Reset, jede Statusänderung und Löschen rufen
+`loginDevices.forget` mit dem Geräte-Schlüssel. `LocalPasswordProvider` lehnt Passwörter
+über 1024 Zeichen vor dem Users-Lookup ab. Die erste Ablehnung pro (Schicht, Client)
+und Minute schreibt eine Logzeile und eine Audit-Zeile `auth.login_rate_limited`, beide
+ohne das Konto. Boot-Wiring: `createLoginGuard` in `index.ts`, ein Limiter und ein
+Geräte-Cookie-Register (`devices`) pro Prozess, dieselben für Auth-Router und
+Admin-Users-Router. Ein Auth-Router ohne `loginLimiter`-Dep baut sich beides selbst mit
+Defaults. Die Login-Seite zeigt für beide Codes „bitte N Sekunden warten“
+(`login.tooManyAttempts`).
+
+Sicherheitsbegründung und Restrisiken (u. a. in-memory pro Prozess, Replicas
+multiplizieren die Grenzen): `docs/security-architecture.md` §10m. Konfiguration: §10
+„Anmelde-Rate-Limit“.
+
+Tests: `test/auth/loginRateLimiter.test.ts`, `test/auth/loginRateLimiterFairness.test.ts`,
+`test/auth/clientAddress.test.ts`, `test/auth/loginRoute.test.ts`,
+`test/auth/loginLockoutDos.test.ts`, `test/auth/loginDevices.test.ts`,
+`test/auth/loginDeviceRevocation.test.ts`, `test/auth/loginAccount.test.ts`,
+`test/auth/loginAccountAliases.test.ts` (Harness in `test/auth/loginHarness.ts`, mit
+dem echten Admin-Users-Router und einer Users-Tabelle, die wie Postgres' `LOWER()`
+vergleicht), `test/auth/adminUsersRoute.test.ts`, `test/auth/localPasswordProvider.test.ts`;
+Postgres `test/auth/loginAccountFold.pg.test.ts`; UI
+`web-ui/app/login/__tests__/page.test.tsx`.
+
+### Replay-Ledger: ein Verifier-Wiedereintritt führt keinen Write aus
+
+`VerifierService` betritt in `enforce` einen Turn erneut — Borderline-Resample
+(`chat()`), Correction-Retry (`chat()` und Stream, nicht bei Canvas-Turns).
+Früher war jeder Wiedereintritt ein kompletter neuer Turn, der alle Tools des
+Modells wieder ausführte; ein Write lief so zwei- bis dreimal pro Nachricht.
+Jetzt erzeugt ein Wiedereintritt nur die Antwort neu:
+
+- **Bindung.** `bindRequestLedger` (`verifierReentry.ts`) legt vor dem ersten
+  Lauf einen `ToolReplayLedger` (`toolReplayLedger.ts`) an und bindet ihn per
+  `Orchestrator.bindToolReplayLedger(input, ledger)` an das Input-Objekt
+  (WeakMap, wie `markScreeningReentry`; Rückgabe ist die Freigabe am Ende der
+  Anfrage). Trägt der Input schon einen anderen Ledger, wirft die Bindung
+  (zwei Anfragen auf einem Input-Objekt spielten sonst gegenseitig ihre
+  Ergebnisse ab); ein Resample bindet den eigenen Ledger erneut.
+  `runTurnCore`/`chatStream` lesen ihn in der **ersten** Zeile, vor
+  dem Umbinden von `input`, und legen ihn als `turnContext.toolReplayLedger`
+  ab. Ohne Bindung bekommt jeder Turn einen turn-lokalen Ledger ohne
+  Ergebnisse (nur für die Wiederholungssperre unten).
+- **Nähte.** `dispatchToolDeadlined` (Orchestrator), `LocalSubAgent.dispatch`
+  (`subagent:<name>`) und `ToolDispatchService.invoke` (`dispatch`, CLI-Sub-
+  Agent über den Loopback-Snapshot) fragen `decide()` vor dem Handler: im
+  ersten Lauf `execute` + `record()` (Rohergebnis nach der Deadline-Firewall
+  oder die geworfene Exception), im Wiedereintritt `replay` über Cursor pro
+  (Naht, Tool, kanonischer Input), die `beginReentry()` zurücksetzt — Resample
+  und Retry spielen also beide Lauf 1 ab. Fehlt ein Call: nur Kernel-Lese-
+  Tools (`replayClassOf`: KG-Abfrage, `query_dataset`, `read_attachment`,
+  `find_free_slots`, Roster, Memory-`view`) laufen frisch, alles andere wird
+  mit `replayMissNotice` verweigert und setzt `abortedTool`. Was ein Tool im
+  ersten Lauf über seinen Attachment-Sink abgab (Diagramm, Office-Datei),
+  hält der Ledger fest (`drainAttachments` → `recordAttachments`) und gibt es
+  für im Wiedereintritt abgespielte Tools einmal pro Lauf zurück — bei einem
+  Replay bleibt der Sink ja leer.
+- **Abbruch.** Post-Batch-Check in beiden Tool-Loops und im `LocalSubAgent`,
+  dazu der autoritative Check am Ende von `runTurnCore` bzw. am Terminal-Event
+  im Stream (fängt Direct-Line und gefaltete Sub-Agent-Antworten).
+  `ToolReplayAbortError` → Resample behält die erste Antwort, Retry hält sie
+  mit `failed` zurück. Wirft ein Wiedereintritt aus anderem Grund, loggt
+  `reentryFailureLine` nur Run-ID, Fehlerklasse und `reentry_turn_failed`,
+  nie die Fehlermeldung. MCP-Input-Card-Antworten und aufgezeichnete
+  MRTR-Sentinels/Connect-Prompts sind nicht abspielbar → Abbruch.
+- **Sub-Agent unter Privacy Shield.** Hat ein Domain-Tool-Dispatch Datasets
+  gebrückt oder ein Bypass-Tool genutzt, wird der Sub-Agent im
+  Wiedereintritt neu ausgeführt (`rerun`), seine inneren Calls werden
+  abgespielt und im neuen Scope neu interniert; sonst wird das Ergebnis samt
+  Sub-Agent-Events (Trace, Postconditions) abgespielt.
+- **Eine Anfrage, ein Datensatz — der gelieferte.** Ein Wiedereintritt feuert
+  keine Per-Call-Hooks (`onBeforeTurn`, `onAfterToolCall`), ingestiert kein
+  MCP-Ergebnis erneut in den KG und bucht keinen Bypass erneut. Der Trace
+  markiert abgespielte Calls mit `replayed` (plugin-api 1.21.0).
+  Commit-on-Delivery (`requestTurnRecord.ts`): Solange ein Request-Ledger
+  gebunden ist (`defersTurnRecord`), schreibt **kein** Lauf — auch nicht der
+  erste — Session-Log/Fact-Extraction/Auto-Promotion oder feuert
+  `onAfterTurn`; jeder Lauf bietet seine Zeile an (`TurnRecordWriter`,
+  `turnRecordWriter.ts`: `recordRow` / `offerRow` →
+  `ledger.turnRecord.offer(pass, …)`) und notiert seine Antwort
+  (`Orchestrator.afterTurn` → `noteAnswer`). Der Verifier committet nach dem
+  Urteil den gelieferten Lauf (bei Zurückhalten den, über den das Endurteil
+  ging): `asRequestResult` / `finishRequestDone` →
+  `turnRecord.commit(pass)`; `prepareReentry` liefert die Pass-Nummer. Die
+  Zeile trägt die Entities aller Läufe, wird im Turn-Scope ihres Laufs
+  geschrieben (`AsyncLocalStorage.snapshot()`, wegen Usage-Attribution),
+  danach `onAfterTurn` im Hook-Kontext des ersten Laufs (der Plan-Runner
+  hängt dort); `onVerifierBlocked` wartet auf den Commit
+  (`afterRequestRecord`), damit er wie vorher nach `onAfterTurn` kommt.
+  `done.turnId` nennt die committete Zeile. Ohne Lieferung committet das
+  `finally` den ersten Lauf. Die Receipts aller Läufe sammelt
+  `ledger.receipts` (`requestReceipts.ts`); geliefert wird das gemergte
+  Receipt, und genau **eine** `turn_receipts`-Zeile wird nach dem letzten
+  Lauf geschrieben (`receiptId` im Stream). Ein Lauf, der wirft oder dessen
+  Stream vor `done` endet (`error`, Client weg — auch schon im Vorlauf, an
+  den `onBeforeTurn`-Annotationen nach einem MCP-Input-Card-Replay),
+  übergibt nichts; der Orchestrator schließt ihn selbst
+  (`closeUndeliveredPass`, samt Auth-Kontext) und behält sein Receipt — in
+  der Zeile der Anfrage oder ohne Request-Ledger als eigene Zeile. Vorher
+  wurde es verworfen. Jeder Lauf mit Receipt bietet an, die Zeile zu
+  besitzen; sie gehört dem frühesten (`BoundPass`: Pass-Nummer bei
+  Laufbeginn, nicht Finalisierungs-Reihenfolge) — dem ersten Lauf, sobald er
+  ein Receipt hat, sonst dem frühesten Wiedereintritt mit einem. Eine
+  Anfrage, deren einziges Receipt von einem abgebrochenen, geworfenen oder
+  verlassenen Wiedereintritt stammt, bekommt so trotzdem ihre Zeile.
+- **Abgekoppelte Arbeit.** Der Runner eines langlaufenden Tasks
+  (`<tool>_start`, `tasks/longRunningTool.ts`) startet unter
+  `runDetachedFromRequestLedger` mit eigenem turn-lokalem Ledger: er läuft
+  nach dem Turn weiter, auch während eines Wiedereintritts, und darf weder
+  gegen den Replay-Modus der Anfrage laufen (Miss → Task `failed`,
+  Wiedereintritt abgebrochen) noch deren Rohergebnisse am Leben halten.
+- **Wiederholungssperre.** Unabhängig vom Verifier verweigert jede Naht die
+  identische Wiederholung eines Write-Calls, dessen Ausgang unbekannt ist
+  (geworfen oder Withheld-Notiz), für die ganze Anfrage — damit auch in den
+  Eltern-Loops und beim CLI-Sub-Agent (offener Punkt aus der
+  Tool-Fehler-Politik, §13).
+- **Uploads einmal pro Anfrage.** `ingestAttachments` läuft vor dem Modell und
+  außerhalb des Tool-Dispatch; ein CSV/XLSX wird dabei per
+  `importTabularDataset` → `KnowledgeGraph.ingestDataset` als **neues**
+  Dataset angelegt (kein Dedupe). Beide Pfade rufen deshalb
+  `ingestAttachmentsForPass` → `ledger.ingestAttachmentsOnce`: Lauf 1
+  ingestiert und hält das Ergebnis (Text/`[dataset-imported]`-Blöcke **vor**
+  dem Masking, Bild-Blöcke), jeder Wiedereintritt bekommt genau das zurück
+  und maskiert es über seine eigene Prompt-Map — gleiche `dataset_id` wie in
+  den abgespielten Tool-Ergebnissen. Findet ein Wiedereintritt nichts,
+  bricht er vor dem Modellaufruf ab (`REENTRY_ABANDONED.attachmentsNotRecorded`).
+  Single-Flight: ein Lauf, der fragt, während der erste Import noch läuft,
+  wartet auf diesen Import, statt einen zweiten zu starten.
+- **Correction-Hint = Wire-Inhalt.** `wireExtraSystemHint` maskiert den
+  `extraSystemHint` des Aufrufers über die Prompt-Map des Laufs wie die
+  User-Nachricht (gleiche Surrogate, Spans im Receipt → `maskedPromptSpans`
+  im gemergten Request-Receipt); der Fresh-Check-Text des Kernels bleibt
+  unmaskiert. `PromptMaskBlockedError` in einem Wiedereintritt bricht ihn ab
+  (`REENTRY_ABANDONED.promptMaskBlocked`) statt die Privacy-Fehlerantwort zu
+  liefern; der erste Lauf behält sein Verhalten. Hinter einem Shield schickt
+  der Verifier einen Hint, den die Maskierung des widersprochenen Laufs
+  verändern würde, gar nicht (`privacySafeCorrection` → Retry zurückgehalten,
+  Badge `failed`); ein Hint, der durchgeht, wird genau einmal maskiert, vom
+  Retry-Lauf selbst. `buildCorrectionPrompt`
+  (`@omadia/verifier`) nennt nur noch die Claims (Wortlaut der Antwort),
+  Call-IDs und feste Anweisungen — kein `truth`, kein `detail`, keine
+  Postcondition-Issues: die Evidenz holt der Verifier mit eigenem Zugriff
+  (KG mandantenweit, Odoo-Reader des Plugins), nicht mit den Grants des Users.
+  Abbruchgründe ohne Tool tragen Namen (`REENTRY_ABANDONED`,
+  `describeAbandonment`, `reentryAbandonment.ts`), die Log-Zeilen nennen sie.
+- **Unterhalb des Ledgers.** Solange ein Request-Ledger gebunden ist, läuft
+  der Handler jeder Naht über `runHandlerAtMostOnce` (`toolReplayLedger.ts`,
+  auch der MCP-Input-Card-Replay): das Signal `sendsEachCallOnce`
+  (`toolIdempotency.ts`, eigener AsyncLocalStorage — übersteht die Re-Scopes
+  von Skill-Bindung und `ctx.mcp`) lässt `McpManager.callTool` nur einen
+  Versuch machen, also keinen Transport-Retry nach einem transienten Fehler,
+  der „ausgeführt, Antwort verloren“ nicht von „nie ausgeführt“
+  unterscheiden kann. Turns ohne Request-Ledger behalten den einen Retry
+  (#542; offener Punkt in §13). Wirft `internToolResultV4`, geben alle Nähte
+  (Orchestrator-Dispatch, `LocalSubAgent`, `ToolDispatchService`,
+  MCP-Input-Card-Replay) die Notiz `internFailedNotice`
+  (`privacyInternPolicy.ts`) statt des Rohergebnisses ans Modell, im ersten
+  Lauf wie im Wiedereintritt; `query_dataset` behält seinen eigenen Text.
+
+Schalter: `verifier_resample_on_borderline` (§10). Sicherheitsbegründung,
+Grenzen und Reviewer-Regeln: `docs/security-architecture.md` §7c und §11.
+Tests: `test/toolReplayLedger.test.ts`, `test/toolReplaySeams.test.ts`,
+`test/verifierServiceWriteSafety.test.ts`, `test/verifierStreamRetry.test.ts`,
+`test/verifierReentryRecords.test.ts`, `test/verifierDeliveredTurnRecord.test.ts`,
+`test/requestTurnRecord.test.ts`,
+`test/verifierSubAgentReplay.test.ts`, `test/verifierResampleKillSwitch.test.ts`,
+`test/longRunningTaskReplayLedger.test.ts`,
+`test/orchestrator/parentLoopThrownCallRepeat.test.ts`,
+`test/verifierReentryAttachments.test.ts`,
+`test/verifierCorrectionHintPrivacy.test.ts`,
+`test/correctionPromptEvidence.test.ts`, `test/mcpWriteIdempotency.test.ts`,
+`test/orchestrator/internFailureFailsClosed.test.ts`,
+`test/orchestratorPrivacyEgress.test.ts`.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -2384,7 +2969,29 @@ Siehe `docs/security-architecture.md` §10.
 
 Wird vom Orchestrator aufgerufen, wenn der User auf prior art verweist.
 End-to-End verifiziert: der Orchestrator nutzt das Tool von selbst, ohne
-dass man ihn zwingt.
+dass man ihn zwingt. `find_entity` (und das Sub-Agent-Tool `query_graph`)
+bleiben bei `name_contains`, also einer Substring-Suche.
+
+### Exakte Entity-Auflösung: `findEntities({ model, id })` (plugin-api 1.21.0)
+
+`FindEntitiesOptions.id` adressiert genau einen Datensatz über seine Quell-ID
+(`props.id`, Odoo-Record-ID oder Confluence-Page-ID). Beide Backends
+vergleichen als String nach `trim()` (`7` ≡ `'7'`), eine fehlende oder leere
+ID liefert `[]`, nie einen Nachbar-Datensatz; mit `nameContains` kombiniert
+gelten beide Bedingungen. Die extras-Wrapper reichen `opts` unverändert durch.
+`nameContains` bleibt Suche, keine Identität: `'7'` trifft 7, 17 und 70.
+
+Der Verifier nutzt das an zwei Stellen: `GraphEvidenceFetcher` löst jedes
+Entity-Handle mit ID (`odoo:hr.employee:7`, `hr.employee:7`) exakt auf und
+prüft Modell/ID/System des Treffers nach; ein Claim mit so einem Handle
+bekommt nur diese Datensätze (kein Modell-Sample, keine Namenssuche), fehlt
+der Datensatz, bleibt der Claim `unverified`. `DeterministicChecker.checkGraph`
+prüft `odooRecord.id` exakt; ein Miss ist dort ebenfalls `unverified` (der
+Graph ist ein Teil-Spiegel, fehlend heißt nicht falsch). `EvidenceJudge`
+stuft ein Verdikt, das einen anderen Datensatz eines gepinnten Modells zitiert,
+auf `unverified` herab. Nur `OdooEntity`/`ConfluencePage` — Plugin-Namespaces
+(`PluginEntity`) sind über `findEntities` nicht erreichbar. Begründung und
+Grenzen: `docs/security-architecture.md` §7c.
 
 ### Structured Datasets — CSV Import (#430)
 
@@ -2524,9 +3131,41 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 |---|---|
 | `AUTH_SESSION_MAX_LIFETIME_HOURS` | Absolute Obergrenze einer Verlängerungskette in Stunden, gemessen ab der **ursprünglichen** Anmeldung (`auth_time`), nicht ab der letzten Verlängerung. Default `12`, erlaubt `4`–`168` (zod-validiert beim Boot). Jeder Login und jede „Ich bin noch da“-Verlängerung gibt ein 4h-Fenster, geklemmt auf diese Grenze; danach antwortet `POST /api/v1/auth/renew` mit 401 `auth.renew_expired` und die UI verlangt einen neuen Login. Werte unter 4 wären sinnlos, weil schon das Login-Fenster 4h lang ist. |
 
+Die Obergrenze bindet nur Sitzungen, die niemand beendet: Abmelden,
+Admin-Passwort-Reset, Deaktivieren und Löschen beenden alle Sitzungen des
+Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf“)
+— ohne eigene Env-Variable.
+
+| Variable | Wirkung |
+|---|---|
+| `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
+
+### Ersteinrichtung
+
+Siehe §3 „Ersteinrichtung `POST /api/v1/auth/setup`“ und `docs/security-architecture.md` §10l.
+
+| Variable | Wirkung |
+|---|---|
+| `ADMIN_SETUP_TOKEN` | Setup-Token, das der Wizard im Body-Feld `setup_token` verlangt. 16 bis 512 Zeichen (sonst bricht der Boot mit Config-Fehler ab), ein leerer Wert gilt als nicht gesetzt (`optionalNonEmpty`). Nicht gesetzt: Die Middleware generiert beim Start ein Token, speichert es in `platform_settings` (gleich auf allen Replicas und über Neustarts, bis der erste Admin existiert) und loggt es einmal pro Start (`setup token: …`). Ein gesetzter Wert wird nie geloggt. Wer den Wert vor dem ersten Start kennen will (etwa für ein Deploy-Skript), setzt ihn selbst (`openssl rand -base64 24`). |
+| `OMADIA_DESKTOP_EMBEDDED` | `true`/`false`, Default `false`. Setzt **nur** der Supervisor der Desktop-App. Zusammen mit einer Loopback-`HOST` braucht der Wizard kein Token. Allein wirkt der Schalter nicht, und `HOST=127.0.0.1` ohne ihn auch nicht (Reverse-Proxy auf demselben Host). Nicht auf Servern setzen. |
+| `HOST` | Bind-Adresse des Kernels, Default `::`. Für die Setup-Token-Ausnahme zählt nur eine literale Loopback-Adresse (`127.0.0.0/8`, `::1`, `::ffff:127.x`), kein `localhost`. |
+| `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD`, `ADMIN_BOOTSTRAP_DISPLAY_NAME` | Deklarativer Seed statt Wizard: Ist die `users`-Tabelle beim Boot leer und sind E-Mail und Passwort (mindestens 8 Zeichen) gesetzt, legt der Boot diesen Admin über `createFirstAdmin` an. Der Wizard bleibt dann zu. Ungültige Werte loggen den Grund und fallen auf den Wizard zurück. |
+
+### Anmelde-Rate-Limit
+
+Siehe §3 „Passwort-Anmeldung mit Rate-Limit“ und `docs/security-architecture.md` §10m.
+Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konstanten in
+`auth/loginRateLimiter.ts`, nur die drei Einsatz-Fakten sind konfigurierbar.
+
+| Variable | Wirkung |
+|---|---|
+| `AUTH_LOGIN_CLIENT_ADDRESS` | Woher der Limiter die Client-Adresse nimmt. `socket` (Default): der TCP-Peer, nicht fälschbar, gilt als geteilter Key (keine Client-Bremse); hinter einem Proxy teilen sich alle Clients dessen Adresse, das Geräte-Cookie trennt wiederkehrende Operatoren. `xff:<n>` (1..8): der n-te `X-Forwarded-For`-Eintrag von **rechts**, n = Zahl der vertrauenswürdigen Proxies davor, die die Client-Adresse an den Header **anhängen**. Compose hinter Caddy oder Traefik (hängen standardmäßig an) oder nginx mit `$proxy_add_x_forwarded_for`: `xff:1`, sofern nichts an diesem Proxy vorbei zum web-ui kommt; einmal mit ausgedachtem `X-Forwarded-For` prüfen, die Logzeile `[auth] login refused` muss die echte Adresse zeigen. `header:<name>`: ein Header, den die Edge **setzt**, genau eine Adresse. **Fly.io: `header:Fly-Client-IP`** (setzt `fly/middleware.fly.toml`), nicht `xff:1`: Fly stellt laut Doku die eigene IP der App rechts in `X-Forwarded-For`, damit hätten alle Clients denselben Key. Hinter Cloudflare `header:CF-Connecting-IP`, nur wenn die App nicht an Cloudflare vorbei erreichbar ist. Nie der linke `X-Forwarded-For`-Eintrag, den schreibt der Client. Ohne vorgeschalteten Proxy im Compose-Stack beim Default bleiben: Der web-ui-Proxy reicht den Header des Browsers unverändert durch, Next.js füllt ihn nur, wenn er fehlt. Ungültiger Wert → Config-Fehler beim Boot, leerer Wert = Default. |
+| `AUTH_LOGIN_IPV6_PREFIX` | Wie viele führende Bit einer IPv6-Adresse einen Client ausmachen. Default `64`, erlaubt `32`–`64`. Ein /56 enthält 256 /64, ein /48 65.536, bei 64 jedes ein eigener Client-Key mit eigenem Burst. 56 oder 48 fasst so eine Zuteilung zu einem Key zusammen, aber auch fremde Clients, die sich eine teilen (Mobilfunk, Hoster). |
+| `AUTH_LOGIN_MAX_INFLIGHT` | Gleichzeitige argon2-Läufe (Anmeldung und Setup-Hash), danach 503 `auth.busy`; einer davon bleibt Browsern mit Geräte-Cookie vorbehalten (bei `1` keiner). Default `4`, erlaubt `1`–`16`. Jeder Lauf braucht 19 MiB und einen Thread des libuv-Pools (`UV_THREADPOOL_SIZE`, Default 4); mehr Slots als Pool-Threads stehen nur Schlange. 16 × 19 MiB ≈ 300 MiB. |
+
 ### Test-Schalter (nicht von der Middleware gelesen)
 
-Drei Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
+Vier Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
 AGENTS.md jede Env-Variable an einer Stelle dokumentiert haben will:
 
 | Variable | Wirkung |
@@ -2534,6 +3173,18 @@ AGENTS.md jede Env-Variable an einer Stelle dokumentiert haben will:
 | `OMADIA_EXPECT_LOOPBACK=1` | Die Loopback-MCP-Tests **scheitern** statt sich selbst zu überspringen, wenn die Sandbox keinen 127.0.0.1-Listener erlaubt. Ohne das meldet ein Runner ohne Listener die ganze Datei grün, ohne etwas zu prüfen (#1017). CI setzt es. |
 | `OMADIA_CLI_LIVE_PROBE=1` | Startet die Live-Probe: echte `claude`-CLI mit dem Produktions-argv, die einen Shell-Befehl ablehnen muss. Kostet Abo-Kontingent und braucht eine eingeloggte CLI, daher opt-in. |
 | `OMADIA_CLI_NEGATIVE_CONTROL=1` | Ergänzt die Probe um die Gegenprobe mit dem argv von vor #991, das erwartungsgemäß ein Built-in-Tool erreicht. Lässt die CLI dabei bewusst einen Shell-Befehl auf dieser Maschine ausführen, deshalb ein eigener Schalter. |
+| `OMADIA_EMBEDDED_PG_IT=require` | Wird nur vom Desktop-Test `desktop/test/embeddedDb.integration.test.mts` gelesen (läuft mit `npm test` in `desktop/`), nicht von der Desktop-App. Die Datei **scheitert** dann, statt sich zu überspringen, wenn `desktop/node_modules` keine `@embedded-postgres`-Engine für die Plattform enthält oder der Test als root läuft (initdb verweigert root), und statt ihre pgvector-Prüfungen wegzulassen, wenn in der Engine kein pgvector eingespielt ist. Ohne den Schalter meldet ein solcher Lauf die Datei grün, obwohl er weniger oder nichts geprüft hat. Nur der Wert `require` wirkt. Der Workflow `desktop-apps` setzt ihn unter macOS und Linux, nachdem er pgvector eingespielt hat; unter Windows läuft der Test dort nicht, weil die Runner als Administrator laufen und `postgres.exe` unter einem solchen Konto nicht startet. |
+
+### Privacy-Shield-Klammer
+
+Wird vom Dispatch-Hook des Orchestrators gelesen
+(`resolveEffectivePrivacyMode()` in `@omadia/plugin-api`, `privacyMode.ts`),
+nicht über `config.ts`. Seit 2026-10-01 auch in `.env.example` dokumentiert,
+weil das README die Variable nennt.
+
+| Variable | Wirkung |
+|---|---|
+| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Nicht erfasst ist die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Sie läuft vor dem Bypass-Resolver und liest das Server-Flag direkt (`isMcpServerPrivacyBypassed`, nicht `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` auch mit Klammer bis zu 8.000 Zeichen jedes Rohergebnisses als Memory; spätere Turns können sie in den Prompt-Kontext holen, die Memory-Jobs schicken sie an ihren Provider (offen, §13). Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
 
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 
@@ -2544,6 +3195,62 @@ nicht importieren kann.
 | Variable | Wirkung |
 |---|---|
 | `OMADIA_CLI_SPAWN_TIMEOUT_MS` | Wanduhr-Budget **eines** CLI-geführten Chat-Turns (Shape 3) in Millisekunden, Default `600000`. Vorher fest 120 s ohne Override, während ein einzelner Aufruf des eigenen `query_seo_analyst`-Sub-Agenten 69–75 s dauert — zwei davon waren garantiert über dem Limit. Das Leerlauf-Limit (60 s ohne Ausgabe) bleibt getrennt bestehen. Nicht-numerische oder nicht-positive Werte werden ignoriert. Priorität: explizite `spawnTimeoutMs`-Dependency > ENV > Default. |
+
+### Sandbox-Container-Limits (#576 `execute`, #581 `publish`)
+
+Gelesen vom `@omadia/sandbox`-Package (`resolveSandboxResourceLimits()` in
+`resourceLimits.ts`), nicht über `config.ts`. Gelten für jeden Docker-Container,
+in dem Agent-Code läuft (Sandbox des `execute`-Tools und per `publish`
+veröffentlichte Apps), also nur, wenn `sandbox_execute_enabled` bzw.
+`sandbox_publish_enabled` an ist. Reihenfolge je Wert wie bei OM-104:
+Orchestrator-Setup-Feld > ENV > Default. Die Setup-Felder sind Plugin-Konfiguration
+(`manifest.yaml` des Orchestrators), keine Env-Variablen.
+
+| Variable | Setup-Feld | Default | Wirkung |
+|---|---|---|---|
+| `OMADIA_SANDBOX_MEMORY_MB` | `sandbox_memory_mb` | `512` | `docker run --memory` **und** `--memory-swap` mit demselben Wert, in MiB, ganze Zahl von 6 bis 1048576 (1 TiB): der Container kann nicht über die Grenze hinaus auslagern. |
+| `OMADIA_SANDBOX_CPUS` | `sandbox_cpus` | `1` | `--cpus` von 0.01 bis 1024, Bruchteile erlaubt (`0.5`). |
+| `OMADIA_SANDBOX_PIDS_LIMIT` | `sandbox_pids_limit` | `256` | `--pids-limit`, ganze Zahl von 1 bis 4194304, Prozesse und Threads je Container. |
+
+Leer, `0`, negativ, nicht numerisch oder außerhalb des Bereichs zählt als nicht
+gesetzt; ein „unbegrenzt“ gibt es bewusst nicht. Docker liest nicht nur `0` als
+„kein Limit“, sondern startet auch manche positiven Werte still ohne Limit
+(`--cpus 0.000001` oder `1e64`, `--memory` ab 2^43 MiB oder als `1e+21m` auf
+arm64); die Bereiche (`SANDBOX_RESOURCE_LIMIT_BOUNDS` in `resourceLimits.ts`)
+schließen genau diese Werte aus. Neue Werte gelten für neu erstellte Container;
+eine bestehende persistente Sandbox bekommt sie beim nächsten Wiederanhängen per
+`docker update` (Best-Effort, ein Fehler landet im Log, der Container läuft mit
+seinen alten Limits weiter). Die wirksamen Werte stehen beim Boot in der
+Log-Zeile `sandbox_execute_enabled=true` bzw. `sandbox_publish_enabled=true`.
+Details: `docs/security-architecture.md` §3b.
+
+### Web-UI: Frame-Freigabe (`UI_FRAME_ANCESTORS`)
+
+Gelesen vom **web-ui**-Prozess, nicht von der Middleware:
+`web-ui/proxy.ts` setzt die Operator-UI-Header pro Request aus
+`web-ui/app/_lib/securityHeaders.ts`.
+
+| Variable | Wirkung |
+|---|---|
+| `UI_FRAME_ANCESTORS` | CSP-`frame-ancestors`-Quellenliste für alle Operator-Seiten, z. B. `"'self' https://teams.microsoft.com"` (ganzen Wert in doppelte Anführungszeichen setzen). Ungesetzt: `frame-ancestors 'none'` plus `X-Frame-Options: DENY`. Gesetzt: ersetzt `'none'`, `X-Frame-Options` entfällt, weil es keine Freigabeliste kennt. Ungültige Werte (`;`, `,`, andere Schlüsselwörter, Steuerzeichen) werden mit Warnung im web-ui-Log ignoriert, der Default bleibt. `/p/*` und `/bot-api/*` behalten immer die Header der Middleware. Pro Request gelesen, wirkt also ohne Rebuild auf einem veröffentlichten Image. |
+
+Details: `docs/security-architecture.md` §10h.
+
+### Answer-Verifier (`VERIFIER_*`)
+
+Die Variablen werden beim ersten Boot einmal in die Setup-Felder des Plugins
+`@omadia/verifier` migriert (`bootstrap.ts`, `verifier_*`); danach gelten die
+Setup-Felder, nicht mehr die Env.
+
+| Variable / Setup-Feld | Wirkung |
+|---|---|
+| `VERIFIER_ENABLED` / `verifier_enabled` | `true` schaltet den Verifier-Wrapper ein. Default `false`. |
+| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht nur bei `approved` oder `skipped` (`no_trigger`/`no_claims`) raus, sonst eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort — hinter dem Shield ebenso ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) — geht nie an den Verifier und wird zurückgehalten (`privacy_shield`), außer an einem Turn mit Input-Karte: Die Karten-Ausnahme (`releasesWithoutVerification`) greift vorher und gibt ihn samt gerenderter Antwort ungeprüft frei; `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
+| `VERIFIER_MODEL` / `verifier_model` | Modell für Claim-Extraktion und Evidence-Judge. |
+| `VERIFIER_MAX_CLAIMS` / `verifier_max_claims` | Höchstzahl geprüfter Claims pro Antwort, Default `20`. |
+| `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Relative Betragstoleranz, Default `0.01`. |
+| `VERIFIER_MAX_RETRIES` / `verifier_max_retries` | Correction-Retry nach einem Widerspruch in `enforce`, auf `chat()` (`/api/chat`, Scheduler, Conductor) und im Stream (nicht bei Canvas-Turns); `0` schaltet ihn ab, und hinter dem Shield entfällt er, wenn die Maskierung den Correction-Hint verändern würde. Default `1`, max `2`. Der Retry führt keinen aufgezeichneten externen Call erneut aus, er spielt ihn aus dem Replay-Ledger zurück; nur ein Sub-Agent, der hinter dem Shield Daten interniert oder ein Bypass-Tool gelesen hat, läuft neu, seine eigenen Calls wieder aus dem Ledger (§3 und Security §7c). |
+| `VERIFIER_RESAMPLE_ON_BORDERLINE` / `verifier_resample_on_borderline` | `false` schaltet in `enforce` die zweite Stichprobe für Grenzfall-Antworten ab (nur `chat()`); jeder andere Wert lässt sie an. Default `true`. Die Stichprobe führt, wie der Retry, keinen aufgezeichneten externen Call erneut aus. Wie alle `VERIFIER_*` nur beim ersten Boot übernommen. |
 
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 
@@ -2600,6 +3307,11 @@ DIAGRAM_MAX_SOURCE_BYTES=64000             # Quellcode-Cap
 DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
 # Object-storage (Tigris auf Fly, MinIO lokal — auto-provisioniert via `fly storage create`)
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Lokaler Attachment-Store ohne S3 (platform/attachmentStore.ts). Greift nur, wenn
+# die vier S3-Werte NICHT alle gesetzt sind; wird als `tigrisStore` veröffentlicht.
+# Die Desktop-App setzt ihn, wenn der Wizard-Schalter „Anhänge“ an ist.
+# GET /health → attachments.store: 's3' | 'filesystem' | 'none' (nie Pfad/Bucket).
+ATTACHMENT_STORE_DIR=/data/attachments     # Objekte unter sha256(key), 0700/0600, kein Ablauf
 # Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId
 CONDUCTOR_WEBHOOKS_ENABLED=true
 CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE=60   # Rate-Limit pro Endpoint (rolling minute)
@@ -2613,6 +3325,8 @@ CONDUCTOR_EPHEMERAL_REAPER_INTERVAL_MS=60000     # Reaper-Poll
 GRAPH_TENANT_ID=byte5
 # Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional
 PRIVACY_C1_DETECTOR_URL=http://pii-detector:8812   # unset ⇒ nur C0-Regex-Baseline
+# Offene Channel-WebSockets (Tabelle „Admin-UI-Sitzung“ oben)
+WS_SESSION_FRAME_RECHECK_MS=5000    # 0..60000; 0 = jeder Frame wird geprüft
 # Runtime
 PORT=3979
 ```
@@ -2700,7 +3414,9 @@ Konfiguration (live pro Call aufgelöst, kein Restart nötig): Setup-Field
 unset). URL nicht gesetzt ⇒ C1 unkonfiguriert, es wird **kein** Call
 versucht (kein Degrade-Audit-Noise). Docker: Overlay
 `docker-compose.pii-detector.yaml` baut den Sidecar (keine published Ports —
-er sieht rohe Prompt-PII, niemals öffentlich exponieren) und setzt die URL.
+er sieht rohe Kundendaten: Prompt-Text bei `mask_user_prompt=on` und,
+unabhängig davon, Tool-Fehlertexte und jede Evidence-Judge-Anfrage des
+Verifiers; niemals öffentlich exponieren) und setzt die URL.
 
 Fail-closed-Verhalten des Clients: Response-Schema wird **positiv**
 validiert (skillspector-Präzedenz); Non-200, `ok:false`, malformed Spans,
@@ -2781,12 +3497,129 @@ type ChatStreamEvent =
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; output: string; durationMs: number; isError?: boolean }
   | { type: 'done'; answer: string; toolCalls: number; iterations: number }
+  | { type: 'verifier'; summary: VerifierResultSummary } // nur mit aktivem Verifier, nach `done`
   | { type: 'error'; message: string }
 ```
 
-Genau ein `done` oder `error` schließt den Stream. Header:
+Genau ein `done` oder `error` schließt den Turn; mit aktivem Verifier folgt auf
+`done` noch genau ein `verifier`-Event (siehe unten). Header:
 `Content-Type: application/x-ndjson; charset=utf-8`, `X-Accel-Buffering: no`
 (nginx-buffer-off).
+
+**Antwort-Verifier.** Ist `verifier@1` aktiv, folgt auf `done` noch genau ein
+`{ type: 'verifier'; summary }` (Status/Badge der Prüfung, Werte siehe
+unten). Läuft zusätzlich der Privacy Shield, hält der Wrapper
+`done` zurück, bis der innere Stream gedrained und der Verifier fertig ist:
+`done` trägt dann — sofern der Turn einen hat — den vollständigen Receipt
+(`privacyReceipt` inkl. `verifierEgress`, `receiptId`), direkt danach kommt
+`verifier`. Text-Deltas
+laufen in `shadow` unverändert live, nur der Abschluss wartet (Heartbeats
+laufen weiter); `enforce` hält ohnehin alles Inhaltliche bis zum Urteil
+(Verifier-Gate, unten). Details: `docs/security-architecture.md` §6e.
+
+**Verifier-Event (`verifier`).** `summary` ist ein `VerifierResultSummary`
+(`@omadia/channel-sdk`). Die Werte sind an Evidenz gebunden:
+
+- `status`: `approved` | `approved_with_disclaimer` | `blocked` — es wurden
+  Claims geprüft; `skipped` — der Verifier lief, fand aber nichts Prüfbares;
+  `unavailable` — der Verifier konnte nicht laufen (Extractor- oder
+  Pipeline-Fehler). `approved` heißt: die Extraktion meldet keine Lücke (das
+  Modell hat die ganze Antwort gesehen, seine Liste blieb unter dem
+  Anfrage-Limit, alle `record_claims`-Calls wurden gelesen und jeder
+  zurückgegebene Claim steht vollständig in der Antwort und ist kurz genug
+  für einen Check), und jeder extrahierte Claim ist geprüft und `verified`,
+  mindestens einer. Einen Claim, den das Modell unter
+  dem Limit gar nicht auflistet, sieht keine Prüfung — `approved` heißt also
+  „nichts bekannt Ungeprüftes“, nicht „die Antwort enthält sonst nichts“. Ein
+  Claim, den kein Checker nimmt (Betrag, Datum, ID oder Summe mit
+  Quelle weder Odoo noch Graph) oder der über dem Claim-Limit pro Antwort
+  liegt (`VERIFIER_MAX_CLAIMS`, greift in der Pipeline), bleibt als
+  `unverified` mit `cause: 'not_checked'` im Verdict — eine nur teilweise
+  prüfbare Antwort ist damit `approved_with_disclaimer`, nie `approved`.
+  Ebenso, was die Extraktion nicht erfasst hat: Der `ClaimExtractor` liest
+  die ersten 6000 Zeichen der Antwort (`EXTRACTION_WINDOW_CHARS`) und bittet
+  das Modell um höchstens `VERIFIER_MAX_CLAIMS + 1` Claims; Text jenseits des
+  Fensters, eine bis zu diesem Limit gefüllte Liste (das Modell hat dann
+  womöglich Claims ausgelassen) und Claims, die nicht in der Antwort stehen
+  (`claims_not_in_answer`), meldet er in `ClaimExtraction.gaps`, und die
+  Pipeline hält jede Lücke als `not_checked`-Eintrag (Claim-Typ
+  `coverage_gap`) im Verdict. Der Verbatim-Guard vergleicht ohne Rücksicht
+  auf Groß-/Kleinschreibung und lässt jede Whitespace-Folge auf jede andere
+  passen (ein Zeilenumbruch, den das Modell als Leerzeichen schreibt, zählt
+  als Zitat; der Claim trägt dann den Wortlaut der Antwort). Was dann noch
+  nicht passt — eine Umschreibung oder ein aus einem anderen Satzteil
+  hineingezogenes Subjekt — geht an keinen Checker, verschwindet aber nicht
+  mehr spurlos, sondern ist die Lücke `claims_not_in_answer`. Der Guard
+  vergleicht den ganzen Claim, nie ein gekürztes Präfix (früher wurde jeder
+  Claim vor dem Abgleich auf 300 Zeichen gekürzt und nur sein Anfang
+  geprüft). Ein Claim, der die Antwort zitiert, aber länger ist als
+  `MAX_CLAIM_CHARS` (300 Zeichen; das Tool-Schema verlangt 1-200), wird
+  nicht passend gekürzt, sondern ist die Lücke `claims_too_long`. Der
+  Extractor liest jeden `record_claims`-Call einer Modellantwort, nicht nur
+  den ersten.
+  Fand die Extraktion im erfassten Teil nichts Prüfbares, ist das Verdict
+  `skipped` mit `incomplete_coverage`. Der
+  `ClaimExtractor` wirft, wenn der LLM-Call scheitert, die Antwort am
+  Token-Limit abgeschnitten ist (`finishReason: 'max_tokens'`), sie keinen
+  verwertbaren `record_claims`-Call trägt (keinen, oder einen ohne
+  `claims`-Array) oder ein Eintrag das Schema verletzt, statt eine leere oder
+  halbe Claim-Liste zu liefern: das landet in
+  `unavailable` (`extractor_error`), nie in `skipped` (`no_claims`) oder
+  `approved`.
+- `badge`: braucht einen Check, der einen Claim entschieden hat
+  (`hasVerificationEvidence`): `verified` nur, wenn jeder Claim bestätigt ist;
+  `partial` bei mindestens einem bestätigten und einem offenen Claim;
+  `corrected` nach einem Retry, dessen eigene Prüfung jeden Claim bestätigt
+  hat — bestätigt sie nur einen Teil, ist das Badge `partial` wie beim ersten
+  Durchlauf; `failed` bei einem Widerspruch. Ohne bestätigten Claim ist das
+  Badge `unverified` — auch bei `status` `approved_with_disclaimer`, wenn die
+  Quellen schwiegen — bzw. `unavailable`, wenn jede gelaufene Prüfung
+  scheiterte (Re-Query oder Judge-Call fehlgeschlagen,
+  `cause: 'check_failed'`) oder der Verifier nicht lief.
+- `reason`: nur bei `skipped` (`no_trigger` | `no_claims` |
+  `no_checkable_claims` | `incomplete_coverage`) und `unavailable`
+  (`extractor_error` | `pipeline_error`). Geschlossener Code-Satz, nie eine
+  Fehlermeldung — die bleibt in der Logzeile, wo der Fehler gefangen wird.
+- `uncheckedCount`: Claims, auf denen keine Prüfung lief (`not_checked`); in
+  `unverifiedCount` mitgezählt. Davon `uncoveredCount`: Einträge für nicht
+  erfasste Teile der Antwort (`coverage_gap`) — die Antwort wurde nicht ganz
+  geprüft. Bestätigte Claims sind `claimCount - contradictionCount -
+  unverifiedCount`.
+
+Die Pipeline ist injiziert (`verifier@1`). `VerifierService.safeVerify` bindet
+ihr Verdict deshalb an seine Claims (`bindVerdictToClaims`, `@omadia/verifier`),
+bevor Retry, Resample, Persistenz oder Stream darauf aufsetzen; `summarise`
+bindet beim Bau des Stream-Summaries noch einmal. Ein Status wird nie höher
+gemeldet, als die Claims tragen (`approved` mit unbestätigtem Claim →
+`approved_with_disclaimer`, mit widersprochenem → `blocked`), und nie
+angehoben. `approved` / `approved_with_disclaimer` / `blocked` ohne Claim, ein
+unbekannter Status, Einträge, die keine Claim-Verdicts sind, und ein `reason`
+außerhalb der geschlossenen Codes werden `unavailable` / `pipeline_error`; der
+Rohwert steht nur in der Server-Logzeile (`[verifier/service] pipeline verdict
+not taken as returned: …`). Die eingebaute Pipeline ist davon nicht betroffen.
+`verifier_verdicts.unverified_count` zählt die Claims selbst, nicht den Status.
+
+Das Event geht unverändert über `/api/chat/stream` und den Public-API-Key-Stream
+(`chatRouter.ts`) raus. Ein Connector-Badge entsteht daraus nur über
+`toSemanticAnswer` und nur, wenn die Zähler das Badge tragen
+(`verifierSummaryHasEvidence`, `verified` und `corrected` nur bei lauter
+bestätigten Claims) und zueinander passen: nichtnegative ganze Zahlen,
+`uncoveredCount ≤ uncheckedCount ≤ unverifiedCount`,
+`contradictionCount + unverifiedCount ≤ claimCount`; fehlende optionale
+Zähler gelten als 0, fehlende Pflichtzähler nie. Der Web-Chip wendet dieselbe
+Regel an (ein Summary mit widersprüchlichen Zählern bekommt einen neutralen
+Chip); der Wire-Typ `SemanticAnswer.verifier` bleibt
+`verified | partial | corrected | failed`, Turns ohne Evidenz ergeben dort
+kein Badge. Der Web-Chat zeigt das Event als Footer-Chip (`VerifierBadge`,
+Keys `chat.verifier.*`), grün nur für ein `verified` mit lauter bestätigten
+Claims, `corrected` nur unter derselben Bedingung; der Tooltip nennt nicht
+geprüfte Claims bzw. sagt, dass nicht die ganze Antwort geprüft wurde. Der
+Borderline-Resample (#132) läuft nur, wenn ein Verdict Claims bestätigt und
+ein geprüfter Claim offen bleibt — nicht bei `skipped` / `unavailable`, nicht
+ohne bestätigten Claim und nicht, wenn nur `not_checked` (auch eine
+Abdeckungslücke) offen ist. Der Omadia-UI-Channel verwirft das Event weiterhin
+(`omadia-ui-channel/src/protocol.ts`). Zustands-Tabelle und Regeln:
+`docs/security-architecture.md` §7c.
 
 **Degradierter Turn (#1094).** Wirft ein Turn, *nachdem* mindestens ein
 Tool-Call bereits committet hat, bleibt das terminale Event bewusst `done` —
@@ -2827,7 +3660,10 @@ degradiert markiert und darf von keinem Consumer als Antwort gerendert werden:
   und `correlationId` bleiben am Event.
 - Ein degradierter Turn zählt **nicht** als „letzter Turn ok" im Operator-Health
   (`routes/chat.ts`), **nicht** als `ok` im Public-API-Key-Audit
-  (`chatRouter.ts`), und der Verifier überspringt ihn (keine Claims).
+  (`chatRouter.ts`), und der Verifier überspringt ihn im Stream ganz (kein
+  `verifier`-Event, `VerifierService.chatStream`). Der nicht-streamende Pfad
+  (`VerifierService.chat` → `runTurn`) sieht nie einen degradierten Turn: dort
+  wirft der Turn weiter, bevor der Verifier läuft.
 
 **Contract-Erweiterung — AI-Act-Kennzeichnung (Epic #642).** Der Ausgangs-Contract
 trägt die KI-Kennzeichnung zusätzlich zum Antworttext:
@@ -2863,6 +3699,7 @@ widersprüchlich bleiben, trägt `done` (und für den gepufferten Pfad
 weggelassen (bedeutet `'model'`). **`done.answer` ist autoritativ**; ein Client,
 der die Antwort aus Deltas rekonstruiert, muss sie durch `done.answer` ersetzen,
 sobald `answerSource` gesetzt und nicht `'model'` ist. Additiv/optional wie oben.
+Dritter Wert seit dem Verifier-Gate: `'verifier-blocked'` (siehe unten).
 
 **Kontrakt-Erweiterung — `answerIsError` (#1097).** Ein Server-Render kann auch
 ein *Fehler* sein (das Modell hat den Shield gebeten, etwas zu rendern, das in
@@ -2870,12 +3707,15 @@ Wahrheit ein Tool-Fehler oder ein Auth-Prompt ist). Dann trägt `done` (bzw.
 `ChatTurnResult`/`SemanticAnswer`) zusätzlich `answerIsError: true`, gesetzt aus
 `PrivacyRenderedAnswer.isError`. Kanäle dürfen den Turn damit als Fehler
 darstellen, statt den englischen Fehlertext als Ergebnis zu zeigen. Nur
-zusammen mit `answerSource: 'privacy-render'`, nie `false`, additiv/optional.
+zusammen mit `answerSource: 'privacy-render'` oder (immer) mit
+`'verifier-blocked'`, nie `false`, additiv/optional.
 Zweiter, unabhängiger Fix im selben Issue: ein Guarded-Tool, das einen prosaischen
 `Error:`-String **zurückgibt** (die `Error:`-Konvention, aus der auch `is_error`
 abgeleitet wird), wird an den Dispatch-Nähten nicht mehr als 1-Zeilen-Dataset
-interniert, sondern unverändert an das Modell durchgereicht — sonst sah das
-Modell den Fehler nie und ein späteres Render materialisierte ihn als Daten.
+interniert, sondern als Text an das Modell gegeben — sonst sah das Modell den
+Fehler nie und ein späteres Render materialisierte ihn als Daten. Nicht
+interniert heißt seit dem Tool-Error-Fix nicht ungeprüft (siehe den Absatz
+„Tool-Fehler an den Dispatch-Nähten“ unten).
 #1105 schloss die beiden Nähte seiner Repros (`Orchestrator.dispatchTool`,
 `ToolDispatchService.afterDispatch`), **#1097** die restlichen zwei:
 `LocalSubAgent.dispatch` (Fehler eines Tools *innerhalb* eines Sub-Agents) und
@@ -2883,17 +3723,25 @@ Modell den Fehler nie und ein späteres Render materialisierte ihn als Daten.
 `McpManager` wirft nie, er liefert einen `Error: …`-String). Alle vier Guards
 sitzen an derselben Stelle: nach Intern-Exemption-Allowlist und Operator-Bypass,
 vor dem Internieren — und konsultieren **ein** Prädikat,
-`isControlFlowToolResult` (`@omadia/plugin-api`, `toolControlFlowText.ts`).
+`isGuardedControlFlowResult` (`toolErrorRedaction.ts`).
 
 Das Prädikat deckt zwei Träger ab, denn der `Error:`-Präfix allein war zu eng:
-den **MCP-Auth-Prompt** (verankert auf das exakte Produzenten-Präfix
-`🔒 The MCP server "`, ggf. mit dem `<mcp-auth-required>`-Block, aus dem die
-Chat-UI die Connect-Karte baut) liefert `McpManager.handleFailure`
-statt eines rohen Fehlers, sobald ein Call auth-förmig scheitert (Alltagsfall:
-abgelaufenes OAuth-Token auf einer geparkten MCP-Input-Karte). Interniert ging
-die Connect-Karte verloren und das Modell erzählte Erfolg über einem Digest.
-Das Prädikat prüft **nur Präfixe**, nie Teilstrings: ein Marker in einer
+den **MCP-Auth-Prompt** (`🔒 The MCP server "…`, ggf. mit dem
+`<mcp-auth-required>`-Block, aus dem die Chat-UI die Connect-Karte baut) liefert
+`McpManager.handleFailure` statt eines rohen Fehlers, sobald ein Call
+auth-förmig scheitert (Alltagsfall: abgelaufenes OAuth-Token auf einer
+geparkten MCP-Input-Karte). Interniert ging die Connect-Karte verloren und das
+Modell erzählte Erfolg über einem Digest. Erkannt wird der Prompt **per
+Provenienz, nicht am Präfix**: jede Naht öffnet um genau einen Dispatch eine
+`McpAuthPromptMint` (`mcp/mcpAuthPromptMint.ts`, eigener AsyncLocalStorage, weil
+der Dispatcher ohne Turn läuft und Skill-Bindung wie `ctx.mcp` den Turn-Store
+neu bauen), `handleFailure` trägt den zurückgegebenen Prompt dort ein, und nur
+ein byte-gleiches Ergebnis zählt. Text, der bloß so anfängt (ein
+Remote-Textblock, eine Datenzelle am Anfang eines Ergebnisses), ist Tool-Datum
+und wird interniert. Das Prädikat prüft nie Teilstrings: ein Marker in einer
 Datenzelle darf kein mehrzeiliges Ergebnis entmaskieren.
+`isControlFlowToolResult` (`@omadia/plugin-api`) klassifiziert weiter nur am
+Präfix; an den Nähten entscheidet es nichts mehr.
 
 Ein **gerenderter Fehler** wird als solcher markiert —
 `PrivacyRenderedAnswer.isError` (entschieden an der Quell-Zelle: ein Dataset
@@ -2901,11 +3749,190 @@ aus genau einer Control-Flow-Zelle), vom Orchestrator als
 `answerIsError: true` auf beide Antwortpfade gelegt (siehe §11-Kontrakt). Der
 **Shape-Classifier bleibt unverändert**: eine Ausnahme für 1×1-`Error:`-Skalare
 wäre ein Klartext-Kanal, weil Verben abgeleitete Datasets neu klassifizieren
-(`filter` + `select` verengen jede maskierte Spalte auf so einen Skalar). Die
-Maskierung **geworfener** Exceptions (`maskErrorText`) bleibt bewusst
-unberührt: diesen Text hat niemand saniert (ein ORM echot die
-Zeile, ein Treiber die gebundenen Parameter), das "Error-Strings enthalten
-konstruktionsbedingt keine PII"-Argument gilt nur für die Konvention.
+(`filter` + `select` verengen jede maskierte Spalte auf so einen Skalar).
+
+**Tool-Fehler an den Dispatch-Nähten.** Weder eine geworfene Exception noch ein
+zurückgegebener `Error:`-Text ist sanierter Text (ein ORM echot die Zeile, ein
+Treiber die gebundenen Parameter, ein Remote-MCP-Server seinen Fehler-Body).
+Deshalb laufen beide Träger an jeder Naht durch **einen** Helper,
+`toolErrorRedaction.ts` (`@omadia/orchestrator`), und die Politik folgt der
+Herkunft:
+- **Geworfen** (`withholdThrownToolError`): das Modell bekommt nur die
+  Withheld-Notice ``Error: tool `<name>` failed with <Klasse> (code <code>)
+  [ref <ref>] …`` — Klassenname und bereinigter Code (`describeThrownError`,
+  `@omadia/plugin-api`), nie die Message. `Orchestrator.dispatchTool` rejected
+  dafür nie mehr (auch nicht bei `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=0`); die
+  Rejection-Zweige beider Loops sind nur noch Backstops mit derselben Notice.
+  `ToolDispatchService.thrownResult` ersetzt das frühere `maskErrorText`
+  (das die Message als Dataset internierte) durch dieselbe Notice
+  (`origin: 'dispatcher'`), und `LocalSubAgent.dispatch` macht aus einem
+  werfenden inneren Tool ein `is_error`-Tool-Result, statt den Sub-Agent
+  abbrechen zu lassen. Der Aufruf kann vor der Exception schon gewirkt haben
+  (Write committet, Antwort läuft in den Timeout): die Notice sagt dem
+  Modell, dass der Ausgang unbekannt ist, und der Sub-Agent verweigert für den
+  Rest des Laufs eine identische Wiederholung (gleiches Tool, gleicher
+  kanonischer Input; `subAgentUnknownOutcome.ts`) — auch ohne
+  Privacy-Provider und auch dann, wenn eine Tool-Bridge die Exception selbst
+  gefangen und die Notice zurückgegeben hat (`isWithheldToolErrorNotice`,
+  Erkennung an der Form; wer sie imitiert, blockiert nur die eigene
+  Wiederholung). Anderer Input und ein Retry nach einem gewöhnlichen
+  zurückgegebenen `Error:`-Hinweis laufen weiter.
+- **Zurückgegeben** (`guardControlFlowResult`): der Text hinter `Error:` geht
+  durch `redactToolErrorText` des Providers (C0-Identitätstypen ohne
+  `date`/`amount`, Deny-List #760, C1; irreversibel `[masked:<typ>]`, die
+  Surrogat-Map des Turns wird nicht erweitert). Zurückgehalten statt redigiert
+  wird er, wenn er nach Exception aussieht (Zeilen-Echo als JSON, Python-Dict
+  oder JS-Objekt/`Map`, wie `util.inspect`, `console.log` und `%o` es
+  drucken; Datensatz mit Keyword-Feldern wie Dataclass, Kotlin/Lombok,
+  Java-Record oder Java-`Map`, oder mit Gos `Key:value`-Feldern; Stacktrace;
+  Postgres-`DETAIL:`-Zeile, `Failing row contains (…)` oder `Key (…)=(…)`,
+  wie psycopg und Odoos JSON-RPC-Fehler sie tragen), länger als 4096 Zeichen
+  ist oder der Provider ihn nicht prüfen kann.
+- **MCP-Connect-Prompt**: byte-identisch durchgereicht (Connect-Karte muss
+  überleben) und quittiert — aber nur der Text, den `McpManager` im selben
+  Dispatch erzeugt hat; alles andere mit diesem Präfix wird interniert. Der
+  Tool-Call eines Sub-Agents ist Teil des Eltern-Dispatches: sein Prompt wird
+  in beiden Mints eingetragen, die Eltern-Naht reicht eine Sub-Agent-Antwort
+  durch, die ihn byte-gleich wiederholt, und behandelt jede andere wie eine
+  normale Sub-Agent-Antwort.
+Die Kernel-eigenen Absagen aus `dispatchToolInner` (Tool nicht verfügbar /
+nicht gegrantet / unbekannt) sind per Provenienz ausgenommen, nicht per Form.
+Jeder behandelte Fehler schreibt einen PII-freien Eintrag in
+`PrivacyReceipt.toolErrors` (`carrier`, `outcome`, Bytes, maskierte
+Span-Typen); die volle Fehlermeldung samt Stack steht einmal im Server-Log
+unter `ref=<ref>` — der Turn-Korrelations-Id (#641, dieselbe wie in
+`<turn-incomplete ref="…">`), der Request-Id des Dispatcher-Callers oder einem
+frischen `err_…`-Token. Das Log ist die einzige Stelle, an der ein Operator den
+Treibertext noch findet. Die In-Tree-Wrapper, die `Error: ${err.message}`
+lieferten (die drei Tool-Bridges über `bridgedToolError`, Web-Search,
+Diagramme, Discussion, Transkription, `manage_routine`, `query_dataset`, die
+Long-Running-Task-Handler, `createDomainTool`), geben nur noch selbst
+formulierte Meldungen im Klartext zurück und sonst `toolErrorFromException`.
+Ein typisierter Fehler zählt nur dann als selbst formuliert, wenn nichts
+Fremdes in seiner Message steckt: Web-Search-Provider und Kroki-Client legen
+die gefangene Transport-Exception auf `cause` und den Upstream-Body auf
+`body`, und `web_search` / `render_diagram` bauen ihr Ergebnis nur aus
+Provider-Id bzw. Diagramm-Art und HTTP-Status, nie aus der Message; der Rest
+steht unter der Ref im Log.
+Auf dem **öffentlichen MCP-Endpunkt** läuft jeder Tool-Handler mit dem
+Privacy-Handle des Dispatches als ambientem `turnContext.privacyHandle`
+(`runHandlerInPrivacyScope`): der Sub-Agent eines Domain-Tools bekommt
+die verschachtelte Gate-Variante (`PrivacyTurnHandle.forNestedCalls`),
+interniert damit seine inneren Ergebnisse und sieht innere Fehler nur als
+Withheld-Notice. Diese Maskierung zählt nicht für `masked()` des
+Call-Ergebnisses, ein Fehlschlag darin verwirft den Call. Ohne Handle läuft
+dort kein Handler (`requirePrivacyHandle`; ein Dispatcher ohne `withPrivacy`
+wird vor dem Dispatch abgewiesen). Vorher fand der Sub-Agent dort keinen
+Handle, und sein Provider bekam innere Daten und Fehlertexte im Klartext.
+Ohne Privacy-Provider (und für intern-exempte Self-Tools) fließt der Text wie
+jedes andere Tool-Ergebnis roh — Parität; auf dem Abo-CLI-Pfad gibt es keinen
+Shield (#1087). Versions-Paarung: der gebündelte
+`@omadia/plugin-privacy-guard` implementiert `redactToolErrorText` ab 0.6.0.
+Ein Provider ohne die Methode lässt den Kernel zurückgegebene `Error:`-Texte
+vollständig zurückhalten, und das Log meldet einmal pro Prozess
+`does not implement redactToolErrorText`. Details, Residuen und Reviewer-Regel:
+`docs/security-architecture.md` §6c und §11.
+
+**Kontrakt-Erweiterung — Verifier-Gate im Stream (`VERIFIER_MODE=enforce`).**
+`shadow` bleibt der unveränderte Pass-through: alle Events wie erzeugt, danach
+ein `verifier`-Event. In `enforce` ist `VerifierService.chatStream` ein
+Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
+`docs/security-architecture.md` §7c):
+
+- **Bis zum Urteil** gehen nur Lebenszeichen raus: `iteration_start`,
+  `turn_routing`, `turn_persona`, `tool_progress`, `heartbeat`,
+  `stream_token_chunk`, `iteration_usage`, `steer_applied` (geschlossene
+  Allowlist `passesBeforeVerdict`). Alles andere — `text_delta`,
+  `tool_use`/`tool_result`, `sub_*` (auch `sub_iteration`, damit es beim
+  Freigeben unter seinem Tool-Call steht), `nudge`, `turn_annotation`,
+  `surface_*`, `done`, jeder künftige Typ — wird gehalten. Der Observer der
+  Route wird jetzt in jedem Modus durchgereicht (vorher verworfen), Token- und
+  Usage-Zähler laufen also live weiter.
+- **Freigabe** nur bei `approved` oder `skipped` mit `no_trigger` /
+  `no_claims`: die gehaltenen Events in Originalreihenfolge, aber ohne die
+  gestreamten `text_delta`s — der Text geht als **ein** `text_delta` mit
+  `done.answer` (ohne gefalteten KI-Kennzeichnungsblock) direkt vor `done`
+  raus, `done` mit `verifier` (dasselbe Summary wie das folgende
+  `verifier`-Event): `…, text_delta(done.answer), done{verifier}, verifier`.
+  Grund: der Orchestrator streamt jede Modellantwort live und verwirft sie
+  ggf. danach (#332-L3-Eskalation, File-Retry: `textParts.length = 0`) — die
+  verworfene Antwort steht in den Deltas, nicht in `done.answer`, und das
+  Urteil gilt nur `done.answer`.
+- **Zurückgehalten** (fail-closed) bei jedem anderen Urteil — `blocked`,
+  `approved_with_disclaimer`, `skipped` mit `no_checkable_claims` /
+  `incomplete_coverage`, `unavailable`: genau ein `text_delta` mit der
+  lokalisierten Notiz (`composeVerifierBlockedText`, Locale: Turn-Disclosure →
+  `ai_disclosure_locale` → `de`), dann `done` mit dieser Notiz als `answer`,
+  `answerSource: 'verifier-blocked'`, `answerIsError: true`, `verifier` und nur
+  Identitäts-/Telemetriefeldern (Allowlist; Anhänge, Dateien, Follow-ups,
+  `maskedValues`, `delegatedAnswer`, Karten, Excerpts fallen weg), dann das
+  `verifier`-Event: `text_delta(Notiz), done{verifier-blocked}, verifier`.
+  Hatte der Turn die KI-Kennzeichnung in `done.answer` gefaltet (erster Turn
+  des Scopes), trägt die Notiz in `done.answer` denselben Block — nie im
+  Delta.
+- **Ohne Urteil freigegeben:** `pendingUserChoice`, `pendingMcpInput`,
+  `pendingSlotCard`, `pendingOAuthConsent`, `degraded` mit der
+  Turn-Incomplete-Notiz, die Datenschutz-Absage (`PROMPT_MASK_BLOCKED_ANSWER`)
+  und die Screening-Quarantäne (`SECURITY_QUARANTINE_NOTICE`) — beide ohne
+  Modelllauf, erkannt auch mit gefaltetem KI-Kennzeichnungsblock — gehaltene
+  Events wie bei der Freigabe (Text als ein Delta aus `done.answer`), kein
+  `verifier`-Event. Sicher faktenfrei sind nur die Server-Notizen und
+  `NO_REPLY`: eine Karte hängt an der Antwort ihres Turns.
+  Auswahlkarte und MCP-Eingabeformular beenden den Turn am Tool-Call (Antwort
+  = Text davor); `pendingSlotCard`, `pendingOAuthConsent` (turnweit, sobald
+  ein Kalender-Tool `consent_required` meldete) und eine vom Card-Router
+  (`maybeRouteCardsFromText`, Provider ohne Interleaving, Antwort ab 40
+  Zeichen) angehängte Auswahlkarte reiten dagegen auf dem `done` einer
+  vollständigen Antwort — die geht dann samt Tool-Output und Surfaces
+  ungeprüft raus (offener Punkt in §13). Ein nacktes `NO_REPLY` (Sentinel als
+  ganze Antwort) gibt nur sein `done` frei, nichts Gehaltenes. Geprüft wie
+  jede Antwort wird eine Antwort, die nur mit `NO_REPLY` **endet**
+  (`isNoReply` akzeptiert die Form, Stream-Clients verwerfen sie aber nicht).
+  Endet der Turn mit `error`, geht nur der `error` raus, nichts Gehaltenes.
+- **Nie an den Verifier: was er hinter dem Privacy Shield nicht sehen darf.**
+  Eine Antwort mit `answerSource: 'privacy-render'` (auch ein `degraded`-Turn,
+  dessen Antwort der Shield schon gerendert hatte) und — hinter einem Shield —
+  ein Lauf ohne Privacy-Sicht (Direct-Line-Relay, keine übergebene
+  Continuation) gehen nie an `pipeline.verify` (`verifierGate`,
+  `verifierPrivacyGate.ts`): die gerenderte Antwort hält echte Werte, die der
+  Shield dem Modell vorenthalten hat. In `enforce` wird daraus das Verdict
+  `unavailable` / `privacy_shield` → zurückgehalten, auf Stream und `chat()`,
+  dort auch für Resample und Retry; `shadow` speichert kein Verdict. Ein
+  zurückgehaltener `degraded`-Turn behält `degraded`, `committedTools` und
+  `correlationId`.
+- **Ein Correction-Retry im Stream** (seit dem Replay-Ledger, §3) — außer bei
+  Canvas-Turns. Bei `blocked` betritt der Wrapper den Turn erneut mit
+  Correction-Hint über den Tool-Ergebnissen des ersten Laufs (kein Tool des
+  ersten Laufs läuft erneut), hält den Retry genauso und liefert nach dessen
+  Urteil; nur seine
+  Lebenszeichen (ein zweites `iteration_start`) gehen vorher raus. Ein
+  abgebrochener oder gescheiterter Retry bleibt intern, dann gilt die Notiz
+  zum ersten Lauf. `done.turnId` nennt die Session-Log-Zeile des gelieferten
+  Laufs (Commit-on-Delivery, §3); `onAfterTurn`-Annotationen kommen mit der
+  freigegebenen Antwort direkt vor ihr. `VerifierService.chat` (`/api/chat`,
+  Scheduler, Conductor)
+  hat Retry und Borderline-Resample und liefert bei einem nicht freigegebenen
+  Endurteil dieselbe Notiz als `SemanticAnswer` (`answerSource`/
+  `answerIsError` gesetzt, Anhänge und Karten entfernt).
+- Ein zurückgehaltener Turn zählt als `ok` (Operator-Health in `routes/chat.ts`,
+  API-Key-Audit in `chatRouter.ts`) — eine Policy-Entscheidung, kein Fehler;
+  außer er ist zugleich `degraded`, dann bleibt er ein Fehler.
+- **Canvas-Skeleton:** deklariert der Basis-Agent
+  `ChatAgent.holdsContentUntilVerdict` (der `VerifierService` in `enforce`),
+  hält der Canvas-Composer sein Skeleton zurück (`verdictHold.ts`): es geht
+  direkt vor dem ersten `surface_*` bzw. dem freigebenden `done` raus, vor
+  dem Antworttext, und nie mit einem zurückgehaltenen oder fehlgeschlagenen
+  Turn. In `shadow` und ohne Verifier bleibt Skeleton-first unverändert.
+- Der Web-Chat faltet `done.verifier` und `verifierBlocked` in die Nachricht
+  (`chatStreamEvents.ts`) und setzt `VerifierBlockedNotice`
+  (`chat.verifierBlocked.*`) über die Notiz; der Server-Mirror
+  (`MessageSchema`) behält beide Felder.
+- **Nicht abgedeckt:** der Abo-CLI-Runtime (`claude-cli`; `buildOrchestrator`
+  gibt den `CliChatAgent` vor dem Verifier-Wrapper zurück) und Routinen (der
+  Routine-Runner ruft `runTurn` auf dem rohen Orchestrator). Persistenz
+  (Session-Log, KG-Turn, Auto-Promotion) passiert vor `done` — mit
+  Request-Ledger erst nach dem Urteil, für den Lauf, über den es ging —, also
+  auch für eine zurückgehaltene Antwort.
 
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
@@ -2966,6 +3993,832 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Sitzungs-Widerruf: offene Verbindungen, gerätegenaues Abmelden, Cache
+
+Der serverseitige Widerruf (`users.session_version`, §3) prüft bei jedem
+Request und bei jedem WebSocket-Upgrade. Offen:
+
+- **Builder-SSE-Stream schließen.** Channel-WebSockets enden inzwischen mit
+  ihrer Sitzung (4401 am `exp`, 4403 bei Widerruf, siehe PR-11-Abschnitt).
+  Der Builder-SSE-Stream (`GET /drafts/:id/events`) authentifiziert weiter nur
+  beim Öffnen und bleibt nach einem Widerruf offen. Vorlage ist
+  `ChannelSessionTracker` (`src/channels/channelSessionLifetime.ts`):
+  `onRevoked` für diese Replica, periodisch `check` für alle anderen, weil
+  `announce` prozesslokal ist.
+- **Canvas-Client nach verpasstem 4401.** `@omadia/canvas-core` hält nach
+  4401/4403 an; erst das nächste `connect()` öffnet wieder, `switchCanvas()`
+  nicht. Kommt der 4401 aber nie an (Gerät schläft über `exp` hinweg, Netz
+  reißt genau dann ab), sieht der Client nur 1006 und verbindet im Backoff mit
+  dem abgelaufenen Cookie neu. Das Upgrade scheitert mit 401, was im Browser
+  wieder als 1006 ankommt: bis zu alle 30 s ein Versuch, bis der User sich neu
+  anmeldet. Möglicher Fix: einen Close nach dem `sessionExpiresAt` des letzten
+  Acks wie 4401 behandeln, mit Toleranz für Uhrabweichung.
+- **Gerätegenaues Abmelden.** Abmelden gilt heute pro User (alle Geräte). Pro
+  Gerät bräuchte eine Denylist auf `sid` samt Aufräumen nach `exp`.
+- **Cache nur bei Bedarf.** Ein Point-Read pro authentifiziertem Request. Wenn
+  der Lookup in Messungen sichtbar wird (Richtwert: > 5 ms im p95 der
+  `/api`-Requests), ein kurzes TTL-Memo im Guard, das `announce` invalidiert;
+  die TTL dann in Code und `docs/security-architecture.md` §10k nennen, weil
+  „sofort“ danach „innerhalb der TTL“ heißt. Die TTL addiert sich auch auf
+  `WS_SESSION_FRAME_RECHECK_MS`: ein WebSocket-Frame dürfte dann auf einem
+  Urteil fahren, das TTL + 5 s alt ist. Deshalb die TTL klein halten (≤ 1 s)
+  und auch in `docs/security-architecture.md` §10d nennen.
+- **Upgrade-Prüfung ohne Deadline.** Der Re-Check offener Channel-Sockets
+  gibt nach `WS_SESSION_CHECK_TIMEOUT_MS` (10 s) auf; die Prüfung beim
+  Channel-Upgrade selbst (`authenticateBeforeHandshake` ohne `timeoutMs`)
+  nicht. Hängt der `users`-Read, hängt auch der rohe Upgrade-Socket, bis die
+  DB antwortet (danach 503 oder 101). Kein Autorisierungsloch, aber eine
+  Ressourcenfrage: dieselbe Deadline an die Channel-Upgrade-Prüfung geben und
+  `webSocketRegistryHardening.test.ts` um einen hängenden Channel-Lookup
+  erweitern.
+- **UI-Hinweise.** Der `SessionWatcher` zeigt bei `auth.revoked` dasselbe
+  Ablauf-Overlay wie bei einer abgelaufenen Sitzung; ein eigener Text
+  („An anderer Stelle abgemeldet“) wäre ehrlicher. Die Detailseite eines Users
+  sollte sagen, dass ein Passwort-Reset alle seine Sitzungen beendet, auch die
+  eigene.
+
+### CI-Schulden aus dem Security-Review (2026-09-29)
+
+- **`PG_TEST_FLOOR` nachziehen, sobald die Auth-Härtungen gemergt sind.** Serverseitiger
+  Sitzungs-Widerruf und die atomare Ersteinrichtung bringen neue Postgres-Suiten mit
+  (`test/auth/userStoreSessionVersion.pg.test.ts`, `userStoreFirstAdmin.pg.test.ts`,
+  `setupRouteConcurrency.pg.test.ts`). Der Floor in `.github/workflows/ci.yml` bleibt bis
+  dahin auf dem Wert von `main` (`372`) und wird dann einmal auf den gemessenen `ran=`-Wert
+  des `test:pg`-Schritts gezogen (lokal mit diesem Stand: `ran=396`, `skipped=0`).
+- **`middleware/src/services/graph/migrations/` löschen** — 4 Dateien, byte-identisch mit
+  KG-neon 0002/0004/0012/0013; kein Runner liest sie (die Graph-Migrationen laufen über die
+  `harness-knowledge-graph-neon`-Serie; #875 hat die dort gestrandete 0009 gerettet). Seit
+  2026-09-29 schlägt der `schema`-Job fehl, sobald dort etwas anderes liegt als diese vier
+  Kopien (Schritt „Inert legacy graph migrations stay inert“). Löschen = Verzeichnis +
+  Eintrag in `scripts/copy-build-assets.mjs` + dieser CI-Schritt + der Pfad in
+  `test/mcpDelegationBackfillMigration.pg.test.ts` (liest das Verzeichnis und nennt es noch
+  „live migration series“); das Dockerfile kopiert es nicht.
+- **Desktop-Refresh (Electron 44.5.1, electron-builder 26.17.0) — erledigt (#1259).** `desktop` ist
+  das dritte Bein der Audit-Matrix, `npm audit` dort bei 0. Weil jeder Push auf `main` über
+  `auto-release.yml` sofort ein signiertes Release samt Update-Feeds baut, lief der Refresh vor dem
+  Merge als Dispatch-Build mit Wegwerf-Tag und durch `desktop-upgrade-smoke.yml` (#1270). Der Smoke
+  ersetzt die früher manuellen Schritte (2) und (2b): frische GitHub-Runner (macOS arm64, Windows x64
+  mit Basic-User-Token, Linux-AppImage mit gnome-keyring), keine produktive Installation.
+  (0a)/(0b) Brücken-Release v0.167.9 mit Hold-back-Hinweis und Secrets-Fix. (1) Der erste
+  Dispatch-Build (36899325147) war in allen Targets grün und trotzdem nicht startfähig: electron-builder
+  26 lässt das oberste `node_modules` jeder `extraResources`-Quelle weg (`app-builder-lib`
+  `util/filter.js`), der Kernel starb mit `ERR_MODULE_NOT_FOUND`. Gefunden hat das der erste
+  Smoke-Lauf (36981332723). Fix: eigene `extraResources`-Einträge für beide `node_modules`, Ausschluss
+  in den Eltern-Einträgen, `afterPack` prüft das Paket auf jeder Plattform, und
+  `scripts/check-packaged-runtime.test.mjs` lässt den Block durch electron-builders eigenen Kopiercode
+  laufen. Finaler Build 36984867502 (Tag `v0.0.0-desktop-refresh.5`), alle vier Targets grün.
+  (2)/(2b) Smoke-Lauf 36989068863: frische Installation und Upgrade über v0.167.14 auf allen drei
+  Plattformen grün, `secrets.enc` byte-identisch, jedes gespeicherte Secret feldweise gleich,
+  Recovery-Key unverändert, Provider-Key verifiziert. (2c) dieser Eintrag, CHANGELOG, `docs/upgrading.md`
+  und §4a nennen v0.167.14 als letztes Release auf Electron 37. (3) Required Checks
+  `audit (high+critical block) (desktop)` und `desktop (typecheck + test)` nach dem Merge.
+  **Nächster Electron-Major:** Dispatch-Build mit Wegwerf-Tag, dann `desktop-upgrade-smoke.yml` mit
+  dessen Run-ID (`desktop/README.md` § Install and upgrade smoke); nie auf einer produktiven
+  Installation.
+- **Beenden während des ersten UI-Ladens meldet einen Boot-Fehler.** Beendet man die App, während
+  das erste `loadURL` der Web-UI noch läuft, lehnt `loadURL` ab, und `bootExistingInstall` reicht das
+  an `presentBootFailure` weiter: `[main] boot failed: ERR_FAILED (-2) loading …`, im ungünstigen
+  Fall mit Fehlerdialog im Shutdown, dessen Standard-Knopf „Re-run setup“ ist. Gesehen im
+  Install-Smoke 36989068863 (Windows-Upgrade, Versuch 1); unabhängig von der Electron-Version.
+  `presentBootFailure` sollte bei gesetztem `quitting` nur loggen und zurückkehren. Der Smoke wartet
+  seither auf das erste fertige Laden, bevor er beendet.
+- **Synchrones `safeStorage` endet mit Electron 46.** Electron 45 markiert
+  `safeStorage.isEncryptionAvailable`/`encryptString`/`decryptString` als deprecated, Electron 46
+  entfernt sie zusammen mit Chromiums synchronem OSCrypt-Backend (Electron
+  `docs/breaking-changes.md`). `desktop/src/secrets.ts` nutzt genau diese drei. Vor dem Sprung
+  auf 46 auf `isAsyncEncryptionAvailable`/`encryptStringAsync`/`decryptStringAsync` umstellen
+  (laut Electron dieselben Key-Stores, alte `secrets.enc` bleibt lesbar) und den Upgrade-Lauf
+  (2b) oben wiederholen. Dependabot ignoriert Electron-Majors nicht, der Bump-PR kommt also.
+- **Datenverzeichnis-Dialog ohne `defaultPath`** (`desktop/src/ipc.ts`): seit Electron 43 öffnet
+  `showOpenDialog` ohne `defaultPath` im Downloads-Ordner — für ein Postgres-Datenverzeichnis ein
+  schlechter Startpunkt. `defaultPath` auf das Home- oder das aktuelle Datenverzeichnis setzen.
+- **`test/graphBackfill.test.ts` ist zeitabhängig.** Zwei direkt nacheinander geloggte Turns
+  bekommen dieselbe Turn-ID, wenn sie in dieselbe Millisekunde fallen (`SessionLogger`,
+  millisekundengenaue Zeit); dann trägt der zweite rekonstruierte Turn die Entity des ersten. Im
+  warmen Prozess passiert das auf Node 22 und 24 fast immer. Grün ist der Test nur, weil der
+  kalte erste Aufruf meist über die Millisekunde hinaus dauert — unter Electron 44s Node 24 in
+  rund 15–25 % der Läufe nicht. Test mit festen `time`-Werten schreiben oder die Turn-ID
+  kollisionsfrei machen.
+- **Zwei Node-Majors für denselben Kernel; auf Electrons Node läuft seine Test-Suite in keinem
+  CI-Job.** Entscheidung mit dem Desktop-Refresh: Die Desktop-App startet Kernel und Web-UI mit
+  Electrons eingebettetem Node (`ELECTRON_RUN_AS_NODE`, `desktop/src/supervisor.ts`), seit
+  Electron 44 also Node 24.21.0 — keine Electron-Linie, die noch Sicherheitsfixes bekommt, hat
+  Node 22. Server-Images, Entwicklung, CI und der Desktop-Release-Build, der den Kernel
+  installiert und baut, bleiben auf Node 22 (`docs/security-architecture.md` §4a). `engines` in
+  `middleware/package.json` bleibt deshalb `>=22.13.0 <23`: Mit `engine-strict`
+  (`middleware/.npmrc`) ist es ein Install-Gate für genau diese Toolchain, wie
+  `scripts/check-node-version.mjs` vor `npm install` und `npm test`. Die Desktop-Laufzeit geht
+  durch keins von beiden; eine Node-24-Freigabe dort öffnete nur die Toolchain. Der Job
+  `desktop (typecheck + test)` läuft auf Node 24, weil der Shell-Code im Electron-Hauptprozess
+  läuft. Den Kernel prüfen unter Electrons Node bisher nur „Verify native modules load under the
+  Electron ABI“ (`desktop-apps.yml`) und der Start einer gebauten App. **Offen:** ein CI-Bein,
+  das wie der Release-Build unter Node 22 installiert und baut und dann die Unit-Suite mit
+  Electrons Binary startet, an `npm test` und seinem `pretest`-Guard vorbei, aus `middleware/`:
+  `ELECTRON_RUN_AS_NODE=1 ../desktop/node_modules/.bin/electron --import tsx --test …`
+  (Electron lädt sein Binary beim ersten Aufruf herunter). Electrons Binary statt
+  `setup-node@24`, weil Electrons Node gegen BoringSSL gebaut ist: `node:crypto` kennt dort 28
+  Cipher, 9 Hashes und 4 Kurven (Node 24: 130/52/82), und fehlt dem Kernel oder einer
+  Abhängigkeit davon etwas, fällt es nur dort auf. Die Primitive des Kernels selbst
+  (sha1/sha256 als Hash und HMAC, `aes-256-gcm`, `hkdfSync`, `RSA-SHA256`, Ed25519) laufen
+  unter Electron 44.5.1, und die Unit-Suite lief dort lokal mit diesem Aufruf durch
+  (2026-10-01, macOS arm64): 10324 Tests, 2 rot — `cliSpawnGate` (liest die lokal installierte
+  `claude`-CLI, unter Node 22 genauso rot) und der `graphBackfill`-Flake. Required erst, wenn
+  der Flake behoben ist.
+- **Kleinkram aus dem Desktop-Refresh:** der Schritt „Allow git-https for git dependencies“ in
+  `desktop-apps.yml` ist tot (kein Lockfile zieht mehr eine git-Abhängigkeit); das leere
+  Root-`package-lock.json` ohne `package.json` kann weg; der Audit-Schritt installiert
+  `npm@latest` ungepinnt.
+- **Typecheck-Ratchet `test/` + `scripts/` (#573): 347 bekannte Fehler in 120 Dateien**
+  (`middleware/test-typecheck-baseline.json`, Stand 2026-09-29). `npm run typecheck:test`
+  blockt nur *neue* Fehler. Abbau: `npm run typecheck:test -- --report`, fixen,
+  `-- --update` senkt die Baseline (nie erhöhen). Ziel: leere Baseline, dann den Ratchet
+  durch ein hartes `tsc -p test/tsconfig.json` ersetzen, wie `desktop` es mit
+  `typecheck:test` schon tut.
+- **Prompt-PII C0, Locale `nl`: strukturierter Recall 88,2 % statt 0,97.** Der Floor in
+  `packages/harness-plugin-privacy-guard/src/validation/ci-baseline.json` steht für `nl` auf
+  0.84 (de/en/es/fr/it: 0.97). Ursachen: NL-Adressen (`straat`/`gracht`/`plein`, Postcode
+  `1016 AZ`) ohne C0-Muster und bewusst ungepatterte BSN. Wege: NL-Adressmuster in C0, oder
+  `nl` nur mit C1-Sidecar freigeben (`c0+c1` laut `validation/README.md` 89,0 % / 100 %).
+  Floor anheben, sobald die Zahl steigt. `mask_user_prompt` ist ein globaler Schalter (kein
+  Locale-Schalter); Betreibern mit überwiegend niederländischen Nutzern bis dahin C1 mit
+  aktivieren oder die C0-Lücke bei Adressen bewusst in Kauf nehmen.
+- **Wackelnder Web-UI-Test `QualityPanel.test.tsx` („Aktualisieren button refetches").**
+  Der Test klickt den Refresh-Button, sobald der erste Fetch nur *aufgerufen* wurde; der
+  Button ist aber `disabled={loading}`, bis dieser Fetch fertig ist. Landet der Klick im
+  Ladezustand, kommt kein zweiter Fetch, und das `waitFor` läuft nach 1 s ab — am
+  2026-10-01 einmal im vollen Suite-Lauf rot, isoliert dreimal grün. Fix: vor dem Klick
+  warten, bis der Button wieder aktiv ist.
+
+### Offene Punkte aus den Security-Härtungen (2026-09-30)
+
+- **IdP-Logout-URL nicht allowlisted.** Die serverseitig gelieferte absolute End-Session-URL
+  (`idpLogout.url`, `web-ui/app/_components/AuthBadge.tsx`) wird ungeprüft angesteuert. Eigene
+  Vertrauensgrenze; Härtung z. B. per Allowlist der konfigurierten IdP-Hosts.
+- **`/login/:id/start` ohne Längenlimit für `return`.** Der Web-UI-Helper begrenzt auf 2048
+  Zeichen; ein direkter Link auf die Middleware-Route ist unbegrenzt (landet im OIDC-State-Cookie).
+
+### Öffentliche Sicherheitsaussagen: was nach dem Abgleich offen ist (2026-10)
+
+README, `docs/architecture.md`, `docs/security-architecture.md` und
+`CITATION.cff` beschreiben seit 2026-10-01 nur noch, was der Code durchsetzt
+(Wächter: `middleware/test/docsClaimsGuard.test.ts`, Checkliste §11). Die
+Privacy-Shield-Aussagen sind seit 2026-10-02 so gebaut: erst, welche
+Modellanfragen der Shield bei welcher Einstellung maskiert (die des Turns
+selbst), dann ein Satz, dass jeder andere Modellaufruf seinen Text so
+schickt, wie er ist, mit den bekannten Fällen (Inbound-Screener,
+Signifikanz-Scorer und die übrigen Memory-Jobs, `ctx.llm`, Bilder,
+Embeddings). Auch innerhalb des Turns nennen sie die Lücken: Tool-Fehler
+werden nur für Tools redigiert oder zurückgehalten, die weder intern-exempt
+noch per Bypass freigegeben sind (ein geworfener Fehler bleibt auch unter
+Bypass zurückgehalten), und Prompt-Masking blockiert eine Anfrage nur, wenn
+C0 scheitert; ein ausgefallener C1-Detektor lässt den Rest des Turns auf C0
+laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
+
+- **Publisher-signierte Plugin-Pakete.** Heute gibt es nur SHA-256-Pinning
+  (Registry-Index bzw. Hash beim Upload), keine Signatur und keinen Trust Root;
+  `Plugin.signed` ist fest `false`. Für echte Signaturen: Signatur beim Publish,
+  Prüfung in `RegistryClient` und `PackageUploadService`, `signed`/`signed_by`
+  aus dem Prüfergebnis, Schlüsselverwaltung für Publisher. Danach README-Zeile
+  „Hash-pinned plugins“, ADR-0001-Status und §4 nachziehen.
+- **`http://`-Registries und Schema-Pinning.** `parseRegistries`
+  (`src/config.ts`) nimmt jede URL an, `RegistryClient` erzwingt kein TLS.
+  `assertHostPinned` vergleicht nur `URL.host` (Host und Port), nicht das
+  Schema: Ein `https://`-Index kann eine `http://`-Download-URL auf demselben
+  Host listen, die dann im Klartext geladen wird, mit dem Bearer-Token der
+  Registry, falls eines konfiguriert ist. Die Integrität hält über den Hash im
+  Index, Token und Transport nicht. Nicht-HTTPS außer Loopback ablehnen (mit
+  ausdrücklichem Override für lokale Test-Registries) und im Pin die ganze
+  Origin (Schema + Host + Port) vergleichen, mindestens `http://`-Artefakte
+  einer `https://`-Registry ablehnen.
+- **Builder-Build-Template aus npm.** `ensureBuildTemplate` installiert beim
+  ersten Boot (und bei geänderter Liste) die Boilerplate-Abhängigkeiten plus
+  `BUILD_TIME_ONLY_DEPS` per Semver-Range, ohne Lockfile. Eine Builder-Preview
+  lädt den Entwurf in-process gegen genau diese `node_modules`
+  (`src/plugins/builder/previewRuntime.ts`), und jeder Build ruft `npx tsc` aus
+  dem Template auf (`scripts/build-zip.mjs` der Boilerplate). Versionen exakt
+  pinnen oder das Template ins Image legen.
+- **MCP-Server per `npx` ohne Version.** Der MCP-Katalog schreibt
+  `npx -y -- <paket>`; jeder Connect kann eine neuere Paketversion ziehen. Die
+  Version aus dem Registry-Eintrag mitschreiben oder den Operator beim Import
+  darauf hinweisen.
+- **Texte außerhalb dieses Repos.** Marketing-Site und Hub-Beschreibungen tragen
+  die alten Aussagen (signierte Plugins, jede Antwort geprüft, nichts verlässt
+  das Haus im Klartext) noch. Abgleich dort als eigener Schritt.
+- **Verifier-Absätze im README.** Beschreiben seit dem Verifier-Design aus
+  #1267 die ehrlichen Zustände (`skipped`, `unavailable`, nur teilweise
+  geprüft), `shadow` als Default-Modus und `enforce` als Auslieferungs-Gate mit
+  Retry und Resample über den Replay-Ledger, samt Grenzen (Input-Cards,
+  Shield-gerenderte Antworten, Abo-CLI, Routinen, MCP-Transport-Retry ohne
+  Ledger) und der Trigger-Muster, ohne deren Treffer `enforce` eine Antwort
+  ungeprüft ausliefert. Ändern sich Verdikt-Zustände, Trigger-Muster oder das
+  Enforce-Verhalten, README „Answer verification“, §7c und die
+  Verifier-Prüfungen in `docsClaimsGuard.test.ts` im selben PR mitziehen.
+- **`read_attachment` liest auch CSV-Uploads im Klartext.** Das Tool ist
+  intern-exempt und extrahiert `.csv` als Text aus den Original-Bytes im
+  Upload-Store, sobald das Modell den `storage_key` kennt (Teams listet ihn im
+  `[attachments-info]`-Block). Zellen, die der Dataset-Import derselben Datei
+  als PII verschlüsselt (`security-architecture.md` §6b), kommen so roh beim
+  Modell an, unabhängig von `mask_user_prompt`. Tabellarische Uploads dort
+  ablehnen und auf `query_dataset` verweisen, oder das Ergebnis für Tabellen
+  internieren.
+- **Receipt-Verluste sichtbar machen.** `persistFailures` zählt nur im Prozess
+  (`turnReceiptCounters()` in `src/receipts/store.ts`), kein Endpunkt meldet
+  ihn. Ein werfendes `finalize()` zählt gar nicht (ein Turn, der wirft oder
+  vor `done` endet, wird seit #1267 über `closeUndeliveredPass` trotzdem
+  finalisiert). Zähler auf einer Operator-Oberfläche ausgeben und den
+  `finalize()`-Fall mitzählen; erst dann darf das README „gezählt“ sagen.
+- **Channel-Verlauf bringt gerenderte Realwerte zum Modell (bestätigt).**
+  `priorTurns` laufen nur bei `mask_user_prompt` on durch die Prompt-Maske:
+  `maskPriorTurnsForWire` ruft `maskPromptForWire`, das bei `disabled` den
+  Text unverändert zurückgibt. Nach einem server-gerenderten v4-Turn
+  (`answerSource: 'privacy-render'`) trägt die ausgelieferte Antwort Realwerte
+  (`maskedValues`). Teams (`omadia-channel-teams`, `src/teamsBot.ts`:
+  `history.append` mit `answerText`, Folgeturn mit `priorTurns`) und Telegram
+  (`omadia-channel-telegram`, `src/telegramBot.ts`: `history.append` mit
+  `result.text`) bauen ihren Verlauf aus genau dieser Antwort, also sieht das
+  Modell die Werte im Folgeturn im Klartext, und zwar im Default. Der
+  In-Tree-Web-Chat setzt keine `priorTurns`; sein Recall liest das
+  Session-Log, das die Modellantwort vor dem Render speichert. Code-Unit:
+  wiederholte Assistant-Antworten unabhängig von `mask_user_prompt` maskieren
+  (mindestens die `maskedValues` eines gerenderten Turns), oder Channels eine
+  modellseitige Antwort zum Speichern als Verlauf mitgeben (ein Feld neben
+  `text` im `SemanticAnswer`, das die Channel-Plugins übernehmen). Danach
+  README, §6f und `docsClaimsGuard.test.ts` nachziehen.
+- **Plugin-Permissions sind keine Sandbox.** Die Manifest-`permissions`
+  schalten nur die `PluginContext`-Accessoren frei. Ein Plugin läuft als
+  vertrauenswürdiges JavaScript im Middleware-Prozess und erreicht globales
+  `fetch`, `node:fs` und jede andere Node-API (`src/platform/pluginContext.ts`
+  sagt das selbst). Für echte Durchsetzung: Isolation (Worker oder Prozess mit
+  eingeschränkten Modulen) oder ein Import-Gate beim Upload.
+- **Idempotenz am öffentlichen MCP-Endpunkt ist prozesslokal.**
+  `ToolIdempotencyStore` (`toolIdempotency.ts`) hält Einträge 15 Minuten, mit
+  1.000 Einträgen als Verdrängungsziel (`evictOverflow` überspringt Calls, die
+  innerhalb ihres 15-Minuten-Fensters noch laufen, der Store kann also kurz
+  mehr halten), nur im Speicher, und merkt sich keinen fehlgeschlagenen
+  Aufruf. Neustart, zweite Instanz, abgelaufener oder verdrängter Eintrag
+  führen den Write erneut aus. Abgelaufen ist auch der Eintrag eines Calls,
+  der nach 15 Minuten noch läuft (`isLiveInFlight`), ein Retry mit demselben
+  Schlüssel startet den Write dann ein zweites Mal. Für verteilte Idempotenz
+  einen geteilten Store (Postgres) mit demselben Schlüssel einsetzen; die
+  Schlüssel-Komposition ist dafür schon serialisierbar.
+- **Modellaufrufe außerhalb des Privacy-Handles (eigene Code-Unit).** Der
+  Shield wirkt nur in den Modellanfragen des Turns selbst. Ungemaskt, mit
+  `mask_user_prompt` an oder aus, gehen: plugin-eigene `ctx.llm`-Anfragen (der
+  Accessor `createLlmAccessor`, `src/platform/pluginContext.ts`, liest keinen
+  Privacy-Handle), darunter die Skelett-Komposition des Canvas
+  (`composeSkeleton`, schickt `input.userMessage` vor dem Turn), Planungs-Gate
+  und Planer des Plan-Runners (`gate.ts`, `materializer.ts`, aus
+  `onBeforeTurn` mit der Rohnachricht) und jedes Tool, das Daten holt und
+  selbst ein Modell fragt; die Memory-Jobs von `@omadia/orchestrator-extras`
+  über dessen eigenen Provider mit gespeicherten Realwerten
+  (Recall-Relevance-Judge pro Turn, Session-Briefing, Inconsistency-Detector,
+  Cluster-Benennung, Topic-Detector für Teams; Fakten- und Excerpt-Extraktion
+  lesen dagegen schon den Wire-Text); dazu Bild-Anhänge als Base64-Blöcke an
+  ein Modell mit Bild-Eingabe (`buildUserContent`) und, mit dem
+  OpenAI-kompatiblen Embedding-Adapter, gespeicherte Turns und Memories im
+  Klartext an dessen Endpunkt. Inbound-Screener und Signifikanz-Scorer haben
+  einen eigenen Punkt (unten). Die Einzelpunkte zu
+  `ctx.llm`, Canvas und Bildern stehen unter „Tool-Fehler-Politik“ und
+  „Verifier-Wiedereintritt“; diese Unit fasst sie zusammen: `ctx.llm`- und
+  Memory-Job-Anfragen über die Prompt-Maske des Turns bzw. eine Maske für
+  gespeicherten Text führen (Handle aus `turnContext`, Maskierung nach dem
+  Muster von `maskUserPrompt`, fail-closed), den Canvas-Composer bei aktivem
+  Shield auf das deterministische Fallback-Skelett setzen und Bild-Anhänge
+  unter aktivem Shield nur nach Policy zulassen. Danach README (Intro, Zeile
+  „Privacy Shield“, Abschnitt „Trust & privacy“), §6f und
+  `docsClaimsGuard.test.ts` nachziehen.
+- **Inbound-Screener und Signifikanz-Scorer schicken Prompt-Text ungemaskt
+  (eigene Code-Unit).** Beide laufen außerhalb des Privacy-Handles, auch mit
+  `mask_user_prompt` an. Der #579-Screener (`screenInboundTurn`,
+  `orchestrator.ts`) läuft in `runTurn` und `chatStream` vor
+  `buildPrivacyHandle` und vor `maskTurnPromptForWire`. Unter der
+  Default-Posture `auto` (`DEFAULT_SECURITY_POSTURE_POLICY`,
+  `harness-channel-sdk/src/securityPosture.ts`) und unter `strict` schickt er
+  bei jedem Turn mit Anhang `renderScreeningPayload(bundleProvenance(input))`
+  ab: die Nachricht wie getippt, jede `priorTurns[].userMessage`, Namen und
+  Typen der Anhänge, an `LlmScreener` auf Provider und Modell des Agenten
+  (`buildOrchestrator.ts`) oder an den HTTP-Proxy unter
+  `security_screen_url`. Der Capture-Filter von `@omadia/orchestrator-extras`
+  schickt beim Default-`capture_level` `normal` (`DEFAULT_CAPTURE_LEVEL`)
+  jeden gespeicherten Turn, die Nachricht wie getippt (`userMessage` des
+  Session-Logs, `input.userMessage`) plus die wiederhergestellte Antwort
+  (`assistantAnswer`), über `CaptureFilteringKnowledgeGraph.ingestTurn` an den
+  Extras-Provider (`captureFilter.ts`, `significanceScorer.ts`), auch mit
+  `mask_user_prompt` an. Code-Unit: beide über den Wire-Text des Turns
+  führen (Screening nach dem Minten des Handles über die maskierte Nachricht
+  und maskierte `priorTurns`, Scoring über die maskierten Texte, die schon
+  die Fakten-Extraktion bekommt) oder beide in den Turn-Scope verlegen.
+  Danach README (Intro, Zeile „Privacy Shield“, Abschnitt „Trust &
+  privacy“), §6f und `docsClaimsGuard.test.ts` nachziehen; dort dann auch
+  `DEFAULT_SECURITY_POSTURE_POLICY.posture === 'auto'` und den Inhalt von
+  `bundleProvenance` festhalten und prüfen, dass README und §6f Screener und
+  Scorer nennen.
+- **MCP→KG-Ingestion ignoriert die Klammer `OMADIA_PRIVACY_FORCE_GUARDED`
+  (eigene Code-Unit).** Der Ingest-Zweig in `Orchestrator.dispatchTool`
+  (Epic #459) läuft vor dem Bypass-Resolver und vor dem Internieren und fragt
+  `isMcpServerPrivacyBypassed(kgTool.mcpServerId)` direkt
+  (`mcpPrivacyBypass.ts`, ein reiner Set-Lookup), nicht über
+  `resolveEffectivePrivacyMode`. Ein Server mit `kgIngest` und
+  `privacyBypass` speichert so auch mit gesetzter Klammer bis zu 8.000 Zeichen
+  jedes Rohergebnisses als `rationale` einer Memory
+  (`createMemorableKnowledge`). Spätere Turns können sie in den
+  Prompt-Kontext holen, der Recall-Relevance-Judge schickt sie dann ungemaskt
+  an den Extras-Provider, und sie wird eingebettet. Der Kommentar in
+  `middleware/migrations/0017_mcp_server_privacy_bypass.sql` verspricht, dass
+  die Klammer alles abdeckt (angewandte Migration, nicht editieren; die
+  Korrektur steht in §6f). Code-Unit: die Bypass-Entscheidung des Ingest-Zweigs
+  wie Pfad 0 von `resolveBypass` über `resolveEffectivePrivacyMode` (mit
+  `process.env`) führen, sodass er mit Klammer nur den wertfreien
+  `mcpObservationDigest` speichert, plus Test mit
+  `OMADIA_PRIVACY_FORCE_GUARDED=true` auf den gespeicherten `rationale`.
+  Danach README (Zeile „Privacy Shield“, Abschnitt „Trust & privacy“), §6f,
+  `.env.example`, §10 („Privacy-Shield-Klammer“) und
+  `docsClaimsGuard.test.ts` nachziehen.
+- **Fehlertexte intern-exempter Tools gehen ungefiltert ans Modell.**
+  `Orchestrator.dispatchTool`, `LocalSubAgent` und `ToolDispatchService`
+  geben das Ergebnis eines Tools aus `INTERN_EXEMPT_TOOLS` zurück, bevor sie
+  auf den `Error:`-Träger prüfen, und `withholdThrownToolError` hält nur für
+  nicht-exempte Tools zurück. Ein `Error:`-Text von `memory` oder
+  `read_attachment` und die geworfene Message eines solchen Tools erreichen
+  das Modell daher wie geliefert. Unter Operator-Bypass gilt das für den
+  zurückgegebenen Fehler (auch in `guardReplayResult`); die geworfene Message
+  bleibt dort zurückgehalten, das ist Operator-Vertrag und steht in §6c.
+  Code-Unit: für intern-exempte Tools den Control-Flow-Zweig
+  (`isGuardedControlFlowResult` → `guardControlFlowResult`) vor die Exemption
+  ziehen, sodass nur der `Error:`-Träger redigiert wird und das normale
+  Ergebnis exempt bleibt, und in `withholdThrownToolError` die
+  Exempt-Ausnahme streichen; Test je Seam mit einem exempten Tool, das einen
+  Fehler mit synthetischer E-Mail-Adresse liefert bzw. wirft. Danach §6c,
+  §6f, README und `docsClaimsGuard.test.ts` nachziehen.
+- **Ausgefallener C1-Detektor: der Rest des Turns läuft still auf C0.**
+  Wirft der konfigurierte C1-Detektor, sperrt `c1DetectorFor`
+  (`harness-plugin-privacy-guard/src/service.ts`) C1 für den Rest des Turns.
+  Prompt-Masking, Tool-Fehler-Redaktion und Verifier-Projektion laufen dann
+  nur auf C0 und der Deny-Liste (`outcome: 'masked'` mit `degraded: true`,
+  im Log `promptMaskDegraded`/`toolErrorRedactDegraded`), und
+  `maskPromptForWire` blockiert nur bei `blocked`. Namen, die nur C1 findet,
+  gehen ungemaskt ans Modell, und die `PrivacyReceipt` zeigt den Degrade
+  nicht. Code-Unit: den Degrade in die Receipt schreiben und eine
+  Operator-Einstellung anbieten, die bei konfiguriertem, aber ausgefallenem
+  C1 die Anfrage blockiert, wie ein gescheitertes C0; Test mit einem
+  werfenden Fake-Detektor. Danach Manifest-Hilfe (`mask_user_prompt`,
+  `c1_detector_url`), `.env.example` und §6f nachziehen.
+- **Verifier prüft nur, was ein Trigger-Muster trifft.** `shouldTriggerVerifier`
+  (`harness-verifier/src/triggerRouter.ts`) kennt Euro-Beträge,
+  Buchungsreferenzen, ISO- und `dd.mm.yyyy`-Daten, Prozente, deutsche
+  Stunden-/Tagesangaben und Aggregat-Schlüsselwörter (überwiegend deutsch) mit
+  einer mindestens dreistelligen Zahl. Andere Währungen, englische Datumsformate
+  und kleine Zählungen lösen für sich nichts aus (steht irgendwo in derselben
+  Antwort ein Aggregat-Schlüsselwort und eine mindestens dreistellige Zahl,
+  greift das Aggregat-Muster, etwa bei `Total: $500`); die Antwort ist
+  `skipped`/`no_trigger` und geht in `enforce` ungeprüft raus. Code-Unit:
+  Muster um weitere Währungen sowie englische Datums- und Zahlformate
+  erweitern, oder `enforce` eine
+  Antwort mit Zahlen ohne Treffer zurückhalten lassen. Danach README, §7c und
+  `docsClaimsGuard.test.ts` nachziehen.
+- **`verifier_max_retries` über 1 wirkt nicht.** Schema (`VERIFIER_MAX_RETRIES`,
+  `max(2)`), `clampMaxRetries` und die Manifest-Hilfe („Max: 2“) erlauben 2,
+  `VerifierService.chat` und `streamRetry` laufen aber höchstens einen Retry.
+  Entweder eine Retry-Schleife bis `maxRetries` bauen oder Schema, Clamp und
+  Hilfetext auf 1 setzen. Die Manifest-Hilfe zu `verifier_mode` („nichts
+  Prüfbares fand“) dabei auf die Trigger-Muster präzisieren.
+
+### Self-Update-Steuerungsebene: Vertrauensmodell und offene Härtung (#432 follow-up)
+
+Vertrauensmodell (Details: `docs/security-architecture.md` §10f): Wer den
+`docker-socket-proxy` erreicht, ist Host-Root. Seine Abschnitts-Flags filtern nur
+nach URL-Präfix, und `CONTAINERS`+`POST` reichen allein schon für einen
+privilegierten Container mit Host-Mounts. Die Grenze ist deshalb die
+Erreichbarkeit: Der Proxy hängt nur am `internal`-Netz `omadia-control` (ohne
+Bridge-Adresse auf dem Host, ohne IPv6), das außer ihm nur der `updater` betritt.
+Der Updater ist per Design root-äquivalent, und die Middleware hält sein Token.
+Jeder Code im Middleware-Prozess, In-Process-Plugins eingeschlossen, kann damit
+ein Update auf ein beliebiges Release-Tag anstoßen. Offen:
+
+- **Exakte Methoden-/Pfad-Allowlist und Loopback-Bind.** Eine eigene
+  `haproxy.cfg` im tecnativa-Image ließe nur die acht Calls durch, die der
+  Updater macht (Liste im Header von `docker-compose.update.yaml`), und könnte an
+  `127.0.0.1:2375` binden. Dann liefe der Proxy mit
+  `network_mode: service:updater` (`UPDATER_DOCKER_API=http://127.0.0.1:2375`,
+  `depends_on` umgedreht), und die Isolation hinge nicht mehr an der
+  Netzwerk-Implementierung der Runtime. Mit dem unveränderten Image 0.3.0 geht
+  das nicht: `BIND_CONFIG` setzt `docker-entrypoint.sh` selbst, es ist kein
+  Env-Schalter. Eine Quell-IP-ACL wäre kein Ersatz, denn OrbStack maskiert
+  netzübergreifenden Verkehr als Gateway-Adresse des Zielnetzes.
+- **Kein Downgrade über das Update-Token.** `POST /api/v1/admin/update`
+  (`routes/adminUpdate.ts`) lehnt nur das laufende Release ab, der Sidecar
+  (`config.mjs`, `TAG_RE`) prüft nur die Form des Tags. Ein
+  „nicht älter als laufend“-Gate (mit ausdrücklichem Operator-Override für echte
+  Rollbacks) fehlt.
+- **Control-Plane-Hostnamen im Plugin-Egress sperren.**
+  `extractOutboundAllowlist` (`platform/pluginContext.ts`) nimmt jeden String als
+  Host an, und die Static-Allow-List-Modi von `ctx.http` vertrauen benannten Hosts
+  ohne SSRF-Guard. `docker-socket-proxy` löst aus der Middleware nicht mehr auf;
+  `updater` bleibt erreichbar (Bearer-Token nötig). Ein hartes Deny für beide
+  Namen im Host-Matcher wäre billige Defense in Depth.
+- **Nicht geprüfte Runtimes.** Die Isolation des Control-Netzes ist auf
+  Stock-dockerd 20.10, 24, 27 und 29 (iptables) und auf OrbStack 29.4 geprüft,
+  nicht auf Rootless Docker, Podman oder Docker Desktop. Wer das Overlay dort
+  betreibt, führt den Check aus `docs/upgrading.md` aus.
+
+### Operator-UI-Header und Sandbox-Limits — bewusst offen gelassen (Security-Doku §3b, §10h)
+
+- **Keine Script-Policy in der Operator-UI.** Die CSP enthält nur
+  `frame-ancestors`, `object-src` und `base-uri`. Der nächste Schritt wäre eine
+  Nonce pro Request aus `web-ui/proxy.ts` für `script-src`; das zwingt aber jede
+  Seite in dynamisches Rendering und muss vorher gemessen werden. `style-src`
+  bräuchte zusätzlich `'unsafe-inline'` wegen der `style`-Attribute.
+- **Keine zentralen Antwort-Header in der Middleware.** Plugin-UIs
+  (`pluginUiStatic.ts`, `withIframeSafeHeaders`) und die Builder-Preview setzen
+  eigene; die übrigen `/api/*`-Antworten, die über `/bot-api/*` ankommen,
+  tragen weder `nosniff` noch eine Frame-Policy. Die web-ui lässt `/bot-api/*`
+  absichtlich unverändert (§10h), die Lücke gehört also in die Middleware.
+- **Publish-Container von vor den Limits** laufen ohne Limits weiter, bis eine
+  neue Version sie ersetzt: `DockerPublishRuntime.deploy()` fasst bestehende
+  Versionen nie an (Unveränderlichkeit), und ein `docker update` dort würde
+  diese Zusage aufweichen.
+
+### Ersteinrichtung: was nach Setup-Token und atomarem Admin offen ist
+
+- **Setup-Token-Fehlversuche pro Client zählen.** Der argon2-Hash von `/setup` läuft
+  inzwischen im globalen Slot des Anmelde-Limiters (§10m), mehr als
+  `AUTH_LOGIN_MAX_INFLIGHT` parallele Hashes gibt es also nicht. Falsche Tokens zählt
+  der Limiter nicht: Ein generiertes Token hat 192 Bit, ein selbst gesetztes aber nur
+  mindestens 16 Zeichen.
+- **Token vorab erzeugen in `fly/deploy.sh` und `render.yaml`.** Heute holt der
+  Operator das generierte Token aus `fly logs` bzw. dem Render-Log. Ein beim Deploy
+  erzeugtes `ADMIN_SETUP_TOKEN`, wie schon `VAULT_KEY`, würde den Schritt sparen.
+
+### Routine-Karten: identitätslose Klicks schon im Teams-Adapter ablehnen (#1029 follow-up)
+
+Seit 2026-09-30 lehnt der Kernel `RoutinesIntegration.handleRoutineAction` ohne
+verwendbaren `actor` ab (`RoutineActorRequiredError`, `routineCardActor.ts`) — kein
+Rückfall mehr auf den Turn-Kontext oder auf `{ kind: 'operator' }`. channel-teams
+schickt `actor` seit 0.26.1, lässt ihn aber ganz weg, wenn `tenantId` oder die
+User-ID fehlt, und ruft den Kernel trotzdem. Dann sieht der Nutzer die generische
+Kernel-Absage, und im Log steht eine `[security] REFUSED …`-Zeile, obwohl nur der
+Adapter falsch konfiguriert ist. Offen:
+
+- **channel-teams:** den Klick in diesem Fall selbst ablehnen, mit eigener Meldung,
+  statt ohne `actor` weiterzureichen. Die Adapter-Tests, die das Weglassen von
+  `actor` festschreiben, gehen mit. Release + Hub-Publish.
+- **plugin-api 2.0:** `actor` im Typ zur Pflicht machen (heute nur zur Laufzeit,
+  damit 1.x-Aufrufer kompilieren). Der Capability-Ref `routinesIntegration@1`
+  bleibt davon unberührt.
+
+### Anmelde-Rate-Limit: was offen ist
+
+- **Verteilter Limiter (Redis oder Postgres), sobald die Middleware mit mehr als einer
+  Replica läuft.** Heute zählt jeder Prozess für sich, N Replicas vervielfachen jede
+  Grenze (§10m, wie beim API-Key-Limiter in §9).
+- **Fly: `header:Fly-Client-IP` einmal Ende-zu-Ende gegen eine omadia-Installation
+  prüfen.** `fly/middleware.fly.toml` setzt `AUTH_LOGIN_CLIENT_ADDRESS=header:Fly-Client-IP`,
+  gestützt auf Fly's Doku: `Fly-Client-IP` ist die Client-Adresse aus Sicht des
+  Fly-Proxys, und rechts in `X-Forwarded-For` steht die IP der App selbst (`xff:1`
+  wäre deshalb falsch). Ob die Edge einen vom Client mitgeschickten `Fly-Client-IP`
+  überschreibt, sagt die Doku nicht. Eine Probe am 2026-10-01 gegen `debug.fly.dev`
+  (öffentliche Fly-App, die die empfangenen Header zurückgibt) zeigt es: Ein
+  ausgedachter Wert (über HTTP/1.1 und HTTP/2, als Einzelwert, Liste, doppelte
+  Zeile oder kleingeschrieben) kam nie bei der App an, sie bekam immer genau einen
+  Header mit der echten Adresse (§10m). Offen ist dieselbe Probe gegen eine omadia-Installation,
+  sobald diese Version auf Fly läuft: sechs falsche Anmeldungen mit einem
+  ausgedachten Wert in dem Header, direkt und über web-ui; die Logzeile
+  `[auth] login refused` muss die echte Adresse zeigen. Wäre der Header fälschbar,
+  bliebe gegen Rateversuche auf ein Konto nur die globale Grenze: bis zu 300 Versuche
+  pro Minute statt etwa 30 pro Stunde (§10m „A key the client can choose“).
+  Voraussetzung bleibt, dass web-ui die Middleware über `.internal` erreicht
+  (`MIDDLEWARE_URL` in `fly/deploy.sh`): Über `.flycast` säße der Fly-Proxy
+  dazwischen und würde den Header vermutlich auf web-ui's eigene Adresse setzen.
+  Bestehende Fly-Installationen, die über den Updater aktualisieren, bekommen den
+  Wert nicht (der tauscht nur das Image), siehe `docs/upgrading.md`.
+- **Render: Client-Header klären.** `render.yaml` lässt den Default `socket`, weil
+  nicht geprüft ist, welchen Header Render's Edge setzt und ob er überschrieben wird.
+  Bis dahin teilen sich dort alle Browser einen Key (siehe nächster Punkt).
+- **Geteilte Paare ohne Geräte-Cookie.** Wer sich einen Client-Key teilt, teilt dessen
+  Paare: Ein Absender, der alle 2 Minuten auf ein Konto falsch rät, hält es für jeden
+  Browser ohne Geräte-Cookie auf demselben Key zu (§10m „What stays open“). Unter
+  `socket` sind das alle Browser hinter web-ui. Eine echte Lösung braucht eine
+  vertrauenswürdige Browser-Adresse durch web-ui hindurch; der Next.js-Proxy sieht die
+  Socket-Adresse des Browsers nicht, sobald ein `X-Forwarded-For` mitkommt. Denkbar:
+  ein eigener Server-Wrapper um Next, der die Socket-Adresse in einen internen Header
+  schreibt, den die Middleware nur vom web-ui-Peer annimmt.
+- **Session-Signing-Key rotieren: kein Werkzeug.** Der Notfall-Hebel, der alle
+  Geräte-Cookies und alle Sessions auf einmal beendet, ist ein neuer
+  `core:auth/session_signing_key` im Vault (fehlt der Eintrag, erzeugt die Middleware
+  beim Start einen neuen). Der Vault ist eine verschlüsselte Datei; einen einzelnen
+  Eintrag zu ersetzen oder zu löschen, geht heute nur mit eigenem Code. Ein
+  Admin-Kommando dafür fehlt.
+- **Passwort-Obergrenze auch beim Setzen.** Setup-Wizard und Admin-Formulare prüfen nur
+  die Mindestlänge. Ein dort gesetztes Passwort über 1024 Zeichen kann sich nicht
+  anmelden.
+- **`user_disabled` vor der Passwortprüfung.** `LocalPasswordProvider` antwortet für ein
+  deaktiviertes Konto mit `auth.user_disabled`, bevor es das Passwort prüft. Der Status
+  eines Kontos ist damit ohne Passwort ablesbar.
+- **Setup-Seite: 503 `auth.busy` übersetzen.** `/setup` antwortet 503 `auth.busy`, wenn
+  kein argon2-Slot frei ist. Die Login-Seite zeigt dafür „bitte N Sekunden warten“, die
+  Setup-Seite (`web-ui/app/setup/page.tsx`) zeigt noch die rohe Fehlermeldung.
+
+### Verifier hinter dem Privacy Shield — Folgearbeiten
+
+Seit dem Privacy-Hand-over (Turn-Receipts, `security-architecture.md` §6e)
+laufen die Verifier-Requests unter der Surrogat-Map des Turns. Offen:
+- **Teams-Card:** `channel-teams` (eigenes Repo) rendert
+  `PrivacyReceipt.verifierEgress` noch nicht — das Feld wird ignoriert, bis die
+  Card eine "Antwortprüfung"-Zeile bekommt (Web-UI hat sie).
+- **Judge-Widersprüche hinter dem Shield:** ein `contradicted` des Judges auf
+  Platzhaltern wird bewusst zu `unverified` herabgestuft (Formatabweichungen
+  zwischen Claim und Evidenz würden sonst korrekte Antworten blocken). Ein
+  format-bewusster Vergleich (z. B. Datums-/Betrags-Normalisierung vor der
+  Maskierung) könnte weiche Widersprüche wieder blockierend machen.
+- **Ledger-Attribution:** die Verifier-Kostenzeilen können an
+  `continuation.receiptId` anknüpfen (siehe Cost-Ledger "Offen").
+- **Direct-Line-Relay in `enforce`.** Hinter einem Shield übergibt ein
+  Relay-Lauf keine Privacy-Sicht; `enforce` hält seine Antwort deshalb als
+  `unavailable` / `privacy_shield` zurück. Wer Direct-Line-Agenten mit
+  `enforce` und Shield betreibt, bekommt dort keine Antwort. Prüfen, ob die
+  Relay-Antwort über die Sicht des Sub-Agent-Laufs verifiziert werden kann.
+- **Wertgleiche Platzhalter beim Minting:** `createPromptPseudonymMap`
+  (`v4/pseudonym.ts`) prüft Kollisionen nur als String. Ein echtes Datum oder
+  ein echter Betrag, dessen Wert einem Kandidaten entspricht, bekommt einen
+  Platzhalter mit demselben Wert in anderer Schreibweise (echte „10.000 €“ →
+  „€10000“, „1970-01-01“ → „01.01.1970“) — der Request trägt dann den echten
+  Wert. Nebenwirkung: `countUnresolvedSurrogates` zählt den restaurierten
+  echten Wert als ungelöst, ein Retry/Re-Sample wird in so einem Turn nie
+  gezeigt (sichere Richtung). Fix: Kandidaten per `asValueLiteral` gegen die
+  Werte der echten Spans und der Datums-/Betragsliterale im Prompt prüfen.
+- **Grenzen der Wertprüfung:** ausgeschriebene Zahlen („zehntausend Euro“),
+  Daten ohne Jahr („am 1. Januar“) und umgerechnete Werte (Monats- statt
+  Jahresbetrag) erkennt `countUnresolvedSurrogates` nicht; ein so
+  umgeschriebener Platzhalter bliebe in einer zweiten Antwort sichtbar.
+
+### Tool-Fehler-Politik: offene Enden
+
+Stand nach dem Fix „Tool-Fehler an den Dispatch-Nähten“ (§11,
+`docs/security-architecture.md` §6c):
+
+- **Channel-Renderer außerhalb dieses Repos** (Teams-/Telegram-Karten in
+  `omadia-channel-teams` / `omadia-channel-telegram`) kennen
+  `PrivacyReceipt.toolErrors` noch nicht. Das Feld ist additiv, sie ignorieren
+  es — zeigen die Einträge aber auch nicht. Die Web-UI zeigt sie.
+- **Laufzeit-Abhängigkeit der Tool-Plugins**: Web-Search, Diagramme und
+  Discussion (je 0.2.0) importieren `toolErrorFromException` (Web-Search und
+  Diagramme auch `newToolErrorRef`) zur Laufzeit aus `@omadia/plugin-api`
+  ≥ 1.20.0. Gebündelt passt das immer. Ein Build für einen älteren Host lädt
+  dort nicht, und `compat.core` erzwingt nichts. Ein Hub-ZIP gibt es nur für
+  Web-Search, der Publish ist offen (siehe „Hub-Publish der
+  In-Tree-Plugins“).
+- **Office-Plugin** (`officeTool.ts`) liefert bei einer unerwarteten Exception
+  weiter `Error: <message>`; die Naht redigiert oder hält zurück. Umstellung
+  auf `toolErrorFromException` offen. Die eigenen Fehler des Plugins
+  (`OfficeUnsafeFormulaError`, `OfficeRenderError`,
+  `OfficePostconditionError`) sind selbst formuliert und müssen lesbar bleiben:
+  ihre Absage nennt Zelle und Grund, damit das Modell die Formel korrigiert,
+  und die Naht lässt sie heute unverändert durch. Ausnahme: Die Schema-Absage
+  für ein Steuerzeichen (`… control character U+0001 …`) kommt als
+  `U[masked:phone]` beim Modell an, weil C0 `+0001` als Telefonnummer liest.
+- **Abo-CLI-Pfad** ohne Privacy Shield (#1087): beide Träger fließen dort roh.
+- **Öffentlicher MCP-Endpunkt, Sub-Agent:** das Gate redigiert keine
+  Tool-Fehler, also sieht der Sub-Agent eines Domain-Tools innere
+  `Error:`-Texte nur als Withheld-Notice und kann sich nicht am Hinweis
+  korrigieren. Redigierte Hinweise dort zuzulassen wäre eine eigene
+  Entscheidung: C1-Kosten und Per-Turn-State im Provider für einen Request, der
+  nie finalisiert wird. Außerdem fehlt dem öffentlichen Dispatcher die
+  Sub-Agent-Dataset-Brücke (`subAgentResultV4`); die Antwort des Sub-Agents
+  wird dort erneut als Datum interniert.
+- **Plugin-eigene Modellaufrufe (`ctx.llm`)** laufen auf keinem Einstiegspfad
+  durch den Privacy Shield, im Chat so wenig wie am öffentlichen Endpunkt: der
+  Accessor (`createLlmAccessor`, `platform/pluginContext.ts`) liest keinen
+  Privacy-Handle, ein Plugin-Tool, das Daten holt und selbst ein Modell fragt,
+  schickt sie, wie es sie zusammengebaut hat. Über den Shield geht nur das
+  Ergebnis des Tools. Eine Prompt-Maskierung für diese Aufrufe (nach dem
+  Muster von `maskUserPrompt`) wäre eine eigene Entscheidung.
+- **Connect-Prompt** wird per Provenienz erkannt (`McpAuthPromptMint`), nicht
+  mehr am Präfix. Offen: paraphrasiert ein Sub-Agent den Prompt, statt ihn
+  byte-gleich weiterzugeben, wird seine Antwort an der Eltern-Naht interniert
+  (sofern er kein Dataset interniert hat) und die Connect-Karte fehlt in der
+  Antwort. Ein typisiertes Control-Flow-Ergebnis statt Prosa wäre die
+  dauerhafte Lösung.
+- **Geworfener Text** wird ganz zurückgehalten, nicht C0-redigiert. Wer den
+  Treiber-Hinweis zurück will, stellt in `withholdThrownToolError` auf
+  `redactToolErrorText` um (eine Stelle) — um den Preis von Namen, die C0
+  nicht erkennt.
+- **Wiederholung nach einer Exception:** seit dem Replay-Ledger (§3)
+  verweigern innerhalb derselben Anfrage auch die Eltern-Loops (gepuffert und
+  Stream) und der Abo-CLI-Sub-Agent (über die `dispatch`-Naht seines
+  Loopback-Snapshots) die identische Wiederholung eines Write-Calls, der mit
+  einer Exception oder der Withheld-Notiz endete — nahtübergreifend,
+  `LocalSubAgent` behält zusätzlich seine Sperre pro Lauf. Offen bleibt:
+  (a) der **Haupt**-Abo-CLI-Agent (`CliChatAgent` als Chat-Agent) läuft ohne
+  Orchestrator-Turn und hat keinen Ledger, dort sperrt nichts; (b) zwei
+  identische Calls im **selben** parallelen Batch laufen beide, die Sperre
+  greift erst für Calls, die nach dem Throw entschieden werden; (c) nach
+  einem Dispatch-Deadline-Timeout oder einem zurückgegebenen Fehler mit
+  ebenso unbekanntem Ausgang (MCP-Request-Timeout) wird nicht gesperrt;
+  (d) eine Wiederholung mit anderem Input läuft. Ein Write genau einmal
+  auszuführen braucht dafür Write-Metadaten plus Idempotenz-Key (wie
+  `ToolDispatchService` sie für das MCP-`exactlyOnce` setzt).
+- **Exception-Formen ohne C1:** positionale Datensatz-Dumps
+  (`Partner(42, 'Jane Doe')`, Gos `%v`) und `name=…`-Paare außerhalb eines
+  Datensatzes erkennt `looksExceptionShaped` nicht; ein Name darin geht ohne
+  C1 an das Modell. Jedes weitere Muster kostet Hinweise, die heute lesbar
+  bleiben — vor einer Erweiterung die Negativliste in
+  `toolErrorExceptionShape.test.ts` prüfen.
+
+### Hub-Publish der In-Tree-Plugins (#1075)
+
+Nur `@omadia/plugin-office` und `@omadia/plugin-web-search` gehen aus
+`middleware/packages/` auch auf den Hub (`docs/creating-plugins.md` §8). Der
+Hub serviert office 0.1.2 und web-search 0.1.0 (`registry/index.json`, Stand
+2026-10-01). Das Repo steht bei office 0.1.4 (Formeln ohne gecachtes Ergebnis,
+Formel-Policy) und web-search 0.2.0 (Tool-Fehler über
+`toolErrorFromException`). Beide Publishes sind offen, und `docs/upgrading.md`
+verspricht Hub-Installationen office 0.1.4 erst mit diesem Schritt.
+
+- **Mindest-Host im Release-Text.** Web-Search 0.2.0 importiert zur Laufzeit
+  aus `@omadia/plugin-api` ≥ 1.20.0. Das ZIP ist flach und löst die Plugin-API
+  vom Host auf, ein älterer Host lädt es also nicht.
+- **Vorher messen.** `latest_version` aus dem Index lesen, ein Plugin nach dem
+  anderen publizieren, nie `?overwrite=true`, danach den Index pollen
+  (`docs/creating-plugins.md` §8, dort auch Bundled-ID-Ablehnung und toter
+  Update-Badge).
+- **Nicht auf dem Hub:** Privacy Guard (0.6.0), Diagramme und Discussion (je
+  0.2.0) laufen nur gebündelt. Ein ZIP mit ihrer ID lehnt der Upload ab
+  (`package.id_conflict_bundled`), außer mit
+  `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`.
+
+### Verifier-Wiedereintritt (Replay-Ledger): offene Enden
+
+Stand nach „Wiedereintritte führen kein Tool erneut aus“ (§3,
+`docs/security-architecture.md` §7c):
+
+- **Erledigt: Session-Log hält die gelieferte Antwort.** Commit-on-Delivery
+  (§3, `requestTurnRecord.ts`) schreibt die eine Zeile der Anfrage nach dem
+  Urteil für den gelieferten Lauf. Offen bleibt nur, was der Commit für eine
+  **zurückgehaltene** Antwort schreibt: die Antwort des Laufs, über den das
+  Endurteil ging (Punkt „Zurückgehaltene Antwort wird trotzdem persistiert“
+  unten) — der Commit kennt das Urteil jetzt, ein Marker statt der Antwort
+  wäre dort einzuhängen. Eine Anfrage mit Request-Ledger, die nie committet
+  wird (Aufrufer ohne `finally`), verliert ihre Zeile; beide bestehenden
+  Binder committen auf jedem Pfad.
+- **Kein positives Read-only im Plugin-Vertrag.** Auf einem Wiedereintritt
+  dürfen nur Kernel-Lese-Tools neu laufen; jeder Plugin-, MCP-, Domain- und
+  Sub-Agent-Call, den der erste Lauf nicht machte, bricht ab — auch reine
+  Lesezugriffe. Eine `readOnly`-Deklaration auf `NativeToolRegistration`,
+  `DomainTool` und `LocalSubAgentTool` (dort fehlt auch ein
+  `writeCapabilities`-Träger) würde mehr Wiedereintritte zu Ende laufen
+  lassen. Fehlendes `writeCapabilities` darf dafür NICHT reichen.
+- **Correction-Retry auf Write-Turns bricht oft ab.** `traceMissingCallVerdict`
+  blockiert jede harte Odoo-Aussage ohne `query_odoo_*`/`odoo_execute`-Call;
+  nennt eine Antwort den gerade angelegten Datensatz, folgt der Retry, und
+  ein neu formulierter Write-Payload bricht ihn ab (`failed`). Prüfen, ob
+  write-fähige Plugin-Tools als Evidenz zählen sollen.
+- **Exakter Input.** Ein Wiedereintritt trifft den aufgezeichneten Call nur
+  bei identischem kanonischem Input (Schlüsselreihenfolge egal). Bewusst kein
+  Fuzzy-Matching — das würde einen anderen Write ausführen.
+- **Canvas-Turns ohne Stream-Retry.** Der Canvas-Composer ordnet
+  Roh-Sentinels per Tool-Name (FIFO) zu; ein Retry, der Calls umsortiert,
+  könnte eine Surface mit dem falschen Ergebnis bauen. Für Canvas-Turns
+  bleibt es beim Zurückhalten ohne Retry, bis die Zuordnung per Call-ID läuft.
+- **Abo-CLI-Sub-Agent: Obligation-Re-Prompt.** Der zweite CLI-Spawn bei
+  fehlendem `expectedTurnToolUse` wird angewiesen, aber nicht daran gehindert,
+  einen erfolgreichen Write zu wiederholen; der Ledger zeichnet im ersten
+  Lauf nur auf. Ein „replay-or-execute“-Modus für diesen Spawn wäre der Fix.
+- **Abgespielte Status-Abfragen.** Ein `_status` eines langlaufenden
+  Sub-Agent-Tasks wird im Wiedereintritt mit dem Stand des ersten Laufs
+  abgespielt — gewollt (gleiche Evidenz), aber kein Live-Stand. Der Runner
+  selbst läuft seit `runDetachedFromRequestLedger` auf eigenem Ledger; er
+  erbt aber weiterhin den übrigen Turn-Kontext des Dispatches (Privacy-Handle,
+  Sinks — `describeDeferredPrivacyPosture`). Andere abgekoppelte Arbeit, die
+  später Tool-Handler ruft, muss denselben Weg nehmen (Security §11).
+- **Screening-Marker bleibt am Input.** `markScreeningReentry` setzt einen
+  WeakSet-Eintrag auf das Input-Objekt, der nach der Anfrage bleibt (anders
+  als der Ledger, der freigegeben wird). Ein Aufrufer, der dasselbe Objekt für
+  eine neue Nachricht wiederverwendet, umginge das Inbound-Screening. Kein
+  bekannter Aufrufer tut das; Freigabe analog zum Ledger wäre billig.
+- **Verifier-Evidenz wird mandantenweit geholt.** `GraphEvidenceFetcher`
+  (`findEntities` nach Modell, exakter ID und Name, inkl. der
+  `res.partner`/`hr.employee`-Namensproben) und der deterministische
+  Odoo-Re-Query laufen ohne User-Identität und Grants. Seit dem Fix verlässt
+  ihr Inhalt den Verifier nicht mehr Richtung Turn (kein `truth`/`detail` im
+  Correction-Hint, die Summary trägt nur Zähler); er geht aber an das
+  Judge-Modell (hinter dem Shield projiziert, Security §6e, ohne Shield roh)
+  und in `verifier_contradictions`. Offen: den Abruf auf den aufgelösten
+  User und seine Grants beschränken und ohne beides fail-closed werten
+  (keine Evidenz → `unverified`) — Voraussetzung, bevor Evidenz je wieder an
+  ein Turn-Modell oder einen User geht.
+- **Retry ohne Messwert.** Der Correction-Retry korrigiert nur noch aus den
+  (abgespielten) Tool-Ergebnissen des Turns; einen Wert, den nur der
+  Verifier kannte, kann er nicht übernehmen. Erwartung: weniger
+  `corrected`, mehr zurückgehaltene Antworten — `corrected`-Rate vor/nach
+  messen.
+- **Hint-Texte passen nicht zum Replay.** Postcondition- und Replay-Abschnitt
+  von `buildCorrectionPrompt` verlangen einen neuen Tool-Call; im
+  Wiedereintritt wird jeder Call außerhalb des ersten Laufs (außer
+  Kernel-Lesern) abgelehnt und der Retry abgebrochen. Texte an die
+  Replay-Realität anpassen oder für diese Fälle keinen Retry starten.
+- **Masking-Grenze des Hints.** Er wird mit denselben Detektoren geprüft und
+  maskiert wie die Nachricht: hinter einem Shield geht ein Hint, den die
+  Maskierung verändern würde, gar nicht raus (Retry zurückgehalten); was
+  keiner erkennt (Namen ohne C1, freie Beträge ohne Währung …), geht wie in
+  der Nachricht ans Modell; mit `mask_user_prompt` aus (Default) wird nichts
+  maskiert. Die Claims sind Wortlaut der Antwort.
+- **Nudge-State pro Lauf.** `applyNudgePipeline` läuft auch nach
+  abgespielten Tool-Batches eines Wiedereintritts und kann
+  `recordEmission` erneut schreiben (kein User-Write; Cooldown/Statistik).
+  Prüfen, ob ein Wiedereintritt (`isReentryPass()`) die Emission
+  überspringen soll.
+- **Wiedereintritte überspringen das #579-Screening.** `prepareReentry`
+  markiert den Input (`markScreeningReentry`), das Inbound-Gate läuft für
+  Resample und Retry nicht erneut. Den Untrusted-Marker, den das Gate im
+  ersten Lauf bei einem Screening-Ausfall (fail-open) an den
+  `extraSystemHint` hängte, trägt ein Wiedereintritt nicht: der Retry-Input
+  entsteht aus dem Input des Aufrufers, dessen `extraSystemHint` der
+  Correction-Hint ersetzt, und ein Resample läuft mit dem Input vor dem Gate.
+  Der Wiedereintritt sieht dieselben Anhänge und abgespielten
+  Tool-Ergebnisse ohne den Hinweis, dass sie ungeprüft sind. Fix: die
+  Gate-Entscheidung des ersten Laufs (samt Marker) an den Wiedereintritt
+  weiterreichen, statt neu zu screenen oder sie zu verlieren.
+- **Bild-Blöcke umgehen die Privacy-Grenze (#504/#505).** Bild-Anhänge gehen
+  als Vision-Blöcke ungemaskt ans Modell — der Shield maskiert nur Text
+  (`ingestedImages` läuft am Prompt-Masking vorbei). Der Ledger hält die
+  Bild-Blöcke des ersten Laufs und gibt sie jedem Wiedereintritt mit, der
+  sie erneut an den Provider schickt. Ein Bild mit personenbezogenen Daten
+  (Scan, Screenshot) verlässt den Prozess damit unmaskiert, im ersten Lauf
+  wie im Wiedereintritt. Offen: Bild-Anhänge unter aktivem Shield nur nach
+  Policy zulassen (abschaltbar, oder OCR plus Maskierung statt Vision).
+- **MCP-Transport-Retry in Turns ohne Request-Ledger.** Bei gebundenem
+  Request-Ledger sendet jede Naht jeden Call nur einmal
+  (`runHandlerAtMostOnce` → `sendsEachCallOnce`, §3). Turns ohne
+  Request-Ledger — `shadow`, Verifier aus, `enforce` ohne erlaubten
+  Wiedereintritt, Canvas-Stream — behalten den einen Retry
+  (`MCP_CALL_MAX_ATTEMPTS = 2`, `mcp/mcpClient.ts`): dort kann
+  ein MCP-Write, dessen Antwort verloren ging, zweimal laufen. Bewusst so
+  gelassen (#542: der Retry fängt einen wackligen gehosteten Proxy ab, für
+  Lesezugriffe harmlos). Fix: Write-Metadaten für MCP-Tools (Punkt „Kein
+  positives Read-only im Plugin-Vertrag“) oder die Ein-Versuch-Regel für
+  jeden Chat-Turn. Daneben: ein transienter MCP-Fehler kommt als
+  `Error:`-Text zurück (`handleFailure` wirft nicht), markiert den Call also
+  nicht als „Ausgang unbekannt“ — das Modell darf denselben Write erneut
+  aufrufen.
+- **Erledigt: Interning fail-closed.** Wirft `privacy.internToolResultV4`,
+  bekommt das Modell an jeder Naht die Notiz `internFailedNotice` (Call lief,
+  Ergebnis zurückgehalten, nicht erneut aufrufen) statt des Rohergebnisses —
+  im ersten Lauf wie im Wiedereintritt; `query_dataset` behält seinen Text.
+  Kostet Antworten, sobald der Privacy-Provider hakt (Log:
+  `privacy.internToolResultV4 threw — result WITHHELD`). Ein Receipt-Eintrag
+  für den zurückgehaltenen Inhalt fehlt noch — es ging nichts raus, aber der
+  Turn-Receipt zeigt den Ausfall nicht.
+- **`replayed` erreicht den Knowledge Graph nicht.** Liefert der Verifier
+  einen Wiedereintritt, schreibt das Session-Log dessen Trace
+  (Commit-on-Delivery); beide KG-Backends legen pro Trace-Eintrag einen
+  `ToolCall`-/`AgentInvocation`-Knoten an und lassen `replayed` fallen
+  (`neonKnowledgeGraph.ts`, `writeToolCall`). Abgespielte Calls stehen dort
+  wie Ausführungen dieses Laufs, mit der Dauer des Replays; der Trace des
+  ersten Laufs, in dem sie wirklich liefen, wird nicht geschrieben. Fix:
+  `replayed` als Knoten-Property in beiden Backends mitschreiben (JSONB, keine
+  SQL-Migration) — plugin-api 1.21.0 dokumentiert die Lücke.
+- **Canvas-Skelett-Komposition umgeht die Privacy-Grenze.** Vor dem
+  geschützten Turn schickt der ui-orchestrator `input.userMessage` (oder die
+  serialisierte Aktion) über den LLM-Accessor des Plugins an das
+  Kompositionsmodell (`composition.ts`, `composeSkeleton`;
+  `pluginContext.ts`) — ohne das Prompt-Masking des Turns. `verdictHold.ts`
+  regelt nur, wann das Skelett ausgeliefert wird, nicht, was an den Provider
+  geht. Mit `mask_user_prompt` an verlässt der Nutzertext den Prozess damit
+  unmaskiert. Fix (eigener Fix, außerhalb dieses Bündels): Komposition über
+  die Privacy-Sicht des Turns führen, oder bei aktivem Shield das
+  deterministische Fallback-Skelett nehmen.
+- **Kalibrierung vor `enforce`: verborgene Antworten haben keine Zeile.**
+  `verifier_verdicts.reason` (KG-Migration 0034) macht `skipped`-Gründe
+  abfragbar (`docs/upgrading.md`). `shadow` schreibt aber keine Zeile für eine
+  Antwort, die der Verifier hinter dem Shield nicht sehen darf (Render,
+  Direct-Line-Relay) — `enforce` hält jede davon zurück. Gezählt werden kann
+  nur über die Log-Zeile `verification skipped run=…`. Fix: in `shadow` eine
+  `unavailable`/`privacy_shield`-Zeile schreiben, ohne zu prüfen.
+
+### MRTR-Sentinel über Skill-Bindung und `ctx.mcp` (#570 follow-up)
+
+Die skill-gebundenen MCP-Tools (`subAgentToolHydration.ts`, Domain-Tools des
+Orchestrators) und der Plugin-Accessor `ctx.mcp.callTool` (`pluginContext.ts`)
+rufen den `McpManager` in einem `turnContext.run(...)` mit **neu gebautem**
+Store auf und reichen nur ausgewählte Felder weiter. `mcpInputSentinelMint`
+gehört nicht dazu: parkt ein solcher Call eine `input_required`-Karte, schreibt
+`parkInputRequired` keine Provenienz, und `dispatchToolDeadlined` interniert
+den Sentinel bei aktivem Privacy Shield — die Karte erscheint nicht. Befund aus
+der Code-Lektüre beim Connect-Prompt-Fix, nicht per Test reproduziert. Der
+Connect-Prompt hat deshalb einen eigenen AsyncLocalStorage
+(`McpAuthPromptMint`); für den Sentinel reicht dasselbe oder die Weitergabe des
+Felds in beiden Re-Scopes.
+
+### Graph-Tools: exakte ID-Abfrage auch für Agenten
+
+Seit plugin-api 1.21.0 kann `findEntities` einen Datensatz über `id` exakt
+adressieren (§7), der Verifier nutzt das. Die Agenten-Tools tun es noch nicht:
+`query_graph` (`createGraphLookupTool`, `harness-verifier/src/graphLookupTool.ts`)
+und `find_entity` in `query_knowledge_graph` kennen nur `name_contains`. Ein
+Sub-Agent, der nach „Partner 42“ fragt, bekommt so auch 142, 420 oder
+„Halle 42“. Offen: einen optionalen `id`-Input an beide Tools, Beschreibung und
+§7 entsprechend anpassen.
 
 ### Web-Routine-Zustellung (#1071 follow-up)
 
@@ -3070,6 +4923,14 @@ steht damit der geerbte Orchestrator-Provider bis zum nächsten Rebuild fest.
 Ein lazy Getter würde das dort beheben; das „kein Lazy-Lookup“ aus #1076 gilt nur
 für extras, dessen Instanzen der Orchestrator eager festhält.
 
+Ebenso zählt der Aufrufzähler des Accessors (`callsUsed`) über die Lebenszeit
+des Kontexts. Für ein Extension-Plugin ist `calls_per_invocation` damit ein
+Budget seit der Aktivierung (das ui-orchestrator-Manifest setzt deshalb
+1000000). Der Plan-Runner (`calls_per_invocation: 30`) bekommt nach 30
+Modellaufrufen `LlmBudgetExceededError`; `shouldPlan` fängt ihn und plant bis
+zur nächsten Aktivierung nichts mehr, ohne Meldung. Budget pro Turn zählen oder
+die Obergrenze des Plan-Runners anheben.
+
 ### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
 
 - `src/plugins/dynamicAgentRuntime.ts` (`activate()`, ~Z. 498-534) löst den
@@ -3109,6 +4970,493 @@ Menü-Überschriften auf die UI-Sprache umgestellt: Die Web-UI pusht ihre Sprach
   `navigator.language` zu lesen.
 - **Electrons eigene `role:`-Menüeinträge** folgen der OS-Sprache; außerhalb
   unserer Reichweite, nur zu benennen.
+
+### Desktop: Schlüsseldatei `secrets.enc` — offene Punkte
+
+Die Desktop-App erzeugt neue Schlüssel nur noch, wenn `secrets.enc` fehlt
+(ENOENT). Jede andere Lesestörung stoppt den Boot mit einem
+Wiederherstellungsdialog, und jedes Neuschreiben läuft über `.bak`, Temp-Datei
+und Rename (`desktop/src/secretsBlob.ts`, `secretsStore.ts`,
+security-architecture §8a). Bewusst offen:
+
+- **`platform-data/` im Pre-Update-Snapshot.** Der Snapshot enthält `pgdata/`
+  und `<snapshot>.secrets.enc`, aber nicht den Kernel-Tresor
+  `platform-data/vault.enc.json` und nicht `installed.json`. Ein Restore bringt
+  Datenbank und Schlüssel zurück, nicht den Tresorstand zum Snapshot-Zeitpunkt.
+- **Recovery-Key wieder einspielen.** `exportRecoveryKey` ist reine Anzeige. Es
+  gibt keinen Weg, einen gesicherten Schlüssel zu importieren, etwa nach
+  Verlust des Keychain-Eintrags oder beim Rechnerumzug. `.bak` und
+  Snapshot-Kopie sind mit demselben Keychain-Eintrag verschlüsselt und helfen
+  dort nicht.
+- **Bestätigter Neuanfang mit neuen Schlüsseln.** Der Fehlerdialog bietet
+  absichtlich keinen solchen Button, weil er auch bei einer bloß verweigerten
+  Keychain-Abfrage erscheint. Heute ist der Neuanfang ein manueller Schritt
+  (Datenordner beiseite verschieben). Ein eigener, bestätigter Weg außerhalb
+  dieses Dialogs wäre die Ergänzung, sinnvollerweise zusammen mit dem Import.
+- **Recovery-Key im Wizard erst nach der Ordnerwahl zeigen.** Der
+  Reveal-Button liest den Schlüssel aus `userData`, bevor `complete` den
+  gewählten Datenordner setzt (`ipc.ts`). Liegt dort schon eine `secrets.enc`,
+  gilt deren Schlüssel und nicht der angezeigte. Die Reparatur: den Override
+  zuerst anwenden oder den Schlüssel erst danach anzeigen.
+- **Verwaiste `.secrets.enc`-Kopien.** Das Pruning entfernt die Kopie zusammen
+  mit ihrem Snapshot-Ordner. Wer Snapshot-Ordner von Hand löscht, lässt die
+  Kopie daneben liegen.
+
+### Desktop: Passwörter für die eingebettete Postgres — offene Punkte
+
+Die eingebettete PostgreSQL verlangt für jede Verbindung ein SCRAM-Passwort,
+der Kernel verbindet sich als `omadia_kernel` ohne Superuser-Rechte
+(`desktop/src/embeddedDbAuth.ts`, security-architecture §8b). Weil
+`omadia_kernel` seine Datenbank besitzt, behandelt die Shell diese Datenbank
+als nicht vertrauenswürdig: Jede Wartungsverbindung pinnt einen festen
+`search_path` (Systemkataloge zuerst, überstimmt `ALTER DATABASE/ROLE ... SET`),
+der Ownership-Transfer schema-qualifiziert seine Aufrufe (`pg_catalog.format`)
+und pinnt den `search_path` zusätzlich selbst
+(`desktop/src/embeddedDbOwnership.ts`). Die Verifikation lehnt die Kernel-Rolle
+außerdem ab, wenn sie Mitglied irgendeiner Rolle ist.
+
+Unter macOS und Linux lauscht der Server nur auf einem Unix-Socket in
+`<userData>/pg-socket` (0700, Eigentümer geprüft; bei zu langem Pfad ein
+privates Temp-Verzeichnis pro Start), ohne TCP; die `DATABASE_URL` des Kernels
+nennt das Socket-Verzeichnis als Host (`desktop/src/embeddedDbEndpoint.ts`).
+Die Shell verbindet sich nur per SCRAM (`desktop/src/scramOnlyConnect.ts`:
+Klartext-, MD5- oder Login ohne SCRAM-Austausch wird abgelehnt, bevor ein
+Passwort rausgeht). "Bereit" heißt: `postmaster.pid` nennt den gestarteten
+Prozess mit Status `ready`, ohne Zugangsdaten; danach muss der erste
+Superuser-Login das eigene `data_directory` melden, bevor das Kernel-Passwort
+irgendwohin geht. Bewusst offen:
+
+- **Windows: Kernel-Pools sind nicht SCRAM-only.** Windows bleibt auf
+  `127.0.0.1`. Die Shell-Verbindungen sind dort geschützt, die Pools des
+  Kernels (`createNeonPool`, `coreMigrations`) nutzen aber einen normalen
+  pg-Client. Stirbt der Server, während der Kernel läuft, und bindet ein
+  anderer lokaler Nutzer den Port vor dem nächsten Reconnect, könnte er das
+  Kernel-Passwort im Klartext anfordern. Optionen: ein SCRAM-only-Client für
+  die Kernel-Pools (`new Pool({ Client })`, aktiv bei `OMADIA_EMBEDDED_DB=1`),
+  ein bei jedem Start neu gesetztes Kernel-Passwort, oder auch unter Windows
+  ein Unix-Socket (PostgreSQL ab 13 kann AF_UNIX unter Windows 10 1803+) in
+  einem Verzeichnis mit Nutzer-ACL.
+- **Windows: Port-Besetzung bricht den Start ab.** Zwischen Portwahl und
+  Serverstart sowie während einer Single-User-Reparatur ist der Port frei;
+  ein anderer lokaler Nutzer, der ihn dann bindet, bekommt kein Passwort, lässt
+  aber den Boot scheitern (der nächste Start wählt einen freien Port). Ein
+  automatischer Neuversuch mit neuem Port wäre die Ergänzung.
+- **Mitgliedschaft schlägt fehl statt sich zu reparieren.** Erhält
+  `omadia_kernel` je eine Rollen-Mitgliedschaft (heute nur über die geschlossene
+  Umleitung erreichbar, oder ein künftiges Feature, das bewusst eine vergibt),
+  bricht der Start ab statt sie zu entziehen; der Rückweg ist der
+  Pre-Update-Snapshot (security-architecture §8a). Ein `REVOKE` aller
+  Mitgliedschaften im Provisioning wäre die selbstheilende Alternative, falls
+  das je nötig wird.
+- **Kernel-Passwort im Kindprozess-Environment.** Es steckt in `DATABASE_URL`
+  und ist damit für Prozesse desselben OS-Nutzers lesbar (`ps eww`), dieselbe
+  Grenze wie bei `VAULT_KEY`. Die Härtung wäre die Übergabe per stdin/fd.
+- **Kein externer Zugriff auf die eingebettete Datenbank.** Beide Passwörter
+  bleiben verschlüsselt in `secrets.enc`, und kein unterstützter Weg gibt sie
+  heraus; ein lokales Werkzeug (psql, ein GUI-Client) kommt nicht mehr an die
+  Daten. Wird das gebraucht, wäre ein Operator-Export des Kernel-DSN hinter
+  einer Bestätigung im Hilfe-Menü die Ergänzung.
+- **Migration und Laufzeit teilen sich eine Rolle.** `omadia_kernel` besitzt
+  die Datenbank und führt Kern- und Plugin-Migrationen aus, beim Boot und bei
+  jeder Plugin-Aktivierung. Eine reine DML-Rolle für die Laufzeit bräuchte im
+  Kernel eine zweite DSN für Migrationen.
+- **pgvector-Updates.** Die Extension gehört dem Superuser. Ein
+  `ALTER EXTENSION vector UPDATE` nach einem Engine-Update mit neuerer
+  pgvector-Version kann nur die Shell ausführen; heute führt es niemand aus.
+- **Windows-Stop vor der Passwort-Reparatur.** Die Reparatur im Single-User-Modus
+  braucht einen gestoppten Server; `postgres.exe` wird dafür hart beendet (wie
+  jeder Stop dort), der Single-User-Lauf macht danach eine Crash-Recovery.
+
+### Desktop-Shell: Trust-Boundary Renderer → Main
+
+Wizard, Ladeseite, Web-UI und bei In-Window-OIDC auch IdP-Seiten laufen im
+selben Fenster mit demselben Preload. Seit 2026-09-30 gilt, Begründung und
+Details in [`security-architecture.md` §10i](security-architecture.md):
+
+- **IPC:** Jeder Kanal wird in `desktop/src/ipc.ts` über
+  `guardedHandle`/`guardedOn` mit genau einer Surface registriert, nie direkt
+  über `ipcMain`. `desktop/src/ipcSender.ts` entscheidet pro Aufruf anhand von
+  `event.senderFrame`. Setup-Kanäle antworten nur dem gebündelten
+  `wizard.html` im Main-Frame (Pfadvergleich gegen die Installation), und nur
+  solange der Navigator `wizard` zeigt. UI-Pings antworten nur dem Origin der
+  laufenden Web-UI. `getState` ist entfernt.
+- **Preload:** `desktop/src/bridgeSurface.ts` gibt der Web-UI nur
+  `uiReady`/`setUiLocale`, fremden Seiten gar nichts. Plugin-iframes erreichen
+  die Bridge der Web-UI über `window.parent.omadia`. Deshalb darf die
+  `app`-Surface nie eine Methode bekommen, die ein Geheimnis liefert oder
+  schreibt.
+- **Navigation:** `desktop/src/navigationGuards.ts` hängt an jedem
+  webContents und dessen Session. Fremde Links und Popups gehen in den
+  Systembrowser. `file:`, `javascript:`, `data:` und `about:blank` werden
+  abgelehnt. Same-App-Popups öffnen sandboxed und ohne Preload. Subframes
+  dürfen Webseiten und `about:`/`data:`/`blob:` laden, sonst nichts.
+  Web-Redirects bleiben bewusst offen, damit der In-Window-Login per
+  OIDC/Entra funktioniert; ein Redirect auf ein anderes Schema bricht die
+  Navigation ab.
+- **OS-Protokoll-Handler:** Die Session verweigert Electrons
+  `openExternal`-Permission, die Electron ohne Handler jeder Seite gewährt.
+  Damit startet keine Seite, kein Plugin-iframe und kein Redirect ein
+  Programm über ein eigenes Schema (`ms-settings:`, `search-ms:`, …). Web-Links
+  öffnet die Shell selbst, geprüft, über `shell.openExternal`.
+
+Offen:
+
+- **Prüfung auf paketierten Builds (macOS und Windows)** vor dem nächsten
+  Desktop-Release. Automatisch im Install-Smoke (`desktop-upgrade-smoke.yml`):
+  der Wizard komplett (Reveal zeigt den Key, Finish bootet), keine
+  `[ipc] … refused`-Zeile im Log (sonst stimmt der Pfadvergleich nicht:
+  asar-Pfad, Laufwerksbuchstabe), `Object.keys(window.omadia)` in der Web-UI
+  genau `uiReady` und `setUiLocale`, der Anhänge-Schalter (`/health` →
+  `attachments.store: filesystem`, Boot-Zeile, Ordner 0700 auf macOS/Linux).
+  Für Electron 44 belegt Lauf 36989068863 keine `[ipc]`-Zeile und die
+  Anhänge-Boot-Zeile auf allen drei Plattformen. Von Hand bleiben:
+  Plugin-Autor-Link, GitHub-Hilfe-Link und ein Link in einer Chat-Antwort
+  öffnen im Systembrowser; ein Same-App-Popup hat kein `window.omadia`; ein
+  Link mit eigenem Schema in einer Plugin-UI startet kein Programm (Log:
+  `[nav] blocked a subframe navigation`); der Entra-Login-Rundlauf klappt
+  inklusive Passwort-POST.
+- **Abmelden einer OIDC-Sitzung:** Die IdP-End-Session-URL öffnet jetzt im
+  Systembrowser, der einen eigenen Cookie-Speicher hat. Die IdP-Sitzung im
+  App-Fenster bleibt also bestehen. Folgepunkt für die Web-UI: in
+  `web-ui/app/_components/AuthBadge.tsx` bei vorhandener Desktop-Bridge direkt
+  auf `/login` gehen statt den IdP-Hop zu versuchen.
+- **Web-Redirects auf fremde Seiten** werden nicht blockiert. Das ist die
+  akzeptierte Rest-Ausnahme aus §10i: Solche Seiten bekommen keine Bridge,
+  jeder Handler lehnt sie ab, und auch sie erreichen keinen
+  OS-Protokoll-Handler.
+- **Übrige Session-Permissions: deny-by-default mit Allowlist.** Die Session
+  verweigert nur `openExternal` (`canGrantPermission`/`canPassPermissionCheck`
+  in `desktop/src/navigationPolicy.ts`). Jede andere Permission-Anfrage und
+  -Prüfung bekommt Electrons Antwort ohne Handler: gewährt, für jeden Frame und
+  ohne Rückfrage der App. Das betrifft Kamera und Mikrofon (`media`), das Lesen
+  der Zwischenablage (`clipboard-read`; Wizard und Shell kopieren den
+  Wiederherstellungsschlüssel dorthin), Standort und Benachrichtigungen, auch
+  für Plugin-iframes, Same-App-Popups und fremde Seiten nach einem Redirect.
+  Folgepunkt: Request- und Check-Handler lehnen ab, was nicht auf einer
+  expliziten Allowlist steht, entschieden pro anfragendem Origin
+  (`details.requestingUrl` bzw. `requestingOrigin`) und Frame
+  (`details.isMainFrame`). Gebraucht wird heute nur `clipboard-sanitized-write`
+  (`navigator.clipboard.writeText` im Wizard und in der Web-UI), also für die
+  gebündelten Seiten und den Origin der laufenden Web-UI. Plugin-iframes laufen
+  auf dem Origin der Web-UI und erben jede Freigabe für ihn, solange sie nicht
+  auf den Main-Frame begrenzt ist; ob Plugin-UIs kopieren dürfen, gehört zur
+  Entscheidung. Die Tests „grants every other request …“ und „answers every
+  other check …“ in `desktop/test/navigationPolicy.test.mts` pinnen das heutige
+  Verhalten und kehren sich mit dem Fix um.
+
+### Desktop-Shell: Wizard-Schalter — Folgepunkte
+
+Seit 2026-09-30 gilt [`security-architecture.md` §10j](security-architecture.md):
+Ein Wizard-Schalter ändert die Kernel-Env oder existiert nicht. Übrig ist
+**Anhänge** (`ATTACHMENT_STORE_DIR` → lokaler `tigrisStore`, Readiness über
+`/health` → `attachments.store`, geprüft von `Supervisor.confirmCapabilities`).
+Semantisches Gedächtnis und Diagramme wurden aus dem Wizard entfernt, weil die
+Shell sie nicht einschalten kann. Offen:
+
+- **Semantisches Gedächtnis als echter Opt-in.** Darf nur mit Verdrahtung
+  zurück in den Wizard: Gewichte-Download aus der Shell heraus (heute nur über
+  die Admin-Route `POST /api/v1/admin/embedding-provider/local-model/fetch`,
+  also mit Operator-Session), danach Selbst-Reaktivierung des Adapters,
+  Neubewertung des Embedding-Gates und ein Readiness-Signal auf `/health`, das
+  die Shell prüft — plus ein `supervisorKernelEnv`-Test, der das pinnt.
+- **Diagramme** brauchen eine Owner-Entscheidung: gehosteter Renderer (ein
+  neuer Datenabfluss der Diagramm-Quellen an einen Dienst außerhalb des
+  Rechners) oder ein mitgelieferter Renderer (Kroki ist JVM-basiert und lässt
+  sich nicht bündeln). Selbst dann fehlt Speicher: `@omadia/diagrams` baut
+  einen eigenen S3-Client und nutzt den Kernel-Store nicht.
+- **Office- und Diagramm-Plugin auf den Kernel-Store umstellen.** Beide bauen
+  eigene S3-Clients aus ihrer Plugin-Config; mit dem Kernel-`tigrisStore`
+  liefen `create_xlsx`/`create_docx` auch auf dem Desktop.
+- **Ablauf für den lokalen Store.** S3-Buckets bekommen eine 90-Tage-Lifecycle-
+  Regel, `filesystemObjectStore.ts` löscht nichts.
+- **Schalter nach dem Setup ändern.** Es gibt keinen Einstellungs-Pfad; heute
+  nur „Setup erneut ausführen“ nach einem Boot-Fehler.
+- **Readiness sichtbar machen.** Die Prüfung schreibt heute nur eine Log-Zeile
+  (`[boot] attachments: …`, im Boot-Log des Wizards sichtbar). Eine Warnung
+  könnte zusätzlich in Tray oder Web-UI erscheinen.
+- **Wer schreibt in den Store?** Der Web-Chat hat keinen Datei-Upload. Heute
+  landen dort nur Dateien von Kanälen, die über den Kernel-Store persistieren
+  (Teams mit `TEAMS_ATTACHMENT_STORAGE_ENABLED=true`).
+- **Manuelle Prüfung auf paketierten Builds:** Wizard zeigt einen Schalter
+  plus Hinweis; `setup.json` enthält `capabilities: { attachments }`; das Log
+  zeigt `[boot] attachments: on, kept in the data folder on this computer`;
+  `GET http://127.0.0.1:8769/health` liefert `attachments.store: filesystem`;
+  `<Datenordner>/attachments` existiert mit 0700.
+
+### Formeln in `create_xlsx` server-seitig auswerten (Option A, zurückgestellt)
+
+Seit `@omadia/plugin-office` 0.1.4 schreibt `create_xlsx` Formeln ohne
+gecachten Wert und setzt `fullCalcOnLoad`. Die Zahlen rechnet die Anwendung,
+die die Datei öffnet (`security-architecture.md` §5a). Vorschauen ohne
+Rechenwerk (Quick Look, Teams/Outlook, Excels Protected View) zeigen
+Formelzellen deshalb leer, und ein ungespeichert hochgeladener Export landet
+mit leeren Formelzellen im Dataset-Import. Option A wäre eine echte
+server-seitige Auswertung, die den `<v>`-Wert selbst schreibt. Aufwand L,
+bewusst zurückgestellt:
+
+- **Engine nur MIT-lizenziert.** Geprüft (Stand 2026-09): `fast-formula-parser`
+  (Sheet-Referenzen über `onCell`/`onRange`, rund 280 Funktionen, seit 2021
+  ohne Pflege), `xlsx-calc` (braucht ein SheetJS-Workbook, Teilmenge der
+  Funktionen), `@formulajs/formulajs` (nur Funktionen, kein Parser).
+  `hot-formula-parser` kennt keine Sheets und scheidet für die
+  Cross-Sheet-Pivots aus. **HyperFormula ist GPL/kommerziell und kommt nicht
+  in Frage.**
+- **Adapter exceljs → Engine**: Spaltenbuchstaben, Datums-Serials,
+  `{row}`-Vorlagen und eine Regel für nicht unterstützte Funktionen (dann
+  keinen `<v>` schreiben, sondern wie heute die Anwendung rechnen lassen).
+- **Semantik-Treue**: Jede Abweichung zwischen Engine und Excel schriebe einen
+  falschen `<v>` unter omadias Namen, also genau den Fehler, den 0.1.4
+  beseitigt hat. Ohne Differenztests gegen echtes Excel nicht ausrollen.
+- **Formel-Policy bleibt**: `formulaPolicy.ts` (nur Excels eigene Funktionen
+  aus `formulaFunctions.ts`; kein `WEBSERVICE`, `IMPORTTEXT`/`IMPORTCSV`,
+  `HYPERLINK`, DDE, keine Verweise auf andere Dateien) gilt unabhängig davon,
+  wer rechnet.
+
+**Funktionskatalog pflegen.** `formulaFunctions.ts` ist Microsofts Liste
+„Excel functions (alphabetical)“ vom 2026-09-30, wörtlich übernommen. Was
+Excel danach dazubekommt, lehnt `create_xlsx` ab, bis es jemand aufnimmt
+(Fail-closed, so fielen `IMPORTTEXT`/`IMPORTCSV` auf). Vor dem Aufnehmen
+prüfen, ob die Funktion nur über Zellen der Arbeitsmappe rechnet; greift sie
+auf Netz, Dateien, Dienste oder andere Programme zu, gehört sie stattdessen
+nach `EXTERNAL_FUNCTIONS`. Offen: Nackte, nicht aufgerufene Namen (LET-Namen
+oder eine Funktion als Wert ohne `_xleta.`) prüft die Policy nur gegen die
+Sperrliste. Sie ganz zu schließen bräuchte einen echten Formel-Parser mit
+LET/LAMBDA-Gültigkeitsbereichen. Damit ließen sich auch Aufrufe über LET-Namen
+(`f(A1)`) wieder erlauben, die heute abgelehnt werden.
+
+**exceljs-Upgrade: Zeichenliste nachziehen.** `formulaText.ts` lehnt genau die
+Zeichen ab, die exceljs 4.4 beim Schreiben verwirft (`utils.xmlEncode`:
+C0-Steuerzeichen außer Tab/LF/CR, dazu DEL) oder die XML nicht trägt. Ändert
+ein exceljs-Update den Encoder, muss die Liste mitziehen, sonst prüft die
+Policy wieder einen anderen Text, als in der Datei landet. Der Test „stores
+every formula it accepts exactly as it was checked“ in
+`office-formulas.test.ts` fällt dann auf, aber nur für die Zeichen, die er
+durchprobiert (alle C0-Zeichen, DEL, U+0085, ein Surrogat, U+FFFE).
+Ebenso die Wert-Erkennung (`Value.getType` in `lib/doc/cell.js`): exceljs
+liest jedes Objekt nach seiner Form (`formula`/`sharedFormula` → Formel samt
+`result` als Cache, `{ text, hyperlink }` → Link), deshalb reicht
+`renderXlsx` nur Text, Zahlen, Booleans, `null`, selbst erzeugte Dates und
+neu gebaute `{ formula }` durch (`cellValueOf`, Header nur als Text). Liest
+ein Update einen dieser Werte anders, etwa Text mit führendem `=` als Formel,
+umgeht er die Policy. `office-cell-values.test.ts` prüft die abgelehnten
+Objektformen und dass solcher Text Text bleibt.
+
+### Answer-Verifier: offene Punkte nach den evidenzgebundenen Verdicts (2026-09-30)
+
+- **Connector-Chip für `skipped` / `unavailable` — Produktentscheidung.** Teams
+  und Telegram bekommen für diese Turns bewusst **kein** Badge; der Wire-Typ
+  `SemanticAnswer.verifier` blieb unverändert, damit die Connector-Repos kein
+  Release brauchen. Ein expliziter „nicht geprüft"- / „Prüfung nicht
+  verfügbar"-Chip hieße: Union in `outgoing.ts` erweitern, `teamsCard.ts`
+  (`verifierChip`) nachziehen, beide Connector-Repos releasen — und ein
+  neutrales Badge auf jedem Small-Talk-Turn. Der Web-Chat zeigt beide Zustände
+  bereits (`VerifierBadge`).
+- **`CHECK`-Constraint auf `verifier_verdicts.status`.** Das Vokabular ist
+  jetzt geschlossen (`approved`, `approved_with_disclaimer`, `blocked`,
+  `skipped`, `unavailable`); eine Migration in der KG-neon-Serie könnte es
+  festschreiben. Heute freie `TEXT`-Spalte ohne Leser im Repo.
+- **Golden-Eval einmal beaufsichtigt laufen lassen.** `skipped.jsonl` (vorher
+  `approve.jsonl`) erwartet jetzt `skipped`. Ein Sample, dessen Extraktion leer
+  bleibt, landet nun in `skipped` statt still in `approved`; extrahiert das
+  Modell neben einem geprüften Claim einen, den kein Checker nimmt, oder einen,
+  der nicht wörtlich in der Antwort steht (Umschreibung, hineingezogenes
+  Subjekt — `claims_not_in_answer`), landet ein `approved`-Eintrag jetzt in
+  `approved_with_disclaimer`; eine am Token-Limit abgeschnittene oder
+  schemawidrige Extraktion in `unavailable` — ein erster roter Lauf von
+  `npm run eval:golden` ist zu untersuchen, nicht wegzuwinken.
+- **Nicht gelistete Claims bleiben unsichtbar.** Der Verifier prüft, was das
+  Extraktionsmodell auflistet. Lässt es unter dem Anfrage-Limit einen Claim
+  weg, hinterlässt das keine Spur; `approved` heißt deshalb „keine bekannte
+  Lücke", nicht „die Antwort enthält sonst nichts" (so auch in
+  `docs/security-architecture.md` §7c). Denkbar: die starken Signale des
+  Trigger-Routers (Beträge, Daten, Referenzen) deterministisch gegen die
+  extrahierten Claims abgleichen und ein Signal ohne Claim als Lücke melden,
+  oder ein Pflichtfeld im `record_claims`-Schema, in dem das Modell
+  Vollständigkeit bestätigt. Heute beobachtet nur die Golden-Eval, ob das
+  Modell die entscheidenden Claims findet.
+- **Verifier-Aufzählung in der README-Feature-Tabelle.** Die Zeile
+  „Answer verification" nennt nur `approved` / `approved_with_disclaimer` und
+  „each answer"; beim nächsten Abgleich der README-Aussagen mit dem erzwungenen
+  Verhalten auf `skipped` / `unavailable` erweitern — und sagen, dass nur
+  `enforce` blockiert (auch im Stream), `shadow` nur beobachtet, und dass der
+  Abo-CLI-Runtime und Routinen nicht verifiziert werden.
+- **Verdict-Zustand im Server-Mirror — erledigt.** Der Chat-Mirror
+  (`MessageSchema`, `routes/chatSessions.ts`) behält `Message.verifier` (ein
+  Summary, das nicht ins Schema passt, fällt einzeln weg) und
+  `verifierBlocked`.
+- **Abdeckung nur im Log, nicht in `verifier_verdicts`.** Die Tabelle hat keine
+  Spalte für nicht geprüfte (`not_checked`) oder gescheiterte
+  (`check_failed`) Claims; beide zählen dort in `unverified_count`. Eine
+  Kalibrierungs-Abfrage trennt „nicht geprüft" und „Check gescheitert" von
+  „geprüft, nicht bestätigt" heute nur über die Logzeilen
+  (`[verifier/pipeline] … not checked`, `[verifier/deterministic] FAIL`,
+  `[verifier/judge] API FAIL`). Eine Migration mit eigenen Zählern wäre der
+  saubere Weg; der Stream (`uncheckedCount`) hat die Zahl bereits.
+- **Konfigurationslücken zählen als „geprüft, nicht bestätigt".** Ein Claim,
+  den der `DeterministicChecker` mangels Odoo-/Graph-Reader oder bekanntem
+  Feld nicht prüfen kann („no odoo reader configured", „no amount field for
+  …"), trägt keine `cause`. Das Badge bleibt ehrlich (ohne bestätigten Claim
+  `unverified`, nie grün), der Tooltip sagt aber „geprüft, keine bestätigt"
+  statt „nicht geprüft", und neben einem bestätigten Claim stößt so ein Claim
+  den Borderline-Resample an. Offen: solche Fälle als `not_checked` markieren.
+- **Schemawidriger Eintrag kippt die ganze Extraktion.** Ein `record_claims`-
+  Eintrag ohne Text, mit unbekanntem Typ oder unbekannter Quelle macht die
+  Extraktion zu `unavailable`, auch wenn die übrigen Einträge lesbar wären —
+  konservativ, weil sich ein unlesbarer Eintrag nicht als Claim im Verdict
+  halten lässt. Häufen sich im Shadow-Betrieb die Logzeilen „… entries do not
+  match the schema", die lesbaren Einträge prüfen und die unlesbaren als
+  Abdeckungslücke zählen.
+- **Resample bei gescheitertem Check neben bestätigtem Claim.** Ein Verdict mit
+  einem bestätigten und einem `check_failed`-Claim gilt weiter als
+  Borderline und kauft einen zweiten Orchestrator-Turn (#132), weil ein
+  transienter Fehler beim zweiten Sample verschwinden kann. Seit dem
+  Replay-Ledger führt ein Resample kein Tool erneut aus; bleibt die Abwägung
+  gegen die Kosten des zweiten Turns.
+- **Lange Antworten fensterweise extrahieren.** Der `ClaimExtractor` liest nur
+  die ersten 6000 Zeichen (`EXTRACTION_WINDOW_CHARS`); jede längere Antwort
+  trägt deshalb eine `coverage_gap` und ist höchstens `partial`, auch wenn
+  jeder Claim im gelesenen Teil stimmt. ERP-Listen überschreiten das leicht.
+  Fensterweise Extraktion (überlappende Fenster, Dubletten zusammenführen, ein
+  LLM-Call je Fenster, bis die Claim-Liste voll ist) würde sie voll prüfbar
+  machen; die Lücke bliebe nur für Text jenseits des letzten Fensters.
+- **Verbatim-Guard und Markdown.** Der Guard (`verbatimSpan.ts`) toleriert
+  Groß-/Kleinschreibung und Whitespace, aber keine Auszeichnung: zitiert das
+  Modell „Die Gutschrift beträgt 2.000,00 €" aus einer Antwort mit
+  `**2.000,00 €**`, ist das die Lücke `claims_not_in_answer` und die Antwort
+  höchstens `partial` — ehrlich, aber womöglich häufig. Im Shadow-Betrieb die
+  Logzeilen `[claim-extractor] … not_in_answer=` beobachten; ist Markdown die
+  Hauptursache, Emphasis-Zeichen (`*`, `_`, Backtick) zwischen den Wörtern
+  gezielt überspringen, statt den Guard allgemein zu lockern.
+- **Token-Budget der Extraktion an das Claim-Limit koppeln.** Der
+  `record_claims`-Call hat `maxTokens: 1024`. Eine Liste nahe am Limit
+  (`VERIFIER_MAX_CLAIMS + 1` Einträge) kann daran abreißen und endet dann als
+  `unavailable` (`extractor_error`) statt als `partial` — ehrlich, aber
+  ungenauer als nötig. Budget aus `maxClaims` ableiten oder kompaktere
+  Einträge anfordern.
+- **Claim-Wert nicht an den Claim-Text gebunden (älteres Limit).** Der
+  `DeterministicChecker` vergleicht bei Beträgen und Summen den vom Modell
+  gelieferten `claim.value` mit dem Odoo-Feld (`checkOdooAmount` ab
+  `deterministicChecker.ts:194`, `checkOdooAggregate` ab :234; bei Daten
+  `claim.value ?? claim.text`, :278), nie den Wert, den der zitierte Text
+  nennt. Der Text ist dank Verbatim-Guard ein Stück der Antwort, der Wert
+  aber die eigene Lesart des Modells: liest es „1.234,56 €" als 1000 und hält
+  der Beleg 1000, ist der Claim `verified`, obwohl die Antwort etwas anderes
+  sagt; umgekehrt kann ein Lesefehler einen richtigen Claim widerlegen.
+  Zudem kürzt der Extractor einen String-Wert auf 200 Zeichen. Offen: Betrag
+  und Datum deterministisch aus dem zitierten Text lesen und bei Abweichung
+  vom Modellwert `not_checked` melden, statt dem Modellwert zu folgen.
+- **Judge-Antwort wird großzügig gelesen (älteres Limit).** `parseVerdict`
+  (`evidenceJudge.ts`) liest nur den ersten `record_verdict`-Call; ein
+  zweiter mit anderem Urteil wird ignoriert. Eine am Token-Limit
+  abgeschnittene Judge-Antwort (`finishReason: 'max_tokens'`) wird nicht
+  verworfen, anders als beim Extractor. Erledigt ist die Zitatprüfung: die
+  zitierte `evidence_node_id` muss eine Kennung sein, die der Request
+  gedruckt hat (Security §7c). Offen: alle Calls lesen (widersprüchliche
+  Urteile → `check_failed`) und eine abgeschnittene Antwort als
+  `check_failed` werten.
+- **Überlange Claims beobachten.** Ein Claim über `MAX_CLAIM_CHARS` (300
+  Zeichen) wird nicht mehr gekürzt geprüft, sondern ist die Lücke
+  `claims_too_long` — die Antwort ist dann höchstens `partial`. Das
+  Tool-Schema verlangt 1-200 Zeichen, erzwungen wird es im Prompt nicht. Im
+  Shadow-Betrieb die Logzeilen `[claim-extractor] … too_long=` beobachten;
+  sind sie häufig, das Modell im System-Prompt ausdrücklich lange Aussagen in
+  mehrere Claims teilen lassen, statt die Grenze anzuheben.
+- **`verifierService.ts` über der 500-Zeilen-Grenze — erledigt.** Die reinen
+  Helfer liegen jetzt in eigenen Modulen: Summary, Badge und Merge
+  (`summarise`, `badgeFor`, `mergeBadges`, `mergeBorderlineVerdicts`,
+  `withVerifier`) in `verifierVerdicts.ts`, die Trace-Extraktion
+  (`extractToolsCalled` u. a.) in `verifierTraceEvidence.ts`.
+  `verifierService.ts` exportiert `badgeFor`, `mergeBadges` und
+  `mergeBorderlineVerdicts` weiter, weil Tests sie von dort importieren.
+
+### Answer-Verifier: offene Punkte zum `enforce`-Gate (2026-10-01)
+
+- **Correction-Retry im Stream — erledigt** (Replay-Ledger, §3), außer bei
+  Canvas-Turns (Punkt „Canvas-Turns ohne Stream-Retry“ oben).
+- **Zurückgehaltene Antwort wird trotzdem persistiert.** Der Orchestrator
+  schreibt Session-Log, KG-Turn und ggf. die Auto-Promotion vor `done`; die
+  zurückgehaltene Antwort landet so im Kontext späterer Turns, und ihre
+  `autoPromotedMkId` wird nicht ausgeliefert (der Web-Chat bietet kein
+  Verwerfen an). Mit Request-Ledger (Retry oder Resample möglich) ist die
+  Persistenz schon bis nach dem Urteil zurückgestellt (Commit-on-Delivery,
+  §3); dort nach dem #1094-Muster einen Marker statt der Antwort committen
+  und die Promotion auslassen. Ohne Ledger (`VERIFIER_MAX_RETRIES=0` ohne
+  Resample, Canvas-Stream) schreibt der Turn weiterhin vor dem Urteil.
+- **Zurückgehaltener Turn zeigt nicht, welche Tools liefen.** Tool-Trace und
+  Tool-Ergebnisse fallen mit der Antwort weg; der Web-Chat zeigt nur die
+  Anzahl (`tools=N`). Hat ein Schreib-Tool committet, sollte die Notiz es nennen
+  wie die Turn-Incomplete-Notiz (#1094) — `done.runTrace` trägt die Namen.
+- **Keepalive für Public-API- und Canvas-Stream.** Bis zum Urteil gehen nur
+  Lebenszeichen raus; `heartbeat` erzeugt nur die Kernel-Route. Ein Turn ohne
+  Tool-Calls ist auf dem API-Key-Stream bis zum Urteil still — Integratoren mit
+  kurzen Lese-Timeouts brechen ab. Ein Wrapper-Heartbeat während des Haltens
+  wäre die Lösung (die README nennt das Verhalten).
+- **Canvas: erster Paint erst nach dem Urteil.** In `enforce` hält der
+  Composer das Skeleton bis zum Urteil (es ist Modell-Output); der Canvas
+  bleibt bis dahin leer. Ein Platzhalter ohne Modelltext (etwa das
+  deterministische Fallback-Skeleton) könnte live rausgehen, braucht aber
+  eine eigene Revisionsfolge (Modell-Skeleton als Revision 1, Patches darauf)
+  und einen lokalisierten „zurückgehalten“-Status für einen zurückgehaltenen
+  Turn.
+- **Mitausgelieferte Inhalte ungeprüft.** Das Urteil gilt `done.answer`;
+  Tool-Output, Sub-Agent-Antworten, Surfaces und der Skeleton-Text gehen mit
+  einem freigegebenen Turn raus, ohne selbst geprüft zu sein. Erfindet der
+  Composer Zahlen im Skeleton, wäre ein Skeleton ohne Freitext in `enforce`
+  (oder eine Prüfung seines Texts) der nächste Schritt.
+- **Nachgestelltes `NO_REPLY` in Teams/Telegram.** Eine Antwort, die nur mit
+  `NO_REPLY` endet, wird in `enforce` geprüft; hält der Verifier sie zurück,
+  postet der Channel die Notiz statt zu schweigen. Falls das stört: die Form
+  vor dem Verifier auf das strikte `NO_REPLY` normalisieren (Prosa verwerfen)
+  — Produktentscheidung.
+- **`onVerifierBlocked` nur bei Widerspruch.** Der Plan-Hook feuert für
+  `blocked`; eine fail-closed zurückgehaltene Antwort (`partial`,
+  `unavailable`) erscheint im Plan nicht als abgelehnt.
+- **Fail-closed hält lange Antworten immer zurück.** Eine Antwort über 6000
+  Zeichen ist nie `approved` (Abdeckungslücke) und wird in `enforce` stets
+  zurückgehalten, ebenso jede mit einem Claim, den kein Checker nimmt. Die
+  fensterweise Extraktion (Punkt oben) ist damit Voraussetzung für `enforce`
+  bei ERP-Listen.
+- **Borderline-Resample in `enforce chat()`.** Ein Borderline-Verdict ist
+  `approved_with_disclaimer` und wird zurückgehalten; der bezahlte Resample
+  ändert daran nur etwas, wenn er auf `blocked` eskaliert und der Retry dann
+  korrigiert. Kosten gegen Nutzen neu abwägen. Seit dem Replay-Ledger führt er
+  kein Tool mehr erneut aus, und `verifier_resample_on_borderline=false`
+  schaltet ihn ab.
+- **Abo-CLI-Runtime und Routinen ohne Verifier.** `VERIFIER_MODE` wirkt weder
+  auf `claude-cli`-Agenten (der `CliChatAgent` wird vor dem Wrapper
+  zurückgegeben) noch auf Routinen (`runTurn` auf dem rohen Orchestrator).
+- **Connector-Badge auf der Notiz.** Teams/Telegram zeigen an einer
+  zurückgehaltenen Antwort das Badge ihres Verdicts (`failed`, `partial`) neben
+  der Notiz. Produktentscheidung, ob es dort entfallen soll.
+- **Karten-Ausnahme lässt Faktenantworten ungeprüft durch.**
+  `releasesWithoutVerification` gibt jeden Turn mit `pendingUserChoice`,
+  `pendingMcpInput`, `pendingSlotCard` oder `pendingOAuthConsent` ohne Urteil
+  frei — auch die vollständige Antwort, an der ein Slot-Picker, ein
+  Consent-Prompt (turnweit) oder eine Card-Router-Auswahlkarte hängt, samt
+  Tool-Output, Surfaces und Canvas-Skeleton, ohne Badge. Die Ausnahme greift
+  vor dem Privacy-Gate (`verifierGate`, in `VerifierService.chat` wie in
+  `enforcedVerifiedStream`), also geht an einem solchen Turn auch eine von
+  Privacy Shield gerenderte Antwort ungeprüft raus. Engere Regel zur
+  Entscheidung: den Antworttext solcher Turns prüfen und die Karte nur
+  mitliefern, wenn das Urteil die Antwort freigibt — oder nur Turns
+  ausnehmen, die nichts als die Karte sind; eine gerenderte Antwort dabei
+  zurückhalten wie ohne Karte. Die vier Ausnahmen sind derzeit
+  so gesetzt; Security §7c beschreibt die Lücke.
+- **`enforce` mit Privacy Shield v4 liefert eine gerenderte Antwort nur an
+  einem Turn mit Input-Karte.** Eine gerenderte Antwort geht nie an den
+  Verifier und wird zurückgehalten (`unavailable` / `privacy_shield`) — auch
+  ein gerenderter Tool-Fehler oder Anmelde-Prompt (`answerIsError`); trägt der
+  Turn eine Input-Karte, gibt die Karten-Ausnahme (Punkt oben) ihn vorher
+  ungeprüft frei. Damit `enforce` sie freigeben kann, müsste
+  der Verifier die Antwort über die Privacy-Sicht des Turns prüfen (Prosa und
+  Spaltenlabels maskiert, Werte über Handles statt Klartext).
+- **Zusammenführen mit der Privacy-Bindung der Verifier-Requests — erledigt.**
+  `verifierGate` entscheidet für beide Modi und jeden Lauf: „nicht prüfen“
+  wird in `enforce` zu `unavailable` / `privacy_shield` (zurückgehalten), nie
+  zu einer Auslieferung ohne Urteil, und in `shadow` zu keinem Verdict;
+  `mayVerifyAnswer` entfällt, `shadow` schickt keine gerenderte Antwort mehr
+  an den Extraktor. Datenschutz-Absage und Screening-Quarantäne gehen in
+  `enforce` als Server-Notizen ohne Urteil raus.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
@@ -3191,9 +5539,13 @@ confidence-Kanten mit Flag speichern, UI zeigt sie anders an.
 
 Feature ist lokal fertig (2026-04-19, siehe CHANGELOG für Architektur-Zusammenfassung). Offen:
 
-1. Zwei Fly-Apps `odoo-bot-kroki` + `odoo-bot-kroki-mermaid` mit flycast-only Services (keine öffentlichen IPs). Dockerfile/fly-toml vorbereiten, z.B. unter `kroki/`.
-2. Tigris-Bucket über `fly storage create -a odoo-bot-middleware`, dann einmalig `PutBucketLifecycleConfigurationCommand` mit 90-Tage-Expiration.
-3. Fly-Secrets setzen: `DIAGRAM_URL_SECRET`, `KROKI_BASE_URL=http://odoo-bot-kroki.flycast:8000`, `DIAGRAM_PUBLIC_BASE_URL=https://odoo-bot-middleware.fly.dev`.
+Platzhalter unten: `<middleware-app>`, `<kroki-app>`, `<kroki-mermaid-app>` sind die
+Fly-App-Namen der eigenen Installation, `<your-omadia-host>` deren öffentlicher
+Host — vor dem Ausführen durch die echten Werte ersetzen.
+
+1. Zwei Fly-Apps `<kroki-app>` + `<kroki-mermaid-app>` mit flycast-only Services (keine öffentlichen IPs). Dockerfile/fly-toml vorbereiten, z.B. unter `kroki/`.
+2. Tigris-Bucket über `fly storage create -a <middleware-app>`, dann einmalig `PutBucketLifecycleConfigurationCommand` mit 90-Tage-Expiration.
+3. Fly-Secrets setzen: `DIAGRAM_URL_SECRET`, `KROKI_BASE_URL=http://<kroki-app>.flycast:8000`, `DIAGRAM_PUBLIC_BASE_URL=https://<your-omadia-host>`.
 4. Smoke-Probe in Teams: "Flow A→B→C als Mermaid" → Card mit PNG.
 
 Lokale Reproduktion jederzeit via `docker compose up -d` + `npm run smoke:diagrams`.
@@ -3329,6 +5681,21 @@ Randbedingungen für jede Variante:
   zurück (sonst greift die Änderung erst nach dem nächsten Neustart), und die
   UI bekommt ihren Toggle wieder.
 
+### Pairing: `auth.mode: 'none'` bei leerer Provider-Liste (#293 follow-up)
+
+`PairingAuth` (`middleware/src/pairing/discovery.ts`) definiert `none` als
+„Host nimmt unauthentifizierte Verbindungen an". Das trifft auf keinen Host zu:
+der Canvas-WebSocket authentifiziert jedes Upgrade (security-architecture §10d).
+Trotzdem melden der Middleware-Deskriptor (`buildPairingDescriptor`), die
+mDNS-Ankündigung und `web-ui/app/pairing-discovery/route.ts` `none`, sobald die
+Provider-Liste leer ist — die Middleware auch ohne Postgres, wo `/api/v1/auth/*`
+mit 503 antwortet. Die web-ui-Route tut das seit dem 503-Fix nur noch für eine
+tatsächlich leer gelieferte Liste; eine unlesbare beantwortet sie mit 503. Kein
+Auth-Bypass, aber der Client versucht es ohne Login und scheitert am 401.
+Offen: mit dem Canvas-Client festlegen, wie „kein Login möglich" gemeldet wird,
+und dann alle drei Erzeuger gemeinsam umstellen, damit jeder Weg dieselbe
+Antwort gibt.
+
 ---
 
 ## 14. Commands (vom `middleware/`-Dir aus)
@@ -3369,7 +5736,7 @@ Session so — nicht versuchen zu committen.
 ## 16. Fly-Deployment (aktuell nicht primär)
 
 Middleware liegt als `fly.toml` und `Dockerfile` vor. Eine Fly-App
-`odoo-bot-middleware` existiert in Prod und läuft mit leicht anderer
+`<middleware-app>` existiert in Prod und läuft mit leicht anderer
 Config (Managed Agents nutzend — veraltet, sollte irgendwann auf lokale
 Sub-Agents umgestellt werden). Lokaler Stand ist der **neuere**. Ein
 Sync auf Fly würde:
@@ -3882,7 +6249,10 @@ Orchestrator-Scope und übergibt eine eigene Turn-ID pro Lauf explizit — expli
 gewinnen immer.
 
 Offen: Verifier-Zeilen (laufen nach dem Turn-Scope) und `claude-cli-completion` bleiben
-NULL, bis der Orchestrator seine Ledger-Turn-ID nach außen gibt. ⚠️ Wie bei 0032:
+NULL, bis der Orchestrator seine Ledger-Turn-ID nach außen gibt. Für den Verifier
+liegt die Turn-ID inzwischen vor: die `PrivacyEgressContinuation` trägt sie als
+`receiptId`, solange der Verifier läuft — die Ledger-Attribution kann daran
+anknüpfen (Privacy-Hand-over, siehe Turn-Receipts). ⚠️ Wie bei 0032:
 Migration vor Deploy, sonst verwirft jeder Flush den ganzen Batch.
 
 ### Systemstatus: "Letzter Turn" (OM-100b, §3)

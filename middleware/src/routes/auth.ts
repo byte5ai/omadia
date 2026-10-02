@@ -1,39 +1,49 @@
-import { providerApiKeyVaultKey } from '@omadia/llm-provider';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { createLoginDevices, usersTableEpochs } from '../auth/loginDevices.js';
 import {
   isOidcProvider,
-  isPasswordProvider,
   type AuthProvider,
   type AuthSuccess,
+  type VerifiedAccount,
 } from '../auth/providers/AuthProvider.js';
-import { hashPassword } from '../auth/passwordHasher.js';
 import {
   LOCAL_PROVIDER_ID,
 } from '../auth/providers/LocalPasswordProvider.js';
 import { ENTRA_PROVIDER_ID } from '../auth/providers/EntraProvider.js';
 import type { ProviderRegistry } from '../auth/providerRegistry.js';
-import { SESSION_COOKIE } from '../auth/requireAuth.js';
+import {
+  applyRevocation,
+  SESSION_COOKIE,
+  sessionFailureStatus,
+} from '../auth/requireAuth.js';
 import {
   isSecureContext,
   SESSION_WINDOW_S,
   setSessionCookie,
 } from '../auth/sessionCookie.js';
-import { signSession } from '../auth/sessionJwt.js';
-import type { UserStore } from '../auth/userStore.js';
 import {
-  encodeVerifiedRecord,
-  keyFingerprint,
-  providerVerifiedAtVaultKey,
-  verifyProviderCredential,
-} from '../platform/providerCredentialVerifier.js';
+  signSession,
+  verifySession,
+  type VerifiedSession,
+} from '../auth/sessionJwt.js';
+import type { SessionRevocation } from '../auth/sessionRevocation.js';
+import type { UserStore } from '../auth/userStore.js';
 import type { SecretVault } from '../secrets/vault.js';
+import { endSessionsOnLogout } from './authLogout.js';
 import {
   createRenewHandler,
   renewableUntil,
   type SessionRenewalDeps,
 } from './authRenew.js';
+import {
+  createPasswordLoginHandler,
+  defaultLoginGuard,
+  httpForAuthErrorCode,
+  type LoginGuardDeps,
+} from './authLogin.js';
+import { createSetupHandler, resolveSetupState } from './authSetup.js';
 
 interface AuthDeps {
   registry: ProviderRegistry;
@@ -45,11 +55,22 @@ interface AuthDeps {
   defaultReturnPath: string;
   /**
    * Set when this boot detected an empty users-table without env-seed
-   * values — the /setup wizard mounts only when this is true. The route
-   * additionally double-checks `userStore.count() === 0` on every call so
-   * the gate stays correct even if the boot-time value drifts.
+   * values. `/providers` and `/setup` read it through the same predicate
+   * (`resolveSetupState` in ./authSetup.ts), which counts users first: while
+   * any exist, both answer "setup already completed" whatever this flag says.
+   * False only matters once the table is empty again — the wizard stays
+   * closed for this boot and a restart re-evaluates it. `/setup` creates the
+   * admin through the atomic `UserStore.createFirstAdmin`.
    */
   setupAllowed: boolean;
+  /**
+   * Operator setup token `POST /setup` demands in its `setup_token` body
+   * field, checked before anything else (`auth/setupToken.ts`). Undefined =
+   * no token gate on this boot: the desktop kernel on a loopback bind, or a
+   * boot without a wizard. Optional so harnesses that never set up keep
+   * compiling.
+   */
+  setupToken?: string;
   /**
    * Slice 1b-channel-web — optional adapter that resolves the just-
    * authenticated identity into a KG `User`-Cluster + `ChannelIdentity`
@@ -102,6 +123,23 @@ interface AuthDeps {
    * never renew keep compiling; production wiring always passes it.
    */
   renewal?: SessionRenewalDeps;
+  /**
+   * Server-side session revocation (`auth/sessionRevocation.ts`) — the same
+   * guard `requireAuth` runs. `GET /me` and `POST /renew` refuse a revoked
+   * session with it, and `POST /logout` announces the revocation it makes.
+   * Optional so harnesses that never revoke keep compiling; production
+   * wiring always passes it. (The `/logout` version bump itself goes through
+   * `userStore` and does not depend on it.)
+   */
+  sessions?: SessionRevocation;
+  /**
+   * Password sign-in rate limiting (`POST /login/:id`, and the argon2 slot of
+   * `POST /setup`; docs/security-architecture.md §10m). Optional so harnesses
+   * keep compiling, but never off: without it the router builds its own
+   * limiter with the defaults and the socket address. Production passes the
+   * process-wide guard so the admin unlock paths reach the same state.
+   */
+  loginLimiter?: LoginGuardDeps;
 }
 
 const PKCE_COOKIE = 'harness_auth_pkce';
@@ -113,42 +151,51 @@ const PKCE_COOKIE_MAX_AGE_S = 600;
  * Endpoints:
  *   GET  /api/v1/auth/providers        list active providers (login UI)
  *   GET  /api/v1/auth/login            back-compat: 302 → /login page
- *   POST /api/v1/auth/login/:id        password-provider form submit
+ *   POST /api/v1/auth/login/:id        password-provider form submit, rate-
+ *                                      limited: 429 `auth.rate_limited` /
+ *                                      503 `auth.busy` + Retry-After (see
+ *                                      ./authLogin.ts)
  *   GET  /api/v1/auth/login/:id/start  oidc-provider redirect to IdP
  *   GET  /api/v1/auth/login/:id/cb     oidc-provider callback handler
- *   POST /api/v1/auth/logout           clear cookie + optional IdP-logout
- *   GET  /api/v1/auth/me               current session (or 401)
+ *   POST /api/v1/auth/logout           clear cookie, end every session of
+ *                                      the user, optional IdP-logout
+ *   GET  /api/v1/auth/me               current session (or 401); never sets
+ *                                      the sign-in device cookie (only a
+ *                                      password sign-in does)
  *   POST /api/v1/auth/renew            extend a valid session ("I'm still
  *                                      here", #965; see ./authRenew.ts)
- *   POST /api/v1/auth/setup            first-user wizard (one-shot, 410 once locked)
+ *   POST /api/v1/auth/setup            first-user wizard (one-shot, setup
+ *                                      token, atomic; see ./authSetup.ts)
  *
  * Provider mechanics live in `auth/providers/*` — the router branches
  * exactly twice (password vs. oidc) and is otherwise provider-agnostic.
  */
 export function createAuthRouter(deps: AuthDeps): Router {
   const router = Router();
+  const loginGuard = deps.loginLimiter ?? defaultLoginGuard();
+  const devices =
+    loginGuard.devices ??
+    createLoginDevices({ signingKey: deps.signingKey, epochs: usersTableEpochs(deps.userStore) });
 
   // ── GET /providers ───────────────────────────────────────────────────────
   router.get('/providers', async (_req: Request, res: Response) => {
-    // Setup is only "required" when ALL three hold:
-    //   - boot-time `setupAllowed` flag (bootstrap detected empty users +
-    //     no env-seed)
-    //   - the local provider is registered (otherwise the wizard would
-    //     produce a local admin we can't actually log in as)
-    //   - users-table is still empty NOW (re-checked per call so the UI
-    //     reflects state without a server restart)
-    const localActive = deps.registry.get(LOCAL_PROVIDER_ID) !== undefined;
-    const empty = (await deps.userStore.count()) === 0;
+    // `setup_required` is the SAME predicate the /setup handler enforces
+    // (local provider active, users table empty now, boot-time flag), so
+    // the UI never offers a wizard the handler refuses — or the reverse.
+    // `setup_token_required` mirrors the handler's first gate.
+    const state = await resolveSetupState(deps);
     res.json({
       providers: deps.registry.summaries(),
-      setup_required: deps.setupAllowed && localActive && empty,
+      setup_required: state === 'available',
+      setup_token_required: deps.setupToken !== undefined,
     });
   });
 
-  // ── GET /login (back-compat for the Next edge middleware) ────────────────
+  // ── GET /login (back-compat for the legacy entry point) ──────────────────
   // The legacy Azure-flow used `GET /api/v1/auth/login` as the entry point.
-  // Edge-middleware in web-ui still redirects 401s there; we forward to
-  // the new web-ui `/login` page where the user picks a provider.
+  // The web UI's proxy now sends 401s straight to its own `/login`, so only
+  // old bookmarks and hand-made links still land here; we forward them to
+  // the web-ui `/login` page where the user picks a provider.
   router.get('/login', (req: Request, res: Response) => {
     const rawReturn =
       typeof req.query['return'] === 'string' ? req.query['return'] : undefined;
@@ -158,35 +205,29 @@ export function createAuthRouter(deps: AuthDeps): Router {
     res.redirect(302, url.toString());
   });
 
-  // ── POST /login/:providerId (password-providers only) ────────────────────
-  router.post('/login/:providerId', async (req: Request, res: Response) => {
-    const id = readParam(req, 'providerId');
-    const provider = id ? deps.registry.get(id) : undefined;
-    if (!provider || !isPasswordProvider(provider)) {
-      res.status(404).json({ code: 'auth.unknown_provider' });
-      return;
-    }
-
-    const result = await provider.verify(req.body);
-    if (result.outcome === 'error') {
-      res.status(httpForAuthErrorCode(result.code)).json({
-        code: `auth.${result.code}`,
-      });
-      return;
-    }
-
-    await mintSessionAndSetCookie({
-      req,
-      res,
-      success: result,
-      provider,
-      signingKey: deps.signingKey,
-      ...(deps.resolveChannelIdentity
-        ? { resolveChannelIdentity: deps.resolveChannelIdentity }
-        : {}),
-    });
-    res.json({ ok: true, user: userPayload(result, provider) });
-  });
+  // ── POST /login/:providerId (password-providers only, rate-limited) ──────
+  router.post(
+    '/login/:providerId',
+    createPasswordLoginHandler({
+      registry: deps.registry,
+      guard: loginGuard,
+      devices,
+      signIn: (req, res, success, provider) =>
+        mintSessionAndSetCookie({
+          req,
+          res,
+          success,
+          // The row the provider checked the password against — see
+          // `VerifiedAccount` for why this is not a second lookup.
+          account: success.account,
+          provider,
+          signingKey: deps.signingKey,
+          ...(deps.resolveChannelIdentity
+            ? { resolveChannelIdentity: deps.resolveChannelIdentity }
+            : {}),
+        }),
+    }),
+  );
 
   // ── GET /login/:providerId/start (oidc-providers only) ───────────────────
   router.get('/login/:providerId/start', async (req: Request, res: Response) => {
@@ -262,6 +303,16 @@ export function createAuthRouter(deps: AuthDeps): Router {
       email: result.email,
       displayName: result.displayName,
     });
+    // A disabled account gets no session — the password path refuses it in
+    // `LocalPasswordProvider.verify`. Every request would refuse the session
+    // anyway (server-side revocation), so minting one would only bounce the
+    // browser back through the IdP.
+    if (upserted.status !== 'active') {
+      res
+        .status(httpForAuthErrorCode('user_disabled'))
+        .send('auth.user_disabled: this account is disabled');
+      return;
+    }
     void deps.userStore.markLoginNow(upserted.id).catch(() => undefined);
 
     res.clearCookie(cookieName, { path: '/' });
@@ -269,6 +320,7 @@ export function createAuthRouter(deps: AuthDeps): Router {
       req,
       res,
       success: result,
+      account: { id: upserted.id, sessionVersion: upserted.sessionVersion },
       provider,
       signingKey: deps.signingKey,
       ...(deps.resolveChannelIdentity
@@ -305,37 +357,27 @@ export function createAuthRouter(deps: AuthDeps): Router {
 
   // ── POST /logout ─────────────────────────────────────────────────────────
   router.post('/logout', async (req: Request, res: Response) => {
-    const cookies = readCookies(req);
-    const token = cookies[SESSION_COOKIE];
-    let providerId: string | undefined;
-    let sessionEmail: string | undefined;
-    if (token) {
-      try {
-        const { verifySession } = await import('../auth/sessionJwt.js');
-        const claims = await verifySession(token, deps.signingKey);
-        providerId = claims.provider;
-        sessionEmail = claims.email;
-      } catch {
-        /* expired / malformed — still clear the cookie below */
-      }
-    }
-    // #965 — the Entra refresh token is what `/renew` redeems. Forgetting it
-    // here ends the renewal chain, so a copy of the cookie taken before the
-    // logout cannot keep extending itself through the IdP. Non-fatal: the
-    // logout itself must always succeed.
-    if (
-      providerId === ENTRA_PROVIDER_ID &&
-      sessionEmail &&
-      deps.renewal?.refreshStore
-    ) {
-      try {
-        await deps.renewal.refreshStore.forget(sessionEmail);
-      } catch (err) {
-        console.error(
-          '[auth] /logout: failed to forget the refresh token:',
-          err instanceof Error ? err.message : err,
-        );
-      }
+    const token = readCookies(req)[SESSION_COOKIE];
+    // Expired / malformed → no claims; the cookie is still cleared below.
+    const claims = token
+      ? await verifyQuietly(token, deps.signingKey)
+      : undefined;
+    const providerId = claims?.provider;
+    // Server-side sign-out: a current cookie moves the user's session version
+    // on, which ends every copy of every session of that user — the cookie
+    // this browser drops below included. Also forgets the Entra refresh token
+    // (#965). Never throws: the logout itself must always succeed.
+    if (claims) {
+      await endSessionsOnLogout(
+        {
+          userStore: deps.userStore,
+          ...(deps.sessions ? { sessions: deps.sessions } : {}),
+          ...(deps.renewal?.refreshStore
+            ? { refreshStore: deps.renewal.refreshStore }
+            : {}),
+        },
+        claims,
+      );
     }
     res.clearCookie(SESSION_COOKIE, { path: '/' });
     // Also clear the non-secret UI-prefs cookie (1-year max-age). On a shared
@@ -368,33 +410,45 @@ export function createAuthRouter(deps: AuthDeps): Router {
       res.status(401).json({ code: 'auth.missing', message: 'no session' });
       return;
     }
-    try {
-      const { verifySession } = await import('../auth/sessionJwt.js');
-      const claims = await verifySession(token, deps.signingKey);
-      res.json({
-        user: {
-          id: claims.sub,
-          email: claims.email,
-          display_name: claims.display_name,
-          role: claims.role,
-          provider: claims.provider,
-        },
-        // Expiry timestamps let the Admin UI render a visible countdown
-        // and a deliberate auto-logout instead of the session silently
-        // dying. `server_now` is the server clock at response time so the
-        // client can correct for clock skew rather than trusting its own.
-        // Both are Unix epoch SECONDS, matching the JWT `exp` convention.
-        expires_at: claims.exp,
-        server_now: Math.floor(Date.now() / 1000),
-        // #965 — end of the renewal chain (auth_time + cap), Unix epoch
-        // SECONDS, or null when renewal is not wired. Lets the watcher
-        // offer "sign in again" up front for the final window instead of
-        // an "I'm still here" click that is bound to be refused.
-        renewable_until: renewableUntil(claims.auth_time, deps.renewal),
-      });
-    } catch {
+    const claims = await verifyQuietly(token, deps.signingKey);
+    if (!claims) {
       res.status(401).json({ code: 'auth.invalid' });
+      return;
     }
+    // Server-side revocation. This is what the UI's 60s heartbeat sees: a
+    // revoked session answers 401 `auth.revoked` (→ the expired overlay), and
+    // a failed lookup 503 `auth.unavailable`, which the watcher treats as a
+    // transient error instead of signing the operator out.
+    if (deps.sessions) {
+      const verdict = await applyRevocation(claims, deps.sessions);
+      if (!verdict.ok) {
+        res
+          .status(sessionFailureStatus(verdict.code))
+          .json({ code: verdict.code, message: verdict.message });
+        return;
+      }
+    }
+    res.json({
+      user: {
+        id: claims.sub,
+        email: claims.email,
+        display_name: claims.display_name,
+        role: claims.role,
+        provider: claims.provider,
+      },
+      // Expiry timestamps let the Admin UI render a visible countdown
+      // and a deliberate auto-logout instead of the session silently
+      // dying. `server_now` is the server clock at response time so the
+      // client can correct for clock skew rather than trusting its own.
+      // Both are Unix epoch SECONDS, matching the JWT `exp` convention.
+      expires_at: claims.exp,
+      server_now: Math.floor(Date.now() / 1000),
+      // #965 — end of the renewal chain (auth_time + cap), Unix epoch
+      // SECONDS, or null when renewal is not wired. Lets the watcher
+      // offer "sign in again" up front for the final window instead of
+      // an "I'm still here" click that is bound to be refused.
+      renewable_until: renewableUntil(claims.auth_time, deps.renewal),
+    });
   });
 
   // ── POST /renew ("I'm still here", #965) ─────────────────────────────────
@@ -405,182 +459,54 @@ export function createAuthRouter(deps: AuthDeps): Router {
       userStore: deps.userStore,
       signingKey: deps.signingKey,
       ...(deps.renewal ? { renewal: deps.renewal } : {}),
+      ...(deps.sessions ? { sessions: deps.sessions } : {}),
     }),
   );
 
   // ── POST /setup (one-shot first-user wizard) ─────────────────────────────
-  // Returns 410 Gone in two cases:
-  //   - any user already exists (one-shot lock)
-  //   - the local password provider is not active (no point creating a
-  //     local admin if AUTH_PROVIDERS=entra-only — that would just leave a
-  //     dangling unauthenticated-creation surface for attackers).
-  // The boot-time `setupAllowed` flag is the third gate, advertised in
-  // /providers so the UI flips into "first-time-setup" mode only when
-  // the wizard is actually usable.
-  router.post('/setup', async (req: Request, res: Response) => {
-    const localProvider = deps.registry.get(LOCAL_PROVIDER_ID);
-    if (!localProvider) {
-      res.status(410).json({
-        code: 'auth.setup_no_local_provider',
-        message:
-          'setup wizard requires the "local" auth provider to be active in AUTH_PROVIDERS',
-      });
-      return;
-    }
-    const existing = await deps.userStore.count();
-    if (existing > 0) {
-      res
-        .status(410)
-        .json({ code: 'auth.setup_locked', message: 'setup already completed' });
-      return;
-    }
-
-    const body = (req.body ?? {}) as {
-      email?: unknown;
-      password?: unknown;
-      display_name?: unknown;
-      anthropic_api_key?: unknown;
-    };
-    const email =
-      typeof body.email === 'string' ? body.email.trim() : '';
-    const password = typeof body.password === 'string' ? body.password : '';
-    const displayName =
-      typeof body.display_name === 'string' ? body.display_name.trim() : '';
-    const anthropicApiKey =
-      typeof body.anthropic_api_key === 'string'
-        ? body.anthropic_api_key.trim()
-        : '';
-
-    if (email.length === 0 || !email.includes('@')) {
-      res.status(400).json({ code: 'auth.setup_invalid_email' });
-      return;
-    }
-    if (password.length < 8) {
-      res.status(400).json({ code: 'auth.setup_password_too_short' });
-      return;
-    }
-
-    // OB-61: validate the Anthropic key *before* persisting any state.
-    // Skipping when empty keeps the wizard usable for operators who add
-    // the key later on the LLM access page (the normal path since S4) — the
-    // orchestrator/verifier capabilities simply stay unpublished until
-    // they do.
-    // OM-08: the ping's RESULT is now recorded, not just acted on. Previously an
-    // accepted key was indistinguishable from a never-checked one the moment
-    // this block returned — which is exactly how a working /setup produced a
-    // dashboard that could not tell "verified" from "some string is on file".
-    let anthropicVerifiedAt: string | undefined;
-    if (anthropicApiKey.length > 0) {
-      if (!anthropicApiKey.startsWith('sk-ant-')) {
-        res.status(400).json({
-          code: 'auth.setup_invalid_anthropic_key',
-          message:
-            'Anthropic API keys start with "sk-ant-". Double-check the value from console.anthropic.com.',
-        });
-        return;
-      }
-      // Shared probe (`platform/providerCredentialVerifier`). Semantics are
-      // unchanged: only an outright rejection blocks setup — a 5xx, a
-      // rate-limit or an offline machine still lets the operator through,
-      // because none of those are the operator's fault.
-      const verification = await verifyProviderCredential({
-        providerId: 'anthropic',
-        apiKey: anthropicApiKey,
-        wireFormat: 'anthropic',
-        force: true,
-      });
-      if (verification.status === 'invalid') {
-        res.status(400).json({
-          code: 'auth.setup_anthropic_key_rejected',
-          message:
-            verification.error ??
-            'Anthropic rejected this API key (401/403). Verify the value at console.anthropic.com → API keys.',
-        });
-        return;
-      }
-      if (verification.status !== 'verified') {
-        console.warn(
-          '[auth] /setup: anthropic key-ping inconclusive, accepting key anyway',
-        );
-      }
-      anthropicVerifiedAt = verification.verifiedAt;
-    }
-
-    const passwordHash = await hashPassword(password);
-    const user = await deps.userStore.create({
-      email,
-      provider: LOCAL_PROVIDER_ID,
-      providerUserId: email.toLowerCase(),
-      passwordHash,
-      displayName: displayName.length > 0 ? displayName : email,
-      role: 'admin',
-    });
-
-    // OB-61: seed the validated key into every consumer plugin's vault,
-    // then reactivate each so the plugin picks it up without a server
-    // restart. Failure to write/reactivate one plugin is logged but does
-    // NOT roll back the user creation — the operator can re-seed on the
-    // LLM access page, but they MUST be able to log in afterwards.
-    if (anthropicApiKey.length > 0 && deps.vault) {
-      const consumers = deps.anthropicKeyConsumers ?? [];
-      for (const agentId of consumers) {
-        try {
-          await deps.vault.setMany(agentId, {
-            [providerApiKeyVaultKey('anthropic')]: anthropicApiKey,
-            // Carry the ping's verdict with the key so the providers page can
-            // render "verified" instead of "key stored, not verified".
-            ...(anthropicVerifiedAt !== undefined
-              ? {
-                  [providerVerifiedAtVaultKey('anthropic')]:
-                    encodeVerifiedRecord(
-                      anthropicVerifiedAt,
-                      keyFingerprint(anthropicApiKey),
-                    ),
-                }
-              : {}),
-          });
-          if (deps.reactivate) {
-            await deps.reactivate(agentId);
-          }
-        } catch (err) {
-          console.error(
-            `[auth] /setup: failed to seed anthropic_api_key for ${agentId}:`,
-            err instanceof Error ? err.message : err,
-          );
-        }
-      }
-    }
-
-    // Auto-login the freshly-created admin so the operator lands inside the
-    // UI without a second round-trip. Mirrors the password-login cookie.
-    await mintSessionAndSetCookie({
-      req,
-      res,
-      success: {
-        outcome: 'success',
-        providerUserId: user.providerUserId,
-        email: user.email,
-        displayName: user.displayName,
-      },
-      provider: { id: LOCAL_PROVIDER_ID, kind: 'password' },
-      signingKey: deps.signingKey,
-      ...(deps.resolveChannelIdentity
-        ? { resolveChannelIdentity: deps.resolveChannelIdentity }
+  // Order: operator setup token → the /providers predicate → the atomic
+  // first-admin transaction. 403 `auth.setup_token_invalid`, 410
+  // `auth.setup_disabled` / `auth.setup_no_local_provider` /
+  // `auth.setup_locked`, 409 `auth.setup_in_progress`, 503 `auth.busy` when
+  // the login limiter has no argon2 slot free — see ./authSetup.ts.
+  router.post(
+    '/setup',
+    createSetupHandler({
+      setupAllowed: deps.setupAllowed,
+      registry: deps.registry,
+      userStore: deps.userStore,
+      loginCapacity: loginGuard.limiter,
+      ...(deps.setupToken !== undefined ? { setupToken: deps.setupToken } : {}),
+      ...(deps.vault ? { vault: deps.vault } : {}),
+      ...(deps.reactivate ? { reactivate: deps.reactivate } : {}),
+      ...(deps.anthropicKeyConsumers
+        ? { anthropicKeyConsumers: deps.anthropicKeyConsumers }
         : {}),
-    });
-    void deps.userStore.markLoginNow(user.id).catch(() => undefined);
-
-    res.json({
-      ok: true,
-      user: {
-        id: user.id,
-        email: user.email,
-        display_name: user.displayName,
-        role: user.role,
-        provider: user.provider,
+      // Auto-login the freshly-created admin so the operator lands inside
+      // the UI without a second round-trip. Mirrors the password login: the
+      // session cookie plus a device cookie under the epoch of the password
+      // just set, so the browser is a known device from the start.
+      signIn: async (req, res, user, epoch) => {
+        await mintSessionAndSetCookie({
+          req,
+          res,
+          success: {
+            outcome: 'success',
+            providerUserId: user.providerUserId,
+            email: user.email,
+            displayName: user.displayName,
+          },
+          account: { id: user.id, sessionVersion: user.sessionVersion },
+          provider: { id: LOCAL_PROVIDER_ID, kind: 'password' },
+          signingKey: deps.signingKey,
+          ...(deps.resolveChannelIdentity
+            ? { resolveChannelIdentity: deps.resolveChannelIdentity }
+            : {}),
+        });
+        devices.remember(req, res, { providerId: LOCAL_PROVIDER_ID, email: user.email, epoch });
       },
-    });
-  });
+    }),
+  );
 
   return router;
 }
@@ -593,6 +519,18 @@ function readCookies(req: Request): Record<string, string> {
   return (
     (req as Request & { cookies?: Record<string, string> }).cookies ?? {}
   );
+}
+
+/** Verify a session token, or `undefined` when it is expired/malformed. */
+async function verifyQuietly(
+  token: string,
+  key: Uint8Array,
+): Promise<VerifiedSession | undefined> {
+  try {
+    return await verifySession(token, key);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Express 5 types `req.params[key]` as `string | string[] | undefined`
@@ -612,32 +550,48 @@ function pkceCookieNameFor(providerId: string): string {
   return `${PKCE_COOKIE}_${providerId}`;
 }
 
+/**
+ * Accept only a root-relative path whose host a browser cannot change;
+ * `null` means "drop it". Our own redirects append the value to
+ * `publicBaseUrl`, so they stay on this origin anyway, but `GET /login`
+ * copies it into the web UI's `/login?return=` link, and that link must not
+ * carry a value a browser resolves elsewhere:
+ *
+ *   - `//host` is protocol-relative, and the WHATWG parser reads `\` as `/`
+ *     in http(s) URLs, so `/\host` is the same thing;
+ *   - browsers drop TAB/LF/CR before parsing (`/<TAB>/host` is `//host`),
+ *     and no legitimate path carries any other C0 control or DEL.
+ *
+ * Same shape rule as the web UI's `app/_lib/returnPath.ts`, which also
+ * normalises; docs/security-architecture.md §10e.
+ */
 function sanitiseReturnPath(value: string | undefined): string | null {
   if (!value) return null;
-  if (!value.startsWith('/') || value.startsWith('//')) return null;
-  if (value.includes('\n') || value.includes('\r')) return null;
+  if (!value.startsWith('/')) return null;
+  if (value[1] === '/' || value[1] === '\\') return null;
+  if (hasControlChars(value)) return null;
   return value;
 }
 
-function httpForAuthErrorCode(code: string): number {
-  switch (code) {
-    case 'invalid_credentials':
-    case 'user_disabled':
-    case 'unknown_user':
-      return 401;
-    case 'state_mismatch':
-    case 'callback_invalid':
-      return 400;
-    case 'idp_error':
-    default:
-      return 502;
+/** C0 controls (U+0000..U+001F) and DEL (U+007F). */
+function hasControlChars(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
   }
+  return false;
 }
 
 interface MintArgs {
   req: Request;
   res: Response;
   success: AuthSuccess;
+  /**
+   * The `users` row this session belongs to. Its id and `session_version`
+   * go into the token (`uid`, `sv`): moving the version (sign-out, password
+   * reset, disable) or replacing the row ends the session server-side.
+   */
+  account: VerifiedAccount;
   provider: { id: string; kind: 'password' | 'oidc' };
   signingKey: Uint8Array;
   /**
@@ -672,28 +626,12 @@ async function mintSessionAndSetCookie(args: MintArgs): Promise<void> {
       role: 'admin',
       provider: args.provider.id,
       ...(omadiaUserId ? { omadia_user_id: omadiaUserId } : {}),
+      sv: args.account.sessionVersion,
+      uid: args.account.id,
+      // `sid` (a fresh random id for this sign-in) is stamped by signSession.
     },
     args.signingKey,
     `${SESSION_WINDOW_S}s`,
   );
   setSessionCookie(args.req, args.res, session, SESSION_WINDOW_S);
-}
-
-function userPayload(
-  success: AuthSuccess,
-  provider: { id: string },
-): {
-  id: string;
-  email: string;
-  display_name: string;
-  role: 'admin';
-  provider: string;
-} {
-  return {
-    id: success.providerUserId,
-    email: success.email,
-    display_name: success.displayName,
-    role: 'admin',
-    provider: provider.id,
-  };
 }

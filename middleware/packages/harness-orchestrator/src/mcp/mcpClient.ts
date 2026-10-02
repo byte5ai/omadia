@@ -58,7 +58,8 @@ import type {
 } from '@omadia/plugin-api';
 
 import { turnContext } from '../turnContext.js';
-import { currentIdempotencyScope } from '../toolIdempotency.js';
+import { currentIdempotencyScope, sendsEachCallOnce } from '../toolIdempotency.js';
+import { recordMcpAuthPrompt } from './mcpAuthPromptMint.js';
 import {
   MCP_INPUT_MAX_REPLAY_DEPTH,
   extractMcpInputPrompt,
@@ -776,9 +777,11 @@ const DEFAULT_MCP_CALL_TIMEOUT_MS = 60_000;
 const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 180_000;
 
 /**
- * Attempts one `callTool` may make: the original plus ONE transient retry.
- * Exported so the timeout hierarchy reasons about the real number rather than
- * re-deriving it from the loop below.
+ * Attempts one `callTool` may make: the original plus ONE transient retry —
+ * only the original under an `exactlyOnce` idempotency scope or inside
+ * `runSendingEachCallOnce` (`toolIdempotency.ts`). Exported so the timeout
+ * hierarchy reasons about the real number rather than re-deriving it from the
+ * loop below.
  */
 export const MCP_CALL_MAX_ATTEMPTS = 2;
 
@@ -1259,8 +1262,15 @@ export class McpManager {
     // idempotency key it publishes `exactlyOnce`, and this loop then makes ONE
     // attempt: at-most-once beats at-least-once for writes.
     //
+    // The same holds inside a request a verifier may re-enter: while its replay
+    // ledger is bound, the dispatch seams publish `sendsEachCallOnce`
+    // (`toolIdempotency.ts`). That request runs each write at most once, it
+    // counts every MCP tool as a write, and its ledger sees one handler call
+    // however often this loop re-sent it.
+    //
     // The mitigation itself is untouched for everything else — read tools, and
-    // write tools dispatched without an idempotency key, still get the retry.
+    // write tools dispatched without an idempotency key outside such a request,
+    // still get the retry.
     //
     // W4 — the retry does NOT get a fresh `maxTotalTimeout`. Two attempts each
     // allowed the full absolute ceiling made one `callTool` worth up to
@@ -1271,7 +1281,7 @@ export class McpManager {
     // is not started at all once the budget is spent.
     const idempotency = currentIdempotencyScope();
     const maxAttempts =
-      idempotency?.exactlyOnce === true ? 1 : MCP_CALL_MAX_ATTEMPTS;
+      idempotency?.exactlyOnce === true || sendsEachCallOnce() ? 1 : MCP_CALL_MAX_ATTEMPTS;
     let lastFailure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed.`;
     const budgetStartedAt = Date.now();
     /** What is left of the shared absolute ceiling, or `null` when it is gone. */
@@ -1433,6 +1443,10 @@ export class McpManager {
       }
       if (authMessage) {
         this.emitCall(cfg, toolName, 'fail', 'auth_required', startedAt, actingIdentity);
+        // Provenance for the dispatch seam: this exact text, produced in this
+        // dispatch, may reach the model verbatim. Text that merely starts like
+        // it (a remote body) is data. See `mcpAuthPromptMint.ts`.
+        recordMcpAuthPrompt(authMessage);
         return authMessage;
       }
     }

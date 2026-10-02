@@ -66,6 +66,9 @@ export interface CanvasConnectionDeps {
 
 type Phase = 'awaiting_select' | 'ready' | 'closed';
 
+/** `turn_error` text for a turn the kernel withheld: the HTTP 503 message. */
+const SESSION_UNCHECKED = 'session check unavailable, try again';
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -81,6 +84,13 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * The socket is already authenticated by the kernel WebSocketRegistry (PR-11);
  * `session` is the verified identity. Turns are serialised per connection so
  * their surface frames never interleave.
+ *
+ * The kernel also ends the socket with its session (4401 at `exp`, 4403 on
+ * revocation). On close the turn still running is aborted and nothing queued
+ * behind it starts: the session that asked for it may be the reason the socket
+ * closed. The ack tells the client `session.expiresAt` as `sessionExpiresAt`.
+ * A frame the kernel withheld because it could not check the session runs
+ * nothing (see `onRefusedMessage` below).
  */
 export function handleCanvasSocket(
   socket: ChannelSocket,
@@ -106,6 +116,9 @@ export function handleCanvasSocket(
     if (phase === 'closed') return;
     socket.send(JSON.stringify(msg));
   };
+  // A call, not an inline comparison: `phase` changes in the close callback
+  // while a turn awaits, which TypeScript's narrowing cannot see.
+  const isClosed = (): boolean => phase === 'closed';
 
   // notifications (omadia-ui#15): sink registered once the handshake
   // completes; disposed on close so the router never pushes into a dead socket.
@@ -113,6 +126,9 @@ export function handleCanvasSocket(
 
   socket.onClose(() => {
     phase = 'closed';
+    // Stop the orchestrator turn still running for this socket; turns queued
+    // behind it see `closed` and never start.
+    activeTurn?.abort();
     disposeNotificationSink?.();
     disposeNotificationSink = undefined;
   });
@@ -176,6 +192,9 @@ export function handleCanvasSocket(
         type: 'handshake_ack',
         handshakeId,
         canvasSessionId,
+        ...(typeof session.expiresAt === 'number'
+          ? { sessionExpiresAt: session.expiresAt }
+          : {}),
       };
       send(ack);
       phase = 'ready';
@@ -306,6 +325,23 @@ export function handleCanvasSocket(
     });
   });
 
+  // The kernel could not check the session for this frame (account lookup
+  // down), so nothing in it may run. A turn is answered so the client can
+  // retry, like after an HTTP 503; an unacked select closes with 1013 so the
+  // reconnect goes through a fresh upgrade check; a stop is still honoured.
+  socket.onRefusedMessage?.((raw) => {
+    const msg = phase === 'closed' ? null : parseClientMessage(raw);
+    if (msg?.type === 'handshake_select' && phase === 'awaiting_select') {
+      phase = 'closed';
+      socket.close(1013, 'session check unavailable');
+    } else if (phase === 'ready' && (msg?.type === 'turn' || msg?.type === 'canvas_refresh')) {
+      const forTurn = typeof msg.turnId === 'string' && msg.turnId.length > 0 ? msg.turnId : undefined;
+      send({ type: 'turn_error', ...(forTurn ? { forTurn } : {}), message: SESSION_UNCHECKED });
+    } else if (msg?.type === 'turn_abort' && activeTurn && activeTurn.turnId === msg.forTurn) {
+      activeTurn.abort();
+    }
+  });
+
   function validateTurnInput(msg: ClientTurn): string | null {
     if (
       msg.target !== undefined &&
@@ -341,6 +377,8 @@ export function handleCanvasSocket(
   }
 
   async function runTurn(turn: IncomingTurn, turnId: string): Promise<void> {
+    // Queued behind a turn that was still running when the socket closed.
+    if (isClosed()) return;
     let terminated = false;
     // turn_abort (omadia-ui#13): race the stream against the abort signal so
     // the abort takes effect IMMEDIATELY, not on the next event. Already-sent
@@ -364,7 +402,11 @@ export function handleCanvasSocket(
         }
         if (r.done) break;
         const ev = r.value;
-        if (phase === 'closed') return;
+        if (phase === 'closed') {
+          // Closed between two events: unwind the generator like an abort.
+          void it.return?.().catch(() => {});
+          return;
+        }
         if (SURFACE_EVENT_TYPES.has(ev.type)) {
           send(ev); // forward the surface_* event 1:1
         } else if (ev.type === 'text_delta') {

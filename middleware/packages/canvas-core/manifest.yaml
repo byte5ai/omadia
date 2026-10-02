@@ -16,7 +16,7 @@ identity:
   kind: "extension"
   domain: "core.canvas"
   name: "Canvas Core Protocol"
-  version: "0.1.0"
+  version: "0.2.0"
   description:
     en: "Defines the canvas format omadia uses to draw interactive views, and validates it. Every plugin that produces or renders a canvas follows it."
     de: "Legt das Canvas-Format fest, mit dem omadia interaktive Ansichten zeichnet, und prüft es. Jedes Plugin, das eine Canvas erzeugt oder darstellt, richtet sich danach."

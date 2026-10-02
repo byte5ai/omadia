@@ -24,6 +24,7 @@ import {
   parseRefreshSource,
 } from './refreshRecipes.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
+import { skeletonOnRelease } from './verdictHold.js';
 import { resolveReferenceLumen } from './referenceLumens.js';
 import { validateLumenNode } from './treeValidator.js';
 import { buildDatasetLumen } from './datasetLumen.js';
@@ -1054,6 +1055,9 @@ export async function activate(
     //    throws: schema failure → bounded repair retry → deterministic fallback.
     //    An action-only turn (choice pick, button click) has no text — the
     //    structured action then IS the request the skeleton is composed for.
+    //    On a base that holds content until the verdict (answer verifier in
+    //    `enforce`), the skeleton — model output as well — waits for it and
+    //    goes out with a released turn only (verdictHold.ts).
     const skeleton = await composeSkeleton({
       llm,
       model,
@@ -1065,7 +1069,7 @@ export async function activate(
     });
     let surfaceSeq = 0;
     const initialRevision = '0' as RevisionId;
-    yield {
+    const skeletonSnapshot: ChatStreamEvent = {
       type: 'surface_snapshot',
       canvasSessionId,
       surfaceSeq: surfaceSeq++,
@@ -1074,6 +1078,8 @@ export async function activate(
       protocolVersion: CANVAS_PROTOCOL_VERSION,
       opsCatalogVersion: OPS_CATALOG_VERSION,
     };
+    const holdSkeleton = base.holdsContentUntilVerdict === true;
+    if (!holdSkeleton) yield skeletonSnapshot;
 
     // 2. Requirement handoff — the main turn carries what the skeleton
     //    promised, so Tier 3 returns payloads matching those exact fields.
@@ -1127,7 +1133,7 @@ export async function activate(
 
     // 3. Delegate + canvas-aware synthesis continuing seq/revision after the
     //    skeleton.
-    yield* synthesizeSurfaceEvents(base.chatStream(augmented, observer), {
+    const turn = synthesizeSurfaceEvents(base.chatStream(augmented, observer), {
       canvasSessionId,
       authorizedToolNames: canvasOutputTools,
       protocolVersion: CANVAS_PROTOCOL_VERSION,
@@ -1140,6 +1146,7 @@ export async function activate(
       takeRawSentinel: tapCanvasSentinels((m) => ctx.log(m)),
       log: (message) => ctx.log(message),
     });
+    yield* holdSkeleton ? skeletonOnRelease(skeletonSnapshot, turn) : turn;
   }
 
   /** Deterministic refresh (protocol 1.1 `canvas_refresh`, omadia-ui#5, v1):

@@ -19,7 +19,7 @@ Ohne Doku-Update ist eine Änderung **nicht fertig**, selbst wenn der Build grü
 | Security-Entscheidung / Credential-Verschiebung | `docs/security-architecture.md` aktualisieren | Abschnitt |
 | Neue ENV-Variable / Secret | `middleware/.env.example` + `docs/middleware-agent-handoff.md` §10 | Zeile + Erklärung |
 | Neue Route / Tool / Sub-Agent | `docs/middleware-agent-handoff.md` §3 und §8 | Abschnitt |
-| Neue SQL-Migration | Datei in `middleware/migrations/` (Core-Serie; Subsystem-Serien wie `src/services/graph/migrations/` nur für deren eigene Tabellen) — **plus** CHANGELOG-Eintrag mit ID und Zweck | Migration-ID |
+| Neue SQL-Migration | Datei in `middleware/migrations/` (Core-Serie; Subsystem-Serien wie `packages/harness-knowledge-graph-neon/src/migrations/` oder `src/conductor/migrations/` nur für deren eigene Tabellen — **nie** `src/services/graph/migrations/`, das liest kein Runner) — **plus** CHANGELOG-Eintrag mit ID und Zweck | Migration-ID |
 | Neue Skill-Version | `skills/<name>/SKILL.md` + CHANGELOG | Skill-Name + Kurzzusammenfassung |
 | Offener Punkt / Backlog / TODO | `docs/middleware-agent-handoff.md` §13 Roadmap | Bullet |
 
@@ -97,7 +97,7 @@ Build artefacts (`target/`, `node_modules/`, etc.) live per worktree — first b
 
 ## Git Workflow & Engineering Standards
 
-Diese Regeln gelten für alle AI-Agenten (Claude, Codex, Copilot, …) und für menschliche Contributors gleichermaßen. Source of truth: `byte5ai/engineering-standards`. Status dieses Repos: `.github/engineering-standards.yml` (`status: applied`).
+Diese Regeln gelten für alle AI-Agenten (Claude, Codex, Copilot, …) und für menschliche Contributors gleichermaßen. Source of truth: das `engineering-standards`-Repo des Accounts (nicht öffentlich — die hier relevanten Regeln stehen vollständig unten). Status dieses Repos: `.github/engineering-standards.yml` (`status: applied`).
 
 - **Niemals direkt auf `main` pushen.** Feature-Branch + PR. Lokal blockt `.hooks/pre-push`, serverseitig Branch Protection.
 - **Branch-Naming:** `feat/<desc>`, `fix/<desc>`, `refactor/<desc>`, `docs/<desc>`, `chore/<desc>`, `test/<desc>`, `ci/<desc>`, `perf/<desc>`, `release/vX.Y`, `dev/vX.Y.devN`.

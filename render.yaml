@@ -9,11 +9,12 @@
 #
 # No secrets to paste: VAULT_KEY and CREDENTIAL_KEYCHAIN_KEY are generated
 # by Render on first sync (the GHCR image bakes NODE_ENV=production, which
-# makes both keys mandatory at boot — see README "Deployment"), and the LLM key is
-# collected by the first-admin /setup wizard at runtime and stored
-# encrypted in the vault. DEV_ENDPOINTS_ENABLED stays unset: these
-# services are publicly reachable, and the dev mounts expose raw KG +
-# memory state without auth.
+# makes both keys mandatory at boot — see README "Deployment"). The
+# first-admin /setup wizard asks for the one-time setup token the middleware
+# prints to its log on first boot (or set ADMIN_SETUP_TOKEN), and the LLM key
+# is connected in the admin UI afterwards and stored encrypted in the vault.
+# DEV_ENDPOINTS_ENABLED stays unset: these services are publicly reachable,
+# and the dev mounts expose raw KG + memory state without auth.
 #
 # Costs: the middleware needs a persistent disk, which requires paid
 # instance types — `starter` for both services plus `basic-256mb`
@@ -51,6 +52,13 @@ services:
       # plugin packages on the disk below instead of the image layer.
       - key: PLATFORM_DATA_DIR
         value: /data
+      # Password sign-in limiter: AUTH_LOGIN_CLIENT_ADDRESS is left at its
+      # default `socket` (docs/upgrading.md, middleware/.env.example). web-ui
+      # reaches the middleware through its public URL, so a browser's request
+      # passes more proxies than one sent to the middleware directly, and no
+      # single `xff:<n>` picks the browser's address on both paths. Every
+      # browser then shares one key, which the limiter treats as shared;
+      # browsers that have signed in before keep a budget of their own.
     disk:
       name: omadia-data
       mountPath: /data

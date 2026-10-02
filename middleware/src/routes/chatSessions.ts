@@ -58,6 +58,36 @@ const ToolEventSchema = z.object({
   subEvents: z.array(SubAgentEventSchema).optional(),
 });
 
+// The answer verifier's summary of a turn (`VerifierResultSummary`). Mirrored
+// so a session resumed from the server shows the verdict and the withheld-
+// answer marker, not only after a local reload. A summary that does not fit is
+// dropped on its own (`.catch`) instead of failing the whole session write —
+// it is client-held state, and the web chat re-checks every summary it renders.
+const count = z.number().int().nonnegative();
+const VerifierSummarySchema = z.object({
+  badge: z.enum(['verified', 'partial', 'corrected', 'failed', 'unverified', 'unavailable']),
+  status: z.enum(['approved', 'approved_with_disclaimer', 'blocked', 'skipped', 'unavailable']),
+  reason: z
+    .enum([
+      'no_trigger',
+      'no_claims',
+      'no_checkable_claims',
+      'incomplete_coverage',
+      'extractor_error',
+      'pipeline_error',
+      'privacy_shield',
+    ])
+    .optional(),
+  claimCount: count,
+  contradictionCount: count,
+  unverifiedCount: count,
+  uncheckedCount: count.optional(),
+  uncoveredCount: count.optional(),
+  retryCount: count,
+  latencyMs: z.number().nonnegative(),
+  mode: z.enum(['shadow', 'enforce']),
+});
+
 const MessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(['user', 'assistant']),
@@ -98,6 +128,11 @@ const MessageSchema = z.object({
       droppedInteractive: z.string().max(100).optional(),
     })
     .optional(),
+
+  verifier: VerifierSummarySchema.optional().catch(undefined),
+  // The answer verifier withheld this turn's answer (`enforce` mode); the
+  // content is the notice saying so.
+  verifierBlocked: z.literal(true).optional().catch(undefined),
 });
 
 const SessionSchema = z.object({

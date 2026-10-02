@@ -1,10 +1,11 @@
 /**
- * #1097 — `isControlFlowToolResult` decides which tool results bypass the
- * Privacy Shield's interning. Four dispatch seams consult it
+ * #1097 — `isControlFlowToolResult` classifies the two control-flow shapes:
+ * the `Error:` convention and the MCP connect prompt. The four dispatch seams
  * (`Orchestrator.dispatchTool`, `Orchestrator.guardReplayResult`,
- * `ToolDispatchService.afterDispatch`, `LocalSubAgent.dispatch`), so a
- * predicate that drifts from the real message shapes silently re-opens the
- * defect at all four.
+ * `ToolDispatchService.afterDispatch`, `LocalSubAgent.dispatch`) take the
+ * `Error:` carrier by the same prefix, and the connect prompt only when
+ * `McpManager` produced it in the dispatch (`mcpAuthPromptProvenance.test.ts`),
+ * so a prefix that drifts from the real message shapes still breaks them.
  *
  * The fixtures below are copied from their PRODUCERS — the app layer builds
  * the auth prompts (`middleware/src/index.ts` `onAuthFailure`,

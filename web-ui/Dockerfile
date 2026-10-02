@@ -51,9 +51,18 @@ ENV PORT=3000
 # The standalone folder contains a trimmed package.json + server.js; static
 # assets are emitted separately under .next/static and public/ — both have to
 # be placed at fixed paths next to server.js for Next to find them.
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+# Owned by `node` so the server can still write under .next/ (cache, ISR)
+# after dropping root below.
+COPY --from=builder --chown=node:node /app/public ./public
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+
+# Run as the base image's unprivileged `node` user (uid 1000). The middleware
+# image drops privileges in its entrypoint via gosu because it must chown a
+# mounted volume first; this image mounts nothing and listens on 3000, so a
+# plain USER is enough. If a volume is ever mounted here, handle its
+# ownership the way the middleware image does.
+USER node
 
 EXPOSE 3000
 CMD ["node", "server.js"]

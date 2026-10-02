@@ -6,8 +6,9 @@
  *   - every route except `/healthz` requires a shared bearer token, compared
  *     in constant time
  *   - refuses to start without that token (see config.mjs)
- *   - talks to a docker-socket-proxy with a narrow endpoint allowlist, never
- *     to `/var/run/docker.sock`
+ *   - talks to a docker-socket-proxy that only this sidecar can reach (the
+ *     internal `omadia-control` network), never to `/var/run/docker.sock`;
+ *     the proxy's allowlist trims the surface, reachability is the boundary
  *   - target versions must be release tags; floating tags are rejected
  *
  * Wire contract (mirrored by `middleware/src/update/updaterClient.ts`):
