@@ -382,7 +382,14 @@ async function bootExistingInstall(): Promise<void> {
  */
 async function presentBootFailure(err: unknown): Promise<void> {
   if (!win) return;
-  const failure = classifyBootFailure(err);
+  const failure = classifyBootFailure(err, { quitting });
+
+  if (failure.kind === 'interrupted') {
+    // FU-161: quitting while the first page loads aborts `loadURL`. That is
+    // the quit, not a failure: no error line, no tray error state, no dialog.
+    log.info(`[main] boot stopped because the app is quitting: ${failure.detail}`);
+    return;
+  }
 
   if (failure.kind === 'superseded') {
     log.info(`[main] boot superseded (expected during an update): ${failure.detail}`);
