@@ -94,6 +94,29 @@ test('quirks: max_completion_tokens replaces max_tokens, tool_choice dropped, ex
   assert.ok(Array.isArray(p['tools']) && (p['tools'] as unknown[]).length === 1);
 });
 
+test('#1211 dropToolChoice is reported as capabilities.toolChoiceNone === false', () => {
+  // The quirk strips `tool_choice` from the body, so a caller asking for
+  // `{ type: 'none' }` gets no suppression at all. Callers that rely on
+  // suppression for correctness (the orchestrator's finalize pass) read this
+  // flag and send no tools instead — so the capability must not claim support.
+  const quirked = createOpenAiProvider({
+    client: mockClient({}, okCompletion()),
+    id: 'minimax',
+    dropToolChoice: true,
+  });
+  assert.equal(quirked.capabilities.toolChoiceNone, false);
+
+  const plain = createOpenAiProvider({
+    client: mockClient({}, okCompletion()),
+    id: 'minimax',
+  });
+  assert.equal(
+    plain.capabilities.toolChoiceNone,
+    undefined,
+    'unset (⇒ honoured) without the quirk',
+  );
+});
+
 test('without quirks a non-openai id keeps legacy max_tokens + tool_choice', async () => {
   const captured: Captured = {};
   const provider = createOpenAiProvider({

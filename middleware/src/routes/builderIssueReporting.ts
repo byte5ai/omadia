@@ -16,15 +16,22 @@ import type {
 } from '../plugins/builder/types.js';
 
 /**
- * Native issue-reporting routes (concept plan: docs/plans/native-issue-
- * reporting.md). Provides:
+ * Native issue-reporting routes. Provides:
  *
  *   POST /drafts/:id/user-choice/:choiceId      — resolve a pending
  *                                                  ask_user_choice
- *   POST /drafts/:id/workarounds/confirm-issue  — confirm browser-
+ *   POST /drafts/:id/workarounds/confirm-issue  — confirm a browser-
  *                                                  submitted issue
- *                                                  number, persist
+ *                                                  number, persist the
  *                                                  workaround
+ *   POST /drafts/:id/workarounds/create-issue   — file the issue
+ *                                                  through the GitHub
+ *                                                  App, persist the
+ *                                                  workaround
+ *   POST /drafts/:id/resume-from-issue          — resume a draft that
+ *                                                  is paused on an
+ *                                                  issue, after checking
+ *                                                  the issue's state
  *
  * Mount via `registerBuilderIssueReportingRoutes(router, deps)`.
  *

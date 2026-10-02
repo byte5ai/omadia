@@ -15,7 +15,7 @@ const withNextIntl = createNextIntlPlugin('./i18n/request.ts');
 const nextConfig: NextConfig = {
   // Standalone output trims the Docker runtime image to ~150 MB by bundling
   // only the minimum Node runtime + used node_modules. Required for the
-  // Fly.io `odoo-bot-harness` deploy; benign for local dev.
+  // Fly.io deploy of the web UI; benign for local dev.
   output: 'standalone',
 
   // Pin the workspace root so Next doesn't pick up a stray parent lockfile

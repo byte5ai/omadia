@@ -53,6 +53,7 @@ import {
   dispatchVerbCall,
   parseRenderDirective,
 } from './v4/toolDefs.js';
+import { FILE_EXPORT_EXCEPTION, RENDER_CONTRACT } from './v4/promptText.js';
 import { materialize } from './v4/materializer.js';
 import {
   createPiiSchemaClassifier,
@@ -782,15 +783,14 @@ export function createPrivacyGuardService(deps?: {
         '[privacy-shield-v4] A sub-agent fetched data behind the data-plane',
         'boundary. Its working notes are below, then the datasets it produced',
         '— each holds the REAL rows server-side, addressable by its datasetId.',
-        'To answer the user, pick the relevant datasetId and call',
-        'v4_render_answer (compose the verb tools first if you must filter /',
-        'aggregate / join). Include identity / sensitive-masked columns — the',
-        'server fills in their real values. If the user instead wants a',
-        'downloadable FILE (Excel/.xlsx export, a report), call the file-export',
-        'tool (e.g. create_xlsx) with the datasetId rather than v4_render_answer',
-        '— the server materializes the real rows into the file. The sub-agent only ever saw',
-        '"[masked]"; do NOT repeat any "cannot show" / "filtered" caveat from',
-        'its notes — the user receives the real values.',
+        'To answer the user, pick the relevant datasetId (compose the verb',
+        'tools first if you must filter / aggregate / join). Include identity /',
+        'sensitive-masked columns — the server fills in their real values.',
+        RENDER_CONTRACT,
+        FILE_EXPORT_EXCEPTION,
+        'The sub-agent only ever saw "[masked]"; do NOT repeat any "cannot',
+        'show" / "filtered" caveat from its notes — the user receives the',
+        'real values.',
       ].join('\n');
       return {
         resultText:
