@@ -504,6 +504,7 @@ if (!gotLock) {
   app.on('web-contents-created', (_event, contents) => {
     installNavigationGuards(contents, {
       trusted: trustedTargets,
+      rendererDir: rendererDir(),
       openExternal: (url) => shell.openExternal(url),
       log,
     });
