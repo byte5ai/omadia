@@ -172,9 +172,12 @@ function mapIngestCodeToStatus(code: string): number {
     // `package.id_conflict_bundled` (#789) belongs here rather than with the
     // 422s: the zip is well-formed, the id is simply already taken by a
     // package this image ships.
+    // `package.incompatible_core` likewise: a valid package whose compat.core
+    // range excludes this host's @omadia/plugin-api.
     case 'package.id_conflict_builtin':
     case 'package.id_conflict_bundled':
     case 'package.duplicate_version':
+    case 'package.incompatible_core':
       return 409;
     default:
       return 400;

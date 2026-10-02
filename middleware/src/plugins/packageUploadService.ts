@@ -9,6 +9,7 @@ import {
 } from '@omadia/plugin-api';
 
 import { findUnscannableSegment } from '../services/pluginScanner.js';
+import { checkCoreCompat } from './coreCompat.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
@@ -70,6 +71,12 @@ export interface PackageUploadServiceDeps {
   };
   /** Host dependencies for the peer-check (ReadonlyRecord<name, semver>). */
   hostDependencies: Record<string, string>;
+  /**
+   * This host's `@omadia/plugin-api` version, which the package's
+   * `compat.core` must admit. Default: read from the installed package
+   * (coreCompat.ts). Tests pin it.
+   */
+  hostPluginApiVersion?: string;
   /**
    * Optional hook. Called after a successful ingest when the registry entry
    * for this agent already exists and is `active` (typical re-upload case:
@@ -198,6 +205,18 @@ export class PackageUploadService {
         );
       }
       const { plugin } = entry;
+
+      // --- 5b. compat.core must admit this host's plugin-api -----------------
+      // A plugin links against THIS host's @omadia/plugin-api at runtime;
+      // outside its stated range it may import an export the host lacks and
+      // fail to load. Refused before anything is stored.
+      const coreRefusal = checkCoreCompat(plugin, this.deps.hostPluginApiVersion);
+      if (coreRefusal) {
+        return fail('package.incompatible_core', coreRefusal.message, {
+          compat_core: coreRefusal.compat_core,
+          host_plugin_api: coreRefusal.host_plugin_api,
+        });
+      }
 
       // --- 6. package.json consistency --------------------------------------
       const pkgJsonPath = path.join(packageRoot, 'package.json');
