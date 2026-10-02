@@ -14,7 +14,9 @@
 // logs and skips, so dev/ad-hoc builds still work.
 //
 // It also checks the macOS floor of the update feed against the packaged app
-// (see assertUpdateFeedFloor) — that one is never fail-soft.
+// (see assertUpdateFeedFloor) — that one is never fail-soft — and, on every
+// platform, that the package carries the kernel's and the web UI's node_modules
+// (see assertPackagedRuntime).
 
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -38,6 +40,21 @@ async function assertUpdateFeedFloor(appPath) {
   const { checkAppMinimum } = await import(pathToFileURL(feedScript).href);
   checkAppMinimum(minimum);
   console.log(`[afterPack] LSMinimumSystemVersion ${minimum} matches the update feed's macOS floor.`);
+}
+
+/**
+ * electron-builder 26 leaves out the top-level node_modules of an
+ * extraResources source unless electron-builder.yml lists it as an entry of its
+ * own. Such a package installs and then fails at its first start with
+ * ERR_MODULE_NOT_FOUND, so fail the build instead, on every platform.
+ */
+async function assertPackagedRuntime(context) {
+  const script = path.join(__dirname, '..', 'scripts', 'check-packaged-runtime.mjs');
+  const { assertRuntimeComplete, packagedResourcesDir } = await import(pathToFileURL(script).href);
+  assertRuntimeComplete(
+    packagedResourcesDir(context.electronPlatformName, context.appOutDir, context.packager.appInfo.productFilename),
+  );
+  console.log("[afterPack] the package carries the kernel's and the web UI's node_modules.");
 }
 
 /**
@@ -114,6 +131,7 @@ function collectMachO(dir, found) {
 }
 
 exports.default = async function afterPack(context) {
+  await assertPackagedRuntime(context);
   if (context.electronPlatformName !== 'darwin') return;
 
   const appName = `${context.packager.appInfo.productFilename}.app`;

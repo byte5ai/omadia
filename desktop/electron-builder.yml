@@ -39,11 +39,20 @@ files:
 # The omadia stack lives outside the asar so child processes can execute it. These
 # paths are produced by `scripts/stage-runtime.mjs` (run before electron-builder),
 # which copies the built middleware + web-ui + the bundled Postgres engine here.
+# electron-builder 26 leaves out the top-level node_modules of every
+# extraResources source (app-builder-lib util/filter.js), and the kernel and the
+# web UI load everything from theirs, so each node_modules has an entry of its
+# own. afterPack fails the build when either is missing from the package
+# (scripts/check-packaged-runtime.mjs).
 extraResources:
   - from: runtime/middleware
     to: omadia/middleware
+  - from: runtime/middleware/node_modules
+    to: omadia/middleware/node_modules
   - from: runtime/web-ui
     to: omadia/web-ui
+  - from: runtime/web-ui/node_modules
+    to: omadia/web-ui/node_modules
   - from: runtime/omadia-pg
     to: omadia-pg
 

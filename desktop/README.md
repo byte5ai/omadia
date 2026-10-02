@@ -102,6 +102,11 @@ middleware + web-ui, checks that the middleware's native modules (better-sqlite3
 argon2, sharp — all N-API prebuilds) load under Electron's own Node the way the
 supervisor runs the kernel (`ELECTRON_RUN_AS_NODE`; no Electron-ABI rebuild is
 needed or done), stages the runtime, then runs electron-builder.
+electron-builder 26 leaves the top-level `node_modules` of an `extraResources`
+source out of the package, so `electron-builder.yml` lists the kernel's and the
+web UI's `node_modules` as entries of their own. `afterPack` checks on every
+platform that both made it into the package and fails the build otherwise
+(`scripts/check-packaged-runtime.mjs`).
 
 Signing is **fail-soft** — without secrets it still ships installers (ad-hoc on
 macOS):

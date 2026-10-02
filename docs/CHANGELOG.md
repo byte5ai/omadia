@@ -75,7 +75,12 @@ that are not Authenticode-signed under that name. Electron 44's
 copy is now logged and shows the key again to write down, where it would
 otherwise have ended the boot of a running app in the boot-failure dialog.
 `npm install` no longer downloads the Electron binary (it is fetched on first
-run). The `desktop (typecheck + test)` CI job moves to Node 24 with it; the
+run). electron-builder 26 also leaves the top-level `node_modules` of every
+`extraResources` source out of the package. The first build of this change
+shipped without the kernel's and the web UI's modules and stopped at the first
+start with `ERR_MODULE_NOT_FOUND`. Both folders are now `extraResources`
+entries of their own, and `afterPack` fails a package that lacks them, on every
+platform. The `desktop (typecheck + test)` CI job moves to Node 24 with it; the
 kernel and the web-ui are still built and tested on Node 22, although inside
 the desktop app they now run on Node 24 (`docs/security-architecture.md` §4a).
 Before this merges, a `desktop-apps.yml` dispatch build of the branch
