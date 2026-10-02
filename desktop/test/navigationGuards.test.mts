@@ -10,10 +10,14 @@
  * to the system browser (anything else), and `about:blank` is refused. No
  * frame and no redirect can hand a URL to the OS protocol handler: subframe
  * navigations and redirects to such schemes are cancelled, and the session
- * never grants Electron's `openExternal` permission.
+ * never grants Electron's `openExternal` permission. Every other permission is
+ * deny by default too: the session's request and check handlers grant only an
+ * allowlisted one to a main frame showing the app's own document.
  */
 import { describe, it, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { WindowOpenHandlerResponse } from 'electron';
 
 import {
@@ -21,6 +25,8 @@ import {
   type FrameNavigationEvent,
   type GuardableContents,
   type GuardableSession,
+  type PermissionCheckDetails,
+  type PermissionContents,
   type PermissionRequestDetails,
 } from '../src/navigationGuards.ts';
 import type { TrustedTargets } from '../src/navigationPolicy.ts';
@@ -28,6 +34,10 @@ import type { TrustedTargets } from '../src/navigationPolicy.ts';
 const UI = 'http://127.0.0.1:4567';
 const KERNEL = 'http://127.0.0.1:8769';
 const IDP_PAGE = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=synthetic';
+const RENDERER = path.resolve('/opt/omadia/resources/app.asar/dist/renderer');
+/** The bundled wizard as Electron reports it: `loadFile` adds the log path, a recovery the hash. */
+const WIZARD = `${pathToFileURL(path.join(RENDERER, 'wizard.html')).href}?log=%2Ftmp%2Fx.log#recovered`;
+const LOADING = `${pathToFileURL(path.join(RENDERER, 'loading.html')).href}?log=%2Ftmp%2Fx.log`;
 /** Schemes the OS would hand to an installed program. */
 const OS_HANDLED = ['ms-settings:privacy', 'search-ms:query=synthetic', 'facetime:+15550100', 'omadia-custom://open'];
 
@@ -49,10 +59,15 @@ interface Harness {
   redirect(url: string, isMainFrame: boolean): boolean;
   /** Fire the window-open handler. */
   open(url: string): WindowOpenHandlerResponse;
-  /** Ask the session's permission request handler; returns its answer. */
-  requestPermission(permission: string, details?: PermissionRequestDetails): boolean | undefined;
-  /** Ask the session's permission check handler. */
-  checkPermission(permission: string): boolean;
+  /** Ask the session's permission request handler, for `handlerContents`; returns its answer. */
+  requestPermission(permission: string, details: PermissionRequestDetails): boolean | undefined;
+  /** Ask the session's permission check handler, for `handlerContents`. */
+  checkPermission(permission: string, details: PermissionCheckDetails): boolean;
+  /**
+   * The webContents Electron hands the permission handlers: this window, or
+   * null as for a check made without one.
+   */
+  handlerContents: PermissionContents | null;
   openExternalFails: boolean;
   /** `getURL()` throws, as it does on a destroyed webContents. */
   getUrlThrows: boolean;
@@ -78,6 +93,7 @@ function harness(): Harness {
     trusted: { origins: [KERNEL, UI] },
     opened: [],
     logged: [],
+    handlerContents: null,
     openExternalFails: false,
     getUrlThrows: false,
     navigate: (url) => fire('will-navigate', url, true),
@@ -87,15 +103,15 @@ function harness(): Harness {
       assert.ok(windowOpen, 'window-open handler installed');
       return windowOpen({ url });
     },
-    requestPermission(permission, details = { isMainFrame: false }) {
+    requestPermission(permission, details) {
       assert.ok(permissionRequest, 'permission request handler installed on the session');
       let answer: boolean | undefined;
-      permissionRequest(null, permission, (granted) => (answer = granted), details);
+      permissionRequest(h.handlerContents, permission, (granted) => (answer = granted), details);
       return answer;
     },
-    checkPermission(permission) {
+    checkPermission(permission, details) {
       assert.ok(permissionCheck, 'permission check handler installed on the session');
-      return permissionCheck(null, permission);
+      return permissionCheck(h.handlerContents, permission, requestingOriginOf(details.requestingUrl), details);
     },
   };
 
@@ -119,9 +135,11 @@ function harness(): Harness {
       windowOpen = handler;
     },
   };
+  h.handlerContents = contents;
 
   installNavigationGuards(contents, {
     trusted: () => h.trusted,
+    rendererDir: RENDERER,
     openExternal: (url) => {
       h.opened.push(url);
       return h.openExternalFails ? Promise.reject(new Error('no handler')) : Promise.resolve();
@@ -137,6 +155,16 @@ function harness(): Harness {
 /** Popups hand off on the next turn, after the handler has returned. */
 function nextTurn(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** What Electron passes a check handler as `requestingOrigin`: the frame's origin, slash-terminated. */
+function requestingOriginOf(url: string | undefined): string {
+  try {
+    const origin = new URL(url ?? '').origin;
+    return origin === 'null' ? '' : `${origin}/`;
+  } catch {
+    return '';
+  }
 }
 
 let h: Harness;
@@ -320,39 +348,143 @@ describe('server redirects', () => {
 });
 
 describe('the OS protocol handler', () => {
-  it("refuses Electron's openExternal permission, whatever it would open", () => {
+  it("refuses Electron's openExternal permission, whatever it would open and whoever asks", () => {
     // Electron asks for it before it hands a non-web URL from any frame, or
     // from a redirect, to the OS, and grants every request when no handler
-    // is set.
+    // is set. Not even the app's own main frame gets it.
     for (const isMainFrame of [true, false]) {
-      for (const externalURL of [...OS_HANDLED, 'https://example.com/']) {
-        assert.equal(
-          h.requestPermission('openExternal', { isMainFrame, externalURL }),
-          false,
-          `${externalURL} main=${isMainFrame}`,
-        );
+      for (const requestingUrl of [`${UI}/chat`, WIZARD, IDP_PAGE]) {
+        for (const externalURL of [...OS_HANDLED, 'https://example.com/']) {
+          assert.equal(
+            h.requestPermission('openExternal', { isMainFrame, requestingUrl, externalURL }),
+            false,
+            `${externalURL} from ${requestingUrl} main=${isMainFrame}`,
+          );
+        }
       }
     }
     assert.equal(h.requestPermission('openExternal', { isMainFrame: true }), false, 'also without a URL');
-    assert.equal(h.checkPermission('openExternal'), false);
+    assert.equal(h.checkPermission('openExternal', { isMainFrame: true, requestingUrl: `${UI}/chat` }), false);
     assert.deepEqual(h.opened, []);
   });
 
   it("logs the refused scheme and the frame kind, never the URL's content", () => {
-    h.requestPermission('openExternal', { isMainFrame: false, externalURL: 'search-ms:query=synthetic-secret' });
+    h.requestPermission('openExternal', {
+      isMainFrame: false,
+      requestingUrl: `${UI}/p/synthetic-plugin/ui/index.html`,
+      externalURL: 'search-ms:query=synthetic-secret',
+    });
     assert.equal(h.logged.length, 1);
     assert.match(h.logged[0] ?? '', /^WARN .*search-ms:.*subframe/);
     assert.equal(h.logged[0]?.includes('synthetic-secret'), false);
   });
+});
 
-  it('keeps every other permission as Electron answers it without a handler', () => {
-    // The wizard and the web UI copy to the clipboard; that must keep working.
-    for (const permission of ['clipboard-sanitized-write', 'fullscreen', 'media', 'notifications']) {
-      assert.equal(h.requestPermission(permission), true, permission);
-      assert.equal(h.checkPermission(permission), true, permission);
+describe("session permissions: deny by default, an allowlist for the app's own main frames", () => {
+  const CLIPBOARD_WRITE = 'clipboard-sanitized-write';
+
+  /**
+   * Put one question to both handlers and require the same answer. Electron
+   * runs most permission checks before a request and asks only when the
+   * check fails, so a check that passed where a request is refused would skip
+   * the gate.
+   */
+  function decide(permission: string, requestingUrl: string | undefined, isMainFrame: boolean): boolean {
+    const details = requestingUrl === undefined ? { isMainFrame } : { isMainFrame, requestingUrl };
+    const granted = h.requestPermission(permission, details);
+    assert.notEqual(granted, undefined, `the ${permission} request was answered`);
+    assert.equal(h.checkPermission(permission, details), granted, `check and request disagree on ${permission}`);
+    return granted === true;
+  }
+
+  it("grants a clipboard write to the web UI's main frame and to the bundled wizard", () => {
+    // The copy buttons: an API key's token, a device-login code, the recovery key.
+    assert.equal(decide(CLIPBOARD_WRITE, `${UI}/admin/api-keys`, true), true);
+    assert.equal(decide(CLIPBOARD_WRITE, `${KERNEL}/health`, true), true);
+    assert.equal(decide(CLIPBOARD_WRITE, WIZARD, true), true);
+    assert.deepEqual(h.logged, [], 'a granted request is not logged');
+  });
+
+  it("refuses it to a subframe, a plugin UI on the web UI's own origin included", () => {
+    assert.equal(decide(CLIPBOARD_WRITE, `${UI}/p/synthetic-plugin/ui/index.html`, false), false);
+    assert.equal(decide(CLIPBOARD_WRITE, 'https://maps.example/embed?q=synthetic', false), false);
+  });
+
+  it("refuses it to a main frame that is not the app's own document", () => {
+    for (const url of [
+      IDP_PAGE,
+      'https://evil.example/',
+      'http://127.0.0.1:9999/',
+      LOADING,
+      pathToFileURL(path.resolve('/tmp/synthetic/wizard.html')).href,
+      'about:blank',
+    ]) {
+      assert.equal(decide(CLIPBOARD_WRITE, url, true), false, url);
     }
-    assert.equal(h.checkPermission('deprecated-sync-clipboard-read'), false);
-    assert.deepEqual(h.logged, []);
+  });
+
+  it("refuses every other permission, even to the web UI's main frame and the wizard", () => {
+    for (const permission of [
+      'media',
+      'display-capture',
+      'geolocation',
+      'notifications',
+      'fullscreen',
+      'clipboard-read',
+      'midi',
+      'hid',
+      'serial',
+      'pointerLock',
+    ]) {
+      assert.equal(decide(permission, `${UI}/chat`, true), false, permission);
+      assert.equal(decide(permission, WIZARD, true), false, permission);
+    }
+  });
+
+  it('refuses openExternal and the deprecated synchronous clipboard read to the app itself', () => {
+    for (const permission of ['openExternal', 'deprecated-sync-clipboard-read']) {
+      assert.equal(decide(permission, `${UI}/chat`, true), false, permission);
+      assert.equal(decide(permission, WIZARD, true), false, permission);
+    }
+  });
+
+  it('judges a request without a requesting URL by the document in the window', () => {
+    h.current = `${UI}/chat`;
+    assert.equal(decide(CLIPBOARD_WRITE, undefined, true), true);
+    h.current = IDP_PAGE;
+    assert.equal(decide(CLIPBOARD_WRITE, undefined, true), false);
+    h.current = `${UI}/chat`;
+    h.getUrlThrows = true;
+    assert.equal(decide(CLIPBOARD_WRITE, undefined, true), false, 'a destroyed window shows nothing of the app');
+    h.getUrlThrows = false;
+    h.handlerContents = null;
+    assert.equal(decide(CLIPBOARD_WRITE, undefined, true), false, 'no window, no document');
+  });
+
+  it('judges by the frame that asked, not by what the window shows', () => {
+    h.current = `${UI}/chat`;
+    assert.equal(decide(CLIPBOARD_WRITE, IDP_PAGE, true), false);
+  });
+
+  it('reads the trust set per request', () => {
+    h.trusted = { origins: [KERNEL] };
+    assert.equal(decide(CLIPBOARD_WRITE, `${UI}/chat`, true), false, 'no web UI is serving yet');
+    h.trusted = { origins: [KERNEL, UI] };
+    assert.equal(decide(CLIPBOARD_WRITE, `${UI}/chat`, true), true);
+  });
+
+  it('logs each refused request with its permission, origin and frame kind, and no check', () => {
+    h.requestPermission('media', {
+      isMainFrame: false,
+      requestingUrl: `${UI}/p/synthetic-plugin/ui/index.html?token=synthetic-secret`,
+    });
+    h.requestPermission('geolocation', { isMainFrame: true, requestingUrl: 'https://evil.example/path?q=synthetic-secret' });
+    h.requestPermission(CLIPBOARD_WRITE, { isMainFrame: true, requestingUrl: WIZARD });
+    h.checkPermission('notifications', { isMainFrame: true, requestingUrl: 'https://evil.example/' });
+    assert.deepEqual(h.logged, [
+      `WARN [nav] refused media for ${UI} (subframe)`,
+      'WARN [nav] refused geolocation for https://evil.example (main frame)',
+    ]);
   });
 });
 

@@ -26,6 +26,9 @@ import type {
   PrivacyPromptMaskResult,
   PrivacyReceipt,
   PrivacyRenderedAnswer,
+  PrivacyReplayedAnswerRequest,
+  PrivacyStoredTextScope,
+  PrivacyStoredTextScopeRequest,
   PrivacySubAgentResultV4Request,
   PrivacyToolErrorRedactRequest,
   PrivacyToolErrorRedactResult,
@@ -79,6 +82,7 @@ import {
   createIdentityValuesDetector,
   hasSurrogateCollision,
 } from './verifierProjection.js';
+import { createStoredTextScope } from './storedTextScope.js';
 import { createTurnSerialQueue } from './turnSerialQueue.js';
 
 /**
@@ -886,6 +890,53 @@ export function createPrivacyGuardService(deps?: {
             reason: 'a real value collides with a surrogate minted this turn',
           };
         },
+      });
+    },
+
+    // Always on, independent of `mask_user_prompt`: that flag is about the
+    // user's own words, and a channel replays the answer it delivered — after
+    // a `v4_render_answer` turn, real values the turn's model never saw. The
+    // detector assembly of `projectVerifierText` (identity shapes only, so
+    // dates and amounts stay as in a v4 digest; the operator deny-list; C1
+    // with the per-turn cache and degrade latch), minus caller-named values,
+    // and booked as the turn's own egress. Through the turn's map, so the
+    // answer-side restore covers these spans; failure-closed in `maskOnce`.
+    async maskReplayedAnswer(
+      request: PrivacyReplayedAnswerRequest,
+    ): Promise<PrivacyPromptMaskResult> {
+      const detectors: PromptPiiDetector[] = [createBaselineIdentityDetector()];
+      const customDetector = resolveCustomDetector(deps?.readConfig);
+      if (customDetector) detectors.push(customDetector);
+      const c1 = await c1DetectorFor(
+        request.turnId,
+        request.text,
+        'promptMaskDegraded',
+      );
+      if (c1.detector) detectors.push(c1.detector);
+      return maskThroughTurnMap({
+        turnId: request.turnId,
+        text: request.text,
+        detectors,
+        degraded: c1.degraded,
+        stage: 'turn',
+        preview: false,
+      });
+    },
+
+    // WP-10 — stored text a background memory job sends outside a turn.
+    // Always on, independent of `mask_user_prompt`, with the detector assembly
+    // of `maskReplayedAnswer` (identity shapes, the operator deny-list, C1),
+    // but through the job run's own surrogate map instead of a turn's, so the
+    // job can restore real values in an output a user reads. No receipt: there
+    // is no turn. Failure-closed in `createStoredTextScope`.
+    openStoredTextScope(request: PrivacyStoredTextScopeRequest): PrivacyStoredTextScope {
+      const detectors: PromptPiiDetector[] = [createBaselineIdentityDetector()];
+      const customDetector = resolveCustomDetector(deps?.readConfig);
+      if (customDetector) detectors.push(customDetector);
+      return createStoredTextScope({
+        job: request.job,
+        detectors,
+        ...(deps?.c1Detector !== undefined ? { c1Detector: deps.c1Detector } : {}),
       });
     },
 

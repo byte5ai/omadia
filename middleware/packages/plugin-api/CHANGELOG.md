@@ -8,6 +8,131 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.25.0 — 2026-10-02
+
+Additive. A Privacy Shield provider can mask the stored text a background
+memory job sends to its own model outside a turn. The memory jobs of
+`@omadia/orchestrator-extras` (topic-cluster naming, the inconsistency
+detector, the Teams topic detector) sent stored memories and earlier exchanges,
+which hold real values, through that plugin's provider whether
+`mask_user_prompt` was on or off. The in-tree privacy-guard plugin implements
+the new member from 0.8.0.
+
+### Added
+
+- **`PrivacyGuardService.openStoredTextScope?(request)`** with
+  `PrivacyStoredTextScopeRequest` (`{ job }`, a PII-free job name for the log),
+  returning a `PrivacyStoredTextScope` for one job run:
+  `maskStoredText(text)` returns the failure-closed `PrivacyPromptMaskResult`
+  (the identity shapes of the C0 baseline, the operator deny-list and the C1
+  detector when configured, always on; never `disabled`; `blocked` means the
+  job must not send the text), and `restoreStoredText(text)` inverts the run's
+  surrogate map over the job's output, so a result a user reads carries the
+  real values. The map lives in the scope object: nothing to finalize, and no
+  turn receipt books these spans. OPTIONAL, so an existing provider still
+  compiles and loads; a job that finds a provider without it skips its model
+  call instead of sending the stored text unmasked.
+
+### Documentation
+
+- `PrivacyGuardService.maskReplayedAnswer` is also the mask for the memory jobs
+  a turn awaits (the recall relevance judge, the session briefing): their
+  spans count as the turn's own egress (`maskedPromptSpans`).
+
+## 1.24.0 — 2026-10-02
+
+Additive. A turn the kernel stores can carry its masked wire texts, so a
+capture decorator that scores the turn with a model of its own no longer
+sends the stored texts, whose answer holds the real values the Privacy Shield
+restored. The capture filter of `@omadia/orchestrator-extras` sends the
+masked view to its significance scorer.
+
+### Added
+
+- **`TurnIngest.maskedView?`** with **`TurnMaskedView`**
+  (`{ userMessage, assistantAnswer }`): the user message as the turn's model
+  received it and the answer as the model wrote it, the texts the kernel's
+  fact extraction gets. Set by the kernel for a turn that ran under a privacy
+  handle; an empty view means nothing may be sent. Never stored: a backend
+  ignores it, and the capture decorator strips it before the inner graph.
+  OPTIONAL, so an existing backend or caller compiles unchanged.
+
+## 1.23.0 — 2026-10-02
+
+Additive. A Privacy Shield provider can mask the answers a channel replays as
+chat history whether or not `mask_user_prompt` is on. Teams and Telegram replay
+the answer they delivered as `priorTurns`, and an answer `v4_render_answer`
+materialized server-side carries real values the turn's model never saw, so
+with the flag off (the default) those values reached the next turn's model in
+clear. The in-tree privacy-guard plugin implements the new member from 0.7.0.
+
+### Added
+
+- **`PrivacyGuardService.maskReplayedAnswer?(request)`** with
+  `PrivacyReplayedAnswerRequest` (`{ sessionId, turnId, text }`), returning the
+  failure-closed `PrivacyPromptMaskResult`. Always on: the identity shapes of
+  the C0 baseline (e-mail, IBAN, phone, address, id number; dates and amounts
+  stay, as in a v4 digest), the operator deny-list and the C1 detector when
+  configured. The spans go through the turn's surrogate map, so
+  `restorePromptPseudonyms` restores them in the answer, and they count as the
+  turn's own egress (`maskedPromptSpans`, not `verifierEgress`). Never
+  `disabled`; `blocked` (a detector failed, or a detected value survived
+  substitution) means the answer must not be sent, and the kernel fails the
+  turn with its privacy notice. OPTIONAL, so an existing provider still
+  compiles and loads: the kernel then masks a replayed answer through
+  `maskUserPrompt`, i.e. only while `mask_user_prompt` is on, as before.
+
+### Documentation
+
+- `PrivacyReceipt.maskedPromptSpans` now also covers the replayed answers
+  masked whatever `mask_user_prompt` says, so it can be present with prompt
+  masking off.
+
+## 1.22.0 — 2026-10-02
+
+Additive (#1219): an optional field on the request, an optional field on the
+result, and one more literal on the deprecated `stopReason`.
+
+### Added
+
+- **`LlmCompleteRequest.outputFormat`** — ask `ctx.llm.complete` for a
+  schema-constrained JSON response (`{ type: 'json_schema', schema }`) instead
+  of instructing the model to emit JSON in the prompt. The schema is a JSON
+  Schema object, forwarded to the provider untouched. Those two fields are the
+  whole object: Anthropic rejects unknown nested body fields with a 400, so
+  there is deliberately no `name`.
+
+  Providers without a structured-output channel **ignore** the field rather
+  than failing, so a plugin must still parse the result tolerantly: this
+  narrows the output, it does not guarantee it everywhere. Today the Anthropic
+  adapter maps it (`output_config.format`), and the OpenAI and OpenAI
+  Responses adapters note once per model that they dropped it.
+
+  On Anthropic, though, the call **fails with a 400** for a model without
+  structured-output support and for a schema using keywords the API cannot
+  compile — `minimum`/`maximum`, `minLength`/`maxLength`, or an object
+  without `additionalProperties: false`. Nothing validates the schema before
+  it is sent. A refusal (`refusal` below) returns normally, and its `text`
+  need not match the schema.
+
+  Optional and additive — existing plugins are unaffected.
+
+- **`LlmCompleteResult.refusal?: { category?: string }`** — set when the
+  model's safety classifiers declined the request. The call still succeeds and
+  `finishReason` is `'stop'`, but `text` is empty or only a fragment, so a
+  plugin that reads `text` as the answer should check this first. `category`
+  is the provider's reason (`bio`, `cyber`, …) — an open set that may be
+  absent, so never switch on it exhaustively. Only the category crosses the
+  contract; the provider's free-text explanation stays in the host log.
+
+### Changed
+
+- **`LlmCompleteResult.stopReason`** (deprecated) gains `'refusal'`. A decline
+  used to come back as `'end_turn'`, indistinguishable from a normal turn end.
+  Comparing against the existing literals keeps compiling; a plugin that
+  switches exhaustively over this field needs one more arm — or, better, moves
+  to `finishReason` plus `refusal`.
+
 ## 1.21.0 — 2026-10-01
 
 Additive. A run trace can now say that a call did not run in its pass, and

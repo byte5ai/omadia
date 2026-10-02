@@ -4131,13 +4131,10 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   **Nächster Electron-Major:** Dispatch-Build mit Wegwerf-Tag, dann `desktop-upgrade-smoke.yml` mit
   dessen Run-ID (`desktop/README.md` § Install and upgrade smoke); nie auf einer produktiven
   Installation.
-- **Beenden während des ersten UI-Ladens meldet einen Boot-Fehler.** Beendet man die App, während
-  das erste `loadURL` der Web-UI noch läuft, lehnt `loadURL` ab, und `bootExistingInstall` reicht das
-  an `presentBootFailure` weiter: `[main] boot failed: ERR_FAILED (-2) loading …`, im ungünstigen
-  Fall mit Fehlerdialog im Shutdown, dessen Standard-Knopf „Re-run setup“ ist. Gesehen im
-  Install-Smoke 36989068863 (Windows-Upgrade, Versuch 1); unabhängig von der Electron-Version.
-  `presentBootFailure` sollte bei gesetztem `quitting` nur loggen und zurückkehren. Der Smoke wartet
-  seither auf das erste fertige Laden, bevor er beendet.
+- **Beenden während des ersten UI-Ladens: erledigt.** `classifyBootFailure` meldet einen
+  Abbruch durch Beenden als `interrupted`; `presentBootFailure` loggt ihn nur noch (INFO), ohne
+  Fehlerdialog und ohne `[main] boot failed`. Vor `app.exit` wird das Desktop-Log geleert, damit
+  Shutdown-Zeilen nicht verloren gehen.
 - **Synchrones `safeStorage` endet mit Electron 46.** Electron 45 markiert
   `safeStorage.isEncryptionAvailable`/`encryptString`/`decryptString` als deprecated, Electron 46
   entfernt sie zusammen mit Chromiums synchronem OSCrypt-Backend (Electron
@@ -4269,37 +4266,31 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   ungeprüft ausliefert. Ändern sich Verdikt-Zustände, Trigger-Muster oder das
   Enforce-Verhalten, README „Answer verification“, §7c und die
   Verifier-Prüfungen in `docsClaimsGuard.test.ts` im selben PR mitziehen.
-- **`read_attachment` liest auch CSV-Uploads im Klartext.** Das Tool ist
-  intern-exempt und extrahiert `.csv` als Text aus den Original-Bytes im
-  Upload-Store, sobald das Modell den `storage_key` kennt (Teams listet ihn im
-  `[attachments-info]`-Block). Zellen, die der Dataset-Import derselben Datei
-  als PII verschlüsselt (`security-architecture.md` §6b), kommen so roh beim
-  Modell an, unabhängig von `mask_user_prompt`. Tabellarische Uploads dort
-  ablehnen und auf `query_dataset` verweisen, oder das Ergebnis für Tabellen
-  internieren.
+- **`read_attachment` und tabellarische Uploads — erledigt.** Das Tool lehnt
+  eine Tabelle (CSV, XLSX; `detectTabularFormat`, dieselbe Regel wie der
+  Attachment-Ingest, der Storage-Key ersetzt einen fehlenden Dateinamen) mit
+  einem `Error:` ab, der auf `query_dataset` verweist; die Beschreibung bietet
+  `.csv` nicht mehr an. Der automatische Ingest der Nachricht schickte schon
+  vorher keine Tabelle als `[attachment-content]`-Text: sie wird Dataset oder
+  abgelehnt. Tests: `test/readAttachmentTabular.test.ts`,
+  `test/orchestrator/tabularUploadPrivacy.test.ts`.
 - **Receipt-Verluste sichtbar machen.** `persistFailures` zählt nur im Prozess
   (`turnReceiptCounters()` in `src/receipts/store.ts`), kein Endpunkt meldet
   ihn. Ein werfendes `finalize()` zählt gar nicht (ein Turn, der wirft oder
   vor `done` endet, wird seit #1267 über `closeUndeliveredPass` trotzdem
   finalisiert). Zähler auf einer Operator-Oberfläche ausgeben und den
   `finalize()`-Fall mitzählen; erst dann darf das README „gezählt“ sagen.
-- **Channel-Verlauf bringt gerenderte Realwerte zum Modell (bestätigt).**
-  `priorTurns` laufen nur bei `mask_user_prompt` on durch die Prompt-Maske:
-  `maskPriorTurnsForWire` ruft `maskPromptForWire`, das bei `disabled` den
-  Text unverändert zurückgibt. Nach einem server-gerenderten v4-Turn
-  (`answerSource: 'privacy-render'`) trägt die ausgelieferte Antwort Realwerte
-  (`maskedValues`). Teams (`omadia-channel-teams`, `src/teamsBot.ts`:
-  `history.append` mit `answerText`, Folgeturn mit `priorTurns`) und Telegram
-  (`omadia-channel-telegram`, `src/telegramBot.ts`: `history.append` mit
-  `result.text`) bauen ihren Verlauf aus genau dieser Antwort, also sieht das
-  Modell die Werte im Folgeturn im Klartext, und zwar im Default. Der
-  In-Tree-Web-Chat setzt keine `priorTurns`; sein Recall liest das
-  Session-Log, das die Modellantwort vor dem Render speichert. Code-Unit:
-  wiederholte Assistant-Antworten unabhängig von `mask_user_prompt` maskieren
-  (mindestens die `maskedValues` eines gerenderten Turns), oder Channels eine
-  modellseitige Antwort zum Speichern als Verlauf mitgeben (ein Feld neben
-  `text` im `SemanticAnswer`, das die Channel-Plugins übernehmen). Danach
-  README, §6f und `docsClaimsGuard.test.ts` nachziehen.
+- **Channel-Verlauf und gerenderte Realwerte — erledigt.**
+  `maskPriorTurnsForWire` maskiert jede wiederholte Assistant-Antwort über
+  `maskReplayedAnswer` (`@omadia/plugin-api` 1.23.0, Privacy-Guard 0.7.0),
+  unabhängig von `mask_user_prompt`: C0-Identitätsmuster, Deny-Liste, C1,
+  über die Platzhalter-Map des Turns (Restore in der Antwort), als eigener
+  Egress des Turns gebucht; `blocked` lässt den Turn scheitern. Wiederholte
+  User-Nachrichten folgen weiter dem Flag. Offen: Ein Provider ohne
+  `maskReplayedAnswer` maskiert über `maskUserPrompt` (nur bei Flag an), und
+  der Abo-CLI-Replay (`CliChatAgent.maskHistory`, heute ohne Handle und damit
+  inert) maskiert Antworten noch über `maskUserPrompt`; beim Einbau eines
+  Handles dort (#1087) dieselbe Regel übernehmen.
 - **Plugin-Permissions sind keine Sandbox.** Die Manifest-`permissions`
   schalten nur die `PluginContext`-Accessoren frei. Ein Plugin läuft als
   vertrauenswürdiges JavaScript im Middleware-Prozess und erreicht globales
@@ -4343,32 +4334,16 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   unter aktivem Shield nur nach Policy zulassen. Danach README (Intro, Zeile
   „Privacy Shield“, Abschnitt „Trust & privacy“), §6f und
   `docsClaimsGuard.test.ts` nachziehen.
-- **Inbound-Screener und Signifikanz-Scorer schicken Prompt-Text ungemaskt
-  (eigene Code-Unit).** Beide laufen außerhalb des Privacy-Handles, auch mit
-  `mask_user_prompt` an. Der #579-Screener (`screenInboundTurn`,
-  `orchestrator.ts`) läuft in `runTurn` und `chatStream` vor
-  `buildPrivacyHandle` und vor `maskTurnPromptForWire`. Unter der
-  Default-Posture `auto` (`DEFAULT_SECURITY_POSTURE_POLICY`,
-  `harness-channel-sdk/src/securityPosture.ts`) und unter `strict` schickt er
-  bei jedem Turn mit Anhang `renderScreeningPayload(bundleProvenance(input))`
-  ab: die Nachricht wie getippt, jede `priorTurns[].userMessage`, Namen und
-  Typen der Anhänge, an `LlmScreener` auf Provider und Modell des Agenten
-  (`buildOrchestrator.ts`) oder an den HTTP-Proxy unter
-  `security_screen_url`. Der Capture-Filter von `@omadia/orchestrator-extras`
-  schickt beim Default-`capture_level` `normal` (`DEFAULT_CAPTURE_LEVEL`)
-  jeden gespeicherten Turn, die Nachricht wie getippt (`userMessage` des
-  Session-Logs, `input.userMessage`) plus die wiederhergestellte Antwort
-  (`assistantAnswer`), über `CaptureFilteringKnowledgeGraph.ingestTurn` an den
-  Extras-Provider (`captureFilter.ts`, `significanceScorer.ts`), auch mit
-  `mask_user_prompt` an. Code-Unit: beide über den Wire-Text des Turns
-  führen (Screening nach dem Minten des Handles über die maskierte Nachricht
-  und maskierte `priorTurns`, Scoring über die maskierten Texte, die schon
-  die Fakten-Extraktion bekommt) oder beide in den Turn-Scope verlegen.
-  Danach README (Intro, Zeile „Privacy Shield“, Abschnitt „Trust &
-  privacy“), §6f und `docsClaimsGuard.test.ts` nachziehen; dort dann auch
-  `DEFAULT_SECURITY_POSTURE_POLICY.posture === 'auto'` und den Inhalt von
-  `bundleProvenance` festhalten und prüfen, dass README und §6f Screener und
-  Scorer nennen.
+- **Inbound-Screener und Signifikanz-Scorer: erledigt.** Der Screener läuft in
+  `runTurn` und `chatStream` erst nach `buildPrivacyHandle` und bekommt über
+  `screeningBundleForWire` die Nachricht, die wiederholten Nutzernachrichten
+  und die Anhangnamen durch die Prompt-Maske des Turns, dieselben Platzhalter
+  wie das Modell; eine blockierte Maske endet geschlossen ohne Screener- und
+  Modell-Aufruf. Der Capture-Filter bewertet `TurnIngest.maskedView`
+  (`@omadia/plugin-api` 1.24.0), also den Turn so, wie das Modell ihn sah;
+  der gespeicherte Turn behält die Realwerte. Offen: Der vom Operator
+  gestartete Backfill (`bulkPromotion.ts`) und der Scratch-Promotion-Reaper
+  bewerten gespeicherten Text weiter unmaskiert (§6f nennt beide).
 - **MCP→KG-Ingestion ignoriert die Klammer `OMADIA_PRIVACY_FORCE_GUARDED`
   (eigene Code-Unit).** Der Ingest-Zweig in `Orchestrator.dispatchTool`
   (Epic #459) läuft vor dem Bypass-Resolver und vor dem Internieren und fragt
@@ -5288,25 +5263,15 @@ Offen:
   akzeptierte Rest-Ausnahme aus §10i: Solche Seiten bekommen keine Bridge,
   jeder Handler lehnt sie ab, und auch sie erreichen keinen
   OS-Protokoll-Handler.
-- **Übrige Session-Permissions: deny-by-default mit Allowlist.** Die Session
-  verweigert nur `openExternal` (`canGrantPermission`/`canPassPermissionCheck`
-  in `desktop/src/navigationPolicy.ts`). Jede andere Permission-Anfrage und
-  -Prüfung bekommt Electrons Antwort ohne Handler: gewährt, für jeden Frame und
-  ohne Rückfrage der App. Das betrifft Kamera und Mikrofon (`media`), das Lesen
-  der Zwischenablage (`clipboard-read`; Wizard und Shell kopieren den
-  Wiederherstellungsschlüssel dorthin), Standort und Benachrichtigungen, auch
-  für Plugin-iframes, Same-App-Popups und fremde Seiten nach einem Redirect.
-  Folgepunkt: Request- und Check-Handler lehnen ab, was nicht auf einer
-  expliziten Allowlist steht, entschieden pro anfragendem Origin
-  (`details.requestingUrl` bzw. `requestingOrigin`) und Frame
-  (`details.isMainFrame`). Gebraucht wird heute nur `clipboard-sanitized-write`
-  (`navigator.clipboard.writeText` im Wizard und in der Web-UI), also für die
-  gebündelten Seiten und den Origin der laufenden Web-UI. Plugin-iframes laufen
-  auf dem Origin der Web-UI und erben jede Freigabe für ihn, solange sie nicht
-  auf den Main-Frame begrenzt ist; ob Plugin-UIs kopieren dürfen, gehört zur
-  Entscheidung. Die Tests „grants every other request …“ und „answers every
-  other check …“ in `desktop/test/navigationPolicy.test.mts` pinnen das heutige
-  Verhalten und kehren sich mit dem Fix um.
+- **Übrige Session-Permissions: erledigt (deny-by-default mit Allowlist).** Request- und
+  Check-Handler teilen eine Regel (`canGrantPermission` in `desktop/src/navigationPolicy.ts`):
+  gewährt wird nur, was in `GRANTABLE_PERMISSIONS` steht, und nur dem Main-Frame eines eigenen
+  Dokuments der App (Origin von Kernel oder Web-UI laut `decideNavigation`, oder der gebündelte
+  Wizard per Dateipfad). Heute steht dort nur `clipboard-sanitized-write` für die Kopier-Knöpfe in
+  Web-UI und Wizard. Subframes bekommen nichts, auch nicht auf dem Origin der Web-UI, wo
+  Plugin-UIs und die Builder-Vorschau laufen; ob Plugin-UIs kopieren dürfen, bleibt eine
+  Produktentscheidung. Eine neue Funktion mit berechtigungspflichtiger Web-API trägt ihre
+  Permission samt Aufrufstellen in die Liste ein.
 
 ### Desktop-Shell: Wizard-Schalter — Folgepunkte
 

@@ -90,6 +90,43 @@ describe('classifyBootFailure — unreadable secrets file', () => {
   });
 });
 
+/**
+ * FU-161: quitting while the first page loads aborts `loadURL`, and that
+ * rejection was presented as a boot failure: `[main] boot failed` in the log,
+ * the tray in its error state, and possibly the failure dialog while the app
+ * was exiting. Once the app is quitting nothing can be shown or acted on, so
+ * every rejection is reported as `interrupted` and only logged.
+ */
+describe('classifyBootFailure — the app is quitting (FU-161)', () => {
+  const aborted = new Error("ERR_ABORTED (-3) loading 'http://127.0.0.1:4567/'");
+
+  it('reports a rejection while quitting as interrupted, with its detail for the log', () => {
+    const failure = classifyBootFailure(aborted, { quitting: true });
+    assert.equal(failure.kind, 'interrupted');
+    assert.equal(failure.detail, aborted.message);
+  });
+
+  it('wins over every other kind: no dialog can be shown by an app that is exiting', () => {
+    const unreadable = new SecretsUnreadableError({
+      file: '/data/secrets.enc',
+      stage: 'decrypt',
+      reason: 'keychain denied',
+      snapshotDir: null,
+      cause: new Error('keychain denied'),
+    });
+    for (const err of [new Error('boot superseded'), new Error('kernel exited with code 1'), unreadable]) {
+      assert.equal(classifyBootFailure(err, { quitting: true }).kind, 'interrupted', describeError(err));
+    }
+  });
+
+  it('changes nothing while the app is not quitting', () => {
+    for (const context of [undefined, {}, { quitting: false }]) {
+      assert.equal(classifyBootFailure(aborted, context).kind, 'fatal', JSON.stringify(context));
+      assert.equal(classifyBootFailure(new Error('boot superseded'), context).kind, 'superseded');
+    }
+  });
+});
+
 describe('describeError', () => {
   it('prefers the message of an Error', () => {
     assert.equal(describeError(new Error('nope')), 'nope');

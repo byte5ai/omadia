@@ -1026,6 +1026,10 @@
         "what": "Other installed plugins still depend on this one, so it cannot be uninstalled.",
         "next": "Uninstall the plugins named in the details below first."
       },
+      "incompatible_core": {
+        "what": "This plugin needs a plugin API version this server does not provide, so the install was refused.",
+        "next": "Install a version of the plugin made for this server, or update omadia first. The details below show both versions."
+      },
       "invalid_body": {
         "what": "The setup step sent its answers in a shape the server rejected.",
         "next": "Reload the page and fill the step in again."
@@ -1086,6 +1090,10 @@
       "id_conflict_bundled": {
         "what": "This plugin id belongs to a plugin that ships with omadia, so the upload was refused.",
         "next": "Give your package its own id in manifest.yaml and package.json, then upload it again."
+      },
+      "incompatible_core": {
+        "what": "The package's compat.core range does not include this server's plugin API version, so the upload was refused.",
+        "next": "Compare compat.core in its manifest.yaml with the version in the details below, then upload a fitting version or update omadia."
       }
     },
     "providers": {

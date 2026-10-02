@@ -1,5 +1,4 @@
 import type { NativeToolSpec } from '@omadia/plugin-api';
-import { newToolErrorRef, toolErrorFromException } from '@omadia/plugin-api';
 import { z } from 'zod';
 
 import {
@@ -8,6 +7,12 @@ import {
   WebSearchProviderError,
   WebSearchQuotaError,
 } from './errors.js';
+import {
+  compatToolErrorFromException,
+  hostToolErrorHelpers,
+  legacyHostToolError,
+  type ToolErrorHelpers,
+} from './toolErrorCompat.js';
 import type { SearchOptions, WebSearchService } from './types.js';
 
 /**
@@ -30,10 +35,15 @@ export const WEB_SEARCH_TOOL_NAME = 'web_search';
  * provider id and HTTP status. Its message is not echoed — the upstream body
  * (`body`) and a transport exception (`cause`) are text this plugin did not
  * write, and a provider implemented elsewhere may still put them into the
- * message. The full error goes to the server log under the result's ref.
+ * message. The full error goes to the server log under the result's ref. On a
+ * host without the tool-error helpers (plugin-api < 1.20.0) the result is the
+ * fixed {@link legacyHostToolError} text instead.
  */
-function providerFailure(err: WebSearchProviderError): string {
-  const ref = newToolErrorRef();
+function providerFailure(err: WebSearchProviderError, helpers: ToolErrorHelpers | null): string {
+  if (helpers === null) {
+    return legacyHostToolError(WEB_SEARCH_TOOL_NAME, err, { site: 'web-search' });
+  }
+  const ref = helpers.newToolErrorRef();
   console.error(
     `[web-search:${WEB_SEARCH_TOOL_NAME}] provider '${err.providerId}' failed (ref=${ref}) — error text withheld from the model:`,
     err,
@@ -124,6 +134,8 @@ export const searchToolSpec: NativeToolSpec = {
  */
 export function createWebSearchToolHandler(
   service: WebSearchService,
+  /** The host's tool-error helpers; `null` on a host before plugin-api 1.20.0. */
+  toolErrorHelpers: ToolErrorHelpers | null = hostToolErrorHelpers,
 ): (input: unknown) => Promise<string> {
   return async (input: unknown): Promise<string> => {
     const parsed = WebSearchInputSchema.safeParse(input);
@@ -170,12 +182,14 @@ export function createWebSearchToolHandler(
         return `Error: web_search misconfigured — ${err.message}`;
       }
       if (err instanceof WebSearchProviderError) {
-        return providerFailure(err);
+        return providerFailure(err, toolErrorHelpers);
       }
       // Anything else — a bare WebSearchError whose message nobody vouches
       // for, or an exception this plugin did not author — is withheld from
       // the model (logged in full under a ref).
-      return toolErrorFromException(WEB_SEARCH_TOOL_NAME, err, { site: 'web-search' });
+      return compatToolErrorFromException(toolErrorHelpers, WEB_SEARCH_TOOL_NAME, err, {
+        site: 'web-search',
+      });
     }
   };
 }

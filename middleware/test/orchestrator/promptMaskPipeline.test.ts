@@ -21,9 +21,28 @@ import type {
   LlmResponse,
   LlmStreamEvent,
 } from '@omadia/llm-provider';
-import { NativeToolRegistry, Orchestrator, steeringBus } from '@omadia/orchestrator';
-import { FactExtractor } from '@omadia/orchestrator-extras';
-import type { FactIngest, KnowledgeGraph } from '@omadia/plugin-api';
+import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
+import { InMemoryMemoryStore } from '@omadia/memory';
+import {
+  NativeToolRegistry,
+  Orchestrator,
+  SessionLogger,
+  steeringBus,
+} from '@omadia/orchestrator';
+import { PROMPT_MASK_BLOCKED_ANSWER } from '@omadia/orchestrator/dist/orchestrator.js';
+import {
+  CaptureFilter,
+  CaptureFilteringKnowledgeGraph,
+  FactExtractor,
+} from '@omadia/orchestrator-extras';
+import type {
+  FactIngest,
+  KnowledgeGraph,
+  PrivacyGuardService,
+  PromptPiiDetector,
+  PromptPiiSpan,
+  TurnIngest,
+} from '@omadia/plugin-api';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 
 const providerCapabilities = {
@@ -43,6 +62,22 @@ function maskingService(): ReturnType<typeof createPrivacyGuardService> {
   return createPrivacyGuardService({
     readConfig: (key: string) => (key === 'mask_user_prompt' ? 'on' : undefined),
   });
+}
+
+/** A C1 stand-in that finds the given names, as the GLiNER sidecar would. */
+function namesC1(...names: readonly string[]): PromptPiiDetector {
+  return {
+    id: 'c1-test',
+    async detect(text: string): Promise<readonly PromptPiiSpan[]> {
+      const spans: PromptPiiSpan[] = [];
+      for (const name of names) {
+        for (let at = text.indexOf(name); at >= 0; at = text.indexOf(name, at + name.length)) {
+          spans.push({ start: at, end: at + name.length, type: 'person', confidence: 0.99 });
+        }
+      }
+      return spans;
+    },
+  };
 }
 
 function textResponse(text: string): LlmResponse {
@@ -275,6 +310,49 @@ describe('#361 prompt masking — orchestrator pipeline', () => {
     assert.ok(result.answer.includes(RAW_EMAIL));
   });
 
+  it('turn N+2: a recalled answer with restored values is masked with mask_user_prompt off', async () => {
+    // The session tail recalls an answer as persisted, with its real values
+    // restored. It goes to the model like a replayed answer: masked whatever
+    // `mask_user_prompt` says (off here, as shipped).
+    const RAW_NAME = 'Jana Beispielfrau';
+    const mainRequests: string[] = [];
+    const contextRetriever = {
+      assembleForBudget: async (): Promise<unknown> => ({
+        text: `## Letzte Turns in diesem Chat\nAssistant: ${RAW_NAME} leitet das Team, erreichbar unter ${RAW_EMAIL}.`,
+        included: [],
+        excluded: [],
+        stats: { candidatePool: 1, compactMode: false, tokensUsed: 10 },
+        recalled: undefined,
+      }),
+    } as unknown as OrchestratorOptions['contextRetriever'];
+
+    const orch = new Orchestrator({
+      provider: echoingMainProvider(mainRequests),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      contextRetriever,
+      // No `mask_user_prompt` in the config; C1 finds names.
+      privacyGuard: () => createPrivacyGuardService({ c1Detector: namesC1(RAW_NAME) }),
+    });
+
+    const result = await orch.runTurn({
+      userMessage: 'Wer war nochmal die Ansprechpartnerin?',
+      sessionScope: 'sess-recalled-answer',
+      userId: 'u1',
+    });
+
+    assert.equal(mainRequests.length, 1);
+    assert.ok(!mainRequests[0]!.includes(RAW_EMAIL), 'the recalled answer must not carry the real e-mail');
+    assert.ok(!mainRequests[0]!.includes(RAW_NAME), 'the recalled answer must not carry the real name');
+    assert.ok(EMAIL_RE.exec(mainRequests[0]!)?.[0], 'the recalled answer must carry an e-mail-shaped surrogate');
+    // Answer-side restore covers the recalled spans: the provider echoed the
+    // surrogate, the user sees the real value.
+    assert.ok(result.answer.includes(RAW_EMAIL), result.answer);
+  });
+
   it('turn N+1: priorTurns (live chat history) are masked before assembly', async () => {
     // Second-review fix — persisted turns store restored REAL values by
     // design, and channels replay them verbatim as `priorTurns`. Turn 1
@@ -345,6 +423,152 @@ describe('#361 prompt masking — orchestrator pipeline', () => {
     // echoed the surrogate, the user sees the real value.
     assert.ok(result.answer.includes(RAW_IBAN));
     assert.ok(!result.answer.includes(surrogate!));
+  });
+
+  it('turn N+1: a replayed answer is masked with mask_user_prompt off, the replayed user message is not', async () => {
+    // Teams and Telegram replay the answer they delivered, and an answer the
+    // shield rendered carries real values the model never saw, so a replayed
+    // answer is masked whatever `mask_user_prompt` says. The user's own words
+    // follow the flag: off here, as shipped.
+    const RAW_NAME = 'Jana Beispielfrau';
+    const RAW_ANSWER_EMAIL = 'jana.beispiel@firma.de';
+    const RAW_USER_EMAIL = 'max.muster@firma.de';
+    const SURROGATE_RE = /[^\s"\\]+@example\.net/;
+    const mainRequests: string[] = [];
+    const provider = {
+      id: 'anthropic',
+      capabilities: providerCapabilities,
+      complete: async (req: LlmRequest): Promise<LlmResponse> => {
+        const serialized = JSON.stringify(req);
+        mainRequests.push(serialized);
+        const surrogate = SURROGATE_RE.exec(serialized)?.[0] ?? 'no-surrogate-in-request';
+        return textResponse(`Ich schreibe an ${surrogate} heute.`);
+      },
+      stream: (): AsyncIterable<LlmStreamEvent> => {
+        throw new Error('replayed-answer provider: stream() not scripted');
+      },
+      classifyError: () => ({ retryable: false, kind: 'other' as const }),
+    } as unknown as LlmProvider;
+
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      // No `mask_user_prompt` in the config; C1 finds names, as the GLiNER
+      // sidecar would.
+      privacyGuard: () => createPrivacyGuardService({ c1Detector: namesC1(RAW_NAME) }),
+    });
+
+    const result = await orch.runTurn({
+      userMessage: 'Schreib ihr bitte wegen des Termins.',
+      sessionScope: 'sess-replayed-answer',
+      userId: 'u1',
+      priorTurns: [
+        {
+          userMessage: `Wer leitet das Team? Antwort bitte an ${RAW_USER_EMAIL} heute`,
+          assistantAnswer: `${RAW_NAME} leitet das Team, erreichbar unter ${RAW_ANSWER_EMAIL} oder im Büro`,
+        },
+      ],
+    });
+
+    assert.equal(mainRequests.length, 1);
+    const wire = mainRequests[0]!;
+    assert.ok(!wire.includes(RAW_NAME), 'the replayed answer must not carry the real name');
+    assert.ok(!wire.includes(RAW_ANSWER_EMAIL), 'the replayed answer must not carry the real e-mail');
+    assert.ok(
+      wire.includes(RAW_USER_EMAIL),
+      'the replayed user message follows mask_user_prompt, which is off',
+    );
+    const surrogate = SURROGATE_RE.exec(wire)?.[0];
+    assert.ok(surrogate, 'the replayed answer must carry an e-mail-shaped surrogate');
+    // Answer-side restore covers the replayed answer's spans.
+    assert.ok(result.answer.includes(RAW_ANSWER_EMAIL), result.answer);
+    assert.ok(!result.answer.includes(surrogate!));
+    // Booked as the turn's own egress.
+    assert.deepEqual(
+      (result.privacyReceipt?.maskedPromptSpans ?? []).map((s) => s.type).sort(),
+      ['email', 'person'],
+    );
+    assert.equal(result.privacyReceipt?.verifierEgress, undefined);
+  });
+
+  it('turn N+1: a provider without maskReplayedAnswer masks the replayed answer through maskUserPrompt', async () => {
+    // An older privacy plugin: the answer follows `mask_user_prompt` as
+    // before, on here, so it is still masked.
+    const RAW_IBAN = 'DE89370400440532013000';
+    const IBAN_RE = /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/;
+    const mainRequests: string[] = [];
+    const provider = {
+      id: 'anthropic',
+      capabilities: providerCapabilities,
+      complete: async (req: LlmRequest): Promise<LlmResponse> => {
+        mainRequests.push(JSON.stringify(req));
+        return textResponse('Notiert.');
+      },
+      stream: (): AsyncIterable<LlmStreamEvent> => {
+        throw new Error('legacy provider: stream() not scripted');
+      },
+      classifyError: () => ({ retryable: false, kind: 'other' as const }),
+    } as unknown as LlmProvider;
+    const legacy = (): PrivacyGuardService => ({
+      ...maskingService(),
+      maskReplayedAnswer: undefined,
+    });
+
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      privacyGuard: legacy,
+    });
+
+    await orch.runTurn({
+      userMessage: 'Und das Konto?',
+      sessionScope: 'sess-legacy-provider',
+      userId: 'u1',
+      priorTurns: [
+        { userMessage: 'Wohin geht das Gehalt?', assistantAnswer: `Auf ${RAW_IBAN} wie immer` },
+      ],
+    });
+
+    assert.equal(mainRequests.length, 1);
+    assert.ok(!mainRequests[0]!.includes(RAW_IBAN), 'the replayed answer must be masked');
+    assert.ok(IBAN_RE.test(mainRequests[0]!), 'an IBAN-shaped surrogate must stand in for it');
+  });
+
+  it('turn N+1: a blocked replayed answer fails the turn closed before the model is called', async () => {
+    const mainRequests: string[] = [];
+    const orch = new Orchestrator({
+      provider: echoingMainProvider(mainRequests),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      privacyGuard: () => ({
+        ...createPrivacyGuardService(),
+        maskReplayedAnswer: async () => ({
+          outcome: 'blocked' as const,
+          reason: 'test: masking could not be guaranteed',
+        }),
+      }),
+    });
+
+    const result = await orch.runTurn({
+      userMessage: 'Und weiter?',
+      sessionScope: 'sess-replay-blocked',
+      userId: 'u1',
+      priorTurns: [{ userMessage: 'Kontakt?', assistantAnswer: `Kontakt: ${RAW_EMAIL} bitte` }],
+    });
+
+    assert.equal(result.answer, PROMPT_MASK_BLOCKED_ANSWER);
+    assert.equal(mainRequests.length, 0, 'the model must not be called');
   });
 
   it('mid-turn steering (/chat/steer) is masked before it crosses the wire', async () => {
@@ -450,4 +674,119 @@ describe('#361 prompt masking — orchestrator pipeline', () => {
     assert.ok(String(done!['answer']).includes(RAW_IBAN));
     assert.ok(!String(done!['answer']).includes(surrogate!));
   });
+});
+
+/** Main-call fake for both paths: answers by echoing the first e-mail-shaped
+ *  token of its own request — the surrogate, when the request was masked. */
+function echoingStreamProvider(requests: string[]): LlmProvider {
+  const answerFor = (req: LlmRequest): LlmResponse => {
+    const serialized = JSON.stringify(req);
+    requests.push(serialized);
+    const email = EMAIL_RE.exec(serialized)?.[0] ?? 'no-email-in-request';
+    return textResponse(`Notiert. Ich schreibe an ${email}.`);
+  };
+  const provider = {
+    id: 'anthropic',
+    capabilities: providerCapabilities,
+    complete: async (req: LlmRequest): Promise<LlmResponse> => answerFor(req),
+    stream: (req: LlmRequest): AsyncIterable<LlmStreamEvent> => {
+      const response = answerFor(req);
+      const text = (response.content[0] as { text: string }).text;
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'text_delta', text } as LlmStreamEvent;
+          yield { type: 'final', response } as LlmStreamEvent;
+        },
+      };
+    },
+    classifyError: () => ({ retryable: false, kind: 'other' as const }),
+  };
+  return provider as unknown as LlmProvider;
+}
+
+describe('WP-09 — the capture filter scores the masked turn', () => {
+  /** A real session logger over the extras capture filter (level `normal`,
+   *  the default), with a scorer that keeps what it was sent and an inner
+   *  graph that keeps what it stored. */
+  function capturePipeline(): {
+    sessionLogger: SessionLogger;
+    scored: string[];
+    stored: TurnIngest[];
+  } {
+    const scored: string[] = [];
+    const stored: TurnIngest[] = [];
+    const inner = new InMemoryKnowledgeGraph();
+    const recordingInner = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'ingestTurn') {
+          return async (turn: TurnIngest) => {
+            stored.push(turn);
+            return target.ingestTurn(turn);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const filter = new CaptureFilter({
+      captureLevel: 'normal',
+      defaultVisibility: 'team',
+      significanceThreshold: 0.2,
+      significanceScorer: {
+        async score(text: string) {
+          scored.push(text);
+          return { score: 0.9 };
+        },
+      },
+    });
+    const graph = new CaptureFilteringKnowledgeGraph({ inner: recordingInner, filter, log: () => {} });
+    return { sessionLogger: new SessionLogger(new InMemoryMemoryStore(), graph), scored, stored };
+  }
+
+  function assertScoredMasked(
+    mainRequests: readonly string[],
+    scored: readonly string[],
+    stored: readonly TurnIngest[],
+  ): void {
+    const surrogate = EMAIL_RE.exec(mainRequests[0] ?? '')?.[0];
+    assert.ok(surrogate && surrogate !== RAW_EMAIL, 'the model got a surrogate');
+    assert.equal(scored.length, 1, 'the stored turn is scored once');
+    assert.ok(!scored[0]!.includes(RAW_EMAIL), `the scorer got the real e-mail: ${scored[0]!}`);
+    assert.ok(
+      scored[0]!.includes(`Ich schreibe an ${surrogate}`),
+      'the scorer gets the answer as the model wrote it, surrogate included',
+    );
+    assert.equal(stored.length, 1);
+    assert.ok(stored[0]!.userMessage.includes(RAW_EMAIL), 'the stored message keeps the real value');
+    assert.ok(stored[0]!.assistantAnswer.includes(RAW_EMAIL), 'the stored answer is restored');
+    assert.equal('maskedView' in stored[0]!, false, 'the masked view is never stored');
+  }
+
+  for (const path of ['non-streaming', 'streaming'] as const) {
+    it(`${path}: the scorer gets the masked message and the unrestored answer`, async () => {
+      const mainRequests: string[] = [];
+      const { sessionLogger, scored, stored } = capturePipeline();
+      const orch = new Orchestrator({
+        provider: echoingStreamProvider(mainRequests),
+        model: 'test',
+        maxTokens: 1024,
+        maxToolIterations: 3,
+        domainTools: [],
+        nativeToolRegistry: new NativeToolRegistry(),
+        sessionLogger,
+        privacyGuard: () => maskingService(),
+      });
+      const input = {
+        userMessage: `Bitte schreibe an ${RAW_EMAIL} wegen des Vertrags.`,
+        sessionScope: `wp09-score-${path}`,
+        userId: 'u1',
+      };
+      if (path === 'streaming') {
+        for await (const ev of orch.chatStream(input)) void ev;
+      } else {
+        await orch.runTurn(input);
+      }
+      assertScoredMasked(mainRequests, scored, stored);
+    });
+  }
 });

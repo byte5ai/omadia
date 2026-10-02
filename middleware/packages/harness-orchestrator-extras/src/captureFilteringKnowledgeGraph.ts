@@ -149,10 +149,14 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     if (innerCount) this.countDatasets = innerCount;
   }
 
-  async ingestTurn(turn: TurnIngest): Promise<TurnIngestResult> {
+  async ingestTurn(ingest: TurnIngest): Promise<TurnIngestResult> {
+    // The masked view is the scorer's input only: the inner graph stores the
+    // turn without it.
+    const { maskedView, ...turn } = ingest;
     const decision = await this.filter.classify({
       userMessage: turn.userMessage,
       assistantAnswer: turn.assistantAnswer,
+      ...(maskedView !== undefined ? { maskedView } : {}),
     });
 
     if (!decision.persist) {

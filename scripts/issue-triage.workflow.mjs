@@ -165,7 +165,7 @@ Your job: produce a triage verdict and a GitHub-ready comment with concrete impl
 ---
 _Automated triage against \`${HEAD}\`; posted after adversarial fact-check review._
 
-Keep the comment under ~90 lines. Every file path and symbol MUST exist (verify with ls/rg) or be explicitly marked as new. If the issue is already fully shipped, say so with evidence (commit/PR) and recommend verify+close instead of a plan.
+Every file path and symbol MUST exist (verify with ls/rg) or be explicitly marked as new. If the issue is already fully shipped, say so with evidence (commit/PR) and recommend verify+close instead of a plan.
 
 Set skipComment=true ONLY when an existing comment already contains a current, accurate plan AND nothing shipped since would change it. When in doubt, comment (a status-delta comment is valuable).
 

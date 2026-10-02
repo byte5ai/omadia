@@ -83,6 +83,7 @@ const COVERED_ROUTE_FILES = [
 const NON_ROUTE_CODES = [
   'providers.key_rejected',
   'package.id_conflict_bundled',
+  'package.incompatible_core',
   'cli_install.no_output',
   'cli_install.npm_failed',
   'cli_install.spawn_failed',

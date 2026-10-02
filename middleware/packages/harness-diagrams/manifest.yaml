@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/diagrams"
   name: "Diagrams"
-  version: "0.2.0"
+  version: "0.2.1"
   kind: "tool"
   domain: "visualization.diagrams"
   description:

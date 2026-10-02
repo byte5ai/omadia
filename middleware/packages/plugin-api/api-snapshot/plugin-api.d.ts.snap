@@ -873,6 +873,11 @@ entryType?: EntryType;
 visibility?: Visibility;
 significance?: number | null;
 tailOnly?: boolean;
+maskedView?: TurnMaskedView;
+}
+export interface TurnMaskedView {
+readonly userMessage: string;
+readonly assistantAnswer: string;
 }
 export interface TurnIngestResult {
 sessionId: string;
@@ -1791,6 +1796,10 @@ readonly content: string;
 }>;
 readonly maxTokens?: number;
 readonly temperature?: number;
+readonly outputFormat?: {
+readonly type: 'json_schema';
+readonly schema: Record<string, unknown>;
+};
 }
 export interface McpAccessorToolDescriptor {
 readonly name: string;
@@ -1808,7 +1817,10 @@ readonly model: string;
 readonly inputTokens: number;
 readonly outputTokens: number;
 readonly finishReason: 'stop' | 'tool_calls' | 'max_tokens';
-readonly stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use';
+readonly stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use' | 'refusal';
+readonly refusal?: {
+readonly category?: string;
+};
 }
 export declare class LlmServiceUnavailableError extends Error {
 constructor(callerAgentId: string);
@@ -2042,6 +2054,18 @@ readonly turnId: string;
 readonly text: string;
 readonly identityValues?: readonly string[];
 }
+export interface PrivacyReplayedAnswerRequest {
+readonly sessionId: string;
+readonly turnId: string;
+readonly text: string;
+}
+export interface PrivacyStoredTextScopeRequest {
+readonly job: string;
+}
+export interface PrivacyStoredTextScope {
+maskStoredText(text: string): Promise<PrivacyPromptMaskResult>;
+restoreStoredText(text: string): string;
+}
 export type PrivacyPromptMaskResult = {
 readonly outcome: 'disabled';
 } | {
@@ -2093,6 +2117,8 @@ maskUserPrompt?(request: PrivacyPromptMaskRequest): Promise<PrivacyPromptMaskRes
 restorePromptPseudonyms?(turnId: string, text: string): Promise<string>;
 snapshotPromptRestorer?(turnId: string): ((text: string) => string) | undefined;
 projectVerifierText?(request: PrivacyVerifierProjectionRequest): Promise<PrivacyPromptMaskResult>;
+maskReplayedAnswer?(request: PrivacyReplayedAnswerRequest): Promise<PrivacyPromptMaskResult>;
+openStoredTextScope?(request: PrivacyStoredTextScopeRequest): PrivacyStoredTextScope;
 countUnresolvedSurrogates?(turnId: string, text: string): Promise<number>;
 v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
 finalizeTurn(turnId: string, turnInput?: string): Promise<PrivacyReceipt | undefined>;

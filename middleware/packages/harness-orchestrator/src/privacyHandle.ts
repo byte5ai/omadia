@@ -141,6 +141,16 @@ export interface PrivacyTurnHandle {
     identityValues: readonly string[],
   ): Promise<PrivacyPromptMaskResult>;
   /**
+   * Mask an answer a channel replays as chat history (`priorTurns`) through
+   * this turn's surrogate map, independent of `mask_user_prompt` (see
+   * `PrivacyGuardService.maskReplayedAnswer`). `blocked` = the caller must not
+   * send it. A provider that predates the member answers through
+   * `maskUserPrompt` instead, as before it existed. Optional so hand-built
+   * handles (tests, wrappers) stay valid; absent ⇒ callers mask through
+   * `maskUserPrompt` themselves.
+   */
+  maskReplayedAnswer?(text: string): Promise<PrivacyPromptMaskResult>;
+  /**
    * How many of this turn's surrogates still occur in `text` (see
    * `PrivacyGuardService.countUnresolvedSurrogates`). `0` when the provider
    * predates the contract. Optional like `projectVerifierText`.
@@ -296,6 +306,18 @@ export function createPrivacyTurnHandle(deps: {
         text,
         identityValues,
       });
+    },
+
+    async maskReplayedAnswer(text) {
+      const request = { sessionId: deps.sessionId, turnId: deps.turnId, text };
+      // Optional on the service contract. A provider that predates it masks a
+      // replayed answer like any prompt text: only while `mask_user_prompt`
+      // is on, the behaviour before the member existed.
+      if (deps.service.maskReplayedAnswer === undefined) {
+        if (deps.service.maskUserPrompt === undefined) return { outcome: 'disabled' };
+        return deps.service.maskUserPrompt(request);
+      }
+      return deps.service.maskReplayedAnswer(request);
     },
 
     async countUnresolvedSurrogates(text) {

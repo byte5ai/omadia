@@ -5,6 +5,7 @@ import {
   turnNodeId,
   type EntityRef,
   type KnowledgeGraph,
+  type TurnMaskedView,
 } from '@omadia/plugin-api';
 import { isValidSessionId, type ChatSessionStore } from './chatSessionStore.js';
 import type { RunTracePayload } from './runTraceCollector.js';
@@ -55,6 +56,13 @@ export interface SessionLogEntry {
    * the segment offsets instead. Absent → `new Date()` exactly as before.
    */
   time?: string;
+  /**
+   * The turn's masked wire texts, for a turn that ran under a privacy handle
+   * (`TurnIngest.maskedView`). Handed to the graph only, for a capture
+   * decorator that scores the turn with a model of its own; the transcript
+   * and the stored turn keep `userMessage` / `assistantAnswer`.
+   */
+  maskedView?: TurnMaskedView;
 }
 
 const USER_MSG_MAX = 1_500;
@@ -205,6 +213,7 @@ export class SessionLogger {
           entityRefs,
           ...(entry.userId ? { userId: entry.userId } : {}),
           ...(entry.speaker !== undefined ? { speaker: entry.speaker } : {}),
+          ...(entry.maskedView !== undefined ? { maskedView: entry.maskedView } : {}),
         });
         // #1082 — the capture filter wrote this turn for session continuity
         // only. Counted per TURN, with or without a trace: the number of

@@ -151,6 +151,7 @@ import type {
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
+  TurnMaskedView,
   TurnReceiptStore,
 } from '@omadia/plugin-api';
 import {
@@ -1252,11 +1253,14 @@ async function maskIngestedForWire(
   return maskPromptForWire(privacy, ingestedText);
 }
 
-/** `maskPromptForWire` for the recalled prior-context block. The recalled
- *  TEXT is injected into the next prompt, so it is LLM-bound wire content:
- *  a raw span recalled from turn N would undo the masking of turn N. Runs
- *  through the SAME turn map, so answer-side restore covers these spans
- *  too. Server-side stores stay raw — only the injected copy is masked. */
+/** The recalled prior-context block (knowledge-graph recall and the session
+ *  tail). The recalled TEXT is injected into the next prompt, so it is
+ *  LLM-bound wire content, and it carries answers that were persisted with
+ *  their real values restored: a span recalled from turn N would undo the
+ *  masking of turn N. So it is masked like a replayed answer
+ *  ({@link maskReplayedAnswerForWire}), whatever `mask_user_prompt` says,
+ *  through the SAME turn map, so answer-side restore covers these spans too.
+ *  Server-side stores stay raw — only the injected copy is masked. */
 async function maskRecalledForWire(
   privacy: PrivacyTurnHandle | undefined,
   recalledText: string | undefined,
@@ -1264,7 +1268,28 @@ async function maskRecalledForWire(
   if (recalledText === undefined || recalledText.trim().length === 0) {
     return recalledText;
   }
-  return maskPromptForWire(privacy, recalledText);
+  return maskReplayedAnswerForWire(privacy, recalledText);
+}
+
+/**
+ * Mask an assistant answer a channel replays in `priorTurns`, whatever
+ * `mask_user_prompt` says: that flag is about the user's own words, and Teams
+ * and Telegram replay the answer they delivered — after a `v4_render_answer`
+ * turn, real values the turn's model never saw. Through the turn's map, so
+ * answer-side restore covers these spans. A handle without
+ * `maskReplayedAnswer` falls back to {@link maskPromptForWire}. Throws
+ * `PromptMaskBlockedError` on the failure-closed `blocked` outcome.
+ */
+async function maskReplayedAnswerForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  answer: string,
+): Promise<string> {
+  if (privacy?.maskReplayedAnswer === undefined) return maskPromptForWire(privacy, answer);
+  const result = await privacy.maskReplayedAnswer(answer);
+  if (result.outcome === 'blocked') {
+    throw new PromptMaskBlockedError(result.reason);
+  }
+  return result.outcome === 'masked' ? result.maskedText : answer;
 }
 
 /** #361 second-review fix — live chat history (`input.priorTurns`) is
@@ -1272,8 +1297,10 @@ async function maskRecalledForWire(
  *  by design, and channels replay them verbatim as priorTurns, so turn-N
  *  PII would reach the model raw on turn N+1. Mask every prior userMessage
  *  AND assistant answer through the SAME turn map before message assembly
- *  (answer-side restore covers these spans as well). Empty pairs are
- *  filtered so a failed prior turn can't poison context. */
+ *  (answer-side restore covers these spans as well): a user message under
+ *  `mask_user_prompt`, an answer whatever that flag says
+ *  ({@link maskReplayedAnswerForWire}). Empty pairs are filtered so a failed
+ *  prior turn can't poison context. */
 async function maskPriorTurnsForWire(
   privacy: PrivacyTurnHandle | undefined,
   priorTurns: ChatTurnInput['priorTurns'],
@@ -1289,11 +1316,45 @@ async function maskPriorTurnsForWire(
     if (t.assistantAnswer.trim().length > 0) {
       pairs.push({
         role: 'assistant',
-        content: await maskPromptForWire(privacy, t.assistantAnswer),
+        content: await maskReplayedAnswerForWire(privacy, t.assistantAnswer),
       });
     }
   }
   return pairs;
+}
+
+/**
+ * The provenance bundle the inbound screener receives (#579,
+ * {@link bundleProvenance}), masked the way the turn's model call masks it:
+ * the user message and every user message a channel replays through
+ * {@link maskPromptForWire}, each upload's name through the same mask. One
+ * turn map, so the screener sees the surrogates the model will see. A
+ * replayed answer is not part of the bundle. Throws `PromptMaskBlockedError`
+ * on the failure-closed `blocked` outcome.
+ */
+async function screeningBundleForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  input: ChatTurnInput,
+): Promise<ReturnType<typeof bundleProvenance>> {
+  const priorTurns: NonNullable<ChatTurnInput['priorTurns']> = [];
+  for (const t of input.priorTurns ?? []) {
+    // The bundle reads the user message only; the answer stays out of it.
+    priorTurns.push({
+      userMessage: await maskPromptForWire(privacy, t.userMessage),
+      assistantAnswer: '',
+    });
+  }
+  const attachments: NonNullable<ChatTurnInput['attachments']> = [];
+  for (const att of input.attachments ?? []) {
+    attachments.push(
+      att.name === undefined ? att : { ...att, name: await maskPromptForWire(privacy, att.name) },
+    );
+  }
+  return bundleProvenance({
+    userMessage: await maskPromptForWire(privacy, input.userMessage),
+    priorTurns,
+    attachments,
+  });
 }
 
 /**
@@ -1356,6 +1417,29 @@ function recordedWireView(): TurnWireView | undefined {
   const box = turnContext.current()?.wireView;
   if (box?.userMessage === undefined || box.answer === undefined) return undefined;
   return { userMessage: box.userMessage, answer: box.answer };
+}
+
+/**
+ * The masked view of a session-log row (`SessionLogEntry.maskedView`) for a
+ * turn under a privacy handle: the row's texts as the turn's model calls
+ * carried them — the prompt as the model received it, the answer as the
+ * model wrote it — the same texts the fact extraction gets. The capture
+ * filter's significance scorer sends these to its provider instead of the
+ * row, whose answer holds restored real values. Nothing without a handle.
+ */
+function maskedRowView(
+  privacy: PrivacyTurnHandle | undefined,
+  wireUserMessage: string,
+  wireAnswer: string,
+): { readonly maskedView?: TurnMaskedView } {
+  return privacy === undefined
+    ? {}
+    : { maskedView: { userMessage: wireUserMessage, assistantAnswer: wireAnswer } };
+}
+
+/** What the session log records for a turn that ended on a choice card. */
+function choiceCardLogLine(answer: string, question: string): string {
+  return answer.length > 0 ? `${answer}\n\n[Rückfrage] ${question}` : `[Rückfrage] ${question}`;
 }
 
 /**
@@ -1653,6 +1737,21 @@ export function finalAnswerText(
 }
 
 /**
+ * #1219 — the refusal clause of the non-`end_turn` finalize log line, so a
+ * declined turn says WHY (`bio`, `cyber`, …; the seam carries the vendor's
+ * category) instead of only that it was declined. Empty for every other
+ * stop reason.
+ */
+function refusalLogClause(message: {
+  readonly stop_reason?: unknown;
+  readonly refusal?: { readonly category?: unknown };
+}): string {
+  if (message.stop_reason !== 'refusal') return '';
+  const category = message.refusal?.category;
+  return ` refusal_category=${typeof category === 'string' ? category : 'none'}`;
+}
+
+/**
  * #579 — fail-open evidence. Fold the untrusted-data marker into the turn's
  * `extraSystemHint` (a non-cached system block, wire-only — NOT persisted to the
  * session log, honouring "persist raw, disclose at boundary"), so an
@@ -1768,11 +1867,7 @@ function buildSystemPrompt(
     : '';
   const chatParticipantsBlock = hasChatParticipants
     ? '\n- `get_chat_participants`: Liefert die Teilnehmer des aktuellen Teams-Chats. Nur aufrufen, wenn du jemanden im Antworttext **per @-Mention ansprechen** willst — Handoff, Rückfrage, Zuständigkeits-Tag. Max 1× pro Turn. In 1:1-Chats nicht nutzen.\n' +
-      '\n  **PFLICHT nach dem Tool-Call — sonst war der Call umsonst:**\n' +
-      '  1. Den Namen im Antworttext in der Form `<at>EXAKTER_DISPLAY_NAME</at>` schreiben.\n' +
-      '  2. `EXAKTER_DISPLAY_NAME` muss byte-für-byte dem `displayName`-Feld aus der Tool-Response entsprechen — inklusive Firmensuffix, Bindestriche, Großschreibung.\n' +
-      '  3. Ohne diese `<at>…</at>`-Tags wird KEINE Mention gerendert und die Person NICHT benachrichtigt — das Schreiben des Namens allein reicht NICHT.\n' +
-      '  4. Beispiel: wenn der Roster `displayName: "Jane Doe - ACME"` zurückgibt und du sie ansprechen willst, schreibst du `Hey <at>Jane Doe - ACME</at>, kannst du das übernehmen?` — nicht `Hey Jane Doe` und auch nicht `Hey @Jane`.\n'
+      '\n  Die exakte Mention-Syntax steht in der Beschreibung des Tools, und die Tool-Response liefert sie in `usage_example` / `rendering_rule` noch einmal mit einem echten `displayName` aus diesem Chat. Halte dich daran: ohne diese Form wird keine Mention gerendert, die Person nicht benachrichtigt, und der Call war umsonst.\n'
     : '';
 
   const graphBlock = hasGraph
@@ -3840,11 +3935,17 @@ export class Orchestrator {
    * — runs the screener. Returns the decision the caller acts on:
    *   - `proceed` with the input to run, possibly augmented with the untrusted
    *     marker on `extraSystemHint` (fail-open evidence);
-   *   - `quarantine` with a refusal answer — the turn must NOT run.
+   *   - `quarantine` with a refusal answer — the turn must NOT run;
+   *   - `blocked` when the text for the screener could not be masked — the
+   *     turn fails closed with the privacy refusal, as a blocked model call
+   *     does, and nothing reaches the screener.
    *
-   * `exempt` short-circuits to `proceed` for an MCP input-card reply: that is a
-   * machine envelope this harness produced, not untrusted inbound content.
-   * Never throws — a screener failure fails open (screenProvenance contract).
+   * The screener gets the turn's masked text: the caller mints the privacy
+   * handle before the gate. `exempt` short-circuits to `proceed` for an MCP
+   * input-card reply: that is a machine envelope this harness produced, not
+   * untrusted inbound content. A screener failure fails open
+   * (screenProvenance contract); only a privacy provider that throws while
+   * masking propagates.
    */
   /**
    * #579 — mark an input object as a re-entry of an already-screened user turn.
@@ -3927,8 +4028,9 @@ export class Orchestrator {
 
   /**
    * Closes a pass that neither finalized nor handed its privacy state over:
-   * it threw, or its stream ended before `done` (an `error`, or a client
-   * that left). Finalizing drops the surrogate map and cached spans — real
+   * it threw, its stream ended before `done` (an `error`, or a client that
+   * left), or the inbound screening quarantined it after masking its text
+   * for the screener. Finalizing drops the surrogate map and cached spans — real
    * values must not outlive the turn — and drains the receipt of what the
    * pass did put on the wire. That receipt is kept like a delivered pass's
    * (`settleTurnReceipt`): the turn's own row, or the request's one row when
@@ -3994,10 +4096,16 @@ export class Orchestrator {
 
   private async screenInboundTurn(
     input: ChatTurnInput,
-    opts: { readonly exempt: boolean },
+    opts: {
+      readonly exempt: boolean;
+      /** The turn's privacy handle, minted before the gate: the screener gets
+       *  the bundle masked through it ({@link screeningBundleForWire}). */
+      readonly privacy: PrivacyTurnHandle | undefined;
+    },
   ): Promise<
     | { readonly action: 'proceed'; readonly input: ChatTurnInput }
     | { readonly action: 'quarantine'; readonly answer: string }
+    | { readonly action: 'blocked'; readonly error: PromptMaskBlockedError }
   > {
     if (opts.exempt) return { action: 'proceed', input };
 
@@ -4018,7 +4126,20 @@ export class Orchestrator {
     const screener = this.securityScreener?.();
     let outcome: ScreenOutcome;
     if (screener) {
-      outcome = await screenProvenance(screener, pairs);
+      // The screener is an egress like the model call, so it gets the turn's
+      // masked text — masked only when it is called at all. A blocked mask
+      // fails the turn closed before anything is sent. The audit's
+      // `sourceTags` stay raw: they are a server-side record.
+      let screened = pairs;
+      if (hasScreenableContent(pairs)) {
+        try {
+          screened = await screeningBundleForWire(opts.privacy, input);
+        } catch (err) {
+          if (err instanceof PromptMaskBlockedError) return { action: 'blocked', error: err };
+          throw err;
+        }
+      }
+      outcome = await screenProvenance(screener, screened);
     } else if (hasScreenableContent(pairs)) {
       // Screening is ON and there is non-human content, but no screener is
       // wired → UNSCREENABLE. Fail open with evidence, never silently clear.
@@ -4143,33 +4264,44 @@ export class Orchestrator {
     if (mcpInputReply) {
       input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
     }
+    // Privacy-Proxy Slice 2.1 hook. When a `privacy.redact@1` provider is
+    // registered, mint a per-turn handle scoped to (sessionScope, turnId)
+    // and thread it through the AsyncLocalStorage so every `messages.create`
+    // / `messages.stream` site in the call tree (main + sub-agents) picks
+    // it up implicitly. After `chatInContext` returns we drain the
+    // turn-aggregated receipt and attach it to the result. Minted before the
+    // screening gate: the screener gets the turn's masked text too.
+    const sessionId = input.sessionScope ?? turnId;
+    const privacyService = this.privacyGuard?.();
+    const privacyHandle = privacyService
+      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
+      : undefined;
+    const gatePass: UndeliveredPass | undefined = privacyHandle
+      ? { handle: privacyHandle, turnId, input, bound }
+      : undefined;
     // #579 — inbound screening gate. Quarantine short-circuits BEFORE the turn
-    // scope opens, so a quarantined turn never runs the model or any tool.
-    // Proceed may hand back a marker-augmented input (fail-open evidence).
-    const gate = await this.screenInboundTurn(input, {
-      exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
-    });
+    // scope opens, so a quarantined turn never runs the model or any tool; its
+    // privacy state is closed here. Proceed may hand back a marker-augmented
+    // input (fail-open evidence). A blocked screening mask runs the turn into
+    // the privacy refusal below, the exit a blocked model call takes.
+    const gate = await this.closePassOnThrow(gatePass, () =>
+      this.screenInboundTurn(input, {
+        exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
+        privacy: privacyHandle,
+      }),
+    );
     if (gate.action === 'quarantine') {
+      if (gatePass) await this.closeUndeliveredPass(gatePass);
       return { answer: gate.answer, toolCalls: 0, iterations: 0 };
     }
-    input = gate.input;
+    const screeningBlocked = gate.action === 'blocked' ? gate.error : undefined;
+    if (gate.action === 'proceed') input = gate.input;
     // Inherit optional fields the channel adapter (e.g. Teams bot) set in an
     // outer ALS scope. The new child scope replaces turnId/turnDate for this
     // turn; carry-through fields like `chatParticipants` must be threaded
     // explicitly or the tool handlers would see them as undefined.
     const parent = turnContext.current();
 
-    // Privacy-Proxy Slice 2.1 hook. When a `privacy.redact@1` provider is
-    // registered, mint a per-turn handle scoped to (sessionScope, turnId)
-    // and thread it through the AsyncLocalStorage so every `messages.create`
-    // / `messages.stream` site in the call tree (main + sub-agents) picks
-    // it up implicitly. After `chatInContext` returns we drain the
-    // turn-aggregated receipt and attach it to the result.
-    const sessionId = input.sessionScope ?? turnId;
-    const privacyService = this.privacyGuard?.();
-    const privacyHandle = privacyService
-      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
-      : undefined;
     // #430 fixup (reviewer round 5) — resolve the canonical omadiaUserId ONCE
     // for the whole turn; see `resolveTurnOwnerIdentity` for the fallback
     // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
@@ -4312,10 +4444,14 @@ export class Orchestrator {
         // Commit-on-delivery: the request's `onAfterTurn` runs in the first
         // run's hook context, whichever pass the verifier delivers.
         this.bindRequestAfterTurn(boundLedger, turnId, input);
-        const direct = await this.executeDirectLine(input, turnId, turnMemory);
+        const direct = screeningBlocked
+          ? undefined
+          : await this.executeDirectLine(input, turnId, turnMemory);
         let result: ChatTurnResult | undefined;
         let promptMaskBlocked = false;
         try {
+          // The screening gate could not mask: fail closed right here.
+          if (screeningBlocked) throw screeningBlocked;
           result = direct ?? (await this.chatInContext(input, turnId, turnMemory));
           // #445 — an ordinary turn is by definition an UNBOUND turn (a live
           // binding would have produced a sticky dispatch), so stamp the
@@ -4531,35 +4667,45 @@ export class Orchestrator {
   }
 
   /**
-   * #361 — the direct-line fact-extraction prompt: both texts masked through
-   * the turn's prompt map (a direct-line turn masked nothing up to here),
-   * with the restorer snapshot that turns extracted facts back into real
-   * values. Undefined without a fact extractor, or when masking is `blocked`
-   * — extraction is then skipped (audited) rather than sent unmasked; the
+   * #361 — a direct-line turn's texts for its LLM-bound extra passes (fact
+   * extraction, the capture filter's scorer), masked through the turn's map
+   * (a direct-line turn masked nothing up to here): the user message like the
+   * turn's prompt, the restored specialist answer like a replayed answer —
+   * whatever `mask_user_prompt` says, since it carries real values. Without a
+   * handle, the texts as they are. Undefined when masking is `blocked`: both
+   * passes are then skipped (audited) rather than sent unmasked; the
    * user-visible answer is unaffected.
    */
-  private async directLineFacts(
+  private async directLineWireTexts(
     privacy: PrivacyTurnHandle | undefined,
     userMessage: string,
     answer: string,
-  ): Promise<TurnFacts | undefined> {
-    if (!this.factExtractor) return undefined;
+  ): Promise<TurnMaskedView | undefined> {
     try {
-      const maskedUserMessage = await maskPromptForWire(privacy, userMessage);
-      const maskedAnswer = await maskPromptForWire(privacy, answer);
-      const restoreFacts = privacy?.snapshotPromptRestorer();
       return {
-        userMessage: maskedUserMessage,
-        assistantAnswer: maskedAnswer,
-        ...(restoreFacts ? { restoreFacts } : {}),
+        userMessage: await maskPromptForWire(privacy, userMessage),
+        assistantAnswer: await maskReplayedAnswerForWire(privacy, answer),
       };
     } catch (err) {
       if (!(err instanceof PromptMaskBlockedError)) throw err;
       console.error(
-        `[orchestrator] direct-line fact extraction skipped — prompt masking blocked: ${err.message}`,
+        `[orchestrator] direct-line fact extraction and scoring skipped — prompt masking blocked: ${err.message}`,
       );
       return undefined;
     }
+  }
+
+  /** #361 — the direct-line fact-extraction prompt over the turn's masked
+   *  texts ({@link directLineWireTexts}), with the restorer snapshot that turns
+   *  extracted facts back into real values. Undefined without a fact
+   *  extractor, or when masking was `blocked`. */
+  private directLineFacts(
+    privacy: PrivacyTurnHandle | undefined,
+    wire: TurnMaskedView | undefined,
+  ): TurnFacts | undefined {
+    if (!this.factExtractor || wire === undefined) return undefined;
+    const restoreFacts = privacy?.snapshotPromptRestorer();
+    return { ...wire, ...(restoreFacts ? { restoreFacts } : {}) };
   }
 
   /**
@@ -5123,6 +5269,10 @@ export class Orchestrator {
     // relay issues no orchestrator-level tool calls of its own).
     let persistedTurnId: string | undefined;
     if (this.sessionLogger && input.sessionScope) {
+      // Masked now: the prompt map belongs to this pass and ends with it. The
+      // fact extraction and the row's masked view (the capture filter's
+      // scorer) get the same texts; a blocked mask leaves both empty-handed.
+      const wire = await this.directLineWireTexts(privacyForPrompt, input.userMessage, answer);
       const entry = {
         scope: input.sessionScope,
         userMessage: input.userMessage,
@@ -5131,22 +5281,19 @@ export class Orchestrator {
         iterations: 1,
         ...(input.userId ? { userId: input.userId } : {}),
         runTrace,
+        ...maskedRowView(privacyForPrompt, wire?.userMessage ?? '', wire?.assistantAnswer ?? ''),
       };
+      const facts = this.directLineFacts(privacyForPrompt, wire);
       const ledger = this.turnRecords.deferringLedger();
       if (ledger !== undefined) {
-        // Masked now: the prompt map belongs to this pass and ends with it.
-        const facts = await this.directLineFacts(privacyForPrompt, input.userMessage, answer);
         this.turnRecords.offerRow(ledger, { entry, entityRefs: [] }, 'direct-line answer', (turnId, refs) => {
           this.turnRecords.startFactExtraction(turnId, facts, refs);
           return Promise.resolve({});
         });
       } else {
         persistedTurnId = await this.turnRecords.writeRow(entry, 'direct-line answer');
+        this.turnRecords.startFactExtraction(persistedTurnId, facts, []);
       }
-    }
-    if (this.factExtractor && persistedTurnId) {
-      const facts = await this.directLineFacts(privacyForPrompt, input.userMessage, answer);
-      this.turnRecords.startFactExtraction(persistedTurnId, facts, []);
     }
 
     return {
@@ -5276,7 +5423,7 @@ export class Orchestrator {
   /** #332 Layer 3 — synthetic reminder pushed when an obligation is unmet. */
   private obligationReminder(toolName: string): string {
     return (
-      `IMPORTANT: Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
+      `Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
       `(\`${toolName}\`) zu konsultieren. Dieser Consult ist für diesen Turn ` +
       `verpflichtend. Rufe \`${toolName}\` jetzt auf, bevor du dem Nutzer antwortest.`
     );
@@ -5817,7 +5964,7 @@ export class Orchestrator {
           // a normal turn end.
           if (response.stop_reason !== 'end_turn') {
             console.error(
-              `[orchestrator] finalized with stop_reason=${String(response.stop_reason)} ` +
+              `[orchestrator] finalized with stop_reason=${String(response.stop_reason)}${refusalLogClause(response)} ` +
                 `iterations=${iteration + 1}/${this.maxIterations}` +
                 (responseHasToolUse
                   ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'
@@ -5826,8 +5973,12 @@ export class Orchestrator {
           }
           // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
           // turn end: escalate ONCE with a forced tool_choice + synthetic
-          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
-          // tool-enabled iteration follows within the iteration budget.
+          // reminder (OB-31). On the models that reject a forced choice (see
+          // `supportsForcedToolChoice()` in the Anthropic adapter) it degrades
+          // to `auto`, so the reminder text is what actually steers the call.
+          // Guarded by
+          // `!finalizeThisIter` so a normal tool-enabled iteration follows
+          // within the iteration budget.
           if (
             obligationTool &&
             !obligationMet &&
@@ -5904,6 +6055,11 @@ export class Orchestrator {
               iterations,
               ...(input.userId ? { userId: input.userId } : {}),
               ...(runTrace ? { runTrace } : {}),
+              ...maskedRowView(
+                privacyForPrompt,
+                wireUserMessage,
+                appendToolDigest(answer, attachments, fileAttachments),
+              ),
             };
             // Fact extraction: fire-and-forget against Haiku, after the
             // session log lands in the graph (so the Fact → Turn
@@ -6121,10 +6277,12 @@ export class Orchestrator {
         this.extractToolEmittedRoutineList(toolResults);
         // #361 — the choice card is user-facing AND its question is
         // persisted in the session log; restore surrogates → real values.
+        // The question as the model wrote it goes into the row's masked view.
+        const wireChoice =
+          this.drainPendingChoice() ?? this.extractToolEmittedChoice(toolResults);
         const pendingUserChoice = await restorePendingChoiceForUser(
           privacyForPrompt,
-          this.drainPendingChoice() ??
-            this.extractToolEmittedChoice(toolResults),
+          wireChoice,
         );
         // W2-1 (#544) — the MCP input card rides the SAME short-circuit.
         //
@@ -6171,19 +6329,21 @@ export class Orchestrator {
           });
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
-            const loggedAnswer = restoredAnswer.length > 0
-              ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
-              : `[Rückfrage] ${pendingUserChoice.question}`;
             persistedTurnId = await this.turnRecords.recordRow(
               {
                 entry: {
                   scope: input.sessionScope,
                   userMessage: input.userMessage,
-                  assistantAnswer: loggedAnswer,
+                  assistantAnswer: choiceCardLogLine(restoredAnswer, pendingUserChoice.question),
                   toolCalls,
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
                   ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    choiceCardLogLine(answer, wireChoice?.question ?? ''),
+                  ),
                 },
                 entityRefs: entityCollection?.drain() ?? [],
               },
@@ -6230,6 +6390,11 @@ export class Orchestrator {
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
                   ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    mcpInputCardLogLine(answer, card),
+                  ),
                 },
                 entityRefs: entityCollection?.drain() ?? [],
               },
@@ -6291,14 +6456,34 @@ export class Orchestrator {
     if (mcpInputReply) {
       input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
     }
+    // Privacy-Proxy Slice 2.1: same handle pattern as `runTurn`. The handle
+    // is bound to the AsyncLocalStorage-scoped context below; every
+    // `streamMessageEvents` site downstream picks it up implicitly. After
+    // `chatStreamInner` yields its `done` event we intercept and decorate
+    // with the aggregated receipt. Minted before the screening gate, as in
+    // `runTurnCore`: the screener gets the turn's masked text.
+    const sessionId = input.sessionScope ?? turnId;
+    const privacyService = this.privacyGuard?.();
+    const privacyHandle = privacyService
+      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
+      : undefined;
+    const gatePass: UndeliveredPass | undefined = privacyHandle
+      ? { handle: privacyHandle, turnId, input, bound }
+      : undefined;
     // #579 — inbound screening gate (streaming mirror of `runTurnCore`). A
-    // quarantine yields a single terminal `done` and returns — the model and
-    // tools never run — like the prompt-mask refusal path below. `proceed` may
-    // hand back a marker-augmented input (fail-open evidence).
-    const streamGate = await this.screenInboundTurn(input, {
-      exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
-    });
+    // quarantine closes the turn's privacy state, yields a single terminal
+    // `done` and returns — the model and tools never run — like the
+    // prompt-mask refusal path below. `proceed` may hand back a
+    // marker-augmented input (fail-open evidence); a blocked screening mask
+    // runs into that refusal path.
+    const streamGate = await this.closePassOnThrow(gatePass, () =>
+      this.screenInboundTurn(input, {
+        exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
+        privacy: privacyHandle,
+      }),
+    );
     if (streamGate.action === 'quarantine') {
+      if (gatePass) await this.closeUndeliveredPass(gatePass);
       // Fold the AI disclosure the same way the non-streaming quarantine does
       // (chat() folds it via toSemanticAnswer), so both paths deliver the refusal
       // byte-identically.
@@ -6313,7 +6498,8 @@ export class Orchestrator {
       );
       return;
     }
-    input = streamGate.input;
+    const screeningBlocked = streamGate.action === 'blocked' ? streamGate.error : undefined;
+    if (streamGate.action === 'proceed') input = streamGate.input;
     // W3-A — this used to be `turnContext.enter` (AsyncLocalStorage.enterWith).
     // That does NOT survive a generator's first `yield`: the generator is
     // resumed in the async context of whoever called `.next()`, so by the time
@@ -6326,16 +6512,6 @@ export class Orchestrator {
     // advance of the inner generator in `storage.run`.
     const parent = turnContext.current();
 
-    // Privacy-Proxy Slice 2.1: same handle pattern as `runTurn`. The handle
-    // is bound to the AsyncLocalStorage-scoped context here; every
-    // `streamMessageEvents` site downstream picks it up implicitly. After
-    // `chatStreamInner` yields its `done` event we intercept and decorate
-    // with the aggregated receipt.
-    const sessionId = input.sessionScope ?? turnId;
-    const privacyService = this.privacyGuard?.();
-    const privacyHandle = privacyService
-      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
-      : undefined;
     // #430 fixup (reviewer round 5) — same per-turn resolution as `runTurn`
     // above. This streaming entry point is what channel adapters (Teams/
     // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
@@ -6439,6 +6615,7 @@ export class Orchestrator {
         ...(bound ? { bound } : {}),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(observer ? { observer } : {}),
+        ...(screeningBlocked ? { screeningBlocked } : {}),
       }),
     );
   }
@@ -6464,8 +6641,12 @@ export class Orchestrator {
     readonly bound?: BoundPass;
     readonly privacyHandle?: PrivacyTurnHandle;
     readonly observer?: AskObserver;
+    /** The screening gate could not mask the turn's text: the turn fails
+     *  closed with the privacy refusal, as a blocked model call does. */
+    readonly screeningBlocked?: PromptMaskBlockedError;
   }): AsyncGenerator<ChatStreamEvent> {
     const { input, turnId, sessionId, mcpInputReply, privacyHandle, observer } = args;
+    const { screeningBlocked } = args;
     const { toolReplayLedger, bound } = args;
     // Set once the turn's privacy state was finalized or handed over. A
     // stream that ends otherwise (thrown, abandoned by the client) drops the
@@ -6532,7 +6713,9 @@ export class Orchestrator {
       // harness; the orchestrator LLM never runs. We synthesize the `done`
       // event and decorate it with the privacy receipt + onAfterTurn hook,
       // exactly like the normal done branch below.
-      const direct = await this.executeDirectLine(input, turnId, turnMemory);
+      const direct = screeningBlocked
+        ? undefined
+        : await this.executeDirectLine(input, turnId, turnMemory);
       if (direct && toolReplayLedger.abortedTool !== undefined) {
         // A direct-line dispatch folds a refused re-entry miss into its own
         // answer; the authoritative check ends the pass here instead.
@@ -6608,9 +6791,13 @@ export class Orchestrator {
       // generator throws before any model call when masking cannot be
       // guaranteed; convert that into a graceful privacy-error `done` event
       // instead of tearing the stream down with a raw 500.
-      const inner = this.chatStreamInner(input, turnId, observer, turnMemory);
+      // A blocked screening mask takes the same exit before the model runs.
+      const inner = screeningBlocked
+        ? undefined
+        : this.chatStreamInner(input, turnId, observer, turnMemory);
       const guardedInner = (async function* () {
         try {
+          if (inner === undefined) throw screeningBlocked;
           yield* inner;
         } catch (err) {
           if (err instanceof PromptMaskBlockedError) {
@@ -7133,7 +7320,7 @@ export class Orchestrator {
           // cut mid-tool_use silently drops the calls of this response.
           if (finalMessage.stop_reason !== 'end_turn') {
             console.error(
-              `[orchestrator] finalized with stop_reason=${String(finalMessage.stop_reason)} ` +
+              `[orchestrator] finalized with stop_reason=${String(finalMessage.stop_reason)}${refusalLogClause(finalMessage)} ` +
                 `iterations=${iteration + 1}/${this.maxIterations}` +
                 (responseHasToolUse
                   ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'
@@ -7142,8 +7329,12 @@ export class Orchestrator {
           }
           // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
           // turn end: escalate ONCE with a forced tool_choice + synthetic
-          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
-          // tool-enabled iteration follows within the iteration budget.
+          // reminder (OB-31). On the models that reject a forced choice (see
+          // `supportsForcedToolChoice()` in the Anthropic adapter) it degrades
+          // to `auto`, so the reminder text is what actually steers the call.
+          // Guarded by
+          // `!finalizeThisIter` so a normal tool-enabled iteration follows
+          // within the iteration budget.
           if (
             obligationTool &&
             !obligationMet &&
@@ -7222,6 +7413,11 @@ export class Orchestrator {
                 iterations,
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
+                ...maskedRowView(
+                  privacyForPrompt,
+                  wireUserMessage,
+                  appendToolDigest(answer, attachments, fileAttachments),
+                ),
               },
               entityRefs: entityCollection?.drain() ?? [],
             };
@@ -7509,10 +7705,12 @@ export class Orchestrator {
         this.extractToolEmittedRoutineList(toolResults);
         // #361 — the choice card is user-facing AND its question is
         // persisted in the session log; restore surrogates → real values.
+        // The question as the model wrote it goes into the row's masked view.
+        const wireChoice =
+          this.drainPendingChoice() ?? this.extractToolEmittedChoice(toolResults);
         const pendingUserChoice = await restorePendingChoiceForUser(
           privacyForPrompt,
-          this.drainPendingChoice() ??
-            this.extractToolEmittedChoice(toolResults),
+          wireChoice,
         );
         // W2-1 (#544) — mirror of chatInContextInner, including the
         // deterministic winner rule. See the comment there.
@@ -7541,19 +7739,21 @@ export class Orchestrator {
           });
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
-            const loggedAnswer = restoredAnswer.length > 0
-              ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
-              : `[Rückfrage] ${pendingUserChoice.question}`;
             persistedTurnId = await this.turnRecords.recordRow(
               {
                 entry: {
                   scope: input.sessionScope,
                   userMessage: input.userMessage,
-                  assistantAnswer: loggedAnswer,
+                  assistantAnswer: choiceCardLogLine(restoredAnswer, pendingUserChoice.question),
                   toolCalls,
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
                   ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    choiceCardLogLine(answer, wireChoice?.question ?? ''),
+                  ),
                 },
                 entityRefs: entityCollection?.drain() ?? [],
               },
@@ -7607,6 +7807,11 @@ export class Orchestrator {
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
                   ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    mcpInputCardLogLine(answer, card),
+                  ),
                 },
                 entityRefs: entityCollection?.drain() ?? [],
               },
@@ -7731,6 +7936,7 @@ export class Orchestrator {
                 iterations,
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
+                ...maskedRowView(privacyForPrompt, wireUserMessage, answer),
               },
               entityRefs: entityCollection?.drain() ?? [],
             },

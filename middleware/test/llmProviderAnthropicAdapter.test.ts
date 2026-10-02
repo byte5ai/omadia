@@ -13,7 +13,9 @@ import type Anthropic from '@anthropic-ai/sdk';
 import {
   classifyAnthropicError,
   createAnthropicProvider,
+  requiresEffortBeta,
   supportsForcedToolChoice,
+  EFFORT_BETA,
 } from '@omadia/llm-adapter-anthropic';
 import {
   collectText,
@@ -454,9 +456,9 @@ test('#1211 declares toolChoiceNone and sends tool_choice none with the tools in
 
 /**
  * `claude-opus-5-5` and `claude-fable-5-1` 400 on a forced `tool_choice`
- * (measured 2026-09-23). Opus 5.5 was already selectable, so every forced
- * path — card router, claim extractor, evidence judge, sub-agent turn
- * obligation — threw on it and fell back silently.
+ * (measured 2026-09-23), and so does `claude-sonnet-5-5`. Opus 5.5 was already
+ * selectable, so every forced path — card router, claim extractor, evidence
+ * judge, sub-agent turn obligation — threw on it and fell back silently.
  */
 test('forced toolChoice degrades to auto on models that reject it', async () => {
   const cases: ReadonlyArray<[ToolChoice, Record<string, unknown>]> = [
@@ -468,7 +470,13 @@ test('forced toolChoice degrades to auto on models that reject it', async () => 
     ],
     [{ type: 'none' }, { type: 'none' }],
   ];
-  for (const model of ['claude-opus-5-5', 'claude-fable-5-1', 'claude-mythos-5-1']) {
+  for (const model of [
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
+    'claude-fable-5-1',
+    'claude-mythos-5-1',
+  ]) {
+    assert.equal(supportsForcedToolChoice(model), false, model);
     for (const [choice, expected] of cases) {
       const captured: Captured = {};
       const provider = createAnthropicProvider({
@@ -492,8 +500,15 @@ test('forced toolChoice degrades to auto on models that reject it', async () => 
 
 test('forced toolChoice is still sent to models that honour it', async () => {
   // The other direction: a gate that downgraded everywhere would pass the
-  // test above while removing forcing from Opus 5 / Fable 5 / Haiku.
-  for (const model of ['claude-opus-5', 'claude-fable-5', 'claude-haiku-4-5-20251001']) {
+  // test above while removing forcing from Opus 5 / Sonnet 5 / Fable 5 / Haiku.
+  // `claude-sonnet-5` also pins the substring match: `claude-sonnet-5-5` must
+  // not swallow its predecessor.
+  for (const model of [
+    'claude-opus-5',
+    'claude-sonnet-5',
+    'claude-fable-5',
+    'claude-haiku-4-5-20251001',
+  ]) {
     assert.equal(supportsForcedToolChoice(model), true, model);
     const captured: Captured = {};
     const provider = createAnthropicProvider({
@@ -654,6 +669,52 @@ test('legacy plugin wrapper preserves stop_sequence', async () => {
   assert.equal(res.stopReason, 'stop_sequence');
 });
 
+test('legacy plugin wrapper reports a refusal as refusal, with its category only (#1219)', async () => {
+  const lines: string[] = [];
+  const provider = createAnthropicLlmProvider({
+    client: mockClient(
+      {},
+      textResponse({
+        content: [],
+        stop_reason: 'refusal',
+        stop_details: { type: 'refusal', category: 'cyber', explanation: 'vendor prose' },
+      }),
+    ),
+    log: (...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    },
+  });
+  const res = await provider.complete({
+    model: 'claude-haiku-4-5-20251001',
+    messages: [{ role: 'user', content: 'Hi' }],
+  });
+  // Was `end_turn`: a decline reported as a normal turn end.
+  assert.equal(res.stopReason, 'refusal');
+  assert.equal(res.finishReason, 'stop');
+  assert.equal(res.text, '');
+  // Only the category crosses the plugin contract — not the explanation.
+  assert.deepEqual(res.refusal, { category: 'cyber' });
+  assert.ok(lines.some((l) => l.includes('category=cyber')), lines.join('\n'));
+
+  // No category: the object is still there, because its presence is the signal.
+  const bare = await createAnthropicLlmProvider({
+    client: mockClient(
+      {},
+      textResponse({ content: [], stop_reason: 'refusal', stop_details: null }),
+    ),
+    log: () => {},
+  }).complete({ model: 'claude-haiku-4-5-20251001', messages: [{ role: 'user', content: 'Hi' }] });
+  assert.equal(bare.stopReason, 'refusal');
+  assert.deepEqual(bare.refusal, {});
+
+  // An ordinary turn carries no `refusal` key at all.
+  const normal = await createAnthropicLlmProvider({
+    client: mockClient({}, textResponse()),
+    log: () => {},
+  }).complete({ model: 'claude-haiku-4-5-20251001', messages: [{ role: 'user', content: 'Hi' }] });
+  assert.equal('refusal' in normal, false);
+});
+
 /**
  * Regression: `temperature` is a hard 400 on some models, and the adapter is
  * the layer that knows the wire contract.
@@ -727,7 +788,7 @@ test('complete() still sends temperature for models that honour it', async () =>
 // #1033 — effort
 // ---------------------------------------------------------------------------
 
-test('effort maps to output_config.effort and attaches the effort beta once', async () => {
+test('effort maps to output_config.effort on every model, beta only where needed', async () => {
   const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
   const client = {
     messages: {
@@ -739,6 +800,8 @@ test('effort maps to output_config.effort and attaches the effort beta once', as
   } as unknown as Anthropic;
   const provider = createAnthropicProvider({ client });
 
+  // Effort is GA from 4.6 on: the mapping happens, the beta does not ride
+  // along, and the caller's own betas are the only header content.
   await provider.complete({
     model: 'claude-opus-4-8',
     maxTokens: 64,
@@ -747,17 +810,222 @@ test('effort maps to output_config.effort and attaches the effort beta once', as
     messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
   });
   assert.deepEqual(calls[0]?.params['output_config'], { effort: 'xhigh' });
-  // The beta rides alongside the caller's own betas, appended not replaced.
   assert.deepEqual(calls[0]?.options, {
-    headers: { 'anthropic-beta': 'context-management-2025-06-27,effort-2025-11-24' },
+    headers: { 'anthropic-beta': 'context-management-2025-06-27' },
+  });
+
+  // Opus 4.5 still needs the opt-in: appended to the caller's betas, not
+  // replacing them.
+  await provider.complete({
+    model: 'claude-opus-4-5-20251101',
+    maxTokens: 64,
+    effort: 'high',
+    betas: ['context-management-2025-06-27'],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[1]?.params['output_config'], { effort: 'high' });
+  assert.deepEqual(calls[1]?.options, {
+    headers: { 'anthropic-beta': `context-management-2025-06-27,${EFFORT_BETA}` },
+  });
+
+  // A GA model carrying effort and nothing else sends no request options at
+  // all — not an empty beta header.
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    effort: 'low',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[2]?.params['output_config'], { effort: 'low' });
+  assert.equal(calls[2]?.options, undefined);
+
+  // A caller that opts in explicitly is honoured on any model, exactly once.
+  await provider.complete({
+    model: 'claude-opus-4-5',
+    maxTokens: 64,
+    effort: 'medium',
+    betas: [EFFORT_BETA],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[3]?.options, {
+    headers: { 'anthropic-beta': EFFORT_BETA },
   });
 
   // No effort → no output_config, no effort beta: the common path is untouched.
   await provider.complete({
-    model: 'claude-opus-4-8',
+    model: 'claude-opus-4-5',
     maxTokens: 64,
     messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
   });
-  assert.equal(calls[1]?.params['output_config'], undefined);
-  assert.equal(calls[1]?.options, undefined);
+  assert.equal(calls[4]?.params['output_config'], undefined);
+  assert.equal(calls[4]?.options, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// #1219 — structured outputs
+// ---------------------------------------------------------------------------
+
+test('outputFormat maps to output_config.format and shares the object with effort', async () => {
+  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return textResponse();
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const schema = {
+    type: 'object',
+    properties: { entities: { type: 'array', items: { type: 'string' } } },
+    required: ['entities'],
+    additionalProperties: false,
+  };
+
+  // Format alone: the current `output_config.format` shape, no beta header —
+  // structured outputs is GA, unlike effort on Opus 4.5.
+  await provider.complete({
+    model: 'claude-haiku-4-5',
+    maxTokens: 64,
+    outputFormat: { type: 'json_schema', schema },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[0]?.params['output_config'], {
+    format: { type: 'json_schema', schema },
+  });
+  assert.equal(calls[0]?.options, undefined);
+  // NOT the deprecated top-level parameter.
+  assert.equal(calls[0]?.params['output_format'], undefined);
+
+  // Effort + format share one object. Two independent spreads would have made
+  // the second silently drop the first.
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    effort: 'low',
+    outputFormat: { type: 'json_schema', schema },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[1]?.params['output_config'], {
+    effort: 'low',
+    format: { type: 'json_schema', schema },
+  });
+  // The format object carries exactly `type` + `schema`. Anthropic rejects
+  // unknown nested body fields with a 400, so an extra key here would be a
+  // hard failure on the first caller that set it — not a dropped field.
+  assert.deepEqual(
+    Object.keys(
+      (calls[1]?.params['output_config'] as { format: object }).format,
+    ).sort(),
+    ['schema', 'type'],
+  );
+
+  // Neither → no `output_config` key at all, so the common path is unchanged.
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal('output_config' in (calls[2]?.params ?? {}), false);
+});
+
+test('the plugin wrapper forwards outputFormat to output_config.format (#1219)', async () => {
+  const schema = {
+    type: 'object',
+    properties: { entities: { type: 'array', items: { type: 'string' } } },
+    required: ['entities'],
+    additionalProperties: false,
+  };
+  const captured: Captured = {};
+  const provider = createAnthropicLlmProvider({
+    client: mockClient(captured, textResponse()),
+    log: () => {},
+  });
+  await provider.complete({
+    model: 'claude-haiku-4-5-20251001',
+    outputFormat: { type: 'json_schema', schema },
+    messages: [{ role: 'user', content: 'Hi' }],
+  });
+  // `ctx.llm.complete` → neutral `outputFormat` → the adapter's current shape,
+  // carrying exactly `type` + `schema`.
+  assert.deepEqual(captured.params?.['output_config'], {
+    format: { type: 'json_schema', schema },
+  });
+  assert.equal(captured.params?.['output_format'], undefined);
+
+  // Not asked for → no `output_config` at all.
+  const plain: Captured = {};
+  await createAnthropicLlmProvider({
+    client: mockClient(plain, textResponse()),
+    log: () => {},
+  }).complete({
+    model: 'claude-haiku-4-5-20251001',
+    messages: [{ role: 'user', content: 'Hi' }],
+  });
+  assert.equal('output_config' in (plain.params ?? {}), false);
+});
+
+// ---------------------------------------------------------------------------
+// #1219 — refusals
+// ---------------------------------------------------------------------------
+
+test('a refusal surfaces stop_details; every other stop reason carries none', async () => {
+  const replies: Array<Record<string, unknown>> = [
+    // Declined with a category — the shape Opus 5.5 returns.
+    {
+      stop_reason: 'refusal',
+      stop_details: { type: 'refusal', category: 'bio', explanation: 'declined' },
+      content: [],
+    },
+    // Declined with no details at all: presence is still the signal.
+    { stop_reason: 'refusal', stop_details: null, content: [] },
+    // A normal turn. stop_details is null here, and reading it unguarded on
+    // every response is the bug this guards against.
+    { stop_reason: 'end_turn', stop_details: null },
+  ];
+  let i = 0;
+  const client = {
+    messages: {
+      create: async () => textResponse(replies[i++]!),
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const ask = () =>
+    provider.complete({
+      model: 'claude-opus-5-5',
+      maxTokens: 64,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    });
+
+  const declined = await ask();
+  assert.deepEqual(declined.refusal, { category: 'bio', explanation: 'declined' });
+  // It is NOT an error and NOT a distinct finishReason — a caller that only
+  // looks at finishReason sees a normal stop with empty content.
+  assert.equal(declined.finishReason, 'stop');
+  assert.equal(declined.providerFinishReason, 'refusal');
+
+  const bare = await ask();
+  assert.deepEqual(bare.refusal, {});
+  assert.notEqual(bare.refusal, undefined);
+
+  const normal = await ask();
+  assert.equal(normal.refusal, undefined);
+});
+
+test('requiresEffortBeta matches only the Opus 4.5 family', () => {
+  for (const model of ['claude-opus-4-5', 'claude-opus-4-5-20251101']) {
+    assert.equal(requiresEffortBeta(model), true, `${model} lost its effort beta`);
+  }
+  for (const model of [
+    'claude-opus-4-6',
+    'claude-opus-4-8',
+    'claude-opus-5',
+    'claude-opus-5-5',
+    'claude-sonnet-5',
+    'claude-haiku-4-5',
+    'claude-fable-5-1',
+  ]) {
+    assert.equal(requiresEffortBeta(model), false, `${model} gained a stale beta`);
+  }
 });

@@ -29,6 +29,7 @@ import type {
   InstalledAgent,
   InstalledRegistry,
 } from './installedRegistry.js';
+import { checkCoreCompat } from './coreCompat.js';
 import { readGrantGap } from './grantGap.js';
 import { extractTemplateDeclarations } from './manifestLoader.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
@@ -128,6 +129,12 @@ export interface InstallServiceDeps {
   /** OM-95 — late-resolved orchestrator config store. Bindings are purged only
    *  on real uninstall; `onUninstall` also runs during `reactivate()`. */
   agentPluginBindingStore?: () => AgentPluginBindingStore | undefined;
+  /**
+   * This host's `@omadia/plugin-api` version, which a plugin's `compat.core`
+   * must admit. Default: read from the installed package (coreCompat.ts).
+   * Tests pin it.
+   */
+  hostPluginApiVersion?: string;
 }
 
 /**
@@ -191,6 +198,18 @@ export class InstallService {
           'plugin is marked incompatible',
         409,
       );
+    }
+
+    // compat.core gate: the plugin links against THIS host's
+    // @omadia/plugin-api at runtime, so a range that excludes it means the
+    // plugin may not even load. Also covers a package uploaded before the
+    // ingest-time check (PackageUploadService) existed.
+    const coreRefusal = checkCoreCompat(entry.plugin, this.deps.hostPluginApiVersion);
+    if (coreRefusal) {
+      throw new InstallError('install.incompatible_core', coreRefusal.message, 409, {
+        compat_core: coreRefusal.compat_core,
+        host_plugin_api: coreRefusal.host_plugin_api,
+      });
     }
 
     // Dependency gate: every parent in depends_on must already be installed.

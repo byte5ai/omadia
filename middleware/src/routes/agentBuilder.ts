@@ -598,7 +598,7 @@ export function createAgentBuilderRouter(
         // grant. Re-scan at attach time (not just import time), same
         // warn-only guard as Wave 5; the UI surfaces `risks` before the
         // operator confirms, but the attach itself is never blocked.
-        const risks = scanSkillForRisks(skill.frontmatter, skill.body);
+        const risks = scanSkillForRisks(skill.frontmatter, skill.body, skill.description);
         const link = await l.graph.addPersonaSkill(agent.id, skillId);
         await reload(l);
         res.json({
@@ -672,7 +672,7 @@ export function createAgentBuilderRouter(
       const skills = rows.map((s) => ({
         ...skillNode(s),
         verdict: skillVerdictField(s.contentHash, verdicts),
-        risks: scanSkillForRisks(s.frontmatter, s.body),
+        risks: scanSkillForRisks(s.frontmatter, s.body, s.description),
       }));
       res.json({ skills });
     } catch (err) {
@@ -800,6 +800,7 @@ export function createAgentBuilderRouter(
         skill.contentHash,
         skill.frontmatter,
         skill.body,
+        skill.description,
       );
       res.json({
         severity: verdictRow.severity,
@@ -946,6 +947,7 @@ export function createAgentBuilderRouter(
             result.contentHash,
             result.skill.frontmatter,
             result.skill.body,
+            result.skill.description,
           );
       res.json({
         ...result,
@@ -988,9 +990,18 @@ export function createAgentBuilderRouter(
       const row = await l.graph.updateSkill(str(req.params.id), patch);
       await reload(l);
       // Post-review fix: re-scan on edit — the same "never scanned outside
-      // manual backfill" gap as the import route, for the edit path.
+      // manual backfill" gap as the import route, for the edit path. #1219:
+      // the description is part of both the hash and the scan, so a
+      // description-only edit lands on a new hash and is scanned, not served
+      // the old verdict.
       if (row.contentHash !== null) {
-        await getOrComputeVerdict(deterministicVerdictStoreFor(l), row.contentHash, row.frontmatter, row.body);
+        await getOrComputeVerdict(
+          deterministicVerdictStoreFor(l),
+          row.contentHash,
+          row.frontmatter,
+          row.body,
+          row.description,
+        );
       }
       res.json(skillNode(row));
     } catch (err) {

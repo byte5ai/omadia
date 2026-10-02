@@ -36,6 +36,109 @@ changelog.
 
 ## [Unreleased]
 
+### Security — memory jobs mask the stored text they send to their model
+
+2026-10-02 — The memory plugin's jobs sent stored memories and earlier turns,
+real values included, to their own provider whether prompt masking was on or
+off: the recall relevance judge, the session briefing, topic-cluster naming,
+the inconsistency detector and the Teams topic detector. Their text is now
+masked whatever `mask_user_prompt` says, with the detectors a replayed answer
+gets. The judge and the briefing run inside the turn and mask through its map.
+The other jobs mask through a new job-scoped privacy scope
+(`openStoredTextScope`, `@omadia/plugin-api` 1.25.0, privacy guard 0.8.0) with
+a map of its own per run, so a session summary, a cluster name or an
+inconsistency summary gets the real values back. A job whose masking fails, or
+that finds a privacy guard without the scope, skips its model call; without a
+privacy guard the jobs work as before. Embedding stored text with the
+OpenAI-compatible adapter stays unmasked for now.
+
+### Security — the inbound screener and the significance scorer get the turn's masked text
+
+2026-10-02 — The inbound screener ran before the turn's privacy handle
+existed, so under the default posture `auto` a turn with an upload sent the
+message, earlier user messages and the upload names to the screening model as
+typed, even with `mask_user_prompt` on. The handle is now minted first, and the
+screener gets what the model gets: the user message and the replayed user
+messages through the turn's prompt mask, and the upload names through the same
+mask, with the same placeholders. A blocked mask fails the turn closed before
+the screener or the model is called.
+
+The significance scorer, which decides what is kept as a memory, scored every
+saved turn with its restored answer through the extras provider. It now scores
+the turn as the model saw it, the masked view the fact extraction already gets
+(`TurnIngest.maskedView`, `@omadia/plugin-api` 1.24.0), and the stored turn
+keeps its real values. An operator-started backfill and the scratch promotion
+reaper still score stored text as it is.
+
+### Security — the desktop app grants web permissions only to its own pages
+
+2026-10-02 — Without a permission handler Electron grants every web permission
+to every frame, and the desktop session refused only `openExternal`. Camera,
+microphone, location, notifications and the rest were open to plugin iframes,
+same-app popups and foreign pages reached by a redirect. Permission requests
+and permission checks now share one deny-by-default rule (`canGrantPermission`
+in `desktop/src/navigationPolicy.ts`): a permission is granted only if it is on
+the allowlist and the main frame of one of the app's own documents asks, which
+means a page on the kernel or web UI origin, or the bundled wizard. The
+allowlist holds `clipboard-sanitized-write` for the copy buttons in the web UI
+and the wizard's recovery-key copy. Subframes get no permission, also on the
+app's own origin, where plugin UIs and the builder preview run. A feature that
+needs another permission-gated web API adds the permission to
+`GRANTABLE_PERMISSIONS` together with its call sites.
+
+Quitting while the web UI's first page was still loading made the app log
+`[main] boot failed` and could show the failure dialog during shutdown. That
+case is now logged as a boot stopped by the quit, without the dialog. The
+desktop log is flushed before the app exits, so shutdown lines are no longer
+lost.
+
+Checked before the merge: a dispatch build of all desktop targets (run
+37027925333) and the install smoke on macOS, Windows and Linux, fresh install
+and upgrade from v0.167.15, 6 of 6 (run 37030116438).
+
+### Security — replayed answers and tabular uploads reach the model masked
+
+2026-10-02 — Teams and Telegram send the answer they delivered back as chat
+history. After a `v4_render_answer` turn that answer carries real values the
+turn's model never saw, and with `mask_user_prompt` off, the default, the next
+turn handed them to the model in clear. Replayed assistant answers now go
+through the privacy guard's new `maskReplayedAnswer`, whatever
+`mask_user_prompt` says: identity shapes, the operator deny-list and C1 when it
+is configured, through the turn's surrogate map, so the reply still shows the
+real values. Recalled context, the knowledge-graph recall and the session
+tail that stores answers with their real values restored, goes through the
+same mask. A replayed user message still follows `mask_user_prompt`.
+`@omadia/plugin-api` 1.23.0 adds the optional handle member; the bundled
+privacy guard implements it (0.7.0). A privacy plugin without it falls back to
+the prompt mask.
+
+`read_attachment` no longer returns a table upload (CSV, XLSX) as text. It
+points the model to the dataset path, where the same file is imported with its
+sensitive cells masked. The automatic attachment ingest already sends files
+marked as a table by type or name to the dataset import, never as text.
+
+The README and `docs/security-architecture.md` (§6b, §6f) no longer list these
+two as open gaps.
+
+### Security — tool plugins load on older hosts; an incompatible plugin is refused at install
+
+2026-10-02 — web-search, diagrams and discussion imported the tool-error
+helpers that `@omadia/plugin-api` has carried since 1.20 as named imports, so
+a hub ZIP of web-search 0.2.0 failed to load on any older host, and nothing
+stopped its install there. The three plugins, now 0.2.1, resolve the helpers
+at runtime. On a host without them a failure reaches the model as a fixed
+`Error: <tool> failed; details are in the server log (ref …)` notice without
+the error text, and the full error goes to the server log under that
+reference. discussion declares `core: ">=1.3 <2.0"`, because it needs
+`ctx.services.getOptional`.
+
+The kernel now enforces `compat.core`. Uploading or installing a plugin whose
+range excludes the host's `@omadia/plugin-api` version is refused with
+`package.incompatible_core` or `install.incompatible_core` (HTTP 409; a hub
+install reports the same code with HTTP 422). A manifest without `compat_core`
+counts as `>=1.0 <2.0`. `docs/upgrading.md` names the minimum host for hub
+plugins.
+
 ### Changed — the desktop install smoke waits for the web UI's first load and checks the shell's boundaries
 
 2026-10-02: the first dispatch of `desktop-upgrade-smoke.yml` from `main` quit a
@@ -1792,6 +1895,134 @@ replaced by those two reasons. See `docs/security-architecture.md` §10n. What
 the slice leaves open for #778 S2/S3b (short-secret floor, the unenforced
 `credential:broker:use` gate, the unsalted `fingerprintSecret`, per-credential
 vendor headers) is tracked in `docs/middleware-agent-handoff.md` §13.
+
+### Changed — dated prompt patterns and thin tool descriptions cleaned up (#1219)
+
+2026-09-29 — cleanups from a prompt audit against the current Claude models.
+Three of them change what goes on the wire — the effort beta, the
+structured-output seam and the refusal handling below; the rest are prompt and
+tool-description text.
+
+`output_config.effort` has been GA since the 4.6 generation, but the Anthropic
+adapter attached the `effort-2025-11-24` beta to **every** request that carried
+an effort, pinning GA models to a beta surface for no reason. Opus 4.5 is not
+retired and still needs the opt-in, so the header is now gated on that family
+through `requiresEffortBeta()`, which follows the `supportsTemperature()`
+convention (substring match, so dated and provider-qualified ids resolve). A
+caller that passes the beta explicitly in `LlmRequest.betas` still gets it on
+any model, exactly once. The adapter test asserted the old behaviour on
+`claude-opus-4-8` and is inverted.
+
+The `<at>…</at>` @-mention contract lived in three places: the
+`get_chat_participants` block of the system prompt, the tool description, and
+the tool response itself (`usage_example` + `rendering_rule`, built from a real
+`displayName` in the current chat). The prompt copy was the weakest — it taught
+the syntax on a made-up roster entry (`Jane Doe - ACME`) where the response
+carries the actual name; the `<at>Max Mustermann</at>` placeholder belongs to
+the tool description, which keeps it — and three copies of one syntax rule
+drift apart. The system-prompt block keeps only its routing
+guidance (when to call, once per turn, not in 1:1 chats) and points at the
+other two.
+
+The synthetic obligation reminder lost its `IMPORTANT:` prefix. Forced
+`tool_choice` degrades to `auto` on the models that reject it, so that reminder
+is what actually steers the consult; it should be clear, not loud. Its sibling
+in `LocalSubAgent` never carried a prefix. `claude-sonnet-5-5` joins the
+models `supportsForcedToolChoice()` lists: it answers a forced choice with the
+same 400 as Opus 5.5 and Fable 5.1, so its forced paths now degrade instead of
+failing. The code comments point at that function instead of naming models.
+
+DB-defined sub-agents described their delegation tool as "Delegate a focused
+question to the `<name>` sub-agent." and nothing else — while that same string
+is the routing text in the system prompt's Fach-Agenten roster, and
+`SkillRow.description` sat unread. It now carries the skill's own description
+plus the delegation contract (no conversation context, no follow-up questions,
+one answer), collapsed to a single line because the roster renders one
+`- name: description` entry per tool. Because that text now reaches the
+parent's system prompt and tool list, it is sanitized on the way in (control,
+invisible and bidi characters, backticks and angle brackets dropped) and capped
+at 300 characters; `scanSkillForRisks` scans it with the body, and
+`computeSkillHash` covers it whenever it differs from the frontmatter's own
+`description`. A description-only edit therefore gets a new content hash and a
+fresh verdict instead of the cached one, while an imported skill — whose
+description is its frontmatter's — keeps its hash.
+
+In `agent-reference-maximum`, three tool descriptions opened with an internal
+ticket ID and the word "Demo" (`OB-29-4`/`-3`/`-1`), and one closed by naming
+the pattern it demonstrates. None of that tells a model when to call the tool,
+and the builder uses this package as its primary reference, so the style
+propagated into generated agents. Each description now leads with the behaviour
+and states a call trigger; the behavioural facts are kept, and the pattern
+framing stays in `INTEGRATION.md`, which is the canonical index. The
+`reference-expert` skill also carried a prose `Kern-Tools` list naming one of
+the four registered tools, next to the real schemas the model already receives;
+it is gone, and the behaviour section stands on its own. `query_notes_by_person`
+says when its choice card actually renders — the orchestrator calls the tool
+itself and the Privacy Shield does not intern the result — and that the model
+otherwise asks which note is meant instead of guessing; the `disambiguate-policy`
+skill says the same, and the manifest's capability descriptions mirror the
+toolkit's, without the ticket IDs, the "Demo" framing and the model name.
+
+The issue-triage workflow's plan prompt no longer caps its comment at ~90
+lines. It asks the same prompt for verified file paths, real symbols and
+acceptance criteria, and a numeric ceiling trades that evidence for brevity.
+The rules that carry the quality stay: every path and symbol must exist, and an
+already-shipped issue gets a verify+close recommendation instead of a plan.
+
+Two API seams were added for the audit's "flagged only" items.
+
+**Structured outputs.** About ten prompts asked for JSON in prose because no
+request type could carry a schema. `LlmRequest.outputFormat` and
+`LlmCompleteRequest.outputFormat` now can, and the Anthropic adapter maps them
+to `output_config.format` — the current shape, not the deprecated top-level
+`output_format`. It shares one `output_config` object with `effort`, so both are
+built together rather than spread separately, where the second would silently
+drop the first. The format object carries exactly `type` and `schema`: the API
+rejects unknown nested body fields with a 400, so there is no `name`. Modelled
+on `effort`, an adapter without the concept ignores the field with a one-time
+note instead of failing — the OpenAI and OpenAI Responses adapters do exactly
+that today, so a caller asking for a schema must still parse tolerantly.
+Anthropic itself is stricter than "ignore": a model without structured-output
+support and a schema with keywords the API cannot compile (`minimum`/`maximum`,
+`minLength`/`maxLength`, an object without `additionalProperties: false`)
+answer 400, and a refusal comes back as a normal response whose text need not
+match the schema; `pluginContext.ts` and the `@omadia/plugin-api` changelog
+say so. No prompt has been migrated onto it yet; that is a decision per call
+site.
+
+**Refusals.** `stop_details` was never read, so a declined turn was opaque —
+a `bio` decline and a `reasoning_extraction` one looked identical.
+`LlmResponse.refusal` now carries the category and explanation, gated on
+`stop_reason` because the API leaves `stop_details` null on every other outcome.
+It travels through the orchestrator's provider seam, so the chat loop and
+`LocalSubAgent` log the category with the refusal, and `ctx.llm.complete`
+reports it to plugins as `LlmCompleteResult.refusal` (category only) with
+`stopReason: 'refusal'` — the plugin wrapper used to call a decline `end_turn`
+(`@omadia/plugin-api` 1.22.0). The chat path was already honest about refusals (`MODEL_REFUSAL_NOTICE`), but
+`LocalSubAgent` reported one as "returned an empty answer", which reads as a
+harness bug — and the delegation tool turns every exception from a sub-agent
+into the data-free withheld notice, so the parent model only learned that a
+tool had failed. `LocalSubAgent` now ends the run the moment a response comes
+back refused, whatever earlier iterations produced: before the response is
+kept, before a tool_use in it is dispatched and before the OB-31 escalation
+(which re-sent the refused turn; on a BuilderAgent build turn the API answered
+that with a 400). It throws a typed `SubAgentRefusalError`, and the delegation
+tool maps exactly that type to a fixed, harness-authored notice with the
+`Error:` prefix — "the `ask_…` sub-agent's model declined this question for
+safety reasons (category …)" — so the parent can rephrase or tell the user. The
+error's message never reaches the model; every other exception keeps the
+withheld notice.
+
+Not applied from the same audit: the `MANDATORY:` markers in the high-tier
+sycophancy guard are deliberately byte-identical to the upstream kemia source
+(`sycophancyGuard.test.ts` asserts exactly that, alongside the preset tests
+that lock kemia byte-identity), so rewording them would fork the mirror
+silently. The vendor's server-side refusal fallback is not wired either: no
+route would enable it yet, and its response side (dropping a pre-fallback
+tool_use, summing `usage.iterations`) does not exist. The audit's remaining
+items — the conductor word caps, the incident histories in `builder-system.md`
+and the shipped boilerplate, the JSON-only pressure wording, and moving the
+repo agent-rule files out — are tracked separately.
 
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
