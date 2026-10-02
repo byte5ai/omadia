@@ -625,6 +625,7 @@ export type {
   ChatSubAgentEvent,
   ChatToolEvent,
   ChatMessage,
+  ChatProactiveMarker,
   ChatSession,
   ChatSessionSummary,
   SessionConfigSnapshot,

@@ -268,6 +268,16 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
           .json({ code: 'routines.not_found', message: `routine '${id}' not found` });
         return;
       }
+      // #1071 — a paused routine (by the user, or auto-paused because its
+      // web chat was deleted) is not run: answer 409 synchronously instead of
+      // a 202 for a run that would only be skipped.
+      if (routine.status !== 'active') {
+        res.status(409).json({
+          code: 'routines.not_active',
+          message: `routine '${id}' is ${routine.status}; resume it before triggering it`,
+        });
+        return;
+      }
       // Interactive path gets a synchronous 503 while no chat agent is
       // published (LLM key not configured) instead of a 202 whose run is
       // guaranteed to fail in the background — the web-ui maps this code

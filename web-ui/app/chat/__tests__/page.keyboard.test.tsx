@@ -72,6 +72,7 @@ vi.mock('../../_lib/chatSessionsContext', () => ({
     setActive: vi.fn(),
     clearMessages: vi.fn(),
     mutateById: mockMutateById,
+    refreshProactive: vi.fn(),
   }),
 }));
 
