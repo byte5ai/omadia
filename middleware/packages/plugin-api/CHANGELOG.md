@@ -25,8 +25,15 @@ result, and one more literal on the deprecated `stopReason`.
   Providers without a structured-output channel **ignore** the field rather
   than failing, so a plugin must still parse the result tolerantly: this
   narrows the output, it does not guarantee it everywhere. Today the Anthropic
-  adapter maps it (`output_config.format`) and the OpenAI adapter notes once
-  per model that it dropped it.
+  adapter maps it (`output_config.format`), and the OpenAI and OpenAI
+  Responses adapters note once per model that they dropped it.
+
+  On Anthropic, though, the call **fails with a 400** for a model without
+  structured-output support and for a schema using keywords the API cannot
+  compile — `minimum`/`maximum`, `minLength`/`maxLength`, or an object
+  without `additionalProperties: false`. Nothing validates the schema before
+  it is sent. A refusal (`refusal` below) returns normally, and its `text`
+  need not match the schema.
 
   Optional and additive — existing plugins are unaffected.
 

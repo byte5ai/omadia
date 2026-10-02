@@ -1807,6 +1807,13 @@ export interface LlmCompleteRequest {
    * Providers that have no such channel IGNORE it rather than failing, so a
    * plugin must still parse the result tolerantly — this narrows the output,
    * it does not guarantee it everywhere.
+   *
+   * On Anthropic the call FAILS (HTTP 400) for a model without
+   * structured-output support, and for a schema using keywords the API cannot
+   * compile: `minimum`/`maximum`, `minLength`/`maxLength`, or an object
+   * without `additionalProperties: false`. Nothing validates the schema before
+   * it is sent. And a refusal ({@link LlmCompleteResult.refusal}) still returns
+   * normally — its `text` need not match the schema.
    */
   readonly outputFormat?: {
     readonly type: 'json_schema';

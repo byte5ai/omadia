@@ -1721,9 +1721,15 @@ built together rather than spread separately, where the second would silently
 drop the first. The format object carries exactly `type` and `schema`: the API
 rejects unknown nested body fields with a 400, so there is no `name`. Modelled
 on `effort`, an adapter without the concept ignores the field with a one-time
-note instead of failing — the OpenAI adapter does exactly that today, so a
-caller asking for a schema must still parse tolerantly. No prompt has been
-migrated onto it yet; that is a decision per call site.
+note instead of failing — the OpenAI and OpenAI Responses adapters do exactly
+that today, so a caller asking for a schema must still parse tolerantly.
+Anthropic itself is stricter than "ignore": a model without structured-output
+support and a schema with keywords the API cannot compile (`minimum`/`maximum`,
+`minLength`/`maxLength`, an object without `additionalProperties: false`)
+answer 400, and a refusal comes back as a normal response whose text need not
+match the schema; `pluginContext.ts` and the `@omadia/plugin-api` changelog
+say so. No prompt has been migrated onto it yet; that is a decision per call
+site.
 
 **Refusals.** `stop_details` was never read, so a declined turn was opaque —
 a `bio` decline and a `reasoning_extraction` one looked identical.

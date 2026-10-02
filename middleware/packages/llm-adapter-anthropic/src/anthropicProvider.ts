@@ -375,10 +375,16 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
  * effort nor an output format — so the common path sends no such key at all.
  *
  * `format` is the CURRENT structured-output shape (`{type:'json_schema',
- * schema}`), not the deprecated top-level `output_format` parameter. It is GA
- * on every model and needs no beta. Anthropic rejects it together with
- * document citations; nothing in this adapter sends citations today, so there
- * is no guard here — add one if citation support lands.
+ * schema}`), not the deprecated top-level `output_format` parameter. It needs
+ * no beta, but it is NOT available on every model: a model without
+ * structured-output support answers 400, and so does a schema the API cannot
+ * compile — `minimum`/`maximum`, `minLength`/`maxLength`, or an object
+ * without `additionalProperties: false`. The adapter forwards the schema
+ * untouched and does not pre-validate either; the caller owns both. A refusal
+ * (`stop_reason: 'refusal'`) still comes back as a normal response, and its
+ * text need not match the schema. Anthropic also rejects `format` together
+ * with document citations; nothing in this adapter sends citations today, so
+ * there is no guard here — add one if citation support lands.
  */
 function toOutputConfig(req: LlmRequest): Record<string, unknown> | undefined {
   const cfg: Record<string, unknown> = {

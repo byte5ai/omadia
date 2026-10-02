@@ -910,6 +910,42 @@ test('outputFormat maps to output_config.format and shares the object with effor
   assert.equal('output_config' in (calls[2]?.params ?? {}), false);
 });
 
+test('the plugin wrapper forwards outputFormat to output_config.format (#1219)', async () => {
+  const schema = {
+    type: 'object',
+    properties: { entities: { type: 'array', items: { type: 'string' } } },
+    required: ['entities'],
+    additionalProperties: false,
+  };
+  const captured: Captured = {};
+  const provider = createAnthropicLlmProvider({
+    client: mockClient(captured, textResponse()),
+    log: () => {},
+  });
+  await provider.complete({
+    model: 'claude-haiku-4-5-20251001',
+    outputFormat: { type: 'json_schema', schema },
+    messages: [{ role: 'user', content: 'Hi' }],
+  });
+  // `ctx.llm.complete` → neutral `outputFormat` → the adapter's current shape,
+  // carrying exactly `type` + `schema`.
+  assert.deepEqual(captured.params?.['output_config'], {
+    format: { type: 'json_schema', schema },
+  });
+  assert.equal(captured.params?.['output_format'], undefined);
+
+  // Not asked for → no `output_config` at all.
+  const plain: Captured = {};
+  await createAnthropicLlmProvider({
+    client: mockClient(plain, textResponse()),
+    log: () => {},
+  }).complete({
+    model: 'claude-haiku-4-5-20251001',
+    messages: [{ role: 'user', content: 'Hi' }],
+  });
+  assert.equal('output_config' in (plain.params ?? {}), false);
+});
+
 // ---------------------------------------------------------------------------
 // #1219 — refusals
 // ---------------------------------------------------------------------------
