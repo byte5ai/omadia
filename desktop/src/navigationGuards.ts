@@ -33,12 +33,13 @@
  *  - The contents' session never grants the `openExternal` permission, which
  *    is how Electron hands any non-web URL to the OS protocol handler. That is
  *    the backstop behind the event guards: whatever a page does, it cannot make
- *    the OS launch a program.
+ *    the OS launch a program. Every other permission request and check is
+ *    refused too, unless the permission is on the allowlist and the main frame
+ *    of one of the app's own documents asks (`canGrantPermission`).
  */
 import type { WindowOpenHandlerResponse } from 'electron';
 import {
   canGrantPermission,
-  canPassPermissionCheck,
   canRedirectTo,
   canSubframeLoad,
   decideNavigation,
@@ -63,21 +64,42 @@ export interface FrameNavigationEvent extends WillNavigateEvent {
 export interface PermissionRequestDetails {
   /** Set by Electron on every request. */
   readonly isMainFrame: boolean;
+  /** The URL of the requesting frame's document. Without it, the window's URL counts. */
+  readonly requestingUrl?: string;
   /** The URL the OS would be handed, on an `openExternal` request. */
   readonly externalURL?: string;
+}
+
+/** The part of a permission check's details read here. */
+export interface PermissionCheckDetails {
+  readonly isMainFrame: boolean;
+  /** The URL of the requesting frame's document; Electron leaves it out for a check made for no document. */
+  readonly requestingUrl?: string;
+}
+
+/** The part of the `WebContents` that Electron hands a permission handler. */
+export interface PermissionContents {
+  getURL(): string;
 }
 
 /** The part of `Session` the guards use. */
 export interface GuardableSession {
   setPermissionRequestHandler(
     handler: (
-      contents: unknown,
+      contents: PermissionContents | null,
       permission: string,
       callback: (granted: boolean) => void,
       details: PermissionRequestDetails,
     ) => void,
   ): void;
-  setPermissionCheckHandler(handler: (contents: unknown, permission: string) => boolean): void;
+  setPermissionCheckHandler(
+    handler: (
+      contents: PermissionContents | null,
+      permission: string,
+      requestingOrigin: string,
+      details: PermissionCheckDetails,
+    ) => boolean,
+  ): void;
 }
 
 /** The part of `WebContents` the guards use. */
@@ -95,6 +117,8 @@ export interface GuardableContents {
 export interface NavigationGuardDeps {
   /** Read per event: the web UI's origin is only known once it is serving. */
   trusted(): TrustedTargets;
+  /** Absolute path of the bundled renderer pages (`<app>/dist/renderer`); the wizard among them may copy. */
+  readonly rendererDir: string;
   /** `shell.openExternal`. */
   openExternal(url: string): Promise<void>;
   log: {
@@ -133,25 +157,50 @@ export function installNavigationGuards(contents: GuardableContents, deps: Navig
     return { action: 'deny' };
   });
 
-  installPermissionGuards(contents.session, deps.log);
+  installPermissionGuards(contents.session, deps);
 }
 
 /**
- * Refuse `openExternal` on a session; every other permission keeps Electron's
- * default answer. Set for the session of every guarded webContents (all of
- * them share the default session today, and setting it again is harmless), so
- * a window on another session cannot slip past.
+ * Deny every permission on a session unless `canGrantPermission` allows it:
+ * an allowlisted permission, for the main frame of one of the app's own
+ * documents. Requests and checks get the same answer; only a refused request
+ * is logged, as checks come often and unprompted. Set for the session of every
+ * guarded webContents (all of them share the default session today, and
+ * setting it again is harmless), so a window on another session cannot slip
+ * past. The trust set is read per call, like the navigation guards do.
  */
-function installPermissionGuards(session: GuardableSession, log: NavigationGuardDeps['log']): void {
-  session.setPermissionRequestHandler((_contents, permission, callback, details) => {
-    const granted = canGrantPermission(permission);
+function installPermissionGuards(session: GuardableSession, deps: NavigationGuardDeps): void {
+  const decide = (permission: string, url: string, isMainFrame: boolean): boolean =>
+    canGrantPermission(
+      permission,
+      // The details come from Electron; a flag it left out reads as a subframe.
+      { url, isMainFrame: isMainFrame === true },
+      { trusted: deps.trusted(), rendererDir: deps.rendererDir },
+    );
+
+  session.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const url = requestingDocument(contents, details.requestingUrl);
+    const granted = decide(permission, url, details.isMainFrame);
     if (!granted) {
       const frame = details.isMainFrame ? 'main frame' : 'subframe';
-      log.warn(`[nav] refused ${permission} for ${describeTarget(details.externalURL ?? '')} (${frame})`);
+      // On openExternal, where it would have gone; otherwise who asked.
+      deps.log.warn(`[nav] refused ${permission} for ${describeTarget(details.externalURL ?? url)} (${frame})`);
     }
     callback(granted);
   });
-  session.setPermissionCheckHandler((_contents, permission) => canPassPermissionCheck(permission));
+  session.setPermissionCheckHandler((contents, permission, _requestingOrigin, details) =>
+    decide(permission, requestingDocument(contents, details.requestingUrl), details.isMainFrame),
+  );
+}
+
+/**
+ * The document a permission is asked for: the requesting frame's own URL, as
+ * Electron reports it; failing that, what the window shows. No window, or one
+ * that cannot be read, is no document of the app's.
+ */
+function requestingDocument(contents: PermissionContents | null, requestingUrl: string | undefined): string {
+  if (requestingUrl) return requestingUrl;
+  return contents === null ? '' : currentDocument(contents);
 }
 
 /** A same-app popup: sandboxed, isolated, and without a preload. */
@@ -177,8 +226,11 @@ function divert(verdict: NavigationVerdict, url: string, deps: NavigationGuardDe
   });
 }
 
-/** `getURL()` throws on a destroyed webContents; treat that like the app (strict rules). */
-function currentDocument(contents: GuardableContents): string {
+/**
+ * `getURL()` throws on a destroyed webContents. Read as '': the strict rules
+ * for a navigation, no app document for a permission.
+ */
+function currentDocument(contents: PermissionContents): string {
   try {
     return contents.getURL();
   } catch {

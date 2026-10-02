@@ -373,10 +373,11 @@ not in the page:
   only after asking for the `openExternal` permission, and grants it when no
   handler is set. The session refuses it, whichever frame or redirect asked;
   the shell opens web links itself through `shell.openExternal`, after
-  checking them. Every other permission keeps Electron's no-handler answer,
-  which grants it to every frame; a deny-by-default allowlist per requesting
-  origin and frame is an open follow-up (`docs/middleware-agent-handoff.md`
-  §13, "Desktop-Shell: Trust-Boundary Renderer → Main").
+  checking them. Every other permission is deny by default as well: the
+  session grants only what `GRANTABLE_PERMISSIONS` in `navigationPolicy.ts`
+  lists (today `clipboard-sanitized-write`, for the copy buttons), and only to
+  the main frame of the app's own pages, a page on the kernel or web UI origin
+  or the bundled wizard. Subframes, plugin UIs among them, get none.
 
 Adding a bundled page means classifying it in `bridgeSurface.ts` and checking
 it by path in `ipcSender.ts`, never widening the wizard surface. The full

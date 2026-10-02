@@ -38,6 +38,12 @@
  * generic one offers "Re-run setup" as its default, and setup would only hit
  * the same file again. What helps is a keychain prompt or a restore, and that
  * dialog says which (see `secretsRecovery.ts`).
+ *
+ * A rejection while the app is quitting is no failure either (FU-161).
+ * Quitting while the first page loads aborts `loadURL`, and that rejection was
+ * logged as `boot failed` and could put the failure dialog in front of an app
+ * that was exiting. The shell says whether it is quitting, and then every
+ * rejection is `interrupted`: logged, never shown.
  */
 import { isSecretsUnreadableError, type SecretsUnreadableStage } from './secretsBlob';
 
@@ -47,8 +53,16 @@ export type BootFailureKind =
   | 'superseded'
   /** The secrets file exists but cannot be used. Explain the restore; never re-run setup. */
   | 'secrets-unreadable'
+  /** The app is quitting, so the rejection is part of the quit. Log it; show nothing. */
+  | 'interrupted'
   /** A genuine failure the user has to act on. */
   | 'fatal';
+
+/** What the shell knows about itself when a boot is rejected. */
+export interface BootFailureContext {
+  /** The app is on its way out (`before-quit` has fired, or a quit was asked for). */
+  readonly quitting?: boolean;
+}
 
 /** What the secrets dialog has to name, copied off `SecretsUnreadableError`. */
 export interface SecretsFailure {
@@ -60,7 +74,7 @@ export interface SecretsFailure {
 
 export type BootFailure =
   | {
-      readonly kind: 'superseded' | 'fatal';
+      readonly kind: 'superseded' | 'interrupted' | 'fatal';
       /** The raw text, for the log and the support detail — never the headline. */
       readonly detail: string;
     }
@@ -84,8 +98,12 @@ export function describeError(err: unknown): string {
   }
 }
 
-export function classifyBootFailure(err: unknown): BootFailure {
+export function classifyBootFailure(err: unknown, context: BootFailureContext = {}): BootFailure {
   const detail = describeError(err);
+  // Quitting first, over every other kind: an app on its way out can show no
+  // dialog, and the rejection is almost always the quit itself (an aborted
+  // page load, a stopped supervisor). The detail still reaches the log.
+  if (context.quitting === true) return { kind: 'interrupted', detail };
   // Typed first: the code and fields survive any rewording of the message.
   if (isSecretsUnreadableError(err)) {
     return {

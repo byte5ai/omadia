@@ -7,7 +7,7 @@ import { CH } from './ipcTypes';
 import { createTray, setTrayStatus, destroyTray, TrayActions } from './tray';
 import { checkForUpdatesManually, initUpdater, isUpdateInstalling } from './updater';
 import { isSetupComplete } from './setupState';
-import { log, logFile, onLog } from './log';
+import { flushLog, log, logFile, onLog } from './log';
 import { classifyBootFailure, describeError } from './bootFailure';
 import {
   clearRecoveryBudget,
@@ -382,7 +382,14 @@ async function bootExistingInstall(): Promise<void> {
  */
 async function presentBootFailure(err: unknown): Promise<void> {
   if (!win) return;
-  const failure = classifyBootFailure(err);
+  const failure = classifyBootFailure(err, { quitting });
+
+  if (failure.kind === 'interrupted') {
+    // FU-161: quitting while the first page loads aborts `loadURL`. That is
+    // the quit, not a failure: no error line, no tray error state, no dialog.
+    log.info(`[main] boot stopped because the app is quitting: ${failure.detail}`);
+    return;
+  }
 
   if (failure.kind === 'superseded') {
     log.info(`[main] boot superseded (expected during an update): ${failure.detail}`);
@@ -504,6 +511,7 @@ if (!gotLock) {
   app.on('web-contents-created', (_event, contents) => {
     installNavigationGuards(contents, {
       trusted: trustedTargets,
+      rendererDir: rendererDir(),
       openExternal: (url) => shell.openExternal(url),
       log,
     });
@@ -547,6 +555,14 @@ if (!gotLock) {
       } catch (err) {
         log.error(`[main] shutdown error: ${describeError(err)}`);
       } finally {
+        // FU-162: the log writes through an async stream, so the shutdown lines
+        // would die with the process. flushLog is bounded and never rejects;
+        // the catch makes sure nothing here can keep the app from exiting.
+        try {
+          await flushLog();
+        } catch {
+          /* exit regardless */
+        }
         app.exit(0);
       }
     })();
