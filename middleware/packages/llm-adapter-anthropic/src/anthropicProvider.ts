@@ -447,6 +447,11 @@ export function createAnthropicProvider(
       streaming: true,
       promptCaching: true,
       forcedToolChoice: true,
+      // #1211 — the Messages API honours `tool_choice: { type: 'none' }`
+      // (`effectiveToolChoice` passes it through unchanged), so the
+      // orchestrator's finalize pass keeps the full tool list, and with it the
+      // cached prefix, instead of sending none.
+      toolChoiceNone: true,
       parallelToolCalls: true,
       // Claude emits natural-language text alongside tool_use in one assistant
       // message, so sidecar tools (suggest_follow_ups) fire inline — no
