@@ -36,6 +36,25 @@ changelog.
 
 ## [Unreleased]
 
+### Added — a smoke test that installs desktop builds and upgrades them over a release
+
+2026-10-02: `.github/workflows/desktop-upgrade-smoke.yml` takes the installers
+of a `desktop-apps.yml` run and installs them on clean GitHub runners for macOS
+arm64, Windows x64 and Linux. Playwright's Electron driver clicks through the
+first-run wizard with a real Anthropic key. The job then creates the first
+admin, signs in, has the kernel verify the stored key and waits for an update
+check against the release feed.
+
+The upgrade scenario starts from a published release, the latest one unless
+the dispatch names another, and installs the candidate over it. It fails on a
+boot or secret-store error in the desktop log, on a changed SHA-256 of
+`secrets.enc`, and on a recovery key that differs from the one the old wizard
+showed. Keys are compared as hashes computed inside the app. Only finished
+desktop builds of this repository are accepted, because their installers get
+the real key. The first run caught the first Electron 44 build, which installed
+cleanly and then could not start its kernel. It runs on dispatch only, and
+`desktop/README.md` § Install and upgrade smoke has the details.
+
 ### Changed — README and security docs describe the controls the code enforces
 
 2026-10-01 — the README, `docs/architecture.md`, `docs/security-architecture.md`
