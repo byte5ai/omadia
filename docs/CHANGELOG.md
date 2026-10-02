@@ -36,6 +36,25 @@ changelog.
 
 ## [Unreleased]
 
+### Security — tool plugins load on older hosts; an incompatible plugin is refused at install
+
+2026-10-02 — web-search, diagrams and discussion imported the tool-error
+helpers that `@omadia/plugin-api` has carried since 1.20 as named imports, so
+a hub ZIP of web-search 0.2.0 failed to load on any older host, and nothing
+stopped its install there. The three plugins, now 0.2.1, resolve the helpers
+at runtime. On a host without them a failure reaches the model as a fixed
+`Error: <tool> failed; details are in the server log (ref …)` notice without
+the error text, and the full error goes to the server log under that
+reference. discussion declares `core: ">=1.3 <2.0"`, because it needs
+`ctx.services.getOptional`.
+
+The kernel now enforces `compat.core`. Uploading or installing a plugin whose
+range excludes the host's `@omadia/plugin-api` version is refused with
+`package.incompatible_core` or `install.incompatible_core` (HTTP 409; a hub
+install reports the same code with HTTP 422). A manifest without `compat_core`
+counts as `>=1.0 <2.0`. `docs/upgrading.md` names the minimum host for hub
+plugins.
+
 ### Changed — the desktop install smoke waits for the web UI's first load and checks the shell's boundaries
 
 2026-10-02: the first dispatch of `desktop-upgrade-smoke.yml` from `main` quit a
