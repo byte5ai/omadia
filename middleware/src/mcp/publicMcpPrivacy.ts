@@ -65,6 +65,7 @@
 
 import type { PrivacyTurnHandle } from '@omadia/orchestrator';
 import { isInternExemptTool } from '@omadia/orchestrator';
+import { describeThrownError } from '@omadia/plugin-api';
 
 /**
  * Never reaches a caller: the endpoint checks `maskingFailed()` and replaces the
@@ -129,9 +130,12 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
       failed = true;
       // Logged, not rethrown. Rethrowing would reach the dispatcher's
       // fail-open catch, which returns `rawResult` — i.e. the leak.
+      // The provider's error can quote the result it was handed: the log line
+      // carries its class and code only.
+      const { name, code } = describeThrownError(err);
       console.warn(
-        `[public-mcp] privacy masking FAILED for tool \`${input.toolName}\` — refusing the call (fail-closed):`,
-        err,
+        `[public-mcp] privacy masking FAILED for tool \`${input.toolName}\` with ${name}` +
+          `${code === undefined ? '' : ` (code ${code})`} — refusing the call (fail-closed)`,
       );
       return { digestText: MASKING_FAILED_PLACEHOLDER, datasetId: '' };
     }

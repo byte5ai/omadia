@@ -213,6 +213,7 @@ import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { CliTurnCards } from './cliChatAgent.js';
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import {
+  errorClassForLog,
   guardControlFlowResult,
   isGuardedControlFlowResult,
   thrownToolErrorForModel,
@@ -3226,10 +3227,10 @@ export class Orchestrator {
       });
       return v4.digestText;
     } catch (err) {
-      // Fail closed, like every dispatch seam (`internFailedNotice`).
+      // Fail closed, like every dispatch seam (`internFailedNotice`). The
+      // provider's error can quote the result it was handed: class and code only.
       console.warn(
-        `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.internToolResultV4 threw — replay result WITHHELD:`,
-        err,
+        `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.internToolResultV4 threw ${errorClassForLog(err)} — replay result WITHHELD`,
       );
       return internFailedNotice(record.toolName);
     }
@@ -8658,10 +8659,10 @@ export class Orchestrator {
         // result the first pass protected stays protected. `query_dataset`
         // returned REAL cell values precisely because this interning was
         // about to happen (see QueryDatasetTool); it keeps its own notice,
-        // since retrying a page read is safe.
+        // since retrying a page read is safe. The provider's error can quote
+        // the result it was handed, so the log line carries class and code only.
         console.warn(
-          `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — result WITHHELD (it never bypasses the shield):`,
-          err,
+          `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw ${errorClassForLog(err)} — result WITHHELD (it never bypasses the shield)`,
         );
         return name === QUERY_DATASET_TOOL_NAME
           ? 'Error: the privacy boundary could not intern this dataset page — its rows were withheld. Retry; if it persists, tell the user the dataset is temporarily unavailable.'

@@ -17,6 +17,7 @@ import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
 import { replayMissNotice, runHandlerAtMostOnce } from './toolReplayLedger.js';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import {
+  errorClassForLog,
   guardControlFlowResult,
   isGuardedControlFlowResult,
   withholdThrownToolError,
@@ -535,10 +536,10 @@ export class ToolDispatchService {
       // Fail CLOSED, like `Orchestrator.dispatchToolDeadlined` and every other
       // seam (`internFailedNotice`): the caller gets the kernel's withheld
       // notice, never the raw result. The public MCP endpoint's privacy gate
-      // refuses such a call on its own as well (`publicMcpPrivacy.ts`).
+      // refuses such a call on its own as well (`publicMcpPrivacy.ts`). The
+      // provider's error can quote the result: class and code only in the log.
       console.warn(
-        `[toolDispatchService:${name}] privacy.internToolResultV4 threw — result WITHHELD:`,
-        err,
+        `[toolDispatchService:${name}] privacy.internToolResultV4 threw ${errorClassForLog(err)} — result WITHHELD`,
       );
       return { content: internFailedNotice(name), isError: true, origin: 'dispatcher' };
     }

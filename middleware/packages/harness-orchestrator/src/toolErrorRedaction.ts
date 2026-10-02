@@ -58,6 +58,7 @@
 
 import {
   TOOL_ERROR_PREFIX,
+  describeThrownError,
   newToolErrorRef,
   withheldToolErrorNotice,
 } from '@omadia/plugin-api';
@@ -219,6 +220,16 @@ export function thrownToolErrorForModel(
   ref: string,
 ): string {
   return withheldToolErrorNotice(toolName, err, ref);
+}
+
+/**
+ * A caught value for a log line: class name and sanitised code only, never the
+ * message. For a privacy provider's error, whose message can quote the input
+ * it was handed (the raw tool result), so the log must not carry it.
+ */
+export function errorClassForLog(err: unknown): string {
+  const { name, code } = describeThrownError(err);
+  return code === undefined ? name : `${name} (code ${code})`;
 }
 
 function safeToken(value: string): string {

@@ -16,6 +16,7 @@ import {
   type SubToolOutcome,
 } from './subAgentUnknownOutcome.js';
 import {
+  errorClassForLog,
   guardControlFlowResult,
   isGuardedControlFlowResult,
   withholdThrownToolError,
@@ -687,10 +688,10 @@ export class LocalSubAgent {
         };
       } catch (err) {
         // Fail closed, like the parent's dispatch (`internFailedNotice`):
-        // this sub-agent's model never reads the raw result.
+        // this sub-agent's model never reads the raw result. The provider's
+        // error can quote that result, so the log line carries class and code only.
         console.warn(
-          `[sub-agent ${this.name}] privacy.internToolResultV4 threw on '${toolName}' — result WITHHELD:`,
-          err,
+          `[sub-agent ${this.name}] privacy.internToolResultV4 threw ${errorClassForLog(err)} on '${toolName}' — result WITHHELD`,
         );
         return { output: internFailedNotice(toolName), ...carried };
       }
