@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Security — memory jobs mask the stored text they send to their model
+
+2026-10-02 — The memory plugin's jobs sent stored memories and earlier turns,
+real values included, to their own provider whether prompt masking was on or
+off: the recall relevance judge, the session briefing, topic-cluster naming,
+the inconsistency detector and the Teams topic detector. Their text is now
+masked whatever `mask_user_prompt` says, with the detectors a replayed answer
+gets. The judge and the briefing run inside the turn and mask through its map.
+The other jobs mask through a new job-scoped privacy scope
+(`openStoredTextScope`, `@omadia/plugin-api` 1.25.0, privacy guard 0.8.0) with
+a map of its own per run, so a session summary, a cluster name or an
+inconsistency summary gets the real values back. A job whose masking fails, or
+that finds a privacy guard without the scope, skips its model call; without a
+privacy guard the jobs work as before. Embedding stored text with the
+OpenAI-compatible adapter stays unmasked for now.
+
 ### Security — the inbound screener and the significance scorer get the turn's masked text
 
 2026-10-02 — The inbound screener ran before the turn's privacy handle
