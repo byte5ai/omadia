@@ -18,6 +18,7 @@ import type {
   AgentPrioritiesStore,
   KnowledgeGraph,
   NudgeProvider,
+  PrivacyGuardService,
   ProcessMemoryService,
   Visibility,
 } from '@omadia/plugin-api';
@@ -30,6 +31,7 @@ import {
   MERGE_CANDIDATE_DETECTOR_SERVICE_NAME,
   NUDGE_PROVIDERS_SERVICE_NAME,
   PALAIA_EXCERPT_SERVICE_NAME,
+  PRIVACY_REDACT_SERVICE_NAME,
   PROCESS_MEMORY_SERVICE_NAME,
   TOPIC_CLUSTERING_SERVICE_NAME,
 } from '@omadia/plugin-api';
@@ -41,6 +43,12 @@ import {
 } from './captureFilter.js';
 import { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph.js';
 import { ContextRetriever } from './contextRetriever.js';
+import {
+  createInTurnJobPrivacy,
+  createJobPrivacy,
+  TURN_CONTEXT_SERVICE_NAME,
+  type TurnPrivacyContext,
+} from './jobPrivacy.js';
 import { createRecallRelevanceJudge } from './recallRelevanceJudge.js';
 import type { Pool } from 'pg';
 import {
@@ -509,6 +517,20 @@ export async function activate(
     llm = withProviderUsageTracking(baseProvider, { source: 'extras' });
   }
 
+  // WP-10 — Privacy Shield for the memory jobs, which send stored real values
+  // through `llm`. Both lookups run per job run (a privacy guard may be
+  // installed after this plugin activated). Jobs outside a turn go through
+  // `outsideTurnPrivacy`; the jobs a turn awaits (the recall relevance judge,
+  // the session briefing) through the turn's handle when there is one.
+  const outsideTurnPrivacy = createJobPrivacy(() =>
+    ctx.services.getOptional<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME),
+  );
+  const inTurnPrivacy = createInTurnJobPrivacy({
+    turnContext: () =>
+      ctx.services.getOptional<TurnPrivacyContext>(TURN_CONTEXT_SERVICE_NAME),
+    outsideTurn: outsideTurnPrivacy,
+  });
+
   // Recall relevance judge (LLM-agnostic). Re-ranks the cross-session recall
   // candidates with the provider's FAST model class: a cosine / lexical score
   // can't separate a specific on-topic fact from a generic note that happens
@@ -534,6 +556,7 @@ export async function activate(
           llm,
           model: recallJudgeModel,
           log: ctx.log,
+          privacy: inTurnPrivacy,
         })
       : undefined;
 
@@ -957,6 +980,9 @@ export async function activate(
       llm,
       model: factModel,
       log: (msg) => { console.error(msg); },
+      // The orchestrator loads the briefing while it assembles the turn's
+      // context, so the summary call runs under the turn's handle.
+      privacy: inTurnPrivacy,
     });
     const graphPool = ctx.services.get<Pool>('graphPool');
     const briefingTenantId =

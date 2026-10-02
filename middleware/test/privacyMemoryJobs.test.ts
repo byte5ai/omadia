@@ -17,12 +17,15 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import type { PrivacyPromptMaskResult } from '@omadia/plugin-api';
-import { createRecallRelevanceJudge } from '@omadia/orchestrator-extras';
+import type { PrivacyGuardService, PrivacyPromptMaskResult } from '@omadia/plugin-api';
+import {
+  createHaikuSessionSummaryGenerator,
+  createRecallRelevanceJudge,
+} from '@omadia/orchestrator-extras';
 import type { RecallCandidate } from '@omadia/orchestrator-extras';
 import {
+  createInTurnJobPrivacy,
   createJobPrivacy,
-  createRequestMasker,
 } from '@omadia/orchestrator-extras/dist/jobPrivacy.js';
 import type { TurnPrivacyContext } from '@omadia/orchestrator-extras/dist/jobPrivacy.js';
 import { createPrivacyTurnHandle } from '@omadia/orchestrator/dist/privacyHandle.js';
@@ -63,7 +66,7 @@ function guardWithDenyList() {
   });
 }
 
-function inTurn(handle: Pick<PrivacyTurnHandle, 'maskReplayedAnswer'>): () => TurnPrivacyContext {
+function inTurn(handle: Partial<PrivacyTurnHandle>): () => TurnPrivacyContext {
   return () => ({ current: () => ({ privacyHandle: handle }) });
 }
 
@@ -82,10 +85,9 @@ function judgeWith(
     log: (msg) => {
       logs.push(msg);
     },
-    maskRequest: createRequestMasker({
+    privacy: createInTurnJobPrivacy({
       turnContext,
-      openJob: createJobPrivacy(resolveGuard),
-      job: 'recall-judge',
+      outsideTurn: createJobPrivacy(resolveGuard),
     }),
   });
 }
@@ -164,6 +166,132 @@ describe('recall relevance judge — in a turn, through the turn handle', () => 
     await judge.filterRelevant(USER_MESSAGE, CANDIDATES);
 
     assert.equal(provider.calls.length, 0);
+  });
+});
+
+/** Every string of the request's messages, i.e. the text the model would read. */
+function userTextOf(request: unknown): string {
+  const out: string[] = [];
+  const walk = (value: unknown): void => {
+    if (typeof value === 'string') out.push(value);
+    else if (Array.isArray(value)) value.forEach(walk);
+    else if (value !== null && typeof value === 'object') Object.values(value).forEach(walk);
+  };
+  walk((request as { messages?: unknown }).messages);
+  return out.join('\n');
+}
+
+/** A provider that answers with the text it was sent, so the output carries
+ *  whatever surrogates the request carried. */
+function echoingLlm(): RecordingLlm {
+  const calls: unknown[] = [];
+  const llm = {
+    async complete(request: unknown) {
+      calls.push(request);
+      return { content: [{ type: 'text', text: `- ${userTextOf(request)}` }] };
+    },
+  };
+  return { calls, llm: llm as never };
+}
+
+const SESSION_TURNS = [
+  {
+    time: '2026-10-01T09:00:00.000Z',
+    userMessage: `Bitte ${NAME} wegen der Rechnung anrufen, ${MAIL}`,
+    assistantAnswer: 'Notiert, Rückruf morgen.',
+  },
+];
+
+describe('session briefing — in a turn, through the turn handle', () => {
+  it('masks the stored transcript and restores real values in the summary', async () => {
+    const service = guardWithDenyList();
+    const handle = createPrivacyTurnHandle({ service, sessionId: 's-jobs', turnId: 't-briefing' });
+    const provider = echoingLlm();
+    const generator = createHaikuSessionSummaryGenerator({
+      llm: provider.llm,
+      log: () => {},
+      privacy: createInTurnJobPrivacy({
+        turnContext: inTurn(handle),
+        outsideTurn: createJobPrivacy(() => service),
+      }),
+    });
+
+    const summary = await generator.generate({ scope: 'chat-1', turns: SESSION_TURNS });
+
+    assert.equal(provider.calls.length, 1);
+    const wire = JSON.stringify(provider.calls[0]);
+    assert.ok(!wire.includes(MAIL), wire);
+    assert.ok(!wire.includes(NAME), wire);
+    assert.match(wire, SURROGATE_MAIL);
+    // The briefing (and the summary persisted from it) carries the real values.
+    assert.ok(summary.includes(MAIL), summary);
+    assert.ok(summary.includes(NAME), summary);
+    assert.doesNotMatch(summary, SURROGATE_MAIL);
+  });
+
+  it('skips the summary without a provider call when the turn handle blocks', async () => {
+    const provider = echoingLlm();
+    const logs: string[] = [];
+    const generator = createHaikuSessionSummaryGenerator({
+      llm: provider.llm,
+      log: (msg) => {
+        logs.push(msg);
+      },
+      privacy: createInTurnJobPrivacy({
+        turnContext: inTurn({
+          async maskReplayedAnswer(): Promise<PrivacyPromptMaskResult> {
+            return { outcome: 'blocked', reason: 'residual PII span survived substitution' };
+          },
+        }),
+        outsideTurn: createJobPrivacy(() => guardWithDenyList()),
+      }),
+    });
+
+    const summary = await generator.generate({ scope: 'chat-1', turns: SESSION_TURNS });
+
+    assert.equal(summary, '');
+    assert.equal(provider.calls.length, 0);
+    assert.ok(logs.some((l) => l.includes('residual PII span')), JSON.stringify(logs));
+  });
+
+  it("keeps today's behaviour without a privacy guard", async () => {
+    const provider = echoingLlm();
+    const generator = createHaikuSessionSummaryGenerator({
+      llm: provider.llm,
+      log: () => {},
+      privacy: createInTurnJobPrivacy({
+        turnContext: outsideAnyTurn,
+        outsideTurn: createJobPrivacy(() => undefined),
+      }),
+    });
+
+    await generator.generate({ scope: 'chat-1', turns: SESSION_TURNS });
+
+    assert.equal(provider.calls.length, 1);
+    assert.ok(JSON.stringify(provider.calls[0]).includes(MAIL));
+  });
+});
+
+/** A privacy guard that predates the stored-text member. */
+function olderGuard(): PrivacyGuardService {
+  const { ...service } = guardWithDenyList() as PrivacyGuardService & {
+    openStoredTextScope?: unknown;
+  };
+  delete service.openStoredTextScope;
+  return service;
+}
+
+describe('recall relevance judge — outside a turn', () => {
+  it('skips the judge when the installed guard cannot mask stored text (fail-closed)', async () => {
+    const provider = recordingLlm('{"relevant":[]}');
+    const logs: string[] = [];
+    const judge = judgeWith(provider.llm, outsideAnyTurn, () => olderGuard(), logs);
+
+    const kept = await judge.filterRelevant(USER_MESSAGE, CANDIDATES);
+
+    assert.equal(provider.calls.length, 0);
+    assert.equal(kept.size, CANDIDATES.length);
+    assert.ok(logs.some((l) => l.includes('cannot mask stored text')), JSON.stringify(logs));
   });
 });
 
