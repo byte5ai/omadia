@@ -1,0 +1,211 @@
+name: Desktop upgrade smoke
+
+# Installs packaged desktop builds on clean GitHub-hosted runners and drives
+# them without a person.
+#   fresh    the candidate's first-run wizard with a real provider key, then the
+#            kernel, the web UI, the first admin, sign-in, the stored key and the
+#            update check.
+#   upgrade  the same on the baseline release, then the candidate installed over
+#            it: it must boot without a failure, keep secrets.enc byte-identical
+#            (and so the recovery key), and still sign in and use the stored key.
+# Dispatch it with the run id of a desktop-apps.yml build, for example a
+# throwaway-tag dispatch of a PR head, before merging a change that alters what
+# installed apps run. Evidence (report, desktop logs, screenshots) is uploaded
+# per job; keys are compared as hashes and never written out.
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: 'desktop-apps.yml run whose installers are the candidate'
+        required: true
+        type: string
+      baseline_tag:
+        description: 'Release installed first in the upgrade scenario'
+        required: true
+        default: 'v0.167.13'
+        type: string
+  # TEMP: iteration trigger while the smoke is built; removed before the PR.
+  push:
+    branches: [ci/desktop-upgrade-smoke]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  smoke:
+    name: ${{ matrix.platform }} ${{ matrix.scenario }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos, windows, linux]
+        scenario: [fresh, upgrade]
+        include:
+          - platform: macos
+            os: macos-latest
+            artifact: omadia-installers-macos-latest
+            baseline_glob: 'omadia-*-arm64.dmg'
+          - platform: windows
+            os: windows-latest
+            artifact: omadia-installers-windows-latest
+            baseline_glob: 'omadia-Setup-*.exe'
+          - platform: linux
+            os: ubuntu-latest
+            artifact: omadia-installers-ubuntu-latest
+            baseline_glob: 'omadia-*.AppImage'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Require the provider key
+        shell: bash
+        env:
+          SMOKE_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$SMOKE_ANTHROPIC_KEY" ]; then
+            echo "::error::secrets.ANTHROPIC_API_KEY is empty; the wizard and the kernel vault need a real key"
+            exit 1
+          fi
+
+      - name: Install the automation driver
+        shell: bash
+        run: npm install --prefix "$RUNNER_TEMP/pw" --no-save --ignore-scripts --no-audit --no-fund playwright-core@1.63.0
+
+      - name: Download the candidate installers
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/candidate
+          run-id: ${{ inputs.candidate_run_id || '36899325147' }}
+          github-token: ${{ github.token }}
+
+      - name: Download the baseline installer
+        if: matrix.scenario == 'upgrade'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_TAG: ${{ inputs.baseline_tag || 'v0.167.13' }}
+          BASELINE_GLOB: ${{ matrix.baseline_glob }}
+        run: gh release download "$BASELINE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$BASELINE_GLOB" --dir "$RUNNER_TEMP/baseline"
+
+      - name: Use a dedicated unlocked keychain (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          # safeStorage keeps its key in the default keychain. A keychain of our
+          # own, unlocked and alone in the search list, rules out unlock prompts.
+          KC="$RUNNER_TEMP/omadia-smoke.keychain-db"
+          security create-keychain -p smoke "$KC"
+          security set-keychain-settings "$KC"
+          security unlock-keychain -p smoke "$KC"
+          security list-keychains -d user -s "$KC"
+          security default-keychain -d user -s "$KC"
+
+      - name: Run the smoke (macOS)
+        if: matrix.platform == 'macos'
+        env:
+          SMOKE_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          export SMOKE_PW_DIR="$RUNNER_TEMP/pw"
+          node .github/scripts/desktop-upgrade-smoke.mjs --scenario "$SCENARIO" --platform macos \
+            --candidate "$RUNNER_TEMP/candidate" --baseline "$RUNNER_TEMP/baseline" --out "$RUNNER_TEMP/smoke-out"
+
+      - name: Install display, keyring and FUSE packages (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb dbus-x11 gnome-keyring libsecret-1-0 libfuse2t64 imagemagick
+
+      - name: Run the smoke (Linux)
+        if: matrix.platform == 'linux'
+        env:
+          SMOKE_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          export SMOKE_PW_DIR="$RUNNER_TEMP/pw"
+          # A GNOME session with an unlocked Secret Service: the packaged app
+          # refuses to keep secrets without OS encryption, and the baseline and
+          # the candidate must use the same keyring. The inner shell expands the
+          # variables, hence the single quotes.
+          # shellcheck disable=SC2016
+          xvfb-run -a -s '-screen 0 1440x900x24' dbus-run-session -- bash -c '
+            set -euo pipefail
+            printf smoke | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+            export XDG_CURRENT_DESKTOP=GNOME
+            node .github/scripts/desktop-upgrade-smoke.mjs --scenario "$SCENARIO" --platform linux \
+              --candidate "$RUNNER_TEMP/candidate" --baseline "$RUNNER_TEMP/baseline" --out "$RUNNER_TEMP/smoke-out"
+          '
+
+      - name: Run the smoke without elevation (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          SMOKE_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          # Windows runners run jobs as an elevated administrator, and postgres.exe
+          # refuses to start under that token. runas /trustlevel:0x20000 starts the
+          # driver with the Basic User token an administrator gets under UAC on a
+          # normal install. runas passes no environment on, so the settings go into
+          # a script file and the key into a file the driver deletes after reading.
+          Set-Service -Name seclogon -StartupType Manual -ErrorAction SilentlyContinue
+          Start-Service -Name seclogon -ErrorAction SilentlyContinue
+          $tmp = $env:RUNNER_TEMP
+          $out = Join-Path $tmp 'smoke-out'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          icacls $out /grant "${env:USERNAME}:(OI)(CI)F" | Out-Null
+          $keyFile = Join-Path $tmp 'smoke-key.txt'
+          [IO.File]::WriteAllText($keyFile, $env:SMOKE_ANTHROPIC_KEY)
+          icacls $keyFile /inheritance:r /grant:r "${env:USERNAME}:F" | Out-Null
+          foreach ($dir in @((Join-Path $tmp 'pw'), (Join-Path $tmp 'candidate'), (Join-Path $tmp 'baseline'), $env:GITHUB_WORKSPACE)) {
+            if (Test-Path $dir) { icacls $dir /grant "${env:USERNAME}:(OI)(CI)RX" /T /Q | Out-Null }
+          }
+          $node = (Get-Command node).Source
+          $script = Join-Path $env:GITHUB_WORKSPACE '.github\scripts\desktop-upgrade-smoke.mjs'
+          $cmd = Join-Path $tmp 'run-smoke.cmd'
+          @(
+            '@echo off',
+            "set SMOKE_PW_DIR=$tmp\pw",
+            "set SMOKE_KEY_FILE=$keyFile",
+            "`"$node`" `"$script`" --scenario $env:SCENARIO --platform windows --candidate `"$tmp\candidate`" --baseline `"$tmp\baseline`" --out `"$out`" > `"$out\driver.log`" 2>&1",
+            ">`"$out\exit-code.txt`" echo %ERRORLEVEL%"
+          ) | Set-Content -Path $cmd -Encoding ascii
+          runas /trustlevel:0x20000 "cmd.exe /c $cmd"
+          if ($LASTEXITCODE -ne 0) { throw "runas failed with exit code $LASTEXITCODE" }
+          $done = Join-Path $out 'exit-code.txt'
+          $deadline = (Get-Date).AddMinutes(40)
+          while (-not (Test-Path $done)) {
+            if ((Get-Date) -gt $deadline) {
+              Get-Content (Join-Path $out 'driver.log') -ErrorAction SilentlyContinue
+              throw 'the smoke driver did not finish within 40 minutes'
+            }
+            Start-Sleep -Seconds 15
+          }
+          Get-Content (Join-Path $out 'driver.log')
+          exit [int](Get-Content $done).Trim()
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/smoke-out/summary.md" ]; then
+            cat "$RUNNER_TEMP/smoke-out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-smoke-${{ matrix.platform }}-${{ matrix.scenario }}
+          path: ${{ runner.temp }}/smoke-out
+          retention-days: 30
+          if-no-files-found: warn
