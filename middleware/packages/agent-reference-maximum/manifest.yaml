@@ -170,7 +170,7 @@ skills:
   - id: "disambiguate_policy"
     kind: "prompt_partial"
     path: "skills/disambiguate-policy.md"
-    description: "Wie das Modell reagiert, wenn ein Tool dieses Plugins Mehrdeutigkeit zurückmeldet: Smart-Card oder Rückfrage, nie raten."
+    description: "Wie das Modell reagiert, wenn ein Tool dieses Plugins Mehrdeutigkeit über _pendingUserChoice zurückmeldet."
     shareable: true
 
 jobs:
