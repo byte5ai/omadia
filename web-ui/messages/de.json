@@ -1026,6 +1026,10 @@
         "what": "Andere installierte Plugins hängen noch von diesem ab, deshalb lässt es sich nicht deinstallieren.",
         "next": "Deinstalliere zuerst die Plugins, die in den Details unten stehen."
       },
+      "incompatible_core": {
+        "what": "Dieses Plugin braucht eine Plugin-API-Version, die dieser Server nicht bereitstellt — die Installation wurde abgelehnt.",
+        "next": "Installiere eine Version des Plugins für diesen Server oder aktualisiere zuerst omadia. Die Details unten zeigen beide Versionen."
+      },
       "invalid_body": {
         "what": "Der Setup-Schritt hat seine Eingaben in einer Form geschickt, die der Server ablehnt.",
         "next": "Lade die Seite neu und fülle den Schritt erneut aus."
@@ -1086,6 +1090,10 @@
       "id_conflict_bundled": {
         "what": "Diese Plugin-ID gehört zu einem Plugin, das mit omadia ausgeliefert wird — der Upload wurde abgelehnt.",
         "next": "Vergib dem Paket in manifest.yaml und package.json eine eigene ID und lade es erneut hoch."
+      },
+      "incompatible_core": {
+        "what": "Der compat.core-Bereich des Pakets schließt die Plugin-API-Version dieses Servers aus — der Upload wurde abgelehnt.",
+        "next": "Vergleiche compat.core in seiner manifest.yaml mit der Version in den Details unten und lade eine passende Version hoch oder aktualisiere omadia."
       }
     },
     "providers": {

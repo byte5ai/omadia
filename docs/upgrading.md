@@ -339,6 +339,32 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.167.17 — plugins: upload and install check `compat.core`
+
+A plugin links against the host's `@omadia/plugin-api` at runtime. Its
+manifest states the versions it runs on in `compat.core`, which until now was
+only displayed. From this release on, a plugin whose `compat.core` excludes
+this host's `@omadia/plugin-api` version is refused:
+
+- **Upload, Hub install, builder install:** the ZIP is rejected before it is
+  stored, with code `package.incompatible_core`
+  (`POST /api/v1/install/packages/upload` answers HTTP 409).
+- **Install from the store:** `install.incompatible_core` (HTTP 409). This also
+  catches a package uploaded before this release.
+
+The message names the plugin, its range and this host's version: install a
+plugin version whose range includes it, or update omadia. Plugins that are
+already installed keep booting, and the bundled plugins always match.
+
+**Minimum host for Hub plugins.** A plugin's `compat.core` is the minimum host
+it needs. `@omadia/plugin-web-search`, `@omadia/diagrams` and
+`@omadia/plugin-discussion` 0.2.0 needed `@omadia/plugin-api` 1.20.0 although
+their manifests admitted every 1.x host, and did not load on an older one.
+0.2.1 loads there again; on such a host a failed call answers
+`Error: <tool> failed; details are in the server log (ref <ref>)`, with the
+full error in the log under that ref. `@omadia/plugin-discussion` 0.2.1
+declares its real minimum, `compat.core: ">=1.3 <2.0"`.
+
 ## Upgrading past v0.167.14 — desktop app: macOS 13 or later from the Electron 44 build
 
 The desktop app's runtime moved from Electron 37 to Electron 44 (2026-09-30).

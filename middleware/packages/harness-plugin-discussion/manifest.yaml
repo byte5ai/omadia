@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-discussion"
   name: "Agent Discussion"
-  version: "0.2.0"
+  version: "0.2.1"
   kind: "tool"
   domain: "agent.discussion"
   description:
@@ -19,7 +19,8 @@ identity:
     - "agents"
 
 compat:
-  core: ">=1.0 <2.0"
+  # ctx.services.getOptional arrived in @omadia/plugin-api 1.3.0.
+  core: ">=1.3 <2.0"
   node: ">=20"
 
 lifecycle:
