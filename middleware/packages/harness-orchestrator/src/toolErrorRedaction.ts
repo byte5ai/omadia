@@ -27,8 +27,9 @@
  *    which replaces every span irreversibly with `[masked:<type>]` so the hint
  *    survives. It is WITHHELD whole instead when it is exception-shaped (a row
  *    echo as JSON, a Python dict or a JavaScript object or `Map` the way
- *    `util.inspect` / `%o` print it; a record with keyword fields or Go-style
- *    bare keys; a Postgres detail line such as `Failing row contains (…)`; a
+ *    `util.inspect` / `%o` print it; a record with keyword fields, positional
+ *    values or Go-style bare keys; a personal field as a bare `key=value` pair;
+ *    a Postgres detail line such as `Failing row contains (…)`; a
  *    stack trace — partial regex masking of a record dump is not reliable,
  *    names survive it), when it is too long to check, or when the provider
  *    cannot redact (it predates the contract, throws, or reports `withheld`).
@@ -132,6 +133,23 @@ const KEYWORD_RECORD = /\b[A-Za-z_][\w$.]{0,63}[([][^()[\]=]{0,256}\b[A-Za-z_]\w
 // A map printed with `key=value` entries (Java's `Map#toString`:
 // `{name=Jane Doe, id=42}`).
 const KEYWORD_MAP = /\{\s*[A-Za-z_]\w{0,63}=(?!=)/;
+// A record printed with positional values only: a type name directly followed
+// by `(`, then at least two comma-separated values of which one is quoted (a
+// Python namedtuple or exception repr, `Record(42, 'Jane Doe', 'jane@…')`).
+// One argument (`lower('abc')`), an id tuple (`res.partner(42,)`) and a
+// parenthesised domain term after a space (`term ('state', '=', 'draft')`)
+// stay readable. A run between commas cannot hold a bracket or a comma, so
+// each one ends at a fixed comma and the scan stays linear.
+const POSITIONAL_RECORD =
+  /\b[A-Za-z_][\w$.]{0,63}\((?:\s*["'][^"'\n]{0,128}["']\s*,|(?:[^(),\n]{0,128},){1,16}\s*["'])/;
+// A personal field printed as a bare `key=value` pair outside any record: a
+// logfmt or framework log line (`id=42 name=Jane Doe email=jane@…`). Only
+// person-describing keys count, so `hostname=db port=5432`, `filename=…` and a
+// validation hint's `type=int_parsing, input_value='abc'` stay readable; the
+// value must open with a letter, a digit or a quote, so `name==draft` and
+// `name=<text>` do too.
+const PERSONAL_FIELD_PAIR =
+  /(?<![\w$])(?:(?:(?:first|last|full|display|given|family|middle|partner|customer|contact|user)_?)?name|surname|e_?mail|phone|mobile|street|address|iban|birth_?date|birthday|login)=(?!=)["'A-Za-z0-9+]/i;
 // A record printed with bare `Key:value` fields and no space after the colon:
 // Go's `%+v` (`{Name:Jane Doe Email:…}`, `&{ID:42 …}`) and its maps
 // (`map[name:…]`). The value must open with a letter, a digit or a quote, so a
@@ -182,6 +200,8 @@ export function looksExceptionShaped(text: string): boolean {
     hasBareKeyEntry(text) ||
     KEYWORD_RECORD.test(text) ||
     KEYWORD_MAP.test(text) ||
+    POSITIONAL_RECORD.test(text) ||
+    PERSONAL_FIELD_PAIR.test(text) ||
     GO_STRUCT.test(text) ||
     GO_MAP.test(text) ||
     STACK_FRAME.test(text) ||
