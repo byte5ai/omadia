@@ -30,6 +30,7 @@ import {
 } from '@omadia/orchestrator/dist/toolIdempotency.js';
 import { ReadAttachmentTool } from '@omadia/orchestrator/dist/tools/readAttachmentTool.js';
 import { verdictReleasesAnswer } from '@omadia/orchestrator/dist/verifierDelivery.js';
+import { bundleProvenance, DEFAULT_SECURITY_POSTURE_POLICY } from '@omadia/channel-sdk';
 import { isWriteCapableTool, PRIVACY_MODE_DEFAULT } from '@omadia/plugin-api';
 import {
   createPrivacyGuardService,
@@ -278,6 +279,75 @@ describe('public security claims match the enforced behaviour', () => {
         (sentence) => sentence.includes('`priorTurns`') && sentence.includes('`mask_user_prompt`'),
       ),
       `docs/security-architecture.md must say that replayed answers go through \`maskReplayedAnswer\` independent of \`mask_user_prompt\`; mentions: ${JSON.stringify(replaySentences)}`,
+    );
+  });
+
+  it('the docs name the inbound screener and turn scoring as masked, and what the screener gets', () => {
+    // The shipping posture screens every turn that carries an upload.
+    assert.equal(DEFAULT_SECURITY_POSTURE_POLICY.posture, 'auto');
+    // What the screener is handed: the message, each replayed USER message
+    // and each upload's name and type — never a replayed answer.
+    const pairs = bundleProvenance({
+      userMessage: 'Bitte prüfe die Rechnung.',
+      priorTurns: [{ userMessage: 'Hier die Rechnung.', assistantAnswer: 'REPLAYED ANSWER' }],
+      attachments: [
+        { kind: 'file', url: 'https://x/invoice.pdf', name: 'invoice.pdf', mediaType: 'application/pdf' },
+      ],
+    });
+    assert.deepEqual(
+      pairs.map((pair) => [pair.source.kind, pair.content]),
+      [
+        ['direct_human', 'Bitte prüfe die Rechnung.'],
+        ['prior_turn', 'Hier die Rechnung.'],
+        ['attachment', 'invoice.pdf (application/pdf)'],
+      ],
+    );
+
+    const readme = read('README.md');
+    const screenerSentences = sentencesMentioning(readme, 'inbound security screener');
+    assert.ok(
+      screenerSentences.some(
+        (sentence) => sentence.includes('turn scoring') && sentence.includes("as the turn's model saw and wrote it"),
+      ),
+      `README must say that the screener and turn scoring get the turn's text as its model saw it; mentions: ${JSON.stringify(screenerSentences)}`,
+    );
+    assert.ok(
+      screenerSentences.some((sentence) => sentence.includes('(`auto`)')),
+      `README must name \`auto\` as the posture under which the screener runs; mentions: ${JSON.stringify(screenerSentences)}`,
+    );
+    const unmasked = sentencesMentioning(readme, 'as it is').filter(
+      (sentence) => /screener|turn scoring/.test(sentence),
+    );
+    assert.deepEqual(unmasked, [], 'README must not list the screener or turn scoring among the calls sent as they are');
+
+    const security = read('docs/security-architecture.md');
+    const gateSentences = sentencesMentioning(security, '`screenInboundTurn`');
+    assert.ok(
+      gateSentences.some(
+        (sentence) =>
+          sentence.includes('`DEFAULT_SECURITY_POSTURE_POLICY`') &&
+          sentence.includes('after the turn minted its privacy handle'),
+      ),
+      `§6f must say that the screener runs after the handle is minted, under the default posture; mentions: ${JSON.stringify(gateSentences)}`,
+    );
+    const bundleSentences = sentencesMentioning(security, '`bundleProvenance`');
+    assert.ok(
+      bundleSentences.some(
+        (sentence) => sentence.includes('`priorTurns`') && sentence.includes('never a replayed answer'),
+      ),
+      `§6f must say what \`bundleProvenance\` carries; mentions: ${JSON.stringify(bundleSentences)}`,
+    );
+    assert.ok(
+      sentencesMentioning(security, '`screeningBundleForWire`').some((sentence) =>
+        sentence.includes('`maskPromptForWire`'),
+      ),
+      '§6f must say that the screening bundle is masked through `maskPromptForWire`',
+    );
+    assert.ok(
+      sentencesMentioning(security, '`TurnIngest.maskedView`').some((sentence) =>
+        sentence.includes('never the restored answer'),
+      ),
+      '§6f must say that the scorer gets the masked view, never the restored answer',
     );
   });
 
