@@ -1666,7 +1666,10 @@ other two.
 The synthetic obligation reminder lost its `IMPORTANT:` prefix. Forced
 `tool_choice` degrades to `auto` on the models that reject it, so that reminder
 is what actually steers the consult; it should be clear, not loud. Its sibling
-in `LocalSubAgent` never carried a prefix.
+in `LocalSubAgent` never carried a prefix. `claude-sonnet-5-5` joins the
+models `supportsForcedToolChoice()` lists: it answers a forced choice with the
+same 400 as Opus 5.5 and Fable 5.1, so its forced paths now degrade instead of
+failing. The code comments point at that function instead of naming models.
 
 DB-defined sub-agents described their delegation tool as "Delegate a focused
 question to the `<name>` sub-agent." and nothing else — while that same string

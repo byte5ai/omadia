@@ -437,9 +437,9 @@ test('toolChoice disableParallel maps to disable_parallel_tool_use', async () =>
 
 /**
  * `claude-opus-5-5` and `claude-fable-5-1` 400 on a forced `tool_choice`
- * (measured 2026-09-23). Opus 5.5 was already selectable, so every forced
- * path — card router, claim extractor, evidence judge, sub-agent turn
- * obligation — threw on it and fell back silently.
+ * (measured 2026-09-23), and so does `claude-sonnet-5-5`. Opus 5.5 was already
+ * selectable, so every forced path — card router, claim extractor, evidence
+ * judge, sub-agent turn obligation — threw on it and fell back silently.
  */
 test('forced toolChoice degrades to auto on models that reject it', async () => {
   const cases: ReadonlyArray<[ToolChoice, Record<string, unknown>]> = [
@@ -451,7 +451,13 @@ test('forced toolChoice degrades to auto on models that reject it', async () => 
     ],
     [{ type: 'none' }, { type: 'none' }],
   ];
-  for (const model of ['claude-opus-5-5', 'claude-fable-5-1', 'claude-mythos-5-1']) {
+  for (const model of [
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
+    'claude-fable-5-1',
+    'claude-mythos-5-1',
+  ]) {
+    assert.equal(supportsForcedToolChoice(model), false, model);
     for (const [choice, expected] of cases) {
       const captured: Captured = {};
       const provider = createAnthropicProvider({
@@ -475,8 +481,15 @@ test('forced toolChoice degrades to auto on models that reject it', async () => 
 
 test('forced toolChoice is still sent to models that honour it', async () => {
   // The other direction: a gate that downgraded everywhere would pass the
-  // test above while removing forcing from Opus 5 / Fable 5 / Haiku.
-  for (const model of ['claude-opus-5', 'claude-fable-5', 'claude-haiku-4-5-20251001']) {
+  // test above while removing forcing from Opus 5 / Sonnet 5 / Fable 5 / Haiku.
+  // `claude-sonnet-5` also pins the substring match: `claude-sonnet-5-5` must
+  // not swallow its predecessor.
+  for (const model of [
+    'claude-opus-5',
+    'claude-sonnet-5',
+    'claude-fable-5',
+    'claude-haiku-4-5-20251001',
+  ]) {
     assert.equal(supportsForcedToolChoice(model), true, model);
     const captured: Captured = {};
     const provider = createAnthropicProvider({

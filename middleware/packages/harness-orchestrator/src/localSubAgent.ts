@@ -288,8 +288,9 @@ export class LocalSubAgent {
           // and we have iteration headroom. Synthesize a user-message
           // reminder + flip `tool_choice` for next iteration. On models that
           // honour a forced choice the API then *requires* the call; on the
-          // ones that reject it (Opus 5.5 / Fable 5.1) the adapter degrades it
-          // to `auto`, and the reminder text is the whole mechanism. After the
+          // ones that reject it (see `supportsForcedToolChoice()` in the
+          // Anthropic adapter) it degrades to `auto`, and the reminder text is
+          // the whole mechanism. After the
           // escalation iteration we honor whatever stop_reason comes back —
           // no second-chance loop.
           if (

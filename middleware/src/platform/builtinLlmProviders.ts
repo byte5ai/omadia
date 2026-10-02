@@ -43,7 +43,8 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
       include: ['^claude-'],
       // Mythos: access-program only (Project Glasswing). Fable is offered —
       // the breaking request difference we handle (forced tool_choice → 400,
-      // shared with Opus 5.5) is degraded to `auto` in the adapter. It is not
+      // shared with the other models `supportsForcedToolChoice()` lists) is
+      // degraded to `auto` in the adapter. It is not
       // the only difference on that family: thinking-block behaviour diverges
       // too (see the flagged list in #1219), which costs us nothing today only
       // because the adapter drops thinking blocks from the neutral view. Verify

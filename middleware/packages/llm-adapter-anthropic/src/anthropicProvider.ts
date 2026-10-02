@@ -303,9 +303,15 @@ export function supportsTemperature(model: string): boolean {
  *
  * Again not derivable from the version number (`opus-5` forces fine,
  * `opus-5-5` does not). Mythos 5.1 shares the Fable 5.1 API surface.
+ * `claude-sonnet-5-5` answers the same 400 (found in the #1219 review), while
+ * `claude-sonnet-5` still forces fine.
+ *
+ * Comments elsewhere point at {@link supportsForcedToolChoice} instead of
+ * naming models, so this list is the one place to extend.
  */
 const FORCED_TOOL_CHOICE_UNSUPPORTED = [
   'claude-opus-5-5',
+  'claude-sonnet-5-5',
   'claude-fable-5-1',
   'claude-mythos-5-1',
 ];
