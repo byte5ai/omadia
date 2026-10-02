@@ -4820,6 +4820,28 @@ Sub-Agent, der nach „Partner 42“ fragt, bekommt so auch 142, 420 oder
 „Halle 42“. Offen: einen optionalen `id`-Input an beide Tools, Beschreibung und
 §7 entsprechend anpassen.
 
+### Finalize-Pass: offene Punkte aus #1211
+
+- **Zweite Directive-Kopie bei ignoriertem `tool_choice: none`.** Der Finalize-Pass
+  hängt `FINALIZE_DIRECTIVE` an den neuesten User-Turn (append-only, damit `system`
+  und `tools` byte-identisch bleiben). Emittiert das Modell trotz Suppression noch
+  ein `tool_use`, läuft eine weitere Finalize-Iteration und hängt eine zweite Kopie
+  an. Vor #1211 konnte das nicht passieren (der Hint wurde pro Iteration neu
+  gebaut). Harmlos, aber unschön — ein Idempotenz-Flag pro Turn würde es schließen,
+  kostet dafür die frische Platzierung am Ende des Transcripts.
+- **Provider ohne `tool_choice`: Cache-Verlust im Finalize-Pass.** Server mit dem
+  `dropToolChoice`-Quirk (MiniMax) melden `capabilities.toolChoiceNone === false`;
+  dort schickt der Finalize-Pass `tools: []` wie vor #1211 — die Garantie „Turn
+  endet in Text“ bleibt, der Prompt-Cache dieses einen Calls ist futsch. Besser
+  wäre ein serverseitig akzeptiertes Äquivalent, sobald es eins gibt.
+- **`forcedToolChoice` lügt unter demselben Quirk.** `DEFAULT_CAPABILITIES` der
+  OpenAI-Adapter meldet `forcedToolChoice: true`, obwohl der Quirk auch
+  `{type:'required'|'tool'}` verschluckt — Card-Router und `#332`-Obligation
+  glauben dort an ein Forcing, das nie auf der Leitung landet. #1211 hat nur
+  `toolChoiceNone` ehrlich gemacht; die beiden anderen Pfade brauchen je eine
+  eigene Entscheidung (Capability ehrlich melden **und** Fallback bauen), darum
+  nicht mitgezogen.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration

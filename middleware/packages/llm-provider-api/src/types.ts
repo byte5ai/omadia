@@ -291,6 +291,15 @@ export interface ProviderCapabilities {
   readonly promptCaching: boolean;
   /** Supports `toolChoice: { type: 'required' | 'tool' }`. */
   readonly forcedToolChoice: boolean;
+  /**
+   * #1211 — whether `toolChoice: { type: 'none' }` actually reaches the wire.
+   * Some OpenAI-compatible servers (MiniMax) reject the field outright, so the
+   * adapter drops it (`dropToolChoice` quirk) and the model keeps every tool it
+   * was offered. Callers that SUPPRESS tool use for correctness — the
+   * orchestrator's finalize pass, which must end the turn in text — have to
+   * fall back to sending no tools at all there. Optional; treated as `true`
+   * when unset, so every provider that honours the field is unaffected. */
+  readonly toolChoiceNone?: boolean;
   readonly parallelToolCalls: boolean;
   /** Whether the model emits assistant text AND tool calls in the SAME
    *  message (Anthropic) versus one-or-the-other per completion (the OpenAI
