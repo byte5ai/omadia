@@ -7,7 +7,7 @@ import { CH } from './ipcTypes';
 import { createTray, setTrayStatus, destroyTray, TrayActions } from './tray';
 import { checkForUpdatesManually, initUpdater, isUpdateInstalling } from './updater';
 import { isSetupComplete } from './setupState';
-import { log, logFile, onLog } from './log';
+import { flushLog, log, logFile, onLog } from './log';
 import { classifyBootFailure, describeError } from './bootFailure';
 import {
   clearRecoveryBudget,
@@ -555,6 +555,14 @@ if (!gotLock) {
       } catch (err) {
         log.error(`[main] shutdown error: ${describeError(err)}`);
       } finally {
+        // FU-162: the log writes through an async stream, so the shutdown lines
+        // would die with the process. flushLog is bounded and never rejects;
+        // the catch makes sure nothing here can keep the app from exiting.
+        try {
+          await flushLog();
+        } catch {
+          /* exit regardless */
+        }
         app.exit(0);
       }
     })();
