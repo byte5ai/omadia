@@ -1658,8 +1658,10 @@ The `<at>…</at>` @-mention contract lived in three places: the
 `get_chat_participants` block of the system prompt, the tool description, and
 the tool response itself (`usage_example` + `rendering_rule`, built from a real
 `displayName` in the current chat). The prompt copy was the weakest — it taught
-`Max Mustermann` where the response carries the actual name — and three copies
-of one syntax rule drift apart. The system-prompt block keeps only its routing
+the syntax on a made-up roster entry (`Jane Doe - ACME`) where the response
+carries the actual name; the `<at>Max Mustermann</at>` placeholder belongs to
+the tool description, which keeps it — and three copies of one syntax rule
+drift apart. The system-prompt block keeps only its routing
 guidance (when to call, once per turn, not in 1:1 chats) and points at the
 other two.
 
