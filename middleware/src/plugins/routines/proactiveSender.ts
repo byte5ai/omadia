@@ -8,7 +8,8 @@ import type { ApprovalReminder } from '@omadia/plugin-api';
  * (Teams ConversationReference, Telegram chat id, …).
  *
  * The routines runner holds one sender per channel id. Channels register
- * their sender at boot (today: Teams; Telegram + HTTP follow). Each sender
+ * their sender at boot (Teams, Telegram, …); the kernel registers the
+ * browser chat's own sender (`webChatProactiveSender.ts`, #1071). Each sender
  * is responsible for translating the channel-agnostic `SemanticAnswer`
  * into the wire format its connector expects — same translation the
  * channel does for inbound-driven turns.
@@ -16,16 +17,37 @@ import type { ApprovalReminder } from '@omadia/plugin-api';
 export interface ProactiveSender {
   /**
    * Channel id this sender handles. Must match the `channel` column on
-   * routine rows it's expected to deliver to. Today: `'teams'`.
+   * routine rows it's expected to deliver to — e.g. `'teams'`, `'telegram'`,
+   * or `'web'` for the kernel's browser-chat sender.
    */
   readonly channel: string;
+
+  /**
+   * #1071 — optional create-time check of the delivery handle. Throws with a
+   * user-facing reason when `conversationRef` could never be delivered to, so
+   * `createRoutine` refuses the routine up front instead of it failing on
+   * every cron fire. Senders that accept any handle omit it.
+   */
+  validateConversationRef?(conversationRef: unknown): void;
+
+  /**
+   * #1071 — optional per-fire pre-flight, run BEFORE the agent turn. Throws
+   * `ProactiveTargetGoneError` when the conversation behind
+   * `conversationRef` no longer exists (e.g. the web chat was deleted): the
+   * runner then pauses the routine instead of spending a full agent turn on
+   * every cron fire for output nobody can receive. Any other throw fails the
+   * run like a `send` error. Senders that cannot tell omit it.
+   */
+  checkDeliverable?(conversationRef: unknown): Promise<void>;
 
   /**
    * Deliver `message` to the conversation captured in `conversationRef`.
    * Throws on non-recoverable errors (auth expired, conversation deleted,
    * bot uninstalled). The runner records the failure on the routine's
    * `last_run_error` and keeps the routine active — channels typically
-   * recover when the user next interacts.
+   * recover when the user next interacts. The one exception is
+   * `ProactiveTargetGoneError` (#1071): the target is gone for good, so the
+   * runner pauses the routine.
    */
   send(opts: {
     conversationRef: unknown;
@@ -64,6 +86,19 @@ export interface ProactiveSender {
      */
     approval?: ApprovalReminder;
   }): Promise<void>;
+}
+
+/**
+ * #1071 — the delivery target of a routine is permanently gone (not a
+ * transient outage). Thrown by `checkDeliverable` (or `send`); the runner
+ * records it as the run's error and PAUSES the routine, so cron stops
+ * burning agent turns until the user points the routine somewhere else.
+ */
+export class ProactiveTargetGoneError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProactiveTargetGoneError';
+  }
 }
 
 /**

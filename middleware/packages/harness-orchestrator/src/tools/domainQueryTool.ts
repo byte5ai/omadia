@@ -127,6 +127,8 @@ export interface Askable {
 import type { ToolPIIField, WriteCapability } from '@omadia/plugin-api';
 import { toolErrorFromException } from '@omadia/plugin-api';
 
+import { SubAgentRefusalError, subAgentRefusalNotice } from '../subAgentRefusal.js';
+
 export interface DomainTool {
   name: string;
   spec: DomainToolSpec;
@@ -257,10 +259,21 @@ export function createDomainTool(options: DomainToolOptions): DomainTool {
         return answer;
       } catch (err) {
         const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-        // An exception out of `ask()` (a provider error, an empty answer, the
-        // iteration limit) reaches the parent's model as the data-free
-        // withheld notice, never as its message: the parent hands this text
-        // on unchanged when the sub-agent already interned a dataset
+        // #1219 — the sub-agent's model declined the question. The withheld
+        // notice below would say "a tool failed" and hide that, so the parent
+        // could neither rephrase nor tell the user; it gets a fixed,
+        // harness-authored notice naming the decline instead. Only this exact
+        // type: its message is never used, and nothing else is let through.
+        if (err instanceof SubAgentRefusalError) {
+          console.warn(
+            `${logTag} ${options.name} → DECLINED (${elapsed}s) by the model's safety classifiers, category=${err.category ?? 'none'}`,
+          );
+          return subAgentRefusalNotice(options.name, err.category);
+        }
+        // Every other exception out of `ask()` (a provider error, an empty
+        // answer, the iteration limit) reaches the parent's model as the
+        // data-free withheld notice, never as its message: the parent hands
+        // this text on unchanged when the sub-agent already interned a dataset
         // (`subAgentResultV4` concatenates it). The notice keeps the `Error:`
         // prefix, so the parent flags it `is_error`. Full error in the log.
         return toolErrorFromException(options.name, err, {

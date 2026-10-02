@@ -50,10 +50,16 @@ describe('chat-session mirror — verifier fields', () => {
   const saved: ChatSession[] = [];
 
   before(async () => {
+    // The PUT route persists through `saveFromClient` (#1071), which keeps
+    // server-written proactive messages; this stub records what reaches it.
     const store = {
       save(s: ChatSession): Promise<void> {
         saved.push(s);
         return Promise.resolve();
+      },
+      saveFromClient(s: ChatSession): Promise<ChatSession> {
+        saved.push(s);
+        return Promise.resolve(s);
       },
     } as unknown as ChatSessionStore;
     const app = express();

@@ -14,12 +14,29 @@ import { createHash } from 'node:crypto';
  * story — it powers dedup and tells "changed" from "unchanged". An explicit
  * version-history table with rollback is deliberately deferred until there is
  * demand; the hash already gives a stable content identity to build on.
+ *
+ * #1219 — the `description` column is model-facing too: it is the routing text
+ * of the sub-agent's delegation tool in the parent's roster. So it is part of
+ * the identity, and a description-only edit yields a new hash — which is what
+ * makes the deterministic verdict (keyed by this hash) get recomputed instead
+ * of served from cache. It joins the payload only when it adds bytes the
+ * frontmatter does not already carry: an imported skill's description IS its
+ * frontmatter `description`, and appending it again would re-key every
+ * imported skill (and void its verdict acks) for no new information. A skill
+ * without a distinct description hashes exactly as before.
  */
 export function computeSkillHash(
   frontmatter: Record<string, unknown>,
   body: string,
+  description?: string | null,
 ): string {
-  const payload = `fm=${canonicalize(frontmatter)}\nbody=${body}`;
+  const distinctDescription =
+    typeof description === 'string' &&
+    description.length > 0 &&
+    description !== frontmatter['description']
+      ? `\ndescription=${description}`
+      : '';
+  const payload = `fm=${canonicalize(frontmatter)}\nbody=${body}${distinctDescription}`;
   return createHash('sha256').update(payload, 'utf8').digest('hex');
 }
 

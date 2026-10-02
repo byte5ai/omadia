@@ -226,6 +226,25 @@ test('a claude-cli agent replays the chat session store as its tail (#1087)', as
     messages: [],
   });
 
+  // #1071 — a cleared chat a routine has since delivered into: its only
+  // message is a proactive delivery, which is not a conversation turn.
+  await built.bundle.chatSessionStore.save({
+    id: 'sess-proactive-only',
+    title: 'Routinen',
+    createdAt: 1,
+    updatedAt: 3,
+    messages: [
+      {
+        id: 'proactive-r1-3',
+        role: 'assistant',
+        content: 'Tagesreport',
+        startedAt: 3,
+        finishedAt: 3,
+        proactive: { deliveredAt: 3, routineId: 'r1', routineName: 'Daily report' },
+      },
+    ],
+  });
+
   const tail = installedSessionTail(built.bundle.agent);
   assert.ok(tail, 'the claude-cli branch must inject a history supplier');
 
@@ -259,6 +278,9 @@ test('a claude-cli agent replays the chat session store as its tail (#1087)', as
   // `undefined`, or every new chat's first turn would carry the missing-history
   // note.
   assert.deepEqual(await tail('sess-empty', 3), []);
+  // Deliveries alone are no history either: `[]`, not the "history could not
+  // be loaded" disclosure.
+  assert.deepEqual(await tail('sess-proactive-only', 3), []);
 });
 
 /**

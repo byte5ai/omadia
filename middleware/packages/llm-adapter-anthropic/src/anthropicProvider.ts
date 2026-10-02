@@ -182,11 +182,36 @@ function mapFinishReason(stopReason: string | null | undefined): {
   }
 }
 
+/**
+ * `stop_details` → the neutral refusal object (#1219).
+ *
+ * The API populates `stop_details` ONLY for `stop_reason: 'refusal'` and leaves
+ * it null everywhere else, so the stop reason is the gate — reading the field
+ * unguarded would be a null deref on every normal turn. `category` is an open
+ * vendor set (`bio`, `cyber`, `reasoning_extraction`, …) and may be absent, so
+ * a refusal with no category still produces an object: its presence is the
+ * signal, its contents are diagnostics.
+ */
+function toRefusal(
+  message: Anthropic.Message,
+): { category?: string; explanation?: string } | undefined {
+  if (message.stop_reason !== 'refusal') return undefined;
+  const details = (message as unknown as Record<string, unknown>)['stop_details'];
+  if (details === null || typeof details !== 'object') return {};
+  const { category, explanation } = details as Record<string, unknown>;
+  return {
+    ...(typeof category === 'string' ? { category } : {}),
+    ...(typeof explanation === 'string' ? { explanation } : {}),
+  };
+}
+
 function mapResponse(message: Anthropic.Message): LlmResponse {
   const usage = message.usage as unknown as Record<string, unknown>;
   const cacheWrite = usage['cache_creation_input_tokens'];
   const cacheRead = usage['cache_read_input_tokens'];
+  const refusal = toRefusal(message);
   return {
+    ...(refusal !== undefined ? { refusal } : {}),
     content: fromAnthropicContent(
       message.content as unknown as Array<
         { type: string } & Record<string, unknown>
@@ -278,9 +303,15 @@ export function supportsTemperature(model: string): boolean {
  *
  * Again not derivable from the version number (`opus-5` forces fine,
  * `opus-5-5` does not). Mythos 5.1 shares the Fable 5.1 API surface.
+ * `claude-sonnet-5-5` answers the same 400 (found in the #1219 review), while
+ * `claude-sonnet-5` still forces fine.
+ *
+ * Comments elsewhere point at {@link supportsForcedToolChoice} instead of
+ * naming models, so this list is the one place to extend.
  */
 const FORCED_TOOL_CHOICE_UNSUPPORTED = [
   'claude-opus-5-5',
+  'claude-sonnet-5-5',
   'claude-fable-5-1',
   'claude-mythos-5-1',
 ];
@@ -311,6 +342,7 @@ function effectiveToolChoice(req: LlmRequest): ToolChoice | undefined {
 function buildParams(req: LlmRequest): Record<string, unknown> {
   const system = buildSystem(req);
   const toolChoice = effectiveToolChoice(req);
+  const outputConfig = toOutputConfig(req);
   return {
     model: req.model,
     max_tokens: req.maxTokens,
@@ -332,15 +364,70 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
     // #1033 — the normalized effort maps 1:1 onto Anthropic's
     // `output_config.effort` vocabulary (`low|medium|high|xhigh|max`); we
     // never send `max`, which the contract deliberately does not carry.
-    ...(req.effort !== undefined
-      ? { output_config: { effort: req.effort } }
-      : {}),
+    // #1219 — `outputFormat` shares that object, so both are built together:
+    // two spreads would make the second overwrite the first.
+    ...(outputConfig !== undefined ? { output_config: outputConfig } : {}),
   };
 }
 
-/** The beta that unlocks `output_config.effort`. Attached only when a request
- *  actually carries an effort, so the common path keeps its header set. */
+/**
+ * The `output_config` object, or undefined when the request carries neither an
+ * effort nor an output format — so the common path sends no such key at all.
+ *
+ * `format` is the CURRENT structured-output shape (`{type:'json_schema',
+ * schema}`), not the deprecated top-level `output_format` parameter. It needs
+ * no beta, but it is NOT available on every model: a model without
+ * structured-output support answers 400, and so does a schema the API cannot
+ * compile — `minimum`/`maximum`, `minLength`/`maxLength`, or an object
+ * without `additionalProperties: false`. The adapter forwards the schema
+ * untouched and does not pre-validate either; the caller owns both. A refusal
+ * (`stop_reason: 'refusal'`) still comes back as a normal response, and its
+ * text need not match the schema. Anthropic also rejects `format` together
+ * with document citations; nothing in this adapter sends citations today, so
+ * there is no guard here — add one if citation support lands.
+ */
+function toOutputConfig(req: LlmRequest): Record<string, unknown> | undefined {
+  const cfg: Record<string, unknown> = {
+    ...(req.effort !== undefined ? { effort: req.effort } : {}),
+    ...(req.outputFormat !== undefined
+      ? {
+          // Exactly `type` + `schema`: the API rejects unknown nested body
+          // fields with a 400, so the object is built field by field rather
+          // than spread from the neutral DTO.
+          format: {
+            type: req.outputFormat.type,
+            schema: req.outputFormat.schema,
+          },
+        }
+      : {}),
+  };
+  return Object.keys(cfg).length > 0 ? cfg : undefined;
+}
+
+/** The beta that unlocked `output_config.effort`. Attached only when a request
+ *  carries an effort AND the model still needs the opt-in, so the common path
+ *  keeps its header set. */
 export const EFFORT_BETA = 'effort-2025-11-24';
+
+/**
+ * Models that still need {@link EFFORT_BETA} to accept `output_config.effort`.
+ *
+ * Effort is GA from the 4.6 generation onward. Opus 4.5 shipped it behind the
+ * beta and is not retired, so it keeps the opt-in. Sending the header to a GA
+ * model is not an error, but it pins the request to a beta surface for no
+ * reason — the newer models get the plain GA shape.
+ */
+const EFFORT_BETA_REQUIRED = ['claude-opus-4-5'];
+
+/**
+ * Whether `output_config.effort` needs its beta opt-in on this model.
+ *
+ * Exported for the test. The match is a substring so dated ids
+ * (`claude-opus-4-5-20251101`) and provider-qualified ids resolve correctly.
+ */
+export function requiresEffortBeta(model: string): boolean {
+  return EFFORT_BETA_REQUIRED.some((m) => model.includes(m));
+}
 
 /** Beta opt-ins → SDK request options (`anthropic-beta` header). Returns
  *  undefined when there are none, so callers pass nothing extra (preserving
@@ -350,7 +437,9 @@ function toRequestOptions(
 ): { headers: Record<string, string> } | undefined {
   const betas = [
     ...(req.betas ?? []),
-    ...(req.effort !== undefined && !(req.betas ?? []).includes(EFFORT_BETA)
+    ...(req.effort !== undefined &&
+    requiresEffortBeta(req.model) &&
+    !(req.betas ?? []).includes(EFFORT_BETA)
       ? [EFFORT_BETA]
       : []),
   ];

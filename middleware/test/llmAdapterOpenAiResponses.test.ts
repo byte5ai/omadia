@@ -211,3 +211,47 @@ describe('#1033 — effort', () => {
     assert.deepEqual(body.reasoning, { effort: 'medium' });
   });
 });
+
+describe('#1219 — outputFormat', () => {
+  it('is dropped with a one-time note per model, never sent, never fatal', async () => {
+    const raw =
+      'event: response.completed\ndata: {"response":{"status":"completed","output":[]}}\n\n';
+    const lines: string[] = [];
+    const bodies: string[] = [];
+    const provider = createOpenAiResponsesProvider({
+      baseURL: 'https://x/codex',
+      apiKey: 'tok',
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        bodies.push(init.body as string);
+        return sseFetch(raw)(url, init);
+      }) as unknown as typeof fetch,
+      log: (...args: unknown[]) => {
+        lines.push(args.map(String).join(' '));
+      },
+    });
+    const outputFormat = {
+      type: 'json_schema' as const,
+      schema: { type: 'object', properties: {}, additionalProperties: false },
+    };
+    // Model ids unique to this test: the note set is module-wide.
+    const model = 'gpt-test-1219-a';
+    await provider.complete({ ...REQ, model, outputFormat });
+    await provider.complete({ ...REQ, model, outputFormat });
+    await provider.complete({ ...REQ, model: 'gpt-test-1219-b' });
+
+    const notes = lines.filter((l) => l.includes('outputFormat is not mapped'));
+    assert.equal(notes.length, 1, lines.join('\n'));
+    assert.match(notes[0]!, /\[llm-adapter-openai-responses\] model 'gpt-test-1219-a'/);
+    // Nothing schema-shaped goes on the wire.
+    for (const body of bodies) {
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      assert.equal('outputFormat' in parsed, false);
+      assert.equal('text' in parsed, false);
+      assert.equal('response_format' in parsed, false);
+    }
+
+    // A second model that asks for a schema gets its own note.
+    await provider.complete({ ...REQ, model: 'gpt-test-1219-b', outputFormat });
+    assert.equal(lines.filter((l) => l.includes('outputFormat is not mapped')).length, 2);
+  });
+});
