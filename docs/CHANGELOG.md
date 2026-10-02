@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Security — the desktop app grants web permissions only to its own pages
+
+2026-10-02 — Without a permission handler Electron grants every web permission
+to every frame, and the desktop session refused only `openExternal`. Camera,
+microphone, location, notifications and the rest were open to plugin iframes,
+same-app popups and foreign pages reached by a redirect. Permission requests
+and permission checks now share one deny-by-default rule (`canGrantPermission`
+in `desktop/src/navigationPolicy.ts`): a permission is granted only if it is on
+the allowlist and the main frame of one of the app's own documents asks, which
+means a page on the kernel or web UI origin, or the bundled wizard. The
+allowlist holds `clipboard-sanitized-write` for the copy buttons in the web UI
+and the wizard's recovery-key copy. Subframes get no permission, also on the
+app's own origin, where plugin UIs and the builder preview run. A feature that
+needs another permission-gated web API adds the permission to
+`GRANTABLE_PERMISSIONS` together with its call sites.
+
+Quitting while the web UI's first page was still loading made the app log
+`[main] boot failed` and could show the failure dialog during shutdown. That
+case is now logged as a boot stopped by the quit, without the dialog. The
+desktop log is flushed before the app exits, so shutdown lines are no longer
+lost.
+
+Before the merge, a dispatch build of all desktop targets and the install smoke on macOS, Windows and Linux checked this change.
+
 ### Changed — the desktop install smoke waits for the web UI's first load and checks the shell's boundaries
 
 2026-10-02: the first dispatch of `desktop-upgrade-smoke.yml` from `main` quit a
