@@ -1109,6 +1109,10 @@
         "what": "Das gewählte Modell gehört zu einem anderen Provider als dem ausgewählten.",
         "next": "Wähle ein Modell dieses Providers oder wechsle zum Provider des Modells."
       },
+      "model_class_unavailable": {
+        "what": "Der gewählte Provider bietet kein Modell für diese Modellklasse an.",
+        "next": "Aktualisiere oder registriere die Modelle des Providers, oder wähle statt einer Klasse ein festes Modell."
+      },
       "not_installed": {
         "what": "Das Plugin, dem du einen Provider zuordnest, ist hier nicht installiert.",
         "next": "Installiere das Plugin zuerst und setze danach seinen Provider.",
@@ -1478,6 +1482,11 @@
     "emptyStatePrompt": "Frage an den Orchestrator stellen — Antwort streamt live inkl. Tool-Aufrufen.",
     "emptyStateShortcut": "Shortcut: ↵ senden · ⇧↵ neue Zeile · Neuer Tab über „+ Neuer Chat\"",
     "composerSendHint": "↵ senden · ⇧↵ neue Zeile",
+    "proactiveRoutineBadge": "Geplante Routine · {name}",
+    "proactiveBadge": "Geplante Nachricht",
+    "proactiveDroppedAttachments": "{count, plural, one {# Anhang} other {# Anhänge}} dieser Routine-Ausgabe {count, plural, one {kann} other {können}} im Web-Chat nicht angezeigt werden.",
+    "proactiveDroppedInteractive": "{kind, select, choice {Eine Auswahlkarte} slots {Eine Terminauswahl} topic {Eine Themen-Rückfrage} routine_list {Eine Routinenliste} mcp_input {Ein Eingabeformular} other {Ein interaktives Element}} dieser Routine-Ausgabe kann im Web-Chat nicht angezeigt werden.",
+    "resetPartialNotice": "Nur in diesem Browser geleert — der Server war nicht erreichbar und kann diese Unterhaltung noch enthalten, zumindest ihre geplanten Routine-Nachrichten, die hier wieder auftauchen können. Starte den Chat später noch einmal neu, um ihn auch auf dem Server zu leeren.",
     "streamingSuffix": "· streamt…",
     "toolTraceHeading": "Tool-Trace ({count})",
     "subCallCount": "{count, plural, one {# Sub-Call} other {# Sub-Calls}}",
@@ -3819,6 +3828,17 @@
       "routingLabel": "Per-Turn Model-Routing (Haiku-Triage)",
       "routingHint": "Ein günstiger Haiku-Call klassifiziert jeden Turn — einfache Turns bekommen ein günstigeres Modell, komplexe das Frontier-Modell.",
       "routingAnthropicOnly": "Nur mit Anthropic verfügbar.",
+      "classGroup": "Modellklasse folgen (greift bei der nächsten Aktivierung)",
+      "modelsGroup": "Feste Modelle",
+      "classOption": "{class} (automatisch → {model})",
+      "classOptionUnresolved": "{class} (automatisch)",
+      "classOptionNoModel": "{class} (nicht auflösbar — kein Modell verfügbar)",
+      "unlistedModel": "{model} (nicht in der Modellliste)",
+      "classNames": {
+        "frontier": "Frontier",
+        "balanced": "Ausgewogen",
+        "fast": "Schnell"
+      },
       "retryDependentRebuild": "Erneut versuchen"
     },
     "status": {
@@ -5761,7 +5781,9 @@
       "triggerButton": "Jetzt",
       "triggerTitle": "Routine jetzt manuell auslösen — feuert einen Agent-Run und liefert das Ergebnis ins Channel.",
       "triggerNotice": "Gestartet — Ergebnis erscheint in ~30 Sekunden im Channel.",
+      "triggerNoticeWeb": "Gestartet — das Ergebnis landet im Chat, in dem die Routine angelegt wurde, und erscheint dort, sobald du den Chat das nächste Mal öffnest oder zu ihm zurückkehrst.",
       "triggerChatUnavailable": "Kein LLM-API-Key konfiguriert — bitte in Admin → Einstellungen hinterlegen und erneut auslösen.",
+      "triggerNotActive": "Diese Routine ist pausiert — erst fortsetzen, dann auslösen. Wurde sie pausiert, weil ihr Chat fehlt: Gibt es den Chat in deinem Browser noch, öffne ihn zuerst; sonst lösche die Routine und lege sie aus einem Chat neu an.",
       "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden."
     },
     "templateEditor": {

@@ -70,6 +70,7 @@ export const ERROR_HELP_CODES = [
   'providers.discovery_unavailable',
   'providers.invalid_request',
   'providers.key_rejected',
+  'providers.model_class_unavailable',
   'providers.model_provider_mismatch',
   'providers.not_installed',
   'providers.oauth_poll_failed',

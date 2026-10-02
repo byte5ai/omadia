@@ -1,6 +1,9 @@
 import type { MemoryStore } from '@omadia/plugin-api';
 import type { DirectLineSessionState } from '@omadia/channel-sdk';
 
+import { withSessionLock } from './chatSessionLock.js';
+import { mergeServerProactiveMessages } from './chatSessionProactive.js';
+
 /**
  * Persisted chat sessions for the dev-UI chat tab. Each session is a
  * self-contained JSON document under `/memories/chat-sessions/<id>.json`,
@@ -65,6 +68,28 @@ export interface ChatMessage {
    * the banner instead of dropping it. Optional: legacy messages pre-date it.
    */
   directLineSession?: DirectLineSessionState;
+  /**
+   * #1071 — set only on messages the SERVER wrote into the session without a
+   * user turn: a scheduled routine's output delivered to the web chat. The
+   * marker is what lets a stale whole-document PUT from an open tab keep the
+   * delivery (`mergeServerProactiveMessages`), keeps the message out of the
+   * model's replayed tail (`chatSessionTailTurns`) and drives the UI badge.
+   * Trusted only from the server's own copy — a client cannot mint one.
+   */
+  proactive?: ChatProactiveMarker;
+}
+
+export interface ChatProactiveMarker {
+  deliveredAt: number;
+  routineId?: string;
+  routineName?: string;
+  /**
+   * What the text-only web delivery had to drop from the routine's output.
+   * Stored as data, not as prose in `content`, so the UI names it in the
+   * reader's language.
+   */
+  droppedAttachments?: number;
+  droppedInteractive?: string;
 }
 
 /**
@@ -101,6 +126,14 @@ export interface ChatSession {
    *  (drain or kill) replaces or clears it. Optional because legacy sessions
    *  pre-date this field. */
   snapshot?: SessionConfigSnapshot;
+  /**
+   * #1071 — server clock of the last explicit clear (`resetMessages`). Lets
+   * a browser holding an older copy tell "cleared elsewhere, then a routine
+   * delivered" apart from "this browser's turn never reached the server".
+   * Written only by `resetMessages`; a client PUT can neither set nor drop
+   * it (`mergeServerProactiveMessages` carries the stored value over).
+   */
+  resetAt?: number;
 }
 
 export interface ChatSessionSummary {
@@ -146,6 +179,11 @@ export function chatSessionTailTurns(
   let pendingUser: string | undefined;
 
   for (const message of messages) {
+    // #1071 — a routine's proactive delivery is not an answer to anything the
+    // user asked. Skip it WITHOUT resetting `pendingUser`: were it paired, a
+    // routine report landing after an unanswered question would be replayed
+    // to the model as that question's answer.
+    if (message.proactive) continue;
     if (message.role === 'user') {
       pendingUser = message.content;
       continue;
@@ -164,8 +202,22 @@ export function chatSessionTailTurns(
   return turns.slice(-limit);
 }
 
+/** A completed turn the SessionLogger mirrors into the session. */
+interface ServerTurn {
+  userMessage: string;
+  assistantMessage: string;
+  telemetry?: { tool_calls: number; iterations: number };
+  startedAt: number;
+  finishedAt: number;
+}
+
 export class ChatSessionStore {
   constructor(private readonly store: MemoryStore) {}
+
+  /** #1071 — module-wide per-session lock, see `chatSessionLock.ts`. */
+  private withLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    return withSessionLock(id, fn);
+  }
 
   /** Summary of all persisted sessions, newest `updatedAt` first. */
   async list(): Promise<ChatSessionSummary[]> {
@@ -230,17 +282,19 @@ export class ChatSessionStore {
     id: string,
     source: () => Promise<SessionConfigSnapshot>,
   ): Promise<SessionConfigSnapshot | null> {
-    const session = await this.get(id);
-    if (!session) return null;
-    if (session.snapshot) return session.snapshot;
-    const snap = await source();
-    const updated: ChatSession = {
-      ...session,
-      snapshot: snap,
-      updatedAt: Date.now(),
-    };
-    await this.save(updated);
-    return snap;
+    return this.withLock(id, async () => {
+      const session = await this.get(id);
+      if (!session) return null;
+      if (session.snapshot) return session.snapshot;
+      const snap = await source();
+      const updated: ChatSession = {
+        ...session,
+        snapshot: snap,
+        updatedAt: Date.now(),
+      };
+      await this.save(updated);
+      return snap;
+    });
   }
 
   /**
@@ -249,11 +303,13 @@ export class ChatSessionStore {
    * re-bind to the current Agent config).
    */
   async clearSnapshot(id: string): Promise<void> {
-    const session = await this.get(id);
-    if (!session) return;
-    if (!session.snapshot) return;
-    const { snapshot: _snapshot, ...rest } = session;
-    await this.save({ ...rest, updatedAt: Date.now() });
+    await this.withLock(id, async () => {
+      const session = await this.get(id);
+      if (!session) return;
+      if (!session.snapshot) return;
+      const { snapshot: _snapshot, ...rest } = session;
+      await this.save({ ...rest, updatedAt: Date.now() });
+    });
   }
 
   /**
@@ -264,21 +320,103 @@ export class ChatSessionStore {
    */
   async resetMessages(id: string): Promise<ChatSession | null> {
     if (!ID_RE.test(id)) throw new InvalidSessionIdError(id);
-    const existing = await this.get(id);
-    if (!existing) return null;
-    const updated: ChatSession = {
-      ...existing,
-      messages: [],
-      updatedAt: Date.now(),
-    };
-    await this.save(updated);
-    return updated;
+    return this.withLock(id, async () => {
+      const existing = await this.get(id);
+      if (!existing) return null;
+      const now = Date.now();
+      const updated: ChatSession = {
+        ...existing,
+        messages: [],
+        updatedAt: now,
+        resetAt: now,
+      };
+      await this.save(updated);
+      return updated;
+    });
+  }
+
+  /**
+   * #1071 — persist a client PUT without dropping server-written proactive
+   * messages the client has not seen yet. Returns the document as stored.
+   */
+  async saveFromClient(session: ChatSession): Promise<ChatSession> {
+    if (!ID_RE.test(session.id)) throw new InvalidSessionIdError(session.id);
+    return this.withLock(session.id, async () => {
+      // A corrupt stored file (unparseable JSON) must not turn every PUT into
+      // a 500 — before #1071 a PUT overwrote (and so repaired) it. Fall back
+      // to that. Any other read failure (a transient storage error) is
+      // rethrown: overwriting then would drop deliveries the client has not
+      // seen and strip their `proactive` markers for good.
+      let existing: ChatSession | null = null;
+      try {
+        existing = await this.get(session.id);
+      } catch (err) {
+        if (!(err instanceof SyntaxError)) throw err;
+        console.warn(
+          `[chat-sessions] unreadable session ${session.id}, overwriting from client:`,
+          err.message,
+        );
+      }
+      const merged = mergeServerProactiveMessages(existing, session);
+      await this.save(merged);
+      return merged;
+    });
+  }
+
+  /**
+   * #1071 — append a scheduled routine's output to an EXISTING session as an
+   * assistant message. Never creates a session: a chat the user deleted stays
+   * deleted, and the caller reports `not_found` as a delivery failure.
+   */
+  async appendProactiveMessage(
+    id: string,
+    message: {
+      content: string;
+      deliveredAt: number;
+      routineId?: string;
+      routineName?: string;
+      droppedAttachments?: number;
+      droppedInteractive?: string;
+    },
+  ): Promise<'appended' | 'not_found'> {
+    if (!ID_RE.test(id)) return 'not_found';
+    return this.withLock(id, async () => {
+      const existing = await this.get(id);
+      if (!existing) return 'not_found';
+      const proactive: ChatProactiveMarker = {
+        deliveredAt: message.deliveredAt,
+        ...(message.routineId !== undefined ? { routineId: message.routineId } : {}),
+        ...(message.routineName !== undefined ? { routineName: message.routineName } : {}),
+        ...(message.droppedAttachments !== undefined && message.droppedAttachments > 0
+          ? { droppedAttachments: message.droppedAttachments }
+          : {}),
+        ...(message.droppedInteractive !== undefined
+          ? { droppedInteractive: message.droppedInteractive }
+          : {}),
+      };
+      const appended: ChatMessage = {
+        id: `proactive-${message.routineId ?? 'reminder'}-${String(message.deliveredAt)}`,
+        role: 'assistant',
+        content: message.content,
+        startedAt: message.deliveredAt,
+        finishedAt: message.deliveredAt,
+        proactive,
+      };
+      await this.save({
+        ...existing,
+        messages: [...existing.messages, appended],
+        updatedAt: Math.max(Date.now(), existing.updatedAt),
+      });
+      return 'appended';
+    });
   }
 
   async delete(id: string): Promise<void> {
     const virtualPath = this.pathFor(id);
-    if (!(await this.store.fileExists(virtualPath))) return;
-    await this.store.delete(virtualPath);
+    await this.withLock(id, async () => {
+      if (!(await this.store.fileExists(virtualPath))) return;
+      await this.store.delete(virtualPath);
+    });
   }
 
   /**
@@ -293,15 +431,16 @@ export class ChatSessionStore {
    */
   async appendTurnFromServer(
     id: string,
-    turn: {
-      userMessage: string;
-      assistantMessage: string;
-      telemetry?: { tool_calls: number; iterations: number };
-      startedAt: number;
-      finishedAt: number;
-    },
+    turn: ServerTurn,
   ): Promise<void> {
     if (!ID_RE.test(id)) return;
+    await this.withLock(id, () => this.appendTurnUnlocked(id, turn));
+  }
+
+  private async appendTurnUnlocked(
+    id: string,
+    turn: ServerTurn,
+  ): Promise<void> {
     const now = Date.now();
     const existing = await this.get(id);
 
@@ -334,7 +473,9 @@ export class ChatSessionStore {
     }
 
     // Idempotency: if the client has already PUT this exact pair, don't dupe.
-    const tail = existing.messages.slice(-2);
+    // #1071 — routine deliveries are skipped: one that landed between the
+    // client's PUT of this turn and this mirror must not hide the pair.
+    const tail = existing.messages.filter((m) => !m.proactive).slice(-2);
     const alreadyPersisted =
       tail.length === 2 &&
       tail[0]?.role === 'user' &&

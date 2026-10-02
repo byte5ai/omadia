@@ -1783,6 +1783,42 @@ takes no datasetId. Model-facing strings only; no behaviour or schema change.
 `privacyV4RenderContract.test.ts` pins that the tool description and the
 dataset digest carry both halves and that ALWAYS stays out.
 
+### Security — credential broker hardened for agent-driven use (#778 S3a)
+
+2026-09-25 — `CredentialBroker.request` sent the stamped request with a plain
+`fetch` and returned the upstream answer verbatim. It followed redirects (a
+302 carried an `X-Api-Key` to the host the upstream named), had no timeout,
+buffered any body size, spread caller headers next to the injected one (a
+lowercase `authorization` was joined into `forged, Bearer <secret>`), returned
+headers and body unscrubbed (an echoing upstream handed the secret back), and
+let a raw fetch error escape (for `query-param`, its URL is the secret). Nothing
+instantiates the broker yet, so nothing was exposed. This is the precondition
+for the agent tool (#778 S3b).
+
+The broker now dispatches with `redirect: 'manual'` and a 20 s timeout, reads
+the body under a 1 MiB streaming cap (`truncated: true` on overflow), scrubs the
+secret from header values and body in raw, base64, URL-encoded,
+JSON-escaped and PHP `json_encode` (`\/`) form, built from what goes on the wire (the whitespace-trimmed
+header value undici sends, the `%27` the URL parser adds; secrets of 8+
+characters), filters caller headers against a static allow-list plus
+undici's own value check and audits the dropped names, refuses a GET/HEAD with
+a body as `invalid-request` before a `once` grant is consumed, and maps
+failures to sanitized `upstream-timeout` / `upstream-unreachable` denials.
+It also closes a `pathPrefixes` bypass that predates the slice: the prefix
+check ran on `path.posix` output, but fetch's WHATWG parser resolves
+`%2e%2e` / `.%2E`, reads `\` as `/` and strips tab/LF/CR, so
+`/v1/messages/%2e%2e/%2e%2e/admin` passed a `/v1/messages` check and sent the
+secret to `/admin`. The broker now refuses backslashes and control characters
+in the path and matches, audits and sends the path exactly as fetch resolves
+it (`resolveWirePath`), before a `once` grant is consumed, against prefixes
+serialised the same way (so `/drive/My Files` or `/v1/über` still match); a declared host
+that is not a plain `host[:port]` is denied as `invalid-broker-declaration`,
+and `timeoutMs` is capped at Node's timer limit (2^31 - 1). `dispatch-failed`, which had no call site, is
+replaced by those two reasons. See `docs/security-architecture.md` §10n. What
+the slice leaves open for #778 S2/S3b (short-secret floor, the unenforced
+`credential:broker:use` gate, the unsalted `fingerprintSecret`, per-credential
+vendor headers) is tracked in `docs/middleware-agent-handoff.md` §13.
+
 ### Fixed — turn budget reaches registry agents; TurnBudgetField no longer wipes it (#1077)
 
 2026-09-24 — the OM-104 "time limit per turn" (`cli_turn_seconds`) had no
@@ -2045,6 +2081,137 @@ pre-existing defects, both fixed by the companion change in the entry above:
 `buildForAgent` did not forward `cliTurnSeconds` to registry-built Agents, and
 `TurnBudgetField` could wipe the stored budget after a failed load.
 
+### Fixed — routines created from the browser chat deliver into that chat (#1071)
+
+2026-09-25 — `manage_routine create` from the web chat failed with *"no
+proactive sender registered for channel 'web'"*: the browser chat had no
+`ProactiveSender`, so a routine could be listed, paused and deleted there but
+never created.
+
+- **Web sender, Postgres only.** `plugins/routines/webChatProactiveSender.ts`
+  is registered by the kernel through `initRoutines({ proactiveSenders })`,
+  inside `if (graphPool)`. Without `DATABASE_URL` routines and the tool stay
+  unwired, exactly as before.
+- **Delivery is persisted into the originating chat.** `/chat` and
+  `/chat/stream` capture the chat tab's `sessionId` in the routine's
+  `conversationRef`; a run appends an assistant message with a
+  `proactive: { deliveredAt, routineId?, routineName? }` marker to that chat in
+  `ChatSessionStore` (`appendProactiveMessage`), the same store the web UI
+  hydrates from. A deleted chat is never recreated: a pre-flight
+  (`ProactiveSender.checkDeliverable`) notices it BEFORE the agent turn runs,
+  and the runner pauses the routine with "no longer exists; the routine was
+  paused — if the chat still exists in your browser, open it and resume the
+  routine; otherwise delete the routine and create it again …" in
+  `last_run_error`, so cron stops paying a turn on every fire
+  (the same happens when the chat vanishes during the turn). A request
+  without a saved chat (debug `scope`, `http-default`) is refused at create
+  time. An empty answer (for example a diagram-only turn) fails the run
+  instead of being recorded as `ok` with nothing delivered; dropped
+  attachments and interactive cards are logged at warn level and recorded on
+  the marker (`droppedAttachments`, `droppedInteractive`), which the web UI
+  names under the badge from the en + de catalog — the stored text stays the
+  routine's own output. A `NO_REPLY` answer (the orchestrator's default for a
+  routine with nothing to report) is dropped like on every other channel:
+  nothing is written and the run counts as `ok`. There is no live push (the
+  web chat has no realtime channel): the web UI re-reads the active chat when
+  `/chat` mounts, after hydration, on chat switch, when the browser tab becomes
+  visible and when the window regains focus (a desktop window can be refocused
+  without ever turning hidden), and folds in deliveries the server returns on
+  a PUT. The message carries a "Scheduled routine" badge (en + de).
+- **Hydration folds, it no longer replaces.** A delivery makes the server copy
+  newer. When that copy differs from the browser's only by deliveries, the web
+  UI now keeps its own copy and adds the deliveries; replacing it would have
+  dropped every client-only field (attachments, privacy receipts, routing,
+  persona, follow-ups …) that the PUT schema strips. When the browser is
+  AHEAD — a turn's fire-and-forget PUT failed and a delivery then made the
+  server copy newer — it keeps its turns, folds the deliveries in and PUTs a
+  catch-up copy, as it did before deliveries could bump `updatedAt`. That
+  includes a server copy with no turns but a delivery (the chat's first turn
+  created the routine and its PUT failed). A clear on ANOTHER device followed
+  by a delivery leaves the same shape; the server's `resetAt` (stamped by
+  `POST …/reset`, server-owned, returned by GET) tells them apart: a reset
+  this browser did not perform and that is not older than its copy's last
+  change lets the clear win, so a stale device no longer pushes cleared turns
+  back for the subscription-CLI tail to replay. A catch-up PUT keeps the browser's title, since the server's may still be
+  the "Neuer Chat" default the failed PUT would have replaced. On the
+  in-process runtime the server copy holds such a turn under the SessionLogger
+  mirror's `srv-u-…` / `srv-a-…` ids; a mirrored message matches the finished
+  local one with the same role and trimmed content, and the catch-up PUT swaps
+  the `srv-*` ids for the client's. A turn with the same id matches only when
+  the local copy is finished and its trimmed content equals the server's. Any
+  other difference (a turn from another device, a partial local answer after a
+  mid-stream reload or a tab closed before its local write caught up, a clear
+  with nothing delivered since) is still resolved in favour of the newer server
+  copy; dropping local turns for a copy with no messages is logged.
+- **Re-reads never rewrite what they did not change.** A re-read that finds no
+  delivery leaves the session state untouched (no re-render, no localStorage
+  write). A re-read that does fold a delivery stores only that delivery, into
+  the one chat as currently stored (re-read from localStorage first); the
+  tab's whole in-memory array is not written. So a stale tab regaining focus
+  (every omadia page mounts the chat-sessions provider) cannot overwrite what
+  another tab stored since, nor bring back a chat another tab deleted. A re-read or PUT answer requested before "clear chat", or answered
+  while its server reset is still in flight, is discarded, so a cleared
+  delivery does not come back. A fold keeps the browser's own
+  `updatedAt`, so a turn whose PUT failed still triggers the next hydration's
+  catch-up PUT (which carries the server's clock). A rename folds in the
+  deliveries the server's merging PUT answer carries. A chat holding only
+  deliveries still counts as empty, so its first real turn names it and ships
+  the selected agent. The re-read / fold / clear-epoch / visibility logic lives
+  in `useProactiveRefresh` (`web-ui/app/_lib/chatProactiveRefresh.ts`).
+- **The "Run now" notice no longer promises ~30 seconds** for a web routine:
+  the result shows when that chat is next opened or focused.
+- **`PUT /api/chat/sessions/:id` merges instead of overwriting**
+  (`ChatSessionStore.saveFromClient` → `mergeServerProactiveMessages`) and
+  answers with the stored document: server-written deliveries the body lacks are
+  kept — also for `messages: []`, which is no longer read as "clear chat" (a
+  rename of a cleared chat, a stale tab's catch-up and a new chat all PUT that,
+  and each silently dropped unseen deliveries). Clearing is explicit:
+  `POST /api/chat/sessions/:id/reset`, which the web UI's `clearMessages` now
+  calls itself before PUTting the cleared copy. A failed reset is retried
+  once; if it still fails, the chat is cleared in the browser only and the
+  chat page says that the server may still hold the conversation — at least
+  its scheduled routine messages, which may reappear (en + de),
+  instead of letting them come back unexplained. A corrupt stored file
+  (unparseable JSON) is still overwritten (repaired) rather than failing the
+  PUT; any other read failure fails the PUT instead of dropping deliveries.
+- **The `proactive` marker is server-trusted.** It counts only from the
+  server's own copy; a PUT message carrying a marker the stored copy does not
+  hold (a delivery cleared or deleted on another device, or a forged one) is
+  dropped with a warning — kept as a plain answer it would outlive the clear,
+  reach the model tail and make the browser's next hydration replace its copy
+  (and its attachments). The web UI never counts a `proactive-*` message as a
+  turn either.
+- **An unsynced rename survives a delivery.** A rename whose PUT failed is
+  remembered locally (`titleUnsynced`, never sent); a delivery that makes the
+  server copy newer no longer reverts it at the next page load — the local
+  title is kept and pushed.
+- **Deliveries stay out of the model tail.** `chatSessionTailTurns` skips them,
+  so a report behind an unanswered question is never replayed as its answer,
+  and the subscription-CLI tail treats a chat holding only deliveries as empty
+  (`[]`), not as unreadable history. The SessionLogger mirror's idempotency
+  check looks past deliveries too, so a delivery landing between a client PUT
+  and the mirror of the same turn no longer stores that turn twice.
+- **"Run now" on a paused routine is refused, not recorded as `ok`.** A fire on
+  a routine that is no longer active is skipped without recording a run — it
+  used to record `ok` and overwrite the `last_run_error` explaining an
+  auto-pause (deleted chat). `POST /api/v1/routines/:id/trigger` answers 409
+  `routines.not_active` (the routines page names it, en + de, with both ways
+  out of an auto-pause: reopen the chat and resume, or recreate), and the smart
+  card's "trigger now" says the routine is paused.
+- **One per-session lock for every `ChatSessionStore` instance.** Each
+  orchestrator builds its own store over the same chat-sessions directory, so
+  the lock is now module-level and also covers `delete`, `captureSnapshot`,
+  `clearSnapshot` and `resetMessages`. The lock only orders concurrent
+  writers: a read-modify-write racing another can no longer drop a delivery or
+  bring a deleted chat back. A later, non-concurrent mirror turn or client PUT
+  can still recreate a deleted chat (as before), and a web routine then
+  delivers into it again. It is in-process only.
+
+Known limit, recorded in `docs/security-architecture.md` §3a and as a
+follow-up in `docs/middleware-agent-handoff.md` §13 (Web-Routine-Zustellung):
+chat sessions still have no per-user owner, so the target chat of a web routine
+is whatever chat id the creating user's turn named.
+
 ### Fixed — plugin-office/web-search Hub drift: lost setup guide restored, versions bumped, build-zip + drift guards (#1075)
 
 2026-09-24 — the Hub served `@omadia/plugin-office` 0.1.2, a version no commit
@@ -2254,6 +2421,34 @@ longer marks the server session `invalid`: that status made `markAuthorized`
 refuse the correct retry, so the post-login auto-assign hook (OM-79) never ran
 and the exit handler dropped the session instead of confirming it. The fixtures
 are now the verbatim 2.1.187 output from the container.
+
+### Fixed — per-agent model select showed the first list entry for a class ref (#1083)
+
+On `/admin/providers` → "Per-agent assignment" the model select could not
+display a model class ref such as `class:frontier` — the platform default the
+orchestrator is auto-installed with. No option matched the stored value, so the
+browser showed the first entry of the model list, which could name a model the
+agent was not using, and switching the provider or re-saving silently pinned a
+concrete model. The model classes are now first-class options, grouped above
+the pinned models and labelled with what they resolve to right now (e.g.
+`Frontier (auto → Claude Opus 5)`); any other stored value that is not in the
+list (a legacy alias, a qualified or dropped id) gets its own selected option.
+Switching the provider keeps a class ref. `GET /api/v1/admin/providers` adds
+`resolvedModel` to each assignment (computed with the runtime's own resolver)
+and `classDefaults` to each provider. `POST /api/v1/admin/providers/assignment`
+now stores a class ref as given — like the runtime config PATCH already did —
+instead of normalising it to a concrete id, returns `resolvedModel`, and
+rejects a class ref the provider cannot serve with any model with
+`400 providers.model_class_unavailable`. Qualified ids and aliases are still
+normalised. The orchestrator, verifier and background scorer resolve a class
+ref once, at activation, and keep that model until the plugin is reactivated
+(e.g. by re-saving the assignment). The admin label is computed from the
+current catalog, so when model discovery later moves a class, the
+`(auto → X)` label can run ahead of the model the plugin is actually running
+until it is reactivated. A server restart does not reliably converge either:
+discovery results are not persisted and boot discovery runs fire-and-forget,
+so activation can resolve against the bundled catalog. The in-app issue reporter's reformulation now resolves the
+orchestrator's model ref too, instead of sending a class ref raw to the vendor.
 
 ### Fixed — dynamic sub-agents on the Anthropic host sent `class:frontier` raw (404) (#1079)
 

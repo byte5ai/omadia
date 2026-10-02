@@ -1506,6 +1506,30 @@ explizite Wahl (`openai`, OAuth, lokaler keyless Server) wird nie überschrieben
 benutzt (Fail-closed-Regeln: tool-loser Provider vs. tool-treibendes Plugin,
 Modell/Provider-Mismatch, Routing-Disable bei Nicht-Anthropic).
 
+**Klassen-Refs bleiben stehen (#1083).** Eine Klassen-Referenz
+(`class:frontier` / `class:balanced` / `class:fast`) speichert
+`applyProviderAssignment` wörtlich — wie der Runtime-`PATCH` — statt sie auf die
+heutige konkrete `modelId` festzunageln; die Konsumenten lösen sie über
+`resolveConfiguredModel` / `resolveModelRefStrict` auf (#1079) — Orchestrator,
+Verifier und Extras einmal bei der Aktivierung (das Assignment reaktiviert das
+Plugin), die Issue-Umformulierung (`issuesRouter`, liest `orchestrator_model`)
+pro Aufruf. Die Sub-Agents lesen keinen dieser Keys (`SUB_AGENT_MODEL` bzw. das
+Manifest) und lösen in `DynamicAgentRuntime.activate()` auf. Kann der Provider
+gar kein Modell liefern (auch keine Nachbarklasse), antwortet der
+POST fail-closed mit `400 providers.model_class_unavailable`. Qualifizierte IDs
+(`openai:gpt-5.5`) und Aliase (`opus`) werden weiterhin auf die nackte
+`modelId` normalisiert. Das Ergebnis trägt zusätzlich `resolvedModel` (auch in
+der POST-Antwort). `GET /admin/providers` liefert pro Assignment `model` (der
+gespeicherte Ref) plus `resolvedModel` (derselbe Resolver wie zur Laufzeit,
+gegen den AKTUELLEN Katalog; Plugins, die bei der Aktivierung auflösen, behalten
+ihr Modell bis zur nächsten Reaktivierung — verschiebt die Model-Discovery
+(`modelCatalogSync`) danach das Ziel einer Klasse, kann das Label vom laufenden
+Modell abweichen, siehe §13 „Klassen-Refs veralten nach Discovery“; `null` wenn nichts gesetzt ist oder der
+Ref nicht auflösbar ist) und pro Provider `classDefaults` (Klasse →
+`modelId` via `modelForClass`). Die Admin-UI rendert Klassen als eigene,
+beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
+Provider-Wechsel einen Klassen-Ref bei.
+
 ### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
 
 Die Middleware hat keine Request-Locale — niemand liest `Accept-Language`, und
@@ -4872,6 +4896,103 @@ Sub-Agent, der nach „Partner 42“ fragt, bekommt so auch 142, 420 oder
   eigene Entscheidung (Capability ehrlich melden **und** Fallback bauen), darum
   nicht mitgezogen.
 
+### Credential-Broker: offen nach der Egress-Härtung (#778 S3a follow-up)
+
+S3a härtet Anfrage- und Antwortseite von `CredentialBroker.request`
+(`docs/security-architecture.md` §10n): auf der Anfrageseite die
+Caller-Header-Allow-List samt undici-Wertprüfung, die Ablehnung von GET/HEAD
+mit Body (`invalid-request`), den Abgleich der `pathPrefixes` mit dem
+Wire-Pfad und die Prüfung des deklarierten Hosts; auf der Antwortseite
+manuelle Redirects, Timeout und Byte-Cap, den Secret-Scrub und bereinigte
+Upstream-Fehler. Die folgenden Punkte lässt der Slice
+bewusst offen; sie müssen stehen, **bevor** das Agent-Tool (#778 S3b) den
+Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
+
+- **Kurze Secrets werden nicht gescrubbt (S2).** `brokerResponse.ts`
+  scrubbt Secrets und `basic-password`-Passwortsegmente erst ab
+  `MIN_SCRUBBABLE_SECRET_LENGTH` = 8 Zeichen; ein kürzeres Secret, das ein
+  Upstream zurückspiegelt, geht unverändert an den Aufrufer. Reparatur:
+  S2 lehnt solche Secrets (und bei `basic-password` ein zu kurzes
+  Passwortsegment) schon beim Anlegen ab, damit die Untergrenze nie greift.
+- **Die grobe Capability `credential:broker:use` wird nicht geprüft
+  (S3b).** Der Header von `harness-channel-sdk/src/credentials.ts` beschreibt
+  sie als Gate vor jeder Broker-Nutzung, aufgelöst über den normalen
+  #575-`GrantStore`. `broker.ts` prüft heute nur den feinen
+  `CredentialGrant`. S3b muss das Gate vor dem Tool-Aufruf durchsetzen,
+  sonst reicht ein Credential-Grant allein.
+- **`fingerprintSecret` ist ungesalzen (S2).** Der Log-Surrogat
+  (`harness-channel-sdk/src/credentials.ts`, SHA-256 gekürzt auf 64 Bit)
+  begründet seine Sicherheit damit, dass das Secret zufällig ist. Für
+  menschlich gewählte Secrets (vor allem `basic-password`, `user:pass`)
+  stimmt das nicht; ein Fingerprint in Audit-Events und Logs erlaubt dann
+  einen Wörterbuchabgleich. Reparatur: HMAC mit einem Server-Schlüssel statt
+  nacktem SHA-256, inklusive Umgang mit bestehenden `fingerprint`-Spalten.
+- **Vendor-Header brauchen ein `allowedHeaders` pro Credential (S2/S3b).**
+  Die Caller-Header-Allow-List in `brokerOutbound.ts` ist statisch;
+  `Notion-Version` o. ä. wird verworfen (und nur als Name auditiert). Das ist
+  eine Schema-Änderung am Credential.
+- **Nicht gescrubbte Transformationen.** Der Scrub deckt roh, base64 (des
+  ganzen Secrets), URL-kodiert (inkl. WHATWG-Form mit `%27`), JSON-escaped
+  (`\"`, `\\`, `\n`), die PHP-`json_encode`-Form mit `\/` (für roh und
+  base64) und jeweils die whitespace-getrimmte Wire-Form ab, nicht
+  JSON-`\u`-Escapes, teilweise URL-Kodierung (`/` unkodiert), base64 des
+  Passwortsegments allein oder Hashes des Secrets. Vor S3b entscheiden, ob
+  das Agent-Tool dafür eine zweite Schicht braucht.
+- **Upstream-`set-cookie` geht durch (S3b).** `sanitizeResponseHeaders`
+  scrubbt nur Secret-Formen. Die Request-Seite verwirft `Cookie` als
+  ambiente Autorität, aber ein Session-Cookie, das der Upstream ausstellt,
+  erreicht den Aufrufer. S3b entscheidet, ob es verworfen wird.
+- **`upstream-*` heißt „gesendet, Ausgang unbekannt“ (S3b).**
+  `upstream-timeout` / `upstream-unreachable` werden als `BrokerDenialError`
+  geworfen, nachdem das Secret raus ist (Audit: `allow`, dann `deny`). Das
+  Agent-Tool darf das nicht als Ablehnung darstellen, sonst wird ein nicht
+  idempotenter POST blind wiederholt. Eigene Fehlerklasse oder ein
+  `dispatched`-Flag erwägen und ein sicheres `cause.code` (`ENOTFOUND`,
+  `UND_ERR_*`) als Diagnose loggen.
+- **`pathPrefixes` gegen serverseitiges `%2F`-Dekodieren (S3b).** Seit S3a
+  prüft, auditiert und sendet der Broker den Pfad genau so, wie fetch ihn
+  auflöst (`resolveWirePath`: `%2e%2e`, `\`, Tab/LF/CR sind zu). Ein
+  Upstream oder Proxy, der `%2F` dekodiert und danach erneut normalisiert,
+  lässt sich mit `..%2F` trotzdem aus einem Präfix führen; `%2F` pauschal
+  abzulehnen würde GitLab-artige IDs brechen. S3b/S2: in der Anlage-UI
+  darauf hinweisen, das engste Präfix zu deklarieren, und den deklarierten
+  Host beim Anlegen validieren (heute erst beim Request als
+  `invalid-broker-declaration`).
+- **Standard-`fetch` ist nicht `guardedOutboundFetch`.** Bewusst: der Host
+  ist vom Operator deklariert und muss exakt passen, Intranet-Ziele sind
+  erlaubt. Mit S3b prüfen, ob ein per-Credential-Opt-in für den SSRF-Guard
+  nötig ist.
+
+### Web-Routine-Zustellung (#1071 follow-up)
+
+Der Web-Sender (§ *Web-Sender (#1071)*) schreibt in einen Chat, den niemand besitzt.
+Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
+
+- **Per-User-Ownership der Chat-Sessions.** Owner beim Anlegen stempeln und in
+  `GET`/`PUT`/`DELETE /api/chat/sessions` sowie in `validateConversationRef` prüfen.
+  Heute listet `GET` jede Session jedem angemeldeten User, und User A kann eine Routine
+  anlegen, die wiederkehrend in den Chat von User B schreibt, ohne dass B sie sehen,
+  pausieren oder löschen kann.
+- **`validateConversationRef` prüft Existenz.** Heute nur die Syntax der `sessionId`
+  (ein gelöschter Chat fällt erst beim ersten Fire auf — dann aber vor dem Agent-Turn,
+  und die Routine wird pausiert).
+- **`checkDeliverable` liest "Datei fehlt" als "Chat gelöscht"** und pausiert die Routine.
+  Existiert der Chat nur im Browser (sein erster PUT scheiterte), wird eine gültige Routine
+  pausiert. Gleiches nach jedem Neustart mit `MEMORY_BACKEND=inmemory` (oder persistierter
+  Operator-Wahl `inmemory`): alle Chat-Sessions sind weg, der erste Fire vor einem Reload
+  pausiert. Abhilfe: Tombstone beim `DELETE` oder nicht-pausierender Fehler bei bloßem Fehlen.
+- **Konkurrierendes Umbenennen bei nicht synchronisiertem Titel.** Hält dieser Browser ein
+  Umbenennen, dessen PUT scheiterte (`titleUnsynced`), und hat ein anderes Gerät den Chat
+  inzwischen umbenannt, gewinnt der lokale Titel und wird per Catch-up-PUT über das andere
+  Umbenennen geschrieben. Ohne Zeitstempel des Titels auf dem Server sind beide nicht
+  gegeneinander abzuwägen.
+- **Zustellungen sind nicht im Modellkontext** (bewusst, s. § *Web-Sender*). Eine Rückfrage
+  wie "erklär Punkt 2 des Reports" hat nichts, woran sie anknüpft; Zustellungen könnten als
+  separater Kontext mitgegeben werden.
+- **Clock-Skew bei `resetAt`.** `clearedElsewhere` vergleicht den Server-Zeitstempel des
+  Resets mit dem Browser-`updatedAt` — nur im Fall "anderes Gerät hat geleert" und nur,
+  wenn der Browser den Reset nicht selbst ausgeführt hat.
+
 ### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
 
 `classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
@@ -4952,6 +5073,24 @@ Budget seit der Aktivierung (das ui-orchestrator-Manifest setzt deshalb
 Modellaufrufen `LlmBudgetExceededError`; `shouldPlan` fängt ihn und plant bis
 zur nächsten Aktivierung nichts mehr, ohne Meldung. Budget pro Turn zählen oder
 die Obergrenze des Plan-Runners anheben.
+
+**Klassen-Refs veralten nach Discovery (#1083, offen).** Orchestrator, Verifier
+und extras lösen einen Klassen-Ref (`class:frontier` …) **einmal bei der
+Aktivierung** auf. Verschiebt `modelCatalogSync` danach das Ziel der Klasse,
+laufen sie auf dem alten Modell weiter, während `GET /admin/providers` das
+`resolvedModel` (und damit das Label `Frontier (auto → X)`) gegen den
+AKTUELLEN Katalog berechnet — das Label kann dem laufenden Modell also
+vorauseilen. Ein Neustart repariert das nicht verlässlich: Discovery-Ergebnisse
+werden nicht persistiert, und `void modelCatalogSync.refreshAll()` in
+`src/index.ts` läuft beim Boot fire-and-forget, während die Plugin-Aktivierung
+später awaited wird — sie kann gegen den gebündelten Katalog auflösen. Eine
+automatische Reaktivierung nach Discovery wurde in #1083 bewusst wieder
+entfernt, weil sie so nicht sicher ist. Voraussetzungen für eine sichere
+Variante: (1) nach einer Orchestrator-Reaktivierung die Kernel-Hydration erneut
+ausführen (Domain-Tools, `dynamicAgentRuntime.attachOrchestrator`,
+`setOnAgentBuilt`) — heute läuft sie nur beim Boot; (2) den Status nach der
+Reaktivierung prüfen, statt Erfolg anzunehmen; (3) den Orchestrator **nach**
+Verifier und extras reaktivieren, damit er deren neue Instanzen bindet.
 
 ### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
 
@@ -6339,10 +6478,186 @@ Stores). Drei Entscheidungen, die dazugehören:
   `enterWith` hätte den Principal ohne Scope-Ende auf der Request-Kette liegen lassen, und
   die In-Process-Runtime hat keinen Owner-Guard, der so etwas abfinge.
 
-Kanal ist `web`. Für den hat kein Plugin einen Proactive-Sender registriert, `create`
-scheitert also weiter — aber mit *"no proactive sender registered for channel 'web'"*, was
-die tatsächliche Grenze benennt. `list`/`pause`/`resume`/`delete` funktionieren.
-**Offen:** ein Web-Sender, damit auch `create` aus dem Browser-Chat trägt.
+Kanal ist `web`. `list`/`pause`/`resume`/`delete` funktionierten damit sofort; `create`
+scheiterte noch mit *"no proactive sender registered for channel 'web'"* — geschlossen
+durch den Web-Sender unten.
+
+#### Web-Sender (#1071)
+
+`middleware/src/plugins/routines/webChatProactiveSender.ts`, vom Kernel in
+`initRoutines({ proactiveSenders })` registriert — also nur **mit Postgres**. Ohne
+`DATABASE_URL` ist das Routines-Feature samt Tool gar nicht verdrahtet, exakt wie vorher.
+
+- **Zustellfläche ist der Chat-Verlauf selbst:** `ChatSessionStore`
+  (`/memories/chat-sessions/<id>.json`), derselbe Store, aus dem die Web-UI hydratisiert.
+  Ein Lauf hängt eine Assistant-Nachricht mit Marker `proactive: { deliveredAt,
+  routineId?, routineName? }` an den Chat an, in dem die Routine angelegt wurde
+  (`ChatSessionStore.appendProactiveMessage`). Kein Live-Push: der Web-Chat hat keinen
+  Realtime-Kanal (`WebSocketRegistry` gehört den Channel-Plugins, SSE nur dem Builder).
+  Stattdessen liest die Web-UI die aktive Session **additiv** neu
+  (`refreshProactive` → `mergeProactiveFromRemote`, nie ein PUT, übersprungen solange ein
+  Turn streamt): wenn `/chat` mountet — der `ChatSessionsProvider` sitzt im Root-Layout
+  und hydratisiert nur einmal pro Full-Load, ein In-App-Wechsel von `/routines` nach
+  `/chat` sähe sonst nichts —, wenn die Hydration fertig ist, wenn der aktive Chat
+  wechselt, wenn der Browser-Tab wieder sichtbar wird und wenn das Fenster den Fokus
+  zurückbekommt (ein Desktop-/Electron-Fenster wird nie "hidden"). Die Antwort des PUT
+  (das gemergte Dokument) wird ebenso eingefaltet. Re-Read, Einfalten, Clear-Epoche und
+  die Visibility-/Focus-Listener stecken im Hook `useProactiveRefresh`
+  (`web-ui/app/_lib/chatProactiveRefresh.ts`), den `useChatSessions` einbindet. Findet
+  ein Re-Read nichts Neues, bleibt der State-Array identisch (`foldProactive` gibt `prev`
+  zurück) — kein Re-Render, kein localStorage-Write. Faltet ein Re-Read eine Zustellung
+  ein, schreibt `persistFoldLocally` nur diese Zustellung in die EINE, frisch aus
+  localStorage gelesene Session (`foldIntoStored`; eine dort fehlende Session bleibt
+  gelöscht, ein neueres `resetAt` gewinnt), und der debouncte Gesamt-Array-Write wird für
+  reine Fold-Änderungen übersprungen (`isFoldOnlyChange`), solange kein lokaler Edit
+  aussteht. Da jede omadia-Seite den Chat-Sessions-Provider mountet, überschreibt ein
+  veralteter Tab, der wieder Fokus bekommt, so weder, was ein anderer Tab gespeichert hat,
+  noch holt er dort gelöschte Chats zurück. Ein Re-Read
+  oder PUT-Answer, der **vor** einem "Chat leeren" angefragt wurde, wird verworfen
+  (Clear-Epoche pro Session), ebenso jeder, der beantwortet wird, **während** der Reset
+  noch läuft (`beginClear`/`endClear`) — sonst kämen die gerade gelöschten Zustellungen
+  zurück. Offline-User sehen die Nachricht beim
+  nächsten Öffnen; die UI zeigt ein Badge "Geplante Routine · <Name>".
+- **Hydration faltet, ersetzt nicht.** Eine Zustellung macht die Server-Kopie neuer. Die
+  Server-Kopie kennt aber nur, was `MessageSchema` deklariert (zod strippt den Rest):
+  Attachments, Privacy-Receipts, Routing, Persona, Follow-ups … gibt es nur im Browser.
+  `reconcileNewerRemote` vergleicht die Turns (Nicht-Proactive-Nachrichten) Position für
+  Position. Ein Server-Turn passt zum lokalen, wenn (a) die Ids gleich sind **und** die
+  lokale Nachricht fertig ist (`streaming !== true`) und ihr getrimmter Inhalt dem des
+  Servers gleicht, oder (b) der Server-Turn eine Mirror-Id trägt (`srv-u-…`/`srv-a-…`, vom
+  SessionLogger geschrieben, bevor der Client-PUT sie ersetzt) und die lokale Nachricht
+  gleiche Rolle, gleichen getrimmten Inhalt hat, fertig und nicht `error` ist — die Regel
+  der Mirror-Idempotenz (`appendTurnUnlocked`). Drei Fälle:
+  - **Alle Turns passen, gleiche Anzahl:** lokale Kopie bleibt, Zustellungen werden
+    eingefügt, der Titel kommt vom Server. Hat ein Mirror-Turn gepasst, folgt ein
+    Catch-up-PUT, der die `srv-*`-Ids durch die des Clients ersetzt (Titel dann lokal,
+    s. u.).
+  - **Server-Turns sind ein echtes Präfix der lokalen:** der Browser ist voraus (ein
+    Turn-PUT scheiterte, ohne gespiegelt zu werden). Lokale Kopie bleibt, Zustellungen
+    werden eingefügt, Catch-up-PUT (der Merge-PUT behält die Zustellungen). Das gilt auch
+    für eine Server-Kopie **ohne** Turns, aber mit Zustellung: der erste Turn des Chats
+    hat die Routine angelegt und sein PUT scheiterte. "Auf anderem Gerät geleert, danach
+    zugestellt" hinterlässt dieselbe Form; unterschieden wird über `resetAt`
+    (`clearedElsewhere`): `resetMessages` stempelt es (Server-Uhr), `mergeServerProactiveMessages`
+    trägt den gespeicherten Wert über jeden PUT (ein Client kann ihn weder setzen noch
+    löschen), `GET` liefert ihn, `coerceSession` liest ihn, und `clearMessages` merkt sich
+    den `resetAt` eines selbst ausgeführten Resets lokal. Ein Reset, den dieser Browser
+    **nicht** kennt und der nicht älter als sein letzter lokaler Stand (`updatedAt`) ist →
+    das Leeren gewinnt (Server-Kopie, kein PUT); sonst gewinnen die Turns. So schiebt ein
+    veraltetes Gerät geleerte Turns nicht mehr zurück auf den Server, wo der
+    Subscription-CLI-Tail sie dem Modell replayed hätte.
+  - **Alles andere** — Turn von einem anderen Gerät, eine lokal nur teilweise vorhandene
+    Antwort unter gleicher oder Mirror-Id (Reload mitten im Stream, Tab geschlossen bevor
+    der debouncte localStorage-Write nachzog), Leeren/Reset ohne spätere Zustellung
+    (Server ganz ohne Nachrichten; das wird geloggt) → Server-Kopie gewinnt wie vor
+    #1071, kein PUT.
+  - **Titel bei Catch-up-PUT:** immer der lokale. Der Server hat den letzten Write dieses
+    Browsers nie bekommen, sein Titel kann also noch der Default ("Neuer Chat") sein, den
+    der gescheiterte PUT ersetzt hätte — der Catch-up würde den Rückfall persistieren.
+  - **Nicht synchronisierte Umbenennung:** `renameSession` setzt lokal `titleUnsynced`
+    (nur localStorage, nie gesendet); jeder erfolgreiche PUT mit diesem Titel löscht es.
+    Bei gleichen Turns und abweichendem Titel gewinnt der lokale Titel, wenn er
+    `titleUnsynced` ist (Catch-up-PUT) — sonst hätte eine Zustellung, die die
+    Server-Kopie neuer macht, die gescheiterte Umbenennung still zurückgedreht. Ohne das
+    Flag gewinnt der Server-Titel (Umbenennung auf anderem Gerät).
+- **Delivery-Handle:** `conversationRef = { kind: 'http-chat', sessionScope, sessionId? }`.
+  `sessionId` wird serverseitig nur gesetzt, wenn die `sessionId` des Requests wirklich der
+  Scope des Turns ist (nicht unter Debug-`scope`, nicht bei `http-default`). Fehlt sie,
+  lehnt `createRoutine` schon beim Anlegen ab (`ProactiveSender.validateConversationRef`,
+  optionaler Hook im middleware-internen Interface, nicht in `@omadia/plugin-api`). Alte
+  `web`-Zeilen kann es nicht geben — `create` scheiterte dort immer.
+- **PUT merged statt überschreibt.** Die Web-UI PUTtet nach jedem Turn das *ganze*
+  Dokument aus einer beim Seitenladen hydratisierten Kopie. `PUT /api/chat/sessions/:id`
+  läuft deshalb über `ChatSessionStore.saveFromClient` → `mergeServerProactiveMessages`:
+  server-geschriebene Proactive-Nachrichten, die im Body fehlen, bleiben erhalten (vor der
+  ersten späteren User-Nachricht einsortiert, nie zwischen Frage und Antwort). Der Marker
+  zählt nur aus der Server-Kopie; eine Nachricht mit einem Marker, den die Server-Kopie
+  nicht hält (Chat auf anderem Gerät geleert/gelöscht, oder vom Client gefälscht), wird
+  **verworfen** (`WARN`-Log mit Anzahl und Session-Id) — nicht als normale
+  Assistant-Nachricht behalten: so überlebte sie das Leeren, landete im Modell-Tail
+  (`chatSessionTailTurns` überspringt nur markierte Nachrichten) und zählte bei der
+  nächsten Hydration als Turn, den der Browser nicht hat, sodass die Server-Kopie die
+  lokale samt Attachments ersetzte. Die Web-UI zählt zusätzlich jede Nachricht mit
+  `proactive-*`-Id nie als Turn (`isRoutineDelivery`). Ein PUT mit
+  `messages: []` ist **kein** "Chat leeren" mehr: genau das PUTten auch das Umbenennen
+  eines geleerten Chats, der Catch-up eines veralteten Tabs und ein neuer Chat, und
+  jedes davon hat ungesehene Zustellungen gelöscht. Leeren ist explizit
+  `POST /api/chat/sessions/:id/reset` (`resetMessages`); `clearMessages` in der Web-UI
+  ruft es selbst auf und PUTtet danach die geleerte Kopie aus dem committeten State
+  (`sessionsRef`). Scheitert der Reset auch im zweiten Versuch, ist der Chat nur im Browser
+  geleert (der PUT ersetzt nur die Turns, Zustellungen bleiben); `clearMessages` liefert
+  dann `'partial'`, und die Chat-Seite sagt, dass der Server die Unterhaltung — mindestens
+  ihre geplanten Nachrichten — noch halten kann (`chat.resetPartialNotice`, en + de; war
+  auch der PUT nicht erreichbar, hält er die ganze Unterhaltung). Ist der Chat in diesem
+  Tab gar nicht geladen, wird nichts gesendet und `'not_loaded'` geliefert (kein Hinweis). Umbenennen liest nicht mehr vorab, sondern
+  faltet die PUT-Antwort ein. `MessageSchema` kennt
+  `proactive`, sonst entfernt zod ihn beim nächsten PUT (die #445-Falle). Ist die
+  gespeicherte Datei korrupt (JSON nicht parsebar, `SyntaxError`), überschreibt der PUT
+  sie wie vor #1071 (repariert sie, `WARN`-Log); jeder andere Lesefehler lässt den PUT
+  scheitern, statt ungesehene Zustellungen samt Marker endgültig zu verwerfen.
+- **Per-Session-Lock, modulweit, nur in-process.** Append, Merge-Save,
+  `appendTurnFromServer`, `captureSnapshot`, `clearSnapshot`, `resetMessages` und `delete`
+  laufen unter einem Lock pro Session-Id, den **alle** `ChatSessionStore`-Instanzen teilen
+  (`buildOrchestrator` baut eine pro Agent, alle über dasselbe
+  `/memories/chat-sessions`). Damit ist auch der SessionLogger-Mirror eines Registry-Agents
+  gegen Web-Sender und PUT-Route serialisiert, und ein DELETE kann nicht von einem
+  parallelen Read-Modify-Write zurückgeholt werden. Er gilt **nicht** über Prozesse
+  hinweg — bei mehreren Middleware-Instanzen auf einem geteilten Memory-Store bleibt ein
+  Fenster. Die Idempotenz-Prüfung des Mirrors (`appendTurnUnlocked`, "letzte zwei
+  Nachrichten") überspringt Zustellungen, sonst würde eine Zustellung zwischen Client-PUT
+  und Mirror desselben Turns ihn als `srv-u`/`srv-a` doppelt speichern.
+- **Gelöschter Chat wird nicht wiederbelebt — und kostet keinen Agent-Turn.** Der optionale
+  Sender-Hook `checkDeliverable` läuft im Runner **vor** dem Agent-Turn und wirft
+  `ProactiveTargetGoneError` (*"web chat conversation '<id>' no longer exists"*); dasselbe,
+  wenn der Chat während des Turns verschwindet (`send`). Der Runner pausiert die Routine
+  dann (unscoped, System-Aktion), meldet sie beim Scheduler ab und schreibt nach
+  `last_run_error` *"…; the routine was paused — if the chat still exists in your browser,
+  open it and resume the routine; otherwise delete the routine and create it again from an
+  existing conversation"* (ein nur serverseitig fehlender Chat wird beim Laden im Browser
+  wieder gespeichert). "Jetzt" auf die pausierte Routine nennt beide Wege
+  (`routines.actions.triggerNotActive`). Ein fehlender Store (LLM-Key noch nicht gesetzt) ist dagegen ein
+  normaler Fehler; die Routine bleibt aktiv. Ein Fire auf eine nicht mehr aktive Routine
+  wird übersprungen, **ohne** einen Lauf aufzuzeichnen (früher `ok`, was den
+  `last_run_error` mit der Pausen-Erklärung überschrieb). "Jetzt" auf eine pausierte
+  Routine: `triggerRoutineNow` wirft `RoutineNotActiveError`, `POST
+  /api/v1/routines/:id/trigger` antwortet 409 `routines.not_active` (Routinen-Seite:
+  `routines.actions.triggerNotActive`), die Smart-Card sagt "ist pausiert".
+- **Nur Text.** `cardBody`/`approval` werden stillschweigend ignoriert; `message.text`
+  trägt schon den Markdown-Fallback, und das Session-Schema persistiert keine
+  Attachments. Verworfene Attachments und ein verworfenes `message.interactive` (Kind
+  wird genannt) werden auf Warn-Level geloggt (`console.warn`) **und** am Marker
+  festgehalten (`proactive.droppedAttachments`, `proactive.droppedInteractive`); die
+  Web-UI nennt sie unter dem Badge aus dem Katalog (`chat.proactiveDroppedAttachments`
+  mit ICU-Plural, `chat.proactiveDroppedInteractive`, en + de). Der gespeicherte Text
+  bleibt die Ausgabe der Routine — keine englische Prosa darin. Eine **leere Antwort** (z. B. ein reiner
+  Diagramm-Turn) wirft — der Lauf landet als `error` in `last_run_error` statt als `ok`
+  ohne Zustellung.
+- **`NO_REPLY` wird verworfen, nicht zugestellt.** Der Orchestrator-Systemprompt macht
+  `NO_REPLY` zur Standardantwort einer Routine ohne Neuigkeiten. Der Web-Sender prüft das
+  wie Teams, Telegram und die eingehende Web-Route (`isNoReply`, strikte und
+  angehängte Form) **vor** dem Leer-Text-Wurf, loggt `logNoReplyDrop('web', …)` und
+  schreibt nichts; der Lauf zählt als `ok`.
+- **Nicht im Modellkontext.** `chatSessionTailTurns` überspringt Proactive-Nachrichten,
+  sonst würde ein Report hinter einer unbeantworteten Frage als deren Antwort replayed —
+  wie bei Teams, wo Routine-Turns unter `routine:<id>` laufen. Die Lücken-Prüfung des
+  CLI-Tails (`buildOrchestrator.ts`, "Verlauf nicht lesbar") zählt sie ebenfalls nicht:
+  ein Chat, der nur Zustellungen enthält, ist leer (`[]`), keine Lücke.
+- **Owner:** unverändert. Identität nur aus der Session, `canTargetOthers: false`,
+  `pause`/`resume`/`delete`/`trigger` owner-gescoped (#1025). Die `sessionId` kommt aus
+  dem authentifizierten Turn des Erstellers.
+
+**Follow-up:** Chat-Sessions haben keinen Per-User-Owner — `GET /api/chat/sessions` listet
+alle Sessions jedem angemeldeten User, `PUT` nimmt jede Id, und ein Turn mit fremder
+`sessionId` spiegelt schon heute in diesen Chat. #1071 **erweitert** diese Fläche leicht:
+die `conversationRef.sessionId` stammt aus dem Request-Body des Erstellers, also kann
+User A eine Routine anlegen, die *wiederkehrend* und mit Server-Badge in den Chat von
+User B schreibt; B sieht die Routine nicht und kann sie weder pausieren noch löschen
+(Routinen sind owner-gescoped). Das ist nicht Teil von #1071 und bleibt als Follow-up
+offen (§13, *Web-Routine-Zustellung*; Security-Eintrag in `docs/security-architecture.md`
+§3a); nötig ist Per-User-Ownership
+der Chat-Sessions (Owner beim Anlegen stempeln, `GET`/`PUT`/`DELETE` und
+`validateConversationRef` darauf prüfen). Weiterer offener Punkt: `validateConversationRef`
+prüft nur die Syntax der `sessionId`, nicht ob der Chat existiert.
 
 ### Der Principal für *jeden* Kanal: Producer in `CoreApi` (#1086)
 
