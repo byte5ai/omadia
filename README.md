@@ -31,18 +31,19 @@ there only once you switch on prompt masking (`mask_user_prompt`, default
 off). Every other model call sends its text as it is, with prompt masking on
 or off. That covers the inbound security screener, turn scoring and the other
 memory jobs, and plugin calls through `ctx.llm` such as the canvas composer
-and the plan runner. Images you attach reach the model unmasked, and agents on
-the Claude subscription CLI run without the shield. The exceptions are listed
-under [Trust & privacy](#trust--privacy-architecture). An optional answer
-verifier, off by default, checks an answer against its sources only when one
-of its trigger patterns matches, such as a euro amount, an accounting
-reference or a date written as `2026-10-02`. An answer whose only figures
-come in other formats, like `$500` or `October 2, 2026`, is not checked
-unless an aggregate keyword such as `total` stands in it. In its default
-`shadow` mode the verifier only records a verdict. On the Postgres backend,
-each turn in which the shield acted appends a hash-chained receipt. Writing
-it is best-effort: a failed write is logged, and the turn completes without a
-receipt. Bring your own LLM key and switch providers by config, not code.
+and the plan runner. Images you attach go to an image-capable model unmasked,
+and agents on the Claude subscription CLI run without the shield. The
+exceptions are listed under [Trust & privacy](#trust--privacy-architecture).
+An optional answer verifier, off by default, checks an answer against its
+sources only when one of its trigger patterns matches, such as a euro amount,
+an accounting reference or a date written as `2026-10-02`. An answer whose
+only figures come in other formats, like `$500` or `October 2, 2026`, is not
+checked unless an aggregate keyword such as `total` stands in it. In its
+default `shadow` mode the verifier only records a verdict. On the Postgres
+backend, each turn in which the shield acted appends a hash-chained receipt.
+Writing it is best-effort: a failed write is logged, and the turn completes
+without a receipt. Bring your own LLM key and switch providers by config,
+not code.
 
 ---
 
@@ -171,7 +172,7 @@ three rows are why teams choose it; the rest is the groundwork done properly.
 
 | Capability | What you get |
 |---|---|
-| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary. The shield acts only in a turn's own model requests, from the agent's loop and its sub-agents to the verifier's checks. There the LLM works from an identity-free digest of each tool result and gets tool errors redacted or withheld, and a result the shield cannot intern is withheld. `guarded` by default, with `bypass`, `per_tool` and a per-MCP-server bypass as opt-ins and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`) that does not cover knowledge-graph ingestion of MCP results. `read_attachment` (uploaded files) and a short allowlist of the agent's own tools return their results in clear, and the errors these tools return or throw reach the model as they are, like the errors a bypassed tool returns. Your messages, recalled context and the chat history a channel replays are masked there only while prompt masking (`mask_user_prompt`, off by default) is on, so by default they reach the model as typed. Replayed answers can carry real values the shield rendered into them. Every other model call sends its text as it is, with masking on or off, from the inbound security screener, turn scoring and the other memory jobs to plugin calls through `ctx.llm` such as the canvas composer and the plan runner. Attached images reach the model unmasked, and the Claude subscription CLI (`claude-cli`) runs without the shield. |
+| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary. The shield acts only in a turn's own model requests, from the agent's loop and its sub-agents to the verifier's checks. There the LLM works from an identity-free digest of each tool result and gets tool errors redacted or withheld, and a result the shield cannot intern is withheld. `guarded` by default, with `bypass`, `per_tool` and a per-MCP-server bypass as opt-ins and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`) that does not cover knowledge-graph ingestion of MCP results. `read_attachment` (uploaded files) and a short allowlist of the agent's own tools return their results in clear, and the errors these tools return or throw reach the model as they are, like the errors a bypassed tool returns. Your messages, recalled context and the chat history a channel replays are masked there only while prompt masking (`mask_user_prompt`, off by default) is on, so by default they reach the model as typed. Replayed answers can carry real values the shield rendered into them. Every other model call sends its text as it is, with masking on or off, from the inbound security screener, turn scoring and the other memory jobs to plugin calls through `ctx.llm` such as the canvas composer and the plan runner. Attached images go to an image-capable model unmasked, and the Claude subscription CLI (`claude-cli`) runs without the shield. |
 | ✅&nbsp;**Answer&nbsp;verification** | Optional and off by default (`verifier_enabled`). Once switched on, it checks an answer against the run's own sources only if one of its trigger patterns matches, such as a euro amount, an accounting reference like `INV/2026/0042` or a date written as `2026-10-02`, and records a verdict. Figures in other formats, such as other currencies or English-format dates, match no trigger pattern unless the answer also holds an aggregate keyword such as `total` and a number of three or more digits. An answer in which the verifier finds nothing to check is `skipped`, a verifier that could not run is `unavailable`, and `approved` means that every claim the verifier extracted was checked and confirmed. The default mode, `shadow`, only records. `enforce` holds each answer until its verdict, delivers an answer the verifier confirmed and withholds one it could not confirm. An answer that no trigger pattern matched, or in which the extraction found no claim, goes out unchecked in `enforce` too, and so does a turn that carries an input card. |
 | 🧮&nbsp;**Excel&nbsp;from&nbsp;real&nbsp;rows** | `create_xlsx` writes the real rows behind a `datasetId` into the workbook server-side, so they never pass through the model, and adds sums and pivots as Excel formulas. omadia runs no spreadsheet engine of its own: the workbook asks the spreadsheet application to recalculate when it opens the file, and that application computes every formula result. |
 | 🧾&nbsp;**Traces&nbsp;and&nbsp;receipts** | The call-stack viewer shows a run step by step, with each tool call and decision. That trace is best-effort telemetry, so a run can lack one. Privacy receipts (`/operator/receipts`, Postgres backend) are hash-chained and written best-effort, one for each turn in which the privacy shield acted. A failed write is logged and not retried, and a receipt that was never written leaves no gap in the chain. |
