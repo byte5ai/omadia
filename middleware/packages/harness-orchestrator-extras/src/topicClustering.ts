@@ -28,6 +28,8 @@ import type {
   TopicNode,
 } from '@omadia/plugin-api';
 
+import type { JobPrivacyRun, OpenJobPrivacy } from './jobPrivacy.js';
+
 export interface TopicClusteringDeps {
   kg: KnowledgeGraph;
   /** Optional. When absent, naming falls back to "Cluster <n>". */
@@ -35,6 +37,14 @@ export interface TopicClusteringDeps {
   /** Haiku model id. Default 'claude-haiku-4-5-20251001'. */
   model?: string;
   log?: (msg: string) => void;
+  /**
+   * WP-10 — the Privacy Shield route for the member summaries, which carry
+   * stored real values. One run per `recluster`; the name and description
+   * are restored before they are persisted. A run that cannot mask names the
+   * cluster with the fallback, without a model call. Absent ⇒ the summaries
+   * go out as stored.
+   */
+  privacy?: OpenJobPrivacy;
 }
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
@@ -167,6 +177,7 @@ export function createTopicClusteringService(
   async function nameCluster(
     summaries: string[],
     fallbackIndex: number,
+    run: JobPrivacyRun | undefined,
   ): Promise<{ name: string; description: string; source: TopicNamingSource }> {
     if (!deps.llm) {
       return {
@@ -180,11 +191,22 @@ export function createTopicClusteringService(
         .slice(0, TOP_K_FOR_NAMING)
         .map((s, i) => `${String(i + 1)}. ${s}`)
         .join('\n');
+      const masked = run ? await run.mask(body) : { send: true as const, text: body };
+      if (!masked.send) {
+        log(
+          `[topic-clustering] privacy: ${masked.reason} — naming skipped for cluster ${String(fallbackIndex + 1)}`,
+        );
+        return {
+          name: `Cluster ${String(fallbackIndex + 1)}`,
+          description: summaries[0]?.slice(0, 200) ?? '',
+          source: 'fallback',
+        };
+      }
       const response = await deps.llm.complete({
         model,
         maxTokens: 250,
         system: NAMING_PROMPT,
-        messages: [textMessage('user', body)],
+        messages: [textMessage('user', masked.text)],
       });
       const text = collectText(response.content);
       const parsed = parseNaming(text);
@@ -196,7 +218,12 @@ export function createTopicClusteringService(
           source: 'fallback',
         };
       }
-      return { ...parsed, source: 'haiku' };
+      if (!run) return { ...parsed, source: 'haiku' };
+      return {
+        name: await run.restore(parsed.name),
+        description: await run.restore(parsed.description),
+        source: 'haiku',
+      };
     } catch (err) {
       log(
         `[topic-clustering] naming Haiku call failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -266,12 +293,15 @@ export function createTopicClusteringService(
       // orders by member_count DESC).
       .sort((a, b) => b.length - a.length);
 
+    // One privacy run per recluster: a value keeps its surrogate across the
+    // clusters it appears in.
+    const run = deps.privacy?.('topic-clustering');
     for (let g = 0; g < eligibleGroups.length; g++) {
       const group = eligibleGroups[g]!;
       const summaries = group.map((idx) =>
         String(items[idx]!.mk.props['summary'] ?? ''),
       );
-      const naming = await nameCluster(summaries, g);
+      const naming = await nameCluster(summaries, g, run);
       if (naming.source === 'haiku') haikuCalls++;
 
       try {

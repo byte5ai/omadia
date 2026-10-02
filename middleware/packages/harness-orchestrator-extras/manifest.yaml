@@ -48,6 +48,13 @@ optional_requires:
   - "llmProviderCatalog@1"
   - "llmProviderPool@1"
   - "installedPluginConfigReader@1"
+  # WP-10 — the memory jobs mask the stored text they send. `turnContext`
+  # (kernel) carries the turn's privacy handle; `privacyRedact` is the key the
+  # privacy guard registers its service under (its capability is named
+  # `privacy.redact@1`, see `pluginServiceGrants.ts`). Neither holds activation
+  # back: without a privacy guard the jobs send what they sent before.
+  - "turnContext@1"
+  - "privacyRedact@1"
 
 # ---------------------------------------------------------------------------
 # S+9.2 Sub-Commit 2b: Capability lifetime flipped.

@@ -475,6 +475,46 @@ export interface PrivacyReplayedAnswerRequest {
 }
 
 /**
+ * One run of a background memory job that sends STORED text (memories, a
+ * session's stored turns, the exchange a channel hands over) to its own model
+ * outside a turn. Stored text holds real values whether or not the operator
+ * enabled `mask_user_prompt`, which is about the user's own words in a turn's
+ * prompt.
+ */
+export interface PrivacyStoredTextScopeRequest {
+  /** PII-free name of the job, logged with every mask call
+   *  (e.g. `topic-clustering`). */
+  readonly job: string;
+}
+
+/**
+ * The privacy scope of one job run
+ * ({@link PrivacyGuardService.openStoredTextScope}). It holds the run's own
+ * surrogate map, so nothing outlives the object and there is nothing to
+ * finalize; no turn receipt books its spans.
+ */
+export interface PrivacyStoredTextScope {
+  /**
+   * Mask stored text bound for the job's model: the identity shapes of the C0
+   * baseline (e-mail, IBAN, phone, address, id number; dates and amounts
+   * stay), the operator deny-list and, when configured, the C1 detector.
+   * Calls of one run share its map, so a value keeps its surrogate. A failing
+   * C1 detector degrades the rest of the run to the baseline
+   * (`degraded: true`). Failure-closed: never `disabled`; `blocked` (a
+   * detector failed, or a detected value survived substitution) means the
+   * text must not be sent and the job skips its model call.
+   */
+  maskStoredText(text: string): Promise<PrivacyPromptMaskResult>;
+  /**
+   * Invert this run's surrogates over the job's model output, so a result a
+   * user reads (a session summary, a cluster name) carries the real values.
+   * Identity when nothing was masked; a surrogate the model reworded stays as
+   * written.
+   */
+  restoreStoredText(text: string): string;
+}
+
+/**
  * Failure-closed result contract (#361): there is NO pass-through-unmasked
  * outcome. `disabled` = the operator flag is off (caller uses the original
  * text — byte-identical legacy behavior); `masked` = surrogates substituted
@@ -713,6 +753,19 @@ export interface PrivacyGuardService {
   maskReplayedAnswer?(
     request: PrivacyReplayedAnswerRequest,
   ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * Open the privacy scope for one run of a background memory job that sends
+   * stored text to its own model outside a turn (see
+   * {@link PrivacyStoredTextScope}) — always on, independent of
+   * `mask_user_prompt`. A job that runs inside a turn masks through the turn's
+   * handle instead (`maskReplayedAnswer`), so its spans are the turn's egress.
+   *
+   * Optional so a provider that predates it still loads. A job that finds a
+   * privacy provider without it must skip its model call (fail-closed), never
+   * send the stored text unmasked; only a host with no privacy provider at
+   * all sends it as stored.
+   */
+  openStoredTextScope?(request: PrivacyStoredTextScopeRequest): PrivacyStoredTextScope;
   /**
    * How many of this turn's prompt surrogates still occur in `text` —
    * verbatim, case-insensitively, with digit separators reformatted, or, for

@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.7.0"
+  version: "0.8.0"
   kind: "tool"
   domain: "privacy.redact"
   description:
@@ -106,6 +106,13 @@ playbook:
         falls konfiguriert, über die Platzhalter-Map des Turns, sodass die
         Antwort die echten Werte zurückbekommt. Eine server-gerenderte
         Antwort trägt Realwerte, die das Modell nie gesehen hat.
+      - `openStoredTextScope` maskiert gespeicherten Text, den ein
+        Memory-Job außerhalb eines Turns an sein Modell schickt
+        (Topic-Cluster-Namen, Inkonsistenz-Erkennung, Teams-Themenerkennung),
+        immer, auch bei `mask_user_prompt: off`: C0-Identitätsmuster,
+        Deny-Liste und C1, falls konfiguriert, über eine eigene
+        Platzhalter-Map pro Job-Lauf, die die echten Werte in die Ausgabe des
+        Jobs zurückbringt.
     Die Receipt landet als Message-Metadata im Channel-Output (Teams + Web)
     und kann dort als Collapsed-/Expanded-Card gerendert werden.
 
@@ -125,6 +132,9 @@ playbook:
     Antworten über `maskReplayedAnswer` (dieses Plugin ab 0.7.0). Fehlt es,
     maskiert er sie über `maskUserPrompt`, also nur bei
     `mask_user_prompt: on`.
+    Ab @omadia/plugin-api 1.25.0 maskieren die Memory-Jobs außerhalb eines
+    Turns über `openStoredTextScope` (dieses Plugin ab 0.8.0). Fehlt es,
+    überspringen sie ihren Modellaufruf.
 
 # ---------------------------------------------------------------------------
 # Permissions. Server-side compute plus ONE deliberate network target

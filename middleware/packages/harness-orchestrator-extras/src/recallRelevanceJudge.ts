@@ -23,10 +23,18 @@
  * ids (the cheap legs already floored + limited them, so keeping that set is
  * itself deterministic) and is NOT cached, so a transient failure can neither
  * poison the cache nor hide recall the cheaper legs surfaced.
+ *
+ * Privacy (WP-10): the request carries stored real values, so with a privacy
+ * guard installed it goes through `opts.privacy` first — inside a turn the
+ * turn's handle, `maskReplayedAnswer`, whatever `mask_user_prompt` says. A run
+ * that cannot mask skips the judge like an abstain: every candidate kept,
+ * nothing sent, nothing cached.
  */
 
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
+
+import type { OpenJobPrivacy } from './jobPrivacy.js';
 
 export type RecallCandidateKind = 'plan' | 'process' | 'insight';
 
@@ -67,6 +75,12 @@ export interface RecallRelevanceJudgeOptions {
    */
   verdictCacheMax?: number;
   log?: (msg: string) => void;
+  /**
+   * WP-10 — the Privacy Shield route for the judge's request. The plugin
+   * passes the in-turn route (`createInTurnJobPrivacy`). Absent ⇒ the request
+   * goes out as built.
+   */
+  privacy?: OpenJobPrivacy;
 }
 
 const DEFAULT_MAX_TOKENS = 512;
@@ -160,11 +174,19 @@ export function createRecallRelevanceJudge(
         `Recalled items:\n${lines.join('\n')}`;
 
       try {
+        const run = opts.privacy?.('recall-judge');
+        const masked = run
+          ? await run.mask(userBlock)
+          : { send: true as const, text: userBlock };
+        if (!masked.send) {
+          log(`[recall-judge] privacy: ${masked.reason} — judge skipped, keeping all candidates`);
+          return allIds;
+        }
         const response = await opts.llm.complete({
           model,
           maxTokens,
           system: SYSTEM_PROMPT,
-          messages: [textMessage('user', userBlock)],
+          messages: [textMessage('user', masked.text)],
         });
         const replyText = collectText(response.content);
         if (!replyText) {
