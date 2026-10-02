@@ -3778,14 +3778,16 @@ wizard, above all the recovery-key export, which returns the vault master key
     from any frame and after any redirect, and without a handler it grants
     every request. Any frame could otherwise launch an installed app's
     scheme (`ms-settings:`, `search-ms:`, …) without a prompt. This is the
-    backstop behind the event rules above. Every other permission keeps
-    Electron's no-handler answer, which grants it to every frame without the
-    app asking: camera and microphone, clipboard read, notifications and the
-    rest, for plugin iframes, same-app popups and a foreign page reached by
-    a redirect alike. Narrowing that to a deny-by-default allowlist per
-    requesting origin and frame is an open follow-up
-    (`docs/middleware-agent-handoff.md` §13, "Desktop-Shell: Trust-Boundary
-    Renderer → Main").
+    backstop behind the event rules above.
+  - Every other permission is deny by default too. The request and check
+    handlers share one rule (`canGrantPermission`): a permission is granted
+    only if it is on `GRANTABLE_PERMISSIONS` and the main frame of one of the
+    app's own documents asks, a page on the kernel or web UI origin or the
+    bundled wizard (compared by file path). The list holds
+    `clipboard-sanitized-write` for the copy buttons. Subframes never get a
+    permission, not even on the web UI's origin, where plugin UIs and the
+    builder preview run. A same-app popup gets only what the list allows, and
+    a foreign page reached by a redirect gets nothing.
   - So only vetted `http:`/`https:` URLs reach the OS. The shell passes
     nothing else to `shell.openExternal`, and no page can make Electron hand
     over anything else. The logs carry the target's origin or scheme, never

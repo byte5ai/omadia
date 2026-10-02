@@ -4131,13 +4131,10 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   **Nächster Electron-Major:** Dispatch-Build mit Wegwerf-Tag, dann `desktop-upgrade-smoke.yml` mit
   dessen Run-ID (`desktop/README.md` § Install and upgrade smoke); nie auf einer produktiven
   Installation.
-- **Beenden während des ersten UI-Ladens meldet einen Boot-Fehler.** Beendet man die App, während
-  das erste `loadURL` der Web-UI noch läuft, lehnt `loadURL` ab, und `bootExistingInstall` reicht das
-  an `presentBootFailure` weiter: `[main] boot failed: ERR_FAILED (-2) loading …`, im ungünstigen
-  Fall mit Fehlerdialog im Shutdown, dessen Standard-Knopf „Re-run setup“ ist. Gesehen im
-  Install-Smoke 36989068863 (Windows-Upgrade, Versuch 1); unabhängig von der Electron-Version.
-  `presentBootFailure` sollte bei gesetztem `quitting` nur loggen und zurückkehren. Der Smoke wartet
-  seither auf das erste fertige Laden, bevor er beendet.
+- **Beenden während des ersten UI-Ladens: erledigt.** `classifyBootFailure` meldet einen
+  Abbruch durch Beenden als `interrupted`; `presentBootFailure` loggt ihn nur noch (INFO), ohne
+  Fehlerdialog und ohne `[main] boot failed`. Vor `app.exit` wird das Desktop-Log geleert, damit
+  Shutdown-Zeilen nicht verloren gehen.
 - **Synchrones `safeStorage` endet mit Electron 46.** Electron 45 markiert
   `safeStorage.isEncryptionAvailable`/`encryptString`/`decryptString` als deprecated, Electron 46
   entfernt sie zusammen mit Chromiums synchronem OSCrypt-Backend (Electron
@@ -5288,25 +5285,15 @@ Offen:
   akzeptierte Rest-Ausnahme aus §10i: Solche Seiten bekommen keine Bridge,
   jeder Handler lehnt sie ab, und auch sie erreichen keinen
   OS-Protokoll-Handler.
-- **Übrige Session-Permissions: deny-by-default mit Allowlist.** Die Session
-  verweigert nur `openExternal` (`canGrantPermission`/`canPassPermissionCheck`
-  in `desktop/src/navigationPolicy.ts`). Jede andere Permission-Anfrage und
-  -Prüfung bekommt Electrons Antwort ohne Handler: gewährt, für jeden Frame und
-  ohne Rückfrage der App. Das betrifft Kamera und Mikrofon (`media`), das Lesen
-  der Zwischenablage (`clipboard-read`; Wizard und Shell kopieren den
-  Wiederherstellungsschlüssel dorthin), Standort und Benachrichtigungen, auch
-  für Plugin-iframes, Same-App-Popups und fremde Seiten nach einem Redirect.
-  Folgepunkt: Request- und Check-Handler lehnen ab, was nicht auf einer
-  expliziten Allowlist steht, entschieden pro anfragendem Origin
-  (`details.requestingUrl` bzw. `requestingOrigin`) und Frame
-  (`details.isMainFrame`). Gebraucht wird heute nur `clipboard-sanitized-write`
-  (`navigator.clipboard.writeText` im Wizard und in der Web-UI), also für die
-  gebündelten Seiten und den Origin der laufenden Web-UI. Plugin-iframes laufen
-  auf dem Origin der Web-UI und erben jede Freigabe für ihn, solange sie nicht
-  auf den Main-Frame begrenzt ist; ob Plugin-UIs kopieren dürfen, gehört zur
-  Entscheidung. Die Tests „grants every other request …“ und „answers every
-  other check …“ in `desktop/test/navigationPolicy.test.mts` pinnen das heutige
-  Verhalten und kehren sich mit dem Fix um.
+- **Übrige Session-Permissions: erledigt (deny-by-default mit Allowlist).** Request- und
+  Check-Handler teilen eine Regel (`canGrantPermission` in `desktop/src/navigationPolicy.ts`):
+  gewährt wird nur, was in `GRANTABLE_PERMISSIONS` steht, und nur dem Main-Frame eines eigenen
+  Dokuments der App (Origin von Kernel oder Web-UI laut `decideNavigation`, oder der gebündelte
+  Wizard per Dateipfad). Heute steht dort nur `clipboard-sanitized-write` für die Kopier-Knöpfe in
+  Web-UI und Wizard. Subframes bekommen nichts, auch nicht auf dem Origin der Web-UI, wo
+  Plugin-UIs und die Builder-Vorschau laufen; ob Plugin-UIs kopieren dürfen, bleibt eine
+  Produktentscheidung. Eine neue Funktion mit berechtigungspflichtiger Web-API trägt ihre
+  Permission samt Aufrufstellen in die Liste ein.
 
 ### Desktop-Shell: Wizard-Schalter — Folgepunkte
 
