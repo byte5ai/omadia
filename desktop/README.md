@@ -177,7 +177,11 @@ same on the baseline release, without the update check, quits it, installs the
 candidate over it and starts it again. That second start must log no boot
 failure and no secret-store refusal, leave `secrets.enc` byte-identical, keep
 the recovery key the baseline wizard showed and every other stored secret, and
-still sign in and verify the stored key.
+still sign in and verify the stored key. Every start also has to show that no
+IPC call from the app was refused, that the web UI page sees only `uiReady` and
+`setUiLocale`, and that the wizard's attachments switch reached the kernel with
+a private folder (0700 on macOS and Linux). The smoke waits for the web UI's
+first load before it quits.
 
 The installers receive the real key, so the workflow accepts only finished
 `desktop-apps.yml` or `auto-release.yml` runs of this repository. The recovery

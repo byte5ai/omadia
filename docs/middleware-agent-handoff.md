@@ -5071,16 +5071,19 @@ Details in [`security-architecture.md` §10i](security-architecture.md):
 
 Offen:
 
-- **Manuelle Prüfung auf paketierten Builds (macOS und Windows)** vor dem
-  nächsten Desktop-Release. Den Wizard komplett durchlaufen: Reveal zeigt den
-  Key, Finish bootet. Im Log darf keine `[ipc] … refused`-Zeile zu
-  `wizard.html` stehen, sonst stimmt der Pfadvergleich (asar-Pfad,
-  Laufwerksbuchstabe) nicht. In der Web-UI muss
-  `Object.keys(window.omadia)` genau `uiReady` und `setUiLocale` liefern.
+- **Prüfung auf paketierten Builds (macOS und Windows)** vor dem nächsten
+  Desktop-Release. Automatisch im Install-Smoke (`desktop-upgrade-smoke.yml`):
+  der Wizard komplett (Reveal zeigt den Key, Finish bootet), keine
+  `[ipc] … refused`-Zeile im Log (sonst stimmt der Pfadvergleich nicht:
+  asar-Pfad, Laufwerksbuchstabe), `Object.keys(window.omadia)` in der Web-UI
+  genau `uiReady` und `setUiLocale`, der Anhänge-Schalter (`/health` →
+  `attachments.store: filesystem`, Boot-Zeile, Ordner 0700 auf macOS/Linux).
+  Für Electron 44 belegt Lauf 36989068863 keine `[ipc]`-Zeile und die
+  Anhänge-Boot-Zeile auf allen drei Plattformen. Von Hand bleiben:
   Plugin-Autor-Link, GitHub-Hilfe-Link und ein Link in einer Chat-Antwort
-  öffnen im Systembrowser. Ein Same-App-Popup hat kein `window.omadia`. Ein
+  öffnen im Systembrowser; ein Same-App-Popup hat kein `window.omadia`; ein
   Link mit eigenem Schema in einer Plugin-UI startet kein Programm (Log:
-  `[nav] blocked a subframe navigation`). Der Entra-Login-Rundlauf klappt
+  `[nav] blocked a subframe navigation`); der Entra-Login-Rundlauf klappt
   inklusive Passwort-POST.
 - **Abmelden einer OIDC-Sitzung:** Die IdP-End-Session-URL öffnet jetzt im
   Systembrowser, der einen eigenen Cookie-Speicher hat. Die IdP-Sitzung im

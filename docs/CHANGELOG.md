@@ -36,7 +36,7 @@ changelog.
 
 ## [Unreleased]
 
-### Changed — the desktop install smoke waits for the web UI's first load before it quits
+### Changed — the desktop install smoke waits for the web UI's first load and checks the shell's boundaries
 
 2026-10-02: the first dispatch of `desktop-upgrade-smoke.yml` from `main` quit a
 Windows upgrade 15 seconds after launch, while the web UI's first page load was
@@ -46,6 +46,12 @@ The smoke now waits until the page has loaded, the way a user works with it. A
 page that never loads still fails the run. The app behaviour itself is a
 follow-up in handoff §13: quitting during that first load should not count as
 a boot failure.
+
+Every start in the smoke now also checks part of the packaged-build list from
+handoff §13: no IPC call from the app was refused, the web UI page sees only
+`uiReady` and `setUiLocale`, and the attachments switch reached the kernel with
+a private folder. External links, popups, custom schemes and the Entra sign-in
+still need a person.
 
 ### Fixed — desktop dependencies refreshed to Electron 44 and electron-builder 26; `desktop` joins the CI audit
 
