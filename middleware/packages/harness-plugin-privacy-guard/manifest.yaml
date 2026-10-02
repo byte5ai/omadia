@@ -42,7 +42,7 @@ setup:
     - key: "mask_user_prompt"
       type: "enum"
       label: "Free-text user-prompt PII masking"
-      help: "EXPERIMENTAL, default off. When on, PII spans detected in the user's own message (email, IBAN, phone, address, amounts, dates — C0 regex baseline) are replaced by realistic pseudonyms in every LLM-bound copy of the turn (main prompt, live chat history/priorTurns, ingested attachment text, recalled prior context, direct-line relay payloads, fact-extraction/routing/excerpt passes); the real values are restored server-side in the final answer and in everything persisted (session log, knowledge graph, promoted memories). Failure-closed: if masking cannot be guaranteed, the turn is blocked rather than sent unmasked — this includes direct-line (#specialist) turns. Names/free-form entities require the C1 transformer detector — set `c1_detector_url` (or the `PRIVACY_C1_DETECTOR_URL` env var) to enable it; unset, only the C0 regex baseline runs."
+      help: "EXPERIMENTAL, default off. When on, PII spans detected in the user's own message (email, IBAN, phone, address, amounts, dates — C0 regex baseline) are replaced by realistic pseudonyms in the turn's own model requests (main prompt, live chat history/priorTurns, ingested attachment text, recalled prior context, live steering text, direct-line relay payloads, a verifier correction hint, and the fact-extraction/routing/excerpt passes that read this text); the real values are restored server-side in the final answer and in everything persisted (session log, knowledge graph, promoted memories). Failure-closed for those requests: if masking cannot be guaranteed, the turn is blocked rather than sent unmasked — this includes direct-line (#specialist) turns. Model calls outside the turn's privacy handle send their text as it is, whether this is on or off: the inbound security screener, the memory jobs (turn scoring included), plugin ctx.llm calls such as the canvas composer and the plan runner, and attached images; docs/security-architecture.md §6f lists them. Names/free-form entities require the C1 transformer detector — set `c1_detector_url` (or the `PRIVACY_C1_DETECTOR_URL` env var) to enable it; unset, only the C0 regex baseline runs."
       required: false
       default: "off"
       enum:
@@ -71,8 +71,12 @@ setup:
 
 playbook:
   when_to_use: |
-    Aktiviere dieses Plugin, damit rohe Tool-Ergebnisse niemals im Klartext
-    an Public-LLMs (Anthropic, OpenAI) gelangen. Das Plugin published die
+    Aktiviere dieses Plugin, damit die Modellanfragen eines Turns statt der
+    Rohergebnisse von Datenquellen-Tools einen identitätsfreien Digest an
+    Public-LLMs (Anthropic, OpenAI) schicken. Was trotzdem im Klartext
+    rausgeht (intern-exempte Tools, Operator-Bypass, Prompt-Text bei
+    `mask_user_prompt: off`, Modellaufrufe außerhalb des Privacy-Handles),
+    steht in docs/security-architecture.md §6f. Das Plugin published die
     `privacy.redact@1`-Capability; der Orchestrator-Hook ruft sie am
     Tool-Dispatch-Seam auf:
       - `internToolResultV4` interniert das rohe Tool-Ergebnis server-seitig

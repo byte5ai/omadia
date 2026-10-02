@@ -2613,11 +2613,14 @@ export class Orchestrator {
    * when the extractor isn't installed. All failure paths return
    * `undefined` so the `done` yield never throws on an enrichment miss.
    *
-   * Note: we currently pass the raw user message + assistant answer
-   * directly. Hint precedence (`<palaia-hint type=…>`) is supported by
-   * the extractor API but not yet wired here — that requires surfacing
-   * the capture-filter's parseHints output, which is hidden behind the
-   * sessionLogger.log pipeline today. Slice 4c can revisit when the
+   * Note: the caller passes the turn's WIRE variants (#361): the user
+   * message as `maskTurnPromptForWire` left it (masked only while
+   * `mask_user_prompt` is on) and the answer as the model wrote it, before
+   * restore; it restores the excerpt (`restoreExcerptForPersistence`) before
+   * persisting or showing it. Hint precedence (`<palaia-hint type=…>`) is
+   * supported by the extractor API but not yet wired here — that requires
+   * surfacing the capture-filter's parseHints output, which is hidden behind
+   * the sessionLogger.log pipeline today. Slice 4c can revisit when the
    * decision becomes reachable from this scope.
    */
   private async maybeExtractExcerpt(
@@ -3036,9 +3039,11 @@ export class Orchestrator {
    * live call where it already does today and applies the SAME privacy boundary
    * here, immediately before the note is put on the LLM wire.
    *
-   * Fail-open is deliberate parity with ordinary dispatch: if receipt recording
-   * or interning throws, we warn and continue with the raw result rather than
-   * breaking the turn after the user already supplied the requested input.
+   * Failure handling is parity with ordinary dispatch. Receipt recording is
+   * best-effort: if `recordBypassedTool` throws for a bypassed server, we warn
+   * and the bypass still applies. Interning fails CLOSED: if
+   * `internToolResultV4` throws, the model gets `internFailedNotice` instead
+   * of the raw result, like at every dispatch seam.
    */
   private async guardReplayResult(
     record: PendingMcpInput,

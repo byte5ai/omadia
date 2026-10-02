@@ -134,15 +134,51 @@ const RETIRED_CLAIMS = [
   'checks answers that carry figures',
   'holds no claim to check',
   'holds nothing to check',
+  // An aggregate keyword with a number of three or more digits triggers in any
+  // format (`Total: $500`), so "other formats" alone do not keep an answer out.
+  'whose figures all come in other formats',
+  'matches none of them.',
+  // The org clamp covers the result the model gets, not the MCP-to-knowledge-
+  // graph ingestion, which stores a bypassed server's raw result regardless.
+  'switches all three off.',
+  'to `guarded` org-wide.',
+  // The card exemption runs before the privacy gate, so an input-card turn
+  // releases a rendered answer unchecked.
+  'so `enforce` withholds it.',
+  'delivers no rendered answer',
+  // A re-entry replays the recorded calls; only a sub-agent that interned
+  // data behind the shield runs again, its own calls replayed.
+  'run no tool again',
+  'runs no tool again',
+  'runs a tool again',
+  'never re-runs a tool',
+  // 1,000 records is an eviction target: a call still running is never evicted.
+  'at most 1,000 records',
+  // Prompt masking reaches only the turn's own model requests (§6f).
+  'context are masked only while',
 ] as const;
 
+/** Retired sentences in operator-facing files outside the public claim files,
+ *  each kept to one line of its file. */
+const RETIRED_OPERATOR_CLAIMS: ReadonlyArray<readonly [file: string, phrase: string]> = [
+  // The prompt mask covers the turn's own model requests, not every copy.
+  ['middleware/packages/harness-plugin-privacy-guard/manifest.yaml', 'every LLM-bound copy of the turn'],
+  ['middleware/.env.example', 'clamps all of them back to `guarded`, whatever'],
+  ['middleware/.env.example', 'runs a tool again'],
+];
+
 describe('public security claims match the enforced behaviour', () => {
-  it('retired overclaims are gone from the README, the architecture docs, CITATION.cff and the ADR notes', () => {
+  it('retired overclaims are gone from the README, the architecture docs, CITATION.cff, the ADR notes and the operator setup texts', () => {
     const hits: string[] = [];
     for (const file of PUBLIC_CLAIM_FILES) {
       const text = flatten(read(file)).toLowerCase();
       for (const phrase of RETIRED_CLAIMS) {
         if (text.includes(phrase.toLowerCase())) hits.push(`${file}: "${phrase}"`);
+      }
+    }
+    for (const [file, phrase] of RETIRED_OPERATOR_CLAIMS) {
+      if (flatten(read(file)).toLowerCase().includes(phrase.toLowerCase())) {
+        hits.push(`${file}: "${phrase}"`);
       }
     }
     assert.deepEqual(hits, []);

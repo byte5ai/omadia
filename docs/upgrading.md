@@ -434,7 +434,8 @@ know and show no badge for turns without evidence.
   `dd.mm.yyyy` dates, percentages, hour and day counts, and an aggregate
   keyword such as `Summe` or `total` in an answer that also holds a number of
   three or more digits, so an answer whose figures are all in other formats
-  (a dollar amount, an English-format date) goes out unchecked.
+  (a dollar amount, an English-format date) goes out unchecked unless it also
+  holds such a keyword: `Total: $500` is checked.
   Every other verdict replaces the answer with a short notice in the
   operator's disclosure locale: a contradiction, but also a partly confirmed
   answer, an answer whose claims no checker takes, and a turn in which the
@@ -471,9 +472,11 @@ know and show no badge for turns without evidence.
   `unavailable`). That includes rendered tool errors and sign-in prompts, and
   behind the shield a Direct Line relay, which hands over no privacy view to
   verify through. With v4 rendering active, expect no rendered answer to
-  reach users in `enforce`. The shield's own refusal of a prompt it cannot
-  mask and the security screening's quarantine notice go out as before,
-  without a verdict.
+  reach users in `enforce`, except on a turn that also carries an input card:
+  that exemption (next point) is checked first and releases the turn
+  unchecked, rendered answer included. The shield's own refusal of a prompt
+  it cannot mask and the security screening's quarantine notice go out as
+  before, without a verdict.
 - **Turns with an input card are delivered unchecked.** A turn that ends with
   a choice card, an MCP input form, a slot picker or an OAuth consent prompt
   is released without a verdict, and so is the answer the card rides on — a
@@ -514,12 +517,15 @@ know and show no badge for turns without evidence.
 - **Not covered:** agents on the subscription-CLI runtime (`claude-cli`
   provider) and proactive routines are not verified, whatever the mode.
 
-### Resample and retry re-generate the answer, they never re-run the turn's tools
+### Resample and retry re-generate the answer from the first run's tool results
 
 - **The first run's tool results are replayed.** A borderline resample and a
   correction retry used to run the whole turn again, tools included, so a
   write could run two or three times for one message. They now get the first
-  run's tool results back instead. When the re-sampled model wants a call the
+  run's tool results back instead and execute none of the recorded external
+  calls again. A sub-agent that interned data behind the Privacy Shield, or
+  read a bypassed result, runs again, and its own calls are replayed the same
+  way. When the re-sampled model wants a call the
   first run did not make, it runs only if it is one of the kernel's own
   reads; any other call — every plugin, MCP, specialist-agent and sub-agent
   tool — ends the re-entry: a resample keeps the first answer, a retry

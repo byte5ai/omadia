@@ -3184,7 +3184,7 @@ weil das README die Variable nennt.
 
 | Variable | Wirkung |
 |---|---|
-| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann nicht). Jeder andere Wert ist wirkungslos. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
+| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Nicht erfasst ist die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Sie läuft vor dem Bypass-Resolver und liest das Server-Flag direkt (`isMcpServerPrivacyBypassed`, nicht `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` auch mit Klammer bis zu 8.000 Zeichen jedes Rohergebnisses als Memory; spätere Turns holen sie in den Prompt-Kontext, die Memory-Jobs schicken sie an ihren Provider (offen, §13). Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
 
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 
@@ -3245,12 +3245,12 @@ Setup-Felder, nicht mehr die Env.
 | Variable / Setup-Feld | Wirkung |
 |---|---|
 | `VERIFIER_ENABLED` / `verifier_enabled` | `true` schaltet den Verifier-Wrapper ein. Default `false`. |
-| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht nur bei `approved` oder `skipped` (`no_trigger`/`no_claims`) raus, sonst eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort — hinter dem Shield ebenso ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) — geht nie an den Verifier und wird zurückgehalten (`privacy_shield`); `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
+| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht nur bei `approved` oder `skipped` (`no_trigger`/`no_claims`) raus, sonst eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort — hinter dem Shield ebenso ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) — geht nie an den Verifier und wird zurückgehalten (`privacy_shield`), außer an einem Turn mit Input-Karte: Die Karten-Ausnahme (`releasesWithoutVerification`) greift vorher und gibt ihn samt gerenderter Antwort ungeprüft frei; `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
 | `VERIFIER_MODEL` / `verifier_model` | Modell für Claim-Extraktion und Evidence-Judge. |
 | `VERIFIER_MAX_CLAIMS` / `verifier_max_claims` | Höchstzahl geprüfter Claims pro Antwort, Default `20`. |
 | `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Relative Betragstoleranz, Default `0.01`. |
-| `VERIFIER_MAX_RETRIES` / `verifier_max_retries` | Correction-Retry nach einem Widerspruch in `enforce`, auf `chat()` (`/api/chat`, Scheduler, Conductor) und im Stream (nicht bei Canvas-Turns); `0` schaltet ihn ab. Default `1`, max `2`. Der Retry führt kein Tool erneut aus (Replay-Ledger, §3 und Security §7c). |
-| `VERIFIER_RESAMPLE_ON_BORDERLINE` / `verifier_resample_on_borderline` | `false` schaltet in `enforce` die zweite Stichprobe für Grenzfall-Antworten ab (nur `chat()`); jeder andere Wert lässt sie an. Default `true`. Die Stichprobe führt kein Tool erneut aus. Wie alle `VERIFIER_*` nur beim ersten Boot übernommen. |
+| `VERIFIER_MAX_RETRIES` / `verifier_max_retries` | Correction-Retry nach einem Widerspruch in `enforce`, auf `chat()` (`/api/chat`, Scheduler, Conductor) und im Stream (nicht bei Canvas-Turns); `0` schaltet ihn ab, und hinter dem Shield entfällt er, wenn die Maskierung den Correction-Hint verändern würde. Default `1`, max `2`. Der Retry führt keinen aufgezeichneten externen Call erneut aus, er spielt ihn aus dem Replay-Ledger zurück; nur ein Sub-Agent, der hinter dem Shield Daten interniert oder ein Bypass-Tool gelesen hat, läuft neu, seine eigenen Calls wieder aus dem Ledger (§3 und Security §7c). |
+| `VERIFIER_RESAMPLE_ON_BORDERLINE` / `verifier_resample_on_borderline` | `false` schaltet in `enforce` die zweite Stichprobe für Grenzfall-Antworten ab (nur `chat()`); jeder andere Wert lässt sie an. Default `true`. Die Stichprobe führt, wie der Retry, keinen aufgezeichneten externen Call erneut aus. Wie alle `VERIFIER_*` nur beim ersten Boot übernommen. |
 
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 
@@ -4100,7 +4100,13 @@ Request und bei jedem WebSocket-Upgrade. Offen:
 
 README, `docs/architecture.md`, `docs/security-architecture.md` und
 `CITATION.cff` beschreiben seit 2026-10-01 nur noch, was der Code durchsetzt
-(Wächter: `middleware/test/docsClaimsGuard.test.ts`, Checkliste §11). Offen:
+(Wächter: `middleware/test/docsClaimsGuard.test.ts`, Checkliste §11). Die
+Privacy-Shield-Aussagen sind seit 2026-10-02 so gebaut: erst, welche
+Modellanfragen der Shield bei welcher Einstellung maskiert (die des Turns
+selbst), dann ein Satz, dass jeder andere Modellaufruf seinen Text so
+schickt, wie er ist, mit den bekannten Fällen (Inbound-Screener,
+Signifikanz-Scorer und die übrigen Memory-Jobs, `ctx.llm`, Bilder,
+Embeddings). Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
 
 - **Publisher-signierte Plugin-Pakete.** Heute gibt es nur SHA-256-Pinning
   (Registry-Index bzw. Hash beim Upload), keine Signatur und keinen Trust Root;
@@ -4179,12 +4185,14 @@ README, `docs/architecture.md`, `docs/security-architecture.md` und
   sagt das selbst). Für echte Durchsetzung: Isolation (Worker oder Prozess mit
   eingeschränkten Modulen) oder ein Import-Gate beim Upload.
 - **Idempotenz am öffentlichen MCP-Endpunkt ist prozesslokal.**
-  `ToolIdempotencyStore` (`toolIdempotency.ts`) hält Einträge 15 Minuten und
-  höchstens 1.000, nur im Speicher, und merkt sich keinen fehlgeschlagenen
-  Aufruf. Neustart, zweite Instanz, abgelaufener oder verdrängter Eintrag
-  führen den Write erneut aus. Für verteilte Idempotenz einen geteilten Store
-  (Postgres) mit demselben Schlüssel einsetzen; die Schlüssel-Komposition ist
-  dafür schon serialisierbar.
+  `ToolIdempotencyStore` (`toolIdempotency.ts`) hält Einträge 15 Minuten, mit
+  1.000 Einträgen als Verdrängungsziel (`evictOverflow` überspringt Calls, die
+  noch laufen, der Store kann also kurz mehr halten), nur im Speicher, und
+  merkt sich keinen fehlgeschlagenen Aufruf. Neustart, zweite Instanz,
+  abgelaufener oder verdrängter Eintrag führen den Write erneut aus. Für
+  verteilte Idempotenz einen geteilten Store (Postgres) mit demselben
+  Schlüssel einsetzen; die Schlüssel-Komposition ist dafür schon
+  serialisierbar.
 - **Modellaufrufe außerhalb des Privacy-Handles (eigene Code-Unit).** Der
   Shield wirkt nur in den Modellanfragen des Turns selbst. Ungemaskt, mit
   `mask_user_prompt` an oder aus, gehen: plugin-eigene `ctx.llm`-Anfragen (der
@@ -4198,7 +4206,10 @@ README, `docs/architecture.md`, `docs/security-architecture.md` und
   (Recall-Relevance-Judge pro Turn, Session-Briefing, Inconsistency-Detector,
   Cluster-Benennung, Topic-Detector für Teams; Fakten- und Excerpt-Extraktion
   lesen dagegen schon den Wire-Text); dazu Bild-Anhänge als Base64-Blöcke an
-  ein Modell mit Bild-Eingabe (`buildUserContent`). Die Einzelpunkte zu
+  ein Modell mit Bild-Eingabe (`buildUserContent`) und, mit dem
+  OpenAI-kompatiblen Embedding-Adapter, gespeicherte Turns und Memories im
+  Klartext an dessen Endpunkt. Inbound-Screener und Signifikanz-Scorer haben
+  einen eigenen Punkt (unten). Die Einzelpunkte zu
   `ctx.llm`, Canvas und Bildern stehen unter „Tool-Fehler-Politik“ und
   „Verifier-Wiedereintritt“; diese Unit fasst sie zusammen: `ctx.llm`- und
   Memory-Job-Anfragen über die Prompt-Maske des Turns bzw. eine Maske für
@@ -4208,14 +4219,62 @@ README, `docs/architecture.md`, `docs/security-architecture.md` und
   unter aktivem Shield nur nach Policy zulassen. Danach README (Intro, Zeile
   „Privacy Shield“, Abschnitt „Trust & privacy“), §6f und
   `docsClaimsGuard.test.ts` nachziehen.
+- **Inbound-Screener und Signifikanz-Scorer schicken Prompt-Text ungemaskt
+  (eigene Code-Unit).** Beide laufen außerhalb des Privacy-Handles, auch mit
+  `mask_user_prompt` an. Der #579-Screener (`screenInboundTurn`,
+  `orchestrator.ts`) läuft in `runTurn` und `chatStream` vor
+  `buildPrivacyHandle` und vor `maskTurnPromptForWire`. Unter der
+  Default-Posture `auto` (`DEFAULT_SECURITY_POSTURE_POLICY`,
+  `harness-channel-sdk/src/securityPosture.ts`) und unter `strict` schickt er
+  bei jedem Turn mit Anhang `renderScreeningPayload(bundleProvenance(input))`
+  ab: die Nachricht wie getippt, jede `priorTurns[].userMessage`, Namen und
+  Typen der Anhänge, an `LlmScreener` auf Provider und Modell des Agenten
+  (`buildOrchestrator.ts`) oder an den HTTP-Proxy unter
+  `security_screen_url`. Der Capture-Filter von `@omadia/orchestrator-extras`
+  schickt beim Default-`capture_level` `normal` (`DEFAULT_CAPTURE_LEVEL`)
+  jeden gespeicherten Turn, die Nachricht wie getippt (`userMessage` des
+  Session-Logs) plus Antwort, an den Extras-Provider (`captureFilter.ts`,
+  `significanceScorer.ts`). Code-Unit: beide über den Wire-Text des Turns
+  führen (Screening nach dem Minten des Handles über die maskierte Nachricht
+  und maskierte `priorTurns`, Scoring über die maskierten Texte, die schon
+  die Fakten-Extraktion bekommt) oder beide in den Turn-Scope verlegen.
+  Danach README (Intro, Zeile „Privacy Shield“, Abschnitt „Trust &
+  privacy“), §6f und `docsClaimsGuard.test.ts` nachziehen; dort dann auch
+  `DEFAULT_SECURITY_POSTURE_POLICY.posture === 'auto'` und den Inhalt von
+  `bundleProvenance` festhalten und prüfen, dass README und §6f Screener und
+  Scorer nennen.
+- **MCP→KG-Ingestion ignoriert die Klammer `OMADIA_PRIVACY_FORCE_GUARDED`
+  (eigene Code-Unit).** Der Ingest-Zweig in `Orchestrator.dispatchTool`
+  (Epic #459) läuft vor dem Bypass-Resolver und vor dem Internieren und fragt
+  `isMcpServerPrivacyBypassed(kgTool.mcpServerId)` direkt
+  (`mcpPrivacyBypass.ts`, ein reiner Set-Lookup), nicht über
+  `resolveEffectivePrivacyMode`. Ein Server mit `kgIngest` und
+  `privacyBypass` speichert so auch mit gesetzter Klammer bis zu 8.000 Zeichen
+  jedes Rohergebnisses als `rationale` einer Memory
+  (`createMemorableKnowledge`). Spätere Turns holen sie in den
+  Prompt-Kontext, der Recall-Relevance-Judge schickt sie ungemaskt an den
+  Extras-Provider, und sie wird eingebettet. Der Kommentar in
+  `middleware/migrations/0017_mcp_server_privacy_bypass.sql` verspricht, dass
+  die Klammer alles abdeckt (angewandte Migration, nicht editieren; die
+  Korrektur steht in §6f). Code-Unit: die Bypass-Entscheidung des Ingest-Zweigs
+  wie Pfad 0 von `resolveBypass` über `resolveEffectivePrivacyMode` (mit
+  `process.env`) führen, sodass er mit Klammer nur den wertfreien
+  `mcpObservationDigest` speichert, plus Test mit
+  `OMADIA_PRIVACY_FORCE_GUARDED=true` auf den gespeicherten `rationale`.
+  Danach README (Zeile „Privacy Shield“, Abschnitt „Trust & privacy“), §6f,
+  `.env.example`, §10 („Privacy-Shield-Klammer“) und
+  `docsClaimsGuard.test.ts` nachziehen.
 - **Verifier prüft nur, was ein Trigger-Muster trifft.** `shouldTriggerVerifier`
   (`harness-verifier/src/triggerRouter.ts`) kennt Euro-Beträge,
   Buchungsreferenzen, ISO- und `dd.mm.yyyy`-Daten, Prozente, deutsche
   Stunden-/Tagesangaben und Aggregat-Schlüsselwörter (überwiegend deutsch) mit
   einer mindestens dreistelligen Zahl. Andere Währungen, englische Datumsformate
-  und kleine Zählungen lösen nichts aus; die Antwort ist `skipped`/`no_trigger`
-  und geht in `enforce` ungeprüft raus. Code-Unit: Muster um weitere Währungen
-  sowie englische Datums- und Zahlformate erweitern, oder `enforce` eine
+  und kleine Zählungen lösen für sich nichts aus (steht irgendwo in derselben
+  Antwort ein Aggregat-Schlüsselwort und eine mindestens dreistellige Zahl,
+  greift das Aggregat-Muster, etwa bei `Total: $500`); die Antwort ist
+  `skipped`/`no_trigger` und geht in `enforce` ungeprüft raus. Code-Unit:
+  Muster um weitere Währungen sowie englische Datums- und Zahlformate
+  erweitern, oder `enforce` eine
   Antwort mit Zahlen ohne Treffer zurückhalten lassen. Danach README, §7c und
   `docsClaimsGuard.test.ts` nachziehen.
 - **`verifier_max_retries` über 1 wirkt nicht.** Schema (`VERIFIER_MAX_RETRIES`,
@@ -5241,15 +5300,21 @@ Objektformen und dass solcher Text Text bleibt.
   `pendingMcpInput`, `pendingSlotCard` oder `pendingOAuthConsent` ohne Urteil
   frei — auch die vollständige Antwort, an der ein Slot-Picker, ein
   Consent-Prompt (turnweit) oder eine Card-Router-Auswahlkarte hängt, samt
-  Tool-Output, Surfaces und Canvas-Skeleton, ohne Badge. Engere Regel zur
+  Tool-Output, Surfaces und Canvas-Skeleton, ohne Badge. Die Ausnahme greift
+  vor dem Privacy-Gate (`verifierGate`, in `VerifierService.chat` wie in
+  `enforcedVerifiedStream`), also geht an einem solchen Turn auch eine von
+  Privacy Shield gerenderte Antwort ungeprüft raus. Engere Regel zur
   Entscheidung: den Antworttext solcher Turns prüfen und die Karte nur
   mitliefern, wenn das Urteil die Antwort freigibt — oder nur Turns
-  ausnehmen, die nichts als die Karte sind. Die vier Ausnahmen sind derzeit
+  ausnehmen, die nichts als die Karte sind; eine gerenderte Antwort dabei
+  zurückhalten wie ohne Karte. Die vier Ausnahmen sind derzeit
   so gesetzt; Security §7c beschreibt die Lücke.
-- **`enforce` mit Privacy Shield v4 liefert keine gerenderte Antwort.** Eine
-  gerenderte Antwort geht nie an den Verifier und wird zurückgehalten
-  (`unavailable` / `privacy_shield`) — auch ein gerenderter Tool-Fehler oder
-  Anmelde-Prompt (`answerIsError`). Damit `enforce` sie freigeben kann, müsste
+- **`enforce` mit Privacy Shield v4 liefert eine gerenderte Antwort nur an
+  einem Turn mit Input-Karte.** Eine gerenderte Antwort geht nie an den
+  Verifier und wird zurückgehalten (`unavailable` / `privacy_shield`) — auch
+  ein gerenderter Tool-Fehler oder Anmelde-Prompt (`answerIsError`); trägt der
+  Turn eine Input-Karte, gibt die Karten-Ausnahme (Punkt oben) ihn vorher
+  ungeprüft frei. Damit `enforce` sie freigeben kann, müsste
   der Verifier die Antwort über die Privacy-Sicht des Turns prüfen (Prosa und
   Spaltenlabels maskiert, Werte über Handles statt Klartext).
 - **Zusammenführen mit der Privacy-Bindung der Verifier-Requests — erledigt.**
