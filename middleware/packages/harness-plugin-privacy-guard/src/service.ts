@@ -27,6 +27,8 @@ import type {
   PrivacyReceipt,
   PrivacyRenderedAnswer,
   PrivacyReplayedAnswerRequest,
+  PrivacyStoredTextScope,
+  PrivacyStoredTextScopeRequest,
   PrivacySubAgentResultV4Request,
   PrivacyToolErrorRedactRequest,
   PrivacyToolErrorRedactResult,
@@ -80,6 +82,7 @@ import {
   createIdentityValuesDetector,
   hasSurrogateCollision,
 } from './verifierProjection.js';
+import { createStoredTextScope } from './storedTextScope.js';
 import { createTurnSerialQueue } from './turnSerialQueue.js';
 
 /**
@@ -917,6 +920,23 @@ export function createPrivacyGuardService(deps?: {
         degraded: c1.degraded,
         stage: 'turn',
         preview: false,
+      });
+    },
+
+    // WP-10 — stored text a background memory job sends outside a turn.
+    // Always on, independent of `mask_user_prompt`, with the detector assembly
+    // of `maskReplayedAnswer` (identity shapes, the operator deny-list, C1),
+    // but through the job run's own surrogate map instead of a turn's, so the
+    // job can restore real values in an output a user reads. No receipt: there
+    // is no turn. Failure-closed in `createStoredTextScope`.
+    openStoredTextScope(request: PrivacyStoredTextScopeRequest): PrivacyStoredTextScope {
+      const detectors: PromptPiiDetector[] = [createBaselineIdentityDetector()];
+      const customDetector = resolveCustomDetector(deps?.readConfig);
+      if (customDetector) detectors.push(customDetector);
+      return createStoredTextScope({
+        job: request.job,
+        detectors,
+        ...(deps?.c1Detector !== undefined ? { c1Detector: deps.c1Detector } : {}),
       });
     },
 

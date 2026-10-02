@@ -20,15 +20,21 @@
  *    the flag-gated `maskUserPrompt`: a handle without `maskReplayedAnswer`
  *    skips the job. Only for jobs the turn AWAITS (the recall relevance judge,
  *    the session briefing): a fire-and-forget job can outlive the turn's map.
- *  - OUTSIDE a turn ({@link createJobPrivacy}): no privacy guard installed ⇒
- *    today's behaviour; a guard installed ⇒ the job is skipped unless the
- *    guard can mask stored text.
+ *  - OUTSIDE a turn ({@link createJobPrivacy}): each run opens the guard's
+ *    stored-text scope (`openStoredTextScope`) — identity shapes, the operator
+ *    deny-list and C1 through the run's own surrogate map, which also restores
+ *    the job's output. No privacy guard installed ⇒ today's behaviour; a guard
+ *    that predates the member ⇒ the job is skipped.
  *
  * Failure-closed throughout: anything but a `masked` result skips the job's
  * model call (`send: false`, with the reason for the job's log line).
  */
 
-import type { PrivacyGuardService, PrivacyPromptMaskResult } from '@omadia/plugin-api';
+import type {
+  PrivacyGuardService,
+  PrivacyPromptMaskResult,
+  PrivacyStoredTextScope,
+} from '@omadia/plugin-api';
 
 /** Service key the kernel publishes its `turnContext` accessor under. */
 export const TURN_CONTEXT_SERVICE_NAME = 'turnContext';
@@ -112,7 +118,7 @@ function turnRun(handle: TurnPrivacyHandleLike): JobPrivacyRun {
 export function createJobPrivacy(
   resolveGuard: () => PrivacyGuardService | undefined,
 ): OpenJobPrivacy {
-  return () => {
+  return (job) => {
     let guard: PrivacyGuardService | undefined;
     try {
       guard = resolveGuard();
@@ -120,7 +126,32 @@ export function createJobPrivacy(
       return refusedRun(`privacy guard lookup failed: ${messageOf(err)}`);
     }
     if (guard === undefined) return UNGUARDED_RUN;
-    return refusedRun('the installed privacy guard cannot mask stored text');
+    if (guard.openStoredTextScope === undefined) {
+      return refusedRun('the installed privacy guard cannot mask stored text');
+    }
+    let scope: PrivacyStoredTextScope;
+    try {
+      scope = guard.openStoredTextScope({ job });
+    } catch (err) {
+      return refusedRun(`opening the stored-text scope failed: ${messageOf(err)}`);
+    }
+    return storedTextRun(scope);
+  };
+}
+
+/** A run through the privacy guard's stored-text scope (outside a turn). */
+function storedTextRun(scope: PrivacyStoredTextScope): JobPrivacyRun {
+  return {
+    async mask(text) {
+      try {
+        return outcomeOfMask(await scope.maskStoredText(text));
+      } catch (err) {
+        return { send: false, reason: `masking failed: ${messageOf(err)}` };
+      }
+    },
+    async restore(text) {
+      return scope.restoreStoredText(text);
+    },
   };
 }
 

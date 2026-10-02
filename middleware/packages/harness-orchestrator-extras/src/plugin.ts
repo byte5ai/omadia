@@ -629,6 +629,9 @@ export async function activate(
     ...(embeddingClient ? { embeddingClient } : {}),
     ...(llm ? { llm, model: factModel } : {}),
     log: (msg) => { console.error(msg); },
+    // Fire-and-forget after a memory write, possibly after the turn that
+    // wrote it finalized its map: never the turn's handle.
+    privacy: outsideTurnPrivacy,
   });
   const disposeInconsistencyDetector = ctx.services.provide(
     INCONSISTENCY_DETECTOR_SERVICE_NAME,
@@ -931,6 +934,7 @@ export async function activate(
     kg: wrappedKg,
     ...(llm ? { llm, model: factModel } : {}),
     log: (msg) => { console.error(msg); },
+    privacy: outsideTurnPrivacy,
   });
   const disposeTopicClustering = ctx.services.provide(
     TOPIC_CLUSTERING_SERVICE_NAME,
@@ -1008,6 +1012,8 @@ export async function activate(
         upperThreshold,
         lowerThreshold,
         classifierModel,
+        // The channel classifies before it starts the turn.
+        privacy: outsideTurnPrivacy,
       });
       disposeTopicDetector = ctx.services.provide(
         TOPIC_DETECTOR_SERVICE,
