@@ -2693,15 +2693,30 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
   password is offered. Before provisioning, before the verification and before
   the DSN is handed to the kernel, the shell confirms again that its server
   still runs and still holds the endpoint.
+- **The kernel's pools are SCRAM-only too.** The shell starts the kernel with
+  `OMADIA_DB_REQUIRE_SCRAM=1`, and every pool the kernel opens (the graph pool
+  from `createNeonPool`, which plugins borrow, and core's migration pool) then
+  uses `ScramOnlyClient`
+  (`middleware/packages/harness-knowledge-graph-neon/src/scramOnlyClient.ts`),
+  the shell's guard as a pg Client class. A cleartext or MD5 request, a SASL
+  offer without SCRAM-SHA-256, or an AuthenticationOk without a completed
+  exchange fails the connection with `OMADIA_SCRAM_REQUIRED` before the
+  password or any query is sent. Without the variable (every server
+  deployment) the pools keep pg's own client.
+- **The kernel does not outlive its database.** When the embedded Postgres
+  exits without being asked to, the supervisor stops the kernel and the web UI
+  at once. No database can start again until the kernel is gone (start and
+  restart are refused meanwhile). The app then restarts the stack the ordinary
+  way, database first, and the new kernel gets the new server's DSN. A boot
+  whose database exits under it fails instead of starting or keeping a kernel
+  (`desktop/src/supervisor.ts`, `onDatabaseExit`).
 - **Residual risk on Windows.** The loopback port is free while the server is
-  stopped (between port selection and start, and during a single-user repair).
-  Another local user who binds it there fails the boot but learns no password
-  and is never taken for the server. The kernel's pools use a stock pg client,
-  though: if the server stops while the kernel runs and another user binds the
-  port before the kernel reconnects, that listener could ask the kernel for its
-  password in cleartext. A SCRAM-only client for the kernel's pools (or a
-  socket on Windows) is the open follow-up
-  (`docs/middleware-agent-handoff.md` §13).
+  stopped (between port selection and start, during a single-user repair, and
+  after the server exits). Another local user who binds it there fails the boot
+  but learns no password and is never taken for the server. A reconnect the
+  kernel attempts between the server's exit and its own fails at the SCRAM
+  check. What remains is availability: the next start picks another port when
+  the stored one is taken.
 - **Extensions are created by the shell.** pgvector's control file is not
   `trusted`, so a non-superuser cannot `CREATE EXTENSION vector`. The shell
   creates `vector` and `pg_trgm` as superuser, and the kernel's own
@@ -2772,6 +2787,12 @@ re-confirmed before provisioning and verification),
 `desktop/test/scramOnlyConnect.test.mts` (a listener on loopback that asks for
 cleartext, MD5, no SCRAM, no authentication at all, or forges the final
 signature gets no password and is refused),
+`middleware/test/scramOnlyClient.test.ts` (the same listeners on loopback TCP
+against the kernel's pools with the variable set: no password and no query
+reach them, a SCRAM server is accepted, and without the variable pg's own
+client is in place), `desktop/test/supervisorDatabaseExit.test.mts` (a
+database exit stops the kernel before the database starts again, a boot whose
+database exits fails before it spawns a kernel),
 `desktop/test/embeddedDbEndpoint.test.mts` (the private socket directory, its
 fallback, the server command line and the `postmaster.pid` check),
 `desktop/test/embeddedDb.integration.test.mts` (the real engine:
@@ -4957,7 +4978,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       connection and schema-qualifies the ownership transfer, and keeps the
       fail-closed verification (wrong password refused for both roles, the
       kernel role unprivileged and a member of no role) with its tests. The
-      shell's connections stay SCRAM-only (`scramOnlyConnect.ts`), readiness
+      shell's connections stay SCRAM-only (`scramOnlyConnect.ts`), the kernel
+      keeps `OMADIA_DB_REQUIRE_SCRAM=1` and every new kernel pool takes
+      `scramOnlyPoolOptions()`, a database exit stops the kernel before a
+      database starts again, readiness
       sends no credentials and never counts an authentication error as "up",
       the superuser login checks `data_directory` before a kernel password goes
       out, and on macOS and Linux the server stays off TCP, its socket in an

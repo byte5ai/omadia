@@ -250,8 +250,8 @@ Accepted v1 limitations (tracked for a follow-up):
   only on Windows (macOS and Linux use a private socket and no TCP port), and
   there another local user who binds it fails the boot rather than learning a
   password: the shell trusts only a server whose `postmaster.pid` names the
-  process it started and that completes SCRAM. The kernel's own database
-  connections are not SCRAM-only yet; see [Database authentication](#database-authentication).
+  process it started and that completes SCRAM, and the kernel's pools accept
+  SCRAM only as well; see [Database authentication](#database-authentication).
 - No app/tray icons shipped yet (Electron defaults used).
 - No Linux target in v1 (mac + win only), though the code paths are cross-platform.
 
@@ -461,6 +461,16 @@ kernel's password goes anywhere. Before provisioning, before the verification
 and before the kernel gets its `DATABASE_URL`, the shell checks again that the
 server it started still runs and still holds its endpoint.
 
+The kernel connects the same way. The shell starts it with
+`OMADIA_DB_REQUIRE_SCRAM=1`, and every pool the kernel opens then refuses a
+cleartext or MD5 request, a missing SCRAM offer and a login without an exchange
+before its password or any query is sent
+(`middleware/packages/harness-knowledge-graph-neon/src/scramOnlyClient.ts`).
+When the server exits while the kernel runs, the shell stops the kernel and the
+web UI first. Nothing can start a database again before the kernel is gone. The
+app then restarts the stack the ordinary way, database first, and reloads the
+window (`src/supervisor.ts`).
+
 | Role | Used by | May |
 |---|---|---|
 | `omadia` | the shell only (provisioning, extensions) | everything: it is the bootstrap superuser |
@@ -509,18 +519,17 @@ pre-update snapshot (`snapshots/pgdata-pre-<version>-<stamp>/` as `pgdata/`,
 its `.secrets.enc` as `secrets.enc`); a later update migrates it again.
 
 **What is left on Windows.** The loopback port is free while the server is
-stopped: between choosing the port and starting the server, and during a
-single-user password repair. Another local user can bind it in that window.
-The server then fails to start, so the boot fails (the next start picks a free
-port); the shell's SCRAM-only logins hand that listener no password, and its
-`postmaster.pid` check never takes it for the server. The kernel's own
-connections use a stock pg client, though: if the server stops while the
-kernel runs and another user binds the port before the kernel reconnects,
-that listener could ask the kernel for its password in cleartext. Closing that
-is a follow-up: a SCRAM-only client for the kernel's pools, or a private socket
-on Windows too (`docs/middleware-agent-handoff.md` §13). macOS and Linux are
-not affected: the private socket directory has room for no one else's
-listener.
+stopped: between choosing the port and starting the server, during a
+single-user password repair, and after the server exits. Another local user can
+bind it in that window. The server then fails to start, so the boot fails (the
+next start picks a free port); the shell's SCRAM-only logins hand that listener
+no password, and its `postmaster.pid` check never takes it for the server. A
+kernel connection in the moment between the server's exit and the kernel's own
+fails at its SCRAM check, so that listener gets no password and no query
+either. What remains is availability, not a credential. A private socket on
+Windows too would remove the window (`docs/middleware-agent-handoff.md` §13).
+macOS and Linux are not affected: the private socket directory has room for
+no one else's listener.
 
 ## Capability switches
 

@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Security — desktop kernel connects to its database with SCRAM only
+
+2026-10-04 — On Windows the desktop's embedded Postgres listens on loopback
+TCP. The shell's own connections already accepted only SCRAM-SHA-256, but the
+kernel's pools used a stock pg client. If the database stopped while the kernel
+ran, another local user could bind the freed port before the kernel
+reconnected and ask for the kernel password in cleartext or as an MD5 hash, or
+let the kernel in without any authentication and receive its queries.
+
+- With `OMADIA_DB_REQUIRE_SCRAM=1` every pool the middleware opens (the graph
+  pool that plugins borrow and the core migration pool) uses a client that
+  accepts only a completed SCRAM exchange. A cleartext or MD5 request, a SASL
+  offer without SCRAM-SHA-256 and a login without an exchange fail the
+  connection with `OMADIA_SCRAM_REQUIRED` before the password or any query is
+  sent. The desktop app sets the variable for its kernel. Server deployments
+  leave it unset and keep pg's own client.
+- When the embedded Postgres exits unexpectedly, the desktop app stops the
+  kernel and the web UI before anything can start a database again. It then
+  restarts the stack the ordinary way, database first, and reloads the window.
+  A boot whose database exits under it fails with a clear error instead of
+  starting or keeping a kernel.
+
 ### Security — tool-dispatch privacy seams: org clamp, exempt-tool errors, record dumps, logs
 
 2026-10-02 — Five changes at the seams where tool results and errors reach a
