@@ -17,6 +17,17 @@ export type {
   NodeRow,
 } from './neonKnowledgeGraph.js';
 export { runGraphMigrations } from './migrator.js';
+// SCRAM-only connections for every kernel pool when the process requires it
+// (`OMADIA_DB_REQUIRE_SCRAM=1`, set by the desktop shell). Core's own pools
+// take the same option.
+export {
+  DB_REQUIRE_SCRAM_ENV,
+  ScramOnlyClient,
+  ScramRequiredError,
+  isScramRefusal,
+  isScramRequired,
+  scramOnlyPoolOptions,
+} from './scramOnlyClient.js';
 
 // Embedding-backfill scheduler. The InMemory sibling has no persistence
 // layer to back-fill, so this lives only here.

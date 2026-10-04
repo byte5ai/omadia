@@ -1,12 +1,15 @@
 /**
  * A listener that speaks just enough of the Postgres wire protocol to stand
- * where the embedded Postgres should be and ask a connecting client for
+ * where a Postgres server should be and ask a connecting client for
  * credentials the way an impostor would: in cleartext, as an MD5 hash, not at
- * all (an AuthenticationOk straight away), or through a SCRAM exchange whose
- * last step it may forge. It records every byte the client sends after its
- * startup message, so a test can assert that a password never left the client.
+ * all (an AuthenticationOk straight away, which is what `trust` does), or
+ * through a SCRAM exchange whose last step it may forge. It records every
+ * byte the client sends after its startup message, so a test can assert that
+ * a password or a query never left the client.
  *
- * Synthetic passwords only; it binds 127.0.0.1 on a port the OS picks.
+ * Same wire script as the desktop shell's `desktop/test/helpers/fakePgWire.mts`.
+ * Synthetic passwords only; it binds 127.0.0.1 TCP on a port the OS picks,
+ * the transport the desktop uses on Windows, on every OS.
  */
 import net from 'node:net';
 import crypto from 'node:crypto';
@@ -59,7 +62,8 @@ function int32(value: number): Buffer {
   return buf;
 }
 
-const auth = (code: number, rest: Buffer = Buffer.alloc(0)): Buffer => message('R', Buffer.concat([int32(code), rest]));
+const auth = (code: number, rest: Buffer = Buffer.alloc(0)): Buffer =>
+  message('R', Buffer.concat([int32(code), rest]));
 const BACKEND_KEY = message('K', Buffer.concat([int32(4242), int32(4343)]));
 const READY_FOR_QUERY = message('Z', Buffer.from('I'));
 const READY = Buffer.concat([auth(0), BACKEND_KEY, READY_FOR_QUERY]);
@@ -92,7 +96,7 @@ class ScramServer {
     this.clientFirstBare = clientFirst.slice(clientFirst.indexOf(',', clientFirst.indexOf(',') + 1) + 1);
     const clientNonce = /r=([^,]+)/.exec(this.clientFirstBare)?.[1] ?? '';
     const nonce = clientNonce + crypto.randomBytes(18).toString('base64');
-    this.serverFirst = `r=${nonce},s=${this.salt.toString('base64')},i=${this.iterations}`;
+    this.serverFirst = `r=${nonce},s=${this.salt.toString('base64')},i=${String(this.iterations)}`;
     return this.serverFirst;
   }
 
