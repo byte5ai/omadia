@@ -2481,13 +2481,21 @@ verlängern). Jetzt gibt es einen Marker pro User.
   dessen letzte Prüfung älter als `WS_SESSION_FRAME_RECHECK_MS` (5 s) ist,
   bzw. im 60-s-Sweep, solange der Socket schweigt, und am `exp` des Tokens
   mit 4401 — Details im Abschnitt „Canvas WebSocket-Transport (Omadia UI,
-  PR-11)“. Der Builder-SSE-Stream bleibt nach einem Widerruf noch offen —
-  siehe §13.
+  PR-11)“. Den Builder-SSE-Stream (`GET /drafts/:id/events`) bindet
+  `src/routes/builderEventsSession.ts` an dieselbe Sitzung: Er endet am `exp`
+  des Tokens, sofort bei `onRevoked` auf dieser Replica und sobald
+  `evaluateSessionToken` ihn ablehnt. Diese Prüfung läuft direkt nach dem
+  Öffnen und mit jedem Heartbeat (25 s). Danach schreibt die Route nichts mehr,
+  Bus-Abo, Heartbeat, Ablauf-Timer und Widerrufs-Listener sind weg. Fällt die
+  Prüfung aus (DB nicht erreichbar, 10-s-Frist verpasst), bleibt der Stream
+  offen, weiter begrenzt durch `exp`.
 
 Tests: `test/auth/sessionRevocation.test.ts`,
 `test/auth/logoutRevokesSession.test.ts`,
 `test/auth/userStoreSessionVersion.test.ts` (+ `.pg.test.ts`),
-`test/auth/adminUsersRoute.test.ts`, `test/webSocketRegistry.test.ts`.
+`test/auth/adminUsersRoute.test.ts`, `test/webSocketRegistry.test.ts`,
+`test/builder/builderEventsSession.test.ts`,
+`test/builder/builderEventsRoutes.test.ts`.
 
 ### Ersteinrichtung `POST /api/v1/auth/setup`: atomar und mit Setup-Token
 
@@ -4055,13 +4063,6 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 Der serverseitige Widerruf (`users.session_version`, §3) prüft bei jedem
 Request und bei jedem WebSocket-Upgrade. Offen:
 
-- **Builder-SSE-Stream schließen.** Channel-WebSockets enden inzwischen mit
-  ihrer Sitzung (4401 am `exp`, 4403 bei Widerruf, siehe PR-11-Abschnitt).
-  Der Builder-SSE-Stream (`GET /drafts/:id/events`) authentifiziert weiter nur
-  beim Öffnen und bleibt nach einem Widerruf offen. Vorlage ist
-  `ChannelSessionTracker` (`src/channels/channelSessionLifetime.ts`):
-  `onRevoked` für diese Replica, periodisch `check` für alle anderen, weil
-  `announce` prozesslokal ist.
 - **Canvas-Client nach verpasstem 4401.** `@omadia/canvas-core` hält nach
   4401/4403 an; erst das nächste `connect()` öffnet wieder, `switchCanvas()`
   nicht. Kommt der 4401 aber nie an (Gerät schläft über `exp` hinweg, Netz
