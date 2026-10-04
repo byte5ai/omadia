@@ -568,33 +568,38 @@ jobs:
         # AUDIT_ALLOW_REGISTRY_OUTAGE=true, which downgrades the failure to a
         # warning; unset it once the registry is back (security-architecture §11).
         #
-        # A high or critical finding in the full tree goes to
-        # `.github/scripts/audit-gate.mjs` together with a production-only
-        # report (`--omit=dev`). A production finding always fails. A finding
-        # that only development tooling pulls in passes only with a dated,
+        # The decision itself is `.github/scripts/audit-gate.mjs`. A high or
+        # critical finding in the full tree needs a production-only report
+        # (`--omit=dev`) as well: a production finding always fails, and a
+        # finding that only development tooling pulls in passes only with a dated,
         # reasoned entry in `.github/audit-exceptions.json` whose `via` names
-        # every route into the tree; `electron` counts as production
-        # (security-architecture §4a).
+        # every route `package-lock.json` gives into the tree; `electron` counts
+        # as production (security-architecture §4a). The override above never
+        # applies once the full tree has findings: an unknown production split is
+        # not a pass. A clean tree goes through the gate too, so an exception
+        # that matches nothing any more is reported for removal.
         env:
           AUDIT_ALLOW_REGISTRY_OUTAGE: ${{ vars.AUDIT_ALLOW_REGISTRY_OUTAGE }}
         run: |
           npm install -g npm@latest
-          # run_audit <report> [npm audit args]: 0 = no high/critical finding,
-          # 1 = findings (or a hard CLI error), 2 = registry still erroring after
-          # three attempts.
+          # run_audit <report> <stderr-log> [npm audit args]: 0 = no high/critical
+          # finding, 1 = findings (or a hard CLI error), 2 = registry still
+          # erroring after three attempts. Called in an `||` list, so errexit is
+          # off inside: every command's status is checked explicitly.
           run_audit() {
             report=$1
-            shift
+            log=$2
+            shift 2
             attempt=0
             while :; do
               attempt=$((attempt + 1))
               code=0
               npm audit --audit-level=high --json --fetch-timeout=60000 --fetch-retries=1 "$@" \
-                >"$report" 2>audit-stderr.log || code=$?
+                >"$report" 2>"$log" || code=$?
               if [ "$code" -eq 0 ]; then
                 return 0
               fi
-              if ! grep -q 'audit endpoint returned an error' audit-stderr.log; then
+              if ! grep -q 'audit endpoint returned an error' "$log"; then
                 return 1
               fi
               if [ "$attempt" -ge 3 ]; then
@@ -604,7 +609,18 @@ jobs:
               sleep $((attempt * 20))
             done
           }
-          registry_outage() {
+          gate() {
+            node ../.github/scripts/audit-gate.mjs --workspace "${{ matrix.workspace }}" \
+              --full audit-report.json --prod "$1" \
+              --lock package-lock.json --exceptions ../.github/audit-exceptions.json
+          }
+          full=0
+          run_audit audit-report.json audit-stderr.log || full=$?
+          if [ "$full" -eq 0 ]; then
+            gate audit-report.json
+            exit $?
+          fi
+          if [ "$full" -eq 2 ]; then
             cat audit-stderr.log
             if [ "$AUDIT_ALLOW_REGISTRY_OUTAGE" = "true" ]; then
               echo "::warning::npm audit endpoint still erroring after 3 attempts; AUDIT_ALLOW_REGISTRY_OUTAGE=true -- passing WITHOUT an audit result"
@@ -612,24 +628,16 @@ jobs:
             fi
             echo "::error::npm audit endpoint still erroring after 3 attempts. An unknown audit state is not a clean result; set the repository variable AUDIT_ALLOW_REGISTRY_OUTAGE=true only for a confirmed upstream outage."
             exit 1
-          }
-          full=0
-          run_audit audit-report.json || full=$?
-          if [ "$full" -eq 0 ]; then
-            exit 0
-          fi
-          if [ "$full" -eq 2 ]; then
-            registry_outage
-          fi
-          prod=0
-          run_audit audit-prod.json --omit=dev || prod=$?
-          if [ "$prod" -eq 2 ]; then
-            registry_outage
           fi
           cat audit-stderr.log
-          node ../.github/scripts/audit-gate.mjs --workspace "${{ matrix.workspace }}" \
-            --full audit-report.json --prod audit-prod.json \
-            --package package.json --exceptions ../.github/audit-exceptions.json
+          prod=0
+          run_audit audit-prod.json audit-prod-stderr.log --omit=dev || prod=$?
+          if [ "$prod" -eq 2 ]; then
+            cat audit-prod-stderr.log
+            echo "::error::the full tree has high or critical findings and the production-only audit could not reach the registry; without that split nothing can be excepted. AUDIT_ALLOW_REGISTRY_OUTAGE does not apply here."
+            exit 1
+          fi
+          gate audit-prod.json
 
       - name: Archive audit report
         if: always()
@@ -640,6 +648,7 @@ jobs:
             ${{ matrix.workspace }}/audit-report.json
             ${{ matrix.workspace }}/audit-prod.json
             ${{ matrix.workspace }}/audit-stderr.log
+            ${{ matrix.workspace }}/audit-prod-stderr.log
           if-no-files-found: ignore
           retention-days: 30
           # Artifact names are unique per run, not per attempt: without this, a
