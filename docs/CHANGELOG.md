@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Security — dependency audit: fixed where a release exists, dated exceptions where none does
+
+2026-10-04 — Two new high advisories reached the full dependency trees. Neither
+touches a production tree.
+
+- `http-cache-semantics` in the desktop's packaging chain (electron-builder)
+  moves to 4.3.0, the first release outside the advisory's range.
+- The middleware no longer installs `nodemon`. Nothing used it, and it was the
+  only route for `braces` into that tree.
+- `braces` has no fixed release. In the web-ui it is reached only through the
+  lint configuration (`eslint-config-next`). The CI audit leg now accepts such a
+  finding only with an entry in `.github/audit-exceptions.json` that names the
+  advisory, the package and every route into the tree, explains why the code is
+  not reachable, and expires at most 90 days after its review. A finding in the
+  production tree, or one reached through `electron`, always fails the leg.
+
 ### Security — tool-dispatch privacy seams: org clamp, exempt-tool errors, record dumps, logs
 
 2026-10-02 — Five changes at the seams where tool results and errors reach a

@@ -537,9 +537,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Audit scope covers every lockfile
+      - name: Audit scope covers every lockfile, exception rules hold
         working-directory: .
-        run: node --test .github/scripts/audit-scope.test.mjs
+        run: node --test .github/scripts/audit-scope.test.mjs .github/scripts/audit-gate.test.mjs
 
       - uses: actions/setup-node@v7
         with:
@@ -567,40 +567,77 @@ jobs:
         # outage an admin sets the repository variable
         # AUDIT_ALLOW_REGISTRY_OUTAGE=true, which downgrades the failure to a
         # warning; unset it once the registry is back (security-architecture §11).
+        #
+        # The decision itself is `.github/scripts/audit-gate.mjs`. A high or
+        # critical finding in the full tree needs a production-only report
+        # (`--omit=dev`) as well: a production finding always fails, and a
+        # finding that only development tooling pulls in passes only with a dated,
+        # reasoned entry in `.github/audit-exceptions.json` whose `via` names
+        # every route `package-lock.json` gives into the tree; `electron` counts
+        # as production (security-architecture §4a). The override above never
+        # applies once the full tree has findings: an unknown production split is
+        # not a pass. A clean tree goes through the gate too, so an exception
+        # that matches nothing any more is reported for removal.
         env:
           AUDIT_ALLOW_REGISTRY_OUTAGE: ${{ vars.AUDIT_ALLOW_REGISTRY_OUTAGE }}
         run: |
           npm install -g npm@latest
-          attempt=0
-          while :; do
-            attempt=$((attempt + 1))
-            set +e
-            npm audit --audit-level=high --json --fetch-timeout=60000 --fetch-retries=1 \
-              >audit-report.json 2>audit-stderr.log
-            exit_code=$?
-            set -e
-            if [ "$exit_code" -eq 0 ]; then
+          # run_audit <report> <stderr-log> [npm audit args]: 0 = no high/critical
+          # finding, 1 = findings (or a hard CLI error), 2 = registry still
+          # erroring after three attempts. Called in an `||` list, so errexit is
+          # off inside: every command's status is checked explicitly.
+          run_audit() {
+            report=$1
+            log=$2
+            shift 2
+            attempt=0
+            while :; do
+              attempt=$((attempt + 1))
+              code=0
+              npm audit --audit-level=high --json --fetch-timeout=60000 --fetch-retries=1 "$@" \
+                >"$report" 2>"$log" || code=$?
+              if [ "$code" -eq 0 ]; then
+                return 0
+              fi
+              if ! grep -q 'audit endpoint returned an error' "$log"; then
+                return 1
+              fi
+              if [ "$attempt" -ge 3 ]; then
+                return 2
+              fi
+              echo "::warning::npm audit endpoint error (attempt $attempt/3) -- retrying in $((attempt * 20))s"
+              sleep $((attempt * 20))
+            done
+          }
+          gate() {
+            node ../.github/scripts/audit-gate.mjs --workspace "${{ matrix.workspace }}" \
+              --full audit-report.json --prod "$1" \
+              --lock package-lock.json --exceptions ../.github/audit-exceptions.json
+          }
+          full=0
+          run_audit audit-report.json audit-stderr.log || full=$?
+          if [ "$full" -eq 0 ]; then
+            gate audit-report.json
+            exit $?
+          fi
+          if [ "$full" -eq 2 ]; then
+            cat audit-stderr.log
+            if [ "$AUDIT_ALLOW_REGISTRY_OUTAGE" = "true" ]; then
+              echo "::warning::npm audit endpoint still erroring after 3 attempts; AUDIT_ALLOW_REGISTRY_OUTAGE=true -- passing WITHOUT an audit result"
               exit 0
             fi
-            if ! grep -q 'audit endpoint returned an error' audit-stderr.log; then
-              # A real result: high/critical findings (or a hard CLI error).
-              cat audit-stderr.log
-              cat audit-report.json
-              exit "$exit_code"
-            fi
-            if [ "$attempt" -ge 3 ]; then
-              break
-            fi
-            echo "::warning::npm audit endpoint error (attempt $attempt/3) -- retrying in $((attempt * 20))s"
-            sleep $((attempt * 20))
-          done
-          cat audit-stderr.log
-          if [ "$AUDIT_ALLOW_REGISTRY_OUTAGE" = "true" ]; then
-            echo "::warning::npm audit endpoint still erroring after 3 attempts; AUDIT_ALLOW_REGISTRY_OUTAGE=true -- passing WITHOUT an audit result"
-            exit 0
+            echo "::error::npm audit endpoint still erroring after 3 attempts. An unknown audit state is not a clean result; set the repository variable AUDIT_ALLOW_REGISTRY_OUTAGE=true only for a confirmed upstream outage."
+            exit 1
           fi
-          echo "::error::npm audit endpoint still erroring after 3 attempts. An unknown audit state is not a clean result; set the repository variable AUDIT_ALLOW_REGISTRY_OUTAGE=true only for a confirmed upstream outage."
-          exit 1
+          cat audit-stderr.log
+          prod=0
+          run_audit audit-prod.json audit-prod-stderr.log --omit=dev || prod=$?
+          if [ "$prod" -eq 2 ]; then
+            cat audit-prod-stderr.log
+            echo "::error::the full tree has high or critical findings and the production-only audit could not reach the registry; without that split nothing can be excepted. AUDIT_ALLOW_REGISTRY_OUTAGE does not apply here."
+            exit 1
+          fi
+          gate audit-prod.json
 
       - name: Archive audit report
         if: always()
@@ -609,7 +646,9 @@ jobs:
           name: npm-audit-${{ matrix.workspace }}
           path: |
             ${{ matrix.workspace }}/audit-report.json
+            ${{ matrix.workspace }}/audit-prod.json
             ${{ matrix.workspace }}/audit-stderr.log
+            ${{ matrix.workspace }}/audit-prod-stderr.log
           if-no-files-found: ignore
           retention-days: 30
           # Artifact names are unique per run, not per attempt: without this, a

@@ -709,6 +709,33 @@ one rule about what counts as a runtime.
   not an application setting, so it does not belong in
   `middleware/.env.example`. Every run archives its report as the
   `npm-audit-<dir>` workflow artifact.
+- **A finding no release fixes, in development tooling only.** A high or
+  critical advisory fails its leg unless `.github/scripts/audit-gate.mjs`
+  accepts an entry for it in `.github/audit-exceptions.json`. The gate reads the
+  full report together with a production-only one (`npm audit --omit=dev`), and
+  a finding in the production tree always fails. An entry names the advisory,
+  the package, the workspaces and, in `via`, the devDependencies through which
+  the package enters the tree. The gate takes every route from the project (the
+  root or a workspace) to each vulnerable copy from `package-lock.json`,
+  resolved the way Node resolves `node_modules`, and fails when a route starts
+  at a dependency the entry does not name, at a production dependency, or
+  passes through `electron`, whose advisories count like production ones
+  (below). It does not rely on the report's `effects` links, which leave
+  dependents out. An entry also says why the vulnerable code is not reachable,
+  carries a review date that is not in the future, and expires at most 90 days
+  later. An expired entry fails the leg, an entry within 14 days of its expiry
+  is announced, and an entry or a `via` name that matches nothing any more is
+  flagged for removal, which is why a clean tree goes through the gate too.
+  Every leg checks the whole file in UTC: a malformed entry, or one whose review
+  date is ahead of UTC, fails all three legs, not only the leg it names.
+  Once the full tree has findings, a registry outage during the production-only
+  audit fails the leg, whatever `AUDIT_ALLOW_REGISTRY_OUTAGE` says. Exceptions
+  are only for advisories that no release fixes yet: when a fixed version
+  exists, the dependency moves instead. The first entry (2026-10-04) covers
+  `braces` in the web-ui's lint chain (`eslint-config-next`,
+  `@next/eslint-plugin-next`, `fast-glob`, `micromatch`), which expands the
+  repository's own glob patterns at lint time.
+  `.github/scripts/audit-gate.test.mjs` runs in every leg before the audit.
 - **Dependabot** has an npm block for every audited directory (`/desktop`,
   `/middleware`, `/web-ui`); a new package directory gets one together with its
   audit leg. GitHub's repository-level alerting is not counted on as a
