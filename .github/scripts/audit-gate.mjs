@@ -103,6 +103,7 @@ export function lockGraph(lock) {
   }
   const owners = new Set(Object.keys(packages).filter((p) => p === '' || !p.split('/').includes('node_modules')));
   const reverse = new Map();
+  const forward = new Map();
   for (const [from, entry] of Object.entries(packages)) {
     if (entry?.link === true) continue;
     const fields = [
@@ -118,10 +119,23 @@ export function lockGraph(lock) {
         const edges = reverse.get(target) ?? [];
         edges.push({ from, name, type });
         reverse.set(target, edges);
+        forward.set(from, [...(forward.get(from) ?? []), target]);
       }
     }
   }
-  return { packages, owners, reverse };
+  // Everything the project actually reaches; a lockfile entry outside this set
+  // (an orphan, or a cycle nothing leads into) is not part of any route.
+  const reachable = new Set(owners);
+  const queue = [...owners];
+  while (queue.length > 0) {
+    for (const next of forward.get(queue.shift()) ?? []) {
+      if (!reachable.has(next)) {
+        reachable.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return { packages, owners, reverse, reachable };
 }
 
 /**
@@ -139,10 +153,11 @@ export function routesTo(graph, locations, runtimeNames = new Set()) {
     const at = queue.shift();
     if (seen.has(at)) continue;
     seen.add(at);
-    const name = packageNameOf(at);
-    if (runtime === null && name !== null && runtimeNames.has(name)) runtime = at;
+    // An aliased install (`"x": "npm:electron@44"`) keeps the real name in the entry.
+    const names = [packageNameOf(at), graph.packages[at]?.name].filter((n) => typeof n === 'string');
+    if (runtime === null && names.some((n) => runtimeNames.has(n))) runtime = at;
     const incoming = graph.reverse.get(at) ?? [];
-    if (incoming.length === 0 && !graph.owners.has(at)) unrooted.push(at);
+    if (!graph.owners.has(at) && !graph.reachable.has(at)) unrooted.push(at);
     for (const edge of incoming) {
       if (graph.owners.has(edge.from)) roots.set(`${edge.from}|${edge.name}|${edge.type}`, { owner: edge.from, name: edge.name, type: edge.type });
       else queue.push(edge.from);
@@ -231,10 +246,11 @@ export function evaluate({ workspace, full, prod, lock, exceptions, today }) {
   const used = new Set();
   for (const advisory of fullAdvisories) {
     if (inProduction.has(`${advisory.id} ${advisory.package}`)) continue;
-    const locations = advisory.nodes.length > 0
-      ? advisory.nodes
-      : Object.keys(graph.packages).filter((p) => packageNameOf(p) === advisory.package);
-    const { roots, unrooted, runtime } = routesTo(graph, locations, runtimeNames);
+    if (advisory.nodes.length === 0) {
+      failures.push(`${advisory.severity} ${advisory.id} in ${advisory.package}: the report lists no vulnerable copies ("nodes"), so its routes cannot be checked`);
+      continue;
+    }
+    const { roots, unrooted, runtime } = routesTo(graph, advisory.nodes, runtimeNames);
     const label = `${advisory.severity} ${advisory.id} in ${advisory.package} (via ${roots.map(routeLabel).join(', ') || 'no route'})`;
     const entry = valid.find(
       (e) => e.advisory.toUpperCase() === advisory.id.toUpperCase() && e.package === advisory.package && e.workspaces.includes(workspace),

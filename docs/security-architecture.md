@@ -726,6 +726,8 @@ one rule about what counts as a runtime.
   later. An expired entry fails the leg, an entry within 14 days of its expiry
   is announced, and an entry or a `via` name that matches nothing any more is
   flagged for removal, which is why a clean tree goes through the gate too.
+  Every leg checks the whole file in UTC: a malformed entry, or one whose review
+  date is ahead of UTC, fails all three legs, not only the leg it names.
   Once the full tree has findings, a registry outage during the production-only
   audit fails the leg, whatever `AUDIT_ALLOW_REGISTRY_OUTAGE` says. Exceptions
   are only for advisories that no release fixes yet: when a fixed version

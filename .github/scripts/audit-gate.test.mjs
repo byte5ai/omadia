@@ -262,6 +262,38 @@ test('the command decides through a symlinked path as well', () => {
   }
 });
 
+test('a runtime installed under an alias is still a runtime', () => {
+  const lockfile = {
+    lockfileVersion: 3,
+    packages: {
+      '': { name: 'desktop', devDependencies: { packager: '^26', 'shell-runtime': 'npm:electron@44' } },
+      'node_modules/packager': { version: '26.0.0', dev: true, dependencies: { matcher: '^4' } },
+      'node_modules/shell-runtime': { name: 'electron', version: '44.0.0', dev: true, dependencies: { matcher: '^4' } },
+      'node_modules/matcher': { version: '4.0.0', dev: true, dependencies: { 'glob-lib': '^3' } },
+      'node_modules/glob-lib': { version: '3.0.3', dev: true },
+    },
+  };
+  const result = decide({ lockfile, workspace: 'desktop', entries: [exception({ workspaces: ['desktop'], via: ['packager', 'shell-runtime'] })] });
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /passes through node_modules\/shell-runtime, which ships as a runtime/);
+});
+
+test('a cycle nothing leads into fails even next to a real route', () => {
+  const lockfile = lock({
+    'node_modules/stray-a': { version: '1.0.0', dependencies: { 'stray-b': '^1' } },
+    'node_modules/stray-b': { version: '1.0.0', dependencies: { 'stray-a': '^1', 'glob-lib': '^3' } },
+  });
+  const result = decide({ lockfile });
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /has no route from the project/);
+});
+
+test('a report without the vulnerable copies ("nodes") fails closed', () => {
+  const result = decide({ full: report([]) });
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /lists no vulnerable copies/);
+});
+
 test('every exception in .github/audit-exceptions.json is well-formed', () => {
   const file = JSON.parse(fs.readFileSync(path.join(repo, '.github', 'audit-exceptions.json'), 'utf8'));
   assert.ok(Array.isArray(file.exceptions));
