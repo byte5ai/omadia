@@ -260,6 +260,7 @@ describe('secrets.ts — a data-dir change during setup', () => {
 
     const revealed = recoveryKeyFor(chosen);
     assert.equal(revealed, FULL.vaultKey);
+    assert.equal(recoveryKeyFor(`${chosen}\n`), revealed, 'the folder resolves as the override will');
     assert.equal(fs.existsSync(secretsFile()), false, 'no keys were made up for the current folder');
 
     setDataDirOverride(chosen);
