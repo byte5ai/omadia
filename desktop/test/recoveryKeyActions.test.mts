@@ -13,7 +13,7 @@ import { strict as assert } from 'node:assert';
 import type { BrowserWindow } from 'electron';
 
 import { __failNextClipboardWrite, __setDialogHandler } from './helpers/electron-fake.mjs';
-import { maybeRemindRecoveryKey } from '../src/recoveryKeyActions.ts';
+import { maybeRemindRecoveryKey, showRecoveryKeyAction } from '../src/recoveryKeyActions.ts';
 import { readSetup, writeSetup } from '../src/setupState.ts';
 import type { ShellTranslate } from '../src/shellStrings.ts';
 
@@ -53,5 +53,31 @@ describe('maybeRemindRecoveryKey', () => {
 
     assert.equal(titles.length, 2, `reminder, key — got ${titles.join(' | ')}`);
     assert.equal(readSetup().recoveryKeyShown, true);
+  });
+});
+
+describe('showRecoveryKeyAction (Help → "Show recovery key…")', () => {
+  it('shows the key of a completed install and records it', async () => {
+    await showRecoveryKeyAction(win, t, () => false);
+
+    assert.deepEqual(titles, ['Recovery key']);
+    assert.equal(readSetup().recoveryKeyShown, true);
+  });
+
+  it('points to the wizard step while setup is not complete, without showing a key', async () => {
+    writeSetup({ ...readSetup(), completed: false, recoveryKeyShown: false });
+
+    await showRecoveryKeyAction(win, t, () => false);
+
+    assert.deepEqual(titles, ['Recovery key after setup']);
+    assert.equal(readSetup().recoveryKeyShown, false, 'no key was on screen');
+  });
+
+  it('points to the wizard step while a re-run of setup is on screen', async () => {
+    // A re-run keeps `completed` set until it finishes; the folder may still change.
+    await showRecoveryKeyAction(win, t, () => true);
+
+    assert.deepEqual(titles, ['Recovery key after setup']);
+    assert.equal(readSetup().recoveryKeyShown, false);
   });
 });

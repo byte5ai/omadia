@@ -57,11 +57,13 @@ export function __setSafeStorage(impl) {
   Object.assign(safeStorage, SAFE_STORAGE_DEFAULTS, impl ?? {});
 }
 
-function unavailable(name) {
+/** `stubs` answers the members a test needs; any other read throws. */
+function unavailable(name, stubs = {}) {
   return new Proxy(
-    {},
+    stubs,
     {
-      get(_target, prop) {
+      get(target, prop) {
+        if (Object.hasOwn(target, prop)) return target[prop];
         throw new Error(
           `electron.${name}.${String(prop)} is not stubbed; this test should not reach Electron`,
         );
@@ -80,12 +82,23 @@ let dialogHandler = null;
 export function __setDialogHandler(handler) {
   dialogHandler = handler;
 }
+/** Same opt-in for the folder picker (`dialog.showOpenDialog`). */
+let openDialogHandler = null;
+export function __setOpenDialogHandler(handler) {
+  openDialogHandler = handler;
+}
 export const dialog = {
   showMessageBox: (...args) => {
     if (dialogHandler === null) {
       throw new Error('electron.dialog.showMessageBox is not stubbed; call __setDialogHandler first');
     }
     return dialogHandler(...args);
+  },
+  showOpenDialog: (...args) => {
+    if (openDialogHandler === null) {
+      throw new Error('electron.dialog.showOpenDialog is not stubbed; call __setOpenDialogHandler first');
+    }
+    return openDialogHandler(...args);
   },
 };
 
@@ -152,7 +165,8 @@ export const Menu = unavailable('Menu');
 export const Tray = unavailable('Tray');
 export const shell = unavailable('shell');
 export const nativeImage = unavailable('nativeImage');
-export const BrowserWindow = unavailable('BrowserWindow');
+// A fake sender belongs to no window, so the folder picker opens unparented.
+export const BrowserWindow = unavailable('BrowserWindow', { fromWebContents: () => null });
 export const ipcRenderer = unavailable('ipcRenderer');
 
 export default {

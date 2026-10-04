@@ -21,6 +21,7 @@ import { app, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 
 import {
   __setIpcMain,
+  __setOpenDialogHandler,
   type FakeInvokeHandler,
   type FakeOnListener,
 } from './helpers/electron-fake.mjs';
@@ -180,6 +181,24 @@ describe('registerIpc — the recovery key and setup stay with the wizard', () =
     assertNothingWritten();
   });
 
+  it('refuses the wizard the key of a folder the picker did not return', async () => {
+    view = 'wizard';
+    // Another folder's secrets: the channel must not become a way to read them.
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'omadia-ipc-elsewhere-'));
+    const blob = { vaultKey: Buffer.alloc(32, 5).toString('base64'), providerKeys: {} };
+    const bytes = Buffer.from(JSON.stringify(blob), 'utf8');
+    fs.writeFileSync(path.join(elsewhere, 'secrets.enc'), bytes, { mode: 0o600 });
+    for (const requested of [elsewhere, undefined, '', 42, { dataDir: elsewhere }]) {
+      await assert.rejects(
+        invoke(CH.exportRecoveryKey, WIZARD, requested),
+        /not chosen in this setup/,
+        String(requested),
+      );
+    }
+    assert.deepEqual(fs.readFileSync(path.join(elsewhere, 'secrets.enc')), bytes);
+    assertNothingWritten();
+  });
+
   it('refuses setup completion to the web UI without writing or booting anything', async () => {
     view = 'app';
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'omadia-ipc-elsewhere-'));
@@ -247,7 +266,8 @@ describe('registerIpc — the legitimate wizard flow still works', () => {
 
   it('reveals the recovery key to the wizard during setup', async () => {
     view = 'wizard';
-    const key = await invoke(CH.exportRecoveryKey, WIZARD);
+    // null: the wizard completes with the current data folder.
+    const key = await invoke(CH.exportRecoveryKey, WIZARD, null);
     assert.equal(typeof key, 'string');
     assert.equal(Buffer.from(String(key), 'base64').length, 32);
   });
@@ -306,5 +326,42 @@ describe('registerIpc — the legitimate wizard flow still works', () => {
     assert.deepEqual(await invoke(CH.complete, WIZARD, stale), { ok: true });
     const setup = JSON.parse(fs.readFileSync(setupFile(), 'utf8')) as { capabilities?: unknown };
     assert.deepEqual(setup.capabilities, { attachments: false });
+  });
+
+  // Last in the file: completing with a picked folder moves the data dir.
+  it('reveals the key of a picked folder with an earlier install, the key setup then keeps', async () => {
+    view = 'wizard';
+    appOrigin = null;
+    const picked = fs.mkdtempSync(path.join(os.tmpdir(), 'omadia-ipc-picked-'));
+    const pickedFile = path.join(picked, 'secrets.enc');
+    const earlier = {
+      vaultKey: Buffer.alloc(32, 7).toString('base64'),
+      credentialKeychainKey: Buffer.alloc(32, 8).toString('base64'),
+      providerKeys: {},
+    };
+    const bytes = Buffer.from(JSON.stringify(earlier), 'utf8');
+    fs.writeFileSync(pickedFile, bytes, { mode: 0o600 });
+    const current = await invoke(CH.exportRecoveryKey, WIZARD, null);
+
+    __setOpenDialogHandler(async () => ({ canceled: false, filePaths: [picked] }));
+    try {
+      assert.equal(await invoke(CH.chooseDataDir, WIZARD), picked);
+    } finally {
+      __setOpenDialogHandler(null);
+    }
+    const shown = await invoke(CH.exportRecoveryKey, WIZARD, picked);
+    assert.equal(shown, earlier.vaultKey, 'the key of the blob in the picked folder');
+    assert.notEqual(shown, current);
+    assert.deepEqual(fs.readFileSync(pickedFile), bytes, 'revealing it wrote nothing');
+
+    assert.deepEqual(await invoke(CH.complete, WIZARD, { ...SETUP, dataDir: picked }), { ok: true });
+    assert.equal(secretsFile(), pickedFile, 'setup bound the picked folder');
+    assert.equal(await invoke(CH.exportRecoveryKey, WIZARD, null), shown, 'the key shown is the key in use');
+    assert.deepEqual(fs.readFileSync(pickedFile), bytes, 'the earlier blob is byte-identical');
+    assert.deepEqual(
+      fs.readdirSync(picked).filter((name) => name.startsWith('secrets.enc')),
+      ['secrets.enc'],
+      'no backup and no temp file: nothing was rewritten',
+    );
   });
 });

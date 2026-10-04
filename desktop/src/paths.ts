@@ -134,6 +134,15 @@ export function secretsFile(): string {
   return path.join(dataRoot(), 'secrets.enc');
 }
 
+/**
+ * The secrets blob of the folder {@link setDataDirOverride} would make the data
+ * root, without making it one. The wizard reads the recovery key from here
+ * before setup binds the folder.
+ */
+export function secretsFileFor(dataDir: string): string {
+  return path.join(normalizeDataDir(dataDir) ?? app.getPath('userData'), 'secrets.enc');
+}
+
 /** First-run setup state (non-secret config). */
 export function setupFile(): string {
   return path.join(dataRoot(), 'setup.json');
@@ -193,11 +202,16 @@ function readDataDirOverride(): string | null {
   try {
     const p = dataDirOverrideFile();
     if (!fs.existsSync(p)) return null;
-    const dir = fs.readFileSync(p, 'utf8').trim();
-    return dir.length > 0 ? dir : null;
+    return normalizeDataDir(fs.readFileSync(p, 'utf8'));
   } catch {
     return null;
   }
+}
+
+/** An override as it is read back: trimmed, and an empty one is none. */
+function normalizeDataDir(raw: string): string | null {
+  const dir = raw.trim();
+  return dir.length > 0 ? dir : null;
 }
 
 function ensureDir(dir: string): void {

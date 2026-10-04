@@ -42,7 +42,9 @@ const wizardApi = {
   testLlmKey: (req: TestLlmKeyRequest): Promise<TestLlmKeyResult> =>
     ipcRenderer.invoke(CH.testLlmKey, req),
   chooseDataDir: (): Promise<string | null> => ipcRenderer.invoke(CH.chooseDataDir),
-  exportRecoveryKey: (): Promise<string> => ipcRenderer.invoke(CH.exportRecoveryKey),
+  /** The key for the folder setup will complete with (`WizardConfig.dataDir`). */
+  exportRecoveryKey: (dataDir: string | null): Promise<string> =>
+    ipcRenderer.invoke(CH.exportRecoveryKey, dataDir),
   complete: (config: WizardConfig): Promise<CompleteResult> =>
     ipcRenderer.invoke(CH.complete, config),
   ...bootApi,
