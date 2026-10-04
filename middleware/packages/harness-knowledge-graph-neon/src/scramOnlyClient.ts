@@ -43,9 +43,10 @@ export function isScramRefusal(err: unknown): boolean {
   return (err as { code?: unknown } | null)?.code === SCRAM_REQUIRED;
 }
 
-/** Whether this process connects to Postgres SCRAM-only. */
+/** Whether this process connects to Postgres SCRAM-only (`1` or `true`). */
 export function isScramRequired(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[DB_REQUIRE_SCRAM_ENV] === '1';
+  const value = env[DB_REQUIRE_SCRAM_ENV]?.trim().toLowerCase();
+  return value === '1' || value === 'true';
 }
 
 /** What pg keeps as a client's password: the value, a function, or nothing (pgpass). */

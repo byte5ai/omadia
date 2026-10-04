@@ -96,6 +96,7 @@ describe('the requirement is off unless the process asks for it', () => {
     assert.equal(isScramRequired({}), false);
     assert.deepEqual(scramOnlyPoolOptions({}), {});
     assert.equal(isScramRequired({ [DB_REQUIRE_SCRAM_ENV]: '0' }), false);
+    assert.equal(isScramRequired({ [DB_REQUIRE_SCRAM_ENV]: 'true' }), true);
     assert.deepEqual(scramOnlyPoolOptions(REQUIRED), { Client: ScramOnlyClient });
   });
 
