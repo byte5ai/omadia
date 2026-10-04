@@ -1,7 +1,7 @@
 import { app, safeStorage } from 'electron';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { secretsFile, snapshotDir } from './paths';
+import { secretsFile, secretsFileFor, snapshotDir } from './paths';
 import { log } from './log';
 import type { EmbeddedDbCredentials, SecretsBlob, SecretsCodec, SecretsIo } from './secretsBlob';
 import { createSecretsStore } from './secretsStore';
@@ -186,6 +186,19 @@ export function allProviderKeys(): Record<string, string> {
 /** Export the vault master key as a recovery string the user can save. */
 export function exportRecoveryKey(): string {
   return store.load().vaultKey;
+}
+
+/**
+ * The recovery key that applies once first-run setup has made `dataDir` the
+ * data folder (null: the current one), read before setup binds it. A valid
+ * blob already in that folder is kept by setup, so its key is the one to save,
+ * and reading it writes nothing. A folder without a blob receives the current
+ * folder's keys. An unreadable blob throws `SecretsUnreadableError` and stays
+ * as it is.
+ */
+export function recoveryKeyFor(dataDir: string | null): string {
+  if (dataDir === null) return exportRecoveryKey();
+  return store.preview(secretsFileFor(dataDir)).vaultKey;
 }
 
 export function isEncryptionAvailable(): boolean {

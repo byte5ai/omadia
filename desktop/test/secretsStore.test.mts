@@ -295,7 +295,7 @@ describe('createSecretsStore — the cache follows the data dir', () => {
   it('adopts an existing file at the new path instead of writing the cached blob over it', () => {
     const chosen = encrypted(FULL);
     const { store, files, moveTo } = harness({ [P2]: chosen });
-    const first = store.load(); // e.g. the wizard revealing the recovery key
+    const first = store.load(); // a blob cached for the old data dir
     const userDataBytes = files.get(P1);
 
     moveTo(P2); // the wizard's data-dir override
@@ -332,5 +332,49 @@ describe('createSecretsStore — the cache follows the data dir', () => {
     const fresh = store.load();
     assert.deepEqual(decoded(files.get(P2)), fresh);
     assert.deepEqual(files.get(P1), damaged, 'the unreadable file stays exactly as it was');
+  });
+});
+
+/**
+ * `preview` is what the wizard's recovery key is read through before setup
+ * binds the chosen folder: it must answer with what `load()` will return after
+ * the move, and must not write, cache or move anything to get there.
+ */
+describe('createSecretsStore — previewing a data dir before moving there', () => {
+  it('reads an existing file there without writing, caching or moving', () => {
+    const chosen = encrypted(FULL);
+    const { store, files, calls, moveTo } = harness({ [P2]: chosen });
+    const first = store.load();
+    calls.length = 0;
+
+    assert.deepEqual(store.preview(P2), FULL, 'the file in that folder decides');
+    for (const verb of ['writeFile', 'rename', 'copyFile', 'remove']) {
+      assert.deepEqual(callsTo(calls, verb), [], `no ${verb}`);
+    }
+    assert.deepEqual(files.get(P2), chosen, 'byte-identical');
+    assert.deepEqual(store.load(), first, 'the current data dir and its cache are unchanged');
+
+    moveTo(P2);
+    assert.deepEqual(store.load(), FULL, 'and the move loads what was previewed');
+  });
+
+  it('answers a missing file there with the persisted keys the move will write', () => {
+    const { store, files, moveTo } = harness();
+    const previewed = store.preview(P2);
+    assert.equal(files.has(P2), false, 'nothing is written there before the move');
+    assert.deepEqual(decoded(files.get(P1)), previewed, 'the keys shown are on disk already');
+
+    moveTo(P2);
+    assert.deepEqual(store.load(), previewed);
+    assert.deepEqual(decoded(files.get(P2)), previewed);
+  });
+
+  it('surfaces an unreadable file there and writes nothing anywhere', () => {
+    const damaged = Buffer.from('enc:');
+    const { store, files, calls } = harness({ [P2]: damaged });
+    assert.throws(() => store.preview(P2), SecretsUnreadableError);
+    assert.deepEqual(files.get(P2), damaged);
+    assert.equal(files.has(P1), false, 'no keys were made up for the current data dir');
+    assert.deepEqual(callsTo(calls, 'writeFile'), []);
   });
 });

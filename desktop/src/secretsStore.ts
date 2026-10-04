@@ -20,11 +20,11 @@ import {
  *   the file it is about to replace, so a file that became unreadable since it
  *   was cached is surfaced instead of overwritten.
  * - **The cache belongs to one path.** First-run setup can move the data dir
- *   while the app runs (the wizard shows the recovery key before it applies the
- *   chosen folder). A cache for the old path is never written over an existing
- *   file at the new one: that file is read and wins. Only a missing file there
- *   receives the keys already handed out, so the recovery key the user was just
- *   shown stays the key in use.
+ *   while the app runs. A cache for the old path is never written over an
+ *   existing file at the new one: that file is read and wins. Only a missing
+ *   file there receives the keys already handed out. `preview` answers by the
+ *   same rule before the move, so the recovery key the wizard shows for the
+ *   chosen folder is the key in use once setup binds it.
  */
 
 export interface SecretsStoreDeps {
@@ -48,6 +48,14 @@ export interface SecretsStore {
    * writes nothing.
    */
   update(change: (current: SecretsBlob) => SecretsBlob): SecretsBlob;
+  /**
+   * The blob `load()` will return once the data dir's file is `file`, without
+   * moving there: an existing file is read and wins, and a missing one will
+   * receive the keys of the current data dir (created there if needed, like
+   * `load()`). Never writes at `file` and never caches it. An unreadable file
+   * throws like every other read.
+   */
+  preview(file: string): SecretsBlob;
   /**
    * The blob as the file holds it right now, bypassing the cache, or null when
    * there is no file. Never writes and never touches the cache: this is how a
@@ -90,7 +98,7 @@ export function createSecretsStore(deps: SecretsStoreDeps): SecretsStore {
    */
   const startingBlob = (): SecretsBlob => cached?.blob ?? freshBlob();
 
-  return {
+  const store: SecretsStore = {
     load(): SecretsBlob {
       const file = deps.file();
       if (cached !== null && cached.file === file) return cached.blob;
@@ -115,6 +123,13 @@ export function createSecretsStore(deps: SecretsStoreDeps): SecretsStore {
       return next;
     },
 
+    preview(file: string): SecretsBlob {
+      if (cached !== null && cached.file === file) return cached.blob;
+      // A missing file there will start from `startingBlob()`, so the keys
+      // shown for it must already be persisted ones: `load()` makes them so.
+      return readSecretsBlob(deps.io, deps.codec, file, readOptions) ?? store.load();
+    },
+
     reread(): SecretsBlob | null {
       return readSecretsBlob(deps.io, deps.codec, deps.file(), readOptions);
     },
@@ -123,4 +138,5 @@ export function createSecretsStore(deps: SecretsStoreDeps): SecretsStore {
       cached = null;
     },
   };
+  return store;
 }

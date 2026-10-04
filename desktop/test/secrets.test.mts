@@ -26,6 +26,7 @@ import {
   embeddedDbCredentials,
   exportRecoveryKey,
   getProviderKey,
+  recoveryKeyFor,
   setProviderKey,
   vaultKey,
 } from '../src/secrets.ts';
@@ -96,6 +97,7 @@ const ACCESSORS: ReadonlyArray<readonly [string, () => unknown]> = [
   ['vaultKey()', () => vaultKey()],
   ['credentialKeychainKey()', () => credentialKeychainKey()],
   ['exportRecoveryKey()', () => exportRecoveryKey()],
+  ['recoveryKeyFor(null)', () => recoveryKeyFor(null)],
   ['allProviderKeys()', () => allProviderKeys()],
   ['setProviderKey()', () => setProviderKey('ANTHROPIC_API_KEY', 'synthetic-provider-key')],
   ['embeddedDbCredentials()', () => embeddedDbCredentials()],
@@ -133,6 +135,7 @@ describe('secrets.ts — only a missing file leads to new keys', () => {
     assert.equal(vaultKey(), FULL.vaultKey);
     assert.equal(credentialKeychainKey(), FULL.credentialKeychainKey);
     assert.equal(exportRecoveryKey(), FULL.vaultKey);
+    assert.equal(recoveryKeyFor(null), FULL.vaultKey, 'null names the current data folder');
     assert.deepEqual(allProviderKeys(), FULL.providerKeys);
     assert.deepEqual(fs.readFileSync(file), bytes);
     assert.deepEqual(family(file), ['secrets.enc']);
@@ -221,29 +224,100 @@ describe('secrets.ts — rewrites are atomic and keep a backup', () => {
 });
 
 describe('secrets.ts — a data-dir change during setup', () => {
-  it('does not write the key revealed on the last wizard step over a file in the chosen folder', () => {
-    // The wizard's Reveal button reads the key BEFORE `complete` applies the
-    // chosen data dir, so a path-agnostic cache used to write the userData blob
-    // over whatever the chosen folder already held.
-    const revealed = exportRecoveryKey();
+  it('reveals the key of a chosen folder that holds a valid blob, the key setup then keeps', () => {
+    // The wizard's Reveal button runs BEFORE `complete` applies the chosen data
+    // dir. It asks for the key of that folder, so the blob already there is
+    // what it shows, and binding the folder keeps that blob's keys.
+    const cached = exportRecoveryKey(); // a key already handed out for userData
     const userDataFile = secretsFile();
     const userDataBytes = fs.readFileSync(userDataFile);
 
     const chosen = freshDir();
     const chosenFile = path.join(chosen, 'secrets.enc');
     const chosenBytes = writeBlob(chosenFile, FULL);
-    setDataDirOverride(chosen);
 
+    const revealed = recoveryKeyFor(chosen);
+    assert.equal(revealed, FULL.vaultKey, 'the key of the blob in the chosen folder');
+    assert.notEqual(revealed, cached);
+    assert.deepEqual(fs.readFileSync(chosenFile), chosenBytes, 'revealing reads, it does not write');
+    assert.deepEqual(family(chosenFile), ['secrets.enc']);
+
+    setDataDirOverride(chosen);
     setProviderKey('ANTHROPIC_API_KEY', 'synthetic-wizard-key');
     const stored = readBlob(chosenFile);
-    assert.equal(stored.vaultKey, FULL.vaultKey, 'the chosen folder keeps its own vault key');
-    assert.notEqual(stored.vaultKey, revealed);
+    assert.equal(stored.vaultKey, revealed, 'the key shown is the key in use');
     assert.equal(stored.credentialKeychainKey, FULL.credentialKeychainKey);
     assert.equal(stored.providerKeys['ANTHROPIC_API_KEY'], 'synthetic-wizard-key');
     assert.deepEqual(fs.readFileSync(`${chosenFile}.bak`), chosenBytes);
     assert.deepEqual(fs.readFileSync(userDataFile), userDataBytes, 'the userData blob is untouched');
-    assert.equal(exportRecoveryKey(), FULL.vaultKey, 'the recovery key now names the key in use');
+    assert.equal(exportRecoveryKey(), revealed, 'the recovery key still names the key in use');
   });
+
+  it('leaves that blob byte-identical through setup when no provider key is stored', () => {
+    const chosen = freshDir();
+    const chosenFile = path.join(chosen, 'secrets.enc');
+    const chosenBytes = writeBlob(chosenFile, FULL);
+
+    const revealed = recoveryKeyFor(chosen);
+    assert.equal(revealed, FULL.vaultKey);
+    assert.equal(fs.existsSync(secretsFile()), false, 'no keys were made up for the current folder');
+
+    setDataDirOverride(chosen);
+    assert.equal(vaultKey(), revealed, 'the kernel boots with the key that was shown');
+    assert.equal(credentialKeychainKey(), FULL.credentialKeychainKey);
+    assert.equal(exportRecoveryKey(), revealed);
+    assert.deepEqual(fs.readFileSync(chosenFile), chosenBytes);
+    assert.deepEqual(family(chosenFile), ['secrets.enc']);
+  });
+
+  it('reveals the new key an empty chosen folder receives, without writing there first', () => {
+    const empty = freshDir();
+    const emptyFile = path.join(empty, 'secrets.enc');
+
+    const revealed = recoveryKeyFor(empty);
+    assert.equal(Buffer.from(revealed, 'base64').length, 32);
+    assert.notEqual(revealed, FULL.vaultKey);
+    assert.deepEqual(fs.readdirSync(empty), [], 'the folder is not bound yet');
+
+    setDataDirOverride(empty);
+    setProviderKey('ANTHROPIC_API_KEY', 'synthetic-wizard-key');
+    assert.equal(readBlob(emptyFile).vaultKey, revealed, 'the key shown is the key in use');
+    assert.equal(vaultKey(), revealed);
+    assert.equal(exportRecoveryKey(), revealed);
+  });
+
+  for (const [stage, text, keychain] of [
+    ['parse', '{"vaultKey": "trunc', null],
+    [
+      'decrypt',
+      'v10-synthetic-ciphertext',
+      {
+        isEncryptionAvailable: () => true,
+        decryptString: () => {
+          throw new Error('keychain denied');
+        },
+      },
+    ],
+  ] as const) {
+    it(`reports a chosen folder's blob that fails at ${stage} instead of a key, and keeps it`, () => {
+      __setSafeStorage(keychain);
+      const chosen = freshDir();
+      const chosenFile = path.join(chosen, 'secrets.enc');
+      const bytes = writeRaw(chosenFile, text);
+
+      assertUnreadable(() => recoveryKeyFor(chosen), stage, 'recoveryKeyFor(chosen)');
+      assert.deepEqual(fs.readFileSync(chosenFile), bytes);
+      assert.deepEqual(family(chosenFile), ['secrets.enc']);
+      assert.equal(fs.existsSync(secretsFile()), false, 'no keys were made up for the current folder');
+
+      // Binding the folder meets the same error as before: nothing replaces the file.
+      setDataDirOverride(chosen);
+      assertUnreadable(() => vaultKey(), stage, 'vaultKey()');
+      assertUnreadable(() => setProviderKey('ANTHROPIC_API_KEY', 'synthetic-wizard-key'), stage, 'setProviderKey()');
+      assert.deepEqual(fs.readFileSync(chosenFile), bytes);
+      assert.deepEqual(family(chosenFile), ['secrets.enc']);
+    });
+  }
 
   it('an unreadable file does not block a fresh start in an empty folder, and is kept', () => {
     const damagedFile = secretsFile();
