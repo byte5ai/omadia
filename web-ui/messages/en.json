@@ -1020,7 +1020,7 @@
     "auth": {
       "logout_revocation_failed": {
         "what": "You are still signed in. The server could not end your session, so it stays valid on every device that has it.",
-        "next": "Try signing out again in a moment. If it keeps failing, ask an administrator to reset your password, which ends every session."
+        "next": "Try signing out again in a moment. If it keeps failing, ask an administrator to reset your password or disable your account. Both end every session."
       },
       "setup_password_too_long": {
         "what": "The password is longer than 1024 characters, the most sign-in accepts.",

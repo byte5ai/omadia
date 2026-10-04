@@ -1020,7 +1020,7 @@
     "auth": {
       "logout_revocation_failed": {
         "what": "Du bist noch angemeldet. Der Server konnte deine Sitzung nicht beenden, sie gilt deshalb auf jedem Gerät weiter, das sie hat.",
-        "next": "Versuche gleich noch einmal, dich abzumelden. Klappt es weiterhin nicht, bitte einen Admin, dein Passwort zurückzusetzen. Das beendet jede Sitzung."
+        "next": "Versuche gleich noch einmal, dich abzumelden. Klappt es weiterhin nicht, bitte einen Admin, dein Passwort zurückzusetzen oder dein Konto zu deaktivieren. Beides beendet jede Sitzung."
       },
       "setup_password_too_long": {
         "what": "Das Passwort ist länger als 1024 Zeichen, mehr nimmt die Anmeldung nicht an.",
