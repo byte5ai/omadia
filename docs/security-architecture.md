@@ -476,26 +476,54 @@ Every `docker run` for agent code now carries three ceilings:
   a swap ceiling that is not updated in the same call.
 - **Existing containers.** Limits are fixed at `docker run`. When a persistent
   sandbox is re-attached, the backend first runs `docker update` with the
-  current limits, then `docker start`. That covers containers created before
-  the limits existed and containers created under different values. The update
-  is best-effort: a refusal is logged (`[sandbox] docker update … failed`) and
-  the container keeps the limits it has; the re-attach itself does not fail.
-  Publish containers are immutable per version and never re-created, so one
-  that predates the limits runs without them until a new version replaces it.
+  current limits, then checks them (next bullet), then runs `docker start`.
+  That covers containers created before the limits existed and containers
+  created under different values.
+- **A sandbox container runs nothing until its limits are in force.** After
+  `docker run`, and after the `docker update` of a re-attach, the backend reads
+  the container's `docker inspect` `.HostConfig` and compares it with the
+  required values (`resourceLimitsNotInForce()` in `resourceLimits.ts`):
+  `Memory` and `MemorySwap` against the memory ceiling, the CPU share from
+  `NanoCpus` (or, when that is unset, `CpuQuota` over `CpuPeriod`) and
+  `PidsLimit`. A missing value (absent, `null`, `0` or `-1`) or a looser one
+  fails the check, a stricter one passes. A failed `docker update`, a failed or
+  unreadable `docker inspect`, or a failed check makes `provision()` throw, so
+  the `execute` and `publish` tools return an error and run nothing:
+  - an existing container is stopped (`docker stop -t 0`, so nothing left
+    running in it keeps going) and kept. The backend refuses rather than
+    creating a replacement, because the container's own filesystem is the
+    scope's durable workspace (there is no volume) and a replacement would
+    silently discard what the agent installed and wrote there. The refusal is
+    not cached: the next request tries the update again on the stopped
+    container, and removing the container (`docker rm -f <name>`) gives the
+    scope a new one with the limits;
+  - a container the call just created holds nothing yet and is removed
+    (`docker rm -f`); a replacement would meet the same daemon.
+
+  The log line (`[sandbox] container '<name>' runs nothing: …`) and the error
+  name the container and each missing limit with its numbers, never Docker's
+  output.
+- **Published apps are not checked yet.** Publish containers are immutable per
+  version and never re-created, so one that predates the limits runs without
+  them until a new version replaces it, and `DockerPublishRuntime.deploy` does
+  not read `docker inspect` after its `docker run`.
 - **One builder.** Both `docker run` sites (`DockerSandboxBackend.runContainer`,
   `DockerPublishRuntime.deploy`) and the update path take their flags from
   `dockerResourceLimitArgs()`.
 - **Host caveat.** On a host whose kernel lacks one of the cgroup controllers,
   `docker run` prints a warning and starts the container without that limit
-  (exit 0), so an argv assertion cannot notice. The real-Docker test tier
+  (exit 0), so an argv assertion cannot notice. The sandbox backend's
+  `docker inspect` check catches it and refuses to run there; a publish
+  container still starts without that limit. The real-Docker test tier
   (`SANDBOX_DOCKER_TEST=1`) checks `docker inspect`, reads the enforced CPU
   quota from `cpu.max` (cgroup v2) and checks that a 700 MB allocation is
   killed; run it once on any new host type.
 
 Tests: `middleware/test/sandbox/resourceLimits.test.ts` (ranges, fallback
-order, argv), `middleware/test/sandbox/dockerSandboxLimits.test.ts` (stub tier
-for argv and the update-before-start order, real tier for what the daemon and
-the kernel applied, including out-of-range values),
+order, argv, the in-force check), `middleware/test/sandbox/dockerSandboxLimits.test.ts`
+(stub tier for argv, the update-inspect-start order and every refusal, real
+tier for what the daemon and the kernel applied, including out-of-range
+values, and for a container the daemon cannot update),
 `middleware/test/sandbox/sandboxLimitsConfig.test.ts` and
 `middleware/test/publish/dockerPublishRuntime.test.ts`.
 
@@ -4937,6 +4965,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       own copy, and offers no way to switch a limit off. A new limit field
       gets a range in `SANDBOX_RESOURCE_LIMIT_BOUNDS` that excludes every
       value Docker would apply as no limit, checked on a real daemon (§3b).
+      A container that runs agent code runs nothing until
+      `resourceLimitsNotInForce()` finds every limit in force on its
+      `docker inspect`, as `DockerSandboxBackend` does (§3b).
 - [ ] A new surface that has to be framed lives under `/p/*` or `/bot-api/*`
       and sets its own `frame-ancestors`. The exemption in
       `web-ui/app/_lib/securityHeaders.ts` is not widened, and the operator-UI

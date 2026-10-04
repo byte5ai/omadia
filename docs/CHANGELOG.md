@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Security — a sandbox container runs nothing until its resource limits are in force
+
+2026-10-04 — The sandbox behind the `execute` and `publish` tools re-attached
+an existing container even when `docker update` could not give it the current
+memory, CPU and PID limits. The failure was logged and the container ran
+commands with the limits it had, which for a container from before the limits
+meant none. After `docker run` and after `docker update`, the backend now reads
+the container's limits with `docker inspect` and compares memory, the swap
+ceiling, the CPU share and the PID limit with the required values. A failed
+update, a failed inspect, or a missing or looser limit refuses the request
+with an error that names the container and the missing limits. An existing
+container is stopped and kept with its files, and the next request tries the
+update again. A container that was just created is removed. A stricter limit
+than required counts as in force. Logs and errors carry no Docker output. On a
+host whose kernel lacks one of the cgroup controllers, `docker run` starts a
+container without that limit, so the sandbox now refuses to run there instead
+of running without it. Containers of published apps are not checked yet.
+
 ### Security — tool-dispatch privacy seams: org clamp, exempt-tool errors, record dumps, logs
 
 2026-10-02 — Five changes at the seams where tool results and errors reach a

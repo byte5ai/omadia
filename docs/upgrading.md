@@ -1054,7 +1054,11 @@ apply it.
   Docker would run some of them (such as 0.000001 CPUs) with no limit at all.
   Existing persistent sandboxes get the limits the next time they are used;
   apps published before the upgrade keep running without them until you
-  publish a new version.
+  publish a new version. Since the in-force check (see the CHANGELOG), a
+  sandbox container whose limits Docker cannot apply runs nothing: the
+  request fails, and the container is stopped and kept with its files.
+  Removing it (`docker rm -f <name>`, the name is in the error) gives the
+  scope a new container with the limits.
 
 ## Upgrading to 0.115 or later — `CREDENTIAL_KEYCHAIN_KEY` is required
 
