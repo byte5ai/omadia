@@ -2686,8 +2686,9 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
   sends no credentials, and an authentication error is never taken as "up".
   Every shell connection accepts SCRAM-SHA-256 and nothing else
   (`desktop/src/scramOnlyConnect.ts`): a cleartext or MD5 request, a SASL offer
-  without SCRAM, or an AuthenticationOk without a completed exchange is refused
-  before a password is sent, and pg's server-signature check makes the server
+  without SCRAM, or an AuthenticationOk or ReadyForQuery without a verified
+  exchange is refused before a password or a query is sent. A connection counts
+  as open only after pg's server-signature check passed, which makes the server
   prove it holds the role's verifier. The first login after every start is the
   superuser's and must report this cluster's `data_directory` before the kernel
   password is offered. Before provisioning, before the verification and before
@@ -2698,16 +2699,20 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
   from `createNeonPool`, which plugins borrow, and core's migration pool) then
   uses `ScramOnlyClient`
   (`middleware/packages/harness-knowledge-graph-neon/src/scramOnlyClient.ts`),
-  the shell's guard as a pg Client class. A cleartext or MD5 request, a SASL
-  offer without SCRAM-SHA-256, or an AuthenticationOk without a completed
-  exchange fails the connection with `OMADIA_SCRAM_REQUIRED` before the
-  password or any query is sent. Without the variable (every server
+  the shell's guard as a pg Client class (a desktop test keeps the two copies
+  in step). A cleartext or MD5 request, a SASL offer without SCRAM-SHA-256, or
+  an AuthenticationOk or ReadyForQuery without a verified exchange fails the
+  connection with `OMADIA_SCRAM_REQUIRED` before the password or any query is
+  sent, and a failed connection is closed. Without the variable (every server
   deployment) the pools keep pg's own client.
 - **The kernel does not outlive its database.** When the embedded Postgres
   exits without being asked to, the supervisor stops the kernel and the web UI
-  at once. No database can start again until the kernel is gone (start and
+  at once. Nothing restarts the database before the kernel is gone (start and
   restart are refused meanwhile). The app then restarts the stack the ordinary
-  way, database first, and the new kernel gets the new server's DSN. A boot
+  way, database first, and the new kernel gets the new server's DSN. A kernel
+  that does not exit even after SIGKILL is reported as an error, and the app
+  then leaves the restart to the user instead of starting a database within
+  that kernel's reach. A boot
   whose database exits under it fails instead of starting or keeping a kernel
   (`desktop/src/supervisor.ts`, `onDatabaseExit`).
 - **Residual risk on Windows.** The loopback port is free while the server is
@@ -2785,14 +2790,16 @@ its data-directory check come before any kernel password, a server reporting
 another data directory or refusing SCRAM stops the start, and the server is
 re-confirmed before provisioning and verification),
 `desktop/test/scramOnlyConnect.test.mts` (a listener on loopback that asks for
-cleartext, MD5, no SCRAM, no authentication at all, or forges the final
-signature gets no password and is refused),
+cleartext, MD5, no SCRAM, no authentication at all, reports ready without
+any authentication message, or forges the final signature gets no password and
+is refused, and the kernel's copy of the guard matches the shell's),
 `middleware/test/scramOnlyClient.test.ts` (the same listeners on loopback TCP
 against the kernel's pools with the variable set: no password and no query
 reach them, a SCRAM server is accepted, and without the variable pg's own
 client is in place), `desktop/test/supervisorDatabaseExit.test.mts` (a
-database exit stops the kernel before the database starts again, a boot whose
-database exits fails before it spawns a kernel),
+database exit stops the kernel before the database starts again, a kernel
+that does not exit leaves the restart to the user, a boot whose database exits
+fails before it spawns a kernel),
 `desktop/test/embeddedDbEndpoint.test.mts` (the private socket directory, its
 fallback, the server command line and the `postmaster.pid` check),
 `desktop/test/embeddedDb.integration.test.mts` (the real engine:

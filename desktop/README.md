@@ -453,9 +453,10 @@ its own `postmaster.pid` names the process the shell spawned, on the expected
 socket or address, with status `ready`; that check sends no credentials. Every
 connection the shell opens accepts SCRAM and nothing else
 (`src/scramOnlyConnect.ts`): a server that asks for a cleartext or MD5
-password, offers no SCRAM, or lets the client in without an exchange is
-refused before a password is sent, and SCRAM's last step makes the server
-prove it holds the password's verifier. The first login after every start is
+password, offers no SCRAM, or lets the client in or reports ready without an
+exchange is refused before a password or a query is sent. A connection counts
+as open only after pg has checked SCRAM's last step, in which the server
+proves it holds the password's verifier. The first login after every start is
 the superuser's and must report this cluster's data directory before the
 kernel's password goes anywhere. Before provisioning, before the verification
 and before the kernel gets its `DATABASE_URL`, the shell checks again that the
@@ -463,13 +464,15 @@ server it started still runs and still holds its endpoint.
 
 The kernel connects the same way. The shell starts it with
 `OMADIA_DB_REQUIRE_SCRAM=1`, and every pool the kernel opens then refuses a
-cleartext or MD5 request, a missing SCRAM offer and a login without an exchange
-before its password or any query is sent
-(`middleware/packages/harness-knowledge-graph-neon/src/scramOnlyClient.ts`).
+cleartext or MD5 request, a missing SCRAM offer and a login or ready report
+without an exchange before its password or any query is sent
+(`middleware/packages/harness-knowledge-graph-neon/src/scramOnlyClient.ts`, the
+same guard, and a test keeps the two copies in step).
 When the server exits while the kernel runs, the shell stops the kernel and the
-web UI first. Nothing can start a database again before the kernel is gone. The
-app then restarts the stack the ordinary way, database first, and reloads the
-window (`src/supervisor.ts`).
+web UI first. Nothing restarts the database before the kernel is gone. The app
+then restarts the stack the ordinary way, database first, and reloads the
+window (`src/supervisor.ts`). If the kernel does not exit even after SIGKILL,
+the shell reports an error and leaves the restart to the user.
 
 | Role | Used by | May |
 |---|---|---|
