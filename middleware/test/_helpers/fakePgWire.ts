@@ -27,6 +27,11 @@ export type FakeAuthScript =
    * startup message, alone or behind BackendKeyData.
    */
   | { readonly kind: 'ready-only'; readonly backendKeyData: boolean }
+  /**
+   * A password request and ReadyForQuery in one packet, so the client parses
+   * both before it can answer.
+   */
+  | { readonly kind: 'password-and-ready'; readonly request: 'cleartext' | 'md5' | 'scram' }
   /** AuthenticationSASL offering only these mechanisms. */
   | { readonly kind: 'sasl'; readonly mechanisms: readonly string[] }
   /**
@@ -130,6 +135,16 @@ function serve(socket: net.Socket, script: FakeAuthScript, record: (type: string
       case 'ready-only':
         socket.write(script.backendKeyData ? Buffer.concat([BACKEND_KEY, READY_FOR_QUERY]) : READY_FOR_QUERY);
         return;
+      case 'password-and-ready': {
+        const request =
+          script.request === 'cleartext'
+            ? auth(3)
+            : script.request === 'md5'
+              ? auth(5, crypto.randomBytes(4))
+              : auth(10, Buffer.from('SCRAM-SHA-256\0\0'));
+        socket.write(Buffer.concat([request, READY_FOR_QUERY]));
+        return;
+      }
       case 'sasl':
         socket.write(auth(10, Buffer.from(`${script.mechanisms.join('\0')}\0\0`)));
         return;

@@ -109,6 +109,25 @@ describe('connectScramOnly refuses before any password is sent', () => {
   }
 });
 
+describe('a refused connect reports once', () => {
+  for (const request of ['cleartext', 'md5', 'scram'] as const) {
+    it(`when the password request (${request}) and ReadyForQuery arrive in one packet`, async () => {
+      const fake = await listener({ kind: 'password-and-ready', request });
+      const late: Error[] = [];
+      await assert.rejects(
+        connectScramOnly(
+          { host: '127.0.0.1', port: fake.port, user: 'omadia', password: PASSWORD, database: 'postgres', connectionTimeoutMillis: 5_000 },
+          (err) => late.push(err),
+        ),
+        (err: unknown) => isScramRefusal(err),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(late, [], 'no error event after the connect was refused');
+      assertNoPasswordSent(fake);
+    });
+  }
+});
+
 describe('connectScramOnly and a SCRAM server', () => {
   it('connects when the server completes SCRAM, i.e. proves it holds the verifier', async () => {
     const fake = await listener({ kind: 'scram', password: PASSWORD, final: 'valid-signature' });

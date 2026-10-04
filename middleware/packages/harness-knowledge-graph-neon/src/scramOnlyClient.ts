@@ -113,7 +113,10 @@ class ScramGuard {
     if (this.refusal === null && !this.scramOffered) {
       this.refuse('the server asked for a password without offering SCRAM-SHA-256');
     }
-    if (this.refusal !== null) throw this.refusal;
+    // The socket is gone by now, so pg's connect fails through it. A thrown
+    // refusal would reach pg's 'error' event after the connect has settled,
+    // and an idle pool turns that into an unhandled rejection.
+    if (this.refusal !== null) return new Promise<never>(() => {});
     if (typeof source === 'function') return source(...args);
     return source ?? undefined;
   }
@@ -198,6 +201,16 @@ export class ScramOnlyClient extends Client {
  * The `Client` option for every pool the kernel opens: the SCRAM-only client
  * when the process is told to require it, pg's own client otherwise.
  */
-export function scramOnlyPoolOptions(env: NodeJS.ProcessEnv = process.env): Pick<PoolConfig, 'Client'> {
-  return isScramRequired(env) ? { Client: ScramOnlyClient } : {};
+export function scramOnlyPoolOptions(
+  env: NodeJS.ProcessEnv = process.env,
+): Pick<PoolConfig, 'Client' | 'connectionTimeoutMillis'> {
+  return isScramRequired(env) ? { Client: ScramOnlyClient, connectionTimeoutMillis: SCRAM_CONNECT_TIMEOUT_MS } : {};
 }
+
+/**
+ * How long a kernel pool that requires SCRAM waits for a connection. pg's
+ * parser throws on authentication requests it does not know (GSS, SSPI) and
+ * the connect then never settles; past this ceiling the pool destroys the
+ * socket, so such a server holds no pool slot.
+ */
+export const SCRAM_CONNECT_TIMEOUT_MS = 10_000;

@@ -101,11 +101,13 @@ class ScramGuard {
   }
 
   /** pg's password callback: the password only goes into a SCRAM exchange. */
-  release(password: string): string {
+  release(password: string): string | Promise<string> {
     if (this.refusal === null && !this.scramOffered) {
       this.refuse('the server asked for a password without offering SCRAM-SHA-256');
     }
-    if (this.refusal !== null) throw this.refusal;
+    // The socket is gone by now, so pg's connect fails through it. A thrown
+    // refusal would reach pg's 'error' event after the connect has settled.
+    if (this.refusal !== null) return new Promise<string>(() => {});
     return password;
   }
 

@@ -40,8 +40,8 @@ changelog.
 
 2026-10-04 — On Windows the desktop's embedded Postgres listens on loopback
 TCP. The shell's own connections already refused cleartext and MD5 requests,
-but the kernel's pools used a stock pg client. If the database stopped while the kernel
-ran, another local user could bind the freed port before the kernel
+but the kernel's pools used a stock pg client. If the database stopped while
+the kernel ran, another local user could bind the freed port before the kernel
 reconnected and ask for the kernel password in cleartext or as an MD5 hash, or
 let the kernel in without any authentication and receive its queries.
 
@@ -52,8 +52,9 @@ let the kernel in without any authentication and receive its queries.
   reports ready without any authentication fail the connection with
   `OMADIA_SCRAM_REQUIRED` before the password or any query is sent. A
   connection counts as open only after pg has checked the server's final SCRAM
-  signature. The desktop app sets the variable for its kernel. Server
-  deployments leave it unset and keep pg's own client.
+  signature. Such a pool gives up on a connection after 10 seconds. The
+  desktop app sets the variable for its kernel. Server deployments leave it
+  unset and keep pg's own client.
 - The desktop shell's own connections use the same check. They now also refuse
   a server that reports ready without any authentication.
 - When the embedded Postgres exits unexpectedly, the desktop app stops the

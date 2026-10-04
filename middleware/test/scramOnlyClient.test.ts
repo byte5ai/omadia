@@ -97,7 +97,7 @@ describe('the requirement is off unless the process asks for it', () => {
     assert.deepEqual(scramOnlyPoolOptions({}), {});
     assert.equal(isScramRequired({ [DB_REQUIRE_SCRAM_ENV]: '0' }), false);
     assert.equal(isScramRequired({ [DB_REQUIRE_SCRAM_ENV]: 'true' }), true);
-    assert.deepEqual(scramOnlyPoolOptions(REQUIRED), { Client: ScramOnlyClient });
+    assert.deepEqual(scramOnlyPoolOptions(REQUIRED), { Client: ScramOnlyClient, connectionTimeoutMillis: 10_000 });
   });
 
   it('a stock pool against a listener that asks for cleartext hands it the password (what the requirement prevents)', async () => {
@@ -171,6 +171,28 @@ describe('a kernel pool that requires SCRAM refuses before any password or query
     assertNoPasswordSent(fake);
   });
 
+  it('a password request and ReadyForQuery in one packet fail the connect once, with no late error', async () => {
+    for (const request of ['cleartext', 'md5', 'scram'] as const) {
+      const fake = await listener({ kind: 'password-and-ready', request });
+      const pool = kernelPool(fake);
+      const late: unknown[] = [];
+      pool.on('error', (err) => late.push(err));
+      const onRejection = (reason: unknown): void => {
+        late.push(reason);
+      };
+      process.on('unhandledRejection', onRejection);
+      try {
+        await assert.rejects(pool.query('SELECT 1'), (err: unknown) => isScramRefusal(err));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        assert.deepEqual(late, [], `${request}: no error after the refused connect`);
+        assertNoPasswordSent(fake);
+        assertNoQuery(fake);
+      } finally {
+        process.off('unhandledRejection', onRejection);
+      }
+    }
+  });
+
   it('a pool that was refused stays usable for the next connection attempt', async () => {
     const fake = await listener({ kind: 'cleartext' });
     const pool = kernelPool(fake);
@@ -185,6 +207,13 @@ describe('a kernel pool that requires SCRAM refuses before any password or query
     await assert.rejects(client.connect(), refusal(/cleartext/));
     await client.end().catch(() => {});
     assertNoPasswordSent(fake);
+  });
+});
+
+describe('a kernel pool that requires SCRAM bounds its connect', () => {
+  it('gives up after 10 s, so a server that never finishes the handshake holds no pool slot', () => {
+    assert.equal(scramOnlyPoolOptions(REQUIRED).connectionTimeoutMillis, 10_000);
+    assert.equal(scramOnlyPoolOptions({}).connectionTimeoutMillis, undefined);
   });
 });
 
