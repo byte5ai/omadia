@@ -75,12 +75,15 @@ The wizard now asks for the key of the folder it completes with:
 - A folder with a valid `secrets.enc` answers with that file's key. Reading it
   writes nothing, and setup keeps the file's keys.
 - An empty folder answers with the new key it receives when setup completes.
-- An unreadable `secrets.enc` shows the same error as before and is left as it
-  is.
+- An unreadable `secrets.enc` shows the error setup would report for it and is
+  left as it is.
 - The shell answers only for the current data folder or the folder its picker
   returned last.
 - Choosing another folder hides a key that is already shown, and Copy copies
   the key on screen.
+- While setup runs, Help, Show recovery key points to the wizard's step
+  instead of showing the key the shell holds, which may belong to another
+  folder.
 
 ### Security — dependency audit: fixed where a release exists, dated exceptions where none does
 
