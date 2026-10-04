@@ -476,6 +476,32 @@ describe('embedded Postgres authentication (real engine)', { skip, timeout: 240_
     }
   });
 
+  // The supervisor stops the kernel on this report, before a database starts
+  // again (supervisorDatabaseExit.test.mts). Last of the tests that run a
+  // server: nothing starts one in this data folder after the kill.
+  it('reports a server that exits unexpectedly to its handle, and not a stop', async () => {
+    const stopped = await startEmbeddedDb();
+    const quiet: string[] = [];
+    stopped.onUnexpectedExit?.((reason) => quiet.push(reason));
+    assert.ok(await stopEmbeddedDb());
+
+    const db = await startEmbeddedDb();
+    const reasons: string[] = [];
+    db.onUnexpectedExit?.((reason) => reasons.push(reason));
+    const dataDir = path.join(path.dirname(secretsFile()), 'pgdata');
+    const pid = Number(fs.readFileSync(path.join(dataDir, 'postmaster.pid'), 'utf8').split(/\r?\n/)[0]);
+    // Not through the module: the way a crash or another process ends it.
+    process.kill(pid, process.platform === 'win32' ? 'SIGKILL' : 'SIGQUIT');
+    for (let i = 0; i < 200 && reasons.length === 0; i += 1) await delay(50);
+
+    assert.equal(reasons.length, 1, 'the unexpected exit is reported once');
+    assert.deepEqual(quiet, [], 'a stop through the module is not reported');
+    // A late subscriber learns at once that the server is gone.
+    const late: string[] = [];
+    db.onUnexpectedExit?.((reason) => late.push(reason));
+    assert.equal(late.length, 1);
+  });
+
   it('an unreadable secrets file stops the start before a cluster exists', async () => {
     assert.ok(await stopEmbeddedDb());
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omadia-unreadable-'));
