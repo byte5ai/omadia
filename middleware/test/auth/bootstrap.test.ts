@@ -189,4 +189,49 @@ describe('runAuthBootstrap', () => {
     assert.equal(store.rows[0]?.user.email, 'existing@example.com');
     assert.equal(store.firstAdminCalls, 0, 'the cheap count short-circuits before the lock');
   });
+
+  it('seeds a password of exactly 1024 code units', async () => {
+    const store = new InMemoryUserStore();
+    const password = 's'.repeat(1022) + '\u{1F511}';
+    assert.equal(password.length, 1024);
+    const result = await runAuthBootstrap({
+      userStore: store,
+      bootstrapEmail: 'admin@example.com',
+      bootstrapPassword: password,
+      bootstrapDisplayName: undefined,
+      log: () => {},
+    });
+    assert.equal(result.seeded, true);
+    assert.ok(await verifyPassword(store.rows[0]?.passwordHash ?? '', password));
+  });
+
+  it('stops the boot on a password over 1024 code units and creates no account', async () => {
+    const store = new InMemoryUserStore();
+    await assert.rejects(
+      runAuthBootstrap({
+        userStore: store,
+        bootstrapEmail: 'admin@example.com',
+        bootstrapPassword: 's'.repeat(1025),
+        bootstrapDisplayName: undefined,
+        log: () => {},
+      }),
+      /ADMIN_BOOTSTRAP_PASSWORD is longer than 1024 characters/,
+    );
+    assert.equal(store.firstAdminCalls, 0, 'refused before the create');
+    assert.equal(store.rows.length, 0);
+  });
+
+  it('an over-long value is ignored once users exist (nothing would be seeded)', async () => {
+    const store = new InMemoryUserStore();
+    store.seed('existing@example.com', 'setup_wizard');
+    const result = await runAuthBootstrap({
+      userStore: store,
+      bootstrapEmail: 'admin@example.com',
+      bootstrapPassword: 's'.repeat(1025),
+      bootstrapDisplayName: undefined,
+      log: () => {},
+    });
+    assert.deepEqual(result, { seeded: false, setupRequired: false, totalUsers: 1 });
+    assert.equal(store.firstAdminCalls, 0);
+  });
 });

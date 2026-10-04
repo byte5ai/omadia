@@ -19,8 +19,10 @@
  * `install.ts`, `runtime.ts`, `runtimeGrants.ts`, `adminProviders.ts`,
  * `store.ts` and `adminSettings.ts`, plus the non-route codes
  * `providers.key_rejected`, `package.id_conflict_bundled` and
- * `cli_install.*`, which their services set rather than a route file. The
- * rest of the middleware's codes are deliberately not covered yet.
+ * `cli_install.*`, which their services set rather than a route file, and a
+ * few single codes from route files outside that set (`auth.*`,
+ * `admin_users.*`). The rest of the middleware's codes are deliberately not
+ * covered yet.
  *
  * `__tests__/errorHelpCoverage.test.ts` holds the scope to that promise. It
  * reads `code: '…'` literals out of the six files, FOLLOWS `install.ts`'s
@@ -40,6 +42,15 @@
  * fails as an orphan.
  */
 export const ERROR_HELP_CODES = [
+  // admin_users.ts — single codes, not the whole file: a password over the
+  // shared maximum (middleware/src/auth/passwordPolicy.ts), which sign-in
+  // would refuse after the admin stored it.
+  'admin_users.password_too_long',
+  // auth.ts — a sign-out the server could not record: the session is still
+  // valid everywhere, and the browser kept its cookie for the retry.
+  'auth.logout_revocation_failed',
+  // authSetup.ts — the first-run wizard's side of the same password maximum.
+  'auth.setup_password_too_long',
   // install.ts — the four it emits as literals, plus the ten its handleError
   // re-emits from an InstallError thrown in plugins/installService.ts.
   'install.already_installed',
@@ -203,6 +214,18 @@ export function isErrorHelpCode(
   code: string | null | undefined,
 ): code is ErrorHelpCode {
   return typeof code === 'string' && CATALOGUED.has(code);
+}
+
+/**
+ * `what` and `next` as one sentence pair, for screens that show an error as a
+ * single line. `null` when the code has no copy, same as `resolveErrorHelp`.
+ */
+export function errorHelpLine(
+  code: string | null | undefined,
+  t: (key: string) => string,
+): string | null {
+  const help = resolveErrorHelp(code, t);
+  return help ? `${help.what} ${help.next}` : null;
 }
 
 /**

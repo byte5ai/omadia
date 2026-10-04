@@ -6,18 +6,26 @@ import { DockerSandboxBackend, _internal, type DockerSandboxBackendOptions } fro
 import { resolveAgentComputerProfile } from '../../packages/harness-sandbox/src/agentComputerProfile.js';
 import type { DockerExec, DockerExecContext, DockerExecResult } from '../../packages/harness-sandbox/src/dockerExec.js';
 import type { Sandbox } from '../../packages/harness-sandbox/src/sandbox.js';
+import {
+  NO_LIMITS,
+  inspectOutput,
+  withInspectableLimits,
+  type InspectedLimits,
+} from '../_helpers/dockerInspectStub.js';
 
 /**
  * Resource ceilings of `DockerSandboxBackend` (see `resourceLimits.ts`), with
  * the same two tiers as `dockerSandbox.test.ts`:
  *
  *  - STUB tier (always runs): the limit flags on the `docker run` and
- *    `docker update` argv, their position before the image, and the
- *    update-before-start order on re-attach.
+ *    `docker update` argv, their position before the image, the
+ *    update-before-start order on re-attach, and that a container whose
+ *    limits `docker inspect` does not show in force runs nothing.
  *  - REAL-DOCKER tier (`SANDBOX_DOCKER_TEST=1`, opt-in): what the daemon
  *    recorded (`docker inspect`), the CPU quota the kernel enforces
- *    (`cpu.max`, cgroup v2) and that the memory ceiling really kills an
- *    oversized allocation.
+ *    (`cpu.max`, cgroup v2), that the memory ceiling really kills an
+ *    oversized allocation, and that a container the daemon cannot update is
+ *    refused.
  */
 
 interface RecordedCall {
@@ -25,13 +33,17 @@ interface RecordedCall {
   readonly input: string | undefined;
 }
 
+/** `inspect` defaults to a daemon that applied the flags of the last
+ *  successful `run` or `update` (`dockerInspectStub.ts`). */
 function stubExec(
   script: (ctx: DockerExecContext, callIndex: number) => DockerExecResult,
+  inspect?: (applied: InspectedLimits) => DockerExecResult,
 ): { exec: DockerExec; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
+  const answer = withInspectableLimits(script, inspect);
   const exec: DockerExec = async (ctx) => {
     calls.push({ args: ctx.args, input: ctx.input });
-    return script(ctx, calls.length - 1);
+    return answer(ctx, calls.length - 1);
   };
   return { exec, calls };
 }
@@ -141,22 +153,176 @@ describe('DockerSandboxBackend.provision — resource limits (stub)', () => {
     ]);
   });
 
-  it('a failing docker update on re-attach is logged and the container still starts', async () => {
-    const name = _internal.containerNameFor('personal:limits-update-fails');
+  it('re-attach checks the limits with docker inspect after the update and before docker start', async () => {
+    const name = _internal.containerNameFor('personal:limits-verified');
+    const { exec, calls } = stubExec((ctx) => (ctx.args[0] === 'ps' ? ok(name) : ok()));
+    const logged: string[] = [];
+    const backend = new DockerSandboxBackend({ execDocker: exec, log: (msg) => logged.push(msg) });
+    const sandbox = await backend.provision({ scopeKey: 'personal:limits-verified', profile: resolveAgentComputerProfile() });
+
+    assert.equal(sandbox.id, name);
+    assert.deepEqual(
+      calls.map((c) => c.args[0]),
+      ['ps', 'update', 'inspect', 'start'],
+      'nothing is stopped or removed when the limits hold',
+    );
+    assert.deepEqual(calls[2]!.args, ['inspect', '--type', 'container', '--format', '{{json .HostConfig}}', name]);
+    assert.deepEqual(logged, []);
+  });
+
+  /** Provision `scopeKey` under the default limits, collecting the log lines. */
+  const provisionWith = (exec: DockerExec, scopeKey: string, logged: string[] = []) =>
+    new DockerSandboxBackend({ execDocker: exec, log: (msg) => logged.push(msg) }).provision({
+      scopeKey,
+      profile: resolveAgentComputerProfile(),
+    });
+
+  it('a new container is checked with docker inspect too', async () => {
+    const { exec, calls } = stubExec((ctx) => (ctx.args[0] === 'ps' ? ok('') : ok()));
+    await provisionWith(exec, 'personal:limits-new-verified');
+    assert.deepEqual(calls.map((c) => c.args[0]), ['ps', 'run', 'inspect']);
+  });
+
+  it('a failing docker update on re-attach refuses the container: it is stopped and kept, never started', async () => {
+    const scopeKey = 'personal:limits-update-fails';
+    const name = _internal.containerNameFor(scopeKey);
+    let updateWorks = false;
     const { exec, calls } = stubExec((ctx) => {
       if (ctx.args[0] === 'ps') return ok(name);
-      if (ctx.args[0] === 'update') return fail('Error response from daemon: Cannot update container');
+      if (ctx.args[0] === 'update' && !updateWorks) return fail('Error response from daemon: Cannot update container');
       return ok();
     });
     const logged: string[] = [];
     const backend = new DockerSandboxBackend({ execDocker: exec, log: (msg) => logged.push(msg) });
-    const sandbox = await backend.provision({ scopeKey: 'personal:limits-update-fails', profile: resolveAgentComputerProfile() });
 
-    assert.equal(sandbox.id, name);
-    assert.ok(calls.some((c) => c.args[0] === 'start'), 'the container must still be started');
+    await assert.rejects(backend.provision({ scopeKey, profile: resolveAgentComputerProfile() }), (err: Error) => {
+      assert.match(err.message, /resource limits are not in force \(docker update failed \(exit 1\)\)/);
+      assert.match(err.message, /stopped and kept with its files/);
+      assert.ok(!err.message.includes('Cannot update container'), 'Docker output stays out of the error');
+      return true;
+    });
+    const verbs = calls.map((c) => c.args[0]);
+    assert.deepEqual(verbs, ['ps', 'update', 'stop'], 'never started, never exec-ed into, never removed');
+    assert.deepEqual(calls[2]!.args, ['stop', '-t', '0', name]);
     assert.equal(logged.length, 1);
-    assert.match(logged[0]!, /docker update/);
     assert.ok(logged[0]!.includes(name));
+    assert.match(logged[0]!, /docker update failed \(exit 1\).*stopped and kept/);
+    assert.ok(!logged[0]!.includes('Cannot update container'), 'Docker output stays out of the log');
+
+    // The refusal is not cached: once the daemon takes the update, the same
+    // backend re-attaches the kept container.
+    updateWorks = true;
+    const sandbox = await backend.provision({ scopeKey, profile: resolveAgentComputerProfile() });
+    assert.equal(sandbox.id, name);
+    assert.deepEqual(calls.slice(3).map((c) => c.args[0]), ['ps', 'update', 'inspect', 'start']);
+  });
+
+  it('a docker update that throws refuses the container as well', async () => {
+    const name = _internal.containerNameFor('personal:limits-update-throws');
+    const calls: string[] = [];
+    const exec: DockerExec = async (ctx) => {
+      calls.push(ctx.args[0]!);
+      if (ctx.args[0] === 'ps') return ok(name);
+      if (ctx.args[0] === 'update') throw new Error('spawn docker ENOENT');
+      return ok();
+    };
+    const logged: string[] = [];
+    await assert.rejects(provisionWith(exec, 'personal:limits-update-throws', logged), /docker update could not run/);
+    assert.deepEqual(calls, ['ps', 'update', 'stop']);
+    assert.ok(!logged.join('\n').includes('ENOENT'));
+  });
+
+  describe('an existing container whose docker inspect shows a missing or looser limit after the update runs nothing', () => {
+    const cases: ReadonlyArray<readonly [string, (applied: InspectedLimits) => InspectedLimits, RegExp]> = [
+      ['no limits at all', () => NO_LIMITS, /--memory not set \(required 536870912 bytes\); --memory-swap not set.*--cpus not set.*--pids-limit not set/],
+      ['unlimited swap', (applied) => ({ ...applied, MemorySwap: -1 }), /--memory-swap not set \(required 536870912 bytes\)/],
+      ['twice the memory', (applied) => ({ ...applied, Memory: 1073741824, MemorySwap: 1073741824 }), /--memory 1073741824 bytes \(required at most 536870912\)/],
+      ['twice the CPU share', (applied) => ({ ...applied, NanoCpus: 2_000_000_000 }), /--cpus 2000000000 nano-CPUs \(required at most 1000000000\)/],
+      ['a CFS quota of two CPUs', (applied) => ({ ...applied, NanoCpus: 0, CpuQuota: 200_000, CpuPeriod: 100_000 }), /--cpus 2000000000 nano-CPUs/],
+      ['no PID limit', (applied) => ({ ...applied, PidsLimit: null }), /--pids-limit not set \(required 256 processes\)/],
+      ['PID limit -1', (applied) => ({ ...applied, PidsLimit: -1 }), /--pids-limit not set/],
+    ];
+    for (const [label, inspected, expected] of cases) {
+      it(label, async () => {
+        const scopeKey = `personal:limits-weaker-${label}`;
+        const name = _internal.containerNameFor(scopeKey);
+        const { exec, calls } = stubExec(
+          (ctx) => (ctx.args[0] === 'ps' ? ok(name) : ok()),
+          (applied) => inspectOutput(inspected(applied)),
+        );
+        const logged: string[] = [];
+        const backend = new DockerSandboxBackend({ execDocker: exec, log: (msg) => logged.push(msg) });
+        await assert.rejects(backend.provision({ scopeKey, profile: resolveAgentComputerProfile() }), expected);
+        assert.deepEqual(calls.map((c) => c.args[0]), ['ps', 'update', 'inspect', 'stop']);
+        assert.equal(logged.length, 1);
+        assert.match(logged[0]!, expected);
+      });
+    }
+  });
+
+  it('a stricter limit than required counts as in force', async () => {
+    const name = _internal.containerNameFor('personal:limits-stricter');
+    const { exec, calls } = stubExec(
+      (ctx) => (ctx.args[0] === 'ps' ? ok(name) : ok()),
+      (applied) => inspectOutput({ ...applied, Memory: 268435456, MemorySwap: 268435456, PidsLimit: 64 }),
+    );
+    await provisionWith(exec, 'personal:limits-stricter');
+    assert.deepEqual(calls.map((c) => c.args[0]), ['ps', 'update', 'inspect', 'start']);
+  });
+
+  it('a new container the daemon started without a limit is removed and runs nothing', async () => {
+    const scopeKey = 'personal:limits-new-dropped';
+    const name = _internal.containerNameFor(scopeKey);
+    const { exec, calls } = stubExec(
+      (ctx) => (ctx.args[0] === 'ps' ? ok('') : ok()),
+      // What a kernel without the pids controller leaves: `docker run` exits 0
+      // with a warning and records no PID limit.
+      (applied) => inspectOutput({ ...applied, PidsLimit: null }),
+    );
+    const logged: string[] = [];
+    const backend = new DockerSandboxBackend({ execDocker: exec, log: (msg) => logged.push(msg) });
+    await assert.rejects(backend.provision({ scopeKey, profile: resolveAgentComputerProfile() }), (err: Error) => {
+      assert.match(err.message, /resource limits are not in force \(--pids-limit not set \(required 256 processes\)\)/);
+      assert.match(err.message, /It was removed\. Nothing ran in it/);
+      return true;
+    });
+    assert.deepEqual(calls.map((c) => c.args[0]), ['ps', 'run', 'inspect', 'rm']);
+    assert.deepEqual(calls[3]!.args, ['rm', '-f', name]);
+    assert.match(logged[0]!, /it was removed$/);
+  });
+
+  it('a failing or unreadable docker inspect counts as limits not in force', async () => {
+    const failures: ReadonlyArray<readonly [DockerExecResult, RegExp]> = [
+      [fail('Error: No such object'), /docker inspect failed \(exit 1\)/],
+      [{ exitCode: null, stdout: '', stderr: '', timedOut: true, outputTruncated: false }, /docker inspect timed out/],
+      [ok('<no value>'), /docker inspect returned no readable HostConfig/],
+    ];
+    for (const [result, expected] of failures) {
+      const { exec, calls } = stubExec((ctx) => (ctx.args[0] === 'ps' ? ok('') : ok()), () => result);
+      await assert.rejects(provisionWith(exec, 'personal:limits-inspect-fails'), (err: Error) => {
+        assert.match(err.message, expected);
+        assert.ok(!err.message.includes('No such object'), 'Docker output stays out of the error');
+        return true;
+      });
+      assert.deepEqual(calls.map((c) => c.args[0]), ['ps', 'run', 'inspect', 'rm']);
+    }
+  });
+
+  it('a failed stop is reported, and the container still runs nothing', async () => {
+    const name = _internal.containerNameFor('personal:limits-stop-fails');
+    const { exec, calls } = stubExec((ctx) => {
+      if (ctx.args[0] === 'ps') return ok(name);
+      if (ctx.args[0] === 'update') return fail('update refused');
+      if (ctx.args[0] === 'stop') return fail('stop refused');
+      return ok();
+    });
+    const logged: string[] = [];
+    await assert.rejects(provisionWith(exec, 'personal:limits-stop-fails', logged), /Stopping it failed/);
+    assert.deepEqual(calls.map((c) => c.args[0]), ['ps', 'update', 'stop']);
+    assert.deepEqual(logged, [
+      `[sandbox] docker stop failed (exit 1) for '${name}'`,
+      `[sandbox] container '${name}' runs nothing: its resource limits are not in force (docker update failed (exit 1)); stopping it failed`,
+    ]);
   });
 
   it('a CPU or memory value Docker would apply as no limit reaches neither docker run nor docker update', async () => {
@@ -271,6 +437,25 @@ describeIfDocker('DockerSandboxBackend — resource limits on a real daemon (SAN
 
     await new DockerSandboxBackend({ resourceLimits: { memoryMb: 1024 } }).provision({ scopeKey, profile });
     assert.equal(inspectLimits(sandbox.id), '1073741824 1073741824 1000000000 256');
+  });
+
+  it('re-attach refuses a container the daemon cannot update: it is stopped, kept, and gets no limits', async () => {
+    const scopeKey = `personal:limits-refused-${String(Date.now())}`;
+    const name = _internal.containerNameFor(scopeKey);
+    // A CPU share set as a CFS quota makes `docker update --cpus` fail
+    // ("Conflicting options"), so the update cannot bring this one up to date.
+    execFileSync('docker', ['run', '-d', '--name', name, '--cpu-quota', '50000', 'alpine:3.20', 'sleep', 'infinity'], {
+      stdio: 'ignore',
+    });
+    cleanup.push(name);
+
+    await assert.rejects(
+      new DockerSandboxBackend({ log: () => undefined }).provision({ scopeKey, profile: resolveAgentComputerProfile() }),
+      /resource limits are not in force \(docker update failed/,
+    );
+    const running = execFileSync('docker', ['inspect', '--format', '{{.State.Running}}', name]).toString().trim();
+    assert.equal(running, 'false', 'the container is stopped, not removed');
+    assert.equal(inspectLimits(name).split(' ')[0], '0', 'it still has no memory limit');
   });
 
   it('a fractional CPU share becomes a real CFS quota', async () => {

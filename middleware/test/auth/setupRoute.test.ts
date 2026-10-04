@@ -801,3 +801,41 @@ describe('POST /api/v1/auth/setup — outcomes of the atomic create', () => {
     }
   });
 });
+
+describe('POST /api/v1/auth/setup — the shared password policy', () => {
+  // UTF-16 code units, the unit sign-in counts in: '\u{1F511}' is two.
+  const longest = 'p'.repeat(1022) + '\u{1F511}';
+
+  it('accepts a password of exactly 1024 code units, and it signs in', async () => {
+    const h = await startHarness({});
+    try {
+      assert.equal(longest.length, 1024);
+      const res = await postSetup(h, { ...VALID_SETUP, password: longest });
+      assert.equal(res.status, 200);
+      assert.equal(h.store.rows.length, 1);
+
+      const login = await fetch(`${h.baseUrl}/api/v1/auth/login/local`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: VALID_SETUP.email, password: longest }),
+      });
+      assert.equal(login.status, 200, 'what setup stored, sign-in accepts');
+    } finally {
+      await stopHarness(h);
+    }
+  });
+
+  it('refuses 1025 code units with 400 auth.setup_password_too_long and creates no admin', async () => {
+    const h = await startHarness({});
+    try {
+      const res = await postSetup(h, { ...VALID_SETUP, password: `${longest}p` });
+      assert.equal(res.status, 400);
+      assert.equal(res.code, 'auth.setup_password_too_long');
+      assert.equal(res.setCookie, null);
+      assert.equal(h.store.firstAdminCalls, 0, 'refused before the create');
+      assert.equal(h.store.rows.length, 0);
+    } finally {
+      await stopHarness(h);
+    }
+  });
+});

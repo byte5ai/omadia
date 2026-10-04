@@ -1,4 +1,9 @@
 import { hashPassword } from './passwordHasher.js';
+import {
+  checkNewPassword,
+  MAX_PASSWORD_LENGTH,
+  MIN_PASSWORD_LENGTH,
+} from './passwordPolicy.js';
 import { LOCAL_PROVIDER_ID } from './providers/LocalPasswordProvider.js';
 import type { UserStore } from './userStore.js';
 
@@ -75,11 +80,20 @@ export async function runAuthBootstrap(
     );
     return { seeded: false, setupRequired: true, totalUsers: 0 };
   }
-  if (password.length < 8) {
+  const violation = checkNewPassword(password);
+  if (violation === 'too_short') {
     log(
-      '[auth] bootstrap: ADMIN_BOOTSTRAP_PASSWORD is shorter than 8 chars — refusing to seed, falling back to /setup wizard',
+      `[auth] bootstrap: ADMIN_BOOTSTRAP_PASSWORD is shorter than ${String(MIN_PASSWORD_LENGTH)} chars — refusing to seed, falling back to /setup wizard`,
     );
     return { seeded: false, setupRequired: true, totalUsers: 0 };
+  }
+  if (violation === 'too_long') {
+    // Sign-in refuses it, so the seeded admin could never sign in. Stop the
+    // boot before anything is hashed or written: the operator meant to set a
+    // working password, and an open wizard would hide that it did not work.
+    throw new Error(
+      `[auth] bootstrap: ADMIN_BOOTSTRAP_PASSWORD is longer than ${String(MAX_PASSWORD_LENGTH)} characters, the most sign-in accepts — shorten it and restart; no account was created`,
+    );
   }
 
   const passwordHash = await hashPassword(password);

@@ -7,7 +7,9 @@
  * `timeout` kills the wrapper shell, not what that shell left behind in the
  * long-lived container. A fork bomb or a runaway allocation inside the
  * container is bounded by these limits and nothing else, so they are wired
- * into `docker run` (and `docker update` on re-attach), never merely declared.
+ * into `docker run` (and `docker update` on re-attach), never merely declared,
+ * and the sandbox backend checks them with `resourceLimitsNotInForce()` before
+ * a container runs anything.
  *
  * Fail-closed like `DEFAULT_AGENT_COMPUTER_PROFILE`: there is deliberately no
  * "unlimited". Docker reads `0` as "no limit" for all three flags, and it
@@ -145,4 +147,48 @@ export function dockerResourceLimitArgs(limits: SandboxResourceLimits): readonly
     '--pids-limit',
     String(safe.pidsLimit),
   ];
+}
+
+const BYTES_PER_MIB = 1024 * 1024;
+const NANO_CPUS_PER_CPU = 1_000_000_000;
+/** The CFS period the kernel uses when a quota is set without one. */
+const DEFAULT_CPU_PERIOD_US = 100_000;
+
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * The limits a container does NOT have in force, judged from its
+ * `docker inspect` `.HostConfig`. Each entry names one flag whose value is
+ * missing (absent, `null`, `0` or `-1`, which Docker all reads as no limit) or
+ * looser than `limits` asks for; an empty result means every limit holds. A
+ * stricter value counts as in force. The CPU share is read from `NanoCpus`
+ * (what `--cpus` records) or, when that is unset, from `CpuQuota` over
+ * `CpuPeriod`, so a runtime that records the share as a CFS quota passes too.
+ *
+ * Entries carry numbers only, never text from Docker, so they can be logged
+ * and shown as they are.
+ */
+export function resourceLimitsNotInForce(hostConfig: unknown, limits: SandboxResourceLimits): readonly string[] {
+  const safe = resolveSandboxResourceLimits(limits);
+  const host: Readonly<Record<string, unknown>> =
+    typeof hostConfig === 'object' && hostConfig !== null ? (hostConfig as Record<string, unknown>) : {};
+  const memoryBytes = safe.memoryMb * BYTES_PER_MIB;
+  const quota = positiveNumber(host['CpuQuota']);
+  const period = positiveNumber(host['CpuPeriod']) ?? DEFAULT_CPU_PERIOD_US;
+  const nanoCpus =
+    positiveNumber(host['NanoCpus']) ??
+    (quota !== undefined ? Math.round((quota * NANO_CPUS_PER_CPU) / period) : undefined);
+  const checks: ReadonlyArray<readonly [string, number | undefined, number, string]> = [
+    ['--memory', positiveNumber(host['Memory']), memoryBytes, 'bytes'],
+    ['--memory-swap', positiveNumber(host['MemorySwap']), memoryBytes, 'bytes'],
+    ['--cpus', nanoCpus, Math.round(safe.cpus * NANO_CPUS_PER_CPU), 'nano-CPUs'],
+    ['--pids-limit', positiveNumber(host['PidsLimit']), safe.pidsLimit, 'processes'],
+  ];
+  return checks.flatMap(([flag, actual, required, unit]) => {
+    if (actual === undefined) return [`${flag} not set (required ${String(required)} ${unit})`];
+    if (actual > required) return [`${flag} ${String(actual)} ${unit} (required at most ${String(required)})`];
+    return [];
+  });
 }

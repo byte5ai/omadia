@@ -85,6 +85,71 @@ The wizard now asks for the key of the folder it completes with:
   instead of showing the key the shell holds, which may belong to another
   folder.
 
+### Security — a sandbox container runs nothing until its resource limits are in force
+
+2026-10-04 — The sandbox behind the `execute` and `publish` tools re-attached
+an existing container even when `docker update` could not give it the current
+memory, CPU and PID limits. The failure was logged and the container ran
+commands with the limits it had, which for a container from before the limits
+meant none. After `docker run` and after `docker update`, the backend now reads
+the container's limits with `docker inspect` and compares memory, the swap
+ceiling, the CPU share and the PID limit with the required values. A failed
+update, a failed inspect, or a missing or looser limit refuses the request
+with an error that names the container and the missing limits. An existing
+container is stopped and kept with its files, and the next request tries the
+update again. A container that was just created is removed. A stricter limit
+than required counts as in force. The refusal names the container and the limits, never Docker's output. On a
+host whose kernel lacks one of the cgroup controllers, `docker run` starts a
+container without that limit, so the sandbox now refuses to run there instead
+of running without it. Containers of published apps are not checked yet.
+
+### Security — builder event streams end with their session
+
+2026-10-04 — The builder's live event stream
+(`GET /api/v1/builder/drafts/:id/events`) checked the session only when it
+opened. After a sign-out, a password reset, a disabled or deleted account or
+the cookie's expiry, an open stream kept delivering that draft's events. The
+stream is now bound to the session that opened it:
+
+- It ends at the token's `exp`. An event due after that moment is dropped even
+  if the timer fires late.
+- A revocation on the same replica ends the owner's open streams at once,
+  through the `SessionRevocation.onRevoked` signal that already closes channel
+  WebSockets.
+- The session is checked again right after the stream opens and with every
+  25 s heartbeat, on the same path as `requireAuth`. A revocation written on
+  another replica ends the stream at the next heartbeat.
+- A check that cannot run (database unreachable, 10 s deadline missed) counts
+  as an outage. The stream stays open, still bounded by `exp`.
+- After the end nothing more is written, and the bus subscription, the
+  heartbeat, the expiry timer and the revocation listener are removed. A
+  request without the session cookie or an `exp` gets a 401 and no stream.
+- The browser reconnects through `requireAuth` after 3 s, so an expired or
+  revoked session gets its 401 there and a renewed cookie opens a fresh
+  stream.
+
+### Security — sign-out reports a failed revocation, and one password policy covers every setter
+
+2026-10-04 — Two fixes in local sign-in:
+
+- `POST /api/v1/auth/logout` answered 200 `ok: true` and cleared the cookie
+  even when the user's session version could not be read or written. A copy
+  of the cookie then kept working although the user was told they had signed
+  out. The route now answers 503 `auth.logout_revocation_failed` and keeps the
+  cookie, so the same request can be retried. A retry that reaches a working
+  store ends every session as usual. The web UI's sign-out menu says the user
+  is still signed in and offers the retry instead of landing on /login.
+- Sign-in refused passwords longer than 1024 characters, but the setup
+  wizard, the admin create and reset routes and the `ADMIN_BOOTSTRAP_PASSWORD`
+  seed checked only the minimum of 8. A password stored there could never
+  sign in, and a reset of your own account also ended every session. One
+  policy (`auth/passwordPolicy.ts`, 8 to 1024 UTF-16 code units) now applies
+  to all of them before anything is hashed or written. The new codes are
+  `auth.setup_password_too_long` and `admin_users.password_too_long`, with
+  help copy in the web UI. An over-long bootstrap password stops the boot
+  before any account is created. Passwords stored above the limit earlier
+  keep being refused at sign-in, and an admin password reset is the way back.
+
 ### Security — dependency audit: fixed where a release exists, dated exceptions where none does
 
 2026-10-04 — Two new high advisories reached the full dependency trees. Neither

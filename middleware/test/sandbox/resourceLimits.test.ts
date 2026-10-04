@@ -7,6 +7,7 @@ import {
   SANDBOX_RESOURCE_LIMIT_ENV_KEYS,
   dockerResourceLimitArgs,
   resolveSandboxResourceLimits,
+  resourceLimitsNotInForce,
   type SandboxResourceLimits,
 } from '../../packages/harness-sandbox/src/resourceLimits.js';
 
@@ -235,5 +236,71 @@ describe('dockerResourceLimitArgs', () => {
         '4194304',
       ]);
     });
+  });
+});
+
+describe('resourceLimitsNotInForce', () => {
+  const LIMITS: SandboxResourceLimits = { memoryMb: 512, cpus: 0.5, pidsLimit: 256 };
+  /** What `docker inspect` shows after `docker run` with `LIMITS`. */
+  const APPLIED = { Memory: 536870912, MemorySwap: 536870912, NanoCpus: 500000000, CpuQuota: 0, CpuPeriod: 0, PidsLimit: 256 };
+
+  it('is empty when the HostConfig carries exactly the required limits', () => {
+    assert.deepEqual(resourceLimitsNotInForce(APPLIED, LIMITS), []);
+  });
+
+  it('accepts a stricter value for every limit', () => {
+    const stricter = { ...APPLIED, Memory: 268435456, MemorySwap: 268435456, NanoCpus: 250000000, PidsLimit: 1 };
+    assert.deepEqual(resourceLimitsNotInForce(stricter, LIMITS), []);
+  });
+
+  it('names every limit that is missing: absent, null, 0 and -1 all mean no limit to Docker', () => {
+    const expected = [
+      '--memory not set (required 536870912 bytes)',
+      '--memory-swap not set (required 536870912 bytes)',
+      '--cpus not set (required 500000000 nano-CPUs)',
+      '--pids-limit not set (required 256 processes)',
+    ];
+    assert.deepEqual(resourceLimitsNotInForce({}, LIMITS), expected);
+    assert.deepEqual(resourceLimitsNotInForce({ Memory: 0, MemorySwap: -1, NanoCpus: 0, PidsLimit: null }, LIMITS), expected);
+    assert.deepEqual(resourceLimitsNotInForce({ ...APPLIED, PidsLimit: -1, Memory: '536870912' }, LIMITS), [expected[0], expected[3]]);
+    assert.deepEqual(resourceLimitsNotInForce(null, LIMITS), expected);
+    assert.deepEqual(resourceLimitsNotInForce('junk', LIMITS), expected);
+  });
+
+  it('names every limit that is looser than required, with both numbers', () => {
+    const looser = { Memory: 1073741824, MemorySwap: 2147483648, NanoCpus: 1000000000, CpuQuota: 0, CpuPeriod: 0, PidsLimit: 4096 };
+    assert.deepEqual(resourceLimitsNotInForce(looser, LIMITS), [
+      '--memory 1073741824 bytes (required at most 536870912)',
+      '--memory-swap 2147483648 bytes (required at most 536870912)',
+      '--cpus 1000000000 nano-CPUs (required at most 500000000)',
+      '--pids-limit 4096 processes (required at most 256)',
+    ]);
+  });
+
+  it('reads the CPU share from CpuQuota over CpuPeriod when NanoCpus is unset', () => {
+    const quota = (CpuQuota: number, CpuPeriod: number) => ({ ...APPLIED, NanoCpus: 0, CpuQuota, CpuPeriod });
+    assert.deepEqual(resourceLimitsNotInForce(quota(50000, 100000), LIMITS), []);
+    // No period recorded: the kernel's default of 100000 µs applies.
+    assert.deepEqual(resourceLimitsNotInForce(quota(50000, 0), LIMITS), []);
+    assert.deepEqual(resourceLimitsNotInForce(quota(100000, 100000), LIMITS), [
+      '--cpus 1000000000 nano-CPUs (required at most 500000000)',
+    ]);
+    assert.deepEqual(resourceLimitsNotInForce(quota(-1, 100000), LIMITS), ['--cpus not set (required 500000000 nano-CPUs)']);
+  });
+
+  it('judges against the validated limits, never against a value Docker would read as no limit', () => {
+    const key = SANDBOX_RESOURCE_LIMIT_ENV_KEYS.memoryMb;
+    const saved = process.env[key];
+    delete process.env[key];
+    try {
+      // A hand-built `{ memoryMb: 0 }` falls back to the default ceiling, so a
+      // container without a memory limit cannot pass as "0 required".
+      assert.deepEqual(resourceLimitsNotInForce({ ...APPLIED, Memory: 0, MemorySwap: 0 }, { ...LIMITS, memoryMb: 0 }), [
+        '--memory not set (required 536870912 bytes)',
+        '--memory-swap not set (required 536870912 bytes)',
+      ]);
+    } finally {
+      if (saved !== undefined) process.env[key] = saved;
+    }
   });
 });

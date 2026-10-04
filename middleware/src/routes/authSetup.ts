@@ -4,6 +4,7 @@ import type { Request, RequestHandler, Response } from 'express';
 import { credentialEpoch } from '../auth/loginDevices.js';
 import type { LoginRateLimiter } from '../auth/loginRateLimiter.js';
 import { hashPassword } from '../auth/passwordHasher.js';
+import { checkNewPassword, MAX_PASSWORD_LENGTH } from '../auth/passwordPolicy.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
 import type { ProviderRegistry } from '../auth/providerRegistry.js';
 import { setupTokenMatches } from '../auth/setupToken.js';
@@ -249,8 +250,18 @@ export function createSetupHandler(deps: SetupRouteDeps): RequestHandler {
       res.status(400).json({ code: 'auth.setup_invalid_email' });
       return;
     }
-    if (body.password.length < 8) {
+    const violation = checkNewPassword(body.password);
+    if (violation === 'too_short') {
       res.status(400).json({ code: 'auth.setup_password_too_short' });
+      return;
+    }
+    if (violation === 'too_long') {
+      // Sign-in refuses anything longer, so storing it would create an admin
+      // nobody can sign in as.
+      res.status(400).json({
+        code: 'auth.setup_password_too_long',
+        message: `the password may be at most ${String(MAX_PASSWORD_LENGTH)} characters long`,
+      });
       return;
     }
 

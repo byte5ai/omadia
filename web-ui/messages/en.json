@@ -997,7 +997,9 @@
     "loginLink": "Login",
     "authError": "auth err",
     "signedInAs": "Signed in as",
-    "signOut": "Sign out"
+    "signOut": "Sign out",
+    "signOutFailed": "Sign-out did not go through. You are still signed in.",
+    "signOutRetry": "Try signing out again"
   },
   "error": {
     "title": "Something went wrong",
@@ -1009,6 +1011,22 @@
     "digestHint": "Quote this reference when reporting the problem — the full message is in the server log."
   },
   "errorHelp": {
+    "admin_users": {
+      "password_too_long": {
+        "what": "The password is longer than 1024 characters, the most sign-in accepts.",
+        "next": "Choose a shorter password. Nothing was changed."
+      }
+    },
+    "auth": {
+      "logout_revocation_failed": {
+        "what": "You are still signed in. The server could not end your session, so it stays valid on every device that has it.",
+        "next": "Try signing out again in a moment. If it keeps failing, ask an administrator to reset your password or disable your account. Both end every session."
+      },
+      "setup_password_too_long": {
+        "what": "The password is longer than 1024 characters, the most sign-in accepts.",
+        "next": "Choose a shorter password. No account was created."
+      }
+    },
     "install": {
       "already_installed": {
         "what": "This plugin is already installed on this server.",
