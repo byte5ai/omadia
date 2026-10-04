@@ -170,12 +170,16 @@ describe('DockerSandboxBackend.provision — resource limits (stub)', () => {
     assert.deepEqual(logged, []);
   });
 
-  it('a new container is checked with docker inspect too', async () => {
-    const { exec, calls } = stubExec((ctx) => (ctx.args[0] === 'ps' ? ok('') : ok()));
-    await new DockerSandboxBackend({ execDocker: exec }).provision({
-      scopeKey: 'personal:limits-new-verified',
+  /** Provision `scopeKey` under the default limits, collecting the log lines. */
+  const provisionWith = (exec: DockerExec, scopeKey: string, logged: string[] = []) =>
+    new DockerSandboxBackend({ execDocker: exec, log: (msg) => logged.push(msg) }).provision({
+      scopeKey,
       profile: resolveAgentComputerProfile(),
     });
+
+  it('a new container is checked with docker inspect too', async () => {
+    const { exec, calls } = stubExec((ctx) => (ctx.args[0] === 'ps' ? ok('') : ok()));
+    await provisionWith(exec, 'personal:limits-new-verified');
     assert.deepEqual(calls.map((c) => c.args[0]), ['ps', 'run', 'inspect']);
   });
 
@@ -223,13 +227,7 @@ describe('DockerSandboxBackend.provision — resource limits (stub)', () => {
       return ok();
     };
     const logged: string[] = [];
-    await assert.rejects(
-      new DockerSandboxBackend({ execDocker: exec, log: (msg) => logged.push(msg) }).provision({
-        scopeKey: 'personal:limits-update-throws',
-        profile: resolveAgentComputerProfile(),
-      }),
-      /docker update could not run/,
-    );
+    await assert.rejects(provisionWith(exec, 'personal:limits-update-throws', logged), /docker update could not run/);
     assert.deepEqual(calls, ['ps', 'update', 'stop']);
     assert.ok(!logged.join('\n').includes('ENOENT'));
   });
@@ -268,10 +266,7 @@ describe('DockerSandboxBackend.provision — resource limits (stub)', () => {
       (ctx) => (ctx.args[0] === 'ps' ? ok(name) : ok()),
       (applied) => inspectOutput({ ...applied, Memory: 268435456, MemorySwap: 268435456, PidsLimit: 64 }),
     );
-    await new DockerSandboxBackend({ execDocker: exec }).provision({
-      scopeKey: 'personal:limits-stricter',
-      profile: resolveAgentComputerProfile(),
-    });
+    await provisionWith(exec, 'personal:limits-stricter');
     assert.deepEqual(calls.map((c) => c.args[0]), ['ps', 'update', 'inspect', 'start']);
   });
 
@@ -304,17 +299,11 @@ describe('DockerSandboxBackend.provision — resource limits (stub)', () => {
     ];
     for (const [result, expected] of failures) {
       const { exec, calls } = stubExec((ctx) => (ctx.args[0] === 'ps' ? ok('') : ok()), () => result);
-      await assert.rejects(
-        new DockerSandboxBackend({ execDocker: exec, log: () => undefined }).provision({
-          scopeKey: 'personal:limits-inspect-fails',
-          profile: resolveAgentComputerProfile(),
-        }),
-        (err: Error) => {
-          assert.match(err.message, expected);
-          assert.ok(!err.message.includes('No such object'), 'Docker output stays out of the error');
-          return true;
-        },
-      );
+      await assert.rejects(provisionWith(exec, 'personal:limits-inspect-fails'), (err: Error) => {
+        assert.match(err.message, expected);
+        assert.ok(!err.message.includes('No such object'), 'Docker output stays out of the error');
+        return true;
+      });
       assert.deepEqual(calls.map((c) => c.args[0]), ['ps', 'run', 'inspect', 'rm']);
     }
   });
@@ -328,13 +317,7 @@ describe('DockerSandboxBackend.provision — resource limits (stub)', () => {
       return ok();
     });
     const logged: string[] = [];
-    await assert.rejects(
-      new DockerSandboxBackend({ execDocker: exec, log: (msg) => logged.push(msg) }).provision({
-        scopeKey: 'personal:limits-stop-fails',
-        profile: resolveAgentComputerProfile(),
-      }),
-      /Stopping it failed/,
-    );
+    await assert.rejects(provisionWith(exec, 'personal:limits-stop-fails', logged), /Stopping it failed/);
     assert.deepEqual(calls.map((c) => c.args[0]), ['ps', 'update', 'stop']);
     assert.deepEqual(logged, [
       `[sandbox] docker stop failed (exit 1) for '${name}'`,
