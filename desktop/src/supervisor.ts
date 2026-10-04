@@ -48,6 +48,11 @@ export interface BootProgress {
 /** The `database-exit` event: the embedded database stopped while the stack ran. */
 export interface DatabaseExit {
   readonly reason: string;
+  /**
+   * Whether the kernel is confirmed gone. When it is not (it outlived SIGTERM
+   * and SIGKILL), nothing may start a database on its own.
+   */
+  readonly kernelStopped: boolean;
 }
 
 const DATABASE_LOST_DURING_BOOT = 'the embedded database stopped while omadia was starting';
@@ -371,8 +376,8 @@ export class Supervisor extends EventEmitter {
    * web-ui, and only then may a database start again. A running stack is then
    * reported through `database-exit`, and the app restarts it the ordinary way
    * (`restart()`), which starts the database before the kernel. A kernel that
-   * does not exit even after SIGKILL is reported as an error instead, without
-   * `database-exit`, so nothing restarts the database on its own. A boot in
+   * does not exit even after SIGKILL is reported with `kernelStopped: false`
+   * and as an error, and the app then leaves the restart to the user. A boot in
    * flight fails instead; its kernel is stopped now rather than after a health
    * timeout. A full shutdown in flight stops everything anyway.
    */
@@ -401,13 +406,13 @@ export class Supervisor extends EventEmitter {
       this.state = 'idle';
       if (survivors.length > 0) log.warn(`[db] still alive after the database exited: ${survivors.join(' + ')}`);
       if (!wasRunning) return;
-      if (survivors.includes('kernel')) {
+      const kernelStopped = !survivors.includes('kernel');
+      if (!kernelStopped) {
         // The kernel may still be running, and a database started now would be
         // within its reach, so the restart is left to the user.
         this.progress('error', 'The embedded database stopped and the kernel did not exit. omadia does not restart on its own.');
-        return;
       }
-      this.emit('database-exit', { reason } satisfies DatabaseExit);
+      this.emit('database-exit', { reason, kernelStopped } satisfies DatabaseExit);
     });
   }
 

@@ -120,6 +120,7 @@ test('a database exit stops the kernel before the database starts again, then bo
   db.exit('code=null signal=SIGKILL');
   const exit = await exited;
   assert.equal(exit.reason, 'code=null signal=SIGKILL');
+  assert.equal(exit.kernelStopped, true);
   assert.deepEqual(events, ['db-start', 'db-exited', 'kernel-SIGTERM', 'kernel-exited', 'database-exit']);
 
   // What the app does on `database-exit`: the ordinary restart. It starts a
@@ -172,13 +173,14 @@ test('a kernel that does not exit leaves the restart to the user', async () => {
     throw Object.assign(new Error('synthetic EPERM'), { code: 'EPERM' });
   };
   pretendRunning(sup, kernel);
-  sup.on('database-exit', () => events.push('database-exit'));
+  const exited = new Promise<DatabaseExit>((resolve) => sup.once('database-exit', resolve));
   const phases: string[] = [];
   sup.on('progress', (progress: { phase: string }) => phases.push(progress.phase));
 
   db.exit('code=1 signal=null');
-  await settle();
-  assert.equal(events.includes('database-exit'), false, 'no automatic restart while the kernel may be alive');
+  const exit = await exited;
+  // What the app reads before it restarts anything: the kernel is not confirmed gone.
+  assert.equal(exit.kernelStopped, false, 'no automatic restart while the kernel may be alive');
   assert.deepEqual(phases, ['error']);
   assert.equal(db.starts(), 1);
 });

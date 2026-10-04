@@ -472,7 +472,7 @@ When the server exits while the kernel runs, the shell stops the kernel and the
 web UI first. Nothing restarts the database before the kernel is gone. The app
 then restarts the stack the ordinary way, database first, and reloads the
 window (`src/supervisor.ts`). If the kernel does not exit even after SIGKILL,
-the shell reports an error and leaves the restart to the user.
+the tray shows an error and the shell leaves the restart to the user.
 
 | Role | Used by | May |
 |---|---|---|
