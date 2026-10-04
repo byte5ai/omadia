@@ -3289,8 +3289,13 @@ gesetzt; ein „unbegrenzt“ gibt es bewusst nicht. Docker liest nicht nur `0` 
 arm64); die Bereiche (`SANDBOX_RESOURCE_LIMIT_BOUNDS` in `resourceLimits.ts`)
 schließen genau diese Werte aus. Neue Werte gelten für neu erstellte Container;
 eine bestehende persistente Sandbox bekommt sie beim nächsten Wiederanhängen per
-`docker update` (Best-Effort, ein Fehler landet im Log, der Container läuft mit
-seinen alten Limits weiter). Die wirksamen Werte stehen beim Boot in der
+`docker update`. Danach (und nach jedem `docker run`) prüft das Backend per
+`docker inspect`, ob alle Grenzen wirksam sind. Scheitert das Update, fehlt eine
+Grenze oder ist sie lockerer als verlangt, läuft im Container nichts: die
+Anfrage schlägt mit einem Fehler fehl, der Container und fehlende Grenzen nennt,
+ein bestehender Container wird gestoppt und mit seinen Dateien behalten, ein
+gerade erstellter entfernt. Container veröffentlichter Apps prüft das noch
+nicht. Die wirksamen Werte stehen beim Boot in der
 Log-Zeile `sandbox_execute_enabled=true` bzw. `sandbox_publish_enabled=true`.
 Details: `docs/security-architecture.md` §3b.
 
