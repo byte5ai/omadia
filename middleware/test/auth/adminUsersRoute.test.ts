@@ -473,7 +473,7 @@ describe('/api/v1/admin/users router', () => {
   it('POST / refuses 1025 code units with 400 password_too_long and creates nothing', async () => {
     setSession(adminSession());
     const rowsBefore = store.rows.length;
-    const auditBefore = audit.entries.length;
+    const entriesBefore = audit.entries.length;
     const res = await fetch(`${baseUrl}/api/v1/admin/users`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -482,7 +482,7 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 400);
     assert.equal(((await res.json()) as { code?: string }).code, 'admin_users.password_too_long');
     assert.equal(store.rows.length, rowsBefore);
-    assert.equal(audit.entries.length, auditBefore);
+    assert.equal(audit.entries.length, entriesBefore);
   });
 
   it('POST /:id/reset-password accepts a password of exactly 1024 code units', async () => {
