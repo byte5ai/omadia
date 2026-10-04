@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Security — the desktop wizard shows the recovery key of the folder it sets up
+
+2026-10-04 — The desktop setup wizard showed the recovery key of the current
+data folder before setup applied the folder chosen on the step before. When
+that folder already held a valid `secrets.enc`, setup kept that file and its
+own vault key, so the key a user saved or copied belonged to another folder.
+The wizard now asks for the key of the folder it completes with:
+
+- A folder with a valid `secrets.enc` answers with that file's key. Reading it
+  writes nothing, and setup keeps the file's keys.
+- An empty folder answers with the new key it receives when setup completes.
+- An unreadable `secrets.enc` shows the same error as before and is left as it
+  is.
+- The shell answers only for the current data folder or the folder its picker
+  returned last.
+- Choosing another folder hides a key that is already shown, and Copy copies
+  the key on screen.
+
 ### Security — tool-dispatch privacy seams: org clamp, exempt-tool errors, record dumps, logs
 
 2026-10-02 — Five changes at the seams where tool results and errors reach a

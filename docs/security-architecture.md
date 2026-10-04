@@ -2616,9 +2616,17 @@ rules, in the Electron-free `secretsBlob.ts` and `secretsStore.ts`:
   became unreadable is surfaced, not overwritten.
 - **The cache belongs to one path.** When setup switches the data folder, an
   existing `secrets.enc` there is adopted. Only a missing one receives the keys
-  already handed out, so the recovery key shown during setup stays the key in
-  use. A file that appears between the ENOENT read and the write is left alone
-  (`SecretsConflictError`).
+  already handed out. A file that appears between the ENOENT read and the write
+  is left alone (`SecretsConflictError`).
+- **The wizard shows the key of the folder it sets up.** Its recovery-key step
+  comes before `complete` binds the chosen folder, so the wizard asks for the
+  key of that folder, and `secretsStore.preview` answers by the rule above
+  without binding the folder, writing to it or caching it. An existing valid
+  `secrets.enc` there answers with its own key. A missing one answers with the
+  persisted keys it will receive. An unreadable one throws the same
+  `SecretsUnreadableError` and stays as it is. The key shown and copied is the
+  key in use after setup. Main answers only for the current data folder or the
+  folder its picker returned last (`ipc.ts`).
 
 **Backups and their limits:**
 
@@ -3803,6 +3811,9 @@ wizard, above all the recovery-key export, which returns the vault master key
     is out of reach once setup is over. The path rule matters on its own: the
     navigator claims a view before its page has loaded, so the previous
     document can still be on screen while `view === 'wizard'`.
+    `exportRecoveryKey` also names the folder setup will complete with and
+    answers only for the current data folder or the folder the picker returned
+    last, so it reads no other folder's secrets (§8a).
   - UI pings (`uiReady`, `uiLocale`) answer only the main frame at the running
     web UI's exact origin, and nothing while no web UI serves.
   - A refused invoke rejects with a fixed message; a refused event is dropped.

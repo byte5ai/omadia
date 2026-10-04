@@ -347,7 +347,10 @@ not in the page:
   from `event.senderFrame`, read synchronously on entry. The setup channels
   (`testLlmKey`, `chooseDataDir`, `exportRecoveryKey`, `complete`) answer only
   the bundled `dist/renderer/wizard.html` (compared as a file path) in the main
-  frame, and only while the navigator above shows `wizard`. The UI pings
+  frame, and only while the navigator above shows `wizard`.
+  `exportRecoveryKey` names the folder setup will complete with and answers
+  only for the current data folder or the folder the picker returned last.
+  The UI pings
   (`uiReady`, `uiLocale`) answer only the running web UI's origin. A missing,
   destroyed or detached sender frame is refused, and so is any subframe.
 - **The preload hands out only the document's own surface**
@@ -402,6 +405,12 @@ app treats the file as irreplaceable:
   `secrets.enc.bak` first, writes a temp file and renames it into place. A crash
   leaves the old file or the new one, never a torn one. The logic lives in the
   Electron-free `src/secretsBlob.ts` and `src/secretsStore.ts`.
+- **The wizard shows the key that applies.** Its recovery-key step reads the
+  key of the folder setup will use before setup binds it, and writes nothing
+  there. A folder that already holds a valid `secrets.enc` keeps it, so the
+  wizard shows that file's key. An empty folder shows the new key it receives.
+  An unreadable file shows the error instead of a key. Choosing another folder
+  hides a key that is already shown.
 - **Pre-update snapshot.** Before an update installs,
   `snapshots/pgdata-pre-<version>-<stamp>/` receives the database and
   `snapshots/pgdata-pre-<version>-<stamp>.secrets.enc` the secrets file.
