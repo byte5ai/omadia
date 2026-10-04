@@ -537,9 +537,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Audit scope covers every lockfile
+      - name: Audit scope covers every lockfile, exception rules hold
         working-directory: .
-        run: node --test .github/scripts/audit-scope.test.mjs
+        run: node --test .github/scripts/audit-scope.test.mjs .github/scripts/audit-gate.test.mjs
 
       - uses: actions/setup-node@v7
         with:
@@ -567,40 +567,69 @@ jobs:
         # outage an admin sets the repository variable
         # AUDIT_ALLOW_REGISTRY_OUTAGE=true, which downgrades the failure to a
         # warning; unset it once the registry is back (security-architecture §11).
+        #
+        # A high or critical finding in the full tree goes to
+        # `.github/scripts/audit-gate.mjs` together with a production-only
+        # report (`--omit=dev`). A production finding always fails. A finding
+        # that only development tooling pulls in passes only with a dated,
+        # reasoned entry in `.github/audit-exceptions.json` whose `via` names
+        # every route into the tree; `electron` counts as production
+        # (security-architecture §4a).
         env:
           AUDIT_ALLOW_REGISTRY_OUTAGE: ${{ vars.AUDIT_ALLOW_REGISTRY_OUTAGE }}
         run: |
           npm install -g npm@latest
-          attempt=0
-          while :; do
-            attempt=$((attempt + 1))
-            set +e
-            npm audit --audit-level=high --json --fetch-timeout=60000 --fetch-retries=1 \
-              >audit-report.json 2>audit-stderr.log
-            exit_code=$?
-            set -e
-            if [ "$exit_code" -eq 0 ]; then
+          # run_audit <report> [npm audit args]: 0 = no high/critical finding,
+          # 1 = findings (or a hard CLI error), 2 = registry still erroring after
+          # three attempts.
+          run_audit() {
+            report=$1
+            shift
+            attempt=0
+            while :; do
+              attempt=$((attempt + 1))
+              code=0
+              npm audit --audit-level=high --json --fetch-timeout=60000 --fetch-retries=1 "$@" \
+                >"$report" 2>audit-stderr.log || code=$?
+              if [ "$code" -eq 0 ]; then
+                return 0
+              fi
+              if ! grep -q 'audit endpoint returned an error' audit-stderr.log; then
+                return 1
+              fi
+              if [ "$attempt" -ge 3 ]; then
+                return 2
+              fi
+              echo "::warning::npm audit endpoint error (attempt $attempt/3) -- retrying in $((attempt * 20))s"
+              sleep $((attempt * 20))
+            done
+          }
+          registry_outage() {
+            cat audit-stderr.log
+            if [ "$AUDIT_ALLOW_REGISTRY_OUTAGE" = "true" ]; then
+              echo "::warning::npm audit endpoint still erroring after 3 attempts; AUDIT_ALLOW_REGISTRY_OUTAGE=true -- passing WITHOUT an audit result"
               exit 0
             fi
-            if ! grep -q 'audit endpoint returned an error' audit-stderr.log; then
-              # A real result: high/critical findings (or a hard CLI error).
-              cat audit-stderr.log
-              cat audit-report.json
-              exit "$exit_code"
-            fi
-            if [ "$attempt" -ge 3 ]; then
-              break
-            fi
-            echo "::warning::npm audit endpoint error (attempt $attempt/3) -- retrying in $((attempt * 20))s"
-            sleep $((attempt * 20))
-          done
-          cat audit-stderr.log
-          if [ "$AUDIT_ALLOW_REGISTRY_OUTAGE" = "true" ]; then
-            echo "::warning::npm audit endpoint still erroring after 3 attempts; AUDIT_ALLOW_REGISTRY_OUTAGE=true -- passing WITHOUT an audit result"
+            echo "::error::npm audit endpoint still erroring after 3 attempts. An unknown audit state is not a clean result; set the repository variable AUDIT_ALLOW_REGISTRY_OUTAGE=true only for a confirmed upstream outage."
+            exit 1
+          }
+          full=0
+          run_audit audit-report.json || full=$?
+          if [ "$full" -eq 0 ]; then
             exit 0
           fi
-          echo "::error::npm audit endpoint still erroring after 3 attempts. An unknown audit state is not a clean result; set the repository variable AUDIT_ALLOW_REGISTRY_OUTAGE=true only for a confirmed upstream outage."
-          exit 1
+          if [ "$full" -eq 2 ]; then
+            registry_outage
+          fi
+          prod=0
+          run_audit audit-prod.json --omit=dev || prod=$?
+          if [ "$prod" -eq 2 ]; then
+            registry_outage
+          fi
+          cat audit-stderr.log
+          node ../.github/scripts/audit-gate.mjs --workspace "${{ matrix.workspace }}" \
+            --full audit-report.json --prod audit-prod.json \
+            --package package.json --exceptions ../.github/audit-exceptions.json
 
       - name: Archive audit report
         if: always()
@@ -609,6 +638,7 @@ jobs:
           name: npm-audit-${{ matrix.workspace }}
           path: |
             ${{ matrix.workspace }}/audit-report.json
+            ${{ matrix.workspace }}/audit-prod.json
             ${{ matrix.workspace }}/audit-stderr.log
           if-no-files-found: ignore
           retention-days: 30

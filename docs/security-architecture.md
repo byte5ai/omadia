@@ -709,6 +709,23 @@ one rule about what counts as a runtime.
   not an application setting, so it does not belong in
   `middleware/.env.example`. Every run archives its report as the
   `npm-audit-<dir>` workflow artifact.
+- **A finding no release fixes, in development tooling only.** A high or
+  critical advisory fails its leg unless `.github/scripts/audit-gate.mjs`
+  accepts an entry for it in `.github/audit-exceptions.json`. The gate reads the
+  full report together with a production-only one (`npm audit --omit=dev`), and
+  a finding in the production tree always fails. An entry names the advisory,
+  the package, the workspaces and, in `via`, the devDependencies through which
+  the package enters the tree. The gate follows the report's dependency links
+  and fails when a route starts anywhere else, or at `electron`, whose advisories
+  count like production ones (below). An entry also says why the vulnerable code
+  is not reachable, carries its review date and expires at most 90 days later.
+  An expired entry fails the leg, and an entry that matches nothing any more is
+  flagged for removal. Exceptions are only for advisories that no release fixes
+  yet: when a fixed version exists, the dependency moves instead. The first entry
+  (2026-10-04) covers `braces` in the web-ui's lint chain (`eslint-config-next`,
+  `@next/eslint-plugin-next`, `fast-glob`, `micromatch`), which expands the
+  repository's own glob patterns at lint time. `.github/scripts/audit-gate.test.mjs`
+  runs in every leg before the audit.
 - **Dependabot** has an npm block for every audited directory (`/desktop`,
   `/middleware`, `/web-ui`); a new package directory gets one together with its
   audit leg. GitHub's repository-level alerting is not counted on as a

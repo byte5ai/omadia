@@ -1,0 +1,14 @@
+{
+  "$comment": "High or critical dependency advisories the CI audit leg accepts for a limited time: only advisories with no fixed release that reach a workspace through development tooling alone. The rules are in .github/scripts/audit-gate.mjs and docs/security-architecture.md section 4a.",
+  "exceptions": [
+    {
+      "advisory": "GHSA-vfj7-8cjw-p6xm",
+      "package": "braces",
+      "workspaces": ["web-ui"],
+      "via": ["eslint-config-next"],
+      "reason": "Reached only through the lint configuration: eslint-config-next, @next/eslint-plugin-next, fast-glob (pinned 3.3.1 by the plugin, latest 16.3.8), micromatch, braces. It runs in `npm run lint` and expands the repository's own static glob patterns, never request or user input, and it is absent from the production tree. No braces release fixes the advisory yet (latest 3.0.3).",
+      "reviewed": "2026-10-04",
+      "expires": "2026-11-15"
+    }
+  ]
+}
