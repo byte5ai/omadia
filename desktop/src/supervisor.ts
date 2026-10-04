@@ -45,6 +45,13 @@ export interface BootProgress {
   detail?: string;
 }
 
+/** The `database-exit` event: the embedded database stopped while the stack ran. */
+export interface DatabaseExit {
+  readonly reason: string;
+}
+
+const DATABASE_LOST_DURING_BOOT = 'the embedded database stopped while omadia was starting';
+
 /**
  * A start() or restart() that is still running.
  *
@@ -236,6 +243,8 @@ export class Supervisor extends EventEmitter {
     let ownKernel: ChildProcess | null = null;
     let ownUi: ChildProcess | null = null;
     let ownDb: EmbeddedDb | null = null;
+    // The database this boot runs on. The boot fails when it exits under it.
+    let bootDb: EmbeddedDb | null = null;
 
     try {
       this.progress('starting-db', 'Starting embedded database…');
@@ -254,10 +263,15 @@ export class Supervisor extends EventEmitter {
           throw new Error('boot superseded');
         }
         this.db = db;
+        bootDb = db;
+        db.onUnexpectedExit?.((reason) => this.onDatabaseExit(db, reason));
+      } else {
+        bootDb = this.db;
       }
       // A stop() that landed while the database was coming up has already run
       // its teardown; anything we spawn from here on would be an orphan.
       this.assertLiveGeneration(gen);
+      this.assertDatabaseUp(bootDb);
 
       const kernelPort = Supervisor.KERNEL_PORT;
       // The kernel port is fixed (the web-ui bakes it at build time), so a clash
@@ -284,6 +298,7 @@ export class Supervisor extends EventEmitter {
       const [uiPort] = await findFreePorts(1);
 
       this.assertLiveGeneration(gen);
+      this.assertDatabaseUp(bootDb);
       this.progress('starting-kernel', 'Starting omadia kernel…');
       // Read once per boot: the env the kernel gets and the check below must
       // describe the same selection.
@@ -302,6 +317,7 @@ export class Supervisor extends EventEmitter {
       await this.confirmCapabilities(kernelPort, capabilities);
 
       this.assertLiveGeneration(gen);
+      this.assertDatabaseUp(bootDb);
       this.progress('starting-ui', 'Starting the admin interface…');
       ownUi = this.forkNode(webUiEntry(), webUiCwd(), this.uiEnv(uiPort, kernelPort), 'web-ui', gen);
       this.ui = ownUi;
@@ -311,11 +327,15 @@ export class Supervisor extends EventEmitter {
       // Nothing checks the generation between that poll resolving and the state
       // flip, and a stop() landing there would otherwise be overwritten.
       this.assertLiveGeneration(gen);
+      this.assertDatabaseUp(bootDb);
       this.state = 'running';
       this.progress('ready', 'omadia is ready.');
       return this.uiUrl;
     } catch (err) {
       const superseded = gen !== this.generation;
+      // A database that exited under this boot is the cause, whatever step
+      // noticed it (the kernel stopped for it, or a checkpoint).
+      const databaseLost = !superseded && bootDb !== null && this.db !== bootDb;
       // Always reap our OWN children. When we were superseded the concurrent
       // stop() bumped the generation and tore down whatever existed AT THAT
       // MOMENT — which, for a boot still between phases, was nothing. Skipping
@@ -327,6 +347,7 @@ export class Supervisor extends EventEmitter {
       if (!superseded) {
         this.state = 'idle';
       }
+      if (databaseLost) throw new Error(DATABASE_LOST_DURING_BOOT, { cause: err });
       throw err;
     }
   }
@@ -334,6 +355,51 @@ export class Supervisor extends EventEmitter {
   /** Bail out of a boot that a concurrent stop()/restart() has overtaken. */
   private assertLiveGeneration(gen: number): void {
     if (gen !== this.generation) throw new Error('boot superseded');
+  }
+
+  /** Bail out of a boot whose database exited under it (see onDatabaseExit). */
+  private assertDatabaseUp(bootDb: EmbeddedDb | null): void {
+    if (this.db !== bootDb) throw new Error(DATABASE_LOST_DURING_BOOT);
+  }
+
+  /**
+   * The embedded database exited without being asked to stop.
+   *
+   * The kernel's pools reconnect on demand to the address they were given. On
+   * Windows that is a loopback port, which is free while no server holds it,
+   * so the kernel must not outlive its database: it is stopped first, with the
+   * web-ui, and only then may a database start again. A running stack is then
+   * reported through `database-exit`, and the app restarts it the ordinary way
+   * (`restart()`), which starts the database before the kernel. A boot in
+   * flight fails instead; its kernel is stopped now rather than after a health
+   * timeout. A full shutdown in flight stops everything anyway.
+   */
+  private onDatabaseExit(db: EmbeddedDb, reason: string): void {
+    if (this.db !== db) return;
+    // The handle is dead. Whatever boots next starts a database of its own.
+    this.db = null;
+    if (this.stopping || this.state === 'stopping') return;
+    log.warn(`[db] embedded Postgres exited unexpectedly (${reason}); stopping the kernel before the database restarts`);
+    if (this.state === 'starting') {
+      void stopChild(this.kernel, 'kernel', log);
+      return;
+    }
+    const wasRunning = this.state === 'running';
+    // Published like a restart, and with the state at 'stopping', so neither a
+    // start() nor a restart() can bring a database back before the kernel is
+    // gone, and a stop() waits for this teardown.
+    this.state = 'stopping';
+    const { op, finish } = this.registerOp('restart');
+    void this.teardownChildren().then((survivors) => {
+      op.survivors.push(...survivors);
+      finish();
+      this.opsInFlight.delete(op);
+      // A full shutdown that began meanwhile owns the stack now.
+      if (this.stopping) return;
+      this.state = 'idle';
+      if (survivors.length > 0) log.warn(`[db] still alive after the database exited: ${survivors.join(' + ')}`);
+      if (wasRunning) this.emit('database-exit', { reason } satisfies DatabaseExit);
+    });
   }
 
   /**
@@ -458,6 +524,13 @@ export class Supervisor extends EventEmitter {
       // vault copy must never win here. Cloud/server leave this unset and
       // keep vault precedence.
       OMADIA_EMBEDDED_DB: '1',
+      // Every pool the kernel opens authenticates with SCRAM-SHA-256 or fails,
+      // like the shell's own connections (`scramOnlyConnect.ts`). On Windows
+      // the server listens on loopback TCP, and a stock pg client would answer
+      // a cleartext, MD5 or no-authentication offer from whatever took the
+      // port while the server was down. Set after `...process.env`: an
+      // inherited value must not switch it off.
+      OMADIA_DB_REQUIRE_SCRAM: '1',
       VAULT_KEY: vaultKey(),
       // #578's credential keychain is a separate trust domain with its own
       // master key; the kernel fail-hards in production without it. Missing

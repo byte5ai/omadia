@@ -44,8 +44,11 @@ import { connectScramOnly } from './scramOnlyConnect';
  * (`embeddedDbAuth.ts`): the bootstrap superuser `omadia` is the shell's
  * alone, and the kernel connects as the restricted `omadia_kernel`. Both
  * passwords live in `secrets.enc`. The shell's own connections accept SCRAM
- * and nothing else (`scramOnlyConnect.ts`), and the shell treats the server as
- * ready only once its postmaster.pid names the process the shell started.
+ * and nothing else (`scramOnlyConnect.ts`), the kernel's pools likewise
+ * (`OMADIA_DB_REQUIRE_SCRAM`, set by the supervisor), and the shell treats the
+ * server as ready only once its postmaster.pid names the process the shell
+ * started. A server that exits unexpectedly is reported to the handle's owner
+ * (`onUnexpectedExit`), which stops the kernel before a server starts again.
  */
 
 /**
@@ -75,9 +78,16 @@ export interface EmbeddedDb {
    * holding files (see #927).
    */
   stop(): Promise<boolean>;
+  /**
+   * Call `listener` once if this server exits without being asked to stop
+   * (a crash, a kill from outside). Not called for a stop through `stop()`.
+   */
+  onUnexpectedExit?(listener: (reason: string) => void): void;
 }
 
 let current: { proc: ChildProcess; endpoint: DbEndpoint } | null = null;
+/** Who to tell when a server exits unexpectedly, per server process. */
+const exitListeners = new Map<ChildProcess, Array<(reason: string) => void>>();
 // Set while we are deliberately shutting the server down, so the `exit` handler
 // (registered at spawn) does not misreport an intentional stop as a crash.
 let stopping = false;
@@ -182,11 +192,16 @@ function spawnServer(dataDir: string, endpoint: DbEndpoint): ChildProcess {
     if (current && current.proc === proc) current = null;
   });
   proc.on('exit', (code, signal) => {
+    const listeners = exitListeners.get(proc) ?? [];
+    exitListeners.delete(proc);
     if (current && current.proc === proc) {
-      if (!stopping) {
-        log.warn(`[db] embedded Postgres exited unexpectedly code=${code} signal=${signal}`);
-      }
       current = null;
+      if (!stopping) {
+        const reason = `code=${code} signal=${signal}`;
+        log.warn(`[db] embedded Postgres exited unexpectedly ${reason}`);
+        // The supervisor stops the kernel before anything starts a server again.
+        for (const listener of listeners) listener(reason);
+      }
     }
   });
   return proc;
@@ -316,6 +331,7 @@ export async function connectShellClient(endpoint: DbEndpoint, options: ConnectO
 }
 
 function toHandle(endpoint: DbEndpoint, kernelPassword: string): EmbeddedDb {
+  const proc = runningProc();
   return {
     // The restricted kernel role. The bootstrap superuser's password never
     // leaves this process.
@@ -323,6 +339,13 @@ function toHandle(endpoint: DbEndpoint, kernelPassword: string): EmbeddedDb {
     port: endpoint.port,
     async stop() {
       return stopEmbeddedDb();
+    },
+    onUnexpectedExit(listener) {
+      if (proc === null || !isAlive(proc)) {
+        listener('the embedded Postgres was no longer running');
+        return;
+      }
+      exitListeners.set(proc, [...(exitListeners.get(proc) ?? []), listener]);
     },
   };
 }

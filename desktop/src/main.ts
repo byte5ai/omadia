@@ -447,6 +447,9 @@ async function onReady(): Promise<void> {
   installApplicationMenu(menuActions, t);
   supervisor = new Supervisor();
   setActiveSupervisor(supervisor);
+  // The supervisor has already stopped the kernel; the restart brings the
+  // database back first, then the kernel and the UI, and reloads the window.
+  supervisor.on('database-exit', () => void trayActions().restart());
 
   win = createWindow();
   createTray(trayActions());
