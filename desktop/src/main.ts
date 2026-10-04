@@ -441,12 +441,18 @@ async function onReady(): Promise<void> {
   const menuActions = {
     checkForUpdates: checkForUpdatesAction,
     showRecoveryKey: () => {
-      if (win) void showRecoveryKeyAction(win, t);
+      if (win) void showRecoveryKeyAction(win, t, () => currentView() === 'wizard');
     },
   };
   installApplicationMenu(menuActions, t);
   supervisor = new Supervisor();
   setActiveSupervisor(supervisor);
+  // The supervisor has already stopped the kernel; the restart brings the
+  // database back first, then the kernel and the UI, and reloads the window.
+  // A kernel that did not exit leaves the restart to the user.
+  supervisor.on('database-exit', (exit: { kernelStopped: boolean }) =>
+    exit.kernelStopped ? void trayActions().restart() : setTrayStatus(trayActions(), 'error'),
+  );
 
   win = createWindow();
   createTray(trayActions());

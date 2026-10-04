@@ -18,10 +18,16 @@ import { Client, type ClientConfig, type Connection } from 'pg';
  *
  * pg has no switch for this, so the guard watches the authentication messages
  * on the connection, ahead of pg's own handlers: it refuses a cleartext or MD5
- * request, a SASL request without SCRAM-SHA-256, and an AuthenticationOk that
- * did not follow a completed SCRAM exchange. A refusal destroys the socket
- * before pg's handler runs, so nothing more is written to it, and pg is handed
- * the password only after the server has offered SCRAM.
+ * request, a SASL request without SCRAM-SHA-256, and an AuthenticationOk or
+ * ReadyForQuery that did not follow a SCRAM exchange pg has verified. A
+ * refusal destroys the socket before pg's handler runs, so nothing more is
+ * written to it, and pg is handed the password only after the server has
+ * offered SCRAM. A connect pg reports as successful is used only when the
+ * server's final SCRAM signature was checked and matched.
+ *
+ * The kernel's pools use the same guard
+ * (`middleware/packages/harness-knowledge-graph-neon/src/scramOnlyClient.ts`);
+ * a test keeps the two copies in step.
  */
 
 export const SCRAM_REQUIRED = 'OMADIA_SCRAM_REQUIRED';
@@ -46,13 +52,17 @@ export type ScramOnlyConfig = Omit<ClientConfig, 'password' | 'connectionString'
   readonly password: string;
 };
 
+/** The SCRAM exchange pg keeps on a client while it runs, and drops once the server's signature matched. */
+const saslSession = (client: Client): unknown => (client as unknown as { saslSession?: unknown }).saslSession;
+
 class ScramGuard {
   refusal: ScramRequiredError | null = null;
   private connection: Connection | null = null;
   private scramOffered = false;
-  private scramCompleted = false;
+  private scramVerified = false;
 
-  attach(connection: Connection): void {
+  attach(client: Client): void {
+    const connection = client.connection;
     this.connection = connection;
     // prependListener: each of these runs before pg's handler for the same message.
     connection.prependListener('authenticationCleartextPassword', () =>
@@ -63,26 +73,54 @@ class ScramGuard {
     );
     connection.prependListener('authenticationSASL', (message: { mechanisms?: unknown }) => {
       const mechanisms: unknown[] = Array.isArray(message.mechanisms) ? message.mechanisms : [];
-      if (mechanisms.includes(SCRAM_MECHANISM)) this.scramOffered = true;
-      else this.refuse('the server did not offer SCRAM-SHA-256');
-    });
-    // pg checks the server signature in its own handler, right after this one,
-    // and fails the connection when it does not match.
-    connection.prependListener('authenticationSASLFinal', () => {
-      this.scramCompleted = this.scramOffered;
+      if (!mechanisms.includes(SCRAM_MECHANISM)) {
+        this.refuse('the server did not offer SCRAM-SHA-256');
+        return;
+      }
+      if (this.scramOffered) return;
+      this.scramOffered = true;
+      // pg checks the server's final signature in its own handler and drops
+      // the exchange only when the signature matches. The second listener is
+      // added now, after pg's handlers, so it runs once that check is done.
+      let exchange: unknown = null;
+      connection.prependListener('authenticationSASLFinal', () => {
+        exchange = saslSession(client) ?? null;
+      });
+      connection.on('authenticationSASLFinal', () => {
+        this.scramVerified = exchange !== null && saslSession(client) === null;
+      });
     });
     connection.prependListener('authenticationOk', () => {
-      if (!this.scramCompleted) this.refuse('the server let the connection in without a SCRAM exchange');
+      if (!this.scramVerified) this.refuse('the server let the connection in without a SCRAM exchange');
+    });
+    // pg takes the first ReadyForQuery as connected, with or without an
+    // AuthenticationOk before it, and then sends any query already queued.
+    connection.prependListener('readyForQuery', () => {
+      if (!this.scramVerified) this.refuse('the server reported ready without a SCRAM exchange');
     });
   }
 
   /** pg's password callback: the password only goes into a SCRAM exchange. */
-  release(password: string): string {
+  release(password: string): string | Promise<string> {
     if (this.refusal === null && !this.scramOffered) {
       this.refuse('the server asked for a password without offering SCRAM-SHA-256');
     }
-    if (this.refusal !== null) throw this.refusal;
+    // The socket is gone by now, so pg's connect fails through it. A thrown
+    // refusal would reach pg's 'error' event after the connect has settled.
+    if (this.refusal !== null) return new Promise<string>(() => {});
     return password;
+  }
+
+  /**
+   * Why a connect that pg has finished must not be used: the guard's refusal,
+   * pg's own error, or a connection that never completed SCRAM. Null when the
+   * server proved that it holds the role's verifier.
+   */
+  outcome<E>(err: E | null | undefined): ScramRequiredError | E | null {
+    if ((err === null || err === undefined) && this.refusal === null && !this.scramVerified) {
+      this.refuse('the connection opened without a completed SCRAM exchange');
+    }
+    return this.refusal ?? err ?? null;
   }
 
   private refuse(reason: string): void {
@@ -106,18 +144,17 @@ export async function connectScramOnly(config: ScramOnlyConfig, onError?: (err: 
   // pg asks for the password when the server requests one; the guard decides.
   const client = new Client({ ...rest, password: () => guard.release(password) });
   if (onError !== undefined) client.on('error', onError);
-  guard.attach(client.connection);
-  try {
-    await client.connect();
-  } catch (err) {
+  guard.attach(client);
+  // pg can report one failed connect twice (an error, then the ReadyForQuery
+  // behind it); the first report decides.
+  const failure = await new Promise<unknown>((resolve) => {
+    client.connect((err?: Error | null) => resolve(guard.outcome(err)));
+  });
+  if (failure !== null) {
+    // pg leaves the socket open after a failed connect, and a refusal can land
+    // after pg has already parsed a ReadyForQuery in the same packet.
     await client.end().catch(() => {});
-    throw guard.refusal ?? err;
-  }
-  // A refusal can land after pg has already parsed the ReadyForQuery that came
-  // in the same packet as the AuthenticationOk.
-  if (guard.refusal !== null) {
-    await client.end().catch(() => {});
-    throw guard.refusal;
+    throw failure;
   }
   return client;
 }

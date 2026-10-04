@@ -31,6 +31,10 @@ const state = {
   /* Set when the user pressed Continue on the key step without a successful
      probe. The next press goes through. */
   unverifiedAcknowledged: false,
+  /* The recovery key on screen, fetched for `dataDir`. Cleared when another
+     folder is chosen, so the key shown and copied is always the one for the
+     folder setup completes with. */
+  recoveryKey: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -280,6 +284,7 @@ $('#chooseDir').addEventListener('click', async () => {
   try {
     const dir = await bridge.chooseDataDir();
     if (dir) {
+      if (dir !== state.dataDir) hideRecoveryKey();
       state.dataDir = dir;
       $('#dataDir').value = dir;
       $('#dataDirHint').textContent = 'omadia will store everything in this folder.';
@@ -293,16 +298,32 @@ $('#chooseDir').addEventListener('click', async () => {
   }
 });
 
+/* The key is fetched for the folder setup will complete with. Main answers
+   with the key that applies once that folder is bound: a folder that already
+   holds a secrets blob keeps it, so its key is the one to save. */
+const RECOVERY_KEY_MASK = $('#recoveryKey').textContent;
+
+function hideRecoveryKey() {
+  state.recoveryKey = null;
+  $('#recoveryKey').textContent = RECOVERY_KEY_MASK;
+  $('#revealKey').textContent = wt('recovery.reveal', 'Reveal');
+}
+
 $('#revealKey').addEventListener('click', async () => {
   if (!bridgeOk()) return;
+  if (state.recoveryKey !== null) {
+    await navigator.clipboard.writeText(state.recoveryKey);
+    $('#revealKey').textContent = 'Copied';
+    return;
+  }
+  const dataDir = state.dataDir;
   try {
-    const key = await bridge.exportRecoveryKey();
+    const key = await bridge.exportRecoveryKey(dataDir);
+    // Another folder was chosen while the key was on its way: not its key.
+    if (state.dataDir !== dataDir) return;
+    state.recoveryKey = key;
     $('#recoveryKey').textContent = key;
     $('#revealKey').textContent = 'Copy';
-    $('#revealKey').onclick = async () => {
-      await navigator.clipboard.writeText(key);
-      $('#revealKey').textContent = 'Copied';
-    };
   } catch (err) {
     $('#recoveryKey').textContent = 'unavailable — ' + ((err && err.message) || 'internal error');
   }

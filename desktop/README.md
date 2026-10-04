@@ -250,8 +250,8 @@ Accepted v1 limitations (tracked for a follow-up):
   only on Windows (macOS and Linux use a private socket and no TCP port), and
   there another local user who binds it fails the boot rather than learning a
   password: the shell trusts only a server whose `postmaster.pid` names the
-  process it started and that completes SCRAM. The kernel's own database
-  connections are not SCRAM-only yet; see [Database authentication](#database-authentication).
+  process it started and that completes SCRAM, and the kernel's pools accept
+  SCRAM only as well; see [Database authentication](#database-authentication).
 - No app/tray icons shipped yet (Electron defaults used).
 - No Linux target in v1 (mac + win only), though the code paths are cross-platform.
 
@@ -347,7 +347,10 @@ not in the page:
   from `event.senderFrame`, read synchronously on entry. The setup channels
   (`testLlmKey`, `chooseDataDir`, `exportRecoveryKey`, `complete`) answer only
   the bundled `dist/renderer/wizard.html` (compared as a file path) in the main
-  frame, and only while the navigator above shows `wizard`. The UI pings
+  frame, and only while the navigator above shows `wizard`.
+  `exportRecoveryKey` names the folder setup will complete with and answers
+  only for the current data folder or the folder the picker returned last.
+  The UI pings
   (`uiReady`, `uiLocale`) answer only the running web UI's origin. A missing,
   destroyed or detached sender frame is refused, and so is any subframe.
 - **The preload hands out only the document's own surface**
@@ -402,6 +405,12 @@ app treats the file as irreplaceable:
   `secrets.enc.bak` first, writes a temp file and renames it into place. A crash
   leaves the old file or the new one, never a torn one. The logic lives in the
   Electron-free `src/secretsBlob.ts` and `src/secretsStore.ts`.
+- **The wizard shows the key that applies.** Its recovery-key step reads the
+  key of the folder setup will use before setup binds it, and writes nothing
+  there. A folder that already holds a valid `secrets.enc` keeps it, so the
+  wizard shows that file's key. An empty folder shows the new key it receives.
+  An unreadable file shows the error instead of a key. Choosing another folder
+  hides a key that is already shown.
 - **Pre-update snapshot.** Before an update installs,
   `snapshots/pgdata-pre-<version>-<stamp>/` receives the database and
   `snapshots/pgdata-pre-<version>-<stamp>.secrets.enc` the secrets file.
@@ -453,13 +462,26 @@ its own `postmaster.pid` names the process the shell spawned, on the expected
 socket or address, with status `ready`; that check sends no credentials. Every
 connection the shell opens accepts SCRAM and nothing else
 (`src/scramOnlyConnect.ts`): a server that asks for a cleartext or MD5
-password, offers no SCRAM, or lets the client in without an exchange is
-refused before a password is sent, and SCRAM's last step makes the server
-prove it holds the password's verifier. The first login after every start is
+password, offers no SCRAM, or lets the client in or reports ready without an
+exchange is refused before a password or a query is sent. A connection counts
+as open only after pg has checked SCRAM's last step, in which the server
+proves it holds the password's verifier. The first login after every start is
 the superuser's and must report this cluster's data directory before the
 kernel's password goes anywhere. Before provisioning, before the verification
 and before the kernel gets its `DATABASE_URL`, the shell checks again that the
 server it started still runs and still holds its endpoint.
+
+The kernel connects the same way. The shell starts it with
+`OMADIA_DB_REQUIRE_SCRAM=1`, and every pool the kernel opens then refuses a
+cleartext or MD5 request, a missing SCRAM offer and a login or ready report
+without an exchange before its password or any query is sent
+(`middleware/packages/harness-knowledge-graph-neon/src/scramOnlyClient.ts`, the
+same guard, and a test keeps the two copies in step).
+When the server exits while the kernel runs, the shell stops the kernel and the
+web UI first. Nothing restarts the database before the kernel is gone. The app
+then restarts the stack the ordinary way, database first, and reloads the
+window (`src/supervisor.ts`). If the kernel does not exit even after SIGKILL,
+the tray shows an error and the shell leaves the restart to the user.
 
 | Role | Used by | May |
 |---|---|---|
@@ -509,18 +531,17 @@ pre-update snapshot (`snapshots/pgdata-pre-<version>-<stamp>/` as `pgdata/`,
 its `.secrets.enc` as `secrets.enc`); a later update migrates it again.
 
 **What is left on Windows.** The loopback port is free while the server is
-stopped: between choosing the port and starting the server, and during a
-single-user password repair. Another local user can bind it in that window.
-The server then fails to start, so the boot fails (the next start picks a free
-port); the shell's SCRAM-only logins hand that listener no password, and its
-`postmaster.pid` check never takes it for the server. The kernel's own
-connections use a stock pg client, though: if the server stops while the
-kernel runs and another user binds the port before the kernel reconnects,
-that listener could ask the kernel for its password in cleartext. Closing that
-is a follow-up: a SCRAM-only client for the kernel's pools, or a private socket
-on Windows too (`docs/middleware-agent-handoff.md` §13). macOS and Linux are
-not affected: the private socket directory has room for no one else's
-listener.
+stopped: between choosing the port and starting the server, during a
+single-user password repair, and after the server exits. Another local user can
+bind it in that window. The server then fails to start, so the boot fails (the
+next start picks a free port); the shell's SCRAM-only logins hand that listener
+no password, and its `postmaster.pid` check never takes it for the server. A
+kernel connection in the moment between the server's exit and the kernel's own
+fails at its SCRAM check, so that listener gets no password and no query
+either. What remains is availability, not a credential. A private socket on
+Windows too would remove the window (`docs/middleware-agent-handoff.md` §13).
+macOS and Linux are not affected: the private socket directory has room for
+no one else's listener.
 
 ## Capability switches
 

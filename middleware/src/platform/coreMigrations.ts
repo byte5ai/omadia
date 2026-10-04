@@ -1,5 +1,6 @@
 import { Pool } from 'pg';
 
+import { scramOnlyPoolOptions } from '@omadia/knowledge-graph-neon';
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
 /**
@@ -149,8 +150,9 @@ export async function runCoreMigrations(
       // Two connections is enough: the migrator uses exactly one, and the
       // spare keeps a transient checkout failure from stalling boot. The pool
       // is closed before boot continues, so it never competes with the
-      // long-lived pools plugins open later.
-      new Pool({ connectionString, max: 2, idleTimeoutMillis: 1_000 }));
+      // long-lived pools plugins open later. SCRAM-only when the process
+      // requires it, like the graph pool (`createNeonPool`).
+      new Pool({ connectionString, max: 2, idleTimeoutMillis: 1_000, ...scramOnlyPoolOptions() }));
 
   const runMigrations = opts.runMigrations ?? runMultiOrchestratorMigrations;
 

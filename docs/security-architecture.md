@@ -2671,9 +2671,17 @@ rules, in the Electron-free `secretsBlob.ts` and `secretsStore.ts`:
   became unreadable is surfaced, not overwritten.
 - **The cache belongs to one path.** When setup switches the data folder, an
   existing `secrets.enc` there is adopted. Only a missing one receives the keys
-  already handed out, so the recovery key shown during setup stays the key in
-  use. A file that appears between the ENOENT read and the write is left alone
-  (`SecretsConflictError`).
+  already handed out. A file that appears between the ENOENT read and the write
+  is left alone (`SecretsConflictError`).
+- **The wizard shows the key of the folder it sets up.** Its recovery-key step
+  comes before `complete` binds the chosen folder, so the wizard asks for the
+  key of that folder, and `secretsStore.preview` answers by the rule above
+  without binding the folder, writing to it or caching it. An existing valid
+  `secrets.enc` there answers with its own key. A missing one answers with the
+  persisted keys it will receive. An unreadable one throws the same
+  `SecretsUnreadableError` and stays as it is. The key shown and copied is the
+  key in use after setup. Main answers only for the current data folder or the
+  folder its picker returned last (`ipc.ts`).
 
 **Backups and their limits:**
 
@@ -2741,22 +2749,42 @@ which can run `COPY ... TO PROGRAM` as the desktop user.
   sends no credentials, and an authentication error is never taken as "up".
   Every shell connection accepts SCRAM-SHA-256 and nothing else
   (`desktop/src/scramOnlyConnect.ts`): a cleartext or MD5 request, a SASL offer
-  without SCRAM, or an AuthenticationOk without a completed exchange is refused
-  before a password is sent, and pg's server-signature check makes the server
+  without SCRAM, or an AuthenticationOk or ReadyForQuery without a verified
+  exchange is refused before a password or a query is sent. A connection counts
+  as open only after pg's server-signature check passed, which makes the server
   prove it holds the role's verifier. The first login after every start is the
   superuser's and must report this cluster's `data_directory` before the kernel
   password is offered. Before provisioning, before the verification and before
   the DSN is handed to the kernel, the shell confirms again that its server
   still runs and still holds the endpoint.
+- **The kernel's pools are SCRAM-only too.** The shell starts the kernel with
+  `OMADIA_DB_REQUIRE_SCRAM=1`, and every pool the kernel opens (the graph pool
+  from `createNeonPool`, which plugins borrow, and core's migration pool) then
+  uses `ScramOnlyClient`
+  (`middleware/packages/harness-knowledge-graph-neon/src/scramOnlyClient.ts`),
+  the shell's guard as a pg Client class (a desktop test keeps the two copies
+  in step). A cleartext or MD5 request, a SASL offer without SCRAM-SHA-256, or
+  an AuthenticationOk or ReadyForQuery without a verified exchange fails the
+  connection with `OMADIA_SCRAM_REQUIRED` before the password or any query is
+  sent, and a failed connection is closed. Without the variable (every server
+  deployment) the pools keep pg's own client.
+- **The kernel does not outlive its database.** When the embedded Postgres
+  exits without being asked to, the supervisor stops the kernel and the web UI
+  at once. Nothing restarts the database before the kernel is gone (start and
+  restart are refused meanwhile). The app then restarts the stack the ordinary
+  way, database first, and the new kernel gets the new server's DSN. A kernel
+  that does not exit even after SIGKILL is reported as an error, and the app
+  then leaves the restart to the user instead of starting a database within
+  that kernel's reach. A boot
+  whose database exits under it fails instead of starting or keeping a kernel
+  (`desktop/src/supervisor.ts`, `onDatabaseExit`).
 - **Residual risk on Windows.** The loopback port is free while the server is
-  stopped (between port selection and start, and during a single-user repair).
-  Another local user who binds it there fails the boot but learns no password
-  and is never taken for the server. The kernel's pools use a stock pg client,
-  though: if the server stops while the kernel runs and another user binds the
-  port before the kernel reconnects, that listener could ask the kernel for its
-  password in cleartext. A SCRAM-only client for the kernel's pools (or a
-  socket on Windows) is the open follow-up
-  (`docs/middleware-agent-handoff.md` §13).
+  stopped (between port selection and start, during a single-user repair, and
+  after the server exits). Another local user who binds it there fails the boot
+  but learns no password and is never taken for the server. A reconnect the
+  kernel attempts between the server's exit and its own fails at the SCRAM
+  check. What remains is availability: the next start picks another port when
+  the stored one is taken.
 - **Extensions are created by the shell.** pgvector's control file is not
   `trusted`, so a non-superuser cannot `CREATE EXTENSION vector`. The shell
   creates `vector` and `pg_trgm` as superuser, and the kernel's own
@@ -2825,8 +2853,16 @@ its data-directory check come before any kernel password, a server reporting
 another data directory or refusing SCRAM stops the start, and the server is
 re-confirmed before provisioning and verification),
 `desktop/test/scramOnlyConnect.test.mts` (a listener on loopback that asks for
-cleartext, MD5, no SCRAM, no authentication at all, or forges the final
-signature gets no password and is refused),
+cleartext, MD5, no SCRAM, no authentication at all, reports ready without
+any authentication message, or forges the final signature gets no password and
+is refused, and the kernel's copy of the guard matches the shell's),
+`middleware/test/scramOnlyClient.test.ts` (the same listeners on loopback TCP
+against the kernel's pools with the variable set: no password and no query
+reach them, a SCRAM server is accepted, and without the variable pg's own
+client is in place), `desktop/test/supervisorDatabaseExit.test.mts` (a
+database exit stops the kernel before the database starts again, a kernel
+that does not exit leaves the restart to the user, a boot whose database exits
+fails before it spawns a kernel),
 `desktop/test/embeddedDbEndpoint.test.mts` (the private socket directory, its
 fallback, the server command line and the `postmaster.pid` check),
 `desktop/test/embeddedDb.integration.test.mts` (the real engine:
@@ -3860,6 +3896,9 @@ wizard, above all the recovery-key export, which returns the vault master key
     is out of reach once setup is over. The path rule matters on its own: the
     navigator claims a view before its page has loaded, so the previous
     document can still be on screen while `view === 'wizard'`.
+    `exportRecoveryKey` also names the folder setup will complete with and
+    answers only for the current data folder or the folder the picker returned
+    last, so it reads no other folder's secrets (§8a).
   - UI pings (`uiReady`, `uiLocale`) answer only the main frame at the running
     web UI's exact origin, and nothing while no web UI serves.
   - A refused invoke rejects with a fixed message; a refused event is dropped.
@@ -5077,7 +5116,10 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       connection and schema-qualifies the ownership transfer, and keeps the
       fail-closed verification (wrong password refused for both roles, the
       kernel role unprivileged and a member of no role) with its tests. The
-      shell's connections stay SCRAM-only (`scramOnlyConnect.ts`), readiness
+      shell's connections stay SCRAM-only (`scramOnlyConnect.ts`), the kernel
+      keeps `OMADIA_DB_REQUIRE_SCRAM=1` and every new kernel pool takes
+      `scramOnlyPoolOptions()`, a database exit stops the kernel before a
+      database starts again, readiness
       sends no credentials and never counts an authentication error as "up",
       the superuser login checks `data_directory` before a kernel password goes
       out, and on macOS and Linux the server stays off TCP, its socket in an

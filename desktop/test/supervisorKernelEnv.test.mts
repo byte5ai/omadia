@@ -193,6 +193,21 @@ describe('Supervisor.kernelEnv database credentials', () => {
       assert.ok(!value?.includes(creds.superuserPassword), `${name} must not carry the bootstrap password`);
     }
   });
+
+  // The kernel's pools then refuse anything but a completed SCRAM exchange,
+  // like the shell's own connections: on Windows the server listens on
+  // loopback TCP, which another local user can bind while it is down.
+  it('makes every kernel pool SCRAM-only, whatever the inherited environment says', () => {
+    assert.equal(kernelEnv()['OMADIA_DB_REQUIRE_SCRAM'], '1');
+    const saved = process.env['OMADIA_DB_REQUIRE_SCRAM'];
+    process.env['OMADIA_DB_REQUIRE_SCRAM'] = '0';
+    try {
+      assert.equal(kernelEnv()['OMADIA_DB_REQUIRE_SCRAM'], '1');
+    } finally {
+      if (saved === undefined) delete process.env['OMADIA_DB_REQUIRE_SCRAM'];
+      else process.env['OMADIA_DB_REQUIRE_SCRAM'] = saved;
+    }
+  });
 });
 
 /**

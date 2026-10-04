@@ -114,6 +114,7 @@ import {
   validateNodeProps,
 } from './schema.js';
 import { captureGateEpoch, type GateEpochReader } from './gateEpoch.js';
+import { scramOnlyPoolOptions } from './scramOnlyClient.js';
 
 export interface NeonKnowledgeGraphOptions {
   pool: Pool;
@@ -200,7 +201,7 @@ interface RunToolCallWritePayload {
 }
 
 export function createNeonPool(connectionString: string, poolMax = 5): Pool {
-  return new Pool({ connectionString, max: poolMax });
+  return new Pool({ connectionString, max: poolMax, ...scramOnlyPoolOptions() });
 }
 
 /**

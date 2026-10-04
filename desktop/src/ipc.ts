@@ -18,7 +18,7 @@ import {
 import type { BootProgress } from './supervisor';
 import type { ShellView } from './shellView';
 import { decideSender, readSenderFacts, type IpcSurface } from './ipcSender';
-import { setProviderKey, exportRecoveryKey } from './secrets';
+import { setProviderKey, recoveryKeyFor } from './secrets';
 import { readSetup, writeSetup } from './setupState';
 import { parseCapabilities, type DesktopCapabilities } from './capabilities';
 import { setDataDirOverride } from './paths';
@@ -207,9 +207,15 @@ export function registerIpc(deps: IpcDeps): void {
     return testLlmKey(req);
   });
 
+  // The folder the picker returned last: besides the current data folder, the
+  // only one whose recovery key the wizard may read.
+  let pickedDataDir: string | null = null;
+
   guardedHandle('wizard', CH.chooseDataDir, async (e): Promise<string | null> => {
     const win = BrowserWindow.fromWebContents(e.sender) ?? undefined;
-    return chooseDataDirWithSyncWarning(win as BrowserWindow);
+    const chosen = await chooseDataDirWithSyncWarning(win as BrowserWindow);
+    if (chosen !== null) pickedDataDir = chosen;
+    return chosen;
   });
 
   // KNOWN GAP (OM-58), and the one-line fix belongs right here: the wizard's
@@ -219,7 +225,13 @@ export function registerIpc(deps: IpcDeps): void {
   // read the key off the wizard's last step still gets one reminder on the next
   // launch. Calling `markRecoveryKeyShown()` here closes that — it was left out
   // only because this file belonged to a concurrent PR at the time.
-  guardedHandle('wizard', CH.exportRecoveryKey, (): string => exportRecoveryKey());
+  //
+  // The wizard names the folder it will complete with, and gets the key that
+  // applies there once `complete` binds it: a folder that already holds a
+  // valid secrets blob keeps that blob, so its key is the one to save.
+  guardedHandle('wizard', CH.exportRecoveryKey, (_e, dataDir: unknown): string =>
+    recoveryKeyFor(revealTarget(dataDir, pickedDataDir)),
+  );
 
   guardedHandle('wizard', CH.complete, async (e, config: WizardConfig): Promise<CompleteResult> => {
     try {
@@ -274,6 +286,17 @@ function makeProgressForwarder(sender: WebContents): (p: BootProgress) => void {
   return (p: BootProgress) => {
     if (!sender.isDestroyed()) sender.send(CH.bootProgress, p);
   };
+}
+
+/**
+ * The folder whose recovery key the wizard asked for: null for the current
+ * data folder, or exactly the folder the picker returned last. Any other path
+ * is refused, so the channel cannot be pointed at another folder's secrets.
+ */
+function revealTarget(requested: unknown, picked: string | null): string | null {
+  if (requested === null) return null;
+  if (typeof requested === 'string' && requested === picked) return requested;
+  throw new Error('This folder was not chosen in this setup. Choose the data folder again.');
 }
 
 /**
