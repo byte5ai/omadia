@@ -5133,16 +5133,16 @@ Prozess mit Status `ready`, ohne Zugangsdaten; danach muss der erste
 Superuser-Login das eigene `data_directory` melden, bevor das Kernel-Passwort
 irgendwohin geht. Bewusst offen:
 
-- **Windows: Kernel-Pools sind nicht SCRAM-only.** Windows bleibt auf
-  `127.0.0.1`. Die Shell-Verbindungen sind dort geschützt, die Pools des
-  Kernels (`createNeonPool`, `coreMigrations`) nutzen aber einen normalen
-  pg-Client. Stirbt der Server, während der Kernel läuft, und bindet ein
-  anderer lokaler Nutzer den Port vor dem nächsten Reconnect, könnte er das
-  Kernel-Passwort im Klartext anfordern. Optionen: ein SCRAM-only-Client für
-  die Kernel-Pools (`new Pool({ Client })`, aktiv bei `OMADIA_EMBEDDED_DB=1`),
-  ein bei jedem Start neu gesetztes Kernel-Passwort, oder auch unter Windows
-  ein Unix-Socket (PostgreSQL ab 13 kann AF_UNIX unter Windows 10 1803+) in
-  einem Verzeichnis mit Nutzer-ACL.
+- **Windows: Kernel-Pools sind inzwischen SCRAM-only.** Windows bleibt auf
+  `127.0.0.1`. Die Shell startet den Kernel mit `OMADIA_DB_REQUIRE_SCRAM=1`,
+  und die Pools des Kernels (`createNeonPool`, `coreMigrations`) nutzen dann
+  `ScramOnlyClient` (`new Pool({ Client })`): Klartext, MD5 oder ein Login
+  ohne SCRAM-Austausch scheitern, bevor Passwort oder Query rausgehen. Stirbt
+  der Server, stoppt die Shell zuerst den Kernel und startet danach Datenbank
+  und Kernel neu (`desktop/src/supervisor.ts`). Weiter möglich: auch unter
+  Windows ein Unix-Socket (PostgreSQL ab 13 kann AF_UNIX unter Windows 10
+  1803+) in einem Verzeichnis mit Nutzer-ACL, das nähme den freien Port ganz
+  weg.
 - **Windows: Port-Besetzung bricht den Start ab.** Zwischen Portwahl und
   Serverstart sowie während einer Single-User-Reparatur ist der Port frei;
   ein anderer lokaler Nutzer, der ihn dann bindet, bekommt kein Passwort, lässt
