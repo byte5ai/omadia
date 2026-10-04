@@ -49,7 +49,7 @@ update, a failed inspect, or a missing or looser limit refuses the request
 with an error that names the container and the missing limits. An existing
 container is stopped and kept with its files, and the next request tries the
 update again. A container that was just created is removed. A stricter limit
-than required counts as in force. Logs and errors carry no Docker output. On a
+than required counts as in force. The refusal names the container and the limits, never Docker's output. On a
 host whose kernel lacks one of the cgroup controllers, `docker run` starts a
 container without that limit, so the sandbox now refuses to run there instead
 of running without it. Containers of published apps are not checked yet.
