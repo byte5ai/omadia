@@ -36,6 +36,31 @@ changelog.
 
 ## [Unreleased]
 
+### Security — builder event streams end with their session
+
+2026-10-04 — The builder's live event stream
+(`GET /api/v1/builder/drafts/:id/events`) checked the session only when it
+opened. After a sign-out, a password reset, a disabled or deleted account or
+the cookie's expiry, an open stream kept delivering that draft's events. The
+stream is now bound to the session that opened it:
+
+- It ends at the token's `exp`. An event due after that moment is dropped even
+  if the timer fires late.
+- A revocation on the same replica ends the owner's open streams at once,
+  through the `SessionRevocation.onRevoked` signal that already closes channel
+  WebSockets.
+- The session is checked again right after the stream opens and with every
+  25 s heartbeat, on the same path as `requireAuth`. A revocation written on
+  another replica ends the stream at the next heartbeat.
+- A check that cannot run (database unreachable, 10 s deadline missed) counts
+  as an outage. The stream stays open, still bounded by `exp`.
+- After the end nothing more is written, and the bus subscription, the
+  heartbeat, the expiry timer and the revocation listener are removed. A
+  request without the session cookie or an `exp` gets a 401 and no stream.
+- The browser reconnects through `requireAuth` after 3 s, so an expired or
+  revoked session gets its 401 there and a renewed cookie opens a fresh
+  stream.
+
 ### Security — sign-out reports a failed revocation, and one password policy covers every setter
 
 2026-10-04 — Two fixes in local sign-in:

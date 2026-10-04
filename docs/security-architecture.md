@@ -4015,11 +4015,13 @@ has the token's `sv`. Every consumer inherits the check through that
 one function: `requireAuth` (all of `/api`, including plugin routes with
 `auth: 'session'`), `ctx.operatorAuth.hasValidSession`, the channel WebSocket
 upgrade, the frame and idle-socket re-checks of open channel sockets (§10d)
-and `POST /renew`. `GET /me` runs the same check, so the UI's
+and `POST /renew`, and so do the checks an open builder event stream runs
+with every heartbeat (below). `GET /me` runs the same check, so the UI's
 60 s heartbeat notices a revocation within a minute. There is no cache, so a
 revocation holds from the next request on, on every replica. An open channel
 WebSocket honours it from its next frame once its last check is
 `WS_SESSION_FRAME_RECHECK_MS` (5 s) old, and within 60 s while it is idle.
+An open builder event stream honours it at its next heartbeat (25 s).
 
 **What ends sessions.**
 
@@ -4035,7 +4037,29 @@ The bump is `UserStore.update(id, { revokeSessions: true })`, always relative
 to the stored value, and always in the same statement as the change that
 causes it, so a password or status change and its revocation never land
 apart. Routes that revoke also call `SessionRevocation.announce`, which closes
-that user's open channel WebSockets on this replica at once (§10d).
+that user's open channel WebSockets (§10d) and builder event streams on this
+replica at once.
+
+**Open builder event streams.** `GET /api/v1/builder/drafts/:id/events`
+(`routes/builderEvents.ts`, `routes/builderEventsSession.ts`) is a
+server-sent-events stream that stays open while a draft is on screen.
+`requireAuth` checks the session once, when the request arrives. From then on
+the stream is bound to that session the way a channel socket is. It ends at
+the token's `exp`, and an event due after `exp` is dropped even if the expiry
+timer runs late. It ends at once when `announce` reports a revocation of its
+owner on this replica. It also ends when `evaluateSessionToken` refuses the
+token on a later check (revoked, de-whitelisted, no longer verifying). That
+check runs right after the stream opens, which covers a revocation that
+landed before the listener existed, and with every 25 s heartbeat, which
+covers a revocation made on another replica. After the end the route writes
+nothing more, and the bus subscription, the heartbeat, the expiry timer and
+the revocation listener are gone. A request without the session cookie or an
+`exp` gets a 401 and no stream. A check that fails or misses its 10 s deadline
+is an outage, not a verdict: the stream stays open, still bounded by its
+`exp`, and the next heartbeat checks again. The browser's `EventSource`
+reconnects through `requireAuth` 3 s after a stream ends, so a revoked or
+expired session gets its 401 there, and a renewed cookie opens a fresh stream
+bound to its own `exp`.
 
 **Status mapping.** Revoked → 401 `auth.revoked` (a raw 401 on a WebSocket
 upgrade, logged once, because that cookie outlived a sign-out or a reset). A
@@ -4075,13 +4099,11 @@ passes every signature-valid session, and the boot log says so.
   reports `forbidden` until the user signs in again (older clients keep
   reconnecting into the raw 401 an expired cookie produces). A per-device
   sign-out would need a denylist keyed by `sid`.
-- The builder's SSE stream (`GET /drafts/:id/events`) still authenticates
-  once, when it opens, and stays open after a revocation. Channel WebSockets
-  no longer do: they close at once on the replica that revoked, and on every
-  other before their next frame is handled or within the 60 s sweep while idle
-  (§10d). The stream can use the same levers: `SessionRevocation.onRevoked`
-  for this replica and a periodic `check` for the rest, since the
-  announcement is process-local.
+- An open builder event stream learns of a revocation made on another
+  replica at its next heartbeat check, so up to 25 s of that draft's events
+  can still reach it. On the replica that revoked it ends at once. While the
+  check cannot run (database unreachable), the stream stays open until its
+  `exp` or until a check answers again.
 - A channel WebSocket frame may ride on a verdict up to
   `WS_SESSION_FRAME_RECHECK_MS` (5 s) old, so a revocation made on another
   replica in that window can still let one burst of frames through. HTTP has
@@ -4104,6 +4126,8 @@ passes every signature-valid session, and the boot log says so.
   Its TTL then adds to every bound named here: "immediately" means "within
   that TTL" across replicas, and a WebSocket frame may ride on a verdict up to
   that TTL plus `WS_SESSION_FRAME_RECHECK_MS` old.
+  An open builder event stream costs one read when it opens and one per
+  heartbeat (25 s).
 - An admin who resets their own password is signed out too (the UI bounces to
   /login), consistent with "a reset ends every session of that user".
 
@@ -4121,7 +4145,11 @@ id and refuses one whose row was re-created),
 `middleware/test/auth/adminUsersRoute.test.ts` (reset, disable, re-enable,
 delete), `middleware/test/webSocketRegistry.test.ts` (401/503 on upgrade) and,
 for sockets that are already open, `middleware/test/webSocketRegistrySession.test.ts`
-and `middleware/test/auth/liveSocketRevocation.test.ts` (§10d).
+and `middleware/test/auth/liveSocketRevocation.test.ts` (§10d). For open
+builder event streams, `middleware/test/builder/builderEventsSession.test.ts`
+(expiry, a revocation on this replica and on another, outage, cleanup, on
+mocked timers) and `middleware/test/builder/builderEventsRoutes.test.ts`
+(the end on a real socket).
 
 ---
 
