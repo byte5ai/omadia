@@ -277,7 +277,7 @@ import {
   PRIVACY_REDACT_SERVICE_NAME,
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
-import { createRequireAuth } from './auth/requireAuth.js';
+import { createRequireAuth, evaluateSessionToken } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
 import {
   createConductorWebhooksInboundRouter,
@@ -6032,6 +6032,18 @@ async function main(): Promise<void> {
         draftStore,
         bus: builderSpecBus,
         autoFixOrchestrator: builderAutoFixOrchestrator,
+        // An open event stream ends with its session: at the cookie's exp,
+        // when `announce` reports a revocation, or when the check that runs
+        // with every heartbeat refuses it. Same verdict path as requireAuth.
+        sessions: {
+          evaluate: (token) =>
+            evaluateSessionToken(token, {
+              signingKey: sessionSigningKey,
+              whitelist: emailWhitelist,
+              sessions: sessionRevocation,
+            }),
+          revocations: sessionRevocation,
+        },
       },
       editing: {
         draftStore,
