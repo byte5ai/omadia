@@ -193,6 +193,26 @@ export async function showRestartRefused(win: BrowserWindow, t: ShellTranslate):
   });
 }
 
+/**
+ * Help → "Show recovery key…" while setup runs. The key that ends up active
+ * belongs to the data folder setup binds, so the wizard's recovery step is the
+ * place that shows the right one.
+ */
+export async function showRecoveryKeyDuringSetup(win: BrowserWindow, t: ShellTranslate): Promise<void> {
+  await messageBox(win, {
+    type: 'info',
+    title: t('recovery.duringSetup.title', 'Recovery key after setup'),
+    message: t('recovery.duringSetup.message', 'Finish setup first.'),
+    detail: t(
+      'recovery.duringSetup.detail',
+      'The recovery key belongs to the data folder you choose during setup. The setup step "Save your recovery key" shows it for that folder.',
+    ),
+    buttons: [t('recovery.close', 'Close')],
+    defaultId: 0,
+    cancelId: 0,
+  });
+}
+
 /** Show the vault recovery key, offering a clipboard copy. */
 export async function showRecoveryKey(
   win: BrowserWindow,

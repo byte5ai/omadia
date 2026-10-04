@@ -441,7 +441,7 @@ async function onReady(): Promise<void> {
   const menuActions = {
     checkForUpdates: checkForUpdatesAction,
     showRecoveryKey: () => {
-      if (win) void showRecoveryKeyAction(win, t);
+      if (win) void showRecoveryKeyAction(win, t, () => currentView() === 'wizard');
     },
   };
   installApplicationMenu(menuActions, t);
