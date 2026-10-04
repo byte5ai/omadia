@@ -372,6 +372,19 @@ describe('builder event stream — transport and scope', () => {
     assert.equal(s.checks.length, 1, 'no check after the close');
   });
 
+  it('keeps a failing transport end away from the code that emitted the event', async () => {
+    const s = await openStream({ exp: NOW_S + 60 });
+    s.res.end = () => {
+      throw new Error('socket already gone');
+    };
+    mock.timers.setTime(NOW_MS + 60_000);
+
+    assert.doesNotThrow(() => s.emit());
+    assert.deepEqual(s.res.events(), []);
+    assert.equal(s.bus.listenerCount(DRAFT_ID), 0);
+    assert.equal(s.revocations.listeners.size, 0);
+  });
+
   it('refuses to open a stream it cannot bind to a session', async () => {
     for (const opts of [
       { cookie: null },

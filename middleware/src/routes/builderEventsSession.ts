@@ -97,7 +97,13 @@ export function watchStreamSession(
   function end(reason: SessionCloseReason): void {
     if (done) return;
     dispose();
-    onEnd(reason);
+    // Called from a bus listener and from `announce`: a throwing handler
+    // must not reach the code that emitted the event or revoked the session.
+    try {
+      onEnd(reason);
+    } catch (err) {
+      console.error(`[builder] event stream end handler threw: ${describe(err)}`);
+    }
   }
 
   function pastExpiry(): boolean {
@@ -141,6 +147,7 @@ export function watchStreamSession(
     console.warn(
       `[builder] event stream session check timed out after ${String(checkTimeoutMs)} ms`,
     );
+    // A refusal that still arrives ends the stream all the same.
     void evaluation.then(applyVerdict);
   }
 
@@ -156,7 +163,11 @@ export function watchStreamSession(
     check(): void {
       if (done || checking) return;
       checking = true;
-      void runCheck();
+      runCheck().catch((err: unknown) => {
+        // Nothing in `runCheck` is expected to throw; never let it go unhandled.
+        checking = false;
+        console.error(`[builder] event stream session check failed: ${describe(err)}`);
+      });
     },
     dispose,
   };
@@ -170,9 +181,11 @@ async function evaluateOrOutage(
   try {
     return await deps.evaluate(token);
   } catch (err) {
-    console.error(
-      `[builder] event stream session check threw: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    console.error(`[builder] event stream session check threw: ${describe(err)}`);
     return { ok: false, code: SESSION_CHECK_UNAVAILABLE_CODE, message: 'session check failed' };
   }
+}
+
+function describe(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
