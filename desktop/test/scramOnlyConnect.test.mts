@@ -14,6 +14,7 @@
  */
 import { describe, it, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
 import pg from 'pg';
 
 import { connectScramOnly, isScramRefusal } from '../src/scramOnlyConnect.ts';
@@ -96,6 +97,16 @@ describe('connectScramOnly refuses before any password is sent', () => {
     assert.deepEqual(fake.messageTypes(), ['p', 'p']);
     assertNoPasswordSent(fake);
   });
+
+  for (const backendKeyData of [false, true]) {
+    it(`when the server reports ready without any Authentication message${backendKeyData ? ' (after BackendKeyData)' : ''}`, async () => {
+      // pg takes a bare ReadyForQuery as connected; the shell's next step
+      // would be a query to whatever this is.
+      const fake = await listener({ kind: 'ready-only', backendKeyData });
+      await assert.rejects(connect(fake), refusal(/without a SCRAM exchange/));
+      assert.deepEqual(fake.messageTypes().filter((type) => type === 'p' || type === 'Q'), [], 'no password, no query');
+    });
+  }
 });
 
 describe('connectScramOnly and a SCRAM server', () => {
@@ -145,6 +156,30 @@ describe("the shell's connections use the guard", () => {
         database: 'omadia',
       }),
       refusal(/without a SCRAM exchange/),
+    );
+  });
+});
+
+describe("the kernel's pools use the same guard", () => {
+  // `middleware/packages/harness-knowledge-graph-neon/src/scramOnlyClient.ts`
+  // carries a copy of this guard for the kernel's pg pools. Both are described
+  // as one mechanism, so they must not drift apart. Only the password callback
+  // differs: the kernel's pools may hand pg a password function.
+  const guardOf = (relative: string): string => {
+    const source = readFileSync(new URL(relative, import.meta.url), 'utf8');
+    const start = source.indexOf('/** The SCRAM exchange pg keeps');
+    const end = source.indexOf('\n}\n', source.indexOf('class ScramGuard {'));
+    assert.ok(start >= 0 && end > start, `ScramGuard found in ${relative}`);
+    const guard = source.slice(start, end);
+    const release = guard.indexOf("  /** pg's password callback");
+    assert.ok(release > 0, `password callback found in ${relative}`);
+    return guard.slice(0, release) + guard.slice(guard.indexOf('\n  }\n', release) + 5);
+  };
+
+  it('the shell and the kernel refuse the same messages the same way', () => {
+    assert.equal(
+      guardOf('../../middleware/packages/harness-knowledge-graph-neon/src/scramOnlyClient.ts'),
+      guardOf('../src/scramOnlyConnect.ts'),
     );
   });
 });
