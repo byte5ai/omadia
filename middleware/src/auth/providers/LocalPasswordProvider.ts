@@ -2,6 +2,7 @@ import { isSameLoginAccount } from '../loginAccount.js';
 import { credentialEpoch } from '../loginDevices.js';
 import type { UserStore } from '../userStore.js';
 import { verifyPassword } from '../passwordHasher.js';
+import { MAX_PASSWORD_LENGTH } from '../passwordPolicy.js';
 import type { PasswordAuthResult, PasswordProvider } from './AuthProvider.js';
 
 /**
@@ -31,13 +32,13 @@ import type { PasswordAuthResult, PasswordProvider } from './AuthProvider.js';
 export const LOCAL_PROVIDER_ID = 'local';
 
 /**
- * Longest password a sign-in attempt may carry. argon2's pre-hash is linear
- * in the input and the JSON body limit is 10 MB, so an unbounded password is
- * an unbounded cost per attempt. Longer ones are refused as
- * `invalid_credentials` before the users-table lookup, so they never reach
- * argon2 either.
+ * Longest password a sign-in attempt may carry: the shared maximum of
+ * `passwordPolicy.ts`, which every password setter applies as well, so no
+ * setter can store a password this check refuses. Longer ones are refused
+ * as `invalid_credentials` before the users-table lookup, so they never
+ * reach argon2 either.
  */
-export const MAX_LOGIN_PASSWORD_LENGTH = 1024;
+export const MAX_LOGIN_PASSWORD_LENGTH = MAX_PASSWORD_LENGTH;
 
 interface LoginBody {
   email?: unknown;

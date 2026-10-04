@@ -12,6 +12,7 @@ import {
   postAuthSetup,
 } from '../_lib/api';
 import { signalDesktopUiReady } from '../_lib/desktopShell';
+import { errorHelpLine } from '../_lib/errorHelp';
 import { sanitiseReturnPath } from '../_lib/returnPath';
 
 type State =
@@ -66,6 +67,7 @@ function SetupPageShell(): React.ReactElement {
 
 function SetupPageInner(): React.ReactElement {
   const t = useTranslations('setup');
+  const tRoot = useTranslations();
   const router = useRouter();
   const searchParams = useSearchParams();
   const returnPath = useMemo(
@@ -148,8 +150,9 @@ function SetupPageInner(): React.ReactElement {
         setSubmitError(t('alreadyLocked'));
         setTimeout(() => router.replace('/login'), 1500);
       } else if (err instanceof ApiError && err.status === 400) {
-        // No key step in v2 — any 400 here is an invalid email/password.
-        setSubmitError(t('credentialsRejected'));
+        // No key step in v2 — any 400 here is an invalid email/password. A
+        // password over the sign-in maximum has its own copy.
+        setSubmitError(errorHelpLine(err.code, tRoot) ?? t('credentialsRejected'));
       } else {
         setSubmitError(err instanceof Error ? err.message : String(err));
       }

@@ -11,6 +11,7 @@ import {
   SESSION_RENEWED_EVENT,
   type AuthUser,
 } from '../_lib/api';
+import { ErrorHelp } from './ErrorHelp';
 
 type State =
   | { kind: 'loading' }
@@ -25,6 +26,12 @@ export function AuthBadge(): React.ReactElement | null {
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [menuOpen, setMenuOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  // Set when the server did not confirm the sign-out. `code` is the
+  // middleware's code (`auth.logout_revocation_failed`), null when the request
+  // never got an answer.
+  const [signOutFailure, setSignOutFailure] = useState<{
+    code: string | null;
+  } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -87,6 +94,7 @@ export function AuthBadge(): React.ReactElement | null {
 
   const handleLogout = useCallback(async () => {
     setSigningOut(true);
+    setSignOutFailure(null);
     try {
       const res = await postAuthLogout();
       // OB-49 — server returns an array of IdP-side logout URLs (one per
@@ -94,10 +102,13 @@ export function AuthBadge(): React.ReactElement | null {
       // array is empty; we just land on /login.
       const idpLogout = res.logout_urls.find((entry) => entry.url);
       window.location.href = idpLogout ? idpLogout.url : '/login';
-    } catch {
-      // Even if the server-side logout throws, clear the local UI state
-      // and bounce to /login — the edge middleware will re-kick the flow.
-      window.location.href = '/login';
+    } catch (err) {
+      // No confirmed sign-out: the server answers 503 when it could not end
+      // the session, and keeps the cookie. Landing on /login here would tell
+      // the user they are signed out while the session, and every copy of
+      // it, still works. Say so and offer the same request again.
+      setSignOutFailure({ code: err instanceof ApiError ? err.code : null });
+      setSigningOut(false);
     }
   }, []);
 
@@ -208,7 +219,7 @@ export function AuthBadge(): React.ReactElement | null {
                 disabled={signingOut}
                 className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-[color:var(--fg-strong)] transition-colors hover:bg-[color:var(--accent)]/10 disabled:opacity-50"
               >
-                <span>{t('signOut')}</span>
+                <span>{signOutFailure ? t('signOutRetry') : t('signOut')}</span>
                 {signingOut ? (
                   <motion.span
                     className="h-3 w-3 rounded-full border-2 border-[color:var(--accent)] border-t-transparent"
@@ -221,6 +232,11 @@ export function AuthBadge(): React.ReactElement | null {
                   </span>
                 )}
               </button>
+              {signOutFailure ? (
+                <div role="alert" className="px-2 pt-2">
+                  <ErrorHelp code={signOutFailure.code} fallback={t('signOutFailed')} />
+                </div>
+              ) : null}
             </div>
           </motion.div>
         ) : null}

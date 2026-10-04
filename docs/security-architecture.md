@@ -476,26 +476,54 @@ Every `docker run` for agent code now carries three ceilings:
   a swap ceiling that is not updated in the same call.
 - **Existing containers.** Limits are fixed at `docker run`. When a persistent
   sandbox is re-attached, the backend first runs `docker update` with the
-  current limits, then `docker start`. That covers containers created before
-  the limits existed and containers created under different values. The update
-  is best-effort: a refusal is logged (`[sandbox] docker update … failed`) and
-  the container keeps the limits it has; the re-attach itself does not fail.
-  Publish containers are immutable per version and never re-created, so one
-  that predates the limits runs without them until a new version replaces it.
+  current limits, then checks them (next bullet), then runs `docker start`.
+  That covers containers created before the limits existed and containers
+  created under different values.
+- **A sandbox container runs nothing until its limits are in force.** After
+  `docker run`, and after the `docker update` of a re-attach, the backend reads
+  the container's `docker inspect` `.HostConfig` and compares it with the
+  required values (`resourceLimitsNotInForce()` in `resourceLimits.ts`):
+  `Memory` and `MemorySwap` against the memory ceiling, the CPU share from
+  `NanoCpus` (or, when that is unset, `CpuQuota` over `CpuPeriod`) and
+  `PidsLimit`. A missing value (absent, `null`, `0` or `-1`) or a looser one
+  fails the check, a stricter one passes. A failed `docker update`, a failed or
+  unreadable `docker inspect`, or a failed check makes `provision()` throw, so
+  the `execute` and `publish` tools return an error and run nothing:
+  - an existing container is stopped (`docker stop -t 0`, so nothing left
+    running in it keeps going) and kept. The backend refuses rather than
+    creating a replacement, because the container's own filesystem is the
+    scope's durable workspace (there is no volume) and a replacement would
+    silently discard what the agent installed and wrote there. The refusal is
+    not cached: the next request tries the update again on the stopped
+    container, and removing the container (`docker rm -f <name>`) gives the
+    scope a new one with the limits;
+  - a container the call just created holds nothing yet and is removed
+    (`docker rm -f`); a replacement would meet the same daemon.
+
+  The log line (`[sandbox] container '<name>' runs nothing: …`) and the error
+  name the container and each missing limit with its numbers, never Docker's
+  output.
+- **Published apps are not checked yet.** Publish containers are immutable per
+  version and never re-created, so one that predates the limits runs without
+  them until a new version replaces it, and `DockerPublishRuntime.deploy` does
+  not read `docker inspect` after its `docker run`.
 - **One builder.** Both `docker run` sites (`DockerSandboxBackend.runContainer`,
   `DockerPublishRuntime.deploy`) and the update path take their flags from
   `dockerResourceLimitArgs()`.
 - **Host caveat.** On a host whose kernel lacks one of the cgroup controllers,
   `docker run` prints a warning and starts the container without that limit
-  (exit 0), so an argv assertion cannot notice. The real-Docker test tier
+  (exit 0), so an argv assertion cannot notice. The sandbox backend's
+  `docker inspect` check catches it and refuses to run there; a publish
+  container still starts without that limit. The real-Docker test tier
   (`SANDBOX_DOCKER_TEST=1`) checks `docker inspect`, reads the enforced CPU
   quota from `cpu.max` (cgroup v2) and checks that a 700 MB allocation is
   killed; run it once on any new host type.
 
 Tests: `middleware/test/sandbox/resourceLimits.test.ts` (ranges, fallback
-order, argv), `middleware/test/sandbox/dockerSandboxLimits.test.ts` (stub tier
-for argv and the update-before-start order, real tier for what the daemon and
-the kernel applied, including out-of-range values),
+order, argv, the in-force check), `middleware/test/sandbox/dockerSandboxLimits.test.ts`
+(stub tier for argv, the update-inspect-start order and every refusal, real
+tier for what the daemon and the kernel applied, including out-of-range
+values, and for a container the daemon cannot update),
 `middleware/test/sandbox/sandboxLimitsConfig.test.ts` and
 `middleware/test/publish/dockerPublishRuntime.test.ts`.
 
@@ -3179,7 +3207,9 @@ that user is refused from the next request on, and cannot renew, because
 `/renew` runs the same evaluation. It also forgets the user's Entra refresh token, which ends the
 IdP side of the renewal chain. Both happen only when the presented cookie is
 itself still current: a revoked copy reaching the public `/logout` route gets
-its own cookie cleared and changes nothing server-side.
+its own cookie cleared and changes nothing server-side. When the version cannot
+be read or written, `/logout` answers 503 `auth.logout_revocation_failed` and
+keeps the cookie instead of reporting a sign-out that did not happen (§10k).
 
 Re-signing carries `sv` and `sid` over together with `auth_time`: a renewed
 token belongs to the same sign-in of the same account version, so a later
@@ -4013,11 +4043,13 @@ has the token's `sv`. Every consumer inherits the check through that
 one function: `requireAuth` (all of `/api`, including plugin routes with
 `auth: 'session'`), `ctx.operatorAuth.hasValidSession`, the channel WebSocket
 upgrade, the frame and idle-socket re-checks of open channel sockets (§10d)
-and `POST /renew`. `GET /me` runs the same check, so the UI's
+and `POST /renew`, and so do the checks an open builder event stream runs
+with every heartbeat (below). `GET /me` runs the same check, so the UI's
 60 s heartbeat notices a revocation within a minute. There is no cache, so a
 revocation holds from the next request on, on every replica. An open channel
 WebSocket honours it from its next frame once its last check is
 `WS_SESSION_FRAME_RECHECK_MS` (5 s) old, and within 60 s while it is idle.
+An open builder event stream honours it at its next heartbeat (25 s).
 
 **What ends sessions.**
 
@@ -4033,7 +4065,29 @@ The bump is `UserStore.update(id, { revokeSessions: true })`, always relative
 to the stored value, and always in the same statement as the change that
 causes it, so a password or status change and its revocation never land
 apart. Routes that revoke also call `SessionRevocation.announce`, which closes
-that user's open channel WebSockets on this replica at once (§10d).
+that user's open channel WebSockets (§10d) and builder event streams on this
+replica at once.
+
+**Open builder event streams.** `GET /api/v1/builder/drafts/:id/events`
+(`routes/builderEvents.ts`, `routes/builderEventsSession.ts`) is a
+server-sent-events stream that stays open while a draft is on screen.
+`requireAuth` checks the session once, when the request arrives. From then on
+the stream is bound to that session the way a channel socket is. It ends at
+the token's `exp`, and an event due after `exp` is dropped even if the expiry
+timer runs late. It ends at once when `announce` reports a revocation of its
+owner on this replica. It also ends when `evaluateSessionToken` refuses the
+token on a later check (revoked, de-whitelisted, no longer verifying). That
+check runs right after the stream opens, which covers a revocation that
+landed before the listener existed, and with every 25 s heartbeat, which
+covers a revocation made on another replica. After the end the route writes
+nothing more, and the bus subscription, the heartbeat, the expiry timer and
+the revocation listener are gone. A request without the session cookie or an
+`exp` gets a 401 and no stream. A check that fails or misses its 10 s deadline
+is an outage, not a verdict: the stream stays open, still bounded by its
+`exp`, and the next heartbeat checks again. The browser's `EventSource`
+reconnects through `requireAuth` 3 s after a stream ends, so a revoked or
+expired session gets its 401 there, and a renewed cookie opens a fresh stream
+bound to its own `exp`.
 
 **Status mapping.** Revoked → 401 `auth.revoked` (a raw 401 on a WebSocket
 upgrade, logged once, because that cookie outlived a sign-out or a reset). A
@@ -4043,6 +4097,16 @@ open channel WebSocket that stays open (§10d), and `false` from
 `hasValidSession`, which never throws. The web UI bounces to /login only on a
 401 and the SessionWatcher keeps its state on a 503, so a database blip does
 not sign operators out.
+
+**A sign-out is confirmed only once the version moved.** If `POST /logout`
+cannot read or write the user's row, the version stays where it was and every
+copy of the session keeps working. The route then answers 503
+`auth.logout_revocation_failed` and leaves the cookie in place, so the user
+knows they are still signed in and can send the same request again. A retry
+that reaches a working store moves the version on like any other sign-out. The
+web UI's sign-out menu shows the failure with help copy and a retry button
+instead of landing on /login. There is no "this device only" option: clearing
+one browser's cookie would leave every copy valid until it expires.
 
 **A stale cookie cannot sign anyone out.** `/api/v1/auth/*` is public, so a
 revoked copy of a cookie can still reach `/logout`. It gets its own cookie
@@ -4063,13 +4127,11 @@ passes every signature-valid session, and the boot log says so.
   reports `forbidden` until the user signs in again (older clients keep
   reconnecting into the raw 401 an expired cookie produces). A per-device
   sign-out would need a denylist keyed by `sid`.
-- The builder's SSE stream (`GET /drafts/:id/events`) still authenticates
-  once, when it opens, and stays open after a revocation. Channel WebSockets
-  no longer do: they close at once on the replica that revoked, and on every
-  other before their next frame is handled or within the 60 s sweep while idle
-  (§10d). The stream can use the same levers: `SessionRevocation.onRevoked`
-  for this replica and a periodic `check` for the rest, since the
-  announcement is process-local.
+- An open builder event stream learns of a revocation made on another
+  replica at its next heartbeat check, so up to 25 s of that draft's events
+  can still reach it. On the replica that revoked it ends at once. While the
+  check cannot run (database unreachable), the stream stays open until its
+  `exp` or until a check answers again.
 - A channel WebSocket frame may ride on a verdict up to
   `WS_SESSION_FRAME_RECHECK_MS` (5 s) old, so a revocation made on another
   replica in that window can still let one burst of frames through. HTTP has
@@ -4092,6 +4154,8 @@ passes every signature-valid session, and the boot log says so.
   Its TTL then adds to every bound named here: "immediately" means "within
   that TTL" across replicas, and a WebSocket frame may ride on a verdict up to
   that TTL plus `WS_SESSION_FRAME_RECHECK_MS` old.
+  An open builder event stream costs one read when it opens and one per
+  heartbeat (25 s).
 - An admin who resets their own password is signed out too (the UI bounces to
   /login), consistent with "a reset ends every session of that user".
 
@@ -4100,7 +4164,8 @@ mapping, outage path, `ctx.operatorAuth`, a token without `uid` against a
 re-created row),
 `middleware/test/auth/logoutRevokesSession.test.ts` (sign-in → copy cookie →
 sign-out → the copy gets 401 on `/api`, `/me` and `/renew`; stale-cookie
-logout; OIDC callback), `middleware/test/auth/userStoreSessionVersion.test.ts`
+logout; a failed read or write answers 503 and keeps the cookie and the
+version, and a retry after recovery revokes the copy; OIDC callback), `middleware/test/auth/userStoreSessionVersion.test.ts`
 and `.pg.test.ts` (the SQL and the migration against real Postgres, and a
 legacy cookie that gets 401 once its row is deleted and re-created),
 `middleware/test/auth/renewRoute.test.ts` (renewal binds a legacy token by
@@ -4108,7 +4173,11 @@ id and refuses one whose row was re-created),
 `middleware/test/auth/adminUsersRoute.test.ts` (reset, disable, re-enable,
 delete), `middleware/test/webSocketRegistry.test.ts` (401/503 on upgrade) and,
 for sockets that are already open, `middleware/test/webSocketRegistrySession.test.ts`
-and `middleware/test/auth/liveSocketRevocation.test.ts` (§10d).
+and `middleware/test/auth/liveSocketRevocation.test.ts` (§10d). For open
+builder event streams, `middleware/test/builder/builderEventsSession.test.ts`
+(expiry, a revocation on this replica and on another, outage, cleanup, on
+mocked timers) and `middleware/test/builder/builderEventsRoutes.test.ts`
+(the end on a real socket).
 
 ---
 
@@ -4514,6 +4583,28 @@ client. An over-long password (more than 1024 characters) is refused as
 `invalid_credentials` before the users-table lookup: argon2's pre-hash is
 linear in the input, and the JSON body limit is 10 MB.
 
+**One password policy for sign-in and every setter.** The maximum lives in
+`auth/passwordPolicy.ts` together with the setters' minimum of 8, both counted
+in UTF-16 code units (`string.length`), the unit sign-in counts in. Every
+place that sets a password applies it: the first-run wizard (400
+`auth.setup_password_too_short` or `auth.setup_password_too_long`), the admin
+create and reset routes, a reset of your own row included (400
+`admin_users.password_too_short` or `admin_users.password_too_long`), and the
+`ADMIN_BOOTSTRAP_PASSWORD` env seed. Each checks before it hashes or writes,
+so a refused password changes neither the stored hash nor the session version.
+The env seed falls back to the wizard for a password under 8 characters as
+before, and stops the boot with an error for one over 1024, before any account
+is created; with users already present it does not run, so the value is not
+read. Passwords stored above 1024 characters before this rule existed are not
+migrated and keep being refused at sign-in. A password reset by another admin
+is the way back in. A sole admin in that state needs a fix in the database,
+because the `ADMIN_BOOTSTRAP_*` seed runs on an empty users table only. Tests:
+`middleware/test/auth/passwordPolicy.test.ts` (the shared bounds and the
+counting), and 1024 accepted, 1025 refused with hash and session version
+unchanged in `setupRoute.test.ts`, `adminUsersRoute.test.ts`,
+`bootstrap.test.ts` and `logoutRevokesSession.test.ts` (a reset of your own
+row through the real gate).
+
 **Configuration.** `AUTH_LOGIN_CLIENT_ADDRESS` (`socket` | `xff:1..8` |
 `header:<name>`; a bad value stops the boot with a config error),
 `AUTH_LOGIN_IPV6_PREFIX` (32..64, default 64) and `AUTH_LOGIN_MAX_INFLIGHT`
@@ -4594,9 +4685,8 @@ with the defaults, so a forgotten wiring cannot switch it off.
   used out first. An attacker cycling random emails evicts older pairs and
   weakens the pair layer for those accounts. The client and global layers are
   unaffected.
-- **Password-setting paths accept longer passwords than sign-in does.** The
-  wizard and the admin user forms enforce a minimum only, so a password over
-  1024 characters set there could not sign in.
+- **Passwords stored above the maximum before the shared policy.** They are
+  not rewritten and cannot sign in. Recovery is an admin password reset.
 
 Tests: `middleware/test/auth/loginRateLimiter.test.ts` (every layer with a fake
 clock, the pinned client semantics, counting at admission, a global budget that
@@ -4964,6 +5054,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       own copy, and offers no way to switch a limit off. A new limit field
       gets a range in `SANDBOX_RESOURCE_LIMIT_BOUNDS` that excludes every
       value Docker would apply as no limit, checked on a real daemon (§3b).
+      A container that runs agent code runs nothing until
+      `resourceLimitsNotInForce()` finds every limit in force on its
+      `docker inspect`, as `DockerSandboxBackend` does (§3b).
 - [ ] A new surface that has to be framed lives under `/p/*` or `/bot-api/*`
       and sets its own `frame-ancestors`. The exemption in
       `web-ui/app/_lib/securityHeaders.ts` is not widened, and the operator-UI

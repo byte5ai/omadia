@@ -366,9 +366,9 @@ export function createAuthRouter(deps: AuthDeps): Router {
     // Server-side sign-out: a current cookie moves the user's session version
     // on, which ends every copy of every session of that user — the cookie
     // this browser drops below included. Also forgets the Entra refresh token
-    // (#965). Never throws: the logout itself must always succeed.
+    // (#965).
     if (claims) {
-      await endSessionsOnLogout(
+      const outcome = await endSessionsOnLogout(
         {
           userStore: deps.userStore,
           ...(deps.sessions ? { sessions: deps.sessions } : {}),
@@ -378,6 +378,18 @@ export function createAuthRouter(deps: AuthDeps): Router {
         },
         claims,
       );
+      // The version did not move, so every copy of this session still works.
+      // Clearing only this browser's cookie and answering `ok` would report a
+      // sign-out that did not happen. Keep the cookie so the same request can
+      // be retried, and say plainly that the server did not end the session.
+      if (outcome === 'failed') {
+        res.status(503).json({
+          code: 'auth.logout_revocation_failed',
+          message:
+            'the session could not be ended on the server — you are still signed in; try again in a moment',
+        });
+        return;
+      }
     }
     res.clearCookie(SESSION_COOKIE, { path: '/' });
     // Also clear the non-secret UI-prefs cookie (1-year max-age). On a shared

@@ -6,6 +6,7 @@ import { loginAccountKey, loginDeviceAccountKey } from '../auth/loginAccount.js'
 import type { LoginDevices } from '../auth/loginDevices.js';
 import type { LoginRateLimiter } from '../auth/loginRateLimiter.js';
 import { hashPassword } from '../auth/passwordHasher.js';
+import { checkNewPassword, MAX_PASSWORD_LENGTH } from '../auth/passwordPolicy.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
 import type { SessionRevocation } from '../auth/sessionRevocation.js';
 import type { UserRecord, UserStore } from '../auth/userStore.js';
@@ -108,10 +109,7 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       res.status(400).json({ code: 'admin_users.invalid_email' });
       return;
     }
-    if (password.length < 8) {
-      res.status(400).json({ code: 'admin_users.password_too_short' });
-      return;
-    }
+    if (refusePassword(res, password)) return;
     const existing = await deps.userStore.findByEmail(LOCAL_PROVIDER_ID, email);
     if (existing) {
       res.status(409).json({ code: 'admin_users.email_in_use' });
@@ -233,10 +231,9 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     }
     const body = (req.body ?? {}) as { password?: unknown };
     const password = typeof body.password === 'string' ? body.password : '';
-    if (password.length < 8) {
-      res.status(400).json({ code: 'admin_users.password_too_short' });
-      return;
-    }
+    // Before the hash and the UPDATE: a refused password leaves the stored
+    // hash and the session version as they were.
+    if (refusePassword(res, password)) return;
     const passwordHash = await hashPassword(password);
     // One statement: the new hash and the end of every session issued under
     // the old one land together or not at all.
@@ -340,6 +337,27 @@ function readParam(req: Request, key: string): string | undefined {
   const v = (req.params as Record<string, string | string[] | undefined>)[key];
   if (typeof v === 'string' && v.length > 0) return v;
   return undefined;
+}
+
+/**
+ * Answer 400 when `password` breaks the shared policy (auth/passwordPolicy.ts)
+ * and report whether it did. Sign-in refuses anything over the maximum, so a
+ * longer password would be stored and never work.
+ */
+function refusePassword(res: Response, password: string): boolean {
+  const violation = checkNewPassword(password);
+  if (violation === 'too_short') {
+    res.status(400).json({ code: 'admin_users.password_too_short' });
+    return true;
+  }
+  if (violation === 'too_long') {
+    res.status(400).json({
+      code: 'admin_users.password_too_long',
+      message: `the password may be at most ${String(MAX_PASSWORD_LENGTH)} characters long`,
+    });
+    return true;
+  }
+  return false;
 }
 
 /** Make the device cookies re-read `user` at once (§10m), under its device key. */
