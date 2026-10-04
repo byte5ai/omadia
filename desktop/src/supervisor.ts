@@ -370,7 +370,9 @@ export class Supervisor extends EventEmitter {
    * so the kernel must not outlive its database: it is stopped first, with the
    * web-ui, and only then may a database start again. A running stack is then
    * reported through `database-exit`, and the app restarts it the ordinary way
-   * (`restart()`), which starts the database before the kernel. A boot in
+   * (`restart()`), which starts the database before the kernel. A kernel that
+   * does not exit even after SIGKILL is reported as an error instead, without
+   * `database-exit`, so nothing restarts the database on its own. A boot in
    * flight fails instead; its kernel is stopped now rather than after a health
    * timeout. A full shutdown in flight stops everything anyway.
    */
@@ -398,7 +400,14 @@ export class Supervisor extends EventEmitter {
       if (this.stopping) return;
       this.state = 'idle';
       if (survivors.length > 0) log.warn(`[db] still alive after the database exited: ${survivors.join(' + ')}`);
-      if (wasRunning) this.emit('database-exit', { reason } satisfies DatabaseExit);
+      if (!wasRunning) return;
+      if (survivors.includes('kernel')) {
+        // The kernel may still be running, and a database started now would be
+        // within its reach, so the restart is left to the user.
+        this.progress('error', 'The embedded database stopped and the kernel did not exit. omadia does not restart on its own.');
+        return;
+      }
+      this.emit('database-exit', { reason } satisfies DatabaseExit);
     });
   }
 

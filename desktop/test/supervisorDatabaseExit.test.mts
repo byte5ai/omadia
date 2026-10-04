@@ -160,6 +160,29 @@ test('nothing can start the database again while the kernel is still being stopp
   assert.equal(db.starts(), 1);
 });
 
+test('a kernel that does not exit leaves the restart to the user', async () => {
+  const events: string[] = [];
+  const db = databaseDouble(events);
+  const sup = new Supervisor({ capabilities: stopBeforeKernel });
+  await assert.rejects(sup.start());
+
+  // A kernel the shell cannot signal (kill() throws), so it may still be running.
+  const kernel = new KernelDouble(events);
+  kernel.kill = (): boolean => {
+    throw Object.assign(new Error('synthetic EPERM'), { code: 'EPERM' });
+  };
+  pretendRunning(sup, kernel);
+  sup.on('database-exit', () => events.push('database-exit'));
+  const phases: string[] = [];
+  sup.on('progress', (progress: { phase: string }) => phases.push(progress.phase));
+
+  db.exit('code=1 signal=null');
+  await settle();
+  assert.equal(events.includes('database-exit'), false, 'no automatic restart while the kernel may be alive');
+  assert.deepEqual(phases, ['error']);
+  assert.equal(db.starts(), 1);
+});
+
 test('a database that exits under a boot fails the boot before a kernel is spawned', async () => {
   let capabilitiesRead = 0;
   let starts = 0;
