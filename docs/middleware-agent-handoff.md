@@ -5137,9 +5137,11 @@ irgendwohin geht. Bewusst offen:
   `127.0.0.1`. Die Shell startet den Kernel mit `OMADIA_DB_REQUIRE_SCRAM=1`,
   und die Pools des Kernels (`createNeonPool`, `coreMigrations`) nutzen dann
   `ScramOnlyClient` (`new Pool({ Client })`): Klartext, MD5 oder ein Login
-  ohne SCRAM-Austausch scheitern, bevor Passwort oder Query rausgehen. Stirbt
-  der Server, stoppt die Shell zuerst den Kernel und startet danach Datenbank
-  und Kernel neu (`desktop/src/supervisor.ts`). Weiter möglich: auch unter
+  bzw. ReadyForQuery ohne von pg verifizierten SCRAM-Austausch scheitern, bevor
+  Passwort oder Query rausgehen. Stirbt der Server, stoppt die Shell zuerst den
+  Kernel und startet danach Datenbank und Kernel neu (`desktop/src/supervisor.ts`).
+  Überlebt der Kernel auch SIGKILL, startet nichts automatisch neu, und das
+  Tray zeigt den Fehler. Weiter möglich: auch unter
   Windows ein Unix-Socket (PostgreSQL ab 13 kann AF_UNIX unter Windows 10
   1803+) in einem Verzeichnis mit Nutzer-ACL, das nähme den freien Port ganz
   weg.
