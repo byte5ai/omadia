@@ -545,6 +545,40 @@ describe('admin actions end sessions end to end (real admin router, real gate)',
     assert.deepEqual(pick(await call(h, 'GET', '/api/v1/admin/ping', target)), revoked);
   });
 
+  it('a refused self reset (1025 code units) keeps the hash, the version and the session', async () => {
+    const h = await start();
+    const here = await login(h);
+    const hashBefore = h.table.row('local', EMAIL).passwordHash;
+    const res = await fetch(`${h.base}/api/v1/admin/users/row-local-1/reset-password`, {
+      method: 'POST',
+      headers: { cookie: `${SESSION_COOKIE}=${here}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'x'.repeat(1025) }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { code?: string }).code, 'admin_users.password_too_long');
+    assert.equal(h.table.row('local', EMAIL).passwordHash, hashBefore);
+    assert.equal(h.table.row('local', EMAIL).sessionVersion, 0);
+    assert.deepEqual(h.table.patches, []);
+    assert.equal((await call(h, 'GET', '/api/v1/admin/ping', here)).status, 200);
+    await login(h);
+  });
+
+  it('a self reset to 1024 code units can sign in with the new password', async () => {
+    const h = await start();
+    const here = await login(h);
+    const longest = 'x'.repeat(1022) + '\u{1F511}';
+    assert.equal(
+      await admin(h, here, 'POST', '/row-local-1/reset-password', { password: longest }),
+      200,
+    );
+    const res = await fetch(`${h.base}/api/v1/auth/login/local`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: EMAIL, password: longest }),
+    });
+    assert.equal(res.status, 200, 'what the reset stored, sign-in accepts');
+  });
+
   it('resetting your own password signs you out too, everywhere', async () => {
     const h = await start();
     const here = await login(h);

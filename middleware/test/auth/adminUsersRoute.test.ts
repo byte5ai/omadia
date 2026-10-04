@@ -6,7 +6,7 @@ import express from 'express';
 
 import { AdminAuditLog, type AuditEntry } from '../../src/auth/adminAuditLog.js';
 import { LOCAL_PROVIDER_ID } from '../../src/auth/providers/LocalPasswordProvider.js';
-import { hashPassword } from '../../src/auth/passwordHasher.js';
+import { hashPassword, verifyPassword } from '../../src/auth/passwordHasher.js';
 import type { RevokedPrincipal } from '../../src/auth/sessionRevocation.js';
 import type {
   CreateUserInput,
@@ -451,6 +451,78 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 400);
     assert.equal(clearedAccounts.length, cleared);
     assert.equal(forgottenAccounts.length, forgotten, 'nor revokes anything');
+  });
+
+  it('POST / accepts a password of exactly 1024 code units', async () => {
+    setSession(adminSession());
+    const password = 'q'.repeat(1022) + '\u{1F511}';
+    assert.equal(password.length, 1024);
+    const res = await fetch(`${baseUrl}/api/v1/admin/users`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'longest@example.com', password }),
+    });
+    assert.equal(res.status, 201);
+    const row = store.rows.find((r) => r.email === 'longest@example.com') as
+      | (UserRecord & { passwordHash?: string })
+      | undefined;
+    assert.ok(row?.passwordHash);
+    assert.equal(await verifyPassword(row.passwordHash, password), true);
+  });
+
+  it('POST / refuses 1025 code units with 400 password_too_long and creates nothing', async () => {
+    setSession(adminSession());
+    const rowsBefore = store.rows.length;
+    const auditBefore = audit.entries.length;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'too-long@example.com', password: 'q'.repeat(1025) }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { code?: string }).code, 'admin_users.password_too_long');
+    assert.equal(store.rows.length, rowsBefore);
+    assert.equal(audit.entries.length, auditBefore);
+  });
+
+  it('POST /:id/reset-password accepts a password of exactly 1024 code units', async () => {
+    setSession(adminSession());
+    const target = store.rows.find((r) => r.email === 'new@example.com')!;
+    const patchesBefore = store.patches.length;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'r'.repeat(1024) }),
+    });
+    assert.equal(res.status, 200);
+    const calls = store.patches.slice(patchesBefore);
+    assert.equal(calls.length, 1);
+    assert.equal(
+      await verifyPassword(calls[0]?.patch.passwordHash ?? '', 'r'.repeat(1024)),
+      true,
+    );
+  });
+
+  it('POST /:id/reset-password refuses 1025 code units before any write', async () => {
+    setSession(adminSession());
+    const target = store.rows.find((r) => r.email === 'new@example.com')!;
+    const versionBefore = target.sessionVersion;
+    const patchesBefore = store.patches.length;
+    const announcedBefore = announced.length;
+    const cleared = clearedAccounts.length;
+    const forgotten = forgottenAccounts.length;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'r'.repeat(1025) }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { code?: string }).code, 'admin_users.password_too_long');
+    assert.equal(store.patches.length, patchesBefore, 'neither hash nor session version written');
+    assert.equal(store.rows.find((r) => r.id === target.id)?.sessionVersion, versionBefore);
+    assert.equal(announced.length, announcedBefore);
+    assert.equal(clearedAccounts.length, cleared);
+    assert.equal(forgottenAccounts.length, forgotten);
   });
 
   it('DELETE /:id refuses self-delete with 409', async () => {
