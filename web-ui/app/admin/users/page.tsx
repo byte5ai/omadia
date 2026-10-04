@@ -14,6 +14,7 @@ import {
   createAdminUser,
   listAdminUsers,
 } from '../../_lib/api';
+import { errorHelpLine } from '../../_lib/errorHelp';
 
 type State =
   | { kind: 'loading' }
@@ -22,6 +23,7 @@ type State =
 
 export default function AdminUsersPage(): React.ReactElement {
   const t = useTranslations('adminUsers');
+  const tRoot = useTranslations();
   const format = useFormatter();
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [showCreate, setShowCreate] = useState(false);
@@ -79,6 +81,8 @@ export default function AdminUsersPage(): React.ReactElement {
           setCreateError(t('errors.emailInUse'));
         } else if (err.body.includes('password_too_short')) {
           setCreateError(t('errors.passwordTooShort'));
+        } else if (err.code === 'admin_users.password_too_long') {
+          setCreateError(errorHelpLine(err.code, tRoot));
         } else if (err.body.includes('invalid_email')) {
           setCreateError(t('errors.invalidEmail'));
         } else {

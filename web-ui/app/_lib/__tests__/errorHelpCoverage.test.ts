@@ -79,6 +79,13 @@ const COVERED_ROUTE_FILES = [
  * discover them. `spawn_failed` was split off `npm_failed` in #933 (OM-68):
  * a child that the OS never started did not run an install and has no log
  * tail, so the npm_failed copy was untrue in both of its sentences.
+ *
+ * `auth.logout_revocation_failed` (`routes/auth.ts`, POST /logout),
+ * `auth.setup_password_too_long` (`routes/authSetup.ts`) and
+ * `admin_users.password_too_long` (`routes/adminUsers.ts`) come from route
+ * files that are NOT covered as a whole. Those files emit many more codes
+ * the catalogue has no copy for, so adding them to COVERED_ROUTE_FILES would
+ * claim coverage that does not exist. These three are registered one by one.
  */
 const NON_ROUTE_CODES = [
   'providers.key_rejected',
@@ -87,6 +94,9 @@ const NON_ROUTE_CODES = [
   'cli_install.no_output',
   'cli_install.npm_failed',
   'cli_install.spawn_failed',
+  'auth.logout_revocation_failed',
+  'auth.setup_password_too_long',
+  'admin_users.password_too_long',
 ] as const;
 
 /**

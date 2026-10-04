@@ -2426,6 +2426,11 @@ Sitzung ohne Navigation.
   Entra-Sitzungen wird zusätzlich der Refresh-Token vergessen
   (`RefreshStore.forget`). Ein schon widerrufenes Cookie ändert serverseitig
   nichts (die Route ist öffentlich), es bekommt nur sein Cookie gelöscht.
+  Lässt sich die Zeile nicht lesen oder schreiben, antwortet die Route 503
+  `auth.logout_revocation_failed` und behält das Cookie, statt eine Abmeldung
+  zu melden, die nicht stattfand. Das Menü der UI zeigt das mit einem Knopf
+  zum Wiederholen. Ein erneuter Versuch nach Erholung des Stores widerruft
+  wie gewohnt.
 - **UI** (`web-ui/app/_components/SessionWatcher.tsx`, `renewSession()` in
   `_lib/api.ts`): Erfolg setzt die Phase von `warning` zurück auf `normal`
   und plant die Timer neu. Ein Heartbeat, der vor der Verlängerung losging,
@@ -2641,7 +2646,9 @@ Geräte-Cookie. Admin-Passwort-Reset und Reaktivierung (`PATCH status: 'active'`
 `routes/adminUsers.ts` rufen `clearAccount` mit dem gefalteten Konto-Schlüssel (alle
 Schreibweisen); Anlegen, Reset, jede Statusänderung und Löschen rufen
 `loginDevices.forget` mit dem Geräte-Schlüssel. `LocalPasswordProvider` lehnt Passwörter
-über 1024 Zeichen vor dem Users-Lookup ab. Die erste Ablehnung pro (Schicht, Client)
+über 1024 Zeichen vor dem Users-Lookup ab. Dieselbe Grenze (`auth/passwordPolicy.ts`,
+UTF-16-Codeeinheiten, Minimum 8) prüfen Setup-Wizard, Admin-Anlage, Admin-Reset und der
+Env-Seed, bevor sie hashen oder schreiben. Die erste Ablehnung pro (Schicht, Client)
 und Minute schreibt eine Logzeile und eine Audit-Zeile `auth.login_rate_limited`, beide
 ohne das Konto. Boot-Wiring: `createLoginGuard` in `index.ts`, ein Limiter und ein
 Geräte-Cookie-Register (`devices`) pro Prozess, dieselben für Auth-Router und
@@ -3204,7 +3211,7 @@ Siehe §3 „Ersteinrichtung `POST /api/v1/auth/setup`“ und `docs/security-arc
 | `ADMIN_SETUP_TOKEN` | Setup-Token, das der Wizard im Body-Feld `setup_token` verlangt. 16 bis 512 Zeichen (sonst bricht der Boot mit Config-Fehler ab), ein leerer Wert gilt als nicht gesetzt (`optionalNonEmpty`). Nicht gesetzt: Die Middleware generiert beim Start ein Token, speichert es in `platform_settings` (gleich auf allen Replicas und über Neustarts, bis der erste Admin existiert) und loggt es einmal pro Start (`setup token: …`). Ein gesetzter Wert wird nie geloggt. Wer den Wert vor dem ersten Start kennen will (etwa für ein Deploy-Skript), setzt ihn selbst (`openssl rand -base64 24`). |
 | `OMADIA_DESKTOP_EMBEDDED` | `true`/`false`, Default `false`. Setzt **nur** der Supervisor der Desktop-App. Zusammen mit einer Loopback-`HOST` braucht der Wizard kein Token. Allein wirkt der Schalter nicht, und `HOST=127.0.0.1` ohne ihn auch nicht (Reverse-Proxy auf demselben Host). Nicht auf Servern setzen. |
 | `HOST` | Bind-Adresse des Kernels, Default `::`. Für die Setup-Token-Ausnahme zählt nur eine literale Loopback-Adresse (`127.0.0.0/8`, `::1`, `::ffff:127.x`), kein `localhost`. |
-| `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD`, `ADMIN_BOOTSTRAP_DISPLAY_NAME` | Deklarativer Seed statt Wizard: Ist die `users`-Tabelle beim Boot leer und sind E-Mail und Passwort (mindestens 8 Zeichen) gesetzt, legt der Boot diesen Admin über `createFirstAdmin` an. Der Wizard bleibt dann zu. Ungültige Werte loggen den Grund und fallen auf den Wizard zurück. |
+| `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD`, `ADMIN_BOOTSTRAP_DISPLAY_NAME` | Deklarativer Seed statt Wizard: Ist die `users`-Tabelle beim Boot leer und sind E-Mail und Passwort (8 bis 1024 Zeichen) gesetzt, legt der Boot diesen Admin über `createFirstAdmin` an. Der Wizard bleibt dann zu. Ungültige Werte loggen den Grund und fallen auf den Wizard zurück. Ein Passwort über 1024 Zeichen stoppt dagegen den Boot, bevor ein Konto entsteht, weil die Anmeldung es ablehnen würde. |
 
 ### Anmelde-Rate-Limit
 
@@ -4503,9 +4510,6 @@ Adapter falsch konfiguriert ist. Offen:
   beim Start einen neuen). Der Vault ist eine verschlüsselte Datei; einen einzelnen
   Eintrag zu ersetzen oder zu löschen, geht heute nur mit eigenem Code. Ein
   Admin-Kommando dafür fehlt.
-- **Passwort-Obergrenze auch beim Setzen.** Setup-Wizard und Admin-Formulare prüfen nur
-  die Mindestlänge. Ein dort gesetztes Passwort über 1024 Zeichen kann sich nicht
-  anmelden.
 - **`user_disabled` vor der Passwortprüfung.** `LocalPasswordProvider` antwortet für ein
   deaktiviertes Konto mit `auth.user_disabled`, bevor es das Passwort prüft. Der Status
   eines Kontos ist damit ohne Passwort ablesbar.

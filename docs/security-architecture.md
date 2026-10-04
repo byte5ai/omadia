@@ -3179,7 +3179,9 @@ that user is refused from the next request on, and cannot renew, because
 `/renew` runs the same evaluation. It also forgets the user's Entra refresh token, which ends the
 IdP side of the renewal chain. Both happen only when the presented cookie is
 itself still current: a revoked copy reaching the public `/logout` route gets
-its own cookie cleared and changes nothing server-side.
+its own cookie cleared and changes nothing server-side. When the version cannot
+be read or written, `/logout` answers 503 `auth.logout_revocation_failed` and
+keeps the cookie instead of reporting a sign-out that did not happen (§10k).
 
 Re-signing carries `sv` and `sid` over together with `auth_time`: a renewed
 token belongs to the same sign-in of the same account version, so a later
@@ -4044,6 +4046,16 @@ open channel WebSocket that stays open (§10d), and `false` from
 401 and the SessionWatcher keeps its state on a 503, so a database blip does
 not sign operators out.
 
+**A sign-out is confirmed only once the version moved.** If `POST /logout`
+cannot read or write the user's row, the version stays where it was and every
+copy of the session keeps working. The route then answers 503
+`auth.logout_revocation_failed` and leaves the cookie in place, so the user
+knows they are still signed in and can send the same request again. A retry
+that reaches a working store moves the version on like any other sign-out. The
+web UI's sign-out menu shows the failure with help copy and a retry button
+instead of landing on /login. There is no "this device only" option: clearing
+one browser's cookie would leave every copy valid until it expires.
+
 **A stale cookie cannot sign anyone out.** `/api/v1/auth/*` is public, so a
 revoked copy of a cookie can still reach `/logout`. It gets its own cookie
 cleared and nothing else: the bump and the Entra refresh-token forget only
@@ -4100,7 +4112,8 @@ mapping, outage path, `ctx.operatorAuth`, a token without `uid` against a
 re-created row),
 `middleware/test/auth/logoutRevokesSession.test.ts` (sign-in → copy cookie →
 sign-out → the copy gets 401 on `/api`, `/me` and `/renew`; stale-cookie
-logout; OIDC callback), `middleware/test/auth/userStoreSessionVersion.test.ts`
+logout; a failed read or write answers 503 and keeps the cookie and the
+version, and a retry after recovery revokes the copy; OIDC callback), `middleware/test/auth/userStoreSessionVersion.test.ts`
 and `.pg.test.ts` (the SQL and the migration against real Postgres, and a
 legacy cookie that gets 401 once its row is deleted and re-created),
 `middleware/test/auth/renewRoute.test.ts` (renewal binds a legacy token by
@@ -4514,6 +4527,28 @@ client. An over-long password (more than 1024 characters) is refused as
 `invalid_credentials` before the users-table lookup: argon2's pre-hash is
 linear in the input, and the JSON body limit is 10 MB.
 
+**One password policy for sign-in and every setter.** The maximum lives in
+`auth/passwordPolicy.ts` together with the setters' minimum of 8, both counted
+in UTF-16 code units (`string.length`), the unit sign-in counts in. Every
+place that sets a password applies it: the first-run wizard (400
+`auth.setup_password_too_short` or `auth.setup_password_too_long`), the admin
+create and reset routes, a reset of your own row included (400
+`admin_users.password_too_short` or `admin_users.password_too_long`), and the
+`ADMIN_BOOTSTRAP_PASSWORD` env seed. Each checks before it hashes or writes,
+so a refused password changes neither the stored hash nor the session version.
+The env seed falls back to the wizard for a password under 8 characters as
+before, and stops the boot with an error for one over 1024, before any account
+is created; with users already present it does not run, so the value is not
+read. Passwords stored above 1024 characters before this rule existed are not
+migrated and keep being refused at sign-in. A password reset by another admin
+is the way back in. A sole admin in that state needs a fix in the database,
+because the `ADMIN_BOOTSTRAP_*` seed runs on an empty users table only. Tests:
+`middleware/test/auth/passwordPolicy.test.ts` (the shared bounds and the
+counting), and 1024 accepted, 1025 refused with hash and session version
+unchanged in `setupRoute.test.ts`, `adminUsersRoute.test.ts`,
+`bootstrap.test.ts` and `logoutRevokesSession.test.ts` (a reset of your own
+row through the real gate).
+
 **Configuration.** `AUTH_LOGIN_CLIENT_ADDRESS` (`socket` | `xff:1..8` |
 `header:<name>`; a bad value stops the boot with a config error),
 `AUTH_LOGIN_IPV6_PREFIX` (32..64, default 64) and `AUTH_LOGIN_MAX_INFLIGHT`
@@ -4594,9 +4629,8 @@ with the defaults, so a forgotten wiring cannot switch it off.
   used out first. An attacker cycling random emails evicts older pairs and
   weakens the pair layer for those accounts. The client and global layers are
   unaffected.
-- **Password-setting paths accept longer passwords than sign-in does.** The
-  wizard and the admin user forms enforce a minimum only, so a password over
-  1024 characters set there could not sign in.
+- **Passwords stored above the maximum before the shared policy.** They are
+  not rewritten and cannot sign in. Recovery is an admin password reset.
 
 Tests: `middleware/test/auth/loginRateLimiter.test.ts` (every layer with a fake
 clock, the pinned client semantics, counting at admission, a global budget that

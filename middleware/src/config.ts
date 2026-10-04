@@ -149,7 +149,9 @@ export const ConfigSchema = z.object({
   // are set, the bootstrap creates a single admin user with these creds.
   // Otherwise the /api/v1/auth/setup wizard opens and the operator
   // completes setup via the browser. Either path is a one-shot: once any
-  // user exists, both paths refuse.
+  // user exists, both paths refuse. The password follows the shared policy
+  // (auth/passwordPolicy.ts): shorter than 8 characters falls back to the
+  // wizard, longer than 1024 stops the boot before any account is created.
   ADMIN_BOOTSTRAP_EMAIL: z.string().optional(),
   ADMIN_BOOTSTRAP_PASSWORD: z.string().optional(),
   ADMIN_BOOTSTRAP_DISPLAY_NAME: z.string().optional(),
