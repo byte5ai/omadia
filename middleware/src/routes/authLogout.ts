@@ -16,8 +16,10 @@ import type { UserStore } from '../auth/userStore.js';
  *   changes server-side: a copied cookie that no longer works must not be
  *   able to sign its owner out of the sessions they hold now, and the auth
  *   routes are public, so it could otherwise do that at will until its `exp`.
- * - `failed` — the users row could not be read or written. Logged; the
- *   browser's cookie is cleared regardless.
+ * - `failed` — the users row could not be read or written, so the session
+ *   version did not move and a copy of the cookie stays valid. Logged; the
+ *   route answers 503 `auth.logout_revocation_failed` and keeps the cookie,
+ *   so the user can try again once the store answers.
  */
 export type LogoutOutcome = 'revoked' | 'stale' | 'failed';
 
@@ -31,7 +33,7 @@ export interface LogoutDeps {
 
 /**
  * The server-side half of `POST /api/v1/auth/logout`, for a cookie whose
- * signature verified. Never throws: sign-out must always clear the cookie.
+ * signature verified. Never throws: a store error comes back as `failed`.
  *
  * Sign-out ends every session of the user, not only this browser's: the
  * revocation marker is per user (`users.session_version`). A per-device

@@ -363,13 +363,48 @@ describe('POST /api/v1/auth/logout ends the session server-side', () => {
     assert.equal(h.table.row('local', EMAIL).sessionVersion, 0);
   });
 
-  it('still clears the cookie when the users row cannot be written', async () => {
+  it('answers 503 and keeps the cookie when the users row cannot be written', async () => {
     const h = await start();
     const token = await login(h);
     h.table.failUpdates = true;
     const res = await call(h, 'POST', '/api/v1/auth/logout', token);
-    assert.equal(res.status, 200);
-    assert.ok(clearsSessionCookie(res.res));
+    assert.deepEqual(pick(res), { status: 503, code: 'auth.logout_revocation_failed' });
+    assert.equal(clearsSessionCookie(res.res), false, 'no sign-out is reported that did not happen');
+    assert.deepEqual(res.res.headers.getSetCookie(), [], 'the cookie stays for a retry');
+    assert.equal(h.table.row('local', EMAIL).sessionVersion, 0, 'the version did not move');
+    // Reads still work, so the session is still live, which is what the 503 says.
+    assert.equal((await call(h, 'GET', '/api/v1/admin/ping', token)).status, 200);
+  });
+
+  it('answers 503 when the users row cannot be read', async () => {
+    const h = await start();
+    const token = await login(h);
+    h.table.failLookups = true;
+    const res = await call(h, 'POST', '/api/v1/auth/logout', token);
+    assert.deepEqual(pick(res), { status: 503, code: 'auth.logout_revocation_failed' });
+    assert.equal(clearsSessionCookie(res.res), false);
+    assert.deepEqual(h.table.patches, []);
+  });
+
+  it('a retry after the store recovers revokes the session and the copied cookie', async () => {
+    const h = await start();
+    const copied = await login(h);
+    h.table.failUpdates = true;
+    assert.equal((await call(h, 'POST', '/api/v1/auth/logout', copied)).status, 503);
+
+    h.table.failUpdates = false;
+    const retry = await call(h, 'POST', '/api/v1/auth/logout', copied);
+    assert.equal(retry.status, 200);
+    assert.ok(clearsSessionCookie(retry.res));
+    assert.equal(h.table.row('local', EMAIL).sessionVersion, 1, 'the version moved on');
+    assert.deepEqual(
+      pick(await call(h, 'GET', '/api/v1/admin/ping', copied)),
+      { status: 401, code: 'auth.revoked' },
+    );
+    assert.deepEqual(
+      pick(await call(h, 'POST', '/api/v1/auth/renew', copied)),
+      { status: 401, code: 'auth.revoked' },
+    );
   });
 
   it('forgets the Entra refresh token for a current cookie, not for a stale one', async () => {
