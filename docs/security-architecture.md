@@ -4513,9 +4513,14 @@ The env seed falls back to the wizard for a password under 8 characters as
 before, and stops the boot with an error for one over 1024, before any account
 is created; with users already present it does not run, so the value is not
 read. Passwords stored above 1024 characters before this rule existed are not
-migrated and keep being refused at sign-in. An admin password reset is the way
-back in; for the only admin, the `ADMIN_BOOTSTRAP_*` seed does not help,
-because it runs on an empty table only.
+migrated and keep being refused at sign-in. A password reset by another admin
+is the way back in. A sole admin in that state needs a fix in the database,
+because the `ADMIN_BOOTSTRAP_*` seed runs on an empty users table only. Tests:
+`middleware/test/auth/passwordPolicy.test.ts` (the shared bounds and the
+counting), and 1024 accepted, 1025 refused with hash and session version
+unchanged in `setupRoute.test.ts`, `adminUsersRoute.test.ts`,
+`bootstrap.test.ts` and `logoutRevokesSession.test.ts` (a reset of your own
+row through the real gate).
 
 **Configuration.** `AUTH_LOGIN_CLIENT_ADDRESS` (`socket` | `xff:1..8` |
 `header:<name>`; a bad value stops the boot with a config error),
