@@ -287,8 +287,8 @@ describe('DockerSandboxBackend.provision — resource limits (stub)', () => {
     const logged: string[] = [];
     const backend = new DockerSandboxBackend({ execDocker: exec, log: (msg) => logged.push(msg) });
     await assert.rejects(backend.provision({ scopeKey, profile: resolveAgentComputerProfile() }), (err: Error) => {
-      assert.match(err.message, /daemon did not apply its resource limits \(--pids-limit not set \(required 256 processes\)\)/);
-      assert.match(err.message, /Nothing ran in it/);
+      assert.match(err.message, /resource limits are not in force \(--pids-limit not set \(required 256 processes\)\)/);
+      assert.match(err.message, /It was removed\. Nothing ran in it/);
       return true;
     });
     assert.deepEqual(calls.map((c) => c.args[0]), ['ps', 'run', 'inspect', 'rm']);

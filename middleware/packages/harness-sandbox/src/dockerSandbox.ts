@@ -243,10 +243,10 @@ export class DockerSandboxBackend implements SandboxBackend {
     if (opts.created) {
       const removed = await this.tryDocker(['rm', '-f', name], 30_000);
       this.log(
-        `[sandbox] container '${name}' runs nothing: the Docker daemon did not apply its resource limits (${detail}); ${removed ? 'it was removed' : 'removing it failed'}`,
+        `[sandbox] container '${name}' runs nothing: its resource limits are not in force (${detail}); ${removed ? 'it was removed' : 'removing it failed'}`,
       );
       throw new Error(
-        `DockerSandboxBackend: container '${name}' was not used because the Docker daemon did not apply its resource limits (${detail}). Nothing ran in it. Check that the daemon can enforce memory, swap, CPU and PID limits.`,
+        `DockerSandboxBackend: new container '${name}' was not used because its resource limits are not in force (${detail}). ${removed ? 'It was removed.' : 'Removing it failed.'} Nothing ran in it. Check that the Docker daemon can enforce memory, swap, CPU and PID limits.`,
       );
     }
     const stopped = await this.tryDocker(['stop', '-t', '0', name], 30_000);
