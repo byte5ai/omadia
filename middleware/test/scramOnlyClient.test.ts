@@ -134,6 +134,29 @@ describe('a kernel pool that requires SCRAM refuses before any password or query
     assertNoQuery(fake);
   });
 
+  for (const backendKeyData of [false, true]) {
+    it(`when the server reports ready without any Authentication message${backendKeyData ? ' (after BackendKeyData)' : ''}`, async () => {
+      // pg takes a bare ReadyForQuery as connected, so a stock pool would hand
+      // the client out and send the kernel's query to whatever this is.
+      const fake = await listener({ kind: 'ready-only', backendKeyData });
+      await assert.rejects(kernelPool(fake).query('SELECT 1'), refusal(/without a SCRAM exchange/));
+      assertNoPasswordMessage(fake);
+      assertNoQuery(fake);
+    });
+  }
+
+  it('a query queued on a direct client before the server reports ready never leaves it', async () => {
+    const fake = await listener({ kind: 'ready-only', backendKeyData: false });
+    const client = new ScramOnlyClient({ connectionString: dsn(fake), connectionTimeoutMillis: 5_000 });
+    client.on('error', () => {});
+    const connecting = client.connect();
+    const queued = client.query('SELECT 1');
+    await assert.rejects(connecting, refusal(/without a SCRAM exchange/));
+    await assert.rejects(queued);
+    await client.end().catch(() => {});
+    assertNoQuery(fake);
+  });
+
   it('when the server offers SASL without SCRAM-SHA-256', async () => {
     const fake = await listener({ kind: 'sasl', mechanisms: ['SYNTHETIC-MECHANISM'] });
     await assert.rejects(kernelPool(fake).query('SELECT 1'), refusal(/did not offer SCRAM-SHA-256/));
@@ -177,6 +200,16 @@ describe('a kernel pool that requires SCRAM and a SCRAM server', () => {
     const fake = await listener({ kind: 'scram', password: PASSWORD, final: 'forged-signature' });
     await assert.rejects(kernelPool(fake).connect(), /server signature does not match/);
     assertNoPasswordSent(fake);
+    assertNoQuery(fake);
+  });
+
+  it('closes the connection to a server whose final signature is forged', async () => {
+    const fake = await listener({ kind: 'scram', password: PASSWORD, final: 'forged-signature' });
+    const client = new ScramOnlyClient({ connectionString: dsn(fake), connectionTimeoutMillis: 5_000 });
+    client.on('error', () => {});
+    const closed = new Promise<void>((resolve) => client.connection.once('end', () => resolve()));
+    await assert.rejects(client.connect(), /server signature does not match/);
+    await closed;
   });
 });
 

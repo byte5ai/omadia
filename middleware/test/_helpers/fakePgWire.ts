@@ -22,6 +22,11 @@ export type FakeAuthScript =
   | { readonly kind: 'md5' }
   /** AuthenticationOk and ReadyForQuery without asking for anything. */
   | { readonly kind: 'no-auth' }
+  /**
+   * No Authentication message at all: ReadyForQuery straight after the
+   * startup message, alone or behind BackendKeyData.
+   */
+  | { readonly kind: 'ready-only'; readonly backendKeyData: boolean }
   /** AuthenticationSASL offering only these mechanisms. */
   | { readonly kind: 'sasl'; readonly mechanisms: readonly string[] }
   /**
@@ -59,11 +64,11 @@ function int32(value: number): Buffer {
 
 const auth = (code: number, rest: Buffer = Buffer.alloc(0)): Buffer =>
   message('R', Buffer.concat([int32(code), rest]));
-const READY = Buffer.concat([
-  auth(0),
-  message('K', Buffer.concat([int32(4242), int32(4343)])),
-  message('Z', Buffer.from('I')),
-]);
+const BACKEND_KEY = message('K', Buffer.concat([int32(4242), int32(4343)]));
+const READY_FOR_QUERY = message('Z', Buffer.from('I'));
+const READY = Buffer.concat([auth(0), BACKEND_KEY, READY_FOR_QUERY]);
+/** The answer to any simple query, so a client that got through resolves instead of waiting. */
+const QUERY_DONE = Buffer.concat([message('C', Buffer.from('SELECT 0\0')), READY_FOR_QUERY]);
 
 function errorResponse(code: string, text: string): Buffer {
   return message('E', Buffer.from(`SFATAL\0C${code}\0M${text}\0\0`));
@@ -122,6 +127,9 @@ function serve(socket: net.Socket, script: FakeAuthScript, record: (type: string
       case 'no-auth':
         socket.write(READY);
         return;
+      case 'ready-only':
+        socket.write(script.backendKeyData ? Buffer.concat([BACKEND_KEY, READY_FOR_QUERY]) : READY_FOR_QUERY);
+        return;
       case 'sasl':
         socket.write(auth(10, Buffer.from(`${script.mechanisms.join('\0')}\0\0`)));
         return;
@@ -166,6 +174,7 @@ function serve(socket: net.Socket, script: FakeAuthScript, record: (type: string
       const type = String.fromCharCode(frame[0] ?? 0);
       record(type, frame);
       if (type === 'p') onPasswordMessage(frame.subarray(5));
+      if (type === 'Q') socket.write(QUERY_DONE);
       if (type === 'X') socket.end();
     }
   });
