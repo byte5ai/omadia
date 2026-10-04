@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Security — sign-out reports a failed revocation, and one password policy covers every setter
+
+2026-10-04 — Two fixes in local sign-in:
+
+- `POST /api/v1/auth/logout` answered 200 `ok: true` and cleared the cookie
+  even when the user's session version could not be read or written. A copy
+  of the cookie then kept working although the user was told they had signed
+  out. The route now answers 503 `auth.logout_revocation_failed` and keeps the
+  cookie, so the same request can be retried. A retry that reaches a working
+  store ends every session as usual. The web UI's sign-out menu says the user
+  is still signed in and offers the retry instead of landing on /login.
+- Sign-in refused passwords longer than 1024 characters, but the setup
+  wizard, the admin create and reset routes and the `ADMIN_BOOTSTRAP_PASSWORD`
+  seed checked only the minimum of 8. A password stored there could never
+  sign in, and a reset of your own account also ended every session. One
+  policy (`auth/passwordPolicy.ts`, 8 to 1024 UTF-16 code units) now applies
+  to all of them before anything is hashed or written. The new codes are
+  `auth.setup_password_too_long` and `admin_users.password_too_long`, with
+  help copy in the web UI. An over-long bootstrap password stops the boot
+  before any account is created. Passwords stored above the limit earlier
+  keep being refused at sign-in, and an admin password reset is the way back.
+
 ### Security — tool-dispatch privacy seams: org clamp, exempt-tool errors, record dumps, logs
 
 2026-10-02 — Five changes at the seams where tool results and errors reach a
