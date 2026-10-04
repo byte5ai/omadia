@@ -203,6 +203,19 @@ describe('<SetupPage /> — refusals get their own message', () => {
     expect(mockRouter.replace).not.toHaveBeenCalled();
   });
 
+  it('400 auth.setup_password_too_long: names the sign-in maximum', async () => {
+    mockPostAuthSetup.mockRejectedValue(refusal(400, 'auth.setup_password_too_long'));
+    renderWithIntl(<SetupPage />);
+    await fillAndSubmit({ token: 'generated-token-0123456789abcdef' });
+
+    expect(
+      await screen.findByText(
+        'The password is longer than 1024 characters, the most sign-in accepts. Choose a shorter password. No account was created.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/raw server text/)).toBeNull();
+  });
+
   it('410 auth.setup_locked: someone else finished setup → login', async () => {
     mockPostAuthSetup.mockRejectedValue(refusal(410, 'auth.setup_locked'));
     renderWithIntl(<SetupPage />);
