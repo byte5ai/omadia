@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the guarded direct-line note is no longer swallowed by its own token cap
+
+2026-10-05 — In `guarded` direct-line mode the orchestrator may append a short
+cross-cutting note under a specialist's verbatim answer (#332 Layer 2). That
+extra pass asked for 512 output tokens. A model that reasons before it answers
+bills those tokens against `max_tokens`, so the budget was spent before any
+text was emitted; the helper treats empty text as "nothing to add" and returns
+no note, which made the feature silently inert on such models rather than
+visibly broken. The pass now asks for 4096 tokens, clamped to the `maxTokens`
+the caller resolved for the active model so it can never request more than the
+model allows. Its system prompt moved to a module-level constant next to the
+card-router prompts and was rewritten in plain register — the all-caps
+imperatives read as pressure the current models over-apply — while keeping the
+explicit two-sentence bound on the note itself. The verbatim block is
+unaffected: the note is still append-only, and the no-redaction invariant
+stays structural. Three tests pin the budget, the clamp, and the empty-text
+fail-open (#1209).
+
 ### Security — desktop kernel connects to its database with SCRAM only
 
 2026-10-04 — On Windows the desktop's embedded Postgres listens on loopback

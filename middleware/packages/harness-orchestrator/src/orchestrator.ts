@@ -5443,10 +5443,11 @@ export class Orchestrator {
 
   /**
    * #332 Layer 2 (guarded mode) — best-effort, bounded single-shot completion
-   * that lets the orchestrator add a SHORT attributed cross-cutting note to a
-   * specialist's verbatim answer. Additive only: the caller keeps the verbatim
-   * block intact. Fail-open (any error / empty → no note). Mirrors the
-   * self-contained extra-pass shape of `maybeRouteCardsFromText`.
+   * that lets the orchestrator add a two-sentence attributed cross-cutting
+   * note to a specialist's verbatim answer. Additive only: the caller keeps
+   * the verbatim block intact. Fail-open (any error / empty → no note).
+   * Mirrors the self-contained extra-pass shape of `maybeRouteCardsFromText`,
+   * module-level prompt constant included.
    */
   private async maybeDirectLineNote(
     label: string,
@@ -5455,16 +5456,16 @@ export class Orchestrator {
   ): Promise<string | undefined> {
     const params: AnthropicParams = {
       model: this.model,
-      max_tokens: 512,
-      system:
-        'You are the omadia orchestrator. A specialist sub-agent has ALREADY ' +
-        'answered the user directly and their verbatim answer is delivered ' +
-        'independently — you cannot edit or remove it. Your ONLY option is to ' +
-        'OPTIONALLY add a SHORT (max 2 sentences) cross-cutting note when you ' +
-        'see a concrete cross-domain risk, policy concern, or missing prior ' +
-        'context the specialist could not see. If you have nothing material to ' +
-        'add, reply with exactly an empty message. Never restate or contradict ' +
-        'the specialist; only add.',
+      // Headroom, not a length target — the note's length is bounded by the
+      // prompt (two sentences), not by this. A model that reasons before it
+      // answers bills those tokens against `max_tokens`, so a tight cap is
+      // spent before any text is emitted and the empty-text branch below
+      // drops the note on every turn. Clamped to the caller's resolved budget
+      // (see `maxTokens` on the options type): asking for more than the
+      // active model allows would fail the request, and the fail-open `catch`
+      // would swallow that into the same silent no-note.
+      max_tokens: Math.min(this.maxTokens, DIRECT_LINE_NOTE_MAX_TOKENS),
+      system: DIRECT_LINE_NOTE_SYSTEM,
       messages: [
         {
           role: 'user',
@@ -9820,6 +9821,31 @@ const CARD_ROUTER_SYSTEM =
 
 const CARD_ROUTER_INSTRUCTION =
   'Entscheide jetzt für die obige Assistenten-Antwort: Rufe genau eines von `ask_user_choice`, `suggest_follow_ups` oder `no_card` auf.';
+
+/**
+ * #332 Layer 2 / #1209 — system prompt of the guarded direct-line note pass
+ * ({@link Orchestrator.maybeDirectLineNote}). Plain register on purpose: the
+ * all-caps imperatives this replaced read as pressure the current models
+ * over-apply, so they withheld notes a cross-domain risk warranted. The
+ * two-sentence bound stays — it is the only thing that keeps an appended note
+ * from competing with the specialist's own answer.
+ */
+const DIRECT_LINE_NOTE_SYSTEM =
+  'You are the omadia orchestrator. A specialist sub-agent has already ' +
+  'answered the user directly and their verbatim answer is delivered ' +
+  'independently — you cannot edit or remove it; you can only append. Add a ' +
+  'cross-cutting note of at most two sentences, and only when you see a ' +
+  'concrete cross-domain risk, policy concern, or missing prior context the ' +
+  'specialist could not see. If you have nothing material to add, reply with ' +
+  'exactly an empty message. Never restate or contradict the specialist; ' +
+  'only add.';
+
+/**
+ * Upper bound for the note pass, clamped against the caller's resolved
+ * `maxTokens` at the call site. See the comment there for why it is this far
+ * above the note's own two-sentence length.
+ */
+const DIRECT_LINE_NOTE_MAX_TOKENS = 4096;
 
 /**
  * #1211 — the `tools` / `tool_choice` pair for ONE request of either tool
