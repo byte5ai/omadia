@@ -36,6 +36,31 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — CLI deny-list drift guard reads CLI 2.1.286+, and fourteen new built-ins are denied
+
+2026-10-05 — The local full test run went red in
+`test/cliBridge/cliSpawnGate.test.ts`: against CLI 2.1.289 the guard mined 0
+tool names. From 2.1.286 the binary no longer carries one inventory array;
+each tool is an object literal whose name is a constant imported from another
+module chunk. CI stayed green because it has no CLI installed and the test
+skips there.
+
+- The miner moved to `test/_helpers/cliToolInventory.ts` and reads both
+  layouts, following module imports to each tool's name. Fixtures in
+  `test/cliBridge/cliToolInventory.test.ts` pin both layouts and the decoys a
+  parser can mistake for tools.
+- The "at least 50 names" count is gone. The guard now requires the
+  code-execution, filesystem and network tools among the mined definitions,
+  fails on a tool name it cannot resolve, and checks built-ins, aliases and
+  the SDK's `BUILTIN_TOOL_NAMES` against the deny list. An installed binary it
+  cannot read still fails rather than skips.
+- `CLI_BUILTIN_TOOL_DENYLIST` gains the fourteen built-ins 2.1.286 and 2.1.289
+  declare and the list lacked, among them `AppifactRepl` and the CLI's own
+  `memory_read` / `memory_write` / `memory_list`. No flag of the gate changed.
+- Live probe on 2.1.289 (opt-in, logged-in CLI): the production argv ran with
+  `tools: []` and no tool call in three of three runs. Details and the flaky
+  negative control in `docs/security-architecture.md`.
+
 ### Security — desktop kernel connects to its database with SCRAM only
 
 2026-10-04 — On Windows the desktop's embedded Postgres listens on loopback

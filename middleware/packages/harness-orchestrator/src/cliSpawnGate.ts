@@ -94,11 +94,22 @@ import { execFile } from 'node:child_process';
  * and `RunWorkflow` — that last one is the alias of `Workflow` and its
  * metadata declares `enablesCodeExecution`.
  *
+ * From 2.1.286 the binary no longer carries that array. Every tool is an
+ * object literal (`{name:…,searchHint:…,maxResultSizeChars:…}`) whose name is
+ * a string constant imported from another module chunk. Mined that way,
+ * 2.1.286 and 2.1.289 declare 83 built-ins and nine aliases (`Task` for
+ * `Agent`, `Brief` for `SendUserMessage`, `ListPeers` for `ListAgents`,
+ * `KillShell`/`KillBash`, the three MCP-resource short forms, `RunWorkflow`).
+ * Fourteen of those built-ins were new and are listed below with a `2.1.286+`
+ * note — among them `AppifactRepl` and the CLI's own `memory_*` store. `Tmux`
+ * no longer appears and stays listed as superset cover.
+ *
  * The drift guard in `test/cliBridge/cliSpawnGate.test.ts` mines the installed
- * binary's inventory AND its alias arrays, then subtracts this list; anything
- * left over fails. It works in that direction on purpose: its first version
- * built its candidate set out of this constant and so could not detect a
- * deletion at all.
+ * binary's tool definitions, their aliases and the SDK's `BUILTIN_TOOL_NAMES`
+ * (`test/_helpers/cliToolInventory.ts` reads both layouts), then subtracts
+ * this list; anything left over fails. It works in that direction on purpose:
+ * its first version built its candidate set out of this constant and so could
+ * not detect a deletion at all.
  */
 export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   // Shell and code execution — the OM-81 finding itself.
@@ -114,6 +125,8 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'JavaScript',
   'Tmux',
   'Cd',
+  // 2.1.286+: a REPL tool for artifacts.
+  'AppifactRepl',
   // Sub-agents and task runners: a denied tool is worthless if a sub-agent can
   // be spawned to call it.
   'Agent',
@@ -126,6 +139,9 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'TaskUpdate',
   'TaskOutput',
   'TaskStop',
+  // 2.1.286+.
+  'GetTask',
+  'SubagentHandback',
   'Explore',
   'Plan',
   // Filesystem.
@@ -138,6 +154,10 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'LS',
   'NotebookEdit',
   'NotebookRead',
+  // 2.1.286+: the CLI's own memory store, read and written outside omadia.
+  'memory_list',
+  'memory_read',
+  'memory_write',
   // Network egress.
   'WebFetch',
   'WebSearch',
@@ -167,6 +187,9 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'CronDelete',
   'CronList',
   'Monitor',
+  // 2.1.286+.
+  'Poll',
+  'WaitForMcpServers',
   // Messaging: an omadia turn must not reach anyone outside its own channel.
   'ListAgents',
   'ListPeers',
@@ -180,6 +203,9 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'Brief',
   'ObserverReport',
   'SubscribePR',
+  // 2.1.286+.
+  'FetchInboxMessage',
+  'ReadNotifications',
   // Artifacts, design surfaces and account-level integrations.
   'Artifact',
   'ArtifactComments',
@@ -198,6 +224,12 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'ExitWorktree',
   'ReportFindings',
   'EndConversation',
+  // 2.1.286+. omadia passes no `--json-schema`, so StructuredOutput has no
+  // legitimate caller in a spawned turn.
+  'ProposeGoal',
+  'ShowOnboardingRolePicker',
+  'StructuredOutput',
+  'TestingPermission',
   'AskUserQuestion',
   'TodoWrite',
   'LSP',
