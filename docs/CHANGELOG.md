@@ -36,6 +36,38 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — output budgets sized for thinking, and clamped to the model
+
+2026-10-05 — `ORCHESTRATOR_MAX_TOKENS` defaulted to 8192 and
+`SUB_AGENT_MAX_TOKENS` to 4096, numbers chosen when thinking was off. The
+default `ORCHESTRATOR_MODEL` is `class:frontier`, which live discovery resolves
+to the vendor's newest Opus — thinking is always on there and its tokens count
+toward `max_tokens`, so the budget bought thinking and then truncated the answer,
+or a large structured tool call (a multi-sheet `create_xlsx`) mid-call, leaving
+no file. Raised to 32000 and 16000, matching the frontier class's own registry
+`maxTokens`. The orchestrator plugin still floors an older installed config, so
+an existing deployment is bumped without a reinstall.
+
+`.env.example` had drifted further than the code: it shipped 4096 for both while
+the code used 8192, and the plugin manifest's operator help text claimed a
+default of 4096. Both now say what the code does, and
+`test/orchestratorMaxTokenBudgets.test.ts` pins every copy of the number —
+nothing asserted them before, which is how three answers to one question
+survived.
+
+Raising the floor exposed a second gap the old number hid: nothing clamped the
+request to the selected model's own output ceiling. A Haiku-class model caps
+output at 8192, as does Mistral; a vendor answers a `max_tokens` above its cap
+with a 400 on the whole request rather than silently capping it, so every turn
+on such a model would have failed. `toLlmRequest` now clamps to the resolved
+model's registry `maxTokens`, resolved against the provider connection the
+request is going out on. Unaffected: a budget the model can serve, and a model
+the registry does not know (an operator-typed id, a local build) — those pass
+through untouched, so an operator-added OpenAI-compatible / Ollama / MiniMax
+model stays unclamped until its provider contributes a `maxTokens`.
+
+Issue #1210.
+
 ### Security — desktop kernel connects to its database with SCRAM only
 
 2026-10-04 — On Windows the desktop's embedded Postgres listens on loopback

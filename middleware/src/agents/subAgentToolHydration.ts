@@ -342,7 +342,10 @@ export function registerDbSubAgentTools(
       : buildSubAgentDomainTools(slice, {
           provider: createAnthropicProvider({ client: deps.client }),
           defaultModel: deps.defaultModel,
-          defaultMaxTokens: deps.defaultMaxTokens ?? 4096,
+          // Mirrors the `SUB_AGENT_MAX_TOKENS` default in `config.ts` for the
+          // callers that pass no budget at all (tests, ad-hoc hydration). Kept
+          // in step with it — see #1210 for why the number is this size.
+          defaultMaxTokens: deps.defaultMaxTokens ?? 16_000,
           defaultMaxIterations: deps.defaultMaxIterations ?? 8,
           mcpManager: deps.mcpManager,
           mcpServersById,

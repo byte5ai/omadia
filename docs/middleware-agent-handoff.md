@@ -3334,11 +3334,11 @@ Setup-Felder, nicht mehr die Env.
 ANTHROPIC_API_KEY
 # Core
 ORCHESTRATOR_MODEL=claude-opus-4-7
-ORCHESTRATOR_MAX_TOKENS=4096
+ORCHESTRATOR_MAX_TOKENS=32000   # inkl. Thinking
 MAX_TOOL_ITERATIONS=12
 # Sub-agents
 SUB_AGENT_MODEL=claude-opus-4-7     # kann auf haiku/sonnet runter
-SUB_AGENT_MAX_TOKENS=4096
+SUB_AGENT_MAX_TOKENS=16000
 SUB_AGENT_MAX_ITERATIONS=16
 SKILLS_DIR=../skills                # relativ zum middleware root
 # Memory
