@@ -5,6 +5,7 @@ import type {
   LocalSubAgentToolSpec,
 } from '@omadia/plugin-api';
 import { appendLimitSignalNote, isControlFlowToolResult } from '@omadia/plugin-api';
+import { appendTextToLastUserTurn } from './appendTextToLastUserTurn.js';
 import { streamMessageWithObserver } from './streaming.js';
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
@@ -120,6 +121,13 @@ export class LocalSubAgent {
       isError: boolean;
     }> = [];
     let repeatFailureDetected = false;
+    // #1212 — the wrap-up note is conversation history now, not a trailer
+    // recomputed per request, so each note must be said exactly once. Keyed on
+    // the note TEXT rather than a bool: a provider that answers a
+    // `tool_choice: none` request with tool_use blocks (the loop's documented
+    // belt-and-braces path) can carry a repeat-failure iteration on to the
+    // last iteration, and that second, different note still has to be said.
+    let wrapUpNoteAppended: string | undefined;
     let lastIteration = 0;
 
     // OB-31: per-turn tool obligation. When the caller declares a tool
@@ -167,11 +175,26 @@ export class LocalSubAgent {
         // if the model *still* refuses to call the obligation tool.
         forceExpectedToolNext = false;
 
-        let trailer = buildDateHeader(turnContext.currentTurnDate());
-        if (repeatFailureDetected && !isLastIteration) {
-          trailer = `${trailer}\n\nIMPORTANT: Du hast denselben Tool-Call mit identischem Input mehrfach hintereinander aufgerufen und immer denselben Fehler bekommen. Rufe diesen Tool-Call NICHT erneut auf. Fasse stattdessen zusammen, was du versucht hast, welcher Fehler aufgetreten ist und was als Nächstes nötig wäre — entweder eine andere Strategie ODER ein operatorseitiger Fix. Gib jetzt eine abschließende Antwort.`;
-        } else if (isLastIteration) {
-          trailer = `${trailer}\n\nIMPORTANT: Dies ist deine letzte Iteration. Du darfst KEINE weiteren Tools aufrufen. Fasse alle Zwischenergebnisse zusammen und gib eine abschließende Antwort — auch wenn die Datenlage unvollständig ist. Benenne fehlende Informationen explizit.`;
+        // #1212 — the system prompt stays FROZEN across the iterations of a
+        // turn: the two blocks are the stable prompt + the turn's date
+        // header (frozen by `turnContext`, so identical for every iteration
+        // of that turn), and nothing else. Mutating the system prompt
+        // mid-turn — the wrap-up notes used to be appended to the second
+        // block — breaks the conversation-prefix binding that extended-
+        // thinking blocks are signed against on the current Opus/Fable
+        // models. The documented append-only form is a text block on the
+        // newest user turn, AFTER its tool_result blocks, which leaves every
+        // earlier turn and its thinking untouched.
+        const dateHeader = buildDateHeader(turnContext.currentTurnDate());
+        const wrapUpNote =
+          repeatFailureDetected && !isLastIteration
+            ? REPEAT_FAILURE_WRAP_UP
+            : isLastIteration
+              ? LAST_ITERATION_WRAP_UP
+              : undefined;
+        if (wrapUpNote !== undefined && wrapUpNote !== wrapUpNoteAppended) {
+          appendTextToLastUserTurn(messages, wrapUpNote);
+          wrapUpNoteAppended = wrapUpNote;
         }
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -198,7 +221,7 @@ export class LocalSubAgent {
               },
               {
                 type: 'text',
-                text: trailer,
+                text: dateHeader,
               },
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
             ] as any,
@@ -269,11 +292,17 @@ export class LocalSubAgent {
           // reminder + flip `tool_choice` for next iteration so the API
           // *forces* the call. After the escalation iteration we honor
           // whatever stop_reason comes back — no second-chance loop.
+          // `!forceTextOnly` (not just `!isLastIteration`): once the tools
+          // are withdrawn — final iteration OR repeat-failure — the model
+          // *cannot* call the obligation tool, so escalating would push a
+          // `Rufe \`x\` jetzt auf` reminder that contradicts the wrap-up note
+          // on the very same user turn, and re-append that note next
+          // iteration. Nothing to escalate to; let the turn end.
           if (
             expectedTurnToolUse !== undefined &&
             !calledExpectedTool &&
             escalationsUsed < maxEscalations &&
-            !isLastIteration
+            !forceTextOnly
           ) {
             escalationsUsed += 1;
             forceExpectedToolNext = true;
@@ -377,8 +406,8 @@ export class LocalSubAgent {
 
         // Detect "stuck": last N tool calls all matched on (name, input)
         // AND all errored. Trigger one early-termination round (forced
-        // tool_choice:none + addendum in the system trailer) instead of
-        // looping until maxIterations.
+        // tool_choice:none + a wrap-up note on the newest user turn)
+        // instead of looping until maxIterations.
         if (recentToolCalls.length >= REPEAT_FAILURE_THRESHOLD) {
           const tail = recentToolCalls.slice(-REPEAT_FAILURE_THRESHOLD);
           const first = tail[0]!;
@@ -571,6 +600,19 @@ function collectTextBlocks(content: ContentBlock[]): string[] {
 // text-only on the next iteration. 3 lets a transient hiccup self-recover
 // (try → fail → tweak → succeed) while bounding the worst-case bleed.
 export const REPEAT_FAILURE_THRESHOLD = 3;
+
+/**
+ * #1212 — the two wrap-up notes appended to the newest user turn when the
+ * loop withdraws the tools. Plain register on purpose: `tool_choice:
+ * { type: 'none' }` already makes the constraint unbreakable, so the note
+ * only has to say why the tools are gone and what to produce instead.
+ * German, because the sub-agents operate in German.
+ */
+export const REPEAT_FAILURE_WRAP_UP =
+  'Du hast denselben Tool-Call mit identischem Input mehrfach hintereinander aufgerufen und jedes Mal denselben Fehler bekommen; ein weiterer identischer Aufruf scheitert genauso. Gib jetzt eine abschließende Antwort: was du versucht hast, welcher Fehler aufgetreten ist und was als Nächstes nötig wäre — eine andere Strategie oder ein operatorseitiger Fix.';
+
+export const LAST_ITERATION_WRAP_UP =
+  'Das ist die letzte Iteration dieses Auftrags; Tools stehen nicht mehr zur Verfügung. Fasse die Zwischenergebnisse zu einer abschließenden Antwort zusammen, auch wenn die Datenlage unvollständig ist, und benenne fehlende Informationen explizit.';
 
 /**
  * Stable string for comparing tool inputs across iterations. Recursively

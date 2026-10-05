@@ -36,6 +36,33 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the system prompt stays frozen for the whole turn (#1212)
+
+2026-10-05 — every tool loop in `@omadia/orchestrator` re-sends the whole
+conversation once per iteration, and three places used to splice an
+instruction into the SYSTEM prompt on the way: `LocalSubAgent`'s
+last-iteration and repeat-failure wrap-up notes, and the orchestrator's
+`FINALIZE_DIRECTIVE` on the final tools-disabled pass (`withFinalizeHint`, both
+the buffered and the streaming loop). That makes the system prompt differ
+between iterations of one turn, which invalidates the conversation prefix the
+earlier turns' thinking blocks are bound to on the current Opus/Fable models
+and breaks the prompt-cache prefix. All three now go through one helper,
+`appendTextToLastUserTurn`, which appends the instruction as a text block at
+the end of the newest user turn, after its `tool_result` blocks — the only
+append-only shape the conversation format allows; live `/chat/steer` injection,
+which already worked that way, shares the helper and now promotes a
+string-content turn to blocks instead of concatenating, so an injected
+instruction never reads as part of what the user wrote. The notes and the
+`#332` obligation reminder were reworded out of the `IMPORTANT:`/`NICHT`/`KEINE`
+register into plain German, since `tool_choice` (`none`, or the forced tool)
+already enforces what they ask for. Fixed alongside: `LocalSubAgent`'s OB-31
+obligation escalation fired even on an iteration whose tools had been withdrawn
+by a repeat failure, which — now that the note is conversation history rather
+than a per-request trailer — appended a second copy of it plus a reminder to
+call a tool the same request forbids; it now ends the turn there instead,
+which is one LLM round-trip fewer in that case. Answers are otherwise
+unaffected — what changes is the wire shape of the request.
+
 ### Fixed — /login and /setup only follow same-origin return paths
 
 2026-09-30 — after a password sign-in, and after the first administrator is

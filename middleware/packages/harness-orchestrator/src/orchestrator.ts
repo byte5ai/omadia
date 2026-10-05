@@ -242,6 +242,7 @@ function messagesCarryImages(messages: ReadonlyArray<{ content: unknown }>): boo
   );
 }
 import { steeringBus } from './steeringBus.js';
+import { appendTextToLastUserTurn } from './appendTextToLastUserTurn.js';
 import { MEMORY_TOOL_NAME } from './registry/subAgentMemoryTool.js';
 import {
   buildDateHeader,
@@ -4554,12 +4555,14 @@ export class Orchestrator {
     };
   }
 
-  /** #332 Layer 3 — synthetic reminder pushed when an obligation is unmet. */
+  /** #332 Layer 3 — synthetic reminder pushed when an obligation is unmet.
+   *  #1212 — plain register, no pressure caps: the iteration this reminder
+   *  precedes runs with `tool_choice` forced to that very tool, so the call is
+   *  already unavoidable; the text only has to say what is missing and why. */
   private obligationReminder(toolName: string): string {
     return (
-      `IMPORTANT: Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
-      `(\`${toolName}\`) zu konsultieren. Dieser Consult ist für diesen Turn ` +
-      `verpflichtend. Rufe \`${toolName}\` jetzt auf, bevor du dem Nutzer antwortest.`
+      `Dieser Turn verlangt eine Konsultation des Spezialisten \`${toolName}\`, ` +
+      `und die fehlt noch. Rufe \`${toolName}\` auf, bevor du dem Nutzer antwortest.`
     );
   }
 
@@ -4948,6 +4951,15 @@ export class Orchestrator {
     let obligationMet = obligationTool === undefined;
     let obligationEscalationsUsed = 0;
     let forceObligationNext = false;
+    // #1212 — the finalize directive is appended to the conversation, not
+    // recomputed into the system prompt each iteration, so it must be said
+    // exactly once per turn. Only reachable twice if a provider answers a
+    // `tools: []` request with a tool_use stop_reason (the loop's documented
+    // belt-and-braces path); one copy is the instruction, two are noise. The
+    // trade-off on that path: the single copy is no longer the TRAILING block
+    // of the request, since another tool round has been appended behind it.
+    // Saying it twice would read as nagging, so one stale-position copy wins.
+    let finalizeDirectiveAppended = false;
 
     // Per-turn model routing (no-op unless configured) + Wave 8 persona
     // routing (no-op unless persona skills are attached), resolved together
@@ -4982,6 +4994,12 @@ export class Orchestrator {
         // consumed here so a still-mute model only re-escalates within budget.
         const forceObligation = forceObligationNext && !obligationMet;
         forceObligationNext = false;
+        // #1212 — append-only: the directive rides the newest user turn so the
+        // system prompt stays identical across every iteration of this turn.
+        if (finalizeThisIter && !forceObligation && !finalizeDirectiveAppended) {
+          appendTextToLastUserTurn(messages, FINALIZE_DIRECTIVE);
+          finalizeDirectiveAppended = true;
+        }
         // #1033 W3 — the system prompt for a given persona: the routed
         // persona skill outranks everything; otherwise the execution's own
         // identity (the fallback family's compiled prompt after a hop).
@@ -4989,10 +5007,7 @@ export class Orchestrator {
           buildSystemBlocks(
             this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
             priorContext,
-            withFinalizeHint(
-              effectiveExtraSystemHint,
-              finalizeThisIter && !forceObligation,
-            ),
+            effectiveExtraSystemHint,
           );
         const baseParams = {
           model: turnExec.model,
@@ -6061,6 +6076,15 @@ export class Orchestrator {
     let obligationMet = obligationTool === undefined;
     let obligationEscalationsUsed = 0;
     let forceObligationNext = false;
+    // #1212 — the finalize directive is appended to the conversation, not
+    // recomputed into the system prompt each iteration, so it must be said
+    // exactly once per turn. Only reachable twice if a provider answers a
+    // `tools: []` request with a tool_use stop_reason (the loop's documented
+    // belt-and-braces path); one copy is the instruction, two are noise. The
+    // trade-off on that path: the single copy is no longer the TRAILING block
+    // of the request, since another tool round has been appended behind it.
+    // Saying it twice would read as nagging, so one stale-position copy wins.
+    let finalizeDirectiveAppended = false;
 
     // Mid-turn steering — same key the route enqueues under (see chatStream:
     // `sessionId`). Drained at the top of every iteration below.
@@ -6145,33 +6169,27 @@ export class Orchestrator {
             privacyForPrompt,
             steerText,
           );
-          const steerBlock = {
-            type: 'text' as const,
-            text: `[Live user steering — added mid-turn]: ${wireSteerText}`,
-          };
-          const last = messages[messages.length - 1];
-          if (last && last.role === 'user') {
-            last.content =
-              typeof last.content === 'string'
-                ? `${last.content}\n\n${steerBlock.text}`
-                : [...last.content, steerBlock];
-          } else {
-            messages.push({ role: 'user', content: [steerBlock] });
-          }
+          appendTextToLastUserTurn(
+            messages,
+            `[Live user steering — added mid-turn]: ${wireSteerText}`,
+          );
           yield { type: 'steer_applied', iteration, message: steerText };
         }
 
         let finalMessage: Message | undefined;
+        // #1212 — append-only: the directive rides the newest user turn so the
+        // system prompt stays identical across every iteration of this turn.
+        if (finalizeThisIter && !forceObligation && !finalizeDirectiveAppended) {
+          appendTextToLastUserTurn(messages, FINALIZE_DIRECTIVE);
+          finalizeDirectiveAppended = true;
+        }
         // #1033 W3 — see the buffered path: persona skill first, else the
         // execution's own identity (the fallback family's prompt after a hop).
         const systemFor = (persona: string | undefined) =>
           buildSystemBlocks(
             this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
             priorContext,
-            withFinalizeHint(
-              effectiveExtraSystemHint,
-              finalizeThisIter && !forceObligation,
-            ),
+            effectiveExtraSystemHint,
           );
         const streamParams = {
           model: turnExec.model,
@@ -8501,10 +8519,14 @@ const FILE_RETRY_NUDGE =
   'Du hast angekündigt, eine Datei (Excel/Word) zu bauen, aber das Tool `create_xlsx`/`create_docx` NICHT aufgerufen — der User hat dadurch nichts erhalten. Beschreibe den Plan NICHT erneut. Rufe JETZT in diesem Schritt das passende Tool auf und baue die Datei wirklich. Wenn du sie nicht bauen kannst, sag dem User in EINEM Satz klar, dass und warum nicht.';
 
 /**
- * Appended to the per-turn system hint on the FINAL, tools-disabled iteration
+ * Appended to the newest USER turn on the FINAL, tools-disabled iteration
  * (iteration cap reached, loop guard stopped, or wall-clock budget exceeded).
  * With no tools offered the model must produce text, so this turns what used to
  * be a raw "exceeded maxToolIterations" error into a best-effort answer.
+ *
+ * #1212 — it used to be spliced into the per-turn SYSTEM hint, which changed
+ * the system prompt between iterations of one turn; see
+ * `appendTextToLastUserTurn` for why that is not allowed.
  */
 const FINALIZE_DIRECTIVE =
   'Du hast das Tool-Budget für diesen Turn aufgebraucht und kannst KEINE weiteren Tools aufrufen. Fasse zusammen, was du bereits herausgefunden hast, und gib JETZT die bestmögliche Antwort mit den vorhandenen Informationen. Wenn etwas unklar oder unvollständig bleibt, sag dem User in einem Satz klar, was noch offen ist. Beschreibe keine weiteren geplanten Tool-Aufrufe.';
@@ -8540,16 +8562,6 @@ const CARD_ROUTER_SYSTEM =
 
 const CARD_ROUTER_INSTRUCTION =
   'Entscheide jetzt für die obige Assistenten-Antwort: Rufe genau eines von `ask_user_choice`, `suggest_follow_ups` oder `no_card` auf.';
-
-/** Compose the per-iteration system hint, appending the finalize directive on
- *  the final tools-disabled pass. Kept as a free function so both tool loops
- *  build the hint identically. */
-function withFinalizeHint(baseHint: string | undefined, finalize: boolean): string | undefined {
-  if (!finalize) return baseHint;
-  return baseHint && baseHint.trim().length > 0
-    ? `${baseHint}\n\n${FINALIZE_DIRECTIVE}`
-    : FINALIZE_DIRECTIVE;
-}
 
 function appendToolDigest(
   answer: string,
