@@ -116,6 +116,18 @@ export function classifyRuntimeRejection(
   return isStructuredUnavailable(parseBody(reason.body)) ? 'down' : 'unreachable';
 }
 
+/**
+ * The middleware's cause for a REJECTED operator-route call, or `null` when
+ * the rejection is not its structured 503 (a real failure the caller must
+ * show as an error). A structured 503 without a `cause` (older middleware, or
+ * the channels route, which sends none) reads as `no_llm_access`, as in
+ * {@link parseCause}.
+ */
+export function runtimeUnavailableCause(reason: unknown): RuntimeReadinessCause | null {
+  if (classifyRuntimeRejection(reason) !== 'down') return null;
+  return parseCause(parseBody((reason as ApiError).body)?.cause);
+}
+
 /** The tri-state for one settled operator-route call. */
 export function runtimeStateOf(result: PromiseSettledResult<unknown>): RuntimeReadiness {
   return result.status === 'fulfilled'

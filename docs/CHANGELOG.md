@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the orchestrator page explains a fresh install instead of printing two 503s
+
+2026-10-05 — Without LLM access the dashboard links to `/operator/agents`,
+which showed `GET /v1/operator/agents failed: 503` and the same for channels.
+The page now reads the middleware's structured 503 with the dashboard's own
+classifier and shows a setup state per cause, linking to LLM access; channel
+routing says it waits for an orchestrator. A transport error, a 500 or a 503
+without the marker still renders as an error, now with a catalogue message
+and the technical detail underneath. New keys `operatorAgents.setup.*` and
+`operatorChannels.awaitingOrchestrator` (en/de).
+
 ### Security — desktop kernel connects to its database with SCRAM only
 
 2026-10-04 — On Windows the desktop's embedded Postgres listens on loopback
