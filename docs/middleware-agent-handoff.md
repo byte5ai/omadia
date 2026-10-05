@@ -1891,7 +1891,12 @@ versions blockt ohnehin). Run-Historie + Version-Graph bleiben als
 Audit-Trace. Guardrails env-tunable (`CONDUCTOR_EPHEMERAL_*`, §10): Pflicht-TTL
 mit Clamp (Default 24h, Max 7d), max. 3 concurrent Runs + 10 Creates/h pro
 Agent. Tests: `test/conductorEphemeral*.test.ts`,
-`test/conductorPatternCatalog.test.ts`. Achtung: das Schema-CI-Gate re-applied
+`test/conductorPatternCatalog.test.ts`. Prompt-Konvention der gebündelten
+Patterns (#1234): Output wird über das Publikum geformt (`WHO READS THIS:` —
+wer liest das, wo, was ist dort lesbar), NICHT über numerische Wort-/Item-Caps;
+die Teams-Markdown-Regeln, die Sektions-Struktur, die
+Fenced-JSON-Verdict-Kontrakte und die Transcript-is-Data-Guards bleiben hart. Gate dafür:
+`test/conductorPatternPromptAudience.test.ts`. Achtung: das Schema-CI-Gate re-applied
 `src/conductor/migrations` noch NICHT (Verzeichnis steht in ci.yml unter
 "still uncovered") — 0009 ist nach 0008-Muster idempotent geschrieben, aber
 CI-unbewiesen.
@@ -2078,8 +2083,9 @@ validate-grün (unguarded bleibt Fehler); Loop-Budget deterministisch über
 `lt ctx.stepAttempts.moderate 24`) plus Ephemeral-TTL plus MAX_STEPS.
 Agent-Steps liefern strukturierte Verdicts: letzter ```json-Fence der
 Antwort → `stepResult.data` (`extractFencedJson` in realStepEffects,
-tolerant + size-capped). Pattern `facilitation` ist **v2** (Assess-Tick
-PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report).
+tolerant + size-capped). Pattern `facilitation` ist **v4** (Assess-Tick
+PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report);
+Pattern `discussion` ist **v3**.
 `conductorEphemeralRuns.poke(runId)` feuert den offenen Timer-Await sofort.
 Neuer Service **`conversationSend`** (deny-by-default; SDK-Seam
 `registerConversationSendProvider`, Kernel `src/channels/
