@@ -46,6 +46,7 @@ routing says it waits for an orchestrator. A transport error, a 500 or a 503
 without the marker still renders as an error, now with a catalogue message
 and the technical detail underneath. New keys `operatorAgents.setup.*` and
 `operatorChannels.awaitingOrchestrator` (en/de).
+
 ### Fixed — CLI deny-list drift guard reads CLI 2.1.286+, and fourteen new built-ins are denied
 
 2026-10-05 — The local full test run went red in
