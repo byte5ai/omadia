@@ -41,6 +41,7 @@ import type {
   ToolResultPart,
   ToolSpec,
 } from '@omadia/llm-provider';
+import { isClassRef, resolveModelRef } from '@omadia/llm-provider';
 
 // The orchestrator's loosely-typed Anthropic shapes. Mirrors its own
 // `type ContentBlock = any` — we narrow structurally inside the mappers.
@@ -182,6 +183,61 @@ function toToolChoice(
 }
 
 /**
+ * Clamp a requested output budget to the RESOLVED model's own ceiling (#1210).
+ *
+ * `max_tokens` arrives pre-resolved from the caller — the orchestrator plugin's
+ * `orchestrator_max_tokens` (floored at the frontier class's ceiling) or the
+ * host's `SUB_AGENT_MAX_TOKENS` — both sized for an always-thinking frontier
+ * model, where thinking tokens count toward the budget. Sent unchanged to a
+ * model with a smaller output cap — a Haiku-class model (8_192), a Mistral
+ * (8_192), an operator's OpenAI-compatible or Ollama build — the vendor rejects
+ * the WHOLE request with a 400 rather than silently capping it, so every turn on
+ * that model fails. The floor and the clamp are not in tension: the floor raises
+ * a stale config to what a frontier model needs, the clamp lowers it to what the
+ * selected model accepts.
+ *
+ * Here because it is the chokepoint of the two paths that carry a turn's real
+ * budget: `Orchestrator`'s own `complete`/`stream` calls and every local
+ * sub-agent (via `streamMessageWithObserver` → `streamMessageEvents`). It is NOT
+ * every sender in this package — `personaRouter`, `modelRouter` and
+ * `securityScreener` hand-build an `LlmRequest` and call `provider.complete`
+ * directly, bypassing this function. They need no clamp: their budgets are
+ * 8–128 tokens, under every ceiling any provider publishes. A new sender that
+ * carries a turn-sized budget must either route through here or clamp itself.
+ *
+ * `providerId` is the connection the request is about to be sent on, and it
+ * matters: a bare vendor id two connected providers both serve is ambiguous
+ * without it, and `resolveModelRef` falls back to ANTHROPIC for a class ref —
+ * an Anthropic ceiling on a Mistral turn. Callers that know their provider pass
+ * it; callers that do not get the conservative behaviour below.
+ *
+ * An id the registry cannot resolve passes through UNTOUCHED — the registry is
+ * a curated overlay, not the universe of valid ids (an operator-typed id, a
+ * fine-tune, a local build). That is the same pass-through contract
+ * `resolveModelIdForProvider` uses, and it keeps the seam's behaviour unchanged
+ * for hosts that register no models at all (unit tests). The known gap #1210
+ * names is exactly this one: an operator-added OpenAI-compatible / Ollama /
+ * MiniMax model is unclamped until its provider contributes a `maxTokens`.
+ */
+function clampMaxTokens(
+  model: string,
+  requested: number,
+  providerId?: string,
+): number {
+  // A class ref must never reach the provider (the plugin resolves refs to a
+  // concrete vendor id at build time), and resolving one WITHOUT a provider
+  // hint silently yields Anthropic's model for that class. Leave it alone
+  // rather than clamp to a ceiling that may belong to another vendor.
+  if (providerId === undefined && isClassRef(model)) return requested;
+  const ceiling = resolveModelRef(
+    model,
+    providerId !== undefined ? { defaultProvider: providerId } : {},
+  )?.maxTokens;
+  if (ceiling === undefined || ceiling <= 0) return requested;
+  return Math.min(requested, ceiling);
+}
+
+/**
  * Translate the Anthropic-shaped params the orchestrator/sub-agent built into
  * a neutral `LlmRequest`. `betas` carries provider preview opt-ins (the
  * orchestrator's `context-management` beta) that previously rode as the
@@ -190,6 +246,10 @@ function toToolChoice(
 export function toLlmRequest(
   params: AnthropicParams,
   betas?: ReadonlyArray<string>,
+  /** The provider connection this request is about to be sent on — see
+   *  {@link clampMaxTokens}. Omitted only by callers that genuinely do not
+   *  know it. */
+  providerId?: string,
 ): LlmRequest {
   const system = toSystem(params.system);
   const toolChoice = toToolChoice(params.tool_choice);
@@ -199,7 +259,7 @@ export function toLlmRequest(
       : undefined;
   return {
     model: params.model,
-    maxTokens: params.max_tokens,
+    maxTokens: clampMaxTokens(params.model, params.max_tokens, providerId),
     messages: params.messages.map(toChatMessage),
     ...(system !== undefined ? { system } : {}),
     ...(tooling !== undefined ? { tools: tooling.tools } : {}),

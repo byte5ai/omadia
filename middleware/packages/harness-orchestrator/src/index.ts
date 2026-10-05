@@ -17,7 +17,7 @@
  */
 
 // Plugin entry point
-export { activate } from './plugin.js';
+export { activate, DEFAULT_MAX_TOKENS } from './plugin.js';
 export type {
   ChatAgentBundle,
   OrchestratorPluginHandle,

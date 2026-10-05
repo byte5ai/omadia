@@ -253,11 +253,24 @@ export const CHAT_PEER_AGENTS_SERVICE = 'chatPeerAgents';
 
 /** #1033 W3 — the kernel's shared provider pool (see `optional_requires`). */
 export const LLM_PROVIDER_POOL_SERVICE = 'llmProviderPool';
-// 8192, not 4096: a verbose preamble + a large structured tool call (e.g. a
-// multi-sheet create_xlsx with formulas) truncates at 4096 → `max_tokens`
-// mid-tool-call, so the file is never built. Also enforced as a floor below so
-// an already-installed registry config of 4096 gets bumped without reinstall.
-const DEFAULT_MAX_TOKENS = 8192;
+// Sized for THINKING PLUS the reply, not for the reply alone (#1210): the
+// `class:frontier` default resolves to the vendor's newest Opus via live
+// discovery, thinking is always on there and its tokens count toward
+// `max_tokens`. A thinking-off budget therefore truncates the answer — or a
+// large structured tool call (e.g. a multi-sheet create_xlsx with formulas)
+// mid-tool-call, so the file is never built. 32_000 is the frontier class's own
+// registry `maxTokens` (`platform/builtinLlmProviders.ts`). Also enforced as a
+// floor below so an already-installed smaller config (4096, or 8192 from the
+// thinking-off era) gets bumped without a reinstall — and clamped back DOWN to
+// the resolved model's own ceiling in `toLlmRequest`, so picking a model with a
+// smaller output cap (Haiku, Mistral, a local build) still sends a value its
+// API accepts instead of 400-ing every turn.
+// Exported so `test/orchestratorMaxTokenBudgets.test.ts` can pin it against the
+// host's `ORCHESTRATOR_MAX_TOKENS` default: the two are the SAME budget written
+// twice (the plugin cannot import the app layer — packages are imported BY it,
+// never the reverse), and the copy the running orchestrator actually uses is
+// this one.
+export const DEFAULT_MAX_TOKENS = 32_000;
 // Raised 25 → 100 so genuinely multi-step turns (e.g. a price-list comparison
 // across many lookups) reach a final answer. The high cap is made safe by the
 // orchestrator's round-loop guard (nudges then force-finalises a repeating
@@ -806,7 +819,8 @@ export async function activate(
     disclosurePosture,
   );
   // Floor at DEFAULT_MAX_TOKENS: a stale installed config (older deployments
-  // persisted 4096) would otherwise truncate large file-building tool calls.
+  // persisted 4096, then 8192) would otherwise truncate thinking plus a large
+  // file-building tool call. The seam clamps this back down per model.
   const maxTokens = Math.max(
     parseNumberOrDefault(
       ctx.config.get<unknown>('orchestrator_max_tokens'),
