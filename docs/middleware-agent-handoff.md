@@ -4198,7 +4198,8 @@ Request und bei jedem WebSocket-Upgrade. Offen:
   (sha1/sha256 als Hash und HMAC, `aes-256-gcm`, `hkdfSync`, `RSA-SHA256`, Ed25519) laufen
   unter Electron 44.5.1, und die Unit-Suite lief dort lokal mit diesem Aufruf durch
   (2026-10-01, macOS arm64): 10324 Tests, 2 rot — `cliSpawnGate` (liest die lokal installierte
-  `claude`-CLI, unter Node 22 genauso rot) und der `graphBackfill`-Flake. Required erst, wenn
+  `claude`-CLI, unter Node 22 genauso rot; seit 2026-10-05 behoben, der Miner liest das
+  Layout ab 2.1.286, siehe `docs/security-architecture.md`) und der `graphBackfill`-Flake. Required erst, wenn
   der Flake behoben ist.
 - **Kleinkram aus dem Desktop-Refresh:** der Schritt „Allow git-https for git dependencies“ in
   `desktop-apps.yml` ist tot (kein Lockfile zieht mehr eine git-Abhängigkeit); das leere
