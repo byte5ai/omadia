@@ -209,8 +209,10 @@ flags. The live probe (`cliGateLiveProbe.test.ts`, opt-in) answered that on
 runs out of three (exit 0, an answer, no tool call), and the CLI's own `init`
 event listed `tools: []` and `permissionMode: dontAsk`. The ungated control
 argv offered 30 tools and called `Bash` in two of four runs. In the other
-two, Haiku answered without trying a tool, so the control can fail through
-model choice and not only through a changed CLI.
+two, Haiku answered without trying a tool, so the control could fail through
+model choice and not only through a changed CLI. It now gets up to four
+attempts and passes on the first one that reaches a built-in; every attempt
+must still exit 0, so a rejected argv cannot pass as "no tool".
 
 Not every entry is a 2.1.259 tool. The list is deliberately a superset so an
 upgrade cannot open a hole between releases; `JavaScript` is one such entry and

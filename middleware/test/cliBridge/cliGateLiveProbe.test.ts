@@ -49,6 +49,9 @@ import {
  * the help text — the open question in #1017 — and the pre-gate argv
  * reproduces the original OM-81 finding on demand.
  */
+/** How often the negative control may run before a missing tool call fails it. */
+const CONTROL_ATTEMPTS = 4;
+
 describe('CLI gate live probe', () => {
   interface ProbeResult {
     readonly exitCode: number | null;
@@ -228,28 +231,41 @@ describe('CLI gate live probe', () => {
       return;
     }
 
-    const result = await runProbe((mcpConfigPath) => [
-      '-p',
-      '--output-format',
-      'stream-json',
-      '--include-partial-messages',
-      '--verbose',
-      '--strict-mcp-config',
-      '--mcp-config',
-      mcpConfigPath,
-      '--allowedTools',
-      `${OMADIA_MCP_TOOL_PREFIX}*`,
-      '--model',
-      'haiku',
-      '--append-system-prompt',
-      'You are a test harness. Answer briefly.',
-    ]);
+    // Measured on 2.1.289 (2026-10-05): the control called `Bash` in two of
+    // four single runs; in the other two Haiku answered without trying a
+    // tool. That is model choice, not the CLI, so the control gets a few
+    // attempts and passes on the first one that reaches a built-in. Every
+    // attempt must still exit 0, so a rejected argv cannot pass as "no tool".
+    const attempts: string[] = [];
+    for (let attempt = 1; attempt <= CONTROL_ATTEMPTS; attempt += 1) {
+      const result = await runProbe((mcpConfigPath) => [
+        '-p',
+        '--output-format',
+        'stream-json',
+        '--include-partial-messages',
+        '--verbose',
+        '--strict-mcp-config',
+        '--mcp-config',
+        mcpConfigPath,
+        '--allowedTools',
+        `${OMADIA_MCP_TOOL_PREFIX}*`,
+        '--model',
+        'haiku',
+        '--append-system-prompt',
+        'You are a test harness. Answer briefly.',
+      ]);
 
-    assert.equal(result.exitCode, 0, `control run failed: stderr=${result.stderr.slice(0, 500)}`);
-    const foreign = result.toolNames.filter((name) => !name.startsWith(OMADIA_MCP_TOOL_PREFIX));
-    assert.ok(
-      foreign.length > 0,
-      'the pre-gate argv produced no built-in tool call, so the gated probe proves nothing — ' +
+      assert.equal(result.exitCode, 0, `control run failed: stderr=${result.stderr.slice(0, 500)}`);
+      const foreign = result.toolNames.filter((name) => !name.startsWith(OMADIA_MCP_TOOL_PREFIX));
+      attempts.push(`attempt ${attempt}: [${foreign.join(', ')}]`);
+      if (foreign.length > 0) {
+        t.diagnostic(attempts.join('; '));
+        return;
+      }
+    }
+    assert.fail(
+      `the pre-gate argv produced no built-in tool call in ${CONTROL_ATTEMPTS} attempts ` +
+        `(${attempts.join('; ')}), so the gated probe proves nothing — ` +
         'check whether the CLI changed its default tool behaviour',
     );
   });
