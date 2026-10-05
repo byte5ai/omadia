@@ -2105,6 +2105,15 @@ Wahrheit lesen (OM-74/75/78/84):
   in `routes/operatorAgents.ts` ist optional; ohne sie bleibt das 503-Payload
   unverändert, ein Reject degradiert zu `unknown`. Wiring-Pin in
   `test/operatorAgentsRouter.test.ts`.
+- **Orchestrator-Seite im Erststart (2026-10-05).** `web-ui/app/operator/agents/page.tsx`
+  liest Agents und Channels per `Promise.allSettled`. Das strukturierte 503 der
+  Agents-Route wird über `runtimeUnavailableCause` (`_lib/runtimeReadiness.ts`,
+  derselbe Klassifizierer wie Dashboard-Schritt 1 und Banner) zur Ursache und
+  rendert `OrchestratorSetupState` mit Link auf `/admin/providers`; das
+  Channels-503 (ohne `cause`) folgt diesem Urteil nur, wenn die Agents-Route
+  ebenfalls strukturiert 503 meldet. Jeder andere Fehler (Transport, 500,
+  503 ohne Marker) bleibt eine Fehlermeldung mit Katalogtext und technischem
+  Detail darunter. Tests: `web-ui/app/operator/agents/__tests__/page.test.tsx`.
 - **`GET /api/v1/admin/embedding-provider/status`** (auth wie der Rest des
   Routers): `{ capabilityPublished, activeProviderId, activeModel,
   installedProviderIds }` aus der Registry allein. Das bestehende `GET /`

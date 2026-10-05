@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the orchestrator page explains a fresh install instead of printing two 503s
+
+2026-10-05 — Without LLM access the dashboard links to `/operator/agents`,
+which showed `GET /v1/operator/agents failed: 503` and the same for channels.
+The page now reads the middleware's structured 503 with the dashboard's own
+classifier and shows a setup state per cause, linking to LLM access; channel
+routing says it waits for an orchestrator. A transport error, a 500 or a 503
+without the marker still renders as an error, now with a catalogue message
+and the technical detail underneath. New keys `operatorAgents.setup.*` and
+`operatorChannels.awaitingOrchestrator` (en/de).
+
 ### Fixed — CLI deny-list drift guard reads CLI 2.1.286+, and fourteen new built-ins are denied
 
 2026-10-05 — The local full test run went red in

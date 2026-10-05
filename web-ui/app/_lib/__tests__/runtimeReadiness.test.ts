@@ -5,6 +5,7 @@ import {
   classifyProbeResponse,
   classifyRuntimeRejection,
   runtimeStateOf,
+  runtimeUnavailableCause,
 } from '../runtimeReadiness';
 
 /**
@@ -173,5 +174,24 @@ describe('classifyProbeResponse', () => {
 
   it('stays silent on a 404 — a missing route is not an unreachable backend', () => {
     expect(classifyProbeResponse(404, null)).toBeNull();
+  });
+});
+
+describe('runtimeUnavailableCause', () => {
+  it('returns the cause of the structured 503', () => {
+    const body = JSON.stringify({ error: 'multi_orchestrator_unavailable', cause: 'no_assignment' });
+    expect(runtimeUnavailableCause(new ApiError(503, 'x', body))).toBe('no_assignment');
+  });
+
+  it('reads a structured 503 without a cause as missing access', () => {
+    expect(runtimeUnavailableCause(new ApiError(503, 'x', UNAVAILABLE_BODY))).toBe('no_llm_access');
+  });
+
+  it.each([
+    ['a bare 503', new ApiError(503, 'x', '')],
+    ['a 500', new ApiError(500, 'x', UNAVAILABLE_BODY)],
+    ['a transport error', new TypeError('fetch failed')],
+  ])('returns null for %s — that is a failure, not a first start', (_label, reason) => {
+    expect(runtimeUnavailableCause(reason)).toBeNull();
   });
 });
