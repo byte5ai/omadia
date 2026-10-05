@@ -170,6 +170,50 @@ mining found something, so "nothing drifted" can no longer be confused with
 `WebFetch`, `Tmux`, `ReadMcpResource` or `RunWorkflow` each turns the suite
 red, and restoring them turns it green.
 
+**2.1.286 changed the binary's layout (2026-10-05).** From 2.1.286 (checked on
+2.1.286 and 2.1.289) the inventory array is gone. Each tool is an object
+literal (`{name:…,searchHint:…,maxResultSizeChars:…}`) whose name is a string
+constant imported from another of ~2,200 ES-module chunks. The old parser
+found 0 names and the guard failed on its own sanity check, which is what it
+was built to do. The miner now lives in `test/_helpers/cliToolInventory.ts`
+and reads both layouts: it follows `import{…}from"/$bunfs/root/chunk-….js"`
+to the exporting chunk's declaration, and it takes aliases only from inside a
+tool definition. It also reads the SDK's own `BUILTIN_TOOL_NAMES` as a second
+source. `cliToolInventory.test.ts` pins both layouts with fixtures, including
+decoys (highlight.js `aliases`, key-binding objects, nested keys, the generic
+`mcp` template), an unresolvable import and an ambiguous one.
+
+The bare "at least 50 names / 5 aliases" counts were replaced. An installed
+but unreadable binary still fails, with the version, instead of skipping. The
+guard now requires the code-execution, filesystem and network anchors
+(`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebFetch`, `WebSearch`)
+among the mined definitions, fails on any tool name it could not resolve (an
+import no chunk resolves, exporters that disagree, a local without a string
+value; only a parameter of the enclosing factory function is exempt, because
+the factory's call sites are mined as definitions themselves), and
+subtracts the deny list from built-ins, aliases and the SDK list separately.
+
+Mined from 2.1.289: 83 built-ins, nine aliases (`Task`, `Brief`, `ListPeers`,
+`KillShell`, `KillBash`, the three MCP-resource short forms, `RunWorkflow`)
+and 22 SDK names. Fourteen built-ins were missing from the deny list and are
+now in it: `AppifactRepl`, `memory_list`, `memory_read`, `memory_write`,
+`GetTask`, `SubagentHandback`, `Poll`, `WaitForMcpServers`,
+`FetchInboxMessage`, `ReadNotifications`, `ProposeGoal`,
+`ShowOnboardingRolePicker`, `StructuredOutput` and `TestingPermission`.
+`Tmux` no longer appears in the binary and stays listed. Removing `Poll` from
+the constant turns the guard red again with the version named.
+
+What the static mining cannot say is whether the running CLI honours the
+flags. The live probe (`cliGateLiveProbe.test.ts`, opt-in) answered that on
+2.1.289 with a logged-in CLI on 2026-10-05: the production argv passed three
+runs out of three (exit 0, an answer, no tool call), and the CLI's own `init`
+event listed `tools: []` and `permissionMode: dontAsk`. The ungated control
+argv offered 30 tools and called `Bash` in two of four runs. In the other
+two, Haiku answered without trying a tool, so the control could fail through
+model choice and not only through a changed CLI. It now gets up to four
+attempts and passes on the first one that reaches a built-in; every attempt
+must still exit 0, so a rejected argv cannot pass as "no tool".
+
 Not every entry is a 2.1.259 tool. The list is deliberately a superset so an
 upgrade cannot open a hole between releases; `JavaScript` is one such entry and
 is **not** a tool in 2.1.259 — the only `"JavaScript"` strings in the binary

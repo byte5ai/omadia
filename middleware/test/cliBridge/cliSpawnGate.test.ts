@@ -22,6 +22,7 @@ import {
   supportsRestrictedFlag,
 } from '../../packages/harness-orchestrator/src/cliSpawnGate.js';
 import type { CliVersionExec } from '../../packages/harness-orchestrator/src/cliSpawnGate.js';
+import { mineCliToolInventory } from '../_helpers/cliToolInventory.js';
 
 /**
  * The gate that keeps a spawned `claude` CLI away from its own built-in tools
@@ -274,6 +275,8 @@ describe('cliSpawnGate', () => {
       'JavaScript',
       'Tmux',
       'Cd',
+      // 2.1.286+: a REPL for artifacts.
+      'AppifactRepl',
       // Alias of `Workflow` whose metadata declares `enablesCodeExecution`.
       'RunWorkflow',
       // Sub-agents: a denied tool is worthless if a sub-agent can call it.
@@ -291,6 +294,9 @@ describe('cliSpawnGate', () => {
       'LS',
       'NotebookEdit',
       'NotebookRead',
+      // 2.1.286+: the CLI's own memory store, outside omadia's control.
+      'memory_read',
+      'memory_write',
       // Network egress.
       'WebFetch',
       'WebSearch',
@@ -320,10 +326,10 @@ describe('cliSpawnGate', () => {
     assert.deepEqual(missing, [], `deny list lost: ${missing.join(', ')}`);
   });
 
-  it('denies every alias 2.1.259 declares, in both spellings', () => {
+  it('denies every alias 2.1.259 and 2.1.289 declare, in both spellings', () => {
     // Denying only one spelling may match nothing depending on how the CLI
     // resolves names, so alias and canonical name are both listed. These are
-    // all ten alias names the 2.1.259 tool metadata declares; the drift guard
+    // all alias names the 2.1.259 and 2.1.289 tool metadata declare; the drift guard
     // below re-mines them from the binary so this cannot silently fall behind.
     const aliases = [
       'KillShell',
@@ -338,6 +344,11 @@ describe('cliSpawnGate', () => {
       // Alias of `Workflow`; its metadata declares `enablesCodeExecution`, so
       // this one was a code-execution path left open.
       'RunWorkflow',
+      // 2.1.286+ adds three more: `Task` (for `Agent`), `Brief` (for
+      // `SendUserMessage`) and `ListPeers` (for `ListAgents`).
+      'Task',
+      'Brief',
+      'ListPeers',
     ];
     const missing = aliases.filter((name) => !CLI_BUILTIN_TOOL_DENYLIST.includes(name));
     assert.deepEqual(missing, [], `deny list is missing aliases: ${missing.join(', ')}`);
@@ -524,8 +535,18 @@ describe('cliSpawnGate', () => {
    * of the binary, then subtract the deny list. Anything left over is drift and
    * fails the test. The deny list is never an input to the candidate set.
    *
-   * Skips only when no binary is installed (CI has none). It deliberately does
-   * NOT skip on a version mismatch: a new version is exactly when this matters.
+   * Reading the binary is `test/_helpers/cliToolInventory.ts`. It knows two
+   * layouts: the literal inventory array of 2.1.259, and the tool-definition
+   * objects of 2.1.286+, whose names are constants imported from other module
+   * chunks. 2.1.289 dropped the array, and the old parser found 0 names there.
+   *
+   * Skips only when no binary is installed (CI has none). A binary that is
+   * installed but cannot be read FAILS — with the version and what was missing
+   * — instead of skipping: a new version is exactly when this matters. It
+   * deliberately does NOT skip on a version mismatch either.
+   *
+   * What this cannot show: that the running CLI honours `--tools ""` and the
+   * deny list. That is `cliGateLiveProbe.test.ts`, which needs a logged-in CLI.
    */
   describe('deny-list drift against the installed CLI', () => {
     /** Newest installed CLI, by SEMVER order — `2.1.30` must not beat `2.1.259`. */
@@ -550,52 +571,12 @@ describe('cliSpawnGate', () => {
     }
 
     /**
-     * Every built-in tool name the binary declares, plus every alias attached
-     * to tool metadata.
-     *
-     * The CLI keeps its tool inventory as one array literal of quoted names
-     * (in 2.1.259 it is minified to `var mEo=[...]`, 183 entries, of which 105
-     * are `mcp__…` and 78 are built-ins). The variable name is minified and
-     * will change between versions, so we look for the ARRAY rather than the
-     * name: a literal of 50+ quoted identifiers that contains the anchors any
-     * plausible inventory must contain.
-     *
-     * Aliases live in `aliases:[...]` arrays. Those also appear in bundled
-     * third-party data (highlight.js language definitions carry them too), so
-     * only arrays whose surrounding window looks like tool metadata count —
-     * `searchHint`, `isReadOnly`, `enablesCodeExecution`, `isConcurrencySafe`.
-     * In 2.1.259 that yields exactly ten alias names.
+     * The tool classes the gate exists to remove. Every CLI that has tools at
+     * all declares these; if the miner cannot find them, it has not understood
+     * the binary, whatever else it returned. This replaces a bare "at least 50
+     * names" count, which said nothing about WHICH names were found.
      */
-    function mineToolNames(text: string): {
-      readonly builtins: readonly string[];
-      readonly aliases: readonly string[];
-    } {
-      // The entry class allows `.` and `-` because MCP server names carry them
-      // (`mcp__claude-code-remote`). Without that the literal match truncates
-      // at the first hyphen and can miss the anchors below — which is how the
-      // first version of this parser silently mined zero names.
-      const arrayLiteral = /\[((?:"[A-Za-z_][A-Za-z0-9_.-]*",){49,}"[A-Za-z_][A-Za-z0-9_.-]*")\]/g;
-      let builtins: string[] = [];
-      let match: RegExpExecArray | null;
-      while ((match = arrayLiteral.exec(text)) !== null) {
-        const body = match[1] ?? '';
-        const names = [...body.matchAll(/"([^"]+)"/g)].map((m) => m[1] as string);
-        const anchors = ['Bash', 'Read', 'WebFetch', 'Grep'];
-        if (!anchors.every((anchor) => names.includes(anchor))) continue;
-        const nonMcp = names.filter((name) => !name.startsWith('mcp__'));
-        if (nonMcp.length > builtins.length) builtins = nonMcp;
-      }
-
-      const aliases = new Set<string>();
-      const aliasArray = /aliases:\[((?:"[^"]*",?)+)\]/g;
-      while ((match = aliasArray.exec(text)) !== null) {
-        const window = text.slice(Math.max(0, match.index - 600), match.index + 600);
-        if (!/searchHint|isReadOnly|enablesCodeExecution|isConcurrencySafe/.test(window)) continue;
-        for (const m of (match[1] ?? '').matchAll(/"([^"]+)"/g)) aliases.add(m[1] as string);
-      }
-
-      return { builtins, aliases: [...aliases].sort() };
-    }
+    const PARSER_ANCHORS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'WebSearch'];
 
     it('names every built-in tool and alias the installed binary declares', (t) => {
       const binary = installedBinary();
@@ -604,41 +585,51 @@ describe('cliSpawnGate', () => {
         return;
       }
 
-      const { builtins, aliases } = mineToolNames(readFileSync(binary.path).toString('latin1'));
+      const inventory = mineCliToolInventory(readFileSync(binary.path).toString('latin1'));
+      const context = `CLI ${binary.version} (${binary.path})`;
+      t.diagnostic(
+        `${context}: layouts [${inventory.formats.join(', ')}], ${inventory.builtins.length} built-ins, ` +
+          `aliases [${inventory.aliases.join(', ')}], SDK list ${inventory.sdkBuiltinNames.length} names`,
+      );
 
       // The mining has to have worked, or the subtraction below proves nothing.
-      // This is the assertion the previous version was missing: it could not
-      // tell "nothing drifted" from "nothing was found".
       assert.ok(
-        builtins.length >= 50,
-        `expected to mine the tool inventory from ${binary.version}, found ${builtins.length} names`,
+        inventory.formats.length > 0,
+        `${context} is installed but its tool inventory is in no layout ` +
+          'test/_helpers/cliToolInventory.ts can read — extend the miner, do not skip',
       );
-      assert.ok(
-        aliases.length >= 5,
-        `expected to mine tool aliases from ${binary.version}, found ${aliases.length}`,
+      const missingAnchors = PARSER_ANCHORS.filter((name) => !inventory.builtins.includes(name));
+      assert.deepEqual(
+        missingAnchors,
+        [],
+        `${context}: the miner did not find these tool definitions, so its result is incomplete`,
       );
-      for (const anchor of ['Bash', 'Read', 'Write', 'WebFetch', 'Tmux']) {
-        assert.ok(builtins.includes(anchor), `mined inventory must contain ${anchor}`);
-      }
+      // A tool whose name could not be followed to its declaration is a blind
+      // spot: something exists that this guard cannot compare.
+      assert.deepEqual(inventory.unresolved, [], `${context}: tool names the miner could not resolve`);
 
       const denied = new Set(CLI_BUILTIN_TOOL_DENYLIST);
-      const undeniedBuiltins = builtins.filter((name) => !denied.has(name));
-      const undeniedAliases = aliases.filter((name) => !denied.has(name));
+      const undenied = (names: readonly string[]): string[] => names.filter((name) => !denied.has(name));
 
       assert.deepEqual(
-        undeniedBuiltins,
+        undenied(inventory.builtins),
         [],
-        `CLI ${binary.version} declares built-in tools the deny list does not name: ` +
-          `${undeniedBuiltins.join(', ')}`,
+        `${context} declares built-in tools the deny list does not name`,
       );
       // #1015 review — `RunWorkflow` (alias of `Workflow`, and its metadata
       // declares `enablesCodeExecution`) and the three MCP-resource short
       // forms were missing here, beside their `…Tool` canonical names.
       assert.deepEqual(
-        undeniedAliases,
+        undenied(inventory.aliases),
         [],
-        `CLI ${binary.version} declares tool aliases the deny list does not name: ` +
-          `${undeniedAliases.join(', ')}`,
+        `${context} declares tool aliases the deny list does not name`,
+      );
+      // The SDK's own list is a second source that does not depend on the
+      // layout parsing above.
+      assert.deepEqual(
+        undenied(inventory.sdkBuiltinNames),
+        [],
+        `${context} lists SDK built-ins the deny list does not name`,
       );
     });
   });
