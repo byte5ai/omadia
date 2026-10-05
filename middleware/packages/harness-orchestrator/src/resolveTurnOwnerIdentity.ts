@@ -104,3 +104,28 @@ export async function resolveTurnOwnerIdentity(
     return {};
   }
 }
+
+/**
+ * The user a turn's run trace is filed under in the knowledge graph.
+ *
+ * `ingestRun` links the Run to an EXISTING User-Cluster (`user:<omadiaUserId>`)
+ * and refuses to create one, so the id it gets has to be the cluster root. A
+ * channel turn's `input.userId` is the raw channel-native id (`key:<uuid>` for
+ * the API channel, an AAD oid for Teams), which names no cluster: every such
+ * trace was dropped as `run-ingest-failed` while the stream reported success.
+ * The canonical id was already resolved for the turn (`resolvedOmadiaUserId`
+ * on the turn context), so a channel turn uses that, and a turn whose identity
+ * could not be resolved files its trace without a user link rather than under
+ * an id no cluster carries.
+ *
+ * A non-channel turn keeps `input.userId`: on the HTTP path that already IS
+ * the session's canonical id, and `resolveTurnOwnerIdentity` passes it through
+ * verbatim.
+ */
+export function runTraceOwnerId(
+  input: Pick<ChatTurnInput, 'userId' | 'channelIdentity'>,
+  resolvedOmadiaUserId: string | undefined,
+): string | undefined {
+  if (input.channelIdentity) return resolvedOmadiaUserId || undefined;
+  return input.userId || undefined;
+}
