@@ -288,9 +288,21 @@ import {
   knowledgeGraphPrincipalResolver,
 } from './audienceFloorProvider.js';
 import { guardToolCommands } from './commandPolicyGuard.js';
-import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
+import { resolveTurnOwnerIdentity, runTraceOwnerId } from './resolveTurnOwnerIdentity.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
+
+/**
+ * The `userId` a `RunTraceCollector` is built with — the canonical cluster id
+ * on a channel turn, see {@link runTraceOwnerId}. Read from the turn context,
+ * where both entry points store the identity they resolved for this turn.
+ */
+function runTraceUserSpread(
+  input: Pick<ChatTurnInput, 'userId' | 'channelIdentity'>,
+): { userId?: string } {
+  const userId = runTraceOwnerId(input, turnContext.current()?.resolvedOmadiaUserId);
+  return userId ? { userId } : {};
+}
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
 // `import { … } from './orchestrator.js'` (verifierService.ts, routes/chat.ts,
@@ -5184,7 +5196,7 @@ export class Orchestrator {
     // #361 privacy masking above (flag off ⇒ byte-identical verbatim relay).
     const collector = new RunTraceCollector({
       scope: input.sessionScope ?? turnId,
-      ...(input.userId ? { userId: input.userId } : {}),
+      ...runTraceUserSpread(input),
     });
     const handle = collector.beginInvocation(tool.name, candidate.agentId);
     const startedAt = Date.now();
@@ -5815,7 +5827,7 @@ export class Orchestrator {
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
           scope: input.sessionScope,
-          ...(input.userId ? { userId: input.userId } : {}),
+          ...runTraceUserSpread(input),
         })
       : undefined;
 
@@ -7105,7 +7117,7 @@ export class Orchestrator {
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
           scope: input.sessionScope,
-          ...(input.userId ? { userId: input.userId } : {}),
+          ...runTraceUserSpread(input),
         })
       : undefined;
 

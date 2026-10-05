@@ -36,6 +36,37 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — an API-key chat turn's run trace is stored in the knowledge graph again
+
+2026-10-05 — Found in the E2E test on main `1d8233ce`: an API-key turn ran
+the model and `query_knowledge_graph`, wrote its privacy receipt and streamed
+a `runTrace` with status `success`, but no Run reached the graph. The browser
+path stored its run. The log showed `run-ingest-failed`. Two causes, and
+fixing only the first was not enough:
+
+- `CHANNEL_KINDS` in `harness-knowledge-graph-neon/src/schema.ts` lacked
+  `'api'`, although the dispatcher sends it for a `key:<uuid>` caller (#1107)
+  and `plugin-api`'s `ChannelKind` has carried it since. Every API-key turn
+  failed `resolveOrCreateChannelIdentity` with a ZodError, so no User-Cluster
+  existed. A type-level test now keeps the two unions identical.
+- The three `RunTraceCollector`s in `orchestrator.ts` were built with the raw
+  `input.userId` (`key:<uuid>`), so `ingestRun` looked for the cluster
+  `user:key:<uuid>`. With the schema fixed alone the turn still failed with
+  `User-Cluster user:key:… not found`. A channel turn now files its trace
+  under the canonical id already resolved for the turn
+  (`resolvedOmadiaUserId`, via `runTraceOwnerId`), or without a user link if
+  resolution failed. Non-channel (browser) turns keep `input.userId`. This
+  also applies to Teams, Telegram and Slack turns, whose traces carried the
+  channel-native id the same way.
+- The Turn node's own `userId` property stays channel-native on purpose:
+  recall filters past turns by `input.userId`, and changing it would cut
+  channel users off from their history. The Turn reaches the canonical
+  cluster through its `BELONGS_TO` edge, which `ingestRun` writes.
+- Tests: `test/apiChannelRunTraceOwner.test.ts` (schema, parity,
+  `runTraceOwnerId`) and `test/apiKeyRunTrace.pg.test.ts`, which streams an
+  API-key turn through the real dispatcher and orchestrator into Postgres and
+  reads Run, Turn edge and ToolCall back from `graph_nodes` / `graph_edges`.
+
 ### Fixed — the orchestrator page explains a fresh install instead of printing two 503s
 
 2026-10-05 — Without LLM access the dashboard links to `/operator/agents`,

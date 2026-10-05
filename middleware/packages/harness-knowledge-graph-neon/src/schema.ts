@@ -175,7 +175,12 @@ const UserPropsSchema = z
 // auth provider (entra → true, local → false). 'admin-ui' would have been
 // more specific but the broader 'web' label keeps the door open for a
 // future end-user chat surface without another migration.
-export const CHANNEL_KINDS = ['teams', 'telegram', 'slack', 'email', 'web'] as const;
+// 'api' is the public chat API (#1107): the dispatcher maps a `key:<uuid>`
+// caller to it, and `plugin-api`'s `ChannelKind` has carried it since then.
+// This enum did not, so every API-key turn failed `resolveOrCreateChannelIdentity`
+// and its run trace had no User-Cluster to land in. A test pins this list to
+// the `plugin-api` union so the two cannot drift apart again.
+export const CHANNEL_KINDS = ['teams', 'telegram', 'slack', 'email', 'web', 'api'] as const;
 export type ChannelKind = (typeof CHANNEL_KINDS)[number];
 
 const ChannelIdentityPropsSchema = z

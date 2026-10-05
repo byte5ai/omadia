@@ -271,7 +271,9 @@ jobs:
           # 372 → 409 with the session, setup, sign-in and verifier hardening
           # (#1262, #1263, #1267: session-version migration, first-admin race,
           # sign-in account fold, verifier verdict reason); measured ran=409.
-          PG_TEST_FLOOR: '409'
+          # 409 → 411 with the API-key run-trace readback (apiKeyRunTrace.pg,
+          # 2 tests); measured ran=411.
+          PG_TEST_FLOOR: '411'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
