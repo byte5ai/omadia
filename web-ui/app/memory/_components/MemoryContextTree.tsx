@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
-import { listMemoryContextLabels, type MemoryContextAxis } from '@/app/_lib/api';
+import {
+  listMemoryContextLabels,
+  listMemoryMemberGroups,
+  type MemoryContextAxis,
+  type MemoryMemberOwner,
+} from '@/app/_lib/api';
 
 import {
   CONTEXTS_ROOT,
@@ -77,6 +82,10 @@ export function MemoryContextTree({
   const [expanded, setExpanded] = useState<string | null>(null);
   const [axisKeys, setAxisKeys] = useState<Record<string, AxisKeys>>({});
   const [labels, setLabels] = useState<Record<string, Record<string, string>>>({});
+  // Per agent: members tier key → the people it belongs to.
+  const [memberOwners, setMemberOwners] = useState<
+    Record<string, Record<string, MemoryMemberOwner[]>>
+  >({});
 
   useEffect(() => {
     let cancelled = false;
@@ -134,6 +143,15 @@ export function MemoryContextTree({
       } catch {
         setLabels((prev) => ({ ...prev, [slug]: {} }));
       }
+      // A members tier is named after its people; without them, its key.
+      try {
+        const { groups } = await listMemoryMemberGroups(slug);
+        const owners: Record<string, MemoryMemberOwner[]> = {};
+        for (const g of groups) owners[g.key] = g.owners;
+        setMemberOwners((prev) => ({ ...prev, [slug]: owners }));
+      } catch {
+        setMemberOwners((prev) => ({ ...prev, [slug]: {} }));
+      }
     },
     [listDir],
   );
@@ -148,6 +166,15 @@ export function MemoryContextTree({
   }, [expanded, axisKeys, loadAgentAxes]);
 
   const labelFor = (slug: string, axis: MemoryContextAxis, key: string): string => {
+    if (axis === 'members') {
+      const owners = memberOwners[slug]?.[key];
+      if (owners !== undefined && owners.length > 0) {
+        return owners
+          .map((o) => o.displayName ?? o.email ?? t('members.unknownPerson'))
+          .join(', ');
+      }
+      return key;
+    }
     const resolved = labels[slug]?.[`${axis}/${key}`];
     if (resolved !== undefined) return resolved;
     // Fall back to the key VERBATIM, not to a prettified half of it. The half

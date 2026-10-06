@@ -4172,13 +4172,19 @@ export async function purgeMemory(body: {
 // ONE helper so the path is a single edit if the backend lands elsewhere.
 // -----------------------------------------------------------------------------
 
-export type MemoryContextAxis = 'team' | 'channel' | 'user';
+/**
+ * `members` is the notes tier of one owner set (context-memory mode
+ * `members`): the people present when the notes were written.
+ */
+export type MemoryContextAxis = 'team' | 'channel' | 'user' | 'members';
+/** A members tier is never a promote source — the server refuses it. */
+export type MemoryPromoteSourceAxis = Exclude<MemoryContextAxis, 'members'>;
 export type MemoryPromoteTier = 'agent' | 'team';
 export type MemoryPromoteMode = 'copy' | 'move';
 
 export interface MemoryPromoteRequest {
   /** Source is always a context tier; `path` is relative to that tier root. */
-  source: { axis: MemoryContextAxis; ctxKey: string; path: string };
+  source: { axis: MemoryPromoteSourceAxis; ctxKey: string; path: string };
   /** Target tier; `path` defaults to the source path server-side. */
   target: { tier: MemoryPromoteTier; ctxKey?: string; path?: string };
   mode: MemoryPromoteMode;
@@ -4259,6 +4265,30 @@ export async function listMemoryPromotions(
  * rejection (404 while the resolver is not deployed, 403 for a non-operator)
  * and fall back to the decoded key.
  */
+/** One owner of a `members` notes tier; names are best effort. */
+export interface MemoryMemberOwner {
+  id: string;
+  displayName: string | null;
+  email: string | null;
+}
+
+/** One `members` notes tier: the people it belongs to. */
+export interface MemoryMemberGroup {
+  key: string;
+  path: string;
+  owners: MemoryMemberOwner[];
+}
+
+/** The owner sets of an agent's `members` notes, with who is in each. */
+export async function listMemoryMemberGroups(
+  agentSlug: string,
+): Promise<{ groups: MemoryMemberGroup[] }> {
+  const res = await getJson<{ groups?: unknown }>(
+    `/v1/operator/memory/contexts/members?agent=${encodeURIComponent(agentSlug)}`,
+  );
+  return { groups: Array.isArray(res?.groups) ? (res.groups as MemoryMemberGroup[]) : [] };
+}
+
 export async function listMemoryContextLabels(
   agentSlug: string,
 ): Promise<{ contexts: MemoryContextLabel[] }> {

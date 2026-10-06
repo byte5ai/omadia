@@ -277,7 +277,7 @@ jobs:
           # (knowledgeGraphToolStrictView.pg, 3 tests); measured ran=414.
           # 414 → 419 with member-scoped memory owner filters on Neon
           # (memberScopedOwners.pg, 5 tests); measured ran=419.
-          PG_TEST_FLOOR: '419'
+          PG_TEST_FLOOR: '421'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

@@ -1,4 +1,4 @@
-import type { MemoryContextAxis } from '@/app/_lib/api';
+import type { MemoryContextAxis, MemoryPromoteSourceAxis } from '@/app/_lib/api';
 
 /**
  * Path algebra for the scratch-memory browser.
@@ -9,6 +9,9 @@ import type { MemoryContextAxis } from '@/app/_lib/api';
  *   /memories/contexts/<slug>/team/<ctxKey>/…   team tier
  *   /memories/contexts/<slug>/channel/<ctxKey>/… conversation tier
  *   /memories/contexts/<slug>/user/<ctxKey>/…   user tier
+ *   /memories/contexts/<slug>/members/<key>/…   notes of one owner set
+ *                                                (mode `members`; owners in
+ *                                                the sibling `members-index/`)
  *   /memories/core/… and the underscore roots    shared kernel/seed
  *
  * `contexts` is a NEW top-level segment precisely so no legacy
@@ -28,7 +31,13 @@ export const MEMORY_CONTEXT_AXES: readonly MemoryContextAxis[] = [
   'team',
   'channel',
   'user',
+  'members',
 ];
+
+/** Whether a tier may be a promote source — `members` notes never leave their owners. */
+export function isPromotableAxis(axis: MemoryContextAxis): axis is MemoryPromoteSourceAxis {
+  return axis !== 'members';
+}
 
 export function isMemoryContextAxis(v: string): v is MemoryContextAxis {
   return (MEMORY_CONTEXT_AXES as readonly string[]).includes(v);
