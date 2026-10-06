@@ -67,6 +67,16 @@ and shows each of the three leaks in an `enforce` control; mutating any one fix
 back turns exactly its assertion red. Also
 `knowledgeGraphToolStrictView{,.pg}.test.ts` and `strictTranscriptAccess.test.ts`.
 
+### Security — `proxy-addr` 2.0.8 and `source-map-js` 1.2.2
+
+2026-10-06 — Two advisories turned the required `audit` check red on every PR:
+critical GHSA-jqcg-44mw-7w3h (`proxy-addr` < 2.0.8, IP spoofing via an
+IPv4-mapped IPv6 trust subnet; middleware production tree through Express,
+published 2026-10-05) and high GHSA-68fv-2mgg-jv7q (`source-map-js` < 1.2.2,
+event-loop DoS; middleware dev tree via vitest, web-ui production tree). Both
+are lockfile-only updates within the existing ranges (`npm update`, npm 10).
+Production and full audits then report 0 high and 0 critical.
+
 ### Fixed — an API-key chat turn's run trace is stored in the knowledge graph again
 
 2026-10-05 — Found in the E2E test on main `1d8233ce`: an API-key turn ran
