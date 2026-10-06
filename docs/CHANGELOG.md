@@ -36,6 +36,38 @@ changelog.
 
 ## [Unreleased]
 
+### Added — member-scoped notes: what the agent writes belongs to the people present
+
+2026-10-06 — Until now, `members` mode partitioned the memory tree like
+`enforce-strict`. A group's notes landed in the chat's channel tier, so
+someone who joined the group later read them. The memory tree now follows the
+same owner rule as the graph:
+
+- One tier per owner set: `/memories/contexts/<slug>/members/<key>/`, where
+  `key` is the first 32 hex characters of the SHA-256 of the canonical owner
+  list. The same people in another chat write to and read the same tier.
+- Larger owner sets that include everyone present are readable as
+  `/memories/~g-<key>/` and listed under `/memories`. A `ro:members:<key>:*`
+  grant makes them read-only, so Marcel alone reads what he noted with Chris
+  and Christian but cannot change it.
+- An unknown room gets no tier at all: reads come back empty and writes are
+  refused, and the system prompt says so.
+- The binder keeps the owner lists in `members-index/<key>.json`, a sibling of
+  the tiers outside every grant. An entry whose owners do not hash to its name
+  is ignored.
+- Binding goes through `MemoryBinder.forAudience`. When it fails, the turn gets
+  no memory tool, never the channel tier.
+- The `user` purge axis with an omadia user id (the KG `aclOwner` spelling)
+  removes every owner set the person belongs to, tier and index entry. That
+  selector used to fail with `invalid_selector`.
+- Promotion out of a members tier is refused by the existing `invalid_axis`
+  check.
+- Tests: `orchestrator/memberScopedNotes.test.ts` runs the scenarios as real
+  turns with scripted `memory` calls. Three mutations each turn a scenario
+  red: the old channel tier, writable shared tiers, and an index that ignores
+  the audience. `membersMemoryIndex.test.ts` covers keys, tampering, the
+  unknown room and the reach of the index.
+
 ### Added — member-scoped memory: knowledge belongs to the people present
 
 2026-10-06 — A new per-agent context-memory mode, `members`, alongside `off`,
@@ -63,8 +95,8 @@ chat once the two identities are linked), and every agent keeps its own.
   filter.
 - Migration **0062** (`0062_agent_context_memory_members.sql`) widens
   `agents_context_memory_check` to accept `members`. Route, config store and
-  web UI offer the mode; the memory tree is quarantined like `enforce-strict`
-  until notes get owner tiers.
+  web UI offer the mode. The memory tree got owner tiers in the follow-up
+  entry above.
 - No backfill: turns from before the switch have no owners and are not
   recalled in this mode.
 - Security review closed four side doors before merge: a T3 durable

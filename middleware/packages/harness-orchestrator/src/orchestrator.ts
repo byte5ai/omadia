@@ -68,7 +68,7 @@ import {
   knowledgeGraphToolSpec,
 } from './knowledgeGraphTool.js';
 import type { MemoryToolHandler } from '@omadia/memory';
-import type { MemoryBinder } from './memoryBinder.js';
+import type { BoundTurnMemory, MemoryBinder } from './memoryBinder.js';
 import type { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import {
   CHAT_PARTICIPANTS_TOOL_NAME,
@@ -1833,6 +1833,21 @@ interface TurnMemoryBinding {
    *    the turn learns is owned by nobody (`owners: []`).
    */
   readonly isolation?: TurnIsolation;
+  /** Which memory convention the system prompt states; absent = the default. */
+  readonly memoryPrompt?: MemoryPromptKind;
+}
+
+/**
+ * The memory convention a turn's system prompt states:
+ *  - `context` — the chat-context tiers (`enforce` / `enforce-strict`);
+ *  - `members` — notes of the people present, plus read-only larger groups;
+ *  - `members-unknown` — a `members` turn whose room is unknown: no notes.
+ */
+type MemoryPromptKind = 'context' | 'members' | 'members-unknown';
+
+function memoryPromptFor(bound: BoundTurnMemory): MemoryPromptKind | undefined {
+  if (bound.members) return bound.members.key ? 'members' : 'members-unknown';
+  return bound.axes.isContextFree ? undefined : 'context';
 }
 
 type TurnIsolation =
@@ -1884,6 +1899,24 @@ const CONTEXT_MEMORY_PROMPT_BLOCK = `**Memory-Kontext (dieser Chat):**
 
 `;
 
+/** The convention of a `members` turn (W3) — notes belong to the people present. */
+const MEMBERS_MEMORY_PROMPT_BLOCK = `**Memory-Kontext (Personen in diesem Chat):**
+- Deine Notizen unter \`/memories/\` gehören den Personen, die gerade in diesem Chat sind. Wieder sichtbar sind sie nur, wenn genau diese Personen oder ein Teil von ihnen mit dir sprechen — sobald jemand Neues dabei ist, nicht.
+- Ordner \`/memories/~g-…/\` (falls vorhanden) sind Notizen aus größeren Runden, zu denen alle hier Anwesenden gehörten — **read-only**. Schreibversuche dorthin schlagen fehl.
+
+`;
+
+/** A `members` turn whose room could not be determined — no notes at all. */
+const MEMBERS_UNKNOWN_MEMORY_PROMPT_BLOCK = `**Memory-Kontext:** In diesem Chat lässt sich nicht feststellen, wer anwesend ist. Notizen unter \`/memories/\` sind deshalb nicht verfügbar — weder lesen noch schreiben. Wenn der Nutzer dich bittet, dir etwas zu merken, sag ihm, dass das in diesem Chat nicht geht.
+
+`;
+
+const MEMORY_PROMPT_BLOCKS: Readonly<Record<MemoryPromptKind, string>> = {
+  context: CONTEXT_MEMORY_PROMPT_BLOCK,
+  members: MEMBERS_MEMORY_PROMPT_BLOCK,
+  'members-unknown': MEMBERS_UNKNOWN_MEMORY_PROMPT_BLOCK,
+};
+
 function buildSystemPrompt(
   assistantIdentity: string,
   domainTools: DomainTool[],
@@ -1895,11 +1928,11 @@ function buildSystemPrompt(
   hasCalendar: boolean,
   hasPrivacyV4: boolean,
   extraToolDocs: readonly string[] = [],
-  contextBoundMemory = false,
+  memoryPrompt?: MemoryPromptKind,
 ): string {
   // W5 — off by default, so a turn that is not context-bound produces a
   // byte-identical prompt (and therefore a byte-identical prompt-cache key).
-  const contextMemoryBlock = contextBoundMemory ? CONTEXT_MEMORY_PROMPT_BLOCK : '';
+  const contextMemoryBlock = memoryPrompt ? MEMORY_PROMPT_BLOCKS[memoryPrompt] : '';
   const domainList = domainTools.length
     ? domainTools.map((t) => `- \`${t.name}\`: ${t.spec.description}`).join('\n')
     : '- (keine Fach-Agenten konfiguriert)';
@@ -4381,10 +4414,30 @@ export class Orchestrator {
         `[memory] members context memory: room audience unknown (${audience.reason}) — no member-scoped recall, and this turn's knowledge is owned by nobody`,
       );
     }
-    return this.bindTurnMemory(input, audience);
+    // Notes, too, belong to the people present — resolved before the binding,
+    // which stays synchronous.
+    let members: BoundTurnMemory;
+    try {
+      members = await this.memoryBinder.forAudience(input.origin, audience);
+    } catch (err) {
+      // Never `forOrigin` here: its channel tier is shared with whoever joins
+      // the chat later. No memory tool this turn; recall stays narrowed.
+      console.error('[security-audit] orchestrator: MemoryBinder.forAudience threw — no memory tool this turn:', err);
+      return {
+        handler: undefined,
+        contextBound: true,
+        memoryPrompt: 'members-unknown',
+        isolation: { kind: 'members', audience: audience.kind === 'known' ? audience.members : null },
+      };
+    }
+    return this.bindTurnMemory(input, audience, members);
   }
 
-  private bindTurnMemory(input: ChatTurnInput, audience?: TurnAudience): TurnMemoryBinding {
+  private bindTurnMemory(
+    input: ChatTurnInput,
+    audience?: TurnAudience,
+    membersBound?: BoundTurnMemory,
+  ): TurnMemoryBinding {
     const fallback: TurnMemoryBinding = {
       handler: this.memoryToolHandler,
       contextBound: false,
@@ -4400,11 +4453,12 @@ export class Orchestrator {
             scope: input.sessionScope ? graphScopeFor(this.agentId, input.sessionScope) : null,
           };
     try {
-      const bound = this.memoryBinder.forOrigin(input.origin);
+      const bound = membersBound ?? this.memoryBinder.forOrigin(input.origin);
       const contextBound = !bound.axes.isContextFree;
       return {
         handler: bound.handler,
         contextBound,
+        memoryPrompt: memoryPromptFor(bound),
         ...(strict && contextBound ? { isolation } : {}),
       };
     } catch (err) {
@@ -6054,7 +6108,7 @@ export class Orchestrator {
         // identity (the fallback family's compiled prompt after a hop).
         const systemFor = (persona: string | undefined) =>
           buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
+            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.memoryPrompt),
             priorContext,
             withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
@@ -7411,7 +7465,7 @@ export class Orchestrator {
         // execution's own identity (the fallback family's prompt after a hop).
         const systemFor = (persona: string | undefined) =>
           buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
+            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.memoryPrompt),
             priorContext,
             withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
@@ -9154,7 +9208,7 @@ export class Orchestrator {
    */
   private getSystemPrompt(
     personaOverride?: string,
-    contextBoundMemory = false,
+    memoryPrompt?: MemoryPromptKind,
   ): string {
     // Plugin-contributed prompt docs, collected from the registry. The
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
@@ -9191,7 +9245,7 @@ export class Orchestrator {
       this.findFreeSlotsTool !== undefined && this.bookMeetingTool !== undefined,
       this.privacyGuard?.() !== undefined,
       extraDocs,
-      contextBoundMemory,
+      memoryPrompt,
     );
   }
 
@@ -9243,9 +9297,9 @@ export class Orchestrator {
   private composeStableSystemPrompt(
     prependRules: string,
     personaOverride?: string,
-    contextBoundMemory = false,
+    memoryPrompt?: MemoryPromptKind,
   ): string {
-    const body = this.getSystemPrompt(personaOverride, contextBoundMemory);
+    const body = this.getSystemPrompt(personaOverride, memoryPrompt);
     if (prependRules.length === 0) return body;
     return `${prependRules}\n\n---\n\n${body}`;
   }

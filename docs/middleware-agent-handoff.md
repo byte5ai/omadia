@@ -6080,7 +6080,11 @@ demselben Agenten gehört. Austretende behalten ihr Owner-Recht.
   liefert `known` (sortierte kanonische IDs) oder `unknown` mit Grund. Fälle:
   - Persönlicher Scope oder API-Key → der Absender allein.
   - Gruppe → alle Menschen aus dem Roster plus der Absender. Das gilt **nur**, wenn der
-    Provider `completeRoster: true` meldet; Telegram listet nur Admins.
+    Provider `completeRoster: true` meldet:
+    - Teams ab 0.28.0: Roster mit max. 10 s Alter, Bots als `kind: 'agent'`.
+    - Telegram ab 0.3.0: verfolgte Mitglieder, jedes per `getChatMember` geprüft. Das
+      Flag kommt nur, wenn die geprüften Mitglieder plus der Bot `getChatMemberCount`
+      ergeben, und nur bis 50 Mitglieder.
   - Teams-Roster-Einträge werden über die AAD-ID aufgelöst, wie der Absender.
   - Jede nicht auflösbare Person ergibt `unknown`.
   - `bindTurnMemoryForTurn` löst die Anwesenden nur im Modus `members` und nur für Turns
@@ -6107,6 +6111,22 @@ demselben Agenten gehört. Austretende behalten ihr Owner-Recht.
   Cluster, bis sie verknüpft ist.
 - Migration 0062 erweitert den CHECK. Tests: `test/orchestrator/memberScopedMemory.test.ts`,
   `test/memberScopedOwners.pg.test.ts`, `test/turnAudience.test.ts`.
+- **Notizen (W3):** `MemoryBinder.forAudience` ersetzt im Modus `members` die
+  Channel-, Team- und User-Tiers, denn ein Channel-Tier sieht jeder, der später dazukommt.
+  - Eine Owner-Menge = ein Tier `contexts/<slug>/members/<key>`
+    (`key = membersTierKey(owners)`).
+  - Größere Mengen, die alle Anwesenden enthalten, sind read-only unter
+    `/memories/~g-<key>/` und in `/memories` gelistet.
+  - Ein unbekannter Raum bekommt kein Tier.
+  - Index unter `members-index/<key>.json`, außerhalb jedes Grants. Ein Eintrag, der
+    nicht auf seinen Namen hasht, wird ignoriert.
+  - Ein Binder-Fehler bedeutet: kein Memory-Tool in diesem Turn, nie das Channel-Tier.
+  - Purge: `user`-Achse mit Omadia-User-ID löscht alle Mengen der Person, Tier und
+    Index-Eintrag.
+  - Promote aus einem Members-Tier lehnt der Server ab (`invalid_axis`).
+  - Tests: `test/orchestrator/memberScopedNotes.test.ts`,
+    `test/membersMemoryIndex.test.ts`.
+  - Offen: Der Memory-Browser der Web-UI zeigt die Members-Tiers noch nicht.
 
 - **Fail-closed.** Fehlender `origin`, `unscoped`, `system`, unbekannter `channelType`,
   unbrauchbare Patterns → Zeile 1 der Tabelle, byte-identisch zu heute, kein Kontextbaum

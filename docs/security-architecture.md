@@ -769,7 +769,16 @@ The surfaces that boundary must cover, and how each one does:
 
 - **Memory tree:** the binder's scope. A context turn gets `ro:core-notes`, so
   the flat transcript trees (`/memories/sessions/`, `chat-sessions/`) are
-  unreadable.
+  unreadable. Under `members`, `MemoryBinder.forAudience` replaces the
+  channel/team/user tiers, which are shared with whoever joins a chat later:
+  - The room's owner set gets one writable tier (`members:<key>:*`).
+  - Larger owner sets that include everyone present are `ro:members:<key>:*`,
+    exposed as `/memories/~g-<key>/`.
+  - An unknown room gets no tier.
+  - The owner lists live in `members-index/`, outside every grant. An entry
+    whose owners do not hash to its key is ignored.
+  - A binder failure leaves the turn without a memory tool, never with the
+    channel tier.
 - **Automatic recall:** `retrievePriorContext` → `ContextRetriever` uses
   `restrictToScope` or `audienceOwners` on every turn leg, the tail included.
   Plans, processes and the session briefing carry no owners, so they are
