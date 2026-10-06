@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Security — CLI 2.1.291's `OfferChromeSetup` is denied in spawned CLI turns
+
+2026-10-06 — The deny-list drift guard went red against the locally installed
+Claude CLI 2.1.291. It declares one new built-in, `OfferChromeSetup`, which
+offers the user a Claude-in-Chrome setup. It is now in
+`CLI_BUILTIN_TOOL_DENYLIST`; all gate flags are unchanged in 2.1.291. Guard
+42/42 against 2.1.291 (84 built-ins, 9 aliases), opt-in live probe 3/3.
+
 ### Fixed — an API-key chat turn's run trace is stored in the knowledge graph again
 
 2026-10-05 — Found in the E2E test on main `1d8233ce`: an API-key turn ran
