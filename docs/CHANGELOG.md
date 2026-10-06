@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Security — CLI 2.1.291's `OfferChromeSetup` is denied in spawned CLI turns
+
+2026-10-06 — The deny-list drift guard went red against the locally installed
+Claude CLI 2.1.291. It declares one new built-in, `OfferChromeSetup`, which
+offers the user a Claude-in-Chrome setup. It is now in
+`CLI_BUILTIN_TOOL_DENYLIST`; all gate flags are unchanged in 2.1.291. Guard
+42/42 against 2.1.291 (84 built-ins, 9 aliases), opt-in live probe 3/3.
+
 ### Security — `enforce-strict` context memory also holds outside the memory tree
 
 2026-10-06 — An E2E test on main `b137610d` (agent in `enforce-strict`, scripted
