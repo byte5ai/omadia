@@ -909,8 +909,9 @@ export interface MemorableKnowledgeSearchOptions {
   /**
    * Member-scoped memory — REPLACES the viewer ACL above with the room rule:
    * a row is admitted when its `acl_owners` include every id here (everyone
-   * present owns it), or when it is `manually_authored` (operator-curated
-   * agent knowledge, not anybody's conversation). `visibility` and
+   * present owns it), or when an operator authored it (`manually_authored` and
+   * a `created_by` other than `auto:…` — T3 durable auto-promotion also sets
+   * `manually_authored`, but that row came out of a conversation). `visibility` and
    * `teamVisibility`/`sharedOnly` do not widen it: a team-visible row that
    * came out of a conversation belongs to that conversation's people.
    * `viewerAgentSlug` still applies. See {@link TurnIngest.owners}.

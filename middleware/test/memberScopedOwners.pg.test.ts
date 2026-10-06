@@ -119,11 +119,16 @@ describe('member-scoped memory · Neon owner filters', () => {
 
   it('memorable knowledge: owned by the room, or operator-authored', async (t) => {
     if (!reachable) return t.skip('no pg');
-    const make = async (summary: string, aclOwners: string[], manual: boolean): Promise<void> => {
+    const make = async (
+      summary: string,
+      aclOwners: string[],
+      manual: boolean,
+      createdBy = 'operator:test',
+    ): Promise<void> => {
       const { memorableKnowledgeNodeId } = await kg().createMemorableKnowledge({
         kind: 'reference',
         summary,
-        createdBy: 'test',
+        createdBy,
         aclOwners,
         visibility: 'team',
       });
@@ -136,6 +141,8 @@ describe('member-scoped memory · Neon owner filters', () => {
     await make('group fact', [A, B, C], false);
     await make('team-visible but from another room', [P], false);
     await make('operator rule', [], true);
+    // T3 durable auto-promotion marks a conversation row manually_authored too.
+    await make('auto-durable from another room', [P], true, `auto:${P}`);
     const search = async (audience: string[]): Promise<string[]> =>
       (
         await kg().searchMemorableKnowledgeByEmbedding({

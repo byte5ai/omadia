@@ -137,6 +137,15 @@ function visibleToAudience(
   return Array.isArray(owners) && ownersCoverAudience(owners as string[], canonicalOwners(audience));
 }
 
+/**
+ * Member-scoped memory parity with Neon: a memorable row an operator wrote,
+ * not one T3 durable auto-promotion marked `manuallyAuthored` — that one came
+ * out of a conversation (`created_by` = `auto:…`) and belongs to its owners.
+ */
+function isOperatorAuthored(node: GraphNode): boolean {
+  return node.manuallyAuthored === true && !String(node.props['created_by'] ?? '').startsWith('auto:');
+}
+
 /** #430 — one `dataset_rows` row's evaluation of a single `DatasetFilter`.
  *  Mirrors the SQL semantics `NeonKnowledgeGraph` builds over the JSONB
  *  column: numeric comparisons coerce both sides to `Number`, `contains`
@@ -1686,7 +1695,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       const admitted =
         opts.audienceOwners !== undefined
           ? (ownersCoverAudience(owners, canonicalOwners(opts.audienceOwners)) ||
-              node.manuallyAuthored === true) &&
+              isOperatorAuthored(node)) &&
             agentMatch
           : ownerMatch || teamMatch;
       if (!admitted || !sharedOk) continue;
@@ -1745,7 +1754,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       const admitted =
         opts.audienceOwners !== undefined
           ? (ownersCoverAudience(owners, canonicalOwners(opts.audienceOwners)) ||
-              parent.manuallyAuthored === true) &&
+              isOperatorAuthored(parent)) &&
             agentMatch
           : ownerMatch || teamMatch;
       if (!admitted || !sharedOk) continue;

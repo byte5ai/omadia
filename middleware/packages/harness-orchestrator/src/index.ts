@@ -642,6 +642,7 @@ export {
 export type {
   SubAgentMemoryHandler,
   TurnContextValue,
+  GraphReadScope,
 } from './turnContext.js';
 export {
   setMcpPrivacyBypassServers,

@@ -3300,7 +3300,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           -- Member-scoped memory: the room rule REPLACES the viewer ACL.
           -- Everyone present owns the row, or an operator authored it.
           ($9::jsonb IS NOT NULL
-            AND (properties->'acl_owners' @> $9::jsonb OR manually_authored = true)
+            -- An operator-authored row, not an auto-promoted durable one: T3
+            -- durable auto-promotion also sets manually_authored, and that row
+            -- came out of a conversation (created_by 'auto:…').
+            AND (properties->'acl_owners' @> $9::jsonb
+              OR (manually_authored = true AND COALESCE(properties->>'created_by', '') NOT LIKE 'auto:%'))
             AND (
               $6::text IS NULL
               OR COALESCE(properties->>'origin_agent', '') = ''
@@ -3381,7 +3385,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           -- Member-scoped memory: the parent MK's room rule (see
           -- searchMemorableKnowledgeByEmbedding) replaces the viewer ACL.
           ($8::jsonb IS NOT NULL
-            AND (mk.properties->'acl_owners' @> $8::jsonb OR mk.manually_authored = true)
+            AND (mk.properties->'acl_owners' @> $8::jsonb
+              OR (mk.manually_authored = true AND COALESCE(mk.properties->>'created_by', '') NOT LIKE 'auto:%'))
             AND (
               $6::text IS NULL
               OR COALESCE(mk.properties->>'origin_agent', '') = ''

@@ -59,7 +59,13 @@ export async function resolveTurnAudience(
   };
 
   try {
-    const sender = await resolve(senderId);
+    // Teams keys a sender on its AAD object id (`from.aadObjectId ?? from.id`);
+    // passing it as such lets the identity layer merge on it, exactly as the
+    // roster entries below are merged.
+    const sender = await resolve(
+      senderId,
+      channelKind === 'teams' && !senderId.startsWith('29:') ? senderId : undefined,
+    );
     if (!sender) return unknown('sender-unresolved');
     if (channelKind === 'api' || input.origin?.scope.kind === 'personal') {
       return { kind: 'known', members: [sender] };

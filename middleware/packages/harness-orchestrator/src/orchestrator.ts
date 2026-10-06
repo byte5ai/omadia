@@ -277,6 +277,7 @@ import {
   today,
   turnContext,
   type TurnContextValue,
+  type GraphReadScope,
 } from './turnContext.js';
 import {
   crossScopeRecallRefused,
@@ -304,6 +305,9 @@ function runTraceUserSpread(
   const userId = runTraceOwnerId(input, turnContext.current()?.resolvedOmadiaUserId);
   return userId ? { userId } : {};
 }
+
+/** A graph-tool view under which nothing is visible (members, unknown room). */
+const NOTHING_VISIBLE = { audienceOwners: null, agentScopePrefix: '' } as const;
 
 /**
  * Member-scoped memory — the `owners` a turn's log entry carries: everyone
@@ -2681,7 +2685,14 @@ export class Orchestrator {
     // advertises and dispatches them on the subscription-CLI path; memory and
     // get_chat_participants stay marker-only (see registerKernelNativeTools).
     registerKernelNativeTools(this.nativeTools, {
-      knowledgeGraphTool: this.knowledgeGraphTool,
+      // The registered handler knows no turn, and it is what the
+      // subscription-CLI path dispatches through. For an agent whose context
+      // memory restricts the graph tool per turn it would read every room of
+      // the tenant, so it sees nothing instead (`unrestrictedGraphToolAllowed`).
+      knowledgeGraphTool:
+        this.knowledgeGraphTool && !this.unrestrictedGraphToolAllowed()
+          ? { handle: (input: unknown) => this.knowledgeGraphTool!.handle(input, NOTHING_VISIBLE) }
+          : this.knowledgeGraphTool,
       askUserChoiceTool: this.askUserChoiceTool,
       suggestFollowUpsTool: this.suggestFollowUpsTool,
       findFreeSlotsTool: this.findFreeSlotsTool,
@@ -4315,6 +4326,18 @@ export class Orchestrator {
    *    wrong trade. The fallback is the NARROWER scope, never a wider one.
    */
   /**
+   * May a turn without an isolation use `query_knowledge_graph` unrestricted
+   * (the whole tenant graph, as before)? Not for an agent whose context memory
+   * restricts the tool per turn: there, a turn the restriction cannot reach —
+   * a context-free turn, or the subscription-CLI path whose registered handler
+   * knows no turn — sees nothing.
+   */
+  private unrestrictedGraphToolAllowed(): boolean {
+    const mode = this.memoryBinder?.contextMemoryMode;
+    return mode !== 'enforce-strict' && mode !== 'members';
+  }
+
+  /**
    * The turn's binding, with the room's audience resolved first when the
    * agent runs `members` context memory. The audience is async (roster and
    * identity lookups), the binding itself is not, so this is the one await in
@@ -4322,6 +4345,29 @@ export class Orchestrator {
    * no other turn pays for the lookup.
    */
   private async bindTurnMemoryForTurn(input: ChatTurnInput): Promise<TurnMemoryBinding> {
+    const binding = await this.resolveTurnMemory(input);
+    // Publish the graph boundary for reads outside the kernel's own recall
+    // (the plugin `KnowledgeGraphAccessor`).
+    const box = turnContext.current()?.graphReadScope;
+    if (box) box.value = this.graphReadScopeFor(binding);
+    return binding;
+  }
+
+  /** What a non-kernel graph read may see in this turn; undefined = unrestricted. */
+  private graphReadScopeFor(binding: TurnMemoryBinding): GraphReadScope | undefined {
+    const isolation = binding.isolation;
+    if (isolation?.kind === 'conversation') return { kind: 'conversation', scope: isolation.scope };
+    if (isolation?.kind === 'members') {
+      return {
+        kind: 'members',
+        audience: isolation.audience,
+        agentScopePrefix: agentScopePrefix(this.agentId),
+      };
+    }
+    return this.unrestrictedGraphToolAllowed() ? undefined : { kind: 'nothing' };
+  }
+
+  private async resolveTurnMemory(input: ChatTurnInput): Promise<TurnMemoryBinding> {
     if (this.memoryBinder?.contextMemoryMode !== 'members' || !input.origin) {
       return this.bindTurnMemory(input);
     }
@@ -4522,6 +4568,7 @@ export class Orchestrator {
         memoryFileRead: { value: false },
         // The turn's wire view (prompt + answer), for a verifier hand-over.
         wireView: {},
+        graphReadScope: {},
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -6725,6 +6772,7 @@ export class Orchestrator {
       sessionScope: sessionId,
       // The turn's wire view (prompt + answer), for a verifier hand-over.
       wireView: {},
+      graphReadScope: {},
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -8978,14 +9026,23 @@ export class Orchestrator {
     // Ahead of the registered-handler branch on purpose: the kernel-native
     // registration of this tool (`registerKernelNativeTools`) carries a
     // build-time handler that knows no turn.
-    if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool && turnMemory?.isolation) {
-      const isolation = turnMemory.isolation;
-      return this.knowledgeGraphTool.handle(
-        input,
-        isolation.kind === 'conversation'
-          ? { restrictToScope: isolation.scope }
-          : { audienceOwners: isolation.audience, agentScopePrefix: agentScopePrefix(this.agentId) },
-      );
+    //
+    // An agent in either mode never reaches the unrestricted tool from here:
+    // a turn with no isolation (context-free — web, API, a turn whose binding
+    // carried no context) sees nothing, rather than every room of the tenant.
+    if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
+      const isolation = turnMemory?.isolation;
+      if (isolation) {
+        return this.knowledgeGraphTool.handle(
+          input,
+          isolation.kind === 'conversation'
+            ? { restrictToScope: isolation.scope }
+            : { audienceOwners: isolation.audience, agentScopePrefix: agentScopePrefix(this.agentId) },
+        );
+      }
+      if (!this.unrestrictedGraphToolAllowed()) {
+        return this.knowledgeGraphTool.handle(input, NOTHING_VISIBLE);
+      }
     }
     // Plugin-contributed handlers win first. Kernel branches below are the
     // legacy path for tools that have not yet been converted to

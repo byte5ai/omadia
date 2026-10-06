@@ -174,7 +174,17 @@ export class KnowledgeGraphTool {
           const all = await this.graph.listSessions();
           return JSON.stringify({ sessions: all.slice(0, args.limit) });
         }
-        const sessions = (await this.visibleSessions(access)).map((s) => s.summary);
+        // Counts and dates from the VISIBLE turns: the stored summary would
+        // tell how much was said before or without the people present.
+        const sessions = (await this.visibleSessions(access)).map(({ summary, view }) => {
+          const times = view.turns.map((t) => String(t.turn.props['time'] ?? '')).sort();
+          return {
+            ...summary,
+            turnCount: view.turns.length,
+            firstAt: times[0] ?? summary.firstAt,
+            lastAt: times.at(-1) ?? summary.lastAt,
+          };
+        });
         return JSON.stringify({ sessions: sessions.slice(0, args.limit), ...noteField });
       }
 

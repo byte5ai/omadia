@@ -67,6 +67,13 @@ chat once the two identities are linked), and every agent keeps its own.
   until notes get owner tiers.
 - No backfill: turns from before the switch have no owners and are not
   recalled in this mode.
+- Security review closed four side doors before merge: a T3 durable
+  auto-promoted memorable row (marked `manually_authored`) no longer passes as
+  operator-authored; the registered `query_knowledge_graph` handler (the
+  subscription-CLI path) and context-free turns of an `enforce-strict` or
+  `members` agent see nothing; the plugin `KnowledgeGraphAccessor` searches
+  inside the turn's `graphReadScope`; `list_sessions` counts only visible
+  turns. See `docs/security-architecture.md`.
 - Tests: `orchestrator/memberScopedMemory.test.ts` runs the scenarios as real
   turns; removing the tail, search or graph-tool filter each turns a scenario
   red. `memberScopedOwners.pg.test.ts` (Neon), `turnAudience.test.ts`.
