@@ -146,6 +146,15 @@ export class MemoryBinder {
     this.mode = options.mode ?? 'off';
   }
 
+  /**
+   * The rollout mode this binder enforces. Read by the orchestrator so the
+   * recall paths outside the memory tree (graph recall, `query_knowledge_graph`)
+   * apply the same `enforce-strict` boundary the tree does.
+   */
+  get contextMemoryMode(): ContextMemoryMode {
+    return this.mode;
+  }
+
   /** Live cache size. Bounded by `cacheCap`. */
   get cacheSize(): number {
     return this.cache.size;

@@ -1801,6 +1801,15 @@ const DEFAULT_ASSISTANT_IDENTITY =
 interface TurnMemoryBinding {
   readonly handler: MemoryToolHandler | undefined;
   readonly contextBound: boolean;
+  /**
+   * Set only on a context-bound turn of an agent in `enforce-strict`. The
+   * memory tree is partitioned by the binder; graph recall and
+   * `query_knowledge_graph` are not, so they are narrowed to the turn's own
+   * conversation (its graph scope). `scope: null` = no conversation to narrow
+   * to, so they see nothing. Without this, an earlier Teams conversation of the
+   * same agent reached a Telegram turn through both paths.
+   */
+  readonly isolation?: { readonly scope: string | null };
 }
 
 /**
@@ -3497,6 +3506,8 @@ export class Orchestrator {
     // text this returns flows INTO the LLM prompt, so the recall query must
     // not itself carry a raw PII span the mask pass just removed.
     wireUserMessage?: string,
+    // `enforce-strict` — see `TurnMemoryBinding.isolation`.
+    isolation?: TurnMemoryBinding['isolation'],
   ): Promise<{
     text: string | undefined;
     recalled: RecalledContext | undefined;
@@ -3543,12 +3554,25 @@ export class Orchestrator {
     // when this turn HAS a scope to be restricted to; without one there is
     // nothing to compare a hit against, so the restriction would silently drop
     // every candidate rather than the cross-session ones.
+    // `enforce-strict` narrows the same way, by the knowledge's owner context:
+    // a context-bound turn recalls only its own conversation, never a
+    // conversation of the same agent that arrived through another channel.
+    // Without a conversation there is nothing it may recall at all.
+    if (isolation && isolation.scope === null) {
+      console.error('[context] SKIP context-memory enforce-strict: no conversation scope');
+      return { text: undefined, recalled: undefined };
+    }
     const restrictRecallScope =
-      input.sessionScope !== undefined && (await crossScopeRecallRefused())
+      isolation?.scope ??
+      (input.sessionScope !== undefined && (await crossScopeRecallRefused())
         ? graphScopeFor(this.agentId, input.sessionScope)
-        : undefined;
+        : undefined);
     if (restrictRecallScope !== undefined) {
-      console.error('[context] audience-floor: recall restricted to this conversation');
+      console.error(
+        `[context] recall restricted to this conversation (${
+          isolation ? 'context-memory enforce-strict' : 'audience-floor'
+        })`,
+      );
     }
     try {
       // OB-74 (Palaia Phase 5) — switch to the token-budget assembler. The
@@ -4247,15 +4271,26 @@ export class Orchestrator {
       contextBound: false,
     };
     if (!this.memoryBinder) return fallback;
+    const strict = this.memoryBinder.contextMemoryMode === 'enforce-strict';
+    const isolation = {
+      scope: input.sessionScope ? graphScopeFor(this.agentId, input.sessionScope) : null,
+    };
     try {
       const bound = this.memoryBinder.forOrigin(input.origin);
-      return { handler: bound.handler, contextBound: !bound.axes.isContextFree };
+      const contextBound = !bound.axes.isContextFree;
+      return {
+        handler: bound.handler,
+        contextBound,
+        ...(strict && contextBound ? { isolation } : {}),
+      };
     } catch (err) {
       console.error(
         '[security-audit] orchestrator: MemoryBinder.forOrigin threw — falling back to the agent-private memory stack:',
         err,
       );
-      return fallback;
+      // A strict agent's turn that carried an origin is narrowed for recall
+      // even though its binding failed: the fallback must not be wider there.
+      return strict && input.origin ? { ...fallback, isolation } : fallback;
     }
   }
 
@@ -5722,7 +5757,7 @@ export class Orchestrator {
     // non-streaming channels (Teams) can render a recall card (the streaming
     // path emits it as a `kg_recall` annotation instead).
     const { text: rawPriorContext, recalled, recallUsed } =
-      await this.retrievePriorContext(input, wireUserMessage);
+      await this.retrievePriorContext(input, wireUserMessage, turnMemory?.isolation);
     // #361 — the recalled TEXT is LLM-bound wire content: it carries real
     // values persisted from earlier turns, so it is masked through the SAME
     // turn map before injection (answer-side restore covers these spans).
@@ -7002,7 +7037,7 @@ export class Orchestrator {
     // card (`toSemanticAnswer`). Wire it through with the flag if a streaming
     // channel ever grows a Fresh-Check affordance.
     const { text: rawPriorContext, recalled } =
-      await this.retrievePriorContext(input, wireUserMessage);
+      await this.retrievePriorContext(input, wireUserMessage, turnMemory?.isolation);
     // #361 — the recalled TEXT is LLM-bound wire content; mask through the
     // same turn map before injection (see chatInContextInner).
     const priorContext = await maskRecalledForWire(
@@ -8845,6 +8880,15 @@ export class Orchestrator {
         if (box) box.value = true;
       }
       return result;
+    }
+    // `enforce-strict` — the graph tool sees only this turn's conversation.
+    // Ahead of the registered-handler branch on purpose: the kernel-native
+    // registration of this tool (`registerKernelNativeTools`) carries a
+    // build-time handler that knows no turn.
+    if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool && turnMemory?.isolation) {
+      return this.knowledgeGraphTool.handle(input, {
+        restrictToScope: turnMemory.isolation.scope,
+      });
     }
     // Plugin-contributed handlers win first. Kernel branches below are the
     // legacy path for tools that have not yet been converted to

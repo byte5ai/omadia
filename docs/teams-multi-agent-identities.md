@@ -839,7 +839,7 @@ hat drei Werte und den **Default `off`**:
 |---|---|
 | `off` | **Default.** Byte-identisch zu vorher: jeder Turn bekommt den agent-privaten Memory-Stack, unabhängig davon, ob sein Channel-Plugin einen `TurnOrigin` mitschickt. |
 | `enforce` | Ein Kontext-Turn schreibt in sein eigenes Tier und liest das Agent-Tier **read-only** — bestehendes Wissen bleibt zitierbar, aber „merk dir das global" ist kein Leak-Kanal von Team A nach Team B mehr. |
-| `enforce-strict` | Volle Quarantäne: ein Kontext-Turn kann das Agent-Tier nicht einmal lesen. |
+| `enforce-strict` | Volle Quarantäne: ein Kontext-Turn kann das Agent-Tier nicht einmal lesen, liest keine Gesprächsprotokolle anderer Konversationen (`/memories/sessions/`, `/memories/chat-sessions/`), und Graph-Recall sowie `query_knowledge_graph` sehen nur die eigene Konversation (seit 2026-10-06). Wissen, das in Teams entstand, erreicht einen Telegram-Turn desselben Agenten auf keinem dieser Wege. |
 
 Unbekannte oder `NULL`-Werte lesen sich als `off` (Deny-Default), damit ein Rollback
 das Memory-Routing nicht verändert. Es gibt **keinen Flag-Day**: jede Kombination aus
@@ -880,7 +880,7 @@ Der effektive Scope entsteht aus statischer Agent-Konfiguration ∩ dynamischem 
 scope = axes.isContextFree
   ? ['core',    `orchestrator:<slug>:*`]                       // = heutiges Verhalten
   : ['ro:core', `ro:orchestrator:<slug>:*`, …axes.patterns]    // enforce
-  : ['ro:core',                             …axes.patterns]    // enforce-strict
+  : ['ro:core-notes',                       …axes.patterns]    // enforce-strict (ohne Transkripte)
 ```
 
 Vier Konsequenzen, die man vorher gelesen haben sollte:
