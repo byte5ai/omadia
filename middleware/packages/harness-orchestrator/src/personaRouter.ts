@@ -22,6 +22,8 @@ import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 import { recordUsage } from '@omadia/usage-telemetry';
 
+import { PERSONA_CLASSIFIER_MAX_TOKENS } from './classifierBudgets.js';
+
 export interface PersonaCandidate {
   readonly skillId: string;
   readonly slug: string;
@@ -92,7 +94,7 @@ export async function routeTurnPersona(
   try {
     const res = await provider.complete({
       model: classifierModel,
-      maxTokens: 16,
+      maxTokens: PERSONA_CLASSIFIER_MAX_TOKENS,
       system: buildClassifierSystem(candidates),
       messages: [textMessage('user', text)],
     });

@@ -36,6 +36,43 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the security screener and persona router get a token budget that survives thinking
+
+2026-10-06 — Both routes run on the agent's own model when nothing cheaper is
+configured (`buildOrchestrator.ts` builds `LlmScreener` with `config.model`;
+`routeTurnPersona` falls back to `modelRouting?.classifierModel ?? this.model`).
+On Opus 5.5 and up thinking is always on, counts toward `max_tokens`, and the
+default effort is medium — so a cap sized for the visible reply alone ends the
+call before the reply exists.
+
+- `LlmScreener`'s default `maxTokens` is 4096 (was 128). At 128 the judge's
+  `ALLOW` / `QUARANTINE: …` line never arrived, `parseVerdict` threw
+  `unparseable-verdict`, and `screenProvenance` fell open to `unscreenable`:
+  the turn ran with the `[NOT security-screened …]` marker. The `unscreenable`
+  audit event and the #749 counters did fire, but under the cause
+  `unparseable-verdict` — which reads as a judge off its contract, not as a
+  budget that ended the call before the verdict existed. An explicitly passed
+  `maxTokens` is still honoured.
+- The persona router asks for 1024 tokens (was 16). At 16 the classifier's
+  slug was truncated, the reply matched no candidate, and every turn silently
+  took the Agent's default identity — indistinguishable from an honest
+  `NO_PERSONA_MATCH`.
+- Both budgets are named constants in the new
+  `harness-orchestrator/src/classifierBudgets.ts`, which carries the reasoning
+  once for both routes (and records why `modelRouter.ts` is exempt). They are
+  package-internal, not barrel exports; the tests import them from source and
+  pin both the wire value and the number.
+- No `effort` is set on either call: both may run on Haiku or a non-Anthropic
+  provider. `temperature: 0` stays as-is — the Anthropic adapter already drops
+  it per `supportsTemperature`.
+- `modelRouter.ts` asks for 8 tokens and is untouched: it only runs with an
+  explicitly configured Haiku-tier classifier, and its fallback on an
+  unparseable reply is the stronger model (overspend, not a silent downgrade).
+  It has the same failure shape if an operator points `classifierModel` at an
+  always-thinking model.
+- Tests: `test/securityPosture579.test.ts` (judge budget, explicit override)
+  and `test/personaRouter.test.ts` (classifier budget).
+
 ### Fixed — an API-key chat turn's run trace is stored in the knowledge graph again
 
 2026-10-05 — Found in the E2E test on main `1d8233ce`: an API-key turn ran

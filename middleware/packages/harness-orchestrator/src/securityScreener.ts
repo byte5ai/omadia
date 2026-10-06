@@ -23,6 +23,7 @@
  * `UNSCREENED_MARKER` into the wire prompt and audits the miss (#579).
  */
 
+import { SCREENER_MAX_TOKENS } from './classifierBudgets.js';
 import {
   collectText,
   textMessage,
@@ -260,13 +261,15 @@ export function parseVerdict(raw: string): SecurityVerdict {
 export interface LlmScreenerOptions {
   readonly provider: LlmProvider;
   readonly model: string;
-  /** Token cap for the judge's (single-line) reply. Small by design. */
+  /** Token cap for the judge's reply. Defaults to {@link SCREENER_MAX_TOKENS},
+   *  which is sized for thinking as well as the verdict line (#1208). */
   readonly maxTokens?: number;
 }
 
 /**
  * The default screener: an LLM judge. Runs at temperature 0 for a stable
- * verdict and caps output tight (the reply is one line). Uses the neutral
+ * verdict (dropped by the adapter on models that no longer honour it) and
+ * caps output at {@link LlmScreenerOptions.maxTokens}. Uses the neutral
  * `@omadia/llm-provider` DTOs directly — no orchestrator seam, so it is
  * unit-testable with a stub provider.
  */
@@ -278,7 +281,7 @@ export class LlmScreener implements SecurityScreener {
   constructor(opts: LlmScreenerOptions) {
     this.#provider = opts.provider;
     this.#model = opts.model;
-    this.#maxTokens = opts.maxTokens ?? 128;
+    this.#maxTokens = opts.maxTokens ?? SCREENER_MAX_TOKENS;
   }
 
   async screen(payload: string): Promise<SecurityVerdict> {
