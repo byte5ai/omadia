@@ -16,6 +16,7 @@ import {
   requiresEffortBeta,
   supportsForcedToolChoice,
   EFFORT_BETA,
+  THINKING_BINDING_BETA,
 } from '@omadia/llm-adapter-anthropic';
 import {
   collectText,
@@ -1029,3 +1030,225 @@ test('requiresEffortBeta matches only the Opus 4.5 family', () => {
     assert.equal(requiresEffortBeta(model), false, `${model} gained a stale beta`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// #1207 — thinking blocks survive a tool loop
+// ---------------------------------------------------------------------------
+
+/** The two block shapes an always-thinking model emits. `signature` is what
+ *  must arrive back unchanged, so the test compares by identity, not shape. */
+const THINKING_BLOCK = {
+  type: 'thinking',
+  thinking: 'Erst die Rechnung prüfen, dann antworten.',
+  signature: 'sig-abc',
+};
+const REDACTED_BLOCK = { type: 'redacted_thinking', data: 'enc-xyz' };
+
+test('thinking/redacted blocks survive the neutral view and replay verbatim', async () => {
+  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return textResponse({
+          model: 'claude-opus-5-5',
+          content: [
+            THINKING_BLOCK,
+            REDACTED_BLOCK,
+            { type: 'text', text: 'Jetzt der Toolaufruf' },
+            { type: 'tool_use', id: 'tu_1', name: 'lookup', input: { q: 'x' } },
+          ],
+          stop_reason: 'tool_use',
+        });
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+
+  // Iteration 1: the model answers with thinking + text + a tool call.
+  const first = await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 1024,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Rechne' }] }],
+  });
+  assert.deepEqual(
+    first.content.map((p) => p.type),
+    ['reasoning', 'reasoning', 'text', 'tool_call'],
+  );
+  // The neutral view carries the block OPAQUELY — same object, not a copy with
+  // a re-serialised signature.
+  assert.equal(
+    (first.content[0] as { raw: unknown }).raw,
+    THINKING_BLOCK,
+  );
+  assert.equal((first.content[1] as { raw: unknown }).raw, REDACTED_BLOCK);
+  // The first request carried no reasoning, so no thinking field and no beta.
+  assert.equal(calls[0]?.params['thinking'], undefined);
+  assert.equal(calls[0]?.options, undefined);
+
+  // Iteration 2: the loop replays the assistant turn with its tool result.
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 1024,
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'Rechne' }] },
+      { role: 'assistant', content: first.content },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', toolCallId: 'tu_1', content: '42' },
+          // A foreign provider's reasoning must never reach the Anthropic
+          // wire — a replayed OpenAI block is not a valid Anthropic block.
+          { type: 'reasoning', provider: 'openai', raw: { foreign: true } },
+        ],
+      },
+    ],
+  });
+  const messages = calls[1]?.params['messages'] as Array<{
+    content: Array<Record<string, unknown>>;
+  }>;
+  // Byte-for-byte, in the original order, ahead of the text and tool_use.
+  assert.deepEqual(messages[1]?.content, [
+    THINKING_BLOCK,
+    REDACTED_BLOCK,
+    { type: 'text', text: 'Jetzt der Toolaufruf' },
+    { type: 'tool_use', id: 'tu_1', name: 'lookup', input: { q: 'x' } },
+  ]);
+  assert.equal(messages[1]?.content[0], THINKING_BLOCK);
+  // The foreign reasoning part is gone, the tool_result is not.
+  assert.deepEqual(messages[2]?.content, [
+    { type: 'tool_result', tool_use_id: 'tu_1', content: '42' },
+  ]);
+  // Replaying blocks opts the request into the binding controls — and the
+  // field is a 400 without its beta header, so the two go together.
+  assert.deepEqual(calls[1]?.params['thinking'], {
+    type: 'adaptive',
+    block_binding: { prefix_mismatch_behavior: 'drop_block' },
+  });
+  assert.deepEqual(calls[1]?.options, {
+    headers: { 'anthropic-beta': THINKING_BINDING_BETA },
+  });
+});
+
+test('the thinking-binding beta is appended to a caller\'s betas exactly once', async () => {
+  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return textResponse();
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const replay = (betas?: string[]) =>
+    provider.complete({
+      model: 'claude-opus-5-5',
+      maxTokens: 64,
+      ...(betas !== undefined ? { betas } : {}),
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'reasoning', provider: 'anthropic', raw: THINKING_BLOCK },
+          ],
+        },
+      ],
+    });
+
+  await replay(['context-management-2025-06-27']);
+  assert.deepEqual(calls[0]?.options, {
+    headers: {
+      'anthropic-beta': `context-management-2025-06-27,${THINKING_BINDING_BETA}`,
+    },
+  });
+
+  await replay([THINKING_BINDING_BETA]);
+  assert.deepEqual(calls[1]?.options, {
+    headers: { 'anthropic-beta': THINKING_BINDING_BETA },
+  });
+
+  // A request with no Anthropic reasoning keeps the untouched common path:
+  // no thinking field (which would turn thinking ON for a model where it is
+  // off by default) and no beta header.
+  await provider.complete({
+    model: 'claude-opus-4-8',
+    maxTokens: 64,
+    messages: [
+      {
+        role: 'assistant',
+        content: [{ type: 'reasoning', provider: 'openai', raw: { x: 1 } }],
+      },
+    ],
+  });
+  assert.equal(calls[2]?.params['thinking'], undefined);
+  assert.equal(calls[2]?.options, undefined);
+});
+
+/** A response reporting that the API dropped a block it was sent. */
+const DROPPED = {
+  input_transformations: [
+    {
+      type: 'thinking_block_dropped',
+      path: 'messages.1.content.0',
+      reason: 'prefix_binding_mismatch',
+    },
+    { type: 'thinking_block_dropped', path: 'messages.3.content.0', reason: 'model_binding_mismatch' },
+  ],
+};
+
+/** Both request paths must report a drop — a replay runs through whichever of
+ *  the two the caller picked, and a silent drop is reasoning lost for good. */
+for (const path of ['complete', 'stream'] as const) {
+  test(`a dropped replayed block is logged on the ${path} path`, async () => {
+    const logged: string[] = [];
+    const final = textResponse(DROPPED);
+    const fakeStream = {
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'message_stop' };
+      },
+      finalMessage: async () => final,
+    };
+    const client = {
+      messages: {
+        create: async () => final,
+        stream: () => fakeStream,
+      },
+    } as unknown as Anthropic;
+    const provider = createAnthropicProvider({
+      client,
+      log: (...args: unknown[]) => logged.push(args.map(String).join(' ')),
+    });
+    const req = {
+      model: 'claude-opus-5-5',
+      maxTokens: 64,
+      messages: [
+        {
+          role: 'assistant' as const,
+          content: [
+            { type: 'reasoning' as const, provider: 'anthropic', raw: THINKING_BLOCK },
+          ],
+        },
+      ],
+    };
+
+    if (path === 'complete') {
+      await provider.complete(req);
+    } else {
+      for await (const _ of provider.stream(req)) {
+        // drain
+      }
+    }
+
+    assert.ok(
+      logged.some(
+        (line) =>
+          // Reported, not interpreted: the count and the vendor's own reasons,
+          // with no claim about WHAT was dropped (later checks add types).
+          line.includes('dropped 2 replayed block(s)') &&
+          line.includes('prefix_binding_mismatch,model_binding_mismatch'),
+      ),
+      `no drop logged on ${path}: ${logged.join(' | ')}`,
+    );
+  });
+}

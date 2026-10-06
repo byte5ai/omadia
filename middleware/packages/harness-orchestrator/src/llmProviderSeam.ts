@@ -103,9 +103,14 @@ function toContentPart(block: AnthropicBlock): ContentPart {
       };
       return part;
     }
+    case 'thinking':
+    case 'redacted_thinking':
+      // #1207 — carried opaquely so the tool loop replays it unchanged on the
+      // next iteration of the same turn; see `ReasoningPart`. The loop itself
+      // never reads these blocks, it only keeps them in `messages`.
+      return { type: 'reasoning', provider: 'anthropic', raw: block };
     default:
-      // thinking/redacted or unknown blocks have no neutral equivalent; the
-      // orchestrator never echoes them back into a request, but be lenient.
+      // unknown blocks have no neutral equivalent; be lenient.
       return { type: 'text', text: '' };
   }
 }
@@ -284,9 +289,27 @@ function fromContentPart(part: ContentPart): AnthropicBlock {
       const call = part as ToolCallPart;
       return { type: 'tool_use', id: call.id, name: call.name, input: call.input };
     }
-    default:
-      // image/tool_result never appear in a model RESPONSE.
+    case 'reasoning':
+      // Back to the exact block the model emitted — the loop pushes this into
+      // `messages` as-is, which is what closes the replay round-trip (#1207).
+      // Only Anthropic reasoning reaches here; `fromLlmResponse` drops the
+      // rest, because a foreign `raw` is not a block this loop may send.
+      return part.raw as AnthropicBlock;
+    case 'image':
+    case 'tool_result':
+      // Never appear in a model RESPONSE (they are request-side shapes).
       return { type: 'text', text: '' };
+    default: {
+      // Same reasoning as `toStopReason`: a new ContentPart member must fail
+      // the BUILD here, not silently become an empty text block in a message
+      // the loop then sends to the vendor.
+      const exhaustive: never = part;
+      throw new Error(
+        `unhandled ContentPart in a response: ${String(
+          (exhaustive as { type?: string }).type,
+        )}`,
+      );
+    }
   }
 }
 
@@ -315,7 +338,13 @@ export interface SeamMessage {
 
 export function fromLlmResponse(response: LlmResponse): SeamMessage {
   return {
-    content: response.content.map(fromContentPart),
+    // #1207 — a foreign provider's reasoning is dropped rather than mapped:
+    // its `raw` is not an Anthropic block, and the loop pushes whatever lands
+    // here straight back into `messages`. Anthropic's own reasoning is kept
+    // verbatim so the in-turn replay stays byte-identical.
+    content: response.content
+      .filter((p) => p.type !== 'reasoning' || p.provider === 'anthropic')
+      .map(fromContentPart),
     // A neutral `refusal` IS the refusal signal (#1219): the loops branch on
     // `stop_reason === 'refusal'`, so an adapter that reports one without the
     // Anthropic vocabulary in `providerFinishReason` must still land there.

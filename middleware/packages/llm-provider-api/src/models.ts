@@ -8,7 +8,7 @@
  * contract without importing the runtime registry.
  */
 
-import type { EffortLevel } from './types.js';
+import type { EffortLevel, ProviderId } from './types.js';
 
 /** Capability/quality tier. Maps a capability request to a concrete model per
  *  provider. Builder slugs `haiku|sonnet|opus` are legacy aliases onto these. */
@@ -24,8 +24,9 @@ export type ModelRole =
   | 'codegen'
   | 'preview';
 
-/** Provider id — matches the `LlmProvider.id` of the adapter that serves it. */
-export type ProviderId = 'anthropic' | 'openai' | 'openai-compatible' | string;
+// `ProviderId` lives in `types.ts` next to `LlmProvider.id`, which it types;
+// re-exported here so the model-registry contract keeps its own vocabulary.
+export type { ProviderId };
 
 /**
  * A model as reported LIVE by a provider's own list-models API (Anthropic

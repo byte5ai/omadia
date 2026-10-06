@@ -2301,6 +2301,45 @@ dem Löschen weiter, nur der Orchestrator verweigert. Bereits gebaute
 dynamische Sub-Agenten behalten ihren Provider bis zum nächsten Rebuild — siehe
 §13 „Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild".
 
+### Reasoning-Blöcke im Tool-Loop: `ReasoningPart` (#1207)
+
+`ContentPart` in `@omadia/llm-provider-api` hat ein fünftes Mitglied:
+`ReasoningPart { type: 'reasoning', provider: ProviderId, raw: unknown }`
+(Contract 1.4.0, additiv). Es ist **opak** — niemand liest `raw`, niemand
+editiert oder sortiert es um.
+
+Hintergrund: auf den Modellen, auf die `class:frontier` auflöst
+(`claude-opus-5-5`, `claude-fable-5-1`), ist Thinking **immer an**, und die
+kurzen Notizen zwischen zwei Tool-Calls kommen als `thinking`-Blöcke. Die
+Signatur eines solchen Blocks ist an das Modell **und** an den
+Conversation-Prefix gebunden, der ihn erzeugt hat. Vorher verwarf der Adapter
+die Blöcke, und der Seam mappte sie auf leeren Text — jede Tool-Loop-Iteration
+schickte den Assistant-Turn also ohne sein Reasoning zurück.
+
+Regeln, die daraus folgen:
+
+- **Der erzeugende Adapter schickt `raw` byte-identisch zurück**, jeder andere
+  filtert es über `provider` weg. Beide Richtungen sind gefiltert: der Adapter
+  in `toAnthropicMessages`, der Seam in `fromLlmResponse`. Ein fremdes `raw`
+  ist kein Anthropic-Block und darf nie in `messages` landen.
+- **Wer einen Turn mitten im Loop umschreibt, verliert das Reasoning.** Sobald
+  ein Request Blöcke replayt, setzt der Adapter
+  `thinking.block_binding.prefix_mismatch_behavior: 'drop_block'` zusammen mit
+  dem Beta-Header `thinking-binding-controls-2026-08-01` (ohne Header ist das
+  Feld ein 400). Prefix-Edits führen damit zu einem **Drop statt zu einem
+  Fehler** — der Turn läuft weiter, aber ohne das Reasoning ab der ersten
+  geänderten Stelle. Der Finalize-Pass und `LocalSubAgent` editieren `system`
+  bzw. `tools` noch mitten im Turn (eigene Issues); jeder Drop steht als
+  `input_transformations`-Eintrag im Adapter-Log (`prefix_binding_mismatch` =
+  wir editieren noch, `model_binding_mismatch` = Provider-Fallback, erwartet).
+- **Nur der In-Turn-Loop braucht die Blöcke.** `maskPriorTurnsForWire`
+  replayt frühere Turns als reinen Text, es überschreitet also kein Block eine
+  Turn-Grenze.
+- `fromContentPart` (Response → Anthropic-Block) endet in einem
+  `never`-Guard: ein sechstes `ContentPart`-Mitglied bricht den **Build**,
+  statt still zu leerem Text zu werden. Nur der eingehende Mapper
+  (Vendor-Block → neutral) bleibt absichtlich tolerant.
+
 ### Embedding-Provider-Reaktivierung (Beta-Runde 5, OM-97/98/99)
 
 **`POST /api/v1/admin/embedding-provider/reactivate`** (Auth wie der Rest des

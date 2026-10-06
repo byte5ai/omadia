@@ -317,3 +317,100 @@ test('fromLlmResponse preserves native Anthropic stop reasons verbatim (allow-se
     'pause_turn',
   );
 });
+
+// ---------------------------------------------------------------------------
+// #1207 — thinking blocks round-trip through the seam
+// ---------------------------------------------------------------------------
+
+test('thinking blocks round-trip through the seam unchanged (response → params)', () => {
+  const thinking = {
+    type: 'thinking',
+    thinking: 'Zwei Schritte: erst suchen, dann rechnen.',
+    signature: 'sig-1',
+  };
+  const redacted = { type: 'redacted_thinking', data: 'enc-1' };
+  const response: LlmResponse = {
+    content: [
+      { type: 'reasoning', provider: 'anthropic', raw: thinking },
+      { type: 'reasoning', provider: 'anthropic', raw: redacted },
+      { type: 'text', text: 'Ich suche kurz.' },
+      { type: 'tool_call', id: 'tu_1', name: 'search', input: { q: 'x' } },
+    ],
+    finishReason: 'tool_calls',
+    providerFinishReason: 'tool_use',
+    model: 'claude-opus-5-5',
+    usage: { inputTokens: 10, outputTokens: 5 },
+  };
+
+  // What the loop reads back: the exact blocks, so pushing `content` into
+  // `messages` keeps the assistant turn intact.
+  const message = fromLlmResponse(response);
+  assert.deepEqual(message.content, [
+    thinking,
+    redacted,
+    { type: 'text', text: 'Ich suche kurz.' },
+    { type: 'tool_use', id: 'tu_1', name: 'search', input: { q: 'x' } },
+  ]);
+  assert.equal(message.content[0], thinking);
+
+  // And the next iteration's params map back to opaque reasoning parts, NOT
+  // to the empty text blocks the seam used to produce.
+  const params: AnthropicParams = {
+    model: 'claude-opus-5-5',
+    max_tokens: 1024,
+    messages: [
+      { role: 'user', content: 'Rechne' },
+      { role: 'assistant', content: message.content },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: '42' }],
+      },
+    ],
+  };
+  assert.deepEqual(toLlmRequest(params).messages[1], {
+    role: 'assistant',
+    content: [
+      { type: 'reasoning', provider: 'anthropic', raw: thinking },
+      { type: 'reasoning', provider: 'anthropic', raw: redacted },
+      { type: 'text', text: 'Ich suche kurz.' },
+      { type: 'tool_call', id: 'tu_1', name: 'search', input: { q: 'x' } },
+    ],
+  });
+});
+
+test('an unknown response block is still mapped leniently to empty text', () => {
+  const params: AnthropicParams = {
+    model: 'claude-opus-5-5',
+    max_tokens: 64,
+    messages: [
+      {
+        role: 'assistant',
+        content: [{ type: 'some_future_block', payload: 1 }],
+      },
+    ],
+  };
+  assert.deepEqual(toLlmRequest(params).messages[0]?.content, [
+    { type: 'text', text: '' },
+  ]);
+});
+
+test('fromLlmResponse drops a FOREIGN provider\'s reasoning instead of forwarding it', () => {
+  const mine = { type: 'thinking', thinking: 'meins', signature: 'sig-2' };
+  const response: LlmResponse = {
+    content: [
+      { type: 'reasoning', provider: 'anthropic', raw: mine },
+      // A future adapter's reasoning: `raw` is NOT an Anthropic block, and the
+      // loop pushes whatever lands here straight back into `messages`.
+      { type: 'reasoning', provider: 'openai', raw: { id: 'rs_1', encrypted: '…' } },
+      { type: 'text', text: 'Antwort' },
+    ],
+    finishReason: 'stop',
+    providerFinishReason: 'end_turn',
+    model: 'claude-opus-5-5',
+    usage: { inputTokens: 1, outputTokens: 1 },
+  };
+  assert.deepEqual(fromLlmResponse(response).content, [
+    mine,
+    { type: 'text', text: 'Antwort' },
+  ]);
+});

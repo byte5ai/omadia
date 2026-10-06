@@ -50,7 +50,32 @@ export interface ToolResultPart {
   readonly isError?: boolean;
 }
 
-export type ContentPart = TextPart | ImagePart | ToolCallPart | ToolResultPart;
+/**
+ * Opaque provider reasoning block (Anthropic `thinking` / `redacted_thinking`)
+ * from an assistant response.
+ *
+ * It has NO neutral meaning and is deliberately not readable: the producing
+ * adapter echoes `raw` back verbatim on later requests of the same turn, and
+ * every other adapter drops it. Never edit, split or reorder it — on
+ * always-thinking models the block carries a signature bound to the model AND
+ * to the conversation prefix that produced it, so a rewritten block is a hard
+ * 400 rather than a degraded answer.
+ */
+export interface ReasoningPart {
+  readonly type: 'reasoning';
+  /** Adapter id that produced the block (`'anthropic'`). Lets an adapter
+   *  filter out a foreign provider's reasoning instead of forwarding a block
+   *  its vendor cannot read. */
+  readonly provider: ProviderId;
+  readonly raw: unknown;
+}
+
+export type ContentPart =
+  | TextPart
+  | ImagePart
+  | ToolCallPart
+  | ToolResultPart
+  | ReasoningPart;
 
 export interface ChatMessage {
   readonly role: 'user' | 'assistant';
@@ -302,9 +327,14 @@ export interface ProviderCapabilities {
   readonly interleavedToolUse?: boolean;
 }
 
+/** Provider id — matches the `LlmProvider.id` of the adapter that serves it.
+ *  Open by design: a manifest may contribute an id this contract never saw,
+ *  so the named members document the built-ins rather than closing the set. */
+export type ProviderId = 'anthropic' | 'openai' | 'openai-compatible' | string;
+
 export interface LlmProvider {
   /** Stable adapter id: `anthropic`, `openai`, `openai-compatible`, … */
-  readonly id: string;
+  readonly id: ProviderId;
   readonly capabilities: ProviderCapabilities;
   complete(req: LlmRequest): Promise<LlmResponse>;
   /** Streaming completion. Yields `text_delta` events as text arrives and

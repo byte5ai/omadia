@@ -26,6 +26,7 @@ export type {
   LlmUsage,
   OutputFormat,
   ProviderCapabilities,
+  ReasoningPart,
   RefusalDetails,
   SystemBlock,
   TextPart,

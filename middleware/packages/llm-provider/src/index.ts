@@ -28,6 +28,7 @@ export type {
   LlmStreamEvent,
   LlmUsage,
   ProviderCapabilities,
+  ReasoningPart,
   SystemBlock,
   TextPart,
   ToolCallPart,

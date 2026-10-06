@@ -58,6 +58,12 @@ function toAnthropicResultPart(
       };
 }
 
+/** Whether this part is reasoning THIS adapter produced. A foreign provider's
+ *  reasoning is not a valid Anthropic block, so it is filtered, never sent. */
+function isAnthropicReasoning(part: ContentPart): boolean {
+  return part.type === 'reasoning' && part.provider === 'anthropic';
+}
+
 function toAnthropicPart(part: ContentPart): AnthropicContentBlockParam {
   switch (part.type) {
     case 'text':
@@ -80,6 +86,10 @@ function toAnthropicPart(part: ContentPart): AnthropicContentBlockParam {
             : part.content.map(toAnthropicResultPart),
         ...(part.isError !== undefined ? { is_error: part.isError } : {}),
       };
+    case 'reasoning':
+      // Echoed back byte-for-byte — see `ReasoningPart`. Foreign reasoning
+      // never reaches here: `toAnthropicMessages` filters it out.
+      return part.raw as AnthropicContentBlockParam;
   }
 }
 
@@ -88,7 +98,9 @@ function toAnthropicMessages(
 ): AnthropicMessageParam[] {
   return messages.map((m) => ({
     role: m.role,
-    content: m.content.map(toAnthropicPart),
+    content: m.content
+      .filter((p) => p.type !== 'reasoning' || isAnthropicReasoning(p))
+      .map(toAnthropicPart),
   }));
 }
 
@@ -153,10 +165,14 @@ function fromAnthropicContent(
         name: block['name'] as string,
         input: block['input'],
       });
+    } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+      // #1207 — kept OPAQUE so the tool loop passes it back unmodified. On
+      // always-thinking models (Opus 5.5, Fable 5.1) the short notes between
+      // tool calls arrive as thinking blocks, and stripping them both loses
+      // that reasoning and breaks the signature/ordering checks on the next
+      // iteration of the same turn.
+      parts.push({ type: 'reasoning', provider: 'anthropic', raw: block });
     }
-    // thinking/redacted blocks are intentionally dropped from the neutral
-    // view — phase-2 callers that need them read providerFinishReason and
-    // raw usage instead; revisit when a second provider exposes reasoning.
   }
   return parts;
 }
@@ -203,6 +219,34 @@ function toRefusal(
     ...(typeof category === 'string' ? { category } : {}),
     ...(typeof explanation === 'string' ? { explanation } : {}),
   };
+}
+
+/**
+ * Logs the blocks the API dropped from a request (#1207).
+ *
+ * Under {@link THINKING_BINDING_BETA} every response carries a top-level
+ * `input_transformations` array — empty when nothing was dropped, absent
+ * entirely without the header. A drop means the turn SILENTLY lost part of
+ * what it replayed: `prefix_binding_mismatch` is something in the middleware
+ * editing the turn mid-flight (the finalize pass, a persona hop),
+ * `model_binding_mismatch` is an expected provider fallback. Neither is an
+ * error, and neither is visible anywhere else, so it goes to the log.
+ *
+ * The vendor adds transformation types and reasons over later checks, so this
+ * REPORTS the reasons it got rather than asserting what was dropped.
+ */
+function logInputTransformations(
+  message: Anthropic.Message,
+  log: (...args: unknown[]) => void,
+): void {
+  const entries = (message as unknown as Record<string, unknown>)[
+    'input_transformations'
+  ];
+  if (!Array.isArray(entries) || entries.length === 0) return;
+  const reasons = entries
+    .map((e) => String((e as Record<string, unknown>)['reason'] ?? 'unknown'))
+    .join(',');
+  log(`dropped ${String(entries.length)} replayed block(s): ${reasons}`);
 }
 
 function mapResponse(message: Anthropic.Message): LlmResponse {
@@ -339,6 +383,30 @@ function effectiveToolChoice(req: LlmRequest): ToolChoice | undefined {
     : { type: 'auto' };
 }
 
+/**
+ * The beta that lets a request choose what happens to a replayed thinking
+ * block whose conversation prefix no longer matches, and that adds
+ * `input_transformations` to every response.
+ *
+ * It is NOT optional once `thinking.block_binding` is sent: without the header
+ * the field is a hard 400 (`block_binding: Extra inputs are not permitted`),
+ * so {@link carriesReasoning} gates both in {@link toRequestOptions} and here.
+ * Claude API only — Bedrock/Vertex get it per model and Foundry not at all, so
+ * a future non-first-party base URL has to re-check this.
+ */
+export const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
+
+/**
+ * Whether this request replays Anthropic thinking blocks.
+ *
+ * True only when the MODEL itself emitted blocks earlier in the same turn, so
+ * a Haiku route — where thinking is off and nothing is ever replayed — never
+ * sees the `thinking` field at all.
+ */
+function carriesReasoning(req: LlmRequest): boolean {
+  return req.messages.some((m) => m.content.some(isAnthropicReasoning));
+}
+
 function buildParams(req: LlmRequest): Record<string, unknown> {
   const system = buildSystem(req);
   const toolChoice = effectiveToolChoice(req);
@@ -348,6 +416,22 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
     max_tokens: req.maxTokens,
     messages: toAnthropicMessages(req.messages),
     ...(system !== undefined ? { system } : {}),
+    // #1207 — a replayed block whose prefix no longer matches (the finalize
+    // pass editing `system`/`tools`, a persona hop, a steer merged into an
+    // earlier message, privacy masking) is DROPPED instead of failing the
+    // turn with a 400. `adaptive` is the only thinking mode these models
+    // accept, and it is never a behaviour change: the field is sent only when
+    // the model already produced thinking blocks this turn, which means
+    // thinking was on. After a provider fallback to a different model the
+    // blocks are dropped as `model_binding_mismatch` — expected, and logged.
+    ...(carriesReasoning(req)
+      ? {
+          thinking: {
+            type: 'adaptive',
+            block_binding: { prefix_mismatch_behavior: 'drop_block' },
+          },
+        }
+      : {}),
     // Sending a temperature a model no longer honours is a hard 400, not a
     // warning. Callers ask for determinism (`temperature: 0`) on paths where
     // an exception degrades to fail-open — the security screener is one — so
@@ -441,6 +525,12 @@ function toRequestOptions(
     requiresEffortBeta(req.model) &&
     !(req.betas ?? []).includes(EFFORT_BETA)
       ? [EFFORT_BETA]
+      : []),
+    // #1207 — `thinking.block_binding` without this header is a 400, so the
+    // two are attached under the same condition and never separately.
+    ...(carriesReasoning(req) &&
+    !(req.betas ?? []).includes(THINKING_BINDING_BETA)
+      ? [THINKING_BINDING_BETA]
       : []),
   ];
   return betas.length > 0
@@ -557,6 +647,7 @@ export function createAnthropicProvider(
       const response = await (options !== undefined
         ? client.messages.create(params, options)
         : client.messages.create(params));
+      logInputTransformations(response as Anthropic.Message, log);
       const mapped = mapResponse(response as Anthropic.Message);
       log(
         `complete ok model=${mapped.model} in=${String(mapped.usage.inputTokens)} out=${String(mapped.usage.outputTokens)} ms=${String(Date.now() - started)}`,
@@ -587,6 +678,7 @@ export function createAnthropicProvider(
         }
       }
       const final = await stream.finalMessage();
+      logInputTransformations(final, log);
       yield { type: 'final', response: mapResponse(final) };
     },
 
