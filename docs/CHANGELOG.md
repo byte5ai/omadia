@@ -36,6 +36,37 @@ changelog.
 
 ## [Unreleased]
 
+### Security — `enforce-strict` context memory also holds outside the memory tree
+
+2026-10-06 — An E2E test on main `b137610d` (agent in `enforce-strict`, scripted
+model) showed that the context notes were separated, but an earlier Teams
+conversation still reached a Telegram turn of the same agent: the `memory` tool
+could read its transcript, `query_knowledge_graph` searched the whole tenant
+graph, and automatic recall put it into the prompt without any tool call. The
+binder partitioned the memory tree only. For a context-bound turn of an agent in
+`enforce-strict`:
+
+- The shared grant is `ro:core-notes` instead of `ro:core`. Shared notes and
+  `_*` trees stay readable; `/memories/sessions/` and `/memories/chat-sessions/`
+  do not, because every transcript sits in one flat tree keyed by conversation.
+- Automatic recall is restricted to the turn's own conversation, using the
+  `restrictToScope` narrowing the audience floor already uses (#575). A turn with
+  no conversation scope recalls nothing.
+- `query_knowledge_graph` answers all six queries from the turn's own
+  conversation only. A foreign `session_summary` scope answers like a missing one.
+- A binder that throws for a strict agent's turn with an `origin` still gets
+  this narrowing.
+
+`off` and `enforce` are unchanged. Strict narrows to the conversation, which is
+narrower than the context partition. Sharing a context's knowledge across its
+conversations (e.g. team-wide) needs a context key on Turn nodes and is open.
+Isolation applies only to turns that carry a `TurnOrigin`: today none of the
+in-repo channels send one, and Teams/Telegram do so only with their pending SDK
+release. Tests: `strictContextIsolation.test.ts` drives real orchestrator turns
+and shows each of the three leaks in an `enforce` control; mutating any one fix
+back turns exactly its assertion red. Also
+`knowledgeGraphToolStrictView{,.pg}.test.ts` and `strictTranscriptAccess.test.ts`.
+
 ### Security — `proxy-addr` 2.0.8 and `source-map-js` 1.2.2
 
 2026-10-06 — Two advisories turned the required `audit` check red on every PR:

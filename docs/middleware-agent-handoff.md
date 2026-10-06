@@ -6038,8 +6038,38 @@ Sonst teilen sich `{kind:'group',groupRef:'x'}` und
 scope = axes.isContextFree
   ? ['core', `orchestrator:${slug}:*`]                        // exakt heute
   : ['ro:core', `ro:orchestrator:${slug}:*`, …axes.patterns]  // enforce
-  : ['ro:core', …axes.patterns]                               // enforce-strict
+  : ['ro:core-notes', …axes.patterns]                         // enforce-strict
 ```
+
+**`enforce-strict` jenseits des Memory-Baums (2026-10-06).** Der Binder partitioniert nur
+den Memory-Baum. Ein E2E-Test auf `b137610d` zeigte, dass eine frühere Teams-Konversation
+denselben Agenten trotzdem in einem Telegram-Turn erreichte, auf drei Wegen. Seitdem gilt
+für einen kontextgebundenen Turn eines Agenten in `enforce-strict`:
+
+- **Transkripte:** `ro:core-notes` statt `ro:core`. `/memories/core/` und `_*` bleiben
+  lesbar, `/memories/sessions/` und `/memories/chat-sessions/` nicht. Der Grund: Jedes
+  Protokoll liegt in einem flachen Baum je Konversation (A3a), ohne Kontext- oder Agent-Bezug.
+- **Graph-Recall:** `bindTurnMemory` setzt `TurnMemoryBinding.isolation`.
+  `retrievePriorContext` beschränkt den Recall darüber auf die eigene Konversation, mit
+  derselben `restrictToScope`-Mechanik wie die Audience-Floor-Einschränkung (#575).
+  Ohne `sessionScope` gibt es keinen Recall.
+- **`query_knowledge_graph`:** `KnowledgeGraphTool.handle(input, { restrictToScope })`
+  filtert alle sechs Abfragen auf den eigenen Graph-Scope (exakte Übereinstimmung; der
+  SQL-Vorfilter ist ein LIKE-Präfix). `session_summary` auf einen fremden Scope antwortet
+  wie bei einem fehlenden. Die Weiche sitzt in `dispatchToolInner` **vor** dem
+  registrierten Kernel-Native-Handler, weil dieser keinen Turn kennt.
+- Ein `forOrigin`, das wirft, liefert bei einem Strict-Agenten mit `origin` trotzdem die
+  Isolation. Der Fallback darf dort nicht breiter sein.
+
+**Offen (Folgearbeit):** Owner-basiertes Teilen innerhalb eines Kontexts über Konversationen
+hinweg (z. B. teamweit) braucht einen Kontext-Key auf Turn- und Session-Knoten. Den gibt es
+nicht; strict schränkt deshalb auf die Konversation ein, also enger als die Partition.
+`enforce` und `off` bleiben unverändert und teilen weiter agentweit. Kanäle im Repo
+(Web, API, Canvas) senden kein `origin`, und Teams/Telegram senden es erst mit dem
+SDK-Release, das in ihren Repos aussteht. Der Claude-CLI-Pfad nutzt den Binder nicht.
+Tests: `test/orchestrator/strictContextIsolation.test.ts` (echte Turns, Kontrolle in
+`enforce`), `test/knowledgeGraphToolStrictView{,.pg}.test.ts`,
+`test/strictTranscriptAccess.test.ts`.
 
 - **Fail-closed.** Fehlender `origin`, `unscoped`, `system`, unbekannter `channelType`,
   unbrauchbare Patterns → Zeile 1 der Tabelle, byte-identisch zu heute, kein Kontextbaum

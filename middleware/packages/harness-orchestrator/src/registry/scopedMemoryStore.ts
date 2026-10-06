@@ -123,7 +123,7 @@ const CONTEXT_AXIS_PATTERN = /^(?:team|channel|user):[^:]+:\*$/;
  * scope = axes.isContextFree
  *   ? ['core',    `orchestrator:${slug}:*`]                       // exactly today
  *   : ['ro:core', `ro:orchestrator:${slug}:*`, …axes.patterns]    // enforce
- *   : ['ro:core',                              …axes.patterns]    // enforce-strict
+ *   : ['ro:core-notes',                        …axes.patterns]    // enforce-strict
  * ```
  *
  * Four properties are the whole point, and each fails in the safe direction:
@@ -228,8 +228,16 @@ export function effectiveMemoryScope(
   // trees stay writable from a context-FREE turn (operator, CLI, pre-W5
   // plugin); new knowledge leaves a context only through the operator promote
   // action (coordinator decision 2).
+  //
+  // `enforce-strict` narrows further to `ro:core-notes`: the shared notes and
+  // `_*` trees stay readable, the transcript trees (`sessions`,
+  // `chat-sessions`) do not. Every session transcript lands in one flat tree,
+  // keyed by conversation and not by context or even agent (decision A3a), so
+  // `ro:core` let a Telegram turn read a Teams conversation word for word —
+  // the opposite of what strict promises. The turn's own conversation still
+  // reaches the model through recall, which strict restricts to it.
   return strict
-    ? ['ro:core', ...patterns]
+    ? ['ro:core-notes', ...patterns]
     : ['ro:core', `ro:orchestrator:${agentSlug}:*`, ...patterns];
 }
 
@@ -253,6 +261,9 @@ const CORE_PREFIXES = [
   '/memories/sessions/',
   '/memories/chat-sessions/',
 ];
+
+/** `core` without the conversation transcripts — the `enforce-strict` grant. */
+const CORE_NOTES_PREFIXES = ['/memories/core/'];
 
 /**
  * Subtrees inside `core` that no agent may ever write, whatever else its scope
@@ -337,12 +348,15 @@ function compileAccessPattern(
   pattern: string,
   agentSlug: string,
 ): CompiledPattern | undefined {
-  if (pattern === 'core') {
+  if (pattern === 'core' || pattern === 'core-notes') {
+    // `core-notes` is `core` without the transcript trees — see the strict
+    // branch of `effectiveMemoryScope`.
+    const prefixes = pattern === 'core' ? CORE_PREFIXES : CORE_NOTES_PREFIXES;
     return {
       source: pattern,
       readOnly: false,
       match: (p) => {
-        for (const pre of CORE_PREFIXES) {
+        for (const pre of prefixes) {
           if (p === pre.slice(0, -1) || p.startsWith(pre)) return true;
         }
         // Allow top-level shared `_*` directories used by some plugins for
