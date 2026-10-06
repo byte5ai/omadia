@@ -36,6 +36,43 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — usage telemetry prices the 5.5 generation and Fable, not the family fallback
+
+2026-10-05 — The Anthropic half of `EXACT_PRICES` in
+`packages/harness-usage-telemetry/src/pricing.ts` ended at the Opus 5 / Sonnet 5
+generation and never knew about Fable, so three current models were mispriced
+in the cost column and in every budget display. Rates checked against
+platform.claude.com/docs/en/about-claude/pricing on 2026-10-05.
+
+- `claude-opus-5-5` fell through to the `opus` family at $5/$25 per MTok with
+  cache reads at the global 0.1x. It is $4/$20 with reads at 0.05x
+  ($0.20/MTok), so cost over-reported by roughly a quarter — more on
+  cache-heavy calls, where reads billed at double. The new entry carries an
+  absolute `cachedInputPerMTok` of 0.2; that field already overrode
+  `CACHE_READ_MULTIPLIER` for the OpenAI path and now also carries the
+  Anthropic models whose read fraction is not 0.1x. Cache writes needed no
+  special case: `CACHE_WRITE_MULTIPLIER` × $4 is the published $5/MTok
+  5-minute write rate.
+- `claude-sonnet-5-5` fell through to the `sonnet` family at $3/$15; it is
+  $2/$10, the same correction the `claude-sonnet-5` entry already made. Reads
+  stay at the standard 0.1x.
+- `claude-fable-5-1` matched no exact entry **and** no family keyword, so every
+  Fable call recorded at $0 behind a one-time "no price for model" warning —
+  the dashboard read frontier traffic as free. It now has an exact entry
+  ($10/$50, reads 0.025x = $0.25/MTok), and a `fable` family row prices Fable 5
+  at $10/$50 with standard 0.1x reads. Mythos needs no row of its own:
+  `builtinLlmProviders.ts` excludes it from model discovery.
+- Dated snapshots of all three were still mispriced after the exact entries,
+  because a snapshot misses the exact table and the only keywords were the
+  broad family ones — `claude-opus-5-5-20260922` resolved to `opus` at $5/$25,
+  the very over-report being fixed. Each point release that prices below its
+  family now also has a family keyword ordered ahead of the family's
+  (`opus-5-5` before `opus`, `sonnet-5-5` before `sonnet`, `fable-5-1` before
+  `fable`), and the rate itself is spelled once in a shared constant used by
+  both tables so the two halves cannot drift apart.
+- `test/usageTelemetryPricing.test.ts` pins all three ids, their snapshots, and
+  the cost arithmetic.
+
 ### Fixed — the orchestrator page explains a fresh install instead of printing two 503s
 
 2026-10-05 — Without LLM access the dashboard links to `/operator/agents`,

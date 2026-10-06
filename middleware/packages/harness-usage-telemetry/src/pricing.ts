@@ -2,8 +2,9 @@
  * Multi-provider model pricing + per-call USD cost computation.
  *
  * Prices are USD per 1,000,000 tokens. Anthropic figures are current as of the
- * Opus 4.8 generation (platform.claude.com/docs/en/pricing); OpenAI figures as
- * of the GPT-4.1/4o generation (openai.com/api/pricing, reviewed 2026-06-14).
+ * Opus 5.5 generation (platform.claude.com/docs/en/about-claude/pricing,
+ * reviewed 2026-10-05); OpenAI figures as of the GPT-4.1/4o generation
+ * (openai.com/api/pricing, reviewed 2026-06-14).
  *
  * Two cache-cost conventions differ across providers, so the model's price
  * entry carries the relevant flags rather than the math being Anthropic-only:
@@ -11,7 +12,9 @@
  *  - Anthropic: `input_tokens` EXCLUDES cached reads. Cache reads bill at ~0.1×
  *    the base input rate (CACHE_READ_MULTIPLIER); 5-minute cache writes
  *    (`cache_creation_input_tokens`) bill at ~1.25× (CACHE_WRITE_MULTIPLIER).
- *    All components sum without double-counting.
+ *    All components sum without double-counting. A model whose read fraction
+ *    is not 0.1× carries an absolute `cachedInputPerMTok` instead of a second
+ *    multiplier table — see that field for which ones and why.
  *  - OpenAI: `prompt_tokens` INCLUDES the cached portion, and cached input has
  *    its own absolute rate (`cachedInputPerMTok`, ~0.1× of input for GPT-5.x).
  *    Entries set `cacheIncludedInInput: true` so the cached tokens are
@@ -19,13 +22,16 @@
  *    — otherwise the cached portion would be billed twice. OpenAI has no cache
  *    write, so `cacheCreationTokens` is 0 on that path.
  *
- * Model matching is by id first, then by family keyword (opus/sonnet/haiku,
- * gpt-5.x variants) so dated snapshots (e.g. `claude-haiku-4-5-20251001`,
- * `gpt-5.4-mini-2026-…`) and future point releases resolve without a code change.
- * Family keywords are ordered most-specific-first because matching is by
- * substring `includes` (`gpt-5.4-mini` must win before `gpt-5.4`). Unknown
- * models price at 0 and are logged once so the dashboard surfaces a "0 cost"
- * anomaly instead of crashing.
+ * Model matching is by id first, then by family keyword (fable/opus/sonnet/
+ * haiku, gpt-5.x variants, mistral sizes) so dated snapshots (e.g.
+ * `claude-opus-5-5-2026…`, `claude-haiku-4-5-20251001`, `gpt-5.4-mini-2026-…`)
+ * and future point releases resolve without a code change. Family keywords are
+ * ordered most-specific-first because matching is by substring `includes`: a
+ * point release that prices differently from its family needs its own keyword
+ * ahead of the family's (`opus-5-5` before `opus`, `gpt-5.4-mini` before
+ * `gpt-5.4`), or its snapshots silently fall through to the family rate.
+ * Unknown models price at 0 and are logged once so the dashboard surfaces a
+ * "0 cost" anomaly instead of crashing.
  */
 
 export interface ModelPrice {
@@ -34,8 +40,13 @@ export interface ModelPrice {
   /** USD per 1M output tokens. */
   readonly outputPerMTok: number;
   /** USD per 1M cached-input tokens (absolute). When set, overrides the
-   *  CACHE_READ_MULTIPLIER fallback. Used by providers (OpenAI) that publish a
-   *  distinct cached rate rather than a fixed fraction of the input rate. */
+   *  CACHE_READ_MULTIPLIER fallback. Two kinds of model need it:
+   *   - OpenAI, which publishes a distinct cached rate rather than a fixed
+   *     fraction of the input rate.
+   *   - the Anthropic models whose read fraction is not the global 0.1×:
+   *     Opus 5.5 reads at 0.05× (0.05 × $4 = $0.20/MTok) and Fable 5.1 at
+   *     0.025× (0.025 × $10 = $0.25/MTok). Expressed absolutely so
+   *     CACHE_READ_MULTIPLIER stays one number instead of a per-model table. */
   readonly cachedInputPerMTok?: number;
   /** True when the provider's reported input-token count INCLUDES the cached
    *  reads (OpenAI). The cached tokens are then subtracted from full-rate input
@@ -50,15 +61,31 @@ export const CACHE_READ_MULTIPLIER = 0.1;
 /** 5-minute cache-write tokens bill at this multiple of the base input rate. */
 export const CACHE_WRITE_MULTIPLIER = 1.25;
 
+/** Point releases that price below the rest of their family. Each is spelled
+ *  once here and used by BOTH tables below: the exact entry prices the bare id,
+ *  the family keyword prices its dated snapshots. Dropping either half
+ *  re-introduces the fall-through these exist to stop. */
+const FABLE_5_1: ModelPrice = { inputPerMTok: 10, outputPerMTok: 50, cachedInputPerMTok: 0.25 };
+const OPUS_5_5: ModelPrice = { inputPerMTok: 4, outputPerMTok: 20, cachedInputPerMTok: 0.2 };
+const SONNET_5_5: ModelPrice = { inputPerMTok: 2, outputPerMTok: 10 };
+
 /** Exact-id price table. Falls through to family matching for anything else. */
 const EXACT_PRICES: Readonly<Record<string, ModelPrice>> = {
   // --- Anthropic (input_tokens excludes cached; multiplier-based cache) ------
+  // Mythos shares Fable's rates and has no row: `builtinLlmProviders.ts`
+  // excludes it from model discovery, so it never reaches the recorder.
+  'claude-fable-5-1': FABLE_5_1,
+  // Cache writes need no entry of their own: CACHE_WRITE_MULTIPLIER × $4 is
+  // the published $5/MTok 5-minute write rate.
+  'claude-opus-5-5': OPUS_5_5,
   'claude-opus-5': { inputPerMTok: 5, outputPerMTok: 25 },
   'claude-opus-4-8': { inputPerMTok: 5, outputPerMTok: 25 },
   'claude-opus-4-7': { inputPerMTok: 5, outputPerMTok: 25 },
   'claude-opus-4-6': { inputPerMTok: 5, outputPerMTok: 25 },
   'claude-opus-4-5': { inputPerMTok: 5, outputPerMTok: 25 },
-  'claude-sonnet-5': { inputPerMTok: 2, outputPerMTok: 10 }, // Load-bearing: cheaper than the family fallback.
+  // Load-bearing, both of them: the `sonnet` family fallback is $3/$15.
+  'claude-sonnet-5-5': SONNET_5_5,
+  'claude-sonnet-5': { inputPerMTok: 2, outputPerMTok: 10 },
   'claude-sonnet-4-6': { inputPerMTok: 3, outputPerMTok: 15 },
   'claude-sonnet-4-5': { inputPerMTok: 3, outputPerMTok: 15 },
   'claude-haiku-4-5': { inputPerMTok: 1, outputPerMTok: 5 },
@@ -79,9 +106,15 @@ const EXACT_PRICES: Readonly<Record<string, ModelPrice>> = {
 };
 
 /** Family-keyword fallback for dated snapshots / future point releases.
- *  Ordered most-specific-first (substring match): nano/mini before base. */
+ *  Ordered most-specific-first (substring match): a point release that prices
+ *  below its family comes before the family, and nano/mini before base. */
 const FAMILY_PRICES: ReadonlyArray<readonly [keyword: string, price: ModelPrice]> = [
+  ['fable-5-1', FABLE_5_1],
+  // Fable 5 / Mythos 5 snapshots: same $10/$50, but reads at the standard 0.1×.
+  ['fable', { inputPerMTok: 10, outputPerMTok: 50 }],
+  ['opus-5-5', OPUS_5_5],
   ['opus', { inputPerMTok: 5, outputPerMTok: 25 }],
+  ['sonnet-5-5', SONNET_5_5],
   ['sonnet', { inputPerMTok: 3, outputPerMTok: 15 }],
   ['haiku', { inputPerMTok: 1, outputPerMTok: 5 }],
   ['gpt-5.4-nano', { inputPerMTok: 0.2, outputPerMTok: 1.25, cachedInputPerMTok: 0.02, cacheIncludedInInput: true }],
