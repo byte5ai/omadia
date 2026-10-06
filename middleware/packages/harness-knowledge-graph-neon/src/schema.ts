@@ -111,6 +111,8 @@ const TurnPropsSchema = z
     assistantAnswer: z.string(),
     toolCalls: z.number().int().nonnegative().optional(),
     iterations: z.number().int().nonnegative().optional(),
+    /** Member-scoped memory — canonical user ids that own this turn. */
+    owners: z.array(z.string().min(1)).optional(),
   })
   .passthrough();
 

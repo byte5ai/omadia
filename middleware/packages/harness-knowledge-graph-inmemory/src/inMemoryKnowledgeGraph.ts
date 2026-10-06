@@ -18,6 +18,8 @@ import {
   topicNodeId,
   turnNodeId,
   userNodeId,
+  canonicalOwners,
+  ownersCoverAudience,
   type ChannelIdentityIngest,
   type CreateMergeCandidateInput,
   type DatasetAggregate,
@@ -98,6 +100,7 @@ import {
   type SessionFilter,
   type SessionSummary,
   type SessionView,
+  type SessionReadOptions,
   type TurnIngest,
   type TurnIngestResult,
   type TurnSearchHit,
@@ -119,6 +122,19 @@ function matchesAgentScopePrefix(
   if (scope.startsWith(prefix)) return true;
   if (prefix === 'default::' && !scope.includes('::')) return true;
   return false;
+}
+
+/**
+ * Member-scoped memory parity with the Neon `properties @> {"owners": …}`
+ * clause: everyone in `audience` must be one of the node's `owners`. A node
+ * without owners, and an empty audience, match nothing.
+ */
+function visibleToAudience(
+  node: GraphNode | undefined,
+  audience: readonly string[],
+): boolean {
+  const owners = node?.props['owners'];
+  return Array.isArray(owners) && ownersCoverAudience(owners as string[], canonicalOwners(audience));
 }
 
 /** #430 — one `dataset_rows` row's evaluation of a single `DatasetFilter`.
@@ -302,6 +318,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         // unconditionally (see the Neon backend): props are merged on upsert,
         // so an omitted flag could never clear a stale `true`.
         tailOnly: turn.tailOnly === true,
+        // Member-scoped memory — see the Neon backend. Only written when set,
+        // so a re-ingest without it keeps the owners the live turn recorded.
+        ...(turn.owners !== undefined ? { owners: canonicalOwners(turn.owners) } : {}),
       },
       // Palaia (OB-70 / OB-71) — mirror the Neon DB defaults on Turn
       // ingest so the in-memory backend exposes the same axes to consumers.
@@ -442,11 +461,18 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     };
   }
 
-  async getSession(scope: string): Promise<SessionView | null> {
+  async getSession(
+    scope: string,
+    options?: SessionReadOptions,
+  ): Promise<SessionView | null> {
     const sessionId = sessionNodeId(scope);
     const session = this.nodes.get(sessionId);
     if (!session) return null;
-    const turnIds = this.sessionTurns.get(sessionId) ?? [];
+    const audience = options?.audienceOwners;
+    const turnIds = (this.sessionTurns.get(sessionId) ?? []).filter(
+      (turnId) => audience === undefined || visibleToAudience(this.nodes.get(turnId), audience),
+    );
+    if (audience !== undefined && turnIds.length === 0) return null;
     const turns = turnIds.map((turnId) => {
       const turnNode = this.nodes.get(turnId);
       const entityIds: string[] = [];
@@ -713,6 +739,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       if (opts.excludeScope && scope === opts.excludeScope) continue;
       if (!matchesAgentScopePrefix(scope, opts.agentScopePrefix)) continue;
       if (opts.userId && node.props['userId'] !== opts.userId) continue;
+      if (opts.audienceOwners !== undefined && !visibleToAudience(node, opts.audienceOwners)) continue;
 
       const haystack = (
         String(node.props['userMessage'] ?? '') +
@@ -784,6 +811,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       const scope = String(node.props['scope'] ?? '');
       if (opts.excludeScope && scope === opts.excludeScope) continue;
       if (!matchesAgentScopePrefix(scope, opts.agentScopePrefix)) continue;
+      if (opts.audienceOwners !== undefined && !visibleToAudience(node, opts.audienceOwners)) continue;
       if (opts.userId && node.props['userId'] !== opts.userId) continue;
 
       const entryType = (node.entryType ?? 'memory') as 'memory' | 'process' | 'task';
@@ -1654,7 +1682,14 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       // while an owner-owned private one cannot slip through the owner branch.
       const sharedOk =
         opts.sharedOnly !== true || ['team', 'public'].includes(node.visibility ?? 'team');
-      if ((!ownerMatch && !teamMatch) || !sharedOk) continue;
+      // Member-scoped memory REPLACES the viewer ACL — see the Neon backend.
+      const admitted =
+        opts.audienceOwners !== undefined
+          ? (ownersCoverAudience(owners, canonicalOwners(opts.audienceOwners)) ||
+              node.manuallyAuthored === true) &&
+            agentMatch
+          : ownerMatch || teamMatch;
+      if (!admitted || !sharedOk) continue;
       const vector = this.embeddings.get(node.id);
       if (!vector) continue;
       const sim = cosine(opts.queryEmbedding, vector);
@@ -1706,7 +1741,14 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       // narrowing runs against the PARENT's visibility.
       const sharedOk =
         opts.sharedOnly !== true || ['team', 'public'].includes(parent.visibility ?? 'team');
-      if ((!ownerMatch && !teamMatch) || !sharedOk) continue;
+      // Member-scoped memory: the parent MK's room rule replaces the viewer ACL.
+      const admitted =
+        opts.audienceOwners !== undefined
+          ? (ownersCoverAudience(owners, canonicalOwners(opts.audienceOwners)) ||
+              parent.manuallyAuthored === true) &&
+            agentMatch
+          : ownerMatch || teamMatch;
+      if (!admitted || !sharedOk) continue;
       const sim = cosine(opts.queryEmbedding, vector);
       if (!Number.isFinite(sim) || sim < minSimilarity) continue;
       hits.push({
@@ -3182,6 +3224,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
             )
           )
             continue;
+          if (opts.audienceOwners !== undefined && !visibleToAudience(turnNode, opts.audienceOwners)) {
+            continue;
+          }
           capturingTurns.push(turnNode);
         }
       }

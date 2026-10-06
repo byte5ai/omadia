@@ -384,7 +384,7 @@ interface AgentDbRow {
  * the safe direction here is the one that changes nothing.
  */
 function parseContextMemoryMode(raw: unknown): ContextMemoryMode {
-  return raw === 'enforce' || raw === 'enforce-strict' ? raw : 'off';
+  return raw === 'enforce' || raw === 'enforce-strict' || raw === 'members' ? raw : 'off';
 }
 
 interface AgentPluginDbRow {

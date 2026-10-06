@@ -140,8 +140,12 @@ export interface KnowledgeGraph {
    * Returns `null` when no Run has been ingested yet for the given turn.
    */
   getRunForTurn(turnExternalId: string): Promise<RunTraceView | null>;
-  /** Returns one snapshot of the session, turns in chronological order. */
-  getSession(scope: string): Promise<SessionView | null>;
+  /**
+   * Returns one snapshot of the session, turns in chronological order.
+   * `options.audienceOwners` keeps only the turns that audience may see (see
+   * {@link SessionReadOptions}); a session left with no turn reads as `null`.
+   */
+  getSession(scope: string, options?: SessionReadOptions): Promise<SessionView | null>;
   /**
    * List sessions. When `userId` is provided, only sessions whose Session node
    * carries that userId are returned — legacy sessions without a userId are
@@ -902,6 +906,16 @@ export interface MemorableKnowledgeSearchOptions {
    * Default false.
    */
   manuallyAuthoredOnly?: boolean;
+  /**
+   * Member-scoped memory — REPLACES the viewer ACL above with the room rule:
+   * a row is admitted when its `acl_owners` include every id here (everyone
+   * present owns it), or when it is `manually_authored` (operator-curated
+   * agent knowledge, not anybody's conversation). `visibility` and
+   * `teamVisibility`/`sharedOnly` do not widen it: a team-visible row that
+   * came out of a conversation belongs to that conversation's people.
+   * `viewerAgentSlug` still applies. See {@link TurnIngest.owners}.
+   */
+  audienceOwners?: readonly string[];
 }
 
 /** Slice 7 — single MK hit from semantic search. */
@@ -917,6 +931,12 @@ export interface ExcerptSearchOptions {
   viewerOmadiaUserId: string;
   limit?: number;
   minSimilarity?: number;
+  /**
+   * Member-scoped memory — the parent MK rule of
+   * {@link MemorableKnowledgeSearchOptions.audienceOwners}, applied to the
+   * excerpt's parent row.
+   */
+  audienceOwners?: readonly string[];
   /**
    * Opt-in team-scope recall — mirrors
    * {@link MemorableKnowledgeSearchOptions.teamVisibility}. The gate runs
@@ -1626,6 +1646,17 @@ export interface TurnIngest {
    */
   tailOnly?: boolean;
   /**
+   * Member-scoped memory — the canonical omadia user ids of everyone present
+   * in the room when the turn happened, sorted and de-duplicated. The turn's
+   * knowledge belongs to exactly these people: a later turn may recall it only
+   * when everyone present there is one of them (`audienceOwners` on the read
+   * options). Set by the kernel for a turn of an agent in `members` context
+   * memory whose audience was known; an empty array means the audience was
+   * not known, so the turn belongs to nobody and is never recalled in that
+   * mode. Absent on every other turn. Stored as a Turn property.
+   */
+  owners?: readonly string[];
+  /**
    * The turn as the Privacy Shield masked it for the turn's own model calls
    * (see {@link TurnMaskedView}). Set by the kernel for a turn that ran under
    * a privacy handle, whose `userMessage` / `assistantAnswer` hold restored
@@ -1993,6 +2024,12 @@ export interface SearchTurnsOptions {
    * {@link agentScopePrefix} — per-orchestrator KG isolation.
    */
   agentScopePrefix?: string;
+  /**
+   * Member-scoped memory — keep only turns whose `owners` include EVERY id
+   * here (the room's audience ⊆ the turn's owners). A turn without `owners`
+   * never matches. Omit for no owner filter. See {@link TurnIngest.owners}.
+   */
+  audienceOwners?: readonly string[];
   /** Hard cap on returned hits. Defaults to 5. */
   limit?: number;
 }
@@ -2031,6 +2068,12 @@ export interface SearchTurnsByEmbeddingOptions {
   agentScopePrefix?: string;
   /** Hard cap on returned hits. Defaults to 5. */
   limit?: number;
+  /**
+   * Member-scoped memory — keep only turns whose `owners` include EVERY id
+   * here (the room's audience ⊆ the turn's owners). A turn without `owners`
+   * never matches. Omit for no owner filter. See {@link TurnIngest.owners}.
+   */
+  audienceOwners?: readonly string[];
   /** Drop matches with cosine similarity below this threshold. Default 0.3. */
   minSimilarity?: number;
 
@@ -2085,6 +2128,15 @@ export interface SearchTurnsByEmbeddingOptions {
   includeCold?: boolean;
 }
 
+/** Read options for {@link KnowledgeGraph.getSession}. */
+export interface SessionReadOptions {
+  /**
+   * Member-scoped memory — keep only turns whose `owners` include every id
+   * here. See {@link TurnIngest.owners}.
+   */
+  audienceOwners?: readonly string[];
+}
+
 export interface EntityCapturedTurnsOptions {
   /** Candidate terms extracted from the current user message. */
   terms: readonly string[];
@@ -2099,6 +2151,12 @@ export interface EntityCapturedTurnsOptions {
    * the legacy cross-agent view. See {@link agentScopePrefix}.
    */
   agentScopePrefix?: string;
+  /**
+   * Member-scoped memory — keep only turns whose `owners` include EVERY id
+   * here (the room's audience ⊆ the turn's owners). A turn without `owners`
+   * never matches. Omit for no owner filter. See {@link TurnIngest.owners}.
+   */
+  audienceOwners?: readonly string[];
   /** Max turns to return per matched entity. Default 2. */
   perEntityLimit?: number;
   /** Hard cap on distinct entities to return. Default 5. */
@@ -2197,6 +2255,29 @@ export function planStepNodeId(stepId: string): string {
 
 export function entityNodeId(ref: EntityRef): string {
   return `${ref.system}:${ref.model}:${String(ref.id)}`;
+}
+
+/**
+ * Member-scoped memory — the one canonical form of an owner set or audience:
+ * trimmed, non-empty, de-duplicated, sorted. Every writer and reader goes
+ * through it, so "the same people" is the same array everywhere.
+ */
+export function canonicalOwners(ids: readonly string[]): string[] {
+  return [...new Set(ids.map((id) => id.trim()).filter((id) => id.length > 0))].sort();
+}
+
+/**
+ * Member-scoped memory — may `audience` see knowledge owned by `owners`?
+ * True when every audience member is an owner. An empty or absent `owners`
+ * matches nothing; an empty audience is not an audience and matches nothing.
+ */
+export function ownersCoverAudience(
+  owners: readonly string[] | undefined,
+  audience: readonly string[],
+): boolean {
+  if (!owners || owners.length === 0 || audience.length === 0) return false;
+  const set = new Set(owners);
+  return audience.every((member) => set.has(member));
 }
 
 /**

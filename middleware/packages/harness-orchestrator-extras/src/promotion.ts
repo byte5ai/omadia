@@ -67,6 +67,13 @@ export interface PromoteTurnInput {
    */
   originAgent?: string;
   /**
+   * Member-scoped memory — the turn's owners. When set they become the MK's
+   * `aclOwners` (and its involved users), so the knowledge stays with the
+   * people present; an empty array means the turn belongs to nobody, and it
+   * is not promoted at all. Absent: the historical `[userId]`.
+   */
+  owners?: readonly string[];
+  /**
    * Trigger T3 — durable auto-promotion. When set, an auto-promoted MK is
    * additionally marked `manuallyAuthored=true` (→ always-surface durable
    * recall tier) iff `significance >= durableMinSignificance`, its `kind` is in
@@ -89,6 +96,7 @@ export interface PromoteTurnResult {
     | 'hygiene-skip'
     | 'already-promoted'
     | 'missing-user'
+    | 'no-owners'
     | 'missing-turn'
     | 'tail-only'
     | 'error';
@@ -111,6 +119,10 @@ export async function promoteTurnIfSignificant(
   if (input.userId.length === 0) {
     log(`[promotion] skip turn=${input.turnId} reason=missing-user`);
     return { promoted: false, reason: 'missing-user', significance: null };
+  }
+  if (input.owners !== undefined && input.owners.length === 0) {
+    log(`[promotion] skip turn=${input.turnId} reason=no-owners (member-scoped room not known)`);
+    return { promoted: false, reason: 'no-owners', significance: null };
   }
 
   try {
@@ -224,8 +236,8 @@ export async function promoteTurnIfSignificant(
       significance,
       ...(durable ? { manuallyAuthored: true } : {}),
       createdBy: `auto:${input.userId}`,
-      involvedOmadiaUserIds: [input.userId],
-      aclOwners: [input.userId],
+      involvedOmadiaUserIds: input.owners ? [...input.owners] : [input.userId],
+      aclOwners: input.owners ? [...input.owners] : [input.userId],
       ...(input.originAgent ? { originAgent: input.originAgent } : {}),
       derivedFromTurnIds: [input.turnId],
       // Slice 6.5 — symmetric to manual save: persist the verbatim
