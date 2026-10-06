@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Security — sharp 0.35.5 (GHSA-wq5f-xc86-pv6w)
+
+2026-10-06 — sharp before 0.35.5 bundles a librsvg with CVE-2026-96889
+(high). It is a production dependency of the middleware (avatar icons,
+diagrams) and the web UI. It is now 0.35.5 in both manifests and both lock
+files; only sharp and its `@img/*` binaries moved. This was the advisory that
+turned the audit gate red on every PR.
+
 ### Added — member-scoped notes: what the agent writes belongs to the people present
 
 2026-10-06 — Until now, `members` mode partitioned the memory tree like
