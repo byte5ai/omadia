@@ -273,7 +273,9 @@ jobs:
           # sign-in account fold, verifier verdict reason); measured ran=409.
           # 409 → 411 with the API-key run-trace readback (apiKeyRunTrace.pg,
           # 2 tests); measured ran=411.
-          PG_TEST_FLOOR: '411'
+          # 411 → 414 with the enforce-strict graph-tool view on Neon
+          # (knowledgeGraphToolStrictView.pg, 3 tests); measured ran=414.
+          PG_TEST_FLOOR: '414'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
