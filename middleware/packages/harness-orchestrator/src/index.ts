@@ -87,8 +87,17 @@ export {
   CONTEXT_AXES,
   contextTierRoot,
   effectiveMemoryScope,
+  membersIndexRoot,
+  membersTierRoot,
   orchestratorMemoryScope,
 } from './registry/scopedMemoryStore.js';
+// W3 — `members` notes: one tier per owner set, recorded in an index.
+export {
+  MEMBERS_SHARED_SEGMENT_PREFIX,
+  MembersIndex,
+  membersTierKey,
+} from './membersMemory.js';
+export type { MembersIndexEntry } from './membersMemory.js';
 export type {
   ContextAxis,
   ContextMemoryEnforcement,

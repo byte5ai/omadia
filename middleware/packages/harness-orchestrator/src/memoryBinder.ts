@@ -16,12 +16,15 @@ import {
   ContextMemoryNamespacer,
   OrchestratorMemoryNamespacer,
 } from './orchestratorMemoryNamespacer.js';
+import { MEMBERS_SHARED_SEGMENT_PREFIX, MembersIndex } from './membersMemory.js';
 import {
   contextTierRoot,
   effectiveMemoryScope,
+  membersTierRoot,
   ScopedMemoryStore,
   type ContextMemoryEnforcement,
 } from './registry/scopedMemoryStore.js';
+import type { TurnAudience } from './turnAudience.js';
 
 /**
  * `MemoryBinder` (W5, design spec #870 §4/§5).
@@ -87,6 +90,12 @@ export interface BoundTurnMemory {
   readonly scope: readonly string[];
   /** The axes this stack was built from. */
   readonly axes: MemoryAxes;
+  /**
+   * Set on a `members` binding: the tier the turn writes to (`null` when the
+   * room's audience is unknown — nothing is writable) and the read-only tiers
+   * of larger owner sets that include everyone present.
+   */
+  readonly members?: { readonly key: string | null; readonly shared: readonly string[] };
 }
 
 export interface MemoryBinderOptions {
@@ -139,6 +148,8 @@ export class MemoryBinder {
   private readonly mode: ContextMemoryMode;
   /** Insertion-ordered — `Map` iteration order is the LRU order. */
   private readonly cache = new Map<string, BoundTurnMemory>();
+  /** Owner sets of `members` mode; created on first use. */
+  private membersIndex: MembersIndex | undefined;
 
   constructor(private readonly options: MemoryBinderOptions) {
     const cap = options.cacheCap ?? DEFAULT_BINDER_CACHE_CAP;
@@ -188,6 +199,85 @@ export class MemoryBinder {
     this.cache.set(key, bound);
     this.evictOverflow();
     return bound;
+  }
+
+  /**
+   * The memory stack for a turn of a `members` agent (W3): notes belong to the
+   * people present, like the turn itself in the graph.
+   *
+   *  - the room's owner set gets one tier, writable — `/memories/...`;
+   *  - every larger owner set that includes everyone present is readable as
+   *    `/memories/~g-<key>/...`, never writable: Marcel alone reads what he
+   *    noted with Chris and Christian, but cannot change what they own;
+   *  - an unknown audience gets no tier at all — a note it could write would
+   *    belong to nobody and could never be shown to anyone again.
+   *
+   * Any other mode, or a context-free origin, is {@link forOrigin}. Index
+   * failures degrade to the unknown-audience stack, never to a wider one.
+   */
+  async forAudience(
+    origin: TurnOrigin | undefined,
+    audience: TurnAudience,
+  ): Promise<BoundTurnMemory> {
+    if (this.mode !== 'members') return this.forOrigin(origin);
+    const axes = memoryAxesForOrigin(origin);
+    if (axes.isContextFree) return this.forOrigin(origin);
+    if (audience.kind === 'unknown') return this.forMembers(axes, null, []);
+    try {
+      this.membersIndex ??= new MembersIndex(this.options.root, this.options.agentSlug);
+      const own = await this.membersIndex.register(audience.members);
+      const shared = (await this.membersIndex.coveringAudience(audience.members))
+        .map((entry) => entry.key)
+        .filter((key) => key !== own);
+      return this.forMembers(axes, own, shared);
+    } catch (err) {
+      console.error(
+        '[security-audit] memoryBinder: members index unavailable — no writable memory tier this turn:',
+        err,
+      );
+      return this.forMembers(axes, null, []);
+    }
+  }
+
+  private forMembers(axes: MemoryAxes, key: string | null, shared: readonly string[]): BoundTurnMemory {
+    const cacheKey = [this.options.agentSlug, 'members', key ?? '-', ...shared].join(CACHE_KEY_SEP);
+    const hit = this.cache.get(cacheKey);
+    if (hit) {
+      this.cache.delete(cacheKey);
+      this.cache.set(cacheKey, hit);
+      return hit;
+    }
+    const bound = this.buildMembers(axes, key, shared);
+    this.cache.set(cacheKey, bound);
+    this.evictOverflow();
+    return bound;
+  }
+
+  private buildMembers(axes: MemoryAxes, key: string | null, shared: readonly string[]): BoundTurnMemory {
+    const { agentSlug, root, durableRules, log } = this.options;
+    // `ro:core-notes` as in `enforce-strict`; no agent tier, no channel tier —
+    // both are shared by people who were never all present.
+    const scope = [
+      'ro:core-notes',
+      ...(key ? [`members:${key}:*`] : []),
+      ...shared.map((k) => `ro:members:${k}:*`),
+    ];
+    const scoped = new ScopedMemoryStore({ agentSlug, scope, inner: root, ...(log ? { log } : {}) });
+    const namespaced = new ContextMemoryNamespacer(
+      {
+        // With no key the private root is a path no `members:` grant can name
+        // (keys are hex): reads come back empty, writes are refused.
+        privateRoot: membersTierRoot(agentSlug, key ?? '_unknown'),
+        sharedRoots: new Map(
+          shared.map((k) => [`${MEMBERS_SHARED_SEGMENT_PREFIX}${k}`, membersTierRoot(agentSlug, k)]),
+        ),
+      },
+      scoped,
+    );
+    const store: MemoryStore = durableRules
+      ? new DurableRulesMemoryStore(namespaced, durableRules)
+      : namespaced;
+    return { handler: new MemoryToolHandler(store), store, scope, axes, members: { key, shared } };
   }
 
   private evictOverflow(): void {

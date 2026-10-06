@@ -320,6 +320,28 @@ export function contextTierRoot(
   return `${CONTEXTS_ROOT}/${agentSlug}/${axis}/${ctxKey}`;
 }
 
+/**
+ * `members` context memory: one tier per OWNER SET — the people present when
+ * the notes were written — keyed by {@link membersTierKey}. Deliberately not a
+ * {@link ContextAxis}: a channel plugin's axes can never name it, only the
+ * binder grants it, after resolving the room's audience.
+ */
+const MEMBERS_TOKEN = /^members:([a-f0-9]{32}):\*$/;
+
+/** Physical root of one owner set's notes for one Agent. */
+export function membersTierRoot(agentSlug: string, key: string): string {
+  return `${CONTEXTS_ROOT}/${agentSlug}/members/${key}`;
+}
+
+/**
+ * Where the binder records which people a members tier belongs to. A sibling
+ * of the tiers, so no `members:<key>:*` grant ever reaches it: the model can
+ * neither read nor forge who owns what.
+ */
+export function membersIndexRoot(agentSlug: string): string {
+  return `${CONTEXTS_ROOT}/${agentSlug}/members-index`;
+}
+
 interface CompiledPattern {
   match(path: string): boolean;
   source: string;
@@ -391,6 +413,14 @@ function compileAccessPattern(
       source: pattern,
       readOnly: false,
       match: prefixMatcher(`${contextTierRoot(agentSlug, axis, ctxKey)}/`),
+    };
+  }
+  const membersMatch = MEMBERS_TOKEN.exec(pattern);
+  if (membersMatch) {
+    return {
+      source: pattern,
+      readOnly: false,
+      match: prefixMatcher(`${membersTierRoot(agentSlug, membersMatch[1]!)}/`),
     };
   }
   // Per-orchestrator isolation (strict): an Agent's own private tree —
