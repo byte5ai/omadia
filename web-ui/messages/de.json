@@ -5660,7 +5660,12 @@
       "axis": {
         "team": "Teams ({count})",
         "channel": "Kanäle ({count})",
-        "user": "Users ({count})"
+        "user": "Users ({count})",
+        "members": "Personenkreise ({count})"
+      },
+      "members": {
+        "unknownPerson": "unbekannte Person",
+        "hint": "Notizen eines Personenkreises: Sie gehören den Personen, die beim Schreiben anwesend waren. Nur diese Personen oder ein Teil von ihnen sehen sie. Sie lassen sich nicht hochstufen."
       }
     },
     "promote": {

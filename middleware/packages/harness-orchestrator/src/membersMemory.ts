@@ -60,6 +60,11 @@ export class MembersIndex {
     return key;
   }
 
+  /** Every recorded owner set, by key — for the operator's memory browser. */
+  async all(): Promise<MembersIndexEntry[]> {
+    return [...(await this.entries()).values()].sort((a, b) => a.key.localeCompare(b.key));
+  }
+
   /** Every recorded owner set that includes all of `audience`. */
   async coveringAudience(audience: readonly string[]): Promise<MembersIndexEntry[]> {
     const wanted = canonicalOwners(audience);

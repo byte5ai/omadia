@@ -6126,7 +6126,10 @@ demselben Agenten gehört. Austretende behalten ihr Owner-Recht.
   - Promote aus einem Members-Tier lehnt der Server ab (`invalid_axis`).
   - Tests: `test/orchestrator/memberScopedNotes.test.ts`,
     `test/membersMemoryIndex.test.ts`.
-  - Offen: Der Memory-Browser der Web-UI zeigt die Members-Tiers noch nicht.
+  - Memory-Browser: Achse „Personenkreise“, beschriftet mit den Namen der Owner
+    (`GET /api/v1/operator/memory/contexts/members?agent=<slug>`; Namen aus dem
+    KG-User-Cluster über `createMemberNameResolver`, Fallback: der Key). Kein
+    Promote-Button, dafür ein Hinweis. `members-index` erscheint nicht im Baum.
 
 - **Fail-closed.** Fehlender `origin`, `unscoped`, `system`, unbekannter `channelType`,
   unbrauchbare Patterns → Zeile 1 der Tabelle, byte-identisch zu heute, kein Kontextbaum

@@ -90,6 +90,7 @@ import { createProvenanceRoutes } from './receipts/verifyRoutes.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createOperatorMemoryContextsRouter } from './routes/operatorMemoryContexts.js';
+import { createMemberNameResolver } from './services/memberNames.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
 import {
   isMcpGrantBlocked,
@@ -3906,7 +3907,10 @@ async function main(): Promise<void> {
   app.use(
     '/api/v1/operator/memory/contexts',
     requireAuth,
-    createOperatorMemoryContextsRouter({ store: memoryStore }),
+    createOperatorMemoryContextsRouter({
+      store: memoryStore,
+      ...(graphPool ? { resolveMemberNames: createMemberNameResolver(graphPool, graphTenantId) } : {}),
+    }),
   );
   console.log(
     '[middleware] operator memory-contexts endpoints ready at /api/v1/operator/memory/contexts/{list,file} (auth-gated, read-only)',

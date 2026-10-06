@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import { MembersIndex, membersTierRoot } from '@omadia/orchestrator';
 import { MemoryPathError, type MemoryStore } from '@omadia/plugin-api';
 
 import { createRootedMemoryAccessor } from '../platform/memoryAccessor.js';
+import type { MemberName, ResolveMemberNames } from '../services/memberNames.js';
 
 /**
  * Operator-facing, read-only browser for the chat-context memory trees
@@ -77,7 +79,15 @@ export interface OperatorMemoryContextsDeps {
   store: MemoryStore;
   /** Injectable log sink. Defaults to `console.error`. */
   log?: (message: string) => void;
+  /**
+   * Names for the owners of `members` notes. Optional: without it the
+   * `/members` listing still answers, with ids only.
+   */
+  resolveMemberNames?: ResolveMemberNames;
 }
+
+/** Agent slugs as the binder writes them into `/memories/contexts/<slug>`. */
+const AGENT_SLUG = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
 /** A `?path=` that survived the guard. */
 interface ResolvedPath {
@@ -193,6 +203,45 @@ export function createOperatorMemoryContextsRouter(
       res
         .status(400)
         .json({ error: 'memory_list_failed', message: messageOf(err) });
+    }
+  });
+
+  // `members` notes of one agent: every owner set, with who is in it. The
+  // owner lists come from the binder's index, read through the same root
+  // store; names are a best-effort lookup and never fail the listing.
+  router.get('/members', async (req: Request, res: Response) => {
+    if (!hasSession(req, res)) return;
+
+    const agent = req.query['agent'];
+    if (typeof agent !== 'string' || !AGENT_SLUG.test(agent)) {
+      res.status(400).json({ error: 'invalid_agent', message: 'agent must be an agent slug' });
+      return;
+    }
+
+    try {
+      const sets = await new MembersIndex(deps.store, agent).all();
+      let names = new Map<string, MemberName>();
+      if (deps.resolveMemberNames) {
+        try {
+          names = await deps.resolveMemberNames([...new Set(sets.flatMap((s) => s.owners))]);
+        } catch (err) {
+          log(`[operator-memory-contexts] member names unavailable: ${messageOf(err)}`);
+        }
+      }
+      res.json({
+        agent,
+        groups: sets.map((set) => ({
+          key: set.key,
+          path: membersTierRoot(agent, set.key),
+          owners: set.owners.map((id) => ({
+            id,
+            displayName: names.get(id)?.displayName ?? null,
+            email: names.get(id)?.email ?? null,
+          })),
+        })),
+      });
+    } catch (err) {
+      res.status(400).json({ error: 'members_list_failed', message: messageOf(err) });
     }
   });
 

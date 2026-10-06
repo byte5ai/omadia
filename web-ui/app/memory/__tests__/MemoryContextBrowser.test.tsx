@@ -39,6 +39,7 @@ const {
   MockApiError,
   mockGetMemoryBackend,
   mockListMemoryContextLabels,
+  mockListMemoryMemberGroups,
   mockListMemoryPromotions,
 } = vi.hoisted(() => ({
   MockApiError: class MockApiError extends Error {
@@ -52,6 +53,7 @@ const {
   },
   mockGetMemoryBackend: vi.fn(),
   mockListMemoryContextLabels: vi.fn(),
+  mockListMemoryMemberGroups: vi.fn(),
   mockListMemoryPromotions: vi.fn(),
 }));
 
@@ -62,6 +64,9 @@ vi.mock('@/app/_lib/api', async (importOriginal) => {
     ApiError: MockApiError,
     getMemoryBackend: mockGetMemoryBackend,
     listMemoryContextLabels: mockListMemoryContextLabels,
+    // Names for members tiers are an enrichment on their own endpoint; this
+    // suite pins that LISTING never leaves the list endpoint.
+    listMemoryMemberGroups: mockListMemoryMemberGroups,
     listMemoryPromotions: mockListMemoryPromotions,
   };
 });
@@ -129,6 +134,7 @@ describe('memory context browser — operator endpoint', () => {
   beforeEach(() => {
     mockGetMemoryBackend.mockResolvedValue({ current: 'postgres' });
     mockListMemoryContextLabels.mockRejectedValue(new MockApiError(404, 'nope'));
+    mockListMemoryMemberGroups.mockResolvedValue({ groups: [] });
     mockListMemoryPromotions.mockResolvedValue({ entries: [] });
   });
 

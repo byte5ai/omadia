@@ -5660,7 +5660,12 @@
       "axis": {
         "team": "Teams ({count})",
         "channel": "Channels ({count})",
-        "user": "Users ({count})"
+        "user": "Users ({count})",
+        "members": "Member groups ({count})"
+      },
+      "members": {
+        "unknownPerson": "unknown person",
+        "hint": "Notes of a member group: they belong to the people who were present when they were written. Only those people, or some of them, see them. They cannot be promoted."
       }
     },
     "promote": {

@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Added — the memory browser shows member groups
+
+2026-10-06 — The operator memory browser (`/memory`) lists the `members` notes
+of an agent as a fourth branch, "Member groups". Each group carries the names of
+the people it belongs to. The new
+`GET /api/v1/operator/memory/contexts/members?agent=<slug>` reads them from the
+binder's owner index. The names come from the KG user clusters
+(`createMemberNameResolver`: cluster name, then identity name, then email,
+scoped to the tenant). When nothing resolves, the browser shows the key.
+
+A member group's notes get a hint and no Promote button. They belong to their
+people, and the server already refuses to promote them. `PG_TEST_FLOOR`
+421.
+
 ### Security — sharp 0.35.5 (GHSA-wq5f-xc86-pv6w)
 
 2026-10-06 — sharp before 0.35.5 bundles a librsvg with CVE-2026-96889
