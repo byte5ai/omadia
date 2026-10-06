@@ -184,7 +184,7 @@ const AgentPatchSchema = z.object({
  * The assignment below is a compile-time pin: it stops compiling the moment
  * this runtime union drifts from the type the orchestrator actually consumes.
  */
-export const CONTEXT_MEMORY_MODES = ['off', 'enforce', 'enforce-strict'] as const;
+export const CONTEXT_MEMORY_MODES = ['off', 'enforce', 'enforce-strict', 'members'] as const;
 
 const _contextMemoryModesPin: readonly ContextMemoryMode[] = CONTEXT_MEMORY_MODES;
 void _contextMemoryModesPin;
@@ -4163,7 +4163,7 @@ export function createOperatorAgentsRouter(
  * into something the operator sees as "on".
  */
 function normalizeContextMemoryMode(raw: unknown): ContextMemoryMode {
-  return raw === 'enforce' || raw === 'enforce-strict' ? raw : 'off';
+  return raw === 'enforce' || raw === 'enforce-strict' || raw === 'members' ? raw : 'off';
 }
 
 function groupBy<T, K>(items: readonly T[], keyFn: (item: T) => K): Map<K, T[]> {

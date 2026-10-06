@@ -90,7 +90,13 @@ export type { MemoryAxes, MemoryAxis } from '@omadia/channel-sdk';
  * (the binder hands over the context-free axes and never calls this with a
  * mode), not a second fail-open branch inside the scope resolver.
  */
-export type ContextMemoryEnforcement = 'enforce' | 'enforce-strict';
+/**
+ * `'members'` (member-scoped memory) quarantines a context turn exactly like
+ * `'enforce-strict'` here: no agent tier, no transcript trees. What it adds is
+ * outside the memory tree: graph recall and `query_knowledge_graph` follow the
+ * owner rule (everyone present owns the knowledge) instead of one conversation.
+ */
+export type ContextMemoryEnforcement = 'enforce' | 'enforce-strict' | 'members';
 
 export interface EffectiveMemoryScopeOptions {
   /** Default `'enforce'`. */
@@ -167,7 +173,7 @@ export function effectiveMemoryScope(
   axes: MemoryAxes,
   options: EffectiveMemoryScopeOptions = {},
 ): readonly string[] {
-  const strict = options.mode === 'enforce-strict';
+  const strict = options.mode === 'enforce-strict' || options.mode === 'members';
 
   // `agentSlug` is interpolated into `orchestrator:<slug>:*`, whose compiled
   // regex is `[^:]+`. A slug carrying a `:` therefore produces a token that

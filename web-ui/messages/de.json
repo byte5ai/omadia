@@ -2225,6 +2225,7 @@
       "semanticsTeam": "Ein Turn aus einem Team-Kontext schreibt in seine eigene Ebene und in die gemeinsame Team-Ebene — dort lesen sich Teamkolleginnen und -kollegen gegenseitig.",
       "semanticsAgent": "Das eigene Memory des Orchestrators bleibt lesbar, wird für Kontext-Turns aber schreibgeschützt. „Merk dir das global“ kann damit kein Wissen mehr von Team A nach Team B tragen.",
       "semanticsApi": "Turns über die API bringen keinen Chat-Kontext mit und erreichen deshalb nur das private Memory des Orchestrators selbst — nie einen Team- oder Kanal-Baum.",
+      "semanticsMembers": "Mit „Geteilt unter den Anwesenden“ bekommt eine Gruppe nur dann Wissen, wenn der Kanal die vollständige Mitgliederliste liefert. Sonst bekommt sie keins, damit niemand liest, was nie seins war.",
       "acknowledge": "Mir ist klar, wie das Memory für diesen Orchestrator aufgeteilt wird.",
       "modes": {
         "off": {
@@ -2238,6 +2239,10 @@
         "enforce-strict": {
           "label": "Getrennt und abgeschottet",
           "description": "Jeder Chat-Kontext bekommt ein eigenes Memory und kann das eigene Memory des Orchestrators gar nicht lesen. Für Kontexte, die nichts teilen dürfen."
+        },
+        "members": {
+          "label": "Geteilt unter den Anwesenden",
+          "description": "Wissen gehört den Personen, die dabei waren, als es entstand. Jeder Chat, an dem nur diese Personen teilnehmen, kann es nutzen, auch ein Einzelchat. Sobald jemand anderes dabei ist, bleibt es draußen."
         }
       }
     },

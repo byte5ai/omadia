@@ -462,7 +462,7 @@ openOnly?: boolean;
 agentScopePrefix?: string;
 }): Promise<GraphNode[]>;
 getRunForTurn(turnExternalId: string): Promise<RunTraceView | null>;
-getSession(scope: string): Promise<SessionView | null>;
+getSession(scope: string, options?: SessionReadOptions): Promise<SessionView | null>;
 listSessions(filter?: SessionFilter): Promise<SessionSummary[]>;
 getNeighbors(nodeId: string): Promise<GraphNode[]>;
 stats(): Promise<GraphStats>;
@@ -628,6 +628,7 @@ teamVisibility?: boolean;
 sharedOnly?: boolean;
 viewerAgentSlug?: string;
 manuallyAuthoredOnly?: boolean;
+audienceOwners?: readonly string[];
 }
 export interface MemorableKnowledgeHit {
 mk: GraphNode;
@@ -638,6 +639,7 @@ queryEmbedding: number[];
 viewerOmadiaUserId: string;
 limit?: number;
 minSimilarity?: number;
+audienceOwners?: readonly string[];
 teamVisibility?: boolean;
 sharedOnly?: boolean;
 viewerAgentSlug?: string;
@@ -873,6 +875,7 @@ entryType?: EntryType;
 visibility?: Visibility;
 significance?: number | null;
 tailOnly?: boolean;
+owners?: readonly string[];
 maskedView?: TurnMaskedView;
 }
 export interface TurnMaskedView {
@@ -1020,6 +1023,7 @@ userId?: string;
 excludeScope?: string;
 excludeTurnIds?: readonly string[];
 agentScopePrefix?: string;
+audienceOwners?: readonly string[];
 limit?: number;
 }
 export interface TurnSearchHit {
@@ -1039,6 +1043,7 @@ excludeScope?: string;
 excludeTurnIds?: readonly string[];
 agentScopePrefix?: string;
 limit?: number;
+audienceOwners?: readonly string[];
 minSimilarity?: number;
 ftsQuery?: string;
 recallMinScore?: number;
@@ -1047,11 +1052,15 @@ typeWeights?: Partial<Record<EntryType, number>>;
 entryTypes?: readonly EntryType[];
 includeCold?: boolean;
 }
+export interface SessionReadOptions {
+audienceOwners?: readonly string[];
+}
 export interface EntityCapturedTurnsOptions {
 terms: readonly string[];
 userId?: string;
 excludeScope?: string;
 agentScopePrefix?: string;
+audienceOwners?: readonly string[];
 perEntityLimit?: number;
 entityLimit?: number;
 }
@@ -1079,6 +1088,8 @@ export declare function turnNodeId(scope: string, time: string): string;
 export declare function planNodeId(planId: string): string;
 export declare function planStepNodeId(stepId: string): string;
 export declare function entityNodeId(ref: EntityRef): string;
+export declare function canonicalOwners(ids: readonly string[]): string[];
+export declare function ownersCoverAudience(owners: readonly string[] | undefined, audience: readonly string[]): boolean;
 export declare function userNodeId(omadiaUserId: string): string;
 export declare function channelIdentityNodeId(channelKind: ChannelKind, channelUserId: string): string;
 export declare function memorableKnowledgeNodeId(memorableId: string): string;

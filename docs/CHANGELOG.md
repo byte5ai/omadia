@@ -36,6 +36,49 @@ changelog.
 
 ## [Unreleased]
 
+### Added — member-scoped memory: knowledge belongs to the people present
+
+2026-10-06 — A new per-agent context-memory mode, `members`, alongside `off`,
+`enforce` and `enforce-strict`. The rule: knowledge belongs to the people
+present when it came up (its owners), and a chat may use it only when everyone
+present is one of them. Marcel, Chris and Christian build knowledge in a group;
+Marcel alone with the agent has it; once a new member is present it stays out;
+Chris and Christian without Marcel have it. It is person-based, not
+channel-based (a Teams group's knowledge reaches the same person's Telegram
+chat once the two identities are linked), and every agent keeps its own.
+
+- The kernel resolves a turn's audience as canonical user ids
+  (`resolveTurnAudience`): the sender in a personal chat or for an API key;
+  every member in a group, but only when the channel marks its roster complete
+  (`ChatParticipantsProvider.completeRoster`). Anything less is an unknown
+  audience: no member-scoped recall, and the turn is owned by nobody.
+- Each turn stores `owners` (`TurnIngest.owners`, plugin-api 1.26.0). Recall
+  (tail included), `query_knowledge_graph` and curated memory read only what
+  the audience owns, in SQL (`properties @> {"owners": …}`, served by the
+  existing GIN index) and in the in-memory twin. Auto-promoted and MCP-ingested
+  memorable knowledge takes the turn's owners as `acl_owners`. Plans,
+  processes and the session briefing carry no owners and are skipped.
+- The three graph decorators in orchestrator-extras forwarded `getSession`
+  without options; they now pass them on, or the tail would have lost the
+  filter.
+- Migration **0062** (`0062_agent_context_memory_members.sql`) widens
+  `agents_context_memory_check` to accept `members`. Route, config store and
+  web UI offer the mode; the memory tree is quarantined like `enforce-strict`
+  until notes get owner tiers.
+- No backfill: turns from before the switch have no owners and are not
+  recalled in this mode.
+- Security review closed four side doors before merge: a T3 durable
+  auto-promoted memorable row (marked `manually_authored`) no longer passes as
+  operator-authored; the registered `query_knowledge_graph` handler (the
+  subscription-CLI path) and context-free turns of an `enforce-strict` or
+  `members` agent see nothing; the plugin `KnowledgeGraphAccessor` searches
+  inside the turn's `graphReadScope`; `list_sessions` counts only visible
+  turns. See `docs/security-architecture.md`.
+- Tests: `orchestrator/memberScopedMemory.test.ts` runs the scenarios as real
+  turns; removing the tail, search or graph-tool filter each turns a scenario
+  red. `memberScopedOwners.pg.test.ts` (Neon), `turnAudience.test.ts`.
+  `PG_TEST_FLOOR` 414 → 419.
+
 ### Security — CLI 2.1.291's `OfferChromeSetup` is denied in spawned CLI turns
 
 2026-10-06 — The deny-list drift guard went red against the locally installed

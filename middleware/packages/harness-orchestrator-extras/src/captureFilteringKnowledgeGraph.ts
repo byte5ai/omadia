@@ -61,6 +61,7 @@ import type {
   RunTrace,
   RunIngestResult,
   RunTraceView,
+  SessionReadOptions,
   SessionView,
   SessionFilter,
   SessionSummary,
@@ -274,8 +275,8 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     return this.inner.getRunForTurn(turnExternalId);
   }
 
-  getSession(scope: string): Promise<SessionView | null> {
-    return this.inner.getSession(scope);
+  getSession(scope: string, options?: SessionReadOptions): Promise<SessionView | null> {
+    return this.inner.getSession(scope, options);
   }
 
   listSessions(filter?: SessionFilter): Promise<SessionSummary[]> {

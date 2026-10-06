@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import type { KnowledgeGraph } from '@omadia/plugin-api';
+import type { KnowledgeGraph, SessionSummary, SessionView } from '@omadia/plugin-api';
 
 const KnowledgeGraphInputSchema = z.object({
   query: z.enum([
@@ -55,27 +55,94 @@ export const knowledgeGraphToolSpec = {
 };
 
 /**
- * What one turn may see through this tool.
+ * What one turn may see through this tool. Absent: the whole tenant graph, as
+ * before. Neither variant ever degrades into "no restriction" — the `null`
+ * forms mean the turn sees nothing.
  *
- * Absent: the whole tenant graph, as before. Set on a turn its agent runs in
- * `enforce-strict` context memory: only the turn's own conversation, by its
- * graph scope (`<agentSlug>::<scope>`). `scope: null` means the turn has no
- * conversation to be restricted to, so it sees nothing — the restriction never
- * degrades into "no restriction".
+ *  - `restrictToScope` — `enforce-strict`: only the turn's own conversation,
+ *    by its graph scope (`<agentSlug>::<scope>`). `null` = no conversation.
+ *  - `audienceOwners` — `members`: only turns of this agent
+ *    (`agentScopePrefix`) whose owners include everyone present. `null` = the
+ *    room's audience is not known.
  */
-export interface KnowledgeGraphToolView {
-  readonly restrictToScope: string | null;
-}
+export type KnowledgeGraphToolView =
+  | { readonly restrictToScope: string | null }
+  | { readonly audienceOwners: readonly string[] | null; readonly agentScopePrefix: string };
 
-/** Returned for every branch that would have reached outside the turn's conversation. */
-const RESTRICTED_NOTE =
-  'context memory is enforce-strict: only this conversation is visible';
+const RESTRICTED_NOTE: Record<'conversation' | 'members', string> = {
+  conversation: 'context memory is enforce-strict: only this conversation is visible',
+  members: 'context memory is members: only knowledge everyone present owns is visible',
+};
+
+/** One turn's access to the graph, derived once from its view. */
+interface ToolAccess {
+  /** Set when any restriction applies; reported back to the model. */
+  readonly note?: string;
+  /** The turn may see nothing at all. */
+  readonly none: boolean;
+  /** Pushed down into the backend's turn searches. */
+  readonly searchOptions: { agentScopePrefix?: string; audienceOwners?: readonly string[] };
+  /** Cheap scope pre-filter; the owner rule is applied by `readSession`. */
+  scopeAllowed(scope: string): boolean;
+  /** The session as this turn may see it, or null. */
+  readSession(scope: string): Promise<SessionView | null>;
+}
 
 export class KnowledgeGraphTool {
   constructor(
     private readonly graph: KnowledgeGraph,
     private readonly embeddingClient?: EmbeddingClient,
   ) {}
+
+  private access(view: KnowledgeGraphToolView | undefined): ToolAccess {
+    if (view === undefined) {
+      return {
+        none: false,
+        searchOptions: {},
+        scopeAllowed: () => true,
+        readSession: (scope) => this.graph.getSession(scope),
+      };
+    }
+    if ('restrictToScope' in view) {
+      const only = view.restrictToScope;
+      // Exact match: the search pre-filter is a LIKE prefix, not equality.
+      const allowed = (scope: string): boolean => only !== null && scope === only;
+      return {
+        note: RESTRICTED_NOTE.conversation,
+        none: only === null,
+        searchOptions: only ? { agentScopePrefix: only } : {},
+        scopeAllowed: allowed,
+        readSession: async (scope) => (allowed(scope) ? this.graph.getSession(scope) : null),
+      };
+    }
+    const audience = view.audienceOwners;
+    const allowed = (scope: string): boolean =>
+      audience !== null && scope.startsWith(view.agentScopePrefix);
+    return {
+      note: RESTRICTED_NOTE.members,
+      none: audience === null,
+      searchOptions: audience
+        ? { agentScopePrefix: view.agentScopePrefix, audienceOwners: audience }
+        : {},
+      scopeAllowed: allowed,
+      readSession: async (scope) =>
+        allowed(scope) && audience ? this.graph.getSession(scope, { audienceOwners: audience }) : null,
+    };
+  }
+
+  /** Every session this turn may see, as it may see it. */
+  private async visibleSessions(
+    access: ToolAccess,
+  ): Promise<Array<{ summary: SessionSummary; view: SessionView }>> {
+    if (access.none) return [];
+    const out: Array<{ summary: SessionSummary; view: SessionView }> = [];
+    for (const summary of await this.graph.listSessions()) {
+      if (!access.scopeAllowed(summary.scope)) continue;
+      const view = await access.readSession(summary.scope);
+      if (view) out.push({ summary, view });
+    }
+    return out;
+  }
 
   async handle(input: unknown, view?: KnowledgeGraphToolView): Promise<string> {
     const parsed = KnowledgeGraphInputSchema.safeParse(input);
@@ -85,19 +152,17 @@ export class KnowledgeGraphTool {
         .join('; ')}`;
     }
     const args = parsed.data;
-    const only = view?.restrictToScope;
-    const restricted = view !== undefined;
-    /** Exact match: the search pre-filter below is a LIKE prefix, not equality. */
-    const visible = (scope: string): boolean => !restricted || (only !== null && scope === only);
+    const access = this.access(view);
+    const noteField = access.note ? { restricted: access.note } : {};
 
     switch (args.query) {
       case 'stats': {
-        if (restricted) {
-          const own = only ? await this.graph.getSession(only) : undefined;
+        if (access.note) {
+          const sessions = await this.visibleSessions(access);
           return JSON.stringify({
-            restricted: RESTRICTED_NOTE,
-            sessions: own ? 1 : 0,
-            turns: own?.turns.length ?? 0,
+            ...noteField,
+            sessions: sessions.length,
+            turns: sessions.reduce((n, s) => n + s.view.turns.length, 0),
           });
         }
         const stats = await this.graph.stats();
@@ -105,11 +170,22 @@ export class KnowledgeGraphTool {
       }
 
       case 'list_sessions': {
-        const all = (await this.graph.listSessions()).filter((s) => visible(s.scope));
-        return JSON.stringify({
-          sessions: all.slice(0, args.limit),
-          ...(restricted ? { restricted: RESTRICTED_NOTE } : {}),
+        if (!access.note) {
+          const all = await this.graph.listSessions();
+          return JSON.stringify({ sessions: all.slice(0, args.limit) });
+        }
+        // Counts and dates from the VISIBLE turns: the stored summary would
+        // tell how much was said before or without the people present.
+        const sessions = (await this.visibleSessions(access)).map(({ summary, view }) => {
+          const times = view.turns.map((t) => String(t.turn.props['time'] ?? '')).sort();
+          return {
+            ...summary,
+            turnCount: view.turns.length,
+            firstAt: times[0] ?? summary.firstAt,
+            lastAt: times.at(-1) ?? summary.lastAt,
+          };
         });
+        return JSON.stringify({ sessions: sessions.slice(0, args.limit), ...noteField });
       }
 
       case 'find_entity': {
@@ -117,7 +193,7 @@ export class KnowledgeGraphTool {
           return 'Error: find_entity requires at least one of `name_contains` or `model`.';
         }
         return JSON.stringify(
-          await this.findEntity(args.name_contains, args.model, args.limit, visible),
+          await this.findEntity(args.name_contains, args.model, args.limit, access),
         );
       }
 
@@ -125,18 +201,18 @@ export class KnowledgeGraphTool {
         if (!args.text) {
           return 'Error: search_turns requires `text` (a keyword / phrase).';
         }
-        if (restricted && only === null) {
-          return JSON.stringify({ query: args.text, mode: 'fts', hits: [], restricted: RESTRICTED_NOTE });
+        if (access.none) {
+          return JSON.stringify({ query: args.text, mode: 'fts', hits: [], ...noteField });
         }
-        // Restricted: push the conversation down as the scope prefix so the
-        // limit counts its own turns, then require an exact scope match.
+        // Restricted: push the restriction down so the limit counts visible
+        // turns, then re-check the scope (the prefix is a LIKE).
         const hits = (
           await this.graph.searchTurns({
             query: args.text,
             limit: Math.min(args.limit, 20),
-            ...(only ? { agentScopePrefix: only } : {}),
+            ...access.searchOptions,
           })
-        ).filter((h) => visible(h.scope));
+        ).filter((h) => access.scopeAllowed(h.scope));
         return JSON.stringify({
           query: args.text,
           mode: 'fts',
@@ -158,8 +234,8 @@ export class KnowledgeGraphTool {
         if (!this.embeddingClient) {
           return 'Error: embeddings not configured — use `search_turns` for keyword-based search instead.';
         }
-        if (restricted && only === null) {
-          return JSON.stringify({ query: args.text, mode: 'embedding', hits: [], restricted: RESTRICTED_NOTE });
+        if (access.none) {
+          return JSON.stringify({ query: args.text, mode: 'embedding', hits: [], ...noteField });
         }
         let vector: number[];
         try {
@@ -172,9 +248,9 @@ export class KnowledgeGraphTool {
             queryEmbedding: vector,
             limit: Math.min(args.limit, 20),
             minSimilarity: 0.25,
-            ...(only ? { agentScopePrefix: only } : {}),
+            ...access.searchOptions,
           })
-        ).filter((h) => visible(h.scope));
+        ).filter((h) => access.scopeAllowed(h.scope));
         return JSON.stringify({
           query: args.text,
           mode: 'embedding',
@@ -193,16 +269,16 @@ export class KnowledgeGraphTool {
         if (!args.scope) {
           return 'Error: session_summary requires `scope`.';
         }
-        // A scope outside the turn's conversation answers exactly like a
-        // missing one, so the reply does not confirm that it exists.
-        const view = visible(args.scope) ? await this.graph.getSession(args.scope) : undefined;
-        if (!view) {
+        // A scope the turn may not see answers exactly like a missing one, so
+        // the reply does not confirm that it exists.
+        const session = await access.readSession(args.scope);
+        if (!session) {
           return JSON.stringify({ scope: args.scope, error: 'not_found' });
         }
         // Compact representation — the sub-agent doesn't need every prop.
         return JSON.stringify({
           scope: args.scope,
-          turns: view.turns.map((t) => ({
+          turns: session.turns.map((t) => ({
             time: t.turn.props['time'],
             userMessage: t.turn.props['userMessage'],
             assistantAnswer: t.turn.props['assistantAnswer'],
@@ -223,16 +299,13 @@ export class KnowledgeGraphTool {
     nameContains: string | undefined,
     model: string | undefined,
     limit: number,
-    visible: (scope: string) => boolean,
+    access: ToolAccess,
   ): Promise<unknown> {
-    // We don't have an index — walk the listSessions output, collect unique
-    // entity nodes via getNeighbors, then filter. Fine at the in-memory scale;
-    // a real backend would push the predicate down to the store.
-    const sessions = (await this.graph.listSessions()).filter((s) => visible(s.scope));
+    // We don't have an index — walk the visible sessions, collect unique
+    // entity nodes, then filter. Fine at the in-memory scale; a real backend
+    // would push the predicate down to the store.
     const seen = new Map<string, { node: { id: string; type: string; props: Record<string, unknown> }; turns: string[] }>();
-    for (const summary of sessions) {
-      const view = await this.graph.getSession(summary.scope);
-      if (!view) continue;
+    for (const { view } of await this.visibleSessions(access)) {
       for (const t of view.turns) {
         for (const entity of t.entities) {
           const displayName = String(entity.props['displayName'] ?? '').toLowerCase();

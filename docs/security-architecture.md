@@ -754,6 +754,52 @@ registry handler (`src/platform/pluginContext.ts`):
   A new native tool bound to shared or unscoped state must be routed or denied
   the same way before it is registered.
 
+### Context memory: what a turn may recall (`enforce-strict`, `members`)
+
+Per-agent switch `agents.context_memory`. Two modes put a boundary around
+**everything** a turn can read from conversation memory, not just the memory
+tree:
+
+| Mode | Boundary | Unknown case |
+|---|---|---|
+| `enforce-strict` | the turn's own conversation (graph scope) | no conversation scope → nothing |
+| `members` | knowledge of this agent whose `owners` include everyone present (audience ⊆ owners) | room not known (incomplete roster, unresolved member) → nothing, and the turn is owned by nobody |
+
+The surfaces that boundary must cover, and how each one does:
+
+- **Memory tree:** the binder's scope. A context turn gets `ro:core-notes`, so
+  the flat transcript trees (`/memories/sessions/`, `chat-sessions/`) are
+  unreadable.
+- **Automatic recall:** `retrievePriorContext` → `ContextRetriever` uses
+  `restrictToScope` or `audienceOwners` on every turn leg, the tail included.
+  Plans, processes and the session briefing carry no owners, so they are
+  skipped.
+- **`query_knowledge_graph` (in-process):** a per-turn view on all six
+  queries.
+- **`query_knowledge_graph` (registered handler):** this is the handler the
+  subscription-CLI path dispatches through, and it knows no turn. For an agent
+  in either mode it sees nothing. So does an in-process turn that carries no
+  isolation (context-free: web, API).
+- **Plugin `KnowledgeGraphAccessor`:** `searchTurns` and
+  `findEntityCapturedTurns` read the turn's `graphReadScope` holder and search
+  inside it.
+- **Curated memory:** under `members`, `acl_owners ⊇ audience`, or an
+  operator-authored row. "Operator-authored" means `manually_authored` and a
+  `created_by` that is not `auto:…`, because T3 durable auto-promotion sets
+  `manually_authored` too. `teamVisibility` does not widen the rule.
+
+The audience is the security input. A group counts as known only when its
+channel marks the roster complete (`ChatParticipantsProvider.completeRoster`).
+A roster cached across a member joining would hide the newcomer and let them
+read, so a channel that sets the flag must refresh the roster on membership
+events. Graph decorators must forward `getSession(scope, options)`; one that
+drops `options` drops the filter.
+
+Known residuals:
+- A knowledge-graph provider that predates plugin-api 1.26.0 ignores
+  `audienceOwners` and returns everything. The in-tree providers honour it.
+- Only turns that carry a `TurnOrigin` are context-bound.
+
 ## 4a. Third-party npm dependencies: audit gate, Dependabot scope, the desktop runtime
 
 Plugins are operator-curated (§4); the npm dependencies of the kernel, the

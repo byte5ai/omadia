@@ -8,6 +8,30 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.26.0 — 2026-10-06
+
+Additive. Member-scoped memory: knowledge belongs to the people present when it
+came up, and a turn may use it only when everyone present is one of them. A
+knowledge-graph provider records who owns a turn and filters reads by the
+room's audience; the kernel's `members` context-memory mode drives both.
+
+### Added
+
+- **`TurnIngest.owners?`** — canonical user ids owning the turn, stored as a
+  Turn property. `[]` means owned by nobody.
+- **`audienceOwners?`** on `SearchTurnsOptions`, `SearchTurnsByEmbeddingOptions`,
+  `EntityCapturedTurnsOptions`, `MemorableKnowledgeSearchOptions` and
+  `ExcerptSearchOptions`: keep only rows whose owners include every id given.
+  For memorable knowledge (and excerpts through their parent) it replaces the
+  viewer ACL: `acl_owners ⊇ audience`, or `manually_authored`. An empty
+  audience matches nothing.
+- **`KnowledgeGraph.getSession(scope, options?)`** with `SessionReadOptions`
+  (`audienceOwners?`). Optional parameter: existing implementations still
+  satisfy the interface, but a decorator that forwards `getSession` must pass
+  `options` on, or the filter is lost.
+- **`canonicalOwners(ids)`** and **`ownersCoverAudience(owners, audience)`** —
+  the one canonical form of an owner set, and the containment rule.
+
 ## 1.25.0 — 2026-10-02
 
 Additive. A Privacy Shield provider can mask the stored text a background

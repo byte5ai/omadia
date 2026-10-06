@@ -6071,6 +6071,43 @@ Tests: `test/orchestrator/strictContextIsolation.test.ts` (echte Turns, Kontroll
 `enforce`), `test/knowledgeGraphToolStrictView{,.pg}.test.ts`,
 `test/strictTranscriptAccess.test.ts`.
 
+**Modus `members`: Wissen gehört den Anwesenden (2026-10-06).** Regel: Ein Wissenseintrag
+gehört den Personen, die beim Entstehen anwesend waren (`owners`, kanonische User-IDs). Ein
+Turn darf ihn nutzen, wenn alle Anwesenden Owner sind (Anwesende ⊆ Owner) und er
+demselben Agenten gehört. Austretende behalten ihr Owner-Recht.
+
+- **Anwesende:** `resolveTurnAudience` (`harness-orchestrator/src/turnAudience.ts`)
+  liefert `known` (sortierte kanonische IDs) oder `unknown` mit Grund. Fälle:
+  - Persönlicher Scope oder API-Key → der Absender allein.
+  - Gruppe → alle Menschen aus dem Roster plus der Absender. Das gilt **nur**, wenn der
+    Provider `completeRoster: true` meldet; Telegram listet nur Admins.
+  - Teams-Roster-Einträge werden über die AAD-ID aufgelöst, wie der Absender.
+  - Jede nicht auflösbare Person ergibt `unknown`.
+  - `bindTurnMemoryForTurn` löst die Anwesenden nur im Modus `members` und nur für Turns
+    mit `origin` auf.
+- **Schreiben:** `TurnMemoryBinding.isolation = { kind: 'members', audience }`.
+  `turnOwnersField` hängt an jeden `SessionLogEntry` `owners`: die Anwesenden, bei
+  `unknown` ein leeres Array (gehört niemandem). Auto-Promotion und MCP-Ingest setzen
+  `acl_owners` auf die Owner; ohne Owner wird nicht promoted.
+- **Lesen:** `audienceOwners` an `searchTurns`, `searchTurnsByEmbedding`,
+  `findEntityCapturedTurns`, `getSession` (der Tail) und an die Memorable- und
+  Excerpt-Suche.
+  - Neon: `properties @> jsonb_build_object('owners', $n)`, getragen vom bestehenden
+    `graph_nodes_props_gin`. Bei MK ersetzt `acl_owners @> audience OR
+    manually_authored` die Viewer-ACL.
+  - Recall filtert in `members` nicht nach `userId`. Pläne, Prozesse und das
+    Session-Briefing (keine Owner) entfallen.
+  - `query_knowledge_graph` bekommt die Sicht `{ audienceOwners, agentScopePrefix }`.
+- **Falle:** Graph-Decoratoren müssen `getSession(scope, options)` weiterreichen. Die drei
+  in orchestrator-extras taten das nicht.
+- **Kein Backfill:** Turns ohne `owners` sind im Modus unsichtbar.
+- **Kanalübergreifend:** Das funktioniert nur, wenn die Kanal-Identitäten einer Person im
+  selben User-Cluster liegen (Merge über verifizierte E-Mail oder AAD-ID). Die
+  Telegram-Identität wird heute ohne E-Mail angelegt und bildet daher einen eigenen
+  Cluster, bis sie verknüpft ist.
+- Migration 0062 erweitert den CHECK. Tests: `test/orchestrator/memberScopedMemory.test.ts`,
+  `test/memberScopedOwners.pg.test.ts`, `test/turnAudience.test.ts`.
+
 - **Fail-closed.** Fehlender `origin`, `unscoped`, `system`, unbekannter `channelType`,
   unbrauchbare Patterns → Zeile 1 der Tabelle, byte-identisch zu heute, kein Kontextbaum
   erreichbar. `axes.patterns` ist eine **Allowlist**: alles ausserhalb der drei Tier-Tokens

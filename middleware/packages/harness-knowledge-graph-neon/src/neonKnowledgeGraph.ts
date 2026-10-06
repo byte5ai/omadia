@@ -20,7 +20,9 @@ import {
   topicNodeId,
   turnNodeId,
   userNodeId,
+  canonicalOwners,
   type ChannelIdentityIngest,
+  type SessionReadOptions,
   type CreateMergeCandidateInput,
   type DatasetAggregate,
   type DatasetColumnSchema,
@@ -471,6 +473,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // that a replay (capture_level=off) or a backfill re-ingests as real
         // knowledge — invisible to recall for good, with nothing to clear it.
         tailOnly: turn.tailOnly === true,
+        // Member-scoped memory — who owns this turn's knowledge. Only written
+        // when set: a re-ingest without it (backfill, replay) keeps the owners
+        // the live turn recorded instead of erasing them.
+        ...(turn.owners !== undefined ? { owners: canonicalOwners(turn.owners) } : {}),
       });
       const turnUuid = await this.upsertNode(client, {
         externalId: turnExtId,
@@ -1064,7 +1070,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     }
   }
 
-  async getSession(scope: string): Promise<SessionView | null> {
+  async getSession(
+    scope: string,
+    options?: SessionReadOptions,
+  ): Promise<SessionView | null> {
+    const audienceOwners = audienceFilter(options?.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return null;
     const sessionExtId = sessionNodeId(scope);
     const sessionRow = await this.findNodeByExternalId(sessionExtId);
     if (!sessionRow) return null;
@@ -1074,10 +1085,14 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       SELECT ${NODE_COLUMNS}
       FROM graph_nodes
       WHERE tenant_id = $1 AND type = 'Turn' AND scope = $2
+        -- Member-scoped memory (see searchTurns): the tail of a room a new
+        -- member joined holds only turns that member also owns.
+        AND ($3::jsonb IS NULL OR properties @> jsonb_build_object('owners', $3::jsonb))
       ORDER BY (properties->>'time') ASC
       `,
-      [this.tenantId, scope],
+      [this.tenantId, scope, audienceOwners],
     );
+    if (audienceOwners !== null && turnRows.rows.length === 0) return null;
 
     const turnUuids = turnRows.rows.map((r) => r.id);
     const entityByTurn = new Map<string, GraphNode[]>();
@@ -1845,6 +1860,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   async searchTurns(opts: SearchTurnsOptions): Promise<TurnSearchHit[]> {
     const query = opts.query.trim();
     if (query.length === 0) return [];
+    const audienceOwners = audienceFilter(opts.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return [];
 
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     const userIdFilter = opts.userId ?? null;
@@ -1896,6 +1913,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         AND ($7::text IS NULL
           OR scope LIKE $7 || '%'
           OR ($7 = 'default::' AND scope NOT LIKE '%::%'))
+        -- Member-scoped memory: everyone present must own the turn.
+        AND ($8::jsonb IS NULL OR properties @> jsonb_build_object('owners', $8::jsonb))
         AND to_tsvector(
           'simple',
           coalesce(properties->>'userMessage', '') || ' ' ||
@@ -1912,6 +1931,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         excludeTurnIds,
         limit,
         agentScopePrefix,
+        audienceOwners,
       ],
     );
 
@@ -1940,6 +1960,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     opts: SearchTurnsByEmbeddingOptions,
   ): Promise<TurnSearchHit[]> {
     if (opts.queryEmbedding.length === 0) return [];
+    const audienceOwners = audienceFilter(opts.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return [];
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const userIdFilter = opts.userId ?? null;
@@ -2038,6 +2060,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND ($14::text IS NULL
             OR scope LIKE $14 || '%'
             OR ($14 = 'default::' AND scope NOT LIKE '%::%'))
+          -- Member-scoped memory (see searchTurns).
+          AND ($15::jsonb IS NULL OR properties @> jsonb_build_object('owners', $15::jsonb))
           AND ($7::text[] IS NULL OR entry_type = ANY($7::text[]))
           AND ($8::boolean = TRUE OR tier IN ('HOT', 'WARM'))
           AND (
@@ -2122,6 +2146,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       weightTask,
       overshoot,
       agentScopePrefix,
+      audienceOwners,
     ]);
 
     return result.rows
@@ -3244,6 +3269,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     opts: MemorableKnowledgeSearchOptions,
   ): Promise<MemorableKnowledgeHit[]> {
     if (opts.queryEmbedding.length === 0) return [];
+    const audienceOwners = audienceFilter(opts.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return [];
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const queryLit = vectorLiteral(opts.queryEmbedding);
@@ -3270,19 +3297,34 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         -- cannot slip through the owner branch.
         AND ($8::boolean IS NOT TRUE OR COALESCE(visibility, 'team') IN ('team', 'public'))
         AND (
-          -- team/public-promoted MK stays shareable across Agents.
-          ($5::boolean AND COALESCE(visibility, 'team') IN ('team', 'public'))
-          OR (
-            properties->'acl_owners' @> jsonb_build_array($3::text)
-            -- Per-orchestrator isolation: owner-gated MK is additionally
-            -- constrained to the viewing Agent. Legacy MK without an
-            -- origin_agent stays visible to the owner.
+          -- Member-scoped memory: the room rule REPLACES the viewer ACL.
+          -- Everyone present owns the row, or an operator authored it.
+          ($9::jsonb IS NOT NULL
+            -- An operator-authored row, not an auto-promoted durable one: T3
+            -- durable auto-promotion also sets manually_authored, and that row
+            -- came out of a conversation (created_by 'auto:…').
+            AND (properties->'acl_owners' @> $9::jsonb
+              OR (manually_authored = true AND COALESCE(properties->>'created_by', '') NOT LIKE 'auto:%'))
             AND (
               $6::text IS NULL
               OR COALESCE(properties->>'origin_agent', '') = ''
               OR properties->>'origin_agent' = $6
+            ))
+          OR ($9::jsonb IS NULL AND (
+            -- team/public-promoted MK stays shareable across Agents.
+            ($5::boolean AND COALESCE(visibility, 'team') IN ('team', 'public'))
+            OR (
+              properties->'acl_owners' @> jsonb_build_array($3::text)
+              -- Per-orchestrator isolation: owner-gated MK is additionally
+              -- constrained to the viewing Agent. Legacy MK without an
+              -- origin_agent stays visible to the owner.
+              AND (
+                $6::text IS NULL
+                OR COALESCE(properties->>'origin_agent', '') = ''
+                OR properties->>'origin_agent' = $6
+              )
             )
-          )
+          ))
         )
       ORDER BY cosine_sim DESC
       LIMIT $4
@@ -3298,6 +3340,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       opts.viewerAgentSlug ?? null,
       opts.manuallyAuthoredOnly === true,
       opts.sharedOnly === true,
+      audienceOwners,
     ]);
     return rows.rows
       .filter((r) => Number(r.cosine_sim) >= minSimilarity)
@@ -3311,6 +3354,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     opts: ExcerptSearchOptions,
   ): Promise<PalaiaExcerptHit[]> {
     if (opts.queryEmbedding.length === 0) return [];
+    const audienceOwners = audienceFilter(opts.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return [];
     const limit = Math.max(1, Math.min(opts.limit ?? 10, 50));
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const queryLit = vectorLiteral(opts.queryEmbedding);
@@ -3337,17 +3382,29 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         -- narrowing runs against the PARENT's visibility.
         AND ($7::boolean IS NOT TRUE OR COALESCE(mk.visibility, 'team') IN ('team', 'public'))
         AND (
-          -- team/public-promoted parent MK stays shareable across Agents.
-          ($5::boolean AND COALESCE(mk.visibility, 'team') IN ('team', 'public'))
-          OR (
-            mk.properties->'acl_owners' @> jsonb_build_array($3::text)
-            -- Per-orchestrator isolation against the parent MK's origin_agent.
+          -- Member-scoped memory: the parent MK's room rule (see
+          -- searchMemorableKnowledgeByEmbedding) replaces the viewer ACL.
+          ($8::jsonb IS NOT NULL
+            AND (mk.properties->'acl_owners' @> $8::jsonb
+              OR (mk.manually_authored = true AND COALESCE(mk.properties->>'created_by', '') NOT LIKE 'auto:%'))
             AND (
               $6::text IS NULL
               OR COALESCE(mk.properties->>'origin_agent', '') = ''
               OR mk.properties->>'origin_agent' = $6
+            ))
+          OR ($8::jsonb IS NULL AND (
+            -- team/public-promoted parent MK stays shareable across Agents.
+            ($5::boolean AND COALESCE(mk.visibility, 'team') IN ('team', 'public'))
+            OR (
+              mk.properties->'acl_owners' @> jsonb_build_array($3::text)
+              -- Per-orchestrator isolation against the parent MK's origin_agent.
+              AND (
+                $6::text IS NULL
+                OR COALESCE(mk.properties->>'origin_agent', '') = ''
+                OR mk.properties->>'origin_agent' = $6
+              )
             )
-          )
+          ))
         )
       ORDER BY cosine_sim DESC
       LIMIT $4
@@ -3370,6 +3427,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       opts.teamVisibility === true || opts.sharedOnly === true,
       opts.viewerAgentSlug ?? null,
       opts.sharedOnly === true,
+      audienceOwners,
     ]);
 
     return rows.rows
@@ -5204,6 +5262,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       .map((t) => t.trim())
       .filter((t) => t.length >= 2);
     if (terms.length === 0) return [];
+    const audienceOwners = audienceFilter(opts.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return [];
 
     const perEntityLimit = Math.max(1, Math.min(opts.perEntityLimit ?? 2, 10));
     const entityLimit = Math.max(1, Math.min(opts.entityLimit ?? 5, 25));
@@ -5259,6 +5319,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND ($6::text IS NULL
             OR t.scope LIKE $6 || '%'
             OR ($6 = 'default::' AND t.scope NOT LIKE '%::%'))
+          -- Member-scoped memory (see searchTurns).
+          AND ($7::jsonb IS NULL OR t.properties @> jsonb_build_object('owners', $7::jsonb))
         ORDER BY (t.properties->>'time') DESC
         LIMIT $5
         `,
@@ -5269,6 +5331,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           excludeScope,
           perEntityLimit,
           agentScopePrefix,
+          audienceOwners,
         ],
       );
 
@@ -5561,6 +5624,23 @@ export function rowToNode(row: NodeRow): GraphNode {
  * any driver-side binary-vector encoding so the same path works against
  * vanilla pgvector (via `pg`) and Neon's pooled endpoints alike.
  */
+/** Sentinel for "an audience was given and it is empty" — matches nothing. */
+const EMPTY_AUDIENCE = Symbol('empty-audience');
+
+/**
+ * Member-scoped memory — the SQL parameter for an `audienceOwners` option.
+ * `null` = no owner filter; a JSON array = `properties @> {"owners": …}`, which
+ * the `graph_nodes_props_gin` index serves. An empty audience is not "no
+ * filter": the caller returns no rows without querying.
+ */
+function audienceFilter(
+  audience: readonly string[] | undefined,
+): string | null | typeof EMPTY_AUDIENCE {
+  if (audience === undefined) return null;
+  const members = canonicalOwners(audience);
+  return members.length === 0 ? EMPTY_AUDIENCE : JSON.stringify(members);
+}
+
 function vectorLiteral(v: readonly number[]): string {
   // Scientific notation is rejected by pgvector's parser — toFixed() keeps us
   // in plain decimal. 6 significant digits are far more precision than cosine

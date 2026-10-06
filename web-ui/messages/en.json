@@ -2225,6 +2225,7 @@
       "semanticsTeam": "A turn from a team context writes into its own tier and into the shared team tier — that is the tier teammates read each other in.",
       "semanticsAgent": "The orchestrator's own memory stays readable but becomes read-only for context turns, so “remember this globally” can no longer carry knowledge from one team to another.",
       "semanticsApi": "Turns from the API carry no chat context, so they only ever reach the private memory of the orchestrator itself — never a team or channel tree.",
+      "semanticsMembers": "With “Shared by the people present”, a group only gets knowledge when the channel reports its complete member list; otherwise it gets none, so nobody can read what was never theirs.",
       "acknowledge": "I understand how memory will be split for this orchestrator.",
       "modes": {
         "off": {
@@ -2238,6 +2239,10 @@
         "enforce-strict": {
           "label": "Separate and sealed",
           "description": "Each chat context gets its own memory tree and cannot read the orchestrator's own memory at all. Choose this when contexts must not share anything."
+        },
+        "members": {
+          "label": "Shared by the people present",
+          "description": "Knowledge belongs to the people present when it came up. Any chat where only those people take part can use it, a direct message included; once someone else is present, it stays out."
         }
       }
     },

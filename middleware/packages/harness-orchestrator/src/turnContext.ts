@@ -35,6 +35,24 @@ import type { ToolReplayLedger } from './toolReplayLedger.js';
  *   helper falls back to a fresh value when called outside any turn context
  *   (unit tests, ad-hoc invocations) so callers never need a guard.
  */
+/**
+ * The graph boundary of a turn whose agent restricts it (see
+ * `TurnContextValue.graphReadScope`):
+ *  - `conversation` (`enforce-strict`): turns of this graph scope only;
+ *    `scope: null` = none.
+ *  - `members`: this agent's turns everyone present owns; `audience: null` =
+ *    the room is not known, so none.
+ *  - `nothing`: a turn the restriction cannot reach (context-free) — none.
+ */
+export type GraphReadScope =
+  | { readonly kind: 'conversation'; readonly scope: string | null }
+  | {
+      readonly kind: 'members';
+      readonly audience: readonly string[] | null;
+      readonly agentScopePrefix: string;
+    }
+  | { readonly kind: 'nothing' };
+
 export interface TurnContextValue {
   turnId: string;
   turnDate: string;
@@ -271,6 +289,16 @@ export interface TurnContextValue {
    * so memory did reach the user either way.
    */
   memoryFileRead?: { value: boolean };
+  /**
+   * Which turns of the knowledge graph this turn may read, set once the
+   * kernel has bound the turn's context memory (`enforce-strict`, `members`).
+   * Read by every graph read that is not the kernel's own recall — today the
+   * plugin `KnowledgeGraphAccessor` — so a domain tool cannot search past the
+   * boundary the recall legs keep. Empty box = unrestricted (every other
+   * mode). Mutable holder for the same shallow-copy reason as
+   * {@link memoryFileRead}.
+   */
+  graphReadScope?: { value?: GraphReadScope };
   /**
    * The turn's wire view: its user message exactly as the model received it
    * (normalised — an MCP input-card reply is its label by then — and masked
