@@ -39,6 +39,9 @@ import {
   PROMPT_MASK_BLOCKED_ANSWER,
   SECURITY_QUARANTINE_NOTICE,
 } from '../packages/harness-orchestrator/src/orchestrator.js';
+// #1208 — the budget constants are internal to the package (not barrel
+// exports); the test pins both the wire value and the number itself.
+import { SCREENER_MAX_TOKENS } from '../packages/harness-orchestrator/src/classifierBudgets.js';
 import { loadManifestFromPath } from '../src/plugins/manifestLoader.js';
 
 const DE_STANDARD = 'Diese Antwort wurde von einem KI-System erzeugt.';
@@ -191,6 +194,33 @@ describe('#579 LlmScreener', () => {
       model: 'test',
     });
     assert.deepEqual(await a.screen('payload'), { decision: 'allow' });
+  });
+
+  // #1208 — the judge runs on the AGENT's model, which on Opus 5.5 and up
+  // always thinks, and thinking counts toward `max_tokens`. A tight cap ends
+  // the call before the verdict line, `parseVerdict` throws, and the turn
+  // fails open as `unscreened`. The default must leave room for both.
+  it('budgets the judge call for thinking plus the verdict line', async () => {
+    const seen: LlmRequest[] = [];
+    const s = new LlmScreener({
+      provider: recordingProvider('ALLOW', seen),
+      model: 'test',
+    });
+    await s.screen('payload');
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.maxTokens, SCREENER_MAX_TOKENS);
+    assert.equal(SCREENER_MAX_TOKENS, 4096);
+  });
+
+  it('honours an explicit maxTokens', async () => {
+    const seen: LlmRequest[] = [];
+    const s = new LlmScreener({
+      provider: recordingProvider('ALLOW', seen),
+      model: 'test',
+      maxTokens: 256,
+    });
+    await s.screen('payload');
+    assert.equal(seen[0]?.maxTokens, 256);
   });
 });
 
