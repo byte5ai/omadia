@@ -190,8 +190,6 @@ User sagt: "Bau mir einen Agent `de.byte5.agent.sharepoint` für Dokument-Suche.
    | `{{AGENT_SLUG}}` | `sharepoint` |
    | `{{AGENT_DESCRIPTION_DE}}` | "Durchsucht SharePoint-Sites …" |
    | `{{AGENT_DESCRIPTION_EN}}` | "Searches SharePoint sites …" (siehe Hinweis unten) |
-   | `{{INTEGRATION_ID}}` | `de.byte5.integration.microsoft365` |
-   | `{{CAPABILITY_ID}}` | `search_documents` |
    | `{{ROLE_DESCRIPTION_DE}}` | "ein pragmatischer SharePoint-Recherche-Assistent" |
 
    > **`identity.description` ist eine Locale-Map, kein einzelner String** (#885).
@@ -204,9 +202,11 @@ User sagt: "Bau mir einen Agent `de.byte5.agent.sharepoint` für Dokument-Suche.
    > `description_en` (alte Spec, Clone-from-installed), fällt Codegen auf
    > die deutsche Zeile zurück und `lint_spec` warnt.
 
-3. **Capabilities verdichten** — `client.ts` (reiner HTTP-Client) + `toolkit.ts`
-   (Capability→Zod→Handler). Pro Capability: `side_effects`, `idempotent`,
-   `autonomous`, `timeout_ms` realistisch.
+3. **Keine Capabilities** — dieses Template ist der Pure-LLM-Fall:
+   `manifest.yaml` hält `capabilities: []`, `activate()` gibt einen leeren
+   Toolkit zurück, `depends_on` bleibt `[]`. Es gibt weder `client.ts` noch
+   `toolkit.ts`. Sobald der Agent einen echten HTTP-Client braucht: auf
+   `agent-integration` wechseln, nicht hier einen anbauen.
 
 4. **System-Prompt** in `skills/<slug>-expert.md` schreiben — nicht im Code.
 

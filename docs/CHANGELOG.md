@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the pure-LLM agent boilerplate no longer prescribes tools it has none of (#1217)
+
+2026-10-06 — `middleware/assets/boilerplate/agent-pure-llm/` was a copy of
+its tool-based sibling `agent-integration`, and the copy still read like one.
+The expert skill partial `skills/{{AGENT_SLUG}}-expert.md` told the agent it
+works "ausschließlich mit den strukturierten Outputs deiner Tools
+(`{{CAPABILITY_ID}}`, …)" and forbade any assessment without tool data — for
+a template whose `manifest.yaml` ships `capabilities: []`. `CAPABILITY_ID` is
+not in this template's `placeholders:` map either; `buildPlaceholderMap` only
+backs it from `spec.tools[0]`, which a pure-LLM spec never has. Generated
+plugins were never affected (the required `skill-prompt` slot overwrites that
+whole marker region), but the builder reads the boilerplate as its worked
+example for tool-less agents, so the contradiction was teaching the wrong
+contract.
+
+The prompt body is now tool-less, and keeps the two rules that were never
+about tools: no invented facts, and no smalltalk/hedging. The same
+copy-paste residue is gone from the template's docs, which
+`builderReferenceCatalog` exposes to the model as `read_reference` roots
+alongside the code: the `{{INTEGRATION_ID}}` / `{{CAPABILITY_ID}}` rows in
+`CLAUDE.md`'s placeholder table, its "Capabilities verdichten — `client.ts`
++ `toolkit.ts`" step (this template has neither file), and `README.md`'s
+layout tree and Quick-Start placeholder list.
+
 ### Fixed — an API-key chat turn's run trace is stored in the knowledge graph again
 
 2026-10-05 — Found in the E2E test on main `1d8233ce`: an API-key turn ran

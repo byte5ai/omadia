@@ -4,8 +4,9 @@ Standalone-Package-Template für neue Omadia-Agenten (`kind: agent`).
 Claude-Guide: [CLAUDE.md](./CLAUDE.md) — wird beim Scaffolden automatisch
 mitgelesen.
 
-Referenz-Implementierung: `middleware/src/agents/seo-analyst/` (kanonisch,
-alle 10 Checkliste-Punkte 1:1 umgesetzt).
+Referenz-Implementierung: keine — für den Pure-LLM-Fall IST diese
+Boilerplate die Referenz. `middleware/src/agents/seo-analyst/` ist der
+kanonische Vergleich für das Tool-basierte Pattern (`agent-integration`).
 
 ## Layout (flach, am Package-Root)
 
@@ -18,8 +19,6 @@ agent/
 ├── tsconfig.json                 # NodeNext, rootDir:./, outDir:./dist
 ├── types.ts                      # lokales PluginContext-Duplikat (Pflicht!)
 ├── plugin.ts                     # activate(ctx) → { toolkit, close() }
-├── client.ts                     # externe API (LLM-frei, testbar)
-├── toolkit.ts                    # Capability → ToolDescriptor[] (Zod)
 ├── index.ts                      # Barrel
 ├── skills/
 │   └── {{AGENT_SLUG}}-expert.md  # System-Prompt-Partial (YAML-Frontmatter)
@@ -37,7 +36,8 @@ cp -R docs/harness-platform/boilerplate/agent \
 cd middleware/src/agents/<slug>
 
 # Platzhalter ersetzen ({{AGENT_ID}}, {{AGENT_NAME}}, {{AGENT_SLUG}},
-# {{INTEGRATION_ID}}, {{CAPABILITY_ID}}, {{AGENT_DESCRIPTION_DE}}, …)
+# {{AGENT_DESCRIPTION_DE}}, {{AGENT_DESCRIPTION_EN}}, {{ROLE_DESCRIPTION_DE}}, …
+# vollständige Liste: `placeholders:` in template.yaml)
 
 npm install
 node scripts/build-zip.mjs
