@@ -289,7 +289,11 @@ import {
   knowledgeGraphPrincipalResolver,
 } from './audienceFloorProvider.js';
 import { guardToolCommands } from './commandPolicyGuard.js';
-import { resolveTurnOwnerIdentity, runTraceOwnerId } from './resolveTurnOwnerIdentity.js';
+import {
+  resolveRunTraceOwner,
+  resolveTurnOwnerIdentity,
+  runTraceOwnerId,
+} from './resolveTurnOwnerIdentity.js';
 import { resolveTurnAudience, type TurnAudience } from './turnAudience.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
@@ -302,7 +306,10 @@ import { isMcpServerKgIngest } from './mcpKgIngest.js';
 function runTraceUserSpread(
   input: Pick<ChatTurnInput, 'userId' | 'channelIdentity'>,
 ): { userId?: string } {
-  const userId = runTraceOwnerId(input, turnContext.current()?.resolvedOmadiaUserId);
+  const ctx = turnContext.current();
+  const userId = ctx?.runTraceOwner
+    ? ctx.runTraceOwner.userId
+    : runTraceOwnerId(input, ctx?.resolvedOmadiaUserId);
   return userId ? { userId } : {};
 }
 
@@ -4546,6 +4553,10 @@ export class Orchestrator {
     // re-deriving it independently.
     const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    // The run trace's User-Cluster, resolved before anything ingests it — a
+    // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
+    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, resolvedOmadiaUserId);
+    const runTraceOwner = runTraceUserId ? { userId: runTraceUserId } : {};
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -4613,6 +4624,7 @@ export class Orchestrator {
         // per-user data with it.
         ...(input.userId ? { userId: input.userId } : {}),
         ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+        runTraceOwner,
         // W2-1 (#544) — one component of the MCP pending-input store key. Never
         // the whole key; see TurnContextValue.sessionScope.
         sessionScope: sessionId,
@@ -6770,6 +6782,10 @@ export class Orchestrator {
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
     const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    // The run trace's User-Cluster, resolved before anything ingests it — a
+    // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
+    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, resolvedOmadiaUserId);
+    const runTraceOwner = runTraceUserId ? { userId: runTraceUserId } : {};
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -6831,6 +6847,7 @@ export class Orchestrator {
       // answer the card, and channel turns (Teams/Telegram) come through here.
       ...(input.userId ? { userId: input.userId } : {}),
       ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+      runTraceOwner,
       // W2-1 (#544) — see the matching `turnContext.run` above.
       sessionScope: sessionId,
       // The turn's wire view (prompt + answer), for a verifier hand-over.
