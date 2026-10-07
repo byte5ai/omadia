@@ -280,27 +280,68 @@ export class VerifierPipeline {
  *
  * Detector is a flat regex over the answer text — node-id-shape is loose
  * on purpose so plugins that mint their own node-ids (Confluence /
- * Odoo prefixes) don't need to update this file.
+ * Odoo prefixes) don't need to update this file. Real graph ids carry
+ * `:` and `.` (`turn:<scope>:<ISO time>`, `odoo:res.partner:42`), so the
+ * id is anything up to the closing bracket that is not whitespace.
+ *
+ * When the turn's knowledge-graph results are known
+ * (`knowledgeGraphRefs`), a marker must also name one of them: a marker
+ * pointing at nothing the graph returned is an invented source
+ * (`citation_unresolved`). And when the graph returned nothing citable,
+ * nothing can be cited — no marker is demanded.
  */
-const CITATION_MARKER_REGEX = /\[ref:[\w-]+\]/i;
+const CITATION_MARKER_REGEX = /\[ref:([^\]\s]+)\]/gi;
+
+/** The source ids the answer's `[ref:…]` markers name, in order. */
+export function citedRefs(answer: string): string[] {
+  return [...answer.matchAll(CITATION_MARKER_REGEX)].map((m) => m[1]!);
+}
 
 function buildCitationMissingVerdicts(input: VerifierInput): ClaimVerdict[] {
   if (input.knowledgeGraphToolsCalled !== true) return [];
-  if (CITATION_MARKER_REGEX.test(input.answer)) return [];
+  const available = input.knowledgeGraphRefs;
+  const cited = citedRefs(input.answer);
+  // Nothing citable came back: no marker can be demanded — but a marker
+  // that names a source anyway is invented, and checked below.
+  if (cited.length === 0 && available !== undefined && available.length === 0) return [];
+  if (cited.length === 0) {
+    return [
+      {
+        status: 'contradicted',
+        claim: {
+          id: 'c_citation_missing',
+          text: 'Answer pulled knowledge-graph evidence but contains no [ref:nodeId] citations.',
+          type: 'citation_missing',
+          expectedSource: 'graph',
+          relatedEntities: [],
+        },
+        truth: null,
+        source: 'graph',
+        basis: 'citation_missing',
+        detail:
+          'Add `[ref:<id>]` after every assertion grounded in the knowledge graph so the verifier can attribute the claim to a source.',
+      },
+    ];
+  }
+  if (available === undefined) return [];
+  const known = new Set(available);
+  const unresolved = [...new Set(cited.filter((ref) => !known.has(ref)))];
+  if (unresolved.length === 0) return [];
   return [
     {
       status: 'contradicted',
       claim: {
-        id: 'c_citation_missing',
-        text: 'Answer pulled knowledge-graph evidence but contains no [ref:nodeId] citations.',
+        id: 'c_citation_unresolved',
+        text: `Answer cites ${String(unresolved.length)} source(s) no knowledge-graph result of this turn returned.`,
         type: 'citation_missing',
         expectedSource: 'graph',
         relatedEntities: [],
       },
       truth: null,
       source: 'graph',
+      basis: 'citation_unresolved',
       detail:
-        'Add `[ref:<nodeId>]` after every assertion grounded in the knowledge graph so the verifier can attribute the claim to a source.',
+        'Every `[ref:<id>]` must name an `id` or `turnId` from this turn\'s `query_knowledge_graph` results; a statement no result supports must not carry a marker.',
     },
   ];
 }
@@ -326,6 +367,7 @@ function buildPostconditionVerdicts(input: VerifierInput): ClaimVerdict[] {
       },
       truth: { issues: v.issues },
       source: 'unknown',
+      basis: 'tool_postcondition',
       detail: v.issues.join('; '),
     }),
   );
@@ -368,6 +410,7 @@ function traceMissingCallVerdict(
     claim,
     truth: null,
     source: 'odoo',
+    basis: 'tool_not_called',
     detail:
       'Claim ohne Fach-Agent-Call im Turn — Antwort hat keine Live-Daten aus Odoo abgerufen (Kontext-Replay).',
   };

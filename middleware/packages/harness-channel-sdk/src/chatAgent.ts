@@ -316,6 +316,34 @@ export type VerifierSummaryReason =
  * render them as a check — see `verifierSummaryHasEvidence`.
  * `toSemanticAnswer` forwards a connector badge only when the counts back it.
  */
+/**
+ * Why the verifier would not release an answer — what the withheld notice
+ * says, and nothing it may overstate:
+ *  - `contradicted`          — a check compared a claim with its source and
+ *                              the source says otherwise (the ONLY cause that
+ *                              may be called a contradiction);
+ *  - `tool_not_called`       — the answer states live data or a failed /
+ *                              missing access, and no call in the turn fetched
+ *                              that data or failed;
+ *  - `citation_missing`      — the answer used knowledge-graph results but
+ *                              named no source for them;
+ *  - `insufficient_evidence` — claims could not be backed by what the turn
+ *                              retrieved (unconfirmed, a cited source the turn
+ *                              never returned, parts not covered);
+ *  - `check_failed`          — a technical fault: the verifier, its checks or
+ *                              a tool's result failed;
+ *  - `not_checked`           — the answer could not be sent to the check at all
+ *                              (Privacy Shield rendered it server-side).
+ * A closed code set: the summary goes out verbatim on the stream.
+ */
+export type VerifierWithheldCause =
+  | 'contradicted'
+  | 'tool_not_called'
+  | 'citation_missing'
+  | 'insufficient_evidence'
+  | 'check_failed'
+  | 'not_checked';
+
 export interface VerifierResultSummary {
   badge: 'verified' | 'partial' | 'corrected' | 'failed' | 'unverified' | 'unavailable';
   status: 'approved' | 'approved_with_disclaimer' | 'blocked' | 'skipped' | 'unavailable';
@@ -341,6 +369,13 @@ export interface VerifierResultSummary {
    * not checked in full. Optional for summaries built without it.
    */
   uncoveredCount?: number;
+  /**
+   * Why the answer is not released, for every status but `approved` and a
+   * `skipped` with nothing to check. `contradictionCount` counts only claims a
+   * source refuted; a withhold for any other cause counts its claims as
+   * unconfirmed (`unverifiedCount`). Optional for summaries built without it.
+   */
+  withheldCause?: VerifierWithheldCause;
   retryCount: number;
   latencyMs: number;
   mode: 'shadow' | 'enforce';

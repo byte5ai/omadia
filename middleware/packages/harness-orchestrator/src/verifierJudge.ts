@@ -15,6 +15,8 @@ import {
   type PrivacyEgressHost,
 } from './verifierPrivacyGate.js';
 import {
+  extractFailedToolsCalled,
+  extractKnowledgeGraphRefs,
   extractKnowledgeGraphToolsCalled,
   extractPostconditionViolations,
   extractToolsCalled,
@@ -77,6 +79,8 @@ export class VerifierJudge {
     const domainToolsCalled = extractToolsCalled(runTrace);
     const toolPostconditionViolations = extractPostconditionViolations(runTrace);
     const knowledgeGraphToolsCalled = extractKnowledgeGraphToolsCalled(runTrace);
+    const knowledgeGraphRefs = extractKnowledgeGraphRefs(runTrace);
+    const failedToolsCalled = extractFailedToolsCalled(runTrace);
     let returned: unknown;
     try {
       returned = await this.opts.pipeline.verify({
@@ -91,6 +95,8 @@ export class VerifierJudge {
         ...(knowledgeGraphToolsCalled !== undefined
           ? { knowledgeGraphToolsCalled }
           : {}),
+        ...(knowledgeGraphRefs ? { knowledgeGraphRefs } : {}),
+        ...(failedToolsCalled ? { failedToolsCalled } : {}),
         // The pass's privacy view: every model request of the verifier goes
         // through it (absent only when no shield is installed).
         ...(privacy ? { privacy } : {}),

@@ -5041,7 +5041,13 @@ export class Orchestrator {
     if (name === MEMORY_TOOL_NAME && memoryHandler) {
       return isMemoryViewCall(input) ? 'read-only' : 'write';
     }
-    if (this.nativeTools.get(name)?.handler) return 'write';
+    // A plugin's native tool is a write. The kernel's own full-form natives
+    // (#1102 gave them a handler too) are not plugins: they fall through to
+    // their per-name class below. Told apart by spec identity, exactly as
+    // `buildToolsList()` does — before this check ran first, a re-entry's new
+    // `query_knowledge_graph` call counted as a write and abandoned it.
+    const native = this.nativeTools.get(name);
+    if (native?.handler && !KERNEL_NATIVE_SPECS.has(native.spec)) return 'write';
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) return 'read-only';
     if (name === QUERY_DATASET_TOOL_NAME && this.queryDatasetTool) return 'read-only';
     if (name === CHAT_PARTICIPANTS_TOOL_NAME && this.chatParticipantsTool) return 'read-only';
@@ -6449,13 +6455,16 @@ export class Orchestrator {
               ...replayed,
             });
           } else if (traceCollector) {
-            traceCollector.recordOrchestratorToolCall({
-              callId: use.id,
-              toolName: use.name,
-              durationMs,
-              isError,
-              ...replayed,
-            });
+            traceCollector.recordOrchestratorToolCall(
+              {
+                callId: use.id,
+                toolName: use.name,
+                durationMs,
+                isError,
+                ...replayed,
+              },
+              output,
+            );
           }
           return {
             type: 'tool_result',
@@ -8357,13 +8366,16 @@ export class Orchestrator {
         ...replayed,
       });
     } else if (traceCollector) {
-      traceCollector.recordOrchestratorToolCall({
-        callId: slot.use.id,
-        toolName: slot.use.name,
-        durationMs,
-        isError,
-        ...replayed,
-      });
+      traceCollector.recordOrchestratorToolCall(
+        {
+          callId: slot.use.id,
+          toolName: slot.use.name,
+          durationMs,
+          isError,
+          ...replayed,
+        },
+        slot.output,
+      );
     }
   }
 

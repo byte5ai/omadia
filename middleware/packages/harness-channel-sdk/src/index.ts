@@ -118,6 +118,7 @@ export type {
   ChatTurnResult,
   VerifierResultSummary,
   VerifierSummaryReason,
+  VerifierWithheldCause,
   RunTracePayload,
   RunStatus,
   RunToolCall,
@@ -191,6 +192,8 @@ export {
   verifierBlockedCause,
 } from './verifierBlocked.js';
 export type { VerifierBlockedCause } from './verifierBlocked.js';
+// `[ref:…]` citation markers are verifier input; every channel strips them.
+export { stripCitationMarkers } from './citationMarkers.js';
 
 // Org security postures + provenance-labelled inbound screening (#579). Shared
 // primitives — the posture model, tighten-only floor math, the provenance
