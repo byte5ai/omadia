@@ -339,6 +339,103 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.168.4 — auth cookies and pairing URLs take their scheme from the connection, not from a header
+
+**This one can change behaviour on an existing deployment, so read it before
+pulling the image.** Up to and including v0.168.4 the middleware decided the
+`Secure` flag on `omadia_session`, `omadia_login_device` and the OIDC PKCE
+cookie by reading the request's `X-Forwarded-Proto` header directly, and ran
+with Express's `trust proxy` set to `true`. Whoever sent a request therefore
+chose the flag: `Secure` on a plain-HTTP login that sent the header, and no
+`Secure` behind a TLS proxy that did not set it
+(`docs/security-architecture.md` §10o, issue #1310).
+
+What changes:
+
+- **`Secure` now follows the connection.** `req.secure`, which applies
+  `X-Forwarded-Proto` only from a hop you have named.
+- **`TRUSTED_PROXY_ADDRESSES` (new, default empty)** is Express's `trust proxy`
+  value: the addresses, `IP/bits` blocks or `loopback` / `linklocal` /
+  `uniquelocal` aliases of the proxies in front of the middleware. Empty means
+  no hop may speak for the client. **It is not a hop count** — Express counts
+  the immediate peer as a trusted hop, so `1` would trust a client that
+  connects directly and believe the header it wrote for itself. A bare number
+  is refused at boot, and neither is a `/0` block (`0.0.0.0/0`, `::/0`) — a
+  zero-length prefix matches every address, which is the `trust proxy = true`
+  this replaced.
+- **`PUBLIC_SCHEME` (new, default `auto`)** — the scheme clients reach the
+  deployment over: `auto` follows the connection, `https` declares TLS whatever
+  the process can observe, `http` declares plain HTTP. One setting rather than a
+  cookie flag, because it also decides the `https`/`wss` URLs the pairing
+  descriptor hands out — a `ws://` URL on an HTTPS page is mixed-content
+  blocked.
+- **`WEB_UI_PUBLIC_SCHEME` (new, read by the web-ui, default `http`).** The
+  `/bot-api` proxy now states `X-Forwarded-Proto` itself and drops the browser's
+  value. It is a declaration, not a derivation: a Next Route Handler cannot
+  observe its own TLS (`req.nextUrl.protocol` is built by next from that very
+  header). Set `https` when the web-ui sits behind a TLS-terminating edge. The
+  same value decides the scheme of the pairing descriptor the web-ui serves at
+  `/.well-known/omadia-ui`.
+
+**Does this affect you?** Check the Set-Cookie lines on a login:
+
+```
+curl -si -X POST 'https://<your-host>/api/v1/auth/login/local' \
+  -H 'content-type: application/json' \
+  -d '{"email":"<admin email>","password":"<password>"}' | grep -i set-cookie
+```
+
+Both cookies should carry `Secure` on any HTTPS deployment. If they do not,
+pick one of the two settings below. The boot log prints what is in force:
+`[middleware] request trust boundary: trusted proxies=…, public scheme=…`.
+
+**Fly.io.** `fly/middleware.fly.toml` now sets `PUBLIC_SCHEME=https`, and
+`fly/web-ui.fly.toml` sets `WEB_UI_PUBLIC_SCHEME=https`; a
+`fly deploy --config fly/middleware.fly.toml` picks them up. `https` rather
+than a proxy address because neither path proves TLS to `req.secure`: direct
+requests come from Fly Proxy, whose address cannot be named stably, and
+requests through web-ui arrive over `.internal`, a plain-HTTP 6PN hop with no
+proxy in between. The one-click updater only swaps the image and keeps the old
+settings — there, set it once with
+`fly secrets set PUBLIC_SCHEME=https --app <middleware-app>`.
+
+**Render.** `render.yaml` now sets `PUBLIC_SCHEME=https` on the middleware and
+`WEB_UI_PUBLIC_SCHEME=https` on the web-ui. An existing
+blueprint deployment does not pick up a changed `render.yaml` on its own: set
+both in the Render dashboard, or re-sync the blueprint.
+
+**docker-compose.** Nothing to do for the shipped stack: both services are
+published on `127.0.0.1` over plain HTTP, and the defaults correctly leave the
+cookies without `Secure` — a browser would discard a `Secure` cookie served
+over `http://127.0.0.1`, which looks like a login that silently does nothing.
+If you put a TLS-terminating reverse proxy in front, set
+`TRUSTED_PROXY_ADDRESSES` to its address (or `loopback` when it runs on the
+same host) **if** it sets `X-Forwarded-Proto`, and `PUBLIC_SCHEME=https` if it
+does not. Setting `https` on a stack that is still reachable over plain HTTP
+breaks sign-in silently, so check the curl above afterwards.
+
+**Desktop.** Nothing to do. The shell reaches the kernel over loopback on
+plain HTTP, and the cookies correctly carry no `Secure` there.
+
+**If you had worked around the old behaviour** by injecting
+`X-Forwarded-Proto: https` at a proxy to get `Secure` cookies, that no longer
+works unless you also name that proxy in `TRUSTED_PROXY_ADDRESSES`.
+`PUBLIC_SCHEME=https` is the simpler replacement.
+
+**Pairing URLs changed the same way, on all three surfaces.** The kernel's
+`/.well-known/omadia-ui`, the channel's `/omadia-ui/info` and the web-ui's own
+`/.well-known/omadia-ui` each derived `https` / `wss` from the same raw header,
+so a client could pick the scheme of the canvas URL and login base it was then
+handed. The two kernel surfaces now follow `PUBLIC_SCHEME` — which is why it is
+one setting and not a cookie flag: set `https` for the cookies and the pairing
+URLs stay `https`/`wss` with it. The web-ui surface follows
+`WEB_UI_PUBLIC_SCHEME`, since that process has its own declaration. **Set both
+on an HTTPS deployment**: the web-ui's descriptor is the browser-facing one, and
+with only `PUBLIC_SCHEME` set it would still advertise `ws://`, which an HTTPS
+page blocks as mixed content. `X-Forwarded-Host` is still honoured, and
+`OMADIA_UI_PUBLIC_WS_URL` still overrides the whole URL — set it if a split
+deployment advertises the wrong scheme after the upgrade.
+
 ## Upgrading past v0.167.17 — plugins: upload and install check `compat.core`
 
 A plugin links against the host's `@omadia/plugin-api` at runtime. Its

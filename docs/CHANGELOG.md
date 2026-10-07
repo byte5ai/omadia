@@ -36,6 +36,44 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — auth cookies and pairing URLs take their scheme from the connection (#1310)
+
+2026-10-07 — `isSecureContext` read `x-forwarded-proto` straight off the
+request, and `trust proxy` was `true`, so the sender of a request chose whether
+its own session, login-device and OIDC PKCE cookies were marked `Secure`:
+`Secure` on a plain-HTTP login that sent the header, none behind a TLS proxy
+that did not. Reported against v0.168.4. `requestIsSecure`
+(`middleware/src/http/requestTrust.ts`) now reads `req.secure`.
+
+A hop count is not the fix, which is why the new `TRUSTED_PROXY_ADDRESSES`
+takes addresses and refuses a bare number at boot: Express counts trusted hops
+from the server *including the immediate peer*, so `1`, `2` and `'loopback'`
+all still believe a forged header from a direct client. Default is empty —
+trust no hop.
+
+`PUBLIC_SCHEME` (`auto` | `https` | `http`) is the half narrowing cannot
+supply: a proxy that terminates TLS and sets no header leaves `req.secure`
+false under every `trust proxy` value. One setting rather than a cookie flag,
+because the pairing descriptor's `https`/`wss` URLs ride on the same question —
+a `ws://` URL on an HTTPS page is blocked as mixed content. `resolveScheme` and
+`@omadia/ui-channel`'s `absoluteCanvasWsUrl` read it too; `X-Forwarded-Host`
+is unchanged.
+
+The web-ui declares its own scheme as `WEB_UI_PUBLIC_SCHEME`, read by one
+helper for both places that process decides a scheme: the `X-Forwarded-Proto`
+the `/bot-api` proxy states to the middleware, and the browser-facing pairing
+descriptor it serves at `/.well-known/omadia-ui`, whose `operatorOrigin` also
+read the raw header. Neither can derive it — a Next Route Handler has no socket,
+and `req.nextUrl.protocol` is built by next from that same header. Fly and
+Render declare `https` on both processes; the compose stack keeps the plain-HTTP
+defaults.
+
+`TRUSTED_PROXY_ADDRESSES` also refuses a `/0` block: `0.0.0.0/0` matches every
+address, so it was `trust proxy = true` wearing a netmask, accepted silently
+while a bare `1` was refused. Migration and a `curl` check:
+`docs/upgrading.md`, "Upgrading past v0.168.4". Trust boundary and the measured
+`trust proxy` table: `docs/security-architecture.md` §10o.
+
 ### Added — the memory browser shows member groups
 
 2026-10-06 — The operator memory browser (`/memory`) lists the `members` notes

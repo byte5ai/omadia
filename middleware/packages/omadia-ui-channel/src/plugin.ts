@@ -44,22 +44,47 @@ export const INFO_PATH = '/omadia-ui/info';
 /** Bidirectional canvas WebSocket path (registered via CoreApi.registerWebSocket). */
 export const CANVAS_PATH = '/omadia-ui/canvas';
 
-/** Derive an absolute `ws(s)://host/omadia-ui/canvas` from the discovery
- *  request, honouring the reverse-proxy `x-forwarded-*` headers the Fly edge
- *  (and any proxy) sets. Mirrors the kernel's `resolveScheme` (#293) but stays
- *  inline so the channel plugin keeps zero runtime deps on the kernel. */
+/**
+ * Express app setting the kernel stores `PUBLIC_SCHEME` under (#1310, §10o).
+ * Spelled literally, like this file's copy of `CANVAS_PATH`, so the channel
+ * plugin keeps zero runtime deps on the kernel — the kernel owns the constant
+ * as `PUBLIC_SCHEME_SETTING` in `src/http/requestTrust.ts`, and changing it
+ * there means changing it here.
+ */
+const PUBLIC_SCHEME_SETTING = 'omadia:public-scheme';
+
+/**
+ * Derive an absolute `ws(s)://host/omadia-ui/canvas` from the discovery
+ * request. Mirrors the kernel's `resolveScheme` (#293) but stays inline so the
+ * channel plugin keeps zero runtime deps on the kernel.
+ *
+ * `ws` vs `wss` follows the CONNECTION (`req.secure`), or the operator's
+ * `PUBLIC_SCHEME` where they declared one — never a raw `x-forwarded-proto`,
+ * which a client sets for itself (#1310). Without `PUBLIC_SCHEME` an HTTPS
+ * deployment whose edge this process cannot name would hand an HTTPS page a
+ * `ws://` URL, which the browser blocks as mixed content.
+ * `x-forwarded-host` is still honoured, as in the kernel — a proxied host is
+ * otherwise unreachable.
+ */
 function absoluteCanvasWsUrl(req: {
   headers: Record<string, string | string[] | undefined>;
-  /** `req.socket.encrypted` (tls.TLSSocket) — true on a direct TLS connection. */
-  encrypted?: boolean;
+  /** `req.secure` — TLS state of the connection, trusted-proxy aware. */
+  secure?: boolean;
+  /** `req.app.get(PUBLIC_SCHEME_SETTING)` — `auto` | `https` | `http`. */
+  publicScheme?: string;
 }): string {
   const first = (name: string): string | undefined => {
     const v = req.headers[name];
     const raw = Array.isArray(v) ? v[0] : v;
     return raw?.split(',')[0]?.trim() || undefined;
   };
-  const xfProto = first('x-forwarded-proto');
-  const secure = xfProto ? xfProto === 'https' : Boolean(req.encrypted);
+  const declared = req.publicScheme?.trim();
+  const secure =
+    declared === 'https'
+      ? true
+      : declared === 'http'
+        ? false
+        : req.secure === true;
   const host = first('x-forwarded-host') ?? first('host') ?? 'localhost';
   return `${secure ? 'wss' : 'ws'}://${host}${CANVAS_PATH}`;
 }
@@ -81,9 +106,8 @@ export async function activate(
     const wsUrl = wsAvailable
       ? absoluteCanvasWsUrl({
           headers: req.headers,
-          encrypted: Boolean(
-            (req.socket as { encrypted?: boolean } | undefined)?.encrypted,
-          ),
+          secure: req.secure,
+          publicScheme: req.app?.get(PUBLIC_SCHEME_SETTING) as string | undefined,
         })
       : undefined;
     res.json({

@@ -3215,6 +3215,14 @@ Admin-Passwort-Reset, Deaktivieren und Löschen beenden alle Sitzungen des
 Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf“)
 — ohne eigene Env-Variable.
 
+### Request-Trust-Boundary (#1310, security-architecture §10o)
+
+| Variable | Wirkung |
+|---|---|
+| `TRUSTED_PROXY_ADDRESSES` | Welche Hops für den Client sprechen dürfen. Wird Express' `trust proxy` und entscheidet damit, ob `req.secure` / `req.protocol` / `req.hostname` / `req.ip` den `X-Forwarded-*`-Headern des Requests glauben. Komma-Liste aus Adressen, `IP/bits`-Blöcken oder `loopback`/`linklocal`/`uniquelocal`; leer (Default) = `none`, kein Hop wird geglaubt. **Keine Hop-Zahl:** Express zählt vertrauenswürdige Hops vom Server aus **inklusive des unmittelbaren Peers**, `1` würde also einem direkt verbundenen Client seinen eigenen gefälschten Header glauben — eine nackte Zahl lehnt der Boot mit Begründung ab. Max. 16 Einträge. Vor #1310 stand hier `true`, und damit konnte der Absender eines Requests das `Secure`-Flag seiner eigenen Auth-Cookies wählen. Setze die Adresse des vorgeschalteten Proxys (web-ui-Container, Caddy/Traefik/nginx); `loopback` für Desktop-Installationen — Vorsicht, dann ist alles auf Loopback vertrauenswürdig. Ungültiger Wert → Config-Fehler beim Boot. |
+| `PUBLIC_SCHEME` | Über welches Schema Clients dieses Deployment erreichen. Steuert **jede** schema-abhängige Entscheidung im Prozess: das `Secure`-Flag der Session-, Login-Device- und OIDC-PKCE-Cookies (`requestIsSecure` in `src/http/requestTrust.ts`) **und** die `https`/`wss`-URLs des Pairing-Descriptors. `auto` (Default) folgt der Verbindung über `req.secure`, das `X-Forwarded-Proto` nur von den oben genannten Hops anwendet. `https` für einen Reverse-Proxy, der TLS terminiert aber **kein** `X-Forwarded-Proto` setzt — `auto` kann das nicht von echtem Plain-HTTP unterscheiden, und dem Header von jedem Absender zu glauben war genau der Bug. `http` für ein absichtlich unverschlüsseltes Deployment. Ein Setting statt eines Cookie-Flags, weil ein Deployment, das für seine Cookies HTTPS erklärt, auch `wss://` ausliefern muss: ein `ws://` auf einer HTTPS-Seite blockt der Browser als Mixed Content. Fly und Render setzen `https` (Edge-Adressen sind nicht stabil benennbar). Ungültiger Wert → Config-Fehler beim Boot. |
+| `WEB_UI_PUBLIC_SCHEME` | **Liest der web-ui-Prozess, nicht dieser.** Der `/bot-api`-Proxy setzt `X-Forwarded-Proto` selbst und verwirft den Wert des Browsers. Eine **Erklärung**, keine Ableitung: ein Next-Route-Handler kann seinen eigenen TLS-Zustand nicht beobachten — `NextRequest` hat keinen Socket, und `req.nextUrl.protocol` baut Next aus genau diesem Header, eine Ableitung würde den Browser-Wert also zurückschleusen. `http` (Default) oder `https` hinter einer TLS-terminierenden Edge (Fly, Render) — kein Relay-Modus, `https` deckt diesen Fall bereits ab. Derselbe Wert bestimmt auch das Schema des Pairing-Descriptors, den web-ui unter `/.well-known/omadia-ui` ausliefert. |
+
 | Variable | Wirkung |
 |---|---|
 | `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
@@ -3410,6 +3418,10 @@ GRAPH_TENANT_ID=byte5
 # Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional
 PRIVACY_C1_DETECTOR_URL=http://pii-detector:8812   # unset ⇒ nur C0-Regex-Baseline
 # Offene Channel-WebSockets (Tabelle „Admin-UI-Sitzung“ oben)
+# Request-Trust-Boundary (#1310) — Adressen, NIE eine Hop-Zahl
+TRUSTED_PROXY_ADDRESSES=             # leer = keinem Hop glauben
+PUBLIC_SCHEME=auto                   # auto | https | http
+WEB_UI_PUBLIC_SCHEME=http            # liest web-ui: http | https
 WS_SESSION_FRAME_RECHECK_MS=5000    # 0..60000; 0 = jeder Frame wird geprüft
 # Runtime
 PORT=3979

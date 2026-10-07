@@ -13,10 +13,11 @@
  * this on would break that flow, and the session gate already closes the hole.
  *
  * Trust boundary: this reads the SOCKET address (`req.socket.remoteAddress`),
- * never `X-Forwarded-For`. Express's `trust proxy` makes `req.ip` reflect
- * client-supplied headers, so gating on `req.ip` would let a caller claim
- * `127.0.0.1` and walk straight through. A guard that a header can defeat is
- * decoration.
+ * never `X-Forwarded-For`. Wherever `TRUSTED_PROXY_ADDRESSES` names a hop
+ * (§10o), Express's `trust proxy` makes `req.ip` reflect client-supplied
+ * headers, so gating on `req.ip` would let a caller claim `127.0.0.1` and walk
+ * straight through. A guard that a header can defeat is decoration, and the
+ * socket peer keeps this one out of the `trust proxy` question entirely.
  */
 
 import type { RequestHandler } from 'express';

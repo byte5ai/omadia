@@ -324,6 +324,12 @@ import {
   SETTING_AUTH_ACTIVE_PROVIDERS,
 } from './auth/platformSettings.js';
 import { initSetupToken, PgSetupTokenStore } from './auth/setupToken.js';
+import {
+  describeTrustedProxies,
+  parseTrustedProxies,
+  PUBLIC_SCHEME_SETTING,
+  requestIsSecure,
+} from './http/requestTrust.js';
 import { createAdminUsersRouter } from './routes/adminUsers.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
@@ -3083,7 +3089,21 @@ async function main(): Promise<void> {
   }
 
   const app = express();
-  app.set('trust proxy', true);
+  // #1310 / §10o — the request trust boundary. `trust proxy` used to be
+  // `true`, which trusts every hop and so made `req.secure` (and with it the
+  // auth cookies' `Secure` flag) a value the sender of the request chose. It
+  // is now the operator's list of proxy ADDRESSES, empty by default; a hop
+  // count would not help, because Express counts the immediate peer as a
+  // trusted hop. `PUBLIC_SCHEME` is the escape hatch for a TLS-terminating
+  // proxy that sets no `X-Forwarded-Proto`, read per request by
+  // `requestIsSecure` — for the cookie flags and for the pairing descriptor's
+  // scheme alike.
+  const trustedProxies = parseTrustedProxies(config.TRUSTED_PROXY_ADDRESSES);
+  app.set('trust proxy', trustedProxies);
+  app.set(PUBLIC_SCHEME_SETTING, config.PUBLIC_SCHEME);
+  console.log(
+    `[middleware] request trust boundary: trusted proxies=${describeTrustedProxies(trustedProxies)}, public scheme=${config.PUBLIC_SCHEME}`,
+  );
   // Bumped 1mb → 10mb (Step #4): the agent-builder PATCH /spec and
   // /clone-from-installed paths can ship full slot bodies + spec JSON
   // serialised in one request; one production turn was hitting 1mb hard
@@ -3203,10 +3223,10 @@ async function main(): Promise<void> {
       buildPairingDescriptor(
         {
           headers: req.headers,
-          // `encrypted` lives on tls.TLSSocket, not the base net.Socket type.
-          encrypted: Boolean(
-            (req.socket as { encrypted?: boolean } | undefined)?.encrypted,
-          ),
+          // The connection's TLS state (or `PUBLIC_SCHEME`), not the client's
+          // `x-forwarded-proto` (#1310): express applies that header only for
+          // a hop `TRUSTED_PROXY_ADDRESSES` names.
+          secure: requestIsSecure(req),
         },
         {
           instanceName: config.OMADIA_UI_INSTANCE_NAME,
