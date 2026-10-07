@@ -279,6 +279,8 @@ export class KnowledgeGraphTool {
         return JSON.stringify({
           scope: args.scope,
           turns: session.turns.map((t) => ({
+            // The citable source for this turn's content (`[ref:<turnId>]`).
+            turnId: t.turn.id,
             time: t.turn.props['time'],
             userMessage: t.turn.props['userMessage'],
             assistantAnswer: t.turn.props['assistantAnswer'],

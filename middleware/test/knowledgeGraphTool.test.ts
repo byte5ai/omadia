@@ -105,6 +105,15 @@ describe('KnowledgeGraphTool', () => {
     );
   });
 
+  it('session_summary names each turn by its turnId — the source a [ref:…] marker cites', async () => {
+    const out = await tool.handle({ query: 'session_summary', scope: 'talk-a' });
+    const parsed = JSON.parse(out) as { turns: Array<{ turnId?: string }> };
+    assert.deepEqual(
+      parsed.turns.map((t) => t.turnId),
+      ['turn:talk-a:2026-04-18T09:00:00.000Z', 'turn:talk-a:2026-04-18T09:05:00.000Z'],
+    );
+  });
+
   it('session_summary returns {error: not_found} for unknown scope', async () => {
     const out = await tool.handle({ query: 'session_summary', scope: 'nope' });
     const parsed = JSON.parse(out) as { error?: string };

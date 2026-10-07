@@ -148,8 +148,55 @@ export type ClaimVerdict =
       truth: unknown;                   // actual value we found
       source: ClaimSource;
       detail?: string;
+      /** What the withhold rests on. Absent: a check refuted the claim
+       *  against evidence ({@link contradictionBasis}). */
+      basis?: ContradictionBasis;
     }
   | { status: 'unverified'; claim: Claim; reason: string; cause?: UnverifiedCause };
+
+/**
+ * What a `contradicted` verdict rests on. Only `evidence` is a refutation:
+ * a check compared the claim with a source and the source says otherwise.
+ * Every other basis withholds the answer for a reason that is NOT a factual
+ * contradiction, and must never be presented to the user as one:
+ *  - `citation_missing`          — knowledge-graph evidence was fetched, the
+ *                                  answer carries no `[ref:…]` marker;
+ *  - `citation_unresolved`       — a marker names no source this turn's
+ *                                  knowledge-graph results returned;
+ *  - `tool_not_called`           — the claim needs live data and the turn
+ *                                  made no call that could have fetched it,
+ *                                  or it reports a failure / absence / asks
+ *                                  for a retry in a turn that made no call;
+ *  - `unsupported_failure_claim` — calls ran, but none backs the claim (a
+ *                                  missing access with no failed call, a
+ *                                  "no attachment" the user message refutes);
+ *  - `tool_postcondition`        — a tool returned a result that broke its
+ *                                  declared output schema (a technical fault).
+ */
+export type ContradictionBasis =
+  | 'evidence'
+  | 'citation_missing'
+  | 'citation_unresolved'
+  | 'tool_not_called'
+  | 'unsupported_failure_claim'
+  | 'tool_postcondition';
+
+/** The basis of a contradicted verdict. The synthetic claim types name their
+ *  own basis, so a verdict built before `basis` existed still reads right. */
+export function contradictionBasis(
+  verdict: Extract<ClaimVerdict, { status: 'contradicted' }>,
+): ContradictionBasis {
+  if (verdict.basis) return verdict.basis;
+  if (verdict.claim.type === 'citation_missing') return 'citation_missing';
+  if (verdict.claim.type === 'tool_postcondition') return 'tool_postcondition';
+  return 'evidence';
+}
+
+/** True for a claim a check refuted against a source — the only verdict
+ *  that may be called a contradiction. */
+export function isEvidenceContradiction(verdict: ClaimVerdict): boolean {
+  return verdict.status === 'contradicted' && contradictionBasis(verdict) === 'evidence';
+}
 
 /** A claim list that holds at least one checked claim. */
 export type NonEmptyClaimVerdicts = [ClaimVerdict, ...ClaimVerdict[]];
@@ -277,6 +324,21 @@ export interface VerifierInput {
    */
   knowledgeGraphToolsCalled?: boolean;
   /**
+   * The source ids this turn's knowledge-graph results showed the model
+   * (`id` / `turnId` fields of `query_knowledge_graph` output, after the
+   * Privacy Shield). A `[ref:…]` marker must name one of them; an empty list
+   * means the graph returned nothing citable, so no marker can be demanded
+   * (and any marker the answer carries is invented).
+   * Undefined ⇒ not known; the check then only asks for a marker at all.
+   */
+  knowledgeGraphRefs?: readonly string[];
+  /**
+   * Names of the calls in this turn that failed (`isError` in the run
+   * trace). A claim of a failed or missing access needs one of them.
+   * Undefined ⇒ not known; the detector then falls back to "any call ran".
+   */
+  failedToolsCalled?: readonly string[];
+  /**
    * The privacy view of the turn being verified, present when that turn ran
    * behind a Privacy Shield (`privacy.redact@1`). Every stage that sends
    * text to a model (claim extractor, evidence judge) goes through it, so
@@ -383,7 +445,9 @@ export function hasVerificationEvidence(verdict: VerifierVerdict): boolean {
     case 'approved_with_disclaimer':
       return verdict.claims.some((c) => c.status === 'verified');
     case 'blocked':
-      return verdict.claims.some((c) => c.status === 'contradicted');
+      // Only a refutation is evidence. A withhold for a missing citation, a
+      // call the turn never made or a broken tool result settled no claim.
+      return verdict.claims.some(isEvidenceContradiction);
     case 'skipped':
     case 'unavailable':
       return false;

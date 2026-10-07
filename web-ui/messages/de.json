@@ -1676,7 +1676,15 @@
     },
     "verifierBlocked": {
       "heading": "Antwort von der Faktenprüfung zurückgehalten",
-      "body": "Die Faktenprüfung konnte diese Antwort nicht bestätigen, deshalb wird sie nicht angezeigt. Stelle die Frage erneut oder prüfe die Angaben direkt im Quellsystem."
+      "body": "Die Faktenprüfung konnte diese Antwort nicht bestätigen, deshalb wird sie nicht angezeigt. Stelle die Frage erneut oder prüfe die Angaben direkt im Quellsystem.",
+      "cause": {
+        "contradicted": "Die Faktenprüfung hat {count, plural, one {einen Widerspruch} other {# Widersprüche}} zu den Quelldaten gefunden, deshalb wird die Antwort nicht angezeigt. Stelle die Frage erneut oder prüfe die Angaben direkt im Quellsystem.",
+        "toolNotCalled": "Die Antwort enthielt Daten oder ein Zugriffsproblem, ohne dass die Daten in diesem Durchlauf abgerufen wurden, deshalb wird sie nicht angezeigt. Bitte stelle die Frage erneut.",
+        "citationMissing": "Die Antwort stützte sich auf gespeichertes Wissen, nannte dafür aber keine Quellen und ließ sich deshalb nicht prüfen. Bitte stelle die Frage erneut.",
+        "insufficientEvidence": "Nicht alle Angaben der Antwort ließen sich mit den abgerufenen Daten belegen, deshalb wird sie nicht angezeigt. Stelle die Frage erneut oder prüfe die Angaben direkt im Quellsystem.",
+        "checkFailed": "Die Faktenprüfung konnte wegen einer technischen Störung nicht abgeschlossen werden, deshalb wird die Antwort nicht angezeigt. Bitte versuche es erneut; tritt das wiederholt auf, wende dich an den Support.",
+        "notChecked": "Die Antwort konnte der Faktenprüfung nicht übergeben werden, deshalb wird sie nicht angezeigt. Stelle die Frage erneut oder prüfe die Angaben direkt im Quellsystem."
+      }
     },
     "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber.",
     "errorCorrelationRef": "Referenz für den Support: {id}",

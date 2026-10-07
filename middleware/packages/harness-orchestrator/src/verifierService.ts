@@ -48,6 +48,7 @@ import {
   mergeBorderlineVerdicts,
   summarise,
   withVerifier,
+  withheldLogLine,
 } from './verifierVerdicts.js';
 
 // Re-exported: tests and callers import these from this module.
@@ -531,7 +532,7 @@ export class VerifierService implements ChatAgent {
     if (verdictReleasesAnswer(verdict)) {
       return toSemanticAnswer(withVerifier(delivered, summary));
     }
-    this.log(`[verifier/service] answer withheld run=${runId} status=${verdict.status}`);
+    this.log(withheldLogLine(runId, verdict));
     return toSemanticAnswer(withheldTurnResult(delivered, summary, this.locale));
   }
 

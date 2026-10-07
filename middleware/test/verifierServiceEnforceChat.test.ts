@@ -157,7 +157,7 @@ describe('VerifierService.chat — enforce withholds what it could not confirm',
     const { h, sa } = await chatEnforced([approved()], [result({ answerSource: 'privacy-render' })]);
     assert.equal(h.verifyInputs.length, 0, 'never sent to the verifier');
     assertWithheld(sa, 'rendered');
-    assert.match(sa.text, /abgeschlossen/);
+    assert.match(sa.text, /der Faktenprüfung nicht übergeben/);
     assert.deepEqual(h.persisted, [{ status: 'unavailable', retryCount: 0, mode: 'enforce' }]);
   });
 
