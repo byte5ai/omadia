@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the Conductor routes the default Teams bot like chat does
+
+2026-10-07 — Three runs of the workflow `test-teams` failed at their entry
+step: "addressed bot '28:737c6ddd-…' resolves to no active Agent". That bot is
+the deployment's configured default bot; chat routed it to the active
+`fallback` agent, but the Conductor looked only at provisioned identities —
+and its `say` step could not have spoken back through it either
+(`no_identity`). Both directions now go through
+`src/conductor/channelBotOwnership.ts`: a provisioned owner first, an
+unavailable provisioned owner refused, the configured default bot
+(`microsoft_app_id` of the Microsoft 365 integration, else `MICROSOFT_APP_ID`)
+to the binding of the run’s conversation, then its own binding, then the
+fallback — as chat routes it — and every other unknown bot refused. The bot key
+is compared lowercased, as stored.
 ### Fixed — a withheld answer says why, and only what is true
 
 2026-10-07 — In production (v0.170.0) three Teams answers withheld for missing
