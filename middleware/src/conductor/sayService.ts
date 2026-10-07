@@ -31,13 +31,15 @@ import type { EphemeralAttachment } from './ephemeralAttachmentsStore.js';
 export const SAY_TEXT_MAX_CHARS = 4000;
 
 /**
- * Resolves the provisioned channel identity an agent speaks as — its OWN bot.
- * Backed by `OrchestratorRegistry.channelIdentityFor`. Absent (no registry)
- * means no agent can be shown to own an identity, and every say is refused.
+ * Resolves the channel identity an agent speaks as — its OWN bot, or the
+ * configured default bot when that routes to this agent in this conversation
+ * (`channelBotOwnership.speakingIdentityFor`). Absent (no registry) means no
+ * agent can be shown to own an identity, and every say is refused.
  */
 export type AgentChannelIdentityResolver = (
   agentSlug: string,
   channelType: string,
+  conversationId?: string,
 ) => { channelKey: string } | undefined;
 
 export interface ConductorSayInput {
@@ -142,7 +144,7 @@ export class ConductorSayService {
     const provider = this.deps.providers.get(input.channelType);
     if (!provider?.sendTyping) return () => undefined;
 
-    const identity = this.deps.identityFor?.(input.agentSlug, input.channelType);
+    const identity = this.deps.identityFor?.(input.agentSlug, input.channelType, input.conversationId);
     if (!identity) return () => undefined;
 
     const tick = (): void => {
@@ -232,7 +234,7 @@ export class ConductorSayService {
     // avatar, and nobody in the chat can tell. Prefixing the text with a name
     // is not a fix — it is a second, weaker claim next to the sender the chat
     // actually shows. So a missing identity is a refusal, not a degradation.
-    const identity = this.deps.identityFor?.(input.agentSlug, input.channelType);
+    const identity = this.deps.identityFor?.(input.agentSlug, input.channelType, input.conversationId);
     if (!identity) {
       return {
         said: false,

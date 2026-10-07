@@ -1858,6 +1858,28 @@ Nachzug hier). UI: Chain-Status-Karte auf `/operator/receipts`. Doku +
 Tamper-Demo: `docs/provenance-verification.md`. Tests:
 `test/provenanceVerify.test.ts` (inkl. Offline-Verifier via spawnSync).
 
+### Conductor: angesprochener Bot ↔ Agent (Standard-Teams-Bot, 2026-10-07)
+
+Ein über einen Kanal gestarteter Lauf (`teams.*`-Event) bindet jeden
+Agent-Schritt an den Bot, den die Person angeschrieben hat
+(`assertChannelOriginAllows`, `src/conductor/realStepEffects.ts`), und ein
+`say`-Schritt spricht als der Bot, der dieser Agent ist (`ConductorSayService`).
+Beide Richtungen beantwortet **ein** Modul, `src/conductor/channelBotOwnership.ts`:
+
+- `resolveAddressedBot`: provisionierte Identität (`agent_teams_identities`)
+  zuerst; gehört der Bot einem nicht aktiven Agenten → verweigert
+  (`identity-unavailable`, nie der Fallback); der **ausdrücklich konfigurierte
+  Standard-Bot** → wie im Chat zuerst die Bindung der Konversation des Laufs,
+  dann die des Bots, dann Plattform-Fallback (`resolveByChannel`); jeder andere unbekannte Bot → verweigert. Schlüssel
+  werden wie gespeichert kleingeschrieben verglichen (`28:<appId>`).
+- `speakingIdentityFor`: eigene Identität, sonst der Standard-Bot — nur für
+  genau den Agenten, auf den er in dieser Konversation auflöst.
+
+Der Standard-Bot kommt aus `wireConductor({ defaultChannelBotKey })`, in
+`src/index.ts` pro Aufruf gelesen: `microsoft_app_id` der
+Microsoft-365-Integration, sonst `MICROSOFT_APP_ID`. Ohne ihn gilt das alte
+Verhalten (nur provisionierte Bots).
+
 ### Conductor Ephemeral/JIT-Workflows (#330 Workstream A)
 
 Agent-generierte, run-scoped Workflows: `conductor_workflows.origin`
