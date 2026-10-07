@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Security — `@modelcontextprotocol/sdk` 1.32.1 (GHSA-6qxp-vccf-f47h)
+
+2026-10-07 — The MCP TypeScript SDK's OAuth client before 1.31.0 could send
+credentials to an authorization server chosen by the MCP server (high). It is
+a production dependency of the middleware and `@omadia/orchestrator`; both
+manifests now require `^1.31.0`, the lock resolves 1.32.1 and moves nothing
+else. This was the advisory that turned the audit gate red on every PR.
+
 ### Added — the memory browser shows member groups
 
 2026-10-06 — The operator memory browser (`/memory`) lists the `members` notes
