@@ -27,7 +27,7 @@ let baseUrl: string;
 let captured: Captured | undefined;
 let respond: (res: ServerResponse) => void;
 const savedEnv = process.env.MIDDLEWARE_URL;
-const savedTrustProto = process.env.WEB_UI_TRUST_FORWARDED_PROTO;
+const savedPublicScheme = process.env.WEB_UI_PUBLIC_SCHEME;
 
 function ctx(path: string[]) {
   return { params: Promise.resolve({ path }) };
@@ -55,8 +55,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise((resolve) => server.close(resolve));
   process.env.MIDDLEWARE_URL = savedEnv;
-  if (savedTrustProto === undefined) delete process.env.WEB_UI_TRUST_FORWARDED_PROTO;
-  else process.env.WEB_UI_TRUST_FORWARDED_PROTO = savedTrustProto;
+  if (savedPublicScheme === undefined) delete process.env.WEB_UI_PUBLIC_SCHEME;
+  else process.env.WEB_UI_PUBLIC_SCHEME = savedPublicScheme;
 });
 
 afterEach(() => {
@@ -135,27 +135,51 @@ describe('createMiddlewareProxy', () => {
     expect(res.headers.getSetCookie()).toEqual(['auth=jwt; HttpOnly', 'flags=1; Path=/']);
   });
 
-  it("replaces the client's x-forwarded-proto with this hop's own (#1310)", async () => {
-    // The browser used to pick this value, and the middleware believed it —
-    // deciding the `Secure` flag on the session cookie it then minted for that
-    // same browser. The header is this proxy's statement about the connection
-    // it accepted, so the handler makes it.
+  /**
+   * #1310 — the browser used to pick `x-forwarded-proto`, and the middleware
+   * believed it, deciding the `Secure` flag on the session cookie it then
+   * minted for that same browser.
+   *
+   * These cases send the forged header on an `https://` request URL on purpose.
+   * That combination is what a derived implementation gets wrong and still
+   * looks right: next builds the URL's protocol from this very header, so
+   * `req.nextUrl.protocol` is the browser's value, and a test that only
+   * asserted "URL scheme wins" would pass against the bug. The assertion is
+   * that NEITHER input reaches the middleware — only the declaration does.
+   */
+  const forged = { 'x-forwarded-proto': 'https' } as const;
+
+  it("ignores the client's x-forwarded-proto AND the request URL by default", async () => {
     process.env.MIDDLEWARE_URL = baseUrl;
-    delete process.env.WEB_UI_TRUST_FORWARDED_PROTO;
+    delete process.env.WEB_UI_PUBLIC_SCHEME;
     const proxy = createMiddlewareProxy('/api');
-    const req = new NextRequest('http://web-ui.local/bot-api/v1/auth/login/local', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-forwarded-proto': 'https' },
-      body: '{}',
-    });
-    await proxy(req, ctx(['v1', 'auth', 'login', 'local']));
+    await proxy(
+      new NextRequest('https://web-ui.local/bot-api/v1/auth/login/local', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...forged },
+        body: '{}',
+      }),
+      ctx(['v1', 'auth', 'login', 'local']),
+    );
 
     expect(captured?.headers['x-forwarded-proto']).toBe('http');
   });
 
-  it('keeps the incoming x-forwarded-proto when the operator trusts its edge', async () => {
+  it('states https when the operator declared this hop is behind TLS', async () => {
     process.env.MIDDLEWARE_URL = baseUrl;
-    process.env.WEB_UI_TRUST_FORWARDED_PROTO = 'true';
+    process.env.WEB_UI_PUBLIC_SCHEME = 'https';
+    const proxy = createMiddlewareProxy('/api');
+    await proxy(
+      new NextRequest('http://web-ui.local/bot-api/v1/ping'),
+      ctx(['v1', 'ping']),
+    );
+
+    expect(captured?.headers['x-forwarded-proto']).toBe('https');
+  });
+
+  it('relays the incoming value only under trust-header, first value only', async () => {
+    process.env.MIDDLEWARE_URL = baseUrl;
+    process.env.WEB_UI_PUBLIC_SCHEME = 'trust-header';
     const proxy = createMiddlewareProxy('/api');
     await proxy(
       new NextRequest('http://web-ui.local/bot-api/v1/ping', {
@@ -167,13 +191,30 @@ describe('createMiddlewareProxy', () => {
     expect(captured?.headers['x-forwarded-proto']).toBe('https');
   });
 
-  it("states this hop's scheme even when the client sent no such header", async () => {
+  it('falls back to http under trust-header when the value is junk or absent', async () => {
     process.env.MIDDLEWARE_URL = baseUrl;
-    delete process.env.WEB_UI_TRUST_FORWARDED_PROTO;
+    process.env.WEB_UI_PUBLIC_SCHEME = 'trust-header';
     const proxy = createMiddlewareProxy('/api');
-    await proxy(new NextRequest('https://web-ui.local/bot-api/v1/ping'), ctx(['v1', 'ping']));
+    await proxy(
+      new NextRequest('https://web-ui.local/bot-api/v1/ping', {
+        headers: { 'x-forwarded-proto': 'gopher' },
+      }),
+      ctx(['v1', 'ping']),
+    );
 
-    expect(captured?.headers['x-forwarded-proto']).toBe('https');
+    expect(captured?.headers['x-forwarded-proto']).toBe('http');
+  });
+
+  it('treats an unrecognised declaration as http rather than guessing', async () => {
+    process.env.MIDDLEWARE_URL = baseUrl;
+    process.env.WEB_UI_PUBLIC_SCHEME = 'maybe';
+    const proxy = createMiddlewareProxy('/api');
+    await proxy(
+      new NextRequest('https://web-ui.local/bot-api/v1/ping', { headers: forged }),
+      ctx(['v1', 'ping']),
+    );
+
+    expect(captured?.headers['x-forwarded-proto']).toBe('http');
   });
 
   it('maps /p/* without the /api prefix', async () => {

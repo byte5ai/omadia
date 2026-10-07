@@ -1,12 +1,13 @@
 /**
- * `TRUSTED_PROXY_ADDRESSES` — which hops may speak for the client (#1310,
+ * `TRUSTED_PROXY_ADDRESSES` and `PUBLIC_SCHEME` — who may speak for the client,
+ * and what scheme clients reach us over (#1310,
  * docs/security-architecture.md §10o).
  *
  * The parser's job is narrow but load-bearing: it is what stands between
  * `app.set('trust proxy', …)` and the old `true`. The case that matters most
  * is the rejection of a hop COUNT, because a count reads like the obvious fix
  * and is not one — Express counts the immediate peer as a trusted hop, so `1`
- * believes a client that connects directly. `test/auth/cookieSecure.test.ts`
+ * believes a client that connects directly. `test/http/cookieSecure.test.ts`
  * pins the behaviour that rejection protects.
  */
 
@@ -15,10 +16,12 @@ import { describe, it } from 'node:test';
 
 import {
   describeTrustedProxies,
+  isPublicSchemeMode,
   isTrustedProxyList,
   MAX_TRUSTED_PROXIES,
   parseTrustedProxies,
-} from '../../src/auth/trustedProxies.js';
+  PUBLIC_SCHEME_MODES,
+} from '../../src/http/requestTrust.js';
 
 describe('parseTrustedProxies — trust nothing by default', () => {
   it('reads an unset, empty or whitespace value as trusting no hop', () => {
@@ -110,5 +113,22 @@ describe('describeTrustedProxies — the boot log line', () => {
       describeTrustedProxies(parseTrustedProxies('10.1.2.3, loopback')),
       '10.1.2.3,loopback',
     );
+  });
+});
+
+describe('isPublicSchemeMode — the config schema refinement', () => {
+  it('accepts exactly the three modes, trimmed', () => {
+    assert.deepEqual([...PUBLIC_SCHEME_MODES], ['auto', 'https', 'http']);
+    for (const raw of ['auto', 'https', 'http', ' auto ', 'https  ']) {
+      assert.equal(isPublicSchemeMode(raw), true, raw);
+    }
+  });
+
+  it('rejects anything else, so a typo is a boot error and not a silent default', () => {
+    // `always`/`never` were this setting's first spelling; a stale .env must
+    // fail loudly rather than fall through to `auto` and drop the Secure flag.
+    for (const raw of ['always', 'never', 'true', 'HTTPS', 'wss', '', 'maybe']) {
+      assert.equal(isPublicSchemeMode(raw), false, JSON.stringify(raw));
+    }
   });
 });

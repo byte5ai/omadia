@@ -23,22 +23,36 @@ import type { NextRequest } from 'next/server';
 /**
  * `X-Forwarded-Proto` is the proxy's statement about the connection IT
  * accepted, so it is this handler's to make, not the browser's to pass
- * through (#1310, security-architecture §10o). Relaying the client's value
- * let a browser decide the scheme the middleware believed, and with it the
- * `Secure` flag on its own session cookie — the middleware now trusts this
- * hop and would have trusted a forged value with it.
+ * through (#1310, security-architecture §10o). Relaying the client's value let
+ * a browser decide the scheme the middleware believed, and with it the `Secure`
+ * flag on its own session cookie — the middleware trusts this hop where an
+ * operator names it, and would have trusted a forged value with it.
  *
- * `WEB_UI_TRUST_FORWARDED_PROTO=true` keeps the incoming header instead, for a
- * web-ui that is itself behind a TLS-terminating edge (Fly, a platform
- * ingress) which sets it. OFF by default: on a web-ui the browser reaches
- * directly, the incoming value is the browser's own.
+ * `WEB_UI_PUBLIC_SCHEME` is a DECLARATION, not a derivation, because a Route
+ * Handler cannot observe its own TLS state. There is no socket on
+ * `NextRequest`, and `req.nextUrl.protocol` is no help: next builds the request
+ * URL's protocol FROM the very header in question
+ * (`next/dist/server/next-server.js`: `req.headers['x-forwarded-proto']
+ * ?.includes('https') ? 'https' : 'http'`, with `base-server.js` only
+ * `??=`-defaulting it when absent). Deriving from it would launder the
+ * browser's value straight back in — and a test built with
+ * `new NextRequest('https://…')` would not notice, because that sets the URL
+ * literally.
+ *
+ *   http          (the default) this hop accepted plain HTTP. Right wherever
+ *                 the browser reaches the web-ui directly — the compose stack.
+ *   https         this hop sits behind a TLS-terminating edge. Fly, Render.
+ *   trust-header  relay the incoming value; the operator asserts that only a
+ *                 trusted edge can set it.
  */
-function forwardedProto(req: NextRequest): string {
-  if (process.env['WEB_UI_TRUST_FORWARDED_PROTO'] === 'true') {
+function forwardedProto(req: NextRequest): 'http' | 'https' {
+  const declared = process.env['WEB_UI_PUBLIC_SCHEME']?.trim().toLowerCase();
+  if (declared === 'https' || declared === 'http') return declared;
+  if (declared === 'trust-header') {
     const inbound = req.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
-    if (inbound) return inbound;
+    if (inbound === 'https' || inbound === 'http') return inbound;
   }
-  return req.nextUrl.protocol.replace(':', '');
+  return 'http';
 }
 
 /** Hop-by-hop headers never travel through a proxy (RFC 9110 §7.6.1). */

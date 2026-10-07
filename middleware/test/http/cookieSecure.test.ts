@@ -2,15 +2,17 @@
  * The `Secure` flag on the auth cookies (#1310, docs/security-architecture.md
  * §10o).
  *
- * The defect these lock down: `isSecureContext` read `x-forwarded-proto`
- * straight off the request, so the sender decided whether its own session and
- * login-device cookies were marked TLS-only — `Secure` on a plain-HTTP login
- * that sent the header, and no `Secure` behind a TLS proxy that did not.
+ * The defect these lock down: the cookie writers' `secure:` came from
+ * `x-forwarded-proto` read straight off the request, so the sender decided
+ * whether its own cookies were marked TLS-only — `Secure` on a plain-HTTP
+ * login that sent the header, and no `Secure` behind a TLS proxy that did not.
  *
  * Every case drives a REAL express listener over a real plain-HTTP connection,
  * because the property under test is Express's own `trust proxy` evaluation
  * and a hand-built `Request` double cannot exercise it. The reporter's repro
- * is the first case, reduced to the two cookie writers.
+ * is the first case. All three writers the report names are driven, the OIDC
+ * PKCE cookie included: they share one helper, and a test per writer is what
+ * keeps a future fourth from quietly opting out of it.
  *
  * The second case is the half a hop count cannot express. Express counts
  * trusted hops from the server INCLUDING the immediate peer, so `1` would
@@ -30,16 +32,17 @@ import {
   setLoginDeviceCookie,
 } from '../../src/auth/loginDeviceCookie.js';
 import { SESSION_COOKIE } from '../../src/auth/requireAuth.js';
-import {
-  COOKIE_SECURE_SETTING,
-  SESSION_WINDOW_S,
-  setSessionCookie,
-  type CookieSecureMode,
-} from '../../src/auth/sessionCookie.js';
+import { SESSION_WINDOW_S, setSessionCookie } from '../../src/auth/sessionCookie.js';
 import {
   parseTrustedProxies,
+  PUBLIC_SCHEME_SETTING,
+  requestIsSecure,
+  type PublicSchemeMode,
   type TrustedProxySetting,
-} from '../../src/auth/trustedProxies.js';
+} from '../../src/http/requestTrust.js';
+
+/** `pkceCookieNameFor('entra')` — the shape `routes/auth.ts` writes. */
+const PKCE_COOKIE = 'omadia_pkce_entra';
 
 const closers: (() => Promise<void>)[] = [];
 
@@ -50,25 +53,34 @@ after(async () => {
 interface AppOptions {
   /** `TRUSTED_PROXY_ADDRESSES`, in its env spelling. */
   readonly trustedProxies?: string;
-  /** `AUTH_COOKIE_SECURE`; omitted = the app sets none, i.e. the `auto` default. */
-  readonly cookieSecure?: CookieSecureMode;
+  /** `PUBLIC_SCHEME`; omitted = the app sets none, i.e. the `auto` default. */
+  readonly publicScheme?: PublicSchemeMode;
 }
 
 /**
- * The boot wiring of `src/index.ts`, reduced to the two cookie writers: the
- * same `trust proxy` value and the same app setting, so what the login path
- * does to a cookie is what these cases see.
+ * The boot wiring of `src/index.ts`: the same `trust proxy` value and the same
+ * app setting, so what the login path does to a cookie is what these cases see.
  */
 function buildApp(opts: AppOptions = {}): Express {
   const app = express();
   const trusted: TrustedProxySetting = parseTrustedProxies(opts.trustedProxies ?? '');
   app.set('trust proxy', trusted);
-  if (opts.cookieSecure !== undefined) {
-    app.set(COOKIE_SECURE_SETTING, opts.cookieSecure);
+  if (opts.publicScheme !== undefined) {
+    app.set(PUBLIC_SCHEME_SETTING, opts.publicScheme);
   }
   app.post('/login', (req, res) => {
     setSessionCookie(req, res, 'session-token', SESSION_WINDOW_S);
     setLoginDeviceCookie(req, res, 'v3.device.cookie.value.tag');
+    // The OIDC PKCE cookie (`routes/auth.ts`) is written inline there rather
+    // than through a helper, so it is reproduced inline here — same attributes,
+    // same `requestIsSecure` call, so a drift in either shows up.
+    res.cookie(PKCE_COOKIE, 'pending-state', {
+      httpOnly: true,
+      secure: requestIsSecure(req),
+      sameSite: 'lax',
+      maxAge: 600_000,
+      path: '/',
+    });
     res.status(204).end();
   });
   return app;
@@ -109,7 +121,7 @@ function hasSecure(line: string): boolean {
 }
 
 function assertSecureFlags(lines: string[], expected: boolean): void {
-  for (const name of [SESSION_COOKIE, LOGIN_DEVICE_COOKIE]) {
+  for (const name of [SESSION_COOKIE, LOGIN_DEVICE_COOKIE, PKCE_COOKIE]) {
     const line = cookie(lines, name);
     assert.equal(
       hasSecure(line),
@@ -186,18 +198,18 @@ describe('auth cookie Secure — a trusted hop can set it', () => {
   });
 });
 
-describe('AUTH_COOKIE_SECURE — the operator override', () => {
-  it("`always` marks both cookies Secure behind a proxy that sets no header", async () => {
+describe('PUBLIC_SCHEME — the operator declaration', () => {
+  it('`https` marks every auth cookie Secure behind a proxy that sets no header', async () => {
     // The failure mode narrowing `trust proxy` cannot reach: TLS is terminated
     // upstream, the proxy says nothing, and the connection here is plain HTTP.
-    const lines = await login(buildApp({ cookieSecure: 'always' }));
+    const lines = await login(buildApp({ publicScheme: 'https' }));
 
     assertSecureFlags(lines, true);
   });
 
-  it('`never` marks neither, even on a header from a trusted hop', async () => {
+  it('`http` marks none of them, even on a header from a trusted hop', async () => {
     const lines = await login(
-      buildApp({ trustedProxies: 'loopback', cookieSecure: 'never' }),
+      buildApp({ trustedProxies: 'loopback', publicScheme: 'http' }),
       { 'x-forwarded-proto': 'https' },
     );
 
@@ -205,7 +217,7 @@ describe('AUTH_COOKIE_SECURE — the operator override', () => {
   });
 
   it('`auto` is the default an app that sets nothing gets', async () => {
-    const explicit = await login(buildApp({ cookieSecure: 'auto' }), {
+    const explicit = await login(buildApp({ publicScheme: 'auto' }), {
       'x-forwarded-proto': 'https',
     });
     const implicit = await login(buildApp(), { 'x-forwarded-proto': 'https' });

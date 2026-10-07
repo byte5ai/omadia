@@ -67,12 +67,15 @@ services:
       # Request trust boundary (#1310, docs/security-architecture.md §10o).
       # Both services are published on 127.0.0.1 over plain HTTP, so the
       # defaults are right as they stand: TRUSTED_PROXY_ADDRESSES is empty (no
-      # hop may set X-Forwarded-Proto) and AUTH_COOKIE_SECURE is `auto`, which
-      # leaves the auth cookies without Secure — correct, because a browser
-      # would discard a Secure cookie served over http://127.0.0.1. Put a
-      # TLS-terminating proxy in front and you set both: its address (or
-      # `loopback` when it runs on this host), and AUTH_COOKIE_SECURE=always if
-      # it sets no X-Forwarded-Proto. See middleware/.env.example.
+      # hop may set X-Forwarded-Proto) and PUBLIC_SCHEME is `auto`, which leaves
+      # the auth cookies without Secure — correct, because a browser would
+      # discard a Secure cookie served over http://127.0.0.1. The web-ui proxy
+      # in front is NOT a trusted hop here, deliberately: it declares
+      # WEB_UI_PUBLIC_SCHEME (default http) rather than relaying the browser's
+      # header, so nothing it forwards needs trusting. Put a TLS-terminating
+      # proxy in front of the stack and you set its address here (or `loopback`
+      # when it runs on this host), plus PUBLIC_SCHEME=https if it sets no
+      # X-Forwarded-Proto. See middleware/.env.example.
       # Vault master key. The shipped image bakes `NODE_ENV=production`
       # (see Dockerfile), which would normally make the middleware refuse
       # to boot without VAULT_KEY set — by design, because the dev

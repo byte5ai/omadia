@@ -11,11 +11,11 @@ primary_region = "fra"
   image = "ghcr.io/byte5ai/omadia-web-ui:latest"
 
 [env]
-  # The /bot-api proxy states X-Forwarded-Proto from the connection it accepted
-  # and drops the browser's value (#1310, §10o). Here the connection it accepts
-  # is Fly Proxy's plain-HTTP hop, and Fly's edge is what terminated TLS and set
-  # the header — so this deployment keeps the incoming value.
-  WEB_UI_TRUST_FORWARDED_PROTO = "true"
+  # The /bot-api proxy states X-Forwarded-Proto itself and drops the browser's
+  # value (#1310, §10o). A Route Handler cannot observe its own TLS — next
+  # derives the request URL's protocol from that same header — so the scheme is
+  # declared. Fly's edge terminates TLS with force_https, so: https.
+  WEB_UI_PUBLIC_SCHEME = "https"
 
 [http_service]
   internal_port = 3000

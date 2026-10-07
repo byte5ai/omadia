@@ -36,6 +36,37 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — auth cookies and pairing URLs take their scheme from the connection (#1310)
+
+2026-10-07 — `isSecureContext` read `x-forwarded-proto` straight off the
+request, and `trust proxy` was `true`, so the sender of a request chose whether
+its own session, login-device and OIDC PKCE cookies were marked `Secure`:
+`Secure` on a plain-HTTP login that sent the header, none behind a TLS proxy
+that did not. Reported against v0.168.4. `requestIsSecure`
+(`middleware/src/http/requestTrust.ts`) now reads `req.secure`.
+
+A hop count is not the fix, which is why the new `TRUSTED_PROXY_ADDRESSES`
+takes addresses and refuses a bare number at boot: Express counts trusted hops
+from the server *including the immediate peer*, so `1`, `2` and `'loopback'`
+all still believe a forged header from a direct client. Default is empty —
+trust no hop.
+
+`PUBLIC_SCHEME` (`auto` | `https` | `http`) is the half narrowing cannot
+supply: a proxy that terminates TLS and sets no header leaves `req.secure`
+false under every `trust proxy` value. One setting rather than a cookie flag,
+because the pairing descriptor's `https`/`wss` URLs ride on the same question —
+a `ws://` URL on an HTTPS page is blocked as mixed content. `resolveScheme` and
+`@omadia/ui-channel`'s `absoluteCanvasWsUrl` read it too; `X-Forwarded-Host`
+is unchanged.
+
+The web-ui `/bot-api` proxy states `X-Forwarded-Proto` from its own declared
+`WEB_UI_PUBLIC_SCHEME` instead of relaying the browser's. It cannot derive it:
+a Next Route Handler has no socket, and `req.nextUrl.protocol` is built by next
+from that same header. Fly and Render declare `https`; the compose stack keeps
+the plain-HTTP defaults. Migration and a `curl` check: `docs/upgrading.md`,
+"Upgrading past v0.168.4". Trust boundary and the measured `trust proxy` table:
+`docs/security-architecture.md` §10o.
+
 ### Added — the memory browser shows member groups
 
 2026-10-06 — The operator memory browser (`/memory`) lists the `members` notes
