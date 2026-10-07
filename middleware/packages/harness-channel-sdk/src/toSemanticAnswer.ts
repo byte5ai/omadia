@@ -15,6 +15,7 @@ import {
   applyAiDisclosure,
   type ApplyAiDisclosureContext,
 } from './aiDisclosure.js';
+import { stripCitationMarkers } from './citationMarkers.js';
 
 /** Claims the verifier confirmed: every claim it neither found contradicted
  *  nor left unconfirmed. */
@@ -326,7 +327,9 @@ export function toSemanticAnswer(
   // empty) pre-question prose and give the user NO indication that a named
   // server is blocked waiting for input. So the prompt is also folded into
   // `text`, which every connector MUST render.
-  const baseText = withMcpInputPrompt(r.answer, r.pendingMcpInput);
+  // #131 — the `[ref:…]` markers the verifier checked are not for the reader;
+  // removed here, the one text every connector renders.
+  const baseText = withMcpInputPrompt(stripCitationMarkers(r.answer), r.pendingMcpInput);
 
   // #643 (epic #642) — AI-Act Art. 50 disclosure. Fold the harness-owned
   // marking into `text` (the one field every connector renders) and forward the

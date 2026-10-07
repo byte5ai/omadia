@@ -1060,7 +1060,11 @@ export function MessageRow({
               />
             )}
             {message.verifierBlocked && (
-              <VerifierBlockedNotice hasAnswerText={delegatedNote.length > 0} />
+              <VerifierBlockedNotice
+                hasAnswerText={delegatedNote.length > 0}
+                cause={message.verifier?.withheldCause}
+                contradictionCount={message.verifier?.contradictionCount}
+              />
             )}
             {delegatedNote.length > 0 ? (
               /* §2.7: agent narration renders in the prose register

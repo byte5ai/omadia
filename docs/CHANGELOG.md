@@ -50,6 +50,57 @@ unavailable provisioned owner refused, the configured default bot
 to the binding of the run’s conversation, then its own binding, then the
 fallback — as chat routes it — and every other unknown bot refused. The bot key
 is compared lowercased, as stored.
+### Fixed — a withheld answer says why, and only what is true
+
+2026-10-07 — In production (v0.170.0) three Teams answers withheld for missing
+`[ref:…]` markers told the user "Die Faktenprüfung hat einen Widerspruch
+gefunden". No source had contradicted anything: `citation_missing`, the
+failure-replay check and the Odoo missing-call check are all built as
+`contradicted` verdicts, and the summary counted every contradicted claim as a
+contradiction. A fourth answer claimed "kein Zugriff" without a single tool
+call.
+
+The decision to withhold (and the correction retry) is unchanged. What changed
+is the cause it is reported under. A contradicted verdict carries a `basis`
+(`ContradictionBasis`); the summary carries `withheldCause` (`contradicted`,
+`tool_not_called`, `citation_missing`, `insufficient_evidence`,
+`check_failed`, `not_checked`), and only `basis: 'evidence'` counts in
+`contradictionCount` or earns the `failed` badge (no "Verifier-Widerspruch"
+chip in Teams). The notice (`composeVerifierBlockedText`, DE/EN) and the web
+UI's withheld card (`chat.verifierBlocked.cause.*`) say the cause and a next
+step. A claim of a missing or denied access now needs a call in the turn that
+actually failed (`failedToolsCalled`), not just any call; an honest "konnte …
+nicht finden" after a search that ran is still released. Without any call the
+cause is `tool_not_called`; with calls but no failed one it is
+`insufficient_evidence`. The correction hint
+no longer opens with "Widersprüche erkannt", and a live-data claim without
+its fetching call goes under "Live-Daten nicht abgerufen", not "widerlegt".
+The withhold log line names the cause and each claim's id and basis.
+
+### Fixed — citation correction works with the first run's graph results
+
+2026-10-07 — All three correction retries above were abandoned: their
+`query_knowledge_graph` call differed from the first run's, and the replay
+ledger treated the graph tool as a write. #1102 gave the kernel's full-form
+natives a handler, and `replayClassOf` checked "has a handler ⇒ write" before
+the read-only branch, so `find_free_slots` was a write too and
+`ask_user_choice` / `suggest_follow_ups` lost their turn-local class. Kernel
+natives are now told apart from plugin tools by spec identity.
+
+Citations must name evidence the turn actually retrieved. The run-trace
+collector keeps the `id` / `turnId` values the graph results showed the model
+— orchestrator and sub-agent calls, replayed or not — beside the payload
+(`knowledgeGraphRefsOf`, a WeakMap), so they never reach the stream, routine
+runs or `ingestRun`. A marker that names none of them withholds as
+`insufficient_evidence`; a graph that returned nothing citable demands no
+marker (but still rejects one that names a source). The marker regex accepts real ids with `:` and `.`
+(`turn:<scope>:<ISO time>`, `odoo:res.partner:42`) — it only accepted
+`[\w-]`, so a correctly cited answer still failed. `session_summary` now
+returns each turn's `turnId`. The Citation-Guard prompt and the correction
+hint point at the real fields and tell the model to repeat its first-run
+queries, which are answered from the stored results. `toSemanticAnswer` now
+strips the markers for every connector (Teams never did); the web UI's
+stripper takes the same id shape.
 ### Security — `@modelcontextprotocol/sdk` 1.32.1 (GHSA-6qxp-vccf-f47h)
 
 2026-10-07 — The MCP TypeScript SDK's OAuth client before 1.31.0 could send

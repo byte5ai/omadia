@@ -3977,6 +3977,22 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   Hatte der Turn die KI-Kennzeichnung in `done.answer` gefaltet (erster Turn
   des Scopes), trägt die Notiz in `done.answer` denselben Block — nie im
   Delta.
+  **Die Notiz nennt die tatsächliche Ursache** (`summary.withheldCause`,
+  abgeleitet aus den Claims in `withheldCauseOf`, nie aus dem Status):
+  `contradicted` (eine Prüfung hat eine Angabe gegen die Quelle widerlegt —
+  der einzige Fall, der „Widerspruch“ heißen darf), `tool_not_called`
+  (Live-Daten, Fehler oder Zugriffsproblem behauptet, ohne dass der Turn den
+  nötigen Aufruf gemacht hat), `citation_missing` (Graph-Ergebnisse genutzt,
+  keine Quelle genannt), `insufficient_evidence` (nicht belegt: unbestätigte
+  Claims, erfundene `[ref:…]`, ein Zugriffsproblem ohne fehlgeschlagenen
+  Aufruf), `check_failed` (technische Störung: Verifier, Prüfung oder
+  ungültiges Tool-Ergebnis), `not_checked` (Privacy Shield, nie an den
+  Verifier). Ein `contradicted`-Verdict trägt dafür `basis`
+  (`ContradictionBasis`); `contradictionCount` und Badge `failed` zählen nur
+  `basis: 'evidence'`, alle anderen Rückhalte zählen als `unverifiedCount`.
+  Die Entscheidung zurückzuhalten (und der Korrektur-Retry) bleibt
+  unverändert. Supportdiagnose: Logzeile `answer withheld … cause=… claims=<id>:<basis>`
+  (`withheldLogLine`, nur Claim-IDs und Codes, nie Claim-Text).
 - **Ohne Urteil freigegeben:** `pendingUserChoice`, `pendingMcpInput`,
   `pendingSlotCard`, `pendingOAuthConsent`, `degraded` mit der
   Turn-Incomplete-Notiz, die Datenschutz-Absage (`PROMPT_MASK_BLOCKED_ANSWER`)

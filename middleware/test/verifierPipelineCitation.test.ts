@@ -197,7 +197,7 @@ describe('verifier/correctionPrompt — citation_missing section (#131)', () => 
     const prompt = buildCorrectionPrompt(verdict);
     assert.ok(prompt);
     assert.match(prompt, /## Fehlende Citations/);
-    assert.match(prompt, /\[ref:<nodeId>\]/);
+    assert.match(prompt, /\[ref:<id>\]/);
     assert.doesNotMatch(prompt, /## Tool-Output nicht spec-konform/);
     assert.doesNotMatch(prompt, /## Falsche \/ widerlegte Daten/);
   });
