@@ -2596,7 +2596,11 @@ Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` 
      zerlegt deshalb per NFKD, wirft kombinierende Zeichen weg, schreibt klein und faltet
      ı zu i und ς zu σ; keine Schreibweise einer Adresse bekommt ein zweites Budget.
      `LocalPasswordProvider` meldet nur ein Konto an, dessen gespeicherte Adresse auf
-     denselben Schlüssel faltet.
+     denselben Schlüssel faltet. Jeder Fehlschlag ohne richtiges Passwort antwortet
+     gleich: `invalid_credentials` nach genau einem argon2-Lauf, auch für ein
+     deaktiviertes Konto. `auth.user_disabled` kommt erst, nachdem das Passwort
+     stimmte (#1311, `security-architecture.md` §10m „One failure code“); die
+     Login-Seite zeigt dafür `login.accountDisabled`.
    - **Global**: höchstens `AUTH_LOGIN_MAX_INFLIGHT` argon2-Läufe gleichzeitig und ein
      Leaky Bucket, der 300 zugelassene Versuche pro Minute abfließen lässt → 503
      `auth.busy`. Ohne Geräte-Cookie gibt es höchstens alle Slots bis auf einen und den
@@ -4526,9 +4530,6 @@ Adapter falsch konfiguriert ist. Offen:
   beim Start einen neuen). Der Vault ist eine verschlüsselte Datei; einen einzelnen
   Eintrag zu ersetzen oder zu löschen, geht heute nur mit eigenem Code. Ein
   Admin-Kommando dafür fehlt.
-- **`user_disabled` vor der Passwortprüfung.** `LocalPasswordProvider` antwortet für ein
-  deaktiviertes Konto mit `auth.user_disabled`, bevor es das Passwort prüft. Der Status
-  eines Kontos ist damit ohne Passwort ablesbar.
 - **Setup-Seite: 503 `auth.busy` übersetzen.** `/setup` antwortet 503 `auth.busy`, wenn
   kein argon2-Slot frei ist. Die Login-Seite zeigt dafür „bitte N Sekunden warten“, die
   Setup-Seite (`web-ui/app/setup/page.tsx`) zeigt noch die rohe Fehlermeldung.

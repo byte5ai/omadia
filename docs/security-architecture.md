@@ -4754,6 +4754,26 @@ and the device reserve are constants in `loginRateLimiter.ts`. The boot logs
 in-flight=…)`. A router built without the limiter dependency builds its own
 with the defaults, so a forgotten wiring cannot switch it off.
 
+**One failure code, whatever the row says (#1311).** The error channel of a
+sign-in tells apart nothing an attempt did not prove. `LocalPasswordProvider`
+answers `invalid_credentials` for a malformed body, an unknown address, an
+address it may not sign in under (the fold above), a row without a hash and a
+wrong password alike, and runs one argon2 verify on each of the paths that
+reached the table — a dummy hash on the miss. `user_disabled` is the only code
+that names a row, so it comes last: the status is checked after
+`verifyPassword` returned true. Until #1311 it was checked before, which made a
+401 `auth.user_disabled` readable with any password: anyone could ask the route
+whether an address had an account and whether it was switched off, and the
+disabled path answered without argon2 at all, so it also answered faster. The
+login page hid neither for long — it showed one message for every 401, but the
+JSON body told them apart. A disabled account now costs an attacker exactly
+what an unknown one does, and the page may say "this account is disabled"
+because the code only arrives behind a correct password (`login.accountDisabled`).
+What a password-less attempt still cannot do is the point; a browser that holds
+a device cookie for the account reads its status another way (residual risks).
+The OIDC callback keeps its own status check (`routes/auth.ts`): there the IdP
+has already authenticated the user, so the reason is theirs to see.
+
 **Residual risks (accepted, documented).**
 
 - **In-memory and per process.** A restart clears every counter. With N
@@ -4800,6 +4820,15 @@ with the defaults, so a forgotten wiring cannot switch it off.
   Re-enabling an account without a reset lets its earlier cookies count
   again, all of them minted with that unchanged password. Rotating the
   session signing key ends all device cookies and all sessions at once.
+- **A device cookie still times the account's status, for whoever holds one.**
+  `usersTableEpochs` (`auth/loginDevices.ts`) answers with an epoch only for an
+  active row, so once an account is disabled its cookies stop counting and that
+  browser drops from the account's known-browser pair onto the address key — a
+  change in budget it can observe without sending a password. It is not the
+  enumeration oracle #1311 closed: a cookie takes a sign-in with the account's
+  own password, so the holder has already proved what the status would tell
+  them. The alternative, honouring cookies of a disabled account, would hand a
+  disabled account's known browsers a reserve of argon2 capacity.
 - **Accounts that fold together share their limiter state.** Two accounts
   whose addresses differ only in what the account key folds away (accents,
   compatibility forms, a combining dot, a dotless ı) share every pair, the
@@ -4872,7 +4901,13 @@ under the account key; create, reset, status change and delete drop the
 cached device epoch under the device key),
 `middleware/test/auth/localPasswordProvider.test.ts` (the length cap; no
 sign-in to an account whose address folds to another key; a success reports
-the epoch of the hash it compared, even when a reset lands meanwhile),
+the epoch of the hash it compared, even when a reset lands meanwhile; a
+disabled account answers `invalid_credentials` for a wrong password and
+`user_disabled` only for the right one, stamps no last-login either way, and
+pays argon2 on the wrong-password path as an unknown address does),
+`middleware/test/auth/loginRoute.test.ts` (the issue's repro through the
+router: the disabled account's wrong-password body equals the unknown-address
+body, and the right password answers `auth.user_disabled` with no cookie),
 `web-ui/app/login/__tests__/page.test.tsx`.
 
 ---
