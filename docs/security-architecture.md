@@ -5087,8 +5087,10 @@ from the real hop. That is a property of the deployment, not of the setting.
 - **`TRUSTED_PROXY_ADDRESSES`** (`middleware/src/http/requestTrust.ts`) is the
   `trust proxy` value: a comma-separated list of addresses, `IP/bits` blocks, or
   Express's `loopback` / `linklocal` / `uniquelocal` aliases. **Empty is the
-  default** — trust no hop, believe nothing forwarded. A bare number is refused
-  at boot, with the reason, so the trap above cannot be configured back in.
+  default** — trust no hop, believe nothing forwarded. Two spellings of the trap
+  above are refused at boot, each with its reason: a bare number, and a `/0`
+  block (`0.0.0.0/0`, `::/0`, any address with `/0`), whose zero-length prefix
+  matches every address and so is `trust proxy = true` wearing a netmask.
 - **`requestIsSecure` reads `req.secure`**, never a header. Express applies
   `X-Forwarded-Proto` for us, and only from a named hop. It replaced
   `isSecureContext`, whose name no longer fit once an operator could declare
@@ -5111,15 +5113,26 @@ from the real hop. That is a property of the deployment, not of the setting.
   (`next-server.js`: `req.headers['x-forwarded-proto']?.includes('https')`,
   with `base-server.js` only `??=`-defaulting it), so deriving would put the
   browser's value straight back. `WEB_UI_PUBLIC_SCHEME` is therefore a
-  declaration: `http` (default), `https`, or `trust-header` where the operator
-  asserts only a trusted edge can set it. In the Compose topology the web-ui is
+  declaration: `http` (default) or `https`. There is no relay mode — `https`
+  already covers a web-ui behind a TLS-terminating edge, and a relay would hand
+  the choice back to whoever can reach the hop. One helper
+  (`web-ui/app/_lib/publicScheme.ts`) serves both readers, because the web-ui
+  decides the scheme twice: here, and in the pairing descriptor it serves at
+  `/.well-known/omadia-ui` (`app/pairing-discovery/route.ts`), whose
+  `operatorOrigin` read the raw header for the browser-facing `wss://` canvas
+  URL and `https://` login base. In the Compose topology the web-ui is
   deliberately **not** a trusted hop — it declares `http`, so nothing it
   forwards needs trusting.
-- **The pairing descriptor resolves its scheme the same way**
-  (`middleware/src/pairing/discovery.ts` `resolveScheme`, and the same inline
-  logic in `@omadia/ui-channel`'s `absoluteCanvasWsUrl`). Both read raw
-  `x-forwarded-proto`, which let a client choose `https`/`wss` for the pairing
-  and login URLs it was handed. This is why `PUBLIC_SCHEME` is not a cookie-only
+- **The pairing descriptor resolves its scheme the same way, on all three
+  surfaces that serve one**: `middleware/src/pairing/discovery.ts`
+  `resolveScheme`, the same inline logic in `@omadia/ui-channel`'s
+  `absoluteCanvasWsUrl`, and the web-ui's own
+  `app/pairing-discovery/route.ts` `operatorOrigin` — the browser-facing one on
+  Fly and Render, and the one most easily missed, because the first two are
+  internal. All three read raw `x-forwarded-proto`, which let a client choose
+  `https`/`wss` for the canvas URL and login base it was handed. The kernel pair
+  follow `PUBLIC_SCHEME`; the web-ui surface follows `WEB_UI_PUBLIC_SCHEME`,
+  that process having its own declaration, so an HTTPS deployment sets both. This is why `PUBLIC_SCHEME` is not a cookie-only
   flag: on an HTTPS deployment whose edge cannot be named, a connection-only
   answer would advertise `ws://` to an HTTPS page, which the browser blocks as
   mixed content — so the operator's one declaration drives both. The channel
@@ -5169,7 +5182,12 @@ scheme mode — for all three cookie writers, the OIDC PKCE cookie included.
 that a stale `always`/`never` fails boot rather than falling through to `auto`.
 `web-ui/app/_lib/__tests__/middlewareProxy.test.ts` sends the forged header on
 an `https://` request URL, so a derived implementation fails it instead of
-passing by accident.
+passing by accident, and `app/pairing-discovery/__tests__/route.test.ts` does
+the same for the browser-facing descriptor.
+`middleware/test/uiChannelCanvasUrl.test.ts` drives the channel's registered
+route and asserts it reads the SAME app-setting key the kernel writes — the two
+literal spellings are what a rename would silently break, and the symptom would
+be a `ws://` URL on exactly the deployments that declared HTTPS.
 
 ## 11. Reviewer checklist
 

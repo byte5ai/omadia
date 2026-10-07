@@ -74,6 +74,20 @@ describe('parseTrustedProxies — rejections', () => {
     assert.throws(() => parseTrustedProxies('true'), /must be an IP/);
   });
 
+  it('rejects a /0 block — it is `trust proxy = true` wearing a netmask', () => {
+    // The hole this closes: a bare `1` was refused with a lecture while
+    // `0.0.0.0/0` sailed through and trusted every sender, silently.
+    for (const raw of ['0.0.0.0/0', '::/0', '10.1.2.3/0', '0.0.0.0/00']) {
+      assert.throws(() => parseTrustedProxies(raw), /refuses a \/0 block/, raw);
+    }
+  });
+
+  it('still accepts the narrowest real blocks either side of that', () => {
+    assert.deepEqual(parseTrustedProxies('0.0.0.0/1'), ['0.0.0.0/1']);
+    assert.deepEqual(parseTrustedProxies('10.1.2.3/32'), ['10.1.2.3/32']);
+    assert.deepEqual(parseTrustedProxies('::/1'), ['::/1']);
+  });
+
   it('rejects hostnames, junk and a malformed block', () => {
     assert.throws(() => parseTrustedProxies('proxy.internal'), /must be an IP/);
     assert.throws(() => parseTrustedProxies('10.1.2.3/33'), /must be an IP/);

@@ -94,6 +94,8 @@ describe('proxy — pairing discovery needs no session', () => {
   it('a cookie-less GET /.well-known/omadia-ui on the operator origin gets the JSON descriptor', async () => {
     vi.stubEnv('OMADIA_UI_PUBLIC_WS_URL', undefined);
     vi.stubEnv('OMADIA_UI_INSTANCE_NAME', undefined);
+    // Declared, not derived from the forwarded header below (#1310).
+    vi.stubEnv('WEB_UI_PUBLIC_SCHEME', 'https');
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       Response.json({ providers: [LOCAL_PROVIDER] }),
     );

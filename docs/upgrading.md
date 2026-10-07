@@ -360,7 +360,9 @@ What changes:
   no hop may speak for the client. **It is not a hop count** — Express counts
   the immediate peer as a trusted hop, so `1` would trust a client that
   connects directly and believe the header it wrote for itself. A bare number
-  is refused at boot.
+  is refused at boot, and neither is a `/0` block (`0.0.0.0/0`, `::/0`) — a
+  zero-length prefix matches every address, which is the `trust proxy = true`
+  this replaced.
 - **`PUBLIC_SCHEME` (new, default `auto`)** — the scheme clients reach the
   deployment over: `auto` follows the connection, `https` declares TLS whatever
   the process can observe, `http` declares plain HTTP. One setting rather than a
@@ -371,8 +373,9 @@ What changes:
   `/bot-api` proxy now states `X-Forwarded-Proto` itself and drops the browser's
   value. It is a declaration, not a derivation: a Next Route Handler cannot
   observe its own TLS (`req.nextUrl.protocol` is built by next from that very
-  header). Set `https` when the web-ui sits behind a TLS-terminating edge, or
-  `trust-header` to relay a trusted edge's value.
+  header). Set `https` when the web-ui sits behind a TLS-terminating edge. The
+  same value decides the scheme of the pairing descriptor the web-ui serves at
+  `/.well-known/omadia-ui`.
 
 **Does this affect you?** Check the Set-Cookie lines on a login:
 
@@ -419,14 +422,19 @@ plain HTTP, and the cookies correctly carry no `Secure` there.
 works unless you also name that proxy in `TRUSTED_PROXY_ADDRESSES`.
 `PUBLIC_SCHEME=https` is the simpler replacement.
 
-**Pairing URLs changed the same way.** `/.well-known/omadia-ui` and the
-channel's `/omadia-ui/info` derived `https` / `wss` from the same raw header, so
-a client could pick the scheme of the URLs it was then handed. They now follow
-`PUBLIC_SCHEME`, which is why it is one setting and not a cookie flag: if you
-set `https` for the cookies, the pairing URLs stay `https`/`wss` with it.
-`X-Forwarded-Host` is still honoured, and `OMADIA_UI_PUBLIC_WS_URL` still
-overrides the whole URL — set it if a split deployment advertises the wrong
-scheme after the upgrade.
+**Pairing URLs changed the same way, on all three surfaces.** The kernel's
+`/.well-known/omadia-ui`, the channel's `/omadia-ui/info` and the web-ui's own
+`/.well-known/omadia-ui` each derived `https` / `wss` from the same raw header,
+so a client could pick the scheme of the canvas URL and login base it was then
+handed. The two kernel surfaces now follow `PUBLIC_SCHEME` — which is why it is
+one setting and not a cookie flag: set `https` for the cookies and the pairing
+URLs stay `https`/`wss` with it. The web-ui surface follows
+`WEB_UI_PUBLIC_SCHEME`, since that process has its own declaration. **Set both
+on an HTTPS deployment**: the web-ui's descriptor is the browser-facing one, and
+with only `PUBLIC_SCHEME` set it would still advertise `ws://`, which an HTTPS
+page blocks as mixed content. `X-Forwarded-Host` is still honoured, and
+`OMADIA_UI_PUBLIC_WS_URL` still overrides the whole URL — set it if a split
+deployment advertises the wrong scheme after the upgrade.
 
 ## Upgrading past v0.167.17 — plugins: upload and install check `compat.core`
 

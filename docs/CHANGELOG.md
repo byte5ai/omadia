@@ -59,13 +59,20 @@ a `ws://` URL on an HTTPS page is blocked as mixed content. `resolveScheme` and
 `@omadia/ui-channel`'s `absoluteCanvasWsUrl` read it too; `X-Forwarded-Host`
 is unchanged.
 
-The web-ui `/bot-api` proxy states `X-Forwarded-Proto` from its own declared
-`WEB_UI_PUBLIC_SCHEME` instead of relaying the browser's. It cannot derive it:
-a Next Route Handler has no socket, and `req.nextUrl.protocol` is built by next
-from that same header. Fly and Render declare `https`; the compose stack keeps
-the plain-HTTP defaults. Migration and a `curl` check: `docs/upgrading.md`,
-"Upgrading past v0.168.4". Trust boundary and the measured `trust proxy` table:
-`docs/security-architecture.md` §10o.
+The web-ui declares its own scheme as `WEB_UI_PUBLIC_SCHEME`, read by one
+helper for both places that process decides a scheme: the `X-Forwarded-Proto`
+the `/bot-api` proxy states to the middleware, and the browser-facing pairing
+descriptor it serves at `/.well-known/omadia-ui`, whose `operatorOrigin` also
+read the raw header. Neither can derive it — a Next Route Handler has no socket,
+and `req.nextUrl.protocol` is built by next from that same header. Fly and
+Render declare `https` on both processes; the compose stack keeps the plain-HTTP
+defaults.
+
+`TRUSTED_PROXY_ADDRESSES` also refuses a `/0` block: `0.0.0.0/0` matches every
+address, so it was `trust proxy = true` wearing a netmask, accepted silently
+while a bare `1` was refused. Migration and a `curl` check:
+`docs/upgrading.md`, "Upgrading past v0.168.4". Trust boundary and the measured
+`trust proxy` table: `docs/security-architecture.md` §10o.
 
 ### Added — the memory browser shows member groups
 

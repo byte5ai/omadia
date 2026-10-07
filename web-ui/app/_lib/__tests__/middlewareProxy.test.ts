@@ -146,6 +146,10 @@ describe('createMiddlewareProxy', () => {
    * `req.nextUrl.protocol` is the browser's value, and a test that only
    * asserted "URL scheme wins" would pass against the bug. The assertion is
    * that NEITHER input reaches the middleware — only the declaration does.
+   *
+   * There is deliberately no "relay the incoming header" mode: `https` already
+   * covers a web-ui behind a TLS-terminating edge, and a relay mode would hand
+   * the choice back to whoever can reach this hop.
    */
   const forged = { 'x-forwarded-proto': 'https' } as const;
 
@@ -175,34 +179,6 @@ describe('createMiddlewareProxy', () => {
     );
 
     expect(captured?.headers['x-forwarded-proto']).toBe('https');
-  });
-
-  it('relays the incoming value only under trust-header, first value only', async () => {
-    process.env.MIDDLEWARE_URL = baseUrl;
-    process.env.WEB_UI_PUBLIC_SCHEME = 'trust-header';
-    const proxy = createMiddlewareProxy('/api');
-    await proxy(
-      new NextRequest('http://web-ui.local/bot-api/v1/ping', {
-        headers: { 'x-forwarded-proto': 'https, http' },
-      }),
-      ctx(['v1', 'ping']),
-    );
-
-    expect(captured?.headers['x-forwarded-proto']).toBe('https');
-  });
-
-  it('falls back to http under trust-header when the value is junk or absent', async () => {
-    process.env.MIDDLEWARE_URL = baseUrl;
-    process.env.WEB_UI_PUBLIC_SCHEME = 'trust-header';
-    const proxy = createMiddlewareProxy('/api');
-    await proxy(
-      new NextRequest('https://web-ui.local/bot-api/v1/ping', {
-        headers: { 'x-forwarded-proto': 'gopher' },
-      }),
-      ctx(['v1', 'ping']),
-    );
-
-    expect(captured?.headers['x-forwarded-proto']).toBe('http');
   });
 
   it('treats an unrecognised declaration as http rather than guessing', async () => {

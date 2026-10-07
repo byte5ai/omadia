@@ -1,5 +1,7 @@
 import type { NextRequest } from 'next/server';
 
+import { publicScheme } from './publicScheme';
+
 /**
  * Runtime reverse proxy to the middleware — the server half of the
  * same-origin API surface (browser → /bot-api/* → middleware /api/*).
@@ -19,41 +21,6 @@ import type { NextRequest } from 'next/server';
  * connects via WS on its own origin (the canvas WS goes to the middleware
  * directly).
  */
-
-/**
- * `X-Forwarded-Proto` is the proxy's statement about the connection IT
- * accepted, so it is this handler's to make, not the browser's to pass
- * through (#1310, security-architecture §10o). Relaying the client's value let
- * a browser decide the scheme the middleware believed, and with it the `Secure`
- * flag on its own session cookie — the middleware trusts this hop where an
- * operator names it, and would have trusted a forged value with it.
- *
- * `WEB_UI_PUBLIC_SCHEME` is a DECLARATION, not a derivation, because a Route
- * Handler cannot observe its own TLS state. There is no socket on
- * `NextRequest`, and `req.nextUrl.protocol` is no help: next builds the request
- * URL's protocol FROM the very header in question
- * (`next/dist/server/next-server.js`: `req.headers['x-forwarded-proto']
- * ?.includes('https') ? 'https' : 'http'`, with `base-server.js` only
- * `??=`-defaulting it when absent). Deriving from it would launder the
- * browser's value straight back in — and a test built with
- * `new NextRequest('https://…')` would not notice, because that sets the URL
- * literally.
- *
- *   http          (the default) this hop accepted plain HTTP. Right wherever
- *                 the browser reaches the web-ui directly — the compose stack.
- *   https         this hop sits behind a TLS-terminating edge. Fly, Render.
- *   trust-header  relay the incoming value; the operator asserts that only a
- *                 trusted edge can set it.
- */
-function forwardedProto(req: NextRequest): 'http' | 'https' {
-  const declared = process.env['WEB_UI_PUBLIC_SCHEME']?.trim().toLowerCase();
-  if (declared === 'https' || declared === 'http') return declared;
-  if (declared === 'trust-header') {
-    const inbound = req.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
-    if (inbound === 'https' || inbound === 'http') return inbound;
-  }
-  return 'http';
-}
 
 /** Hop-by-hop headers never travel through a proxy (RFC 9110 §7.6.1). */
 const HOP_BY_HOP = new Set([
@@ -87,11 +54,13 @@ export function createMiddlewareProxy(
     req.headers.forEach((value, key) => {
       // `host` must be the upstream's own; fetch derives it from the URL.
       if (HOP_BY_HOP.has(key) || key === 'host') return;
-      // Set below from this hop's own connection, never relayed.
+      // Set below from this hop's declared scheme, never relayed: the
+      // middleware decides the auth cookies' `Secure` flag from this header
+      // (#1310, §10o), so a browser must not be able to pick it.
       if (key === 'x-forwarded-proto') return;
       headers.set(key, value);
     });
-    headers.set('x-forwarded-proto', forwardedProto(req));
+    headers.set('x-forwarded-proto', publicScheme());
 
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
     const upstream = await fetch(target, {

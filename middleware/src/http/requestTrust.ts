@@ -90,6 +90,14 @@ export function parseTrustedProxies(raw: string): TrustedProxySetting {
           'and its X-Forwarded-Proto is believed — name the proxy address instead.',
       );
     }
+    if (matchesEverything(entry)) {
+      throw new Error(
+        `TRUSTED_PROXY_ADDRESSES refuses a /0 block (got ${JSON.stringify(entry)}). ` +
+          'A zero-length prefix matches every address, which is the `trust proxy = true` ' +
+          'this setting replaced — every sender would be a trusted hop and could pick its ' +
+          "own X-Forwarded-Proto. Name the proxy's address, or its real block.",
+      );
+    }
     if (!isAddressOrBlock(entry)) {
       throw new Error(
         `TRUSTED_PROXY_ADDRESSES entry must be an IP, an IP/bits block, or loopback|linklocal|uniquelocal (got ${JSON.stringify(entry)})`,
@@ -170,12 +178,26 @@ export function requestIsSecure(req: Request): boolean {
 }
 
 /** The app's mode, defaulting to `auto` for an app (or a test double) that set none. */
-export function publicSchemeMode(req: Pick<Request, 'app'>): PublicSchemeMode {
+function publicSchemeMode(req: Pick<Request, 'app'>): PublicSchemeMode {
   const get = req.app?.get as ((name: string) => unknown) | undefined;
   if (typeof get !== 'function') return 'auto';
   const raw = get.call(req.app, PUBLIC_SCHEME_SETTING);
   const mode = typeof raw === 'string' ? raw.trim() : '';
   return isPublicSchemeMode(mode) ? mode : 'auto';
+}
+
+/**
+ * A block whose prefix length is zero — `0.0.0.0/0`, `::/0`, and any address
+ * with `/0`, since the prefix is what matches and zero bits of it match all.
+ * Refused for the same reason a bare hop count is: it reinstates the
+ * trust-everything behaviour this setting exists to end, and it would do so
+ * silently.
+ */
+function matchesEverything(entry: string): boolean {
+  const slash = entry.lastIndexOf('/');
+  if (slash === -1) return false;
+  const bits = entry.slice(slash + 1).trim();
+  return /^0+$/.test(bits) && isAddressOrBlock(entry);
 }
 
 /** An IP, or an IP with a prefix length that fits its family. */

@@ -72,8 +72,6 @@ function absoluteCanvasWsUrl(req: {
   secure?: boolean;
   /** `req.app.get(PUBLIC_SCHEME_SETTING)` — `auto` | `https` | `http`. */
   publicScheme?: string;
-  /** `req.socket.encrypted` (tls.TLSSocket) — true on a direct TLS connection. */
-  encrypted?: boolean;
 }): string {
   const first = (name: string): string | undefined => {
     const v = req.headers[name];
@@ -86,7 +84,7 @@ function absoluteCanvasWsUrl(req: {
       ? true
       : declared === 'http'
         ? false
-        : (req.secure ?? Boolean(req.encrypted));
+        : req.secure === true;
   const host = first('x-forwarded-host') ?? first('host') ?? 'localhost';
   return `${secure ? 'wss' : 'ws'}://${host}${CANVAS_PATH}`;
 }
