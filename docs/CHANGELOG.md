@@ -48,6 +48,13 @@ of the turn through the identity resolver (`resolveRunTraceOwner` →
 uses), each group participant to their own cluster. `ingestRun` still never
 creates a cluster, and the turn's `resolvedOmadiaUserId`, dataset ACLs, MCP
 keys and `Principal` are unchanged for these turns.
+### Security — `@modelcontextprotocol/sdk` 1.32.1 (GHSA-6qxp-vccf-f47h)
+
+2026-10-07 — The MCP TypeScript SDK's OAuth client before 1.31.0 could send
+credentials to an authorization server chosen by the MCP server (high). It is
+a production dependency of the middleware and `@omadia/orchestrator`; both
+manifests now require `^1.31.0`, the lock resolves 1.32.1 and moves nothing
+else. This was the advisory that turned the audit gate red on every PR.
 
 ### Added — the memory browser shows member groups
 
