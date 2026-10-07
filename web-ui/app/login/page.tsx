@@ -150,7 +150,14 @@ function LoginPageInner(): React.ReactElement {
     } catch (err) {
       const retryAfterS = signInRetryAfterSeconds(err);
       if (err instanceof ApiError && err.status === 401) {
-        setSubmitError(t('incorrectCredentials'));
+        // `auth.user_disabled` only comes back once the password verified
+        // (middleware #1311), so naming the reason here leaks nothing a
+        // password-less attempt could read.
+        setSubmitError(
+          err.code === 'auth.user_disabled'
+            ? t('accountDisabled')
+            : t('incorrectCredentials'),
+        );
       } else if (retryAfterS !== null) {
         setSubmitError(t('tooManyAttempts', { seconds: retryAfterS }));
       } else {
