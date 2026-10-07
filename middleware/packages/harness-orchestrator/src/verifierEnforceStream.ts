@@ -25,7 +25,7 @@ import {
   reentryAbandonedLine,
   type ReentryPolicy,
 } from './verifierReentry.js';
-import { mergeBadges, summarise } from './verifierVerdicts.js';
+import { mergeBadges, summarise, withheldLogLine } from './verifierVerdicts.js';
 
 /** What the `enforce` stream needs from `VerifierService`. */
 export interface EnforceStreamHost {
@@ -124,7 +124,7 @@ function deliver(
   void host.judge.persist(runId, input, verdict, retryCount);
   const releases = verdictReleasesAnswer(verdict);
   if (!releases) {
-    host.log(`[verifier/service] answer withheld run=${runId} status=${verdict.status}`);
+    host.log(withheldLogLine(runId, verdict));
   }
   const summary = summarise(verdict, retryCount, 'enforce');
   return { summary: badge ? { ...summary, badge } : summary, releases };

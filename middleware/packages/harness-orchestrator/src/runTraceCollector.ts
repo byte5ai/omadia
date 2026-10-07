@@ -5,6 +5,8 @@ import type {
   RunToolCall,
 } from '@omadia/plugin-api';
 import type { RunTracePayload } from '@omadia/channel-sdk';
+import { KNOWLEDGE_GRAPH_TOOL_NAME } from './knowledgeGraphTool.js';
+import { knowledgeGraphRefsIn } from './knowledgeGraphRefs.js';
 
 /**
  * `RunTracePayload` was lifted to `@omadia/channel-sdk` in S+10-2 so
@@ -64,14 +66,36 @@ export class RunTraceCollector {
     this.startedAt = opts.startedAt ?? new Date().toISOString();
   }
 
+  /**
+   * `output` — the result text the model received. For a
+   * `query_knowledge_graph` call it supplies the turn's citable source ids
+   * ({@link noteKnowledgeGraphOutput}); other tools' output is not kept.
+   */
   recordOrchestratorToolCall(
     call: Omit<RunToolCall, 'agentContext'>,
+    output?: string,
   ): void {
+    if (call.toolName === KNOWLEDGE_GRAPH_TOOL_NAME && output !== undefined) {
+      this.noteKnowledgeGraphOutput(output);
+    }
     this.orchestratorToolCalls.push({
       ...call,
       agentContext: 'orchestrator',
     });
   }
+
+  /**
+   * Keeps the source ids a knowledge-graph result showed the model — the ids
+   * a `[ref:…]` marker in the answer may name ({@link knowledgeGraphRefsOf}).
+   * A replayed result passes through here exactly like an executed one.
+   */
+  noteKnowledgeGraphOutput(output: string): void {
+    this.knowledgeGraphOutputSeen = true;
+    for (const ref of knowledgeGraphRefsIn(output)) this.knowledgeGraphRefs.add(ref);
+  }
+
+  private knowledgeGraphOutputSeen = false;
+  private readonly knowledgeGraphRefs = new Set<string>();
 
   beginInvocation(agentName: string, agentId?: string): InvocationHandle {
     const index = this.invocationIndex++;
@@ -92,6 +116,7 @@ export class RunTraceCollector {
       },
       onSubToolResult: (ev) => {
         const meta = toolCallStarts.get(ev.id);
+        if (meta?.name === KNOWLEDGE_GRAPH_TOOL_NAME) this.noteKnowledgeGraphOutput(ev.output);
         subToolCalls.push({
           callId: ev.id,
           toolName: meta?.name ?? 'unknown',
@@ -171,6 +196,27 @@ export class RunTraceCollector {
       ...(this.provider ? { provider: this.provider } : {}),
       ...(opts.error ? { error: opts.error } : {}),
     };
+    if (this.knowledgeGraphOutputSeen) {
+      KNOWLEDGE_GRAPH_REFS.set(payload, [...this.knowledgeGraphRefs].sort());
+    }
     return payload;
   }
+}
+
+/**
+ * The citable ids per finished trace, held BESIDE the payload rather than on
+ * it: the payload goes out on the stream's `done`, into routine runs and to
+ * `ingestRun`, and these ids are verifier input for this turn only. Keyed by
+ * the payload object, so they live exactly as long as the trace does.
+ */
+const KNOWLEDGE_GRAPH_REFS = new WeakMap<RunTracePayload, readonly string[]>();
+
+/**
+ * The source ids this trace's `query_knowledge_graph` results showed the
+ * model (`id` / `turnId`), sorted — what a `[ref:…]` marker in the answer may
+ * name. Undefined when the turn made no graph call (or the trace was not
+ * built by a collector); empty when the graph returned nothing citable.
+ */
+export function knowledgeGraphRefsOf(trace: RunTracePayload): readonly string[] | undefined {
+  return KNOWLEDGE_GRAPH_REFS.get(trace);
 }

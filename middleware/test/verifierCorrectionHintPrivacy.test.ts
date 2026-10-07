@@ -48,7 +48,7 @@ const CORRECTED_WIRE = `Die Rechnung für ${surrogate(1)} über 1.200 EUR ist an
 /** What the verifier measured, with its own access. Never for the model. */
 const TRUTH = 'Quelle: 1.200 EUR, Ansprechpartnerin Erika Beispiel';
 const DETAIL = 'no res.partner with name="Interne Notiz 4411"';
-const HINT_HEADER = 'Verifier hat Widersprüche';
+const HINT_HEADER = 'Verifier hat die Antwort zurückgehalten';
 
 function blockedWithEvidence(claimText: string = CLAIM): VerifierVerdict {
   const contradiction: ClaimVerdict = {

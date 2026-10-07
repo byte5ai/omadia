@@ -1676,7 +1676,15 @@
     },
     "verifierBlocked": {
       "heading": "Answer withheld by the fact-check",
-      "body": "The fact-check could not confirm this answer, so it is not shown. Ask the question again, or check the details directly in the source system."
+      "body": "The fact-check could not confirm this answer, so it is not shown. Ask the question again, or check the details directly in the source system.",
+      "cause": {
+        "contradicted": "The fact-check found {count, plural, one {a contradiction} other {# contradictions}} with the source data, so the answer is not shown. Ask again, or check the details directly in the source system.",
+        "toolNotCalled": "The answer stated data or an access problem without the data having been retrieved in this run, so it is not shown. Please ask again.",
+        "citationMissing": "The answer relied on stored knowledge without naming the sources, so it could not be checked and is not shown. Please ask again.",
+        "insufficientEvidence": "Not all of the answer's statements could be backed by the retrieved data, so it is not shown. Ask again, or check the details directly in the source system.",
+        "checkFailed": "The fact-check could not be completed because of a technical fault, so the answer is not shown. Please try again; if it keeps happening, contact support.",
+        "notChecked": "The answer could not be passed to the fact-check, so it is not shown. Ask again, or check the details directly in the source system."
+      }
     },
     "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
     "errorCorrelationRef": "Reference for support: {id}",

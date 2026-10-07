@@ -3,7 +3,13 @@ import type {
   VerifierBadge,
   VerifierVerdict,
 } from '@omadia/verifier';
-import { bindVerdictToClaims, hasVerificationEvidence } from '@omadia/verifier';
+import {
+  bindVerdictToClaims,
+  contradictionBasis,
+  hasVerificationEvidence,
+  isEvidenceContradiction,
+} from '@omadia/verifier';
+import type { VerifierWithheldCause } from '@omadia/channel-sdk';
 import type { ChatTurnResult, VerifierResultSummary } from './orchestrator.js';
 
 /**
@@ -36,6 +42,7 @@ export function summarise(
   // the connector and web-chat badge gates check the badge against.
   const count = (pick: (c: ClaimVerdict) => boolean): number =>
     verdict.claims.filter(pick).length;
+  const withheldCause = withheldCauseOf(verdict);
 
   return {
     badge: badgeFor(verdict, retryCount),
@@ -43,9 +50,17 @@ export function summarise(
     ...(verdict.status === 'skipped' || verdict.status === 'unavailable'
       ? { reason: verdict.reason }
       : {}),
+    ...(withheldCause ? { withheldCause } : {}),
     claimCount: verdict.claims.length,
-    contradictionCount: count((c) => c.status === 'contradicted'),
-    unverifiedCount: count((c) => c.status === 'unverified'),
+    // Only a claim a source refuted is a contradiction. A withhold for a
+    // missing citation, an uncalled tool or a broken tool result counts as
+    // not confirmed — it must never surface as "contradiction found".
+    contradictionCount: count(isEvidenceContradiction),
+    unverifiedCount: count(
+      (c) =>
+        c.status === 'unverified' ||
+        (c.status === 'contradicted' && !isEvidenceContradiction(c)),
+    ),
     uncheckedCount: count((c) => c.status === 'unverified' && c.cause === 'not_checked'),
     uncoveredCount: count((c) => c.claim.type === 'coverage_gap'),
     retryCount,
@@ -74,12 +89,65 @@ export function badgeFor(
       ? 'unavailable'
       : 'unverified';
   }
-  if (verdict.claims.some((c) => c.status === 'contradicted')) return 'failed';
+  if (verdict.claims.some(isEvidenceContradiction)) return 'failed';
   const everyClaimConfirmed =
     verdict.status === 'approved' &&
     verdict.claims.every((c) => c.status === 'verified');
   if (!everyClaimConfirmed) return 'partial';
   return retryCount > 0 ? 'corrected' : 'verified';
+}
+
+/**
+ * Why a verdict does not release its answer, derived from the claims — never
+ * from a status alone, so a withhold is explained by what actually happened.
+ * Undefined when the verdict releases the answer (`approved`, or `skipped`
+ * with nothing to check). Most specific first: a refutation outranks an
+ * uncalled tool, which outranks a technical fault and a missing citation.
+ */
+export function withheldCauseOf(verdict: VerifierVerdict): VerifierWithheldCause | undefined {
+  if (verdict.status === 'approved') return undefined;
+  if (verdict.status === 'skipped' && (verdict.reason === 'no_trigger' || verdict.reason === 'no_claims')) {
+    return undefined;
+  }
+  if (verdict.status === 'unavailable') {
+    return verdict.reason === 'privacy_shield' ? 'not_checked' : 'check_failed';
+  }
+  const bases = new Set(
+    verdict.claims.flatMap((c) => (c.status === 'contradicted' ? [contradictionBasis(c)] : [])),
+  );
+  if (bases.has('evidence')) return 'contradicted';
+  if (bases.has('tool_not_called')) return 'tool_not_called';
+  if (bases.has('tool_postcondition')) return 'check_failed';
+  if (bases.has('citation_missing')) return 'citation_missing';
+  // Calls ran but none backs the claim, or a cited source was never
+  // returned: "could not be backed by the retrieved data" — true either way,
+  // where "not retrieved" would not be.
+  if (bases.has('unsupported_failure_claim') || bases.has('citation_unresolved')) {
+    return 'insufficient_evidence';
+  }
+  if (everyCheckFailed(verdict)) return 'check_failed';
+  return 'insufficient_evidence';
+}
+
+/**
+ * The support diagnosis for a withheld answer: the cause the user was told,
+ * and per claim the id and what it rests on. Claim ids, bases and closed
+ * codes only — never a claim's words, a truth or a detail, which can carry
+ * the withheld answer's data.
+ */
+export function withheldLogLine(runId: string, verdict: VerifierVerdict): string {
+  const claims = verdict.claims.flatMap((c) => {
+    if (c.status === 'contradicted') return [`${c.claim.id}:${contradictionBasis(c)}`];
+    if (c.status === 'unverified') return [`${c.claim.id}:unverified${c.cause ? `/${c.cause}` : ''}`];
+    return [];
+  });
+  const reason =
+    verdict.status === 'skipped' || verdict.status === 'unavailable' ? ` reason=${verdict.reason}` : '';
+  return (
+    `[verifier/service] answer withheld run=${runId} status=${verdict.status}` +
+    `${reason} cause=${withheldCauseOf(verdict) ?? 'none'}` +
+    (claims.length > 0 ? ` claims=${claims.join(',')}` : '')
+  );
 }
 
 /** True when a check ran on at least one claim and every such check failed.

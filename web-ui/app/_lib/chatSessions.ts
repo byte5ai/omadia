@@ -348,6 +348,16 @@ export interface VerifierSummary {
    *  at its list limit, or claims it returned that are not in the answer or
    *  too long to check whole) — the answer was not checked in full. */
   uncoveredCount?: number;
+  /** Why the answer is not released — what the withheld notice states. Only
+   *  `contradicted` is a refutation by a source; `contradictionCount` counts
+   *  nothing else. Absent on summaries from before the field. */
+  withheldCause?:
+    | 'contradicted'
+    | 'tool_not_called'
+    | 'citation_missing'
+    | 'insufficient_evidence'
+    | 'check_failed'
+    | 'not_checked';
   retryCount: number;
   latencyMs: number;
   mode: 'shadow' | 'enforce';

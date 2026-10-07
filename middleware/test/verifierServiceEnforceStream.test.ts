@@ -192,12 +192,12 @@ describe('VerifierService.chatStream — enforce withholds an answer it could no
 
   it('fails closed: unavailable, partly checked and unconfirmed verdicts withhold too', async () => {
     const cases: [string, ScriptedVerdict, RegExp][] = [
-      ['pipeline error', new Error('pipeline down'), /abgeschlossen/],
-      ['extractor outage', unavailable(), /abgeschlossen/],
-      ['partly checked', partlyChecked(), /bestätigen/],
-      ['none confirmed', noneConfirmed(), /bestätigen/],
-      ['no checkable claims', skipped('no_checkable_claims'), /bestätigen/],
-      ['incomplete coverage', skipped('incomplete_coverage'), /bestätigen/],
+      ['pipeline error', new Error('pipeline down'), /technischen Störung nicht abgeschlossen/],
+      ['extractor outage', unavailable(), /technischen Störung nicht abgeschlossen/],
+      ['partly checked', partlyChecked(), /nicht alle Angaben ließen sich/i],
+      ['none confirmed', noneConfirmed(), /nicht alle Angaben ließen sich/i],
+      ['no checkable claims', skipped('no_checkable_claims'), /nicht alle Angaben ließen sich/i],
+      ['incomplete coverage', skipped('incomplete_coverage'), /nicht alle Angaben ließen sich/i],
     ];
     for (const [label, verdict, why] of cases) {
       const { events, h } = await runEnforced([verdict]);
@@ -305,7 +305,9 @@ describe('VerifierService.chatStream — enforce release rules without a verdict
       const { events, h } = await runEnforced([approved()], turn(terminal));
       assert.equal(h.verifyInputs.length, 0, `${label}: never sent to the verifier`);
       const withheld = assertWithheld(events, label);
-      assert.match(withheld.answer, /abgeschlossen/, `${label}: the check could not run`);
+      // Not a technical fault: the answer was never handed to the check.
+      assert.match(withheld.answer, /der Faktenprüfung nicht übergeben/, `${label}: the check could not run`);
+      assert.doesNotMatch(withheld.answer, /technische/, `${label}: no fault claimed`);
       assert.equal(withheld.verifier?.status, 'unavailable', label);
       assert.equal(withheld.verifier?.reason, 'privacy_shield', label);
       assert.equal(withheld.verifier?.badge, 'unavailable', label);

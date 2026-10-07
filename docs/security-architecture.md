@@ -2100,6 +2100,16 @@ localized notice (`composeVerifierBlockedText`, `@omadia/channel-sdk`) marked
 `answerSource: 'verifier-blocked'` + `answerIsError: true`. The summary keeps
 the badge its verdict earns (a withheld, partly confirmed answer is `partial`,
 not `failed`), so the evidence rules above hold for withheld answers too.
+The notice states the cause the claims support (`withheldCause`) and nothing
+stronger: only a claim a check refuted against its source
+(`ContradictionBasis` `evidence`) counts as a contradiction, earns `failed`
+and may be called one. A missing or invented citation, a live-data claim
+without the fetching call, a claimed failed or missing access with no failed
+call in the trace (`failedToolsCalled`), and a tool result that broke its
+schema each withhold the answer under their own cause. A missing-access claim
+needs a failed call; without any call the notice says no data was retrieved,
+with calls it says the statements could not be backed — never a claim the
+trace does not support.
 
 - **Stream: no content before the verdict.** `enforcedVerifiedStream` passes
   a closed allowlist of events while the verdict is pending
