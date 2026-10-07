@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { RegistryConfigEntry } from './api/registry-v1.js';
 import { isClientAddressPolicy } from './auth/clientAddress.js';
 import { SETUP_TOKEN_MAX_LENGTH, SETUP_TOKEN_MIN_LENGTH } from './auth/setupToken.js';
+import { isPublicSchemeMode, isTrustedProxyList } from './http/requestTrust.js';
 
 // Resolve .env relative to this file so the server works from any CWD.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -218,6 +219,44 @@ export const ConfigSchema = z.object({
     (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
     z.coerce.number().int().min(0).max(60_000).default(5_000),
   ),
+  // Which hops may speak for the client (#1310, §10o). Comma-separated
+  // addresses and/or `IP/bits` blocks, or `loopback`|`linklocal`|
+  // `uniquelocal`. This becomes Express's `trust proxy`, so it decides whether
+  // `req.secure` / `req.protocol` / `req.hostname` / `req.ip` believe the
+  // request's `X-Forwarded-*` headers — and with them whether the auth
+  // cookies get `Secure`. Empty (the default) = `none`: trust no hop, believe
+  // no forwarded header. NOT a hop count: Express counts hops from the server
+  // INCLUDING the immediate peer, so `1` trusts a client that connects
+  // directly and believes its forged header — the schema rejects a bare
+  // number for that reason. Set it to the address of the reverse proxy in
+  // front of this process (web-ui's container address, your Caddy/Traefik/
+  // nginx, the platform edge); `loopback` for a desktop install, where the
+  // caveat is that anything else on loopback is then trusted too.
+  TRUSTED_PROXY_ADDRESSES: z
+    .string()
+    .default('')
+    .transform((v) => v.trim())
+    .refine(
+      isTrustedProxyList,
+      'must be empty/none, or up to 16 comma-separated IPs, IP/bits blocks or loopback|linklocal|uniquelocal (not a hop count)',
+    ),
+  // The scheme clients reach this deployment over (#1310, §10o). Governs every
+  // scheme-shaped decision in the process: the `Secure` flag on the session,
+  // login-device and PKCE cookies, and the `https`/`wss` URLs the pairing
+  // descriptor hands out. `auto` (the default) follows the connection via
+  // `req.secure`, which honours `X-Forwarded-Proto` only from the hops
+  // TRUSTED_PROXY_ADDRESSES names. `https` for a reverse proxy that terminates
+  // TLS but sets no `X-Forwarded-Proto` — `auto` cannot tell that apart from
+  // genuine plain HTTP, and trusting the header from every sender is the bug
+  // this replaced. `http` for a deployment that is plain HTTP on purpose.
+  // One setting rather than a cookie-only flag because a deployment that
+  // declares HTTPS for its cookies must advertise HTTPS in its pairing URLs
+  // too; a `ws://` URL on an HTTPS page is blocked as mixed content.
+  PUBLIC_SCHEME: z
+    .string()
+    .default('auto')
+    .transform((v) => (v.trim() === '' ? 'auto' : v.trim()))
+    .refine(isPublicSchemeMode, 'must be auto, https or http'),
   // Password sign-in rate limit (docs/security-architecture.md §10m): where
   // the limiter takes a client's address from. `socket` = the TCP peer, which
   // cannot be forged (default; behind a proxy every client shares the proxy's

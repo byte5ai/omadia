@@ -20,6 +20,27 @@ import type { NextRequest } from 'next/server';
  * directly).
  */
 
+/**
+ * `X-Forwarded-Proto` is the proxy's statement about the connection IT
+ * accepted, so it is this handler's to make, not the browser's to pass
+ * through (#1310, security-architecture §10o). Relaying the client's value
+ * let a browser decide the scheme the middleware believed, and with it the
+ * `Secure` flag on its own session cookie — the middleware now trusts this
+ * hop and would have trusted a forged value with it.
+ *
+ * `WEB_UI_TRUST_FORWARDED_PROTO=true` keeps the incoming header instead, for a
+ * web-ui that is itself behind a TLS-terminating edge (Fly, a platform
+ * ingress) which sets it. OFF by default: on a web-ui the browser reaches
+ * directly, the incoming value is the browser's own.
+ */
+function forwardedProto(req: NextRequest): string {
+  if (process.env['WEB_UI_TRUST_FORWARDED_PROTO'] === 'true') {
+    const inbound = req.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
+    if (inbound) return inbound;
+  }
+  return req.nextUrl.protocol.replace(':', '');
+}
+
 /** Hop-by-hop headers never travel through a proxy (RFC 9110 §7.6.1). */
 const HOP_BY_HOP = new Set([
   'connection',
@@ -52,8 +73,11 @@ export function createMiddlewareProxy(
     req.headers.forEach((value, key) => {
       // `host` must be the upstream's own; fetch derives it from the URL.
       if (HOP_BY_HOP.has(key) || key === 'host') return;
+      // Set below from this hop's own connection, never relayed.
+      if (key === 'x-forwarded-proto') return;
       headers.set(key, value);
     });
+    headers.set('x-forwarded-proto', forwardedProto(req));
 
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
     const upstream = await fetch(target, {

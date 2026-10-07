@@ -27,6 +27,7 @@ let baseUrl: string;
 let captured: Captured | undefined;
 let respond: (res: ServerResponse) => void;
 const savedEnv = process.env.MIDDLEWARE_URL;
+const savedTrustProto = process.env.WEB_UI_TRUST_FORWARDED_PROTO;
 
 function ctx(path: string[]) {
   return { params: Promise.resolve({ path }) };
@@ -54,6 +55,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise((resolve) => server.close(resolve));
   process.env.MIDDLEWARE_URL = savedEnv;
+  if (savedTrustProto === undefined) delete process.env.WEB_UI_TRUST_FORWARDED_PROTO;
+  else process.env.WEB_UI_TRUST_FORWARDED_PROTO = savedTrustProto;
 });
 
 afterEach(() => {
@@ -130,6 +133,47 @@ describe('createMiddlewareProxy', () => {
     );
 
     expect(res.headers.getSetCookie()).toEqual(['auth=jwt; HttpOnly', 'flags=1; Path=/']);
+  });
+
+  it("replaces the client's x-forwarded-proto with this hop's own (#1310)", async () => {
+    // The browser used to pick this value, and the middleware believed it —
+    // deciding the `Secure` flag on the session cookie it then minted for that
+    // same browser. The header is this proxy's statement about the connection
+    // it accepted, so the handler makes it.
+    process.env.MIDDLEWARE_URL = baseUrl;
+    delete process.env.WEB_UI_TRUST_FORWARDED_PROTO;
+    const proxy = createMiddlewareProxy('/api');
+    const req = new NextRequest('http://web-ui.local/bot-api/v1/auth/login/local', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-proto': 'https' },
+      body: '{}',
+    });
+    await proxy(req, ctx(['v1', 'auth', 'login', 'local']));
+
+    expect(captured?.headers['x-forwarded-proto']).toBe('http');
+  });
+
+  it('keeps the incoming x-forwarded-proto when the operator trusts its edge', async () => {
+    process.env.MIDDLEWARE_URL = baseUrl;
+    process.env.WEB_UI_TRUST_FORWARDED_PROTO = 'true';
+    const proxy = createMiddlewareProxy('/api');
+    await proxy(
+      new NextRequest('http://web-ui.local/bot-api/v1/ping', {
+        headers: { 'x-forwarded-proto': 'https, http' },
+      }),
+      ctx(['v1', 'ping']),
+    );
+
+    expect(captured?.headers['x-forwarded-proto']).toBe('https');
+  });
+
+  it("states this hop's scheme even when the client sent no such header", async () => {
+    process.env.MIDDLEWARE_URL = baseUrl;
+    delete process.env.WEB_UI_TRUST_FORWARDED_PROTO;
+    const proxy = createMiddlewareProxy('/api');
+    await proxy(new NextRequest('https://web-ui.local/bot-api/v1/ping'), ctx(['v1', 'ping']));
+
+    expect(captured?.headers['x-forwarded-proto']).toBe('https');
   });
 
   it('maps /p/* without the /api prefix', async () => {

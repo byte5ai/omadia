@@ -3215,8 +3215,9 @@ Confirmed empirically against a deployment under our control: uncredentialed
    convention.
 3. `DEV_ENDPOINTS_LOOPBACK_ONLY=true` (optional, default off) additionally
    refuses any `/api/dev` request that did not arrive over a loopback socket.
-   It reads `req.socket.remoteAddress`, never `X-Forwarded-For` — `trust proxy`
-   is on, so a guard on `req.ip` would be defeated by a header. Leave it off in
+   It reads `req.socket.remoteAddress`, never `X-Forwarded-For` — wherever
+   `TRUSTED_PROXY_ADDRESSES` names a hop (§10o), a guard on `req.ip` would be
+   defeated by a header. Leave it off in
    containerised setups, where the Next.js server proxies from a container
    address. The password sign-in limiter (§10m) keys clients on the same rule:
    the socket peer by default, and a forwarded address only from a configured
@@ -4560,7 +4561,12 @@ answer it, and the two paragraphs after them say what they leave open.
   - It is bound to the account the sign-in VERIFIED, never to the address as
     typed: to that account's stored address and to the password that
     sign-in checked. It lives one year and is HttpOnly, SameSite=Lax, Path=/
-    and Secure behind TLS, like the session cookie.
+    and — like the session cookie — Secure whenever `isSecureContext` says the
+    request arrived over TLS: `req.secure` under the default
+    `AUTH_COOKIE_SECURE=auto`, which believes `X-Forwarded-Proto` only from a
+    hop `TRUSTED_PROXY_ADDRESSES` names, and that list is empty by default
+    (§10o). Its one-year life makes it the more exposed of the two when that
+    flag is wrong.
   - The value is `v3.<id>.<exp>.<ep>.<tag>`. `ep` fingerprints the credential
     epoch the sign-in checked: SHA-256 over the users row id and the password
     hash the provider compared the password with (`AuthSuccess.credentialEpoch`;
@@ -4632,9 +4638,11 @@ earlier cookies count again, which gives their holders nothing: each of them
 signed in with that same, unchanged password. Reset the password to end them
 for good.
 
-**The client key under `trust proxy`.** `app.set('trust proxy', true)` makes
-`req.ip` the left-most `X-Forwarded-For` entry, which the client writes. The
-limiter never reads `req.ip` (the same rule as §10's loopback gate).
+**The client key under `trust proxy`.** Under any non-empty
+`TRUSTED_PROXY_ADDRESSES` (§10o — `true` until #1310) `req.ip` is the left-most
+`X-Forwarded-For` entry, which the client writes. The limiter never reads
+`req.ip` (the same rule as §10's loopback gate), so naming a proxy there to fix
+the cookie `Secure` flag does not move this key.
 `AUTH_LOGIN_CLIENT_ADDRESS` (`auth/clientAddress.ts`) chooses the key:
 
 - `socket` (default): the TCP peer, which cannot be forged, and always a
@@ -5020,6 +5028,127 @@ and `middleware/test/credentialBrokerResponse.test.ts` (forms, the floor, the
 cap straddle).
 
 ---
+
+## 10o. The request trust boundary: who may speak for the client (#1310)
+
+`X-Forwarded-Proto`, `X-Forwarded-For` and `X-Forwarded-Host` are ordinary
+request headers. Anything that can reach the server can send them. They are
+worth reading only to the extent that a hop the operator vouches for is the
+one that wrote them, and Express decides that with a single setting:
+`trust proxy`.
+
+The app set it to `true` — trust every hop. Three values rode on that, and
+`isSecureContext` (`middleware/src/auth/sessionCookie.ts`) made the worst use
+of it: it did not read `req.secure` at all, but `req.headers['x-forwarded-proto']`
+directly, and its result is the `Secure` flag on the session cookie
+(`setSessionCookie`), the login-device cookie (`setLoginDeviceCookie`, §10m)
+and the OIDC PKCE cookie (`routes/auth.ts`). The sender of a request therefore
+decided whether its own auth cookies were marked TLS-only. Reported against
+`v0.168.4`: a local login over plain HTTP carrying `x-forwarded-proto: https`
+came back with `Secure` on both cookies; the same login without the header came
+back with it on neither.
+
+Two deployments it breaks, in opposite directions:
+
+- **A TLS-terminating proxy that sets no `X-Forwarded-Proto`.** Users reach the
+  site over HTTPS, the cookies carry no `Secure`, and if the host also answers
+  on plain HTTP — a port-80 redirect is enough — the browser sends the session
+  cookie there in the clear.
+- **A forged header in front of an HTTP-only origin.** The server sets `Secure`
+  cookies that the browser then discards. Login appears to do nothing, with no
+  error anywhere.
+
+### A hop count is not the fix
+
+The obvious narrowing — keep reading the header but set `trust proxy` to the
+number of real proxies — does not close it. Express counts trusted hops from
+the server **including the immediate peer**, so a client that connects directly
+is itself trusted hop #1 and the header it wrote for itself is believed.
+Measured against the `express` in this workspace, a direct loopback client over
+plain HTTP sending `x-forwarded-proto: https` and `x-forwarded-for: 1.2.3.4`:
+
+| `trust proxy` | `req.secure` | `req.ip` |
+| --- | --- | --- |
+| `true` | `true` | `1.2.3.4` |
+| `1` | `true` | `1.2.3.4` |
+| `2` | `true` | `1.2.3.4` |
+| `'loopback'` | `true` | `1.2.3.4` |
+| `['10.1.2.3']` | **`false`** | `127.0.0.1` |
+| `false` | **`false`** | `127.0.0.1` |
+
+Only naming an address the client does not have refuses the forgery. `loopback`
+is listed as trusted-and-forgeable on purpose: it is the right setting for a
+desktop install, where the shell really is a loopback proxy, and in that
+topology a forged header from something else on loopback is indistinguishable
+from the real hop. That is a property of the deployment, not of the setting.
+
+### What is enforced
+
+- **`TRUSTED_PROXY_ADDRESSES`** (`middleware/src/auth/trustedProxies.ts`) is the
+  `trust proxy` value: a comma-separated list of addresses, `IP/bits` blocks, or
+  Express's `loopback` / `linklocal` / `uniquelocal` aliases. **Empty is the
+  default** — trust no hop, believe nothing forwarded. A bare number is refused
+  at boot, with the reason, so the trap above cannot be configured back in.
+- **`isSecureContext` reads `req.secure`**, never a header. Express applies
+  `X-Forwarded-Proto` for us, and only from a named hop.
+- **`AUTH_COOKIE_SECURE`** (`auto` | `always` | `never`, default `auto`) is the
+  one thing narrowing `trust proxy` cannot supply. With TLS terminated upstream
+  and no header set, `req.secure` is `false` under *every* `trust proxy` value
+  above: the setting cannot tell a silent TLS proxy from genuine plain HTTP.
+  `always` is the operator saying which it is. It is stored as an Express app
+  setting (`COOKIE_SECURE_SETTING`), read per request, so the four cookie
+  writers keep one argument and a test can stand up two apps with different
+  modes.
+- **The web-ui `/bot-api` proxy sets `X-Forwarded-Proto` itself** and drops the
+  browser's value (`web-ui/app/_lib/middlewareProxy.ts`). It is now a trusted
+  hop in the Compose topology, and a trusted hop that relays a forged header
+  launders it. `WEB_UI_TRUST_FORWARDED_PROTO=true` keeps the incoming value for
+  a web-ui that is itself behind a TLS-terminating edge; off by default, because
+  where the browser reaches the web-ui directly the incoming value is the
+  browser's.
+- **The pairing descriptor takes its scheme from the connection too**
+  (`middleware/src/pairing/discovery.ts` `resolveScheme`, and the same inline
+  logic in `@omadia/ui-channel`'s `absoluteCanvasWsUrl`). Both read raw
+  `x-forwarded-proto`, which let a client choose `https`/`wss` for the pairing
+  and login URLs it was handed. `X-Forwarded-Host` is still honoured there: a
+  split deployment cannot advertise a reachable host otherwise, and an operator
+  who needs it pinned sets `OMADIA_UI_PUBLIC_WS_URL`, which wins outright.
+
+### What this does not change
+
+Narrowing `trust proxy` does not widen or narrow the two gates that already
+refused to depend on it. The password sign-in limiter reads its own
+`AUTH_LOGIN_CLIENT_ADDRESS` policy and never `req.ip` / `req.ips`
+(`clientAddress.ts`, §10m); the dev-endpoint gate reads the socket peer
+(`loopbackOnly.ts`, §10). Both documented their reason as "`trust proxy` is
+`true`", which is now narrower but still not something either wants to trust.
+Nothing under `middleware/src` reads `req.ip`, `req.ips` or `req.protocol`, and
+no rate-limit or session middleware in `middleware/package.json` reads them
+behind our backs, so `req.ip` reverting to the socket peer changes no app code.
+
+### Residual risks
+
+- A `loopback` / `linklocal` / `uniquelocal` entry trusts everything that
+  reaches the process from inside that range, the real proxy included. Where
+  the proxy has a fixed address, naming it is strictly better.
+- `AUTH_COOKIE_SECURE=always` is an assertion the code cannot check. Set on a
+  deployment that is reachable over plain HTTP, every login silently fails:
+  the browser discards the cookie it was given.
+- The first failure mode above was derived from the code and never reproduced
+  against a real TLS-terminating proxy. `always` is the supported answer for
+  that topology, not a fix that was observed to close it.
+- This section is about who may *speak* for the client, not about who the
+  client is. `X-Forwarded-Host` remains client-settable on the pairing path
+  (bounded by `OMADIA_UI_PUBLIC_WS_URL`), and the `Secure` flag says nothing
+  about `SameSite` or about an attacker already on the origin.
+
+Regression tests: `middleware/test/auth/cookieSecure.test.ts` drives a real
+Express listener over a real plain-HTTP connection — a hand-built `Request`
+double cannot exercise `trust proxy` — and pins the reporter's repro (forged
+header, no `Secure`), the trusted-hop case (`loopback`, `Secure`), and each
+override mode. `middleware/test/auth/trustedProxies.test.ts` pins the hop-count
+rejection. `web-ui/app/_lib/__tests__/middlewareProxy.test.ts` pins that the
+proxy states its own scheme.
 
 ## 11. Reviewer checklist
 
@@ -5416,4 +5545,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§6f: the org clamp covers MCP-to-knowledge-graph ingestion, and intern-exempt tools' errors are redacted or withheld like any tool's; §6c: positional record dumps and personal `key=value` pairs are withheld whole; §6f: the memory jobs mask the stored text they send to their model whatever `mask_user_prompt` says, in a turn through its handle and outside one through `openStoredTextScope`, and masking embeddings stays open; §4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*
+*Last reviewed: 2026-10 (§10o added: the request trust boundary — `trust proxy` is an operator-named list of proxy ADDRESSES, empty by default, and a hop count is refused at boot because Express counts the immediate peer as a trusted hop; `isSecureContext` reads `req.secure` instead of a raw `X-Forwarded-Proto`, `AUTH_COOKIE_SECURE` is the operator's answer for a TLS proxy that sets no header, the web-ui proxy states its own `X-Forwarded-Proto` rather than relaying the browser's, and the pairing descriptor's scheme comes from the connection; §10m: the login-device cookie's `Secure` claim names its control and that control's default; §6f: the org clamp covers MCP-to-knowledge-graph ingestion, and intern-exempt tools' errors are redacted or withheld like any tool's; §6c: positional record dumps and personal `key=value` pairs are withheld whole; §6f: the memory jobs mask the stored text they send to their model whatever `mask_user_prompt` says, in a turn through its handle and outside one through `openStoredTextScope`, and masking embeddings stays open; §4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*

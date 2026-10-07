@@ -339,6 +339,88 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.168.4 — auth cookies take `Secure` from the connection, not from a header
+
+**This one can change behaviour on an existing deployment, so read it before
+pulling the image.** Up to and including v0.168.4 the middleware decided the
+`Secure` flag on `omadia_session`, `omadia_login_device` and the OIDC PKCE
+cookie by reading the request's `X-Forwarded-Proto` header directly, and ran
+with Express's `trust proxy` set to `true`. Whoever sent a request therefore
+chose the flag: `Secure` on a plain-HTTP login that sent the header, and no
+`Secure` behind a TLS proxy that did not set it
+(`docs/security-architecture.md` §10o, issue #1310).
+
+What changes:
+
+- **`Secure` now follows the connection.** `req.secure`, which applies
+  `X-Forwarded-Proto` only from a hop you have named.
+- **`TRUSTED_PROXY_ADDRESSES` (new, default empty)** is Express's `trust proxy`
+  value: the addresses, `IP/bits` blocks or `loopback` / `linklocal` /
+  `uniquelocal` aliases of the proxies in front of the middleware. Empty means
+  no hop may speak for the client. **It is not a hop count** — Express counts
+  the immediate peer as a trusted hop, so `1` would trust a client that
+  connects directly and believe the header it wrote for itself. A bare number
+  is refused at boot.
+- **`AUTH_COOKIE_SECURE` (new, default `auto`)** — `auto` follows the
+  connection, `always` marks the cookies `Secure` regardless, `never` marks
+  none of them.
+- **`WEB_UI_TRUST_FORWARDED_PROTO` (new, read by the web-ui, default off).**
+  The `/bot-api` proxy now sets `X-Forwarded-Proto` from the connection it
+  accepted and drops the browser's value; set this to `true` when the web-ui
+  itself sits behind a TLS-terminating edge that sets the header.
+
+**Does this affect you?** Check the Set-Cookie lines on a login:
+
+```
+curl -si -X POST 'https://<your-host>/api/v1/auth/login/local' \
+  -H 'content-type: application/json' \
+  -d '{"email":"<admin email>","password":"<password>"}' | grep -i set-cookie
+```
+
+Both cookies should carry `Secure` on any HTTPS deployment. If they do not,
+pick one of the two settings below. The boot log prints what is in force:
+`[middleware] request trust boundary: trusted proxies=…, auth cookie Secure=…`.
+
+**Fly.io.** `fly/middleware.fly.toml` now sets `AUTH_COOKIE_SECURE=always`, and
+`fly/web-ui.fly.toml` sets `WEB_UI_TRUST_FORWARDED_PROTO=true`; a
+`fly deploy --config fly/middleware.fly.toml` picks them up. `always` rather
+than a proxy address because neither path proves TLS to `req.secure`: direct
+requests come from Fly Proxy, whose address cannot be named stably, and
+requests through web-ui arrive over `.internal`, a plain-HTTP 6PN hop with no
+proxy in between. The one-click updater only swaps the image and keeps the old
+settings — there, set it once with
+`fly secrets set AUTH_COOKIE_SECURE=always --app <middleware-app>`.
+
+**Render.** `render.yaml` now sets `AUTH_COOKIE_SECURE=always` on the
+middleware and `WEB_UI_TRUST_FORWARDED_PROTO=true` on the web-ui. An existing
+blueprint deployment does not pick up a changed `render.yaml` on its own: set
+both in the Render dashboard, or re-sync the blueprint.
+
+**docker-compose.** Nothing to do for the shipped stack: both services are
+published on `127.0.0.1` over plain HTTP, and the defaults correctly leave the
+cookies without `Secure` — a browser would discard a `Secure` cookie served
+over `http://127.0.0.1`, which looks like a login that silently does nothing.
+If you put a TLS-terminating reverse proxy in front, set
+`TRUSTED_PROXY_ADDRESSES` to its address (or `loopback` when it runs on the
+same host) **if** it sets `X-Forwarded-Proto`, and `AUTH_COOKIE_SECURE=always`
+if it does not. Setting `always` on a stack that is still reachable over plain
+HTTP breaks sign-in silently, so check the curl above afterwards.
+
+**Desktop.** Nothing to do. The shell reaches the kernel over loopback on
+plain HTTP, and the cookies correctly carry no `Secure` there.
+
+**If you had worked around the old behaviour** by injecting
+`X-Forwarded-Proto: https` at a proxy to get `Secure` cookies, that no longer
+works unless you also name that proxy in `TRUSTED_PROXY_ADDRESSES`.
+`AUTH_COOKIE_SECURE=always` is the simpler replacement.
+
+**Pairing URLs changed the same way.** `/.well-known/omadia-ui` and the
+channel's `/omadia-ui/info` derived `https` / `wss` from the same raw header,
+so a client could pick the scheme of the URLs it was then handed. They now use
+the connection. `X-Forwarded-Host` is still honoured, and
+`OMADIA_UI_PUBLIC_WS_URL` still overrides the whole URL — set it if a split
+deployment advertises the wrong scheme after the upgrade.
+
 ## Upgrading past v0.167.17 — plugins: upload and install check `compat.core`
 
 A plugin links against the host's `@omadia/plugin-api` at runtime. Its

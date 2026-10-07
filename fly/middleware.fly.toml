@@ -27,6 +27,13 @@ primary_region = "fra"
   # MIDDLEWARE_URL stays on .internal (fly/deploy.sh): a .flycast hop is Fly
   # Proxy, which would most likely put web-ui's own address in this header.
   AUTH_LOGIN_CLIENT_ADDRESS = "header:Fly-Client-IP"
+  # Auth cookie Secure flag (#1310, §10o). `always`, not the `auto` default:
+  # `force_https = true` below means every browser reaches this app over TLS,
+  # but neither path proves it to `req.secure`. Direct requests arrive from Fly
+  # Proxy, whose address TRUSTED_PROXY_ADDRESSES cannot name stably; requests
+  # through web-ui arrive over .internal, which is a plain-HTTP 6PN hop with no
+  # proxy in between. `auto` would leave the flag off on both.
+  AUTH_COOKIE_SECURE = "always"
 
 [mounts]
   source = "omadia_data"

@@ -19,10 +19,10 @@ import {
   sessionFailureStatus,
 } from '../auth/requireAuth.js';
 import {
-  isSecureContext,
   SESSION_WINDOW_S,
   setSessionCookie,
 } from '../auth/sessionCookie.js';
+import { requestIsSecure } from '../http/requestTrust.js';
 import {
   signSession,
   verifySession,
@@ -247,7 +247,7 @@ export function createAuthRouter(deps: AuthDeps): Router {
       Buffer.from(begin.pendingState).toString('base64url'),
       {
         httpOnly: true,
-        secure: isSecureContext(req),
+        secure: requestIsSecure(req),
         sameSite: 'lax',
         maxAge: PKCE_COOKIE_MAX_AGE_S * 1000,
         path: '/',

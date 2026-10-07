@@ -59,6 +59,14 @@ services:
       # single `xff:<n>` picks the browser's address on both paths. Every
       # browser then shares one key, which the limiter treats as shared;
       # browsers that have signed in before keep a budget of their own.
+      #
+      # Auth cookie Secure flag (#1310, docs/security-architecture.md §10o).
+      # `always`, not the `auto` default: Render serves both services over
+      # HTTPS only, but TLS is terminated at its edge and the middleware sees a
+      # plain-HTTP connection from an address TRUSTED_PROXY_ADDRESSES cannot
+      # name stably, so `auto` would leave the flag off.
+      - key: AUTH_COOKIE_SECURE
+        value: always
     disk:
       name: omadia-data
       mountPath: /data
@@ -81,6 +89,11 @@ services:
           name: omadia-middleware
           type: web
           envVarKey: RENDER_EXTERNAL_URL
+      # The /bot-api proxy states X-Forwarded-Proto from the connection it
+      # accepted and drops the browser's value (#1310, §10o). Render's edge
+      # terminates TLS and sets the header, so keep the incoming value.
+      - key: WEB_UI_TRUST_FORWARDED_PROTO
+        value: "true"
 
 databases:
   # --- Postgres + pgvector (knowledge graph, routines, verifier store) -----
