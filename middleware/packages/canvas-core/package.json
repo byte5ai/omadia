@@ -32,7 +32,7 @@
   },
   "devDependencies": {
     "@omadia/plugin-api": "*",
-    "@types/node": "^26.6.3",
+    "@types/node": "^26.6.4",
     "@types/ws": "^8.18.1",
     "tsx": "^4.23.15",
     "typescript": "^5.9.0",
