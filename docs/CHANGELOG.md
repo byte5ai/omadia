@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Teams turns keep their run traces
+
+2026-10-07 — Every Teams turn's run trace was dropped (`run-ingest-failed`,
+"User-Cluster user:<aad-id> not found"); transcript and embeddings were
+written. The Teams plugin names its sender only through `origin` + `userId`
+(the AAD object id), so no `channelIdentity` reached the kernel and the raw
+AAD id went to `ingestRun`. The run-trace owner is now resolved at the start
+of the turn through the identity resolver (`resolveRunTraceOwner` →
+`resolveOrCreateChannelIdentity`, with the AAD merge `resolveTurnAudience`
+uses), each group participant to their own cluster. `ingestRun` still never
+creates a cluster, and the turn's `resolvedOmadiaUserId`, dataset ACLs, MCP
+keys and `Principal` are unchanged for these turns.
+
 ### Added — the memory browser shows member groups
 
 2026-10-06 — The operator memory browser (`/memory`) lists the `members` notes
