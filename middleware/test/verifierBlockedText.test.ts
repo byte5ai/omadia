@@ -13,7 +13,11 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import { composeVerifierBlockedText, type VerifierWithheldCause } from '@omadia/channel-sdk';
+import {
+  composeVerifierBlockedText,
+  composeVerifierDisclaimerText,
+  type VerifierWithheldCause,
+} from '@omadia/channel-sdk';
 
 const contradicted = (n: number) => ({
   badge: 'failed' as const,
@@ -116,6 +120,67 @@ describe('composeVerifierBlockedText', () => {
         const text = composeVerifierBlockedText(locale, withCause(cause));
         assert.doesNotMatch(text, /[<>*_`\n]/, text);
       }
+    }
+  });
+});
+
+/**
+ * The note on a RELEASED answer whose claims the check could not all confirm
+ * (2026-10-08: unconfirmed is not wrong, so `enforce` releases it). It must
+ * say no more than the counts back: "some statements" only when the check
+ * confirmed at least one claim, "the statements" when it confirmed none.
+ */
+describe('composeVerifierDisclaimerText', () => {
+  const counts = (claimCount: number, unverifiedCount: number, contradictionCount = 0) => ({
+    claimCount,
+    unverifiedCount,
+    contradictionCount,
+  });
+
+  it('says "some" only when the check confirmed a claim', () => {
+    assert.match(composeVerifierDisclaimerText('de', counts(3, 1)), /^Hinweis: Ein Teil der Angaben/);
+    assert.match(composeVerifierDisclaimerText('de', counts(2, 2)), /^Hinweis: Die Angaben in dieser Antwort/);
+    assert.match(composeVerifierDisclaimerText('de', counts(0, 0)), /^Hinweis: Die Angaben in dieser Antwort/);
+  });
+
+  it('never claims a confirmation the counts do not back', () => {
+    // Malformed or inconsistent counts fall back to "none confirmed".
+    for (const summary of [
+      counts(1, 3),
+      { claimCount: Number.NaN, unverifiedCount: 0, contradictionCount: 0 },
+      { claimCount: -2, unverifiedCount: 0, contradictionCount: 0 },
+      { claimCount: 2.5, unverifiedCount: 0, contradictionCount: 0 },
+      { claimCount: 3, unverifiedCount: Number.NaN, contradictionCount: 0 },
+      // A summary from a client that left the count out.
+      { claimCount: 3, contradictionCount: 0, unverifiedCount: undefined as unknown as number },
+      // Nothing unconfirmed: "some could not be confirmed" would be false.
+      counts(3, 0),
+      counts(2, 1, 1),
+    ]) {
+      assert.match(
+        composeVerifierDisclaimerText('de', summary),
+        /^Hinweis: Die Angaben/,
+        JSON.stringify(summary),
+      );
+    }
+  });
+
+  it('speaks EN on request, DE by default, one plain-text paragraph', () => {
+    assert.match(
+      composeVerifierDisclaimerText('en', counts(3, 1)),
+      /^Note: some statements in this answer could not be confirmed automatically\./,
+    );
+    assert.match(composeVerifierDisclaimerText('en-GB', counts(1, 1)), /^Note: the statements in this answer/);
+    assert.match(composeVerifierDisclaimerText(undefined, counts(1, 1)), /^Hinweis:/);
+    for (const text of [
+      composeVerifierDisclaimerText('de', counts(3, 1)),
+      composeVerifierDisclaimerText('de', counts(0, 0)),
+      composeVerifierDisclaimerText('en', counts(3, 1)),
+      composeVerifierDisclaimerText('en', counts(0, 0)),
+    ]) {
+      assert.doesNotMatch(text, /[<>*_`\n]/, text);
+      assert.doesNotMatch(text, CONTRADICTION_WORDS, 'a disclaimer never speaks of a contradiction');
+      assert.doesNotMatch(text, /zurückgehalten|withheld/i, 'the answer was not withheld');
     }
   });
 });

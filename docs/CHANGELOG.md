@@ -36,6 +36,48 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — `enforce` releases an unconfirmed answer with a disclaimer
+
+2026-10-08 — With extraction working again (release 358), the next live
+answers were withheld as `approved_with_disclaimer` /
+`insufficient_evidence`: no claim refuted, but some `not_checked` (no checker
+takes them) or `not_in_answer` (the verbatim guard). Unconfirmed is not
+wrong, and withholding it hid most real answers.
+
+- **Release with a disclaimer.** `enforce` now delivers an
+  `approved_with_disclaimer` over at least one unconfirmed claim, and
+  `skipped` with `no_checkable_claims` / `incomplete_coverage`, with a
+  localized paragraph (`composeVerifierDisclaimerText`, `@omadia/channel-sdk`):
+  "Hinweis: Ein Teil der Angaben in dieser Antwort ließ sich nicht automatisch
+  bestätigen. Prüfe wichtige Angaben bei Bedarf im Quellsystem." when valid
+  counts show a confirmed claim next to an unconfirmed one, "Die Angaben …
+  ließen sich nicht automatisch bestätigen. …" otherwise (EN: "could not be
+  confirmed automatically"). "Confirmed", not "checked": a claim the judge
+  checked and found unsupported was checked. Stream and `chat()`; a folded
+  AI-disclosure block stays last, and a trailing `NO_REPLY` line stays the
+  last line so Teams and Telegram stay silent.
+- **Released this way, too:** a contradiction the evidence judge reported but
+  could not confirm — judged on Privacy Shield placeholders, not reproduced on
+  recheck, citing no evidence, evidence its request never printed or another
+  record than the claim pins — now carries
+  `cause: 'contradiction_unconfirmed'` and goes out with the disclaimer. Behind
+  the shield a contradiction judged on a request masking changed therefore
+  cannot stop an answer; one judged on an unchanged request is rechecked and
+  still can, and so can the deterministic re-query, the citation checks and
+  the trace checks.
+- **Still withheld:** `blocked` (refutation, missing or invented citation,
+  uncalled tool), `unavailable` (verifier could not run, Privacy Shield), and
+  an `approved_with_disclaimer` whose every check that ran failed technically
+  (`check_failed`, the outage notice). A judge recheck that itself fails now
+  counts as `check_failed`, not as an unconfirmed contradiction.
+- Content-free log lines (ids and closed codes only, anything else logged as
+  `invalid`): `[verifier/service] answer released with disclaimer run=…
+  status=… cause=… claims=<id>:<basis>,…`, and the correction retry now names
+  each contradicted claim's basis (`retry run=… contradictions=N
+  claims=<id>:<basis>,…`). **Behaviour change for `VERIFIER_MODE=enforce`:**
+  unconfirmed claims can now reach the user, marked as such; there is no
+  setting to restore the stricter rule.
+
 ### Fixed — citation markers no longer cost claims, and still pin their record
 
 - **`[ref:…]` markers are stripped before extraction, the verbatim guard and

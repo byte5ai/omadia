@@ -8,9 +8,12 @@
  *     the held events in their original order, the answer the verdict is
  *     about as one text delta, and the verdict on `done`
  *     (`verifierServiceEnforceRelease.test.ts` pins that delta);
- *   - any other verdict — a contradiction, claims left unconfirmed, a
- *     verifier that could not run — withholds the answer: the consumer gets
- *     one notice delta and a `done` marked `answerSource: 'verifier-blocked'`;
+ *   - claims the check could not confirm, did not check or did not cover
+ *     release the answer with a disclaimer true to the counts, folded before
+ *     the AI-disclosure block;
+ *   - a contradiction or a verifier that could not run withholds the answer:
+ *     the consumer gets one notice delta and a `done` marked
+ *     `answerSource: 'verifier-blocked'`;
  *   - control-flow terminals (choice card, MCP input form, slot picker, OAuth
  *     consent, a degraded turn's notice) are released without verification;
  *     a bare NO_REPLY releases its `done` and nothing else, and an answer that
@@ -38,13 +41,21 @@ import { createVerifierHarness, USER_INPUT } from './_helpers/verifierServiceHar
 import type { ScriptedVerdict } from './_helpers/verifierServiceHarness.js';
 import {
   AMOUNT_TEXT,
+  CONTRADICTED,
+  UNCONFIRMED_CONTRADICTION,
+  allChecksFailed,
   approved,
   blocked,
+  disclaimerOverVerified,
   noneConfirmed,
   partlyChecked,
+  partlyFailed,
   skipped,
   unavailable,
+  unconfirmedContradiction,
 } from './_helpers/verifierVerdictFixtures.js';
+import { isNoReply } from '../packages/harness-channel-sdk/src/noReply.js';
+import { withVerifierDisclaimer } from '../packages/harness-orchestrator/src/verifierDelivery.js';
 import {
   ANSWER,
   DISCLOSURE,
@@ -139,7 +150,7 @@ describe('VerifierService.chatStream — enforce holds content until the verdict
   });
 });
 
-describe('VerifierService.chatStream — enforce withholds an answer it could not confirm', () => {
+describe('VerifierService.chatStream — enforce withholds an answer it found wrong or could not check', () => {
   it('a contradiction delivers one notice and a done marked verifier-blocked', async () => {
     const terminal = done({
       turnId: 'turn:scope-1:1',
@@ -190,19 +201,15 @@ describe('VerifierService.chatStream — enforce withholds an answer it could no
     assert.match(h.streamCalls[1]?.input.extraSystemHint ?? '', /\S/, 'the retry carries the correction hint');
   });
 
-  it('fails closed: unavailable, partly checked and unconfirmed verdicts withhold too', async () => {
-    const cases: [string, ScriptedVerdict, RegExp][] = [
-      ['pipeline error', new Error('pipeline down'), /technischen Störung nicht abgeschlossen/],
-      ['extractor outage', unavailable(), /technischen Störung nicht abgeschlossen/],
-      ['partly checked', partlyChecked(), /nicht alle Angaben ließen sich/i],
-      ['none confirmed', noneConfirmed(), /nicht alle Angaben ließen sich/i],
-      ['no checkable claims', skipped('no_checkable_claims'), /nicht alle Angaben ließen sich/i],
-      ['incomplete coverage', skipped('incomplete_coverage'), /nicht alle Angaben ließen sich/i],
+  it('fails closed when the check could not run: a pipeline error and an outage withhold', async () => {
+    const cases: [string, ScriptedVerdict][] = [
+      ['pipeline error', new Error('pipeline down')],
+      ['extractor outage', unavailable()],
     ];
-    for (const [label, verdict, why] of cases) {
+    for (const [label, verdict] of cases) {
       const { events, h } = await runEnforced([verdict]);
       const withheld = assertWithheld(events, label);
-      assert.match(withheld.answer, why, label);
+      assert.match(withheld.answer, /technischen Störung nicht abgeschlossen/, label);
       assert.equal(h.hookPoints.length, 0, `${label}: no contradiction, no block hook`);
     }
   });
@@ -229,6 +236,125 @@ describe('VerifierService.chatStream — enforce withholds an answer it could no
     assert.match(byOperator?.answer ?? '', /withheld/);
     const byDefault = doneOf((await runEnforced([blocked()], turn())).events);
     assert.match(byDefault?.answer ?? '', /zurückgehalten/);
+  });
+
+  it('logs the bases of the claims a correction retry is for — ids and codes, never text', async () => {
+    const { h } = await runEnforced([blocked(), approved()], turn());
+    const line = h.logs.find((l) => l.includes('[verifier/service] retry run='));
+    assert.ok(line, 'the retry is logged');
+    assert.match(line, /contradictions=1 claims=\S+:evidence \(stream\)$/);
+    assert.equal(line.includes(AMOUNT_TEXT), false, 'no claim text in the log');
+  });
+});
+
+describe('VerifierService.chatStream — enforce releases an unconfirmed answer with a disclaimer', () => {
+  // Unconfirmed is not wrong: claims the check could not confirm, did not
+  // check or did not cover go out — with a note that is true to the counts.
+  const SOME = 'Hinweis: Ein Teil der Angaben in dieser Antwort ließ sich nicht automatisch bestätigen. Prüfe wichtige Angaben bei Bedarf im Quellsystem.';
+  const NONE = 'Hinweis: Die Angaben in dieser Antwort ließen sich nicht automatisch bestätigen. Prüfe wichtige Angaben bei Bedarf im Quellsystem.';
+
+  it('releases the answer and the disclaimer as one delta, the verdict on done', async () => {
+    const cases: [string, ScriptedVerdict, string][] = [
+      ['partly checked', partlyChecked(), SOME],
+      ['none confirmed', noneConfirmed(), NONE],
+      ['no checkable claims', skipped('no_checkable_claims'), NONE],
+      ['incomplete coverage', skipped('incomplete_coverage'), NONE],
+    ];
+    for (const [label, verdict, note] of cases) {
+      const { events, h } = await runEnforced([verdict]);
+      const terminal = doneOf(events);
+      const expected = `${ANSWER}\n\n${note}`;
+      assert.equal(terminal?.answerSource, undefined, `${label}: not withheld`);
+      assert.equal(terminal?.answerIsError, undefined, `${label}: no error`);
+      assert.equal(terminal?.answer, expected, label);
+      assert.deepEqual(deltasOf(events), [expected], `${label}: one delta, answer + note`);
+      assert.equal(terminal?.verifier?.status, verdict instanceof Error ? undefined : verdict.status, label);
+      assert.equal(events[events.length - 1]?.type, 'verifier', `${label}: verifier comes last`);
+      assert.equal(h.hookPoints.length, 0, `${label}: no block hook`);
+      assert.equal(h.streamCalls.length, 1, `${label}: no correction retry`);
+      const line = h.logs.find((l) => l.includes('answer released with disclaimer'));
+      assert.ok(line, `${label}: the release is logged`);
+      assert.match(line, /status=\S+ /, label);
+      assert.equal(line.includes(AMOUNT_TEXT), false, `${label}: no answer text in the log`);
+    }
+  });
+
+  it('puts the disclaimer before the AI-disclosure block the turn folded, never in the delta', async () => {
+    const folded = done({ aiDisclosure: DISCLOSURE }, `${ANSWER}\n\n${DISCLOSURE_BLOCK}`);
+    const { events } = await runEnforced([partlyChecked()], turn(folded));
+    const terminal = doneOf(events);
+    assert.equal(terminal?.answer, `${ANSWER}\n\n${SOME}\n\n${DISCLOSURE_BLOCK}`);
+    assert.deepEqual(deltasOf(events), [`${ANSWER}\n\n${SOME}`]);
+  });
+
+  it('words the disclaimer in the turn locale, then the operator locale', async () => {
+    const english = { ...DISCLOSURE, locale: 'en' };
+    const byTurn = await runEnforced([partlyChecked()], turn(done({ aiDisclosure: english })));
+    assert.match(doneOf(byTurn.events)?.answer ?? '', /\n\nNote: some statements in this answer could not be confirmed automatically\./);
+
+    const byOperator = await runEnforced([noneConfirmed()], turn(), 'en');
+    assert.match(doneOf(byOperator.events)?.answer ?? '', /\n\nNote: the statements in this answer could not be confirmed automatically\./);
+  });
+
+  it('a confirmed answer carries no disclaimer', async () => {
+    const { events, h } = await runEnforced([approved()]);
+    assert.equal(doneOf(events)?.answer, ANSWER);
+    assert.equal(h.logs.some((l) => l.includes('answer released with disclaimer')), false);
+  });
+
+  it('nor does a weaker status over claims that are all verified — there is nothing to disclaim', async () => {
+    const { events, h } = await runEnforced([disclaimerOverVerified()]);
+    assert.equal(doneOf(events)?.answer, ANSWER);
+    assert.equal(doneOf(events)?.answerSource, undefined);
+    assert.equal(h.logs.some((l) => l.includes('answer released with disclaimer')), false);
+  });
+
+  it('releases over a failed check when another claim got a real verdict', async () => {
+    const { events } = await runEnforced([partlyFailed()]);
+    assert.equal(doneOf(events)?.answer, `${ANSWER}\n\n${SOME}`);
+    assert.equal(doneOf(events)?.answerSource, undefined);
+  });
+
+  it('releases a contradiction the judge could not confirm, with the disclaimer — and logs its cause', async () => {
+    const { events, h } = await runEnforced([unconfirmedContradiction()]);
+    assert.equal(doneOf(events)?.answer, `${ANSWER}\n\n${SOME}`);
+    assert.equal(h.hookPoints.length, 0, 'no contradiction, no block hook');
+    const line = h.logs.find((l) => l.includes('answer released with disclaimer'));
+    assert.match(line ?? '', /c_5:unverified\/contradiction_unconfirmed/);
+  });
+
+  it('withholds when every check that ran failed: the technical-fault notice, like an outage', async () => {
+    const { events, h } = await runEnforced([allChecksFailed()]);
+    const withheld = assertWithheld(events, 'all checks failed');
+    assert.match(withheld.answer, /technischen Störung nicht abgeschlossen/);
+    assert.equal(withheld.verifier?.withheldCause, 'check_failed');
+    assert.ok(h.logs.some((l) => /answer withheld .*cause=check_failed/.test(l)), h.logs.join(' | '));
+  });
+
+  it('a real blocker outranks a disclaimable claim: refuted plus unconfirmed stays withheld', async () => {
+    const mixed: ScriptedVerdict = {
+      status: 'blocked',
+      claims: [CONTRADICTED, UNCONFIRMED_CONTRADICTION],
+      contradictions: [CONTRADICTED],
+      latencyMs: 3,
+    };
+    const { events } = await runEnforced([mixed, mixed]);
+    const withheld = assertWithheld(events, 'mixed');
+    assert.match(withheld.answer, /Widerspruch/);
+  });
+
+  it('keeps a trailing NO_REPLY last, so a channel that honours it stays silent', async () => {
+    const silent = `${ANSWER}\nNO_REPLY`;
+    const { events } = await runEnforced([partlyChecked()], turn(done({}, silent)));
+    const answer = doneOf(events)?.answer ?? '';
+    assert.equal(answer, `${ANSWER}\n\n${SOME}\nNO_REPLY`);
+    assert.equal(isNoReply({ text: answer }), true, 'the sentinel still ends the message');
+  });
+
+  it('never decorates deliberate silence, in any whitespace', () => {
+    for (const silent of ['NO_REPLY', '  NO_REPLY  ', '  \n NO_REPLY  ']) {
+      assert.equal(withVerifierDisclaimer(silent, SOME, undefined), silent, JSON.stringify(silent));
+    }
   });
 });
 

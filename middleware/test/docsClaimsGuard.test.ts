@@ -173,6 +173,16 @@ const RETIRED_CLAIMS = [
   // embeddings still send stored text as it is.
   'turn scoring and the other memory jobs',
   'other memory jobs send stored memories',
+  // `enforce` withholds a refuted claim and an answer it could not check, but
+  // releases one it merely could not fully confirm, with a disclaimer.
+  'withholds one it could not confirm',
+  'withholds an answer whose claims it could not confirm',
+  'replaces one it could not confirm with a notice',
+  // The disclaimer says "confirmed": a claim the judge checked and found
+  // unsupported was checked.
+  'could not be checked automatically',
+  'Every other verdict withholds it',
+  'withheld like any answer with an unconfirmed claim',
 ] as const;
 
 /** Retired sentences in operator- and API-caller-facing files outside the

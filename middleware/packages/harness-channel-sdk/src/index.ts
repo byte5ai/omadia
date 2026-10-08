@@ -189,6 +189,7 @@ export { composeTurnIncompleteText } from './turnIncomplete.js';
 // through the same locale mechanism as the turn-incomplete notice above.
 export {
   composeVerifierBlockedText,
+  composeVerifierDisclaimerText,
   verifierBlockedCause,
 } from './verifierBlocked.js';
 export type { VerifierBlockedCause } from './verifierBlocked.js';

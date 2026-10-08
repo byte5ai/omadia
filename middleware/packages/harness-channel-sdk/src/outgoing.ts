@@ -36,8 +36,11 @@ export type { AiDisclosure } from './aiDisclosure.js';
  * treat the final answer as authoritative whenever this is not `'model'`.
  *
  * `'verifier-blocked'` — the answer verifier, in `enforce` mode, withheld the
- * model's answer because it could not confirm it (a contradiction, claims it
- * could not confirm, or a check that could not be completed). The answer is
+ * model's answer: a refuted claim, a missing or invented citation, data the
+ * run never fetched, or a check that could not run or whose every check
+ * failed. (An answer it merely could not fully confirm is released as
+ * `'model'` with a disclaimer paragraph, `composeVerifierDisclaimerText`.)
+ * The answer is
  * then a localized notice saying so (`composeVerifierBlockedText`), always
  * with `answerIsError: true`; the model's own text never reaches the client,
  * not even as earlier deltas — the stream carries exactly one `text_delta`,
