@@ -48,12 +48,16 @@ string that was not valid JSON — the shape behind the morning's withholds.
   constrains decoding to the schema, so `claims` is always an array. The
   schema is strict-clean (`additionalProperties: false` on every object,
   `value` as `anyOf` instead of a type array). New optional
-  `ToolSpec.strict`; the Anthropic adapter sends it on the tool definition,
-  other adapters ignore it. Haiku 4.5 supports it without a beta header.
+  `ToolSpec.strict`; the Anthropic adapter sends it on the tool definition
+  for models on its strict allowlist (`supportsStrictTools`: Haiku 4.5,
+  Opus 4.1/4.5/4.8, the 5-series) and leaves it out elsewhere — an unknown
+  field is a 400, not ignored. Other adapters ignore it. No beta header.
 - The extraction budget is derived from the claim cap
-  (`extractionTokenBudget`: max(1024, 256 + 110 × (maxClaims + 1)), 2566 at
-  the default 20) instead of a fixed 1024. Billed per token produced, so it
-  costs only when a list needs it.
+  (`extractionTokenBudget`: 256 + 110 × (maxClaims + 1), between 1024 and
+  16000 — 2566 at the default 20) instead of a fixed 1024. Billed per token
+  produced, so it costs only when a list needs it; the ceiling keeps a large
+  `VERIFIER_MAX_CLAIMS` from asking for more than a non-streaming call can
+  carry.
 - Verified against the real API with synthetic text: strict accepted, 5/5
   extractions of a ~20-claim answer returned arrays of 18–21 entries using
   1063–1403 output tokens — every one would have hit the old cap.

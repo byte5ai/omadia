@@ -95,6 +95,7 @@ function toAnthropicMessages(
 function toAnthropicTools(
   tools: ReadonlyArray<ToolSpec>,
   cacheHints: CacheHints | undefined,
+  strictSupported: boolean,
 ): AnthropicContentBlockParam[] {
   return tools.map((tool, i) => {
     // Caching the LAST tool caches everything up to that point — the
@@ -114,8 +115,10 @@ function toAnthropicTools(
       description: tool.description,
       input_schema: tool.inputSchema,
       // Constrained decoding: the API guarantees the call's input validates
-      // against `input_schema` (no beta header; Haiku 4.5 and later).
-      ...(tool.strict === true ? { strict: true } : {}),
+      // against `input_schema` (no beta header) — only on a model that
+      // honors it (`supportsStrictTools`); elsewhere the call goes out
+      // unconstrained instead of failing with a 400.
+      ...(tool.strict === true && strictSupported ? { strict: true } : {}),
       ...cache,
     };
   });
@@ -324,6 +327,30 @@ export function supportsForcedToolChoice(model: string): boolean {
   return !FORCED_TOOL_CHOICE_UNSUPPORTED.some((m) => model.includes(m));
 }
 
+/** Model-id fragments of the models that honor strict tool use (structured
+ *  outputs): Haiku 4.5, Opus 4.1/4.5/4.8 and every 5-series model. An
+ *  allowlist, not a denylist — a model or gateway that does not know the
+ *  field answers 400 instead of ignoring it. */
+const STRICT_TOOLS_SUPPORTED = [
+  'haiku-4-5',
+  'opus-4-1',
+  'opus-4-5',
+  'opus-4-8',
+  'opus-5',
+  'sonnet-5',
+  'fable-5',
+  'mythos-5',
+];
+
+/**
+ * Whether `strict: true` may be sent on a tool definition for this model.
+ * On any other model a strict `ToolSpec` goes out without the flag — the
+ * call is then unconstrained, exactly as before, rather than a 400.
+ */
+export function supportsStrictTools(model: string): boolean {
+  return STRICT_TOOLS_SUPPORTED.some((m) => model.includes(m));
+}
+
 /**
  * On models that reject forced tool use, a forced choice degrades to `auto`
  * (keeping `disableParallel`). Every caller that forces a tool already treats
@@ -359,7 +386,7 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
       ? { temperature: req.temperature }
       : {}),
     ...(req.tools !== undefined && req.tools.length > 0
-      ? { tools: toAnthropicTools(req.tools, req.cacheHints) }
+      ? { tools: toAnthropicTools(req.tools, req.cacheHints, supportsStrictTools(req.model)) }
       : {}),
     ...(toolChoice !== undefined
       ? { tool_choice: toAnthropicToolChoice(toolChoice) }

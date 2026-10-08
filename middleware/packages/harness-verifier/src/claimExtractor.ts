@@ -22,8 +22,10 @@ import { verbatimSpans } from './verbatimSpan.js';
 
 /**
  * Extracts structured factual claims from an orchestrator answer via a
- * Haiku tool-use call. The tool schema is enforced via `tool_choice`, so
- * the model is forced into a JSON-shaped response and cannot ramble.
+ * Haiku tool-use call. `tool_choice` forces the call; the schema itself is
+ * enforced by strict tool use (`strict: true`, constrained decoding) where
+ * the model supports it — a forced call alone did not stop Haiku 4.5 from
+ * writing the list as an invalid JSON string (2026-10-08).
  *
  * Design choices:
  *  - One LLM call per answer, plus at most one repair call when that
@@ -130,15 +132,23 @@ const TOKENS_PER_CLAIM = 110;
 const TOKENS_ENVELOPE = 256;
 /** Never below the budget the extractor had before it was derived. */
 const MIN_EXTRACTION_TOKENS = 1024;
+/** Never above what a non-streaming call can ask for: the Anthropic SDK
+ *  refuses one whose expected duration needs streaming (from ~21k tokens),
+ *  and 16k-output models stop at 16384. Reached from a claim cap of ~143. */
+const MAX_EXTRACTION_TOKENS = 16000;
 
 /**
  * The extraction call's output-token budget: room for the whole list the
- * prompt asks for (`maxClaims + 1` entries). A fixed 1024 cut real answers
- * off at about ten claims; billing is per token produced, so the larger cap
- * costs only when a list needs it (and then a few seconds more).
+ * prompt asks for (`maxClaims + 1` entries), between the old fixed 1024 and
+ * a non-streaming ceiling. A fixed 1024 cut real answers off at about ten
+ * claims; billing is per token produced, so the larger cap costs only when a
+ * list needs it (and then a few seconds more).
  */
 export function extractionTokenBudget(maxClaims: number): number {
-  return Math.max(MIN_EXTRACTION_TOKENS, TOKENS_ENVELOPE + TOKENS_PER_CLAIM * (maxClaims + 1));
+  return Math.min(
+    MAX_EXTRACTION_TOKENS,
+    Math.max(MIN_EXTRACTION_TOKENS, TOKENS_ENVELOPE + TOKENS_PER_CLAIM * (maxClaims + 1)),
+  );
 }
 
 const TOOL_NAME = 'record_claims';

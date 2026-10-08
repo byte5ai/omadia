@@ -15,6 +15,7 @@ import {
   createAnthropicProvider,
   requiresEffortBeta,
   supportsForcedToolChoice,
+  supportsStrictTools,
   EFFORT_BETA,
 } from '@omadia/llm-adapter-anthropic';
 import {
@@ -264,6 +265,41 @@ test('request mapping: a strict tool carries strict: true on its definition, oth
   assert.equal(tools[0]?.['strict'], true);
   assert.equal('strict' in (tools[1] ?? {}), false);
   assert.equal('strict' in ((p['tool_choice'] as Record<string, unknown>) ?? {}), false);
+});
+
+test('request mapping: strict is left out for a model that does not honor it', async () => {
+  // A field the endpoint does not know is a 400, not ignored: a model outside
+  // the strict allowlist gets the tool unconstrained, as before.
+  const captured: Captured = {};
+  const provider = createAnthropicProvider({
+    client: mockClient(captured, textResponse()),
+  });
+  await provider.complete({
+    model: 'claude-sonnet-4-6',
+    maxTokens: 256,
+    tools: [
+      { name: 'record_claims', description: 'R', inputSchema: { type: 'object' }, strict: true },
+    ],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  const tools = (captured.params as Record<string, unknown>)['tools'] as Array<Record<string, unknown>>;
+  assert.equal('strict' in (tools[0] ?? {}), false);
+});
+
+test('supportsStrictTools: Haiku 4.5 and the 5-series, not older Sonnets', () => {
+  for (const model of [
+    'claude-haiku-4-5-20251001',
+    'claude-haiku-4-5',
+    'claude-opus-4-8',
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
+    'claude-fable-5-1',
+  ]) {
+    assert.equal(supportsStrictTools(model), true, model);
+  }
+  for (const model of ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-3-5-haiku-latest', 'gpt-4o']) {
+    assert.equal(supportsStrictTools(model), false, model);
+  }
 });
 
 test('stream() yields text deltas then a final response', async () => {

@@ -92,7 +92,7 @@ setup:
       label: "Max Claims per Answer"
       type: "string"
       required: false
-      help: "Höchstzahl geprüfter Claims pro Antwort. Der ClaimExtractor fragt das Modell nach höchstens einem Claim mehr; weitere Claims und eine bis zu diesem Limit gefüllte Liste (das Modell hat dann womöglich Claims ausgelassen) bleiben als 'nicht geprüft' im Verdict, die Antwort gilt dann höchstens als teilweise geprüft. Default: 20."
+      help: "Höchstzahl geprüfter Claims pro Antwort. Der ClaimExtractor fragt das Modell nach höchstens einem Claim mehr; weitere Claims und eine bis zu diesem Limit gefüllte Liste (das Modell hat dann womöglich Claims ausgelassen) bleiben als 'nicht geprüft' im Verdict, die Antwort gilt dann höchstens als teilweise geprüft. Das Limit bestimmt auch das Ausgabe-Budget der Extraktion (ca. 110 Tokens pro Claim, mindestens 1024, höchstens 16000) — ein höheres Limit verlängert lange Prüfungen. Default: 20."
     - key: "verifier_amount_tolerance"
       label: "Amount Tolerance"
       type: "string"

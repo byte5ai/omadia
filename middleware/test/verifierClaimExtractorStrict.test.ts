@@ -109,6 +109,15 @@ describe('the extraction token budget fits the list the prompt asks for', () => 
     assert.equal(extractionTokenBudget(0), 1024);
   });
 
+  it('never asks for more than a non-streaming call can carry', () => {
+    // From ~21k tokens the Anthropic SDK refuses a non-streaming call, and
+    // 16k-output models stop at 16384: a large claim cap must not turn every
+    // extraction into an extractor_error.
+    assert.equal(extractionTokenBudget(142), 15986);
+    assert.equal(extractionTokenBudget(143), 16000);
+    assert.equal(extractionTokenBudget(1000), 16000);
+  });
+
   it('sends the derived budget by default — 1024 cut real answers off at ~10 claims', async () => {
     const { extractor, requests } = recording();
     await extractor.extract(INPUT);

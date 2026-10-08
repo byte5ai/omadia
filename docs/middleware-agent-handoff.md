@@ -3672,13 +3672,16 @@ laufen weiter); `enforce` hält ohnehin alles Inhaltliche bis zum Urteil
   eine leere oder halbe Claim-Liste zu liefern: das landet in
   `unavailable` (`extractor_error`), nie in `skipped` (`no_claims`) oder
   `approved`. **`record_claims` ist ein Strict-Tool** (`strict: true`,
-  `ToolSpec.strict`, vom Anthropic-Adapter durchgereicht; andere Adapter
+  `ToolSpec.strict`, vom Anthropic-Adapter nur für Modelle der Allowlist
+  `supportsStrictTools` gesendet — Haiku 4.5, Opus 4.1/4.5/4.8, 5er-Serie;
+  sonst weggelassen, weil ein unbekanntes Feld ein 400 wäre; andere Adapter
   ignorieren es): die API dekodiert schema-gebunden, `claims` kommt immer als
   Array (live 2026-10-08 kam es ohne Strict als ungültiger JSON-String). Das
   Schema ist dafür strict-tauglich (`additionalProperties: false` überall,
   `value` als `anyOf`); die clientseitigen Prüfungen bleiben. Das
   Ausgabe-Budget leitet sich aus `maxClaims` ab (`extractionTokenBudget`,
-  Default 2566). **Vorher genau ein Reparaturversuch** (seit 2026-10-08,
+  256 + 110 × (maxClaims + 1), zwischen 1024 und 16000, Default 2566).
+  **Vorher genau ein Reparaturversuch** (seit 2026-10-08,
   `extractionRepair.ts`): Ist die Antwort abgeschnitten, ohne Call, ohne
   `claims`-Array oder schemawidrig, folgt ein zweiter Call mit demselben
   Modell, Token-Budget, Tool und Wire-View plus einer festen Notiz, was
