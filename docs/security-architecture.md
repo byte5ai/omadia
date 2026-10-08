@@ -1389,6 +1389,9 @@ answer they check:
   the model wrote it, before restore. The request is admitted through the view
   (`admitWireView`, one verifier request in the receipt) but never masked a
   second time, which would read the turn's placeholders as new values. The
+  extractor's one repair attempt (an unusable `record_claims` response) is a
+  request of its own: admitted again, counted again, the same wire view plus
+  fixed static prose — and not sent at all if the view does not admit it. The
   pipeline's own `userMessage` (server-side checks; the extraction prompt when
   no shield is installed) is the same normalised text, never the envelope.
   A server-rendered v4 answer (`answerSource: 'privacy-render'`, real values

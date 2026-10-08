@@ -3666,12 +3666,36 @@ laufen weiter); `enforce` hält ohnehin alles Inhaltliche bis zum Urteil
   Fand die Extraktion im erfassten Teil nichts Prüfbares, ist das Verdict
   `skipped` mit `incomplete_coverage`. Der
   `ClaimExtractor` wirft, wenn der LLM-Call scheitert, die Antwort am
-  Token-Limit abgeschnitten ist (`finishReason: 'max_tokens'`), sie keinen
-  verwertbaren `record_claims`-Call trägt (keinen, oder einen ohne
-  `claims`-Array) oder ein Eintrag das Schema verletzt, statt eine leere oder
-  halbe Claim-Liste zu liefern: das landet in
+  Token-Limit abgeschnitten (`finishReason: 'max_tokens'`) oder verweigert
+  (`refusal`) ist, sie keinen verwertbaren `record_claims`-Call trägt (keinen,
+  oder einen ohne `claims`-Array) oder ein Eintrag das Schema verletzt, statt
+  eine leere oder halbe Claim-Liste zu liefern: das landet in
   `unavailable` (`extractor_error`), nie in `skipped` (`no_claims`) oder
-  `approved`.
+  `approved`. **Vorher genau ein Reparaturversuch** (seit 2026-10-08,
+  `extractionRepair.ts`): Ist die Antwort abgeschnitten, ohne Call, ohne
+  `claims`-Array oder schemawidrig, folgt ein zweiter Call mit demselben
+  Modell, Token-Budget, Tool und Wire-View plus einer festen Notiz, was
+  falsch war. Abgeschnitten: kompakte Einträge (kürzeste Spanne, ohne
+  `unit`), aber `value`, `odoo_record`, `related_entities` und `aggregation`
+  bleiben — ohne `related_entities` summiert der Aggregat-Check über alle
+  Mitarbeiter und meldet einen falschen Widerspruch. Der zweite Call wird wie
+  der erste über `privacy.admitWireView()` zugelassen und im Receipt gezählt
+  (`verifierEgress.requests`) und läuft über denselben Usage-getrackten
+  Provider (`token_usage`). Kein Retry bei API-Fehler oder einer vom Adapter
+  gemeldeten Refusal (`LlmResponse.refusal`, heute der Anthropic-Adapter;
+  der OpenAI-Adapter liefert eine Refusal als Text, die dann als
+  `no_tool_call` die eine Reparatur bekommt), kein dritter Call, keine
+  fachlichen Tools (nur `record_claims`), kein neuer Agentenlauf. Eine
+  Reparatur, die nichts oder weniger Einträge listet als die erste Antwort
+  noch zeigte, gilt als gescheitert (die erste Antwort war nicht leer). Ein
+  als JSON-String geschriebenes, nicht leeres `claims`-Array wird ohne
+  zweiten Call dekodiert (`readToolClaims`), jeder Eintrag danach voll
+  geprüft; `"[]"` als String ist keine Liste. Jede unbrauchbare Antwort loggt
+  `[claim-extractor] diag attempt=N problem=…` mit Provider, Modell,
+  Finish-Reason, Refusal, Anzahl Tool-Calls, Input-Typ, Feldnamen (nur
+  Schema- und gängige Wrapper-Namen, sonst `<other:N>`), `claims`-Typ und
+  Tokens — nie Prompt, Antwort oder Argumentwerte
+  (`describeExtractionResponse`).
 - `badge`: braucht einen Check, der einen Claim entschieden hat
   (`hasVerificationEvidence`): `verified` nur, wenn jeder Claim bestätigt ist;
   `partial` bei mindestens einem bestätigten und einem offenen Claim;
@@ -5485,11 +5509,13 @@ Objektformen und dass solcher Text Text bleibt.
   Hauptursache, Emphasis-Zeichen (`*`, `_`, Backtick) zwischen den Wörtern
   gezielt überspringen, statt den Guard allgemein zu lockern.
 - **Token-Budget der Extraktion an das Claim-Limit koppeln.** Der
-  `record_claims`-Call hat `maxTokens: 1024`. Eine Liste nahe am Limit
-  (`VERIFIER_MAX_CLAIMS + 1` Einträge) kann daran abreißen und endet dann als
-  `unavailable` (`extractor_error`) statt als `partial` — ehrlich, aber
-  ungenauer als nötig. Budget aus `maxClaims` ableiten oder kompaktere
-  Einträge anfordern.
+  `record_claims`-Call hat `maxTokens: 1024`. Gemessen (2026-10-08, Haiku 4.5,
+  synthetische Antwort): 9 Claims brauchen 818–998 Ausgabe-Tokens, 1 von 12
+  Läufen riss am Limit ab — eine Liste mit `VERIFIER_MAX_CLAIMS + 1` (21)
+  Einträgen passt nicht hinein. Seither bekommt ein abgeschnittener Call
+  einen Reparaturversuch mit kompakten Einträgen im selben Budget; reicht das
+  nicht, bleibt es `unavailable`. Offen: das Budget aus `maxClaims` ableiten
+  (kostet nur, wenn die Liste es braucht, verlängert aber die Prüfzeit).
 - **Claim-Wert nicht an den Claim-Text gebunden (älteres Limit).** Der
   `DeterministicChecker` vergleicht bei Beträgen und Summen den vom Modell
   gelieferten `claim.value` mit dem Odoo-Feld (`checkOdooAmount` ab
