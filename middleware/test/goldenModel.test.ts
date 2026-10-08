@@ -273,7 +273,9 @@ describe('goldenModel/buildVerifierRunOnce (synthetic paths, key-free)', () => {
     const r = await buildVerifierRunOnce(stubProvider(() => {
       calls += 1;
     }), 'stub-model')(entry);
-    assert.equal(calls, 1, 'the currency amount must fire the trigger');
+    // The currency amount fires the trigger: one extraction call, and — the
+    // stub's content being unusable — exactly one repair call, never more.
+    assert.equal(calls, 2, 'the currency amount must fire the trigger (extraction + one repair)');
     assert.equal(r.status, 'unavailable');
   });
 

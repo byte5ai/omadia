@@ -36,6 +36,39 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a broken claim extraction gets one repair, and says what broke
+
+2026-10-08 — Two answers in production (kernel v0.171.3, 04:33Z and 04:39Z,
+Haiku 4.5, Privacy Shield on) were withheld as `unavailable /
+extractor_error`: "record_claims call without a claims array". Token
+telemetry rules out a cut-off and an empty call — each wrote ≈500 of 1024
+output tokens, as much as a successful 6–8-claim extraction, with no
+`max_tokens` stop — and the Anthropic adapter passes `tool_use.input` through
+unchanged. So the model's call carried its list, but not as a `claims` array;
+which shape it was could not be told, because nothing recorded it.
+
+- `[claim-extractor] diag attempt=N problem=…` now records that shape for
+  every unusable response, content-free: provider, model, finish reason
+  (neutral and provider), refusal, tool-call count, input type, field names
+  (schema and common wrapper names only, any other key counted as
+  `<other:N>`), the `claims` type and the token counts.
+- A non-empty list written as a JSON-encoded string — a known tool-use
+  failure mode — is decoded; every entry still goes through the schema and
+  verbatim checks. `"[]"` as a string is not a list.
+- Any other unusable response (no call, no claims array, wrong type, a broken
+  entry, a cut-off) gets exactly one more extraction call: the same model,
+  token budget, tool and wire view plus a fixed repair note (a cut-off asks
+  for compact entries but keeps every field the checks read). It is admitted
+  through `privacy.admitWireView()` and counted in the receipt
+  (`verifierEgress.requests`) like the first call, and recorded in
+  `token_usage`. A refusal the adapter reports or a failed API call is not
+  retried; neither the agent's turn nor any business tool runs again. A
+  repair that lists nothing, or fewer entries than the first response still
+  showed, is rejected. Two unusable responses stay `unavailable` — never
+  `[]` — and the notice says technical fault, not contradiction.
+- A refusal (`stop_reason: 'refusal'`, Anthropic) is now its own failure
+  instead of a misleading "no claims array".
+
 ### Fixed — Teams turns keep their run traces
 
 2026-10-07 — Every Teams turn's run trace was dropped (`run-ingest-failed`,
