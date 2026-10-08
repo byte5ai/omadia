@@ -1,6 +1,7 @@
 import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
 import { textMessage } from '@omadia/llm-provider';
-import { claimContext } from './claimContext.js';
+import { claimContext, claimLocation } from './claimContext.js';
+import { isRecordHandle, isSystemRecordHandle, parseEntityHandle } from './entityHandle.js';
 import {
   describeExtractionResponse,
   readToolClaims,
@@ -18,6 +19,7 @@ import type {
   VerifierPrivacy,
 } from './claimTypes.js';
 import { restoreClaims } from './claimRestore.js';
+import { citationAnchors, stripCitationMarkers } from './citationMarkers.js';
 import { verbatimSpans } from './verbatimSpan.js';
 
 /**
@@ -317,7 +319,10 @@ export class ClaimExtractor {
     // Behind a Privacy Shield the model sees the turn's wire view only: the
     // answer as the turn's model wrote it, the prompt as the turn's model
     // received it — never the caller's own text.
-    const answer = (privacy ? privacy.wireAnswer : input.answer).trim();
+    // Without its `[ref:…]` markers: the verifier's metadata, not what the
+    // answer says — mid-sentence they made a faithful claim fail the verbatim
+    // guard (`citationMarkers.ts`). The citation check reads them upstream.
+    const answer = stripCitationMarkers(privacy ? privacy.wireAnswer : input.answer).trim();
     if (answer.length === 0) return { claims: [], gaps: [] };
     const userMessage = privacy ? privacy.wireUserMessage : input.userMessage;
     await this.admit(privacy, 'claim extraction failed: the request was not admitted');
@@ -391,10 +396,16 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
     // answer the user was shown never reaches a checker — and, like a claim
     // the verbatim guard kept back, it is not dropped without a trace: the
     // part of the answer it stood for was not checked (`claims_not_restored`).
-    const out = privacy
-      ? await restoreClaims(normalised, privacy, input.answer.trim(), claimContext)
+    const restored = privacy
+      ? await restoreClaims(
+          normalised,
+          privacy,
+          stripCitationMarkers(input.answer).trim(),
+          claimContext,
+        )
       : normalised;
-    const notRestored = normalised.length - out.length;
+    const notRestored = normalised.length - restored.length;
+    const { claims: out, anchored } = withCitedRecords(restored, input.answer);
     const gaps = coverageGaps({
       answerLength: answer.length,
       rawClaimCount: rawClaims.length,
@@ -411,8 +422,8 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
       }${missed.not_verbatim > 0 ? ` not_in_answer=${String(missed.not_verbatim)}` : ''}${
         missed.too_long > 0 ? ` too_long=${String(missed.too_long)}` : ''
       }${notRestored > 0 ? ` not_restored=${String(notRestored)}` : ''}${
-        gaps.length > 0 ? ` gaps=${gaps.join(',')}` : ''
-      }`,
+        anchored > 0 ? ` cited_records=${String(anchored)}` : ''
+      }${gaps.length > 0 ? ` gaps=${gaps.join(',')}` : ''}`,
     );
     // Diagnostic: when the extractor returns zero claims even though the
     // trigger router fired, log the shape of the exchange. Lengths only: the
@@ -584,6 +595,62 @@ function coverageGaps(extraction: {
   if (extraction.tooLong > 0) gaps.push('claims_too_long');
   if (extraction.notRestored > 0) gaps.push('claims_not_restored');
   return gaps;
+}
+
+/**
+ * Each claim with the records the answer's `[ref:…]` markers cite for it
+ * added to its `relatedEntities`. The extraction never sees the markers
+ * (`citationMarkers.ts`), so this restores — exactly, from the raw answer —
+ * the one place its record handles stood. A marker cites the text before
+ * it: it counts for a claim of the same sentence that starts before it,
+ * with the whitespace between the cited text and the marker set aside, so
+ * a marker after the full stop counts for the sentence it closes and one
+ * glued to the next sentence's first word does not count for that word.
+ * The claim's text is the answer's own span (the verbatim guard), so its
+ * place is found, not guessed. Only record handles of a known system
+ * (`isSystemRecordHandle`), and only for a claim that pins no record of its
+ * own — the extraction's handle wins. They tell the evidence fetcher which
+ * record to look up — exactly that record (`fetchPinned`) — and are never
+ * evidence themselves; the citation check holds every marker to this turn's
+ * knowledge-graph results. `anchored` counts the claims that gained one.
+ */
+function withCitedRecords(
+  claims: Claim[],
+  rawAnswer: string,
+): { claims: Claim[]; anchored: number } {
+  const asRead = stripCitationMarkers(rawAnswer);
+  const anchors = citationAnchors(rawAnswer)
+    .filter((a) => isSystemRecordHandle(a.id))
+    .map((a) => ({ id: a.id, at: afterCitedText(asRead, a.at) }));
+  if (anchors.length === 0) return { claims, anchored: 0 };
+  let anchored = 0;
+  const out = claims.map((claim) => {
+    if (claim.relatedEntities.some(pinsRecord)) return claim;
+    const where = claimLocation(claim.text, asRead);
+    if (!where) return claim;
+    const [start, end] = where.sentence;
+    const cited = anchors
+      .filter((a) => a.at > start && a.at <= end && a.at > where.at)
+      .map((a) => a.id);
+    if (cited.length === 0) return claim;
+    anchored += 1;
+    return { ...claim, relatedEntities: [...new Set([...claim.relatedEntities, ...cited])] };
+  });
+  return { claims: out, anchored };
+}
+
+/** `at` moved back over the whitespace before it: the end of the text the
+ *  marker stood after. */
+function afterCitedText(text: string, at: number): number {
+  let i = at;
+  while (i > 0 && /\s/.test(text[i - 1] ?? '')) i -= 1;
+  return i;
+}
+
+/** True when `handle` names one record (`model:id`, with or without system). */
+function pinsRecord(handle: string): boolean {
+  const parsed = parseEntityHandle(handle);
+  return parsed !== null && isRecordHandle(parsed);
 }
 
 /**

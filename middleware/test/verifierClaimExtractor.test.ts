@@ -101,11 +101,13 @@ describe('verifier/claimExtractor - claimContext (enclosing sentence)', () => {
 
 describe('verifier/claimExtractor - extract', () => {
   it('attaches context to fragment claims and leaves full-sentence claims without', async () => {
+    // Extraction reads the answer without its `[ref:…]` markers
+    // (`citationMarkers.ts`): spans and context are cut from that text.
     const extractor = new ClaimExtractor({
       llm: stubLlm([
         { text: 'in die IT-Abteilung', type: 'qualitative', expected_source: 'graph' },
         {
-          text: 'Anna Müller wechselte am 01.03.2023 in die IT-Abteilung [ref:n_emp_anna].',
+          text: 'Anna Müller wechselte am 01.03.2023 in die IT-Abteilung.',
           type: 'qualitative',
           expected_source: 'graph',
         },
@@ -114,10 +116,7 @@ describe('verifier/claimExtractor - extract', () => {
     });
     const { claims } = await extractor.extract({ userMessage: 'Wo arbeitet Anna?', answer: ANSWER });
     assert.equal(claims.length, 2);
-    assert.equal(
-      claims[0]!.context,
-      'Anna Müller wechselte am 01.03.2023 in die IT-Abteilung [ref:n_emp_anna].',
-    );
+    assert.equal(claims[0]!.context, 'Anna Müller wechselte am 01.03.2023 in die IT-Abteilung.');
     assert.equal(claims[1]!.context, undefined);
   });
 
@@ -133,9 +132,11 @@ describe('verifier/claimExtractor - extract', () => {
     const { claims } = await extractor.extract({ userMessage, answer: ANSWER });
     assert.equal(claims.length, 0);
     const diag = lines.find((l) => l.includes('zero-raw diag'));
+    // The length of what the model was sent: the answer without its marker.
+    const sent = ANSWER.replace(' [ref:n_emp_anna]', '');
     assert.equal(
       diag,
-      `[claim-extractor] zero-raw diag userLen=${String(userMessage.length)} answerLen=${String(ANSWER.length)}`,
+      `[claim-extractor] zero-raw diag userLen=${String(userMessage.length)} answerLen=${String(sent.length)}`,
     );
     for (const line of lines) {
       assert.equal(line.includes('Anna'), false, `turn text in the log: ${line}`);
@@ -244,12 +245,11 @@ describe('verifier/claimExtractor - privacy view', () => {
     // normalised to ISO like every extracted date.
     assert.equal(claims[1]!.text, REAL_DATE);
     assert.equal(claims[1]!.value, '2023-03-01');
-    // Context is cut from the REAL answer, so the judge gets real subjects
-    // server-side (and projects them itself before anything leaves).
-    assert.equal(
-      claims[2]!.context,
-      `${REAL_NAME} wechselte am ${REAL_DATE} in die IT-Abteilung [ref:n_emp_jana].`,
-    );
+    // Context is cut from the REAL answer (without its marker), so the judge
+    // gets real subjects server-side (and projects them itself before
+    // anything leaves).
+    assert.equal(claims[2]!.context, `${REAL_NAME} wechselte am ${REAL_DATE} in die IT-Abteilung.`);
+    assert.equal(JSON.stringify(requests[0]).includes('[ref:'), false, 'a marker reached the wire');
   });
 
   it('sends the prompt the turn’s model received, never the caller’s own text', async () => {

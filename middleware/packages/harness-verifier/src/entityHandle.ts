@@ -52,6 +52,22 @@ export function isRecordHandle(handle: EntityHandle): handle is RecordHandle {
 }
 
 /**
+ * True when `raw` names one record of a known source system
+ * (`odoo:res.partner:42`, `confluence:page:7`). A `[ref:…]` marker id of any
+ * other shape — a turn ref (`turn:<scope>:<time>`), a bare node id
+ * (`n_emp_anna`) — pins no record the evidence fetcher can look up.
+ */
+export function isSystemRecordHandle(raw: string): boolean {
+  const handle = parseEntityHandle(raw);
+  return (
+    handle !== null &&
+    isRecordHandle(handle) &&
+    handle.system !== undefined &&
+    ENTITY_SYSTEMS.has(handle.system)
+  );
+}
+
+/**
  * True when `node` is exactly the record `handle` names: same model, same id
  * (string-compared) and, for a handle that names its system, same system.
  * Applied to whatever a lookup returns, because the `knowledgeGraph`
