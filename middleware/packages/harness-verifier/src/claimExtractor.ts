@@ -22,8 +22,10 @@ import { verbatimSpans } from './verbatimSpan.js';
 
 /**
  * Extracts structured factual claims from an orchestrator answer via a
- * Haiku tool-use call. The tool schema is enforced via `tool_choice`, so
- * the model is forced into a JSON-shaped response and cannot ramble.
+ * Haiku tool-use call. `tool_choice` forces the call; the schema itself is
+ * enforced by strict tool use (`strict: true`, constrained decoding) where
+ * the model supports it — a forced call alone did not stop Haiku 4.5 from
+ * writing the list as an invalid JSON string (2026-10-08).
  *
  * Design choices:
  *  - One LLM call per answer, plus at most one repair call when that
@@ -98,7 +100,8 @@ export interface ClaimExtractorOptions {
    *  answer with exactly `maxClaims` claims still gets its whole list. A
    *  model that returns more is not cut off here. Default 20. */
   maxClaims?: number;
-  /** Token budget for the extraction call. */
+  /** Token budget for the extraction call (and its one repair). Default:
+   *  derived from `maxClaims` ({@link extractionTokenBudget}). */
   maxTokens?: number;
   log?: (msg: string) => void;
 }
@@ -119,8 +122,34 @@ export interface ExtractInput {
 const DEFAULTS = {
   model: 'claude-haiku-4-5-20251001',
   maxClaims: 20,
-  maxTokens: 1024,
 };
+
+/** Output tokens one `record_claims` entry takes. Measured 2026-10-08 on
+ *  Haiku 4.5: 9 claims took 818–998 tokens, and a production call with about
+ *  ten hit a 1024-token cap. */
+const TOKENS_PER_CLAIM = 110;
+/** Room for the call around the list. */
+const TOKENS_ENVELOPE = 256;
+/** Never below the budget the extractor had before it was derived. */
+const MIN_EXTRACTION_TOKENS = 1024;
+/** Never above what a non-streaming call can ask for: the Anthropic SDK
+ *  refuses one whose expected duration needs streaming (from ~21k tokens),
+ *  and 16k-output models stop at 16384. Reached from a claim cap of ~143. */
+const MAX_EXTRACTION_TOKENS = 16000;
+
+/**
+ * The extraction call's output-token budget: room for the whole list the
+ * prompt asks for (`maxClaims + 1` entries), between the old fixed 1024 and
+ * a non-streaming ceiling. A fixed 1024 cut real answers off at about ten
+ * claims; billing is per token produced, so the larger cap costs only when a
+ * list needs it (and then a few seconds more).
+ */
+export function extractionTokenBudget(maxClaims: number): number {
+  return Math.min(
+    MAX_EXTRACTION_TOKENS,
+    Math.max(MIN_EXTRACTION_TOKENS, TOKENS_ENVELOPE + TOKENS_PER_CLAIM * (maxClaims + 1)),
+  );
+}
 
 const TOOL_NAME = 'record_claims';
 
@@ -142,17 +171,30 @@ const CLAIM_SOURCES: readonly ClaimSource[] = [
 
 const AGGREGATIONS: readonly Aggregation[] = ['sum', 'count', 'avg', 'max', 'min'];
 
+/**
+ * The `record_claims` tool, strict (`strict: true`): the provider constrains
+ * decoding to the schema, so a call's `claims` is always a JSON array of
+ * schema-valid entries — never the list written as a string (in production on
+ * 2026-10-08 Haiku 4.5 sent `claims` as a 1391-character string that was not
+ * even valid JSON). Strict mode needs a strict-clean schema:
+ * `additionalProperties: false` on every object and `anyOf` instead of a type
+ * array. The client-side checks below stay: a provider that cannot honor
+ * strictness ignores the flag.
+ */
 const toolSpec: ToolSpec = {
   name: TOOL_NAME,
   description:
     'Record every factual claim made in the assistant answer. One entry per claim. Only include claims whose text appears VERBATIM in the answer. Do not invent, summarise, or paraphrase. If the answer contains no factual claims, return an empty array.',
+  strict: true,
   inputSchema: {
     type: 'object' as const,
+    additionalProperties: false,
     properties: {
       claims: {
         type: 'array',
         items: {
           type: 'object',
+          additionalProperties: false,
           properties: {
             text: {
               type: 'string',
@@ -172,7 +214,7 @@ const toolSpec: ToolSpec = {
                 'Where the ground truth lives. "odoo" for ERP facts, "graph" for knowledge-graph facts, "confluence" for wiki content, "unknown" otherwise.',
             },
             value: {
-              type: ['number', 'string'],
+              anyOf: [{ type: 'number' }, { type: 'string' }],
               description:
                 'Parsed value when possible: number for amounts/aggregates, ISO-8601 string for dates, reference string for ids/names.',
             },
@@ -182,6 +224,7 @@ const toolSpec: ToolSpec = {
             },
             odoo_record: {
               type: 'object',
+              additionalProperties: false,
               properties: {
                 model: { type: 'string' },
                 id: { type: 'integer' },
@@ -231,16 +274,17 @@ export class ClaimExtractor {
   };
 
   constructor(opts: ClaimExtractorOptions) {
+    // Normalised like the pipeline's cap, so the prompt never asks for a
+    // negative or fractional number of claims.
+    const maxClaims =
+      typeof opts.maxClaims === 'number' && Number.isFinite(opts.maxClaims)
+        ? Math.max(0, Math.floor(opts.maxClaims))
+        : DEFAULTS.maxClaims;
     this.opts = {
       llm: opts.llm,
       model: opts.model ?? DEFAULTS.model,
-      // Normalised like the pipeline's cap, so the prompt never asks for a
-      // negative or fractional number of claims.
-      maxClaims:
-        typeof opts.maxClaims === 'number' && Number.isFinite(opts.maxClaims)
-          ? Math.max(0, Math.floor(opts.maxClaims))
-          : DEFAULTS.maxClaims,
-      maxTokens: opts.maxTokens ?? DEFAULTS.maxTokens,
+      maxClaims,
+      maxTokens: opts.maxTokens ?? extractionTokenBudget(maxClaims),
       log:
         opts.log ??
         ((msg: string): void => {

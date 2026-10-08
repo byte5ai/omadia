@@ -3671,7 +3671,17 @@ laufen weiter); `enforce` hält ohnehin alles Inhaltliche bis zum Urteil
   oder einen ohne `claims`-Array) oder ein Eintrag das Schema verletzt, statt
   eine leere oder halbe Claim-Liste zu liefern: das landet in
   `unavailable` (`extractor_error`), nie in `skipped` (`no_claims`) oder
-  `approved`. **Vorher genau ein Reparaturversuch** (seit 2026-10-08,
+  `approved`. **`record_claims` ist ein Strict-Tool** (`strict: true`,
+  `ToolSpec.strict`, vom Anthropic-Adapter nur für Modelle der Allowlist
+  `supportsStrictTools` gesendet — Haiku 4.5, Opus 4.1/4.5/4.8, 5er-Serie;
+  sonst weggelassen, weil ein unbekanntes Feld ein 400 wäre; andere Adapter
+  ignorieren es): die API dekodiert schema-gebunden, `claims` kommt immer als
+  Array (live 2026-10-08 kam es ohne Strict als ungültiger JSON-String). Das
+  Schema ist dafür strict-tauglich (`additionalProperties: false` überall,
+  `value` als `anyOf`); die clientseitigen Prüfungen bleiben. Das
+  Ausgabe-Budget leitet sich aus `maxClaims` ab (`extractionTokenBudget`,
+  256 + 110 × (maxClaims + 1), zwischen 1024 und 16000, Default 2566).
+  **Vorher genau ein Reparaturversuch** (seit 2026-10-08,
   `extractionRepair.ts`): Ist die Antwort abgeschnitten, ohne Call, ohne
   `claims`-Array oder schemawidrig, folgt ein zweiter Call mit demselben
   Modell, Token-Budget, Tool und Wire-View plus einer festen Notiz, was
@@ -5508,14 +5518,13 @@ Objektformen und dass solcher Text Text bleibt.
   Logzeilen `[claim-extractor] … not_in_answer=` beobachten; ist Markdown die
   Hauptursache, Emphasis-Zeichen (`*`, `_`, Backtick) zwischen den Wörtern
   gezielt überspringen, statt den Guard allgemein zu lockern.
-- **Token-Budget der Extraktion an das Claim-Limit koppeln.** Der
-  `record_claims`-Call hat `maxTokens: 1024`. Gemessen (2026-10-08, Haiku 4.5,
-  synthetische Antwort): 9 Claims brauchen 818–998 Ausgabe-Tokens, 1 von 12
-  Läufen riss am Limit ab — eine Liste mit `VERIFIER_MAX_CLAIMS + 1` (21)
-  Einträgen passt nicht hinein. Seither bekommt ein abgeschnittener Call
-  einen Reparaturversuch mit kompakten Einträgen im selben Budget; reicht das
-  nicht, bleibt es `unavailable`. Offen: das Budget aus `maxClaims` ableiten
-  (kostet nur, wenn die Liste es braucht, verlängert aber die Prüfzeit).
+- ~~**Token-Budget der Extraktion an das Claim-Limit koppeln.**~~ Erledigt
+  2026-10-08: `extractionTokenBudget(maxClaims)` = max(1024, 256 + 110 ×
+  (maxClaims + 1)), Default 2566 bei `VERIFIER_MAX_CLAIMS` 20. Anlass: live
+  riss ein Extraktions-Call bei ~10 Claims an den festen 1024 Tokens;
+  gemessen (Haiku 4.5, strict, synthetisch) braucht eine Antwort mit ~20
+  Claims 1063–1403 Ausgabe-Tokens. Kostet nur, wenn die Liste es braucht;
+  dann einige Sekunden mehr Prüfzeit.
 - **Claim-Wert nicht an den Claim-Text gebunden (älteres Limit).** Der
   `DeterministicChecker` vergleicht bei Beträgen und Summen den vom Modell
   gelieferten `claim.value` mit dem Odoo-Feld (`checkOdooAmount` ab

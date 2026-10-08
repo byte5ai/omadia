@@ -13,6 +13,7 @@ export {
   classifyAnthropicError,
   requiresEffortBeta,
   supportsForcedToolChoice,
+  supportsStrictTools,
   supportsTemperature,
   EFFORT_BETA,
   type AnthropicProviderOptions,
