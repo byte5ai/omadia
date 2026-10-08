@@ -26,20 +26,10 @@ const NON_TERMINAL_BEFORE_DOT = /(?:\d+|z\.b|d\.h|u\.a|bzw|ca|dr|prof|nr|str|evt
  * enclosing sentence to know *who* moved where.
  */
 export function claimContext(text: string, answer: string): string | undefined {
-  const needle = text.trim().toLowerCase();
-  if (needle.length === 0) return undefined;
-  const hay = answer.toLowerCase();
-  // Lower-casing can change the code-unit length (e.g. U+0130) and would
-  // shift every offset — bail out rather than slice at the wrong place.
-  if (hay.length !== answer.length) return undefined;
-  const at = hay.indexOf(needle);
-  if (at < 0) return undefined;
-
-  const [start, end] = sentenceBounds(answer, at, needle.length);
-  const again = hay.indexOf(needle, at + 1);
-  if (again >= 0 && again >= end) return undefined; // second occurrence in another sentence
-
-  let [s, e] = [start, end];
+  const found = locate(text, answer);
+  if (!found) return undefined;
+  const { needle, at, bounds } = found;
+  let [s, e] = bounds;
   if (e - s > MAX_CONTEXT_CHARS) {
     // Over-long sentence: keep a window around the span, not its head.
     const room = Math.floor((MAX_CONTEXT_CHARS - needle.length) / 2);
@@ -52,6 +42,38 @@ export function claimContext(text: string, answer: string): string | undefined {
     return undefined;
   }
   return sentence;
+}
+
+/**
+ * Where the span `text` stands in `answer`: its first offset and the
+ * `[start, end)` of the one sentence that holds it — found the way
+ * {@link claimContext} finds it (case-insensitive; undefined when the span
+ * is absent, or occurs again in another sentence).
+ */
+export function claimLocation(
+  text: string,
+  answer: string,
+): { readonly at: number; readonly sentence: readonly [number, number] } | undefined {
+  const found = locate(text, answer);
+  return found ? { at: found.at, sentence: found.bounds } : undefined;
+}
+
+function locate(
+  text: string,
+  answer: string,
+): { needle: string; at: number; bounds: [number, number] } | undefined {
+  const needle = text.trim().toLowerCase();
+  if (needle.length === 0) return undefined;
+  const hay = answer.toLowerCase();
+  // Lower-casing can change the code-unit length (e.g. U+0130) and would
+  // shift every offset — bail out rather than slice at the wrong place.
+  if (hay.length !== answer.length) return undefined;
+  const at = hay.indexOf(needle);
+  if (at < 0) return undefined;
+  const bounds = sentenceBounds(answer, at, needle.length);
+  const again = hay.indexOf(needle, at + 1);
+  if (again >= 0 && again >= bounds[1]) return undefined; // second occurrence in another sentence
+  return { needle, at, bounds };
 }
 
 /** `[start, end)` of the sentence containing the span `[at, at+len)`. */

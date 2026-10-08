@@ -17,6 +17,10 @@ import type { EvidenceJudge } from './evidenceJudge.js';
 import { coverageVerdicts, readExtraction, skipReason } from './extractionCoverage.js';
 import { detectFailureReplay } from './failureReplayDetector.js';
 import { shouldTriggerVerifier } from './triggerRouter.js';
+import { citedRefs, stripCitationMarkers } from './citationMarkers.js';
+
+// Re-exported: callers and tests read the marker ids from here.
+export { citedRefs };
 
 /**
  * End-to-end verifier pipeline.
@@ -128,7 +132,9 @@ export class VerifierPipeline {
       ...citationVerdicts,
     ];
 
-    const trigger = shouldTriggerVerifier(input.answer);
+    // Triggered by what the answer says — a marker's id digits
+    // (`[ref:odoo:account.move:9182]`) are no claim (`citationMarkers.ts`).
+    const trigger = shouldTriggerVerifier(stripCitationMarkers(input.answer));
     if (!trigger.shouldVerify) {
       // Only the synthetic (no-extraction-needed) verdicts matter here.
       return aggregate(synthetic, started, 'no_trigger');
@@ -288,15 +294,10 @@ export class VerifierPipeline {
  * (`knowledgeGraphRefs`), a marker must also name one of them: a marker
  * pointing at nothing the graph returned is an invented source
  * (`citation_unresolved`). And when the graph returned nothing citable,
- * nothing can be cited — no marker is demanded.
+ * nothing can be cited — no marker is demanded. (The marker shape and
+ * `citedRefs` live in `citationMarkers.ts`; this check is the one stage that
+ * reads the answer WITH its markers.)
  */
-const CITATION_MARKER_REGEX = /\[ref:([^\]\s]+)\]/gi;
-
-/** The source ids the answer's `[ref:…]` markers name, in order. */
-export function citedRefs(answer: string): string[] {
-  return [...answer.matchAll(CITATION_MARKER_REGEX)].map((m) => m[1]!);
-}
-
 function buildCitationMissingVerdicts(input: VerifierInput): ClaimVerdict[] {
   if (input.knowledgeGraphToolsCalled !== true) return [];
   const available = input.knowledgeGraphRefs;

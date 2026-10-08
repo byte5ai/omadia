@@ -3649,7 +3649,22 @@ laufen weiter); `enforce` hält ohnehin alles Inhaltliche bis zum Urteil
   womöglich Claims ausgelassen) und Claims, die nicht in der Antwort stehen
   (`claims_not_in_answer`), meldet er in `ClaimExtraction.gaps`, und die
   Pipeline hält jede Lücke als `not_checked`-Eintrag (Claim-Typ
-  `coverage_gap`) im Verdict. Der Verbatim-Guard vergleicht ohne Rücksicht
+  `coverage_gap`) im Verdict. Extraktion, Verbatim-Guard und Trigger-Router
+  lesen die Antwort **ohne `[ref:…]`-Marker** (`stripCitationMarkers` in
+  `harness-verifier/src/citationMarkers.ts`, dieselbe Regex wie der
+  Channel-Stripper): ein Marker mitten im Satz ließ ein treues Zitat am
+  Guard scheitern (2026-10-08 gemessen: 8 statt 3 `not_in_answer`), und
+  seine ID-Ziffern sind keine Angabe. Nur der Zitations-Check liest die
+  Marker, auf der Rohantwort. Weil die Marker der einzige Ort waren, an dem
+  die Extraktion Record-Handles (`odoo:res.partner:42`) sah, ergänzt
+  `withCitedRecords` sie danach deterministisch: Ein Marker zitiert den Text
+  vor ihm und zählt für die Claims seines Satzes, die vor ihm beginnen
+  (Whitespace zwischen Text und Marker zählt nicht mit, ein Marker nach dem
+  Punkt schließt den Satz davor, Listenzeilen sind Sätze); nur
+  `odoo:`/`confluence:`-Record-Handles, nur für Claims ohne eigenes
+  Record-Handle; Logfeld `cited_records=N`. Sie sagen dem Fetcher nur, wo er
+  nachschlägt (`fetchPinned`), und sind nie selbst Evidenz. Der Verbatim-Guard
+  vergleicht ohne Rücksicht
   auf Groß-/Kleinschreibung und lässt jede Whitespace-Folge auf jede andere
   passen (ein Zeilenumbruch, den das Modell als Leerzeichen schreibt, zählt
   als Zitat; der Claim trägt dann den Wortlaut der Antwort). Was dann noch

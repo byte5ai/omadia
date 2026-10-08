@@ -36,6 +36,26 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — citation markers no longer cost claims, and still pin their record
+
+- **`[ref:…]` markers are stripped before extraction, the verbatim guard and
+  the trigger** (`harness-verifier/src/citationMarkers.ts`, the same regex as
+  the channel-sdk stripper; a test compares the two on sample inputs, and the
+  web chat keeps a third copy in `web-ui/app/_lib/citations.ts`). A marker
+  mid-sentence made a faithful quote fail the guard; measured on synthetic
+  text (Haiku 4.5, 4 runs each): 8 claims kept from the checkers with
+  mid-sentence markers, 3 without. A marker's id digits no longer fire the
+  trigger. The citation check still reads the markers on the raw answer.
+- The markers were the only place the extraction saw record handles
+  (`odoo:res.partner:42`) for `related_entities`, which pin the evidence fetch
+  to exactly the cited record. They are now added deterministically: each
+  claim gets the record handles of the markers in its own sentence of the raw
+  answer (a marker counts for the sentence it closes, before or right after
+  the full stop; list lines are sentences). Only `odoo:` / `confluence:`
+  record handles; turn refs and bare node ids pin nothing. They only tell the
+  fetcher where to look (an unknown record yields no evidence, so nothing is
+  verified), and the extraction log counts them (`cited_records=N`).
+
 ### Fixed — claim extraction is schema-bound and gets the tokens its list needs
 
 2026-10-08 — The live diagnostic from #1364 named both causes of the
