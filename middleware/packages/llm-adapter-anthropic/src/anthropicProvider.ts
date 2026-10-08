@@ -113,6 +113,9 @@ function toAnthropicTools(
       name: tool.name,
       description: tool.description,
       input_schema: tool.inputSchema,
+      // Constrained decoding: the API guarantees the call's input validates
+      // against `input_schema` (no beta header; Haiku 4.5 and later).
+      ...(tool.strict === true ? { strict: true } : {}),
       ...cache,
     };
   });

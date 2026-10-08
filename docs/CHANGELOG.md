@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — claim extraction is schema-bound and gets the tokens its list needs
+
+2026-10-08 — The live diagnostic from #1364 named both causes of the
+`extractor_error` withholds (Haiku 4.5, run `3028130c`, 06:21Z): the first
+call hit the fixed 1024-token cap (`finish=max_tokens`, `out=1024`, an answer
+with about ten claims), and the repair returned `claims` as a 1391-character
+string that was not valid JSON — the shape behind the morning's withholds.
+
+- `record_claims` is now a strict tool (`strict: true`): the provider
+  constrains decoding to the schema, so `claims` is always an array. The
+  schema is strict-clean (`additionalProperties: false` on every object,
+  `value` as `anyOf` instead of a type array). New optional
+  `ToolSpec.strict`; the Anthropic adapter sends it on the tool definition,
+  other adapters ignore it. Haiku 4.5 supports it without a beta header.
+- The extraction budget is derived from the claim cap
+  (`extractionTokenBudget`: max(1024, 256 + 110 × (maxClaims + 1)), 2566 at
+  the default 20) instead of a fixed 1024. Billed per token produced, so it
+  costs only when a list needs it.
+- Verified against the real API with synthetic text: strict accepted, 5/5
+  extractions of a ~20-claim answer returned arrays of 18–21 entries using
+  1063–1403 output tokens — every one would have hit the old cap.
+
 ### Fixed — a broken claim extraction gets one repair, and says what broke
 
 2026-10-08 — Two answers in production (kernel v0.171.3, 04:33Z and 04:39Z,

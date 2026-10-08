@@ -75,6 +75,13 @@ export interface ToolSpec {
    *  tool (OpenAI, Mistral) MUST skip it rather than send a malformed custom
    *  function. */
   readonly serverType?: string;
+  /** Ask the provider to guarantee that every call's input validates
+   *  against `inputSchema` (constrained decoding — Anthropic `strict: true`).
+   *  The schema must then be strict-clean: `additionalProperties: false` on
+   *  every object, no numeric or string-length constraints. An adapter that
+   *  cannot honor per-tool strictness ignores the flag; the call is then
+   *  unconstrained, exactly as without it. */
+  readonly strict?: boolean;
 }
 
 export type ToolChoice =
