@@ -373,7 +373,8 @@ Mit aktivem Answer-Verifier sitzt `VerifierService` vor dem Orchestrator
 (`User → VerifierService.chatStream/chat → Orchestrator`): in `shadow` prüft er
 nur und hängt das Urteil an, in `enforce` ist er ein Auslieferungs-Gate — der
 Stream hält jeden Inhalt bis zum Urteil (der Canvas-Composer sein Skeleton
-ebenso), eine nicht bestätigte Antwort wird durch eine Notiz ersetzt (§11,
+ebenso), eine widerlegte oder nicht prüfbare Antwort wird durch eine Notiz
+ersetzt, eine nicht vollständig bestätigte geht mit Hinweis raus (§11,
 Kontrakt-Erweiterung Verifier-Gate). Agenten auf dem Abo-CLI-Runtime und
 Routinen laufen ohne diesen Wrapper.
 
@@ -3351,7 +3352,7 @@ Setup-Felder, nicht mehr die Env.
 | Variable / Setup-Feld | Wirkung |
 |---|---|
 | `VERIFIER_ENABLED` / `verifier_enabled` | `true` schaltet den Verifier-Wrapper ein. Default `false`. |
-| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht nur bei `approved` oder `skipped` (`no_trigger`/`no_claims`) raus, sonst eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort — hinter dem Shield ebenso ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) — geht nie an den Verifier und wird zurückgehalten (`privacy_shield`), außer an einem Turn mit Input-Karte: Die Karten-Ausnahme (`releasesWithoutVerification`) greift vorher und gibt ihn samt gerenderter Antwort ungeprüft frei; `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
+| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht bei `approved` und `skipped` (`no_trigger`/`no_claims`) raus, bei `approved_with_disclaimer` und `skipped` (`no_checkable_claims`/`incomplete_coverage`) mit lokalisiertem Hinweis „ließ sich nicht automatisch bestätigen“ (außer alle gelaufenen Checks scheiterten technisch: dann zurückgehalten); bei `blocked` oder `unavailable` statt ihrer eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort — hinter dem Shield ebenso ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) — geht nie an den Verifier und wird zurückgehalten (`privacy_shield`), außer an einem Turn mit Input-Karte: Die Karten-Ausnahme (`releasesWithoutVerification`) greift vorher und gibt ihn samt gerenderter Antwort ungeprüft frei; `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
 | `VERIFIER_MODEL` / `verifier_model` | Modell für Claim-Extraktion und Evidence-Judge. |
 | `VERIFIER_MAX_CLAIMS` / `verifier_max_claims` | Höchstzahl geprüfter Claims pro Antwort, Default `20`. |
 | `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Relative Betragstoleranz, Default `0.01`. |
@@ -4004,8 +4005,8 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   `surface_*`, `done`, jeder künftige Typ — wird gehalten. Der Observer der
   Route wird jetzt in jedem Modus durchgereicht (vorher verworfen), Token- und
   Usage-Zähler laufen also live weiter.
-- **Freigabe** nur bei `approved` oder `skipped` mit `no_trigger` /
-  `no_claims`: die gehaltenen Events in Originalreihenfolge, aber ohne die
+- **Freigabe** bei `approved`, `skipped` und — seit 2026-10-08 —
+  `approved_with_disclaimer`: die gehaltenen Events in Originalreihenfolge, aber ohne die
   gestreamten `text_delta`s — der Text geht als **ein** `text_delta` mit
   `done.answer` (ohne gefalteten KI-Kennzeichnungsblock) direkt vor `done`
   raus, `done` mit `verifier` (dasselbe Summary wie das folgende
@@ -4014,9 +4015,46 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   ggf. danach (#332-L3-Eskalation, File-Retry: `textParts.length = 0`) — die
   verworfene Antwort steht in den Deltas, nicht in `done.answer`, und das
   Urteil gilt nur `done.answer`.
-- **Zurückgehalten** (fail-closed) bei jedem anderen Urteil — `blocked`,
-  `approved_with_disclaimer`, `skipped` mit `no_checkable_claims` /
-  `incomplete_coverage`, `unavailable`: genau ein `text_delta` mit der
+- **Freigabe mit Hinweis** (`verdictNeedsDisclaimer`) bei
+  `approved_with_disclaimer` über mindestens einem unbestätigten Claim und
+  bei `skipped` mit `no_checkable_claims` / `incomplete_coverage`: Claims,
+  die die Prüfung nicht bestätigen, nicht prüfen oder nicht abdecken konnte,
+  ein gescheiterter Check neben einem echten Urteil, und ein Widerspruch, den
+  der Evidence-Judge meldete, aber nicht bestätigen konnte
+  (`cause: 'contradiction_unconfirmed'`: auf Privacy-Shield-Platzhaltern
+  geurteilt, im Recheck nicht reproduziert, ohne Evidenz-ID, mit einer
+  Evidenz-ID, die der Request nie druckte, oder mit einem anderen Datensatz
+  als dem, den der Claim pinnt) — unbestätigt ist nicht falsch. Vorher wurden sie
+  zurückgehalten, live (2026-10-08) traf das die meisten echten Antworten
+  (Claims, die kein Checker nimmt, und `[ref:…]`-bedingte
+  `not_in_answer`-Lücken). `done.answer` bekommt einen lokalisierten Absatz
+  (`composeVerifierDisclaimerText`, Locale wie die Notiz), der nur sagt, was
+  die Zählung trägt — „bestätigen“, nicht „prüfen“, denn ein geprüfter, aber
+  unbelegter Claim wurde geprüft: „Ein Teil der Angaben in dieser Antwort
+  ließ sich nicht automatisch bestätigen“ nur, wenn alle Zählungen gültig
+  sind und einen bestätigten neben einem unbestätigten Claim zeigen, sonst
+  „Die Angaben in dieser Antwort ließen sich nicht automatisch bestätigen“;
+  jeweils „Prüfe wichtige Angaben bei Bedarf im Quellsystem.“ Ein
+  gefalteter KI-Kennzeichnungsblock bleibt der letzte Absatz
+  (`withVerifierDisclaimer`); eine Antwort, die mit einer `NO_REPLY`-Zeile
+  endet, bekommt den Hinweis davor, damit Teams/Telegram weiter schweigen.
+  Das eine `text_delta` trägt Antwort und Hinweis. `chat()` hängt denselben
+  Hinweis an `result.answer`, die Kennzeichnung faltet `toSemanticAnswer`
+  danach. Ein `approved_with_disclaimer`, dessen Claims alle `verified` sind
+  (schwächerer Status eines injizierten Pipelines), geht ohne Hinweis raus.
+  Log, inhaltsfrei wie beim Zurückhalten (IDs/Codes außerhalb
+  `[\w.:-]{1,64}` als `invalid`): `[verifier/service] answer released with
+  disclaimer run=… status=… [reason=…] cause=…
+  claims=<id>:<basis>|<id>:unverified/<cause>,…`. Kein Retry, kein
+  `onVerifierBlocked` (der nicht-streamende Pfad kann bei Borderline
+  trotzdem seine Stichprobe ziehen).
+- **Zurückgehalten** (fail-closed) bei `blocked` (Widerspruch, fehlende oder
+  erfundene Quelle, nicht gemachter Aufruf), `unavailable` (technische
+  Störung, Privacy Shield) und bei einem `approved_with_disclaimer`, dessen
+  sämtliche gelaufenen Checks technisch scheiterten — kein Claim bekam ein
+  echtes Urteil (`withheldCause` `check_failed`, dieselbe Störungsnotiz wie
+  bei einem Verifier- oder Extraktionsfehler; ein Judge-Recheck, der selbst scheitert, zählt als
+  `check_failed`): genau ein `text_delta` mit der
   lokalisierten Notiz (`composeVerifierBlockedText`, Locale: Turn-Disclosure →
   `ai_disclosure_locale` → `de`), dann `done` mit dieser Notiz als `answer`,
   `answerSource: 'verifier-blocked'`, `answerIsError: true`, `verifier` und nur
@@ -4039,9 +4077,12 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   Verifier). Ein `contradicted`-Verdict trägt dafür `basis`
   (`ContradictionBasis`); `contradictionCount` und Badge `failed` zählen nur
   `basis: 'evidence'`, alle anderen Rückhalte zählen als `unverifiedCount`.
-  Die Entscheidung zurückzuhalten (und der Korrektur-Retry) bleibt
-  unverändert. Supportdiagnose: Logzeile `answer withheld … cause=… claims=<id>:<basis>`
-  (`withheldLogLine`, nur Claim-IDs und Codes, nie Claim-Text).
+  Ob zurückgehalten wird, entscheidet `verdictReleasesAnswer` (oben); die
+  Ursache bestimmt nur den Wortlaut der Notiz. Der Korrektur-Retry läuft nur
+  bei `blocked`. Supportdiagnose: Logzeile `answer withheld … cause=…
+  claims=<id>:<basis>` (`withheldLogLine`, nur Claim-IDs und Codes, nie
+  Claim-Text); der Retry loggt `retry run=… contradictions=N
+  claims=<id>:<basis>,…` (`retryLogLine`).
 - **Ohne Urteil freigegeben:** `pendingUserChoice`, `pendingMcpInput`,
   `pendingSlotCard`, `pendingOAuthConsent`, `degraded` mit der
   Turn-Incomplete-Notiz, die Datenschutz-Absage (`PROMPT_MASK_BLOCKED_ANSWER`)
@@ -5616,17 +5657,18 @@ Objektformen und dass solcher Text Text bleibt.
   vor dem Verifier auf das strikte `NO_REPLY` normalisieren (Prosa verwerfen)
   — Produktentscheidung.
 - **`onVerifierBlocked` nur bei Widerspruch.** Der Plan-Hook feuert für
-  `blocked`; eine fail-closed zurückgehaltene Antwort (`partial`,
-  `unavailable`) erscheint im Plan nicht als abgelehnt.
-- **Fail-closed hält lange Antworten immer zurück.** Eine Antwort über 6000
-  Zeichen ist nie `approved` (Abdeckungslücke) und wird in `enforce` stets
-  zurückgehalten, ebenso jede mit einem Claim, den kein Checker nimmt. Die
-  fensterweise Extraktion (Punkt oben) ist damit Voraussetzung für `enforce`
-  bei ERP-Listen.
+  `blocked`; eine wegen `unavailable` zurückgehaltene Antwort erscheint im
+  Plan nicht als abgelehnt.
+- **Lange Antworten gehen nur mit Hinweis raus.** Eine Antwort über 6000
+  Zeichen ist nie `approved` (Abdeckungslücke) und geht in `enforce` seit
+  2026-10-08 mit dem Hinweis „ließ sich nicht automatisch bestätigen“ raus
+  (vorher: zurückgehalten), ebenso jede mit einem Claim, den kein Checker
+  nimmt. Die fensterweise Extraktion (Punkt oben) bleibt Voraussetzung für
+  ein `approved` bei ERP-Listen.
 - **Borderline-Resample in `enforce chat()`.** Ein Borderline-Verdict ist
-  `approved_with_disclaimer` und wird zurückgehalten; der bezahlte Resample
-  ändert daran nur etwas, wenn er auf `blocked` eskaliert und der Retry dann
-  korrigiert. Kosten gegen Nutzen neu abwägen. Seit dem Replay-Ledger führt er
+  `approved_with_disclaimer` und geht mit Hinweis raus; der bezahlte Resample
+  ändert daran nur etwas, wenn er auf `blocked` eskaliert (dann Retry oder
+  Notiz). Kosten gegen Nutzen neu abwägen. Seit dem Replay-Ledger führt er
   kein Tool mehr erneut aus, und `verifier_resample_on_borderline=false`
   schaltet ihn ab.
 - **Abo-CLI-Runtime und Routinen ohne Verifier.** `VERIFIER_MODE` wirkt weder

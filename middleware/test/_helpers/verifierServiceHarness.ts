@@ -66,6 +66,8 @@ export interface VerifierHarness {
   readonly persisted: PersistedRow[];
   /** Turn-hook points the service fired. */
   readonly hookPoints: string[];
+  /** Every line the service logged. */
+  readonly logs: string[];
   /** Drains `service.chatStream` and returns every event it yielded. */
   stream(input?: ChatTurnInput, observer?: ChatStreamObserver): Promise<ChatStreamEvent[]>;
 }
@@ -90,6 +92,7 @@ export function createVerifierHarness(opts: VerifierHarnessOptions): VerifierHar
   const reentries: ChatTurnInput[] = [];
   const persisted: PersistedRow[] = [];
   const hookPoints: string[] = [];
+  const logs: string[] = [];
   const streams = opts.streams ?? [];
   const results = opts.results ?? [];
 
@@ -152,7 +155,9 @@ export function createVerifierHarness(opts: VerifierHarnessOptions): VerifierHar
     enabled: opts.enabled ?? true,
     mode: opts.mode,
     maxRetries: opts.maxRetries ?? 1,
-    log: () => undefined,
+    log: (line: string) => {
+      logs.push(line);
+    },
     turnHookRegistry,
     ...(opts.locale !== undefined ? { locale: opts.locale } : {}),
   });
@@ -166,6 +171,7 @@ export function createVerifierHarness(opts: VerifierHarnessOptions): VerifierHar
     reentries,
     persisted,
     hookPoints,
+    logs,
     async stream(input = USER_INPUT, observer) {
       received.length = 0;
       for await (const event of service.chatStream(input, observer)) received.push(event);

@@ -132,12 +132,20 @@ export interface ClaimExtraction {
  *                     it is a `coverage_gap` entry for a part of the answer
  *                     the extraction did not cover.
  *  - `check_failed` — a check ran and could not finish: the re-query, the
- *                     evidence fetch or the judge call failed.
- * Neither is evidence. A claim nobody checked still counts against the
+ *                     evidence fetch, the judge call or its contradiction
+ *                     recheck failed.
+ *  - `contradiction_unconfirmed` — the evidence judge called the claim
+ *                     contradicted, and the contradiction could not be
+ *                     confirmed: judged on Privacy Shield placeholders, not
+ *                     reproduced on recheck, citing no evidence, evidence
+ *                     its request never printed, or a record other than the
+ *                     one the claim pins. A check ran and finished, so it is
+ *                     not a fault — and it is no refutation either.
+ * None is evidence. A claim nobody checked still counts against the
  * answer's coverage, which is why it stays in the verdict instead of being
  * dropped.
  */
-export type UnverifiedCause = 'not_checked' | 'check_failed';
+export type UnverifiedCause = 'not_checked' | 'check_failed' | 'contradiction_unconfirmed';
 
 /** Outcome for a single claim after checking. */
 export type ClaimVerdict =

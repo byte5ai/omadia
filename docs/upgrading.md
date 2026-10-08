@@ -339,6 +339,45 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.171.5 — answer verifier: `enforce` releases an unconfirmed answer with a disclaimer
+
+Applies only with `VERIFIER_MODE=enforce`; `shadow` is unchanged.
+
+- **Unconfirmed is no longer withheld.** An answer whose claims the verifier
+  could not all confirm, none of them refuted, now reaches the user with a
+  short paragraph in the disclosure locale: "Hinweis: Ein Teil der Angaben in
+  dieser Antwort ließ sich nicht automatisch bestätigen. Prüfe wichtige
+  Angaben bei Bedarf im Quellsystem." ("Die Angaben … ließen sich nicht
+  automatisch bestätigen …" when it confirmed none; English: "Note: some
+  statements / the statements in this answer could not be confirmed
+  automatically. …"). That covers the verdict `approved_with_disclaimer` and
+  `skipped` with `no_checkable_claims` or `incomplete_coverage`: a partly
+  confirmed answer, one whose claims no checker takes, one longer than the
+  extractor reads, and one with a contradiction the evidence judge reported
+  but could not confirm (judged on Privacy Shield placeholders, not
+  reproduced on recheck, or citing no evidence, evidence it was never shown
+  or another record than the claim is about). The badge
+  stays `partial` or `unverified`, never `verified`. Behind the Privacy
+  Shield a contradiction the judge found on a request masking changed
+  therefore no longer stops an answer; one found on an unchanged request is
+  rechecked and still can, and so can the deterministic Odoo re-query, the
+  citation checks and the trace checks.
+- **Still withheld:** a contradiction, a missing or invented `[ref:…]`
+  citation, live data claimed without the call that fetches it (`blocked`), a
+  turn the verifier could not run on (`unavailable`, Privacy Shield
+  included), and an answer whose every check that ran failed technically
+  (`check_failed`, for example when all of its claims went to the evidence
+  judge during an outage). There is no setting to
+  restore the stricter rule.
+- **Fewer false gaps.** Extraction, the verbatim guard and the trigger now
+  read the answer without its `[ref:…]` citation markers, as the user reads
+  it; a marker mid-sentence used to make a faithful claim count as "not in
+  the answer". The record a marker cites (`odoo:res.partner:42`) is still
+  handed to the evidence lookup, for the claims of the marker's own sentence.
+- The log line `[verifier/service] answer released with disclaimer run=…`
+  (verdict, cause and per-claim bases; no answer text) marks each such
+  answer.
+
 ## Upgrading past v0.167.17 — plugins: upload and install check `compat.core`
 
 A plugin links against the host's `@omadia/plugin-api` at runtime. Its
@@ -473,6 +512,10 @@ Teams and Telegram need nothing: they keep receiving only the four badges they
 know and show no badge for turns without evidence.
 
 ### `enforce` withholds what it could not confirm, on the stream too
+
+> Superseded in part after v0.171.5: an answer the verifier could not fully
+> confirm, none of it refuted, goes out with a disclaimer instead of being
+> withheld (see "Upgrading past v0.171.5" above).
 
 - **Answers the verifier could not confirm are withheld.** `enforce` delivers
   an answer only when its verdict is `approved`, or `skipped` because no

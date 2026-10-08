@@ -1707,7 +1707,7 @@
       },
       "hint": {
         "verified": "The verifier checked {count, plural, one {# claim} other {# claims}} in this answer against the sources and confirmed all of them.",
-        "partial": "No claim contradicts the sources, but {count, plural, one {# claim} other {# claims}} could not be confirmed.",
+        "partial": "No contradiction with the sources was established, but {count, plural, one {# claim} other {# claims}} could not be confirmed.",
         "partialUnchecked": "The verifier confirmed the other claims, but {count, plural, one {# claim} other {# claims}} in this answer could not be checked.",
         "partialCoverage": "The verifier confirmed {count, plural, one {# claim} other {# claims}}, but did not check all of this answer.",
         "corrected": "The first answer contradicted the sources; the verifier confirmed {count, plural, one {the # claim} other {all # claims}} in this corrected answer.",

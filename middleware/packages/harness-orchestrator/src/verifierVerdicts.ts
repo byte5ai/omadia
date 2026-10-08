@@ -98,11 +98,14 @@ export function badgeFor(
 }
 
 /**
- * Why a verdict does not release its answer, derived from the claims — never
- * from a status alone, so a withhold is explained by what actually happened.
- * Undefined when the verdict releases the answer (`approved`, or `skipped`
- * with nothing to check). Most specific first: a refutation outranks an
- * uncalled tool, which outranks a technical fault and a missing citation.
+ * Why a verdict does not confirm its answer, derived from the claims — never
+ * from a status alone, so a withhold (and a disclaimed release) is explained
+ * by what actually happened. Undefined when there is nothing unconfirmed
+ * (`approved`, or `skipped` with nothing to check). `enforce` withholds on
+ * it only for `blocked` and `unavailable`, and for `check_failed` on an
+ * `approved_with_disclaimer` (`verdictReleasesAnswer`). Most specific first:
+ * a refutation outranks an uncalled tool, which outranks a technical fault
+ * and a missing citation.
  */
 export function withheldCauseOf(verdict: VerifierVerdict): VerifierWithheldCause | undefined {
   if (verdict.status === 'approved') return undefined;
@@ -136,18 +139,61 @@ export function withheldCauseOf(verdict: VerifierVerdict): VerifierWithheldCause
  * the withheld answer's data.
  */
 export function withheldLogLine(runId: string, verdict: VerifierVerdict): string {
+  return `[verifier/service] answer withheld run=${runId} ${diagnosis(verdict)}`;
+}
+
+/**
+ * The support diagnosis for an answer released WITH the verifier disclaimer
+ * (`verdictNeedsDisclaimer`): the same content-free fields as a withhold, so
+ * a released-but-unconfirmed answer is just as traceable.
+ */
+export function releasedWithDisclaimerLogLine(runId: string, verdict: VerifierVerdict): string {
+  return `[verifier/service] answer released with disclaimer run=${runId} ${diagnosis(verdict)}`;
+}
+
+/**
+ * The correction-retry line: how many contradictions, and per claim what it
+ * rests on — so a retry is attributable to an evidence refutation versus a
+ * missing citation or an uncalled tool. Claim ids and bases only.
+ */
+export function retryLogLine(
+  runId: string,
+  verdict: Extract<VerifierVerdict, { status: 'blocked' }>,
+): string {
+  const bases = verdict.claims.flatMap((c) =>
+    c.status === 'contradicted' ? [`${token(c.claim.id)}:${token(contradictionBasis(c))}`] : [],
+  );
+  return (
+    `[verifier/service] retry run=${runId} contradictions=${String(verdict.contradictions.length)}` +
+    (bases.length > 0 ? ` claims=${bases.join(',')}` : '')
+  );
+}
+
+/** Status, reason, cause and per-claim bases — closed codes and ids only. */
+function diagnosis(verdict: VerifierVerdict): string {
   const claims = verdict.claims.flatMap((c) => {
-    if (c.status === 'contradicted') return [`${c.claim.id}:${contradictionBasis(c)}`];
-    if (c.status === 'unverified') return [`${c.claim.id}:unverified${c.cause ? `/${c.cause}` : ''}`];
+    if (c.status === 'contradicted') return [`${token(c.claim.id)}:${token(contradictionBasis(c))}`];
+    if (c.status === 'unverified') {
+      return [`${token(c.claim.id)}:unverified${c.cause ? `/${token(c.cause)}` : ''}`];
+    }
     return [];
   });
   const reason =
-    verdict.status === 'skipped' || verdict.status === 'unavailable' ? ` reason=${verdict.reason}` : '';
+    verdict.status === 'skipped' || verdict.status === 'unavailable'
+      ? ` reason=${token(verdict.reason)}`
+      : '';
   return (
-    `[verifier/service] answer withheld run=${runId} status=${verdict.status}` +
-    `${reason} cause=${withheldCauseOf(verdict) ?? 'none'}` +
+    `status=${token(verdict.status)}${reason} cause=${withheldCauseOf(verdict) ?? 'none'}` +
     (claims.length > 0 ? ` claims=${claims.join(',')}` : '')
   );
+}
+
+/** Log-safe form of a claim id or closed code. The built-in pipeline only
+ *  ever produces short word-character ids (`c_001`) and closed codes; an
+ *  injected pipeline's value outside that shape — model output, a line
+ *  break, a long string — is replaced, never logged. */
+function token(value: string): string {
+  return /^[\w.:-]{1,64}$/.test(value) ? value : 'invalid';
 }
 
 /** True when a check ran on at least one claim and every such check failed.

@@ -73,6 +73,34 @@ export const noneConfirmed = (): VerifierVerdict => disclaimer([UNVERIFIED]);
  *  (`isBorderlineVerdict`), so `enforce chat()` draws a resample. */
 export const borderline = (): VerifierVerdict => disclaimer([VERIFIED, UNVERIFIED]);
 
+export const CHECK_FAILED: ClaimVerdict = {
+  status: 'unverified',
+  claim: { ...AMOUNT, id: 'c_4' },
+  reason: 'judge returned no usable verdict',
+  cause: 'check_failed',
+};
+export const UNCONFIRMED_CONTRADICTION: ClaimVerdict = {
+  status: 'unverified',
+  claim: { ...AMOUNT, id: 'c_5' },
+  reason: 'judge contradiction not reproduced on recheck',
+  cause: 'contradiction_unconfirmed',
+};
+
+/** Every check that ran failed (the other claim no checker takes): the same
+ *  technical fault as `unavailable`, claim by claim. */
+export const allChecksFailed = (): VerifierVerdict => disclaimer([CHECK_FAILED, NOT_CHECKED]);
+
+/** One claim confirmed, one check failed: a real verdict exists. */
+export const partlyFailed = (): VerifierVerdict => disclaimer([VERIFIED, CHECK_FAILED]);
+
+/** One claim confirmed; the judge called another contradicted, and the
+ *  contradiction was not confirmed. */
+export const unconfirmedContradiction = (): VerifierVerdict =>
+  disclaimer([VERIFIED, UNCONFIRMED_CONTRADICTION]);
+
+/** A weaker status than its claims need — every claim verified. */
+export const disclaimerOverVerified = (): VerifierVerdict => disclaimer([VERIFIED]);
+
 export const skipped = (reason: VerifierSkipReason): VerifierVerdict => ({
   status: 'skipped',
   reason,

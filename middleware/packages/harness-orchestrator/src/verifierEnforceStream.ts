@@ -5,6 +5,7 @@ import type { ToolReplayLedger } from './toolReplayLedger.js';
 import {
   enforcedVerifiedStream,
   privacyShieldVerdict,
+  verdictNeedsDisclaimer,
   verdictReleasesAnswer,
   type EnforcedRetry,
   type EnforcedVerdict,
@@ -25,7 +26,13 @@ import {
   reentryAbandonedLine,
   type ReentryPolicy,
 } from './verifierReentry.js';
-import { mergeBadges, summarise, withheldLogLine } from './verifierVerdicts.js';
+import {
+  mergeBadges,
+  releasedWithDisclaimerLogLine,
+  retryLogLine,
+  summarise,
+  withheldLogLine,
+} from './verifierVerdicts.js';
 
 /** What the `enforce` stream needs from `VerifierService`. */
 export interface EnforceStreamHost {
@@ -88,7 +95,7 @@ export async function* enforcedVerifierStream(
           : undefined;
         if (retry) retryPass = retry.pass;
         return retry
-          ? { summary: summarise(verdict, 0, 'enforce'), releases: false, retry }
+          ? { summary: summarise(verdict, 0, 'enforce'), releases: false, disclaimer: false, retry }
           : deliver(host, runId, input, verdict, 0);
       },
       host.locale,
@@ -123,11 +130,14 @@ function deliver(
 ): EnforcedVerdict {
   void host.judge.persist(runId, input, verdict, retryCount);
   const releases = verdictReleasesAnswer(verdict);
+  const disclaimer = releases && verdictNeedsDisclaimer(verdict);
   if (!releases) {
     host.log(withheldLogLine(runId, verdict));
+  } else if (disclaimer) {
+    host.log(releasedWithDisclaimerLogLine(runId, verdict));
   }
   const summary = summarise(verdict, retryCount, 'enforce');
-  return { summary: badge ? { ...summary, badge } : summary, releases };
+  return { summary: badge ? { ...summary, badge } : summary, releases, disclaimer };
 }
 
 /**
@@ -160,9 +170,7 @@ async function streamRetry(
     );
   }
   if (!correction) return undefined;
-  host.log(
-    `[verifier/service] retry run=${runId} contradictions=${String(first.contradictions.length)} (stream)`,
-  );
+  host.log(`${retryLogLine(runId, first)} (stream)`);
   const retryInput: ChatTurnInput = { ...input, extraSystemHint: correction };
   const pass = prepareReentry(host.orchestrator, retryInput, ledger);
   const retryEgress = passes.open(retryInput);
