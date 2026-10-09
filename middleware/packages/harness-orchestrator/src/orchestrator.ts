@@ -4050,7 +4050,13 @@ export class Orchestrator {
     // #1094 — expand a degraded turn's marker into the localized notice FIRST,
     // so the disclosure line below folds onto readable text (and so the fold's
     // own first-turn bookkeeping sees the same answer every other path sees).
-    const delivered = this.expandDegradedDoneEvent(done, input);
+    // Phase 3 — the level this answer ran under rides every `done` the
+    // stream yields (this is the single funnel), on the disclosure-off path
+    // as well; `chat()` does the same for the non-streaming result.
+    const delivered = {
+      ...this.expandDegradedDoneEvent(done, input),
+      answerVerbosity: this.resolveAnswerVerbosity(input),
+    };
     const aiDisclosure = this.resolveTurnDisclosure(input);
     if (!aiDisclosure) return delivered;
     const { text } = applyAiDisclosure(delivered.answer, {

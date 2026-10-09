@@ -64,6 +64,26 @@ export const ANSWER_VERBOSITY_LEVELS = [
 ] as const;
 export type AnswerVerbosity = (typeof ANSWER_VERBOSITY_LEVELS)[number];
 
+/**
+ * The level an answer was generated under (`SemanticAnswer.answerVerbosity`
+ * / the stream `done` event). `turn` = the user picked it for that turn,
+ * `configured` = Agent / installation setting (or the delivered `standard`).
+ */
+export interface AnswerVerbosityInfo {
+  effective: AnswerVerbosity;
+  source: 'turn' | 'configured';
+}
+
+/** The neighbouring level, or undefined at either end of the scale. */
+export function answerVerbosityNeighbour(
+  level: AnswerVerbosity,
+  direction: 'shorter' | 'longer',
+): AnswerVerbosity | undefined {
+  const idx = ANSWER_VERBOSITY_LEVELS.indexOf(level);
+  if (idx < 0) return undefined;
+  return ANSWER_VERBOSITY_LEVELS[direction === 'shorter' ? idx - 1 : idx + 1];
+}
+
 export function isAnswerVerbosity(raw: string): raw is AnswerVerbosity {
   return (ANSWER_VERBOSITY_LEVELS as readonly string[]).includes(raw);
 }

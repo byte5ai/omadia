@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { AnswerVerbosityInfo } from './agentIdentity';
 
 import { foldIntoStored, reconcileNewerRemote } from './chatProactiveMerge';
 import { useProactiveRefresh } from './chatProactiveRefresh';
@@ -668,6 +669,12 @@ export interface Message {
    * footer. Absent when no sub-agent ran this turn.
    */
   agentsConsulted?: AgentConsultation[];
+  /**
+   * The answer-size level this answer was generated under (stream `done`).
+   * Drives the "Kürzer" / "Mehr Details" re-ask buttons; absent on a
+   * middleware that predates the field, which simply hides them.
+   */
+  answerVerbosity?: AnswerVerbosityInfo;
   /**
    * #332 Layer 2 (gap-closure) — the harness-owned, attributed verbatim
    * answer for a Direct-Line turn. Rendered as a visually distinct block,

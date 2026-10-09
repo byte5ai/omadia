@@ -301,6 +301,7 @@ export function withheldDone(
       ...(done.aiDisclosure ? { aiDisclosure: done.aiDisclosure } : {}),
       ...(done.directLineSession ? { directLineSession: done.directLineSession } : {}),
       ...(done.agentsConsulted ? { agentsConsulted: done.agentsConsulted } : {}),
+      ...(done.answerVerbosity ? { answerVerbosity: done.answerVerbosity } : {}),
       ...(done.privacyReceipt ? { privacyReceipt: done.privacyReceipt } : {}),
       ...(done.correlationId ? { correlationId: done.correlationId } : {}),
       ...(done.degraded === true

@@ -1148,6 +1148,12 @@ export type ChatStreamEvent =
        * field gives every channel the SAME harness-built array.
        */
       agentsConsulted?: AgentConsultation[];
+      /**
+       * Phase 3 — the answer-size level this turn was generated under (see
+       * {@link ChatTurnResult.answerVerbosity}); the streaming twin so the
+       * web chat can offer "Kürzer" / "Mehr Details" too.
+       */
+      answerVerbosity?: AnswerVerbosityInfo;
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The

@@ -81,7 +81,7 @@ export async function runOneTurn(
   depsRef: DepsRef,
 ): Promise<void> {
   const { request, signal } = claim;
-  const { sessionId, pendingMessageId, message, agentSlug } = request;
+  const { sessionId, pendingMessageId, message, agentSlug, answerVerbosity } = request;
   const { store } = depsRef.current;
 
   // Per-turn accumulators. Kept local to the runner so the store stays
@@ -166,6 +166,7 @@ export async function runOneTurn(
         message,
         sessionId,
         ...(agentSlug ? { agentSlug } : {}),
+        ...(answerVerbosity ? { answerVerbosity } : {}),
       }),
       signal,
     });

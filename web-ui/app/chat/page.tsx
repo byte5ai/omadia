@@ -14,6 +14,10 @@ import { ChevronDown, Eraser, GitBranch, Navigation, Network } from 'lucide-reac
 import { ChatTabs } from '../_components/ChatTabs';
 import { ScrollToBottomButton } from '../_components/ScrollToBottomButton';
 import { Button } from '../_components/ui/Button';
+import {
+  answerVerbosityNeighbour,
+  type AnswerVerbosity,
+} from '../_lib/agentIdentity';
 import { useStickToBottom } from '../_lib/useStickToBottom';
 import { AgentPicker } from '../_components/AgentPicker';
 import { AgentUnavailableBanner } from '../_components/AgentUnavailableBanner';
@@ -294,7 +298,7 @@ export default function ChatPage(): React.ReactElement {
   );
 
   const send = useCallback(
-    (overrideText?: string): void => {
+    (overrideText?: string, opts?: { answerVerbosity?: AnswerVerbosity }): void => {
       // Two entry points use this: the Senden button (reads `input`) and the
       // Smart-Card option buttons (pass the chosen label via overrideText).
       const trimmed = (overrideText ?? input).trim();
@@ -353,6 +357,9 @@ export default function ChatPage(): React.ReactElement {
         ...(isFirstTurn && selectedAgentSlug
           ? { agentSlug: selectedAgentSlug }
           : {}),
+        // Phase 3 — a "Kürzer" / "Mehr Details" re-ask carries its level for
+        // this one turn; a normal send carries nothing.
+        ...(opts?.answerVerbosity ? { answerVerbosity: opts.answerVerbosity } : {}),
       });
       inputRef.current?.focus();
     },
@@ -651,7 +658,7 @@ export default function ChatPage(): React.ReactElement {
             {activeSession.messages.length === 0 && (
               <EmptyState hydrating={hydrating} session={activeSession} />
             )}
-            {activeSession.messages.map((m) => (
+            {activeSession.messages.map((m, idx) => (
               <MessageRow
                 key={m.id}
                 message={m}
@@ -659,6 +666,21 @@ export default function ChatPage(): React.ReactElement {
                 onChoose={(value) => {
                   send(value);
                 }}
+                // Only the LAST answer gets the size buttons: a re-ask lands
+                // at the bottom of the chat, so re-asking an older question
+                // there would read as a non-sequitur. And only when the
+                // nearest user message above is a typed question — the
+                // answer to a choice-card / follow-up click sits under the
+                // option LABEL ("Ja"), which is nothing to re-ask.
+                {...(idx === activeSession.messages.length - 1 &&
+                resizableQuestionFor(activeSession.messages, idx) !== undefined
+                  ? {
+                      onResize: (level: AnswerVerbosity) => {
+                        const question = resizableQuestionFor(activeSession.messages, idx);
+                        if (question) send(question, { answerVerbosity: level });
+                      },
+                    }
+                  : {})}
                 onDiscardAutoPromoted={clearAutoPromoted}
               />
             ))}
@@ -922,11 +944,14 @@ export function MessageRow({
   message,
   disabled,
   onChoose,
+  onResize,
   onDiscardAutoPromoted,
 }: {
   message: Message;
   disabled: boolean;
   onChoose: (value: string) => void;
+  /** Phase 3 — re-ask this answer's question at the given size level. */
+  onResize?: (level: AnswerVerbosity) => void;
   /** Slice 4c — called when the user successfully Discards an
    *  auto-promoted MK so the parent can clear `autoPromotedMkId` on
    *  this message and the manual save-as-memory button comes back. */
@@ -1124,6 +1149,24 @@ export function MessageRow({
                 onChoose={onChoose}
               />
             )}
+            {!isUser &&
+              !message.streaming &&
+              !message.error &&
+              // Same rule as the memory button: a withheld or degraded turn is
+              // a notice, and an open choice / MCP form is a question — none
+              // of them is an answer whose size the user would adjust.
+              !message.verifierBlocked &&
+              message.degradedTurn === undefined &&
+              message.pendingUserChoice === undefined &&
+              message.pendingMcpInput === undefined &&
+              message.answerVerbosity !== undefined &&
+              onResize !== undefined && (
+                <VerbosityStepButtons
+                  level={message.answerVerbosity.effective}
+                  disabled={disabled}
+                  onResize={onResize}
+                />
+              )}
             {message.captureDisclosure && (
               <CaptureDisclosure disclosure={message.captureDisclosure} />
             )}
@@ -1943,6 +1986,86 @@ function formatFileSize(bytes: number): string {
  * heavy color accent — so the eye treats them as *quick next steps*, not
  * as blocking UI like `ChoiceCard`.
  */
+/**
+ * The question an answer at `idx` can be re-asked with: the nearest user
+ * message above it, provided it is a typed question. A user message that
+ * was produced by a choice-card / follow-up click carries the option label
+ * as its content, and the assistant message right before it holds the card
+ * that was clicked — re-asking "Ja" with a size hint would be meaningless, so
+ * that case (and an empty, file-only message) yields undefined.
+ */
+export function resizableQuestionFor(
+  messages: readonly Message[],
+  idx: number,
+): string | undefined {
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (!m || m.role !== 'user') continue;
+    const prev = messages[i - 1];
+    const clickedCard =
+      prev?.role === 'assistant' &&
+      (prev.pendingUserChoice !== undefined ||
+        prev.pendingMcpInput !== undefined ||
+        (prev.followUpOptions?.some((o) => o.prompt === m.content) ?? false));
+    const text = m.content.trim();
+    return clickedCard || text.length === 0 ? undefined : text;
+  }
+  return undefined;
+}
+
+/**
+ * Phase 3 — "Kürzer" / "Mehr Details": re-ask the same question one step
+ * down / up the answer-size scale for one turn. Mirrors the Teams card's
+ * buttons; the one at the end of the scale is left out, not disabled.
+ */
+function VerbosityStepButtons({
+  level,
+  disabled,
+  onResize,
+}: {
+  level: AnswerVerbosity;
+  disabled: boolean;
+  onResize: (level: AnswerVerbosity) => void;
+}): React.ReactElement | null {
+  const t = useTranslations('chat');
+  const shorter = answerVerbosityNeighbour(level, 'shorter');
+  const longer = answerVerbosityNeighbour(level, 'longer');
+  if (!shorter && !longer) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <span className="text-[10px] font-medium tracking-wide text-[color:var(--fg-muted)] uppercase">
+        {t('verbosityLabel')}
+      </span>
+      {shorter && (
+        <Button
+          variant="secondary"
+          size="sm"
+          pill
+          disabled={disabled}
+          onClick={() => {
+            onResize(shorter);
+          }}
+        >
+          {t('verbosityShorter')}
+        </Button>
+      )}
+      {longer && (
+        <Button
+          variant="secondary"
+          size="sm"
+          pill
+          disabled={disabled}
+          onClick={() => {
+            onResize(longer);
+          }}
+        >
+          {t('verbosityLonger')}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function FollowUpButtons({
   options,
   disabled,
