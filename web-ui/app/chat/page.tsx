@@ -666,15 +666,21 @@ export default function ChatPage(): React.ReactElement {
                 onChoose={(value) => {
                   send(value);
                 }}
-                onResize={(level) => {
-                  // Re-ask the question this answer belongs to — the nearest
-                  // user message above it — one step up or down the scale.
-                  const question = activeSession.messages
-                    .slice(0, idx)
-                    .reverse()
-                    .find((x) => x.role === 'user')?.content;
-                  if (question) send(question, { answerVerbosity: level });
-                }}
+                // Only the LAST answer gets the size buttons: a re-ask lands
+                // at the bottom of the chat, so re-asking an older question
+                // there would read as a non-sequitur. And only when the
+                // nearest user message above is a typed question — the
+                // answer to a choice-card / follow-up click sits under the
+                // option LABEL ("Ja"), which is nothing to re-ask.
+                {...(idx === activeSession.messages.length - 1 &&
+                resizableQuestionFor(activeSession.messages, idx) !== undefined
+                  ? {
+                      onResize: (level: AnswerVerbosity) => {
+                        const question = resizableQuestionFor(activeSession.messages, idx);
+                        if (question) send(question, { answerVerbosity: level });
+                      },
+                    }
+                  : {})}
                 onDiscardAutoPromoted={clearAutoPromoted}
               />
             ))}
@@ -1146,6 +1152,13 @@ export function MessageRow({
             {!isUser &&
               !message.streaming &&
               !message.error &&
+              // Same rule as the memory button: a withheld or degraded turn is
+              // a notice, and an open choice / MCP form is a question — none
+              // of them is an answer whose size the user would adjust.
+              !message.verifierBlocked &&
+              message.degradedTurn === undefined &&
+              message.pendingUserChoice === undefined &&
+              message.pendingMcpInput === undefined &&
               message.answerVerbosity !== undefined &&
               onResize !== undefined && (
                 <VerbosityStepButtons
@@ -1973,6 +1986,33 @@ function formatFileSize(bytes: number): string {
  * heavy color accent — so the eye treats them as *quick next steps*, not
  * as blocking UI like `ChoiceCard`.
  */
+/**
+ * The question an answer at `idx` can be re-asked with: the nearest user
+ * message above it, provided it is a typed question. A user message that
+ * was produced by a choice-card / follow-up click carries the option label
+ * as its content, and the assistant message right before it holds the card
+ * that was clicked — re-asking "Ja" with a size hint would be meaningless, so
+ * that case (and an empty, file-only message) yields undefined.
+ */
+export function resizableQuestionFor(
+  messages: readonly Message[],
+  idx: number,
+): string | undefined {
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (!m || m.role !== 'user') continue;
+    const prev = messages[i - 1];
+    const clickedCard =
+      prev?.role === 'assistant' &&
+      (prev.pendingUserChoice !== undefined ||
+        prev.pendingMcpInput !== undefined ||
+        (prev.followUpOptions?.some((o) => o.prompt === m.content) ?? false));
+    const text = m.content.trim();
+    return clickedCard || text.length === 0 ? undefined : text;
+  }
+  return undefined;
+}
+
 /**
  * Phase 3 — "Kürzer" / "Mehr Details": re-ask the same question one step
  * down / up the answer-size scale for one turn. Mirrors the Teams card's

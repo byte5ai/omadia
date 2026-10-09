@@ -3651,9 +3651,13 @@ Nachbarstufen anbieten kann — Teams rendert daraus „🔽 Kürzer“ / „�
 Details“ (`omadia-channel-teams` ≥ 0.29.0, Payload `verbosity_step`). Der
 Stream-`done`-Event trägt dasselbe Feld (Funnel `discloseDoneEvent`, auch auf
 dem `withheldDone`-Pfad des Verifiers); `POST /api/chat[/stream]` nimmt
-`answerVerbosity` im Body, und der Web-Debug-Chat zeigt unter jeder Antwort
-„🔽 Kürzer“ / „🔼 Mehr Details“ (`VerbosityStepButtons`, stellt die
-zugehörige User-Frage mit der Nachbarstufe neu).
+`answerVerbosity` im Body, und der Web-Debug-Chat zeigt unter der **letzten**
+Antwort „🔽 Kürzer“ / „🔼 Mehr Details“ (`VerbosityStepButtons`, stellt die
+zugehörige getippte User-Frage mit der Nachbarstufe neu — nicht unter
+Verifier-Hinweis, Degraded-Karte, offener Choice-/MCP-Form oder der Antwort
+auf einen Card-Klick, siehe `resizableQuestionFor`). Das Feld lebt nur auf
+der gestreamten Nachricht, nicht im Session-Mirror: nach Reload sind die
+Buttons bis zur nächsten Antwort weg.
 
 ---
 
