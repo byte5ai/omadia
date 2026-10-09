@@ -6,6 +6,11 @@ import {
 } from './mcp/mcpClient.js';
 import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
 import {
+  buildAnswerVerbosityBlock,
+  DEFAULT_ANSWER_VERBOSITY,
+  type AnswerVerbosity,
+} from './answerVerbosity.js';
+import {
   deriveAgentsConsulted,
   toSemanticAnswer,
   applyAiDisclosure,
@@ -953,6 +958,13 @@ export interface OrchestratorOptions {
    * empty → behaviour is identical to pre-Wave-8 (no classifier call).
    */
   personaSkills?: readonly OrchestratorPersonaSkill[];
+  /**
+   * Operator's target answer size — the `answer_verbosity` setup field. A
+   * prompt contract (what the answer contains), not a token budget. Absent →
+   * `standard`, which emits no block and leaves the system prompt
+   * byte-identical. See `answerVerbosity.ts`.
+   */
+  answerVerbosity?: AnswerVerbosity;
   /**
    * AI-Act Art. 50 (#644) — the operator's resolved disclosure config. Absent →
    * the shipping default (standard, active) on every channel. See
@@ -1936,7 +1948,11 @@ function buildSystemPrompt(
   hasPrivacyV4: boolean,
   extraToolDocs: readonly string[] = [],
   memoryPrompt?: MemoryPromptKind,
+  answerVerbosity: AnswerVerbosity = DEFAULT_ANSWER_VERBOSITY,
 ): string {
+  // Operator's answer-size contract. `standard` is '' so the delivered state
+  // keeps the prompt (and its cache key) unchanged.
+  const answerVerbosityBlock = buildAnswerVerbosityBlock(answerVerbosity);
   // W5 — off by default, so a turn that is not context-bound produces a
   // byte-identical prompt (and therefore a byte-identical prompt-cache key).
   const contextMemoryBlock = memoryPrompt ? MEMORY_PROMPT_BLOCKS[memoryPrompt] : '';
@@ -2012,7 +2028,7 @@ d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabel
   return `${assistantIdentity}
 
 Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.
-
+${answerVerbosityBlock ? '\n' + answerVerbosityBlock : ''}
 Werkzeuge:
 - \`memory\` (virtuelles /memories-Verzeichnis): Persistiere Domänen-Learnings, Nutzer-Präferenzen, Geschäfts-Konventionen und häufige Anfragen. Der Memory wird über Sessions hinweg geteilt und ist global für diesen Agent. Lies zu Beginn jeder neuen Aufgabe einmal den Verzeichnisinhalt, bevor du antwortest, damit du auf relevante Learnings zurückgreifen kannst. Lege neue Learnings in themenbezogenen Dateien ab (z.B. /memories/customers/kundenname.md, /memories/observations/2026-q2.md).
 ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBlock}${calendarBlock}${extraToolDocs.length > 0 ? '\n' + extraToolDocs.map((doc) => `- ${doc.trim()}`).join('\n') + '\n' : ''}
@@ -2563,6 +2579,8 @@ export class Orchestrator {
   /** #967 — this Agent's own authored name. See
    *  `OrchestratorOptions.identityName`. */
   private readonly identityName: string | undefined;
+  /** Operator's answer-size contract (see OrchestratorOptions.answerVerbosity). */
+  private readonly answerVerbosity: AnswerVerbosity;
   /** #644 — resolved operator disclosure config (undefined → shipping default
    *  on every channel). See {@link AiDisclosureSetup}. */
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
@@ -2702,6 +2720,7 @@ export class Orchestrator {
     this.assistantIdentity =
       options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
     this.identityName = options.identityName?.trim() || undefined;
+    this.answerVerbosity = options.answerVerbosity ?? DEFAULT_ANSWER_VERBOSITY;
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
@@ -9275,6 +9294,7 @@ export class Orchestrator {
       this.privacyGuard?.() !== undefined,
       extraDocs,
       memoryPrompt,
+      this.answerVerbosity,
     );
   }
 

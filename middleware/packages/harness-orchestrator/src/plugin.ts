@@ -29,6 +29,7 @@ import {
   describeAiDisclosurePosture,
   formatDisclosureBootWarning,
 } from './aiDisclosurePosture.js';
+import { parseAnswerVerbosity } from './answerVerbosity.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -766,6 +767,12 @@ export async function activate(
   const assistantIdentity = (
     ctx.config.get<string>('assistant_identity') ?? ''
   ).trim();
+  // Operator's target answer size (`answer_verbosity`). Undefined (unset or a
+  // value the enum does not know) → the orchestrator's `standard`, which adds
+  // no prompt block at all. See `answerVerbosity.ts`.
+  const answerVerbosity = parseAnswerVerbosity(
+    ctx.config.get<unknown>('answer_verbosity'),
+  );
   // AI-Act Art. 50 (#644) — resolve the operator's disclosure setup once at
   // build time (same arrival pattern as `assistantIdentity`). Undefined → the
   // orchestrator applies the shipping default (standard, active) on every
@@ -1172,6 +1179,7 @@ export async function activate(
     ...(graphPool ? { graphPool } : {}),
     graphTenantId,
     ...(assistantIdentity ? { assistantIdentity } : {}),
+    ...(answerVerbosity ? { answerVerbosity } : {}),
     ...(aiDisclosure ? { aiDisclosure } : {}),
     // #579 — org security posture (org floor + optional scope tighten + mode +
     // screen URL). Undefined → the orchestrator's shipping default (`auto`).

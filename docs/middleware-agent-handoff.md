@@ -3591,6 +3591,39 @@ Auslieferungszustand ohne jedes gesetzte Feld: `standard`, aktiv,
 Die aufgelöste Haltung ist ablesbar: `GET /health` → `disclosure`, plus
 Boot-Warnung und Dashboard-Hinweis **nur** bei Abweichung vom Auslieferungszustand.
 
+### 10.x Antwortumfang (`answer_verbosity`)
+
+Plugin-Setup-Feld des Orchestrators, gelesen in `plugin.ts` über
+`parseAnswerVerbosity` (`packages/harness-orchestrator/src/answerVerbosity.ts`)
+und über `OrchestratorDeps.answerVerbosity` an **jeden** per
+`buildOrchestratorForAgent` gebauten Agenten gereicht (Haupt-Agent und
+Registry-Agenten teilen den Installationswert).
+
+| Wert | Vertrag im System-Prompt |
+|---|---|
+| `tldr` | 1–3 Sätze, nur das Ergebnis; Tabellen nur auf Wunsch, per `v4_top_n` auf ≤ 5 Zeilen |
+| `brief` | Ergebnis zuerst, ≤ 5 Stichpunkte; Rankings per `v4_top_n` auf ≤ 10 Zeilen |
+| `standard` | Auslieferungszustand — **kein** Block, System-Prompt byte-identisch |
+| `detailed` | Ergebnis mit Begründung (Fach-Agent, Zeitraum, Filter, Annahmen) |
+| `max` | alles: Zwischenschritte, Rohwerte, Unsicherheiten, offene Punkte |
+
+Drei Eigenschaften sind load-bearing:
+
+- **Prompt-Vertrag, kein Token-Limit.** `orchestrator_max_tokens` ist nach unten
+  auf den Default begrenzt und würde ohnehin mitten im Satz abschneiden. Der
+  Block sagt, was die Antwort enthält — und dass Fach-Agenten-Ergebnisse
+  Rohmaterial sind, das verdichtet und nicht nacherzählt wird.
+- **Die kurzen Stufen kürzen den Datensatz, nicht nur die Prosa.** Tabellen
+  rendert der Privacy-Guard serverseitig (`MAX_CHAT_ROWS = 50`); eine reine
+  Prosa-Regel ließe eine 50-Zeilen-Tabelle unter einem Ein-Satz-Text stehen.
+- **Die Bitte des Users gewinnt pro Turn.** »kurz«, »nur die Zahl«, »alle
+  Details« in der Nachricht übersteuern den Betreiber-Default für diesen Turn.
+
+Unbekannte Werte parsen zu `undefined` → `standard`; ein Tippfehler in einer
+Config wählt nie still eine Stufe. Die Persona-Achse `conciseness` bleibt
+getrennt: sie steuert den Ton relativ zur Modell-Baseline, nicht den Umfang.
+Pro-Agent- und Pro-Turn-Overrides sind spätere Phasen.
+
 ---
 
 ## 11. Stream-Protokoll (`POST /api/chat/stream`)

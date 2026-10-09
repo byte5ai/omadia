@@ -55,6 +55,7 @@ import {
   type OrchestratorPersonaSkill,
   type AiDisclosureSetup,
 } from './orchestrator.js';
+import type { AnswerVerbosity } from './answerVerbosity.js';
 import {
   LlmScreener,
   HttpProxyScreener,
@@ -334,6 +335,12 @@ export interface OrchestratorDeps {
   readonly graphTenantId?: string;
   /** Operator-set assistant identity (overrides the built-in default). */
   readonly assistantIdentity?: string;
+  /**
+   * Operator's target answer size (`answer_verbosity` setup field), shared by
+   * every Agent this process builds. Absent → `standard`, no prompt block. See
+   * `OrchestratorOptions.answerVerbosity`.
+   */
+  readonly answerVerbosity?: AnswerVerbosity;
   /**
    * AI-Act Art. 50 (#644) — resolved operator disclosure config. Absent → the
    * shipping default (standard, active) on every channel. See
@@ -823,6 +830,7 @@ export function buildOrchestratorForAgent(
     ...(config.identityName?.trim()
       ? { identityName: config.identityName.trim() }
       : {}),
+    ...(deps.answerVerbosity ? { answerVerbosity: deps.answerVerbosity } : {}),
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
       ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
