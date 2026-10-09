@@ -135,6 +135,9 @@ export type {
   PendingRoutineList,
   AgentMeta,
 } from './chatAgent.js';
+// Phase 3 — the answer-size scale by VALUE: the orchestrator re-exports it
+// (single definition), channels validate card payloads against it.
+export { ANSWER_VERBOSITY_LEVELS } from './chatAgent.js';
 
 // Conversion helper from kernel-shaped result to channel-agnostic outgoing
 // message — lifted from `services/orchestrator.ts` in S+10-2 so channel
