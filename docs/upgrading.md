@@ -21,7 +21,7 @@ keys, and shifts in the plugin API.
 2. Back up your Postgres volume, your `VAULT_KEY` and your
    `CREDENTIAL_KEYCHAIN_KEY`.
 3. Pull the new image. Pin a release with `OMADIA_VERSION`, see the
-   [README quickstart](../README.md#-quickstart).
+   [README quickstart](../README.md#quickstart).
 4. Restart with `docker compose up -d`. If you run overlays, pass the same
    `-f` files you start the stack with; a plain `up` leaves their services
    running as they were.
