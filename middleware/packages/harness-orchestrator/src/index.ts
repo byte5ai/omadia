@@ -607,6 +607,13 @@ export type {
   AiDisclosurePosture,
   ChannelPosture,
 } from './aiDisclosurePosture.js';
+export {
+  ANSWER_VERBOSITY_LEVELS,
+  DEFAULT_ANSWER_VERBOSITY,
+  buildAnswerVerbosityBlock,
+  parseAnswerVerbosity,
+} from './answerVerbosity.js';
+export type { AnswerVerbosity } from './answerVerbosity.js';
 
 // Session logger + chat-session store
 export { SessionLogger, graphScopeFor } from './sessionLogger.js';

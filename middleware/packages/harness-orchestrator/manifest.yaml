@@ -206,6 +206,27 @@ setup:
       type: "string"
       required: false
       help: "Höchstzahl an Prozessen und Threads je Sandbox- und App-Container (`docker run --pids-limit`), ganze Zahl von 1 bis 4194304; fängt Fork-Bomben ab. Leer, 0, ungültig oder außerhalb des Bereichs = OMADIA_SANDBOX_PIDS_LIMIT, danach Default 256. Kein „unbegrenzt“."
+    # Antwortumfang — ein Prompt-Vertrag (was die Antwort enthält und weglässt),
+    # KEIN Token-Limit: `orchestrator_max_tokens` ist nach unten begrenzt und
+    # würde ohnehin mitten im Satz abschneiden. `standard` erzeugt keinen
+    # Prompt-Block, der System-Prompt bleibt byte-identisch zum Auslieferungszustand.
+    - key: "answer_verbosity"
+      label: "Antwortumfang"
+      type: "enum"
+      required: false
+      default: "standard"
+      enum:
+        - value: "tldr"
+          label: "TL;DR — 1 bis 3 Sätze, nur das Ergebnis"
+        - value: "brief"
+          label: "Kurz — Ergebnis plus höchstens 5 Stichpunkte"
+        - value: "standard"
+          label: "Standard — Auslieferungszustand"
+        - value: "detailed"
+          label: "Ausführlich — mit Begründung, Quellen und Annahmen"
+        - value: "max"
+          label: "Maximal — alle Zwischenschritte, Rohwerte und Unsicherheiten"
+      help: "Ziel-Umfang der Antwort an den User für alle Agenten dieser Installation. Steuert, was eine Antwort enthält (Ergebnis, Begründung, Zwischenschritte) und wie Ergebnisse der Fach-Agenten verdichtet werden — kein Token-Limit. Bittet der User in seiner Nachricht ausdrücklich um mehr oder weniger (»kurz«, »alle Details«), gewinnt seine Bitte für diesen Turn. Leer lassen = Standard."
     - key: "assistant_identity"
       label: "Assistant-Persona"
       type: "string"
