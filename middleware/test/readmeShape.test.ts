@@ -84,8 +84,16 @@ describe('the README stays a pitch', () => {
     assert.deepEqual(long, [], `README table cells over ${MAX_CELL_WORDS} words (${GUIDE})`);
   });
 
+  it('leaves the fine print to the linked docs', () => {
+    // A limit belongs on the page the README links. In the pitch it reads as a
+    // caveat; encode a default as an action ("Switch it on, and ...") instead.
+    const markers = /\b(?:unless|apart from|except|best-effort|whatever the settings|only (?:when|if|while|once))\b/i;
+    const hits = withoutCode.split('\n').filter((line) => markers.test(line));
+    assert.deepEqual(hits, [], `README lines with fine-print markers (${GUIDE})`);
+  });
+
   it('uses no em dash and no middle dot', () => {
-    const hits = README.split('\n').filter((line) => /[—·]/.test(line));
+    const hits = README.split('\n').filter((line) => /[\u2014\u00B7]/.test(line));
     assert.deepEqual(hits, [], `README lines with an em dash or a middle dot (${GUIDE})`);
   });
 });

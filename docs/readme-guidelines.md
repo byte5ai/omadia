@@ -21,10 +21,12 @@ space, against omadia's README before the rewrite.
 | Open WebUI | 263 | 2,050 | 72 | none | 0.0 |
 | Langfuse | 392 | 3,138 | 55 | 22 | 0.5 |
 | omadia before | 612 | 5,300 | 822 | 308 | 3.5 |
-| omadia after | 163 | 852 | 70 | 26 | 0.75 |
+| omadia after | 163 | 850 | 70 | 27 | 0.75³ |
 
 ¹ Share of limiting words (`only`, `unless`, `apart from`, `not`, `without`,
 `best-effort` …) in the first 400 words. ² Mostly the translations list.
+³ The remaining hits are benefit phrases ("config, not code", "No code.",
+"No Docker?"), none of them a caveat; the capability table has none.
 
 ## Dramaturgy
 
@@ -47,11 +49,15 @@ it:
 
 ## Wording
 
-- Lead with the outcome, not the setting: "Checks figures against the run's own
-  sources … Opt-in." rather than "Optional and off by default. Once switched on,
-  it checks …".
-- One fact per sentence, 40 words at most. Second person ("your data", "you
-  can"), active verbs.
+- Lead with what the reader gets, as an active verb addressed to them: "Follow a
+  run step by step", "Connect Microsoft 365 …", "Describe an agent in plain
+  words, and the Builder …". Avoid opening with a technical subject
+  ("`create_xlsx` writes …", "An orchestrator routes …") or a bare noun list.
+- Encode a default as an action, not a qualifier: "Switch it on, and omadia
+  checks …" rather than "Optional and off by default. Once switched on, it
+  checks …" or a trailing "Opt-in.".
+- One fact per sentence, 40 words at most. Second person ("your data", "your
+  infrastructure").
 - Concrete numbers where they are true ("three containers, one command").
 - Calm, declarative voice. No superlatives, no em dash, no middle dot, no
   negation-reveal hook ("It's not X, it's Y").
@@ -80,4 +86,7 @@ changes.
 
 `readmeShape.test.ts` fails when the README has more than 220 lines, a prose
 paragraph over 75 words, a sentence over 40 words, a table cell over 30 words,
-or an em dash or middle dot.
+a fine-print marker (`unless`, `apart from`, `except`, `best-effort`,
+`whatever the settings`, `only when/if/while/once`), or an em dash or middle
+dot. Active verbs and outcome-first phrasing are a review rule; no test can
+judge them.

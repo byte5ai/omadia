@@ -37,16 +37,16 @@ work: real data, your own infrastructure, and answers you have to stand behind.
 
 | Capability | What you get |
 |---|---|
-| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a boundary on your server, and the model works from an identity-free digest. On by default. |
-| ✅&nbsp;**Answer&nbsp;verification** | Checks figures such as euro amounts, dates and invoice references against the run's own sources, and can hold back an answer with a refuted claim. Opt-in. |
-| 🧮&nbsp;**Excel&nbsp;from&nbsp;real&nbsp;rows** | `create_xlsx` writes the real rows into the workbook server-side, so they never pass through the model. Sums and pivots stay live Excel formulas. |
-| 🧾&nbsp;**Traces&nbsp;and&nbsp;receipts** | Follow a run step by step in the call-stack viewer. Turns the Privacy Shield guarded get a hash-chained receipt on Postgres. |
-| 👥&nbsp;**Multiplayer&nbsp;by&nbsp;design** | Agents work in your team's shared channels (Slack, Teams, Telegram, Discord), so several people work with them in one context. |
-| 🤖&nbsp;**Agent&nbsp;teams** | An orchestrator routes each turn to the right specialist agent. Channels, integrations, tools, and capability providers sit behind one stable API. |
+| 🛡️&nbsp;**Privacy&nbsp;Shield** | Let agents work on real customer data. The Privacy Shield keeps the raw results of data-source tools on your server and hands the model an identity-free digest. |
+| ✅&nbsp;**Answer&nbsp;verification** | Switch it on, and omadia checks euro amounts, dates and invoice references against the run's own sources. `enforce` holds back answers with a refuted claim. |
+| 🧮&nbsp;**Excel&nbsp;from&nbsp;real&nbsp;rows** | Get workbooks filled server-side with the real rows, straight from the data source into the file. Sums and pivots stay live Excel formulas. |
+| 🧾&nbsp;**Traces&nbsp;and&nbsp;receipts** | Follow a run step by step in the call-stack viewer. Hash-chained receipts record where the Privacy Shield stepped in. |
+| 👥&nbsp;**Multiplayer&nbsp;by&nbsp;design** | Work with the same agents as a team, right in Slack, Teams, Telegram or Discord, in one shared context. |
+| 🤖&nbsp;**Agent&nbsp;teams** | Ask once, and an orchestrator hands the turn to the specialist agent that fits it. |
 | 🧭&nbsp;**Conductor&nbsp;workflows** | Chain agent, action and human steps into deterministic workflows, with durable approvals, crash-safe resume and a visual designer. |
-| 🧩&nbsp;**No-code&nbsp;builder** | Describe an agent in plain words, and the Builder generates, typechecks and smoke-tests the plugin. Plugins install as hash-pinned ZIP files. |
-| 🔒&nbsp;**Self-hosted&nbsp;and&nbsp;yours** | One `docker compose up` on a single machine. Your Postgres, your LLM key, your infrastructure. GDPR-aware and made in the EU. |
-| 🔌&nbsp;**Enterprise&nbsp;integrations** | Microsoft 365, Odoo, Confluence, Teams, and Telegram, with the LLM provider a swappable plugin. |
+| 🧩&nbsp;**No-code&nbsp;builder** | Describe an agent in plain words, and the Builder generates, typechecks and smoke-tests it. Install it as a hash-pinned ZIP. |
+| 🔒&nbsp;**Self-hosted&nbsp;and&nbsp;yours** | Run it on your own machine with one `docker compose up`: your Postgres, your LLM key, your infrastructure. GDPR-aware, made in the EU. |
+| 🔌&nbsp;**Enterprise&nbsp;integrations** | Connect Microsoft 365, Odoo, Confluence, Teams and Telegram, and swap the LLM provider like any other plugin. |
 
 Every control has a default and a scope. [Trust & privacy](docs/trust-and-privacy.md)
 lists both, and a test keeps that page tied to the code.
@@ -68,7 +68,7 @@ docker compose logs middleware | grep "setup token"   # one-time token for the f
 Open `http://localhost:3333`, create the first admin with that token, and
 connect your LLM under **Admin → LLM access**.
 
-- **No Docker?** Your AI assistant can install the desktop app with
+- **No Docker?** Let your AI assistant install the desktop app with
   [one prompt](docs/getting-started.md#no-docker-let-your-ai-assistant-install-it).
 - **Next steps:** the first run, optional features, pinned releases and
   troubleshooting are in [Getting started](docs/getting-started.md).
