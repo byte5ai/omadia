@@ -7,7 +7,9 @@ import {
 import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
 import {
   buildAnswerVerbosityBlock,
+  buildAnswerVerbosityTurnBlock,
   DEFAULT_ANSWER_VERBOSITY,
+  parseAnswerVerbosity,
   type AnswerVerbosity,
 } from './answerVerbosity.js';
 import {
@@ -19,6 +21,7 @@ import {
   DEFAULT_AI_DISCLOSURE_POLICY,
   InMemoryDisclosureSeenStore,
   type ChatStreamEvent,
+  type AnswerVerbosityInfo,
   type ChatTurnInput,
   type ChatTurnResult,
   type DelegatedAnswer,
@@ -1652,15 +1655,17 @@ ${priorContext}`,
  * The per-turn system hint as it crosses the wire (#361): the caller's
  * `extraSystemHint` masked through the turn's prompt map like the user's
  * message — once, through this turn's map — then composed with the kernel's
- * own fresh-check text. The caller's hint (a verifier correction on a retry,
+ * own per-turn prose (the fresh-check block, the answer-size pick). The
+ * caller's hint (a verifier correction on a retry,
  * the screening marker) is wire content, not kernel prose — the verifier's
  * correction hint quotes claims cut from the RESTORED answer, i.e. the real
  * values the mask kept from the model — so it gets the message's protection:
  * the same surrogates (restored in the answer), its masked spans on the
  * turn's receipt, and a `PromptMaskBlockedError` when masking cannot be
- * guaranteed. The fresh-check prose is not masked: it is static, carries no
- * user data, and masking it could only garble — or, on a residual-leak
- * `blocked`, fail — a turn with no hint.
+ * guaranteed. The kernel's own prose (fresh check, answer-size pick) is not
+ * masked: it is static, carries no user data — the size pick interpolates
+ * only a parsed enum label — and masking it could only garble — or, on a
+ * residual-leak `blocked`, fail — a turn with no hint.
  */
 async function wireExtraSystemHint(
   privacy: PrivacyTurnHandle | undefined,
@@ -1671,7 +1676,11 @@ async function wireExtraSystemHint(
     callerHint !== undefined && callerHint.trim().length > 0
       ? await maskPromptForWire(privacy, callerHint)
       : undefined;
-  return composeExtraSystemHint(input.freshCheck, wireHint);
+  return composeExtraSystemHint(
+    input.freshCheck,
+    wireHint,
+    parseAnswerVerbosity(input.answerVerbosity),
+  );
 }
 
 /**
@@ -1685,8 +1694,16 @@ async function wireExtraSystemHint(
 function composeExtraSystemHint(
   freshCheck: ChatTurnInput['freshCheck'],
   callerHint: string | undefined,
+  turnVerbosity?: AnswerVerbosity,
 ): string | undefined {
   const parts: string[] = [];
+  // Phase 3 — the user's per-turn answer-size pick. Same home as Fresh
+  // Check (uncached, per turn, static prose that carries no user data), so
+  // the stable prompt and its cache key stay byte-identical. Already parsed:
+  // an unknown wire value arrives here as undefined and adds nothing.
+  if (turnVerbosity) {
+    parts.push(buildAnswerVerbosityTurnBlock(turnVerbosity));
+  }
   if (freshCheck) {
     parts.push(
       `# FRESH CHECK MODE (von User per Card-Button aktiviert)
@@ -3888,7 +3905,14 @@ export class Orchestrator {
    * `runTurn()` directly.
    */
   async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-    const result = await this.runTurn(input);
+    const turn = await this.runTurn(input);
+    // Phase 3 — the level this answer was generated under, on EVERY answer
+    // this path returns (choice cards, direct-line, gate returns included),
+    // so a channel can always offer the neighbouring steps. Resolved here,
+    // once, at the boundary; the inner success path sets the same value.
+    const result: ChatTurnResult = turn.answerVerbosity
+      ? turn
+      : { ...turn, answerVerbosity: this.resolveAnswerVerbosity(input) };
     // #644 — the disclosure resolution rides `result.aiDisclosure` (set by
     // `runTurn`). Thread the scope + shared seen-store ONLY when there is a
     // marker to fold, so `toSemanticAnswer` folds it on the FIRST turn of the
@@ -3907,6 +3931,18 @@ export class Orchestrator {
           }
         : undefined,
     );
+  }
+
+  /**
+   * Phase 3 — the answer-size level a turn runs under: the user's per-turn
+   * pick (parsed, never trusted) over the configured slot (Agent, else
+   * installation, else `standard`).
+   */
+  private resolveAnswerVerbosity(input: ChatTurnInput): AnswerVerbosityInfo {
+    const turnVerbosity = parseAnswerVerbosity(input.answerVerbosity);
+    return turnVerbosity
+      ? { effective: turnVerbosity, source: 'turn' }
+      : { effective: this.answerVerbosity, source: 'configured' };
   }
 
   /**
@@ -6405,6 +6441,9 @@ export class Orchestrator {
             answer: restoredAnswer,
             toolCalls,
             iterations,
+            // Phase 3 — see `resolveAnswerVerbosity`; `chat()` fills it on
+            // every other return path too.
+            answerVerbosity: this.resolveAnswerVerbosity(input),
             ...(memoryUsed ? { memoryUsed: true } : {}),
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),

@@ -19,10 +19,13 @@
  * installation that never touched the field produces a byte-identical system
  * prompt (and therefore an unchanged prompt-cache key).
  *
- * ## What this is not (yet)
+ * ## The three layers
  *
- * Per-agent and per-turn overrides are later phases. The user's own wording in
- * a message ("kurz", "alle Details") already wins for that one turn — the block
+ * Installation (`answer_verbosity`, phase 1) < Agent (`agent_identities.
+ * verbosity`, phase 2, a slot that replaces the installation value) < turn
+ * (`ChatTurnInput.answerVerbosity`, phase 3, the uncached per-turn hint built
+ * by {@link buildAnswerVerbosityTurnBlock}). The user's own wording in a
+ * message ("kurz", "alle Details") wins for that one turn as well — the block
  * says so — because the operator's default must never fight the person asking.
  *
  * The persona axis `conciseness` (agent identity) is a TONE hint relative to
@@ -30,15 +33,19 @@
  * this scale fixes the SIZE and shape of the answer.
  */
 
-export const ANSWER_VERBOSITY_LEVELS = [
-  'tldr',
-  'brief',
-  'standard',
-  'detailed',
-  'max',
-] as const;
+import {
+  ANSWER_VERBOSITY_LEVELS,
+  type AnswerVerbosityLevel,
+} from '@omadia/channel-sdk';
 
-export type AnswerVerbosity = (typeof ANSWER_VERBOSITY_LEVELS)[number];
+/**
+ * The closed scale — ONE definition, owned by the channel SDK (the wire
+ * contract channels and the orchestrator share; this package depends on it).
+ * Re-exported here under the name the orchestrator-side code and the plugin
+ * manifest test have used since phase 1.
+ */
+export { ANSWER_VERBOSITY_LEVELS };
+export type AnswerVerbosity = AnswerVerbosityLevel;
 
 /** The delivered state: no block, prompt unchanged. */
 export const DEFAULT_ANSWER_VERBOSITY: AnswerVerbosity = 'standard';
@@ -86,6 +93,29 @@ const LEVEL_CONTRACT: Record<Exclude<AnswerVerbosity, 'standard'>, string> = {
 - Lass nichts weg, was ein Prüfer bräuchte, um die Antwort nachzuvollziehen.
 - Tabellen vollständig bis zur Zeilengrenze; ist das Ergebnis größer, biete den Export an.`,
 };
+
+/**
+ * The per-TURN variant (phase 3): the user picked a level on a channel
+ * affordance ("Kürzer" / "Mehr Details") for a re-run of one question. Goes
+ * into the uncached per-turn system hint — like Fresh Check — so the stable
+ * prompt and its cache key are untouched, and says explicitly that it
+ * replaces the configured "Antwortumfang" section for this turn. Unlike
+ * {@link buildAnswerVerbosityBlock} it is never empty: a turn pick of
+ * `standard` over an Agent configured to `tldr` must still say "normal size".
+ */
+export function buildAnswerVerbosityTurnBlock(level: AnswerVerbosity): string {
+  const contract =
+    level === 'standard'
+      ? `- Normaler Umfang: Ergebnis mit kurzer Einordnung, wie ohne jede Vorgabe.
+- Keine künstliche Kürzung und keine künstliche Ausführlichkeit.`
+      : LEVEL_CONTRACT[level];
+  const label = level === 'standard' ? 'Standard' : LEVEL_LABEL[level];
+  return `# ANTWORTUMFANG FÜR DIESEN TURN (vom User per Card-Button auf «${label}» gestellt)
+
+Für diesen EINEN Turn ersetzt diese Vorgabe den Abschnitt »Antwortumfang« im stabilen System-Prompt (falls vorhanden). Der User hat gerade dieselbe Frage noch einmal gestellt, weil ihm die vorige Antwort zu lang oder zu kurz war — liefere jetzt genau diesen Umfang:
+${contract}
+- Ergebnisse von Fach-Agenten sind Rohmaterial: verdichte sie auf diesen Umfang, gib sie nicht wörtlich oder nacherzählt weiter.`;
+}
 
 /**
  * The system-prompt block for a level. Empty string for `standard` so the

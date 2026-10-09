@@ -40,6 +40,8 @@ import {
   type OrchestratorDeps,
 } from '../packages/harness-orchestrator/src/buildOrchestrator.js';
 import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
+import type { Orchestrator } from '../packages/harness-orchestrator/src/orchestrator.js';
+import { buildAnswerVerbosityTurnBlock } from '../packages/harness-orchestrator/src/answerVerbosity.js';
 import { loadManifestFromPath } from '../src/plugins/manifestLoader.js';
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -109,6 +111,19 @@ async function systemPromptFor(
   answerVerbosity: AnswerVerbosity | undefined,
   agentVerbosity?: AnswerVerbosity,
 ): Promise<string> {
+  return (await turnFor(answerVerbosity, agentVerbosity)).prompt;
+}
+
+/**
+ * One turn through the real wiring, with an optional per-turn pick on the
+ * input (phase 3). Returns the system text the provider saw (stable blocks
+ * AND the uncached per-turn hint) plus the channel-facing answer.
+ */
+async function turnFor(
+  answerVerbosity: AnswerVerbosity | undefined,
+  agentVerbosity?: AnswerVerbosity,
+  turnPick?: string,
+): Promise<{ prompt: string; answer: Awaited<ReturnType<Orchestrator['chat']>> }> {
   const captured: string[] = [];
   const deps: OrchestratorDeps = {
     provider: capturingProvider(captured),
@@ -133,10 +148,17 @@ async function systemPromptFor(
     },
     deps,
   );
-  await built.orchestrator.chat({ userMessage: 'Wie viele offene Rechnungen gibt es?' });
+  const answer = await built.orchestrator.chat({
+    userMessage: 'Wie viele offene Rechnungen gibt es?',
+    // Deliberately typed loosely: the wire may carry anything, the
+    // orchestrator parses it.
+    ...(turnPick !== undefined
+      ? { answerVerbosity: turnPick as AnswerVerbosity }
+      : {}),
+  });
   const first = captured[0];
   assert.ok(first !== undefined, 'provider never received a request');
-  return first;
+  return { prompt: first, answer };
 }
 
 describe('parseAnswerVerbosity', () => {
@@ -237,6 +259,44 @@ describe('buildOrchestratorForAgent — answerVerbosity reaches the system promp
   it('an agent without its own level inherits the installation default', async () => {
     const prompt = await systemPromptFor('brief', undefined);
     assert.match(prompt, /«Kurz»/);
+  });
+});
+
+describe('per-turn pick (phase 3) — the user re-asks with a different size', () => {
+  it('the turn block is never empty, even for standard', () => {
+    for (const level of ANSWER_VERBOSITY_LEVELS) {
+      const block = buildAnswerVerbosityTurnBlock(level);
+      assert.match(block, /^# ANTWORTUMFANG FÜR DIESEN TURN/, level);
+      assert.match(block, /ersetzt diese Vorgabe den Abschnitt »Antwortumfang«/, level);
+    }
+    assert.match(buildAnswerVerbosityTurnBlock('standard'), /Normaler Umfang/);
+  });
+
+  it('lands in the uncached per-turn hint; the stable prompt keeps the configured block', async () => {
+    const { prompt, answer } = await turnFor('tldr', undefined, 'max');
+    // Both present: the configured block in the stable prompt (cache key
+    // unchanged) and the turn block that explicitly overrides it.
+    assert.match(prompt, /Antwortumfang \(vom Betreiber auf «TL;DR» gestellt\)/);
+    assert.match(prompt, /ANTWORTUMFANG FÜR DIESEN TURN \(vom User per Card-Button auf «Maximal» gestellt\)/);
+    assert.ok(
+      prompt.indexOf('ANTWORTUMFANG FÜR DIESEN TURN') > prompt.indexOf('Antwortumfang (vom Betreiber'),
+      'the turn hint comes after the stable prompt',
+    );
+    assert.deepEqual(answer.answerVerbosity, { effective: 'max', source: 'turn' });
+  });
+
+  it('reports the configured level when the user picked nothing', async () => {
+    const { prompt, answer } = await turnFor('brief', 'detailed');
+    assert.doesNotMatch(prompt, /ANTWORTUMFANG FÜR DIESEN TURN/);
+    assert.deepEqual(answer.answerVerbosity, { effective: 'detailed', source: 'configured' });
+    const nothing = await turnFor(undefined, undefined);
+    assert.deepEqual(nothing.answer.answerVerbosity, { effective: 'standard', source: 'configured' });
+  });
+
+  it('ignores a value the scale does not know — a stale button cannot pick a level', async () => {
+    const { prompt, answer } = await turnFor('tldr', undefined, 'verbose');
+    assert.doesNotMatch(prompt, /ANTWORTUMFANG FÜR DIESEN TURN/);
+    assert.deepEqual(answer.answerVerbosity, { effective: 'tldr', source: 'configured' });
   });
 });
 

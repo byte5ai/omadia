@@ -3636,7 +3636,20 @@ für sich ab. Eine Änderung ist ein Rebuild-Grund (`identity_verbosity` in
 `applyDiff.ts`) und löst in der Route `registry.reload()` aus, sonst wäre sie
 gespeichert und nie gesprochen. Die Route ist — wie bei allen Identity-Feldern —
 ein Voll-Ersatz: ein Client, der den Key weglässt, schreibt „übernehmen“
-(`NULL`). Pro-Turn-Overrides sind die nächste Phase.
+(`NULL`).
+
+**Pro Turn (Phase 3):** `ChatTurnInput.answerVerbosity` (channel-sdk,
+`AnswerVerbosityLevel`) ersetzt die konfigurierte Stufe für genau einen Turn.
+Mechanik wie Fresh Check: der Block (`buildAnswerVerbosityTurnBlock`) landet im
+**ungecachten** Pro-Turn-Hint (`composeExtraSystemHint`), sagt explizit, dass er
+den Abschnitt »Antwortumfang« des stabilen Prompts ersetzt, und ist auch für
+`standard` nie leer. Der stabile Prompt und sein Cache-Key bleiben unberührt.
+Der Kernel parst den Wire-Wert (`parseAnswerVerbosity`); Unbekanntes ist ein
+No-op. Jede Antwort trägt `ChatTurnResult.answerVerbosity: { effective,
+source: 'turn' | 'configured' }` (→ `SemanticAnswer`), damit ein Kanal die
+Nachbarstufen anbieten kann — Teams rendert daraus „🔽 Kürzer“ / „🔼 Mehr
+Details“ (`omadia-channel-teams` ≥ 0.29.0, Payload `verbosity_step`). Der
+Stream-`done`-Event trägt das Feld noch nicht (Web-Chat-Buttons offen).
 
 ---
 

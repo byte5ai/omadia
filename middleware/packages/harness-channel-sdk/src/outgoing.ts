@@ -17,6 +17,7 @@ import type {
 } from '@omadia/plugin-api';
 import type { OutgoingSurface } from './surface.js';
 import type { AiDisclosure } from './aiDisclosure.js';
+import type { AnswerVerbosityInfo } from './chatAgent.js';
 
 export type { CaptureDisclosure, PrivacyReceipt, RecalledContext };
 export type { AiDisclosure } from './aiDisclosure.js';
@@ -76,6 +77,13 @@ export interface SemanticAnswer {
    * Absent/false therefore means the affordance should not be offered.
    */
   memoryUsed?: boolean;
+
+  /**
+   * The answer-size level this answer was generated under (see
+   * `ChatTurnResult.answerVerbosity`). Channels offer "Kürzer" / "Mehr
+   * Details" relative to it; absent on a kernel that predates the field.
+   */
+  answerVerbosity?: AnswerVerbosityInfo;
 
   /** Soft-disclaimer line appended to the answer (e.g. "unverified claims"). */
   disclaimer?: string;

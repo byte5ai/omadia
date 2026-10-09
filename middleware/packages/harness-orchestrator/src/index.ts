@@ -611,6 +611,7 @@ export {
   ANSWER_VERBOSITY_LEVELS,
   DEFAULT_ANSWER_VERBOSITY,
   buildAnswerVerbosityBlock,
+  buildAnswerVerbosityTurnBlock,
   parseAnswerVerbosity,
 } from './answerVerbosity.js';
 export type { AnswerVerbosity } from './answerVerbosity.js';

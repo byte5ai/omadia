@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Added — answer size per turn (`ChatTurnInput.answerVerbosity`)
+
+2026-10-09 — Phase 3 of answer verbosity. A channel can re-ask the same
+question one step down or up the size scale for a single turn
+(`ChatTurnInput.answerVerbosity`, channel-sdk `AnswerVerbosityLevel`). The
+level goes into the uncached per-turn system hint next to Fresh Check
+(`buildAnswerVerbosityTurnBlock`), explicitly overriding the configured
+"Antwortumfang" section for that turn, so the stable prompt and its cache key
+are untouched; the wire value is parsed, and an unknown level is a no-op.
+Every `ChatTurnResult` / `SemanticAnswer` now carries
+`answerVerbosity: { effective, source: 'turn' | 'configured' }` so the channel
+can offer the neighbouring steps — the Teams card's "🔽 Kürzer" / "🔼 Mehr
+Details" buttons (`omadia-channel-teams` 0.29.0) are the first consumer. The
+stream `done` event does not carry the field yet.
+
 ### Fixed — a provider plugin installed at runtime can store its API key
 
 2026-10-09 — Installing an LLM provider plugin without a restart (e.g.

@@ -13,6 +13,26 @@ import type { EnvelopeProvenance } from './provenance.js';
 import type { TurnOrigin } from './turnOrigin.js';
 
 /**
+ * The closed answer-size scale. Mirrors `ANSWER_VERBOSITY_LEVELS` in the
+ * orchestrator package (which depends on this one, so the list lives here by
+ * value and there by name); the orchestrator parses, never trusts, the wire.
+ */
+export const ANSWER_VERBOSITY_LEVELS = [
+  'tldr',
+  'brief',
+  'standard',
+  'detailed',
+  'max',
+] as const;
+export type AnswerVerbosityLevel = (typeof ANSWER_VERBOSITY_LEVELS)[number];
+
+/** The level a turn was answered under, and where it came from. */
+export interface AnswerVerbosityInfo {
+  readonly effective: AnswerVerbosityLevel;
+  readonly source: 'turn' | 'configured';
+}
+
+/**
  * Orchestrator surface contract — the duck-typed interface every chat-handling
  * implementation satisfies (the concrete `Orchestrator` class plus any
  * wrappers like the answer-verifier's `VerifierService`). Channel adapters
@@ -459,6 +479,16 @@ export interface ChatTurnInput {
    */
   freshCheck?: boolean;
   /**
+   * Answer-size override for THIS turn only — the level the user picked on a
+   * channel affordance ("Kürzer" / "Mehr Details" on the Teams card) for a
+   * re-run of the same question. Replaces the configured level (Agent, else
+   * installation) for the one turn; the next turn is back on the configured
+   * one. Unknown values are ignored, so a stale button cannot pick a level
+   * the prompt builder does not know. See {@link ChatTurnResult.answerVerbosity}
+   * for the value the channel needs to offer the next step.
+   */
+  answerVerbosity?: AnswerVerbosityLevel;
+  /**
    * Teams SSO assertion (JWT) for the calling user. When present, the
    * calendar tools (`find_free_slots` / `book_meeting`) can OBO-exchange
    * for a delegated Graph token. Absent → the calendar tools return an
@@ -712,6 +742,14 @@ export interface ChatTurnResult {
    * Omitted when nothing qualified — a fresh check would then be a no-op.
    */
   memoryUsed?: boolean;
+  /**
+   * The answer-size level this turn was generated under, so a channel can
+   * offer the neighbouring steps ("Kürzer" / "Mehr Details") relative to what
+   * the user just read. `source: 'turn'` when the user picked it for this
+   * turn, `'configured'` when it came from the Agent / installation setting
+   * (or the delivered `standard` when nothing is configured).
+   */
+  answerVerbosity?: AnswerVerbosityInfo;
   /**
    * #332 Layer 2 — Direct Line. The verbatim sub-agent answer for a turn the
    * user directed at a named specialist (`@omadia #strategist …`). Set by the
