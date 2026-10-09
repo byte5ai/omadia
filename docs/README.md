@@ -25,6 +25,11 @@ Dieser Ordner ist das kollektive Gedächtnis des Omadia-Projekts. Mehrere Agents
 | [`creating-plugins.md`](creating-plugins.md) | HowTo: Plugin bauen (Scaffold → Manifest → ZIP) + Publish auf den Hub | Bei Änderungen am Package-Contract / Publish-Flow | Plugin-/Registry-Thread |
 | [`teams-multi-agent-identities.md`](teams-multi-agent-identities.md) | HowTo: mehrere omadia-Agenten als eigene benannte Bots in Microsoft Teams (Provisionierung, Team-Zuordnung, Rechte, Persona, Kontext-Memory-ACL) | Bei Änderungen an der Teams-Identitäts-Provisionierung oder an `teamsProvisioner@1` | Epic-#860-Thread |
 | [`ai-act-transparency.md`](ai-act-transparency.md) | Was omadia bei KI-Antworten kennzeichnet und was **nicht** (EU AI Act Art. 50) + DE/EN-Textbausteine für die Transparenzseite. Bindend: keine Aussage ohne Codestelle | Bei jeder Änderung an Kennzeichnung oder Provenienz-Markierung | Epic-#642-Thread |
+| [`getting-started.md`](getting-started.md) | Lokale Installation, erster Lauf, optionale Features, Troubleshooting (öffentlich, Englisch, aus dem README ausgelagert) | Bei Änderungen an Quickstart, Overlays oder Setup-Wizard | Feature-Agents |
+| [`deployment.md`](deployment.md) | Render, Fly.io, eigener Host, Pflicht-Secrets für Produktion (öffentlich, Englisch) | Bei neuen Deploy-Zielen oder Boot-Pflicht-Secrets | Feature-Agents |
+| [`trust-and-privacy.md`](trust-and-privacy.md) | Defaults, Reichweite und Grenzen von Privacy Shield, Verifier, Receipts, Plugins. Die Positiv-Prüfungen von `docsClaimsGuard.test.ts` lesen diese Seite | Bei jeder Änderung an Default oder Grenze dieser Controls | Security-Thread |
+| [`readme-guidelines.md`](readme-guidelines.md) | Rolle, Dramaturgie und Wording des Root-README (Benchmark), durchgesetzt von `readmeShape.test.ts` | Bei Regeländerung | Jeder, der das README ändert |
+| [`design.md`](design.md) | Lume, die visuelle Sprache der Operator-UI | Bei Theme-Änderungen | Frontend-Thread |
 
 ## Lebende Docs (öffentliche Untermenge)
 
