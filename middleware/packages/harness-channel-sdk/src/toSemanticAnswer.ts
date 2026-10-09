@@ -362,6 +362,7 @@ export function toSemanticAnswer(
     ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
     ...(verifier ? { verifier } : {}),
     ...(r.memoryUsed ? { memoryUsed: true } : {}),
+    ...(r.answerVerbosity ? { answerVerbosity: r.answerVerbosity } : {}),
     ...(agentsConsulted && agentsConsulted.length > 0
       ? { agentsConsulted }
       : {}),

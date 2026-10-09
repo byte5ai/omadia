@@ -111,6 +111,8 @@ export type {
 // channel-plugins-final (S+11) and the orchestrator-plugin (S+10-3/4) can
 // consume `ChatAgent` without depending on the concrete Orchestrator class.
 export type {
+  AnswerVerbosityInfo,
+  AnswerVerbosityLevel,
   ChatAgent,
   ChatStreamObserver,
   ChatTurnInput,

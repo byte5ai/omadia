@@ -7,7 +7,9 @@ import {
 import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
 import {
   buildAnswerVerbosityBlock,
+  buildAnswerVerbosityTurnBlock,
   DEFAULT_ANSWER_VERBOSITY,
+  parseAnswerVerbosity,
   type AnswerVerbosity,
 } from './answerVerbosity.js';
 import {
@@ -19,6 +21,7 @@ import {
   DEFAULT_AI_DISCLOSURE_POLICY,
   InMemoryDisclosureSeenStore,
   type ChatStreamEvent,
+  type AnswerVerbosityInfo,
   type ChatTurnInput,
   type ChatTurnResult,
   type DelegatedAnswer,
@@ -1671,7 +1674,11 @@ async function wireExtraSystemHint(
     callerHint !== undefined && callerHint.trim().length > 0
       ? await maskPromptForWire(privacy, callerHint)
       : undefined;
-  return composeExtraSystemHint(input.freshCheck, wireHint);
+  return composeExtraSystemHint(
+    input.freshCheck,
+    wireHint,
+    parseAnswerVerbosity(input.answerVerbosity),
+  );
 }
 
 /**
@@ -1685,8 +1692,16 @@ async function wireExtraSystemHint(
 function composeExtraSystemHint(
   freshCheck: ChatTurnInput['freshCheck'],
   callerHint: string | undefined,
+  turnVerbosity?: AnswerVerbosity,
 ): string | undefined {
   const parts: string[] = [];
+  // Phase 3 — the user's per-turn answer-size pick. Same home as Fresh
+  // Check (uncached, per turn, static prose that carries no user data), so
+  // the stable prompt and its cache key stay byte-identical. Already parsed:
+  // an unknown wire value arrives here as undefined and adds nothing.
+  if (turnVerbosity) {
+    parts.push(buildAnswerVerbosityTurnBlock(turnVerbosity));
+  }
   if (freshCheck) {
     parts.push(
       `# FRESH CHECK MODE (von User per Card-Button aktiviert)
@@ -6401,10 +6416,18 @@ export class Orchestrator {
           const memoryUsed =
             recallUsed === true ||
             turnContext.current()?.memoryFileRead?.value === true;
+          // Phase 3 — the level this answer was generated under, so the
+          // channel can offer the neighbouring steps relative to it. A turn
+          // pick (parsed, never trusted) wins over the configured slot.
+          const turnVerbosity = parseAnswerVerbosity(input.answerVerbosity);
+          const answerVerbosity: AnswerVerbosityInfo = turnVerbosity
+            ? { effective: turnVerbosity, source: 'turn' }
+            : { effective: this.answerVerbosity, source: 'configured' };
           return {
             answer: restoredAnswer,
             toolCalls,
             iterations,
+            answerVerbosity,
             ...(memoryUsed ? { memoryUsed: true } : {}),
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
