@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Added — answer size in the web chat (stream `done` + "Kürzer" / "Mehr Details")
+
+2026-10-09 — The stream `done` event now carries `answerVerbosity` like the
+non-streaming result (single funnel `discloseDoneEvent`, kept on the
+verifier's `withheldDone` rebuild), `POST /api/chat` and `/api/chat/stream`
+accept `answerVerbosity` in the body (validated against the closed scale),
+and the web debug chat renders "🔽 Kürzer" / "🔼 Mehr Details" under each
+answer, re-asking the question it belongs to one step down / up the scale
+for that one turn. An older middleware omits the field and the buttons stay
+hidden.
+
 ### Added — answer size per turn (`ChatTurnInput.answerVerbosity`)
 
 2026-10-09 — Phase 3 of answer verbosity. A channel can re-ask the same

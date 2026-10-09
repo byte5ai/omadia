@@ -14,6 +14,10 @@ import { ChevronDown, Eraser, GitBranch, Navigation, Network } from 'lucide-reac
 import { ChatTabs } from '../_components/ChatTabs';
 import { ScrollToBottomButton } from '../_components/ScrollToBottomButton';
 import { Button } from '../_components/ui/Button';
+import {
+  answerVerbosityNeighbour,
+  type AnswerVerbosity,
+} from '../_lib/agentIdentity';
 import { useStickToBottom } from '../_lib/useStickToBottom';
 import { AgentPicker } from '../_components/AgentPicker';
 import { AgentUnavailableBanner } from '../_components/AgentUnavailableBanner';
@@ -294,7 +298,7 @@ export default function ChatPage(): React.ReactElement {
   );
 
   const send = useCallback(
-    (overrideText?: string): void => {
+    (overrideText?: string, opts?: { answerVerbosity?: AnswerVerbosity }): void => {
       // Two entry points use this: the Senden button (reads `input`) and the
       // Smart-Card option buttons (pass the chosen label via overrideText).
       const trimmed = (overrideText ?? input).trim();
@@ -353,6 +357,9 @@ export default function ChatPage(): React.ReactElement {
         ...(isFirstTurn && selectedAgentSlug
           ? { agentSlug: selectedAgentSlug }
           : {}),
+        // Phase 3 — a "Kürzer" / "Mehr Details" re-ask carries its level for
+        // this one turn; a normal send carries nothing.
+        ...(opts?.answerVerbosity ? { answerVerbosity: opts.answerVerbosity } : {}),
       });
       inputRef.current?.focus();
     },
@@ -651,13 +658,22 @@ export default function ChatPage(): React.ReactElement {
             {activeSession.messages.length === 0 && (
               <EmptyState hydrating={hydrating} session={activeSession} />
             )}
-            {activeSession.messages.map((m) => (
+            {activeSession.messages.map((m, idx) => (
               <MessageRow
                 key={m.id}
                 message={m}
                 disabled={sending || hydrating}
                 onChoose={(value) => {
                   send(value);
+                }}
+                onResize={(level) => {
+                  // Re-ask the question this answer belongs to — the nearest
+                  // user message above it — one step up or down the scale.
+                  const question = activeSession.messages
+                    .slice(0, idx)
+                    .reverse()
+                    .find((x) => x.role === 'user')?.content;
+                  if (question) send(question, { answerVerbosity: level });
                 }}
                 onDiscardAutoPromoted={clearAutoPromoted}
               />
@@ -922,11 +938,14 @@ export function MessageRow({
   message,
   disabled,
   onChoose,
+  onResize,
   onDiscardAutoPromoted,
 }: {
   message: Message;
   disabled: boolean;
   onChoose: (value: string) => void;
+  /** Phase 3 — re-ask this answer's question at the given size level. */
+  onResize?: (level: AnswerVerbosity) => void;
   /** Slice 4c — called when the user successfully Discards an
    *  auto-promoted MK so the parent can clear `autoPromotedMkId` on
    *  this message and the manual save-as-memory button comes back. */
@@ -1124,6 +1143,17 @@ export function MessageRow({
                 onChoose={onChoose}
               />
             )}
+            {!isUser &&
+              !message.streaming &&
+              !message.error &&
+              message.answerVerbosity !== undefined &&
+              onResize !== undefined && (
+                <VerbosityStepButtons
+                  level={message.answerVerbosity.effective}
+                  disabled={disabled}
+                  onResize={onResize}
+                />
+              )}
             {message.captureDisclosure && (
               <CaptureDisclosure disclosure={message.captureDisclosure} />
             )}
@@ -1943,6 +1973,59 @@ function formatFileSize(bytes: number): string {
  * heavy color accent — so the eye treats them as *quick next steps*, not
  * as blocking UI like `ChoiceCard`.
  */
+/**
+ * Phase 3 — "Kürzer" / "Mehr Details": re-ask the same question one step
+ * down / up the answer-size scale for one turn. Mirrors the Teams card's
+ * buttons; the one at the end of the scale is left out, not disabled.
+ */
+function VerbosityStepButtons({
+  level,
+  disabled,
+  onResize,
+}: {
+  level: AnswerVerbosity;
+  disabled: boolean;
+  onResize: (level: AnswerVerbosity) => void;
+}): React.ReactElement | null {
+  const t = useTranslations('chat');
+  const shorter = answerVerbosityNeighbour(level, 'shorter');
+  const longer = answerVerbosityNeighbour(level, 'longer');
+  if (!shorter && !longer) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <span className="text-[10px] font-medium tracking-wide text-[color:var(--fg-muted)] uppercase">
+        {t('verbosityLabel')}
+      </span>
+      {shorter && (
+        <Button
+          variant="secondary"
+          size="sm"
+          pill
+          disabled={disabled}
+          onClick={() => {
+            onResize(shorter);
+          }}
+        >
+          {t('verbosityShorter')}
+        </Button>
+      )}
+      {longer && (
+        <Button
+          variant="secondary"
+          size="sm"
+          pill
+          disabled={disabled}
+          onClick={() => {
+            onResize(longer);
+          }}
+        >
+          {t('verbosityLonger')}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function FollowUpButtons({
   options,
   disabled,

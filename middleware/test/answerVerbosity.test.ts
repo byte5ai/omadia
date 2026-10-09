@@ -293,6 +293,34 @@ describe('per-turn pick (phase 3) — the user re-asks with a different size', (
     assert.deepEqual(nothing.answer.answerVerbosity, { effective: 'standard', source: 'configured' });
   });
 
+  it('the stream done event carries the level too (web chat)', async () => {
+    const captured: string[] = [];
+    const built = buildOrchestratorForAgent(
+      { agentId: 'solo', model: 'test', maxTokens: 1024, maxToolIterations: 3 },
+      {
+        provider: capturingProvider(captured),
+        knowledgeGraph: undefined as unknown as KnowledgeGraph,
+        memoryStore: undefined as unknown as MemoryStore,
+        entityRefBus: undefined as unknown as EntityRefBus,
+        nativeToolRegistry: new NativeToolRegistry(),
+        nudgeRegistry: new InMemoryNudgeRegistry(),
+        responseGuard: () => undefined,
+        privacyGuard: () => undefined,
+        answerVerbosity: 'brief',
+      },
+    );
+    let done: { answerVerbosity?: unknown } | undefined;
+    for await (const ev of built.orchestrator.chatStream({
+      userMessage: 'Wie viele offene Rechnungen gibt es?',
+      answerVerbosity: 'max',
+    })) {
+      if (ev.type === 'done') done = ev;
+    }
+    assert.ok(done, 'stream produced no done event');
+    assert.deepEqual(done.answerVerbosity, { effective: 'max', source: 'turn' });
+    assert.match(captured[0] ?? '', /ANTWORTUMFANG FÜR DIESEN TURN/);
+  });
+
   it('ignores a value the scale does not know — a stale button cannot pick a level', async () => {
     const { prompt, answer } = await turnFor('tldr', undefined, 'verbose');
     assert.doesNotMatch(prompt, /ANTWORTUMFANG FÜR DIESEN TURN/);

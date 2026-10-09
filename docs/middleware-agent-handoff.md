@@ -3649,7 +3649,11 @@ No-op. Jede Antwort trägt `ChatTurnResult.answerVerbosity: { effective,
 source: 'turn' | 'configured' }` (→ `SemanticAnswer`), damit ein Kanal die
 Nachbarstufen anbieten kann — Teams rendert daraus „🔽 Kürzer“ / „🔼 Mehr
 Details“ (`omadia-channel-teams` ≥ 0.29.0, Payload `verbosity_step`). Der
-Stream-`done`-Event trägt das Feld noch nicht (Web-Chat-Buttons offen).
+Stream-`done`-Event trägt dasselbe Feld (Funnel `discloseDoneEvent`, auch auf
+dem `withheldDone`-Pfad des Verifiers); `POST /api/chat[/stream]` nimmt
+`answerVerbosity` im Body, und der Web-Debug-Chat zeigt unter jeder Antwort
+„🔽 Kürzer“ / „🔼 Mehr Details“ (`VerbosityStepButtons`, stellt die
+zugehörige User-Frage mit der Nachbarstufe neu).
 
 ---
 

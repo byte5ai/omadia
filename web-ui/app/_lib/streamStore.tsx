@@ -1,5 +1,7 @@
 'use client';
 
+import type { AnswerVerbosity } from './agentIdentity';
+
 import {
   createContext,
   useCallback,
@@ -85,6 +87,8 @@ export interface StreamRequest {
    *  session; the server pins the snapshot and ignores it thereafter.
    *  `undefined` ⇒ server uses the platform fallback. */
   agentSlug?: string;
+  /** Phase 3 — answer-size pick for THIS turn only ("Kürzer" / "Mehr Details"). */
+  answerVerbosity?: AnswerVerbosity;
 }
 
 /** What the runner pulls off the queue. */
