@@ -107,6 +107,7 @@ function capturingProvider(captured: string[]): LlmProvider {
  */
 async function systemPromptFor(
   answerVerbosity: AnswerVerbosity | undefined,
+  agentVerbosity?: AnswerVerbosity,
 ): Promise<string> {
   const captured: string[] = [];
   const deps: OrchestratorDeps = {
@@ -123,7 +124,13 @@ async function systemPromptFor(
     ...(answerVerbosity ? { answerVerbosity } : {}),
   };
   const built = buildOrchestratorForAgent(
-    { agentId: 'solo', model: 'test', maxTokens: 1024, maxToolIterations: 3 },
+    {
+      agentId: 'solo',
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      ...(agentVerbosity ? { answerVerbosity: agentVerbosity } : {}),
+    },
     deps,
   );
   await built.orchestrator.chat({ userMessage: 'Wie viele offene Rechnungen gibt es?' });
@@ -211,6 +218,25 @@ describe('buildOrchestratorForAgent — answerVerbosity reaches the system promp
     const standard = await systemPromptFor('standard');
     assert.ok(prompt.length > standard.length);
     assert.ok(prompt.includes('Fach-Agenten (Routing-Regel'), 'routing block still present');
+  });
+
+  it("the agent's own level replaces the installation default — one block, never two", async () => {
+    const prompt = await systemPromptFor('max', 'tldr');
+    assert.match(prompt, /Antwortumfang \(vom Betreiber auf «TL;DR» gestellt\)/);
+    assert.doesNotMatch(prompt, /«Maximal»/);
+    assert.equal(prompt.match(/Antwortumfang \(/g)?.length, 1);
+  });
+
+  it("an agent set to standard silences the installation default for that agent", async () => {
+    // `standard` is a real choice on the agent, not "unset": it means "the
+    // delivered prompt", even when the installation default says otherwise.
+    const prompt = await systemPromptFor('tldr', 'standard');
+    assert.doesNotMatch(prompt, /Antwortumfang \(/);
+  });
+
+  it('an agent without its own level inherits the installation default', async () => {
+    const prompt = await systemPromptFor('brief', undefined);
+    assert.match(prompt, /«Kurz»/);
   });
 });
 

@@ -2373,7 +2373,17 @@
         "shortDescriptionHint": "At most 80 characters — the limit the Teams manifest itself sets.",
         "longDescription": "Full description",
         "instructions": "Behaviour",
-        "instructionsHint": "How this agent should present itself and answer. For this agent it replaces the platform-wide default text — leave it empty to keep the default."
+        "instructionsHint": "How this agent should present itself and answer. For this agent it replaces the platform-wide default text — leave it empty to keep the default.",
+        "verbosity": "Answer size",
+        "verbosityHint": "How much an answer contains — from the result alone to every intermediate step. Overrides the installation-wide setting of the Chat Orchestrator for this agent. A user asking for \"short\" or \"all details\" still wins for that turn.",
+        "verbosityInherit": "Inherit the installation default",
+        "verbosityLevels": {
+          "tldr": "TL;DR — 1 to 3 sentences, the result only",
+          "brief": "Brief — result plus at most 5 bullet points",
+          "standard": "Standard — as delivered",
+          "detailed": "Detailed — with reasoning, sources and assumptions",
+          "max": "Maximum — every step, raw value and uncertainty"
+        }
       },
       "republish": {
         "queued": "Republishing the Teams package.",

@@ -49,6 +49,25 @@ async function forwardCookieHeader(): Promise<Record<string, string>> {
 // DTOs — snake_case, verbatim from the REST payload
 // ---------------------------------------------------------------------------
 
+/**
+ * The closed answer-size scale — mirrors `ANSWER_VERBOSITY_LEVELS` in the
+ * orchestrator package (the route's zod enum and the migration's CHECK use
+ * the same list). `null` on the identity = inherit the installation-wide
+ * `answer_verbosity` setup field.
+ */
+export const ANSWER_VERBOSITY_LEVELS = [
+  'tldr',
+  'brief',
+  'standard',
+  'detailed',
+  'max',
+] as const;
+export type AnswerVerbosity = (typeof ANSWER_VERBOSITY_LEVELS)[number];
+
+export function isAnswerVerbosity(raw: string): raw is AnswerVerbosity {
+  return (ANSWER_VERBOSITY_LEVELS as readonly string[]).includes(raw);
+}
+
 /** The authored identity. `null` in a field = not authored, inherited. */
 export interface AgentIdentityFieldsDto {
   display_name: string | null;
@@ -56,6 +75,9 @@ export interface AgentIdentityFieldsDto {
   long_description: string | null;
   instructions: string | null;
   accent_color: string | null;
+  /** Per-agent answer size; `null`/absent = inherit the installation default.
+   *  Optional so a middleware that predates the column still parses. */
+  verbosity?: AnswerVerbosity | null;
   /** The 12-axis character block — same shape the Agent Builder writes. */
   persona: PersonaConfig | null;
   /** Boundaries + sycophancy — same shape the Agent Builder writes. */
@@ -133,6 +155,7 @@ export interface AgentIdentityInput {
   long_description: string | null;
   instructions: string | null;
   accent_color: string | null;
+  verbosity: AnswerVerbosity | null;
   persona: PersonaConfig | null;
   quality: QualityConfig | null;
 }

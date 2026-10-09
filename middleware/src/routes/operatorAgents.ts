@@ -16,6 +16,7 @@ import {
   parseModelRef,
   resolveModelPolicyRuntime,
   validateModelPolicy,
+  ANSWER_VERBOSITY_LEVELS,
   type AgentToAgentMode,
   type ModelPolicyValidationContext,
   type ChatSessionStore,
@@ -1470,6 +1471,10 @@ const AgentIdentitySchema = z.object({
     .string()
     .regex(/^#[0-9A-Fa-f]{6}$/, 'expected a #RRGGBB colour')
     .nullish(),
+  // The closed five-step scale from the orchestrator package — the same list
+  // the manifest enum and the migration's CHECK use. `null` = inherit the
+  // installation-wide `answer_verbosity`.
+  verbosity: z.enum(ANSWER_VERBOSITY_LEVELS).nullish(),
   // The persona and quality blocks are validated by the SPEC's own schemas,
   // not by a second definition here. They are the same documents the Agent
   // Builder writes and `agent.md` frontmatter mirrors; a private copy would
@@ -1519,6 +1524,7 @@ export function projectAgentIdentity(
       long_description: identity?.longDescription ?? null,
       instructions: identity?.instructions ?? null,
       accent_color: identity?.accentColor ?? null,
+      verbosity: identity?.verbosity ?? null,
       persona: identity?.persona ?? null,
       quality: identity?.quality ?? null,
       revision: identity?.revision ?? 1,
@@ -2460,6 +2466,7 @@ export function createOperatorAgentsRouter(
         longDescription: body.long_description ?? null,
         instructions: body.instructions ?? null,
         accentColor: body.accent_color ?? null,
+        verbosity: body.verbosity ?? null,
         persona,
         quality,
         composed: { text: composed.text, family, byFamily: compiled.byFamily },
@@ -2491,10 +2498,16 @@ export function createOperatorAgentsRouter(
           (body.short_description ?? '').trim() ||
         (before?.longDescription ?? '').trim() !==
           (body.long_description ?? '').trim();
+      // The answer-size level is spliced into the system prompt by
+      // `buildOrchestratorForAgent` (it replaces the installation default for
+      // this Agent), so it is on this list for the same reason as the name.
+      const verbosityChanged =
+        (before?.verbosity ?? null) !== (body.verbosity ?? null);
       if (
         (before?.composed.text ?? null) !== (composed.text ?? null) ||
         nameChanged ||
-        descriptionChanged
+        descriptionChanged ||
+        verbosityChanged
       ) {
         await live.registry.reload();
       }

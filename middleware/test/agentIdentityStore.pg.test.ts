@@ -96,6 +96,8 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
       // identity row; the store reads it in `META_COLUMNS`, so the suite
       // must carry the migration that adds it (and proves it double-applies).
       '0059_agent_model_policy.sql',
+      // Phase 2 of answer verbosity — `verbosity` is in `META_COLUMNS` too.
+      '0063_agent_identity_verbosity.sql',
     ]) {
       const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
       // Twice: the schema CI gate double-applies every file in the series.
@@ -126,6 +128,34 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
 
   it('reports no identity for an agent that never authored one', async () => {
     assert.equal(await store.getByAgentId(agentId), undefined);
+  });
+
+  it('round-trips the answer-size level and treats a change as content (0063)', async () => {
+    const first = await store.save(agentId, { ...EMPTY, verbosity: 'tldr' });
+    assert.equal(first.verbosity, 'tldr');
+    assert.equal(first.revision, 1);
+    // A verbosity-only edit is a real change: the no-op guard must not
+    // swallow it, otherwise the operator sees "saved" and nothing moves.
+    const second = await store.save(agentId, { ...EMPTY, verbosity: 'max' });
+    assert.equal(second.verbosity, 'max');
+    assert.equal(second.revision, 2);
+    // Same value again → the no-op path, revision untouched.
+    const third = await store.save(agentId, { ...EMPTY, verbosity: 'max' });
+    assert.equal(third.revision, 2);
+    // Back to inherit.
+    const cleared = await store.save(agentId, { ...EMPTY, verbosity: null });
+    assert.equal(cleared.verbosity, null);
+    assert.equal(cleared.revision, 3);
+  });
+
+  it('the CHECK refuses a level the prompt builder does not know', async () => {
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO agent_identities (agent_id, verbosity) VALUES ($1, 'verbose')`,
+        [agentId],
+      ),
+      /agent_identities_verbosity_check/,
+    );
   });
 
   it('creates the row on first save and starts the revision at 1', async () => {

@@ -3622,7 +3622,21 @@ Drei Eigenschaften sind load-bearing:
 Unbekannte Werte parsen zu `undefined` → `standard`; ein Tippfehler in einer
 Config wählt nie still eine Stufe. Die Persona-Achse `conciseness` bleibt
 getrennt: sie steuert den Ton relativ zur Modell-Baseline, nicht den Umfang.
-Pro-Agent- und Pro-Turn-Overrides sind spätere Phasen.
+
+**Pro Agent (Phase 2, Migration `0063_agent_identity_verbosity.sql`):**
+`agent_identities.verbosity` (gleiche fünf Werte, CHECK-Constraint, `NULL` =
+installationsweite Einstellung übernehmen). Gepflegt im Identity-Tab der
+Agenten-Seite (Profil → „Antwortumfang“), Route `PUT /:slug/identity` mit
+zod-Enum, Store `agentIdentityStore.ts`. Der Registry-Join
+(`AGENT_SELECT` → `identity_verbosity` → `AgentRow.answerVerbosity`) reicht ihn
+als `AgentRuntimeConfig.answerVerbosity` an `buildOrchestratorForAgent`, wo er
+`deps.answerVerbosity` **ersetzt** (Slot, kein Layer) — es landet immer genau
+ein Block im Prompt. Ein Agent auf `standard` schaltet den Installationswert
+für sich ab. Eine Änderung ist ein Rebuild-Grund (`identity_verbosity` in
+`applyDiff.ts`) und löst in der Route `registry.reload()` aus, sonst wäre sie
+gespeichert und nie gesprochen. Die Route ist — wie bei allen Identity-Feldern —
+ein Voll-Ersatz: ein Client, der den Key weglässt, schreibt „übernehmen“
+(`NULL`). Pro-Turn-Overrides sind die nächste Phase.
 
 ---
 

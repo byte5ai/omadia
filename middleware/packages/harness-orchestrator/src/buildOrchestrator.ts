@@ -173,6 +173,14 @@ export interface AgentRuntimeConfig {
   readonly identityShortDescription?: string;
   readonly identityLongDescription?: string;
   /**
+   * This Agent's own answer-size contract (`agent_identities.verbosity`).
+   * A SLOT over the platform-wide `OrchestratorDeps.answerVerbosity`: when
+   * set it replaces the installation default for this Agent, so exactly ONE
+   * verbosity block ever reaches the prompt. Absent → the platform value
+   * (and with that unset, `standard`, no block).
+   */
+  readonly answerVerbosity?: AnswerVerbosity;
+  /**
    * W5 memory-ACL — per-Agent rollout switch for chat-context-scoped memory.
    * Read from the `agents.context_memory` column (migration 0050).
    *
@@ -830,7 +838,10 @@ export function buildOrchestratorForAgent(
     ...(config.identityName?.trim()
       ? { identityName: config.identityName.trim() }
       : {}),
-    ...(deps.answerVerbosity ? { answerVerbosity: deps.answerVerbosity } : {}),
+    // Agent's own setting beats the installation default (one block, never two).
+    ...((config.answerVerbosity ?? deps.answerVerbosity)
+      ? { answerVerbosity: config.answerVerbosity ?? deps.answerVerbosity }
+      : {}),
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
       ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }

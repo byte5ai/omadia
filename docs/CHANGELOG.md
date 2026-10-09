@@ -36,6 +36,27 @@ changelog.
 
 ## [Unreleased]
 
+### Added — answer size per Agent (`agent_identities.verbosity`)
+
+2026-10-09 — Phase 2 of the answer-verbosity feature (#1369 added the
+installation-wide `answer_verbosity` setup field). An Agent can now carry its
+own level on the Identity tab (Profile → "Answer size"); `null` inherits the
+installation value. The level is a slot, not a layer: `buildOrchestratorForAgent`
+takes `config.answerVerbosity ?? deps.answerVerbosity`, so exactly one block
+reaches the prompt, and an Agent set to `standard` silences the installation
+default for itself. A change is a rebuild reason (`identity_verbosity`) and
+the identity route reloads the registry, or the edit would be saved and never
+spoken.
+
+- Migration **0063** (`0063_agent_identity_verbosity.sql`) adds `verbosity
+  TEXT` with a CHECK over the five levels (`tldr`, `brief`, `standard`,
+  `detailed`, `max`). No backfill: every existing row stays `NULL` and keeps
+  the prompt it had.
+- Store, route (zod enum), registry join (`identity_verbosity`), `applyDiff`
+  forwarding and web UI (`en`/`de` keys) in one change; the route is
+  full-replace like the other identity fields, so a client that omits the key
+  writes "inherit".
+
 ### Changed — README is a pitch again; detail moved to `docs/`
 
 2026-10-09 — The README had grown to 612 lines, with paragraphs of up to 822

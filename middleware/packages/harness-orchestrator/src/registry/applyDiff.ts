@@ -364,6 +364,10 @@ export function buildForAgent(
       ...(agent.identityLongDescription?.trim()
         ? { identityLongDescription: agent.identityLongDescription.trim() }
         : {}),
+      // The agent's own answer-size level. A SLOT: when set it replaces the
+      // installation default inside `buildOrchestratorForAgent`, so exactly
+      // one verbosity block ever reaches the prompt.
+      ...(agent.answerVerbosity ? { answerVerbosity: agent.answerVerbosity } : {}),
       // W5 memory-ACL — the agent's own rollout mode. Omitted here until now,
       // which made `agents.context_memory` a switch with nothing behind it:
       // the column was written, read back into `AgentRow`, echoed by the API
@@ -447,6 +451,11 @@ function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] 
     (newAgent.identityLongDescription ?? '')
   ) {
     reasons.push('identity_long_description');
+  }
+  // The answer-size level is spliced into the system prompt, so a change has
+  // to reach the running Agent — the same silent-no-op rule as for the name.
+  if ((oldAgent.answerVerbosity ?? null) !== (newAgent.answerVerbosity ?? null)) {
+    reasons.push('identity_verbosity');
   }
   // W5 memory-ACL — the mode decides which memory stack every turn of this
   // Agent gets, so it is as runtime-relevant as the model. The rebuild is the
