@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a provider plugin installed at runtime can store its API key
+
+2026-10-09 — Installing an LLM provider plugin without a restart (e.g.
+`@omadia/plugin-llm-seibertgpt`) registered the provider and showed it on the
+admin Providers page, but saving its key failed with
+`settings.no_valid_changes` / "unknown setting" (`SEIBERTGPT_API_KEY`) until
+the middleware restarted: the settings router built its catalog once at
+mount. The catalog is now built per request, so a hot-installed provider's
+`<ID>_API_KEY` is accepted right away and an uninstalled one is rejected again.
+
 ### Added — answer size per Agent (`agent_identities.verbosity`)
 
 2026-10-09 — Phase 2 of the answer-verbosity feature (#1369 added the

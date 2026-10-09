@@ -68,9 +68,12 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
   const router = Router();
 
   // Static cross-plugin settings + per-provider API-key settings contributed by
-  // plugin providers (e.g. MiniMax). Computed once per router; provider plugins
-  // are registered at boot before routes are mounted.
-  const catalog = buildSettingsCatalog(deps.llmProviderCatalog?.list() ?? []);
+  // plugin providers (e.g. MiniMax). Built per request, not once per router: a
+  // provider plugin installed at runtime registers into the catalog without a
+  // restart, and a snapshot taken at mount would reject its `<ID>_API_KEY` as
+  // an unknown setting until the next boot.
+  const currentCatalog = (): readonly SettingDef[] =>
+    buildSettingsCatalog(deps.llmProviderCatalog?.list() ?? []);
 
   const allInstalled = (def: SettingDef): boolean =>
     settingPluginIds(def).every((id) => deps.installedRegistry.has(id));
@@ -119,7 +122,7 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
     try {
       const keyCache = new Map<string, Set<string>>();
       const resolved = await Promise.all(
-        catalog.map((def) => resolve(def, keyCache)),
+        currentCatalog().map((def) => resolve(def, keyCache)),
       );
       const byCategory = new Map<string, ResolvedSetting[]>();
       for (const r of resolved) {
@@ -159,6 +162,9 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
     const secretSet = new Map<string, Record<string, string>>();
     const secretDelete = new Map<string, string[]>();
     const affected = new Set<string>();
+    // One snapshot per request: validation and the echoed state below must
+    // agree even if a provider plugin is (un)installed mid-request.
+    const catalog = currentCatalog();
     /** Providers whose API key this batch writes or clears. Their cached
      *  "the key works" verdict must be dropped, or a replaced key would keep
      *  serving the previous key's `verified` until the TTL expires. */

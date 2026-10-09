@@ -37,6 +37,7 @@ interface Harness {
 
 async function makeHarness(
   installed: Array<{ id: string; config?: Record<string, unknown> }>,
+  providers?: Array<{ id: string; label: string }>,
 ): Promise<Harness> {
   const vault = new InMemorySecretVault();
   const registry = new InMemoryInstalledRegistry();
@@ -60,6 +61,7 @@ async function makeHarness(
       reactivate: async (id: string) => {
         reactivated.push(id);
       },
+      ...(providers ? { llmProviderCatalog: { list: () => providers } } : {}),
     }),
   );
   const server: Server = await new Promise((resolve) => {
@@ -299,5 +301,44 @@ describe('admin settings route — PATCH /', () => {
           e.key === 'ANTHROPIC_API_KEY' && e.message.includes('not installed'),
       ),
     );
+  });
+});
+
+describe('admin settings route — runtime-installed provider plugin', () => {
+  let h: Harness | undefined;
+  afterEach(async () => {
+    await h?.close();
+    h = undefined;
+  });
+
+  // The router used to snapshot the catalog at mount, so a provider plugin
+  // installed afterwards (no restart) showed on the Providers page but its key
+  // was rejected as `unknown setting` (SEIBERTGPT_API_KEY, 2026-10-09).
+  it('accepts the API key of a provider registered after the router was mounted', async () => {
+    const providers: Array<{ id: string; label: string }> = [];
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], providers);
+    providers.push({ id: 'seibertgpt', label: 'SeibertGPT' });
+
+    const body = await getSettings(h);
+    assert.equal(findSetting(body, 'SEIBERTGPT_API_KEY')?.isSet, false);
+
+    const { status } = await patch(h, [{ key: 'SEIBERTGPT_API_KEY', value: 'sgpt_test123' }]);
+    assert.equal(status, 200);
+    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
+      assert.equal(
+        await h.vault.get(scope, providerApiKeyVaultKey('seibertgpt')),
+        'sgpt_test123',
+      );
+    }
+  });
+
+  it('rejects the key again once the provider is unregistered', async () => {
+    const providers = [{ id: 'seibertgpt', label: 'SeibertGPT' }];
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], providers);
+    providers.length = 0;
+
+    const { status, body } = await patch(h, [{ key: 'SEIBERTGPT_API_KEY', value: 'sgpt_test123' }]);
+    assert.equal(status, 400);
+    assert.equal(body.code, 'settings.no_valid_changes');
   });
 });
