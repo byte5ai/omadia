@@ -28,7 +28,7 @@ Dieser Ordner ist das kollektive Gedächtnis des Omadia-Projekts. Mehrere Agents
 | [`getting-started.md`](getting-started.md) | Lokale Installation, erster Lauf, optionale Features, Troubleshooting (öffentlich, Englisch, aus dem README ausgelagert) | Bei Änderungen an Quickstart, Overlays oder Setup-Wizard | Feature-Agents |
 | [`deployment.md`](deployment.md) | Render, Fly.io, eigener Host, Pflicht-Secrets für Produktion (öffentlich, Englisch) | Bei neuen Deploy-Zielen oder Boot-Pflicht-Secrets | Feature-Agents |
 | [`trust-and-privacy.md`](trust-and-privacy.md) | Defaults, Reichweite und Grenzen von Privacy Shield, Verifier, Receipts, Plugins. Die Positiv-Prüfungen von `docsClaimsGuard.test.ts` lesen diese Seite | Bei jeder Änderung an Default oder Grenze dieser Controls | Security-Thread |
-| [`readme-guidelines.md`](readme-guidelines.md) | Rolle, Dramaturgie und Wording des Root-README (Benchmark), durchgesetzt von `readmeShape.test.ts` | Bei Regeländerung | Jeder, der das README ändert |
+| [`readme-guidelines.md`](readme-guidelines.md) | Rolle, Dramaturgie und Wording des Root-README, durchgesetzt von `readmeShape.test.ts`; Begründung, Quellen und Benchmark in [ADR-0011](adr/0011-readme-as-landing-page.md) | Bei Regeländerung | Jeder, der das README ändert |
 | [`design.md`](design.md) | Lume, die visuelle Sprache der Operator-UI | Bei Theme-Änderungen | Frontend-Thread |
 
 ## Lebende Docs (öffentliche Untermenge)

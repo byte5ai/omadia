@@ -5,28 +5,14 @@ sells the product to a developer or decision-maker who arrives cold, and hands
 them a working install. Everything else lives in `docs/`.
 `middleware/test/readmeShape.test.ts` enforces the measurable rules below.
 
-## Benchmark
+## Why
 
-Measured 2026-10-09 on the READMEs of ten open-source projects in omadia's
-space, against omadia's README before the rewrite.
-
-| README | Lines | Words | Longest paragraph | Longest table cell | Hedges per 100 words¹ |
-|---|---|---|---|---|---|
-| n8n | 73 | 479 | 128 | none | 0.5 |
-| mastra | 107 | 685 | 57 | none | 0.0 |
-| Twenty | 172 | 745 | 51 | none | 0.2 |
-| Dify | 178 | 945 | 62 | none | 0.0 |
-| PostHog | 178 | 1,260 | 81 | 2 | 0.5 |
-| Supabase | 288 | 1,002 | 196² | none | 0.5 |
-| Open WebUI | 263 | 2,050 | 72 | none | 0.0 |
-| Langfuse | 392 | 3,138 | 55 | 22 | 0.5 |
-| omadia before | 612 | 5,300 | 822 | 308 | 3.5 |
-| omadia after | 163 | 850 | 70 | 27 | 0.75³ |
-
-¹ Share of limiting words (`only`, `unless`, `apart from`, `not`, `without`,
-`best-effort` …) in the first 400 words. ² Mostly the translations list.
-³ The remaining hits are benefit phrases ("config, not code", "No code.",
-"No Docker?"), none of them a caveat; the capability table has none.
+The reasoning, the sources, the measuring method and the full benchmark
+findings are recorded in
+[ADR-0011](adr/0011-readme-as-landing-page.md). In short: ten widely starred
+open-source READMEs in omadia's space run 100 to 300 lines, keep paragraphs
+under about 80 words and put no fine print on the landing page. omadia's
+README had 612 lines, an 822-word paragraph and 3.5 hedges per 100 words.
 
 ## Dramaturgy
 
