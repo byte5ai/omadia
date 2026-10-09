@@ -2373,7 +2373,17 @@
         "shortDescriptionHint": "Höchstens 80 Zeichen — genau die Grenze, die das Teams-Manifest zieht.",
         "longDescription": "Ausführliche Beschreibung",
         "instructions": "Verhalten",
-        "instructionsHint": "Wie dieser Agent auftreten und antworten soll. Ersetzt für diesen Agenten den plattformweiten Standardtext — leer lassen heißt: Standard."
+        "instructionsHint": "Wie dieser Agent auftreten und antworten soll. Ersetzt für diesen Agenten den plattformweiten Standardtext — leer lassen heißt: Standard.",
+        "verbosity": "Antwortumfang",
+        "verbosityHint": "Wie viel eine Antwort enthält — vom reinen Ergebnis bis zu jedem Zwischenschritt. Übersteuert für diesen Agenten die installationsweite Einstellung des Chat Orchestrators. Bittet ein User um „kurz“ oder „alle Details“, gewinnt das für diesen Turn.",
+        "verbosityInherit": "Installationsweite Einstellung übernehmen",
+        "verbosityLevels": {
+          "tldr": "TL;DR — 1 bis 3 Sätze, nur das Ergebnis",
+          "brief": "Kurz — Ergebnis plus höchstens 5 Stichpunkte",
+          "standard": "Standard — Auslieferungszustand",
+          "detailed": "Ausführlich — mit Begründung, Quellen und Annahmen",
+          "max": "Maximal — alle Zwischenschritte, Rohwerte und Unsicherheiten"
+        }
       },
       "republish": {
         "queued": "Teams-Paket wird neu veröffentlicht.",

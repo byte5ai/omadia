@@ -217,6 +217,62 @@ test('an agent without an authored name keeps the platform identity byte-for-byt
   );
 });
 
+/** The level the built Orchestrator will splice into its prompt. */
+function verbosityOf(built: ReturnType<typeof buildForAgent>): unknown {
+  return (built.orchestrator as unknown as { answerVerbosity?: unknown })
+    .answerVerbosity;
+}
+
+test('the agent row forwards its answer-size level into the build', () => {
+  // Delete the spread in `buildForAgent` and this fails: the level would be
+  // stored, joined, reported in the UI — and never reach the prompt.
+  assert.equal(
+    verbosityOf(buildForAgent(agentRow({ answerVerbosity: 'brief' }), deps(), RUNTIME)),
+    'brief',
+  );
+});
+
+test('an agent without its own level inherits the installation default', () => {
+  const platformDeps = { ...deps(), answerVerbosity: 'max' } as OrchestratorDeps;
+  assert.equal(
+    verbosityOf(buildForAgent(agentRow(), deps(), RUNTIME)),
+    'standard',
+    'nothing set anywhere → the delivered state',
+  );
+  assert.equal(
+    verbosityOf(buildForAgent(agentRow({ answerVerbosity: null }), platformDeps, RUNTIME)),
+    'max',
+  );
+  // `standard` on the agent is a choice, not "unset": it silences the
+  // installation default for this one agent.
+  assert.equal(
+    verbosityOf(
+      buildForAgent(agentRow({ answerVerbosity: 'standard' }), platformDeps, RUNTIME),
+    ),
+    'standard',
+  );
+});
+
+test('changing the answer-size level rebuilds the agent', () => {
+  // The level is spliced into the system prompt, so — like the name — a
+  // change the operator saved has to reach the running Agent.
+  const plan = diffSnapshots(
+    snapshot(agentRow({ answerVerbosity: 'brief' })),
+    snapshot(agentRow({ answerVerbosity: 'max' })),
+  );
+  assert.equal(plan.actions.length, 1);
+  const action = plan.actions[0];
+  assert.equal(action?.kind, 'rebuild');
+  assert.match((action as { reason: string }).reason, /identity_verbosity/);
+
+  // Inherit (null) and absent are the same state: no rebuild between them.
+  const same = diffSnapshots(
+    snapshot(agentRow({ answerVerbosity: null })),
+    snapshot(agentRow()),
+  );
+  assert.equal(same.actions.length, 0);
+});
+
 test('renaming an agent rebuilds it', () => {
   // Without this the operator renames the bot, sees it saved, and keeps
   // hearing the old name in chat until some unrelated edit rebuilds the
