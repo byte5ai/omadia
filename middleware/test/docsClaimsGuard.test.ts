@@ -1,7 +1,9 @@
 /**
- * The root README, the architecture overview, the security architecture,
- * CITATION.cff and the implementation notes of ADR-0001 and ADR-0005 state
- * security properties in public. This guard ties the load-bearing ones to the
+ * The root README, the trust & privacy page, the architecture overview, the
+ * security architecture, CITATION.cff and the implementation notes of ADR-0001
+ * and ADR-0005 state security properties in public. The README is the pitch and
+ * keeps its claims short; the defaults and limits it links to live on
+ * `docs/trust-and-privacy.md`, which the positive checks below read. This guard ties the load-bearing ones to the
  * code that enforces them: a changed default or a retired overclaim that comes
  * back fails here.
  *
@@ -79,8 +81,12 @@ function sentencesMentioning(markdown: string, token: string): string[] {
     .filter((sentence) => sentence.includes(token));
 }
 
+/** Where the README's trust claims are spelled out with their limits. */
+const TRUST_DOC = 'docs/trust-and-privacy.md';
+
 const PUBLIC_CLAIM_FILES = [
   'README.md',
+  TRUST_DOC,
   'docs/architecture.md',
   'docs/security-architecture.md',
   'CITATION.cff',
@@ -224,29 +230,37 @@ describe('public security claims match the enforced behaviour', () => {
     assert.deepEqual(hits, []);
   });
 
-  it('the README names the Privacy Shield defaults the code ships, and its limits', () => {
+  it('the README links the page that names its trust controls\' defaults and limits', () => {
     const readme = read('README.md');
+    assert.ok(
+      readme.includes('](docs/trust-and-privacy.md)'),
+      'README must link docs/trust-and-privacy.md, where its trust claims carry their defaults and limits',
+    );
+  });
+
+  it('the trust page names the Privacy Shield defaults the code ships, and its limits', () => {
+    const trust = read(TRUST_DOC);
 
     assert.equal(PRIVACY_MODE_DEFAULT, 'guarded');
     assert.ok(
-      /`guarded` (?:by default|is the default)/.test(flatten(readme)),
-      'README must name `guarded` as the default privacy mode',
+      /`guarded` (?:by default|is the default)/.test(flatten(trust)),
+      'docs/trust-and-privacy.md must name `guarded` as the default privacy mode',
     );
 
     // Prompt masking is a privacy-guard setting that ships switched off.
     assert.equal(MASK_USER_PROMPT_CONFIG_KEY, 'mask_user_prompt');
-    const maskSentences = sentencesMentioning(readme, '`mask_user_prompt`');
+    const maskSentences = sentencesMentioning(trust, '`mask_user_prompt`');
     assert.equal(maskDefault(), 'off');
     assert.ok(
       maskSentences.some((sentence) => /\boff\b/i.test(sentence)),
-      `README must say that \`mask_user_prompt\` is off by default; mentions: ${JSON.stringify(maskSentences)}`,
+      `docs/trust-and-privacy.md must say that \`mask_user_prompt\` is off by default; mentions: ${JSON.stringify(maskSentences)}`,
     );
 
     // The subscription-CLI provider installs no shield (security-architecture §3a).
-    const cliSentences = sentencesMentioning(readme, '`claude-cli`');
+    const cliSentences = sentencesMentioning(trust, '`claude-cli`');
     assert.ok(
       cliSentences.some((sentence) => /shield/i.test(sentence)),
-      `README must say that the \`claude-cli\` provider runs without the shield; mentions: ${JSON.stringify(cliSentences)}`,
+      `docs/trust-and-privacy.md must say that the \`claude-cli\` provider runs without the shield; mentions: ${JSON.stringify(cliSentences)}`,
     );
   });
 
@@ -272,20 +286,20 @@ describe('public security claims match the enforced behaviour', () => {
       'a replayed answer must reach the model without the e-mail address',
     );
 
-    const readme = read('README.md');
-    const historySentences = sentencesMentioning(readme, '`priorTurns`');
+    const trust = read(TRUST_DOC);
+    const historySentences = sentencesMentioning(trust, '`priorTurns`');
     assert.ok(
       historySentences.some(
         (sentence) => /\bas typed\b/i.test(sentence) && /\buser messages\b/i.test(sentence),
       ),
-      `README must say that the user messages a channel replays (\`priorTurns\`) reach the model as typed; mentions: ${JSON.stringify(historySentences)}`,
+      `docs/trust-and-privacy.md must say that the user messages a channel replays (\`priorTurns\`) reach the model as typed; mentions: ${JSON.stringify(historySentences)}`,
     );
-    const answerSentences = sentencesMentioning(readme, 'answers a channel replays');
+    const answerSentences = sentencesMentioning(trust, 'answers a channel replays');
     assert.ok(
       answerSentences.some(
         (sentence) => /\bmasked\b/i.test(sentence) && /\bwhatever the settings\b|\bon or off\b/i.test(sentence),
       ),
-      `README must say that the answers a channel replays are masked whatever the settings; mentions: ${JSON.stringify(answerSentences)}`,
+      `docs/trust-and-privacy.md must say that the answers a channel replays are masked whatever the settings; mentions: ${JSON.stringify(answerSentences)}`,
     );
     const security = read('docs/security-architecture.md');
     const replaySentences = sentencesMentioning(security, '`maskReplayedAnswer`');
@@ -318,22 +332,22 @@ describe('public security claims match the enforced behaviour', () => {
       ],
     );
 
-    const readme = read('README.md');
-    const screenerSentences = sentencesMentioning(readme, 'inbound security screener');
+    const trust = read(TRUST_DOC);
+    const screenerSentences = sentencesMentioning(trust, 'inbound security screener');
     assert.ok(
       screenerSentences.some(
         (sentence) => sentence.includes('turn scoring') && sentence.includes("as the turn's model saw and wrote it"),
       ),
-      `README must say that the screener and turn scoring get the turn's text as its model saw it; mentions: ${JSON.stringify(screenerSentences)}`,
+      `docs/trust-and-privacy.md must say that the screener and turn scoring get the turn's text as its model saw it; mentions: ${JSON.stringify(screenerSentences)}`,
     );
     assert.ok(
       screenerSentences.some((sentence) => sentence.includes('(`auto`)')),
-      `README must name \`auto\` as the posture under which the screener runs; mentions: ${JSON.stringify(screenerSentences)}`,
+      `docs/trust-and-privacy.md must name \`auto\` as the posture under which the screener runs; mentions: ${JSON.stringify(screenerSentences)}`,
     );
-    const unmasked = sentencesMentioning(readme, 'as it is').filter(
+    const unmasked = sentencesMentioning(trust, 'as it is').filter(
       (sentence) => /screener|turn scoring/.test(sentence),
     );
-    assert.deepEqual(unmasked, [], 'README must not list the screener or turn scoring among the calls sent as they are');
+    assert.deepEqual(unmasked, [], 'docs/trust-and-privacy.md must not list the screener or turn scoring among the calls sent as they are');
 
     const security = read('docs/security-architecture.md');
     const gateSentences = sentencesMentioning(security, '`screenInboundTurn`');
@@ -382,17 +396,17 @@ describe('public security claims match the enforced behaviour', () => {
       'a memory job must reach its model without the e-mail address',
     );
 
-    const readme = read('README.md');
-    const jobSentences = sentencesMentioning(readme, 'memory jobs');
+    const trust = read(TRUST_DOC);
+    const jobSentences = sentencesMentioning(trust, 'memory jobs');
     assert.ok(
       jobSentences.some(
         (sentence) => /\bmasked\b/i.test(sentence) && /\bwhatever the settings\b|\bon or off\b/i.test(sentence),
       ),
-      `README must say that the memory jobs' stored text is masked whatever the settings; mentions: ${JSON.stringify(jobSentences)}`,
+      `docs/trust-and-privacy.md must say that the memory jobs' stored text is masked whatever the settings; mentions: ${JSON.stringify(jobSentences)}`,
     );
     assert.ok(
-      sentencesMentioning(readme, 'embedd').some((sentence) => /\bas (?:it is|stored)\b/i.test(sentence)),
-      'README must say that embeddings still carry stored text as it is',
+      sentencesMentioning(trust, 'embedd').some((sentence) => /\bas (?:it is|stored)\b/i.test(sentence)),
+      'docs/trust-and-privacy.md must say that embeddings still carry stored text as it is',
     );
 
     const security = read('docs/security-architecture.md');
@@ -417,19 +431,19 @@ describe('public security claims match the enforced behaviour', () => {
   });
 
   it('the docs name the results that reach the model without a digest', async () => {
-    const readme = read('README.md');
+    const trust = read(TRUST_DOC);
 
     // Intern-exempt tools hand their results to the model as returned. The
-    // security architecture lists every one of them, the README names
+    // security architecture lists every one of them, the trust page names
     // `read_attachment`, the one that carries an uploaded file's text.
     const security = read('docs/security-architecture.md');
     const unlisted = [...INTERN_EXEMPT_TOOLS].filter((tool) => !security.includes(`\`${tool}\``));
     assert.deepEqual(unlisted, [], 'docs/security-architecture.md must list every intern-exempt tool');
     assert.ok(INTERN_EXEMPT_TOOLS.has('read_attachment'));
-    const exemptSentences = sentencesMentioning(readme, '`read_attachment`');
+    const exemptSentences = sentencesMentioning(trust, '`read_attachment`');
     assert.ok(
       exemptSentences.some((sentence) => /\bin clear\b/i.test(sentence)),
-      `README must say that \`read_attachment\` results reach the model in clear; mentions: ${JSON.stringify(exemptSentences)}`,
+      `docs/trust-and-privacy.md must say that \`read_attachment\` results reach the model in clear; mentions: ${JSON.stringify(exemptSentences)}`,
     );
     // ...apart from a table, which it refuses: an uploaded table's cells reach
     // the model only through `query_dataset`.
@@ -445,7 +459,7 @@ describe('public security claims match the enforced behaviour', () => {
     assert.ok(refusal.includes('query_dataset') && !refusal.includes('jane.doe@mail.example'));
     assert.ok(
       exemptSentences.some((sentence) => /\brefuses\b/i.test(sentence) && sentence.includes('`query_dataset`')),
-      `README must say that \`read_attachment\` refuses tables and points to \`query_dataset\`; mentions: ${JSON.stringify(exemptSentences)}`,
+      `docs/trust-and-privacy.md must say that \`read_attachment\` refuses tables and points to \`query_dataset\`; mentions: ${JSON.stringify(exemptSentences)}`,
     );
     const tableSentences = sentencesMentioning(security, '`query_dataset`');
     assert.ok(
@@ -472,10 +486,10 @@ describe('public security claims match the enforced behaviour', () => {
       read('docs/security-architecture.md').includes('`persistFailures`'),
       'docs/security-architecture.md must name the receipt failure counter',
     );
-    const receiptSentences = sentencesMentioning(read('README.md'), '`/operator/receipts`');
+    const receiptSentences = sentencesMentioning(read(TRUST_DOC), '`/operator/receipts`');
     assert.ok(
       receiptSentences.some((sentence) => /best-effort/i.test(sentence)),
-      `README must say that receipts are written best-effort; mentions: ${JSON.stringify(receiptSentences)}`,
+      `docs/trust-and-privacy.md must say that receipts are written best-effort; mentions: ${JSON.stringify(receiptSentences)}`,
     );
   });
 
@@ -483,16 +497,16 @@ describe('public security claims match the enforced behaviour', () => {
     assert.equal(ConfigSchema.shape.VERIFIER_ENABLED.parse(undefined), false);
     assert.equal(ConfigSchema.shape.VERIFIER_MODE.parse(undefined), 'shadow');
 
-    const readme = read('README.md');
-    const enabledSentences = sentencesMentioning(readme, '`verifier_enabled`');
+    const trust = read(TRUST_DOC);
+    const enabledSentences = sentencesMentioning(trust, '`verifier_enabled`');
     assert.ok(
       enabledSentences.some((sentence) => /\boff by default\b/i.test(sentence)),
-      `README must call the verifier off by default where it names \`verifier_enabled\`; mentions: ${JSON.stringify(enabledSentences)}`,
+      `docs/trust-and-privacy.md must call the verifier off by default where it names \`verifier_enabled\`; mentions: ${JSON.stringify(enabledSentences)}`,
     );
-    const shadowSentences = sentencesMentioning(readme, '`shadow`');
+    const shadowSentences = sentencesMentioning(trust, '`shadow`');
     assert.ok(
       shadowSentences.some((sentence) => /\bdefault\b/i.test(sentence)),
-      `README must name \`shadow\` as the verifier's default mode; mentions: ${JSON.stringify(shadowSentences)}`,
+      `docs/trust-and-privacy.md must name \`shadow\` as the verifier's default mode; mentions: ${JSON.stringify(shadowSentences)}`,
     );
   });
 
@@ -535,10 +549,10 @@ describe('public security claims match the enforced behaviour', () => {
     });
     assert.equal(extracted.length, 1);
 
-    const triggerSentences = sentencesMentioning(read('README.md'), 'trigger pattern');
+    const triggerSentences = sentencesMentioning(read(TRUST_DOC), 'trigger pattern');
     assert.ok(
       triggerSentences.some((sentence) => /\bunchecked\b/i.test(sentence)),
-      `README must say that an answer no trigger pattern matches goes out unchecked; mentions: ${JSON.stringify(triggerSentences)}`,
+      `docs/trust-and-privacy.md must say that an answer no trigger pattern matches goes out unchecked; mentions: ${JSON.stringify(triggerSentences)}`,
     );
     const gateSentences = sentencesMentioning(read('docs/security-architecture.md'), '`no_trigger`');
     assert.ok(
@@ -582,7 +596,7 @@ describe('public security claims match the enforced behaviour', () => {
       rmSync(dir, { recursive: true, force: true });
     }
 
-    for (const file of ['README.md', 'docs/security-architecture.md'] as const) {
+    for (const file of [TRUST_DOC, 'docs/security-architecture.md'] as const) {
       assert.ok(
         /no publisher signature/i.test(flatten(read(file))),
         `${file} must say that plugin packages carry no publisher signature`,

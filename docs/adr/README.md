@@ -38,6 +38,7 @@ decision, write a new ADR and mark the old one **Superseded by …**.
 | 0008 | [MCP connection lifetime and pooling](0008-mcp-connection-lifetime.md) | Accepted | 2026-08-06 |
 | 0009 | [Default TTL for MCP tool-list caching](0009-default-ttl-for-mcp-tool-list-caching.md) | Accepted | 2026-08-15 |
 | 0010 | [Adopting the Lume icon + state-as-glyph specs into core](0010-lume-icon-and-state-glyph-adoption.md) | Accepted | 2026-08-17 |
+| 0011 | [The root README is a landing page; detail lives in `docs/`](0011-readme-as-landing-page.md) | Accepted | 2026-10-09 |
 
 > These first records are written *retroactively* — they document decisions that
 > were already implemented and proven in the product. New decisions should be

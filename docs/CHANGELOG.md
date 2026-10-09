@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — README is a pitch again; detail moved to `docs/`
+
+2026-10-09 — The README had grown to 612 lines, with paragraphs of up to 822
+words and table cells of up to 308, because each privacy and verifier fix
+appended its limits there: `docsClaimsGuard.test.ts` required the limit
+sentences in the README itself. Measured against ten benchmark READMEs
+(n8n, mastra, Twenty, Dify, PostHog, Supabase, Open WebUI, Langfuse, cal.com,
+Activepieces), it is now a landing page again: claim, demo, capability table
+with one sentence per cell, pitch video, three-command quickstart, links into
+the docs (163 lines).
+
+- New `docs/trust-and-privacy.md` holds the Privacy Shield, verifier, receipt
+  and plugin statements, moved verbatim. The positive checks of
+  `docsClaimsGuard.test.ts` read that page; the retired-claim scan covers it
+  and still covers the README, and a new check requires the README to link it.
+- New `docs/getting-started.md` (prerequisites, install variants, AI-assistant
+  install, first run, optional features, local troubleshooting),
+  `docs/deployment.md` (Render, Fly.io, own host, required production secrets
+  stated once instead of three times) and `docs/design.md` (Lume).
+- New `docs/readme-guidelines.md` with the benchmark, the dramaturgy and the
+  wording rules; new `middleware/test/readmeShape.test.ts` enforces the
+  measurable ones (220 lines, 75-word paragraphs, 40-word sentences, 30-word
+  cells, no em dash or middle dot).
+
 ### Changed — `enforce` releases an unconfirmed answer with a disclaimer
 
 2026-10-08 — With extraction working again (release 358), the next live
