@@ -339,10 +339,10 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
-## Upgrading past v0.168.4 — auth cookies and pairing URLs take their scheme from the connection, not from a header
+## Upgrading past v0.176.0 — auth cookies and pairing URLs take their scheme from the connection, not from a header
 
 **This one can change behaviour on an existing deployment, so read it before
-pulling the image.** Up to and including v0.168.4 the middleware decided the
+pulling the image.** Up to and including v0.176.0 the middleware decided the
 `Secure` flag on `omadia_session`, `omadia_login_device` and the OIDC PKCE
 cookie by reading the request's `X-Forwarded-Proto` header directly, and ran
 with Express's `trust proxy` set to `true`. Whoever sent a request therefore
@@ -396,8 +396,11 @@ than a proxy address because neither path proves TLS to `req.secure`: direct
 requests come from Fly Proxy, whose address cannot be named stably, and
 requests through web-ui arrive over `.internal`, a plain-HTTP 6PN hop with no
 proxy in between. The one-click updater only swaps the image and keeps the old
-settings — there, set it once with
-`fly secrets set PUBLIC_SCHEME=https --app <middleware-app>`.
+settings — there, set both once with
+`fly secrets set PUBLIC_SCHEME=https --app <middleware-app>` and
+`fly secrets set WEB_UI_PUBLIC_SCHEME=https --app <web-ui-app>`. Without the
+second, the web-ui's pairing descriptor keeps advertising `ws://`, which the
+HTTPS page then blocks as mixed content.
 
 **Render.** `render.yaml` now sets `PUBLIC_SCHEME=https` on the middleware and
 `WEB_UI_PUBLIC_SCHEME=https` on the web-ui. An existing

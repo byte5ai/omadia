@@ -71,7 +71,7 @@ defaults.
 `TRUSTED_PROXY_ADDRESSES` also refuses a `/0` block: `0.0.0.0/0` matches every
 address, so it was `trust proxy = true` wearing a netmask, accepted silently
 while a bare `1` was refused. Migration and a `curl` check:
-`docs/upgrading.md`, "Upgrading past v0.168.4". Trust boundary and the measured
+`docs/upgrading.md`, "Upgrading past v0.176.0". Trust boundary and the measured
 `trust proxy` table: `docs/security-architecture.md` §10o.
 
 ### Added — answer size in the web chat (stream `done` + "Kürzer" / "Mehr Details")
