@@ -68,6 +68,9 @@ export const CACHE_WRITE_MULTIPLIER = 1.25;
 const FABLE_5_1: ModelPrice = { inputPerMTok: 10, outputPerMTok: 50, cachedInputPerMTok: 0.25 };
 const OPUS_5_5: ModelPrice = { inputPerMTok: 4, outputPerMTok: 20, cachedInputPerMTok: 0.2 };
 const SONNET_5_5: ModelPrice = { inputPerMTok: 2, outputPerMTok: 10 };
+// Prompts above 100k tokens bill at $0.50/$2.50; ModelPrice has no tier field,
+// so those calls are under-counted until it gets one.
+const HAIKU_5_5: ModelPrice = { inputPerMTok: 0.1, outputPerMTok: 0.5 };
 
 /** Exact-id price table. Falls through to family matching for anything else. */
 const EXACT_PRICES: Readonly<Record<string, ModelPrice>> = {
@@ -88,6 +91,8 @@ const EXACT_PRICES: Readonly<Record<string, ModelPrice>> = {
   'claude-sonnet-5': { inputPerMTok: 2, outputPerMTok: 10 },
   'claude-sonnet-4-6': { inputPerMTok: 3, outputPerMTok: 15 },
   'claude-sonnet-4-5': { inputPerMTok: 3, outputPerMTok: 15 },
+  // Load-bearing: the `haiku` family fallback is $1/$5, ten times this.
+  'claude-haiku-5-5': HAIKU_5_5,
   'claude-haiku-4-5': { inputPerMTok: 1, outputPerMTok: 5 },
   // --- OpenAI (current GPT-5.x; prompt_tokens includes cached, ~0.1x cached) -
   'gpt-5.5': { inputPerMTok: 5, outputPerMTok: 30, cachedInputPerMTok: 0.5, cacheIncludedInInput: true },
@@ -116,6 +121,7 @@ const FAMILY_PRICES: ReadonlyArray<readonly [keyword: string, price: ModelPrice]
   ['opus', { inputPerMTok: 5, outputPerMTok: 25 }],
   ['sonnet-5-5', SONNET_5_5],
   ['sonnet', { inputPerMTok: 3, outputPerMTok: 15 }],
+  ['haiku-5-5', HAIKU_5_5],
   ['haiku', { inputPerMTok: 1, outputPerMTok: 5 }],
   ['gpt-5.4-nano', { inputPerMTok: 0.2, outputPerMTok: 1.25, cachedInputPerMTok: 0.02, cacheIncludedInInput: true }],
   ['gpt-5.4-mini', { inputPerMTok: 0.75, outputPerMTok: 4.5, cachedInputPerMTok: 0.075, cacheIncludedInInput: true }],

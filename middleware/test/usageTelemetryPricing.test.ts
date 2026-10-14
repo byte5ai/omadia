@@ -177,6 +177,21 @@ describe('computeCostUsd — Anthropic regression (unchanged)', () => {
     expectCost('claude-sonnet-5-5', noUsage({ cacheReadTokens: 1000 }), (1000 * 0.2) / 1e6);
   });
 
+  it('prices claude-haiku-5-5 exactly — a tenth of the haiku family (#1389)', () => {
+    // The 'haiku' fallback is $1/$5; Haiku 5.5 is $0.10/$0.50 and runs the
+    // background calls after every turn, so the fallback over-billed 10x.
+    assert.deepEqual(priceForModel('claude-haiku-5-5'), {
+      inputPerMTok: 0.1,
+      outputPerMTok: 0.5,
+    });
+    assert.deepEqual(priceForModel('claude-haiku-5-5-20261001'), {
+      inputPerMTok: 0.1,
+      outputPerMTok: 0.5,
+    });
+    // Reads at the standard 0.1x: $0.01/MTok.
+    expectCost('claude-haiku-5-5', noUsage({ cacheReadTokens: 1000 }), (1000 * 0.01) / 1e6);
+  });
+
   it('prices the Fable family instead of recording it at $0', () => {
     // Fable matched no keyword at all before, so every Fable call recorded as
     // free. 5.1 reads at 0.025x ($0.25/MTok); Fable 5 reads at the usual 0.1x.

@@ -62,15 +62,20 @@ platform.claude.com/docs/en/about-claude/pricing on 2026-10-05.
   ($10/$50, reads 0.025x = $0.25/MTok), and a `fable` family row prices Fable 5
   at $10/$50 with standard 0.1x reads. Mythos needs no row of its own:
   `builtinLlmProviders.ts` excludes it from model discovery.
+- `claude-haiku-5-5` (#1389) fell through to the `haiku` family at $1/$5; it
+  is $0.10/$0.50 with standard 0.1x reads. It runs the background calls after
+  every turn, so it is the most frequent call of an instance and was
+  over-billed tenfold. Prompts above 100k tokens bill at $0.50/$2.50, which
+  `ModelPrice` cannot express yet; those calls stay under-counted.
 - Dated snapshots of all three were still mispriced after the exact entries,
   because a snapshot misses the exact table and the only keywords were the
   broad family ones — `claude-opus-5-5-20260922` resolved to `opus` at $5/$25,
   the very over-report being fixed. Each point release that prices below its
   family now also has a family keyword ordered ahead of the family's
-  (`opus-5-5` before `opus`, `sonnet-5-5` before `sonnet`, `fable-5-1` before
-  `fable`), and the rate itself is spelled once in a shared constant used by
+  (`opus-5-5` before `opus`, `sonnet-5-5` before `sonnet`, `haiku-5-5` before
+  `haiku`, `fable-5-1` before `fable`), and the rate itself is spelled once in a shared constant used by
   both tables so the two halves cannot drift apart.
-- `test/usageTelemetryPricing.test.ts` pins all three ids, their snapshots, and
+- `test/usageTelemetryPricing.test.ts` pins all four ids, their snapshots, and
   the cost arithmetic.
 
 ### Added — answer size in the web chat (stream `done` + "Kürzer" / "Mehr Details")
