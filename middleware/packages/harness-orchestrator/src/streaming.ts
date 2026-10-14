@@ -233,7 +233,7 @@ export async function* streamMessageEvents(args: {
         'onIterationPhase',
       );
 
-      const events = provider.stream(toLlmRequest(params, betas));
+      const events = provider.stream(toLlmRequest(params, betas, provider.id));
 
       let cumulativeApprox = 0;
       let windowStart = Date.now();

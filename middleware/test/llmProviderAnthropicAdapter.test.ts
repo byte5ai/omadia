@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type Anthropic from '@anthropic-ai/sdk';
+import Anthropic from '@anthropic-ai/sdk';
 
 import {
   classifyAnthropicError,
@@ -1096,4 +1096,195 @@ test('requiresEffortBeta matches only the Opus 4.5 family', () => {
   ]) {
     assert.equal(requiresEffortBeta(model), false, `${model} gained a stale beta`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// #1210 — buffered completions above the SDK's non-streaming cap.
+//
+// Without a client timeout, the SDK refuses a non-streaming `messages.create`
+// whose `max_tokens` implies more than 10 minutes of generation (> 21 333
+// tokens) and throws before sending anything. The orchestrator budget is
+// 32 000, so `complete()` must stream there. These tests drive a REAL SDK
+// client over a stubbed `fetch`, so the SDK's own guard is what is exercised.
+// ---------------------------------------------------------------------------
+
+interface WireCall {
+  readonly url: string;
+  readonly body: Record<string, unknown>;
+  readonly headers: Headers;
+}
+
+function sse(events: ReadonlyArray<Record<string, unknown>>): string {
+  return events
+    .map((e) => `event: ${String(e['type'])}\ndata: ${JSON.stringify(e)}\n\n`)
+    .join('');
+}
+
+/** The SSE a streamed request receives for the same message `textResponse()`
+ *  returns buffered: two text blocks, end_turn, the same usage. */
+function streamedTextReply(model: string): string {
+  return sse([
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_test',
+        type: 'message',
+        role: 'assistant',
+        model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: {
+          input_tokens: 100,
+          output_tokens: 1,
+          cache_creation_input_tokens: 50,
+          cache_read_input_tokens: 10,
+        },
+      },
+    },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hallo ' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Welt' } },
+    { type: 'content_block_stop', index: 1 },
+    {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: { output_tokens: 20 },
+    },
+    { type: 'message_stop' },
+  ]);
+}
+
+/** A real SDK client whose transport answers from `reply` and records each
+ *  request. No timeout is configured — exactly like `createAnthropicClient`. */
+function realClient(
+  reply: (call: WireCall) => Response,
+): { client: Anthropic; calls: WireCall[] } {
+  const calls: WireCall[] = [];
+  const stubFetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const call: WireCall = {
+      url: String(input instanceof Request ? input.url : input),
+      body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      headers: new Headers(init?.headers),
+    };
+    calls.push(call);
+    return reply(call);
+  };
+  const client = new Anthropic({
+    apiKey: 'sk-test',
+    maxRetries: 0,
+    fetch: stubFetch as unknown as typeof fetch,
+  });
+  return { client, calls };
+}
+
+const textOnly = (call: WireCall): Response =>
+  call.body['stream'] === true
+    ? new Response(streamedTextReply(String(call.body['model'])), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    : new Response(JSON.stringify(textResponse({ model: call.body['model'] })), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+
+test('#1210 — the SDK itself refuses a non-streaming create() at 32000 max_tokens', async () => {
+  // Pins the premise of the fix: if a future SDK drops this guard, the
+  // streaming branch below is no longer load-bearing.
+  const { client, calls } = realClient(textOnly);
+  assert.throws(
+    () =>
+      client.messages.create({
+        model: 'claude-opus-5-5',
+        max_tokens: 32_000,
+        messages: [{ role: 'user', content: 'Hi' }],
+      }),
+    /Streaming is required/,
+  );
+  assert.equal(calls.length, 0, 'the guard throws before anything is sent');
+});
+
+test('#1210 — complete() at 32000 max_tokens streams and maps the final message', async () => {
+  const { client, calls } = realClient(textOnly);
+  const provider = createAnthropicProvider({ client });
+
+  const res = await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 32_000,
+    betas: ['context-management-2025-06-27'],
+    system: 'Sei knapp.',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.body['stream'], true);
+  assert.equal(calls[0]?.body['max_tokens'], 32_000);
+  assert.equal(calls[0]?.body['system'], 'Sei knapp.');
+  assert.equal(
+    calls[0]?.headers.get('anthropic-beta'),
+    'context-management-2025-06-27',
+    'request options (betas) survive the streaming branch',
+  );
+  // Same mapping as the buffered path's `textResponse()` test above.
+  assert.equal(collectText(res.content), 'Hallo Welt');
+  assert.equal(res.finishReason, 'stop');
+  assert.equal(res.providerFinishReason, 'end_turn');
+  assert.equal(res.model, 'claude-opus-5-5');
+  assert.deepEqual(res.usage, {
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheWriteTokens: 50,
+    cacheReadTokens: 10,
+  });
+});
+
+test('#1210 — complete() at or below 8192 max_tokens keeps the plain non-streaming request', async () => {
+  const { client, calls } = realClient(textOnly);
+  const provider = createAnthropicProvider({ client });
+
+  const res = await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 8192,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.body['stream'], undefined);
+  assert.equal(collectText(res.content), 'Hallo Welt');
+});
+
+test('#1210 — a streamed complete() failure is classified like a buffered one', async () => {
+  const { client } = realClient(
+    () =>
+      new Response(
+        JSON.stringify({
+          type: 'error',
+          error: { type: 'overloaded_error', message: 'Overloaded' },
+        }),
+        { status: 529, headers: { 'content-type': 'application/json' } },
+      ),
+  );
+  const provider = createAnthropicProvider({ client });
+
+  const err = await provider
+    .complete({
+      model: 'claude-opus-5-5',
+      maxTokens: 32_000,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    })
+    .then(
+      () => assert.fail('expected the 529 to reject'),
+      (e: unknown) => e,
+    );
+  assert.doesNotMatch(String(err), /Streaming is required/);
+  assert.deepEqual(provider.classifyError(err), {
+    retryable: true,
+    kind: 'overloaded',
+  });
 });

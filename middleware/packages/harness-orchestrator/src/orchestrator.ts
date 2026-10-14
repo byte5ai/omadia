@@ -3476,7 +3476,11 @@ export class Orchestrator {
 
     let routed: SeamMessage;
     try {
-      routed = fromLlmResponse(await this.provider.complete(toLlmRequest(params)));
+      routed = fromLlmResponse(
+        await this.provider.complete(
+          toLlmRequest(params, undefined, this.provider.id),
+        ),
+      );
     } catch (err) {
       console.error(
         '[orchestrator] card-router pass failed (continuing without card):',
@@ -5781,7 +5785,9 @@ export class Orchestrator {
     };
     try {
       const response = fromLlmResponse(
-        await this.provider.complete(toLlmRequest(params)),
+        await this.provider.complete(
+          toLlmRequest(params, undefined, this.provider.id),
+        ),
       );
       const text = response.content
         .filter((b) => b['type'] === 'text')
@@ -6234,7 +6240,11 @@ export class Orchestrator {
 
         const completed = await completeWithFallback({
           provider: turnExec.provider,
-          request: toLlmRequest(safeParams, [MEMORY_BETA_HEADER]),
+          request: toLlmRequest(
+            safeParams,
+            [MEMORY_BETA_HEADER],
+            turnExec.provider.id,
+          ),
           ...(fb
             ? {
                 fallback: {
@@ -6248,6 +6258,7 @@ export class Orchestrator {
                       ...toolParamsForProvider(fb.provider),
                     }),
                     [MEMORY_BETA_HEADER],
+                    fb.provider.id,
                   ),
                   ...(this.providerPool?.health ? { health: this.providerPool.health } : {}),
                 },
