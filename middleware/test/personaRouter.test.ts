@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import { routeTurnPersona } from '../packages/harness-orchestrator/src/personaRouter.js';
+import { PERSONA_CLASSIFIER_MAX_TOKENS } from '../packages/harness-orchestrator/src/classifierBudgets.js';
 
 /**
  * Wave 8 — per-turn direct-answer persona router. Twin of modelRouter.test.ts:
@@ -101,6 +102,34 @@ describe('routeTurnPersona', () => {
     );
     assert.equal(r.bucket, 'none');
     assert.equal(r.skillId, null);
+  });
+
+  // #1208 — with no routing classifier configured the fallback is the agent's
+  // own model, where thinking counts toward `max_tokens`; a 16-token cap
+  // truncated before the slug and every turn took the default persona.
+  it('budgets the classifier call for thinking plus the slug', async () => {
+    const seen: Array<{ maxTokens?: number }> = [];
+    const client = {
+      complete: (req: { maxTokens?: number }) => {
+        seen.push(req);
+        return Promise.resolve({
+          content: [{ type: 'text', text: 'sales-bot' }],
+          finishReason: 'stop',
+          model: 'claude-opus-5-5',
+          usage: { inputTokens: 0, outputTokens: 0 },
+        });
+      },
+    };
+    const r = await routeTurnPersona(
+      client as never,
+      candidates,
+      'what does this cost?',
+      'claude-opus-5-5',
+    );
+    assert.equal(r.bucket, 'matched');
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.maxTokens, PERSONA_CLASSIFIER_MAX_TOKENS);
+    assert.equal(PERSONA_CLASSIFIER_MAX_TOKENS, 1024);
   });
 
   it('zero candidates short-circuits before any classifier call', async () => {
