@@ -36,6 +36,64 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the Anthropic adapter replays a turn's thinking blocks instead of dropping them
+
+2026-10-06 — #1207. `fromAnthropicContent` dropped `thinking` /
+`redacted_thinking` from the neutral view and `llmProviderSeam.ts` mapped them
+to empty text, so every tool-loop iteration re-sent the assistant turn without
+its reasoning. On the always-thinking models this route targets
+(`claude-opus-5-5`, `claude-fable-5-1`) thinking cannot be turned off, the
+short notes between tool calls arrive as thinking blocks, and the documented
+requirement is to pass the blocks back unmodified — stripping them loses the
+reasoning between tool calls and can fail the next request's
+signature/ordering check.
+
+- A new neutral `ReasoningPart { type: 'reasoning', provider, raw }` carries
+  the block OPAQUELY: the producing adapter echoes `raw` back byte-for-byte,
+  every other adapter filters it out by `provider`. Nothing reads it, and
+  nothing may edit or reorder it.
+- A request that replays blocks now sends
+  `thinking: { type: 'adaptive', block_binding: { prefix_mismatch_behavior:
+  'drop_block' } }` **together with** the `thinking-binding-controls-2026-08-01`
+  beta header — `block_binding` without that header is a hard 400
+  (`block_binding: Extra inputs are not permitted`), so the adapter attaches
+  both under one condition and never separately. With it, the mid-turn prefix
+  edits that remain (the finalize pass, a persona hop, a `/chat/steer` merge,
+  privacy masking) degrade instead of failing the turn.
+- Blocks, field and header go only to a model whose default already is
+  adaptive thinking (`supportsThinkingReplay`: Opus 5 / 5.5, Fable 5 / 5.1,
+  Mythos 5 / 5.1, Sonnet 5.5, Haiku 5.5), and only when the turn already
+  holds Anthropic blocks — so the field restates the default and no model
+  has thinking switched on by this change. Every other model gets the blocks
+  stripped and no field, as before: that covers a Haiku route and the
+  orchestrator's fallback hop, which re-sends the primary's history to its
+  fallback model (on Haiku 4.5 `adaptive` would be a 400; on Opus 4.8 and
+  Sonnet 4.6 it would turn thinking on). Sonnet 5 is left out until replay
+  there is verified.
+- A dropped block is no longer silent: the adapter logs the response's
+  `input_transformations` entries (`prefix_binding_mismatch` = something still
+  edits the turn mid-flight, `model_binding_mismatch` = an expected provider
+  fallback).
+- Cross-turn history is unaffected — `priorTurns` are replayed as plain text,
+  so no block crosses a turn boundary.
+- Tests: the round-trip and beta-header pairing in
+  `test/llmProviderAnthropicAdapter.test.ts` (drop logging, replay to a
+  thinking model and stripping for a fallback model each covered on both the
+  `complete` and the `stream` path), the seam round-trip and the foreign-
+  reasoning guard in `test/orchestratorLlmProviderSeam.test.ts`. Nothing
+  covered thinking before.
+- Contract `@omadia/llm-provider-api` → 1.4.0 (additive: `ReasoningPart`, a
+  fifth `ContentPart` member; the bump also covers the optional
+  `ToolSpec.strict` that #1365 added without one). `ProviderId` moved from
+  `models.ts` to `types.ts`, where it now types `LlmProvider.id` and
+  `ReasoningPart.provider`; `models.ts` re-exports it, so every import site is
+  unchanged.
+- `fromContentPart` in the seam now ends in a `never` guard like its
+  `toStopReason` neighbour: a sixth `ContentPart` member fails the BUILD
+  instead of silently becoming an empty text block in a message the loop
+  sends on. Only the INBOUND vendor-block mapper stays lenient, which is
+  what lets an unknown future block type through.
+
 ### Fixed — no tool escalation into a text-only sub-agent turn
 
 2026-10-14 — When a sub-agent with a declared obligation tool

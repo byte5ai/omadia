@@ -15,7 +15,9 @@ export {
   supportsForcedToolChoice,
   supportsStrictTools,
   supportsTemperature,
+  supportsThinkingReplay,
   EFFORT_BETA,
+  THINKING_BINDING_BETA,
   type AnthropicProviderOptions,
 } from './anthropicProvider.js';
 
