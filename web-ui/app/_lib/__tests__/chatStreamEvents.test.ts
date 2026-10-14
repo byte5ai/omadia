@@ -82,6 +82,21 @@ describe('applyStreamEvent — writes are addressed by session id (#617)', () =>
     expect(next.updatedAt).toBeGreaterThanOrEqual(before.updatedAt);
   });
 
+  it('keeps the answer-size level from done so the row can offer the next step', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'kurz',
+      toolCalls: 0,
+      iterations: 1,
+      answerVerbosity: { effective: 'brief', source: 'turn' },
+    });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.answerVerbosity).toEqual({ effective: 'brief', source: 'turn' });
+  });
+
   it('replaces the content wholesale with the authoritative done answer', () => {
     const { sessions, mutateById } = stubSessions();
 

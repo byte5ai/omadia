@@ -1,7 +1,8 @@
 import type { ChatTurnInput } from '@omadia/channel-sdk';
-import { canonicalOwners, type ChannelKind, type KnowledgeGraph } from '@omadia/plugin-api';
+import { canonicalOwners, type KnowledgeGraph } from '@omadia/plugin-api';
 
 import type { ChatParticipantsProvider } from './chatParticipants.js';
+import { CHANNEL_KIND_BY_ORIGIN } from './resolveTurnOwnerIdentity.js';
 
 /**
  * Member-scoped memory — who is present in a turn's room, as canonical omadia
@@ -26,13 +27,6 @@ import type { ChatParticipantsProvider } from './chatParticipants.js';
 export type TurnAudience =
   | { readonly kind: 'known'; readonly members: readonly string[] }
   | { readonly kind: 'unknown'; readonly reason: string };
-
-/** The `TurnOrigin.channelType` values that map onto a KG channel kind. */
-const CHANNEL_KIND_BY_ORIGIN: Readonly<Record<string, ChannelKind>> = {
-  teams: 'teams',
-  telegram: 'telegram',
-  api: 'api',
-};
 
 const unknown = (reason: string): TurnAudience => ({ kind: 'unknown', reason });
 

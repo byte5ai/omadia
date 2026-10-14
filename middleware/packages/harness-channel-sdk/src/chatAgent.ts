@@ -13,6 +13,26 @@ import type { EnvelopeProvenance } from './provenance.js';
 import type { TurnOrigin } from './turnOrigin.js';
 
 /**
+ * The closed answer-size scale. Mirrors `ANSWER_VERBOSITY_LEVELS` in the
+ * orchestrator package (which depends on this one, so the list lives here by
+ * value and there by name); the orchestrator parses, never trusts, the wire.
+ */
+export const ANSWER_VERBOSITY_LEVELS = [
+  'tldr',
+  'brief',
+  'standard',
+  'detailed',
+  'max',
+] as const;
+export type AnswerVerbosityLevel = (typeof ANSWER_VERBOSITY_LEVELS)[number];
+
+/** The level a turn was answered under, and where it came from. */
+export interface AnswerVerbosityInfo {
+  readonly effective: AnswerVerbosityLevel;
+  readonly source: 'turn' | 'configured';
+}
+
+/**
  * Orchestrator surface contract — the duck-typed interface every chat-handling
  * implementation satisfies (the concrete `Orchestrator` class plus any
  * wrappers like the answer-verifier's `VerifierService`). Channel adapters
@@ -316,6 +336,34 @@ export type VerifierSummaryReason =
  * render them as a check — see `verifierSummaryHasEvidence`.
  * `toSemanticAnswer` forwards a connector badge only when the counts back it.
  */
+/**
+ * Why the verifier would not release an answer — what the withheld notice
+ * says, and nothing it may overstate:
+ *  - `contradicted`          — a check compared a claim with its source and
+ *                              the source says otherwise (the ONLY cause that
+ *                              may be called a contradiction);
+ *  - `tool_not_called`       — the answer states live data or a failed /
+ *                              missing access, and no call in the turn fetched
+ *                              that data or failed;
+ *  - `citation_missing`      — the answer used knowledge-graph results but
+ *                              named no source for them;
+ *  - `insufficient_evidence` — claims could not be backed by what the turn
+ *                              retrieved (unconfirmed, a cited source the turn
+ *                              never returned, parts not covered);
+ *  - `check_failed`          — a technical fault: the verifier, its checks or
+ *                              a tool's result failed;
+ *  - `not_checked`           — the answer could not be sent to the check at all
+ *                              (Privacy Shield rendered it server-side).
+ * A closed code set: the summary goes out verbatim on the stream.
+ */
+export type VerifierWithheldCause =
+  | 'contradicted'
+  | 'tool_not_called'
+  | 'citation_missing'
+  | 'insufficient_evidence'
+  | 'check_failed'
+  | 'not_checked';
+
 export interface VerifierResultSummary {
   badge: 'verified' | 'partial' | 'corrected' | 'failed' | 'unverified' | 'unavailable';
   status: 'approved' | 'approved_with_disclaimer' | 'blocked' | 'skipped' | 'unavailable';
@@ -341,6 +389,18 @@ export interface VerifierResultSummary {
    * not checked in full. Optional for summaries built without it.
    */
   uncoveredCount?: number;
+  /**
+   * Why the answer is not confirmed, for every status but `approved` and a
+   * `skipped` with nothing to check. When `enforce` withholds the answer
+   * (`blocked`, `unavailable`) it is what the notice states; an answer
+   * released with the "could not be confirmed automatically" disclaimer
+   * (`approved_with_disclaimer`, `skipped` with claims no check accepts or
+   * parts not covered) carries it too, as does every answer in `shadow`.
+   * `contradictionCount` counts only claims a source refuted; any other cause
+   * counts its claims as unconfirmed (`unverifiedCount`). Optional for
+   * summaries built without it.
+   */
+  withheldCause?: VerifierWithheldCause;
   retryCount: number;
   latencyMs: number;
   mode: 'shadow' | 'enforce';
@@ -418,6 +478,16 @@ export interface ChatTurnInput {
    * `🔄 Fresh Check` button when the user distrusts a cached-memory answer.
    */
   freshCheck?: boolean;
+  /**
+   * Answer-size override for THIS turn only — the level the user picked on a
+   * channel affordance ("Kürzer" / "Mehr Details" on the Teams card) for a
+   * re-run of the same question. Replaces the configured level (Agent, else
+   * installation) for the one turn; the next turn is back on the configured
+   * one. Unknown values are ignored, so a stale button cannot pick a level
+   * the prompt builder does not know. See {@link ChatTurnResult.answerVerbosity}
+   * for the value the channel needs to offer the next step.
+   */
+  answerVerbosity?: AnswerVerbosityLevel;
   /**
    * Teams SSO assertion (JWT) for the calling user. When present, the
    * calendar tools (`find_free_slots` / `book_meeting`) can OBO-exchange
@@ -672,6 +742,14 @@ export interface ChatTurnResult {
    * Omitted when nothing qualified — a fresh check would then be a no-op.
    */
   memoryUsed?: boolean;
+  /**
+   * The answer-size level this turn was generated under, so a channel can
+   * offer the neighbouring steps ("Kürzer" / "Mehr Details") relative to what
+   * the user just read. `source: 'turn'` when the user picked it for this
+   * turn, `'configured'` when it came from the Agent / installation setting
+   * (or the delivered `standard` when nothing is configured).
+   */
+  answerVerbosity?: AnswerVerbosityInfo;
   /**
    * #332 Layer 2 — Direct Line. The verbatim sub-agent answer for a turn the
    * user directed at a named specialist (`@omadia #strategist …`). Set by the
@@ -1070,6 +1148,12 @@ export type ChatStreamEvent =
        * field gives every channel the SAME harness-built array.
        */
       agentsConsulted?: AgentConsultation[];
+      /**
+       * Phase 3 — the answer-size level this turn was generated under (see
+       * {@link ChatTurnResult.answerVerbosity}); the streaming twin so the
+       * web chat can offer "Kürzer" / "Mehr Details" too.
+       */
+      answerVerbosity?: AnswerVerbosityInfo;
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The

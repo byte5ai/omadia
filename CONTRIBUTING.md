@@ -24,7 +24,7 @@ lowest:
    [SECURITY.md](SECURITY.md))
 3. **Performance improvements** that ship with a before/after benchmark
 4. **New features** that match the roadmap in the
-   [README](README.md#status--roadmap)
+   [README](README.md#status-and-roadmap)
 5. **Documentation and examples**
 
 This is a guide, not a gate. A well-scoped docs fix still lands faster than a
