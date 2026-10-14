@@ -1,5 +1,7 @@
 import type { NextRequest } from 'next/server';
 
+import { publicScheme } from './publicScheme';
+
 /**
  * Runtime reverse proxy to the middleware — the server half of the
  * same-origin API surface (browser → /bot-api/* → middleware /api/*).
@@ -52,8 +54,13 @@ export function createMiddlewareProxy(
     req.headers.forEach((value, key) => {
       // `host` must be the upstream's own; fetch derives it from the URL.
       if (HOP_BY_HOP.has(key) || key === 'host') return;
+      // Set below from this hop's declared scheme, never relayed: the
+      // middleware decides the auth cookies' `Secure` flag from this header
+      // (#1310, §10o), so a browser must not be able to pick it.
+      if (key === 'x-forwarded-proto') return;
       headers.set(key, value);
     });
+    headers.set('x-forwarded-proto', publicScheme());
 
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
     const upstream = await fetch(target, {

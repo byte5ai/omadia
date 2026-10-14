@@ -27,6 +27,7 @@ let baseUrl: string;
 let captured: Captured | undefined;
 let respond: (res: ServerResponse) => void;
 const savedEnv = process.env.MIDDLEWARE_URL;
+const savedPublicScheme = process.env.WEB_UI_PUBLIC_SCHEME;
 
 function ctx(path: string[]) {
   return { params: Promise.resolve({ path }) };
@@ -54,6 +55,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise((resolve) => server.close(resolve));
   process.env.MIDDLEWARE_URL = savedEnv;
+  if (savedPublicScheme === undefined) delete process.env.WEB_UI_PUBLIC_SCHEME;
+  else process.env.WEB_UI_PUBLIC_SCHEME = savedPublicScheme;
 });
 
 afterEach(() => {
@@ -130,6 +133,64 @@ describe('createMiddlewareProxy', () => {
     );
 
     expect(res.headers.getSetCookie()).toEqual(['auth=jwt; HttpOnly', 'flags=1; Path=/']);
+  });
+
+  /**
+   * #1310 — the browser used to pick `x-forwarded-proto`, and the middleware
+   * believed it, deciding the `Secure` flag on the session cookie it then
+   * minted for that same browser.
+   *
+   * These cases send the forged header on an `https://` request URL on purpose.
+   * That combination is what a derived implementation gets wrong and still
+   * looks right: next builds the URL's protocol from this very header, so
+   * `req.nextUrl.protocol` is the browser's value, and a test that only
+   * asserted "URL scheme wins" would pass against the bug. The assertion is
+   * that NEITHER input reaches the middleware — only the declaration does.
+   *
+   * There is deliberately no "relay the incoming header" mode: `https` already
+   * covers a web-ui behind a TLS-terminating edge, and a relay mode would hand
+   * the choice back to whoever can reach this hop.
+   */
+  const forged = { 'x-forwarded-proto': 'https' } as const;
+
+  it("ignores the client's x-forwarded-proto AND the request URL by default", async () => {
+    process.env.MIDDLEWARE_URL = baseUrl;
+    delete process.env.WEB_UI_PUBLIC_SCHEME;
+    const proxy = createMiddlewareProxy('/api');
+    await proxy(
+      new NextRequest('https://web-ui.local/bot-api/v1/auth/login/local', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...forged },
+        body: '{}',
+      }),
+      ctx(['v1', 'auth', 'login', 'local']),
+    );
+
+    expect(captured?.headers['x-forwarded-proto']).toBe('http');
+  });
+
+  it('states https when the operator declared this hop is behind TLS', async () => {
+    process.env.MIDDLEWARE_URL = baseUrl;
+    process.env.WEB_UI_PUBLIC_SCHEME = 'https';
+    const proxy = createMiddlewareProxy('/api');
+    await proxy(
+      new NextRequest('http://web-ui.local/bot-api/v1/ping'),
+      ctx(['v1', 'ping']),
+    );
+
+    expect(captured?.headers['x-forwarded-proto']).toBe('https');
+  });
+
+  it('treats an unrecognised declaration as http rather than guessing', async () => {
+    process.env.MIDDLEWARE_URL = baseUrl;
+    process.env.WEB_UI_PUBLIC_SCHEME = 'maybe';
+    const proxy = createMiddlewareProxy('/api');
+    await proxy(
+      new NextRequest('https://web-ui.local/bot-api/v1/ping', { headers: forged }),
+      ctx(['v1', 'ping']),
+    );
+
+    expect(captured?.headers['x-forwarded-proto']).toBe('http');
   });
 
   it('maps /p/* without the /api prefix', async () => {

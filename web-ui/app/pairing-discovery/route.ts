@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { publicScheme, publicWsScheme, type PublicScheme } from '../_lib/publicScheme';
 
 /**
  * Friction-free pairing discovery on the OPERATOR origin (#293).
@@ -68,12 +69,17 @@ type ProvidersRead =
   | { readonly ok: true; readonly providers: ProviderSummary[] }
   | { readonly ok: false; readonly reason: string };
 
-function operatorOrigin(req: Request): { httpProto: string; host: string } {
+function operatorOrigin(req: Request): { httpProto: PublicScheme; host: string } {
   const headers = req.headers;
-  const xfProto = headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
-  // `req.url` carries the proxied internal scheme; trust the forwarded header
-  // (set by the Fly edge / any reverse proxy) and default to https in prod.
-  const httpProto = xfProto ?? new URL(req.url).protocol.replace(':', '');
+  // The scheme is DECLARED (`WEB_UI_PUBLIC_SCHEME`), never taken from
+  // `x-forwarded-proto` or from `req.url` — next builds the URL's protocol from
+  // that same header, so both let the caller choose the `wss://` canvas URL and
+  // the `https://` login base it is then handed (#1310, §10o).
+  //
+  // The host is a different question and stays as it was: a split deployment
+  // cannot advertise a reachable host otherwise, and an operator who needs it
+  // pinned sets OMADIA_UI_PUBLIC_WS_URL, which wins outright below.
+  const httpProto = publicScheme();
   const host =
     headers.get('x-forwarded-host')?.split(',')[0]?.trim() ??
     headers.get('host') ??
@@ -129,9 +135,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   const origin = `${httpProto}://${host}`;
 
   const override = process.env.OMADIA_UI_PUBLIC_WS_URL?.trim();
-  const wsUrl =
-    override ||
-    `${httpProto === 'https' ? 'wss' : 'ws'}://${host}${CANVAS_WS_PATH}`;
+  const wsUrl = override || `${publicWsScheme()}://${host}${CANVAS_WS_PATH}`;
 
   // `none` only for a list the middleware returned empty, which is how its own
   // `buildPairingDescriptor` reads that state. A list that could not be read
