@@ -6,6 +6,13 @@ import {
 } from './mcp/mcpClient.js';
 import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
 import {
+  buildAnswerVerbosityBlock,
+  buildAnswerVerbosityTurnBlock,
+  DEFAULT_ANSWER_VERBOSITY,
+  parseAnswerVerbosity,
+  type AnswerVerbosity,
+} from './answerVerbosity.js';
+import {
   deriveAgentsConsulted,
   toSemanticAnswer,
   applyAiDisclosure,
@@ -14,6 +21,7 @@ import {
   DEFAULT_AI_DISCLOSURE_POLICY,
   InMemoryDisclosureSeenStore,
   type ChatStreamEvent,
+  type AnswerVerbosityInfo,
   type ChatTurnInput,
   type ChatTurnResult,
   type DelegatedAnswer,
@@ -289,7 +297,11 @@ import {
   knowledgeGraphPrincipalResolver,
 } from './audienceFloorProvider.js';
 import { guardToolCommands } from './commandPolicyGuard.js';
-import { resolveTurnOwnerIdentity, runTraceOwnerId } from './resolveTurnOwnerIdentity.js';
+import {
+  resolveRunTraceOwner,
+  resolveTurnOwnerIdentity,
+  runTraceOwnerId,
+} from './resolveTurnOwnerIdentity.js';
 import { resolveTurnAudience, type TurnAudience } from './turnAudience.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
@@ -302,7 +314,10 @@ import { isMcpServerKgIngest } from './mcpKgIngest.js';
 function runTraceUserSpread(
   input: Pick<ChatTurnInput, 'userId' | 'channelIdentity'>,
 ): { userId?: string } {
-  const userId = runTraceOwnerId(input, turnContext.current()?.resolvedOmadiaUserId);
+  const ctx = turnContext.current();
+  const userId = ctx?.runTraceOwner
+    ? ctx.runTraceOwner.userId
+    : runTraceOwnerId(input, ctx?.resolvedOmadiaUserId);
   return userId ? { userId } : {};
 }
 
@@ -946,6 +961,13 @@ export interface OrchestratorOptions {
    * empty → behaviour is identical to pre-Wave-8 (no classifier call).
    */
   personaSkills?: readonly OrchestratorPersonaSkill[];
+  /**
+   * Operator's target answer size — the `answer_verbosity` setup field. A
+   * prompt contract (what the answer contains), not a token budget. Absent →
+   * `standard`, which emits no block and leaves the system prompt
+   * byte-identical. See `answerVerbosity.ts`.
+   */
+  answerVerbosity?: AnswerVerbosity;
   /**
    * AI-Act Art. 50 (#644) — the operator's resolved disclosure config. Absent →
    * the shipping default (standard, active) on every channel. See
@@ -1633,15 +1655,17 @@ ${priorContext}`,
  * The per-turn system hint as it crosses the wire (#361): the caller's
  * `extraSystemHint` masked through the turn's prompt map like the user's
  * message — once, through this turn's map — then composed with the kernel's
- * own fresh-check text. The caller's hint (a verifier correction on a retry,
+ * own per-turn prose (the fresh-check block, the answer-size pick). The
+ * caller's hint (a verifier correction on a retry,
  * the screening marker) is wire content, not kernel prose — the verifier's
  * correction hint quotes claims cut from the RESTORED answer, i.e. the real
  * values the mask kept from the model — so it gets the message's protection:
  * the same surrogates (restored in the answer), its masked spans on the
  * turn's receipt, and a `PromptMaskBlockedError` when masking cannot be
- * guaranteed. The fresh-check prose is not masked: it is static, carries no
- * user data, and masking it could only garble — or, on a residual-leak
- * `blocked`, fail — a turn with no hint.
+ * guaranteed. The kernel's own prose (fresh check, answer-size pick) is not
+ * masked: it is static, carries no user data — the size pick interpolates
+ * only a parsed enum label — and masking it could only garble — or, on a
+ * residual-leak `blocked`, fail — a turn with no hint.
  */
 async function wireExtraSystemHint(
   privacy: PrivacyTurnHandle | undefined,
@@ -1652,7 +1676,11 @@ async function wireExtraSystemHint(
     callerHint !== undefined && callerHint.trim().length > 0
       ? await maskPromptForWire(privacy, callerHint)
       : undefined;
-  return composeExtraSystemHint(input.freshCheck, wireHint);
+  return composeExtraSystemHint(
+    input.freshCheck,
+    wireHint,
+    parseAnswerVerbosity(input.answerVerbosity),
+  );
 }
 
 /**
@@ -1666,8 +1694,16 @@ async function wireExtraSystemHint(
 function composeExtraSystemHint(
   freshCheck: ChatTurnInput['freshCheck'],
   callerHint: string | undefined,
+  turnVerbosity?: AnswerVerbosity,
 ): string | undefined {
   const parts: string[] = [];
+  // Phase 3 — the user's per-turn answer-size pick. Same home as Fresh
+  // Check (uncached, per turn, static prose that carries no user data), so
+  // the stable prompt and its cache key stay byte-identical. Already parsed:
+  // an unknown wire value arrives here as undefined and adds nothing.
+  if (turnVerbosity) {
+    parts.push(buildAnswerVerbosityTurnBlock(turnVerbosity));
+  }
   if (freshCheck) {
     parts.push(
       `# FRESH CHECK MODE (von User per Card-Button aktiviert)
@@ -1929,7 +1965,11 @@ function buildSystemPrompt(
   hasPrivacyV4: boolean,
   extraToolDocs: readonly string[] = [],
   memoryPrompt?: MemoryPromptKind,
+  answerVerbosity: AnswerVerbosity = DEFAULT_ANSWER_VERBOSITY,
 ): string {
+  // Operator's answer-size contract. `standard` is '' so the delivered state
+  // keeps the prompt (and its cache key) unchanged.
+  const answerVerbosityBlock = buildAnswerVerbosityBlock(answerVerbosity);
   // W5 — off by default, so a turn that is not context-bound produces a
   // byte-identical prompt (and therefore a byte-identical prompt-cache key).
   const contextMemoryBlock = memoryPrompt ? MEMORY_PROMPT_BLOCKS[memoryPrompt] : '';
@@ -2005,7 +2045,7 @@ d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabel
   return `${assistantIdentity}
 
 Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.
-
+${answerVerbosityBlock ? '\n' + answerVerbosityBlock : ''}
 Werkzeuge:
 - \`memory\` (virtuelles /memories-Verzeichnis): Persistiere Domänen-Learnings, Nutzer-Präferenzen, Geschäfts-Konventionen und häufige Anfragen. Der Memory wird über Sessions hinweg geteilt und ist global für diesen Agent. Lies zu Beginn jeder neuen Aufgabe einmal den Verzeichnisinhalt, bevor du antwortest, damit du auf relevante Learnings zurückgreifen kannst. Lege neue Learnings in themenbezogenen Dateien ab (z.B. /memories/customers/kundenname.md, /memories/observations/2026-q2.md).
 ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBlock}${calendarBlock}${extraToolDocs.length > 0 ? '\n' + extraToolDocs.map((doc) => `- ${doc.trim()}`).join('\n') + '\n' : ''}
@@ -2556,6 +2596,8 @@ export class Orchestrator {
   /** #967 — this Agent's own authored name. See
    *  `OrchestratorOptions.identityName`. */
   private readonly identityName: string | undefined;
+  /** Operator's answer-size contract (see OrchestratorOptions.answerVerbosity). */
+  private readonly answerVerbosity: AnswerVerbosity;
   /** #644 — resolved operator disclosure config (undefined → shipping default
    *  on every channel). See {@link AiDisclosureSetup}. */
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
@@ -2695,6 +2737,7 @@ export class Orchestrator {
     this.assistantIdentity =
       options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
     this.identityName = options.identityName?.trim() || undefined;
+    this.answerVerbosity = options.answerVerbosity ?? DEFAULT_ANSWER_VERBOSITY;
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
@@ -3862,7 +3905,14 @@ export class Orchestrator {
    * `runTurn()` directly.
    */
   async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-    const result = await this.runTurn(input);
+    const turn = await this.runTurn(input);
+    // Phase 3 — the level this answer was generated under, on EVERY answer
+    // this path returns (choice cards, direct-line, gate returns included),
+    // so a channel can always offer the neighbouring steps. Resolved here,
+    // once, at the boundary; the inner success path sets the same value.
+    const result: ChatTurnResult = turn.answerVerbosity
+      ? turn
+      : { ...turn, answerVerbosity: this.resolveAnswerVerbosity(input) };
     // #644 — the disclosure resolution rides `result.aiDisclosure` (set by
     // `runTurn`). Thread the scope + shared seen-store ONLY when there is a
     // marker to fold, so `toSemanticAnswer` folds it on the FIRST turn of the
@@ -3881,6 +3931,18 @@ export class Orchestrator {
           }
         : undefined,
     );
+  }
+
+  /**
+   * Phase 3 — the answer-size level a turn runs under: the user's per-turn
+   * pick (parsed, never trusted) over the configured slot (Agent, else
+   * installation, else `standard`).
+   */
+  private resolveAnswerVerbosity(input: ChatTurnInput): AnswerVerbosityInfo {
+    const turnVerbosity = parseAnswerVerbosity(input.answerVerbosity);
+    return turnVerbosity
+      ? { effective: turnVerbosity, source: 'turn' }
+      : { effective: this.answerVerbosity, source: 'configured' };
   }
 
   /**
@@ -3988,7 +4050,13 @@ export class Orchestrator {
     // #1094 — expand a degraded turn's marker into the localized notice FIRST,
     // so the disclosure line below folds onto readable text (and so the fold's
     // own first-turn bookkeeping sees the same answer every other path sees).
-    const delivered = this.expandDegradedDoneEvent(done, input);
+    // Phase 3 — the level this answer ran under rides every `done` the
+    // stream yields (this is the single funnel), on the disclosure-off path
+    // as well; `chat()` does the same for the non-streaming result.
+    const delivered = {
+      ...this.expandDegradedDoneEvent(done, input),
+      answerVerbosity: this.resolveAnswerVerbosity(input),
+    };
     const aiDisclosure = this.resolveTurnDisclosure(input);
     if (!aiDisclosure) return delivered;
     const { text } = applyAiDisclosure(delivered.answer, {
@@ -4546,6 +4614,10 @@ export class Orchestrator {
     // re-deriving it independently.
     const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    // The run trace's User-Cluster, resolved before anything ingests it — a
+    // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
+    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, resolvedOmadiaUserId);
+    const runTraceOwner = runTraceUserId ? { userId: runTraceUserId } : {};
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -4613,6 +4685,7 @@ export class Orchestrator {
         // per-user data with it.
         ...(input.userId ? { userId: input.userId } : {}),
         ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+        runTraceOwner,
         // W2-1 (#544) — one component of the MCP pending-input store key. Never
         // the whole key; see TurnContextValue.sessionScope.
         sessionScope: sessionId,
@@ -5041,7 +5114,13 @@ export class Orchestrator {
     if (name === MEMORY_TOOL_NAME && memoryHandler) {
       return isMemoryViewCall(input) ? 'read-only' : 'write';
     }
-    if (this.nativeTools.get(name)?.handler) return 'write';
+    // A plugin's native tool is a write. The kernel's own full-form natives
+    // (#1102 gave them a handler too) are not plugins: they fall through to
+    // their per-name class below. Told apart by spec identity, exactly as
+    // `buildToolsList()` does — before this check ran first, a re-entry's new
+    // `query_knowledge_graph` call counted as a write and abandoned it.
+    const native = this.nativeTools.get(name);
+    if (native?.handler && !KERNEL_NATIVE_SPECS.has(native.spec)) return 'write';
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) return 'read-only';
     if (name === QUERY_DATASET_TOOL_NAME && this.queryDatasetTool) return 'read-only';
     if (name === CHAT_PARTICIPANTS_TOOL_NAME && this.chatParticipantsTool) return 'read-only';
@@ -6368,6 +6447,9 @@ export class Orchestrator {
             answer: restoredAnswer,
             toolCalls,
             iterations,
+            // Phase 3 — see `resolveAnswerVerbosity`; `chat()` fills it on
+            // every other return path too.
+            answerVerbosity: this.resolveAnswerVerbosity(input),
             ...(memoryUsed ? { memoryUsed: true } : {}),
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
@@ -6449,13 +6531,16 @@ export class Orchestrator {
               ...replayed,
             });
           } else if (traceCollector) {
-            traceCollector.recordOrchestratorToolCall({
-              callId: use.id,
-              toolName: use.name,
-              durationMs,
-              isError,
-              ...replayed,
-            });
+            traceCollector.recordOrchestratorToolCall(
+              {
+                callId: use.id,
+                toolName: use.name,
+                durationMs,
+                isError,
+                ...replayed,
+              },
+              output,
+            );
           }
           return {
             type: 'tool_result',
@@ -6761,6 +6846,10 @@ export class Orchestrator {
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
     const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    // The run trace's User-Cluster, resolved before anything ingests it — a
+    // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
+    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, resolvedOmadiaUserId);
+    const runTraceOwner = runTraceUserId ? { userId: runTraceUserId } : {};
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -6822,6 +6911,7 @@ export class Orchestrator {
       // answer the card, and channel turns (Teams/Telegram) come through here.
       ...(input.userId ? { userId: input.userId } : {}),
       ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+      runTraceOwner,
       // W2-1 (#544) — see the matching `turnContext.run` above.
       sessionScope: sessionId,
       // The turn's wire view (prompt + answer), for a verifier hand-over.
@@ -8357,13 +8447,16 @@ export class Orchestrator {
         ...replayed,
       });
     } else if (traceCollector) {
-      traceCollector.recordOrchestratorToolCall({
-        callId: slot.use.id,
-        toolName: slot.use.name,
-        durationMs,
-        isError,
-        ...replayed,
-      });
+      traceCollector.recordOrchestratorToolCall(
+        {
+          callId: slot.use.id,
+          toolName: slot.use.name,
+          durationMs,
+          isError,
+          ...replayed,
+        },
+        slot.output,
+      );
     }
   }
 
@@ -9246,6 +9339,7 @@ export class Orchestrator {
       this.privacyGuard?.() !== undefined,
       extraDocs,
       memoryPrompt,
+      this.answerVerbosity,
     );
   }
 

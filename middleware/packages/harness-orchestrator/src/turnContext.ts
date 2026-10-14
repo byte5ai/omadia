@@ -91,6 +91,13 @@ export interface TurnContextValue {
    */
   resolvedOmadiaUserId?: string;
   /**
+   * The User-Cluster the turn's run trace is filed under, resolved at the
+   * start of the turn (`resolveRunTraceOwner`). A holder rather than a plain
+   * id so "resolved to nobody" (`{}` — trace without a user link) is told
+   * apart from "not resolved here" (absent — derive it as before).
+   */
+  runTraceOwner?: { readonly userId?: string };
+  /**
    * W2-1 (#544) — the turn's session scope (`input.sessionScope`, falling back
    * to the turn id when the caller supplied none), as computed once by the
    * orchestrator entry point.

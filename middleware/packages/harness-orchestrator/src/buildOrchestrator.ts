@@ -55,6 +55,7 @@ import {
   type OrchestratorPersonaSkill,
   type AiDisclosureSetup,
 } from './orchestrator.js';
+import type { AnswerVerbosity } from './answerVerbosity.js';
 import {
   LlmScreener,
   HttpProxyScreener,
@@ -171,6 +172,14 @@ export interface AgentRuntimeConfig {
    */
   readonly identityShortDescription?: string;
   readonly identityLongDescription?: string;
+  /**
+   * This Agent's own answer-size contract (`agent_identities.verbosity`).
+   * A SLOT over the platform-wide `OrchestratorDeps.answerVerbosity`: when
+   * set it replaces the installation default for this Agent, so exactly ONE
+   * verbosity block ever reaches the prompt. Absent → the platform value
+   * (and with that unset, `standard`, no block).
+   */
+  readonly answerVerbosity?: AnswerVerbosity;
   /**
    * W5 memory-ACL — per-Agent rollout switch for chat-context-scoped memory.
    * Read from the `agents.context_memory` column (migration 0050).
@@ -334,6 +343,12 @@ export interface OrchestratorDeps {
   readonly graphTenantId?: string;
   /** Operator-set assistant identity (overrides the built-in default). */
   readonly assistantIdentity?: string;
+  /**
+   * Operator's target answer size (`answer_verbosity` setup field), shared by
+   * every Agent this process builds. Absent → `standard`, no prompt block. See
+   * `OrchestratorOptions.answerVerbosity`.
+   */
+  readonly answerVerbosity?: AnswerVerbosity;
   /**
    * AI-Act Art. 50 (#644) — resolved operator disclosure config. Absent → the
    * shipping default (standard, active) on every channel. See
@@ -822,6 +837,10 @@ export function buildOrchestratorForAgent(
     // name the operator had typed there.
     ...(config.identityName?.trim()
       ? { identityName: config.identityName.trim() }
+      : {}),
+    // Agent's own setting beats the installation default (one block, never two).
+    ...((config.answerVerbosity ?? deps.answerVerbosity)
+      ? { answerVerbosity: config.answerVerbosity ?? deps.answerVerbosity }
       : {}),
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore

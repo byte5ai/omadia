@@ -373,7 +373,8 @@ Mit aktivem Answer-Verifier sitzt `VerifierService` vor dem Orchestrator
 (`User → VerifierService.chatStream/chat → Orchestrator`): in `shadow` prüft er
 nur und hängt das Urteil an, in `enforce` ist er ein Auslieferungs-Gate — der
 Stream hält jeden Inhalt bis zum Urteil (der Canvas-Composer sein Skeleton
-ebenso), eine nicht bestätigte Antwort wird durch eine Notiz ersetzt (§11,
+ebenso), eine widerlegte oder nicht prüfbare Antwort wird durch eine Notiz
+ersetzt, eine nicht vollständig bestätigte geht mit Hinweis raus (§11,
 Kontrakt-Erweiterung Verifier-Gate). Agenten auf dem Abo-CLI-Runtime und
 Routinen laufen ohne diesen Wrapper.
 
@@ -1858,6 +1859,28 @@ Nachzug hier). UI: Chain-Status-Karte auf `/operator/receipts`. Doku +
 Tamper-Demo: `docs/provenance-verification.md`. Tests:
 `test/provenanceVerify.test.ts` (inkl. Offline-Verifier via spawnSync).
 
+### Conductor: angesprochener Bot ↔ Agent (Standard-Teams-Bot, 2026-10-07)
+
+Ein über einen Kanal gestarteter Lauf (`teams.*`-Event) bindet jeden
+Agent-Schritt an den Bot, den die Person angeschrieben hat
+(`assertChannelOriginAllows`, `src/conductor/realStepEffects.ts`), und ein
+`say`-Schritt spricht als der Bot, der dieser Agent ist (`ConductorSayService`).
+Beide Richtungen beantwortet **ein** Modul, `src/conductor/channelBotOwnership.ts`:
+
+- `resolveAddressedBot`: provisionierte Identität (`agent_teams_identities`)
+  zuerst; gehört der Bot einem nicht aktiven Agenten → verweigert
+  (`identity-unavailable`, nie der Fallback); der **ausdrücklich konfigurierte
+  Standard-Bot** → wie im Chat zuerst die Bindung der Konversation des Laufs,
+  dann die des Bots, dann Plattform-Fallback (`resolveByChannel`); jeder andere unbekannte Bot → verweigert. Schlüssel
+  werden wie gespeichert kleingeschrieben verglichen (`28:<appId>`).
+- `speakingIdentityFor`: eigene Identität, sonst der Standard-Bot — nur für
+  genau den Agenten, auf den er in dieser Konversation auflöst.
+
+Der Standard-Bot kommt aus `wireConductor({ defaultChannelBotKey })`, in
+`src/index.ts` pro Aufruf gelesen: `microsoft_app_id` der
+Microsoft-365-Integration, sonst `MICROSOFT_APP_ID`. Ohne ihn gilt das alte
+Verhalten (nur provisionierte Bots).
+
 ### Conductor Ephemeral/JIT-Workflows (#330 Workstream A)
 
 Agent-generierte, run-scoped Workflows: `conductor_workflows.origin`
@@ -3333,7 +3356,7 @@ Setup-Felder, nicht mehr die Env.
 | Variable / Setup-Feld | Wirkung |
 |---|---|
 | `VERIFIER_ENABLED` / `verifier_enabled` | `true` schaltet den Verifier-Wrapper ein. Default `false`. |
-| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht nur bei `approved` oder `skipped` (`no_trigger`/`no_claims`) raus, sonst eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort — hinter dem Shield ebenso ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) — geht nie an den Verifier und wird zurückgehalten (`privacy_shield`), außer an einem Turn mit Input-Karte: Die Karten-Ausnahme (`releasesWithoutVerification`) greift vorher und gibt ihn samt gerenderter Antwort ungeprüft frei; `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
+| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht bei `approved` und `skipped` (`no_trigger`/`no_claims`) raus, bei `approved_with_disclaimer` und `skipped` (`no_checkable_claims`/`incomplete_coverage`) mit lokalisiertem Hinweis „ließ sich nicht automatisch bestätigen“ (außer alle gelaufenen Checks scheiterten technisch: dann zurückgehalten); bei `blocked` oder `unavailable` statt ihrer eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort — hinter dem Shield ebenso ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) — geht nie an den Verifier und wird zurückgehalten (`privacy_shield`), außer an einem Turn mit Input-Karte: Die Karten-Ausnahme (`releasesWithoutVerification`) greift vorher und gibt ihn samt gerenderter Antwort ungeprüft frei; `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
 | `VERIFIER_MODEL` / `verifier_model` | Modell für Claim-Extraktion und Evidence-Judge. |
 | `VERIFIER_MAX_CLAIMS` / `verifier_max_claims` | Höchstzahl geprüfter Claims pro Antwort, Default `20`. |
 | `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Relative Betragstoleranz, Default `0.01`. |
@@ -3572,6 +3595,74 @@ Auslieferungszustand ohne jedes gesetzte Feld: `standard`, aktiv,
 Die aufgelöste Haltung ist ablesbar: `GET /health` → `disclosure`, plus
 Boot-Warnung und Dashboard-Hinweis **nur** bei Abweichung vom Auslieferungszustand.
 
+### 10.x Antwortumfang (`answer_verbosity`)
+
+Plugin-Setup-Feld des Orchestrators, gelesen in `plugin.ts` über
+`parseAnswerVerbosity` (`packages/harness-orchestrator/src/answerVerbosity.ts`)
+und über `OrchestratorDeps.answerVerbosity` an **jeden** per
+`buildOrchestratorForAgent` gebauten Agenten gereicht (Haupt-Agent und
+Registry-Agenten teilen den Installationswert).
+
+| Wert | Vertrag im System-Prompt |
+|---|---|
+| `tldr` | 1–3 Sätze, nur das Ergebnis; Tabellen nur auf Wunsch, per `v4_top_n` auf ≤ 5 Zeilen |
+| `brief` | Ergebnis zuerst, ≤ 5 Stichpunkte; Rankings per `v4_top_n` auf ≤ 10 Zeilen |
+| `standard` | Auslieferungszustand — **kein** Block, System-Prompt byte-identisch |
+| `detailed` | Ergebnis mit Begründung (Fach-Agent, Zeitraum, Filter, Annahmen) |
+| `max` | alles: Zwischenschritte, Rohwerte, Unsicherheiten, offene Punkte |
+
+Drei Eigenschaften sind load-bearing:
+
+- **Prompt-Vertrag, kein Token-Limit.** `orchestrator_max_tokens` ist nach unten
+  auf den Default begrenzt und würde ohnehin mitten im Satz abschneiden. Der
+  Block sagt, was die Antwort enthält — und dass Fach-Agenten-Ergebnisse
+  Rohmaterial sind, das verdichtet und nicht nacherzählt wird.
+- **Die kurzen Stufen kürzen den Datensatz, nicht nur die Prosa.** Tabellen
+  rendert der Privacy-Guard serverseitig (`MAX_CHAT_ROWS = 50`); eine reine
+  Prosa-Regel ließe eine 50-Zeilen-Tabelle unter einem Ein-Satz-Text stehen.
+- **Die Bitte des Users gewinnt pro Turn.** »kurz«, »nur die Zahl«, »alle
+  Details« in der Nachricht übersteuern den Betreiber-Default für diesen Turn.
+
+Unbekannte Werte parsen zu `undefined` → `standard`; ein Tippfehler in einer
+Config wählt nie still eine Stufe. Die Persona-Achse `conciseness` bleibt
+getrennt: sie steuert den Ton relativ zur Modell-Baseline, nicht den Umfang.
+
+**Pro Agent (Phase 2, Migration `0063_agent_identity_verbosity.sql`):**
+`agent_identities.verbosity` (gleiche fünf Werte, CHECK-Constraint, `NULL` =
+installationsweite Einstellung übernehmen). Gepflegt im Identity-Tab der
+Agenten-Seite (Profil → „Antwortumfang“), Route `PUT /:slug/identity` mit
+zod-Enum, Store `agentIdentityStore.ts`. Der Registry-Join
+(`AGENT_SELECT` → `identity_verbosity` → `AgentRow.answerVerbosity`) reicht ihn
+als `AgentRuntimeConfig.answerVerbosity` an `buildOrchestratorForAgent`, wo er
+`deps.answerVerbosity` **ersetzt** (Slot, kein Layer) — es landet immer genau
+ein Block im Prompt. Ein Agent auf `standard` schaltet den Installationswert
+für sich ab. Eine Änderung ist ein Rebuild-Grund (`identity_verbosity` in
+`applyDiff.ts`) und löst in der Route `registry.reload()` aus, sonst wäre sie
+gespeichert und nie gesprochen. Die Route ist — wie bei allen Identity-Feldern —
+ein Voll-Ersatz: ein Client, der den Key weglässt, schreibt „übernehmen“
+(`NULL`).
+
+**Pro Turn (Phase 3):** `ChatTurnInput.answerVerbosity` (channel-sdk,
+`AnswerVerbosityLevel`) ersetzt die konfigurierte Stufe für genau einen Turn.
+Mechanik wie Fresh Check: der Block (`buildAnswerVerbosityTurnBlock`) landet im
+**ungecachten** Pro-Turn-Hint (`composeExtraSystemHint`), sagt explizit, dass er
+den Abschnitt »Antwortumfang« des stabilen Prompts ersetzt, und ist auch für
+`standard` nie leer. Der stabile Prompt und sein Cache-Key bleiben unberührt.
+Der Kernel parst den Wire-Wert (`parseAnswerVerbosity`); Unbekanntes ist ein
+No-op. Jede Antwort trägt `ChatTurnResult.answerVerbosity: { effective,
+source: 'turn' | 'configured' }` (→ `SemanticAnswer`), damit ein Kanal die
+Nachbarstufen anbieten kann — Teams rendert daraus „🔽 Kürzer“ / „🔼 Mehr
+Details“ (`omadia-channel-teams` ≥ 0.29.0, Payload `verbosity_step`). Der
+Stream-`done`-Event trägt dasselbe Feld (Funnel `discloseDoneEvent`, auch auf
+dem `withheldDone`-Pfad des Verifiers); `POST /api/chat[/stream]` nimmt
+`answerVerbosity` im Body, und der Web-Debug-Chat zeigt unter der **letzten**
+Antwort „🔽 Kürzer“ / „🔼 Mehr Details“ (`VerbosityStepButtons`, stellt die
+zugehörige getippte User-Frage mit der Nachbarstufe neu — nicht unter
+Verifier-Hinweis, Degraded-Karte, offener Choice-/MCP-Form oder der Antwort
+auf einen Card-Klick, siehe `resizableQuestionFor`). Das Feld lebt nur auf
+der gestreamten Nachricht, nicht im Session-Mirror: nach Reload sind die
+Buttons bis zur nächsten Antwort weg.
+
 ---
 
 ## 11. Stream-Protokoll (`POST /api/chat/stream`)
@@ -3631,7 +3722,22 @@ laufen weiter); `enforce` hält ohnehin alles Inhaltliche bis zum Urteil
   womöglich Claims ausgelassen) und Claims, die nicht in der Antwort stehen
   (`claims_not_in_answer`), meldet er in `ClaimExtraction.gaps`, und die
   Pipeline hält jede Lücke als `not_checked`-Eintrag (Claim-Typ
-  `coverage_gap`) im Verdict. Der Verbatim-Guard vergleicht ohne Rücksicht
+  `coverage_gap`) im Verdict. Extraktion, Verbatim-Guard und Trigger-Router
+  lesen die Antwort **ohne `[ref:…]`-Marker** (`stripCitationMarkers` in
+  `harness-verifier/src/citationMarkers.ts`, dieselbe Regex wie der
+  Channel-Stripper): ein Marker mitten im Satz ließ ein treues Zitat am
+  Guard scheitern (2026-10-08 gemessen: 8 statt 3 `not_in_answer`), und
+  seine ID-Ziffern sind keine Angabe. Nur der Zitations-Check liest die
+  Marker, auf der Rohantwort. Weil die Marker der einzige Ort waren, an dem
+  die Extraktion Record-Handles (`odoo:res.partner:42`) sah, ergänzt
+  `withCitedRecords` sie danach deterministisch: Ein Marker zitiert den Text
+  vor ihm und zählt für die Claims seines Satzes, die vor ihm beginnen
+  (Whitespace zwischen Text und Marker zählt nicht mit, ein Marker nach dem
+  Punkt schließt den Satz davor, Listenzeilen sind Sätze); nur
+  `odoo:`/`confluence:`-Record-Handles, nur für Claims ohne eigenes
+  Record-Handle; Logfeld `cited_records=N`. Sie sagen dem Fetcher nur, wo er
+  nachschlägt (`fetchPinned`), und sind nie selbst Evidenz. Der Verbatim-Guard
+  vergleicht ohne Rücksicht
   auf Groß-/Kleinschreibung und lässt jede Whitespace-Folge auf jede andere
   passen (ein Zeilenumbruch, den das Modell als Leerzeichen schreibt, zählt
   als Zitat; der Claim trägt dann den Wortlaut der Antwort). Was dann noch
@@ -3648,12 +3754,46 @@ laufen weiter); `enforce` hält ohnehin alles Inhaltliche bis zum Urteil
   Fand die Extraktion im erfassten Teil nichts Prüfbares, ist das Verdict
   `skipped` mit `incomplete_coverage`. Der
   `ClaimExtractor` wirft, wenn der LLM-Call scheitert, die Antwort am
-  Token-Limit abgeschnitten ist (`finishReason: 'max_tokens'`), sie keinen
-  verwertbaren `record_claims`-Call trägt (keinen, oder einen ohne
-  `claims`-Array) oder ein Eintrag das Schema verletzt, statt eine leere oder
-  halbe Claim-Liste zu liefern: das landet in
+  Token-Limit abgeschnitten (`finishReason: 'max_tokens'`) oder verweigert
+  (`refusal`) ist, sie keinen verwertbaren `record_claims`-Call trägt (keinen,
+  oder einen ohne `claims`-Array) oder ein Eintrag das Schema verletzt, statt
+  eine leere oder halbe Claim-Liste zu liefern: das landet in
   `unavailable` (`extractor_error`), nie in `skipped` (`no_claims`) oder
-  `approved`.
+  `approved`. **`record_claims` ist ein Strict-Tool** (`strict: true`,
+  `ToolSpec.strict`, vom Anthropic-Adapter nur für Modelle der Allowlist
+  `supportsStrictTools` gesendet — Haiku 4.5, Opus 4.1/4.5/4.8, 5er-Serie;
+  sonst weggelassen, weil ein unbekanntes Feld ein 400 wäre; andere Adapter
+  ignorieren es): die API dekodiert schema-gebunden, `claims` kommt immer als
+  Array (live 2026-10-08 kam es ohne Strict als ungültiger JSON-String). Das
+  Schema ist dafür strict-tauglich (`additionalProperties: false` überall,
+  `value` als `anyOf`); die clientseitigen Prüfungen bleiben. Das
+  Ausgabe-Budget leitet sich aus `maxClaims` ab (`extractionTokenBudget`,
+  256 + 110 × (maxClaims + 1), zwischen 1024 und 16000, Default 2566).
+  **Vorher genau ein Reparaturversuch** (seit 2026-10-08,
+  `extractionRepair.ts`): Ist die Antwort abgeschnitten, ohne Call, ohne
+  `claims`-Array oder schemawidrig, folgt ein zweiter Call mit demselben
+  Modell, Token-Budget, Tool und Wire-View plus einer festen Notiz, was
+  falsch war. Abgeschnitten: kompakte Einträge (kürzeste Spanne, ohne
+  `unit`), aber `value`, `odoo_record`, `related_entities` und `aggregation`
+  bleiben — ohne `related_entities` summiert der Aggregat-Check über alle
+  Mitarbeiter und meldet einen falschen Widerspruch. Der zweite Call wird wie
+  der erste über `privacy.admitWireView()` zugelassen und im Receipt gezählt
+  (`verifierEgress.requests`) und läuft über denselben Usage-getrackten
+  Provider (`token_usage`). Kein Retry bei API-Fehler oder einer vom Adapter
+  gemeldeten Refusal (`LlmResponse.refusal`, heute der Anthropic-Adapter;
+  der OpenAI-Adapter liefert eine Refusal als Text, die dann als
+  `no_tool_call` die eine Reparatur bekommt), kein dritter Call, keine
+  fachlichen Tools (nur `record_claims`), kein neuer Agentenlauf. Eine
+  Reparatur, die nichts oder weniger Einträge listet als die erste Antwort
+  noch zeigte, gilt als gescheitert (die erste Antwort war nicht leer). Ein
+  als JSON-String geschriebenes, nicht leeres `claims`-Array wird ohne
+  zweiten Call dekodiert (`readToolClaims`), jeder Eintrag danach voll
+  geprüft; `"[]"` als String ist keine Liste. Jede unbrauchbare Antwort loggt
+  `[claim-extractor] diag attempt=N problem=…` mit Provider, Modell,
+  Finish-Reason, Refusal, Anzahl Tool-Calls, Input-Typ, Feldnamen (nur
+  Schema- und gängige Wrapper-Namen, sonst `<other:N>`), `claims`-Typ und
+  Tokens — nie Prompt, Antwort oder Argumentwerte
+  (`describeExtractionResponse`).
 - `badge`: braucht einen Check, der einen Claim entschieden hat
   (`hasVerificationEvidence`): `verified` nur, wenn jeder Claim bestätigt ist;
   `partial` bei mindestens einem bestätigten und einem offenen Claim;
@@ -3937,8 +4077,8 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   `surface_*`, `done`, jeder künftige Typ — wird gehalten. Der Observer der
   Route wird jetzt in jedem Modus durchgereicht (vorher verworfen), Token- und
   Usage-Zähler laufen also live weiter.
-- **Freigabe** nur bei `approved` oder `skipped` mit `no_trigger` /
-  `no_claims`: die gehaltenen Events in Originalreihenfolge, aber ohne die
+- **Freigabe** bei `approved`, `skipped` und — seit 2026-10-08 —
+  `approved_with_disclaimer`: die gehaltenen Events in Originalreihenfolge, aber ohne die
   gestreamten `text_delta`s — der Text geht als **ein** `text_delta` mit
   `done.answer` (ohne gefalteten KI-Kennzeichnungsblock) direkt vor `done`
   raus, `done` mit `verifier` (dasselbe Summary wie das folgende
@@ -3947,9 +4087,46 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   ggf. danach (#332-L3-Eskalation, File-Retry: `textParts.length = 0`) — die
   verworfene Antwort steht in den Deltas, nicht in `done.answer`, und das
   Urteil gilt nur `done.answer`.
-- **Zurückgehalten** (fail-closed) bei jedem anderen Urteil — `blocked`,
-  `approved_with_disclaimer`, `skipped` mit `no_checkable_claims` /
-  `incomplete_coverage`, `unavailable`: genau ein `text_delta` mit der
+- **Freigabe mit Hinweis** (`verdictNeedsDisclaimer`) bei
+  `approved_with_disclaimer` über mindestens einem unbestätigten Claim und
+  bei `skipped` mit `no_checkable_claims` / `incomplete_coverage`: Claims,
+  die die Prüfung nicht bestätigen, nicht prüfen oder nicht abdecken konnte,
+  ein gescheiterter Check neben einem echten Urteil, und ein Widerspruch, den
+  der Evidence-Judge meldete, aber nicht bestätigen konnte
+  (`cause: 'contradiction_unconfirmed'`: auf Privacy-Shield-Platzhaltern
+  geurteilt, im Recheck nicht reproduziert, ohne Evidenz-ID, mit einer
+  Evidenz-ID, die der Request nie druckte, oder mit einem anderen Datensatz
+  als dem, den der Claim pinnt) — unbestätigt ist nicht falsch. Vorher wurden sie
+  zurückgehalten, live (2026-10-08) traf das die meisten echten Antworten
+  (Claims, die kein Checker nimmt, und `[ref:…]`-bedingte
+  `not_in_answer`-Lücken). `done.answer` bekommt einen lokalisierten Absatz
+  (`composeVerifierDisclaimerText`, Locale wie die Notiz), der nur sagt, was
+  die Zählung trägt — „bestätigen“, nicht „prüfen“, denn ein geprüfter, aber
+  unbelegter Claim wurde geprüft: „Ein Teil der Angaben in dieser Antwort
+  ließ sich nicht automatisch bestätigen“ nur, wenn alle Zählungen gültig
+  sind und einen bestätigten neben einem unbestätigten Claim zeigen, sonst
+  „Die Angaben in dieser Antwort ließen sich nicht automatisch bestätigen“;
+  jeweils „Prüfe wichtige Angaben bei Bedarf im Quellsystem.“ Ein
+  gefalteter KI-Kennzeichnungsblock bleibt der letzte Absatz
+  (`withVerifierDisclaimer`); eine Antwort, die mit einer `NO_REPLY`-Zeile
+  endet, bekommt den Hinweis davor, damit Teams/Telegram weiter schweigen.
+  Das eine `text_delta` trägt Antwort und Hinweis. `chat()` hängt denselben
+  Hinweis an `result.answer`, die Kennzeichnung faltet `toSemanticAnswer`
+  danach. Ein `approved_with_disclaimer`, dessen Claims alle `verified` sind
+  (schwächerer Status eines injizierten Pipelines), geht ohne Hinweis raus.
+  Log, inhaltsfrei wie beim Zurückhalten (IDs/Codes außerhalb
+  `[\w.:-]{1,64}` als `invalid`): `[verifier/service] answer released with
+  disclaimer run=… status=… [reason=…] cause=…
+  claims=<id>:<basis>|<id>:unverified/<cause>,…`. Kein Retry, kein
+  `onVerifierBlocked` (der nicht-streamende Pfad kann bei Borderline
+  trotzdem seine Stichprobe ziehen).
+- **Zurückgehalten** (fail-closed) bei `blocked` (Widerspruch, fehlende oder
+  erfundene Quelle, nicht gemachter Aufruf), `unavailable` (technische
+  Störung, Privacy Shield) und bei einem `approved_with_disclaimer`, dessen
+  sämtliche gelaufenen Checks technisch scheiterten — kein Claim bekam ein
+  echtes Urteil (`withheldCause` `check_failed`, dieselbe Störungsnotiz wie
+  bei einem Verifier- oder Extraktionsfehler; ein Judge-Recheck, der selbst scheitert, zählt als
+  `check_failed`): genau ein `text_delta` mit der
   lokalisierten Notiz (`composeVerifierBlockedText`, Locale: Turn-Disclosure →
   `ai_disclosure_locale` → `de`), dann `done` mit dieser Notiz als `answer`,
   `answerSource: 'verifier-blocked'`, `answerIsError: true`, `verifier` und nur
@@ -3959,6 +4136,25 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   Hatte der Turn die KI-Kennzeichnung in `done.answer` gefaltet (erster Turn
   des Scopes), trägt die Notiz in `done.answer` denselben Block — nie im
   Delta.
+  **Die Notiz nennt die tatsächliche Ursache** (`summary.withheldCause`,
+  abgeleitet aus den Claims in `withheldCauseOf`, nie aus dem Status):
+  `contradicted` (eine Prüfung hat eine Angabe gegen die Quelle widerlegt —
+  der einzige Fall, der „Widerspruch“ heißen darf), `tool_not_called`
+  (Live-Daten, Fehler oder Zugriffsproblem behauptet, ohne dass der Turn den
+  nötigen Aufruf gemacht hat), `citation_missing` (Graph-Ergebnisse genutzt,
+  keine Quelle genannt), `insufficient_evidence` (nicht belegt: unbestätigte
+  Claims, erfundene `[ref:…]`, ein Zugriffsproblem ohne fehlgeschlagenen
+  Aufruf), `check_failed` (technische Störung: Verifier, Prüfung oder
+  ungültiges Tool-Ergebnis), `not_checked` (Privacy Shield, nie an den
+  Verifier). Ein `contradicted`-Verdict trägt dafür `basis`
+  (`ContradictionBasis`); `contradictionCount` und Badge `failed` zählen nur
+  `basis: 'evidence'`, alle anderen Rückhalte zählen als `unverifiedCount`.
+  Ob zurückgehalten wird, entscheidet `verdictReleasesAnswer` (oben); die
+  Ursache bestimmt nur den Wortlaut der Notiz. Der Korrektur-Retry läuft nur
+  bei `blocked`. Supportdiagnose: Logzeile `answer withheld … cause=…
+  claims=<id>:<basis>` (`withheldLogLine`, nur Claim-IDs und Codes, nie
+  Claim-Text); der Retry loggt `retry run=… contradictions=N
+  claims=<id>:<basis>,…` (`retryLogLine`).
 - **Ohne Urteil freigegeben:** `pendingUserChoice`, `pendingMcpInput`,
   `pendingSlotCard`, `pendingOAuthConsent`, `degraded` mit der
   Turn-Incomplete-Notiz, die Datenschutz-Absage (`PROMPT_MASK_BLOCKED_ANSWER`)
@@ -5447,12 +5643,13 @@ Objektformen und dass solcher Text Text bleibt.
   Logzeilen `[claim-extractor] … not_in_answer=` beobachten; ist Markdown die
   Hauptursache, Emphasis-Zeichen (`*`, `_`, Backtick) zwischen den Wörtern
   gezielt überspringen, statt den Guard allgemein zu lockern.
-- **Token-Budget der Extraktion an das Claim-Limit koppeln.** Der
-  `record_claims`-Call hat `maxTokens: 1024`. Eine Liste nahe am Limit
-  (`VERIFIER_MAX_CLAIMS + 1` Einträge) kann daran abreißen und endet dann als
-  `unavailable` (`extractor_error`) statt als `partial` — ehrlich, aber
-  ungenauer als nötig. Budget aus `maxClaims` ableiten oder kompaktere
-  Einträge anfordern.
+- ~~**Token-Budget der Extraktion an das Claim-Limit koppeln.**~~ Erledigt
+  2026-10-08: `extractionTokenBudget(maxClaims)` = max(1024, 256 + 110 ×
+  (maxClaims + 1)), Default 2566 bei `VERIFIER_MAX_CLAIMS` 20. Anlass: live
+  riss ein Extraktions-Call bei ~10 Claims an den festen 1024 Tokens;
+  gemessen (Haiku 4.5, strict, synthetisch) braucht eine Antwort mit ~20
+  Claims 1063–1403 Ausgabe-Tokens. Kostet nur, wenn die Liste es braucht;
+  dann einige Sekunden mehr Prüfzeit.
 - **Claim-Wert nicht an den Claim-Text gebunden (älteres Limit).** Der
   `DeterministicChecker` vergleicht bei Beträgen und Summen den vom Modell
   gelieferten `claim.value` mit dem Odoo-Feld (`checkOdooAmount` ab
@@ -5529,17 +5726,18 @@ Objektformen und dass solcher Text Text bleibt.
   vor dem Verifier auf das strikte `NO_REPLY` normalisieren (Prosa verwerfen)
   — Produktentscheidung.
 - **`onVerifierBlocked` nur bei Widerspruch.** Der Plan-Hook feuert für
-  `blocked`; eine fail-closed zurückgehaltene Antwort (`partial`,
-  `unavailable`) erscheint im Plan nicht als abgelehnt.
-- **Fail-closed hält lange Antworten immer zurück.** Eine Antwort über 6000
-  Zeichen ist nie `approved` (Abdeckungslücke) und wird in `enforce` stets
-  zurückgehalten, ebenso jede mit einem Claim, den kein Checker nimmt. Die
-  fensterweise Extraktion (Punkt oben) ist damit Voraussetzung für `enforce`
-  bei ERP-Listen.
+  `blocked`; eine wegen `unavailable` zurückgehaltene Antwort erscheint im
+  Plan nicht als abgelehnt.
+- **Lange Antworten gehen nur mit Hinweis raus.** Eine Antwort über 6000
+  Zeichen ist nie `approved` (Abdeckungslücke) und geht in `enforce` seit
+  2026-10-08 mit dem Hinweis „ließ sich nicht automatisch bestätigen“ raus
+  (vorher: zurückgehalten), ebenso jede mit einem Claim, den kein Checker
+  nimmt. Die fensterweise Extraktion (Punkt oben) bleibt Voraussetzung für
+  ein `approved` bei ERP-Listen.
 - **Borderline-Resample in `enforce chat()`.** Ein Borderline-Verdict ist
-  `approved_with_disclaimer` und wird zurückgehalten; der bezahlte Resample
-  ändert daran nur etwas, wenn er auf `blocked` eskaliert und der Retry dann
-  korrigiert. Kosten gegen Nutzen neu abwägen. Seit dem Replay-Ledger führt er
+  `approved_with_disclaimer` und geht mit Hinweis raus; der bezahlte Resample
+  ändert daran nur etwas, wenn er auf `blocked` eskaliert (dann Retry oder
+  Notiz). Kosten gegen Nutzen neu abwägen. Seit dem Replay-Ledger führt er
   kein Tool mehr erneut aus, und `verifier_resample_on_borderline=false`
   schaltet ihn ab.
 - **Abo-CLI-Runtime und Routinen ohne Verifier.** `VERIFIER_MODE` wirkt weder

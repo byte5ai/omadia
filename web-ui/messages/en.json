@@ -1556,6 +1556,9 @@
     "attachmentCachedSuffix": " · cached",
     "clarifyKicker": "🤔 Clarification",
     "followUpsLabel": "Next variants",
+    "verbosityLabel": "Answer size",
+    "verbosityShorter": "🔽 Shorter",
+    "verbosityLonger": "🔼 More detail",
     "streamLive": "Stream live · {seconds}s",
     "cacheBadge": "· 🟢 cache ({tokens}t)",
     "iterationActivity": "· Iter {iteration} · last activity {gap}",
@@ -1677,7 +1680,15 @@
     },
     "verifierBlocked": {
       "heading": "Answer withheld by the fact-check",
-      "body": "The fact-check could not confirm this answer, so it is not shown. Ask the question again, or check the details directly in the source system."
+      "body": "The fact-check could not confirm this answer, so it is not shown. Ask the question again, or check the details directly in the source system.",
+      "cause": {
+        "contradicted": "The fact-check found {count, plural, one {a contradiction} other {# contradictions}} with the source data, so the answer is not shown. Ask again, or check the details directly in the source system.",
+        "toolNotCalled": "The answer stated data or an access problem without the data having been retrieved in this run, so it is not shown. Please ask again.",
+        "citationMissing": "The answer relied on stored knowledge without naming the sources, so it could not be checked and is not shown. Please ask again.",
+        "insufficientEvidence": "Not all of the answer's statements could be backed by the retrieved data, so it is not shown. Ask again, or check the details directly in the source system.",
+        "checkFailed": "The fact-check could not be completed because of a technical fault, so the answer is not shown. Please try again; if it keeps happening, contact support.",
+        "notChecked": "The answer could not be passed to the fact-check, so it is not shown. Ask again, or check the details directly in the source system."
+      }
     },
     "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
     "errorCorrelationRef": "Reference for support: {id}",
@@ -1700,7 +1711,7 @@
       },
       "hint": {
         "verified": "The verifier checked {count, plural, one {# claim} other {# claims}} in this answer against the sources and confirmed all of them.",
-        "partial": "No claim contradicts the sources, but {count, plural, one {# claim} other {# claims}} could not be confirmed.",
+        "partial": "No contradiction with the sources was established, but {count, plural, one {# claim} other {# claims}} could not be confirmed.",
         "partialUnchecked": "The verifier confirmed the other claims, but {count, plural, one {# claim} other {# claims}} in this answer could not be checked.",
         "partialCoverage": "The verifier confirmed {count, plural, one {# claim} other {# claims}}, but did not check all of this answer.",
         "corrected": "The first answer contradicted the sources; the verifier confirmed {count, plural, one {the # claim} other {all # claims}} in this corrected answer.",
@@ -2366,7 +2377,17 @@
         "shortDescriptionHint": "At most 80 characters — the limit the Teams manifest itself sets.",
         "longDescription": "Full description",
         "instructions": "Behaviour",
-        "instructionsHint": "How this agent should present itself and answer. For this agent it replaces the platform-wide default text — leave it empty to keep the default."
+        "instructionsHint": "How this agent should present itself and answer. For this agent it replaces the platform-wide default text — leave it empty to keep the default.",
+        "verbosity": "Answer size",
+        "verbosityHint": "How much an answer contains — from the result alone to every intermediate step. Overrides the installation-wide setting of the Chat Orchestrator for this agent. A user asking for \"short\" or \"all details\" still wins for that turn.",
+        "verbosityInherit": "Inherit the installation default",
+        "verbosityLevels": {
+          "tldr": "TL;DR — 1 to 3 sentences, the result only",
+          "brief": "Brief — result plus at most 5 bullet points",
+          "standard": "Standard — as delivered",
+          "detailed": "Detailed — with reasoning, sources and assumptions",
+          "max": "Maximum — every step, raw value and uncertainty"
+        }
       },
       "republish": {
         "queued": "Republishing the Teams package.",

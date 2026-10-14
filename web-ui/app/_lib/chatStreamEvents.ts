@@ -1,5 +1,6 @@
 'use client';
 
+import type { AnswerVerbosityInfo } from './agentIdentity';
 import type {
   AgentConsultation,
   ChatSession,
@@ -149,6 +150,8 @@ export type ChatStreamEvent =
       maskedValues?: readonly string[];
       /** #332 Layer 1 (gap-closure) — see `Message.agentsConsulted`. */
       agentsConsulted?: AgentConsultation[];
+      /** Phase 3 — see `Message.answerVerbosity`. */
+      answerVerbosity?: AnswerVerbosityInfo;
       /** #332 Layer 2 (gap-closure) — see `Message.delegatedAnswer`. */
       delegatedAnswer?: DelegatedAnswer;
       /** #445 — see `Message.directLineSession`. */
@@ -450,6 +453,7 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         ...(event.agentsConsulted && event.agentsConsulted.length > 0
           ? { agentsConsulted: event.agentsConsulted }
           : {}),
+        ...(event.answerVerbosity ? { answerVerbosity: event.answerVerbosity } : {}),
         ...(event.delegatedAnswer
           ? { delegatedAnswer: event.delegatedAnswer }
           : {}),

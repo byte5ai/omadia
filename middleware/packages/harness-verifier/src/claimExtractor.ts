@@ -1,6 +1,13 @@
 import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
-import { textMessage, toolCalls } from '@omadia/llm-provider';
-import { claimContext } from './claimContext.js';
+import { textMessage } from '@omadia/llm-provider';
+import { claimContext, claimLocation } from './claimContext.js';
+import { isRecordHandle, isSystemRecordHandle, parseEntityHandle } from './entityHandle.js';
+import {
+  describeExtractionResponse,
+  readToolClaims,
+  type ExtractionProblemCode,
+} from './extractionResponse.js';
+import { isRepairable, repairNote, repairShortfall } from './extractionRepair.js';
 import type {
   Aggregation,
   Claim,
@@ -12,17 +19,21 @@ import type {
   VerifierPrivacy,
 } from './claimTypes.js';
 import { restoreClaims } from './claimRestore.js';
+import { citationAnchors, stripCitationMarkers } from './citationMarkers.js';
 import { verbatimSpans } from './verbatimSpan.js';
 
 /**
  * Extracts structured factual claims from an orchestrator answer via a
- * Haiku tool-use call. The tool schema is enforced via `tool_choice`, so
- * the model is forced into a JSON-shaped response and cannot ramble.
+ * Haiku tool-use call. `tool_choice` forces the call; the schema itself is
+ * enforced by strict tool use (`strict: true`, constrained decoding) where
+ * the model supports it — a forced call alone did not stop Haiku 4.5 from
+ * writing the list as an invalid JSON string (2026-10-08).
  *
  * Design choices:
- *  - One LLM call per answer. The extractor is NOT recursive. The claims of
- *    every `record_claims` call in the response are read, in order: a model
- *    that splits its list over several calls gets every part checked.
+ *  - One LLM call per answer, plus at most one repair call when that
+ *    response is unusable (below). The extractor is NOT recursive. The claims
+ *    of every `record_claims` call in the response are read, in order: a
+ *    model that splits its list over several calls gets every part checked.
  *  - The model MUST only return claims whose text appears verbatim in the
  *    answer; we police this client-side (`verbatimSpans`): a claim must quote
  *    the answer, case and whitespace set aside, and carries the quoted span
@@ -37,13 +48,24 @@ import { verbatimSpans } from './verbatimSpan.js';
  *    (`MAX_CLAIM_CHARS`) is the `claims_too_long` gap, not a cut-down claim.
  *  - A failed extraction is not an empty one. When the turn's privacy view
  *    does not admit the request, the LLM call fails, the
- *    response was cut off at the token limit, it carries no usable
+ *    response was cut off at the token limit or refused, it carries no usable
  *    `record_claims` call (none, or one of them without a `claims` array), or
  *    an entry breaks the `record_claims` schema, `extract` logs and rejects,
  *    and the pipeline reports the verifier as `unavailable`. An empty list
  *    without gaps means the model found no claim, which the pipeline reports
  *    as `skipped`. Returning [] — or the readable part of a broken response
  *    — on a failure would make an outage look like a clean, complete run.
+ *  - One repair, never more. An unusable response (cut off, no call, no
+ *    claims array, a broken entry) gets exactly one more extraction call:
+ *    the same model, token budget and wire view, plus a fixed note naming
+ *    what was wrong. It is a request of its own, so it is admitted — and
+ *    counted in the receipt — like the first. A failed API call or a refusal
+ *    the adapter reports (`LlmResponse.refusal`) is not retried. A repair
+ *    that lists nothing, or fewer entries than the first response still
+ *    showed, is rejected like a failed one: the first response was not empty.
+ *    A non-empty list the model wrote as a JSON-encoded string is decoded
+ *    without a second call (`readToolClaims`). Every failure logs a
+ *    content-free description of the response (`describeExtractionResponse`).
  *  - Coverage is explicit. The model sees the first
  *    `EXTRACTION_WINDOW_CHARS` characters of the answer and is asked for at
  *    most `maxClaims + 1` claims. The result names what the extraction did
@@ -80,7 +102,8 @@ export interface ClaimExtractorOptions {
    *  answer with exactly `maxClaims` claims still gets its whole list. A
    *  model that returns more is not cut off here. Default 20. */
   maxClaims?: number;
-  /** Token budget for the extraction call. */
+  /** Token budget for the extraction call (and its one repair). Default:
+   *  derived from `maxClaims` ({@link extractionTokenBudget}). */
   maxTokens?: number;
   log?: (msg: string) => void;
 }
@@ -101,8 +124,34 @@ export interface ExtractInput {
 const DEFAULTS = {
   model: 'claude-haiku-4-5-20251001',
   maxClaims: 20,
-  maxTokens: 1024,
 };
+
+/** Output tokens one `record_claims` entry takes. Measured 2026-10-08 on
+ *  Haiku 4.5: 9 claims took 818–998 tokens, and a production call with about
+ *  ten hit a 1024-token cap. */
+const TOKENS_PER_CLAIM = 110;
+/** Room for the call around the list. */
+const TOKENS_ENVELOPE = 256;
+/** Never below the budget the extractor had before it was derived. */
+const MIN_EXTRACTION_TOKENS = 1024;
+/** Never above what a non-streaming call can ask for: the Anthropic SDK
+ *  refuses one whose expected duration needs streaming (from ~21k tokens),
+ *  and 16k-output models stop at 16384. Reached from a claim cap of ~143. */
+const MAX_EXTRACTION_TOKENS = 16000;
+
+/**
+ * The extraction call's output-token budget: room for the whole list the
+ * prompt asks for (`maxClaims + 1` entries), between the old fixed 1024 and
+ * a non-streaming ceiling. A fixed 1024 cut real answers off at about ten
+ * claims; billing is per token produced, so the larger cap costs only when a
+ * list needs it (and then a few seconds more).
+ */
+export function extractionTokenBudget(maxClaims: number): number {
+  return Math.min(
+    MAX_EXTRACTION_TOKENS,
+    Math.max(MIN_EXTRACTION_TOKENS, TOKENS_ENVELOPE + TOKENS_PER_CLAIM * (maxClaims + 1)),
+  );
+}
 
 const TOOL_NAME = 'record_claims';
 
@@ -124,17 +173,30 @@ const CLAIM_SOURCES: readonly ClaimSource[] = [
 
 const AGGREGATIONS: readonly Aggregation[] = ['sum', 'count', 'avg', 'max', 'min'];
 
+/**
+ * The `record_claims` tool, strict (`strict: true`): the provider constrains
+ * decoding to the schema, so a call's `claims` is always a JSON array of
+ * schema-valid entries — never the list written as a string (in production on
+ * 2026-10-08 Haiku 4.5 sent `claims` as a 1391-character string that was not
+ * even valid JSON). Strict mode needs a strict-clean schema:
+ * `additionalProperties: false` on every object and `anyOf` instead of a type
+ * array. The client-side checks below stay: a provider that cannot honor
+ * strictness ignores the flag.
+ */
 const toolSpec: ToolSpec = {
   name: TOOL_NAME,
   description:
     'Record every factual claim made in the assistant answer. One entry per claim. Only include claims whose text appears VERBATIM in the answer. Do not invent, summarise, or paraphrase. If the answer contains no factual claims, return an empty array.',
+  strict: true,
   inputSchema: {
     type: 'object' as const,
+    additionalProperties: false,
     properties: {
       claims: {
         type: 'array',
         items: {
           type: 'object',
+          additionalProperties: false,
           properties: {
             text: {
               type: 'string',
@@ -154,7 +216,7 @@ const toolSpec: ToolSpec = {
                 'Where the ground truth lives. "odoo" for ERP facts, "graph" for knowledge-graph facts, "confluence" for wiki content, "unknown" otherwise.',
             },
             value: {
-              type: ['number', 'string'],
+              anyOf: [{ type: 'number' }, { type: 'string' }],
               description:
                 'Parsed value when possible: number for amounts/aggregates, ISO-8601 string for dates, reference string for ids/names.',
             },
@@ -164,6 +226,7 @@ const toolSpec: ToolSpec = {
             },
             odoo_record: {
               type: 'object',
+              additionalProperties: false,
               properties: {
                 model: { type: 'string' },
                 id: { type: 'integer' },
@@ -213,16 +276,17 @@ export class ClaimExtractor {
   };
 
   constructor(opts: ClaimExtractorOptions) {
+    // Normalised like the pipeline's cap, so the prompt never asks for a
+    // negative or fractional number of claims.
+    const maxClaims =
+      typeof opts.maxClaims === 'number' && Number.isFinite(opts.maxClaims)
+        ? Math.max(0, Math.floor(opts.maxClaims))
+        : DEFAULTS.maxClaims;
     this.opts = {
       llm: opts.llm,
       model: opts.model ?? DEFAULTS.model,
-      // Normalised like the pipeline's cap, so the prompt never asks for a
-      // negative or fractional number of claims.
-      maxClaims:
-        typeof opts.maxClaims === 'number' && Number.isFinite(opts.maxClaims)
-          ? Math.max(0, Math.floor(opts.maxClaims))
-          : DEFAULTS.maxClaims,
-      maxTokens: opts.maxTokens ?? DEFAULTS.maxTokens,
+      maxClaims,
+      maxTokens: opts.maxTokens ?? extractionTokenBudget(maxClaims),
       log:
         opts.log ??
         ((msg: string): void => {
@@ -237,9 +301,11 @@ export class ClaimExtractor {
    * is nothing to extract: an empty answer, or a model that reports no claim
    * (with the gaps that still apply). Rejects when extraction could not run
    * or did not finish: the turn's privacy view did not admit the request,
-   * the LLM call failed, the response was cut off at the token limit, it
-   * carries no `record_claims` call or one of them has no `claims` array, or
-   * an entry breaks the `record_claims` schema. A well-formed claim whose
+   * the LLM call failed or was refused, or the response — and then its one
+   * repair — was cut off at the token limit, carried no `record_claims` call
+   * or one without a `claims` array, or had an entry that breaks the
+   * `record_claims` schema; also when the repair listed nothing or fewer
+   * entries than the first response. A well-formed claim whose
    * text is not in the answer is kept from the checkers (the
    * anti-hallucination guard) and reported as the `claims_not_in_answer`
    * gap, one longer than `MAX_CLAIM_CHARS` as the `claims_too_long` gap, and
@@ -253,25 +319,13 @@ export class ClaimExtractor {
     // Behind a Privacy Shield the model sees the turn's wire view only: the
     // answer as the turn's model wrote it, the prompt as the turn's model
     // received it — never the caller's own text.
-    const answer = (privacy ? privacy.wireAnswer : input.answer).trim();
+    // Without its `[ref:…]` markers: the verifier's metadata, not what the
+    // answer says — mid-sentence they made a faithful claim fail the verbatim
+    // guard (`citationMarkers.ts`). The citation check reads them upstream.
+    const answer = stripCitationMarkers(privacy ? privacy.wireAnswer : input.answer).trim();
     if (answer.length === 0) return { claims: [], gaps: [] };
     const userMessage = privacy ? privacy.wireUserMessage : input.userMessage;
-    if (privacy) {
-      try {
-        await privacy.admitWireView();
-      } catch (err) {
-        this.opts.log(
-          `[claim-extractor] extraction not sent — prompt masking blocked: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-        // Nothing was looked for, so this is no empty extraction: the
-        // pipeline maps the rejection to `unavailable`, never to `skipped`.
-        throw new Error('claim extraction failed: the request was not admitted', {
-          cause: err,
-        });
-      }
-    }
+    await this.admit(privacy, 'claim extraction failed: the request was not admitted');
 
     // One more than the pipeline checks: a list that reaches this limit shows
     // the answer may hold claims the model left out.
@@ -294,61 +348,64 @@ ${truncate(userMessage, 2000)}
 ASSISTANT ANSWER:
 ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
 
-    let response: LlmResponse;
-    try {
-      response = await this.opts.llm.complete({
-        model: this.opts.model,
-        maxTokens: this.opts.maxTokens,
-        system,
-        tools: [toolSpec],
-        toolChoice: { type: 'tool', name: TOOL_NAME },
-        messages: [textMessage('user', user)],
-      });
-    } catch (err) {
-      this.opts.log(
-        `[claim-extractor] API FAIL: ${err instanceof Error ? err.message : String(err)}`,
+    const prompt: ExtractionPrompt = { system, user, answer };
+    let attempt = await this.attempt(prompt, undefined);
+    if (!attempt.ok) {
+      if (!isRepairable(attempt.code)) {
+        throw new Error(`claim extraction failed: ${attempt.problem}`);
+      }
+      // Exactly one repair: the same model, token budget and wire view, plus
+      // a fixed note on what was wrong. A request of its own — admitted and
+      // counted in the receipt like the first one.
+      const first = attempt;
+      this.opts.log(`[claim-extractor] repair attempt 2/2 after: ${first.code}`);
+      await this.admit(
+        privacy,
+        `claim extraction failed: ${first.problem}; the repair request was not admitted`,
       );
-      // Not []: that reads as "the answer holds no claim". The pipeline maps
-      // a rejection to `unavailable`.
-      throw err;
+      try {
+        attempt = await this.attempt(prompt, first.code);
+      } catch (err) {
+        throw new Error(
+          `claim extraction failed: ${first.problem}; repair call failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          { cause: err },
+        );
+      }
+      if (!attempt.ok) {
+        throw new Error(
+          `claim extraction failed: ${first.problem}; repair attempt failed: ${attempt.problem}`,
+        );
+      }
+      // The first response was not empty — it failed. A repair that now lists
+      // nothing, or fewer entries than the first response still showed, may
+      // have dropped claims; resolving it would pass a partial (or empty)
+      // extraction off as the whole answer.
+      const lost = repairShortfall(attempt.rawClaims.length, first.listed);
+      if (lost) {
+        this.opts.log(`[claim-extractor] repair rejected: ${lost}`);
+        throw new Error(`claim extraction failed: ${first.problem}; repair rejected: ${lost}`);
+      }
+      this.opts.log(`[claim-extractor] repair attempt succeeded after: ${first.code}`);
     }
+    const { rawClaims, normalised, missed, read } = attempt;
 
-    const read = readToolClaims(response);
-    if (!read.ok) {
-      this.opts.log(`[claim-extractor] ${read.problem}`);
-      throw new Error(`claim extraction failed: ${read.problem}`);
-    }
-    const rawClaims = read.claims;
-
-    // Verbatim guard against the text the model actually saw (the wire view
-    // behind a Privacy Shield).
-    const spanOf = verbatimSpans(answer);
-    const normalised: Claim[] = [];
-    let malformed = 0;
-    const missed = { not_verbatim: 0, too_long: 0 };
-    for (const raw of rawClaims) {
-      const claim = normaliseClaim(raw, normalised.length, answer, spanOf);
-      if (claim === 'malformed') malformed += 1;
-      else if (typeof claim === 'string') missed[claim] += 1;
-      else normalised.push(claim);
-    }
-    if (malformed > 0) {
-      // A broken entry is a claim we cannot read, not one the answer lacks:
-      // returning the readable rest would pass off a partial extraction as
-      // the whole answer.
-      const problem = `${String(malformed)} of ${String(rawClaims.length)} ${TOOL_NAME} entries do not match the schema`;
-      this.opts.log(`[claim-extractor] ${problem}`);
-      throw new Error(`claim extraction failed: ${problem}`);
-    }
     // Behind a Privacy Shield every claim is mapped back to real values
     // before anything checks it. A claim that does not map back onto the
     // answer the user was shown never reaches a checker — and, like a claim
     // the verbatim guard kept back, it is not dropped without a trace: the
     // part of the answer it stood for was not checked (`claims_not_restored`).
-    const out = privacy
-      ? await restoreClaims(normalised, privacy, input.answer.trim(), claimContext)
+    const restored = privacy
+      ? await restoreClaims(
+          normalised,
+          privacy,
+          stripCitationMarkers(input.answer).trim(),
+          claimContext,
+        )
       : normalised;
-    const notRestored = normalised.length - out.length;
+    const notRestored = normalised.length - restored.length;
+    const { claims: out, anchored } = withCitedRecords(restored, input.answer);
     const gaps = coverageGaps({
       answerLength: answer.length,
       rawClaimCount: rawClaims.length,
@@ -360,11 +417,13 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
     this.opts.log(
       `[claim-extractor] extracted=${String(out.length)} raw=${String(rawClaims.length)}${
         read.calls > 1 ? ` calls=${String(read.calls)}` : ''
+      }${read.decoded ? ' decoded=json-string' : ''}${
+        attempt.repaired ? ' attempts=2' : ''
       }${missed.not_verbatim > 0 ? ` not_in_answer=${String(missed.not_verbatim)}` : ''}${
         missed.too_long > 0 ? ` too_long=${String(missed.too_long)}` : ''
       }${notRestored > 0 ? ` not_restored=${String(notRestored)}` : ''}${
-        gaps.length > 0 ? ` gaps=${gaps.join(',')}` : ''
-      }`,
+        anchored > 0 ? ` cited_records=${String(anchored)}` : ''
+      }${gaps.length > 0 ? ` gaps=${gaps.join(',')}` : ''}`,
     );
     // Diagnostic: when the extractor returns zero claims even though the
     // trigger router fired, log the shape of the exchange. Lengths only: the
@@ -377,7 +436,141 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
     }
     return { claims: out, gaps };
   }
+
+  /**
+   * Admit one request carrying the turn's wire view — each extraction call
+   * is one, and the receipt counts each. Nothing to admit without a shield.
+   */
+  private async admit(privacy: VerifierPrivacy | undefined, failure: string): Promise<void> {
+    if (!privacy) return;
+    try {
+      await privacy.admitWireView();
+    } catch (err) {
+      this.opts.log(
+        `[claim-extractor] extraction not sent — prompt masking blocked: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      // Nothing was looked for, so this is no empty extraction: the
+      // pipeline maps the rejection to `unavailable`, never to `skipped`.
+      throw new Error(failure, { cause: err });
+    }
+  }
+
+  /**
+   * One extraction call and the reading of its response. `repairOf` names
+   * what the previous attempt got wrong; the call then carries a fixed note
+   * about it — static prose, nothing of the turn's content. A failed API
+   * call rejects (never retried here); an unusable response resolves as a
+   * failure with a content-free description in the log.
+   */
+  private async attempt(
+    prompt: ExtractionPrompt,
+    repairOf: ExtractionProblemCode | undefined,
+  ): Promise<AttemptResult> {
+    let response: LlmResponse;
+    try {
+      response = await this.opts.llm.complete({
+        model: this.opts.model,
+        maxTokens: this.opts.maxTokens,
+        system: repairOf
+          ? `${prompt.system}\n\n${repairNote(repairOf, {
+              toolName: TOOL_NAME,
+              claimTypes: CLAIM_TYPES,
+              claimSources: CLAIM_SOURCES,
+            })}`
+          : prompt.system,
+        tools: [toolSpec],
+        toolChoice: { type: 'tool', name: TOOL_NAME },
+        messages: [textMessage('user', prompt.user)],
+      });
+    } catch (err) {
+      this.opts.log(
+        `[claim-extractor] API FAIL: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      // Not []: that reads as "the answer holds no claim". The pipeline maps
+      // a rejection to `unavailable`.
+      throw err;
+    }
+    const attemptNo = repairOf ? 2 : 1;
+    const fail = (code: ExtractionProblemCode, problem: string, listed: number): AttemptResult => {
+      this.opts.log(`[claim-extractor] ${problem}`);
+      this.opts.log(
+        `[claim-extractor] diag attempt=${String(attemptNo)} problem=${code} ${describeExtractionResponse(
+          response,
+          { providerId: this.opts.llm.id, toolName: TOOL_NAME },
+        )}`,
+      );
+      return { ok: false, code, problem, listed };
+    };
+
+    const read = readToolClaims(response, TOOL_NAME);
+    if (!read.ok) return fail(read.code, read.problem, read.listed);
+    if (read.decoded) {
+      this.opts.log(
+        `[claim-extractor] claims arrived as a JSON-encoded string — decoded; ${describeExtractionResponse(
+          response,
+          { providerId: this.opts.llm.id, toolName: TOOL_NAME },
+        )}`,
+      );
+    }
+
+    // Verbatim guard against the text the model actually saw (the wire view
+    // behind a Privacy Shield).
+    const spanOf = verbatimSpans(prompt.answer);
+    const normalised: Claim[] = [];
+    let malformed = 0;
+    const missed = { not_verbatim: 0, too_long: 0 };
+    for (const raw of read.claims) {
+      const claim = normaliseClaim(raw, normalised.length, prompt.answer, spanOf);
+      if (claim === 'malformed') malformed += 1;
+      else if (typeof claim === 'string') missed[claim] += 1;
+      else normalised.push(claim);
+    }
+    if (malformed > 0) {
+      // A broken entry is a claim we cannot read, not one the answer lacks:
+      // returning the readable rest would pass off a partial extraction as
+      // the whole answer.
+      return fail(
+        'malformed_entries',
+        `${String(malformed)} of ${String(read.claims.length)} ${TOOL_NAME} entries do not match the schema`,
+        read.claims.length,
+      );
+    }
+    return {
+      ok: true,
+      read,
+      rawClaims: read.claims,
+      normalised,
+      missed,
+      repaired: repairOf !== undefined,
+    };
+  }
 }
+
+interface ExtractionPrompt {
+  readonly system: string;
+  readonly user: string;
+  /** The answer the model sees — the verbatim guard reads this text. */
+  readonly answer: string;
+}
+
+type AttemptResult =
+  | {
+      readonly ok: true;
+      readonly read: { readonly calls: number; readonly decoded: boolean };
+      readonly rawClaims: unknown[];
+      readonly normalised: Claim[];
+      readonly missed: { not_verbatim: number; too_long: number };
+      readonly repaired: boolean;
+    }
+  | {
+      readonly ok: false;
+      readonly code: ExtractionProblemCode;
+      readonly problem: string;
+      /** Entries the unusable response still listed (see `readToolClaims`). */
+      readonly listed: number;
+    };
 
 /**
  * What an extraction did not cover: answer text beyond the window the model
@@ -405,31 +598,59 @@ function coverageGaps(extraction: {
 }
 
 /**
- * The claims of every `record_claims` call in the response, in order, or why
- * the response has none to read: it was cut off at the token limit, it holds
- * no such call, or one of them has no `claims` array. Each is a failed
- * extraction, which is not the same as a call that lists no claims. A model
- * may split its list over several calls; reading only the first would drop
- * the rest without a trace.
+ * Each claim with the records the answer's `[ref:…]` markers cite for it
+ * added to its `relatedEntities`. The extraction never sees the markers
+ * (`citationMarkers.ts`), so this restores — exactly, from the raw answer —
+ * the one place its record handles stood. A marker cites the text before
+ * it: it counts for a claim of the same sentence that starts before it,
+ * with the whitespace between the cited text and the marker set aside, so
+ * a marker after the full stop counts for the sentence it closes and one
+ * glued to the next sentence's first word does not count for that word.
+ * The claim's text is the answer's own span (the verbatim guard), so its
+ * place is found, not guessed. Only record handles of a known system
+ * (`isSystemRecordHandle`), and only for a claim that pins no record of its
+ * own — the extraction's handle wins. They tell the evidence fetcher which
+ * record to look up — exactly that record (`fetchPinned`) — and are never
+ * evidence themselves; the citation check holds every marker to this turn's
+ * knowledge-graph results. `anchored` counts the claims that gained one.
  */
-function readToolClaims(
-  response: LlmResponse,
-): { ok: true; claims: unknown[]; calls: number } | { ok: false; problem: string } {
-  // A call cut off at the token limit can still parse into a claims array —
-  // just not the whole one: the rest of the answer was never extracted.
-  if (response.finishReason === 'max_tokens') {
-    return { ok: false, problem: 'response truncated at the token limit' };
-  }
-  // Defensive: the contract guarantees `content` is an array.
-  const lists = (Array.isArray(response.content) ? toolCalls(response.content) : [])
-    .filter((call) => call.name === TOOL_NAME)
-    .map((call) => (call.input as { claims?: unknown } | null | undefined)?.claims);
-  if (lists.length === 0) return { ok: false, problem: 'no tool_use block in response' };
-  // One unreadable call makes the whole list partial, like a broken entry.
-  if (!lists.every((claims): claims is unknown[] => Array.isArray(claims))) {
-    return { ok: false, problem: `${TOOL_NAME} call without a claims array` };
-  }
-  return { ok: true, claims: lists.flat(), calls: lists.length };
+function withCitedRecords(
+  claims: Claim[],
+  rawAnswer: string,
+): { claims: Claim[]; anchored: number } {
+  const asRead = stripCitationMarkers(rawAnswer);
+  const anchors = citationAnchors(rawAnswer)
+    .filter((a) => isSystemRecordHandle(a.id))
+    .map((a) => ({ id: a.id, at: afterCitedText(asRead, a.at) }));
+  if (anchors.length === 0) return { claims, anchored: 0 };
+  let anchored = 0;
+  const out = claims.map((claim) => {
+    if (claim.relatedEntities.some(pinsRecord)) return claim;
+    const where = claimLocation(claim.text, asRead);
+    if (!where) return claim;
+    const [start, end] = where.sentence;
+    const cited = anchors
+      .filter((a) => a.at > start && a.at <= end && a.at > where.at)
+      .map((a) => a.id);
+    if (cited.length === 0) return claim;
+    anchored += 1;
+    return { ...claim, relatedEntities: [...new Set([...claim.relatedEntities, ...cited])] };
+  });
+  return { claims: out, anchored };
+}
+
+/** `at` moved back over the whitespace before it: the end of the text the
+ *  marker stood after. */
+function afterCitedText(text: string, at: number): number {
+  let i = at;
+  while (i > 0 && /\s/.test(text[i - 1] ?? '')) i -= 1;
+  return i;
+}
+
+/** True when `handle` names one record (`model:id`, with or without system). */
+function pinsRecord(handle: string): boolean {
+  const parsed = parseEntityHandle(handle);
+  return parsed !== null && isRecordHandle(parsed);
 }
 
 /**
