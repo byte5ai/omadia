@@ -17,6 +17,7 @@ import type {
 } from '@omadia/plugin-api';
 import type { OutgoingSurface } from './surface.js';
 import type { AiDisclosure } from './aiDisclosure.js';
+import type { AnswerVerbosityInfo } from './chatAgent.js';
 
 export type { CaptureDisclosure, PrivacyReceipt, RecalledContext };
 export type { AiDisclosure } from './aiDisclosure.js';
@@ -36,8 +37,11 @@ export type { AiDisclosure } from './aiDisclosure.js';
  * treat the final answer as authoritative whenever this is not `'model'`.
  *
  * `'verifier-blocked'` — the answer verifier, in `enforce` mode, withheld the
- * model's answer because it could not confirm it (a contradiction, claims it
- * could not confirm, or a check that could not be completed). The answer is
+ * model's answer: a refuted claim, a missing or invented citation, data the
+ * run never fetched, or a check that could not run or whose every check
+ * failed. (An answer it merely could not fully confirm is released as
+ * `'model'` with a disclaimer paragraph, `composeVerifierDisclaimerText`.)
+ * The answer is
  * then a localized notice saying so (`composeVerifierBlockedText`), always
  * with `answerIsError: true`; the model's own text never reaches the client,
  * not even as earlier deltas — the stream carries exactly one `text_delta`,
@@ -73,6 +77,13 @@ export interface SemanticAnswer {
    * Absent/false therefore means the affordance should not be offered.
    */
   memoryUsed?: boolean;
+
+  /**
+   * The answer-size level this answer was generated under (see
+   * `ChatTurnResult.answerVerbosity`). Channels offer "Kürzer" / "Mehr
+   * Details" relative to it; absent on a kernel that predates the field.
+   */
+  answerVerbosity?: AnswerVerbosityInfo;
 
   /** Soft-disclaimer line appended to the answer (e.g. "unverified claims"). */
   disclaimer?: string;

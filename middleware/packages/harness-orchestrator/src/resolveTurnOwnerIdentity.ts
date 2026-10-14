@@ -1,5 +1,40 @@
 import { makePrincipal, type ChatTurnInput, type Principal } from '@omadia/channel-sdk';
-import type { KnowledgeGraph } from '@omadia/plugin-api';
+import type { ChannelIdentityIngest, ChannelKind, KnowledgeGraph } from '@omadia/plugin-api';
+
+/** The `TurnOrigin.channelType` values that map onto a KG channel kind. */
+export const CHANNEL_KIND_BY_ORIGIN: Readonly<Record<string, ChannelKind>> = {
+  teams: 'teams',
+  telegram: 'telegram',
+  api: 'api',
+};
+
+/**
+ * The channel identity a plugin channel turn carries implicitly: no
+ * `channelIdentity` (that is minted only by `createOrchestratorDispatcher`),
+ * but an `origin` naming a channel and `userId` holding the sender's
+ * channel-native id. The Teams plugin calls `ChatAgent.chat` this way with the
+ * sender's AAD object id. `origin` is set only by channel plugins — no HTTP
+ * route sets it — so this is as adapter-attested as the dispatcher's
+ * `userRef`.
+ *
+ * Teams keys a sender on `from.aadObjectId ?? from.id`; an AAD id is passed as
+ * such so the identity layer merges it into the person's existing cluster
+ * (exactly as `resolveTurnAudience` does). A Bot Framework `29:` id is not one.
+ */
+export function originChannelIdentity(
+  input: Pick<ChatTurnInput, 'userId' | 'channelIdentity' | 'origin'>,
+): ChannelIdentityIngest | undefined {
+  if (input.channelIdentity || !input.origin || !input.userId) return undefined;
+  const channelKind = CHANNEL_KIND_BY_ORIGIN[input.origin.channelType];
+  if (!channelKind) return undefined;
+  return {
+    channelKind,
+    channelUserId: input.userId,
+    ...(channelKind === 'teams' && !input.userId.startsWith('29:')
+      ? { aadObjectId: input.userId }
+      : {}),
+  };
+}
 
 /**
  * #430 fixup (reviewer round 5) — resolves the ONE canonical `omadiaUserId`
@@ -128,4 +163,44 @@ export function runTraceOwnerId(
 ): string | undefined {
   if (input.channelIdentity) return resolvedOmadiaUserId || undefined;
   return input.userId || undefined;
+}
+
+/**
+ * The run-trace owner, resolved once at the start of the turn — before
+ * `ingestRun` needs it.
+ *
+ * {@link runTraceOwnerId} covers turns with a `channelIdentity` and HTTP
+ * turns. A plugin channel turn that states its channel only through `origin`
+ * (Teams: `userId` = the sender's AAD object id) had neither: its raw AAD id
+ * went to `ingestRun`, which names no User-Cluster, and every such trace was
+ * dropped as `run-ingest-failed`. This resolves that sender through the
+ * identity resolver (`resolveOrCreateChannelIdentity`, the same call and the
+ * same AAD merge `resolveTurnAudience` uses), which links a cluster to the
+ * channel identity — `ingestRun` itself still never creates one.
+ *
+ * Only the trace owner. The turn's `resolvedOmadiaUserId` — dataset ACLs, MCP
+ * keys, the `Principal` — is untouched for these turns. Every participant of a
+ * group chat resolves to their own cluster, so traces stay per person. No
+ * knowledge graph, or a failed resolution: the trace is filed without a user
+ * link, never under an id no cluster carries.
+ */
+export async function resolveRunTraceOwner(
+  knowledgeGraph: KnowledgeGraph | undefined,
+  input: Pick<ChatTurnInput, 'userId' | 'channelIdentity' | 'origin'>,
+  resolvedOmadiaUserId: string | undefined,
+): Promise<string | undefined> {
+  const implicit = originChannelIdentity(input);
+  if (!implicit) return runTraceOwnerId(input, resolvedOmadiaUserId);
+  if (!knowledgeGraph) return undefined;
+  try {
+    const { omadiaUserId } = await knowledgeGraph.resolveOrCreateChannelIdentity(implicit);
+    return omadiaUserId || undefined;
+  } catch (err) {
+    console.warn(
+      `[harness-orchestrator] resolveRunTraceOwner: channel identity resolution failed — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return undefined;
+  }
 }

@@ -47,7 +47,9 @@ export type {
 // the kernel-side `verifierService.ts` until sub-commit 2b moves it.
 export {
   SOFT_ANCHOR_REF_FIELDS,
+  contradictionBasis,
   hasOdooRecordAnchor,
+  isEvidenceContradiction,
   hasVerificationEvidence,
   isBorderlineVerdict,
   isHardClaim,
@@ -60,6 +62,7 @@ export type {
   ClaimSource,
   ClaimType,
   ClaimVerdict,
+  ContradictionBasis,
   ExtractionGap,
   HardClaim,
   NonEmptyClaimVerdicts,
