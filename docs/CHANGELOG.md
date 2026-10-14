@@ -73,6 +73,61 @@ plain call.
 
 Issue #1210.
 
+### Fixed — the guarded direct-line note is no longer swallowed by its own token cap
+
+2026-10-05 — In `guarded` direct-line mode the orchestrator may append a short
+cross-cutting note under a specialist's verbatim answer (#332 Layer 2). That
+extra pass asked for 512 output tokens. A model that reasons before it answers
+bills those tokens against `max_tokens`, so the budget was spent before any
+text was emitted; the helper treats empty text as "nothing to add" and returns
+no note, which made the feature silently inert on such models rather than
+visibly broken. The pass now asks for 4096 tokens, clamped to the `maxTokens`
+the caller resolved for the active model so it can never request more than the
+model allows. Its system prompt moved to a module-level constant next to the
+card-router prompts and was rewritten in plain register — the all-caps
+imperatives read as pressure the current models over-apply — while keeping the
+explicit two-sentence bound on the note itself. The verbatim block is
+unaffected: the note is still append-only, and the no-redaction invariant
+stays structural. Three tests pin the budget, the clamp, and the empty-text
+fail-open (#1209).
+
+### Fixed — the security screener and persona router get a token budget that survives thinking
+
+2026-10-06 — Both routes run on the agent's own model when nothing cheaper is
+configured (`buildOrchestrator.ts` builds `LlmScreener` with `config.model`;
+`routeTurnPersona` falls back to `modelRouting?.classifierModel ?? this.model`).
+On Opus 5.5 and up thinking is always on, counts toward `max_tokens`, and the
+default effort is medium — so a cap sized for the visible reply alone ends the
+call before the reply exists.
+
+- `LlmScreener`'s default `maxTokens` is 4096 (was 128). At 128 the judge's
+  `ALLOW` / `QUARANTINE: …` line never arrived, `parseVerdict` threw
+  `unparseable-verdict`, and `screenProvenance` fell open to `unscreenable`:
+  the turn ran with the `[NOT security-screened …]` marker. The `unscreenable`
+  audit event and the #749 counters did fire, but under the cause
+  `unparseable-verdict` — which reads as a judge off its contract, not as a
+  budget that ended the call before the verdict existed. An explicitly passed
+  `maxTokens` is still honoured.
+- The persona router asks for 1024 tokens (was 16). At 16 the classifier's
+  slug was truncated, the reply matched no candidate, and every turn silently
+  took the Agent's default identity — indistinguishable from an honest
+  `NO_PERSONA_MATCH`.
+- Both budgets are named constants in the new
+  `harness-orchestrator/src/classifierBudgets.ts`, which carries the reasoning
+  once for both routes (and records why `modelRouter.ts` is exempt). They are
+  package-internal, not barrel exports; the tests import them from source and
+  pin both the wire value and the number.
+- No `effort` is set on either call: both may run on Haiku or a non-Anthropic
+  provider. `temperature: 0` stays as-is — the Anthropic adapter already drops
+  it per `supportsTemperature`.
+- `modelRouter.ts` asks for 8 tokens and is untouched: it only runs with an
+  explicitly configured Haiku-tier classifier, and its fallback on an
+  unparseable reply is the stronger model (overspend, not a silent downgrade).
+  It has the same failure shape if an operator points `classifierModel` at an
+  always-thinking model.
+- Tests: `test/securityPosture579.test.ts` (judge budget, explicit override)
+  and `test/personaRouter.test.ts` (classifier budget).
+
 ### Added — answer size in the web chat (stream `done` + "Kürzer" / "Mehr Details")
 
 2026-10-09 — The stream `done` event now carries `answerVerbosity` like the
@@ -835,6 +890,57 @@ range excludes the host's `@omadia/plugin-api` version is refused with
 install reports the same code with HTTP 422). A manifest without `compat_core`
 counts as `>=1.0 <2.0`. `docs/upgrading.md` names the minimum host for hub
 plugins.
+
+### Changed — conductor prompts shape their output by naming the audience, not a word count (#1234)
+
+2026-10-05 — the four agentic conductor pattern prompts carried hard numeric
+ceilings: the discussion `speak` step "at most 120 words" plus "no bullet lists
+longer than three items", the discussion `close` step "Under 140 words", and
+both facilitation report steps "Total length under 150 words". A cap is the one
+instruction a model can satisfy by stopping mid-argument, so the limit was
+doing the shaping that the reader should do. Each is now replaced by a
+`WHO READS THIS:` clause naming the reader, the device and the moment — a
+running group chat read on a phone with the next speaker right behind it; a
+closing summary that someone who missed the discussion reads as their only
+message; a final report that is the last word on the goal and has to stand
+without the conversation next to it. The two placeholder hints inside the
+fenced-json verdicts lost their counts the same way (`max 12 words` → "as one
+short question", `max 8 words` → "as a short label").
+
+**Visible effect:** a discussion turn and a facilitation report may now run
+longer than the old ceilings. That is the intended product change, not a
+regression.
+
+**Two runtime bounds the caps used to keep out of reach, left as they are and
+named here so the next change is a decision and not a surprise:**
+`renderTranscript` trims the rendered transcript from the FRONT at
+`TRANSCRIPT_TEXT_MAX_CHARS = 12_000` (`src/conductor/transcript.ts`). At the old
+~120 words/turn a full default discussion (`DISCUSSION_DEFAULT_MAX_TURNS = 16`)
+fit the window almost exactly; with longer turns the oldest turns fall off
+silently, so a late speaker can no longer honour "never repeat a point already
+made" for an evicted turn, and the `close` step can summarise only the tail
+while being told to attribute positions and report only what was said. And
+`formatUtterance` hard-truncates a posted utterance at
+`SAY_TEXT_MAX_CHARS = 4000` with an ellipsis while still recording
+`said: true` (`src/conductor/sayService.ts`) — previously unreachable for the
+reports, now reachable, and a report cut mid-bullet is the opposite of the
+"stands on its own" property the audience clause asks for. Raising either bound
+costs context per turn on every discussion, which is the same kind of product
+call as this entry, so it is deliberately not bundled in.
+
+Unchanged on purpose, because each had its own reason: the Teams-Markdown rules
+(bold mini-headings and `-` bullets only, never ASCII dividers or ALL-CAPS
+banners — they render as an unreadable wall in chat), the section and bullet
+structure including the outcome emoji, the fenced-json verdict contracts with
+their `converged` / `dodMet` semantics and items-array rules (the parsers on the
+other side read those keys), "never write your own name in front of your text",
+and the transcript-is-data prompt-injection guards. Pattern manifest versions
+bump with the prompt text (`discussion` 2 → 3, `facilitation` 3 → 4).
+
+The earlier entry below — "report prompts carry hard FORMAT rules … <150 words"
+(#330 field report) — describes the previous behavior and is superseded here;
+the historic entry stays as it shipped. Gate against a cap creeping back, and
+against losing a kept item: `test/conductorPatternPromptAudience.test.ts`.
 
 ### Changed — the desktop install smoke waits for the web UI's first load and checks the shell's boundaries
 
