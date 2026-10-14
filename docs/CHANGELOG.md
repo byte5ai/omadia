@@ -36,6 +36,42 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the pure-LLM agent boilerplate no longer prescribes tools it has none of (#1217)
+
+2026-10-06 — `middleware/assets/boilerplate/agent-pure-llm/` was a copy of
+its tool-based sibling `agent-integration`, and the copy still read like one.
+The expert skill partial `skills/{{AGENT_SLUG}}-expert.md` told the agent it
+works "ausschließlich mit den strukturierten Outputs deiner Tools
+(`{{CAPABILITY_ID}}`, …)" and forbade any assessment without tool data — for
+a template whose `manifest.yaml` ships `capabilities: []`. `CAPABILITY_ID` is
+not in this template's `placeholders:` map either; `buildPlaceholderMap` only
+backs it from `spec.tools[0]`, which a pure-LLM spec never has. Generated
+plugins were never affected (the required `skill-prompt` slot overwrites that
+whole marker region), but the builder reads the boilerplate as its worked
+example for tool-less agents, so the contradiction was teaching the wrong
+contract.
+
+The prompt body is now tool-less, and keeps the two rules that were never
+about tools: no invented facts, and no smalltalk/hedging. The same
+copy-paste residue is gone from the template's docs, which
+`builderReferenceCatalog` exposes to the model as `read_reference` roots
+alongside the code: the `{{INTEGRATION_ID}}` / `{{CAPABILITY_ID}}` rows in
+`CLAUDE.md`'s placeholder table, its "Capabilities verdichten — `client.ts`
++ `toolkit.ts`" step (this template has neither file), and `README.md`'s
+layout tree and Quick-Start placeholder list.
+
+A second pass took out what was left. `CLAUDE.md`'s worked example was a
+SharePoint search agent, which needs an integration; it is now a tone
+reviewer that works only on the user's text. §6 and §8 say the template ships
+`tools: []` and keep the `ToolDescriptor` / Zod matrix only as reference for
+a switch to `agent-integration`. `README.md` no longer promises a toolkit,
+`tsconfig.json` no longer includes the absent `toolkit.ts` / `client.ts`, and
+`manifest.yaml`'s `llm.prefers` drops `tool_use` (nothing reads that list, so
+runtime behaviour is unchanged). References to the gitignored
+`docs/harness-platform/` now point at the public files: the manifest parser
+(`manifestLoader.ts`), `middleware/src/api/admin-v1.ts`,
+`middleware/assets/entity-registry.v1.yaml` and the boilerplate's own path.
+
 ### Fixed — auth cookies and pairing URLs take their scheme from the connection (#1310)
 
 2026-10-07 — `isSecureContext` read `x-forwarded-proto` straight off the
