@@ -3,10 +3,13 @@
  * (`AUTH_LOGIN_CLIENT_ADDRESS`, `AUTH_LOGIN_IPV6_PREFIX`,
  * docs/security-architecture.md §10m).
  *
- * Trust boundary: this never reads `req.ip` / `req.ips`. The app runs with
- * `trust proxy = true`, which makes `req.ip` the LEFT-most `X-Forwarded-For`
+ * Trust boundary: this never reads `req.ip` / `req.ips`. Under any non-empty
+ * `TRUSTED_PROXY_ADDRESSES` (§10o) `req.ip` is the LEFT-most `X-Forwarded-For`
  * entry — a value the client writes. A limiter keyed on it is a limiter the
- * caller resets with a header. Same rule as `loopbackOnly.ts` (§10).
+ * caller resets with a header. That held when `trust proxy` was `true` and
+ * still holds now that it names addresses: an operator who names their proxy
+ * to get the cookie `Secure` flag right (#1310) has not thereby said the
+ * left-most entry is trustworthy. Same rule as `loopbackOnly.ts` (§10).
  *
  *   socket         the TCP peer (`req.socket.remoteAddress`). Cannot be forged;
  *                  the default. Behind a proxy it is the proxy, so every

@@ -1914,7 +1914,12 @@ versions blockt ohnehin). Run-Historie + Version-Graph bleiben als
 Audit-Trace. Guardrails env-tunable (`CONDUCTOR_EPHEMERAL_*`, §10): Pflicht-TTL
 mit Clamp (Default 24h, Max 7d), max. 3 concurrent Runs + 10 Creates/h pro
 Agent. Tests: `test/conductorEphemeral*.test.ts`,
-`test/conductorPatternCatalog.test.ts`. Achtung: das Schema-CI-Gate re-applied
+`test/conductorPatternCatalog.test.ts`. Prompt-Konvention der gebündelten
+Patterns (#1234): Output wird über das Publikum geformt (`WHO READS THIS:` —
+wer liest das, wo, was ist dort lesbar), NICHT über numerische Wort-/Item-Caps;
+die Teams-Markdown-Regeln, die Sektions-Struktur, die
+Fenced-JSON-Verdict-Kontrakte und die Transcript-is-Data-Guards bleiben hart. Gate dafür:
+`test/conductorPatternPromptAudience.test.ts`. Achtung: das Schema-CI-Gate re-applied
 `src/conductor/migrations` noch NICHT (Verzeichnis steht in ci.yml unter
 "still uncovered") — 0009 ist nach 0008-Muster idempotent geschrieben, aber
 CI-unbewiesen.
@@ -2101,8 +2106,9 @@ validate-grün (unguarded bleibt Fehler); Loop-Budget deterministisch über
 `lt ctx.stepAttempts.moderate 24`) plus Ephemeral-TTL plus MAX_STEPS.
 Agent-Steps liefern strukturierte Verdicts: letzter ```json-Fence der
 Antwort → `stepResult.data` (`extractFencedJson` in realStepEffects,
-tolerant + size-capped). Pattern `facilitation` ist **v2** (Assess-Tick
-PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report).
+tolerant + size-capped). Pattern `facilitation` ist **v4** (Assess-Tick
+PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report);
+Pattern `discussion` ist **v3**.
 `conductorEphemeralRuns.poke(runId)` feuert den offenen Timer-Await sofort.
 Neuer Service **`conversationSend`** (deny-by-default; SDK-Seam
 `registerConversationSendProvider`, Kernel `src/channels/
@@ -2619,7 +2625,11 @@ Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` 
      zerlegt deshalb per NFKD, wirft kombinierende Zeichen weg, schreibt klein und faltet
      ı zu i und ς zu σ; keine Schreibweise einer Adresse bekommt ein zweites Budget.
      `LocalPasswordProvider` meldet nur ein Konto an, dessen gespeicherte Adresse auf
-     denselben Schlüssel faltet.
+     denselben Schlüssel faltet. Jeder Fehlschlag ohne richtiges Passwort antwortet
+     gleich: `invalid_credentials` nach genau einem argon2-Lauf, auch für ein
+     deaktiviertes Konto. `auth.user_disabled` kommt erst, nachdem das Passwort
+     stimmte (#1311, `security-architecture.md` §10m „One failure code“); die
+     Login-Seite zeigt dafür `login.accountDisabled`.
    - **Global**: höchstens `AUTH_LOGIN_MAX_INFLIGHT` argon2-Läufe gleichzeitig und ein
      Leaky Bucket, der 300 zugelassene Versuche pro Minute abfließen lässt → 503
      `auth.busy`. Ohne Geräte-Cookie gibt es höchstens alle Slots bis auf einen und den
@@ -3238,6 +3248,14 @@ Admin-Passwort-Reset, Deaktivieren und Löschen beenden alle Sitzungen des
 Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf“)
 — ohne eigene Env-Variable.
 
+### Request-Trust-Boundary (#1310, security-architecture §10o)
+
+| Variable | Wirkung |
+|---|---|
+| `TRUSTED_PROXY_ADDRESSES` | Welche Hops für den Client sprechen dürfen. Wird Express' `trust proxy` und entscheidet damit, ob `req.secure` / `req.protocol` / `req.hostname` / `req.ip` den `X-Forwarded-*`-Headern des Requests glauben. Komma-Liste aus Adressen, `IP/bits`-Blöcken oder `loopback`/`linklocal`/`uniquelocal`; leer (Default) = `none`, kein Hop wird geglaubt. **Keine Hop-Zahl:** Express zählt vertrauenswürdige Hops vom Server aus **inklusive des unmittelbaren Peers**, `1` würde also einem direkt verbundenen Client seinen eigenen gefälschten Header glauben — eine nackte Zahl lehnt der Boot mit Begründung ab. Max. 16 Einträge. Vor #1310 stand hier `true`, und damit konnte der Absender eines Requests das `Secure`-Flag seiner eigenen Auth-Cookies wählen. Setze die Adresse des vorgeschalteten Proxys (web-ui-Container, Caddy/Traefik/nginx); `loopback` für Desktop-Installationen — Vorsicht, dann ist alles auf Loopback vertrauenswürdig. Ungültiger Wert → Config-Fehler beim Boot. |
+| `PUBLIC_SCHEME` | Über welches Schema Clients dieses Deployment erreichen. Steuert **jede** schema-abhängige Entscheidung im Prozess: das `Secure`-Flag der Session-, Login-Device- und OIDC-PKCE-Cookies (`requestIsSecure` in `src/http/requestTrust.ts`) **und** die `https`/`wss`-URLs des Pairing-Descriptors. `auto` (Default) folgt der Verbindung über `req.secure`, das `X-Forwarded-Proto` nur von den oben genannten Hops anwendet. `https` für einen Reverse-Proxy, der TLS terminiert aber **kein** `X-Forwarded-Proto` setzt — `auto` kann das nicht von echtem Plain-HTTP unterscheiden, und dem Header von jedem Absender zu glauben war genau der Bug. `http` für ein absichtlich unverschlüsseltes Deployment. Ein Setting statt eines Cookie-Flags, weil ein Deployment, das für seine Cookies HTTPS erklärt, auch `wss://` ausliefern muss: ein `ws://` auf einer HTTPS-Seite blockt der Browser als Mixed Content. Fly und Render setzen `https` (Edge-Adressen sind nicht stabil benennbar). Ungültiger Wert → Config-Fehler beim Boot. |
+| `WEB_UI_PUBLIC_SCHEME` | **Liest der web-ui-Prozess, nicht dieser.** Der `/bot-api`-Proxy setzt `X-Forwarded-Proto` selbst und verwirft den Wert des Browsers. Eine **Erklärung**, keine Ableitung: ein Next-Route-Handler kann seinen eigenen TLS-Zustand nicht beobachten — `NextRequest` hat keinen Socket, und `req.nextUrl.protocol` baut Next aus genau diesem Header, eine Ableitung würde den Browser-Wert also zurückschleusen. `http` (Default) oder `https` hinter einer TLS-terminierenden Edge (Fly, Render) — kein Relay-Modus, `https` deckt diesen Fall bereits ab. Derselbe Wert bestimmt auch das Schema des Pairing-Descriptors, den web-ui unter `/.well-known/omadia-ui` ausliefert. |
+
 | Variable | Wirkung |
 |---|---|
 | `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
@@ -3366,11 +3384,11 @@ Setup-Felder, nicht mehr die Env.
 ANTHROPIC_API_KEY
 # Core
 ORCHESTRATOR_MODEL=claude-opus-4-7
-ORCHESTRATOR_MAX_TOKENS=4096
+ORCHESTRATOR_MAX_TOKENS=32000   # inkl. Thinking
 MAX_TOOL_ITERATIONS=12
 # Sub-agents
 SUB_AGENT_MODEL=claude-opus-4-7     # kann auf haiku/sonnet runter
-SUB_AGENT_MAX_TOKENS=4096
+SUB_AGENT_MAX_TOKENS=16000
 SUB_AGENT_MAX_ITERATIONS=16
 SKILLS_DIR=../skills                # relativ zum middleware root
 # Memory
@@ -3433,6 +3451,10 @@ GRAPH_TENANT_ID=byte5
 # Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional
 PRIVACY_C1_DETECTOR_URL=http://pii-detector:8812   # unset ⇒ nur C0-Regex-Baseline
 # Offene Channel-WebSockets (Tabelle „Admin-UI-Sitzung“ oben)
+# Request-Trust-Boundary (#1310) — Adressen, NIE eine Hop-Zahl
+TRUSTED_PROXY_ADDRESSES=             # leer = keinem Hop glauben
+PUBLIC_SCHEME=auto                   # auto | https | http
+WEB_UI_PUBLIC_SCHEME=http            # liest web-ui: http | https
 WS_SESSION_FRAME_RECHECK_MS=5000    # 0..60000; 0 = jeder Frame wird geprüft
 # Runtime
 PORT=3979
@@ -4722,9 +4744,6 @@ Adapter falsch konfiguriert ist. Offen:
   beim Start einen neuen). Der Vault ist eine verschlüsselte Datei; einen einzelnen
   Eintrag zu ersetzen oder zu löschen, geht heute nur mit eigenem Code. Ein
   Admin-Kommando dafür fehlt.
-- **`user_disabled` vor der Passwortprüfung.** `LocalPasswordProvider` antwortet für ein
-  deaktiviertes Konto mit `auth.user_disabled`, bevor es das Passwort prüft. Der Status
-  eines Kontos ist damit ohne Passwort ablesbar.
 - **Setup-Seite: 503 `auth.busy` übersetzen.** `/setup` antwortet 503 `auth.busy`, wenn
   kein argon2-Slot frei ist. Die Login-Seite zeigt dafür „bitte N Sekunden warten“, die
   Setup-Seite (`web-ui/app/setup/page.tsx`) zeigt noch die rohe Fehlermeldung.

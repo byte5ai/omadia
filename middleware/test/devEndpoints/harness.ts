@@ -173,6 +173,9 @@ export async function startDevEndpointsHarness(
   opts: DevEndpointsHarnessOptions = {},
 ): Promise<DevEndpointsHarness> {
   const app = express();
+  // Deliberately the widest setting — `trust proxy` is operator-configured in
+  // index.ts since #1310, and `true` is the worst case this guard must survive:
+  // every forwarded header believed. A guard that passes here passes anywhere.
   app.set('trust proxy', true);
   app.use(express.json({ limit: '10mb' }));
   // index.ts:2435 — without it `req.cookies` is undefined and requireAuth 401s

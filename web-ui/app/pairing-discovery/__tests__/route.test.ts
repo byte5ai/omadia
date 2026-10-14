@@ -119,6 +119,10 @@ describe('GET /pairing-discovery', () => {
       MIDDLEWARE_URL: middlewareUrl,
       OMADIA_UI_PUBLIC_WS_URL: undefined,
       OMADIA_UI_INSTANCE_NAME: undefined,
+      // The scheme is declared, not read off the request (#1310): Fly and
+      // Render set this, and without it the forwarded header below buys the
+      // caller nothing — see the case after this one.
+      WEB_UI_PUBLIC_SCHEME: 'https',
     });
     const req = discoveryRequest();
     expect(req.headers.get('cookie')).toBeNull();
@@ -142,6 +146,30 @@ describe('GET /pairing-discovery', () => {
     // One server-to-server read of the public provider list, and no session
     // material travels upstream.
     expect(upstreamCalls).toEqual([{ url: '/api/v1/auth/providers', cookie: undefined }]);
+  });
+
+  it('does NOT take https/wss from a forwarded header the caller wrote (#1310)', async () => {
+    // `operatorOrigin` used to read `x-forwarded-proto`, so the caller chose
+    // the canvas URL and login base it was handed — the same defect as the
+    // auth cookies' Secure flag, on the browser-facing descriptor. With no
+    // declaration the answer is plain http, whatever the request claims.
+    const GET = await loadHandler({
+      MIDDLEWARE_URL: middlewareUrl,
+      OMADIA_UI_PUBLIC_WS_URL: undefined,
+      OMADIA_UI_INSTANCE_NAME: undefined,
+      WEB_UI_PUBLIC_SCHEME: undefined,
+    });
+
+    const body = (await (await GET(discoveryRequest())).json()) as {
+      wsUrl: string;
+      auth: { loginStartUrl: string };
+    };
+
+    expect(body.wsUrl).toBe('ws://ops.example.com/omadia-ui/canvas');
+    expect(body.auth.loginStartUrl).toBe('http://ops.example.com/bot-api/v1/auth');
+    // The host half is unchanged — a split deployment needs it to advertise a
+    // reachable host, and OMADIA_UI_PUBLIC_WS_URL overrides the whole URL.
+    expect(body.wsUrl).toContain('ops.example.com');
   });
 
   it('marks the descriptor no-store, because it echoes the caller host', async () => {

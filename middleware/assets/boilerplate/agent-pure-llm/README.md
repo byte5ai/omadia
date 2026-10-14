@@ -4,8 +4,9 @@ Standalone-Package-Template für neue Omadia-Agenten (`kind: agent`).
 Claude-Guide: [CLAUDE.md](./CLAUDE.md) — wird beim Scaffolden automatisch
 mitgelesen.
 
-Referenz-Implementierung: `middleware/src/agents/seo-analyst/` (kanonisch,
-alle 10 Checkliste-Punkte 1:1 umgesetzt).
+Referenz-Implementierung: keine — für den Pure-LLM-Fall IST diese
+Boilerplate die Referenz. `middleware/packages/agent-seo-analyst/` ist der
+kanonische Vergleich für das Tool-basierte Pattern (`agent-integration`).
 
 ## Layout (flach, am Package-Root)
 
@@ -18,8 +19,6 @@ agent/
 ├── tsconfig.json                 # NodeNext, rootDir:./, outDir:./dist
 ├── types.ts                      # lokales PluginContext-Duplikat (Pflicht!)
 ├── plugin.ts                     # activate(ctx) → { toolkit, close() }
-├── client.ts                     # externe API (LLM-frei, testbar)
-├── toolkit.ts                    # Capability → ToolDescriptor[] (Zod)
 ├── index.ts                      # Barrel
 ├── skills/
 │   └── {{AGENT_SLUG}}-expert.md  # System-Prompt-Partial (YAML-Frontmatter)
@@ -31,13 +30,14 @@ agent/
 ## Quick Start
 
 ```bash
-cp -R docs/harness-platform/boilerplate/agent \
-      middleware/src/agents/<slug>
+cp -R middleware/assets/boilerplate/agent-pure-llm \
+      middleware/packages/agent-<slug>
 
-cd middleware/src/agents/<slug>
+cd middleware/packages/agent-<slug>
 
 # Platzhalter ersetzen ({{AGENT_ID}}, {{AGENT_NAME}}, {{AGENT_SLUG}},
-# {{INTEGRATION_ID}}, {{CAPABILITY_ID}}, {{AGENT_DESCRIPTION_DE}}, …)
+# {{AGENT_DESCRIPTION_DE}}, {{AGENT_DESCRIPTION_EN}}, {{ROLE_DESCRIPTION_DE}}, …
+# vollständige Liste: `placeholders:` in template.yaml)
 
 npm install
 node scripts/build-zip.mjs
@@ -53,13 +53,16 @@ Upload: `<your-omadia-host>` → Store → Upload, oder Admin-API
   (`de.byte5.agent.<slug>` → `query_<slug>`), systemPrompt-Concat aus
   `skills/*.md`, Hot-Install/Uninstall, Secret-Chain-Resolution, Logging-Prefix.
 
-Der Agent liefert nur: Manifest, Toolkit (Zod-Input + `run`), optional
-Skills, und bindet sich bei `activate` an Ziel-API/Services.
+Der Agent liefert nur: Manifest, den System-Prompt in `skills/` und ein
+`activate`, das ein leeres Toolkit (`tools: []`) zurückgibt. Kein Client,
+keine Secrets, keine externe API: die Runtime baut ohne Tools keine
+Tool-Loop. Braucht der Agent eine Datenquelle, ist `agent-integration` das
+richtige Template.
 
 ## Referenzen
 
-- Schema: `docs/harness-platform/manifest-schema.v1.yaml`
-- Entities: `docs/harness-platform/entity-registry.v1.yaml`
-- Beispiele: `docs/harness-platform/examples/agent-*.manifest.yaml`
-- Canonical: `middleware/src/agents/seo-analyst/`
+- Schema: Parser `adaptManifestV1` in `middleware/src/plugins/manifestLoader.ts`
+  (Typen: `middleware/src/api/admin-v1.ts`), Leitfaden `docs/creating-plugins.md`
+- Entities: `middleware/assets/entity-registry.v1.yaml`
+- Canonical (mit Toolkit): `middleware/packages/agent-seo-analyst/`
 - Runtime-Contract: `middleware/src/platform/pluginContext.ts`

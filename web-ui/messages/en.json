@@ -929,6 +929,7 @@
     "submit": "Sign in",
     "submitting": "Signing in…",
     "incorrectCredentials": "Incorrect email or password.",
+    "accountDisabled": "This account is disabled. Please ask an administrator to re-enable it.",
     "tooManyAttempts": "Too many sign-in attempts. Please wait {seconds, plural, one {# second} other {# seconds}} and try again.",
     "or": "or",
     "continueWith": "Continue with {provider}"
