@@ -16,6 +16,7 @@ import {
   requiresEffortBeta,
   supportsForcedToolChoice,
   supportsStrictTools,
+  supportsThinkingReplay,
   EFFORT_BETA,
   THINKING_BINDING_BETA,
 } from '@omadia/llm-adapter-anthropic';
@@ -1252,6 +1253,142 @@ test('the thinking-binding beta is appended to a caller\'s betas exactly once', 
   assert.equal(calls[2]?.params['thinking'], undefined);
   assert.equal(calls[2]?.options, undefined);
 });
+
+test('supportsThinkingReplay: only models whose default is adaptive thinking', () => {
+  // Omitting `thinking` already runs adaptive on these, so the replay field
+  // restates the default instead of turning thinking on.
+  for (const model of [
+    'claude-opus-5',
+    'claude-opus-5-5',
+    'claude-fable-5',
+    'claude-fable-5-1',
+    'claude-mythos-5-1',
+    'claude-sonnet-5-5',
+    'claude-haiku-5-5',
+    'anthropic:claude-opus-5-5',
+  ]) {
+    assert.equal(supportsThinkingReplay(model), true, model);
+  }
+  // Thinking off by default (adaptive would switch it on) or no adaptive at
+  // all (Haiku 4.5: a 400). `sonnet-5` must not match via `sonnet-5-5`.
+  for (const model of [
+    'claude-haiku-4-5',
+    'claude-haiku-4-5-20251001',
+    'claude-sonnet-4-6',
+    'claude-sonnet-5',
+    'claude-sonnet-5-20260101',
+    'claude-opus-4-8',
+    'claude-opus-4-6',
+  ]) {
+    assert.equal(supportsThinkingReplay(model), false, model);
+  }
+});
+
+/** The tool-loop history a primary always-thinking model left behind: its
+ *  thinking block ahead of a tool call, then the tool result. Exactly what the
+ *  orchestrator's fallback hop re-sends to a different model. */
+function replayedHistory() {
+  return [
+    { role: 'user' as const, content: [{ type: 'text' as const, text: 'Rechne' }] },
+    {
+      role: 'assistant' as const,
+      content: [
+        { type: 'reasoning' as const, provider: 'anthropic', raw: THINKING_BLOCK },
+        { type: 'reasoning' as const, provider: 'anthropic', raw: REDACTED_BLOCK },
+        { type: 'tool_call' as const, id: 'tu_1', name: 'lookup', input: { q: 'x' } },
+      ],
+    },
+    {
+      role: 'user' as const,
+      content: [{ type: 'tool_result' as const, toolCallId: 'tu_1', content: '42' }],
+    },
+  ];
+}
+
+/** Runs one request on either path and returns what reached the SDK. */
+async function captureRequest(
+  path: 'complete' | 'stream',
+  model: string,
+): Promise<{ params: Record<string, unknown>; options: unknown }> {
+  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+  const final = textResponse({ model });
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return final;
+      },
+      stream: (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { type: 'message_stop' };
+          },
+          finalMessage: async () => final,
+        };
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const req = { model, maxTokens: 64, messages: replayedHistory() };
+  if (path === 'complete') {
+    await provider.complete(req);
+  } else {
+    for await (const _ of provider.stream(req)) {
+      // drain
+    }
+  }
+  assert.equal(calls.length, 1);
+  return calls[0]!;
+}
+
+for (const path of ['complete', 'stream'] as const) {
+  test(`a model that takes thinking gets the blocks replayed (${path})`, async () => {
+    for (const model of ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5']) {
+      const { params, options } = await captureRequest(path, model);
+      const messages = params['messages'] as Array<{ content: unknown[] }>;
+      assert.equal(messages[1]?.content[0], THINKING_BLOCK, model);
+      assert.equal(messages[1]?.content[1], REDACTED_BLOCK, model);
+      assert.deepEqual(
+        params['thinking'],
+        { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } },
+        model,
+      );
+      assert.deepEqual(
+        options,
+        { headers: { 'anthropic-beta': THINKING_BINDING_BETA } },
+        model,
+      );
+    }
+  });
+
+  test(`a fallback model without default thinking gets the blocks stripped (${path})`, async () => {
+    // The orchestrator's fallback hop re-sends the primary's history verbatim:
+    // these models must see neither the blocks nor a `thinking` field (which
+    // would switch thinking on, or be a 400 on Haiku 4.5) nor the beta.
+    for (const model of [
+      'claude-haiku-4-5-20251001',
+      'claude-sonnet-4-6',
+      'claude-sonnet-5',
+      'claude-opus-4-8',
+    ]) {
+      const { params, options } = await captureRequest(path, model);
+      const messages = params['messages'] as Array<{ content: unknown[] }>;
+      assert.deepEqual(
+        messages[1]?.content,
+        [{ type: 'tool_use', id: 'tu_1', name: 'lookup', input: { q: 'x' } }],
+        model,
+      );
+      assert.deepEqual(
+        messages[2]?.content,
+        [{ type: 'tool_result', tool_use_id: 'tu_1', content: '42' }],
+        model,
+      );
+      assert.equal('thinking' in params, false, model);
+      assert.equal(options, undefined, model);
+    }
+  });
+}
 
 /** A response reporting that the API dropped a block it was sent. */
 const DROPPED = {

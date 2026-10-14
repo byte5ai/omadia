@@ -60,9 +60,15 @@ signature/ordering check.
   both under one condition and never separately. With it, the mid-turn prefix
   edits that remain (the finalize pass, a persona hop, a `/chat/steer` merge,
   privacy masking) degrade instead of failing the turn.
-- The field is sent only when the model itself emitted blocks earlier in the
-  same turn, so a Haiku route never sees it and no model has thinking switched
-  on by this change.
+- Blocks, field and header go only to a model whose default already is
+  adaptive thinking (`supportsThinkingReplay`: Opus 5 / 5.5, Fable 5 / 5.1,
+  Mythos 5 / 5.1, Sonnet 5.5, Haiku 5.5), and only when the turn already
+  holds Anthropic blocks — so the field restates the default and no model
+  has thinking switched on by this change. Every other model gets the blocks
+  stripped and no field, as before: that covers a Haiku route and the
+  orchestrator's fallback hop, which re-sends the primary's history to its
+  fallback model (on Haiku 4.5 `adaptive` would be a 400; on Opus 4.8,
+  Sonnet 4.6 and Sonnet 5 it would turn thinking on).
 - A dropped block is no longer silent: the adapter logs the response's
   `input_transformations` entries (`prefix_binding_mismatch` = something still
   edits the turn mid-flight, `model_binding_mismatch` = an expected provider
@@ -70,15 +76,17 @@ signature/ordering check.
 - Cross-turn history is unaffected — `priorTurns` are replayed as plain text,
   so no block crosses a turn boundary.
 - Tests: the round-trip and beta-header pairing in
-  `test/llmProviderAnthropicAdapter.test.ts` (drop logging covered on both the
+  `test/llmProviderAnthropicAdapter.test.ts` (drop logging, replay to a
+  thinking model and stripping for a fallback model each covered on both the
   `complete` and the `stream` path), the seam round-trip and the foreign-
   reasoning guard in `test/orchestratorLlmProviderSeam.test.ts`. Nothing
   covered thinking before.
 - Contract `@omadia/llm-provider-api` → 1.4.0 (additive: `ReasoningPart`, a
   fifth `ContentPart` member; the bump also covers the optional
-  `ToolSpec.strict` that #1365 added without one). `ProviderId` moved from `models.ts` to
-  `types.ts`, where it now types `LlmProvider.id` and `ReasoningPart.provider`;
-  `models.ts` re-exports it, so every import site is unchanged.
+  `ToolSpec.strict` that #1365 added without one). `ProviderId` moved from
+  `models.ts` to `types.ts`, where it now types `LlmProvider.id` and
+  `ReasoningPart.provider`; `models.ts` re-exports it, so every import site is
+  unchanged.
 - `fromContentPart` in the seam now ends in a `never` guard like its
   `toStopReason` neighbour: a sixth `ContentPart` member fails the BUILD
   instead of silently becoming an empty text block in a message the loop

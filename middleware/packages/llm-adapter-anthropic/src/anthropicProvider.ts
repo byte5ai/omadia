@@ -59,7 +59,8 @@ function toAnthropicResultPart(
 }
 
 /** Whether this part is reasoning THIS adapter produced. A foreign provider's
- *  reasoning is not a valid Anthropic block, so it is filtered, never sent. */
+ *  reasoning is not a valid Anthropic block, so it is filtered, never sent.
+ *  Whether the TARGET model may receive it is {@link supportsThinkingReplay}. */
 function isAnthropicReasoning(part: ContentPart): boolean {
   return part.type === 'reasoning' && part.provider === 'anthropic';
 }
@@ -87,19 +88,30 @@ function toAnthropicPart(part: ContentPart): AnthropicContentBlockParam {
         ...(part.isError !== undefined ? { is_error: part.isError } : {}),
       };
     case 'reasoning':
-      // Echoed back byte-for-byte — see `ReasoningPart`. Foreign reasoning
-      // never reaches here: `toAnthropicMessages` filters it out.
+      // Echoed back byte-for-byte — see `ReasoningPart`. Foreign reasoning,
+      // and any reasoning sent to a model that does not take it, never
+      // reaches here: `toAnthropicMessages` filters it out.
       return part.raw as AnthropicContentBlockParam;
   }
 }
 
+/**
+ * @param replayReasoning whether the target model takes replayed thinking
+ *   ({@link supportsThinkingReplay}). When false, EVERY reasoning part is
+ *   stripped — the pre-#1207 wire shape — so a fallback model never sees
+ *   blocks it cannot read nor a `thinking` field it did not ask for.
+ */
 function toAnthropicMessages(
   messages: ReadonlyArray<ChatMessage>,
+  replayReasoning: boolean,
 ): AnthropicMessageParam[] {
   return messages.map((m) => ({
     role: m.role,
     content: m.content
-      .filter((p) => p.type !== 'reasoning' || isAnthropicReasoning(p))
+      .filter(
+        (p) =>
+          p.type !== 'reasoning' || (replayReasoning && isAnthropicReasoning(p)),
+      )
       .map(toAnthropicPart),
   }));
 }
@@ -427,14 +439,51 @@ function effectiveToolChoice(req: LlmRequest): ToolChoice | undefined {
 export const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
 
 /**
+ * Model-id fragments of the models that run ADAPTIVE thinking when the
+ * `thinking` field is omitted: Claude Opus 5 / 5.5, Fable 5 / 5.1, Mythos
+ * 5 / 5.1, Sonnet 5.5 and Haiku 5.5. On these, sending
+ * `thinking: { type: 'adaptive', block_binding }` restates the default, so it
+ * never switches thinking on. An allowlist, not a denylist:
+ *
+ * - Opus 4.6/4.7/4.8, Sonnet 4.6 and Sonnet 5 run WITHOUT thinking unless
+ *   asked — `adaptive` there would turn it on behind the caller's back.
+ * - Haiku 4.5 and older do not accept `adaptive` at all (400).
+ * - `block_binding` requires adaptive thinking on every model.
+ *
+ * `sonnet-5-5`, not `sonnet-5`: the substring would also match Sonnet 5.
+ */
+const THINKING_REPLAY_SUPPORTED = [
+  'opus-5',
+  'fable-5',
+  'mythos-5',
+  'sonnet-5-5',
+  'haiku-5-5',
+];
+
+/**
+ * Whether replayed thinking blocks — and with them the `thinking` field and
+ * {@link THINKING_BINDING_BETA} — may be sent to this model. On any other
+ * model the blocks are stripped from the request instead (the pre-#1207
+ * behaviour), which matters on the fallback path: the turn's blocks were
+ * produced by the primary model and travel with the messages to whatever
+ * model the fallback names.
+ */
+export function supportsThinkingReplay(model: string): boolean {
+  return THINKING_REPLAY_SUPPORTED.some((m) => model.includes(m));
+}
+
+/**
  * Whether this request replays Anthropic thinking blocks.
  *
- * True only when the MODEL itself emitted blocks earlier in the same turn, so
- * a Haiku route — where thinking is off and nothing is ever replayed — never
- * sees the `thinking` field at all.
+ * True only when the target model takes them ({@link supportsThinkingReplay})
+ * AND it emitted blocks earlier in the same turn, so a route on any other
+ * model — the primary or a fallback — never sees the `thinking` field at all.
  */
 function carriesReasoning(req: LlmRequest): boolean {
-  return req.messages.some((m) => m.content.some(isAnthropicReasoning));
+  return (
+    supportsThinkingReplay(req.model) &&
+    req.messages.some((m) => m.content.some(isAnthropicReasoning))
+  );
 }
 
 function buildParams(req: LlmRequest): Record<string, unknown> {
@@ -444,16 +493,18 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
   return {
     model: req.model,
     max_tokens: req.maxTokens,
-    messages: toAnthropicMessages(req.messages),
+    messages: toAnthropicMessages(req.messages, supportsThinkingReplay(req.model)),
     ...(system !== undefined ? { system } : {}),
     // #1207 — a replayed block whose prefix no longer matches (the finalize
     // pass editing `system`/`tools`, a persona hop, a steer merged into an
     // earlier message, privacy masking) is DROPPED instead of failing the
     // turn with a 400. `adaptive` is the only thinking mode these models
-    // accept, and it is never a behaviour change: the field is sent only when
-    // the model already produced thinking blocks this turn, which means
-    // thinking was on. After a provider fallback to a different model the
-    // blocks are dropped as `model_binding_mismatch` — expected, and logged.
+    // accept, and it is never a behaviour change: the field is sent only to a
+    // model whose default already IS adaptive thinking
+    // (`supportsThinkingReplay`), and only when blocks are being replayed.
+    // A fallback to a model outside that list gets the blocks stripped and no
+    // field; a fallback inside it that cannot read the primary's blocks drops
+    // them as `model_binding_mismatch` — expected, and logged.
     ...(carriesReasoning(req)
       ? {
           thinking: {
