@@ -26,6 +26,20 @@ describe('stripCitationMarkers (#131)', () => {
     );
   });
 
+  it('removes markers with real graph ids — colons and dots included', () => {
+    expect(
+      stripCitationMarkers(
+        'Zwei Tickets [ref:turn:teams:19:abc@thread.v2:2026-10-07T09:16:00.000Z] beim Kunden [ref:odoo:res.partner:42].',
+      ),
+    ).toBe('Zwei Tickets beim Kunden.');
+  });
+
+  it('never joins lines when a marker starts one', () => {
+    expect(stripCitationMarkers('Erste Zeile\n[ref:odoo:res.partner:42] zweite')).toBe(
+      'Erste Zeile\n zweite',
+    );
+  });
+
   it('is a no-op when no markers are present', () => {
     const src = 'Plain prose without any marker.';
     expect(stripCitationMarkers(src)).toBe(src);

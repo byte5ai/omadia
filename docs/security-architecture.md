@@ -754,6 +754,61 @@ registry handler (`src/platform/pluginContext.ts`):
   A new native tool bound to shared or unscoped state must be routed or denied
   the same way before it is registered.
 
+### Context memory: what a turn may recall (`enforce-strict`, `members`)
+
+Per-agent switch `agents.context_memory`. Two modes put a boundary around
+**everything** a turn can read from conversation memory, not just the memory
+tree:
+
+| Mode | Boundary | Unknown case |
+|---|---|---|
+| `enforce-strict` | the turn's own conversation (graph scope) | no conversation scope → nothing |
+| `members` | knowledge of this agent whose `owners` include everyone present (audience ⊆ owners) | room not known (incomplete roster, unresolved member) → nothing, and the turn is owned by nobody |
+
+The surfaces that boundary must cover, and how each one does:
+
+- **Memory tree:** the binder's scope. A context turn gets `ro:core-notes`, so
+  the flat transcript trees (`/memories/sessions/`, `chat-sessions/`) are
+  unreadable. Under `members`, `MemoryBinder.forAudience` replaces the
+  channel/team/user tiers, which are shared with whoever joins a chat later:
+  - The room's owner set gets one writable tier (`members:<key>:*`).
+  - Larger owner sets that include everyone present are `ro:members:<key>:*`,
+    exposed as `/memories/~g-<key>/`.
+  - An unknown room gets no tier.
+  - The owner lists live in `members-index/`, outside every grant. An entry
+    whose owners do not hash to its key is ignored.
+  - A binder failure leaves the turn without a memory tool, never with the
+    channel tier.
+- **Automatic recall:** `retrievePriorContext` → `ContextRetriever` uses
+  `restrictToScope` or `audienceOwners` on every turn leg, the tail included.
+  Plans, processes and the session briefing carry no owners, so they are
+  skipped.
+- **`query_knowledge_graph` (in-process):** a per-turn view on all six
+  queries.
+- **`query_knowledge_graph` (registered handler):** this is the handler the
+  subscription-CLI path dispatches through, and it knows no turn. For an agent
+  in either mode it sees nothing. So does an in-process turn that carries no
+  isolation (context-free: web, API).
+- **Plugin `KnowledgeGraphAccessor`:** `searchTurns` and
+  `findEntityCapturedTurns` read the turn's `graphReadScope` holder and search
+  inside it.
+- **Curated memory:** under `members`, `acl_owners ⊇ audience`, or an
+  operator-authored row. "Operator-authored" means `manually_authored` and a
+  `created_by` that is not `auto:…`, because T3 durable auto-promotion sets
+  `manually_authored` too. `teamVisibility` does not widen the rule.
+
+The audience is the security input. A group counts as known only when its
+channel marks the roster complete (`ChatParticipantsProvider.completeRoster`).
+A roster cached across a member joining would hide the newcomer and let them
+read, so a channel that sets the flag must refresh the roster on membership
+events. Graph decorators must forward `getSession(scope, options)`; one that
+drops `options` drops the filter.
+
+Known residuals:
+- A knowledge-graph provider that predates plugin-api 1.26.0 ignores
+  `audienceOwners` and returns everything. The in-tree providers honour it.
+- Only turns that carry a `TurnOrigin` are context-bound.
+
 ## 4a. Third-party npm dependencies: audit gate, Dependabot scope, the desktop runtime
 
 Plugins are operator-curated (§4); the npm dependencies of the kernel, the
@@ -1334,6 +1389,9 @@ answer they check:
   the model wrote it, before restore. The request is admitted through the view
   (`admitWireView`, one verifier request in the receipt) but never masked a
   second time, which would read the turn's placeholders as new values. The
+  extractor's one repair attempt (an unusable `record_claims` response) is a
+  request of its own: admitted again, counted again, the same wire view plus
+  fixed static prose — and not sent at all if the view does not admit it. The
   pipeline's own `userMessage` (server-side checks; the extraction prompt when
   no shield is installed) is the same normalised text, never the envelope.
   A server-rendered v4 answer (`answerSource: 'privacy-render'`, real values
@@ -1371,8 +1429,13 @@ answer they check:
   Evidence is capped (3 snippets × 1200 chars) and the C1 timeout/degrade
   latch applies as for the prompt. Because a contradiction judged on
   placeholders can be an artefact of the substitution, it is reported as
-  `unverified`, never as a contradiction: it buys no correction retry, and
-  `enforce` withholds the answer as unconfirmed (§7c).
+  `unverified` (`cause: 'contradiction_unconfirmed'`), never as a
+  contradiction: it buys no correction retry, and since 2026-10-08 `enforce`
+  releases the answer with the "could not be confirmed automatically"
+  disclaimer (§7c). A contradiction judged on a request the shield masked
+  therefore cannot stop an answer; one judged on a request masking left
+  unchanged is rechecked and still can, and so can the deterministic
+  re-query on real values, the citation checks and the trace checks.
 - **Fail closed.** A blocked mask or projection sends nothing: a blocked
   extraction request rejects, so the verdict is `unavailable` /
   `extractor_error`, never an empty extraction; a blocked judge request
@@ -1380,7 +1443,8 @@ answer they check:
   installed but no continuation handed back, the wrapper does not verify at
   all (`verifierGate`; `enforce` withholds the answer as `unavailable` /
   `privacy_shield`). A provider without `projectVerifierText` blocks every
-  judge request. One without `countUnresolvedSurrogates` reports no
+  judge request, so an answer whose checks all go to the judge has every
+  check fail and `enforce` withholds it (`check_failed`). One without `countUnresolvedSurrogates` reports no
   placeholders, so the check under **Correction retry** never keeps a second
   answer back. The bundled privacy guard implements both from 0.6.0 on.
 - **Correction retry.** The hint carries no verifier evidence, with or
@@ -1849,7 +1913,8 @@ invariant cannot cover — a claim the model never lists — is stated below.
 - **The trigger patterns decide whether an answer is checked at all.**
   `shouldTriggerVerifier` (`harness-verifier/src/triggerRouter.ts`) hands an
   answer to the claim extractor only when one of its regular expressions
-  matches somewhere in the answer's text. They look for a euro amount (`€` or
+  matches somewhere in the answer's text, read without its `[ref:…]` citation
+  markers (a marker's id digits are no figure). They look for a euro amount (`€` or
   `EUR` next to a number), an accounting reference (`INV`, `SO`, `PO`, `RECH`,
   `MOVE`, `BILL`, `RG` or `CR` followed by at least two digits), a date
   written `yyyy-mm-dd` or `dd.mm.yyyy`, a percentage with one to three digits
@@ -1903,7 +1968,15 @@ invariant cannot cover — a claim the model never lists — is stated below.
   than was looked at. The summary counts the entries as `uncoveredCount`, and
   the web chat's tooltip says the verifier did not check all of the answer.
 - **The verbatim guard reports what it keeps out.** A claim must quote the
-  answer: the guard compares case-insensitively and lets any run of whitespace
+  answer as the user reads it: extraction and guard see the answer without its
+  `[ref:…]` citation markers (`stripCitationMarkers`, stripped exactly as every
+  channel strips them; the citation check alone reads them, on the raw
+  answer), since a marker mid-sentence made a faithful quote fail the guard.
+  A claim then gets the `odoo:` / `confluence:` record handles of the markers
+  that cite it, a marker citing the text of its sentence before it
+  (`withCitedRecords`), unless the extraction pinned a record itself. They
+  tell the evidence fetcher which record to look up and are never evidence.
+  The guard compares case-insensitively and lets any run of whitespace
   match any other (a line break the model writes as a space, a non-breaking
   space written as a plain one), and the claim then carries the answer's own
   span. A claim that quotes nothing — a paraphrase, or a subject stitched in
@@ -2031,20 +2104,57 @@ the stream summary and the stored row),
 ### `enforce` is a delivery gate, not a badge
 
 `VERIFIER_MODE=shadow` observes; `enforce` decides whether the user sees an
-answer. The wrapper releases an answer only when its bound verdict is
-`approved`, or `skipped` because no trigger pattern matched the answer or the
-extraction listed no claim in it (`no_trigger`, `no_claims`), and an answer
-released on either reason goes out unchecked (`verdictReleasesAnswer` in
-`harness-orchestrator/src/verifierDelivery.ts`). That includes an answer whose
-figures are all in formats the trigger patterns do not cover (above). Every
-other verdict withholds
-it; the gate fails closed: `blocked`, `approved_with_disclaimer` (a claim not
-confirmed, not checked or not covered), `skipped` with `no_checkable_claims` /
-`incomplete_coverage`, and `unavailable`. A withheld answer is replaced by a
-localized notice (`composeVerifierBlockedText`, `@omadia/channel-sdk`) marked
-`answerSource: 'verifier-blocked'` + `answerIsError: true`. The summary keeps
-the badge its verdict earns (a withheld, partly confirmed answer is `partial`,
-not `failed`), so the evidence rules above hold for withheld answers too.
+answer (`verdictReleasesAnswer` in
+`harness-orchestrator/src/verifierDelivery.ts`, applied to the bound verdict):
+
+- **Released** — `approved`, and `skipped` because no trigger pattern matched
+  the answer or the extraction listed no claim in it (`no_trigger`,
+  `no_claims`). An answer released on either reason goes out unchecked; that
+  includes an answer whose figures are all in formats the trigger patterns do
+  not cover (above).
+- **Released with a disclaimer** (since 2026-10-08) — `approved_with_disclaimer`
+  over at least one claim it could not confirm, none refuted: a claim the
+  evidence did not back, one no check ran on, a part of the answer the
+  extraction did not cover, a check that failed while another claim got a
+  real verdict, and a contradiction the evidence judge reported but could
+  not confirm (`cause: 'contradiction_unconfirmed'`: judged on Privacy Shield
+  placeholders, not reproduced on recheck, citing no evidence, evidence its
+  request never printed or another record than the claim pins); and
+  `skipped` with `no_checkable_claims` /
+  `incomplete_coverage` (`verdictNeedsDisclaimer`). The answer carries a
+  localized paragraph (`composeVerifierDisclaimerText`, `@omadia/channel-sdk`)
+  that it "could not be confirmed automatically" — "confirmed", not
+  "checked", because a claim the judge checked and found unsupported was
+  checked: "some statements" only when the counts are valid and show a
+  confirmed claim next to an unconfirmed one, "the statements" otherwise. So
+  an unconfirmed claim **can reach the user**; it is marked, never presented
+  as confirmed, and its badge stays `partial` or `unverified`. An answer that
+  ends with a `NO_REPLY` line gets the note before that line, so a channel
+  that honours the sentinel stays silent. Before, these answers were
+  withheld, which hid most real answers (claims no checker accepts are
+  common).
+- **Withheld** — the gate fails closed on `blocked` (a refutation, a missing or
+  invented citation, a call the turn never made), on `unavailable` (the
+  verifier could not run, or Privacy Shield kept the answer from it), and on
+  an `approved_with_disclaimer` whose every check that ran failed — no claim
+  got a real verdict (`withheldCause` `check_failed`), the same technical
+  fault as `unavailable`, claim by claim. A withheld answer is replaced by a
+  localized notice (`composeVerifierBlockedText`) marked
+  `answerSource: 'verifier-blocked'` + `answerIsError: true`.
+
+The summary keeps the badge its verdict earns (a withheld contradiction is
+`failed`, a withheld technical fault `unavailable`), so the evidence rules
+above hold for withheld and disclaimed answers too.
+The notice states the cause the claims support (`withheldCause`) and nothing
+stronger: only a claim a check refuted against its source
+(`ContradictionBasis` `evidence`) counts as a contradiction, earns `failed`
+and may be called one. A missing or invented citation, a live-data claim
+without the fetching call, a claimed failed or missing access with no failed
+call in the trace (`failedToolsCalled`), and a tool result that broke its
+schema each withhold the answer under their own cause. A missing-access claim
+needs a failed call; without any call the notice says no data was retrieved,
+with calls it says the statements could not be backed — never a claim the
+trace does not support.
 
 - **Stream: no content before the verdict.** `enforcedVerifiedStream` passes
   a closed allowlist of events while the verdict is pending
@@ -2478,9 +2588,11 @@ skip the #132 borderline resample. The rules:
   is exactly the unearned badge described above.
 
 Trade-off: a genuine contradiction whose citation the model mistypes counts
-as an unconfirmed claim, not as a contradiction: `partial` in `shadow`; in
-`enforce` the answer is withheld like any answer with an unconfirmed claim,
-but no correction retry is bought for it. That is accepted because a
+as an unconfirmed claim (`cause: 'contradiction_unconfirmed'`), not as a
+contradiction: `partial` in `shadow`; in `enforce` the answer goes out with
+the "could not be confirmed automatically" disclaimer, like any answer with
+an unconfirmed claim, and no correction retry is bought for it. That is
+accepted because a
 contradiction must point at evidence by contract, and the deterministic
 checker (hard claims, anchored Odoo records, the trace cross-check) still
 blocks on its own.
@@ -5299,7 +5411,8 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       included (§6f). A claim about
       what the verifier checks names its trigger patterns and the answers
       `enforce` delivers unchecked, an input-card turn's rendered answer
-      included (§7c).
+      included, and those it delivers with the "could not be confirmed
+      automatically" disclaimer (§7c).
       A claim that a call runs once names the scope the code gives it: one
       request for the verifier's replay ledger, one process and the cache
       window for an idempotency key (§4, §7c).
@@ -5361,4 +5474,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§6f: the org clamp covers MCP-to-knowledge-graph ingestion, and intern-exempt tools' errors are redacted or withheld like any tool's; §6c: positional record dumps and personal `key=value` pairs are withheld whole; §6f: the memory jobs mask the stored text they send to their model whatever `mask_user_prompt` says, in a turn through its handle and outside one through `openStoredTextScope`, and masking embeddings stays open; §4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict and withholds what it could not confirm; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*
+*Last reviewed: 2026-10 (§6f: the org clamp covers MCP-to-knowledge-graph ingestion, and intern-exempt tools' errors are redacted or withheld like any tool's; §6c: positional record dumps and personal `key=value` pairs are withheld whole; §6f: the memory jobs mask the stored text they send to their model whatever `mask_user_prompt` says, in a turn through its handle and outside one through `openStoredTextScope`, and masking embeddings stays open; §4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict, withholds an answer with a refuted claim or one it could not check (the verifier could not run, every check failed, or Privacy Shield kept the answer from it), and releases one it could not fully confirm with a disclaimer; extraction, its verbatim guard and the trigger read the answer without its `[ref:…]` markers, and a marker's record handle pins the claims it cites; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*

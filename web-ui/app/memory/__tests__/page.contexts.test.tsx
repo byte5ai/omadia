@@ -38,6 +38,8 @@ const AGENT = 'de.byte5.agent.hr';
 const TEAM_KEY = 'teams~19-abc-thread-tacv2-a1b2c3d4';
 const CHANNEL_KEY = 'teams~19-chan-thread-tacv2-c3d4e5f6';
 const CHANNEL_ROOT = `/memories/contexts/${AGENT}/channel/${CHANNEL_KEY}`;
+const MEMBERS_KEY = 'a3191014ead5e066a02a39bc57004781';
+const MEMBERS_ROOT = `/memories/contexts/${AGENT}/members/${MEMBERS_KEY}`;
 
 // Hoisted with the mocks: the factory below runs while the module graph is
 // still being imported, so plain module-level consts would be in the TDZ.
@@ -50,11 +52,13 @@ const {
   MockApiError,
   mockGetMemoryBackend,
   mockListMemoryContextLabels,
+  mockListMemoryMemberGroups,
   mockListMemoryPromotions,
   mockPromoteMemory,
   mockPreviewMemoryPurge,
   mockPurgeMemory,
 } = vi.hoisted(() => ({
+  mockListMemoryMemberGroups: vi.fn(),
   MockApiError: class MockApiError extends Error {
     constructor(
       public status: number,
@@ -76,6 +80,7 @@ vi.mock('@/app/_lib/api', () => ({
   ApiError: MockApiError,
   getMemoryBackend: mockGetMemoryBackend,
   listMemoryContextLabels: mockListMemoryContextLabels,
+  listMemoryMemberGroups: mockListMemoryMemberGroups,
   listMemoryPromotions: mockListMemoryPromotions,
   promoteMemory: mockPromoteMemory,
   previewMemoryPurge: mockPreviewMemoryPurge,
@@ -98,7 +103,10 @@ function buildStore(): Record<string, string[]> {
     '/memories/contexts': [AGENT],
     // The stray file is the one thing in a context tree that is NOT promotable:
     // it sits above any tier, so it names no source context.
-    [`/memories/contexts/${AGENT}`]: ['team', 'channel', 'user', '+notes.md'],
+    [`/memories/contexts/${AGENT}`]: ['team', 'channel', 'user', 'members', 'members-index', '+notes.md'],
+    [`/memories/contexts/${AGENT}/members`]: [MEMBERS_KEY],
+    [MEMBERS_ROOT]: ['+kranich.md'],
+    [`/memories/contexts/${AGENT}/members-index`]: [`+${MEMBERS_KEY}.json`],
     [`/memories/contexts/${AGENT}/team`]: [TEAM_KEY],
     [`/memories/contexts/${AGENT}/channel`]: [CHANNEL_KEY],
     [`/memories/contexts/${AGENT}/user`]: [],
@@ -422,5 +430,60 @@ describe('danger zone — context-key selector semantics', () => {
     expect(
       screen.getByPlaceholderText('telegram~-1001234567890 (never a bare id)'),
     ).toBeInTheDocument();
+  });
+});
+
+describe('memory browser — members notes', () => {
+  beforeEach(() => {
+    mockGetMemoryBackend.mockResolvedValue({ current: 'inmemory' });
+    mockListMemoryContextLabels.mockRejectedValue(new MockApiError(404, 'nope'));
+    mockListMemoryPromotions.mockResolvedValue({ entries: [] });
+    mockListMemoryMemberGroups.mockResolvedValue({
+      groups: [
+        {
+          key: MEMBERS_KEY,
+          path: MEMBERS_ROOT,
+          owners: [
+            { id: 'u-1', displayName: 'Marcel', email: null },
+            { id: 'u-2', displayName: null, email: 'chris@example.com' },
+            { id: 'u-3', displayName: null, email: null },
+          ],
+        },
+      ],
+    });
+    installFetch(buildStore());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  const GROUP_LABEL = 'Marcel, chris@example.com, unknown person';
+
+  it('lists a member group under its people, never the owner index', async () => {
+    renderWithIntl(<MemoryPage />);
+
+    expect(await screen.findByText('Member groups (1)')).toBeInTheDocument();
+    const group = await screen.findByRole('button', { name: GROUP_LABEL });
+    expect(group).toHaveAttribute('title', MEMBERS_ROOT);
+    expect(screen.queryByRole('button', { name: /members-index/ })).not.toBeInTheDocument();
+  });
+
+  it('falls back to the key when the names cannot be listed', async () => {
+    mockListMemoryMemberGroups.mockRejectedValue(new MockApiError(404, 'nope'));
+    renderWithIntl(<MemoryPage />);
+
+    expect(await screen.findByRole('button', { name: MEMBERS_KEY })).toBeInTheDocument();
+  });
+
+  it('explains a member group’s notes and never offers Promote for them', async () => {
+    const user = userEvent.setup();
+    renderWithIntl(<MemoryPage />);
+
+    await user.click(await screen.findByRole('button', { name: GROUP_LABEL }));
+    await user.click(await screen.findByRole('button', { name: /kranich\.md/ }));
+    expect(await screen.findByText(/They cannot be promoted/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /promote…/i })).not.toBeInTheDocument();
   });
 });

@@ -111,6 +111,8 @@ export type {
 // channel-plugins-final (S+11) and the orchestrator-plugin (S+10-3/4) can
 // consume `ChatAgent` without depending on the concrete Orchestrator class.
 export type {
+  AnswerVerbosityInfo,
+  AnswerVerbosityLevel,
   ChatAgent,
   ChatStreamObserver,
   ChatTurnInput,
@@ -118,6 +120,7 @@ export type {
   ChatTurnResult,
   VerifierResultSummary,
   VerifierSummaryReason,
+  VerifierWithheldCause,
   RunTracePayload,
   RunStatus,
   RunToolCall,
@@ -132,6 +135,9 @@ export type {
   PendingRoutineList,
   AgentMeta,
 } from './chatAgent.js';
+// Phase 3 — the answer-size scale by VALUE: the orchestrator re-exports it
+// (single definition), channels validate card payloads against it.
+export { ANSWER_VERBOSITY_LEVELS } from './chatAgent.js';
 
 // Conversion helper from kernel-shaped result to channel-agnostic outgoing
 // message — lifted from `services/orchestrator.ts` in S+10-2 so channel
@@ -188,9 +194,12 @@ export { composeTurnIncompleteText } from './turnIncomplete.js';
 // through the same locale mechanism as the turn-incomplete notice above.
 export {
   composeVerifierBlockedText,
+  composeVerifierDisclaimerText,
   verifierBlockedCause,
 } from './verifierBlocked.js';
 export type { VerifierBlockedCause } from './verifierBlocked.js';
+// `[ref:…]` citation markers are verifier input; every channel strips them.
+export { stripCitationMarkers } from './citationMarkers.js';
 
 // Org security postures + provenance-labelled inbound screening (#579). Shared
 // primitives — the posture model, tighten-only floor math, the provenance

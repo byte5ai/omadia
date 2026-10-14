@@ -1518,12 +1518,51 @@ function createKnowledgeGraphAccessor(
       // hardening pass MAY parse out the prefix and assert it's allowed.
       return resolveKg().ingestFacts(facts);
     },
-    searchTurns: (opts2) => resolveKg().searchTurns(opts2),
-    findEntityCapturedTurns: (opts2) =>
-      resolveKg().findEntityCapturedTurns(opts2),
+    // A domain tool running inside a turn whose agent restricts the graph
+    // (`enforce-strict`, `members`) searches within that turn's boundary, not
+    // the tenant: otherwise it would be a side door past the recall legs.
+    searchTurns: async (opts2) => {
+      const bounded = boundTurnSearch(opts2);
+      if (bounded === null) return [];
+      const hits = await resolveKg().searchTurns(bounded.options);
+      return hits.filter((h) => bounded.scopeAllowed(h.scope));
+    },
+    findEntityCapturedTurns: async (opts2) => {
+      const bounded = boundTurnSearch(opts2);
+      if (bounded === null) return [];
+      const hits = await resolveKg().findEntityCapturedTurns(bounded.options);
+      return hits
+        .map((hit) => ({ ...hit, turns: hit.turns.filter((t) => bounded.scopeAllowed(t.scope)) }))
+        .filter((hit) => hit.turns.length > 0);
+    },
     getNeighbors: (nodeId) => resolveKg().getNeighbors(nodeId),
     stats: () => resolveKg().stats(),
   };
+}
+
+/**
+ * The current turn's graph boundary (`TurnContextValue.graphReadScope`)
+ * applied to a plugin's turn search: the options to pass down plus an exact
+ * scope check for the hits (the `agentScopePrefix` pre-filter is a LIKE).
+ * `null` = this turn may see no turns at all. Outside a restricted turn the
+ * options pass through unchanged.
+ */
+export function boundTurnSearch<T extends { agentScopePrefix?: string; audienceOwners?: readonly string[] }>(
+  options: T,
+): { options: T; scopeAllowed: (scope: string) => boolean } | null {
+  const bound = turnContext.current()?.graphReadScope?.value;
+  if (!bound) return { options, scopeAllowed: () => true };
+  if (bound.kind === 'nothing') return null;
+  if (bound.kind === 'members') {
+    if (!bound.audience) return null;
+    return {
+      options: { ...options, agentScopePrefix: bound.agentScopePrefix, audienceOwners: bound.audience },
+      scopeAllowed: (scope) => scope.startsWith(bound.agentScopePrefix),
+    };
+  }
+  const only = bound.scope;
+  if (!only) return null;
+  return { options: { ...options, agentScopePrefix: only }, scopeAllowed: (scope) => scope === only };
 }
 
 // ---------------------------------------------------------------------------

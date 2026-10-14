@@ -1,4 +1,4 @@
-import type { RunTracePayload } from './runTraceCollector.js';
+import { knowledgeGraphRefsOf, type RunTracePayload } from './runTraceCollector.js';
 
 /**
  * What the answer verifier reads from a turn's run trace: the tools and
@@ -53,6 +53,39 @@ export function extractKnowledgeGraphToolsCalled(
     }
   }
   return false;
+}
+
+/**
+ * The source ids this turn's knowledge-graph results showed the model — what
+ * a `[ref:…]` marker may name. Undefined when there is no trace or the trace
+ * predates the field; an empty list when the graph returned nothing citable.
+ */
+export function extractKnowledgeGraphRefs(
+  trace: RunTracePayload | undefined,
+): readonly string[] | undefined {
+  return trace ? knowledgeGraphRefsOf(trace) : undefined;
+}
+
+/**
+ * Names of the calls in this turn that failed (`isError`), orchestrator and
+ * sub-agent alike. A claim of a failed or missing access needs one of them.
+ * Undefined when no trace is available.
+ */
+export function extractFailedToolsCalled(
+  trace: RunTracePayload | undefined,
+): string[] | undefined {
+  if (!trace) return undefined;
+  const names = new Set<string>();
+  for (const call of trace.orchestratorToolCalls) {
+    if (call.isError) names.add(call.toolName);
+  }
+  for (const invocation of trace.agentInvocations) {
+    if (invocation.status === 'error') names.add(invocation.agentName);
+    for (const call of invocation.toolCalls) {
+      if (call.isError) names.add(call.toolName);
+    }
+  }
+  return [...names];
 }
 
 /**
