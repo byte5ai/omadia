@@ -134,7 +134,7 @@ setup:
       label: "Max Output Tokens"
       type: "string"
       required: false
-      help: "Maximum response-Tokens pro Turn. Default: 4096. Migriert aus ORCHESTRATOR_MAX_TOKENS."
+      help: "Maximum Output-Tokens pro Turn — inklusive Thinking, das bei Always-Thinking-Modellen mitzählt. Default: 32000 (auch Floor — niedrigere installierte Werte werden hochgesetzt); auf das Output-Limit des gewählten Modells heruntergeklemmt. Migriert aus ORCHESTRATOR_MAX_TOKENS."
     - key: "max_tool_iterations"
       label: "Max Tool-Loop Iterations"
       type: "string"
