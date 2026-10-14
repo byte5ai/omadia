@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — no tool escalation into a text-only sub-agent turn
+
+2026-10-14 — When a sub-agent with a declared obligation tool
+(`expectedTurnToolUse`) stopped after repeated identical tool failures, the
+loop already forced the next request to text-only (`tool_choice: none`), but
+the OB-31 escalation still fired on the text answer: it pushed a "Rufe `x`
+jetzt auf" reminder and paid for one more round-trip in which the model was
+told to call a tool the request forbade. The escalation now checks the
+text-only state instead of only the last iteration, so the turn ends with the
+answer. Found in #1300 by Sophie Neumann.
+
 ### Added — answer size in the web chat (stream `done` + "Kürzer" / "Mehr Details")
 
 2026-10-09 — The stream `done` event now carries `answerVerbosity` like the
