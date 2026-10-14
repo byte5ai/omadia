@@ -3,9 +3,10 @@ schema_version: "1"
 # ===========================================================================
 # Pure-LLM Agent Template — {{AGENT_NAME}}
 # ---------------------------------------------------------------------------
-# Schema of truth:  docs/harness-platform/manifest-schema.v1.yaml
-# Entity types:     docs/harness-platform/entity-registry.v1.yaml
-# Reference impl:   docs/harness-platform/boilerplate/agent-integration/
+# Schema of truth:  adaptManifestV1 in middleware/src/plugins/manifestLoader.ts
+#                   (types: middleware/src/api/admin-v1.ts)
+# Entity types:     middleware/assets/entity-registry.v1.yaml
+# Sibling template: middleware/assets/boilerplate/agent-integration/
 #
 # This template targets agents whose value is in the system prompt + the
 # orchestrator's reasoning, not in calling an external API. No depends_on,
@@ -66,9 +67,12 @@ setup:
   fields: []
   self_test: false                       # nothing to ping
 
+# Model hint only. No "tool_use": this agent makes no tool calls. The
+# runtime reads nothing from this list today (dynamicAgentRuntime only looks
+# at an object-form `llm.prefers.model`), so it documents intent.
 llm:
   prefers:
-    - capabilities: ["tool_use"]
+    - capabilities: []
       min_context: 100000
       class: "frontier"
       temperature_hint: 0.3              # leans toward generative work

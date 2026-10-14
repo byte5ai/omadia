@@ -11,11 +11,18 @@ import {
   type ProviderSummaryLike,
 } from '../src/pairing/discovery.js';
 
+/**
+ * `secure` is what express's `req.secure` would be — the connection's TLS
+ * state, with `x-forwarded-proto` applied only for a hop
+ * `TRUSTED_PROXY_ADDRESSES` names (#1310). `encrypted` is the socket-level
+ * fallback for a caller with no express request. Neither is ever derived here
+ * from a header the client could have written.
+ */
 function req(
   headers: Record<string, string | string[] | undefined>,
-  encrypted = false,
+  opts: { encrypted?: boolean; secure?: boolean } = {},
 ): PairingRequestInfo {
-  return { headers, encrypted };
+  return { headers, ...opts };
 }
 
 test('resolveScheme: plain HTTP request → ws + host', () => {
@@ -29,17 +36,15 @@ test('resolveScheme: plain HTTP request → ws + host', () => {
 });
 
 test('resolveScheme: direct TLS socket → wss', () => {
-  const s = resolveScheme(req({ host: 'omadia.local' }, true));
+  const s = resolveScheme(req({ host: 'omadia.local' }, { encrypted: true }));
   assert.equal(s.secure, true);
   assert.equal(s.wsProto, 'wss');
 });
 
-test('resolveScheme: honours x-forwarded-proto/host (behind Fly edge)', () => {
+test('resolveScheme: a trusted hop reporting https (req.secure) → wss', () => {
   const s = resolveScheme(
-    req({
-      host: 'internal:8080',
-      'x-forwarded-proto': 'https',
-      'x-forwarded-host': 'omadia.example.com',
+    req({ host: 'internal:8080', 'x-forwarded-host': 'omadia.example.com' }, {
+      secure: true,
     }),
   );
   assert.equal(s.httpProto, 'https');
@@ -47,12 +52,22 @@ test('resolveScheme: honours x-forwarded-proto/host (behind Fly edge)', () => {
   assert.equal(s.host, 'omadia.example.com');
 });
 
-test('resolveScheme: takes first value of comma-joined forwarded headers', () => {
+test('resolveScheme: a raw x-forwarded-proto does NOT make the scheme https (#1310)', () => {
+  // The client writes this header. It used to decide the scheme of the
+  // pairing and login URLs the same client was then handed; express applies
+  // it now, and only for a hop TRUSTED_PROXY_ADDRESSES names.
   const s = resolveScheme(
-    req({
-      host: 'h',
-      'x-forwarded-proto': 'https, http',
-      'x-forwarded-host': 'public.example.com, internal',
+    req({ host: 'internal:8080', 'x-forwarded-proto': 'https' }),
+  );
+  assert.equal(s.secure, false);
+  assert.equal(s.httpProto, 'http');
+  assert.equal(s.wsProto, 'ws');
+});
+
+test('resolveScheme: takes first value of comma-joined x-forwarded-host', () => {
+  const s = resolveScheme(
+    req({ host: 'h', 'x-forwarded-host': 'public.example.com, internal' }, {
+      secure: true,
     }),
   );
   assert.equal(s.host, 'public.example.com');
@@ -61,7 +76,7 @@ test('resolveScheme: takes first value of comma-joined forwarded headers', () =>
 
 test('resolveCanvasWsUrl: derives absolute URL from request origin', () => {
   const url = resolveCanvasWsUrl(
-    req({ host: 'omadia.example.com', 'x-forwarded-proto': 'https' }),
+    req({ host: 'omadia.example.com' }, { secure: true }),
   );
   assert.equal(url, `wss://omadia.example.com${CANVAS_WS_PATH}`);
 });
@@ -92,7 +107,7 @@ test('buildPairingDescriptor: password provider → mode password + absolute log
     { id: 'local', displayName: 'Password', kind: 'password' },
   ];
   const d = buildPairingDescriptor(
-    req({ host: 'omadia.example.com', 'x-forwarded-proto': 'https' }),
+    req({ host: 'omadia.example.com' }, { secure: true }),
     { providers },
   );
   assert.equal(d.auth.mode, 'password');

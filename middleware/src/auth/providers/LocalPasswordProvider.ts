@@ -10,9 +10,12 @@ import type { PasswordAuthResult, PasswordProvider } from './AuthProvider.js';
  *
  * Hash verification uses argon2id via passwordHasher. Failure paths return
  * the same `invalid_credentials` code regardless of whether the email
- * exists or the password mismatched — keeps the error-channel free of
- * user-enumeration leaks (the timing channel is mitigated implicitly by
- * argon2's constant-time compare and a fixed-cost dummy hash on miss).
+ * exists, the password mismatched, or the account is disabled — keeps the
+ * error-channel free of user-enumeration leaks (the timing channel is
+ * mitigated implicitly by argon2's constant-time compare and a fixed-cost
+ * dummy hash on miss). `user_disabled` is the one code that names an account,
+ * so it is returned only after the password verified: every password-less
+ * attempt, whatever the row says, gets `invalid_credentials` after one verify.
  *
  * Attempt limits are not this class's job: `POST /login/:id` runs every
  * call through the sign-in rate limiter first (routes/authLogin.ts,
@@ -106,20 +109,22 @@ export class LocalPasswordProvider implements PasswordProvider {
       };
     }
 
-    if (user.status !== 'active') {
-      return {
-        outcome: 'error',
-        code: 'user_disabled',
-        message: `local user ${creds.email} is disabled`,
-      };
-    }
-
     const ok = await verifyPassword(user.passwordHash, creds.password);
     if (!ok) {
       return {
         outcome: 'error',
         code: 'invalid_credentials',
         message: `password mismatch for ${creds.email}`,
+      };
+    }
+
+    // After the verify, never before it: checking the status first made
+    // `user_disabled` an enumeration oracle readable without a password (#1311).
+    if (user.status !== 'active') {
+      return {
+        outcome: 'error',
+        code: 'user_disabled',
+        message: `local user ${creds.email} is disabled`,
       };
     }
 

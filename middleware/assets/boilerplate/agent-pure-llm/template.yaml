@@ -54,8 +54,9 @@ skip_files:
   - CLAUDE.md
   - template.yaml
   # README.md is a doc-only file with literal {{PLACEHOLDER}} examples in
-  # code-block bodies (illustrating the placeholder mechanism, including
-  # `{{INTEGRATION_ID}}` / `{{CAPABILITY_ID}}` from the integration sibling
-  # template). Skipping it avoids the post-codegen no-residue check
-  # tripping over those examples — matches the agent-integration skip-set.
+  # code-block bodies (illustrating the placeholder mechanism). Skipping it
+  # avoids the post-codegen no-residue check tripping over those examples
+  # — matches the agent-integration skip-set. #1217 removed this file's
+  # `{{INTEGRATION_ID}}` / `{{CAPABILITY_ID}}` examples: they came from the
+  # integration sibling and are not in this template's placeholder map.
   - README.md

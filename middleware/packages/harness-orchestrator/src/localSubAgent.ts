@@ -317,11 +317,16 @@ export class LocalSubAgent {
           // the whole mechanism. After the escalation iteration we honor
           // whatever stop_reason comes back — no second-chance loop. A
           // refusal never gets here; it ended the run above.
+          // `!forceTextOnly`, not just `!isLastIteration`: once a repeat
+          // failure has withdrawn the tools (sticky `tool_choice: none`),
+          // the model cannot call the obligation tool any more, so an
+          // escalation would only buy a round-trip whose reminder
+          // contradicts the request it rides on. Let the turn end.
           if (
             expectedTurnToolUse !== undefined &&
             !calledExpectedTool &&
             escalationsUsed < maxEscalations &&
-            !isLastIteration
+            !forceTextOnly
           ) {
             escalationsUsed += 1;
             forceExpectedToolNext = true;

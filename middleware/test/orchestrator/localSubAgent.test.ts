@@ -571,6 +571,57 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     assert.equal(reminderCount, 0);
   });
 
+  it('does NOT escalate into a text-only turn after a repeat-failure stop (found in #1300)', async () => {
+    // Iter 0..2: the model calls a DIFFERENT tool (patch_spec) three times
+    // with identical input and gets the same error each time → repeat-failure
+    // detection withdraws the tools (tool_choice:none) from iter 3 on.
+    // Iter 3: the model answers text-only. The obligation tool fill_slot was
+    // never called, but escalating now would tell the model to call it while
+    // every following request forbids tools — a contradictory, wasted
+    // round-trip. The loop must return the answer instead (4 calls, not 5;
+    // a 5th call would also exhaust the stub script and throw).
+    const dupInput = { patches: [{ op: 'add', path: '/x', value: 1 }] };
+    const { provider, calls } = stubProvider([
+      { content: [toolUse('t1', 'patch_spec', dupInput)], stop_reason: 'tool_use' },
+      { content: [toolUse('t2', 'patch_spec', dupInput)], stop_reason: 'tool_use' },
+      { content: [toolUse('t3', 'patch_spec', dupInput)], stop_reason: 'tool_use' },
+      { content: [textBlock('Ich komme nicht weiter — Schema-Fehler.')], stop_reason: 'end_turn' },
+    ]);
+    const agent = new LocalSubAgent({
+      name: 'test',
+      provider,
+      model: 'claude-haiku',
+      maxTokens: 1024,
+      maxIterations: 20,
+      systemPrompt: 'you are a test',
+      tools: [
+        { spec: baseToolSpec, handle: async () => 'Error: schema rejected' },
+        { spec: fillSlotSpec, handle: async () => 'ok' },
+      ],
+    });
+    const answer = await agent.ask('baue alle slots', undefined, {
+      expectedTurnToolUse: 'fill_slot',
+    });
+    assert.equal(answer, 'Ich komme nicht weiter — Schema-Fehler.');
+    assert.equal(calls.length, 4);
+    assert.deepEqual(calls[3]?.toolChoice, { type: 'none' });
+    // No request ever carried an escalation reminder naming the tool.
+    for (const call of calls) {
+      const msgs = call.messages as Array<{ role: string; content: ContentPart[] | string }>;
+      const escalations = msgs.filter(
+        (m) =>
+          m.role === 'user' &&
+          (typeof m.content === 'string'
+            ? m.content.includes('Rufe `fill_slot` jetzt auf')
+            : m.content.some(
+                (part) =>
+                  part.type === 'text' && part.text.includes('Rufe `fill_slot` jetzt auf'),
+              )),
+      );
+      assert.equal(escalations.length, 0);
+    }
+  });
+
   it('does nothing special when expectedTurnToolUse is unset', async () => {
     // Spec-Phase scenario: BuilderAgent did NOT pass expectedTurnToolUse
     // because the user message was a question, not a build command.

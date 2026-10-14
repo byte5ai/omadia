@@ -94,6 +94,151 @@ signature/ordering check.
   sends on. Only the INBOUND vendor-block mapper stays lenient, which is
   what lets an unknown future block type through.
 
+### Fixed — no tool escalation into a text-only sub-agent turn
+
+2026-10-14 — When a sub-agent with a declared obligation tool
+(`expectedTurnToolUse`) stopped after repeated identical tool failures, the
+loop already forced the next request to text-only (`tool_choice: none`), but
+the OB-31 escalation still fired on the text answer: it pushed a "Rufe `x`
+jetzt auf" reminder and paid for one more round-trip in which the model was
+told to call a tool the request forbade. The escalation now checks the
+text-only state instead of only the last iteration, so the turn ends with the
+answer. Found in #1300 by Sophie Neumann.
+
+### Fixed — the pure-LLM agent boilerplate no longer prescribes tools it has none of (#1217)
+
+2026-10-06 — `middleware/assets/boilerplate/agent-pure-llm/` was a copy of
+its tool-based sibling `agent-integration`, and the copy still read like one.
+The expert skill partial `skills/{{AGENT_SLUG}}-expert.md` told the agent it
+works "ausschließlich mit den strukturierten Outputs deiner Tools
+(`{{CAPABILITY_ID}}`, …)" and forbade any assessment without tool data — for
+a template whose `manifest.yaml` ships `capabilities: []`. `CAPABILITY_ID` is
+not in this template's `placeholders:` map either; `buildPlaceholderMap` only
+backs it from `spec.tools[0]`, which a pure-LLM spec never has. Generated
+plugins were never affected (the required `skill-prompt` slot overwrites that
+whole marker region), but the builder reads the boilerplate as its worked
+example for tool-less agents, so the contradiction was teaching the wrong
+contract.
+
+The prompt body is now tool-less, and keeps the two rules that were never
+about tools: no invented facts, and no smalltalk/hedging. The same
+copy-paste residue is gone from the template's docs, which
+`builderReferenceCatalog` exposes to the model as `read_reference` roots
+alongside the code: the `{{INTEGRATION_ID}}` / `{{CAPABILITY_ID}}` rows in
+`CLAUDE.md`'s placeholder table, its "Capabilities verdichten — `client.ts`
++ `toolkit.ts`" step (this template has neither file), and `README.md`'s
+layout tree and Quick-Start placeholder list.
+
+A second pass took out what was left. `CLAUDE.md`'s worked example was a
+SharePoint search agent, which needs an integration; it is now a tone
+reviewer that works only on the user's text. §6 and §8 say the template ships
+`tools: []` and keep the `ToolDescriptor` / Zod matrix only as reference for
+a switch to `agent-integration`. `README.md` no longer promises a toolkit,
+`tsconfig.json` no longer includes the absent `toolkit.ts` / `client.ts`, and
+`manifest.yaml`'s `llm.prefers` drops `tool_use` (nothing reads that list, so
+runtime behaviour is unchanged). References to the gitignored
+`docs/harness-platform/` now point at the public files: the manifest parser
+(`manifestLoader.ts`), `middleware/src/api/admin-v1.ts`,
+`middleware/assets/entity-registry.v1.yaml` and the boilerplate's own path.
+
+### Fixed — auth cookies and pairing URLs take their scheme from the connection (#1310)
+
+2026-10-07 — `isSecureContext` read `x-forwarded-proto` straight off the
+request, and `trust proxy` was `true`, so the sender of a request chose whether
+its own session, login-device and OIDC PKCE cookies were marked `Secure`:
+`Secure` on a plain-HTTP login that sent the header, none behind a TLS proxy
+that did not. Reported against v0.168.4. `requestIsSecure`
+(`middleware/src/http/requestTrust.ts`) now reads `req.secure`.
+
+A hop count is not the fix, which is why the new `TRUSTED_PROXY_ADDRESSES`
+takes addresses and refuses a bare number at boot: Express counts trusted hops
+from the server *including the immediate peer*, so `1`, `2` and `'loopback'`
+all still believe a forged header from a direct client. Default is empty —
+trust no hop.
+
+`PUBLIC_SCHEME` (`auto` | `https` | `http`) is the half narrowing cannot
+supply: a proxy that terminates TLS and sets no header leaves `req.secure`
+false under every `trust proxy` value. One setting rather than a cookie flag,
+because the pairing descriptor's `https`/`wss` URLs ride on the same question —
+a `ws://` URL on an HTTPS page is blocked as mixed content. `resolveScheme` and
+`@omadia/ui-channel`'s `absoluteCanvasWsUrl` read it too; `X-Forwarded-Host`
+is unchanged.
+
+The web-ui declares its own scheme as `WEB_UI_PUBLIC_SCHEME`, read by one
+helper for both places that process decides a scheme: the `X-Forwarded-Proto`
+the `/bot-api` proxy states to the middleware, and the browser-facing pairing
+descriptor it serves at `/.well-known/omadia-ui`, whose `operatorOrigin` also
+read the raw header. Neither can derive it — a Next Route Handler has no socket,
+and `req.nextUrl.protocol` is built by next from that same header. Fly and
+Render declare `https` on both processes; the compose stack keeps the plain-HTTP
+defaults.
+
+`TRUSTED_PROXY_ADDRESSES` also refuses a `/0` block: `0.0.0.0/0` matches every
+address, so it was `trust proxy = true` wearing a netmask, accepted silently
+while a bare `1` was refused. Migration and a `curl` check:
+`docs/upgrading.md`, "Upgrading past v0.176.0". Trust boundary and the measured
+`trust proxy` table: `docs/security-architecture.md` §10o.
+
+### Security — local login no longer reveals disabled accounts (#1311)
+
+2026-10-07 — `LocalPasswordProvider` checked `user.status` before it verified
+the password, so a 401 `auth.user_disabled` came back for a disabled account
+whatever the password was — readable by anyone, and faster than the other
+failure paths because it returned before argon2 ran. The error channel told an
+attacker that an address had an account and that it was switched off; the login
+page showed the same generic message for all three cases, but the JSON body did
+not. The status is now checked after `verifyPassword` returned true: every
+password-less failure answers `invalid_credentials` after exactly one argon2
+verify, an unknown address and a disabled account alike. Behind a correct
+password the page names the reason (`login.accountDisabled`, en + de). The OIDC
+callback keeps its own status check — there the IdP has already authenticated
+the user. Tests: `localPasswordProvider.test.ts` (disabled + wrong password →
+`invalid_credentials`, disabled + right password → `user_disabled` and no
+last-login stamp), `web-ui/app/login/__tests__/page.test.tsx`. Background:
+`security-architecture.md` §10m "One failure code, whatever the row says".
+
+### Fixed — usage telemetry prices the 5.5 generation and Fable, not the family fallback
+
+2026-10-05 — The Anthropic half of `EXACT_PRICES` in
+`packages/harness-usage-telemetry/src/pricing.ts` ended at the Opus 5 / Sonnet 5
+generation and never knew about Fable, so three current models were mispriced
+in the cost column and in every budget display. Rates checked against
+platform.claude.com/docs/en/about-claude/pricing on 2026-10-05.
+
+- `claude-opus-5-5` fell through to the `opus` family at $5/$25 per MTok with
+  cache reads at the global 0.1x. It is $4/$20 with reads at 0.05x
+  ($0.20/MTok), so cost over-reported by roughly a quarter — more on
+  cache-heavy calls, where reads billed at double. The new entry carries an
+  absolute `cachedInputPerMTok` of 0.2; that field already overrode
+  `CACHE_READ_MULTIPLIER` for the OpenAI path and now also carries the
+  Anthropic models whose read fraction is not 0.1x. Cache writes needed no
+  special case: `CACHE_WRITE_MULTIPLIER` × $4 is the published $5/MTok
+  5-minute write rate.
+- `claude-sonnet-5-5` fell through to the `sonnet` family at $3/$15; it is
+  $2/$10, the same correction the `claude-sonnet-5` entry already made. Reads
+  stay at the standard 0.1x.
+- `claude-fable-5-1` matched no exact entry **and** no family keyword, so every
+  Fable call recorded at $0 behind a one-time "no price for model" warning —
+  the dashboard read frontier traffic as free. It now has an exact entry
+  ($10/$50, reads 0.025x = $0.25/MTok), and a `fable` family row prices Fable 5
+  at $10/$50 with standard 0.1x reads. Mythos needs no row of its own:
+  `builtinLlmProviders.ts` excludes it from model discovery.
+- `claude-haiku-5-5` (#1389) fell through to the `haiku` family at $1/$5; it
+  is $0.10/$0.50 with standard 0.1x reads. It runs the background calls after
+  every turn, so it is the most frequent call of an instance and was
+  over-billed tenfold. Prompts above 100k tokens bill at $0.50/$2.50, which
+  `ModelPrice` cannot express yet; those calls stay under-counted.
+- Dated snapshots of all three were still mispriced after the exact entries,
+  because a snapshot misses the exact table and the only keywords were the
+  broad family ones — `claude-opus-5-5-20260922` resolved to `opus` at $5/$25,
+  the very over-report being fixed. Each point release that prices below its
+  family now also has a family keyword ordered ahead of the family's
+  (`opus-5-5` before `opus`, `sonnet-5-5` before `sonnet`, `haiku-5-5` before
+  `haiku`, `fable-5-1` before `fable`), and the rate itself is spelled once in a shared constant used by
+  both tables so the two halves cannot drift apart.
+- `test/usageTelemetryPricing.test.ts` pins all four ids, their snapshots, and
+  the cost arithmetic.
+
 ### Fixed — output budgets sized for thinking, and clamped to the model
 
 2026-10-05 — `ORCHESTRATOR_MAX_TOKENS` defaulted to 8192 and
