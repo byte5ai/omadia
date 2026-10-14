@@ -163,6 +163,41 @@ describe('verifier/evidenceJudge', () => {
     const verdict = await judge.check(makeSoftClaim());
     assert.equal(verdict.status, 'unverified');
     assert.equal(callCount(), 2);
+    // A check ran and finished: an unconfirmed contradiction, not a fault.
+    assert.equal(verdict.status === 'unverified' ? verdict.cause : 'n/a', 'contradiction_unconfirmed');
+  });
+
+  it('a contradiction whose recheck call fails is a failed check, not an unconfirmed one', async () => {
+    let calls = 0;
+    const client = {
+      complete(): Promise<unknown> {
+        calls += 1;
+        if (calls > 1) return Promise.reject(new Error('rate limit'));
+        return Promise.resolve({
+          content: [
+            {
+              type: 'tool_call',
+              name: 'record_verdict',
+              id: 'toolu_1',
+              input: { verdict: 'contradicted', evidence_node_id: 'person:john-doe' },
+            },
+          ],
+        });
+      },
+    };
+    const lines: string[] = [];
+    const judge = new EvidenceJudge({
+      llm: client as never,
+      fetcher: stubFetcher([SNIPPET]),
+      log: (line: string): void => {
+        lines.push(line);
+      },
+    });
+    const verdict = await judge.check(makeSoftClaim());
+    assert.equal(calls, 2, 'the recheck was attempted');
+    assert.equal(verdict.status, 'unverified');
+    assert.equal(verdict.status === 'unverified' ? verdict.cause : 'n/a', 'check_failed');
+    assert.ok(lines.some((l) => /recheck failed/.test(l)), lines.join(' | '));
   });
 
   it('returns unverified when API call fails', async () => {
@@ -408,6 +443,7 @@ describe('verifier/evidenceJudge - privacy view', () => {
     });
     const verdict = await judge.check(CLAIM, servicePrivacy(false));
     assert.equal(verdict.status, 'unverified');
+    assert.equal(verdict.status === 'unverified' ? verdict.cause : 'n/a', 'contradiction_unconfirmed');
     assert.equal(prompts.length, 1, 'no second request for a contradiction that cannot block');
   });
 
@@ -508,8 +544,21 @@ describe('verifier/evidenceJudge - cited evidence id must be in the evidence set
     assert.equal(verdict.status, 'unverified');
     if (verdict.status === 'unverified') {
       assert.match(verdict.reason, /evidence set/);
+      assert.equal(verdict.cause, 'contradiction_unconfirmed');
     }
     assert.equal(callCount(), 1);
+  });
+
+  it('a "verified" citing an unknown evidence id is plain unverified, not an unconfirmed contradiction', async () => {
+    const { llm } = stubProvider([{ verdict: 'verified', evidence_node_id: 'person:ghost' }]);
+    const judge = new EvidenceJudge({
+      llm: llm as never,
+      fetcher: stubFetcher([SNIPPET]),
+      log: silentLog,
+    });
+    const verdict = await judge.check(makeSoftClaim());
+    assert.equal(verdict.status, 'unverified');
+    assert.equal(verdict.status === 'unverified' ? verdict.cause : 'n/a', undefined);
   });
 
   it('a recheck that cites an unknown id does not confirm the contradiction', async () => {
@@ -526,6 +575,7 @@ describe('verifier/evidenceJudge - cited evidence id must be in the evidence set
     assert.equal(verdict.status, 'unverified');
     if (verdict.status === 'unverified') {
       assert.match(verdict.reason, /not reproduced/);
+      assert.equal(verdict.cause, 'contradiction_unconfirmed');
     }
     assert.equal(callCount(), 2);
   });

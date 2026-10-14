@@ -472,7 +472,7 @@ export async function removeAgentPeerChannel(
 // ── W5 memory-ACL rollout switch (#899) ────────────────────────────────
 
 /**
- * The three modes `agents.context_memory` accepts. Structural contract with
+ * The modes `agents.context_memory` accepts. Structural contract with
  * the middleware, same arrangement as {@link TEAMS_PROVISIONING_STATES}: the
  * column's CHECK constraint (migration 0050) owns the vocabulary, the route
  * re-states it, and this list mirrors it so the radio group renders without a
@@ -484,6 +484,7 @@ export const CONTEXT_MEMORY_MODES = [
   'off',
   'enforce',
   'enforce-strict',
+  'members',
 ] as const;
 
 export type ContextMemoryMode = (typeof CONTEXT_MEMORY_MODES)[number];
