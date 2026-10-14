@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
+import { ANSWER_VERBOSITY_LEVELS, isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
 import { MAX_STEER_LENGTH, steeringBus, today, turnContext } from '@omadia/orchestrator';
 import type {
   AskObserver,
@@ -57,6 +57,12 @@ const ChatRequestSchema = z.object({
     .string()
     .regex(AGENT_SLUG_RE, 'agentSlug must be lowercase-kebab')
     .optional(),
+  /**
+   * Phase 3 — answer-size pick for THIS turn only ("Kürzer" / "Mehr Details"
+   * re-asking the same question). Validated against the closed scale here
+   * and parsed again by the kernel; `null`/absent = the configured level.
+   */
+  answerVerbosity: z.enum(ANSWER_VERBOSITY_LEVELS).optional(),
 });
 
 /**
@@ -393,6 +399,9 @@ export function createChatRouter(
               userMessage: parsed.data.message,
               sessionScope,
               ...(userId ? { userId } : {}),
+              ...(parsed.data.answerVerbosity
+                ? { answerVerbosity: parsed.data.answerVerbosity }
+                : {}),
             }),
           ),
       );
@@ -628,6 +637,9 @@ export function createChatRouter(
               userMessage: parsed.data.message,
               sessionScope: resolveScope(parsed.data),
               ...(userId ? { userId } : {}),
+              ...(parsed.data.answerVerbosity
+                ? { answerVerbosity: parsed.data.answerVerbosity }
+                : {}),
             },
             observer,
           ),

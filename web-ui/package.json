@@ -76,7 +76,7 @@
     "esbuild": "^0.28.1",
     "undici": "^7.28.0",
     "postcss": "8.5.28",
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "brace-expansion": "5.0.12",
     "minimatch": "10.2.5",
     "dompurify": "3.4.16",

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
+import { speakingIdentityFor, type DefaultChannelBotKey } from './channelBotOwnership.js';
 import type { JsonObject, KnownRefs } from '@omadia/conductor-core';
 
 import type { RoleHolderRegistry, RoleHolderSource } from '@omadia/channel-sdk';
@@ -218,6 +219,11 @@ export async function wireConductor(deps: {
   requireAuth: RequestHandler;
   /** resolves an Agent (orchestrator instance) by slug for agent steps. */
   getRegistry: () => OrchestratorRegistry | undefined;
+  /** The deployment's configured default bot per channel type (Teams:
+   *  `28:<appId>` of the Microsoft 365 integration), read per call. Lets a
+   *  run started through that bot reach its agent and speak back through it
+   *  (`channelBotOwnership.ts`). Absent: provisioned bots only. */
+  defaultChannelBotKey?: DefaultChannelBotKey;
   /** invokes a deterministic-action / connector tool by id for action steps. */
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
   /** lists registered deterministic-action / tool ids for the Designer's action-step picker. */
@@ -358,9 +364,14 @@ export async function wireConductor(deps: {
 
   // Which bot IS this agent. Read live from the registry on every call: a
   // just-provisioned identity has to work without a restart, and a revoked one
-  // has to stop working just as fast.
-  const agentChannelIdentity: AgentChannelIdentityResolver = (agentSlug, channelType) =>
-    deps.getRegistry()?.channelIdentityFor(agentSlug, channelType);
+  // has to stop working just as fast. The configured default bot speaks for
+  // the agent it routes to — the same answer the inbound check gives.
+  const agentChannelIdentity: AgentChannelIdentityResolver = (agentSlug, channelType, conversationId) => {
+    const registry = deps.getRegistry();
+    return registry
+      ? speakingIdentityFor(registry, agentSlug, channelType, deps.defaultChannelBotKey, conversationId)
+      : undefined;
+  };
   // Shared disposal path (terminal-state hook, TTL reaper safety net, and the
   // operator's facilitation terminate — #330 round 4). Idempotent: an already
   // reaped or non-ephemeral workflow is a no-op.
@@ -389,6 +400,7 @@ export async function wireConductor(deps: {
     awaitStore,
     effects: new RealStepEffects({
       getRegistry: deps.getRegistry,
+      ...(deps.defaultChannelBotKey ? { defaultChannelBotKey: deps.defaultChannelBotKey } : {}),
       ...(deps.invokeAction ? { invokeAction: deps.invokeAction } : {}),
       // The agent-dialogue seam: a `say` step's answer reaches the chat through
       // here. Absent providers = silent turns, never a failing run.

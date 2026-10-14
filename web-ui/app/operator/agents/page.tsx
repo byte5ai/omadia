@@ -2,15 +2,11 @@ import type { Metadata } from 'next';
 import { getTranslations } from 'next-intl/server';
 
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
-import {
-  listOperatorAgents,
-  type OperatorAgentsListDto,
-} from '../../_lib/agents';
-import {
-  listOperatorChannels,
-  type ChannelsListDto,
-} from '../../_lib/channels';
+import { listOperatorAgents } from '../../_lib/agents';
+import { listOperatorChannels } from '../../_lib/channels';
+import { runtimeUnavailableCause } from '../../_lib/runtimeReadiness';
 import { AgentsDashboard } from './_components/AgentsDashboard';
+import { OrchestratorSetupState } from './_components/OrchestratorSetupState';
 import { ChannelsDashboard } from '../channels/_components/ChannelsDashboard';
 
 /**
@@ -18,6 +14,12 @@ import { ChannelsDashboard } from '../channels/_components/ChannelsDashboard';
  *
  * Hosts both settings surfaces on one page: the orchestrator registry and
  * the channel routing table. The nav links here directly (no sub-dropdown).
+ *
+ * On a fresh install both routes answer the middleware's structured 503
+ * (`multi_orchestrator_unavailable`): no orchestrator runs yet. That is the
+ * expected first-start state and renders {@link OrchestratorSetupState}.
+ * Any other failure stays an error on the page, with the technical detail
+ * under a catalogue message, so a real outage is never mistaken for setup.
  */
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -27,27 +29,48 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export const dynamic = 'force-dynamic';
 
+function LoadError({
+  message,
+  detail,
+}: {
+  message: string;
+  detail: string | null;
+}): React.ReactElement {
+  return (
+    <div
+      role="alert"
+      className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]"
+    >
+      <p>{message}</p>
+      {detail ? <p className="mt-1 font-mono text-xs opacity-80">{detail}</p> : null}
+    </div>
+  );
+}
+
+function errorDetail(reason: unknown): string | null {
+  return reason instanceof Error ? reason.message : null;
+}
+
 export default async function OperatorAgentsPage(): Promise<React.ReactElement> {
   const t = await getTranslations('operatorAgents');
   const tc = await getTranslations('operatorChannels');
 
-  let initial: OperatorAgentsListDto | null = null;
-  let loadError: string | null = null;
-  try {
-    initial = await listOperatorAgents();
-  } catch (err) {
-    await redirectIfUnauthorized(err);
-    loadError = err instanceof Error ? err.message : t('loadError');
-  }
+  const [agents, channels] = await Promise.allSettled([
+    listOperatorAgents(),
+    listOperatorChannels(),
+  ]);
+  if (agents.status === 'rejected') await redirectIfUnauthorized(agents.reason);
+  if (channels.status === 'rejected') await redirectIfUnauthorized(channels.reason);
 
-  let channels: ChannelsListDto | null = null;
-  let channelsError: string | null = null;
-  try {
-    channels = await listOperatorChannels();
-  } catch (err) {
-    await redirectIfUnauthorized(err);
-    channelsError = err instanceof Error ? err.message : tc('loadError');
-  }
+  // Only the orchestrator route reports WHY the runtime is unavailable; the
+  // channels route sends the marker without a cause, so it follows the
+  // orchestrator verdict and never opens the setup state on its own.
+  const setupCause =
+    agents.status === 'rejected' ? runtimeUnavailableCause(agents.reason) : null;
+  const channelsAwaitSetup =
+    setupCause !== null &&
+    channels.status === 'rejected' &&
+    runtimeUnavailableCause(channels.reason) !== null;
 
   return (
     <main className="mx-auto w-full max-w-[1400px] px-6 py-12 lg:px-8 lg:py-16">
@@ -57,12 +80,12 @@ export default async function OperatorAgentsPage(): Promise<React.ReactElement> 
           {t('subtitle')}
         </p>
       </header>
-      {loadError ? (
-        <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
-          {loadError}
-        </div>
+      {agents.status === 'fulfilled' ? (
+        <AgentsDashboard initial={agents.value} />
+      ) : setupCause !== null ? (
+        <OrchestratorSetupState cause={setupCause} />
       ) : (
-        <AgentsDashboard initial={initial!} />
+        <LoadError message={t('loadError')} detail={errorDetail(agents.reason)} />
       )}
 
       <section className="mt-16 border-t border-[color:var(--border)] pt-12">
@@ -72,12 +95,17 @@ export default async function OperatorAgentsPage(): Promise<React.ReactElement> 
             {tc('subtitle')}
           </p>
         </header>
-        {channelsError ? (
-          <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
-            {channelsError}
-          </div>
+        {channels.status === 'fulfilled' ? (
+          <ChannelsDashboard initial={channels.value} />
+        ) : channelsAwaitSetup ? (
+          <p
+            data-testid="channels-await-setup"
+            className="max-w-2xl text-sm text-[color:var(--fg-muted)]"
+          >
+            {tc('awaitingOrchestrator')}
+          </p>
         ) : (
-          <ChannelsDashboard initial={channels!} />
+          <LoadError message={tc('loadError')} detail={errorDetail(channels.reason)} />
         )}
       </section>
     </main>

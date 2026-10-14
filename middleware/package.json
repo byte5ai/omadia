@@ -61,7 +61,7 @@
     "@azure/msal-node": "^5.6.0",
     "@huggingface/transformers": "^3.7.6",
     "@microsoft/microsoft-graph-client": "^3.0.7",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@types/better-sqlite3": "^9.6.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/multer": "^2.1.0",
@@ -83,7 +83,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "semver": "^7.8.5",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "typescript-eslint": "^8.67.0",
     "undici": "^8.10.2",
     "ws": "^8.21.3",
@@ -112,6 +112,6 @@
     "esbuild": "^0.28.1",
     "fast-uri": "3.1.8",
     "postcss": "8.5.23",
-    "sharp": "^0.35.4"
+    "sharp": "^0.35.5"
   }
 }

@@ -9,12 +9,14 @@
  * without memoising. Idempotent: stripping twice is a no-op.
  *
  * NodeId shape is loose on purpose: plugins mint their own prefixes
- * (`n_invoice_42`, `confluence-page-89`, `odoo://res.partner/7`) and a
- * tight regex here would break with the next backend addition. The
+ * (`n_invoice_42`, `confluence-page-89`, `odoo:res.partner:42`) and real
+ * graph ids carry `:` and `.` (`turn:<scope>:<ISO time>`), so the id is
+ * anything up to the closing bracket that is not whitespace. The
  * verifier's detection regex (`harness-verifier/src/verifierPipeline.ts`)
- * uses the same loose pattern, so the two stay in lock-step.
+ * and the channel-SDK stripper (`harness-channel-sdk/src/citationMarkers.ts`)
+ * use the same pattern, so the three stay in lock-step.
  */
-const CITATION_MARKER_REGEX = /\s?\[ref:[\w-]+\]/gi;
+const CITATION_MARKER_REGEX = /[ \t]?\[ref:[^\]\s]+\]/gi;
 
 export function stripCitationMarkers(source: string): string {
   return source.replace(CITATION_MARKER_REGEX, '');

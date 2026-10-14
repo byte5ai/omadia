@@ -1,4 +1,5 @@
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
+import { resolveAddressedBot, type DefaultChannelBotKey } from './channelBotOwnership.js';
 import type { JsonObject, JsonValue, Step } from '@omadia/conductor-core';
 
 import type { ConductorSayOutcome, ConductorSayService } from './sayService.js';
@@ -64,6 +65,10 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
 export interface RealStepEffectsDeps {
   /** the multi-orchestrator registry — resolves an Agent (orchestrator) by slug. */
   getRegistry: () => OrchestratorRegistry | undefined;
+  /** The deployment's configured default bot per channel type — the one bot
+   *  without an identity row that still has an owner (`channelBotOwnership`).
+   *  Absent: only provisioned bots can start an agent step. */
+  defaultChannelBotKey?: DefaultChannelBotKey;
   /** invoke a deterministic-action / connector tool by id (dynamicAgentRuntime). */
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
   /** Per-step hard budget in ms. MUST be < the resume worker's staleMs (default 900_000). 0 disables. */
@@ -132,7 +137,14 @@ export class RealStepEffects implements StepEffects {
     // Scoped to CHANNEL triggers. A manual, scheduled or webhook run has no
     // addressed bot, no impersonation risk, and keeps behaving exactly as
     // before — which is why the rule keys on the trigger, not on the step.
-    assertChannelOriginAllows(step, context, meta, registry, this.deps.log);
+    assertChannelOriginAllows(
+      step,
+      context,
+      meta,
+      registry,
+      this.deps.defaultChannelBotKey,
+      this.deps.log,
+    );
 
     const entry = registry.get(slug);
     if (!entry) {
@@ -298,6 +310,7 @@ function assertChannelOriginAllows(
   context: JsonObject,
   meta: StepMeta,
   registry: OrchestratorRegistry,
+  defaultBotKey: DefaultChannelBotKey | undefined,
   log?: (msg: string) => void,
 ): void {
   const eventId = meta.triggerEventId;
@@ -319,25 +332,33 @@ function assertChannelOriginAllows(
     );
   }
 
-  const owner = registry.identityForChannel('teams', botKey);
-  if (!owner) {
-    log?.(
-      `[conductor] agent step '${step.id}' refused — addressed bot '${botKey}' resolves to no active agent`,
-    );
+  // The same owner normal chat routes this bot to: a provisioned identity, or
+  // — for the configured default bot only — its binding, then the fallback.
+  const conversationId =
+    typeof context['conversationId'] === 'string' ? context['conversationId'] : undefined;
+  const owner = resolveAddressedBot(registry, 'teams', botKey, defaultBotKey, conversationId);
+  if (owner.kind === 'refused') {
+    const why =
+      owner.reason === 'identity-unavailable'
+        ? `belongs to Agent '${owner.ownerAgentId}', which is not active`
+        : owner.reason === 'no-agent'
+          ? 'is the default bot, but no binding or fallback Agent is active for it'
+          : 'is neither a provisioned bot nor the configured default bot';
+    log?.(`[conductor] agent step '${step.id}' refused — addressed bot '${botKey}' ${why}`);
     throw new Error(
-      `agent step '${step.id}' cannot run: the addressed bot '${botKey}' resolves to no active Agent`,
+      `agent step '${step.id}' cannot run: the addressed bot '${botKey}' resolves to no active Agent (${why})`,
     );
   }
 
-  if (owner.agent.slug !== step.agentId) {
+  if (owner.agentSlug !== step.agentId) {
     log?.(
       `[conductor] agent step '${step.id}' refused — addressed bot '${botKey}' belongs to Agent ` +
-        `'${owner.agent.slug}' but the step is configured to run as '${String(step.agentId)}'`,
+        `'${owner.agentSlug}' but the step is configured to run as '${String(step.agentId)}'`,
     );
     throw new Error(
       `agent step '${step.id}' cannot run as '${String(step.agentId)}': the message was addressed to ` +
-        `Agent '${owner.agent.slug}'. Work started by a message to a bot runs with that bot's ` +
-        `permissions only — configure this step for '${owner.agent.slug}', or trigger the workflow ` +
+        `Agent '${owner.agentSlug}'. Work started by a message to a bot runs with that bot's ` +
+        `permissions only — configure this step for '${owner.agentSlug}', or trigger the workflow ` +
         `another way.`,
     );
   }

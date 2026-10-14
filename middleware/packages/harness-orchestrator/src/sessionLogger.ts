@@ -35,6 +35,12 @@ export interface SessionLogEntry {
    */
   userId?: string;
   /**
+   * Member-scoped memory — the canonical user ids that own this turn (see
+   * `TurnIngest.owners`). Forwarded to the graph; never written into the
+   * markdown transcript.
+   */
+  owners?: readonly string[];
+  /**
    * Agentic run-graph payload collected by the orchestrator. When present
    * (and a graph sink is configured) the logger fills in the canonical
    * turn id and calls ingestRun alongside ingestTurn.
@@ -212,6 +218,7 @@ export class SessionLogger {
           iterations: entry.iterations,
           entityRefs,
           ...(entry.userId ? { userId: entry.userId } : {}),
+          ...(entry.owners !== undefined ? { owners: entry.owners } : {}),
           ...(entry.speaker !== undefined ? { speaker: entry.speaker } : {}),
           ...(entry.maskedView !== undefined ? { maskedView: entry.maskedView } : {}),
         });

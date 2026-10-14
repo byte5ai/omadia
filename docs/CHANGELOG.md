@@ -36,6 +36,510 @@ changelog.
 
 ## [Unreleased]
 
+### Added — answer size in the web chat (stream `done` + "Kürzer" / "Mehr Details")
+
+2026-10-09 — The stream `done` event now carries `answerVerbosity` like the
+non-streaming result (every done that passes `discloseDoneEvent`, kept on the
+verifier's `withheldDone` rebuild; the prompt-mask-blocked done bypasses the
+funnel and carries none), `POST /api/chat` and `/api/chat/stream` accept
+`answerVerbosity` in the body (validated against the closed scale), and the
+web debug chat renders "🔽 Kürzer" / "🔼 Mehr Details" under the LAST answer
+— not under a withheld / degraded notice, an open choice or MCP form, or an
+answer to a card click — re-asking the typed question it belongs to one step
+down / up the scale for that one turn. The field lives on the streamed
+message only (not in the server-side session mirror), so after a reload the
+buttons are gone until the next answer. An older middleware omits the field
+and the buttons stay hidden.
+
+### Added — answer size per turn (`ChatTurnInput.answerVerbosity`)
+
+2026-10-09 — Phase 3 of answer verbosity. A channel can re-ask the same
+question one step down or up the size scale for a single turn
+(`ChatTurnInput.answerVerbosity`, channel-sdk `AnswerVerbosityLevel`). The
+level goes into the uncached per-turn system hint next to Fresh Check
+(`buildAnswerVerbosityTurnBlock`), explicitly overriding the configured
+"Antwortumfang" section for that turn, so the stable prompt and its cache key
+are untouched; the wire value is parsed, and an unknown level is a no-op.
+Every `ChatTurnResult` / `SemanticAnswer` now carries
+`answerVerbosity: { effective, source: 'turn' | 'configured' }` so the channel
+can offer the neighbouring steps — the Teams card's "🔽 Kürzer" / "🔼 Mehr
+Details" buttons (`omadia-channel-teams` 0.29.0) are the first consumer. The
+stream `done` event does not carry the field yet.
+
+### Fixed — a provider plugin installed at runtime can store its API key
+
+2026-10-09 — Installing an LLM provider plugin without a restart (e.g.
+`@omadia/plugin-llm-seibertgpt`) registered the provider and showed it on the
+admin Providers page, but saving its key failed with
+`settings.no_valid_changes` / "unknown setting" (`SEIBERTGPT_API_KEY`) until
+the middleware restarted: the settings router built its catalog once at
+mount. The catalog is now built per request, so a hot-installed provider's
+`<ID>_API_KEY` is accepted right away and an uninstalled one is rejected again.
+
+### Added — answer size per Agent (`agent_identities.verbosity`)
+
+2026-10-09 — Phase 2 of the answer-verbosity feature (#1369 added the
+installation-wide `answer_verbosity` setup field). An Agent can now carry its
+own level on the Identity tab (Profile → "Answer size"); `null` inherits the
+installation value. The level is a slot, not a layer: `buildOrchestratorForAgent`
+takes `config.answerVerbosity ?? deps.answerVerbosity`, so exactly one block
+reaches the prompt, and an Agent set to `standard` silences the installation
+default for itself. A change is a rebuild reason (`identity_verbosity`) and
+the identity route reloads the registry, or the edit would be saved and never
+spoken.
+
+- Migration **0063** (`0063_agent_identity_verbosity.sql`) adds `verbosity
+  TEXT` with a CHECK over the five levels (`tldr`, `brief`, `standard`,
+  `detailed`, `max`). No backfill: every existing row stays `NULL` and keeps
+  the prompt it had.
+- Store, route (zod enum), registry join (`identity_verbosity`), `applyDiff`
+  forwarding and web UI (`en`/`de` keys) in one change; the route is
+  full-replace like the other identity fields, so a client that omits the key
+  writes "inherit".
+
+### Changed — README is a pitch again; detail moved to `docs/`
+
+2026-10-09 — The README had grown to 612 lines, with paragraphs of up to 822
+words and table cells of up to 308, because each privacy and verifier fix
+appended its limits there: `docsClaimsGuard.test.ts` required the limit
+sentences in the README itself. Measured against ten benchmark READMEs
+(n8n, mastra, Twenty, Dify, PostHog, Supabase, Open WebUI, Langfuse, cal.com,
+Activepieces), it is now a landing page again: claim, demo, capability table
+with one sentence per cell, pitch video, three-command quickstart, links into
+the docs (163 lines).
+
+- New `docs/trust-and-privacy.md` holds the Privacy Shield, verifier, receipt
+  and plugin statements, moved verbatim. The positive checks of
+  `docsClaimsGuard.test.ts` read that page; the retired-claim scan covers it
+  and still covers the README, and a new check requires the README to link it.
+- New `docs/getting-started.md` (prerequisites, install variants, AI-assistant
+  install, first run, optional features, local troubleshooting),
+  `docs/deployment.md` (Render, Fly.io, own host, required production secrets
+  stated once instead of three times) and `docs/design.md` (Lume).
+- New `docs/readme-guidelines.md` with the benchmark, the dramaturgy and the
+  wording rules; new `middleware/test/readmeShape.test.ts` enforces the
+  measurable ones (220 lines, 75-word paragraphs, 40-word sentences, 30-word
+  cells, no em dash or middle dot).
+
+### Changed — `enforce` releases an unconfirmed answer with a disclaimer
+
+2026-10-08 — With extraction working again (release 358), the next live
+answers were withheld as `approved_with_disclaimer` /
+`insufficient_evidence`: no claim refuted, but some `not_checked` (no checker
+takes them) or `not_in_answer` (the verbatim guard). Unconfirmed is not
+wrong, and withholding it hid most real answers.
+
+- **Release with a disclaimer.** `enforce` now delivers an
+  `approved_with_disclaimer` over at least one unconfirmed claim, and
+  `skipped` with `no_checkable_claims` / `incomplete_coverage`, with a
+  localized paragraph (`composeVerifierDisclaimerText`, `@omadia/channel-sdk`):
+  "Hinweis: Ein Teil der Angaben in dieser Antwort ließ sich nicht automatisch
+  bestätigen. Prüfe wichtige Angaben bei Bedarf im Quellsystem." when valid
+  counts show a confirmed claim next to an unconfirmed one, "Die Angaben …
+  ließen sich nicht automatisch bestätigen. …" otherwise (EN: "could not be
+  confirmed automatically"). "Confirmed", not "checked": a claim the judge
+  checked and found unsupported was checked. Stream and `chat()`; a folded
+  AI-disclosure block stays last, and a trailing `NO_REPLY` line stays the
+  last line so Teams and Telegram stay silent.
+- **Released this way, too:** a contradiction the evidence judge reported but
+  could not confirm — judged on Privacy Shield placeholders, not reproduced on
+  recheck, citing no evidence, evidence its request never printed or another
+  record than the claim pins — now carries
+  `cause: 'contradiction_unconfirmed'` and goes out with the disclaimer. Behind
+  the shield a contradiction judged on a request masking changed therefore
+  cannot stop an answer; one judged on an unchanged request is rechecked and
+  still can, and so can the deterministic re-query, the citation checks and
+  the trace checks.
+- **Still withheld:** `blocked` (refutation, missing or invented citation,
+  uncalled tool), `unavailable` (verifier could not run, Privacy Shield), and
+  an `approved_with_disclaimer` whose every check that ran failed technically
+  (`check_failed`, the outage notice). A judge recheck that itself fails now
+  counts as `check_failed`, not as an unconfirmed contradiction.
+- Content-free log lines (ids and closed codes only, anything else logged as
+  `invalid`): `[verifier/service] answer released with disclaimer run=…
+  status=… cause=… claims=<id>:<basis>,…`, and the correction retry now names
+  each contradicted claim's basis (`retry run=… contradictions=N
+  claims=<id>:<basis>,…`). **Behaviour change for `VERIFIER_MODE=enforce`:**
+  unconfirmed claims can now reach the user, marked as such; there is no
+  setting to restore the stricter rule.
+
+### Fixed — citation markers no longer cost claims, and still pin their record
+
+- **`[ref:…]` markers are stripped before extraction, the verbatim guard and
+  the trigger** (`harness-verifier/src/citationMarkers.ts`, the same regex as
+  the channel-sdk stripper; a test compares the two on sample inputs, and the
+  web chat keeps a third copy in `web-ui/app/_lib/citations.ts`). A marker
+  mid-sentence made a faithful quote fail the guard; measured on synthetic
+  text (Haiku 4.5, 4 runs each): 8 claims kept from the checkers with
+  mid-sentence markers, 3 without. A marker's id digits no longer fire the
+  trigger. The citation check still reads the markers on the raw answer.
+- The markers were the only place the extraction saw record handles
+  (`odoo:res.partner:42`) for `related_entities`, which pin the evidence fetch
+  to exactly the cited record. They are now added deterministically: each
+  claim gets the record handles of the markers in its own sentence of the raw
+  answer (a marker counts for the sentence it closes, before or right after
+  the full stop; list lines are sentences). Only `odoo:` / `confluence:`
+  record handles; turn refs and bare node ids pin nothing. They only tell the
+  fetcher where to look (an unknown record yields no evidence, so nothing is
+  verified), and the extraction log counts them (`cited_records=N`).
+
+### Fixed — claim extraction is schema-bound and gets the tokens its list needs
+
+2026-10-08 — The live diagnostic from #1364 named both causes of the
+`extractor_error` withholds (Haiku 4.5, run `3028130c`, 06:21Z): the first
+call hit the fixed 1024-token cap (`finish=max_tokens`, `out=1024`, an answer
+with about ten claims), and the repair returned `claims` as a 1391-character
+string that was not valid JSON — the shape behind the morning's withholds.
+
+- `record_claims` is now a strict tool (`strict: true`): the provider
+  constrains decoding to the schema, so `claims` is always an array. The
+  schema is strict-clean (`additionalProperties: false` on every object,
+  `value` as `anyOf` instead of a type array). New optional
+  `ToolSpec.strict`; the Anthropic adapter sends it on the tool definition
+  for models on its strict allowlist (`supportsStrictTools`: Haiku 4.5,
+  Opus 4.1/4.5/4.8, the 5-series) and leaves it out elsewhere — an unknown
+  field is a 400, not ignored. Other adapters ignore it. No beta header.
+- The extraction budget is derived from the claim cap
+  (`extractionTokenBudget`: 256 + 110 × (maxClaims + 1), between 1024 and
+  16000 — 2566 at the default 20) instead of a fixed 1024. Billed per token
+  produced, so it costs only when a list needs it; the ceiling keeps a large
+  `VERIFIER_MAX_CLAIMS` from asking for more than a non-streaming call can
+  carry.
+- Verified against the real API with synthetic text: strict accepted, 5/5
+  extractions of a ~20-claim answer returned arrays of 18–21 entries using
+  1063–1403 output tokens — every one would have hit the old cap.
+
+### Fixed — a broken claim extraction gets one repair, and says what broke
+
+2026-10-08 — Two answers in production (kernel v0.171.3, 04:33Z and 04:39Z,
+Haiku 4.5, Privacy Shield on) were withheld as `unavailable /
+extractor_error`: "record_claims call without a claims array". Token
+telemetry rules out a cut-off and an empty call — each wrote ≈500 of 1024
+output tokens, as much as a successful 6–8-claim extraction, with no
+`max_tokens` stop — and the Anthropic adapter passes `tool_use.input` through
+unchanged. So the model's call carried its list, but not as a `claims` array;
+which shape it was could not be told, because nothing recorded it.
+
+- `[claim-extractor] diag attempt=N problem=…` now records that shape for
+  every unusable response, content-free: provider, model, finish reason
+  (neutral and provider), refusal, tool-call count, input type, field names
+  (schema and common wrapper names only, any other key counted as
+  `<other:N>`), the `claims` type and the token counts.
+- A non-empty list written as a JSON-encoded string — a known tool-use
+  failure mode — is decoded; every entry still goes through the schema and
+  verbatim checks. `"[]"` as a string is not a list.
+- Any other unusable response (no call, no claims array, wrong type, a broken
+  entry, a cut-off) gets exactly one more extraction call: the same model,
+  token budget, tool and wire view plus a fixed repair note (a cut-off asks
+  for compact entries but keeps every field the checks read). It is admitted
+  through `privacy.admitWireView()` and counted in the receipt
+  (`verifierEgress.requests`) like the first call, and recorded in
+  `token_usage`. A refusal the adapter reports or a failed API call is not
+  retried; neither the agent's turn nor any business tool runs again. A
+  repair that lists nothing, or fewer entries than the first response still
+  showed, is rejected. Two unusable responses stay `unavailable` — never
+  `[]` — and the notice says technical fault, not contradiction.
+- A refusal (`stop_reason: 'refusal'`, Anthropic) is now its own failure
+  instead of a misleading "no claims array".
+
+### Fixed — Teams turns keep their run traces
+
+2026-10-07 — Every Teams turn's run trace was dropped (`run-ingest-failed`,
+"User-Cluster user:<aad-id> not found"); transcript and embeddings were
+written. The Teams plugin names its sender only through `origin` + `userId`
+(the AAD object id), so no `channelIdentity` reached the kernel and the raw
+AAD id went to `ingestRun`. The run-trace owner is now resolved at the start
+of the turn through the identity resolver (`resolveRunTraceOwner` →
+`resolveOrCreateChannelIdentity`, with the AAD merge `resolveTurnAudience`
+uses), each group participant to their own cluster. `ingestRun` still never
+creates a cluster, and the turn's `resolvedOmadiaUserId`, dataset ACLs, MCP
+keys and `Principal` are unchanged for these turns.
+### Fixed — the Conductor routes the default Teams bot like chat does
+
+2026-10-07 — Three runs of the workflow `test-teams` failed at their entry
+step: "addressed bot '28:737c6ddd-…' resolves to no active Agent". That bot is
+the deployment's configured default bot; chat routed it to the active
+`fallback` agent, but the Conductor looked only at provisioned identities —
+and its `say` step could not have spoken back through it either
+(`no_identity`). Both directions now go through
+`src/conductor/channelBotOwnership.ts`: a provisioned owner first, an
+unavailable provisioned owner refused, the configured default bot
+(`microsoft_app_id` of the Microsoft 365 integration, else `MICROSOFT_APP_ID`)
+to the binding of the run’s conversation, then its own binding, then the
+fallback — as chat routes it — and every other unknown bot refused. The bot key
+is compared lowercased, as stored.
+### Fixed — a withheld answer says why, and only what is true
+
+2026-10-07 — In production (v0.170.0) three Teams answers withheld for missing
+`[ref:…]` markers told the user "Die Faktenprüfung hat einen Widerspruch
+gefunden". No source had contradicted anything: `citation_missing`, the
+failure-replay check and the Odoo missing-call check are all built as
+`contradicted` verdicts, and the summary counted every contradicted claim as a
+contradiction. A fourth answer claimed "kein Zugriff" without a single tool
+call.
+
+The decision to withhold (and the correction retry) is unchanged. What changed
+is the cause it is reported under. A contradicted verdict carries a `basis`
+(`ContradictionBasis`); the summary carries `withheldCause` (`contradicted`,
+`tool_not_called`, `citation_missing`, `insufficient_evidence`,
+`check_failed`, `not_checked`), and only `basis: 'evidence'` counts in
+`contradictionCount` or earns the `failed` badge (no "Verifier-Widerspruch"
+chip in Teams). The notice (`composeVerifierBlockedText`, DE/EN) and the web
+UI's withheld card (`chat.verifierBlocked.cause.*`) say the cause and a next
+step. A claim of a missing or denied access now needs a call in the turn that
+actually failed (`failedToolsCalled`), not just any call; an honest "konnte …
+nicht finden" after a search that ran is still released. Without any call the
+cause is `tool_not_called`; with calls but no failed one it is
+`insufficient_evidence`. The correction hint
+no longer opens with "Widersprüche erkannt", and a live-data claim without
+its fetching call goes under "Live-Daten nicht abgerufen", not "widerlegt".
+The withhold log line names the cause and each claim's id and basis.
+
+### Fixed — citation correction works with the first run's graph results
+
+2026-10-07 — All three correction retries above were abandoned: their
+`query_knowledge_graph` call differed from the first run's, and the replay
+ledger treated the graph tool as a write. #1102 gave the kernel's full-form
+natives a handler, and `replayClassOf` checked "has a handler ⇒ write" before
+the read-only branch, so `find_free_slots` was a write too and
+`ask_user_choice` / `suggest_follow_ups` lost their turn-local class. Kernel
+natives are now told apart from plugin tools by spec identity.
+
+Citations must name evidence the turn actually retrieved. The run-trace
+collector keeps the `id` / `turnId` values the graph results showed the model
+— orchestrator and sub-agent calls, replayed or not — beside the payload
+(`knowledgeGraphRefsOf`, a WeakMap), so they never reach the stream, routine
+runs or `ingestRun`. A marker that names none of them withholds as
+`insufficient_evidence`; a graph that returned nothing citable demands no
+marker (but still rejects one that names a source). The marker regex accepts real ids with `:` and `.`
+(`turn:<scope>:<ISO time>`, `odoo:res.partner:42`) — it only accepted
+`[\w-]`, so a correctly cited answer still failed. `session_summary` now
+returns each turn's `turnId`. The Citation-Guard prompt and the correction
+hint point at the real fields and tell the model to repeat its first-run
+queries, which are answered from the stored results. `toSemanticAnswer` now
+strips the markers for every connector (Teams never did); the web UI's
+stripper takes the same id shape.
+### Security — `@modelcontextprotocol/sdk` 1.32.1 (GHSA-6qxp-vccf-f47h)
+
+2026-10-07 — The MCP TypeScript SDK's OAuth client before 1.31.0 could send
+credentials to an authorization server chosen by the MCP server (high). It is
+a production dependency of the middleware and `@omadia/orchestrator`; both
+manifests now require `^1.31.0`, the lock resolves 1.32.1 and moves nothing
+else. This was the advisory that turned the audit gate red on every PR.
+
+### Added — the memory browser shows member groups
+
+2026-10-06 — The operator memory browser (`/memory`) lists the `members` notes
+of an agent as a fourth branch, "Member groups". Each group carries the names of
+the people it belongs to. The new
+`GET /api/v1/operator/memory/contexts/members?agent=<slug>` reads them from the
+binder's owner index. The names come from the KG user clusters
+(`createMemberNameResolver`: cluster name, then identity name, then email,
+scoped to the tenant). When nothing resolves, the browser shows the key.
+
+A member group's notes get a hint and no Promote button. They belong to their
+people, and the server already refuses to promote them. `PG_TEST_FLOOR`
+421.
+
+### Security — sharp 0.35.5 (GHSA-wq5f-xc86-pv6w)
+
+2026-10-06 — sharp before 0.35.5 bundles a librsvg with CVE-2026-96889
+(high). It is a production dependency of the middleware (avatar icons,
+diagrams) and the web UI. It is now 0.35.5 in both manifests and both lock
+files; only sharp and its `@img/*` binaries moved. This was the advisory that
+turned the audit gate red on every PR.
+
+### Added — member-scoped notes: what the agent writes belongs to the people present
+
+2026-10-06 — Until now, `members` mode partitioned the memory tree like
+`enforce-strict`. A group's notes landed in the chat's channel tier, so
+someone who joined the group later read them. The memory tree now follows the
+same owner rule as the graph:
+
+- One tier per owner set: `/memories/contexts/<slug>/members/<key>/`, where
+  `key` is the first 32 hex characters of the SHA-256 of the canonical owner
+  list. The same people in another chat write to and read the same tier.
+- Larger owner sets that include everyone present are readable as
+  `/memories/~g-<key>/` and listed under `/memories`. A `ro:members:<key>:*`
+  grant makes them read-only, so Marcel alone reads what he noted with Chris
+  and Christian but cannot change it.
+- An unknown room gets no tier at all: reads come back empty and writes are
+  refused, and the system prompt says so.
+- The binder keeps the owner lists in `members-index/<key>.json`, a sibling of
+  the tiers outside every grant. An entry whose owners do not hash to its name
+  is ignored.
+- Binding goes through `MemoryBinder.forAudience`. When it fails, the turn gets
+  no memory tool, never the channel tier.
+- The `user` purge axis with an omadia user id (the KG `aclOwner` spelling)
+  removes every owner set the person belongs to, tier and index entry. That
+  selector used to fail with `invalid_selector`.
+- Promotion out of a members tier is refused by the existing `invalid_axis`
+  check.
+- Tests: `orchestrator/memberScopedNotes.test.ts` runs the scenarios as real
+  turns with scripted `memory` calls. Three mutations each turn a scenario
+  red: the old channel tier, writable shared tiers, and an index that ignores
+  the audience. `membersMemoryIndex.test.ts` covers keys, tampering, the
+  unknown room and the reach of the index.
+
+### Added — member-scoped memory: knowledge belongs to the people present
+
+2026-10-06 — A new per-agent context-memory mode, `members`, alongside `off`,
+`enforce` and `enforce-strict`. The rule: knowledge belongs to the people
+present when it came up (its owners), and a chat may use it only when everyone
+present is one of them. Marcel, Chris and Christian build knowledge in a group;
+Marcel alone with the agent has it; once a new member is present it stays out;
+Chris and Christian without Marcel have it. It is person-based, not
+channel-based (a Teams group's knowledge reaches the same person's Telegram
+chat once the two identities are linked), and every agent keeps its own.
+
+- The kernel resolves a turn's audience as canonical user ids
+  (`resolveTurnAudience`): the sender in a personal chat or for an API key;
+  every member in a group, but only when the channel marks its roster complete
+  (`ChatParticipantsProvider.completeRoster`). Anything less is an unknown
+  audience: no member-scoped recall, and the turn is owned by nobody.
+- Each turn stores `owners` (`TurnIngest.owners`, plugin-api 1.26.0). Recall
+  (tail included), `query_knowledge_graph` and curated memory read only what
+  the audience owns, in SQL (`properties @> {"owners": …}`, served by the
+  existing GIN index) and in the in-memory twin. Auto-promoted and MCP-ingested
+  memorable knowledge takes the turn's owners as `acl_owners`. Plans,
+  processes and the session briefing carry no owners and are skipped.
+- The three graph decorators in orchestrator-extras forwarded `getSession`
+  without options; they now pass them on, or the tail would have lost the
+  filter.
+- Migration **0062** (`0062_agent_context_memory_members.sql`) widens
+  `agents_context_memory_check` to accept `members`. Route, config store and
+  web UI offer the mode. The memory tree got owner tiers in the follow-up
+  entry above.
+- No backfill: turns from before the switch have no owners and are not
+  recalled in this mode.
+- Security review closed four side doors before merge: a T3 durable
+  auto-promoted memorable row (marked `manually_authored`) no longer passes as
+  operator-authored; the registered `query_knowledge_graph` handler (the
+  subscription-CLI path) and context-free turns of an `enforce-strict` or
+  `members` agent see nothing; the plugin `KnowledgeGraphAccessor` searches
+  inside the turn's `graphReadScope`; `list_sessions` counts only visible
+  turns. See `docs/security-architecture.md`.
+- Tests: `orchestrator/memberScopedMemory.test.ts` runs the scenarios as real
+  turns; removing the tail, search or graph-tool filter each turns a scenario
+  red. `memberScopedOwners.pg.test.ts` (Neon), `turnAudience.test.ts`.
+  `PG_TEST_FLOOR` 414 → 419.
+
+### Security — CLI 2.1.291's `OfferChromeSetup` is denied in spawned CLI turns
+
+2026-10-06 — The deny-list drift guard went red against the locally installed
+Claude CLI 2.1.291. It declares one new built-in, `OfferChromeSetup`, which
+offers the user a Claude-in-Chrome setup. It is now in
+`CLI_BUILTIN_TOOL_DENYLIST`; all gate flags are unchanged in 2.1.291. Guard
+42/42 against 2.1.291 (84 built-ins, 9 aliases), opt-in live probe 3/3.
+
+### Security — `enforce-strict` context memory also holds outside the memory tree
+
+2026-10-06 — An E2E test on main `b137610d` (agent in `enforce-strict`, scripted
+model) showed that the context notes were separated, but an earlier Teams
+conversation still reached a Telegram turn of the same agent: the `memory` tool
+could read its transcript, `query_knowledge_graph` searched the whole tenant
+graph, and automatic recall put it into the prompt without any tool call. The
+binder partitioned the memory tree only. For a context-bound turn of an agent in
+`enforce-strict`:
+
+- The shared grant is `ro:core-notes` instead of `ro:core`. Shared notes and
+  `_*` trees stay readable; `/memories/sessions/` and `/memories/chat-sessions/`
+  do not, because every transcript sits in one flat tree keyed by conversation.
+- Automatic recall is restricted to the turn's own conversation, using the
+  `restrictToScope` narrowing the audience floor already uses (#575). A turn with
+  no conversation scope recalls nothing.
+- `query_knowledge_graph` answers all six queries from the turn's own
+  conversation only. A foreign `session_summary` scope answers like a missing one.
+- A binder that throws for a strict agent's turn with an `origin` still gets
+  this narrowing.
+
+`off` and `enforce` are unchanged. Strict narrows to the conversation, which is
+narrower than the context partition. Sharing a context's knowledge across its
+conversations (e.g. team-wide) needs a context key on Turn nodes and is open.
+Isolation applies only to turns that carry a `TurnOrigin`: today none of the
+in-repo channels send one, and Teams/Telegram do so only with their pending SDK
+release. Tests: `strictContextIsolation.test.ts` drives real orchestrator turns
+and shows each of the three leaks in an `enforce` control; mutating any one fix
+back turns exactly its assertion red. Also
+`knowledgeGraphToolStrictView{,.pg}.test.ts` and `strictTranscriptAccess.test.ts`.
+
+### Security — `proxy-addr` 2.0.8 and `source-map-js` 1.2.2
+
+2026-10-06 — Two advisories turned the required `audit` check red on every PR:
+critical GHSA-jqcg-44mw-7w3h (`proxy-addr` < 2.0.8, IP spoofing via an
+IPv4-mapped IPv6 trust subnet; middleware production tree through Express,
+published 2026-10-05) and high GHSA-68fv-2mgg-jv7q (`source-map-js` < 1.2.2,
+event-loop DoS; middleware dev tree via vitest, web-ui production tree). Both
+are lockfile-only updates within the existing ranges (`npm update`, npm 10).
+Production and full audits then report 0 high and 0 critical.
+
+### Fixed — an API-key chat turn's run trace is stored in the knowledge graph again
+
+2026-10-05 — Found in the E2E test on main `1d8233ce`: an API-key turn ran
+the model and `query_knowledge_graph`, wrote its privacy receipt and streamed
+a `runTrace` with status `success`, but no Run reached the graph. The browser
+path stored its run. The log showed `run-ingest-failed`. Two causes, and
+fixing only the first was not enough:
+
+- `CHANNEL_KINDS` in `harness-knowledge-graph-neon/src/schema.ts` lacked
+  `'api'`, although the dispatcher sends it for a `key:<uuid>` caller (#1107)
+  and `plugin-api`'s `ChannelKind` has carried it since. Every API-key turn
+  failed `resolveOrCreateChannelIdentity` with a ZodError, so no User-Cluster
+  existed. A type-level test now keeps the two unions identical.
+- The three `RunTraceCollector`s in `orchestrator.ts` were built with the raw
+  `input.userId` (`key:<uuid>`), so `ingestRun` looked for the cluster
+  `user:key:<uuid>`. With the schema fixed alone the turn still failed with
+  `User-Cluster user:key:… not found`. A channel turn now files its trace
+  under the canonical id already resolved for the turn
+  (`resolvedOmadiaUserId`, via `runTraceOwnerId`), or without a user link if
+  resolution failed. Non-channel (browser) turns keep `input.userId`. This
+  also applies to Teams, Telegram and Slack turns, whose traces carried the
+  channel-native id the same way.
+- The Turn node's own `userId` property stays channel-native on purpose:
+  recall filters past turns by `input.userId`, and changing it would cut
+  channel users off from their history. The Turn reaches the canonical
+  cluster through its `BELONGS_TO` edge, which `ingestRun` writes.
+- Tests: `test/apiChannelRunTraceOwner.test.ts` (schema, parity,
+  `runTraceOwnerId`) and `test/apiKeyRunTrace.pg.test.ts`, which streams an
+  API-key turn through the real dispatcher and orchestrator into Postgres and
+  reads Run, Turn edge and ToolCall back from `graph_nodes` / `graph_edges`.
+
+### Fixed — the orchestrator page explains a fresh install instead of printing two 503s
+
+2026-10-05 — Without LLM access the dashboard links to `/operator/agents`,
+which showed `GET /v1/operator/agents failed: 503` and the same for channels.
+The page now reads the middleware's structured 503 with the dashboard's own
+classifier and shows a setup state per cause, linking to LLM access; channel
+routing says it waits for an orchestrator. A transport error, a 500 or a 503
+without the marker still renders as an error, now with a catalogue message
+and the technical detail underneath. New keys `operatorAgents.setup.*` and
+`operatorChannels.awaitingOrchestrator` (en/de).
+
+### Fixed — CLI deny-list drift guard reads CLI 2.1.286+, and fourteen new built-ins are denied
+
+2026-10-05 — The local full test run went red in
+`test/cliBridge/cliSpawnGate.test.ts`: against CLI 2.1.289 the guard mined 0
+tool names. From 2.1.286 the binary no longer carries one inventory array;
+each tool is an object literal whose name is a constant imported from another
+module chunk. CI stayed green because it has no CLI installed and the test
+skips there.
+
+- The miner moved to `test/_helpers/cliToolInventory.ts` and reads both
+  layouts, following module imports to each tool's name. Fixtures in
+  `test/cliBridge/cliToolInventory.test.ts` pin both layouts and the decoys a
+  parser can mistake for tools.
+- The "at least 50 names" count is gone. The guard now requires the
+  code-execution, filesystem and network tools among the mined definitions,
+  fails on a tool name it cannot resolve, and checks built-ins, aliases and
+  the SDK's `BUILTIN_TOOL_NAMES` against the deny list. An installed binary it
+  cannot read still fails rather than skips.
+- `CLI_BUILTIN_TOOL_DENYLIST` gains the fourteen built-ins 2.1.286 and 2.1.289
+  declare and the list lacked, among them `AppifactRepl` and the CLI's own
+  `memory_read` / `memory_write` / `memory_list`. No flag of the gate changed.
+- Live probe on 2.1.289 (opt-in, logged-in CLI): the production argv ran with
+  `tools: []` and no tool call in three of three runs. Details and the flaky
+  negative control in `docs/security-architecture.md`.
+
 ### Security — desktop kernel connects to its database with SCRAM only
 
 2026-10-04 — On Windows the desktop's embedded Postgres listens on loopback
