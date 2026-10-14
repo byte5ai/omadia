@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Security — local login no longer reveals disabled accounts (#1311)
+
+2026-10-07 — `LocalPasswordProvider` checked `user.status` before it verified
+the password, so a 401 `auth.user_disabled` came back for a disabled account
+whatever the password was — readable by anyone, and faster than the other
+failure paths because it returned before argon2 ran. The error channel told an
+attacker that an address had an account and that it was switched off; the login
+page showed the same generic message for all three cases, but the JSON body did
+not. The status is now checked after `verifyPassword` returned true: every
+password-less failure answers `invalid_credentials` after exactly one argon2
+verify, an unknown address and a disabled account alike. Behind a correct
+password the page names the reason (`login.accountDisabled`, en + de). The OIDC
+callback keeps its own status check — there the IdP has already authenticated
+the user. Tests: `localPasswordProvider.test.ts` (disabled + wrong password →
+`invalid_credentials`, disabled + right password → `user_disabled` and no
+last-login stamp), `web-ui/app/login/__tests__/page.test.tsx`. Background:
+`security-architecture.md` §10m "One failure code, whatever the row says".
+
 ### Fixed — usage telemetry prices the 5.5 generation and Fable, not the family fallback
 
 2026-10-05 — The Anthropic half of `EXACT_PRICES` in

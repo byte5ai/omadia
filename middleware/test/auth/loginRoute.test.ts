@@ -24,6 +24,7 @@ import type { PasswordAuthResult, PasswordProvider } from '../../src/auth/provid
 import { LOCAL_PROVIDER_ID } from '../../src/auth/providers/LocalPasswordProvider.js';
 import { invoke } from '../_helpers/httpInvoke.js';
 import {
+  admin,
   ADMIN,
   assertBusy,
   assertRateLimited,
@@ -273,6 +274,33 @@ describe('POST /login/:id — global capacity', () => {
     throwNext = false;
     assert.equal((await login(h, wrong('b@example.com'))).status, 401);
     assert.equal(h.limiter.stats().inFlight, 0);
+  });
+});
+
+describe('POST /login/:id — the failure code tells nothing a password proved (#1311)', () => {
+  it('a disabled account answers invalid_credentials for a wrong password, user_disabled only for the right one', async () => {
+    const h = await harness();
+    const id = h.store.idOf(ADMIN);
+    assert.equal((await admin(h, 'PATCH', `/${id}`, { status: 'disabled' })).status, 200);
+
+    // The issue's repro, through the real router: the three bodies an attacker
+    // can compare. Two of them have to be the same body.
+    const mismatch = await login(h, wrong());
+    assert.equal(mismatch.status, 401);
+    assert.deepEqual(json(mismatch), { code: 'auth.invalid_credentials' });
+
+    const unknown = await login(h, wrong('nobody@example.com'));
+    assert.equal(unknown.status, 401);
+    assert.deepEqual(
+      json(unknown),
+      json(mismatch),
+      'a disabled account answers a wrong password like an unknown address does',
+    );
+
+    const verified = await login(h, right());
+    assert.equal(verified.status, 401);
+    assert.deepEqual(json(verified), { code: 'auth.user_disabled' });
+    assert.deepEqual(setCookies(verified), [], 'a disabled account gets no cookie of any kind');
   });
 });
 
