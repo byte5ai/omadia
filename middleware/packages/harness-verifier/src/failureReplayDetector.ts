@@ -23,9 +23,19 @@ import type { Claim, ClaimVerdict, VerifierInput } from './claimTypes.js';
  *      `[attachments-info]` block)  →  hard-disprove against the user
  *      message: if the block literally appears there, it's a replay.
  *
- *   2. Generic operation failure (`konnte nicht …`, `fehler beim`,
- *      `not found`, `timeout`)  →  evidence = ≥ 1 tool call in the trace.
- *      Zero tool calls in this turn means the bot never tried.
+ *   2a. Missing / denied access (`kein Zugriff`, `nicht erreichbar`,
+ *      `access denied`, `timeout`)  →  evidence = a call in this turn that
+ *      FAILED (`failedToolsCalled`). A turn whose calls all succeeded, or
+ *      that made none, never saw an access fail. Without failure data the
+ *      rule falls back to "≥ 1 tool call".
+ *
+ *   2b. Generic operation failure (`konnte nicht … finden/laden`,
+ *      `fehler beim`)  →  evidence = ≥ 1 tool call in the trace: a search
+ *      that ran and found nothing backs "konnte nicht finden".
+ *
+ *   A verdict with no call at all in the turn has basis `tool_not_called`
+ *   (the attempt was omitted); one where calls ran has
+ *   `unsupported_failure_claim` (no call backs the claim).
  *
  *   3. Retry request (`bitte nochmal hochladen/senden/versuchen`)  →
  *      combined check: if a file actually came in (attachments-info
@@ -46,20 +56,35 @@ const ABSENCE_PATTERNS: readonly RegExp[] = [
   // "kein Anhang", "keinen [attachments-info]-Block", "keine Ergebnisse" —
   // allow optional bracketed token or short filler between the negation
   // and the noun (e.g. `keinen [attachments-info]-Block`).
-  /\b(kein|keine|keinen|keinerlei)\s+(?:\[[^\]]+\][-\s]?)?(?:\S+\s+){0,2}?(anhang|attachment|datei|upload|bild|logo|block|eintrag|ergebnis|treffer|buchung|zugriff)\b/i,
+  /\b(kein|keine|keinen|keinerlei)\s+(?:\[[^\]]+\][-\s]?)?(?:\S+\s+){0,2}?(anhang|attachment|datei|upload|bild|logo|block|eintrag|ergebnis|treffer|buchung)\b/i,
   /\[attachments?[-_]info\][^a-z]{0,10}(fehlt|nicht|kein)/i,
   /\bno\s+(attachment|file|upload|image|results?|entries?)\b/i,
   /\bnicht\s+(angekommen|mitgekommen|übermittelt|vorhanden|gefunden|verfügbar)\b/i,
   /\b(not|never)\s+(received|attached|present|found)\b/i,
 ];
 
+/**
+ * Missing or denied access — "kein Zugriff auf Odoo", "keinen Zugang", "das
+ * System ist nicht erreichbar", "access denied", "timeout". Only a failed
+ * attempt can show this, so these need a FAILED call in the turn; a turn
+ * whose calls all succeeded never saw an access fail.
+ */
+const ACCESS_PATTERNS: readonly RegExp[] = [
+  /\b(kein|keine|keinen|keinerlei)\s+(?:\S+\s+){0,2}?(zugriff|zugang|verbindung)\b/i,
+  /\bnicht\s+(erreichbar|zugänglich|verbunden)\b/i,
+  /\b(no|without)\s+access\b/i,
+  /\b(not|isn't|is\s+not)\s+(reachable|accessible)\b/i,
+  /\b(zugriff\s+verweigert|access\s+denied|permission\s+denied|timeout|timed\s+out)\b/i,
+];
+
+/** Generic failure — "konnte nicht finden / laden". A search that ran and
+ *  found nothing backs these, so any call in the turn is enough. */
 const FAILURE_PATTERNS: readonly RegExp[] = [
   // "Ich konnte die Rechnungen nicht laden" — allow arbitrary object
   // between the modal and the negation, cap the distance so we don't
   // glue unrelated sentences together.
   /\b(konnte|konntest|kann|kannst)\b.{0,60}?\bnicht\b.{0,80}?\b(abrufen|laden|holen|erhalten|öffnen|zugreifen|lesen|finden)/i,
   /\b(fehler|error)\s+(beim|bei|during|while|accessing|reading|loading)\b/i,
-  /\b(zugriff\s+verweigert|access\s+denied|permission\s+denied|timeout|timed\s+out)\b/i,
   /\b(konnte|wurde)\s+nicht\s+(geladen|abgerufen|gespeichert|persistiert)\b/i,
 ];
 
@@ -95,6 +120,10 @@ export function detectFailureReplay(
 
   const toolsCalled = input.domainToolsCalled;
   const anyToolCalled = Array.isArray(toolsCalled) && toolsCalled.length > 0;
+  // A failed access needs a failed call. Older callers that pass no failure
+  // data keep the previous, weaker rule (any call counts as an attempt).
+  const failedCalls = input.failedToolsCalled;
+  const anyToolFailed = failedCalls !== undefined ? failedCalls.length > 0 : anyToolCalled;
   const hasAttachmentsInfo = userMessageHasAttachmentsInfo(input.userMessage);
 
   const push = (match: string, detail: string): void => {
@@ -113,6 +142,9 @@ export function detectFailureReplay(
       claim,
       truth: null,
       source: 'unknown',
+      // No call at all: the turn never tried (an omitted tool call). Calls
+      // ran: the claim is just not backed by any of them.
+      basis: anyToolCalled ? 'unsupported_failure_claim' : 'tool_not_called',
       detail,
     });
   };
@@ -141,7 +173,21 @@ export function detectFailureReplay(
     }
   }
 
-  // --- 2. Generic failure phrases
+  // --- 2a. Missing / denied access — needs a failed call
+  for (const re of ACCESS_PATTERNS) {
+    const m = re.exec(answer);
+    if (!m) continue;
+    if (toolsCalled === undefined) continue;
+    if (anyToolFailed) continue;
+    push(
+      m[0],
+      anyToolCalled
+        ? 'Antwort behauptet einen fehlenden oder verweigerten Zugriff, aber kein Tool-Call in diesem Turn ist fehlgeschlagen.'
+        : 'Antwort behauptet einen fehlenden oder verweigerten Zugriff, aber der Run-Trace hat keinen einzigen Tool-Call — der Zugriff wurde in diesem Turn gar nicht versucht.',
+    );
+  }
+
+  // --- 2b. Generic failure phrases — need an attempt
   for (const re of FAILURE_PATTERNS) {
     const m = re.exec(answer);
     if (!m) continue;

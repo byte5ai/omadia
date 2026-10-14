@@ -132,6 +132,10 @@ interface JudgeVerdict {
    *  node id of the snippet printed under that ref, or absent. */
   evidenceNodeId?: string;
   rationale?: string;
+  /** What the judge said before its verdict was demoted to `unverified` —
+   *  a citation missing, unknown or naming another record. A demoted
+   *  `contradicted` is an unconfirmed contradiction (`check`). */
+  demotedFrom?: PrimitiveVerdict;
 }
 
 const OTHER_RECORD_REASON =
@@ -183,7 +187,10 @@ export class EvidenceJudge {
       return checkFailed(claim, 'judge returned no usable verdict');
     }
     if (first.verdict === 'unverified') {
-      return unverified(claim, first.rationale ?? 'judge unverified');
+      const reason = first.rationale ?? 'judge unverified';
+      return first.demotedFrom === 'contradicted'
+        ? unconfirmedContradiction(claim, reason)
+        : unverified(claim, reason);
     }
 
     // `parseVerdict` already demotes a citation outside the refs its request
@@ -197,7 +204,9 @@ export class EvidenceJudge {
         ? undefined
         : evidence.find((s) => s.nodeId === first.evidenceNodeId);
     if (!sourceSnippet) {
-      return unverified(claim, UNKNOWN_EVIDENCE_REASON);
+      return first.verdict === 'contradicted'
+        ? unconfirmedContradiction(claim, UNKNOWN_EVIDENCE_REASON)
+        : unverified(claim, UNKNOWN_EVIDENCE_REASON);
     }
     const source = sourceKind(sourceSnippet.source);
 
@@ -218,17 +227,25 @@ export class EvidenceJudge {
       this.log(
         `[verifier/judge] contradiction judged on placeholders, downgrading to unverified claim=${claim.id}`,
       );
-      return unverified(
+      return unconfirmedContradiction(
         claim,
         'contradiction judged on placeholder values — not confirmable behind the privacy shield',
       );
     }
     const second = await this.judgeOnce(claim, evidence, privacy);
-    if (second === null || second.verdict !== 'contradicted') {
+    if (second === null) {
+      // The recheck never ran to a verdict: the contradiction was not tested
+      // again, so the check did not finish — a fault, not a non-reproduction.
+      this.log(
+        `[verifier/judge] contradiction recheck failed, downgrading to unverified claim=${claim.id}`,
+      );
+      return checkFailed(claim, 'judge contradiction recheck returned no usable verdict');
+    }
+    if (second.verdict !== 'contradicted') {
       this.log(
         `[verifier/judge] contradiction not reproduced, downgrading to unverified claim=${claim.id}`,
       );
-      return unverified(claim, 'judge contradiction not reproduced on recheck');
+      return unconfirmedContradiction(claim, 'judge contradiction not reproduced on recheck');
     }
     return {
       status: 'contradicted',
@@ -343,6 +360,7 @@ ${evidenceBlock}`;
         verdict: parsed.verdict,
         ...(nodeId !== undefined ? { evidenceNodeId: nodeId } : {}),
         ...(parsed.rationale !== undefined ? { rationale: parsed.rationale } : {}),
+        ...(parsed.demotedFrom !== undefined ? { demotedFrom: parsed.demotedFrom } : {}),
       },
       this.log,
     );
@@ -362,6 +380,7 @@ ${evidenceBlock}`;
   ): Promise<JudgeVerdict> {
     const out: JudgeVerdict = { verdict: verdict.verdict };
     if (verdict.evidenceNodeId !== undefined) out.evidenceNodeId = verdict.evidenceNodeId;
+    if (verdict.demotedFrom !== undefined) out.demotedFrom = verdict.demotedFrom;
     if (verdict.rationale !== undefined) {
       try {
         out.rationale = await privacy.restore(verdict.rationale);
@@ -391,7 +410,7 @@ function bindToReferencedRecord(
     return verdict;
   }
   log(`[verifier/judge] ${OTHER_RECORD_REASON}, demoting claim=${claim.id}`);
-  return { verdict: 'unverified', rationale: OTHER_RECORD_REASON };
+  return { verdict: 'unverified', rationale: OTHER_RECORD_REASON, demotedFrom: verdict.verdict };
 }
 
 // ---------------- helpers ----------------
@@ -416,13 +435,13 @@ function parseVerdict(
     const needsCitation = verdict === 'verified' || verdict === 'contradicted';
     // verified and contradicted MUST cite a node id — otherwise demote.
     if (needsCitation && !nodeId) {
-      return { verdict: 'unverified', rationale: 'missing evidence_node_id' };
+      return { verdict: 'unverified', rationale: 'missing evidence_node_id', demotedFrom: verdict };
     }
     // ...and it must name a snippet this call was shown. Exact match on the
     // trimmed string: ids are opaque, so no case-folding or prefix matching.
     if (needsCitation && !knownRefs.has(nodeId)) {
       onUnknownRef(nodeId.length);
-      return { verdict: 'unverified', rationale: UNKNOWN_EVIDENCE_REASON };
+      return { verdict: 'unverified', rationale: UNKNOWN_EVIDENCE_REASON, demotedFrom: verdict };
     }
     const rationale =
       typeof raw.rationale === 'string' ? raw.rationale.slice(0, 300) : '';
@@ -446,6 +465,11 @@ function unverified(claim: SoftClaim, reason: string): ClaimVerdict {
 
 function checkFailed(claim: SoftClaim, reason: string): ClaimVerdict {
   return { status: 'unverified', claim, reason, cause: 'check_failed' };
+}
+
+/** A contradiction the judge reported but that could not be confirmed. */
+function unconfirmedContradiction(claim: SoftClaim, reason: string): ClaimVerdict {
+  return { status: 'unverified', claim, reason, cause: 'contradiction_unconfirmed' };
 }
 
 /**

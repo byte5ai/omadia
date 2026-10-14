@@ -90,6 +90,7 @@ import { createProvenanceRoutes } from './receipts/verifyRoutes.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createOperatorMemoryContextsRouter } from './routes/operatorMemoryContexts.js';
+import { createMemberNameResolver } from './services/memberNames.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
 import {
   isMcpGrantBlocked,
@@ -3906,7 +3907,10 @@ async function main(): Promise<void> {
   app.use(
     '/api/v1/operator/memory/contexts',
     requireAuth,
-    createOperatorMemoryContextsRouter({ store: memoryStore }),
+    createOperatorMemoryContextsRouter({
+      store: memoryStore,
+      ...(graphPool ? { resolveMemberNames: createMemberNameResolver(graphPool, graphTenantId) } : {}),
+    }),
   );
   console.log(
     '[middleware] operator memory-contexts endpoints ready at /api/v1/operator/memory/contexts/{list,file} (auth-gated, read-only)',
@@ -4354,6 +4358,18 @@ async function main(): Promise<void> {
       app,
       requireAuth,
       getRegistry,
+      // The deployment's own Teams bot — the Microsoft 365 integration's app
+      // id, which channel-teams serves as its default bot. Read per call, so
+      // an operator's change applies without a restart. Only this explicitly
+      // configured bot may route to its binding / the fallback agent in the
+      // Conductor; any other unknown bot stays refused.
+      defaultChannelBotKey: (channelType) => {
+        if (channelType !== 'teams') return undefined;
+        const raw = installedRegistry.get(ms365IntegrationId)?.config?.['microsoft_app_id'];
+        const appId =
+          typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : config.MICROSOFT_APP_ID;
+        return appId ? `28:${appId}` : undefined;
+      },
       // #330 round 4 — participants column of the facilitation admin lens.
       getRoster: (channelType, conversationId) => conversationRosterRegistry.getRoster(channelType, conversationId),
       // Agent dialogue: a `say` step publishes an agent's turn into the chat.

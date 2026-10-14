@@ -78,6 +78,7 @@ import type {
   SearchTurnsOptions,
   SessionFilter,
   SessionSummary,
+  SessionReadOptions,
   SessionView,
   TurnIngest,
   TurnIngestResult,
@@ -335,8 +336,8 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   ): Promise<EntityCapturedTurnsHit[]> {
     return this.inner.findEntityCapturedTurns(opts);
   }
-  getSession(scope: string): Promise<SessionView | null> {
-    return this.inner.getSession(scope);
+  getSession(scope: string, options?: SessionReadOptions): Promise<SessionView | null> {
+    return this.inner.getSession(scope, options);
   }
   listSessions(filter?: SessionFilter): Promise<SessionSummary[]> {
     return this.inner.listSessions(filter);

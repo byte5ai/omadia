@@ -17,7 +17,7 @@ import {
   MemoryContextTree,
   type DirEntry,
 } from './_components/MemoryContextTree';
-import { PromoteDialog } from './_components/PromoteDialog';
+import { PromoteDialog, type PromoteSource } from './_components/PromoteDialog';
 import { PromotionAuditPanel } from './_components/PromotionAuditPanel';
 import {
   isRouterNotFoundBody,
@@ -32,6 +32,7 @@ import {
   cwdToCrumbs,
   formatSize,
   isInsideContexts,
+  isPromotableAxis,
   parentOf,
   parseContextPath,
   type MemoryContextRef,
@@ -234,8 +235,13 @@ export default function MemoryPage(): React.ReactElement {
   // Whose audit log the tab shows: the file in hand wins over the folder.
   const auditAgentSlug =
     selectedContext?.agentSlug ?? cwdContext?.agentSlug ?? null;
-  const canPromote =
-    selectedContext !== null && selectedContext.relPath.length > 0;
+  // A `members` tier is never a promote source: its notes belong to the
+  // people present when they were written and must not widen to the agent.
+  const promoteSource: PromoteSource | null =
+    selectedContext !== null && isPromotableAxis(selectedContext.axis)
+      ? { ...selectedContext, axis: selectedContext.axis }
+      : null;
+  const canPromote = promoteSource !== null && promoteSource.relPath.length > 0;
 
   const navigateTo = useCallback((path: string): void => {
     setCwd(path);
@@ -442,6 +448,11 @@ export default function MemoryPage(): React.ReactElement {
             {promoteNotice}
           </p>
         )}
+        {activeContext?.axis === 'members' && (
+          <p className="border-b border-[color:var(--border)] px-4 py-2 text-xs text-[color:var(--fg-muted)]">
+            {t('contexts.members.hint')}
+          </p>
+        )}
 
         {tab === 'audit' ? (
           <PromotionAuditPanel
@@ -476,9 +487,9 @@ export default function MemoryPage(): React.ReactElement {
         )}
       </section>
 
-      {promoteOpen && selectedContext !== null && (
+      {promoteOpen && promoteSource !== null && (
         <PromoteDialog
-          source={selectedContext}
+          source={promoteSource}
           teamKeys={teamKeys}
           onClose={() => { setPromoteOpen(false); }}
           onPromoted={(receipt) => {

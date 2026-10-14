@@ -216,6 +216,9 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'Snip',
   'Projects',
   'ConnectGitHub',
+  // 2.1.291+: offers the user a Claude-in-Chrome setup — a browser integration
+  // nobody on an omadia channel can or should complete.
+  'OfferChromeSetup',
   'StatusLine',
   // Session control and interactive prompts nobody is watching.
   'EnterPlanMode',

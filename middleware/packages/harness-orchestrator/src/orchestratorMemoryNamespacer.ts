@@ -216,6 +216,12 @@ export interface ContextMemoryNamespacerOptions {
    * `ScopedMemoryStore`, NOT by this mapper.
    */
   readonly agentRoot?: string;
+  /**
+   * Further model-facing segments (e.g. `~g-<key>`) → physical roots, listed
+   * under `/memories` so the model can find them. Read-only by the `ro:`
+   * patterns of the `ScopedMemoryStore`, not by this mapper.
+   */
+  readonly sharedRoots?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -239,6 +245,9 @@ export interface ContextMemoryNamespacerOptions {
  * guarantee of the layering is preserved.
  */
 export class ContextMemoryNamespacer extends MemoryNamespacerBase {
+  /** Model-facing segments of `sharedRoots`, announced by `list('/memories')`. */
+  private readonly listedSegments: readonly string[];
+
   constructor(options: ContextMemoryNamespacerOptions, inner: MemoryStore) {
     const roots = new Map<string, string>();
     // A wider root identical to the private root would break the bijection
@@ -249,11 +258,43 @@ export class ContextMemoryNamespacer extends MemoryNamespacerBase {
     if (options.agentRoot && options.agentRoot !== options.privateRoot) {
       roots.set(AGENT_SEGMENT, options.agentRoot);
     }
+    const listed: string[] = [];
+    for (const [segment, root] of options.sharedRoots ?? []) {
+      if (!segment.startsWith('~') || roots.has(segment) || root === options.privateRoot) continue;
+      roots.set(segment, root);
+      listed.push(segment);
+    }
     super(
       inner,
       options.privateRoot,
       roots,
-      new Set([TEAM_SEGMENT, AGENT_SEGMENT]),
+      new Set([TEAM_SEGMENT, AGENT_SEGMENT, ...listed]),
     );
+    this.listedSegments = listed;
+  }
+
+  /**
+   * The shared roots live outside the private tree, so a plain listing of
+   * `/memories` would never show them. They are appended there — and only
+   * there — as directories. A private tree that does not exist yet lists as
+   * empty when there are shared roots to show.
+   */
+  /** `/memories` exists whenever there is a shared root to show in it. */
+  override async directoryExists(virtualPath: string): Promise<boolean> {
+    if (virtualPath === MEMORIES_ROOT && this.listedSegments.length > 0) return true;
+    return super.directoryExists(virtualPath);
+  }
+
+  override async list(virtualPath: string): Promise<MemoryEntry[]> {
+    if (virtualPath !== MEMORIES_ROOT || this.listedSegments.length === 0) {
+      return super.list(virtualPath);
+    }
+    const own = (await super.directoryExists(virtualPath)) ? await super.list(virtualPath) : [];
+    const shared = this.listedSegments.map((segment) => ({
+      virtualPath: `${MEMORIES_ROOT}/${segment}`,
+      isDirectory: true,
+      sizeBytes: 0,
+    }));
+    return [...own, ...shared];
   }
 }

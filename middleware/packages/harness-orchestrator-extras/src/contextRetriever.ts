@@ -162,6 +162,11 @@ export interface ContextBuildInput {
    * {@link AssembleForBudgetInput}.
    */
   sharedRecallOnly?: boolean;
+  /**
+   * Member-scoped memory — see the field of the same name on
+   * {@link AssembleForBudgetInput}. Forwarded to every turn and memory leg.
+   */
+  audienceOwners?: readonly string[];
   /** External id of the turn currently being answered — excluded from hits. */
   currentTurnId?: string;
   /**
@@ -284,6 +289,15 @@ export interface AssembleForBudgetInput {
    * keeps it.
    */
   sharedRecallOnly?: boolean;
+  /**
+   * Member-scoped memory (`members` context memory) — the room's audience as
+   * canonical user ids. Every turn leg — the tail included — keeps only turns
+   * all of these people own, from any conversation of the agent; curated
+   * memory keeps rows they all own plus operator-authored ones. Plans and
+   * processes carry no owners, so they are skipped. Replaces `userId`
+   * filtering: the caller leaves `userId` out.
+   */
+  audienceOwners?: readonly string[];
   /** Optional override; otherwise `defaultBudgetTokens` from ContextRetriever-Opts. */
   budget?: { tokens: number };
 }
@@ -581,6 +595,7 @@ export class ContextRetriever {
       ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
       ...(input.userId ? { userId: input.userId } : {}),
       ...(input.currentTurnId ? { currentTurnId: input.currentTurnId } : {}),
+      ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
       // Per-orchestrator KG isolation is OPT-IN: only when the caller (the
       // orchestrator) passes an agent prefix do we constrain recall to that
       // Agent. Its `sessionScope` then already arrives qualified, so
@@ -606,7 +621,10 @@ export class ContextRetriever {
     // see them — gating here is what makes that filter honest rather than
     // partial.
     const hasTopicalAnchor = !this.opts.recallRequiresTerms || extractedTerms.length > 0;
-    const runCrossSessionRecall = input.restrictToScope === undefined && hasTopicalAnchor;
+    // Member-scoped memory skips them as well: plans and processes carry no
+    // owners, so nothing says whether the room may read them.
+    const runCrossSessionRecall =
+      input.restrictToScope === undefined && input.audienceOwners === undefined && hasTopicalAnchor;
     // #575 — curated memory is TIERED, unlike plans and processes: `team` /
     // `public` knowledge is shared by construction, and a restricted room is
     // entitled to it. So the memory leg narrows rather than dying with the
@@ -1034,7 +1052,12 @@ export class ContextRetriever {
     input: ContextBuildInput,
   ): Promise<Array<{ time: string; userMessage: string; assistantAnswer: string }>> {
     if (!input.sessionScope) return [];
-    const session = await this.graph.getSession(input.sessionScope);
+    // Member-scoped memory: the tail too — a member who just joined does not
+    // get the turns from before they were there.
+    const session = await this.graph.getSession(
+      input.sessionScope,
+      input.audienceOwners ? { audienceOwners: input.audienceOwners } : undefined,
+    );
     if (!session) return [];
     const turns = session.turns
       .map((t) => ({
@@ -1062,6 +1085,7 @@ export class ContextRetriever {
       ...(input.agentScopePrefix
         ? { agentScopePrefix: input.agentScopePrefix }
         : {}),
+      ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
       perEntityLimit: 2,
       entityLimit: this.opts.entityLimit,
     });
@@ -1243,7 +1267,9 @@ export class ContextRetriever {
     input: ContextBuildInput,
   ): Promise<MemoryRecallHit[]> {
     if (this.opts.memoryRecallDisabled) return [];
-    if (!this.embeddingClient || !input.userId) return [];
+    const viewer = memoryViewer(input);
+    if (!this.embeddingClient || !viewer) return [];
+    const audience = input.audienceOwners ? { audienceOwners: input.audienceOwners } : {};
 
     let queryVector: number[];
     try {
@@ -1269,21 +1295,23 @@ export class ContextRetriever {
       [mkHits, excerptHits] = await Promise.all([
         this.graph.searchMemorableKnowledgeByEmbedding({
           queryEmbedding: queryVector,
-          viewerOmadiaUserId: input.userId,
+          viewerOmadiaUserId: viewer,
           ...(input.sharedRecallOnly ? { sharedOnly: true } : {}),
           limit: overshoot,
           minSimilarity: this.opts.memoryMinSimilarity,
           teamVisibility: this.opts.teamVisibility,
           ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
+          ...audience,
         }),
         this.graph.searchExcerptsByEmbedding({
           queryEmbedding: queryVector,
-          viewerOmadiaUserId: input.userId,
+          viewerOmadiaUserId: viewer,
           ...(input.sharedRecallOnly ? { sharedOnly: true } : {}),
           limit: excerptOvershoot,
           minSimilarity: this.opts.memoryMinSimilarity,
           teamVisibility: this.opts.teamVisibility,
           ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
+          ...audience,
         }),
       ]);
     } catch (err) {
@@ -1364,7 +1392,8 @@ export class ContextRetriever {
     input: ContextBuildInput,
   ): Promise<MemoryRecallHit[]> {
     if (this.opts.durableTierDisabled) return [];
-    if (!this.embeddingClient || !input.userId) return [];
+    const viewer = memoryViewer(input);
+    if (!this.embeddingClient || !viewer) return [];
 
     const reservedSlots = Math.max(0, this.opts.durableReservedSlots);
     if (reservedSlots === 0) return [];
@@ -1390,7 +1419,7 @@ export class ContextRetriever {
     try {
       mkHits = await this.graph.searchMemorableKnowledgeByEmbedding({
         queryEmbedding: queryVector,
-        viewerOmadiaUserId: input.userId,
+        viewerOmadiaUserId: viewer,
         limit: overshoot,
         minSimilarity: this.opts.durableMinSimilarity,
         teamVisibility: this.opts.teamVisibility,
@@ -1398,6 +1427,7 @@ export class ContextRetriever {
         // session noise crowds durable knowledge out of the over-fetch window.
         manuallyAuthoredOnly: true,
         ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
+        ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
       });
     } catch (err) {
       console.error(
@@ -1448,6 +1478,7 @@ export class ContextRetriever {
             ...(input.agentScopePrefix
               ? { agentScopePrefix: input.agentScopePrefix }
               : {}),
+            ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
             limit: this.opts.ftsLimit,
             recallMinScore: this.opts.recallMinScore,
             recallRecencyBoost: this.opts.recallRecencyBoost,
@@ -1470,9 +1501,19 @@ export class ContextRetriever {
       ...(input.agentScopePrefix
         ? { agentScopePrefix: input.agentScopePrefix }
         : {}),
+      ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
       limit: this.opts.ftsLimit,
     });
   }
+}
+
+/**
+ * The `viewerOmadiaUserId` a curated-memory search needs. Under member-scoped
+ * memory the backend ignores it (`audienceOwners` replaces the viewer ACL),
+ * so any audience member stands in when the caller left `userId` out.
+ */
+function memoryViewer(input: ContextBuildInput): string | undefined {
+  return input.userId ?? input.audienceOwners?.[0];
 }
 
 interface RenderInput {
