@@ -67,8 +67,9 @@ signature/ordering check.
   has thinking switched on by this change. Every other model gets the blocks
   stripped and no field, as before: that covers a Haiku route and the
   orchestrator's fallback hop, which re-sends the primary's history to its
-  fallback model (on Haiku 4.5 `adaptive` would be a 400; on Opus 4.8,
-  Sonnet 4.6 and Sonnet 5 it would turn thinking on).
+  fallback model (on Haiku 4.5 `adaptive` would be a 400; on Opus 4.8 and
+  Sonnet 4.6 it would turn thinking on). Sonnet 5 is left out until replay
+  there is verified.
 - A dropped block is no longer silent: the adapter logs the response's
   `input_transformations` entries (`prefix_binding_mismatch` = something still
   edits the turn mid-flight, `model_binding_mismatch` = an expected provider

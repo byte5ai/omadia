@@ -445,12 +445,14 @@ export const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
  * `thinking: { type: 'adaptive', block_binding }` restates the default, so it
  * never switches thinking on. An allowlist, not a denylist:
  *
- * - Opus 4.6/4.7/4.8, Sonnet 4.6 and Sonnet 5 run WITHOUT thinking unless
- *   asked — `adaptive` there would turn it on behind the caller's back.
+ * - Opus 4.6/4.7/4.8 and Sonnet 4.6 run WITHOUT thinking unless asked —
+ *   `adaptive` there would turn it on behind the caller's back.
  * - Haiku 4.5 and older do not accept `adaptive` at all (400).
  * - `block_binding` requires adaptive thinking on every model.
  *
- * `sonnet-5-5`, not `sonnet-5`: the substring would also match Sonnet 5.
+ * `sonnet-5-5`, not `sonnet-5`: Sonnet 5 does run adaptive by default, but
+ * replay there is untested, so it keeps the pre-#1207 shape (blocks
+ * stripped) until someone verifies it.
  */
 const THINKING_REPLAY_SUPPORTED = [
   'opus-5',
