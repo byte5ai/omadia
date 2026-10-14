@@ -61,7 +61,12 @@ export const ConfigSchema = z.object({
   // time), so a fresh install follows the vendor's current frontier model
   // instead of a version baked into the code. A concrete id still works.
   ORCHESTRATOR_MODEL: z.string().min(1).default('class:frontier'),
-  ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(8192),
+  // #1210 — thinking counts toward `max_tokens` on always-thinking models, so
+  // size this for thinking PLUS the reply, not for the reply alone. 32_000 is
+  // the frontier class's registry `maxTokens`; the orchestrator plugin also
+  // floors an older installed config at this value, and the provider seam
+  // clamps it back down to whatever the resolved model actually accepts.
+  ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(32_000),
   // Live model discovery: how often each connected provider's list-models API
   // is re-read into the catalog (0 = boot only, never periodically).
   LLM_MODEL_DISCOVERY_INTERVAL_MS: z.coerce
@@ -100,17 +105,21 @@ export const ConfigSchema = z.object({
   // SKILLS_DIR. Model default matches the orchestrator; override to run
   // sub-agents cheaper (Sonnet/Haiku) while keeping the orchestrator on Opus.
   SUB_AGENT_MODEL: z.string().min(1).default('class:frontier'),
-  SUB_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
+  // Half the orchestrator budget (#1210): a sub-agent answers one delegated
+  // question rather than composing the turn, but it runs on the same
+  // always-thinking class by default, so 4096 bought thinking and nothing else.
+  SUB_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16_000),
   SUB_AGENT_MAX_ITERATIONS: z.coerce.number().int().positive().default(16),
 
-  // BuilderAgent runtime — separate from SUB_AGENT_MAX_TOKENS because
-  // fill_slot generates whole TS slot bodies (5–15k output tokens for a
-  // realistic plugin slot is normal). With 4096 the model would emit
-  // `{"slotKey":"…","source":"<truncated>` and the SDK aggregator would
-  // drop the partial source field, producing zod errors that look like
-  // "Required: source" — see OB-31. 16384 covers the common cases;
-  // operators can bump to the model's max (32k for opus-4-7) via env.
-  BUILDER_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16384),
+  // BuilderAgent runtime — its own knob because fill_slot generates whole TS
+  // slot bodies (5–15k output tokens for a realistic plugin slot is normal),
+  // so it must be tunable without moving every other sub-agent. At the old
+  // 4096 the model emitted `{"slotKey":"…","source":"<truncated>` and the SDK
+  // aggregator dropped the partial source field, producing zod errors that
+  // looked like "Required: source" — see OB-31. Since #1210 raised
+  // SUB_AGENT_MAX_TOKENS the two sit at a comparable budget; operators can
+  // bump this to the model's max (32k for the frontier class) via env.
+  BUILDER_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16_384),
   SKILLS_DIR: z.string().min(1).default('../skills'),
 
   // Memory persistence backend selection.

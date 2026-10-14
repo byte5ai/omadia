@@ -334,12 +334,15 @@ const toolResponse = (name: string, input: unknown): LlmResponse =>
 function scriptedCompleteProvider(seq: LlmResponse[]): {
   provider: LlmProvider;
   calls: () => number;
+  requests: () => LlmRequest[];
 } {
   let i = 0;
+  const seen: LlmRequest[] = [];
   const provider = {
     id: 'anthropic',
     capabilities: providerCapabilities,
-    complete: async (): Promise<LlmResponse> => {
+    complete: async (req: LlmRequest): Promise<LlmResponse> => {
+      seen.push(req);
       const r = seq[i] ?? textResponse('done');
       i += 1;
       return r;
@@ -349,7 +352,11 @@ function scriptedCompleteProvider(seq: LlmResponse[]): {
     },
     classifyError: () => ({ retryable: false, kind: 'other' as const }),
   };
-  return { provider: provider as unknown as LlmProvider, calls: () => i };
+  return {
+    provider: provider as unknown as LlmProvider,
+    calls: () => i,
+    requests: () => seen,
+  };
 }
 
 function strategistTool(
@@ -561,6 +568,74 @@ describe('#332 Layer 2 — guarded-additive mode', () => {
     assert.equal(sa.delegatedAnswer?.text, 'VERBATIM-X'); // intact, independent
     assert.match(sa.text, /VERBATIM-X/);
     assert.match(sa.text, /▸ omadia note: cross-domain caveat/);
+  });
+
+  // #1209 — the note pass used a 512-token cap. A model that reasons before
+  // it answers bills those tokens against max_tokens, so the cap was spent
+  // before any text and `maybeDirectLineNote` returned undefined on every
+  // turn: the note silently never appeared. The budget is pinned here because
+  // nothing user-visible fails when it regresses.
+  it('asks for enough output budget that a reasoning model can still emit the note', async () => {
+    const tool = strategistTool(async () => 'VERBATIM-B');
+    const { provider, requests } = scriptedCompleteProvider([
+      textResponse('cross-domain caveat'),
+    ]);
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 64000, // a real model's resolved ceiling
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      directLineMode: 'guarded',
+    });
+    await orch.chat({ userMessage: '#strategist plan?', sessionScope: 'g-budget' });
+    const [noteReq] = requests();
+    assert.equal(noteReq?.maxTokens, 4096);
+  });
+
+  // The other half of the same fix: 4096 is a ceiling, not a demand. Asking
+  // for more than the caller resolved for the active model would fail the
+  // request, and the fail-open catch would turn that into the very silent
+  // no-note #1209 was about.
+  it('clamps the note budget to the caller-resolved maxTokens', async () => {
+    const tool = strategistTool(async () => 'VERBATIM-C');
+    const { provider, requests } = scriptedCompleteProvider([
+      textResponse('cross-domain caveat'),
+    ]);
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024, // below the note pass's own ceiling
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      directLineMode: 'guarded',
+    });
+    await orch.chat({ userMessage: '#strategist plan?', sessionScope: 'g-clamp' });
+    const [noteReq] = requests();
+    assert.equal(noteReq?.maxTokens, 1024);
+  });
+
+  it('appends nothing when the note pass returns empty text (fail-open)', async () => {
+    const tool = strategistTool(async () => 'VERBATIM-D');
+    // The prompt's escape hatch: "reply with exactly an empty message".
+    const { provider } = scriptedCompleteProvider([textResponse('   ')]);
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 64000,
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      directLineMode: 'guarded',
+    });
+    const sa = await orch.chat({
+      userMessage: '#strategist plan?',
+      sessionScope: 'g-empty',
+    });
+    assert.equal(withoutDisclosure(sa.text), 'VERBATIM-D'); // no marker, no trailing blank
+    assert.doesNotMatch(sa.text, /omadia note/);
   });
 
   it('degrades to strict (no note LLM call) when a privacy guard is active — no PII to the provider', async () => {
