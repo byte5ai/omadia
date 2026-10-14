@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { LlmResponse } from '@omadia/llm-provider';
+import {
+  registerExternalModels,
+  type LlmResponse,
+  type ModelInfo,
+} from '@omadia/llm-provider';
 
 import {
   fromLlmResponse,
@@ -316,4 +320,145 @@ test('fromLlmResponse preserves native Anthropic stop reasons verbatim (allow-se
     }).stop_reason,
     'pause_turn',
   );
+});
+
+// ---------------------------------------------------------------------------
+// #1210 — per-model `max_tokens` clamp
+// ---------------------------------------------------------------------------
+
+const OPUS: ModelInfo = {
+  id: 'anthropic:claude-opus-5-5',
+  provider: 'anthropic',
+  modelId: 'claude-opus-5-5',
+  label: 'Claude Opus 5.5',
+  class: 'frontier',
+  maxTokens: 32_000,
+  contextWindow: 200_000,
+  vision: true,
+  classDefault: true,
+};
+const HAIKU: ModelInfo = {
+  id: 'anthropic:claude-haiku-4-5-20251001',
+  provider: 'anthropic',
+  modelId: 'claude-haiku-4-5-20251001',
+  label: 'Claude Haiku 4.5',
+  class: 'fast',
+  maxTokens: 8_192,
+  contextWindow: 200_000,
+  vision: false,
+};
+
+// Same BARE vendor id served by two connected providers with different caps —
+// the shape that makes a provider hint necessary rather than cosmetic.
+const SHARED_ANTHROPIC: ModelInfo = {
+  id: 'anthropic:shared-model-1',
+  provider: 'anthropic',
+  modelId: 'shared-model-1',
+  label: 'Shared (Anthropic)',
+  class: 'balanced',
+  maxTokens: 30_000,
+  contextWindow: 200_000,
+  vision: false,
+};
+const SHARED_COMPAT: ModelInfo = {
+  id: 'openai-compatible:shared-model-1',
+  provider: 'openai-compatible',
+  modelId: 'shared-model-1',
+  label: 'Shared (self-hosted)',
+  class: 'balanced',
+  maxTokens: 4_096,
+  contextWindow: 32_000,
+  vision: false,
+};
+
+function params(model: string, maxTokens: number): AnthropicParams {
+  return {
+    model,
+    max_tokens: maxTokens,
+    messages: [{ role: 'user', content: 'hi' }],
+  };
+}
+
+// The orchestrator's budget is floored at the frontier class's ceiling, so a
+// model with a smaller cap receives a value its API rejects outright (400 on
+// the whole request, not a silent cap) — every turn on that model would fail.
+test('toLlmRequest clamps max_tokens to a smaller model\'s own ceiling', () => {
+  const dispose = registerExternalModels([OPUS, HAIKU]);
+  try {
+    assert.equal(toLlmRequest(params(HAIKU.modelId, 32_000)).maxTokens, 8_192);
+    // Provider-qualified and alias forms resolve to the same ceiling.
+    assert.equal(toLlmRequest(params(HAIKU.id, 32_000)).maxTokens, 8_192);
+  } finally {
+    dispose();
+  }
+});
+
+test('toLlmRequest leaves a budget the model can serve untouched', () => {
+  const dispose = registerExternalModels([OPUS, HAIKU]);
+  try {
+    assert.equal(toLlmRequest(params(OPUS.modelId, 32_000)).maxTokens, 32_000);
+    // A router/screener asking for a tiny budget is never raised to the cap.
+    assert.equal(toLlmRequest(params(OPUS.modelId, 8)).maxTokens, 8);
+    assert.equal(toLlmRequest(params(HAIKU.modelId, 1_024)).maxTokens, 1_024);
+  } finally {
+    dispose();
+  }
+});
+
+// The registry is a curated overlay, not the universe of valid ids: an
+// operator-typed id (a local Ollama build, a fine-tune) must keep reaching the
+// vendor with the budget the caller asked for, exactly as before the clamp.
+test('toLlmRequest passes an unregistered model id through unclamped', () => {
+  const dispose = registerExternalModels([OPUS, HAIKU]);
+  try {
+    assert.equal(
+      toLlmRequest(params('my-local-llama-70b', 32_000)).maxTokens,
+      32_000,
+    );
+  } finally {
+    dispose();
+  }
+});
+
+test('toLlmRequest needs no registry at all (empty overlay = no clamp)', () => {
+  assert.equal(toLlmRequest(params('claude-haiku-4-5-20251001', 32_000)).maxTokens, 32_000);
+});
+
+// Without a hint a bare id two providers serve is ambiguous, so the budget must
+// pass through rather than be clamped to whichever owner happens to answer.
+// With the hint it clamps to the connection the request is actually going to.
+test('toLlmRequest resolves the ceiling on the named provider, not the default one', () => {
+  const dispose = registerExternalModels([SHARED_ANTHROPIC, SHARED_COMPAT]);
+  try {
+    assert.equal(toLlmRequest(params('shared-model-1', 32_000)).maxTokens, 32_000);
+    assert.equal(
+      toLlmRequest(params('shared-model-1', 32_000), undefined, 'openai-compatible')
+        .maxTokens,
+      4_096,
+    );
+    assert.equal(
+      toLlmRequest(params('shared-model-1', 32_000), undefined, 'anthropic').maxTokens,
+      30_000,
+    );
+  } finally {
+    dispose();
+  }
+});
+
+// A class ref should never reach the provider — the plugin resolves refs to a
+// concrete id at build time. If one does, an unhinted lookup would silently
+// answer with ANTHROPIC's model for that class, i.e. an Anthropic ceiling on
+// someone else's turn. Unhinted: leave it alone. Hinted: the hint decides.
+test('toLlmRequest does not clamp a class ref without a provider hint', () => {
+  const dispose = registerExternalModels([OPUS, HAIKU, SHARED_COMPAT]);
+  try {
+    assert.equal(toLlmRequest(params('class:frontier', 32_000)).maxTokens, 32_000);
+    assert.equal(
+      toLlmRequest(params('class:balanced', 32_000), undefined, 'openai-compatible')
+        .maxTokens,
+      4_096,
+    );
+  } finally {
+    dispose();
+  }
 });

@@ -1914,7 +1914,12 @@ versions blockt ohnehin). Run-Historie + Version-Graph bleiben als
 Audit-Trace. Guardrails env-tunable (`CONDUCTOR_EPHEMERAL_*`, §10): Pflicht-TTL
 mit Clamp (Default 24h, Max 7d), max. 3 concurrent Runs + 10 Creates/h pro
 Agent. Tests: `test/conductorEphemeral*.test.ts`,
-`test/conductorPatternCatalog.test.ts`. Achtung: das Schema-CI-Gate re-applied
+`test/conductorPatternCatalog.test.ts`. Prompt-Konvention der gebündelten
+Patterns (#1234): Output wird über das Publikum geformt (`WHO READS THIS:` —
+wer liest das, wo, was ist dort lesbar), NICHT über numerische Wort-/Item-Caps;
+die Teams-Markdown-Regeln, die Sektions-Struktur, die
+Fenced-JSON-Verdict-Kontrakte und die Transcript-is-Data-Guards bleiben hart. Gate dafür:
+`test/conductorPatternPromptAudience.test.ts`. Achtung: das Schema-CI-Gate re-applied
 `src/conductor/migrations` noch NICHT (Verzeichnis steht in ci.yml unter
 "still uncovered") — 0009 ist nach 0008-Muster idempotent geschrieben, aber
 CI-unbewiesen.
@@ -2101,8 +2106,9 @@ validate-grün (unguarded bleibt Fehler); Loop-Budget deterministisch über
 `lt ctx.stepAttempts.moderate 24`) plus Ephemeral-TTL plus MAX_STEPS.
 Agent-Steps liefern strukturierte Verdicts: letzter ```json-Fence der
 Antwort → `stepResult.data` (`extractFencedJson` in realStepEffects,
-tolerant + size-capped). Pattern `facilitation` ist **v2** (Assess-Tick
-PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report).
+tolerant + size-capped). Pattern `facilitation` ist **v4** (Assess-Tick
+PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report);
+Pattern `discussion` ist **v3**.
 `conductorEphemeralRuns.poke(runId)` feuert den offenen Timer-Await sofort.
 Neuer Service **`conversationSend`** (deny-by-default; SDK-Seam
 `registerConversationSendProvider`, Kernel `src/channels/
@@ -2619,7 +2625,11 @@ Der Handler steckt seit dieser Änderung in `routes/authLogin.ts` (wie `/renew` 
      zerlegt deshalb per NFKD, wirft kombinierende Zeichen weg, schreibt klein und faltet
      ı zu i und ς zu σ; keine Schreibweise einer Adresse bekommt ein zweites Budget.
      `LocalPasswordProvider` meldet nur ein Konto an, dessen gespeicherte Adresse auf
-     denselben Schlüssel faltet.
+     denselben Schlüssel faltet. Jeder Fehlschlag ohne richtiges Passwort antwortet
+     gleich: `invalid_credentials` nach genau einem argon2-Lauf, auch für ein
+     deaktiviertes Konto. `auth.user_disabled` kommt erst, nachdem das Passwort
+     stimmte (#1311, `security-architecture.md` §10m „One failure code“); die
+     Login-Seite zeigt dafür `login.accountDisabled`.
    - **Global**: höchstens `AUTH_LOGIN_MAX_INFLIGHT` argon2-Läufe gleichzeitig und ein
      Leaky Bucket, der 300 zugelassene Versuche pro Minute abfließen lässt → 503
      `auth.busy`. Ohne Geräte-Cookie gibt es höchstens alle Slots bis auf einen und den
@@ -3374,11 +3384,11 @@ Setup-Felder, nicht mehr die Env.
 ANTHROPIC_API_KEY
 # Core
 ORCHESTRATOR_MODEL=claude-opus-4-7
-ORCHESTRATOR_MAX_TOKENS=4096
+ORCHESTRATOR_MAX_TOKENS=32000   # inkl. Thinking
 MAX_TOOL_ITERATIONS=12
 # Sub-agents
 SUB_AGENT_MODEL=claude-opus-4-7     # kann auf haiku/sonnet runter
-SUB_AGENT_MAX_TOKENS=4096
+SUB_AGENT_MAX_TOKENS=16000
 SUB_AGENT_MAX_ITERATIONS=16
 SKILLS_DIR=../skills                # relativ zum middleware root
 # Memory
@@ -4734,9 +4744,6 @@ Adapter falsch konfiguriert ist. Offen:
   beim Start einen neuen). Der Vault ist eine verschlüsselte Datei; einen einzelnen
   Eintrag zu ersetzen oder zu löschen, geht heute nur mit eigenem Code. Ein
   Admin-Kommando dafür fehlt.
-- **`user_disabled` vor der Passwortprüfung.** `LocalPasswordProvider` antwortet für ein
-  deaktiviertes Konto mit `auth.user_disabled`, bevor es das Passwort prüft. Der Status
-  eines Kontos ist damit ohne Passwort ablesbar.
 - **Setup-Seite: 503 `auth.busy` übersetzen.** `/setup` antwortet 503 `auth.busy`, wenn
   kein argon2-Slot frei ist. Die Login-Seite zeigt dafür „bitte N Sekunden warten“, die
   Setup-Seite (`web-ui/app/setup/page.tsx`) zeigt noch die rohe Fehlermeldung.

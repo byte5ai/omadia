@@ -356,4 +356,18 @@ describe('<LoginPage /> sign-in errors', () => {
     await submit();
     expect(await screen.findByText('Incorrect email or password.')).toBeTruthy();
   });
+
+  it('names the disabled account for a 401 auth.user_disabled', async () => {
+    // The middleware sends this code only once the password verified
+    // (#1311), so the page may say why the sign-in failed.
+    const { ApiError } = await import('../../_lib/api');
+    mockPostAuthLogin.mockRejectedValue(
+      new ApiError(401, 'POST /v1/auth/login/local → 401', '{"code":"auth.user_disabled"}'),
+    );
+    renderWithIntl(<LoginPage />);
+    await submit();
+    expect(
+      await screen.findByText('This account is disabled. Please ask an administrator to re-enable it.'),
+    ).toBeTruthy();
+  });
 });
