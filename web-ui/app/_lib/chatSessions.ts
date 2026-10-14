@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { AnswerVerbosityInfo } from './agentIdentity';
 
 import { foldIntoStored, reconcileNewerRemote } from './chatProactiveMerge';
 import { useProactiveRefresh } from './chatProactiveRefresh';
@@ -348,6 +349,17 @@ export interface VerifierSummary {
    *  at its list limit, or claims it returned that are not in the answer or
    *  too long to check whole) — the answer was not checked in full. */
   uncoveredCount?: number;
+  /** Why the answer is not confirmed — on a withheld answer, what the notice
+   *  states; an answer released with the verifier's disclaimer carries it too.
+   *  Only `contradicted` is a refutation by a source; `contradictionCount`
+   *  counts nothing else. Absent on summaries from before the field. */
+  withheldCause?:
+    | 'contradicted'
+    | 'tool_not_called'
+    | 'citation_missing'
+    | 'insufficient_evidence'
+    | 'check_failed'
+    | 'not_checked';
   retryCount: number;
   latencyMs: number;
   mode: 'shadow' | 'enforce';
@@ -657,6 +669,12 @@ export interface Message {
    * footer. Absent when no sub-agent ran this turn.
    */
   agentsConsulted?: AgentConsultation[];
+  /**
+   * The answer-size level this answer was generated under (stream `done`).
+   * Drives the "Kürzer" / "Mehr Details" re-ask buttons; absent on a
+   * middleware that predates the field, which simply hides them.
+   */
+  answerVerbosity?: AnswerVerbosityInfo;
   /**
    * #332 Layer 2 (gap-closure) — the harness-owned, attributed verbatim
    * answer for a Direct-Line turn. Rendered as a visually distinct block,

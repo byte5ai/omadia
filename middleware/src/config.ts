@@ -597,12 +597,13 @@ export const ConfigSchema = z.object({
   // the blast radius:
   //   - shadow  : verifier runs + logs verdicts, never blocks or retries.
   //   - enforce : a delivery gate on /api/chat/stream and every other
-  //               chatStream consumer as well as chat(): only an answer the
-  //               verifier confirmed (or found nothing to check in) is
-  //               delivered; anything else — a contradiction, unconfirmed or
-  //               unchecked claims, a verifier that could not run — is
-  //               replaced by a withheld-answer notice, and the stream sends
-  //               no answer text before the verdict. Turns that end in an
+  //               chatStream consumer as well as chat(): an answer with a
+  //               contradiction (or a missing/invented citation, an uncalled
+  //               tool) or one the verifier could not check (it could not
+  //               run, every check failed) is replaced by a withheld-answer
+  //               notice; one whose claims it could not all confirm goes out
+  //               with a "could not be confirmed automatically" disclaimer;
+  //               the stream sends no answer text before the verdict. Turns that end in an
   //               input card (and the answer it rides on) or a
   //               turn-incomplete notice go out unchecked; an answer Privacy
   //               Shield rendered is never verified and is withheld. A
