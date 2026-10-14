@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { RegistryConfigEntry } from './api/registry-v1.js';
 import { isClientAddressPolicy } from './auth/clientAddress.js';
 import { SETUP_TOKEN_MAX_LENGTH, SETUP_TOKEN_MIN_LENGTH } from './auth/setupToken.js';
+import { isPublicSchemeMode, isTrustedProxyList } from './http/requestTrust.js';
 
 // Resolve .env relative to this file so the server works from any CWD.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -61,7 +62,12 @@ export const ConfigSchema = z.object({
   // time), so a fresh install follows the vendor's current frontier model
   // instead of a version baked into the code. A concrete id still works.
   ORCHESTRATOR_MODEL: z.string().min(1).default('class:frontier'),
-  ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(8192),
+  // #1210 — thinking counts toward `max_tokens` on always-thinking models, so
+  // size this for thinking PLUS the reply, not for the reply alone. 32_000 is
+  // the frontier class's registry `maxTokens`; the orchestrator plugin also
+  // floors an older installed config at this value, and the provider seam
+  // clamps it back down to whatever the resolved model actually accepts.
+  ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(32_000),
   // Live model discovery: how often each connected provider's list-models API
   // is re-read into the catalog (0 = boot only, never periodically).
   LLM_MODEL_DISCOVERY_INTERVAL_MS: z.coerce
@@ -100,17 +106,21 @@ export const ConfigSchema = z.object({
   // SKILLS_DIR. Model default matches the orchestrator; override to run
   // sub-agents cheaper (Sonnet/Haiku) while keeping the orchestrator on Opus.
   SUB_AGENT_MODEL: z.string().min(1).default('class:frontier'),
-  SUB_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
+  // Half the orchestrator budget (#1210): a sub-agent answers one delegated
+  // question rather than composing the turn, but it runs on the same
+  // always-thinking class by default, so 4096 bought thinking and nothing else.
+  SUB_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16_000),
   SUB_AGENT_MAX_ITERATIONS: z.coerce.number().int().positive().default(16),
 
-  // BuilderAgent runtime — separate from SUB_AGENT_MAX_TOKENS because
-  // fill_slot generates whole TS slot bodies (5–15k output tokens for a
-  // realistic plugin slot is normal). With 4096 the model would emit
-  // `{"slotKey":"…","source":"<truncated>` and the SDK aggregator would
-  // drop the partial source field, producing zod errors that look like
-  // "Required: source" — see OB-31. 16384 covers the common cases;
-  // operators can bump to the model's max (32k for opus-4-7) via env.
-  BUILDER_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16384),
+  // BuilderAgent runtime — its own knob because fill_slot generates whole TS
+  // slot bodies (5–15k output tokens for a realistic plugin slot is normal),
+  // so it must be tunable without moving every other sub-agent. At the old
+  // 4096 the model emitted `{"slotKey":"…","source":"<truncated>` and the SDK
+  // aggregator dropped the partial source field, producing zod errors that
+  // looked like "Required: source" — see OB-31. Since #1210 raised
+  // SUB_AGENT_MAX_TOKENS the two sit at a comparable budget; operators can
+  // bump this to the model's max (32k for the frontier class) via env.
+  BUILDER_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16_384),
   SKILLS_DIR: z.string().min(1).default('../skills'),
 
   // Memory persistence backend selection.
@@ -218,6 +228,44 @@ export const ConfigSchema = z.object({
     (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
     z.coerce.number().int().min(0).max(60_000).default(5_000),
   ),
+  // Which hops may speak for the client (#1310, §10o). Comma-separated
+  // addresses and/or `IP/bits` blocks, or `loopback`|`linklocal`|
+  // `uniquelocal`. This becomes Express's `trust proxy`, so it decides whether
+  // `req.secure` / `req.protocol` / `req.hostname` / `req.ip` believe the
+  // request's `X-Forwarded-*` headers — and with them whether the auth
+  // cookies get `Secure`. Empty (the default) = `none`: trust no hop, believe
+  // no forwarded header. NOT a hop count: Express counts hops from the server
+  // INCLUDING the immediate peer, so `1` trusts a client that connects
+  // directly and believes its forged header — the schema rejects a bare
+  // number for that reason. Set it to the address of the reverse proxy in
+  // front of this process (web-ui's container address, your Caddy/Traefik/
+  // nginx, the platform edge); `loopback` for a desktop install, where the
+  // caveat is that anything else on loopback is then trusted too.
+  TRUSTED_PROXY_ADDRESSES: z
+    .string()
+    .default('')
+    .transform((v) => v.trim())
+    .refine(
+      isTrustedProxyList,
+      'must be empty/none, or up to 16 comma-separated IPs, IP/bits blocks or loopback|linklocal|uniquelocal (not a hop count)',
+    ),
+  // The scheme clients reach this deployment over (#1310, §10o). Governs every
+  // scheme-shaped decision in the process: the `Secure` flag on the session,
+  // login-device and PKCE cookies, and the `https`/`wss` URLs the pairing
+  // descriptor hands out. `auto` (the default) follows the connection via
+  // `req.secure`, which honours `X-Forwarded-Proto` only from the hops
+  // TRUSTED_PROXY_ADDRESSES names. `https` for a reverse proxy that terminates
+  // TLS but sets no `X-Forwarded-Proto` — `auto` cannot tell that apart from
+  // genuine plain HTTP, and trusting the header from every sender is the bug
+  // this replaced. `http` for a deployment that is plain HTTP on purpose.
+  // One setting rather than a cookie-only flag because a deployment that
+  // declares HTTPS for its cookies must advertise HTTPS in its pairing URLs
+  // too; a `ws://` URL on an HTTPS page is blocked as mixed content.
+  PUBLIC_SCHEME: z
+    .string()
+    .default('auto')
+    .transform((v) => (v.trim() === '' ? 'auto' : v.trim()))
+    .refine(isPublicSchemeMode, 'must be auto, https or http'),
   // Password sign-in rate limit (docs/security-architecture.md §10m): where
   // the limiter takes a client's address from. `socket` = the TCP peer, which
   // cannot be forged (default; behind a proxy every client shares the proxy's

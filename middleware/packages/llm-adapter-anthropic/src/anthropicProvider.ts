@@ -549,6 +549,66 @@ export function classifyAnthropicError(err: unknown): LlmErrorClassification {
 }
 
 // ---------------------------------------------------------------------------
+// Buffered completions: plain request, or a stream drained to its final message
+// ---------------------------------------------------------------------------
+
+/**
+ * The largest `max_tokens` this adapter sends as a plain (non-streaming)
+ * `messages.create`. Above it, `complete()` streams and awaits the final
+ * message instead.
+ *
+ * Why: without a client timeout, the SDK refuses a non-streaming request
+ * whose `max_tokens` implies a generation longer than 10 minutes — it throws
+ * "Streaming is required for operations that may take longer than 10
+ * minutes" before anything is sent. That cut-off is 21 333 tokens for every
+ * model, and lower for the models in the SDK's internal, unexported
+ * `MODEL_NONSTREAMING_TOKENS` table (8192 for the Opus 4 / 4.1 entries).
+ * 8192 sits under both, so the adapter need not mirror that table; every
+ * smaller request keeps the plain call shape it always had. The orchestrator
+ * budget (32 000) and the sub-agent budget (16 000) both stream (#1210).
+ */
+const MAX_UNSTREAMED_TOKENS = 8192;
+
+/** Whether `complete()` must stream to get a response for this budget. */
+function requiresStreaming(maxTokens: number): boolean {
+  return maxTokens > MAX_UNSTREAMED_TOKENS;
+}
+
+type RequestOptions = ReturnType<typeof toRequestOptions>;
+
+async function completeUnstreamed(
+  client: Anthropic,
+  req: LlmRequest,
+  options: RequestOptions,
+): Promise<Anthropic.Message> {
+  const params = buildParams(req) as unknown as Parameters<
+    typeof client.messages.create
+  >[0];
+  const response = await (options !== undefined
+    ? client.messages.create(params, options)
+    : client.messages.create(params));
+  return response as Anthropic.Message;
+}
+
+/** Same request over the streaming endpoint, drained to the message a
+ *  non-streaming call would have returned. A failure — HTTP or mid-stream —
+ *  rejects `finalMessage()` with the SDK's error, so `classifyAnthropicError`
+ *  sees the same shapes as on the plain path. */
+async function completeViaStream(
+  client: Anthropic,
+  req: LlmRequest,
+  options: RequestOptions,
+): Promise<Anthropic.Message> {
+  const params = buildParams(req) as unknown as Parameters<
+    typeof client.messages.stream
+  >[0];
+  const stream = options !== undefined
+    ? client.messages.stream(params, options)
+    : client.messages.stream(params);
+  return stream.finalMessage();
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -580,14 +640,11 @@ export function createAnthropicProvider(
 
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const started = Date.now();
-      const params = buildParams(req) as unknown as Parameters<
-        typeof client.messages.create
-      >[0];
       const options = toRequestOptions(req);
-      const response = await (options !== undefined
-        ? client.messages.create(params, options)
-        : client.messages.create(params));
-      const mapped = mapResponse(response as Anthropic.Message);
+      const response = requiresStreaming(req.maxTokens)
+        ? await completeViaStream(client, req, options)
+        : await completeUnstreamed(client, req, options);
+      const mapped = mapResponse(response);
       log(
         `complete ok model=${mapped.model} in=${String(mapped.usage.inputTokens)} out=${String(mapped.usage.outputTokens)} ms=${String(Date.now() - started)}`,
       );

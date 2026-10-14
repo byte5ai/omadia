@@ -33,7 +33,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import type { Request, Response } from 'express';
 
-import { isSecureContext } from './sessionCookie.js';
+import { requestIsSecure } from '../http/requestTrust.js';
 
 export const LOGIN_DEVICE_COOKIE = 'omadia_login_device';
 /** One year: a device stays known across many sessions. */
@@ -113,11 +113,12 @@ export function createLoginDeviceCookies(signingKey: Uint8Array): LoginDeviceCoo
   };
 }
 
-/** Same attributes as the session cookie (HttpOnly, SameSite=Lax, Path=/, Secure behind TLS). */
+/** Same attributes as the session cookie (HttpOnly, SameSite=Lax, Path=/, and
+ *  `Secure` on a request `requestIsSecure` calls TLS — #1310, §10o). */
 export function setLoginDeviceCookie(req: Request, res: Response, value: string): void {
   res.cookie(LOGIN_DEVICE_COOKIE, value, {
     httpOnly: true,
-    secure: isSecureContext(req),
+    secure: requestIsSecure(req),
     sameSite: 'lax',
     maxAge: LOGIN_DEVICE_TTL_S * 1000,
     path: '/',

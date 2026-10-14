@@ -28,6 +28,8 @@ class InMemoryUserStore implements Pick<
   private rows = new Map<string, UserRecord & { passwordHash: string | null }>();
   /** How often the provider reached the users table. */
   lookups = 0;
+  /** How often the provider stamped a last-login, i.e. counted a sign-in. */
+  logins = 0;
 
   /** `match` is the table's LOWER(): two addresses are one row when it maps them alike. */
   constructor(private readonly match: (email: string) => string = (e) => e.toLowerCase()) {}
@@ -78,12 +80,30 @@ class InMemoryUserStore implements Pick<
   }
 
   async markLoginNow(_id: string): Promise<void> {
-    /* no-op — tested via observable side-effects elsewhere */
+    this.logins += 1;
   }
 }
 
 function provider(store: InMemoryUserStore): LocalPasswordProvider {
   return new LocalPasswordProvider(store as unknown as UserStore);
+}
+
+/**
+ * Milliseconds of the fastest of three `verify` runs. argon2 is only ever
+ * slowed down by a loaded machine, so the minimum is the honest cost of the
+ * path and the comparison rests on a floor rather than on an average.
+ */
+async function fastestVerifyMs(
+  p: LocalPasswordProvider,
+  body: { email: string; password: string },
+): Promise<number> {
+  let fastest = Infinity;
+  for (let i = 0; i < 3; i += 1) {
+    const started = performance.now();
+    await p.verify(body);
+    fastest = Math.min(fastest, performance.now() - started);
+  }
+  return fastest;
 }
 
 describe('LocalPasswordProvider.verify', () => {
@@ -126,7 +146,7 @@ describe('LocalPasswordProvider.verify', () => {
     }
   });
 
-  it('rejects disabled user with user_disabled', async () => {
+  it('rejects a disabled user with user_disabled once the password verified', async () => {
     const store = new InMemoryUserStore();
     await store.addLocalUser({
       email: 'disabled@example.com',
@@ -141,6 +161,65 @@ describe('LocalPasswordProvider.verify', () => {
     if (r.outcome === 'error') {
       assert.equal(r.code, 'user_disabled');
     }
+  });
+
+  it('rejects a disabled user with a wrong password as invalid_credentials (#1311)', async () => {
+    // The status must not be readable without the password: a wrong password
+    // against a disabled account answers exactly like an unknown address, so
+    // `user_disabled` is no enumeration oracle.
+    const store = new InMemoryUserStore();
+    await store.addLocalUser({
+      email: 'disabled@example.com',
+      plainPassword: 'pw-12345678',
+      status: 'disabled',
+    });
+    const r = await provider(store).verify({
+      email: 'disabled@example.com',
+      password: 'wrong-pass',
+    });
+    assert.equal(r.outcome, 'error');
+    if (r.outcome === 'error') {
+      assert.equal(r.code, 'invalid_credentials');
+    }
+  });
+
+  it('pays argon2 for a disabled account, like an unknown address does (#1311)', async () => {
+    // The code is only half of what the issue asked for: a status check ahead
+    // of `verifyPassword` would answer without argon2 at all — microseconds
+    // against ~20 ms — and time the account's status out that way. Comparing
+    // the two paths pins the ordering itself, where asserting the code cannot:
+    // the fastest of three runs each, since argon2 can be delayed by load but
+    // never run faster, and a third of the unknown-address cost as the bound.
+    const store = new InMemoryUserStore();
+    await store.addLocalUser({
+      email: 'disabled@example.com',
+      plainPassword: 'pw-12345678',
+      status: 'disabled',
+    });
+    const p = provider(store);
+    const unknown = await fastestVerifyMs(p, { email: 'nobody@example.com', password: 'wrong-pass' });
+    const disabled = await fastestVerifyMs(p, {
+      email: 'disabled@example.com',
+      password: 'wrong-pass',
+    });
+    assert.ok(
+      disabled > unknown / 3,
+      `the disabled path took ${disabled.toFixed(1)}ms against ${unknown.toFixed(1)}ms for an unknown address — it looks like it skipped argon2`,
+    );
+  });
+
+  it('does not stamp last-login for a disabled account with the right password', async () => {
+    const store = new InMemoryUserStore();
+    await store.addLocalUser({
+      email: 'disabled@example.com',
+      plainPassword: 'pw-12345678',
+      status: 'disabled',
+    });
+    await provider(store).verify({
+      email: 'disabled@example.com',
+      password: 'pw-12345678',
+    });
+    assert.equal(store.logins, 0);
   });
 
   it('returns success on correct credentials with normalised email', async () => {

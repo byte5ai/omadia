@@ -72,6 +72,196 @@ runtime behaviour is unchanged). References to the gitignored
 (`manifestLoader.ts`), `middleware/src/api/admin-v1.ts`,
 `middleware/assets/entity-registry.v1.yaml` and the boilerplate's own path.
 
+### Fixed — auth cookies and pairing URLs take their scheme from the connection (#1310)
+
+2026-10-07 — `isSecureContext` read `x-forwarded-proto` straight off the
+request, and `trust proxy` was `true`, so the sender of a request chose whether
+its own session, login-device and OIDC PKCE cookies were marked `Secure`:
+`Secure` on a plain-HTTP login that sent the header, none behind a TLS proxy
+that did not. Reported against v0.168.4. `requestIsSecure`
+(`middleware/src/http/requestTrust.ts`) now reads `req.secure`.
+
+A hop count is not the fix, which is why the new `TRUSTED_PROXY_ADDRESSES`
+takes addresses and refuses a bare number at boot: Express counts trusted hops
+from the server *including the immediate peer*, so `1`, `2` and `'loopback'`
+all still believe a forged header from a direct client. Default is empty —
+trust no hop.
+
+`PUBLIC_SCHEME` (`auto` | `https` | `http`) is the half narrowing cannot
+supply: a proxy that terminates TLS and sets no header leaves `req.secure`
+false under every `trust proxy` value. One setting rather than a cookie flag,
+because the pairing descriptor's `https`/`wss` URLs ride on the same question —
+a `ws://` URL on an HTTPS page is blocked as mixed content. `resolveScheme` and
+`@omadia/ui-channel`'s `absoluteCanvasWsUrl` read it too; `X-Forwarded-Host`
+is unchanged.
+
+The web-ui declares its own scheme as `WEB_UI_PUBLIC_SCHEME`, read by one
+helper for both places that process decides a scheme: the `X-Forwarded-Proto`
+the `/bot-api` proxy states to the middleware, and the browser-facing pairing
+descriptor it serves at `/.well-known/omadia-ui`, whose `operatorOrigin` also
+read the raw header. Neither can derive it — a Next Route Handler has no socket,
+and `req.nextUrl.protocol` is built by next from that same header. Fly and
+Render declare `https` on both processes; the compose stack keeps the plain-HTTP
+defaults.
+
+`TRUSTED_PROXY_ADDRESSES` also refuses a `/0` block: `0.0.0.0/0` matches every
+address, so it was `trust proxy = true` wearing a netmask, accepted silently
+while a bare `1` was refused. Migration and a `curl` check:
+`docs/upgrading.md`, "Upgrading past v0.176.0". Trust boundary and the measured
+`trust proxy` table: `docs/security-architecture.md` §10o.
+
+### Security — local login no longer reveals disabled accounts (#1311)
+
+2026-10-07 — `LocalPasswordProvider` checked `user.status` before it verified
+the password, so a 401 `auth.user_disabled` came back for a disabled account
+whatever the password was — readable by anyone, and faster than the other
+failure paths because it returned before argon2 ran. The error channel told an
+attacker that an address had an account and that it was switched off; the login
+page showed the same generic message for all three cases, but the JSON body did
+not. The status is now checked after `verifyPassword` returned true: every
+password-less failure answers `invalid_credentials` after exactly one argon2
+verify, an unknown address and a disabled account alike. Behind a correct
+password the page names the reason (`login.accountDisabled`, en + de). The OIDC
+callback keeps its own status check — there the IdP has already authenticated
+the user. Tests: `localPasswordProvider.test.ts` (disabled + wrong password →
+`invalid_credentials`, disabled + right password → `user_disabled` and no
+last-login stamp), `web-ui/app/login/__tests__/page.test.tsx`. Background:
+`security-architecture.md` §10m "One failure code, whatever the row says".
+
+### Fixed — usage telemetry prices the 5.5 generation and Fable, not the family fallback
+
+2026-10-05 — The Anthropic half of `EXACT_PRICES` in
+`packages/harness-usage-telemetry/src/pricing.ts` ended at the Opus 5 / Sonnet 5
+generation and never knew about Fable, so three current models were mispriced
+in the cost column and in every budget display. Rates checked against
+platform.claude.com/docs/en/about-claude/pricing on 2026-10-05.
+
+- `claude-opus-5-5` fell through to the `opus` family at $5/$25 per MTok with
+  cache reads at the global 0.1x. It is $4/$20 with reads at 0.05x
+  ($0.20/MTok), so cost over-reported by roughly a quarter — more on
+  cache-heavy calls, where reads billed at double. The new entry carries an
+  absolute `cachedInputPerMTok` of 0.2; that field already overrode
+  `CACHE_READ_MULTIPLIER` for the OpenAI path and now also carries the
+  Anthropic models whose read fraction is not 0.1x. Cache writes needed no
+  special case: `CACHE_WRITE_MULTIPLIER` × $4 is the published $5/MTok
+  5-minute write rate.
+- `claude-sonnet-5-5` fell through to the `sonnet` family at $3/$15; it is
+  $2/$10, the same correction the `claude-sonnet-5` entry already made. Reads
+  stay at the standard 0.1x.
+- `claude-fable-5-1` matched no exact entry **and** no family keyword, so every
+  Fable call recorded at $0 behind a one-time "no price for model" warning —
+  the dashboard read frontier traffic as free. It now has an exact entry
+  ($10/$50, reads 0.025x = $0.25/MTok), and a `fable` family row prices Fable 5
+  at $10/$50 with standard 0.1x reads. Mythos needs no row of its own:
+  `builtinLlmProviders.ts` excludes it from model discovery.
+- `claude-haiku-5-5` (#1389) fell through to the `haiku` family at $1/$5; it
+  is $0.10/$0.50 with standard 0.1x reads. It runs the background calls after
+  every turn, so it is the most frequent call of an instance and was
+  over-billed tenfold. Prompts above 100k tokens bill at $0.50/$2.50, which
+  `ModelPrice` cannot express yet; those calls stay under-counted.
+- Dated snapshots of all three were still mispriced after the exact entries,
+  because a snapshot misses the exact table and the only keywords were the
+  broad family ones — `claude-opus-5-5-20260922` resolved to `opus` at $5/$25,
+  the very over-report being fixed. Each point release that prices below its
+  family now also has a family keyword ordered ahead of the family's
+  (`opus-5-5` before `opus`, `sonnet-5-5` before `sonnet`, `haiku-5-5` before
+  `haiku`, `fable-5-1` before `fable`), and the rate itself is spelled once in a shared constant used by
+  both tables so the two halves cannot drift apart.
+- `test/usageTelemetryPricing.test.ts` pins all four ids, their snapshots, and
+  the cost arithmetic.
+
+### Fixed — output budgets sized for thinking, and clamped to the model
+
+2026-10-05 — `ORCHESTRATOR_MAX_TOKENS` defaulted to 8192 and
+`SUB_AGENT_MAX_TOKENS` to 4096, numbers chosen when thinking was off. The
+default `ORCHESTRATOR_MODEL` is `class:frontier`, which live discovery resolves
+to the vendor's newest Opus — thinking is always on there and its tokens count
+toward `max_tokens`, so the budget bought thinking and then truncated the answer,
+or a large structured tool call (a multi-sheet `create_xlsx`) mid-call, leaving
+no file. Raised to 32000 and 16000, matching the frontier class's own registry
+`maxTokens`. The orchestrator plugin still floors an older installed config, so
+an existing deployment is bumped without a reinstall.
+
+`.env.example` had drifted further than the code: it shipped 4096 for both while
+the code used 8192, and the plugin manifest's operator help text claimed a
+default of 4096. Both now say what the code does, and
+`test/orchestratorMaxTokenBudgets.test.ts` pins every copy of the number —
+nothing asserted them before, which is how three answers to one question
+survived.
+
+Raising the floor exposed a second gap the old number hid: nothing clamped the
+request to the selected model's own output ceiling. A Haiku-class model caps
+output at 8192, as does Mistral; a vendor answers a `max_tokens` above its cap
+with a 400 on the whole request rather than silently capping it, so every turn
+on such a model would have failed. `toLlmRequest` now clamps to the resolved
+model's registry `maxTokens`, resolved against the provider connection the
+request is going out on. Unaffected: a budget the model can serve, and a model
+the registry does not know (an operator-typed id, a local build) — those pass
+through untouched, so an operator-added OpenAI-compatible / Ollama / MiniMax
+model stays unclamped until its provider contributes a `maxTokens`.
+
+The Anthropic SDK refuses a non-streaming request above 21 333 `max_tokens`
+before sending it, so the adapter's `complete()` now streams any request above
+8192 and maps the final message exactly as before; smaller requests keep the
+plain call.
+
+Issue #1210.
+
+### Fixed — the guarded direct-line note is no longer swallowed by its own token cap
+
+2026-10-05 — In `guarded` direct-line mode the orchestrator may append a short
+cross-cutting note under a specialist's verbatim answer (#332 Layer 2). That
+extra pass asked for 512 output tokens. A model that reasons before it answers
+bills those tokens against `max_tokens`, so the budget was spent before any
+text was emitted; the helper treats empty text as "nothing to add" and returns
+no note, which made the feature silently inert on such models rather than
+visibly broken. The pass now asks for 4096 tokens, clamped to the `maxTokens`
+the caller resolved for the active model so it can never request more than the
+model allows. Its system prompt moved to a module-level constant next to the
+card-router prompts and was rewritten in plain register — the all-caps
+imperatives read as pressure the current models over-apply — while keeping the
+explicit two-sentence bound on the note itself. The verbatim block is
+unaffected: the note is still append-only, and the no-redaction invariant
+stays structural. Three tests pin the budget, the clamp, and the empty-text
+fail-open (#1209).
+
+### Fixed — the security screener and persona router get a token budget that survives thinking
+
+2026-10-06 — Both routes run on the agent's own model when nothing cheaper is
+configured (`buildOrchestrator.ts` builds `LlmScreener` with `config.model`;
+`routeTurnPersona` falls back to `modelRouting?.classifierModel ?? this.model`).
+On Opus 5.5 and up thinking is always on, counts toward `max_tokens`, and the
+default effort is medium — so a cap sized for the visible reply alone ends the
+call before the reply exists.
+
+- `LlmScreener`'s default `maxTokens` is 4096 (was 128). At 128 the judge's
+  `ALLOW` / `QUARANTINE: …` line never arrived, `parseVerdict` threw
+  `unparseable-verdict`, and `screenProvenance` fell open to `unscreenable`:
+  the turn ran with the `[NOT security-screened …]` marker. The `unscreenable`
+  audit event and the #749 counters did fire, but under the cause
+  `unparseable-verdict` — which reads as a judge off its contract, not as a
+  budget that ended the call before the verdict existed. An explicitly passed
+  `maxTokens` is still honoured.
+- The persona router asks for 1024 tokens (was 16). At 16 the classifier's
+  slug was truncated, the reply matched no candidate, and every turn silently
+  took the Agent's default identity — indistinguishable from an honest
+  `NO_PERSONA_MATCH`.
+- Both budgets are named constants in the new
+  `harness-orchestrator/src/classifierBudgets.ts`, which carries the reasoning
+  once for both routes (and records why `modelRouter.ts` is exempt). They are
+  package-internal, not barrel exports; the tests import them from source and
+  pin both the wire value and the number.
+- No `effort` is set on either call: both may run on Haiku or a non-Anthropic
+  provider. `temperature: 0` stays as-is — the Anthropic adapter already drops
+  it per `supportsTemperature`.
+- `modelRouter.ts` asks for 8 tokens and is untouched: it only runs with an
+  explicitly configured Haiku-tier classifier, and its fallback on an
+  unparseable reply is the stronger model (overspend, not a silent downgrade).
+  It has the same failure shape if an operator points `classifierModel` at an
+  always-thinking model.
+- Tests: `test/securityPosture579.test.ts` (judge budget, explicit override)
+  and `test/personaRouter.test.ts` (classifier budget).
+
 ### Added — answer size in the web chat (stream `done` + "Kürzer" / "Mehr Details")
 
 2026-10-09 — The stream `done` event now carries `answerVerbosity` like the
@@ -834,6 +1024,57 @@ range excludes the host's `@omadia/plugin-api` version is refused with
 install reports the same code with HTTP 422). A manifest without `compat_core`
 counts as `>=1.0 <2.0`. `docs/upgrading.md` names the minimum host for hub
 plugins.
+
+### Changed — conductor prompts shape their output by naming the audience, not a word count (#1234)
+
+2026-10-05 — the four agentic conductor pattern prompts carried hard numeric
+ceilings: the discussion `speak` step "at most 120 words" plus "no bullet lists
+longer than three items", the discussion `close` step "Under 140 words", and
+both facilitation report steps "Total length under 150 words". A cap is the one
+instruction a model can satisfy by stopping mid-argument, so the limit was
+doing the shaping that the reader should do. Each is now replaced by a
+`WHO READS THIS:` clause naming the reader, the device and the moment — a
+running group chat read on a phone with the next speaker right behind it; a
+closing summary that someone who missed the discussion reads as their only
+message; a final report that is the last word on the goal and has to stand
+without the conversation next to it. The two placeholder hints inside the
+fenced-json verdicts lost their counts the same way (`max 12 words` → "as one
+short question", `max 8 words` → "as a short label").
+
+**Visible effect:** a discussion turn and a facilitation report may now run
+longer than the old ceilings. That is the intended product change, not a
+regression.
+
+**Two runtime bounds the caps used to keep out of reach, left as they are and
+named here so the next change is a decision and not a surprise:**
+`renderTranscript` trims the rendered transcript from the FRONT at
+`TRANSCRIPT_TEXT_MAX_CHARS = 12_000` (`src/conductor/transcript.ts`). At the old
+~120 words/turn a full default discussion (`DISCUSSION_DEFAULT_MAX_TURNS = 16`)
+fit the window almost exactly; with longer turns the oldest turns fall off
+silently, so a late speaker can no longer honour "never repeat a point already
+made" for an evicted turn, and the `close` step can summarise only the tail
+while being told to attribute positions and report only what was said. And
+`formatUtterance` hard-truncates a posted utterance at
+`SAY_TEXT_MAX_CHARS = 4000` with an ellipsis while still recording
+`said: true` (`src/conductor/sayService.ts`) — previously unreachable for the
+reports, now reachable, and a report cut mid-bullet is the opposite of the
+"stands on its own" property the audience clause asks for. Raising either bound
+costs context per turn on every discussion, which is the same kind of product
+call as this entry, so it is deliberately not bundled in.
+
+Unchanged on purpose, because each had its own reason: the Teams-Markdown rules
+(bold mini-headings and `-` bullets only, never ASCII dividers or ALL-CAPS
+banners — they render as an unreadable wall in chat), the section and bullet
+structure including the outcome emoji, the fenced-json verdict contracts with
+their `converged` / `dodMet` semantics and items-array rules (the parsers on the
+other side read those keys), "never write your own name in front of your text",
+and the transcript-is-data prompt-injection guards. Pattern manifest versions
+bump with the prompt text (`discussion` 2 → 3, `facilitation` 3 → 4).
+
+The earlier entry below — "report prompts carry hard FORMAT rules … <150 words"
+(#330 field report) — describes the previous behavior and is superseded here;
+the historic entry stays as it shipped. Gate against a cap creeping back, and
+against losing a kept item: `test/conductorPatternPromptAudience.test.ts`.
 
 ### Changed — the desktop install smoke waits for the web UI's first load and checks the shell's boundaries
 
