@@ -6,6 +6,13 @@ import {
 } from './mcp/mcpClient.js';
 import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
 import {
+  buildAnswerVerbosityBlock,
+  buildAnswerVerbosityTurnBlock,
+  DEFAULT_ANSWER_VERBOSITY,
+  parseAnswerVerbosity,
+  type AnswerVerbosity,
+} from './answerVerbosity.js';
+import {
   deriveAgentsConsulted,
   toSemanticAnswer,
   applyAiDisclosure,
@@ -14,6 +21,7 @@ import {
   DEFAULT_AI_DISCLOSURE_POLICY,
   InMemoryDisclosureSeenStore,
   type ChatStreamEvent,
+  type AnswerVerbosityInfo,
   type ChatTurnInput,
   type ChatTurnResult,
   type DelegatedAnswer,
@@ -68,7 +76,7 @@ import {
   knowledgeGraphToolSpec,
 } from './knowledgeGraphTool.js';
 import type { MemoryToolHandler } from '@omadia/memory';
-import type { MemoryBinder } from './memoryBinder.js';
+import type { BoundTurnMemory, MemoryBinder } from './memoryBinder.js';
 import type { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import {
   CHAT_PARTICIPANTS_TOOL_NAME,
@@ -277,6 +285,7 @@ import {
   today,
   turnContext,
   type TurnContextValue,
+  type GraphReadScope,
 } from './turnContext.js';
 import {
   crossScopeRecallRefused,
@@ -288,9 +297,45 @@ import {
   knowledgeGraphPrincipalResolver,
 } from './audienceFloorProvider.js';
 import { guardToolCommands } from './commandPolicyGuard.js';
-import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
+import {
+  resolveRunTraceOwner,
+  resolveTurnOwnerIdentity,
+  runTraceOwnerId,
+} from './resolveTurnOwnerIdentity.js';
+import { resolveTurnAudience, type TurnAudience } from './turnAudience.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
+
+/**
+ * The `userId` a `RunTraceCollector` is built with — the canonical cluster id
+ * on a channel turn, see {@link runTraceOwnerId}. Read from the turn context,
+ * where both entry points store the identity they resolved for this turn.
+ */
+function runTraceUserSpread(
+  input: Pick<ChatTurnInput, 'userId' | 'channelIdentity'>,
+): { userId?: string } {
+  const ctx = turnContext.current();
+  const userId = ctx?.runTraceOwner
+    ? ctx.runTraceOwner.userId
+    : runTraceOwnerId(input, ctx?.resolvedOmadiaUserId);
+  return userId ? { userId } : {};
+}
+
+/** A graph-tool view under which nothing is visible (members, unknown room). */
+const NOTHING_VISIBLE = { audienceOwners: null, agentScopePrefix: '' } as const;
+
+/**
+ * Member-scoped memory — the `owners` a turn's log entry carries: everyone
+ * present when the agent runs `members` context memory, `[]` when that room
+ * was not known (the turn then belongs to nobody and is never recalled in
+ * that mode), nothing in every other mode.
+ */
+function turnOwnersField(turnMemory: TurnMemoryBinding | undefined): {
+  owners?: readonly string[];
+} {
+  const isolation = turnMemory?.isolation;
+  return isolation?.kind === 'members' ? { owners: isolation.audience ?? [] } : {};
+}
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
 // `import { … } from './orchestrator.js'` (verifierService.ts, routes/chat.ts,
@@ -916,6 +961,13 @@ export interface OrchestratorOptions {
    * empty → behaviour is identical to pre-Wave-8 (no classifier call).
    */
   personaSkills?: readonly OrchestratorPersonaSkill[];
+  /**
+   * Operator's target answer size — the `answer_verbosity` setup field. A
+   * prompt contract (what the answer contains), not a token budget. Absent →
+   * `standard`, which emits no block and leaves the system prompt
+   * byte-identical. See `answerVerbosity.ts`.
+   */
+  answerVerbosity?: AnswerVerbosity;
   /**
    * AI-Act Art. 50 (#644) — the operator's resolved disclosure config. Absent →
    * the shipping default (standard, active) on every channel. See
@@ -1603,15 +1655,17 @@ ${priorContext}`,
  * The per-turn system hint as it crosses the wire (#361): the caller's
  * `extraSystemHint` masked through the turn's prompt map like the user's
  * message — once, through this turn's map — then composed with the kernel's
- * own fresh-check text. The caller's hint (a verifier correction on a retry,
+ * own per-turn prose (the fresh-check block, the answer-size pick). The
+ * caller's hint (a verifier correction on a retry,
  * the screening marker) is wire content, not kernel prose — the verifier's
  * correction hint quotes claims cut from the RESTORED answer, i.e. the real
  * values the mask kept from the model — so it gets the message's protection:
  * the same surrogates (restored in the answer), its masked spans on the
  * turn's receipt, and a `PromptMaskBlockedError` when masking cannot be
- * guaranteed. The fresh-check prose is not masked: it is static, carries no
- * user data, and masking it could only garble — or, on a residual-leak
- * `blocked`, fail — a turn with no hint.
+ * guaranteed. The kernel's own prose (fresh check, answer-size pick) is not
+ * masked: it is static, carries no user data — the size pick interpolates
+ * only a parsed enum label — and masking it could only garble — or, on a
+ * residual-leak `blocked`, fail — a turn with no hint.
  */
 async function wireExtraSystemHint(
   privacy: PrivacyTurnHandle | undefined,
@@ -1622,7 +1676,11 @@ async function wireExtraSystemHint(
     callerHint !== undefined && callerHint.trim().length > 0
       ? await maskPromptForWire(privacy, callerHint)
       : undefined;
-  return composeExtraSystemHint(input.freshCheck, wireHint);
+  return composeExtraSystemHint(
+    input.freshCheck,
+    wireHint,
+    parseAnswerVerbosity(input.answerVerbosity),
+  );
 }
 
 /**
@@ -1636,8 +1694,16 @@ async function wireExtraSystemHint(
 function composeExtraSystemHint(
   freshCheck: ChatTurnInput['freshCheck'],
   callerHint: string | undefined,
+  turnVerbosity?: AnswerVerbosity,
 ): string | undefined {
   const parts: string[] = [];
+  // Phase 3 — the user's per-turn answer-size pick. Same home as Fresh
+  // Check (uncached, per turn, static prose that carries no user data), so
+  // the stable prompt and its cache key stay byte-identical. Already parsed:
+  // an unknown wire value arrives here as undefined and adds nothing.
+  if (turnVerbosity) {
+    parts.push(buildAnswerVerbosityTurnBlock(turnVerbosity));
+  }
   if (freshCheck) {
     parts.push(
       `# FRESH CHECK MODE (von User per Card-Button aktiviert)
@@ -1789,7 +1855,40 @@ const DEFAULT_ASSISTANT_IDENTITY =
 interface TurnMemoryBinding {
   readonly handler: MemoryToolHandler | undefined;
   readonly contextBound: boolean;
+  /**
+   * Set only on a context-bound turn of an agent whose context memory reaches
+   * beyond the memory tree. The tree is partitioned by the binder; graph
+   * recall and `query_knowledge_graph` are not, so they are narrowed here:
+   *
+   *  - `conversation` (`enforce-strict`): the turn's own conversation, by its
+   *    graph scope. `scope: null` = no conversation, so they see nothing.
+   *    Without this, an earlier Teams conversation of the same agent reached a
+   *    Telegram turn through both paths.
+   *  - `members`: knowledge of this agent that everyone present owns.
+   *    `audience: null` = the room is not known, so they see nothing, and what
+   *    the turn learns is owned by nobody (`owners: []`).
+   */
+  readonly isolation?: TurnIsolation;
+  /** Which memory convention the system prompt states; absent = the default. */
+  readonly memoryPrompt?: MemoryPromptKind;
 }
+
+/**
+ * The memory convention a turn's system prompt states:
+ *  - `context` — the chat-context tiers (`enforce` / `enforce-strict`);
+ *  - `members` — notes of the people present, plus read-only larger groups;
+ *  - `members-unknown` — a `members` turn whose room is unknown: no notes.
+ */
+type MemoryPromptKind = 'context' | 'members' | 'members-unknown';
+
+function memoryPromptFor(bound: BoundTurnMemory): MemoryPromptKind | undefined {
+  if (bound.members) return bound.members.key ? 'members' : 'members-unknown';
+  return bound.axes.isContextFree ? undefined : 'context';
+}
+
+type TurnIsolation =
+  | { readonly kind: 'conversation'; readonly scope: string | null }
+  | { readonly kind: 'members'; readonly audience: readonly string[] | null };
 
 /**
  * A pass of a request a verifier bound a ledger to (`bindToolReplayLedger`):
@@ -1836,6 +1935,24 @@ const CONTEXT_MEMORY_PROMPT_BLOCK = `**Memory-Kontext (dieser Chat):**
 
 `;
 
+/** The convention of a `members` turn (W3) — notes belong to the people present. */
+const MEMBERS_MEMORY_PROMPT_BLOCK = `**Memory-Kontext (Personen in diesem Chat):**
+- Deine Notizen unter \`/memories/\` gehören den Personen, die gerade in diesem Chat sind. Wieder sichtbar sind sie nur, wenn genau diese Personen oder ein Teil von ihnen mit dir sprechen — sobald jemand Neues dabei ist, nicht.
+- Ordner \`/memories/~g-…/\` (falls vorhanden) sind Notizen aus größeren Runden, zu denen alle hier Anwesenden gehörten — **read-only**. Schreibversuche dorthin schlagen fehl.
+
+`;
+
+/** A `members` turn whose room could not be determined — no notes at all. */
+const MEMBERS_UNKNOWN_MEMORY_PROMPT_BLOCK = `**Memory-Kontext:** In diesem Chat lässt sich nicht feststellen, wer anwesend ist. Notizen unter \`/memories/\` sind deshalb nicht verfügbar — weder lesen noch schreiben. Wenn der Nutzer dich bittet, dir etwas zu merken, sag ihm, dass das in diesem Chat nicht geht.
+
+`;
+
+const MEMORY_PROMPT_BLOCKS: Readonly<Record<MemoryPromptKind, string>> = {
+  context: CONTEXT_MEMORY_PROMPT_BLOCK,
+  members: MEMBERS_MEMORY_PROMPT_BLOCK,
+  'members-unknown': MEMBERS_UNKNOWN_MEMORY_PROMPT_BLOCK,
+};
+
 function buildSystemPrompt(
   assistantIdentity: string,
   domainTools: DomainTool[],
@@ -1847,11 +1964,15 @@ function buildSystemPrompt(
   hasCalendar: boolean,
   hasPrivacyV4: boolean,
   extraToolDocs: readonly string[] = [],
-  contextBoundMemory = false,
+  memoryPrompt?: MemoryPromptKind,
+  answerVerbosity: AnswerVerbosity = DEFAULT_ANSWER_VERBOSITY,
 ): string {
+  // Operator's answer-size contract. `standard` is '' so the delivered state
+  // keeps the prompt (and its cache key) unchanged.
+  const answerVerbosityBlock = buildAnswerVerbosityBlock(answerVerbosity);
   // W5 — off by default, so a turn that is not context-bound produces a
   // byte-identical prompt (and therefore a byte-identical prompt-cache key).
-  const contextMemoryBlock = contextBoundMemory ? CONTEXT_MEMORY_PROMPT_BLOCK : '';
+  const contextMemoryBlock = memoryPrompt ? MEMORY_PROMPT_BLOCKS[memoryPrompt] : '';
   const domainList = domainTools.length
     ? domainTools.map((t) => `- \`${t.name}\`: ${t.spec.description}`).join('\n')
     : '- (keine Fach-Agenten konfiguriert)';
@@ -1924,7 +2045,7 @@ d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabel
   return `${assistantIdentity}
 
 Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.
-
+${answerVerbosityBlock ? '\n' + answerVerbosityBlock : ''}
 Werkzeuge:
 - \`memory\` (virtuelles /memories-Verzeichnis): Persistiere Domänen-Learnings, Nutzer-Präferenzen, Geschäfts-Konventionen und häufige Anfragen. Der Memory wird über Sessions hinweg geteilt und ist global für diesen Agent. Lies zu Beginn jeder neuen Aufgabe einmal den Verzeichnisinhalt, bevor du antwortest, damit du auf relevante Learnings zurückgreifen kannst. Lege neue Learnings in themenbezogenen Dateien ab (z.B. /memories/customers/kundenname.md, /memories/observations/2026-q2.md).
 ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBlock}${calendarBlock}${extraToolDocs.length > 0 ? '\n' + extraToolDocs.map((doc) => `- ${doc.trim()}`).join('\n') + '\n' : ''}
@@ -2475,6 +2596,8 @@ export class Orchestrator {
   /** #967 — this Agent's own authored name. See
    *  `OrchestratorOptions.identityName`. */
   private readonly identityName: string | undefined;
+  /** Operator's answer-size contract (see OrchestratorOptions.answerVerbosity). */
+  private readonly answerVerbosity: AnswerVerbosity;
   /** #644 — resolved operator disclosure config (undefined → shipping default
    *  on every channel). See {@link AiDisclosureSetup}. */
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
@@ -2614,6 +2737,7 @@ export class Orchestrator {
     this.assistantIdentity =
       options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
     this.identityName = options.identityName?.trim() || undefined;
+    this.answerVerbosity = options.answerVerbosity ?? DEFAULT_ANSWER_VERBOSITY;
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
@@ -2637,7 +2761,14 @@ export class Orchestrator {
     // advertises and dispatches them on the subscription-CLI path; memory and
     // get_chat_participants stay marker-only (see registerKernelNativeTools).
     registerKernelNativeTools(this.nativeTools, {
-      knowledgeGraphTool: this.knowledgeGraphTool,
+      // The registered handler knows no turn, and it is what the
+      // subscription-CLI path dispatches through. For an agent whose context
+      // memory restricts the graph tool per turn it would read every room of
+      // the tenant, so it sees nothing instead (`unrestrictedGraphToolAllowed`).
+      knowledgeGraphTool:
+        this.knowledgeGraphTool && !this.unrestrictedGraphToolAllowed()
+          ? { handle: (input: unknown) => this.knowledgeGraphTool!.handle(input, NOTHING_VISIBLE) }
+          : this.knowledgeGraphTool,
       askUserChoiceTool: this.askUserChoiceTool,
       suggestFollowUpsTool: this.suggestFollowUpsTool,
       findFreeSlotsTool: this.findFreeSlotsTool,
@@ -2685,6 +2816,8 @@ export class Orchestrator {
   private async maybePromoteTurn(opts: {
     turnId: string | undefined;
     userId: string | undefined;
+    /** Member-scoped memory — see `PromoteTurnInput.owners`. */
+    owners?: readonly string[];
     palaiaExcerpt: PalaiaExcerpt | undefined;
     fallbackAssistantAnswer: string;
   }): Promise<string | undefined> {
@@ -2699,6 +2832,7 @@ export class Orchestrator {
       turnId: opts.turnId,
       userId: opts.userId,
       threshold: this.autoPromoteThreshold,
+      ...(opts.owners !== undefined ? { owners: opts.owners } : {}),
       fallbackAssistantAnswer: opts.fallbackAssistantAnswer,
       // Per-orchestrator isolation: stamp the producing Agent so auto-promoted
       // MK default-isolates to it (team/public promotion stays cross-agent).
@@ -3489,6 +3623,8 @@ export class Orchestrator {
     // text this returns flows INTO the LLM prompt, so the recall query must
     // not itself carry a raw PII span the mask pass just removed.
     wireUserMessage?: string,
+    // `enforce-strict` — see `TurnMemoryBinding.isolation`.
+    isolation?: TurnMemoryBinding['isolation'],
   ): Promise<{
     text: string | undefined;
     recalled: RecalledContext | undefined;
@@ -3535,12 +3671,42 @@ export class Orchestrator {
     // when this turn HAS a scope to be restricted to; without one there is
     // nothing to compare a hit against, so the restriction would silently drop
     // every candidate rather than the cross-session ones.
+    // `enforce-strict` narrows the same way, by the knowledge's owner context:
+    // a context-bound turn recalls only its own conversation, never a
+    // conversation of the same agent that arrived through another channel.
+    // Without a conversation there is nothing it may recall at all.
+    //
+    // `members` replaces the conversation boundary with the owner rule: a turn
+    // recalls this agent's knowledge that everyone present owns, from any
+    // conversation, through any channel. An unknown room recalls nothing.
+    if (isolation?.kind === 'conversation' && isolation.scope === null) {
+      console.error('[context] SKIP context-memory enforce-strict: no conversation scope');
+      return { text: undefined, recalled: undefined };
+    }
+    if (isolation?.kind === 'members' && isolation.audience === null) {
+      console.error('[context] SKIP context-memory members: room audience unknown');
+      return { text: undefined, recalled: undefined };
+    }
+    const audienceOwners = isolation?.kind === 'members' ? isolation.audience ?? undefined : undefined;
     const restrictRecallScope =
-      input.sessionScope !== undefined && (await crossScopeRecallRefused())
-        ? graphScopeFor(this.agentId, input.sessionScope)
-        : undefined;
+      isolation?.kind === 'conversation'
+        ? (isolation.scope ?? undefined)
+        : audienceOwners === undefined &&
+            input.sessionScope !== undefined &&
+            (await crossScopeRecallRefused())
+          ? graphScopeFor(this.agentId, input.sessionScope)
+          : undefined;
     if (restrictRecallScope !== undefined) {
-      console.error('[context] audience-floor: recall restricted to this conversation');
+      console.error(
+        `[context] recall restricted to this conversation (${
+          isolation ? 'context-memory enforce-strict' : 'audience-floor'
+        })`,
+      );
+    }
+    if (audienceOwners !== undefined) {
+      console.error(
+        `[context] recall restricted to knowledge all ${String(audienceOwners.length)} present own (context-memory members)`,
+      );
     }
     try {
       // OB-74 (Palaia Phase 5) — switch to the token-budget assembler. The
@@ -3563,10 +3729,14 @@ export class Orchestrator {
         ...(input.sessionScope
           ? { sessionScope: graphScopeFor(this.agentId, input.sessionScope) }
           : {}),
-        ...(input.userId ? { userId: input.userId } : {}),
+        // `members`: the owner rule replaces the per-user filter — the turn's
+        // `userId` is the sender's channel-native id, and the knowledge a room
+        // may use was spoken by everyone in it, not by the sender alone.
+        ...(input.userId && audienceOwners === undefined ? { userId: input.userId } : {}),
         ...(restrictRecallScope !== undefined
           ? { restrictToScope: restrictRecallScope }
           : {}),
+        ...(audienceOwners !== undefined ? { audienceOwners } : {}),
       });
       console.error(
         `[context] assembled scope=${input.sessionScope ?? '-'} user=${input.userId ?? '-'} pool=${String(result.stats.candidatePool)} included=${String(result.included.length)} excluded=${String(result.excluded.length)} compact=${String(result.stats.compactMode)} tokens=${String(result.stats.tokensUsed)} rendered=${String(result.text.length)}B`,
@@ -3578,7 +3748,9 @@ export class Orchestrator {
       // service short-circuits cheaply when there's no scope, no
       // session, or the existing summary is fresh.
       let briefingText = '';
-      if (this.sessionBriefing && input.sessionScope) {
+      // `members`: the briefing summarises the whole conversation, including
+      // turns from before someone present joined it — not theirs to read.
+      if (this.sessionBriefing && input.sessionScope && audienceOwners === undefined) {
         try {
           const briefing = await this.sessionBriefing.loadSessionBriefing({
             // Qualified scope so the briefing reads THIS Agent's turns only.
@@ -3737,7 +3909,14 @@ export class Orchestrator {
    * `runTurn()` directly.
    */
   async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-    const result = await this.runTurn(input);
+    const turn = await this.runTurn(input);
+    // Phase 3 — the level this answer was generated under, on EVERY answer
+    // this path returns (choice cards, direct-line, gate returns included),
+    // so a channel can always offer the neighbouring steps. Resolved here,
+    // once, at the boundary; the inner success path sets the same value.
+    const result: ChatTurnResult = turn.answerVerbosity
+      ? turn
+      : { ...turn, answerVerbosity: this.resolveAnswerVerbosity(input) };
     // #644 — the disclosure resolution rides `result.aiDisclosure` (set by
     // `runTurn`). Thread the scope + shared seen-store ONLY when there is a
     // marker to fold, so `toSemanticAnswer` folds it on the FIRST turn of the
@@ -3756,6 +3935,18 @@ export class Orchestrator {
           }
         : undefined,
     );
+  }
+
+  /**
+   * Phase 3 — the answer-size level a turn runs under: the user's per-turn
+   * pick (parsed, never trusted) over the configured slot (Agent, else
+   * installation, else `standard`).
+   */
+  private resolveAnswerVerbosity(input: ChatTurnInput): AnswerVerbosityInfo {
+    const turnVerbosity = parseAnswerVerbosity(input.answerVerbosity);
+    return turnVerbosity
+      ? { effective: turnVerbosity, source: 'turn' }
+      : { effective: this.answerVerbosity, source: 'configured' };
   }
 
   /**
@@ -3863,7 +4054,13 @@ export class Orchestrator {
     // #1094 — expand a degraded turn's marker into the localized notice FIRST,
     // so the disclosure line below folds onto readable text (and so the fold's
     // own first-turn bookkeeping sees the same answer every other path sees).
-    const delivered = this.expandDegradedDoneEvent(done, input);
+    // Phase 3 — the level this answer ran under rides every `done` the
+    // stream yields (this is the single funnel), on the disclosure-off path
+    // as well; `chat()` does the same for the non-streaming result.
+    const delivered = {
+      ...this.expandDegradedDoneEvent(done, input),
+      answerVerbosity: this.resolveAnswerVerbosity(input),
+    };
     const aiDisclosure = this.resolveTurnDisclosure(input);
     if (!aiDisclosure) return delivered;
     const { text } = applyAiDisclosure(delivered.answer, {
@@ -4233,21 +4430,117 @@ export class Orchestrator {
    *    not a hostile input — and dropping the user's turn over it would be the
    *    wrong trade. The fallback is the NARROWER scope, never a wider one.
    */
-  private bindTurnMemory(input: ChatTurnInput): TurnMemoryBinding {
+  /**
+   * May a turn without an isolation use `query_knowledge_graph` unrestricted
+   * (the whole tenant graph, as before)? Not for an agent whose context memory
+   * restricts the tool per turn: there, a turn the restriction cannot reach —
+   * a context-free turn, or the subscription-CLI path whose registered handler
+   * knows no turn — sees nothing.
+   */
+  private unrestrictedGraphToolAllowed(): boolean {
+    const mode = this.memoryBinder?.contextMemoryMode;
+    return mode !== 'enforce-strict' && mode !== 'members';
+  }
+
+  /**
+   * The turn's binding, with the room's audience resolved first when the
+   * agent runs `members` context memory. The audience is async (roster and
+   * identity lookups), the binding itself is not, so this is the one await in
+   * front of it. Only a turn that carries an `origin` can be context-bound, so
+   * no other turn pays for the lookup.
+   */
+  private async bindTurnMemoryForTurn(input: ChatTurnInput): Promise<TurnMemoryBinding> {
+    const binding = await this.resolveTurnMemory(input);
+    // Publish the graph boundary for reads outside the kernel's own recall
+    // (the plugin `KnowledgeGraphAccessor`).
+    const box = turnContext.current()?.graphReadScope;
+    if (box) box.value = this.graphReadScopeFor(binding);
+    return binding;
+  }
+
+  /** What a non-kernel graph read may see in this turn; undefined = unrestricted. */
+  private graphReadScopeFor(binding: TurnMemoryBinding): GraphReadScope | undefined {
+    const isolation = binding.isolation;
+    if (isolation?.kind === 'conversation') return { kind: 'conversation', scope: isolation.scope };
+    if (isolation?.kind === 'members') {
+      return {
+        kind: 'members',
+        audience: isolation.audience,
+        agentScopePrefix: agentScopePrefix(this.agentId),
+      };
+    }
+    return this.unrestrictedGraphToolAllowed() ? undefined : { kind: 'nothing' };
+  }
+
+  private async resolveTurnMemory(input: ChatTurnInput): Promise<TurnMemoryBinding> {
+    if (this.memoryBinder?.contextMemoryMode !== 'members' || !input.origin) {
+      return this.bindTurnMemory(input);
+    }
+    const audience = await resolveTurnAudience(
+      this.knowledgeGraph,
+      input,
+      turnContext.current()?.chatParticipants,
+    );
+    if (audience.kind === 'unknown') {
+      console.warn(
+        `[memory] members context memory: room audience unknown (${audience.reason}) — no member-scoped recall, and this turn's knowledge is owned by nobody`,
+      );
+    }
+    // Notes, too, belong to the people present — resolved before the binding,
+    // which stays synchronous.
+    let members: BoundTurnMemory;
+    try {
+      members = await this.memoryBinder.forAudience(input.origin, audience);
+    } catch (err) {
+      // Never `forOrigin` here: its channel tier is shared with whoever joins
+      // the chat later. No memory tool this turn; recall stays narrowed.
+      console.error('[security-audit] orchestrator: MemoryBinder.forAudience threw — no memory tool this turn:', err);
+      return {
+        handler: undefined,
+        contextBound: true,
+        memoryPrompt: 'members-unknown',
+        isolation: { kind: 'members', audience: audience.kind === 'known' ? audience.members : null },
+      };
+    }
+    return this.bindTurnMemory(input, audience, members);
+  }
+
+  private bindTurnMemory(
+    input: ChatTurnInput,
+    audience?: TurnAudience,
+    membersBound?: BoundTurnMemory,
+  ): TurnMemoryBinding {
     const fallback: TurnMemoryBinding = {
       handler: this.memoryToolHandler,
       contextBound: false,
     };
     if (!this.memoryBinder) return fallback;
+    const mode = this.memoryBinder.contextMemoryMode;
+    const strict = mode === 'enforce-strict' || mode === 'members';
+    const isolation: TurnIsolation =
+      mode === 'members'
+        ? { kind: 'members', audience: audience?.kind === 'known' ? audience.members : null }
+        : {
+            kind: 'conversation',
+            scope: input.sessionScope ? graphScopeFor(this.agentId, input.sessionScope) : null,
+          };
     try {
-      const bound = this.memoryBinder.forOrigin(input.origin);
-      return { handler: bound.handler, contextBound: !bound.axes.isContextFree };
+      const bound = membersBound ?? this.memoryBinder.forOrigin(input.origin);
+      const contextBound = !bound.axes.isContextFree;
+      return {
+        handler: bound.handler,
+        contextBound,
+        memoryPrompt: memoryPromptFor(bound),
+        ...(strict && contextBound ? { isolation } : {}),
+      };
     } catch (err) {
       console.error(
         '[security-audit] orchestrator: MemoryBinder.forOrigin threw — falling back to the agent-private memory stack:',
         err,
       );
-      return fallback;
+      // A strict agent's turn that carried an origin is narrowed for recall
+      // even though its binding failed: the fallback must not be wider there.
+      return strict && input.origin ? { ...fallback, isolation } : fallback;
     }
   }
 
@@ -4325,6 +4618,10 @@ export class Orchestrator {
     // re-deriving it independently.
     const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    // The run trace's User-Cluster, resolved before anything ingests it — a
+    // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
+    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, resolvedOmadiaUserId);
+    const runTraceOwner = runTraceUserId ? { userId: runTraceUserId } : {};
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -4392,6 +4689,7 @@ export class Orchestrator {
         // per-user data with it.
         ...(input.userId ? { userId: input.userId } : {}),
         ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+        runTraceOwner,
         // W2-1 (#544) — one component of the MCP pending-input store key. Never
         // the whole key; see TurnContextValue.sessionScope.
         sessionScope: sessionId,
@@ -4401,6 +4699,7 @@ export class Orchestrator {
         memoryFileRead: { value: false },
         // The turn's wire view (prompt + answer), for a verifier hand-over.
         wireView: {},
+        graphReadScope: {},
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -4456,7 +4755,7 @@ export class Orchestrator {
         // `input` is final here: the MCP-envelope normalisation and the
         // inbound-screening gate above have both already re-bound it, so the
         // origin the binding is derived from is the origin the turn ran with.
-        const turnMemory = this.bindTurnMemory(input);
+        const turnMemory = await this.bindTurnMemoryForTurn(input);
         // Commit-on-delivery: the request's `onAfterTurn` runs in the first
         // run's hook context, whichever pass the verifier delivers.
         this.bindRequestAfterTurn(boundLedger, turnId, input);
@@ -4819,7 +5118,13 @@ export class Orchestrator {
     if (name === MEMORY_TOOL_NAME && memoryHandler) {
       return isMemoryViewCall(input) ? 'read-only' : 'write';
     }
-    if (this.nativeTools.get(name)?.handler) return 'write';
+    // A plugin's native tool is a write. The kernel's own full-form natives
+    // (#1102 gave them a handler too) are not plugins: they fall through to
+    // their per-name class below. Told apart by spec identity, exactly as
+    // `buildToolsList()` does — before this check ran first, a re-entry's new
+    // `query_knowledge_graph` call counted as a write and abandoned it.
+    const native = this.nativeTools.get(name);
+    if (native?.handler && !KERNEL_NATIVE_SPECS.has(native.spec)) return 'write';
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) return 'read-only';
     if (name === QUERY_DATASET_TOOL_NAME && this.queryDatasetTool) return 'read-only';
     if (name === CHAT_PARTICIPANTS_TOOL_NAME && this.chatParticipantsTool) return 'read-only';
@@ -5188,7 +5493,7 @@ export class Orchestrator {
     // #361 privacy masking above (flag off ⇒ byte-identical verbatim relay).
     const collector = new RunTraceCollector({
       scope: input.sessionScope ?? turnId,
-      ...(input.userId ? { userId: input.userId } : {}),
+      ...runTraceUserSpread(input),
     });
     const handle = collector.beginInvocation(tool.name, candidate.agentId);
     const startedAt = Date.now();
@@ -5296,6 +5601,7 @@ export class Orchestrator {
         toolCalls: 1,
         iterations: 1,
         ...(input.userId ? { userId: input.userId } : {}),
+        ...turnOwnersField(turnMemory),
         runTrace,
         ...maskedRowView(privacyForPrompt, wire?.userMessage ?? '', wire?.assistantAnswer ?? ''),
       };
@@ -5716,7 +6022,7 @@ export class Orchestrator {
     // non-streaming channels (Teams) can render a recall card (the streaming
     // path emits it as a `kg_recall` annotation instead).
     const { text: rawPriorContext, recalled, recallUsed } =
-      await this.retrievePriorContext(input, wireUserMessage);
+      await this.retrievePriorContext(input, wireUserMessage, turnMemory?.isolation);
     // #361 — the recalled TEXT is LLM-bound wire content: it carries real
     // values persisted from earlier turns, so it is masked through the SAME
     // turn map before injection (answer-side restore covers these spans).
@@ -5821,7 +6127,7 @@ export class Orchestrator {
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
           scope: input.sessionScope,
-          ...(input.userId ? { userId: input.userId } : {}),
+          ...runTraceUserSpread(input),
         })
       : undefined;
 
@@ -5887,7 +6193,7 @@ export class Orchestrator {
         // identity (the fallback family's compiled prompt after a hop).
         const systemFor = (persona: string | undefined) =>
           buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
+            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.memoryPrompt),
             priorContext,
             withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
@@ -6077,6 +6383,7 @@ export class Orchestrator {
               toolCalls,
               iterations,
               ...(input.userId ? { userId: input.userId } : {}),
+              ...turnOwnersField(turnMemory),
               ...(runTrace ? { runTrace } : {}),
               ...maskedRowView(
                 privacyForPrompt,
@@ -6151,6 +6458,9 @@ export class Orchestrator {
             answer: restoredAnswer,
             toolCalls,
             iterations,
+            // Phase 3 — see `resolveAnswerVerbosity`; `chat()` fills it on
+            // every other return path too.
+            answerVerbosity: this.resolveAnswerVerbosity(input),
             ...(memoryUsed ? { memoryUsed: true } : {}),
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
@@ -6232,13 +6542,16 @@ export class Orchestrator {
               ...replayed,
             });
           } else if (traceCollector) {
-            traceCollector.recordOrchestratorToolCall({
-              callId: use.id,
-              toolName: use.name,
-              durationMs,
-              isError,
-              ...replayed,
-            });
+            traceCollector.recordOrchestratorToolCall(
+              {
+                callId: use.id,
+                toolName: use.name,
+                durationMs,
+                isError,
+                ...replayed,
+              },
+              output,
+            );
           }
           return {
             type: 'tool_result',
@@ -6361,6 +6674,7 @@ export class Orchestrator {
                   toolCalls,
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
+                  ...turnOwnersField(turnMemory),
                   ...(runTrace ? { runTrace } : {}),
                   ...maskedRowView(
                     privacyForPrompt,
@@ -6412,6 +6726,7 @@ export class Orchestrator {
                   toolCalls,
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
+                  ...turnOwnersField(turnMemory),
                   ...(runTrace ? { runTrace } : {}),
                   ...maskedRowView(
                     privacyForPrompt,
@@ -6542,6 +6857,10 @@ export class Orchestrator {
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
     const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    // The run trace's User-Cluster, resolved before anything ingests it — a
+    // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
+    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, resolvedOmadiaUserId);
+    const runTraceOwner = runTraceUserId ? { userId: runTraceUserId } : {};
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -6603,10 +6922,12 @@ export class Orchestrator {
       // answer the card, and channel turns (Teams/Telegram) come through here.
       ...(input.userId ? { userId: input.userId } : {}),
       ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+      runTraceOwner,
       // W2-1 (#544) — see the matching `turnContext.run` above.
       sessionScope: sessionId,
       // The turn's wire view (prompt + answer), for a verifier hand-over.
       wireView: {},
+      graphReadScope: {},
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -6730,7 +7051,7 @@ export class Orchestrator {
       // streaming turn before W3-A (see the comment at the top of
       // `chatStream`). A binding lost that way would not fail; it would
       // quietly fall back to the agent-global tree.
-      const turnMemory = this.bindTurnMemory(input);
+      const turnMemory = await this.bindTurnMemoryForTurn(input);
       // #332 Layer 2 — Direct Line short-circuit (streaming / web-ui path).
       // A user-directed specialist turn is dispatched deterministically by the
       // harness; the orchestrator LLM never runs. We synthesize the `done`
@@ -7001,7 +7322,7 @@ export class Orchestrator {
     // card (`toSemanticAnswer`). Wire it through with the flag if a streaming
     // channel ever grows a Fresh-Check affordance.
     const { text: rawPriorContext, recalled } =
-      await this.retrievePriorContext(input, wireUserMessage);
+      await this.retrievePriorContext(input, wireUserMessage, turnMemory?.isolation);
     // #361 — the recalled TEXT is LLM-bound wire content; mask through the
     // same turn map before injection (see chatInContextInner).
     const priorContext = await maskRecalledForWire(
@@ -7116,7 +7437,7 @@ export class Orchestrator {
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
           scope: input.sessionScope,
-          ...(input.userId ? { userId: input.userId } : {}),
+          ...runTraceUserSpread(input),
         })
       : undefined;
 
@@ -7245,7 +7566,7 @@ export class Orchestrator {
         // execution's own identity (the fallback family's prompt after a hop).
         const systemFor = (persona: string | undefined) =>
           buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
+            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.memoryPrompt),
             priorContext,
             withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
@@ -7435,6 +7756,7 @@ export class Orchestrator {
                 toolCalls,
                 iterations,
                 ...(input.userId ? { userId: input.userId } : {}),
+                ...turnOwnersField(turnMemory),
                 ...(runTrace ? { runTrace } : {}),
                 ...maskedRowView(
                   privacyForPrompt,
@@ -7491,6 +7813,7 @@ export class Orchestrator {
               const mkId = await this.maybePromoteTurn({
                 turnId,
                 userId: input.userId,
+                ...turnOwnersField(turnMemory),
                 palaiaExcerpt,
                 fallbackAssistantAnswer: restoredAnswer,
               });
@@ -7509,6 +7832,7 @@ export class Orchestrator {
           const autoPromotedMkId = await this.maybePromoteTurn({
             turnId: persistedTurnId,
             userId: input.userId,
+            ...turnOwnersField(turnMemory),
             palaiaExcerpt,
             fallbackAssistantAnswer: restoredAnswer,
           });
@@ -7771,6 +8095,7 @@ export class Orchestrator {
                   toolCalls,
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
+                  ...turnOwnersField(turnMemory),
                   ...(runTrace ? { runTrace } : {}),
                   ...maskedRowView(
                     privacyForPrompt,
@@ -7829,6 +8154,7 @@ export class Orchestrator {
                   toolCalls,
                   iterations,
                   ...(input.userId ? { userId: input.userId } : {}),
+                  ...turnOwnersField(turnMemory),
                   ...(runTrace ? { runTrace } : {}),
                   ...maskedRowView(
                     privacyForPrompt,
@@ -7958,6 +8284,7 @@ export class Orchestrator {
                 toolCalls,
                 iterations,
                 ...(input.userId ? { userId: input.userId } : {}),
+                ...turnOwnersField(turnMemory),
                 ...(runTrace ? { runTrace } : {}),
                 ...maskedRowView(privacyForPrompt, wireUserMessage, answer),
               },
@@ -8131,13 +8458,16 @@ export class Orchestrator {
         ...replayed,
       });
     } else if (traceCollector) {
-      traceCollector.recordOrchestratorToolCall({
-        callId: slot.use.id,
-        toolName: slot.use.name,
-        durationMs,
-        isError,
-        ...replayed,
-      });
+      traceCollector.recordOrchestratorToolCall(
+        {
+          callId: slot.use.id,
+          toolName: slot.use.name,
+          durationMs,
+          isError,
+          ...replayed,
+        },
+        slot.output,
+      );
     }
   }
 
@@ -8542,7 +8872,11 @@ export class Orchestrator {
       ) {
         const tc = turnContext.current();
         const userId = tc?.userId;
-        if (userId) {
+        // Member-scoped memory: the room owns what its turn fetched. A room
+        // that was not known owns nothing, so nothing is stored.
+        const members = turnOwnersField(turnMemory).owners;
+        const owners = members ?? (userId ? [userId] : []);
+        if (userId && owners.length > 0) {
           const bypassed = isMcpServerBypassInForce(kgTool.mcpServerId, name);
           const detail = bypassed
             ? result.slice(0, 8000)
@@ -8553,8 +8887,8 @@ export class Orchestrator {
               summary: `MCP ${kgTool.mcpServerName ?? kgTool.mcpServerId} · ${name}`.slice(0, 2000),
               rationale: detail.slice(0, 10000),
               createdBy: `auto:${userId}`,
-              involvedOmadiaUserIds: [userId],
-              aclOwners: [userId],
+              involvedOmadiaUserIds: [...owners],
+              aclOwners: [...owners],
               ...(tc?.agentSlug ? { originAgent: tc.agentSlug } : {}),
               ...(tc?.turnId ? { derivedFromTurnIds: [tc.turnId] } : {}),
             })
@@ -8845,6 +9179,29 @@ export class Orchestrator {
       }
       return result;
     }
+    // `enforce-strict` — the graph tool sees only this turn's conversation;
+    // `members` — only this agent's knowledge that everyone present owns.
+    // Ahead of the registered-handler branch on purpose: the kernel-native
+    // registration of this tool (`registerKernelNativeTools`) carries a
+    // build-time handler that knows no turn.
+    //
+    // An agent in either mode never reaches the unrestricted tool from here:
+    // a turn with no isolation (context-free — web, API, a turn whose binding
+    // carried no context) sees nothing, rather than every room of the tenant.
+    if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
+      const isolation = turnMemory?.isolation;
+      if (isolation) {
+        return this.knowledgeGraphTool.handle(
+          input,
+          isolation.kind === 'conversation'
+            ? { restrictToScope: isolation.scope }
+            : { audienceOwners: isolation.audience, agentScopePrefix: agentScopePrefix(this.agentId) },
+        );
+      }
+      if (!this.unrestrictedGraphToolAllowed()) {
+        return this.knowledgeGraphTool.handle(input, NOTHING_VISIBLE);
+      }
+    }
     // Plugin-contributed handlers win first. Kernel branches below are the
     // legacy path for tools that have not yet been converted to
     // plugin-registration (memory, knowledge_graph, …). As each kernel tool
@@ -8955,7 +9312,7 @@ export class Orchestrator {
    */
   private getSystemPrompt(
     personaOverride?: string,
-    contextBoundMemory = false,
+    memoryPrompt?: MemoryPromptKind,
   ): string {
     // Plugin-contributed prompt docs, collected from the registry. The
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
@@ -8992,7 +9349,8 @@ export class Orchestrator {
       this.findFreeSlotsTool !== undefined && this.bookMeetingTool !== undefined,
       this.privacyGuard?.() !== undefined,
       extraDocs,
-      contextBoundMemory,
+      memoryPrompt,
+      this.answerVerbosity,
     );
   }
 
@@ -9044,9 +9402,9 @@ export class Orchestrator {
   private composeStableSystemPrompt(
     prependRules: string,
     personaOverride?: string,
-    contextBoundMemory = false,
+    memoryPrompt?: MemoryPromptKind,
   ): string {
-    const body = this.getSystemPrompt(personaOverride, contextBoundMemory);
+    const body = this.getSystemPrompt(personaOverride, memoryPrompt);
     if (prependRules.length === 0) return body;
     return `${prependRules}\n\n---\n\n${body}`;
   }

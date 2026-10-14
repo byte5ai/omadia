@@ -26,6 +26,7 @@
  */
 
 import type { Pool } from 'pg';
+import type { AnswerVerbosity } from '@omadia/orchestrator';
 
 import type {
   PersonaConfig,
@@ -77,6 +78,14 @@ export interface AgentIdentityText {
   readonly instructions: string | null;
   /** `#RRGGBB`, validated by the route AND by the migration's CHECK. */
   readonly accentColor: string | null;
+  /**
+   * This Agent's answer-size level (migration 0063). `null`/absent = inherit
+   * the installation-wide `answer_verbosity` setup field. Validated by the
+   * route's enum AND by the migration's CHECK. Optional in the type so the
+   * many call sites that assemble an identity text predating the column
+   * (Teams republish, tests) keep compiling; the store always maps it.
+   */
+  readonly verbosity?: AnswerVerbosity | null;
 }
 
 /** What the record says about the avatar without carrying it. */
@@ -212,7 +221,7 @@ function nonEmpty(value: string | null | undefined): string | null {
 
 /** Everything except the three BYTEA columns. */
 const META_COLUMNS =
-  'agent_id, display_name, short_description, long_description, instructions, accent_color, persona, quality, composed_prompt, composed_family, composed_prompts, avatar_etag, revision, created_at, updated_at';
+  'agent_id, display_name, short_description, long_description, instructions, accent_color, verbosity, persona, quality, composed_prompt, composed_family, composed_prompts, avatar_etag, revision, created_at, updated_at';
 
 interface AgentIdentityMetaRow {
   agent_id: string;
@@ -221,6 +230,7 @@ interface AgentIdentityMetaRow {
   long_description: string | null;
   instructions: string | null;
   accent_color: string | null;
+  verbosity: AnswerVerbosity | null;
   persona: PersonaConfig | null;
   quality: QualityConfig | null;
   composed_prompt: string | null;
@@ -249,6 +259,7 @@ function mapRow(row: AgentIdentityMetaRow): AgentIdentityRecord {
     longDescription: row.long_description,
     instructions: row.instructions,
     accentColor: row.accent_color,
+    verbosity: row.verbosity,
     persona: row.persona,
     quality: row.quality,
     composed: {
@@ -290,6 +301,7 @@ function sameContent(
     nonEmpty(a.longDescription) === nonEmpty(b.longDescription) &&
     nonEmpty(a.instructions) === nonEmpty(b.instructions) &&
     nonEmpty(a.accentColor) === nonEmpty(b.accentColor) &&
+    (a.verbosity ?? null) === (b.verbosity ?? null) &&
     JSON.stringify(a.persona ?? null) === JSON.stringify(b.persona ?? null) &&
     JSON.stringify(a.quality ?? null) === JSON.stringify(b.quality ?? null)
   );
@@ -409,6 +421,7 @@ export class AgentIdentityStore {
       nonEmpty(input.longDescription),
       nonEmpty(input.instructions),
       nonEmpty(input.accentColor),
+      input.verbosity ?? null,
       input.persona === null ? null : JSON.stringify(input.persona),
       input.quality === null ? null : JSON.stringify(input.quality),
       input.composed.text,
@@ -418,15 +431,16 @@ export class AgentIdentityStore {
     const res = await this.pool.query<AgentIdentityMetaRow>(
       `INSERT INTO agent_identities (
          agent_id, display_name, short_description, long_description,
-         instructions, accent_color, persona, quality,
+         instructions, accent_color, verbosity, persona, quality,
          composed_prompt, composed_family, composed_prompts
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
        ON CONFLICT (agent_id) DO UPDATE SET
          display_name      = EXCLUDED.display_name,
          short_description = EXCLUDED.short_description,
          long_description  = EXCLUDED.long_description,
          instructions      = EXCLUDED.instructions,
          accent_color      = EXCLUDED.accent_color,
+         verbosity         = EXCLUDED.verbosity,
          persona           = EXCLUDED.persona,
          quality           = EXCLUDED.quality,
          composed_prompt   = EXCLUDED.composed_prompt,

@@ -1,4 +1,4 @@
-import type { ClaimVerdict, VerifierVerdict } from './claimTypes.js';
+import { contradictionBasis, type ClaimVerdict, type VerifierVerdict } from './claimTypes.js';
 
 /**
  * Produces a correction hint appended to the orchestrator's system prompt
@@ -33,23 +33,54 @@ export function buildCorrectionPrompt(
 
   const postconditionItems = verdict.contradictions.filter(isPostcondition);
   const citationItems = verdict.contradictions.filter(isCitationMissing);
+  const unresolvedCitation = citationItems.some((v) => basisOf(v) === 'citation_unresolved');
+  const missingCitation = citationItems.some((v) => basisOf(v) !== 'citation_unresolved');
+  // A live-data claim without its fetching call (the Odoo cross-check); a
+  // failure / absence claim in a turn without calls stays a replay below.
+  const notCalledItems = verdict.contradictions.filter(
+    (v) => basisOf(v) === 'tool_not_called' && !isReplay(v),
+  );
   const replayItems = verdict.contradictions.filter(
     (v) => !isPostcondition(v) && !isCitationMissing(v) && isReplay(v),
   );
   const dataItems = verdict.contradictions.filter(
-    (v) =>
-      !isPostcondition(v) && !isCitationMissing(v) && !isReplay(v),
+    (v) => basisOf(v) === 'evidence' && !isReplay(v),
   );
 
-  const sections: string[] = ['# Verifier hat Widersprüche erkannt', ''];
+  // Neutral on purpose: most withholds are not contradictions, and the model
+  // must not tell the user a source contradicted it when none did.
+  const sections: string[] = ['# Verifier hat die Antwort zurückgehalten', ''];
 
   if (citationItems.length > 0) {
     sections.push(
       '## Fehlende Citations',
       '',
-      'Du hast in diesem Turn die Wissens-Datenbank (knowledge graph) abgefragt, aber deine Antwort enthält keinen `[ref:nodeId]`-Marker. Jede Aussage, die du aus den Graph-Ergebnissen ableitest, muss mit der nodeId der Quelle versehen sein — sonst ist sie für den User nicht nachvollziehbar.',
+      ...(missingCitation
+        ? [
+            'Du hast in diesem Turn die Wissens-Datenbank (knowledge graph) abgefragt, aber deine Antwort enthält keinen `[ref:<id>]`-Marker. Jede Aussage, die du aus den Graph-Ergebnissen ableitest, muss die Quelle nennen — sonst ist sie für den User nicht nachvollziehbar.',
+            '',
+          ]
+        : []),
+      ...(unresolvedCitation
+        ? [
+            'Mindestens ein `[ref:…]`-Marker deiner Antwort nennt eine Quelle, die kein `query_knowledge_graph`-Ergebnis dieses Turns geliefert hat. Erfinde keine Quellen.',
+            '',
+          ]
+        : []),
+      '**Jetzt bitte:** schreibe die Antwort neu und hänge nach jeder graph-basierten Aussage `[ref:<id>]` an. Die Quelle ist der Wert eines `id`- oder `turnId`-Feldes aus den `query_knowledge_graph`-Ergebnissen. Stelle dafür dieselben Abfragen wie zuvor — sie werden aus dem ersten Durchlauf beantwortet, eine neue Abfrage brauchst du dafür nicht. Belegt kein Ergebnis eine Aussage, lass die Aussage weg oder sag ausdrücklich, dass sie sich nicht belegen lässt — und setze dort keinen Marker. Wenn eine Aussage nicht aus dem Graph kommt (z.B. allgemeines Wissen oder eine direkte Tool-Antwort), brauchst du dort keine Citation. Der Channel-Layer entfernt die Marker vor der Anzeige, sie dienen nur der Verifizierung.',
       '',
-      '**Jetzt bitte:** schreibe die Antwort neu und hänge nach jeder graph-basierten Aussage `[ref:<nodeId>]` an (die nodeIds findest du in den vorherigen `query_knowledge_graph`-Tool-Results). Wenn eine Aussage nicht aus dem Graph kommt (z.B. allgemeines Wissen oder eine direkte Tool-Antwort), brauchst du dort keine Citation. Der Channel-Layer entfernt die Marker vor der Anzeige — du musst dir um die Optik keine Sorgen machen, der Marker dient nur der Verifizierung.',
+    );
+  }
+
+  if (notCalledItems.length > 0) {
+    sections.push(
+      '## Live-Daten nicht abgerufen',
+      '',
+      'Die folgenden Aussagen brauchen Live-Daten aus dem Quellsystem, aber dieser Turn hat kein Tool aufgerufen, das sie liefern könnte. Sie stammen vermutlich aus dem Kontext eines früheren Turns.',
+      '',
+      '**Jetzt bitte:** rufe das zuständige Tool auf, bevor du diese Angaben machst. Liefert es sie nicht, lass sie weg oder sag ehrlich, was das Tool zurückgegeben hat.',
+      '',
+      ...notCalledItems.map(formatContradiction),
       '',
     );
   }
@@ -71,9 +102,9 @@ export function buildCorrectionPrompt(
     sections.push(
       '## Replay aus Kontext-Block erkannt',
       '',
-      'Deine Antwort behauptete einen Fehler / eine Absenz / bat um Wiederholung, obwohl der aktuelle Turn dafür keine Evidenz liefert. Das ist typischerweise eine Kopie aus dem FTS-Kontext-Block (früherer gescheiterter Turn), nicht aus der aktuellen Realität.',
+      'Deine Antwort behauptete einen fehlgeschlagenen oder fehlenden Zugriff / eine Absenz / bat um Wiederholung, obwohl kein Zugriffsversuch in diesem Turn das belegt. Das ist typischerweise eine Kopie aus dem FTS-Kontext-Block (früherer gescheiterter Turn), nicht aus der aktuellen Realität.',
       '',
-      '**Jetzt bitte:** prüfe die aktuelle User-Message Zeile für Zeile (inkl. eines `[attachments-info]`-Blocks, falls vorhanden) UND mache wenn nötig einen echten Tool-Call — wiederhole NICHT die Alt-Aussage. Wenn nach einem echten Versuch wirklich nichts da ist, sag das explizit mit Quellenangabe ("Tool X gab für Y leer zurück").',
+      '**Jetzt bitte:** prüfe die aktuelle User-Message Zeile für Zeile (inkl. eines `[attachments-info]`-Blocks, falls vorhanden) UND mache wenn nötig einen echten Tool-Call — wiederhole NICHT die Alt-Aussage. Wenn nach einem echten Versuch wirklich nichts da ist, sag das explizit mit Quellenangabe ("Tool X gab für Y leer zurück"). Sag "kein Zugriff" oder "nicht erreichbar" nur, wenn ein Tool-Call dieses Turns tatsächlich mit einem Fehler zurückkam.',
       '',
       ...replayItems.map(formatContradiction),
       '',
@@ -93,6 +124,10 @@ export function buildCorrectionPrompt(
   }
 
   return sections.join('\n');
+}
+
+function basisOf(v: ClaimVerdict): ReturnType<typeof contradictionBasis> | undefined {
+  return v.status === 'contradicted' ? contradictionBasis(v) : undefined;
 }
 
 function isPostcondition(v: ClaimVerdict): boolean {

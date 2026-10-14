@@ -1,4 +1,5 @@
 import { memoryContextKey } from '@omadia/channel-sdk';
+import { MembersIndex, membersIndexRoot, membersTierRoot } from '@omadia/orchestrator';
 import type { MemoryStore } from '@omadia/plugin-api';
 
 /**
@@ -17,6 +18,12 @@ import type { MemoryStore } from '@omadia/plugin-api';
  *   /memories/contexts/<slug>/<axis>/<ctxKey>/...  — per-agent × chat-context
  *                                                    tree (axis = team |
  *                                                    channel | user)
+ *   /memories/contexts/<slug>/members/<key>/...    — `members` notes of one
+ *                                                    owner set; who owns it is
+ *                                                    in `members-index/<key>.json`.
+ *                                                    The `user` axis with an
+ *                                                    omadia user id removes
+ *                                                    every set that includes them.
  *   /memories/_rules, /memories/_brand             — shared seed
  *   /memories/core                                 — shared kernel namespace
  *   /memories/sessions, /chat-sessions             — shared session scratch
@@ -158,6 +165,32 @@ function contextKeyCandidates(selector: string | undefined): string[] {
   return derived === raw ? [raw] : [raw, derived];
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** An omadia user id — the spelling the Knowledge-Graph half matches as `aclOwner`. */
+function isOmadiaUserId(selector: string | undefined): selector is string {
+  return selector !== undefined && UUID.test(selector.trim());
+}
+
+/**
+ * `members` notes (W3) of one person: every owner-set tier that includes them,
+ * in every agent, plus its index entry. The index entry goes even when the
+ * tier was never written — it names the person, and it is the record that
+ * would make a later tier of that owner set readable again.
+ */
+async function membersTargets(store: MemoryStore, userId: string): Promise<string[]> {
+  const targets: string[] = [];
+  for (const agentSlug of await directChildren(store, CONTEXTS_ROOT)) {
+    const sets = await new MembersIndex(store, agentSlug).coveringAudience([userId]);
+    for (const { key } of sets) {
+      const tier = membersTierRoot(agentSlug, key);
+      if (await store.directoryExists(tier)) targets.push(tier);
+      targets.push(`${membersIndexRoot(agentSlug)}/${key}.json`);
+    }
+  }
+  return targets;
+}
+
 /**
  * Compute the set of top-level `/memories/<name>` entries that a purge would
  * delete, given the axis + selector. Returns absolute virtual paths.
@@ -196,6 +229,10 @@ async function resolvePurgeTargets(
       if (await store.directoryExists(candidate)) targets.push(candidate);
     }
     return targets;
+  }
+
+  if (axis === 'user' && isOmadiaUserId(selector)) {
+    return membersTargets(store, selector.trim());
   }
 
   if (isContextAxis(axis)) {

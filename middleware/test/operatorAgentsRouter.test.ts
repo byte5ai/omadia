@@ -35,7 +35,7 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { after, afterEach, before, describe, it } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
@@ -1101,7 +1101,7 @@ describe('createOperatorAgentsRouter', () => {
       // The UI renders its radio group from this list, so the route owns the
       // union. A drift here would silently drop a mode from the operator's
       // choices while the runtime still honours it.
-      assert.deepEqual(body.modes, ['off', 'enforce', 'enforce-strict']);
+      assert.deepEqual(body.modes, ['off', 'enforce', 'enforce-strict', 'members']);
     });
 
     it('GET /:slug/context-memory reads an unknown persisted value as off', async () => {
@@ -1194,16 +1194,21 @@ describe('createOperatorAgentsRouter', () => {
       assert.equal(after?.contextMemory, 'enforce');
     });
 
-    it('the advertised union matches the CHECK constraint in migration 0050', async () => {
+    it('the advertised union matches the latest CHECK constraint on context_memory', async () => {
       // The column's CHECK is the last line of defence. If the route offered a
-      // fourth mode, the write would fail at the database with a 500 instead
-      // of a validation error — so the two unions are pinned to each other.
-      const sql = await readFile(
-        new URL('../migrations/0050_agent_context_memory_flag.sql', import.meta.url),
-        'utf8',
-      );
+      // mode the constraint lacks, the write would fail at the database with a
+      // 500 instead of a validation error — so the two unions are pinned to
+      // each other. The constraint in force is the one the highest-numbered
+      // migration writes (0050 created it, 0062 added 'members').
+      const dir = new URL('../migrations/', import.meta.url);
+      const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
+      let sql = '';
+      for (const file of files) {
+        const text = await readFile(new URL(file, dir), 'utf8');
+        if (/agents_context_memory_check[\s\S]*context_memory\s+IN\s*\(/.test(text)) sql = text;
+      }
       const match = /context_memory\s+IN\s*\(([^)]*)\)/.exec(sql);
-      assert.ok(match, 'migration 0050 must CHECK context_memory against a value list');
+      assert.ok(match, 'a migration must CHECK context_memory against a value list');
       const fromSql = [...match[1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]);
       assert.deepEqual(fromSql, [...CONTEXT_MEMORY_MODES]);
     });

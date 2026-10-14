@@ -87,8 +87,17 @@ export {
   CONTEXT_AXES,
   contextTierRoot,
   effectiveMemoryScope,
+  membersIndexRoot,
+  membersTierRoot,
   orchestratorMemoryScope,
 } from './registry/scopedMemoryStore.js';
+// W3 — `members` notes: one tier per owner set, recorded in an index.
+export {
+  MEMBERS_SHARED_SEGMENT_PREFIX,
+  MembersIndex,
+  membersTierKey,
+} from './membersMemory.js';
+export type { MembersIndexEntry } from './membersMemory.js';
 export type {
   ContextAxis,
   ContextMemoryEnforcement,
@@ -598,6 +607,14 @@ export type {
   AiDisclosurePosture,
   ChannelPosture,
 } from './aiDisclosurePosture.js';
+export {
+  ANSWER_VERBOSITY_LEVELS,
+  DEFAULT_ANSWER_VERBOSITY,
+  buildAnswerVerbosityBlock,
+  buildAnswerVerbosityTurnBlock,
+  parseAnswerVerbosity,
+} from './answerVerbosity.js';
+export type { AnswerVerbosity } from './answerVerbosity.js';
 
 // Session logger + chat-session store
 export { SessionLogger, graphScopeFor } from './sessionLogger.js';
@@ -642,6 +659,7 @@ export {
 export type {
   SubAgentMemoryHandler,
   TurnContextValue,
+  GraphReadScope,
 } from './turnContext.js';
 export {
   setMcpPrivacyBypassServers,

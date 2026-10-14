@@ -21,11 +21,11 @@
 
 export const CITATION_GUARD_HEADING = '## Knowledge-Graph Citation-Pflicht';
 
-const BODY = `Wenn du in diesem Turn Daten aus der Wissens-Datenbank (Tool \`query_knowledge_graph\`) verwendest, MUSST du jede daraus abgeleitete Aussage mit einem \`[ref:<nodeId>]\`-Marker versehen. Die nodeId kommt aus den \`nodeId\`-Feldern der Tool-Results.
+const BODY = `Wenn du in diesem Turn Daten aus der Wissens-Datenbank (Tool \`query_knowledge_graph\`) verwendest, MUSST du jede daraus abgeleitete Aussage mit einem \`[ref:<id>]\`-Marker versehen. Die Quelle ist der Wert eines \`id\`-Feldes (Entitäten) oder \`turnId\`-Feldes (Gesprächs-Turns) aus den Tool-Results — exakt übernommen, inklusive Doppelpunkten und Punkten. Nenne nur Quellen, die ein Tool-Result dieses Turns tatsächlich geliefert hat; belegt kein Ergebnis eine Aussage, setze keinen Marker und sag, dass sie sich nicht belegen lässt.
 
 Beispiel:
 - ❌ "Die Rechnung INV/2026/0042 ist offen."  (keine Quelle → wird vom Verifier zurückgewiesen)
-- ✅ "Die Rechnung INV/2026/0042 ist offen [ref:n_invoice_42]."
+- ✅ "Die Rechnung INV/2026/0042 ist offen [ref:odoo:account.move:42]."
 
 Wenn eine Aussage NICHT aus dem Graph stammt (allgemeines Wissen, direkte Tool-Antwort, vom User mitgegebene Information), brauchst du dort keine Citation.
 
