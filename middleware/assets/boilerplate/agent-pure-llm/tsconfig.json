@@ -22,8 +22,6 @@
   },
   "include": [
     "./plugin.ts",
-    "./toolkit.ts",
-    "./client.ts",
     "./types.ts",
     "./index.ts"
   ],

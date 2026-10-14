@@ -1,35 +1,41 @@
 # Agent Boilerplate — Claude Entwickler-Guide
 
-Dieses Verzeichnis ist das **kanonische Template** für neue Harness-Platform-
-Agenten. Der bereits gemergte Referenz-Agent ist `middleware/packages/agent-seo-analyst/`
-— wenn du im Zweifel bist, wie etwas konkret aussieht, dort nachschauen. Das
-Template hier und seo-analyst halten 1:1 die gleiche Struktur ein.
+Dieses Verzeichnis ist das **kanonische Template** für Pure-LLM-Agenten der
+Harness-Platform: System-Prompt plus das Reasoning des Modells, **keine Tools**,
+keine Secrets, kein `depends_on`. Für den Pure-LLM-Fall IST diese Boilerplate
+die Referenz. Der gemergte Referenz-Agent `middleware/packages/agent-seo-analyst/`
+zeigt dasselbe Package-Layout mit Toolkit — dort nachschauen, wie Manifest,
+`plugin.ts` und `skills/` konkret aussehen.
 
 ## Wann dieser Guide greift
 
 Trigger-Phrasen:
 - "Neuen Agent bauen für X" / "Agent skeleton für Y"
-- "Boilerplate / Plugin-Package für Capability Z"
-- "Scaffold + Manifest für neuen Integration-Agent"
+- "Agent ohne API / nur mit System-Prompt" (Coach, Reviewer, Erklärer)
+- "Scaffold + Manifest für einen Agent, der nur mit dem User-Input arbeitet"
 
-Bei vagem "Plugin" kurz zurückfragen: **Agent** (Capability-Anbieter, hier),
+Bei vagem "Plugin" kurz zurückfragen: **Agent** (hier, wenn er ohne Tools
+auskommt; mit externer API → `agent-integration`),
 **Channel** (User-Surface wie Teams/Slack → `middleware/src/channels/teams/`)
 oder **Integration** (reine Credentials/HTTP-Client, kein Toolkit).
 
 ## Quellen der Wahrheit (NICHT halluzinieren)
 
-- **Referenz-Impl**: `middleware/packages/agent-seo-analyst/` — 1:1 Vorlage.
-- **Manifest-Schema**: `docs/harness-platform/manifest-schema.v1.yaml`
+- **Referenz-Impl**: `middleware/packages/agent-seo-analyst/` — Package-Layout
+  (mit Toolkit; das Toolkit entfällt hier).
+- **Manifest-Schema**: der Parser `adaptManifestV1` in
+  `middleware/src/plugins/manifestLoader.ts` (Typen: `middleware/src/api/admin-v1.ts`)
   — 3 kinds (`agent` | `integration` | `channel`), `depends_on`-Graph,
     `required_secrets` + `setup.fields`, permissions summary, `compat.core`-Guard.
-- **Entity-Registry**: `docs/harness-platform/entity-registry.v1.yaml`.
+  Leitfaden: `docs/creating-plugins.md`.
+- **Entity-Registry**: `middleware/assets/entity-registry.v1.yaml`.
 - **Admin-API v1** (alle JWT-gated außer `/auth/*`):
   - `middleware/src/routes/store.ts`       — `GET /api/v1/store/plugins`
   - `middleware/src/routes/install.ts`     — job-basiert:
     `POST /api/v1/install/plugins/:id` → `POST /api/v1/install/jobs/:id/configure`
   - `middleware/src/routes/auth.ts`        — `/api/v1/auth/{login,callback,me,logout}`
   - `middleware/src/routes/vaultStatus.ts` — `GET /api/v1/admin/vault-status`
-  - Typen: `docs/harness-platform/api/admin-api.v1.ts`.
+  - Typen: `middleware/src/api/admin-v1.ts`.
 - **Runtime-Contract**: `middleware/src/platform/pluginContext.ts` —
   Surface ist `agentId`, `secrets.{get,require,keys}` (async), `config.{get,require}<T>`
   (sync), `log(...)`. `vault`/`registry`/`catalog` sind Factory-intern und bleiben
@@ -102,7 +108,10 @@ Extension-Allowlist im Host-Extractor:
 ```ts
 { toolkit: { tools: ToolDescriptor[]; close(): Promise<void> }, close(): Promise<void> }
 ```
-`ToolDescriptor = { id, description, input: ZodSchema, run(input) }`.
+**Dieses Template liefert `tools: []`** (in `plugin.ts` als `never[]` typisiert)
+und keinen `toolkit.ts` — die Runtime sieht das leere Toolkit und baut keine
+Tool-Loop. Die Shape bleibt trotzdem Pflicht. Nur als Referenz für den Wechsel
+auf `agent-integration`: `ToolDescriptor = { id, description, input: ZodSchema, run(input) }`.
 
 Runtime übernimmt: LocalSubAgent-Wrap, Tool-Bridge, DomainTool-Wrap,
 Tool-Name-Derivation, systemPrompt-Concat. Agent baut **keinen** eigenen
@@ -125,7 +134,9 @@ automatisch einen Header aus `plugin.name` + `plugin.description` +
 als String zurück.
 
 ### 8. Zod-Support-Matrix
-Tool-Bridge versteht:
+**Greift in diesem Template nicht** — ohne Tools gibt es keine Input-Schemas.
+Steht hier als Referenz für den Wechsel auf `agent-integration`. Tool-Bridge
+versteht:
 - **OK**: Object, String (+ `.url`/`.email`/`.uuid`/`.min`/`.max`/`.regex`),
   Number (+ `.int`/`.min`/`.max`), Boolean, Enum, Array, Optional, Nullable,
   Default, Literal, Effects.
@@ -134,7 +145,8 @@ Tool-Bridge versteht:
     Tool-Use-UX. Bei den unterstützten Typen bleiben.
 
 ### 9. Lifecycle-Budgets
-- `activate(ctx)`: **10s**. Self-Test = ein GET, kein Vollcrawl, kein Bulk-Sync.
+- `activate(ctx)`: **10s**. Hier trivial: kein Self-Test (`setup.self_test: false`),
+  nichts zu pingen.
 - `close()`: **5s**. Timer, Sockets, Watches, Intervals **wirklich** freigeben —
   wird beim Uninstall aufgerufen; hängende Handles blockieren Hot-Uninstall.
 
@@ -170,27 +182,29 @@ uploadbare Artefakt.
 
 ## Scaffolding-Rezept
 
-User sagt: "Bau mir einen Agent `de.byte5.agent.sharepoint` für Dokument-Suche."
+User sagt: "Bau mir einen Agent `de.byte5.agent.tone-reviewer`, der Texte auf
+Tonalität und Stil prüft." Der Agent braucht keine Datenquelle: er arbeitet
+nur mit dem Text, den der User ihm mitgibt.
 
 1. **Kopieren**
    ```bash
-   cp -R docs/harness-platform/boilerplate/agent \
-         middleware/packages/agent-sharepoint
-   mv middleware/packages/agent-sharepoint/skills/{{AGENT_SLUG}}-expert.md \
-      middleware/packages/agent-sharepoint/skills/sharepoint-expert.md
+   cp -R middleware/assets/boilerplate/agent-pure-llm \
+         middleware/packages/agent-tone-reviewer
+   mv middleware/packages/agent-tone-reviewer/skills/{{AGENT_SLUG}}-expert.md \
+      middleware/packages/agent-tone-reviewer/skills/tone-reviewer-expert.md
    ```
 
-2. **Platzhalter ersetzen** — über Edit-Tool, IDs doppelt prüfen (Typos in
-   `depends_on` scheitern erst zur Install-Zeit):
+2. **Platzhalter ersetzen** — über Edit-Tool, IDs doppelt prüfen (ein Typo in
+   `{{AGENT_ID}}` bricht `name` === `identity.id`, Checkliste-Punkt 3):
 
    | Platzhalter | Beispiel |
    |---|---|
-   | `{{AGENT_ID}}` | `de.byte5.agent.sharepoint` |
-   | `{{AGENT_NAME}}` | `Microsoft SharePoint Agent` |
-   | `{{AGENT_SLUG}}` | `sharepoint` |
-   | `{{AGENT_DESCRIPTION_DE}}` | "Durchsucht SharePoint-Sites …" |
-   | `{{AGENT_DESCRIPTION_EN}}` | "Searches SharePoint sites …" (siehe Hinweis unten) |
-   | `{{ROLE_DESCRIPTION_DE}}` | "ein pragmatischer SharePoint-Recherche-Assistent" |
+   | `{{AGENT_ID}}` | `de.byte5.agent.tone-reviewer` |
+   | `{{AGENT_NAME}}` | `Tonalitäts-Reviewer` |
+   | `{{AGENT_SLUG}}` | `tone-reviewer` |
+   | `{{AGENT_DESCRIPTION_DE}}` | "Prüft Texte auf Tonalität, Stil und Verständlichkeit …" |
+   | `{{AGENT_DESCRIPTION_EN}}` | "Reviews texts for tone, style and clarity …" (siehe Hinweis unten) |
+   | `{{ROLE_DESCRIPTION_DE}}` | "ein genauer Lektor für Tonalität und Stil" |
 
    > **`identity.description` ist eine Locale-Map, kein einzelner String** (#885).
    > Ein blanker String wird als Englisch gelesen — deutscher Text darin
@@ -209,13 +223,16 @@ User sagt: "Bau mir einen Agent `de.byte5.agent.sharepoint` für Dokument-Suche.
    `agent-integration` wechseln, nicht hier einen anbauen.
 
 4. **System-Prompt** in `skills/<slug>-expert.md` schreiben — nicht im Code.
+   Hier steckt der ganze Agent: Prüfkriterien (Ansprache, Satzlänge,
+   Fachjargon), Ausgabeformat (Befund + Umformulierungsvorschlag) und die
+   Grenze, dass er nur den mitgegebenen Text bewertet und nichts nachschlägt.
 
 5. **Build + Install**
    ```bash
-   cd middleware/packages/agent-sharepoint
+   cd middleware/packages/agent-tone-reviewer
    npm install          # oder bun install
    node scripts/build-zip.mjs
-   # → out/de.byte5.agent.sharepoint-0.1.0.zip
+   # → out/de.byte5.agent.tone-reviewer-0.1.0.zip
 
    # Upload via Admin-UI (<your-omadia-host> → Store → Upload)
    # oder via Admin-API POST /api/v1/install/plugins/:id (job-basiert).

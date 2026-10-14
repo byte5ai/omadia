@@ -60,6 +60,18 @@ alongside the code: the `{{INTEGRATION_ID}}` / `{{CAPABILITY_ID}}` rows in
 + `toolkit.ts`" step (this template has neither file), and `README.md`'s
 layout tree and Quick-Start placeholder list.
 
+A second pass took out what was left. `CLAUDE.md`'s worked example was a
+SharePoint search agent, which needs an integration; it is now a tone
+reviewer that works only on the user's text. §6 and §8 say the template ships
+`tools: []` and keep the `ToolDescriptor` / Zod matrix only as reference for
+a switch to `agent-integration`. `README.md` no longer promises a toolkit,
+`tsconfig.json` no longer includes the absent `toolkit.ts` / `client.ts`, and
+`manifest.yaml`'s `llm.prefers` drops `tool_use` (nothing reads that list, so
+runtime behaviour is unchanged). References to the gitignored
+`docs/harness-platform/` now point at the public files: the manifest parser
+(`manifestLoader.ts`), `middleware/src/api/admin-v1.ts`,
+`middleware/assets/entity-registry.v1.yaml` and the boilerplate's own path.
+
 ### Added — answer size in the web chat (stream `done` + "Kürzer" / "Mehr Details")
 
 2026-10-09 — The stream `done` event now carries `answerVerbosity` like the
