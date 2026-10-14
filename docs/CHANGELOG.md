@@ -66,6 +66,11 @@ the registry does not know (an operator-typed id, a local build) — those pass
 through untouched, so an operator-added OpenAI-compatible / Ollama / MiniMax
 model stays unclamped until its provider contributes a `maxTokens`.
 
+The Anthropic SDK refuses a non-streaming request above 21 333 `max_tokens`
+before sending it, so the adapter's `complete()` now streams any request above
+8192 and maps the final message exactly as before; smaller requests keep the
+plain call.
+
 Issue #1210.
 
 ### Added — answer size in the web chat (stream `done` + "Kürzer" / "Mehr Details")

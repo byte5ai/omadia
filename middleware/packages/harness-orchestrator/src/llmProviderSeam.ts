@@ -201,8 +201,8 @@ function toToolChoice(
  * sub-agent (via `streamMessageWithObserver` → `streamMessageEvents`). It is NOT
  * every sender in this package — `personaRouter`, `modelRouter` and
  * `securityScreener` hand-build an `LlmRequest` and call `provider.complete`
- * directly, bypassing this function. They need no clamp: their budgets are
- * 8–128 tokens, under every ceiling any provider publishes. A new sender that
+ * directly, bypassing this function. They need no clamp: each sets its own
+ * small budget, well below every ceiling any provider publishes. A new sender that
  * carries a turn-sized budget must either route through here or clamp itself.
  *
  * `providerId` is the connection the request is about to be sent on, and it
