@@ -339,6 +339,39 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.178.1 — answer verifier: Privacy Shield rendered answers are checked by their prose
+
+Up to v0.178.1, `enforce` withheld every answer Privacy Shield v4 rendered
+server-side (`answerSource: 'privacy-render'`, a `v4_render_answer` table or
+list): the verifier may not see the real values the shield kept from the
+model, so it never got the answer and recorded `unavailable` /
+`privacy_shield`. Behind the shield, `enforce` therefore delivered almost no
+data answer. This supersedes the "Privacy Shield v4 rendering and `enforce`
+do not combine" point under v0.167.13 below.
+
+- **The prose is verified, the values are system data.** The privacy guard
+  (0.9.0, plugin-api 1.27.0) reports the model's prose apart from the rows
+  (`PrivacyRenderedAnswer.prose`). The verifier checks that prose through the
+  turn's privacy view, like any model answer; the cell values the server
+  materialized from the turn's tool results never reach it. A contradicted
+  prose buys the usual correction retry, which re-renders.
+- **A render with no prose goes out as system data.** New skip reason
+  `system_data`: released without the disclaimer, in both modes, with a
+  `verifier_verdicts` row (`status = 'skipped'`, `reason = 'system_data'`).
+  The web chat marks every rendered answer with an "original system data"
+  chip instead of a verifier chip for such a turn.
+- **Not checked, by design:** the model's choice of dataset and verbs (as with
+  any tool query) and the column labels and rank header it writes into the
+  table.
+- **Still withheld in `enforce`:** a rendered tool error or sign-in prompt
+  (`answerIsError`), a render from a privacy guard older than 0.9.0 (it
+  reports no `prose`, so prose and values cannot be told apart), and behind
+  the shield a Direct Line relay. Upgrade the privacy guard together with the
+  core.
+- **`shadow` costs more.** Rendered answers with prose now run the full
+  pipeline in `shadow` too: extra verifier model calls and rows that were not
+  there before.
+
 ## Upgrading past v0.176.0 — auth cookies and pairing URLs take their scheme from the connection, not from a header
 
 **This one can change behaviour on an existing deployment, so read it before

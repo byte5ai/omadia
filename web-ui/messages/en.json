@@ -1700,6 +1700,10 @@
       "providerFallback": "Fallback model",
       "providerFallbackTooltip": "The primary model was unavailable — this answer came from the agent's fallback ({model} on {provider})."
     },
+    "systemData": {
+      "label": "Original system data",
+      "hint": "The server inserted the values in this answer unchanged from the source system — the AI model did not write them. The text around them and the column headings come from the model."
+    },
     "verifier": {
       "label": {
         "verified": "Answer verified",

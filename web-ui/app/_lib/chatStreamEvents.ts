@@ -472,6 +472,11 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         ...(event.answerSource === 'verifier-blocked'
           ? { verifierBlocked: true as const }
           : {}),
+        // Privacy Shield v4 rendered the answer from the source system's data
+        // — marked as such (`SystemDataBadge`). A rendered failure is not.
+        ...(event.answerSource === 'privacy-render' && event.answerIsError !== true
+          ? { systemData: true as const }
+          : {}),
         finishedAt: Date.now(),
         streaming: false,
       };

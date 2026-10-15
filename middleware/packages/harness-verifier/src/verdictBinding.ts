@@ -32,6 +32,7 @@ const SKIP_REASONS: ReadonlySet<unknown> = new Set<VerifierSkipReason>([
   'no_claims',
   'no_checkable_claims',
   'incomplete_coverage',
+  'system_data',
 ]);
 
 const UNAVAILABLE_REASONS: ReadonlySet<unknown> = new Set<VerifierUnavailableReason>([

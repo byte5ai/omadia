@@ -39,7 +39,7 @@ import { RecalledContextCard } from '../_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
 import { TurnIncompleteNotice } from '../_components/chat/TurnIncompleteNotice';
-import { VerifierBadge } from '../_components/chat/VerifierBadge';
+import { SystemDataBadge, VerifierBadge } from '../_components/chat/VerifierBadge';
 import { VerifierBlockedNotice } from '../_components/chat/VerifierBlockedNotice';
 import { Markdown } from '../_components/Markdown';
 import { steerActiveTurn } from '../_lib/api';
@@ -1195,6 +1195,7 @@ export function MessageRow({
                   {shortModelName(message.model)}
                 </span>
               )}
+              {message.systemData && <SystemDataBadge />}
               {message.verifier && <VerifierBadge summary={message.verifier} />}
               {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
               {message.streaming && (

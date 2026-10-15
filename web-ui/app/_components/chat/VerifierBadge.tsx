@@ -46,3 +46,23 @@ export function VerifierBadge({
     </span>
   );
 }
+
+/**
+ * Footer chip for an answer Privacy Shield rendered server-side: its values
+ * are the source system's original data, inserted by the server — not text
+ * the model wrote. Deterministic, so the verifier does not check them; the
+ * model's prose around them still is (`VerifierBadge`). The tooltip says
+ * that the prose and the column headings are the model's.
+ */
+export function SystemDataBadge(): React.ReactElement {
+  const t = useTranslations('chat.systemData');
+  return (
+    <span
+      className={`ml-3 inline-flex items-center rounded-full px-2 py-0.5 font-medium ring-1 ${TONE_CLASS.info}`}
+      title={t('hint')}
+      data-system-data="true"
+    >
+      {t('label')}
+    </span>
+  );
+}

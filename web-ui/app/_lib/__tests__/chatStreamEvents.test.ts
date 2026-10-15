@@ -366,6 +366,25 @@ describe('applyStreamEvent — enforce-mode verifier verdicts', () => {
     expect(message?.error).toBeUndefined();
   });
 
+  it('a server-rendered answer is marked as system data — a rendered failure is not', () => {
+    for (const answerIsError of [false, true]) {
+      const { sessions, mutateById } = stubSessions();
+
+      applyStreamEvent(sessions, 'bg', 'pending-1', {
+        type: 'done',
+        answer: '| Kunde | Betrag |',
+        toolCalls: 1,
+        iterations: 1,
+        answerSource: 'privacy-render',
+        ...(answerIsError ? { answerIsError: true } : {}),
+      });
+
+      const message = applied(mutateById, session('bg')).messages[1];
+      expect(message?.systemData).toBe(answerIsError ? undefined : true);
+      expect(message?.verifierBlocked).toBeUndefined();
+    }
+  });
+
   it('a released answer carries its verdict from done', () => {
     const { sessions, mutateById } = stubSessions();
 

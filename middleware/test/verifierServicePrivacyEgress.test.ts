@@ -374,11 +374,103 @@ describe('VerifierService.chat — privacy egress', () => {
     assert.equal(answer.verifier, undefined);
   });
 
-  it('never verifies a server-rendered answer, but still finalizes it', async () => {
+  it('verifies a server-rendered answer by its prose only — never the rendered rows', async () => {
+    const rendered = 'Offene Posten von «PERSON_1»:\n\n| Kunde | Betrag |\n| Acme GmbH | 100 € |';
     const { orchestrator, state } = stubOrchestrator({
-      results: [turn('| Name | Gehalt |', { answerSource: 'privacy-render', maskedValues: ['x'] })],
+      results: [turn(rendered, { answerSource: 'privacy-render', maskedValues: ['Acme GmbH'] })],
       handOver: true,
       privacyActive: true,
+      // The view's answer is the directive's prose, in the masked space.
+      continuation: () => ({
+        wireAnswer: 'Offene Posten von «PERSON_1»:',
+        restore: (t) => t.replace('«PERSON_1»', 'Marcel'),
+      }),
+    });
+    const { pipeline, inputs } = verdicts([APPROVED]);
+    const service = new VerifierService({ orchestrator, pipeline, enabled: true, mode: 'enforce', log: SILENT });
+
+    const answer = await service.chat({ userMessage: 'Tabelle bitte' });
+
+    assert.equal(inputs.length, 1);
+    assert.equal(inputs[0]!.privacy, state.continuations[0]!.verifierPrivacy);
+    // The pipeline sees the restored prose, never a rendered value.
+    assert.equal(inputs[0]!.answer, 'Offene Posten von Marcel:');
+    assert.equal(inputs[0]!.answer.includes('Acme GmbH'), false);
+    assert.equal(answer.text.startsWith(rendered), true);
+    assert.equal(state.continuations[0]!.finalizeCalls, 1);
+    assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
+  });
+
+  it('a rendered answer whose prose is contradicted re-renders once and delivers the corrected render', async () => {
+    const first = 'Alle 3 Posten sind bezahlt.\n\n| Kunde | Betrag |';
+    const second = '3 Posten sind offen.\n\n| Kunde | Betrag |';
+    const { orchestrator, state } = stubOrchestrator({
+      results: [
+        turn(first, { answerSource: 'privacy-render' }),
+        turn(second, { answerSource: 'privacy-render' }),
+      ],
+      handOver: true,
+      privacyActive: true,
+      continuation: (i) => ({ wireAnswer: i === 0 ? 'Alle 3 Posten sind bezahlt.' : '3 Posten sind offen.' }),
+    });
+    const { pipeline, inputs } = verdicts([BLOCKED, APPROVED]);
+    const service = new VerifierService({ orchestrator, pipeline, enabled: true, mode: 'enforce', log: SILENT });
+
+    const answer = await service.chat({ userMessage: 'Offene Posten?' });
+
+    assert.equal(state.runs.length, 2, 'one correction retry');
+    // Each pass is judged by its own prose, never its rows.
+    assert.deepEqual(
+      inputs.map((i) => i.answer),
+      ['Alle 3 Posten sind bezahlt.', '3 Posten sind offen.'],
+    );
+    assert.equal(answer.text.startsWith(second), true);
+    assert.equal(answer.answerSource, 'privacy-render');
+    assert.deepEqual(
+      state.continuations.map((c) => c.finalizeCalls),
+      [1, 1],
+    );
+  });
+
+  for (const mode of ['shadow', 'enforce'] as const) {
+    it(`releases a system-data-only rendered answer unverified, as system data (${mode})`, async () => {
+      const rendered = '| Kunde | Betrag |\n| Acme GmbH | 100 € |';
+      const { orchestrator, state } = stubOrchestrator({
+        results: [turn(rendered, { answerSource: 'privacy-render', maskedValues: ['Acme GmbH'] })],
+        handOver: true,
+        privacyActive: true,
+        continuation: () => ({ wireAnswer: undefined, systemDataOnly: true }),
+      });
+      const { pipeline, inputs } = verdicts([APPROVED]);
+      const lines: string[] = [];
+      const service = new VerifierService({
+        orchestrator,
+        pipeline,
+        enabled: true,
+        mode,
+        log: (m) => lines.push(m),
+      });
+
+      const answer = await service.chat({ userMessage: 'Tabelle bitte' });
+
+      assert.equal(inputs.length, 0);
+      assert.equal(answer.text, rendered, 'released as rendered, without a disclaimer');
+      assert.equal(answer.answerSource, 'privacy-render');
+      assert.equal(lines.some((l) => l.includes('answer withheld')), false);
+      assert.equal(lines.some((l) => l.includes('server-rendered system data')), true);
+      assert.equal(state.continuations[0]!.finalizeCalls, 1);
+      assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
+    });
+  }
+
+  it('withholds a rendered answer it has no view of and that is not system data (rendered failure)', async () => {
+    const { orchestrator, state } = stubOrchestrator({
+      results: [
+        turn('Error: odoo unreachable', { answerSource: 'privacy-render', answerIsError: true }),
+      ],
+      handOver: true,
+      privacyActive: true,
+      continuation: () => ({ wireAnswer: undefined }),
     });
     const { pipeline, inputs } = verdicts([APPROVED]);
     const service = new VerifierService({ orchestrator, pipeline, enabled: true, mode: 'enforce', log: SILENT });
@@ -386,8 +478,9 @@ describe('VerifierService.chat — privacy egress', () => {
     const answer = await service.chat({ userMessage: 'Tabelle bitte' });
 
     assert.equal(inputs.length, 0);
+    assert.equal(answer.text.includes('odoo unreachable'), false);
+    assert.equal(answer.answerSource, 'verifier-blocked');
     assert.equal(state.continuations[0]!.finalizeCalls, 1);
-    assert.deepEqual(answer.privacyReceipt, state.continuations[0]!.receipt);
   });
 
   it('skips a turn whose continuation has no view (Direct Line relay) and still attaches its receipt', async () => {

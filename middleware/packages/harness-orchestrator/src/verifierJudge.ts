@@ -8,7 +8,7 @@ import type {
   VerifierVerdict,
 } from '@omadia/verifier';
 import { bindVerdictToClaims } from '@omadia/verifier';
-import { privacyShieldVerdict } from './verifierDelivery.js';
+import { privacyShieldVerdict, systemDataVerdict } from './verifierDelivery.js';
 import {
   modelFacingUserMessage,
   verifierGate,
@@ -48,12 +48,14 @@ export class VerifierJudge {
 
   /**
    * The verdict on one pass's answer (a `done` event or a turn result),
-   * through that pass's privacy gate (`verifierGate`). An answer the verifier
-   * may not see — one Privacy Shield rendered server-side (real values the
-   * turn's model never saw), or, behind a shield, a pass that handed over no
-   * view to verify through — never reaches the pipeline: `enforce` cannot
-   * confirm it and records `unavailable` / `privacy_shield`, which withholds
-   * it; `shadow` reports nothing (`undefined`).
+   * through that pass's privacy gate (`verifierGate`). An answer Privacy
+   * Shield rendered server-side is verified by the prose its model wrote;
+   * its rows are system data, and one with no prose is `skipped` /
+   * `system_data` in either mode, released as it is. An answer the verifier
+   * may not see — behind a shield, a pass that handed over no view to verify
+   * through — never reaches the pipeline: `enforce` cannot confirm it and
+   * records `unavailable` / `privacy_shield`, which withholds it; `shadow`
+   * reports nothing (`undefined`).
    */
   async verdictFor(
     runId: string,
@@ -64,9 +66,28 @@ export class VerifierJudge {
     const gate = verifierGate(turn.answerSource, egress, this.opts.host);
     if (!gate.verify) {
       this.opts.log(`[verifier/service] verification skipped run=${runId}: ${gate.reason}`);
+      if (gate.systemData === true) return systemDataVerdict();
       return this.opts.mode === 'enforce' ? privacyShieldVerdict() : undefined;
     }
-    return this.safeVerify(runId, input, turn.answer, turn.runTrace, gate.privacy);
+    // A server-rendered answer: the pipeline checks the prose its model
+    // wrote, never `turn.answer`, which holds the rendered real values.
+    const answer =
+      gate.renderedProse === true && gate.privacy !== undefined
+        ? await this.restoredProse(gate.privacy)
+        : turn.answer;
+    return this.safeVerify(runId, input, answer, turn.runTrace, gate.privacy);
+  }
+
+  /** The rendered answer's prose with the turn's prompt surrogates restored —
+   *  what the user reads above the rows. The masked prose when restore fails:
+   *  it holds no real value, so the pipeline may still see it. */
+  private async restoredProse(privacy: VerifierPrivacy): Promise<string> {
+    try {
+      return await privacy.restore(privacy.wireAnswer);
+    } catch (err) {
+      this.opts.log(`[verifier/service] prose restore FAIL: ${errMsg(err)}`);
+      return privacy.wireAnswer;
+    }
   }
 
   async safeVerify(

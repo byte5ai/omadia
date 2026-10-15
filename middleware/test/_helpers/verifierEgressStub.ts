@@ -38,6 +38,10 @@ export interface ContinuationOpts {
   readonly wireUserMessage?: string;
   readonly maskWouldAlter?: boolean;
   readonly unresolved?: number;
+  /** A server-rendered answer with no model prose (system data only). */
+  readonly systemDataOnly?: boolean;
+  /** What the view's `restore` maps the wire answer to; identity by default. */
+  readonly restore?: (text: string) => string;
 }
 
 function receiptFor(n: number): PrivacyReceipt {
@@ -71,11 +75,12 @@ function recordingContinuation(
           wireAnswer: opts.wireAnswer,
           admitWireView: async () => undefined,
           projectForWire: async (t) => t,
-          restore: async (t) => t,
+          restore: async (t) => (opts.restore ? opts.restore(t) : t),
         };
   const c: RecordingContinuation = {
     receiptId: `turn-${String(n)}`,
     verifierPrivacy: view,
+    systemDataOnly: opts.systemDataOnly === true,
     receipt,
     finalizeCalls: 0,
     maskWouldAlter: async () => opts.maskWouldAlter === true,

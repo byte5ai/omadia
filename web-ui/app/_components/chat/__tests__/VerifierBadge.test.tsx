@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { VerifierSummary } from '../../../_lib/chatSessions';
 import { renderWithIntl } from '../../../_lib/test-utils';
-import { VerifierBadge } from '../VerifierBadge';
+import { SystemDataBadge, VerifierBadge } from '../VerifierBadge';
 
 function summary(overrides: Partial<VerifierSummary> = {}): VerifierSummary {
   return {
@@ -21,7 +21,25 @@ function summary(overrides: Partial<VerifierSummary> = {}): VerifierSummary {
 
 const GREEN = 'var(--success)';
 
+describe('<SystemDataBadge>', () => {
+  it('marks a server-rendered answer as original system data, in German too', () => {
+    renderWithIntl(<SystemDataBadge />, { locale: 'de' });
+    const chip = screen.getByText('Originaldaten aus dem System');
+    expect(chip.getAttribute('data-system-data')).toBe('true');
+    expect(chip.getAttribute('title')).toMatch(/unverändert aus dem Quellsystem/);
+  });
+});
+
 describe('<VerifierBadge>', () => {
+  it('renders no chip for a system-data-only answer — its own chip says where it comes from', () => {
+    const { container } = renderWithIntl(
+      <VerifierBadge
+        summary={summary({ badge: 'unverified', status: 'skipped', reason: 'system_data', claimCount: 0 })}
+      />,
+    );
+    expect(container.textContent).toBe('');
+  });
+
   it('renders a green chip only for an evidenced verified summary', () => {
     renderWithIntl(<VerifierBadge summary={summary()} />);
     const chip = screen.getByText('Answer verified');

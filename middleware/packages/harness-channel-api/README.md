@@ -223,9 +223,10 @@ an optional `answerSource` field to tell the two apart:
 - `"verifier-blocked"` — the answer verifier, in `enforce` mode, withheld
   the model's answer: it found a refuted claim, a missing or invented source
   citation or data the run never fetched, or it could not check the answer
-  (the verifier could not run, every check failed, or — always for an answer
-  Privacy Shield rendered, which the verifier may not see — `summary.reason`
-  is `privacy_shield`). An answer it merely could not fully confirm is not
+  (the verifier could not run, every check failed, or — for an answer it has
+  no privacy view of, such as a rendered failure — `summary.reason` is
+  `privacy_shield`). A `"privacy-render"` answer is judged by its prose;
+  one with no prose arrives with `summary.reason` `system_data`. An answer it merely could not fully confirm is not
   withheld; it arrives as `"model"` with a disclaimer paragraph. `answer` is a
   short notice saying so, in the instance's language,
   and `answerIsError` is `true`. The stream carried exactly one `text_delta`

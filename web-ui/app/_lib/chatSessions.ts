@@ -328,13 +328,16 @@ export interface VerifierSummary {
   badge: 'verified' | 'partial' | 'corrected' | 'failed' | 'unverified' | 'unavailable';
   status: 'approved' | 'approved_with_disclaimer' | 'blocked' | 'skipped' | 'unavailable';
   /** Why a `skipped` / `unavailable` turn has no evidence. A closed code set;
-   *  `privacy_shield`: an answer Privacy Shield rendered, withheld in
-   *  `enforce` mode without being sent to the verifier. */
+   *  `system_data`: an answer Privacy Shield rendered from the source
+   *  system's data with no model prose to check (`<SystemDataBadge>` marks
+   *  it); `privacy_shield`: an answer withheld in `enforce` mode because
+   *  the verifier had no privacy view of it. */
   reason?:
     | 'no_trigger'
     | 'no_claims'
     | 'no_checkable_claims'
     | 'incomplete_coverage'
+    | 'system_data'
     | 'extractor_error'
     | 'pipeline_error'
     | 'privacy_shield';
@@ -655,6 +658,14 @@ export interface Message {
    * server-side mirror too.
    */
   verifierBlocked?: true;
+  /**
+   * `true` when Privacy Shield v4 rendered this answer server-side from the
+   * turn's tool results (`done.answerSource === 'privacy-render'`, not a
+   * rendered failure): its rows are the source system's data, not text the
+   * model wrote. `<SystemDataBadge>` marks it. Kept by the server-side
+   * mirror too.
+   */
+  systemData?: true;
   /**
    * Privacy Shield v4 — real values in `content` that the LLM never saw,
    * resolved server-side behind the data-plane boundary. `<Markdown>`

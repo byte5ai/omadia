@@ -47,10 +47,13 @@ import { withheldCauseOf } from './verifierVerdicts.js';
  *    — that part fails closed. The client gets one `text_delta` with the
  *    notice and a `done` marked `answerSource: 'verifier-blocked'` ({@link
  *    withheldDone}); none of the held events.
- *  - An answer the verifier may not see behind a Privacy Shield — one it
- *    rendered server-side, or a turn that handed over no privacy view
- *    (`verifierGate`, `verifierPrivacyGate.ts`) — never reaches the
- *    verifier, so it is withheld as well ({@link privacyShieldVerdict}).
+ *  - An answer Privacy Shield rendered server-side is judged by the prose its
+ *    model wrote; its rows are system data, never checked. One with no prose
+ *    is released as system data ({@link systemDataVerdict}).
+ *  - An answer the verifier may not see behind a Privacy Shield — a turn that
+ *    handed over no privacy view (`verifierGate`, `verifierPrivacyGate.ts`)
+ *    — never reaches the verifier, so it is withheld as well
+ *    ({@link privacyShieldVerdict}).
  *  - Control-flow terminals are released without a verdict, the same way
  *    ({@link releasesWithoutVerification}); a bare NO_REPLY releases its
  *    `done` and nothing else ({@link isDeliberateSilence}).
@@ -133,8 +136,8 @@ export function isDeliberateSilence(answer: string): boolean {
  *
  * A degraded turn whose answer Privacy Shield had already rendered
  * (`answerSource: 'privacy-render'`) is not exempt: it is a real answer, and
- * `enforce` withholds it without sending it to the verifier
- * ({@link privacyShieldVerdict}).
+ * goes through the verifier's gate like any rendered answer — its prose
+ * verified, its rows system data ({@link systemDataVerdict}).
  */
 export function releasesWithoutVerification(turn: ControlFlowTurn): boolean {
   return (
@@ -157,14 +160,27 @@ function isServerNotice(turn: ControlFlowTurn): boolean {
 
 /**
  * The verdict `enforce` records for an answer the verifier may not see
- * (`verifierGate`, `verifierPrivacyGate.ts`): one Privacy Shield v4 rendered
- * server-side (`answerSource: 'privacy-render'`), degraded or not — it holds
- * real values the turn's model never saw — or, behind a shield, a turn that
- * handed over no privacy view to verify through. The pipeline never gets it,
- * and `enforce` cannot confirm it, so it is withheld — it fails closed.
+ * (`verifierGate`, `verifierPrivacyGate.ts`): behind a shield, a turn that
+ * handed over no privacy view to verify through — including a rendered
+ * failure (#1097), which is control flow, not system data. The pipeline never
+ * gets it, and `enforce` cannot confirm it, so it is withheld — it fails
+ * closed.
  */
 export function privacyShieldVerdict(): VerifierVerdict {
   return { status: 'unavailable', reason: 'privacy_shield', claims: [], latencyMs: 0 };
+}
+
+/**
+ * The verdict for an answer that is system data only: Privacy Shield v4
+ * rendered it server-side from the turn's tool results
+ * (`answerSource: 'privacy-render'`), and its model wrote no prose around
+ * the rows. Its values are the source system's own, materialized
+ * deterministically, so there is no claim to check. The model still chose
+ * the dataset and wrote the column labels — neither is checked. Released
+ * without the disclaimer; clients mark it as original system data.
+ */
+export function systemDataVerdict(): VerifierVerdict {
+  return { status: 'skipped', reason: 'system_data', claims: [], latencyMs: 0 };
 }
 
 /**
@@ -231,6 +247,7 @@ function skipDisclaimer(reason: VerifierSkipReason): boolean {
   switch (reason) {
     case 'no_trigger':
     case 'no_claims':
+    case 'system_data':
       return false;
     case 'no_checkable_claims':
     case 'incomplete_coverage':

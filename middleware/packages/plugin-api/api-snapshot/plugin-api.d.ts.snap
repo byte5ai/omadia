@@ -2012,6 +2012,7 @@ readonly input_schema: Record<string, unknown>;
 export interface PrivacyRenderedAnswer {
 readonly text: string;
 readonly maskedValues: readonly string[];
+readonly prose?: string;
 readonly isError?: boolean;
 }
 export interface PrivacyBypassedToolRequest {

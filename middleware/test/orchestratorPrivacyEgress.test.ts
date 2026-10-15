@@ -176,7 +176,7 @@ describe('orchestrator — privacy hand-over for the verifier (runTurn)', () => 
     // verifier must not get them, but the wrapper still owns the finalize.
     const rendered = `| Name | E-Mail |\n| Jana | ${RAW_EMAIL} |`;
     const { service, finalizeCalls } = countingService(true, {
-      takeRenderedAnswerV4: async () => ({ text: rendered, maskedValues: [RAW_EMAIL] }),
+      takeRenderedAnswerV4: async () => ({ text: rendered, maskedValues: [RAW_EMAIL], prose: '' }),
     });
     const orch = buildOrch({ service, provider: echoingProvider() });
     const input = { userMessage: 'Tabelle bitte', sessionScope: 'sess-render' };
@@ -189,9 +189,61 @@ describe('orchestrator — privacy hand-over for the verifier (runTurn)', () => 
     const egress = orch.takePrivacyEgress(input);
     assert.ok(egress, 'the render site did not hand over');
     assert.equal(egress.verifierPrivacy, undefined, 'rendered values must not reach the verifier');
+    assert.equal(egress.systemDataOnly, true, 'no prose: the answer is system data only');
     assert.equal(finalizeCalls(), 0);
     await egress.finalize();
     assert.equal(finalizeCalls(), 1);
+  });
+
+  it('a server-rendered answer with prose hands over the prose as the view — never the rows, on both paths', async () => {
+    const prose = 'Hier die offenen Posten:';
+    const rendered = `${prose}\n\n| Name | E-Mail |\n| Jana | ${RAW_EMAIL} |`;
+    for (const path of ['runTurn', 'chatStream'] as const) {
+      const { service } = countingService(true, {
+        takeRenderedAnswerV4: async () => ({ text: rendered, maskedValues: [RAW_EMAIL], prose }),
+      });
+      const orch = buildOrch({ service, provider: echoingProvider() });
+      const input = { userMessage: 'Tabelle bitte', sessionScope: `sess-render-prose-${path}` };
+
+      orch.markPrivacyFinalizeHeld(input);
+      if (path === 'runTurn') await orch.runTurn(input);
+      else await drain(orch.chatStream(input));
+
+      const egress = orch.takePrivacyEgress(input);
+      assert.ok(egress, `${path}: the render site did not hand over`);
+      assert.equal(egress.verifierPrivacy?.wireAnswer, prose, path);
+      assert.deepEqual(findIdentityLeaks(egress.verifierPrivacy.wireAnswer, [RAW_EMAIL]), [], path);
+      assert.equal(egress.systemDataOnly, false, path);
+      await egress.finalize();
+    }
+  });
+
+  it('a rendered failure, or a provider that reports no prose field, is neither verified nor system data, on both paths', async () => {
+    const renders = {
+      failure: { text: 'Error: odoo unreachable', maskedValues: [], prose: 'Leider ein Fehler:', isError: true },
+      // A provider that predates `prose`: rows and prose cannot be told
+      // apart, so it fails closed.
+      legacy: { text: `Hier:\n\n| Jana | ${RAW_EMAIL} |`, maskedValues: [RAW_EMAIL] },
+    };
+    for (const [kind, render] of Object.entries(renders))
+    for (const path of ['runTurn', 'chatStream'] as const) {
+      const { service } = countingService(true, {
+        takeRenderedAnswerV4: async () => render,
+      });
+      const orch = buildOrch({ service, provider: echoingProvider() });
+      const input = { userMessage: 'Tabelle bitte', sessionScope: `sess-render-${kind}-${path}` };
+      const at = `${kind}/${path}`;
+
+      orch.markPrivacyFinalizeHeld(input);
+      if (path === 'runTurn') await orch.runTurn(input);
+      else await drain(orch.chatStream(input));
+
+      const egress = orch.takePrivacyEgress(input);
+      assert.ok(egress, at);
+      assert.equal(egress.verifierPrivacy, undefined, at);
+      assert.equal(egress.systemDataOnly, false, at);
+      await egress.finalize();
+    }
   });
 
   it('a correction hint reaches the model only as surrogates', async () => {

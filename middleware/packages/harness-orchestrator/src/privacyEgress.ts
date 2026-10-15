@@ -44,11 +44,19 @@ export interface PrivacyEgressContinuation {
   /**
    * The view the verifier sends through, bound to this turn's handle.
    * `undefined` when the turn's answer is not model prose the verifier may
-   * see: a server-rendered v4 answer (real values its model never saw), a
-   * Direct Line relay (restored before it got here), the privacy refusal, or
-   * a turn that recorded no wire view. The wrapper then skips verification.
+   * see: a Direct Line relay (restored before it got here), the privacy
+   * refusal, a server-rendered v4 answer whose model wrote no prose, or a
+   * turn that recorded no wire view. The wrapper then skips verification.
+   * For a server-rendered answer with prose, the view's answer is that prose
+   * — never the rendered rows, real values its model never saw.
    */
   readonly verifierPrivacy: VerifierPrivacy | undefined;
+  /**
+   * `true` when the turn's answer is system data only: Privacy Shield v4
+   * rendered it from the turn's tool results and the model wrote no prose
+   * around it. Nothing in it is the model's, so there is nothing to verify.
+   */
+  readonly systemDataOnly: boolean;
   /**
    * Would the turn's prompt-mask policy change `text`? Side-effect free (no
    * map entry, no receipt line). `true` when masking would be blocked.
@@ -69,6 +77,8 @@ export function createPrivacyEgressContinuation(deps: {
   readonly receiptId: string;
   /** The turn's wire view, or `undefined` when the verifier must skip. */
   readonly wireView: TurnWireView | undefined;
+  /** The answer is system data only (see the continuation's field). */
+  readonly systemDataOnly?: boolean;
   /** Finalize the handle and persist the receipt. Must not throw. */
   readonly settle: () => Promise<PrivacyReceipt | undefined>;
 }): PrivacyEgressContinuation {
@@ -112,6 +122,7 @@ export function createPrivacyEgressContinuation(deps: {
   return {
     receiptId: deps.receiptId,
     verifierPrivacy,
+    systemDataOnly: deps.systemDataOnly === true,
     async maskWouldAlter(text: string): Promise<boolean> {
       const result = await handle.maskUserPrompt(text, {
         stage: 'verifier',

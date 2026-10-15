@@ -1907,8 +1907,9 @@ invariant cannot cover — a claim the model never lists — is stated below.
 | retry after `blocked`, every claim verified | correction confirmed | `corrected` | corrected | blue |
 | retry after `blocked`, some claims verified, none contradicted | correction confirmed in part | `partial` | partial | amber |
 | `skipped` — `no_trigger`, `no_claims`, `no_checkable_claims`, `incomplete_coverage` | ran, nothing checkable | `unverified` | none | neutral "not verified" |
+| `skipped` — `system_data` | a Privacy Shield v4 rendered answer with no model prose: system data only, nothing to check (below) | `unverified` | none | none; the answer's own "original system data" chip |
 | `unavailable` — `extractor_error`, `pipeline_error` | could not run, or the pipeline returned no usable verdict | `unavailable` | none | neutral "unavailable" |
-| `unavailable` — `privacy_shield` | `enforce` only: an answer the verifier may not see behind Privacy Shield — one the shield rendered, or a pass without a privacy view — was never sent to it (below) | `unavailable` | none | neutral "unavailable" |
+| `unavailable` — `privacy_shield` | `enforce` only: an answer the verifier may not see behind Privacy Shield — a pass without a privacy view, a rendered failure, or a render whose provider reports no prose — was never sent to it (below) | `unavailable` | none | neutral "unavailable" |
 
 - **The trigger patterns decide whether an answer is checked at all.**
   `shouldTriggerVerifier` (`harness-verifier/src/triggerRouter.ts`) hands an
@@ -2210,21 +2211,39 @@ trace does not support.
   accepts that form so Teams, Telegram and `/api/chat` stay silent, but no
   stream consumer drops it. `shadow` keeps its narrower rule (choice card
   and degraded turn only).
-- **Never verified: what the verifier may not see.** An answer with
-  `answerSource: 'privacy-render'` holds real values the shield kept from
-  the turn's model, and behind a shield a pass that handed over no privacy
-  view (a Direct Line relay) leaves nothing the verifier may read (§6e).
-  Neither reaches the pipeline (`verifierGate`): `enforce` records
-  `unavailable` with reason `privacy_shield` and withholds the answer, on
-  both paths and for every answer it would verify — the first answer, a
-  borderline resample and a correction retry; `shadow` records no verdict.
-  A degraded turn whose answer the shield had already rendered is a real
-  answer, not the turn-incomplete notice, so it is not exempt and is
-  withheld the same way; its `done` keeps `degraded` and `committedTools`,
-  so the turn still reports its failure. With Privacy Shield v4 rendering
-  active, `enforce` therefore delivers a rendered answer, a rendered tool
-  error or sign-in prompt included, only on a turn that also carries an
-  input card: the card exemption (above) runs first and releases that turn
+- **Rendered answers: the prose is verified, the values are system data.**
+  An answer with `answerSource: 'privacy-render'` is the model's
+  `v4_render_answer` prose followed by cell values the server materialized
+  from the turn's interned tool results — real values the shield kept from
+  the model. The values never reach the pipeline. The prose does: the
+  provider reports it apart (`PrivacyRenderedAnswer.prose`, plugin-api
+  1.27.0), the orchestrator hands it over as the turn's wire view
+  (`renderedVerifierHandOver`), and the pipeline checks it like any answer
+  — the extractor reads the masked prose, `VerifierInput.answer` is the
+  prose restored, never the rendered text. A contradicted prose buys the
+  usual correction retry, which re-renders. A render with no prose
+  (`prose: ''`) is system data only: `verifierGate` skips it with
+  `skipped` / `system_data`, in both modes, and `enforce` releases it
+  without the disclaimer. Clients mark every rendered, non-failure answer as
+  original system data (web chat: the "original system data" chip). Not
+  checked, by design: the model's choice of dataset and verb chain (as with
+  any tool query) and its column labels and rank header, which it writes as
+  free text into the rendered table.
+- **Never verified: what the verifier may not see.** Behind a shield, a pass
+  that handed over no privacy view (a Direct Line relay) leaves nothing the
+  verifier may read (§6e), and neither does a rendered failure (#1097:
+  `answerIsError`, control flow rather than system data) or a render whose
+  provider does not report `prose` (it predates plugin-api 1.27.0, so prose
+  and values cannot be told apart). None reaches the pipeline
+  (`verifierGate`): `enforce` records `unavailable` with reason
+  `privacy_shield` and withholds the answer, on both paths and for every
+  answer it would verify — the first answer, a borderline resample and a
+  correction retry; `shadow` records no verdict. A degraded turn whose
+  answer the shield had already rendered is a real answer, not the
+  turn-incomplete notice, so it is not exempt: it goes through the same gate
+  as any rendered answer, and its `done` keeps `degraded` and
+  `committedTools`, so the turn still reports its failure. The card
+  exemption (above) runs first and releases a turn with an input card
   unchecked (`releasesWithoutVerification` before `verifierGate`, in
   `VerifierService.chat` and in `enforcedVerifiedStream`).
 - **Re-entries.** `VerifierService.chat` runs at most one correction retry for

@@ -213,14 +213,28 @@ export async function settleQuietly(
 }
 
 export type VerifierGate =
-  | { readonly verify: true; readonly privacy?: VerifierPrivacy }
-  | { readonly verify: false; readonly reason: string };
+  | {
+      readonly verify: true;
+      readonly privacy?: VerifierPrivacy;
+      /** The view's answer is the prose of a server-rendered v4 answer: the
+       *  pipeline checks that prose, never the rendered rows. */
+      readonly renderedProse?: true;
+    }
+  | {
+      readonly verify: false;
+      readonly reason: string;
+      /** The answer is system data only — released, nothing to check. */
+      readonly systemData?: true;
+    };
 
 /**
  * Whether — and through which view — a turn's answer may be verified.
  *
- *   - a server-rendered v4 answer holds real values its model never saw:
- *     never verified;
+ *   - a server-rendered v4 answer: its rows are system data, materialized
+ *     from the turn's tool results — never checked. The prose its model
+ *     wrote is verified through the turn's view; without prose there is
+ *     nothing to verify (`systemData`); with no view at all (a rendered
+ *     failure, nothing handed over) it is skipped and fails closed;
  *   - a continuation came back: verify through its view, or skip when it
  *     has none (Direct Line relay, privacy refusal);
  *   - a shield is installed but nothing came back: skip rather than send
@@ -233,6 +247,12 @@ export function verifierGate(
   host: PrivacyEgressHost,
 ): VerifierGate {
   if (answerSource === 'privacy-render') {
+    if (egress?.verifierPrivacy !== undefined) {
+      return { verify: true, privacy: egress.verifierPrivacy, renderedProse: true };
+    }
+    if (egress?.systemDataOnly === true) {
+      return { verify: false, reason: 'server-rendered system data', systemData: true };
+    }
     return { verify: false, reason: 'server-rendered answer' };
   }
   if (egress !== undefined) {

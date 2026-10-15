@@ -73,6 +73,7 @@ const VerifierSummarySchema = z.object({
       'no_claims',
       'no_checkable_claims',
       'incomplete_coverage',
+      'system_data',
       'extractor_error',
       'pipeline_error',
       'privacy_shield',
@@ -133,6 +134,8 @@ const MessageSchema = z.object({
   // The answer verifier withheld this turn's answer (`enforce` mode); the
   // content is the notice saying so.
   verifierBlocked: z.literal(true).optional().catch(undefined),
+  // Privacy Shield v4 rendered the answer from the source system's data.
+  systemData: z.literal(true).optional().catch(undefined),
 });
 
 const SessionSchema = z.object({

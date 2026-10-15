@@ -220,22 +220,31 @@ export type NonEmptyClaimVerdicts = [ClaimVerdict, ...ClaimVerdict[]];
  *                            (an `ExtractionGap`) and found nothing checkable
  *                            in the part it covered; "no claims" would say
  *                            more than was looked at.
+ *  - `system_data`         — the answer is system data only: Privacy Shield
+ *                            rendered it server-side from the turn's tool
+ *                            results, and the model wrote no prose around it.
+ *                            Its values are the source system's own, so
+ *                            there is no claim to check. The model still
+ *                            chose the dataset and wrote the column labels;
+ *                            neither is checked.
  */
 export type VerifierSkipReason =
   | 'no_trigger'
   | 'no_claims'
   | 'no_checkable_claims'
-  | 'incomplete_coverage';
+  | 'incomplete_coverage'
+  | 'system_data';
 
 /**
  * Why the verifier could not run: `extractor_error` when the claim extraction
  * failed, `pipeline_error` when the pipeline threw or returned a verdict that
  * breaks this contract (see `bindVerdictToClaims`), `privacy_shield` when the
  * answer may not be sent to it — the verifier wrapper sets this in `enforce`
- * mode for an answer Privacy Shield rendered server-side, which the pipeline
- * never sees. A closed code on purpose: the reason is forwarded on the stream
- * `verifier` event to API clients, so it never carries an error message —
- * that stays in the log line where the error is caught.
+ * mode for an answer it has no privacy view of (behind a shield, a turn that
+ * handed none over; a server-rendered failure). A closed code on purpose: the
+ * reason is forwarded on the stream `verifier` event to API clients, so it
+ * never carries an error message — that stays in the log line where the
+ * error is caught.
  */
 export type VerifierUnavailableReason = 'extractor_error' | 'pipeline_error' | 'privacy_shield';
 
