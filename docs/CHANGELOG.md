@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Added — sub-agents fall back to the orchestrator's model
+
+2026-10-15. A `LocalSubAgent` whose own model fails before producing output —
+unknown model, rejected key, unreachable endpoint, rate limit after the retry
+budget — now continues on the model the orchestrator runs the turn on,
+instead of failing the delegation. The typical trigger is a stale model id
+after a provider switch (a manifest or `SUB_AGENT_MODEL` still naming a Claude
+model on a host now running on another provider), which made every call to
+that agent end in `model_not_found`. A configuration failure (`model_not_found`,
+`auth`) also skips the broken model on that sub-agent's next runs for ten
+minutes; the hop is logged as a warning naming both models. Like the
+orchestrator's own fallback (#1033 W3), a hop to another provider happens only
+before the first model call, and a hop to the same provider only for an
+unknown model. Outside an
+orchestrator turn (builder, preview) nothing changes.
+
 ### Fixed — the Anthropic adapter replays a turn's thinking blocks instead of dropping them
 
 2026-10-06 — #1207. `fromAnthropicContent` dropped `thinking` /

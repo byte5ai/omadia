@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { LlmProvider } from '@omadia/llm-provider';
 import type { AudienceFloorProvider } from './audienceFloorGuard.js';
 import type { CommandPolicyProvider } from './commandPolicyGuard.js';
 import type { ChatParticipantsProvider } from './chatParticipants.js';
@@ -318,6 +319,17 @@ export interface TurnContextValue {
    */
   wireView?: { userMessage?: string; answer?: string };
   /**
+   * Where the orchestrator's own model calls run this turn — its provider and
+   * model after `resolveTurnExecution`, and after a fallback hop the fallback.
+   * Read by `LocalSubAgent` as ITS fallback: a sub-agent whose configured model
+   * the provider does not serve (a stale manifest/`SUB_AGENT_MODEL` id after a
+   * provider switch) hops onto the model the turn demonstrably runs on instead
+   * of failing the delegation. Empty box = no orchestrator turn (builder,
+   * tests), so no sub-agent fallback. Mutable holder for the same
+   * shallow-copy reason as {@link memoryFileRead}.
+   */
+  orchestratorExecution?: { value?: OrchestratorExecution };
+  /**
    * #904 — the memory-tool handler bound to the turn that is currently
    * delegating to a sub-agent.
    *
@@ -352,6 +364,12 @@ export interface TurnContextValue {
    * executes as before. Holds raw handler results: never log or persist it.
    */
   toolReplayLedger?: ToolReplayLedger;
+}
+
+/** See `TurnContextValue.orchestratorExecution`. */
+export interface OrchestratorExecution {
+  readonly provider: LlmProvider;
+  readonly model: string;
 }
 
 /**

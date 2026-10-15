@@ -39,6 +39,12 @@ export interface StreamFallback {
   readonly params: any;
   /** The circuit breaker: consulted before the first attempt, tripped on switch. */
   readonly health?: ProviderHealth;
+  /**
+   * Narrows which fallback reasons this fallback takes (default: all). A
+   * same-provider fallback passes `reason => !isProviderWideFailure(reason)`:
+   * a broken key or endpoint would fail the second model just the same.
+   */
+  readonly accepts?: (reason: string) => boolean;
 }
 
 /**
@@ -337,7 +343,7 @@ export async function* streamMessageEvents(args: {
       // fallback for the cooldown instead of re-paying this retry budget.
       if (fallback && !forwardedText) {
         const reason = fallbackReasonFor(provider, err, attempt);
-        if (reason !== undefined) {
+        if (reason !== undefined && (fallback.accepts?.(reason) ?? true)) {
           if (isProviderWideFailure(reason)) fallback.health?.markFailed(provider.id, reason);
           console.warn(
             `[${streamLabel}] provider '${provider.id}' failed (${reason}) before any output — falling back to '${fallback.provider.id}':`,
@@ -427,6 +433,12 @@ export async function streamMessageWithObserver(
   observer: AskObserver | undefined,
   iteration: number,
   streamLabel: string,
+  options?: {
+    /** See {@link StreamFallback}. Absent = no hop. */
+    readonly fallback?: StreamFallback;
+    /** Called once when the stream switched to the fallback. */
+    readonly onFallback?: (ev: { providerId: string; model: string; reason: string }) => void;
+  },
 ): Promise<Message> {
   for await (const ev of streamMessageEvents({
     provider,
@@ -434,8 +446,10 @@ export async function streamMessageWithObserver(
     observer,
     iteration,
     streamLabel,
+    ...(options?.fallback ? { fallback: options.fallback } : {}),
   })) {
     if (ev.type === 'final') return ev.message;
+    if (ev.type === 'fallback') options?.onFallback?.(ev);
   }
   throw new Error(`[${streamLabel}] stream ended without a final message`);
 }

@@ -1531,6 +1531,27 @@ Ref nicht auflösbar ist) und pro Provider `classDefaults` (Klasse →
 beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
 Provider-Wechsel einen Klassen-Ref bei.
 
+**Sub-Agents fallen auf das Orchestrator-Modell zurück.** Weil die Sub-Agents
+ihr Modell selbst auflösen, kann es nach einem Provider-Wechsel veralten — eine
+konkrete Claude-ID in `SUB_AGENT_MODEL` oder im Manifest läuft gegen den neuen
+Provider ins `model_not_found`. Der Orchestrator veröffentlicht deshalb pro Turn,
+wo er läuft: `TurnContextValue.orchestratorExecution` (mutabler Holder, gesetzt
+nach `resolveTurnExecution` und nach jedem eigenen #1033-W3-Hop). `LocalSubAgent`
+nimmt das als seinen Fallback (`subAgentModelFallback.ts`) und springt mit
+derselben Logik wie der Orchestrator (`streamMessageEvents`, `fallbackReasonFor`)
+— nur vor jedem Output, nur bei Verfügbarkeitsfehlern, und auf einen ANDEREN
+Provider nur in Iteration 0 (danach trägt das Transkript tool_use/tool_result im
+Format des Primär-Adapters). Auf demselben Provider hilft der Sprung nur bei
+`model_not_found`; Key- oder Endpoint-Fehler (`isProviderWideFailure`) träfen das
+zweite Modell genauso. Ein Konfigurationsfehler (`model_not_found`, `auth`)
+öffnet pro Sub-Agent einen Cooldown von zehn Minuten (`PrimaryModelCooldown`),
+in dem die Läufe direkt auf dem Orchestrator-Modell starten; beides loggt eine
+Warnung mit beiden Modellen. Außerhalb eines Orchestrator-Turns (Builder,
+Preview, Tests) ist der Holder leer und es gibt keinen Fallback. Der
+CLI-Sub-Agent (`claude-cli`) ist nicht betroffen — dort führt die CLI den Loop.
+Der Fallback ist ein Sicherheitsnetz: das richtige Sub-Agent-Modell bleibt eine
+Konfigurationsfrage.
+
 ### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
 
 Die Middleware hat keine Request-Locale — niemand liest `Accept-Language`, und

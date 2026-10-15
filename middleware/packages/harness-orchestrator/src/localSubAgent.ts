@@ -6,9 +6,14 @@ import type {
 } from '@omadia/plugin-api';
 import { appendLimitSignalNote, isWithheldToolErrorNotice } from '@omadia/plugin-api';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
-import { streamMessageWithObserver } from './streaming.js';
+import { isProviderWideFailure, streamMessageWithObserver } from './streaming.js';
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  PrimaryModelCooldown,
+  orchestratorFallbackFor,
+  type SubAgentExecution,
+} from './subAgentModelFallback.js';
 import { SubAgentRefusalError } from './subAgentRefusal.js';
 import {
   UnknownOutcomeCalls,
@@ -84,6 +89,8 @@ export class LocalSubAgent {
   private readonly systemPrompt: string;
   private readonly toolsByName: Map<string, LocalSubAgentTool>;
   private readonly toolSpecs: LocalSubAgentToolSpec[];
+  /** Skips a primary model that failed for a configuration reason. */
+  private readonly primaryCooldown = new PrimaryModelCooldown();
 
   constructor(options: LocalSubAgentOptions) {
     this.name = options.name;
@@ -160,6 +167,21 @@ export class LocalSubAgent {
     let escalationsUsed = 0;
     let forceExpectedToolNext = false;
 
+    // Where this run's model calls go, and where they may hop to: the
+    // orchestrator's model of this turn (`subAgentModelFallback.ts`). While
+    // the primary is cooling down after a configuration failure, the run
+    // starts on the fallback directly.
+    const primary: SubAgentExecution = { provider: this.provider, model: this.model };
+    let fallback = orchestratorFallbackFor(primary);
+    let exec: SubAgentExecution = primary;
+    if (fallback && this.primaryCooldown.isActive()) {
+      console.warn(
+        `[sub-agent ${this.name}] model '${this.model}' is cooling down after a configuration failure — running on the orchestrator's model '${fallback.model}' on '${fallback.provider.id}'`,
+      );
+      exec = fallback;
+      fallback = undefined;
+    }
+
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
         lastIteration = iteration;
@@ -204,34 +226,66 @@ export class LocalSubAgent {
           toolChoice = { type: 'tool', name: expectedTurnToolUse };
         }
 
-        const response: Message = await streamMessageWithObserver(
-          this.provider,
-          {
-            model: this.model,
-            max_tokens: this.maxTokens,
-            // Two-block system: stable prompt (cache-eligible) + the turn's
-            // frozen date from turnContext. Falls back to a fresh date when
-            // called outside any turn (tests / ad-hoc invocations).
-            system: [
-              {
-                type: 'text',
-                text: this.systemPrompt,
-                cache_control: { type: 'ephemeral' },
-              },
-              {
-                type: 'text',
-                text: trailer,
-              },
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            ] as any,
+        const params = {
+          max_tokens: this.maxTokens,
+          // Two-block system: stable prompt (cache-eligible) + the turn's
+          // frozen date from turnContext. Falls back to a fresh date when
+          // called outside any turn (tests / ad-hoc invocations).
+          system: [
+            {
+              type: 'text',
+              text: this.systemPrompt,
+              cache_control: { type: 'ephemeral' },
+            },
+            {
+              type: 'text',
+              text: trailer,
+            },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            tools: this.toolSpecs as any,
-            messages,
-            ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
-          },
+          ] as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          tools: this.toolSpecs as any,
+          messages,
+          ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
+        };
+        // A hop to ANOTHER provider only before the first model call, exactly
+        // like the orchestrator (#1033 W3): from iteration 1 on the transcript
+        // carries tool_use/tool_result pairs shaped by the primary's adapter.
+        const fb =
+          fallback && (iteration === 0 || fallback.provider.id === exec.provider.id)
+            ? fallback
+            : undefined;
+        const response: Message = await streamMessageWithObserver(
+          exec.provider,
+          { ...params, model: exec.model },
           observer,
           iteration,
           `sub-agent ${this.name}`,
+          fb
+            ? {
+                fallback: {
+                  provider: fb.provider,
+                  params: { ...params, model: fb.model },
+                  // On the same provider a broken key or endpoint fails the
+                  // second model too; only an unknown model is worth the hop.
+                  ...(fb.provider.id === exec.provider.id
+                    ? { accepts: (reason: string) => !isProviderWideFailure(reason) }
+                    : {}),
+                },
+                onFallback: (ev) => {
+                  // The rest of this run stays on the fallback; a
+                  // configuration failure also skips the primary on the
+                  // following runs for the cooldown.
+                  exec = fb;
+                  fallback = undefined;
+                  const sticky = this.primaryCooldown.recordFallback(ev.reason);
+                  console.warn(
+                    `[sub-agent ${this.name}] model '${this.model}' on '${this.provider.id}' failed (${ev.reason}) — continuing on the orchestrator's model '${ev.model}' on '${ev.providerId}'` +
+                      (sticky ? ' for the next runs too (cooldown)' : ''),
+                  );
+                },
+              }
+            : undefined,
         );
 
         const iterationTextBlocks = collectTextBlocks(response.content);

@@ -4700,6 +4700,8 @@ export class Orchestrator {
         // The turn's wire view (prompt + answer), for a verifier hand-over.
         wireView: {},
         graphReadScope: {},
+        // Where this turn's model calls run — the sub-agents' fallback.
+        orchestratorExecution: {},
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -5264,6 +5266,15 @@ export class Orchestrator {
       }
     }
     return { provider, model, ...(effort !== undefined ? { effort } : {}), ...(fallback ? { fallback } : {}) };
+  }
+
+  /**
+   * Publish where this turn runs into its context, so a sub-agent whose own
+   * model fails can continue on it (`TurnContextValue.orchestratorExecution`).
+   */
+  private static publishTurnExecution(exec: TurnExecution): void {
+    const box = turnContext.current()?.orchestratorExecution;
+    if (box) box.value = { provider: exec.provider, model: exec.model };
   }
 
   /** #1033 W3 — after the hop, the fallback IS the execution for the rest of the turn. */
@@ -6169,6 +6180,7 @@ export class Orchestrator {
     const turnPersonaBody = turnPersonaResolved.skillBody;
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
     let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
+    Orchestrator.publishTurnExecution(turnExec);
     // #650 — stamp the resolved model on the trace here, once, rather than at
     // each of `finish()`'s call sites. Buffered path.
     traceCollector?.recordModel(turnExec.model, turnExec.provider.id);
@@ -6268,6 +6280,7 @@ export class Orchestrator {
         });
         if (completed.fallbackUsed) {
           turnExec = Orchestrator.afterFallback(turnExec);
+          Orchestrator.publishTurnExecution(turnExec);
           this.recordTurnAttribution(turnId, completed.fallbackUsed.model, completed.fallbackUsed.providerId, true);
           traceCollector?.recordModel(completed.fallbackUsed.model, completed.fallbackUsed.providerId);
         }
@@ -6929,6 +6942,7 @@ export class Orchestrator {
       // The turn's wire view (prompt + answer), for a verifier hand-over.
       wireView: {},
       graphReadScope: {},
+      orchestratorExecution: {},
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -7472,6 +7486,7 @@ export class Orchestrator {
     const turnPersonaBody = resolvedPersona.skillBody;
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
     let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
+    Orchestrator.publishTurnExecution(turnExec);
     // #650 — streaming mirror of the buffered stamp above. Both paths, or the
     // field is present on some traces and absent on others for no visible
     // reason, which is worse for a provenance record than not having it.
@@ -7631,6 +7646,7 @@ export class Orchestrator {
             // names it, and the UI gets a distinct `provider_fallback` chip
             // (never confused with the triage `bucket: 'fallback'`).
             turnExec = Orchestrator.afterFallback(turnExec);
+            Orchestrator.publishTurnExecution(turnExec);
             this.recordTurnAttribution(turnId, ev.model, ev.providerId, true);
             traceCollector?.recordModel(ev.model, ev.providerId);
             yield {
