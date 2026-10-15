@@ -1552,6 +1552,22 @@ CLI-Sub-Agent (`claude-cli`) ist nicht betroffen — dort führt die CLI den Loo
 Der Fallback ist ein Sicherheitsnetz: das richtige Sub-Agent-Modell bleibt eine
 Konfigurationsfrage.
 
+**Domain-Tools überleben eine Re-Aktivierung des Orchestrators.** Jede
+Provider-Umstellung (ebenso Key-Speichern, Reactivate) aktiviert
+`@omadia/orchestrator` neu; das Plugin veröffentlicht dabei einen neuen
+`chatAgent`-Orchestrator und eine neue `orchestratorRegistry`, beide ohne
+Domain-Tools. Früher wurden nur die Boot-Instanzen hydratisiert — nach der
+Umstellung fehlten allen Agents ihre `query_*`-Sub-Agents bis zum Neustart.
+Jetzt ruft `toolPluginRuntime.onActivated` für dieses Plugin
+`rebindOrchestratorToolsRef` (`src/index.ts`): Kernel-Tools +
+`dynamicAgentRuntime.attachOrchestrator` auf den LIVE-Chat-Orchestrator,
+`hydrateAgentRegistry` (`src/agents/runtimeToolPropagation.ts`) auf die
+LIVE-Registry inkl. `setOnAgentBuilt`. Die Tool-Quelle ist `liveDomainTools`:
+Kernel-Built-ins aus dem Boot-Set, Dynamic-Agent-Tools aus der Runtime (der
+Boot-Handle eines später neu hochgeladenen oder entfernten Agents ist tot).
+Offen: ein key-loser Erst-Boot installiert diese Verdrahtung nicht und braucht
+für Sub-Agent-Stacks weiterhin einen Neustart.
+
 ### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
 
 Die Middleware hat keine Request-Locale — niemand liest `Accept-Language`, und

@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — agents keep their sub-agents after a provider switch
+
+2026-10-15. Switching the LLM provider (or saving a key, or reactivating the
+orchestrator plugin) re-activates `@omadia/orchestrator`, which publishes a
+new chat orchestrator and a new per-Agent registry whose orchestrators start
+with no domain tools. Only the boot instances were ever hydrated, so after the
+switch every agent answered as if its specialist agents (`query_odoo_accounting`
+& co.) were not installed — until the next restart. The kernel now re-binds
+the domain tools to the live chat orchestrator and registry whenever the
+orchestrator plugin activates (`toolPluginRuntime.onActivated`), including the
+`onAgentBuilt` hook that keeps rebuilt agents hydrated. Dynamic-agent tools are
+taken from the agent runtime rather than the boot snapshot, so an agent
+re-uploaded or removed after boot is bound with its current handle, or not at
+all. A key-less first boot still needs one restart for sub-agent stacks.
+
 ### Added — sub-agents fall back to the orchestrator's model
 
 2026-10-15. A `LocalSubAgent` whose own model fails before producing output —

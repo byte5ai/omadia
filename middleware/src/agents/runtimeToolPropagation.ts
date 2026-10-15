@@ -16,6 +16,8 @@
 
 import type { DomainTool } from '@omadia/orchestrator';
 
+import { scopeDomainToolsToPlugins, type AgentPluginScope } from './scopeDomainTools.js';
+
 /** The slice of `Orchestrator` the reconciler mutates. */
 export interface DomainToolHost {
   hasDomainTool(name: string): boolean;
@@ -86,4 +88,116 @@ export function mergeDomainTools(
 ): DomainTool[] {
   const bootNames = new Set(boot.map((t) => t.name));
   return [...boot, ...runtime.filter((t) => !bootNames.has(t.name))];
+}
+
+/**
+ * The LIVE domain-tool set: the kernel built-ins from the frozen boot set,
+ * every dynamic-agent tool from the runtime. The boot set's dynamic-agent
+ * entries are boot HANDLES — an agent re-uploaded or upgraded after boot holds
+ * a fresh one in the runtime, an uninstalled one none — so they are dropped by
+ * name instead of winning a clash, or a (re)hydration would re-bind a stale,
+ * already-closed handle or resurrect an uninstalled agent.
+ */
+export function liveDomainTools(
+  boot: readonly DomainTool[],
+  dynamicAtBoot: readonly DomainTool[],
+  runtimeActive: readonly DomainTool[],
+): DomainTool[] {
+  return mergeDomainTools(kernelDomainTools(boot, dynamicAtBoot), runtimeActive);
+}
+
+/** The boot set without its dynamic-agent entries (see {@link liveDomainTools}). */
+export function kernelDomainTools(
+  boot: readonly DomainTool[],
+  dynamicAtBoot: readonly DomainTool[],
+): DomainTool[] {
+  const dynamicNames = new Set(dynamicAtBoot.map((t) => t.name));
+  return boot.filter((t) => !dynamicNames.has(t.name));
+}
+
+/** The slice of a per-Agent registry entry the hydration reads. */
+export interface HydratableAgent {
+  readonly agent: { readonly slug: string };
+  readonly plugins: readonly AgentPluginScope[];
+  readonly built: { readonly orchestrator: Pick<DomainToolHost, 'hasDomainTool' | 'registerDomainTool'> };
+}
+
+/** The slice of the per-Agent orchestrator registry the hydration drives. */
+export interface HydratableRegistry<B extends HydratableAgent['built']> {
+  list(): readonly (HydratableAgent & { readonly built: B })[];
+  get(slug: string): (HydratableAgent & { readonly built: B }) | undefined;
+  setOnAgentBuilt(cb: (slug: string, built: B) => void): void;
+}
+
+export interface HydrateRegistryDeps<B> {
+  /** The LIVE domain-tool set (boot built-ins merged with runtime installs). */
+  readonly currentDomainTools: () => readonly DomainTool[];
+  /** Registers the Agent's DB-defined sub-agent tools; returns how many. */
+  readonly hydrateSubAgentTools: (slug: string, built: B) => number;
+  readonly log: (message: string) => void;
+}
+
+function registerScoped(
+  orchestrator: HydratableAgent['built']['orchestrator'],
+  tools: readonly DomainTool[],
+): number {
+  let attached = 0;
+  for (const t of tools) {
+    if (!orchestrator.hasDomainTool(t.name)) {
+      orchestrator.registerDomainTool(t);
+      attached += 1;
+    }
+  }
+  return attached;
+}
+
+function surface(tools: readonly DomainTool[]): string {
+  return tools.length === 0
+    ? '(none)'
+    : tools.map((t) => `${t.name}←${t.agentId ?? 'UNOWNED'}`).join(', ');
+}
+
+/**
+ * Hydrate every per-Agent orchestrator of `reg` with its plugin-scoped domain
+ * tools and sub-agent tools, and install the `onAgentBuilt` hook that keeps a
+ * rebuilt Agent hydrated.
+ *
+ * Runs at boot AND on every re-activation of the orchestrator plugin
+ * (provider switch, secret save, reactivate): a re-activation publishes a NEW
+ * registry whose orchestrators start with `domainTools: []` and carry no hook,
+ * so hydrating only the boot instance left every agent without its
+ * sub-agents until the next restart. Idempotent: tools already present are
+ * skipped. Returns the number of registrations made.
+ */
+export function hydrateAgentRegistry<B extends HydratableAgent['built']>(
+  reg: HydratableRegistry<B>,
+  deps: HydrateRegistryDeps<B>,
+): number {
+  let attached = 0;
+  for (const entry of reg.list()) {
+    // By name and by owner, not just a count: a tool that passed the filter
+    // for lack of an owner id is indistinguishable from a granted one in a
+    // number.
+    const scoped = scopeDomainToolsToPlugins(deps.currentDomainTools(), entry.plugins);
+    deps.log(`registry: tool surface for "${entry.agent.slug}": ${surface(scoped)}`);
+    attached += registerScoped(entry.built.orchestrator, scoped);
+    attached += deps.hydrateSubAgentTools(entry.agent.slug, entry.built);
+  }
+  deps.log(
+    `registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(reg.list().length)} agent(s) (per-Agent plugin-scoped)`,
+  );
+  // A later `reload()` that REBUILDS an Agent (model_routing / instructions
+  // change, …) re-hydrates the new orchestrator from the LIVE tool source. The
+  // entry is in the registry map before `onAgentBuilt` fires (both `add` and
+  // `rebuild` set it first), so the plugin lookup works here.
+  reg.setOnAgentBuilt((slug, built) => {
+    const entry = reg.get(slug);
+    const tools = entry ? scopeDomainToolsToPlugins(deps.currentDomainTools(), entry.plugins) : [];
+    registerScoped(built.orchestrator, tools);
+    const subTools = deps.hydrateSubAgentTools(slug, built);
+    deps.log(
+      `registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) + ${String(subTools)} sub-agent tool(s) (per-Agent plugin-scoped): ${surface(tools)}`,
+    );
+  });
+  return attached;
 }

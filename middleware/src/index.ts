@@ -128,9 +128,10 @@ import { createDuplicatesRouter } from './routes/duplicates.js';
 import { createTopicsRouter } from './routes/topics.js';
 import { createUsageRouter } from './routes/usage.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
-import { scopeDomainToolsToPlugins } from './agents/scopeDomainTools.js';
 import {
-  mergeDomainTools,
+  hydrateAgentRegistry,
+  kernelDomainTools,
+  liveDomainTools,
   reconcileDomainToolAcrossAgents,
 } from './agents/runtimeToolPropagation.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
@@ -1372,6 +1373,15 @@ async function main(): Promise<void> {
     });
   }
 
+  // Forward reference: re-bind every domain tool after a POST-BOOT
+  // re-activation of the orchestrator plugin (provider switch, secret save,
+  // reactivate), which publishes a fresh chat Orchestrator and a fresh
+  // per-Agent registry — both without domain tools. Assigned in the
+  // orchestrator-wiring block far below (it needs the hydration closures) and
+  // called from `onActivated` here; the boot activation runs before the
+  // assignment and stays a no-op, since the boot block hydrates itself.
+  let rebindOrchestratorToolsRef: (() => void) | undefined;
+
   const toolPluginRuntime = new ToolPluginRuntime({
     catalog: pluginCatalog,
     registry: installedRegistry,
@@ -1411,6 +1421,16 @@ async function main(): Promise<void> {
     // manifest-linter and codegen, so a newly-online platform becomes
     // buildable immediately, with no middleware restart.
     onActivated: async (entry, packagePath) => {
+      if (entry.plugin.id === '@omadia/orchestrator') {
+        try {
+          rebindOrchestratorToolsRef?.();
+        } catch (err) {
+          console.error(
+            '[middleware] re-binding domain tools after orchestrator re-activation FAILED:',
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
       const serviceTypes = entry.plugin.service_types ?? [];
       if (serviceTypes.length === 0) return;
       for (const st of serviceTypes) {
@@ -2507,6 +2527,16 @@ async function main(): Promise<void> {
   // package must not block the whole middleware.
   const dynamicDomainTools = await dynamicAgentRuntime.activateAllInstalled();
   for (const t of dynamicDomainTools) domainTools.push(t);
+  // The LIVE domain-tool source. `domainTools[]` is frozen at boot, and its
+  // dynamic-agent entries are boot HANDLES: an agent re-uploaded, upgraded or
+  // uninstalled after boot holds a fresh handle (or none) in the runtime.
+  // So the kernel built-ins come from the boot set and every dynamic-agent
+  // tool from `dynamicAgentRuntime` — otherwise a later (re)hydration would
+  // re-bind a stale, already-closed handle or resurrect an uninstalled agent.
+  const bootKernelDomainTools = (): DomainTool[] =>
+    kernelDomainTools(domainTools, dynamicDomainTools);
+  const currentDomainTools = (): DomainTool[] =>
+    liveDomainTools(domainTools, dynamicDomainTools, dynamicAgentRuntime.activeDomainTools());
   console.log(
     `[middleware] dynamic agent runtime: ${dynamicAgentRuntime.activeIds().length} uploaded agent(s) active`,
   );
@@ -2531,10 +2561,14 @@ async function main(): Promise<void> {
   // routes below resolve those services LIVE from the registry per request,
   // so chat goes live the moment the key is saved — no restart needed.
   //
-  // The boot-only wiring guarded on `orchestrator` below (domain-tool
-  // hydration of per-Agent orchestrators) re-applies on the next restart for
-  // advanced stacks (sub-agents). The default out-of-the-box stack has no
-  // domain tools, so chat is fully functional hot. Routines follows the same
+  // The domain-tool wiring guarded on `orchestrator` below (hydration of the
+  // chat and per-Agent orchestrators) runs at boot, and again on every later
+  // re-activation of the orchestrator plugin (provider switch, secret save,
+  // reactivate — `rebindOrchestratorToolsRef`). Only a boot WITHOUT a chat
+  // orchestrator (key-less first boot) still needs a restart for advanced
+  // stacks (sub-agents): the wiring is never installed on that path. The
+  // default out-of-the-box stack has no domain tools, so chat is fully
+  // functional hot. Routines follows the same
   // live-resolution pattern as chat (issue #473): its runner resolves
   // chatAgent per run, so it hot-enables on key save too.
   const chatAgentBundle = serviceRegistry.get<ChatAgentBundle>('chatAgent');
@@ -2559,10 +2593,33 @@ async function main(): Promise<void> {
     // Push all kernel-collected DomainTools (native sub-agents + uploaded
     // dynamic agents) into the plugin-built Orchestrator. Plugin construction
     // happens BEFORE these are accumulated, so the registerDomainTool calls
-    // here finish the wiring.
-    for (const t of domainTools) orchestrator.registerDomainTool(t);
-    // Hot-register pathway for future agent installs while the process runs.
-    dynamicAgentRuntime.attachOrchestrator(orchestrator);
+    // here finish the wiring. Re-run on every later re-activation of the
+    // orchestrator plugin (see `rebindOrchestratorToolsRef`), which publishes
+    // a fresh Orchestrator that starts with no domain tools.
+    const bindChatOrchestrator = (target: typeof orchestrator): void => {
+      for (const t of bootKernelDomainTools()) {
+        if (!target.hasDomainTool(t.name)) target.registerDomainTool(t);
+      }
+      // Registers the runtime's LIVE dynamic-agent tools, and is the
+      // hot-register pathway for future agent installs while the process runs.
+      dynamicAgentRuntime.attachOrchestrator(target);
+    };
+    bindChatOrchestrator(orchestrator);
+    // Set inside the registry block below; absent on a registry-less (no-DB) host.
+    let hydrateRegistryForRebind: ((reg: MultiOrchestratorRegistry) => void) | undefined;
+    // Re-bind after a post-boot re-activation of the orchestrator plugin
+    // (fired from `toolPluginRuntime.onActivated`). Resolves both services
+    // LIVE: the re-activation replaced the chat bundle and the registry.
+    rebindOrchestratorToolsRef = (): void => {
+      const chat = serviceRegistry.get<ChatAgentBundle>('chatAgent')?.raw;
+      if (chat) bindChatOrchestrator(chat);
+      const reg =
+        serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+      if (reg) hydrateRegistryForRebind?.(reg);
+      console.log(
+        `[middleware] orchestrator re-activated — domain tools re-bound (chat=${chat ? 'yes' : 'no'}, registry=${reg && hydrateRegistryForRebind ? 'yes' : 'no'})`,
+      );
+    };
 
     // Phase B fix — the multi-orchestrator registry built one Orchestrator per
     // Agent earlier in boot (inside the orchestrator plugin's activate, during
@@ -2587,14 +2644,9 @@ async function main(): Promise<void> {
       // inherits `query_odoo_accounting` et al. it was never granted.
       // See `scopeDomainToolsToPlugins` for the rule.
       //
-      // LIVE tool source. The boot-time `domainTools[]` is frozen at process
-      // start, so an agent-plugin installed/activated AFTER boot (its tool
-      // lives only in `dynamicAgentRuntime`) would never reach a per-Agent
-      // orchestrator on a later rebuild. Merge the boot set with the runtime's
-      // currently-active domain tools, de-duped by name (boot built-ins are
-      // already in `domainTools` and win on clash).
-      const currentDomainTools = (): DomainTool[] =>
-        mergeDomainTools(domainTools, dynamicAgentRuntime.activeDomainTools());
+      // Tools come from the LIVE source `currentDomainTools` (defined after
+      // the dynamic-agent activation above), so a runtime-installed agent's
+      // tool reaches a per-Agent orchestrator on a later rebuild.
 
       // Agent Builder P2/P4 — shared MCP connection pool + a closure that
       // materialises each agent's DB-defined sub-agents into DomainTools and
@@ -2855,12 +2907,13 @@ async function main(): Promise<void> {
           : 'anthropic';
       };
       const hydrateSubAgentTools = (
+        reg: MultiOrchestratorRegistry,
         slug: string,
         built: { orchestrator: { hasDomainTool(n: string): boolean; registerDomainTool(t: DomainTool): void } },
       ): number => {
-        const entry = registryForHydrate.get(slug);
+        const entry = reg.get(slug);
         if (!entry) return 0;
-        const snapshot = registryForHydrate.currentSnapshot();
+        const snapshot = reg.currentSnapshot();
         const mcpServers = snapshot?.mcpServers ?? [];
         // Persona skills + operator bindings for skill capability contracts
         // (issue #456) — resolved from the same snapshot the registry built
@@ -2902,40 +2955,22 @@ async function main(): Promise<void> {
         );
       };
 
-      let attached = 0;
-      for (const entry of registryForHydrate.list()) {
-        // WHAT THIS AGENT ACTUALLY ENDED UP WITH, by name and by owner.
-        //
-        // The count alone was not enough to answer the question that matters
-        // — "why can this agent reach that connector?" — because it cannot
-        // distinguish a tool that was granted from one that passed the filter
-        // for lack of an owner id (`agentId === undefined` is waved through by
-        // design, as a core helper). An agent with no grants reaching a
-        // plugin's tool is indistinguishable from correct behaviour in a
-        // number.
-        const scoped = scopeDomainToolsToPlugins(
-          currentDomainTools(),
-          entry.plugins,
-        );
-        console.log(
-          `[middleware] registry: tool surface for "${entry.agent.slug}": ` +
-            (scoped.length === 0
-              ? '(none)'
-              : scoped
-                  .map((t) => `${t.name}←${t.agentId ?? 'UNOWNED'}`)
-                  .join(', ')),
-        );
-        for (const t of scoped) {
-          if (!entry.built.orchestrator.hasDomainTool(t.name)) {
-            entry.built.orchestrator.registerDomainTool(t);
-            attached += 1;
-          }
-        }
-        attached += hydrateSubAgentTools(entry.agent.slug, entry.built);
-      }
-      console.log(
-        `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s) (per-Agent plugin-scoped)`,
-      );
+      // Hydrate every per-Agent orchestrator of `reg` and keep its rebuilds
+      // hydrated. Runs at boot and again on each re-activation of the
+      // orchestrator plugin (provider switch, secret save, reactivate): that
+      // publishes a NEW registry whose orchestrators start with
+      // `domainTools: []` and carry no `onAgentBuilt` hook, so without this
+      // every agent lost its sub-agents until the next restart.
+      const hydrateRegistry = (reg: MultiOrchestratorRegistry): void => {
+        hydrateAgentRegistry(reg, {
+          currentDomainTools,
+          hydrateSubAgentTools: (slug, built) => hydrateSubAgentTools(reg, slug, built),
+          log: (m: string) => console.log(`[middleware] ${m}`),
+        });
+      };
+      hydrateRegistry(registryForHydrate);
+
+      hydrateRegistryForRebind = hydrateRegistry;
       // Issue #560 — start the boot resume driver once the deferred tool handles
       // exist. It claims and re-drives any `working` task with no lease (a
       // durable row a restart orphaned before its runner claimed it, or a task a
@@ -2952,36 +2987,6 @@ async function main(): Promise<void> {
             console.warn('[middleware] long-running task resume sweep failed:', err),
         });
       }
-      // Persist the wiring so a later `registry.reload()` that REBUILDS an
-      // Agent (model_routing / instructions change, etc.) re-hydrates the new
-      // orchestrator — still scoped to the Agent's enabled plugins, and now
-      // from the LIVE tool source so a runtime-installed agent's tool survives
-      // the rebuild. The entry is in the registry map before `onAgentBuilt`
-      // fires (both the `add` and `rebuild` actions set it first), so the
-      // plugin lookup is available here. Without this, the rebuilt Agent goes
-      // back to `domainTools: []` and the operator's next chat turn cannot
-      // reach its sub-agents.
-      registryForHydrate.setOnAgentBuilt((slug, built) => {
-        const entry = registryForHydrate.get(slug);
-        const tools = entry
-          ? scopeDomainToolsToPlugins(currentDomainTools(), entry.plugins)
-          : [];
-        for (const t of tools) {
-          if (!built.orchestrator.hasDomainTool(t.name)) {
-            built.orchestrator.registerDomainTool(t);
-          }
-        }
-        const subTools = hydrateSubAgentTools(slug, built);
-        // Same by-name surface as the initial hydrate above — a rebuild is
-        // exactly when a tool can appear that the operator did not grant, so
-        // the rebuild path must be as readable as the boot path.
-        console.log(
-          `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) + ${String(subTools)} sub-agent tool(s) (per-Agent plugin-scoped): ` +
-            (tools.length === 0
-              ? '(none)'
-              : tools.map((t) => `${t.name}←${t.agentId ?? 'UNOWNED'}`).join(', ')),
-        );
-      });
 
       // Periodic MCP re-scan (epic #459 W6, #455 Phase 3): re-discovers and
       // re-scans every enabled server so post-import drift surfaces without
@@ -2995,7 +3000,11 @@ async function main(): Promise<void> {
           void rescanAllMcpServers(rescanStore, mcpManager, (m) =>
             console.log(`[middleware] ${m}`),
           )
-            .then(() => registryForHydrate.reload())
+            .then(() =>
+              serviceRegistry
+                .get<MultiOrchestratorRegistry>('orchestratorRegistry')
+                ?.reload(),
+            )
             .catch((err: unknown) => {
               console.warn(`[middleware] periodic mcp re-scan failed: ${String(err)}`);
             });
