@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.8.0"
+  version: "0.9.0"
   kind: "tool"
   domain: "privacy.redact"
   description:
@@ -85,7 +85,9 @@ playbook:
         Digest.
       - `runV4Tool` führt vom LLM komponierte `v4_*`-Verben (sort, filter,
         rank, …) und das `v4_render_answer`-Directive in vertrauenswürdigem
-        Server-Code aus.
+        Server-Code aus. Die gerenderte Antwort meldet die Prosa des Modells
+        getrennt von den Zeilen (`prose`, `''` ohne Prosa): Der
+        Antwort-Verifier prüft nur sie, die Zellwerte sind Systemdaten.
       - `finalizeTurn` verwirft die Turn-Datasets und liefert eine PII-freie
         `PrivacyReceipt` für die UI-Disclosure.
       - `redactToolErrorText` redigiert zurückgegebene `Error:`-Texte

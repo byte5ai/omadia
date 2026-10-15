@@ -81,6 +81,10 @@ function unverified(reason: unknown): VerifierBadgeView {
 export function verifierBadgeView(summary: unknown): VerifierBadgeView | null {
   if (typeof summary !== 'object' || summary === null) return null;
   const s = summary as Record<string, unknown>;
+  // System data only: nothing the model wrote, so nothing to verify. The
+  // answer's own chip says where it comes from (`SystemDataBadge`); a
+  // "not verified" chip next to it would read as a doubt about the source.
+  if (s['status'] === 'skipped' && s['reason'] === 'system_data') return null;
   const counts = countsOf(s);
   const checkedClaims =
     counts !== null && counts.claims > 0 && EVIDENCED_STATUSES.has(s['status']);

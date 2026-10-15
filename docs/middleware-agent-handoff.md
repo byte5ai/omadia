@@ -3446,7 +3446,7 @@ Setup-Felder, nicht mehr die Env.
 | Variable / Setup-Feld | Wirkung |
 |---|---|
 | `VERIFIER_ENABLED` / `verifier_enabled` | `true` schaltet den Verifier-Wrapper ein. Default `false`. |
-| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht bei `approved` und `skipped` (`no_trigger`/`no_claims`) raus, bei `approved_with_disclaimer` und `skipped` (`no_checkable_claims`/`incomplete_coverage`) mit lokalisiertem Hinweis „ließ sich nicht automatisch bestätigen“ (außer alle gelaufenen Checks scheiterten technisch: dann zurückgehalten); bei `blocked` oder `unavailable` statt ihrer eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort — hinter dem Shield ebenso ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) — geht nie an den Verifier und wird zurückgehalten (`privacy_shield`), außer an einem Turn mit Input-Karte: Die Karten-Ausnahme (`releasesWithoutVerification`) greift vorher und gibt ihn samt gerenderter Antwort ungeprüft frei; `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
+| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht bei `approved` und `skipped` (`no_trigger`/`no_claims`) raus, bei `approved_with_disclaimer` und `skipped` (`no_checkable_claims`/`incomplete_coverage`) mit lokalisiertem Hinweis „ließ sich nicht automatisch bestätigen“ (außer alle gelaufenen Checks scheiterten technisch: dann zurückgehalten); bei `blocked` oder `unavailable` statt ihrer eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort wird an ihrer Prosa geprüft; die Zellwerte sind Systemdaten und gehen nie an den Verifier. Ohne Prosa ist sie reine Systemdaten (`skipped` / `system_data`) und geht ohne Hinweis raus; die Web-UI markiert jede gerenderte Antwort als „Originaldaten aus dem System“. Ein gerenderter Fehler, ein Provider ohne `prose`-Feld und hinter dem Shield ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) gehen nie an den Verifier und werden zurückgehalten (`privacy_shield`), außer an einem Turn mit Input-Karte: Die Karten-Ausnahme (`releasesWithoutVerification`) greift vorher und gibt ihn ungeprüft frei; `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
 | `VERIFIER_MODEL` / `verifier_model` | Modell für Claim-Extraktion und Evidence-Judge. |
 | `VERIFIER_MAX_CLAIMS` / `verifier_max_claims` | Höchstzahl geprüfter Claims pro Antwort, Default `20`. |
 | `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Relative Betragstoleranz, Default `0.01`. |
@@ -5854,14 +5854,16 @@ Objektformen und dass solcher Text Text bleibt.
   ausnehmen, die nichts als die Karte sind; eine gerenderte Antwort dabei
   zurückhalten wie ohne Karte. Die vier Ausnahmen sind derzeit
   so gesetzt; Security §7c beschreibt die Lücke.
-- **`enforce` mit Privacy Shield v4 liefert eine gerenderte Antwort nur an
-  einem Turn mit Input-Karte.** Eine gerenderte Antwort geht nie an den
-  Verifier und wird zurückgehalten (`unavailable` / `privacy_shield`) — auch
-  ein gerenderter Tool-Fehler oder Anmelde-Prompt (`answerIsError`); trägt der
-  Turn eine Input-Karte, gibt die Karten-Ausnahme (Punkt oben) ihn vorher
-  ungeprüft frei. Damit `enforce` sie freigeben kann, müsste
-  der Verifier die Antwort über die Privacy-Sicht des Turns prüfen (Prosa und
-  Spaltenlabels maskiert, Werte über Handles statt Klartext).
+- **`enforce` mit Privacy Shield v4 — Prosa geprüft, Werte als Systemdaten
+  (erledigt 2026-10-15).** Der Verifier prüft die Prosa einer gerenderten
+  Antwort über die Privacy-Sicht des Turns; die Zellwerte sind Systemdaten
+  und gehen nie an ihn, ohne Prosa wird die Antwort als `system_data`
+  freigegeben (Security §7c). Weiter zurückgehalten: ein gerenderter
+  Tool-Fehler oder Anmelde-Prompt (`answerIsError`) und ein Provider ohne
+  `prose`-Feld. Offen: Spaltenlabels und Rang-Header schreibt das Modell
+  als Freitext in die Tabelle, ungeprüft; sie könnten maskiert mit der Prosa
+  in die Wire-View. Ein Hinweis zu unbestätigter Prosa steht hinter der
+  Tabelle, obwohl er nur die Prosa meint.
 - **Zusammenführen mit der Privacy-Bindung der Verifier-Requests — erledigt.**
   `verifierGate` entscheidet für beide Modi und jeden Lauf: „nicht prüfen“
   wird in `enforce` zu `unavailable` / `privacy_shield` (zurückgehalten), nie

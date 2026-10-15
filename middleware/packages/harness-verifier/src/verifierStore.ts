@@ -48,9 +48,10 @@ export class VerifierStore {
     const unverifiedCount = countUnverified(verdict);
     // `skipped` / `unavailable` persist as their own status (the column is
     // free TEXT), so calibration queries can tell an outage from a clean run,
-    // and with their reason: `enforce` delivers a `skipped` answer only for
-    // `no_trigger` / `no_claims`. The run id links the row to the failure
-    // logged where it happened.
+    // and with their reason: `enforce` delivers every `skipped` answer, with
+    // the disclaimer for `no_checkable_claims` / `incomplete_coverage`, and
+    // `system_data` marks a rendered answer of system data only. The run id
+    // links the row to the failure logged where it happened.
     const reason = verdictReason(verdict);
     if (verdict.status === 'unavailable') {
       this.log(

@@ -270,6 +270,40 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
     assert.equal(answer.isError, undefined, 'an ordinary answer carries no error flag');
   });
 
+  it('takeRenderedAnswerV4 surfaces the model prose apart from the rows — and none for blank prose', async () => {
+    const svc = createPrivacyGuardService();
+    const render = async (turnId: string, prose: string | undefined) => {
+      const interned = await svc.internToolResultV4({
+        sessionId: 's',
+        turnId,
+        toolName: 'hr.leave',
+        rawResult: JSON.stringify(HR_LEAVE),
+      });
+      await svc.runV4Tool({
+        sessionId: 's',
+        turnId,
+        toolName: 'v4_render_answer',
+        input: {
+          datasetId: datasetIdOf(interned.digestText),
+          columns: ['employee', 'days'],
+          format: 'table',
+          ...(prose !== undefined ? { prose } : {}),
+        },
+      });
+      return svc.takeRenderedAnswerV4(turnId);
+    };
+
+    const withProse = await render('t-prose', 'Urlaub nach Tagen:');
+    assert.equal(withProse?.prose, 'Urlaub nach Tagen:');
+    assert.ok(withProse?.text.startsWith('Urlaub nach Tagen:'));
+    assert.ok(withProse?.text.includes('Anna Rüsche'));
+
+    // Always reported: '' says "no prose" — absent would read as a provider
+    // that predates the field, which the kernel fails closed on.
+    assert.equal((await render('t-blank', '   '))?.prose, '');
+    assert.equal((await render('t-none', undefined))?.prose, '');
+  });
+
   it('takeRenderedAnswerV4 clears the stash after taking', async () => {
     const svc = createPrivacyGuardService();
     const turnId = 't-clear';

@@ -80,7 +80,9 @@ export {
  * gets a localized notice instead (`answerSource: 'verifier-blocked'`). That
  * part fails closed, and so does an answer the verifier may not see behind a
  * Privacy Shield, which is never sent to the pipeline (`verifierGate`,
- * `privacyShieldVerdict`). On the stream no content leaves before the
+ * `privacyShieldVerdict`). An answer Privacy Shield rendered server-side
+ * is judged by its model's prose; its rows are system data
+ * (`systemDataVerdict`). On the stream no content leaves before the
  * verdict (`verifierDelivery.ts`).
  * Before it delivers, `enforce` may re-enter the turn: the non-streaming path
  * draws a second sample of a borderline answer, and both paths run one

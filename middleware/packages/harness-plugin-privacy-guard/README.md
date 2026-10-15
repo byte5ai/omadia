@@ -117,6 +117,17 @@ call logs `storedTextMask job=… spans=…`. Failure-closed: a detection failur
 a surviving value answers `blocked` and the job skips its model call, and a
 provider without the member makes the jobs skip their model calls.
 
+### Rendered answers and the verifier (from 0.9.0)
+
+`takeRenderedAnswerV4` reports the `v4_render_answer` directive's prose apart
+from the rendered text (`PrivacyRenderedAnswer.prose`, plugin-api 1.27.0):
+exactly as the model wrote it, in the turn's masked space, or `''` when it
+wrote none. The answer verifier checks that prose through the turn's view and
+treats the cell values as system data; a render with no prose is released as
+`system_data`. The field is always set, so the kernel can tell "no prose"
+from an older guard that does not report it — that one fails closed in
+`enforce` (security-architecture §7c).
+
 ### Answer-verifier requests (stage `verifier`)
 
 The answer verifier's post-turn model requests run under the same turn map

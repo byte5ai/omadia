@@ -8,6 +8,19 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.27.0 — 2026-10-15
+
+Additive. A Privacy Shield v4 rendered answer reports the prose its model
+wrote apart from the rows the server materialized, so the answer verifier can
+check the model's text and treat the rows as system data.
+
+### Added
+
+- **`PrivacyRenderedAnswer.prose?`** — the `v4_render_answer` directive's
+  prose exactly as the model wrote it (PII-free, in the turn's masked space);
+  omitted when the model wrote none. Everything else in `text` is
+  materialized from the turn's interned tool results.
+
 ## 1.26.0 — 2026-10-06
 
 Additive. Member-scoped memory: knowledge belongs to the people present when it

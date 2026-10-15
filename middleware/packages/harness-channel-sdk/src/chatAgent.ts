@@ -306,19 +306,22 @@ export interface RunTracePayload {
  * Why a verifier summary carries no evidence. `no_trigger` / `no_claims` /
  * `no_checkable_claims` explain a `skipped` turn (nothing checkable), and
  * `incomplete_coverage` one whose claim extraction covered only part of the
- * answer and found nothing checkable there; `extractor_error` /
+ * answer and found nothing checkable there, and `system_data` one whose
+ * answer is system data only — rendered by Privacy Shield from the turn's tool
+ * results, with no model prose to check; `extractor_error` /
  * `pipeline_error` an `unavailable` one (the verifier could not run, or its
  * pipeline returned no usable verdict), and `privacy_shield` an `unavailable`
  * one whose answer was never sent to the verifier: in `enforce` mode an
- * answer Privacy Shield rendered server-side is withheld unverified. A closed
- * code set: the summary is forwarded verbatim on the stream, so it never
- * carries an error message.
+ * answer behind a shield with no privacy view to verify through is withheld
+ * unverified. A closed code set: the summary is forwarded verbatim on the
+ * stream, so it never carries an error message.
  */
 export type VerifierSummaryReason =
   | 'no_trigger'
   | 'no_claims'
   | 'no_checkable_claims'
   | 'incomplete_coverage'
+  | 'system_data'
   | 'extractor_error'
   | 'pipeline_error'
   | 'privacy_shield';

@@ -717,6 +717,10 @@ export function createPrivacyGuardService(deps?: {
           renderedAnswers.set(request.turnId, {
             text: rendered.text,
             maskedValues: rendered.maskedValues,
+            // Always set — '' when the model wrote none — so the kernel can
+            // tell "no prose" (system data only) from a provider that predates
+            // the field (fails closed).
+            prose: directive.prose?.trim() ? directive.prose : '',
             ...(renderIsError ? { isError: true } : {}),
           });
           console.log(

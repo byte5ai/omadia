@@ -294,6 +294,17 @@ export interface PrivacyRenderedAnswer {
    */
   readonly maskedValues: readonly string[];
   /**
+   * The directive's `prose` exactly as the model wrote it — PII-free, in the
+   * turn's masked space — or `''` when it wrote none. A provider sets it on
+   * every rendered answer. The answer verifier checks this, never `text`;
+   * the cell values in `text` are materialized from the turn's interned
+   * tool results (system data). Column labels and a rank header are model
+   * text too, but are not part of it. Absent only from a provider that
+   * predates the field: the kernel then cannot tell prose from rows and
+   * fails closed (the answer is withheld in `enforce`).
+   */
+  readonly prose?: string;
+  /**
    * #1097 — true when the materialized text is control flow rather than an
    * answer: a tool error (`Error: …`) or an MCP auth prompt that the model
    * rendered as if it were data. The render still happens (the text is what

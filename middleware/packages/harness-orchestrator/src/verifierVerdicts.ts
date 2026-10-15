@@ -109,7 +109,12 @@ export function badgeFor(
  */
 export function withheldCauseOf(verdict: VerifierVerdict): VerifierWithheldCause | undefined {
   if (verdict.status === 'approved') return undefined;
-  if (verdict.status === 'skipped' && (verdict.reason === 'no_trigger' || verdict.reason === 'no_claims')) {
+  if (
+    verdict.status === 'skipped' &&
+    (verdict.reason === 'no_trigger' ||
+      verdict.reason === 'no_claims' ||
+      verdict.reason === 'system_data')
+  ) {
     return undefined;
   }
   if (verdict.status === 'unavailable') {

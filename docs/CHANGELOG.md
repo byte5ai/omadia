@@ -36,6 +36,25 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — `enforce` no longer withholds every Privacy Shield rendered answer
+
+2026-10-15. With the answer verifier in `enforce`, every answer Privacy
+Shield v4 rendered server-side (`answerSource: 'privacy-render'`) was
+withheld: the verifier may not see the real values the shield kept from the
+model, so it never got the answer and recorded `unavailable` /
+`privacy_shield`. On our Fly instance that hid an open-items table from
+Odoo and, earlier the same day, a Teams answer — deterministically, not
+flakily. The privacy guard (0.9.0, plugin-api 1.27.0) now reports the model's
+prose apart from the rows (`PrivacyRenderedAnswer.prose`); the verifier
+checks that prose through the turn's privacy view and treats the
+materialized cell values as system data. A render with no prose is released
+as the new skip reason `system_data`, without the disclaimer, and the web
+chat marks rendered answers with an "original system data" chip
+(`Message.systemData`, also kept by the `/chat/sessions` mirror). Still
+withheld: rendered tool errors and sign-in prompts, and renders from a guard
+that reports no prose. Column labels and the dataset choice stay unchecked.
+See `docs/upgrading.md` (past v0.178.1).
+
 ### Fixed — agents keep their sub-agents after a provider switch
 
 2026-10-15. Switching the LLM provider (or saving a key, or reactivating the

@@ -156,6 +156,7 @@ import type {
   PalaiaExcerptExtractor,
   PrivacyGuardService,
   PrivacyReceipt,
+  PrivacyRenderedAnswer,
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
@@ -1470,6 +1471,35 @@ function recordedWireView(): TurnWireView | undefined {
   const box = turnContext.current()?.wireView;
   if (box?.userMessage === undefined || box.answer === undefined) return undefined;
   return { userMessage: box.userMessage, answer: box.answer };
+}
+
+/** What the verifier gets of a turn: its wire view, and whether the answer is
+ *  system data only (nothing model-authored to verify). */
+interface VerifierHandOver {
+  readonly wireView: TurnWireView | undefined;
+  readonly systemDataOnly: boolean;
+}
+
+/**
+ * The verifier's share of a server-rendered v4 answer. The rendered cell
+ * values are system data — materialized from the turn's interned tool
+ * results, never written by the model — so they are not the verifier's to
+ * check. The directive's prose is model text, written in the turn's masked
+ * space: it is verified through the turn's view like any answer. A model that
+ * wrote no prose (`''`) left nothing to verify (`systemDataOnly`). Fails
+ * closed — no view, not system data — for a rendered failure (#1097), which
+ * is control flow, and for a provider that does not report the prose at all.
+ */
+function renderedVerifierHandOver(rendered: PrivacyRenderedAnswer): VerifierHandOver {
+  if (rendered.isError === true || rendered.prose === undefined) {
+    return { wireView: undefined, systemDataOnly: false };
+  }
+  if (rendered.prose.trim() === '') return { wireView: undefined, systemDataOnly: true };
+  const userMessage = turnContext.current()?.wireView?.userMessage;
+  return {
+    wireView: userMessage === undefined ? undefined : { userMessage, answer: rendered.prose },
+    systemDataOnly: false,
+  };
 }
 
 /**
@@ -4209,6 +4239,8 @@ export class Orchestrator {
     readonly input: ChatTurnInput;
     /** What the verifier may see; `undefined` ⇒ it verifies nothing. */
     readonly wireView: TurnWireView | undefined;
+    /** The answer is system data only — nothing for the verifier to check. */
+    readonly systemDataOnly?: boolean;
     /** The request pass when a verifier may re-enter the request: the
      *  receipt then joins the request's one row (`requestReceipts.ts`). */
     readonly bound: BoundPass | undefined;
@@ -4220,6 +4252,7 @@ export class Orchestrator {
         handle: args.handle,
         receiptId: args.turnId,
         wireView: args.wireView,
+        systemDataOnly: args.systemDataOnly === true,
         settle: async () => {
           try {
             const receipt = await args.handle.finalize(args.input.userMessage);
@@ -4805,14 +4838,14 @@ export class Orchestrator {
           await this.closeAbandonedReentry(toolReplayLedger, bound, privacyHandle, turnId, input);
           throw new ToolReplayAbortError(toolReplayLedger.abortedTool ?? 'unknown');
         }
-        let serverRendered = false;
+        let rendered: VerifierHandOver | undefined;
         // Privacy Shield v4 — when a v4_render_answer call produced the
         // answer this turn it is final and already safe (real values
         // materialized server-side from ground truth). Swap it in.
         if (privacyHandle) {
           const v4Rendered = await privacyHandle.takeRenderedAnswerV4();
           if (v4Rendered !== undefined) {
-            serverRendered = true;
+            rendered = renderedVerifierHandOver(v4Rendered);
             result = {
               ...result,
               answer: v4Rendered.text,
@@ -4832,14 +4865,17 @@ export class Orchestrator {
         }
         // What the verifier may see: the prompt exactly as this turn's model
         // received it and the answer exactly as it wrote it, recorded BEFORE
-        // the answer loop restored the text. Not for a server-rendered v4
-        // answer (real values the model never saw), a Direct Line relay
-        // (restored inside executeDirectLine) or the privacy refusal. Nothing
-        // recorded ⇒ nothing to verify.
+        // the answer loop restored the text. For a server-rendered v4 answer
+        // only the prose its model wrote — never the rendered rows, real
+        // values the model never saw (`renderedVerifierHandOver`). Nothing for
+        // a Direct Line relay (restored inside executeDirectLine) or the
+        // privacy refusal. Nothing recorded ⇒ nothing to verify.
         const verifierWireView =
-          direct !== undefined || promptMaskBlocked || serverRendered
+          direct !== undefined || promptMaskBlocked
             ? undefined
-            : recordedWireView();
+            : rendered !== undefined
+              ? rendered.wireView
+              : recordedWireView();
         // #361 — restore prompt surrogates → real values over the final
         // answer (identity when the turn masked nothing). Must run BEFORE
         // finalize, which drops the turn's surrogate map.
@@ -4865,6 +4901,8 @@ export class Orchestrator {
             turnId,
             input,
             wireView: verifierWireView,
+            // A Direct Line relay is the specialist's answer, never system data.
+            systemDataOnly: direct === undefined && rendered?.systemDataOnly === true,
             bound,
           });
           return result;
@@ -7012,13 +7050,18 @@ export class Orchestrator {
     // state in `finally` — real values must not outlive the turn.
     let privacySettled = false;
     let promptMaskBlocked = false;
-    const handOver = (handle: PrivacyTurnHandle, wireView: TurnWireView | undefined): void => {
+    const handOver = (
+      handle: PrivacyTurnHandle,
+      wireView: TurnWireView | undefined,
+      systemDataOnly = false,
+    ): void => {
       this.stashPrivacyEgress({
         callerInput: args.callerInput,
         handle,
         turnId,
         input,
         wireView,
+        systemDataOnly,
         bound,
       });
       privacySettled = true;
@@ -7234,9 +7277,12 @@ export class Orchestrator {
                 }
               : event;
           // What the verifier may see — see the buffered twin in runTurnCore.
-          const verifierWireView =
-            v4Rendered !== undefined || promptMaskBlocked
-              ? undefined
+          const rendered =
+            v4Rendered !== undefined ? renderedVerifierHandOver(v4Rendered) : undefined;
+          const verifierWireView = promptMaskBlocked
+            ? undefined
+            : rendered !== undefined
+              ? rendered.wireView
               : recordedWireView();
           // #361 — restore prompt surrogates → real values on the final
           // answer, before finalize drops the turn's surrogate map. Note:
@@ -7257,7 +7303,7 @@ export class Orchestrator {
           if (args.holdPrivacyFinalize) {
             // The wrapper verifies first, then finalizes and attaches the
             // receipt to the `done` it re-emits.
-            handOver(privacyHandle, verifierWireView);
+            handOver(privacyHandle, verifierWireView, rendered?.systemDataOnly === true);
           } else {
             try {
               const receipt = await privacyHandle.finalize(input.userMessage);

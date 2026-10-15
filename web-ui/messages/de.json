@@ -1700,6 +1700,10 @@
       "providerFallback": "Fallback-Modell",
       "providerFallbackTooltip": "Das primäre Modell war nicht verfügbar — diese Antwort kam vom Fallback des Agenten ({model} bei {provider})."
     },
+    "systemData": {
+      "label": "Originaldaten aus dem System",
+      "hint": "Die Werte dieser Antwort hat der Server unverändert aus dem Quellsystem eingesetzt – das KI-Modell hat sie nicht geschrieben. Der Text drumherum und die Spaltenüberschriften stammen vom Modell."
+    },
     "verifier": {
       "label": {
         "verified": "Antwort geprüft",
