@@ -161,3 +161,122 @@ describe('#796 the retry predicate is pinned to the migrator that produces it', 
     );
   });
 });
+
+describe('#1386 boot waits for a Postgres that is not reachable yet', () => {
+  /** What `pg` rejects with while the `postgres` DNS alias does not exist yet. */
+  function enotfound(): Error {
+    return Object.assign(new Error('getaddrinfo ENOTFOUND postgres'), {
+      code: 'ENOTFOUND',
+    });
+  }
+
+  it('retries ENOTFOUND with backoff, logs the wait, then applies', async () => {
+    let attempts = 0;
+    let ended = 0;
+    const waits: number[] = [];
+    const logs: string[] = [];
+    const outcome = await runCoreMigrations({
+      databaseUrl: 'postgres://postgres/db',
+      createPool: () => fakePool(() => { ended += 1; }),
+      runMigrations: async () => {
+        attempts += 1;
+        if (attempts < 3) throw enotfound();
+      },
+      log: (m) => { logs.push(m); },
+      sleep: async (ms) => { waits.push(ms); },
+    });
+
+    assert.equal(outcome, 'applied');
+    assert.equal(attempts, 3, 'a not-yet-reachable database must be waited for, not crash boot');
+    assert.deepEqual(waits, [500, 1_000], 'backoff doubles between attempts');
+    assert.equal(logs.filter((l) => l.includes('waiting for Postgres')).length, 2);
+    assert.equal(ended, 1, 'the boot pool must still be closed exactly once');
+  });
+
+  it('retries ECONNREFUSED and 57P03 (server still starting) too', async () => {
+    const errors = [
+      Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:5432'), { code: 'ECONNREFUSED' }),
+      Object.assign(new Error('the database system is starting up'), { code: '57P03' }),
+    ];
+    let attempts = 0;
+    const outcome = await runCoreMigrations({
+      databaseUrl: 'postgres://postgres/db',
+      createPool: () => fakePool(() => undefined),
+      runMigrations: async () => {
+        const err = errors[attempts];
+        attempts += 1;
+        if (err) throw err;
+      },
+      sleep: async () => undefined,
+    });
+    assert.equal(outcome, 'applied');
+    assert.equal(attempts, 3);
+  });
+
+  it('gives up with the original error once the wait budget is spent', async () => {
+    let attempts = 0;
+    let ended = 0;
+    await assert.rejects(
+      runCoreMigrations({
+        databaseUrl: 'postgres://postgres/db',
+        createPool: () => fakePool(() => { ended += 1; }),
+        runMigrations: async () => { attempts += 1; throw enotfound(); },
+        databaseWaitMs: 0,
+        sleep: async () => undefined,
+      }),
+      /ENOTFOUND/,
+    );
+    assert.equal(attempts, 1, 'past the budget the error must reach main() unchanged');
+    assert.equal(ended, 1);
+  });
+
+  it('a long database wait does not use up the lock-contention budget', async () => {
+    // Every replica waits for Postgres after a database restart, then races
+    // for the migration lock. The lock budget must start at the first
+    // contention, not at boot, or the loser of that race crashes (#796).
+    const contention = new Error(
+      '[multi-orchestrator] timed out after 2000ms waiting for the ' +
+        '_multi_orchestrator_migrations advisory lock; retry the boot',
+    );
+    const realNow = Date.now;
+    let clock = realNow();
+    Date.now = (): number => clock;
+    try {
+      let attempts = 0;
+      const outcome = await runCoreMigrations({
+        databaseUrl: 'postgres://postgres/db',
+        createPool: () => fakePool(() => undefined),
+        runMigrations: async () => {
+          attempts += 1;
+          if (attempts === 1) throw enotfound();
+          if (attempts < 4) throw contention;
+        },
+        // The database wait eats 59.9 s of the clock before contention starts;
+        // a lock budget counted from boot would have 100 ms left for it.
+        sleep: async (ms) => { clock += attempts === 1 ? 59_900 : ms; },
+      });
+      assert.equal(outcome, 'applied');
+      assert.equal(attempts, 4);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it('does not retry a permanent connection failure such as bad credentials', async () => {
+    let attempts = 0;
+    const badPassword = Object.assign(
+      new Error('password authentication failed for user "omadia"'),
+      { code: '28P01' },
+    );
+    await assert.rejects(
+      runCoreMigrations({
+        databaseUrl: 'postgres://postgres/db',
+        createPool: () => fakePool(() => undefined),
+        runMigrations: async () => { attempts += 1; throw badPassword; },
+        sleep: async () => undefined,
+      }),
+      /password authentication failed/,
+    );
+    assert.equal(attempts, 1, 'a misconfiguration must fail loudly on the first attempt');
+  });
+});
