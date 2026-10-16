@@ -5673,6 +5673,56 @@ tamper-proof against an operator with database access. Install rows cover
 the install wizard; a package ingested from a registry or uploaded is not an
 install until the wizard completes.
 
+## 10r. Ephemeral run state and the owner-scoped run seams (conductor 0012)
+
+`conductorEphemeralRuns` lets an agent plugin read back, persist working state
+for, and cancel the ephemeral (agent-generated) conductor runs it created. Added
+after the 2026-10-15 facilitation incident, where a restart wiped the plugin's
+in-memory state while the durable run kept ticking.
+
+**Owner guard lives in the SQL.** `listOwnRuns`, `saveRunState` and
+`cancelOwnRun` scope every query by `conductor_workflows.created_by_agent`
+through the runs → versions → workflows join. A write is ONE owner-guarded
+`INSERT…SELECT … ON CONFLICT` that only matches an active, un-reaped,
+unexpired, uncancelled run of that agent; a foreign, ended or unknown run is
+`saved:false`, never an error that would reveal it exists. There is no
+read-then-write window to race.
+
+**The agentId is bound by the kernel, not claimed by the plugin.** The service
+is registered through `perCallerService` (`src/index.ts`,
+`src/conductor/ephemeralRunsCapability.ts`). For a plugin caller, the three
+owner-scoped methods compare the passed `agentId` with the kernel-known plugin
+id and refuse a mismatch with the same answer as an unknown run (empty list /
+`saved:false` / `not_found`), logging the attempt. Core's own resolution
+(`KERNEL_SERVICE_CALLER`) gets the unscoped service. `createEphemeralRun` and
+`poke` stay pass-through for compatibility: a create only spends quota under
+the named id, and a mismatching create is logged. `poke` still takes a bare
+run id (pre-existing; it can only fire a timer early).
+
+**Cancel surface.** `cancelOwnRun` re-checks ownership, then calls
+`executor.cancelRun(runId, 'agent:<id>')`: a waiting run is finalized at once,
+which triggers the ephemeral reap; a running run stops at the next step
+boundary. Every outcome is logged with agent, run and reason.
+
+**State retention.** `conductor_ephemeral_run_state` holds plugin working
+memory, not audit trace: at most 16 KiB per run (schema CHECK, mirrored at the
+boundary; U+0000 rejected), purged in the same statement that reaps the
+workflow (`markReaped`). A write that races the reap waits on the workflow
+row lock (`FOR SHARE OF w`) and re-checks `reaped_at`; the one interleaving a
+lock cannot close (a write committing after the purge's snapshot) is swept by
+`purgeReapedRunState` on every reaper tick. The FK cascades if a run row is
+ever hard-deleted. The Facilitator's snapshot carries phase, progress, nudge
+count, role key and channel type — deliberately no inviter identity.
+
+**Logs.** Caller-controlled text (agentId, cancel reason, error messages) has
+control characters replaced and its length capped before it reaches a log
+line; agentId is limited to 256 characters at the boundary.
+
+**Residual: webhooks carry the run context.** The facilitation start payload
+now includes `conversationId` and an optional `deadline`, and `run.context`
+goes out in conductor run webhooks like every other context key. Subscribers to
+conductor run events therefore see conversation ids of facilitations.
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:

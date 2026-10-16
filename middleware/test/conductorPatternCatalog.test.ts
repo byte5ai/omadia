@@ -31,6 +31,24 @@ describe('bundled pattern catalog', () => {
     );
   });
 
+  it('facilitation v5 hands the conversationId to every tool-calling step', () => {
+    const catalog = loadPatternCatalog({ log: () => undefined });
+    const facilitation = catalog.get('facilitation');
+    assert.ok(facilitation);
+    assert.equal((facilitation as { version?: number }).version, 5);
+    // A restarted plugin resolves the facilitation by conversationId; without it
+    // in the prompt the tick falls back to "latest" and can hit the wrong one.
+    const prompts = new Map(
+      facilitation.graph.steps.map((s) => [s.id, (s as { prompt?: string }).prompt ?? '']),
+    );
+    for (const id of ['moderate', 'report', 'abort-report']) {
+      assert.ok(prompts.get(id)?.includes('{{ctx.conversationId}}'), `step '${id}' must carry {{ctx.conversationId}}`);
+    }
+    assert.ok(prompts.get('moderate')?.includes('{{ctx.deadline}}'));
+    // Step ids are load-bearing for running runs' snapshotted graphs.
+    assert.deepEqual([...prompts.keys()], ['moderate', 'wait', 'confirm', 'report', 'abort-report']);
+  });
+
   it('every bundled pattern passes the manifest gate', () => {
     const catalog = loadPatternCatalog({ log: () => undefined });
     const patterns = catalog.list();

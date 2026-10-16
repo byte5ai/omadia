@@ -13,14 +13,16 @@ interface Calls {
   cancelled: Array<{ id: string; by: string }>;
   reaped: string[];
   hardDeleted: string[];
+  sweeps: number;
 }
 
 function fakeStore(opts: {
   reapable: ReapableWorkflow[];
   listError?: Error;
   reapErrorFor?: string;
+  sweepError?: Error;
 }): { store: ConductorEphemeralStore; calls: Calls } {
-  const calls: Calls = { cancelled: [], reaped: [], hardDeleted: [] };
+  const calls: Calls = { cancelled: [], reaped: [], hardDeleted: [], sweeps: 0 };
   const store = {
     listReapable: async () => {
       if (opts.listError) throw opts.listError;
@@ -37,6 +39,11 @@ function fakeStore(opts: {
     hardDeleteUnreferenced: async (id: string) => {
       calls.hardDeleted.push(id);
       return false;
+    },
+    purgeReapedRunState: async () => {
+      calls.sweeps += 1;
+      if (opts.sweepError) throw opts.sweepError;
+      return 2;
     },
   } as unknown as ConductorEphemeralStore;
   return { store, calls };
@@ -116,5 +123,33 @@ describe('ConductorEphemeralReaper.tick', () => {
 
     assert.deepEqual(calls.reaped, []);
     assert.ok(logs.some((l) => l.includes('reaper list failed')));
+  });
+});
+
+describe('ConductorEphemeralReaper run-state sweep (0012)', () => {
+  it('sweeps orphaned run state on every tick, after the reaps', async () => {
+    const logs: string[] = [];
+    const { store, calls } = fakeStore({ reapable: [{ id: 'wf-1', slug: 'eph-a', expired: false }] });
+    await new ConductorEphemeralReaper({ store, log: (m) => logs.push(m) }).tick();
+
+    assert.deepEqual(calls.reaped, ['wf-1']);
+    assert.equal(calls.sweeps, 1);
+    assert.ok(logs.some((l) => l.includes('purged 2 orphaned run-state row(s)')));
+  });
+
+  it('still sweeps when listing reapable workflows fails', async () => {
+    const { store, calls } = fakeStore({ reapable: [], listError: new Error('pg down') });
+    await new ConductorEphemeralReaper({ store, log: () => undefined }).tick();
+    assert.equal(calls.sweeps, 1);
+  });
+
+  it('isolates a failing sweep: logged, tick resolves, next tick runs again', async () => {
+    const logs: string[] = [];
+    const { store, calls } = fakeStore({ reapable: [], sweepError: new Error('lock timeout') });
+    const reaper = new ConductorEphemeralReaper({ store, log: (m) => logs.push(m) });
+    await reaper.tick();
+    await reaper.tick();
+    assert.equal(calls.sweeps, 2);
+    assert.ok(logs.some((l) => l.includes('run-state sweep failed: lock timeout')));
   });
 });
