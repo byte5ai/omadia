@@ -272,7 +272,7 @@ describe('#1100 boot wiring — recomposeStaleIdentities in index.ts', () => {
       ['await toolPluginRuntime.activateAllInstalled()', 'orchestrator plugin activation'],
       ['await recomposeStaleIdentities(', 'the boot recompose'],
       ['dynamicAgentRuntime.activateAllInstalled()', 'domain-tool hydration'],
-      ['app.listen(', 'the HTTP listener'],
+      ['createAppServer(app, terminalHandler).listen(', 'the HTTP listener'],
     ];
     const at = order.map(([needle, what]) => {
       const idx = src.indexOf(needle);

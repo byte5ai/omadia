@@ -113,7 +113,7 @@ describe('POST /v1/routines/:id/trigger — chat-agent availability (issue #473)
 
   beforeEach(async () => {
     h = await makeHarness();
-    h.runner.seed(makeRoutine('routine-1'));
+    h.runner.seed(makeRoutine('00000000-0000-4000-8000-000000000001'));
   });
 
   afterEach(async () => {
@@ -121,7 +121,7 @@ describe('POST /v1/routines/:id/trigger — chat-agent availability (issue #473)
   });
 
   it('returns 503 routines.chat_unavailable while no chat agent is published — without dispatching a run', async () => {
-    const res = await fetch(`${h.baseUrl}/v1/routines/routine-1/trigger`, {
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000001/trigger`, {
       method: 'POST',
     });
     assert.equal(res.status, 503);
@@ -132,7 +132,7 @@ describe('POST /v1/routines/:id/trigger — chat-agent availability (issue #473)
   });
 
   it('404 still wins over 503 for unknown routines', async () => {
-    const res = await fetch(`${h.baseUrl}/v1/routines/nope/trigger`, {
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-0000000000ff/trigger`, {
       method: 'POST',
     });
     assert.equal(res.status, 404);
@@ -141,7 +141,7 @@ describe('POST /v1/routines/:id/trigger — chat-agent availability (issue #473)
   });
 
   it('flips to 202 the moment the chat agent resolves — no restart, same router instance', async () => {
-    const first = await fetch(`${h.baseUrl}/v1/routines/routine-1/trigger`, {
+    const first = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000001/trigger`, {
       method: 'POST',
     });
     assert.equal(first.status, 503);
@@ -149,22 +149,22 @@ describe('POST /v1/routines/:id/trigger — chat-agent availability (issue #473)
     // LLM-access-page key save → reactivate → chatAgent@1 published.
     h.runner.chatAvailable = true;
 
-    const second = await fetch(`${h.baseUrl}/v1/routines/routine-1/trigger`, {
+    const second = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000001/trigger`, {
       method: 'POST',
     });
     assert.equal(second.status, 202);
     const body = (await second.json()) as { routine: { id: string } };
-    assert.equal(body.routine.id, 'routine-1');
-    assert.deepEqual(h.runner.triggerCalls, ['routine-1']);
+    assert.equal(body.routine.id, '00000000-0000-4000-8000-000000000001');
+    assert.deepEqual(h.runner.triggerCalls, ['00000000-0000-4000-8000-000000000001']);
   });
 
   // #1071 — a paused routine (e.g. auto-paused because its web chat was
   // deleted) is refused synchronously instead of accepted and then skipped.
   it('returns 409 routines.not_active for a paused routine — without dispatching a run', async () => {
     h.runner.chatAvailable = true;
-    h.runner.seed({ ...makeRoutine('routine-2'), status: 'paused' });
+    h.runner.seed({ ...makeRoutine('00000000-0000-4000-8000-000000000002'), status: 'paused' });
 
-    const res = await fetch(`${h.baseUrl}/v1/routines/routine-2/trigger`, {
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000002/trigger`, {
       method: 'POST',
     });
 
