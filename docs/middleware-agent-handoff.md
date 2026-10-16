@@ -164,6 +164,39 @@ src/
   gilt für Plugin-Tools mit `agentId`; `get_chat_participants` ist
   kernel-intern und wird stattdessen am Turn-Roster gegatet.
 
+### Plugin-Tools per Turn ausblenden — `isAvailable` (#1346, #1086)
+
+- **Vertrag:** `ToolRegistrationOptions.isAvailable?: () => boolean`
+  (`@omadia/plugin-api` 1.31.0). Der Kernel ruft es **im Turn-Scope** auf,
+  sobald er die Tool-Liste baut; `false` (oder ein Throw) blendet Spec **und**
+  `promptDoc` für diesen Turn aus. Fehlt es, bleibt das Tool angeboten.
+- **Eine Prüfung, drei Advertise-Stellen:** `isOfferedThisTurn(entry)` in
+  `nativeToolRegistry.ts`, konsultiert von `Orchestrator.buildToolsList()`,
+  `getSystemPrompt()` (Plugin-`promptDoc`s) und
+  `ToolDispatchService.listDispatchableToolSpecs()` (CLI-Loopback und
+  Public-MCP `tools/list`). Außerhalb eines Turns (Public MCP) ist so ein Tool
+  damit verborgen **und** nicht aufrufbar — richtig, es braucht einen Turn.
+- **Nur Advertise, nicht Dispatch:** Ein Aufruf, der trotzdem ankommt (alte
+  Tool-Liste, Replay), läuft in den Handler und muss dort eine wahre
+  `Error:`-Antwort bekommen.
+- **Nutzer heute:**
+  - `discussion_start` / `discussion_partners` — angeboten nur, wenn
+    `conductorDiscussions.availableHere()` true ist: der Turn nennt eine
+    Konversation **und** den empfangenden Bot eines Agents (heute nur Teams).
+    Web-Chat (`{ kind: 'http-chat' }`) und `CoreApi`-Kanäle
+    (`{ kind: 'channel' }`) können keine Diskussion tragen. Ohne Capability
+    (kein Postgres) bleiben die Tools sichtbar und sagen "nicht auf diesem
+    Deployment". `DiscussionNoConversationError` sagt jetzt, dass Diskussionen
+    in diesem Chat nicht verfügbar sind (Teams-Gruppenchat nötig), statt dem
+    Aufruf die Schuld zu geben.
+  - `manage_routine` — angeboten nur mit Routines-Principal
+    (`isManageRoutineOffered`: Web-Chat, jeder `CoreApi.handleTurnStream`-Kanal,
+    Teams). Adapter, die `chatAgent` direkt rufen (Telegram, Slack, Discord,
+    WhatsApp, Stand 2026-10), liefern weder Kanal noch Konversation; der Kernel
+    kann für sie keinen ehrlichen Principal bauen — auf demselben Weg laufen
+    auch interne Turns (Routine-Runs, Conductor). Dort ist das Tool jetzt
+    unsichtbar statt bei jeder Aktion zu scheitern.
+
 ### `find_free_slots` + `book_meeting` — M365-Kalender-Tools (#1214)
 
 - **Dateien:** `packages/harness-orchestrator/src/tools/findFreeSlotsTool.ts`
@@ -6675,7 +6708,7 @@ weiterhin gegen den **getippten** Selector, nie gegen den abgeleiteten `ctxKey`.
 Seit #1333–#1336 (2026-10-16): Preview und Delete teilen **einen** Plan (`planPurge` in
 `routes/memoryPurge.ts`), die Preview zählt also exakt, was gelöscht wird. Der KG-Teil umfasst
 neben `MemorableKnowledge` den **Gesprächsverlauf** (`KnowledgeGraph.count/purgeConversationHistory?`,
-plugin-api 1.31.0: Turn, Session, Run, AgentInvocation, ToolCall, Plan, PlanStep, abgeleitete
+plugin-api 1.32.0: Turn, Session, Run, AgentInvocation, ToolCall, Plan, PlanStep, abgeleitete
 Facts; Agent-Achse über den Scope-Präfix `<slug>::`, User-Achse über `user_id` = omadia-User-Id).
 Response-Felder: `scratchCount|kgCount|conversationCount`, `reseedEntries`, `warnings[{code,params}]`
 (keine fertigen englischen Sätze mehr), `previewToken`. `DELETE` verlangt den `previewToken`

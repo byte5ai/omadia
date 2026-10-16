@@ -609,7 +609,7 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
     it('a KG provider without the history primitives is reported, not counted as empty', async () => {
       const h = await makeHarness();
       try {
-        // A third-party provider that predates plugin-api 1.31.0.
+        // A third-party provider that predates plugin-api 1.32.0.
         const kg = h.kg as unknown as Record<string, unknown>;
         kg['countConversationHistory'] = undefined;
         kg['purgeConversationHistory'] = undefined;

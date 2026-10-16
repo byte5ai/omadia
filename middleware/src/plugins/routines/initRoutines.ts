@@ -69,6 +69,8 @@ export interface InitRoutinesOptions {
     options: {
       spec: typeof manageRoutineToolSpec;
       promptDoc?: string;
+      /** #1086/#1346 — per-turn advertisement gate (`isOfferedThisTurn`). */
+      isAvailable?: () => boolean;
     },
   ) => () => void;
   /** Optional proactive senders the runner should know at boot. Channel
@@ -90,6 +92,14 @@ export interface RoutinesHandle {
   /** Compose with kernel shutdown — disposes the tool registration and
    *  stops every running routine. */
   close(): void;
+}
+
+/**
+ * #1086 — is `manage_routine` offered on the current turn? Only when the turn
+ * carries a routines principal; without one every action refuses.
+ */
+export function isManageRoutineOffered(): boolean {
+  return routineTurnContext.current() !== undefined;
 }
 
 export async function initRoutines(
@@ -124,7 +134,16 @@ export async function initRoutines(
   const disposeTool = opts.registerNativeTool(
     MANAGE_ROUTINE_TOOL_NAME,
     (input) => tool.handle(input),
-    { spec: manageRoutineToolSpec },
+    {
+      spec: manageRoutineToolSpec,
+      // #1086 — offered only on a turn that carries a routines principal: the
+      // web chat, every `CoreApi.handleTurnStream` channel, and Teams. An
+      // adapter that calls `chatAgent` directly passes neither a channel nor a
+      // conversation, so the kernel cannot build one for it, and the tool
+      // would refuse every action there. A call that still arrives (a stale
+      // tool list, a replay) gets ROUTINE_NO_CONTEXT_ERROR.
+      isAvailable: isManageRoutineOffered,
+    },
   );
 
   // Note: `runner.start()` is NOT called here. The caller MUST invoke

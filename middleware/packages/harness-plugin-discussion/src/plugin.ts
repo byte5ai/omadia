@@ -6,6 +6,7 @@ import {
   createDiscussionPartnersHandler,
   createDiscussionStartHandler,
   discussionPartnersToolSpec,
+  discussionToolsAvailable,
   discussionStartToolSpec,
 } from './discussionTool.js';
 import type { DiscussionsCapability } from './discussionTool.js';
@@ -47,19 +48,23 @@ export async function activate(ctx: PluginContext): Promise<DiscussionPluginHand
   const resolveDiscussions = (): DiscussionsCapability | undefined =>
     ctx.services.getOptional<DiscussionsCapability>(CONDUCTOR_DISCUSSIONS_SERVICE_NAME);
 
+  // #1346 — offered only on turns that can host a discussion (a Teams chat
+  // with the agents' bots in it). Evaluated per model round, inside the turn.
+  const isAvailable = (): boolean => discussionToolsAvailable(resolveDiscussions);
+
   const disposeTool = ctx.tools.register(
     discussionStartToolSpec,
     createDiscussionStartHandler({
       resolveDiscussions,
       log: (msg) => ctx.log(msg),
     }),
-    { promptDoc: DISCUSSION_PROMPT_DOC },
+    { promptDoc: DISCUSSION_PROMPT_DOC, isAvailable },
   );
 
   const disposePartners = ctx.tools.register(
     discussionPartnersToolSpec,
     createDiscussionPartnersHandler({ resolveDiscussions, log: (msg) => ctx.log(msg) }),
-    { promptDoc: DISCUSSION_PARTNERS_PROMPT_DOC },
+    { promptDoc: DISCUSSION_PARTNERS_PROMPT_DOC, isAvailable },
   );
 
   // Seam state is reported as "checked at call time" rather than a boot-time

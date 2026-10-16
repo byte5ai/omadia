@@ -328,6 +328,25 @@ working across it:
   `handleTurnStream` must supply ids that cannot collide with another
   channel's (`key:<uuid>` on the public API).
 
+  **#1086 (via the #1346 mechanism): `manage_routine` is advertised only where a principal exists.** The
+  tool is registered with a per-turn `isAvailable` predicate
+  (`routineTurnContext.current() !== undefined`), so a direct-`chatAgent` turn
+  without a principal no longer sees the tool. This is advertisement only:
+  a principal that is present — including a stale `enterWith` one — still
+  shows the tool, and this guard still decides the dispatch. The same
+  predicate is evaluated by `listDispatchableToolSpecs()`, which also feeds the
+  public MCP server's `callableToolNames`; outside a turn the tool is therefore
+  neither listed nor callable there, which narrows that surface (the tool
+  refused every action there anyway).
+
+  The discussion tools use the same advertisement mechanism via
+  `conductorDiscussions.availableHere()`, but this guard does not cover them:
+  it protects routines on the CLI path only. `availableHere` reads the same
+  `routineTurnContext`, so a stale Teams `enterWith` context can show the
+  discussion tools on a later turn, and `startHere` would act on that stale
+  conversation. That was already true before #1346 (the tools were always
+  offered); the gate neither adds nor removes that exposure.
+
   **The declaration is part of the mechanism, not bookkeeping.** Both
   `services.get` and `services.getOptional` run `assertServiceGranted`, which
   throws `ServiceNotDeclaredError` for a name in none of `requires:`,
