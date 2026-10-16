@@ -1611,6 +1611,33 @@ behalten wir für Logs.**
   Einstellung gemeldet, mit "Seite neu laden" als Aktion. **Wer eine neue
   Wert-Validierung ergänzt, nutzt `rejectValue(key, message)` statt
   `errors.push(...)`** — sonst landet der Fall wieder im falschen Code.
+- **Per-Feld-Codes bei `PATCH /v1/admin/settings` (#1330/#1331):** Ein
+  abgelehnter Provider-Key trägt im `errors[]`-Eintrag zusätzlich `code`
+  (`settings.anthropic_key_format`, `settings.openai_key_format`,
+  `settings.api_key_format`); `message` bleibt der englische Satz.
+  `checkApiKeyFormat()` prüft Anthropic/OpenAI per Präfix und jeden anderen
+  Provider-Key (Mistral, Plugin-Provider) auf "kein Whitespace, mindestens
+  `MIN_PROVIDER_KEY_LENGTH` (6; Mistral 20) Zeichen" — vorher wurde dort alles
+  gespeichert. Kurz gehalten, weil Plugin-Provider auch Self-Hosted-Gateways mit
+  kurzen Tokens sein können.
+  Der Katalog (`settingsCatalog.ts`) leitet die Skip-Liste aus den statischen
+  Einträgen ab (Mistral stand doppelt drin), überspringt Provider mit
+  `requiresApiKey: false`, die sich per CLI oder OAuth anmelden (kein
+  `CLAUDE_CLI_API_KEY` mehr; lokale Keyless-Provider behalten ihr optionales Feld) und
+  dedupliziert Keys. Labels sind jetzt Englisch; die Web-UI rendert diesen
+  Katalog nicht mehr direkt.
+- **`/admin/settings` entfernt (#1397):** Die Seite war ein veraltetes Duplikat
+  von Admin → LLM-Zugang → "API keys" und leitet jetzt auf `/admin/providers`
+  um; die Dashboard-Karte "Middleware" verlinkt `/system`. Provider-Keys werden
+  nur noch in `ProvidersPanel` gepflegt, das den Feld-Code einer Ablehnung als
+  Überschrift zeigt bzw. den Server-Grund als sichtbare Zeile.
+- **Server-Fehlertext lesen: `web-ui/app/_lib/apiErrorMessage.ts`.**
+  `serverErrorMessage(err)` liefert das `message` (bzw. `error`) aus dem
+  JSON-Body eines `ApiError`, nie den Roh-Body; `serverFieldErrors(err)` die
+  `errors[]` eines Validierungs-Envelopes. Neue Fehleranzeigen bauen darauf auf
+  statt `err.body` selbst zu parsen oder roh zu rendern — Überschrift bleibt
+  ein lokalisierter Katalog-Text, der Server-Satz ist Detail (#1338,
+  `admin/webhooks/_components/shared.tsx`).
 - **Web-UI-Seite:** `ApiError.code` parst den Code einmal zentral,
   `web-ui/app/_lib/errorHelp.ts` löst ihn gegen
   `messages/{en,de}.json → errorHelp.<code>.{what,next}` auf, und

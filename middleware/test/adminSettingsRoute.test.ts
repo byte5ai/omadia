@@ -37,7 +37,13 @@ interface Harness {
 
 async function makeHarness(
   installed: Array<{ id: string; config?: Record<string, unknown> }>,
-  providers?: Array<{ id: string; label: string }>,
+  providers?: Array<{
+    id: string;
+    label: string;
+    policy?: { requiresApiKey?: boolean };
+    wireFormat?: string;
+    oauth?: unknown;
+  }>,
 ): Promise<Harness> {
   const vault = new InMemorySecretVault();
   const registry = new InMemoryInstalledRegistry();
@@ -112,7 +118,7 @@ function findSetting(
 async function patch(
   h: Harness,
   changes: Array<{ key: string; value: string | null }>,
-): Promise<{ status: number; body: { updated?: unknown[]; errors?: Array<{ key: string; message: string }>; code?: string } }> {
+): Promise<{ status: number; body: { updated?: unknown[]; errors?: Array<{ key: string; message: string; code?: string }>; code?: string } }> {
   const res = await fetch(`${h.baseUrl}/api/v1/admin/settings`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
@@ -322,12 +328,12 @@ describe('admin settings route — runtime-installed provider plugin', () => {
     const body = await getSettings(h);
     assert.equal(findSetting(body, 'SEIBERTGPT_API_KEY')?.isSet, false);
 
-    const { status } = await patch(h, [{ key: 'SEIBERTGPT_API_KEY', value: 'sgpt_test123' }]);
+    const { status } = await patch(h, [{ key: 'SEIBERTGPT_API_KEY', value: 'sgpt_test1234567890' }]);
     assert.equal(status, 200);
     for (const scope of [ORCH, VERIFIER, EXTRAS]) {
       assert.equal(
         await h.vault.get(scope, providerApiKeyVaultKey('seibertgpt')),
-        'sgpt_test123',
+        'sgpt_test1234567890',
       );
     }
   });
@@ -337,8 +343,110 @@ describe('admin settings route — runtime-installed provider plugin', () => {
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], providers);
     providers.length = 0;
 
-    const { status, body } = await patch(h, [{ key: 'SEIBERTGPT_API_KEY', value: 'sgpt_test123' }]);
+    const { status, body } = await patch(h, [{ key: 'SEIBERTGPT_API_KEY', value: 'sgpt_test1234567890' }]);
     assert.equal(status, 400);
     assert.equal(body.code, 'settings.no_valid_changes');
   });
+});
+
+describe('admin settings route — one field per keyed provider (#1331)', () => {
+  let h: Harness | undefined;
+  afterEach(async () => {
+    await h?.close();
+    h = undefined;
+  });
+
+  const allKeys = (body: Awaited<ReturnType<typeof getSettings>>): string[] =>
+    body.categories.flatMap((c) => c.settings.map((s) => s.key));
+
+  it('lists the built-in Mistral provider once, not twice', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], [
+      { id: 'anthropic', label: 'Anthropic' },
+      { id: 'openai', label: 'OpenAI' },
+      { id: 'mistral', label: 'Mistral' },
+    ]);
+    const keys = allKeys(await getSettings(h));
+    assert.equal(keys.filter((k) => k === 'MISTRAL_API_KEY').length, 1);
+    assert.equal(new Set(keys).size, keys.length, `duplicate keys: ${keys.join(', ')}`);
+  });
+
+  it('offers no key field for a provider that signs in without a key', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], [
+      {
+        id: 'claude-cli',
+        label: 'Claude (subscription CLI)',
+        policy: { requiresApiKey: false },
+        wireFormat: 'claude-cli',
+      },
+      {
+        id: 'openai-chatgpt',
+        label: 'ChatGPT',
+        policy: { requiresApiKey: false },
+        oauth: { flow: 'device' },
+      },
+      { id: 'minimax', label: 'MiniMax', policy: { requiresApiKey: true } },
+      // Keyless but no other sign-in: a stored key is still sent if present.
+      { id: 'ollama', label: 'Ollama', policy: { requiresApiKey: false } },
+    ]);
+    const keys = allKeys(await getSettings(h));
+    assert.ok(!keys.includes('CLAUDE_CLI_API_KEY'));
+    assert.ok(!keys.includes('OPENAI_CHATGPT_API_KEY'));
+    assert.ok(keys.includes('MINIMAX_API_KEY'));
+    assert.ok(keys.includes('OLLAMA_API_KEY'));
+
+    const { status, body } = await patch(h, [{ key: 'CLAUDE_CLI_API_KEY', value: 'x'.repeat(40) }]);
+    assert.equal(status, 400);
+    assert.equal(body.code, 'settings.no_valid_changes');
+  });
+
+  it('keeps one field when two provider ids normalise to the same key', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], [
+      { id: 'foo-bar', label: 'Foo Bar' },
+      { id: 'foo_bar', label: 'Foo_Bar' },
+    ]);
+    const keys = allKeys(await getSettings(h));
+    assert.equal(keys.filter((k) => k === 'FOO_BAR_API_KEY').length, 1);
+  });
+});
+
+describe('admin settings route — key format checks (#1330/#1331)', () => {
+  it('accepts a short gateway token for a plugin provider', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], [
+      { id: 'litellm', label: 'LiteLLM' },
+    ]);
+    const { status } = await patch(h, [{ key: 'LITELLM_API_KEY', value: 'sk-1234' }]);
+    assert.equal(status, 200);
+  });
+
+  let h: Harness | undefined;
+  afterEach(async () => {
+    await h?.close();
+    h = undefined;
+  });
+
+  const cases: Array<{ key: string; value: string; code: string }> = [
+    { key: 'MISTRAL_API_KEY', value: '!!!', code: 'settings.api_key_format' },
+    { key: 'MISTRAL_API_KEY', value: 'aB3xY7qP9 random32charMistralKey', code: 'settings.api_key_format' },
+    { key: 'MISTRAL_API_KEY', value: 'aB3xY7qP9rand', code: 'settings.api_key_format' },
+    { key: 'MINIMAX_API_KEY', value: 's', code: 'settings.api_key_format' },
+    { key: 'OPENAI_API_KEY', value: ['sk', 'ant', 'falsch'].join('-'), code: 'settings.openai_key_format' },
+    { key: 'ANTHROPIC_API_KEY', value: 'sk-test', code: 'settings.anthropic_key_format' },
+  ];
+  for (const c of cases) {
+    it(`rejects ${c.key}=${JSON.stringify(c.value)} with ${c.code}`, async () => {
+      h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], [
+        { id: 'minimax', label: 'MiniMax' },
+      ]);
+      const { status, body } = await patch(h, [{ key: c.key, value: c.value }]);
+      assert.equal(status, 400);
+      assert.equal(body.code, 'settings.invalid_values');
+      const err = body.errors?.find((e) => e.key === c.key);
+      assert.equal(err?.code, c.code);
+      // The English reason stays alongside the code for logs and old UIs.
+      assert.ok((err?.message.length ?? 0) > 0);
+      assert.deepEqual(h.reactivated, []);
+      // Nothing was stored.
+      assert.deepEqual(await h.vault.listKeys(ORCH), []);
+    });
+  }
 });
