@@ -4731,18 +4731,32 @@
   },
   "adminApiKeys": {
     "title": "Public API Keys",
-    "intro": "Server-to-server bearer credentials for the public chat API. A key’s plaintext token is shown exactly once, right after creation — copy it immediately, it cannot be retrieved again, even by an operator.",
+    "intro": "Server-to-server bearer credentials for the public chat API and the public MCP endpoint. A key’s plaintext token is shown exactly once, right after creation — copy it immediately, it cannot be retrieved again, even by an operator.",
     "create": {
       "heading": "Create a new key",
       "fields": {
         "label": "Label (optional)",
-        "rateLimit": "Rate limit (requests/minute, optional)"
+        "rateLimit": "Rate limit (requests/minute, optional)",
+        "scopes": "Scopes",
+        "expiry": "Expires on (optional)",
+        "mcpWriteTools": "Write tools (optional)"
       },
       "rateLimitInvalid": "Rate limit must be between {min} and {max} requests/minute.",
       "scopesRequired": "Select at least one scope — a key with none cannot do anything.",
       "blockedByReveal": "Dismiss the token above before creating another key.",
       "submit": "Create key",
-      "creating": "Creating"
+      "creating": "Creating",
+      "scopeHelp": {
+        "chatWrite": "Public chat API",
+        "mcpList": "List public MCP tools",
+        "mcpInvoke": "Call read-only MCP tools",
+        "wildcard": "Everything except MCP write tools",
+        "plugin": "Plugin scope"
+      },
+      "mcpWriteToolsHint": "Comma-separated tool names. Each name grants the scope {prefix}name for exactly that tool.",
+      "mcpWriteToolsInvalid": "Tool names may contain only lowercase letters, digits, “_” and “-”, starting with a letter.",
+      "expiryInvalid": "The expiry date must lie in the future.",
+      "scopesUnavailable": "The scope list could not be loaded, so only chat:write is offered."
     },
     "reveal": {
       "heading": "New API key created",
@@ -4765,7 +4779,8 @@
       "rateLimitValue": "{value}/min",
       "status": {
         "active": "Active",
-        "revoked": "Revoked"
+        "revoked": "Revoked",
+        "expired": "Expired"
       },
       "revoke": "Revoke",
       "revoking": "Revoking",
@@ -4773,6 +4788,35 @@
         "message": "Revoke this key? Anything using it stops working immediately — this can't be undone.",
         "confirm": "Confirm revoke",
         "cancel": "Cancel"
+      },
+      "expiresAt": "Expires {date}",
+      "expiredAt": "Expired {date}",
+      "createdBy": "Created by {email}",
+      "createdByUnknown": "Creator unknown",
+      "lastUsed": "Last used {date}",
+      "neverUsed": "Not used yet",
+      "showInactive": "Show revoked and expired keys ({count})",
+      "hideInactive": "Hide revoked and expired keys",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "confirmDelete": {
+        "message": "Delete this key for good? It disappears from this list, and its request history is no longer shown here. Its create, revoke and delete records stay in the admin audit log.",
+        "confirm": "Confirm delete",
+        "cancel": "Cancel"
+      },
+      "usage": {
+        "show": "Recent activity",
+        "hide": "Hide activity",
+        "loading": "Loading activity …",
+        "empty": "No requests from this key in the recent log.",
+        "failed": "The activity could not be loaded.",
+        "status": {
+          "ok": "OK",
+          "rate_limited": "Rate limited",
+          "forbidden": "Missing scope",
+          "invalid_request": "Invalid request",
+          "error": "Error"
+        }
       }
     },
     "errors": {
@@ -4780,7 +4824,10 @@
       "authUnavailable": "Operator authentication is unavailable right now. Try again shortly.",
       "sessionExpired": "Your session has expired. Redirecting to sign in…",
       "invalidRequest": "That request was invalid — check the values above and try again.",
-      "generic": "Something went wrong (error {status})."
+      "generic": "Something went wrong (error {status}).",
+      "invalidScope": "That scope is unknown — pick one from the list.",
+      "invalidExpiry": "The expiry date must lie in the future and at most five years ahead.",
+      "keyActive": "Revoke the key before deleting it."
     }
   },
   "adminWebhooks": {
