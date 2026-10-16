@@ -31,13 +31,13 @@ import type { MemberName, ResolveMemberNames } from '../services/memberNames.js'
  *
  * WHY IT EXISTS
  * -------------
- * `web-ui/app/memory/page.tsx` browses the context trees through
+ * `web-ui/app/memory/page.tsx` used to browse the context trees through
  * `/bot-api/dev/memory/list` — `packages/harness-memory/src/devMemoryRouter.ts`,
  * mounted by the memory plugin only when `dev_memory_endpoints_enabled` is
- * truthy, which the kernel forbids in production. That router is unauthenticated
- * and exposes the WHOLE `/memories` tree, so it can never be the production
- * answer. This is the production answer: authenticated, and structurally unable
- * to leave `/memories/contexts`.
+ * truthy, which is dev scaffolding. That router is session-gated but exposes the
+ * WHOLE `/memories` tree to any logged-in session, so it can never be the
+ * production answer. The page moved to this route, which is the production
+ * answer: authenticated, and structurally unable to leave `/memories/contexts`.
  *
  * WIRE SHAPE — settled here, deliberately
  * ---------------------------------------

@@ -405,6 +405,14 @@ export interface McpManagerOptions {
    *  `MCP_TOOLLIST_DEFAULT_TTL_MS`. `0` (or negative) restores the
    *  spec-strict reading — absent `ttlMs` means no caching. */
   readonly toolListTtlMs?: number;
+  /** Issues #1341 / #1342 — checked before ANY transport is built (no socket,
+   *  no child process), with the config whose endpoint is actually dialled.
+   *  Throwing refuses the connect; the error reaches `listTools` callers
+   *  unchanged and `callTool` returns its message without the auth-prompt
+   *  fallback (that fallback would itself contact the refused host). Same
+   *  optional-dependency shape as `auth`: omitting it leaves behaviour
+   *  byte-identical to before. */
+  readonly connectGuard?: (cfg: McpServerConfig) => Promise<void>;
 }
 
 /** Default idle lifetime of a pooled MCP connection (5 minutes). */
@@ -881,6 +889,10 @@ export class McpManager {
    *  just one extra fetch, and a purge is rare. */
   private toolListPurgeGen = 0;
 
+  /** Errors raised by `options.connectGuard`, so `callTool` can tell a refused
+   *  connect from a failed one by identity rather than by message text. */
+  private readonly guardRefusals = new WeakSet<object>();
+
   /** Optional audit observer + dispatch guard (issues #462/#454). Existing
    *  `new McpManager()` call sites keep working unchanged. */
   constructor(private readonly options?: McpManagerOptions) {}
@@ -1295,6 +1307,14 @@ export class McpManager {
       try {
         pooled = await this.getOrConnect(cfg, token);
       } catch (err) {
+        // Refused by the connect guard (#1341 / #1342): nothing was dialled, a
+        // retry would be refused again, and the auth-prompt fallback in
+        // `handleFailure` would contact the refused host for OAuth metadata.
+        if (this.isGuardRefusal(err)) {
+          const refusal = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
+          this.emitCall(cfg, toolName, 'fail', refusal, startedAt, actingIdentity);
+          return refusal;
+        }
         // A server that requires OAuth often refuses the connection outright
         // (streamable-HTTP surfaces the 401 as "-32000 Connection closed"), so
         // this path must also offer the auth prompt — not just tool-level errors.
@@ -1553,6 +1573,18 @@ export class McpManager {
   }
 
   private async connect(cfg: McpServerConfig, token: string | null): Promise<Pooled> {
+    // #1341 / #1342 — the single choke point every transport passes through
+    // (both SDK families, stdio included), so the guard runs before anything
+    // is dialled or spawned. A refusal rejects this connect, which
+    // `getOrConnect` never caches.
+    if (this.options?.connectGuard) {
+      try {
+        await this.options.connectGuard(cfg);
+      } catch (err) {
+        if (err !== null && typeof err === 'object') this.guardRefusals.add(err);
+        throw err;
+      }
+    }
     // #562 phase 2 — `http` is the only transport that moved to the v2 family.
     // The branch is here rather than inside `makeTransport` because the two
     // families' `Transport` interfaces are NOT interchangeable: a v2 transport
@@ -1587,6 +1619,10 @@ export class McpManager {
     });
     await client.connect(this.makeTransport(cfg, token));
     return { client: legacySdkSession(client) };
+  }
+
+  private isGuardRefusal(err: unknown): boolean {
+    return err !== null && typeof err === 'object' && this.guardRefusals.has(err);
   }
 
   /** Resolve Vault-backed config into a cfg (epic #459): secret headers for

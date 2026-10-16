@@ -98,6 +98,7 @@ import {
   refreshMcpGrantPolicy,
 } from './services/mcpGrantPolicy.js';
 import { rescanAllMcpServers } from './services/mcpRescan.js';
+import { createMcpConnectGuard } from './services/mcpOutboundHostGuard.js';
 import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
 import { HttpSkillSpectorScanner } from './services/pluginScanner.js';
 import {
@@ -140,10 +141,12 @@ import {
 import { createChatSessionsRouter } from './routes/chatSessions.js';
 import {
   DEV_GRAPH_PATH,
+  DEV_PATH_PREFIX,
   KG_LIFECYCLE_ADMIN_PATH,
   KG_PRIORITIES_ADMIN_PATH,
   PLUGIN_DOMAINS_ADMIN_PATH,
   mountDevGraph,
+  mountDevLoopbackGuard,
   mountKnowledgeGraphAdmin,
 } from './routes/graphRouterMounts.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
@@ -268,6 +271,7 @@ import {
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
 import { recordRawBodyBytes } from './http/rawBodySize.js';
+import { createAppServer, createTerminalHandler } from './http/terminalHandler.js';
 import { redactAuditError } from './services/secretRedaction.js';
 import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp.js';
 // W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
@@ -2719,6 +2723,10 @@ async function main(): Promise<void> {
       const mcpManager: McpManager = new McpManager({
         // #547 / #569 — see `mcpStructuredSink` above (accounting only).
         structuredSink: mcpStructuredSink,
+        // Issues #1341 / #1342 — runtime tool calls and the periodic rescan
+        // pass the operator outbound host rule and the stdio switch before
+        // any transport is built.
+        connectGuard: createMcpConnectGuard({ stdioEnabled: config.MCP_STDIO_ENABLED }),
         // W2-1 (#544) — where a `resultType: "input_required"` call is parked.
         // The process-shared instance, so the Orchestrator's turn drain reads
         // exactly what this manager wrote.
@@ -3337,10 +3345,12 @@ async function main(): Promise<void> {
   //     with no session attached. That is the hole a plain `publicPaths` entry
   //     leaves open, and the reason `auth/publicPaths.ts` stays a frozen
   //     core-owned literal instead of becoming a dynamic set.
-  //   * Anything else calls next() and meets requireAuth exactly as before.
+  //   * Anything else calls next() and meets the ordinary stack exactly as
+  //     before: requireAuth's 401 under `/api`, and outside `/api` the
+  //     terminal JSON 404 (#1349 — a session does not open such a path).
   //
   // Fail-closed by construction: no grants, no store, no registry, no live
-  // plugin — every one of those is a next(), i.e. a 401. There is no failure
+  // plugin — every one of those is a next(), i.e. a 401 or 404. There is no failure
   // mode of this mount that produces LESS authentication than a build without
   // it. Mounted after express.json/cookieParser so plugin handlers see the
   // same parsed request they see through the ordinary boot-time mount.
@@ -3924,8 +3934,8 @@ async function main(): Promise<void> {
   // cookie session JWT), NOT the machine-to-machine ADMIN_TOKEN surface in
   // `admin.ts`: the memory browser in web-ui authenticates as a logged-in
   // admin user. It replaces `/bot-api/dev/memory/*` (the @omadia/memory dev
-  // router), which is unauthenticated, exposes the WHOLE `/memories` tree and
-  // is forbidden in production — so before this mount the browser had no
+  // router), which exposes the WHOLE `/memories` tree to any logged-in session
+  // and is dev scaffolding only — so before this mount the browser had no
   // production endpoint at all.
   //
   // The ROOT (undecorated) `memoryStore` is handed in on purpose: the router's
@@ -4052,6 +4062,23 @@ async function main(): Promise<void> {
       ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
       ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
       ...(mcpRegistrySecrets ? { mcpRegistrySecrets } : {}),
+      // Issue #1342 — stdio switch + durable trace of saved stdio servers.
+      // Closure like auditFacilitationTerminate: adminAudit is constructed
+      // further down, and stays undefined without Postgres (log line only).
+      mcpStdioEnabled: config.MCP_STDIO_ENABLED,
+      auditMcpStdioServerSaved: async (entry) => {
+        // #775 lesson — the SUB is an email and must NEVER land in the uuid
+        // actor_id column; the uuid rides separately when the session has one.
+        await adminAudit?.record({
+          actor: {
+            ...(entry.actorUserId ? { id: entry.actorUserId } : {}),
+            ...(entry.actor ? { email: entry.actor } : {}),
+          },
+          action: 'mcp_server.stdio_create',
+          target: `mcp-server:${entry.serverId}`,
+          after: { name: entry.serverName, source: entry.source },
+        });
+      },
       // W5-1 — the operator surface for `public_mcp_key_bindings`, without
       // which the public MCP endpoint cannot be configured except by hand in
       // psql. A fresh store per call so a graphPool that arrives later is
@@ -6187,7 +6214,9 @@ async function main(): Promise<void> {
   // `/api/dev/memory` is now mounted by the @omadia/memory plugin via
   // ctx.routes.register when its `dev_memory_endpoints_enabled` config is true.
   // It is authenticated by the same OB-106 `/api` requireAuth line as everything
-  // else here — issue #669 removed the `/api/dev` entry from `publicPaths`.
+  // else here — issue #669 removed the `/api/dev` entry from `publicPaths` — and
+  // bound to loopback by `mountDevLoopbackGuard` below when
+  // DEV_ENDPOINTS_LOOPBACK_ONLY is set (#1350).
 
   // Issue #669 — the operator surfaces (KG lifecycle, per-agent priorities,
   // plugin domains) no longer live behind DEV_ENDPOINTS_ENABLED. They are
@@ -6210,16 +6239,19 @@ async function main(): Promise<void> {
 
   // The flag is read inside `mountDevGraph`, not in an `if` here — see its doc
   // comment: one tested consumer, and an admin mount that cannot depend on it.
+  // #1350 — the loopback guard covers the whole `/api/dev` prefix, including
+  // the plugin routes `pluginRouteRegistry.mountAll(app)` mounts further down
+  // (the `@omadia/memory` browser). It must stay ahead of both mounts.
+  mountDevLoopbackGuard(app, { loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY });
   if (
     mountDevGraph(app, requireAuth, {
       graph: knowledgeGraph,
       enabled: config.DEV_ENDPOINTS_ENABLED,
-      loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY,
     })
   ) {
     console.log(
       `[middleware] DEV endpoints enabled at ${DEV_GRAPH_PATH} (auth: required${
-        config.DEV_ENDPOINTS_LOOPBACK_ONLY ? ', loopback-only' : ''
+        config.DEV_ENDPOINTS_LOOPBACK_ONLY ? `, ${DEV_PATH_PREFIX}/* loopback-only` : ''
       })`,
     );
   }
@@ -6433,7 +6465,15 @@ async function main(): Promise<void> {
   // anyway, this only moves the cost off the critical path.
   void warmPatternWorker();
 
-  const server = app.listen(config.PORT, config.HOST, () => {
+  // #1326 / #1318 / #1349 — answer whatever no router took (unknown path,
+  // body-parser rejection, unhandled route error) with a JSON `{ code, message }`
+  // and never a stack, instead of Express's HTML `finalhandler`. A terminal
+  // callback rather than a trailing `app.use`, so routes plugins mount after
+  // boot still come before it — see http/terminalHandler.ts.
+  const terminalHandler = createTerminalHandler({
+    ungrantedPublicPrefix: (path) => publicPathGrants.resolveUngranted(path)?.prefix ?? null,
+  });
+  const server = createAppServer(app, terminalHandler).listen(config.PORT, config.HOST, () => {
     console.log(`[middleware] listening on [${config.HOST}]:${config.PORT}`);
     console.log(`[middleware] skills dir: ${config.SKILLS_DIR}`);
     console.log(`[middleware] orchestrator model: ${config.ORCHESTRATOR_MODEL}`);
