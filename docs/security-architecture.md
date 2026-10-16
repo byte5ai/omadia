@@ -1078,7 +1078,7 @@ privacy-guard 0.10.0 a `format: table` render returned its `_pendingCanvasTree`
 snapshot — real cell values — as the tool's `tool_result`, and the tool loop
 always calls the model once more after a tool round, so every table render
 sent those values to the provider (and a memory-tool call after it could
-persist them). Since 0.10.0 (`@omadia/plugin-api` 1.29.0) `runV4Tool`
+persist them). Since 0.10.0 (`@omadia/plugin-api` 1.30.0) `runV4Tool`
 returns only a shape acknowledgement as `resultText` — the row count and the
 column labels the model chose itself — and hands the snapshot back as
 `PrivacyV4ToolResult.canvasSentinel`. The orchestrator gives that to the
@@ -3295,6 +3295,41 @@ already-revoked key is a no-op that returns its unchanged view). `verify()`
 skips any record with `revokedAt` set, so a revoked key starts failing
 immediately on its very next call — no propagation delay, no cache to
 invalidate.
+
+**Lifecycle, scope catalog and admin audit (#1327 / #1328 / #1329).**
+Creation requires every scope to be *known* (`isKnownScope`,
+`apiKeyScopeCatalog.ts`): a built-in, a registered scope
+(`registerApiKeyScope`; no caller yet, and not exposed through `ctx`), or a
+well-formed `mcp:write:<tool>` (tool sets are decided later by the key's MCP
+binding, so tools are admitted by shape). The read path keeps the shape-only
+`normalizeScopes`, so a key minted with a scope whose plugin is later removed
+keeps it rather than flipping to deny-all. `expiresAt` (≤ 5 years ahead) makes
+`verify()` refuse the key once passed; an unreadable persisted `expiresAt`
+hydrates to `0` — expired, fail closed. `isApiKeyActive` (not revoked, not
+expired) is the one predicate for "can authenticate", used by `verify()`, the
+channel directory and the public-MCP binding lister. `DELETE` removes only a
+revoked or expired record, so deletion can never be an un-audited revoke.
+`createdBy` and every `admin_audit` row take the actor from the kernel's
+session evaluation (`ctx.operatorAuth.sessionPrincipal` /
+`recordAdminAction`), never from plugin-supplied data: `actor_id` is the
+session's `uid` (`users.id`), `actor_email` its email. `PLUGIN_AUDIT_POLICY` admits an
+action only for named plugins and a target shape (`api_key.*` → only
+`@omadia/channel-api`, target `api-key:<uuid>`), so no plugin can forge
+kernel events such as `user.delete` or another plugin's events. The plugin id
+in that decision comes from the kernel: the unscoped accessor refuses every
+write, and only the per-plugin wrapper (`scopeOperatorAuthToPlugin`, applied
+in `createPluginContext`) can call `recordForPlugin` with its id. That id is
+stamped last into `before.plugin` and `after.plugin`, and each payload is
+capped at 4 KB. Audit payloads carry id, label,
+scopes, rate limit and expiry — never the token or its hash. A failed audit
+write is logged, not turned into an error response (the action already
+happened). The usage log is readable per key (`GET .../keys/:id/usage`,
+operator session required like every route on that router). The public MCP
+endpoint writes to it as well (`createPublicMcpUsageLog`), with a writer that
+may set only the `usage-audit-log` entry of the key namespace; both writers
+share one process-wide queue. Deleting a key drops its `lastUsed` stamp but
+keeps its request entries until the cap ages them out — after a leak that
+history is evidence.
 
 **Usage audit.** Every call that gets *past key verification* — i.e. every
 authenticated call, regardless of what happens next — is recorded as one

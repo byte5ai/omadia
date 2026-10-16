@@ -43,12 +43,37 @@ the real, unmasked cell values — as the `tool_result`, and the tool loop
 always asks the model once more after a tool round, so every table render
 sent names and e-mails to the LLM provider; a memory-tool call after the
 render could write them to memory. The privacy guard (0.10.0, plugin-api
-1.29.0) now returns the model only a shape acknowledgement (row count and
+1.30.0) now returns the model only a shape acknowledgement (row count and
 the column labels it chose) and hands the snapshot to the canvas through the
 canvas-sentinel side channel (`PrivacyV4ToolResult.canvasSentinel`). The
 orchestrator also strips a snapshot an older guard still embeds. The chat
 answer, the canvas table and the verifier's prose check are unchanged. The
 privacy acceptance test counts the render's `tool_result` as LLM-bound again.
+
+### Fixed — API keys: known scopes only, expiry/owner/delete, audit trail (#1327, #1328, #1329, #1324)
+
+2026-10-16. `POST /api/public/v1/admin/keys` accepted any well-formed scope,
+so a typo (`chat:wirte`) minted a key every route refused; it now answers
+`400 invalid_scope` naming the unknown entries. Scopes are checked against a
+catalog in `@omadia/api-key-auth` (`chat:write`, `mcp:list`, `mcp:invoke`,
+`*`, `mcp:write:<tool>`; `registerApiKeyScope` is ready for a future
+plugin-defined scope but has no caller yet), served at `GET .../admin/keys/scopes`; the admin page
+offers every scope instead of one hardcoded `chat:write` checkbox, plus a
+write-tool list for `mcp:write:<tool>`. Keys gain an optional `expiresAt`
+(`verify()` refuses an expired key like a revoked one), `createdBy` from the
+operator session, and `DELETE .../admin/keys/:id` for revoked or expired keys
+(409 for an active one); the page hides inactive keys behind a toggle. Create,
+revoke and delete write `api_key.create|revoke|delete` rows to `admin_audit`
+(actor = `users.id` + email, never the token or hash) through the new
+`ctx.operatorAuth.recordAdminAction` (plugin-api 1.29.0). The usage log is
+readable: `GET .../admin/keys/:id/usage`, and the list carries `lastUsedAt`
+(kept beside the 200-entry cap, so a quiet key does not look unused). Public
+MCP requests are now recorded there too (they never were), through one
+process-wide write queue shared with the chat writer. The
+one-time token banner now renders above the create form, where the hint says
+it is. No DB migration: key records and the usage log stay vault entries;
+old records read as "no expiry, owner unknown". Rotation is not implemented
+(open question on the PR).
 
 ### Fixed — the subscription CLI fails a turn honestly, and its turns reach Memory
 
