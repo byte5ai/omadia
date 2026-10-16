@@ -356,6 +356,32 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.178.2 — tool refusals, SEO analyst, MCP outbound guard
+
+- **Plugin tools can refuse a call readably (plugin-api 1.28.0).** A tool that
+  throws `ToolRefusalError` (recognised by `name`) gets its message passed to
+  the model as `Error: tool \`<name>\` refused the call: …` instead of the
+  withheld notice; so do omadia's own `ctx.http` blocks. Throw it only when the
+  tool did nothing and the message contains no data. Nothing changes for any
+  other exception. A plugin that also targets older hosts can throw
+  `Object.assign(new Error(msg), { name: 'ToolRefusalError' })`; an older host
+  withholds it as before.
+- **SEO analyst 0.2.0 fails instead of reporting on an unreached site.**
+  `check_technical_seo` and `audit_site` now reject a blocked or unreachable
+  root/start URL like `analyze_page` does, and a blocked robots.txt or sitemap
+  shows up as the issue `fetch.blocked`. The plugin also activates without
+  internet access now; only an audit mode or allow-list that forbids
+  `target_base_url` still stops activation.
+- **MCP: link-local and metadata hosts are refused.** A registry URL or a
+  manual `http`/`sse` MCP server pointing at `169.254.0.0/16`, `fe80::/10` or a
+  metadata alias is rejected on save, and a row saved earlier now reports
+  `blocked_host` on Discover, rescan and tool calls instead of "fetch failed".
+  Private and loopback hosts are unaffected. New optional switch
+  `MCP_STDIO_ENABLED` (default `true`); set it to `false` to forbid stdio MCP
+  servers, which start processes inside the middleware container. The host
+  rule only works as an SSRF control with stdio off, since with stdio on the
+  same admin can start any process anyway.
+
 ## Upgrading past v0.178.1 — answer verifier: Privacy Shield rendered answers are checked by their prose
 
 Up to v0.178.1, `enforce` withheld every answer Privacy Shield v4 rendered

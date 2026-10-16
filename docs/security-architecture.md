@@ -1146,7 +1146,7 @@ the text came from, not its shape:
 
 | Carrier | What the model reads | Receipt entry (`toolErrors`) |
 |---|---|---|
-| A handler **threw** | The withheld notice: ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …`` — class name and a sanitised code (`describeThrownError`, `@omadia/plugin-api`), never the message; it also says the outcome is unknown and not to repeat a call that changes data | `thrown` / `withheld` |
+| A handler **threw** | The withheld notice: ``Error: tool `<name>` failed with <ErrorClass> (code <code>) [ref <ref>] …`` — class name and a sanitised code (`describeThrownError`, `@omadia/plugin-api`), never the message; it also says the outcome is unknown and not to repeat a call that changes data. A refusal is the one exception (below) | `thrown` / `withheld` |
 | A handler **returned** an `Error:` string | The text after the prefix, run through the provider's `redactToolErrorText`: the C0 identity types (e-mail, IBAN, phone, address, id number — not `date` or `amount`, which are hints), the operator deny-list (#760) and C1, each span replaced irreversibly by `[masked:<type>]`. **Withheld** whole instead when the text is exception-shaped (a record echo as JSON, as a Python dict, or as a JavaScript object or `Map` the way `util.inspect`, `console.log` and `%o` print it; a record printed with keyword fields — a Python dataclass, a Kotlin data class or Lombok `toString`, a Java record or `Map` — or with positional values, one of them quoted (`Record(42, 'Jane Doe', …)`), or with Go's bare `Key:value` fields; a personal field such as `name=`, `email=` or `phone=` printed as a bare `key=value` pair outside a record; a stack trace; a Postgres `DETAIL:` line, a `Failing row contains (…)` or a `Key (…)=(…)` detail), longer than 4096 characters, or the provider cannot check it | `returned` / `redacted` (with span types) or `withheld` |
 | The MCP **connect prompt** (`🔒 The MCP server "…`) that `McpManager.handleFailure` produced **in the same dispatch** | Byte-identical: its connect URL and `<mcp-auth-required>` block must survive. Recognised by per-dispatch provenance, never by its prefix: any other text that starts like the prompt is tool data and is interned | `mcp_auth_prompt` / `passed` |
 
@@ -1334,6 +1334,41 @@ with it; the privacy guard uses it only to flag a rendered one-cell dataset as
 a failure. The shape classifier has **no** control-flow exemption — verbs
 re-classify derived datasets, so one would turn `filter` + `select` into a
 cleartext channel.
+
+#### A plugin tool that refuses the call (`ToolRefusalError`, #1343)
+
+One kind of exception is written for the model. `@omadia/plugin-api` 1.28.0
+adds `ToolRefusalError`: a plugin tool throws it when it did not carry the call
+out, and its message says why (a host the plugin may not reach, a precondition
+the operator has to change). The kernel's own `ctx.http` permission errors
+count as refusals too: `HttpForbiddenError`, `HttpBlockedAddressError` and
+`HttpRateLimitError`, each thrown before a request leaves the middleware. Both
+are recognised in `modelReadableToolErrorMessage` (`toolErrorNotice.ts`), the
+plugin error by `name === 'ToolRefusalError'` (a plugin bundles its own copy
+of the package, so `instanceof` would miss it), the kernel errors by name AND
+by the message shape omadia writes (`plugin '<id>' is not permitted to reach…`,
+`plugin '<id>' exceeded its…`), so a library error that only shares the name
+stays withheld.
+
+The model then reads ``Error: tool `<name>` refused the call: <message>``
+instead of the withheld notice, with control characters stripped and the
+message cut at 600 characters (`MAX_REFUSAL_MESSAGE_CHARS`). A message with a
+line break is withheld like any exception: a refusal is a sentence, and the
+exception-shape detectors are line-based (a stack trace flattened into one
+line would slip past them). A kernel `ctx.http` block the tool did not catch
+reads ``Error: tool `<name>` was stopped by omadia: <message> …`` and keeps
+the outcome-unknown clause and marker (`isUnknownOutcomeToolErrorNotice`): the
+block is omadia's, but the tool may have written something before it. That text is a
+control-flow result, not a pass: under a privacy provider it goes through the
+returned-error policy above (`guardControlFlowResult`), so it is redacted, and
+withheld whole when it is exception-shaped. The `ToolRefusalError` notice
+carries no "outcome unknown" clause and `LocalSubAgent` sets no
+outcome-unknown marker for it, because nothing was carried out — the plugin
+asserts that by throwing it. `toolErrorFromException` gives a wrapper the
+same refusal notice. Every other exception, of a plugin or of the kernel, stays
+withheld. A plugin author decides what a refusal message says; it must carry
+no record, response body or upstream error text, and the redactor is the
+backstop, not the guarantee.
 
 ### 6d. `agents.privacy_profile` is not a Privacy Shield control (#978)
 
@@ -5313,7 +5348,7 @@ route and asserts it reads the SAME app-setting key the kernel writes — the tw
 literal spellings are what a rename would silently break, and the symptom would
 be a `ws://` URL on exactly the deployments that declared HTTPS.
 
-## 10p. Danger-Zone memory purge: complete, previewed, attributed (#1333–#1336)
+## 10q. Danger-Zone memory purge: complete, previewed, attributed (#1333–#1336)
 
 The memory purge (`/api/v1/admin/memory/purge`, page `/admin/danger-zone`) is
 the operator's tool for erasure requests, so it has to delete what it says and
@@ -5359,6 +5394,82 @@ preview token does not survive a restart or span several middleware processes.
 A user purge misses a Turn whose `user_id` is a raw channel id (Telegram id,
 Teams `29:` id without an AAD id) when its run trace was never ingested, since
 the `BELONGS_TO` edge to the user cluster is the only other link.
+
+## 10p. MCP outbound targets and stdio servers (#1341, #1342)
+
+Only an admin can add an MCP server or an MCP registry (`/api/v1/operator`
+sits behind `requireAuth`). Both are operator configuration, so the rules
+below are about consistency with the other operator outbound paths and about
+making the stdio transport visible and switchable, not about an untrusted
+caller.
+
+**The operator outbound rule.** An MCP registry URL and the endpoint of a
+manually added `http` or `sse` MCP server follow the same rule. Refused are
+link-local and cloud-metadata targets only: IPv4 `169.254.0.0/16` (with
+`169.254.169.254`), IPv6 `fe80::/10`, the IPv6 metadata endpoints
+`fd00:ec2::254` (AWS) and `fd20:ce::254` (GCP), `169.254.x` carried inside an
+IPv6 address (IPv4-mapped, SIIT, IPv4-compatible, NAT64 `64:ff9b::/96`, 6to4
+`2002::/16`), and the metadata hostnames `metadata.google.internal`,
+`metadata.goog` and `metadata`. The check runs on the literal host and on every
+address the host resolves to (an IPv6 literal is resolved without its URL
+brackets).
+Private ranges (`10/8`, `172.16/12`, `192.168/16`, Compose service names such
+as `postgres`) and loopback (`localhost`, `127.0.0.1`, `::1`) stay allowed on
+purpose: a registry or MCP server on the intranet is a legitimate setup.
+
+It is checked twice:
+
+- **On save.** A blocked registry URL gets
+  `400 {"error":"invalid_registry","code":"blocked_host"}`, a blocked server
+  endpoint `400 {"error":"mcp_endpoint_refused","code":"blocked_host"}`.
+- **On every connect**: Discover, "Re-scan all", the periodic re-scan
+  (`MCP_RESCAN_INTERVAL_MS`, every 6 h by default) and tool calls at runtime.
+  A row saved before the check existed is refused there and reports
+  `blocked_host` (Discover: `502 {"error":"mcp_discover_failed","code":"blocked_host"}`)
+  instead of a bare transport failure. A registry catalog fetch keeps its
+  `502 mcp_registry_unreachable` with `code: blocked_host`.
+
+Endpoints that come from a registry catalog are not operator configuration and
+keep the stricter untrusted rule (`assertUntrustedEndpointSafe`,
+`mcpRegistryClient.ts`): `https` only, and no private or loopback host either.
+
+**stdio trust model.** For transport `stdio` the endpoint is a command line.
+The middleware splits it and starts it as its own child process, so it runs as
+the middleware's OS user with the same filesystem and network access. That is
+the same power the admin who saves it already has. Catalog imports only write
+`npx -y -- <package>` and check the package name against a strict npm-name
+grammar (`NPM_NAME_RE`); a manual entry accepts any command. Saving a stdio
+server writes a log line with its id, name and source (manual or catalog), not
+the command line, which can carry secrets in its arguments.
+
+`MCP_STDIO_ENABLED=false` switches the transport off for deployments that use
+only remote servers. Creating a stdio server is then refused, manually and by
+catalog import, with
+`400 {"error":"mcp_stdio_disabled","code":"stdio_disabled"}`, and an existing
+stdio row is refused at connect time (Discover → `502` with
+`code: stdio_disabled`, re-scans, runtime calls) without starting a process.
+The default is `true`, so existing installations keep working unchanged.
+Whether the Compose stack should ship with stdio off is an open decision.
+
+**Residual risks.**
+
+- The DNS check runs before the connection and is not pinned to it. The MCP
+  transport resolves the host again when it connects, so a name that resolves
+  to an allowed address at check time and to a link-local one a moment later
+  (DNS rebinding) is not covered. Unlike the Conductor webhook path (§7), there
+  is no guarded `Agent` that re-checks the address the socket actually uses.
+- Redirects are not re-checked by omadia. Both MCP SDK transports follow only
+  same-origin redirects, so a 30x to the metadata address is not followed, but
+  that is the SDK's default, not an omadia control.
+- A connection already in the pool is reused without a new check. The pool
+  lives in one process, and changing the rule or `MCP_STDIO_ENABLED` needs a
+  restart, which empties it.
+- The rule is only a meaningful SSRF control on an installation with
+  `MCP_STDIO_ENABLED=false`: with stdio on, the same admin can start any
+  process anyway.
+- With stdio on, an admin can run any command in the middleware container.
+  Restricting manual stdio entries to the catalog grammar unless the operator
+  opts in to free command lines is deferred.
 
 ## 11. Reviewer checklist
 
@@ -5753,7 +5864,14 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       resolves that id deterministically against the concrete input set of
       that call. An unknown id yields the conservative verdict, never a
       fallback derived from the claim itself (§7c).
+- [ ] A new path that opens an MCP connection or fetches an operator-configured
+      MCP URL goes through the connect-time guard, so it applies the operator
+      outbound rule and refuses stdio while `MCP_STDIO_ENABLED=false`; a check
+      on save alone does not cover rows that already exist (§10p).
+- [ ] A plugin tool throws `ToolRefusalError` only when it carried nothing
+      out, with a message it wrote itself that holds no record, response body
+      or upstream error text (§6c).
 
 ---
 
-*Last reviewed: 2026-10 (§10o added: the request trust boundary — `trust proxy` is an operator-named list of proxy ADDRESSES, empty by default, and a hop count is refused at boot because Express counts the immediate peer as a trusted hop; `requestIsSecure` reads `req.secure` instead of a raw `X-Forwarded-Proto`, `PUBLIC_SCHEME` is the operator's one answer for a TLS proxy that sets no header — governing the cookie flags and the pairing descriptor's scheme alike, since a `ws://` URL on an HTTPS page is blocked as mixed content — and the web-ui proxy DECLARES its `X-Forwarded-Proto` rather than relaying or deriving it, a Route Handler having no way to observe its own TLS; §10m: the login-device cookie's `Secure` claim names its control and that control's default; §6f: the org clamp covers MCP-to-knowledge-graph ingestion, and intern-exempt tools' errors are redacted or withheld like any tool's; §6c: positional record dumps and personal `key=value` pairs are withheld whole; §6f: the memory jobs mask the stored text they send to their model whatever `mask_user_prompt` says, in a turn through its handle and outside one through `openStoredTextScope`, and masking embeddings stays open; §4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict, withholds an answer with a refuted claim or one it could not check (the verifier could not run, every check failed, or Privacy Shield kept the answer from it), and releases one it could not fully confirm with a disclaimer; extraction, its verbatim guard and the trigger read the answer without its `[ref:…]` markers, and a marker's record handle pins the claims it cites; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*
+*Last reviewed: 2026-10 (§10p added: operator MCP registry URLs and manual `http`/`sse` endpoints refuse link-local and cloud-metadata targets on save and on every connect, private and loopback stay allowed, the DNS check is not pinned to the connection, and `MCP_STDIO_ENABLED` switches stdio servers off; §6c: a `ToolRefusalError` or a kernel `ctx.http` permission error reaches the model as a refusal notice through the returned-error redactor; §10o added: the request trust boundary — `trust proxy` is an operator-named list of proxy ADDRESSES, empty by default, and a hop count is refused at boot because Express counts the immediate peer as a trusted hop; `requestIsSecure` reads `req.secure` instead of a raw `X-Forwarded-Proto`, `PUBLIC_SCHEME` is the operator's one answer for a TLS proxy that sets no header — governing the cookie flags and the pairing descriptor's scheme alike, since a `ws://` URL on an HTTPS page is blocked as mixed content — and the web-ui proxy DECLARES its `X-Forwarded-Proto` rather than relaying or deriving it, a Route Handler having no way to observe its own TLS; §10m: the login-device cookie's `Secure` claim names its control and that control's default; §6f: the org clamp covers MCP-to-knowledge-graph ingestion, and intern-exempt tools' errors are redacted or withheld like any tool's; §6c: positional record dumps and personal `key=value` pairs are withheld whole; §6f: the memory jobs mask the stored text they send to their model whatever `mask_user_prompt` says, in a turn through its handle and outside one through `openStoredTextScope`, and masking embeddings stays open; §4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict, withholds an answer with a refuted claim or one it could not check (the verifier could not run, every check failed, or Privacy Shield kept the answer from it), and releases one it could not fully confirm with a disclaimer; extraction, its verbatim guard and the trigger read the answer without its `[ref:…]` markers, and a marker's record handle pins the claims it cites; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*

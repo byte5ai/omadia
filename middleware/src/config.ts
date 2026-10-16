@@ -205,6 +205,14 @@ export const ConfigSchema = z.object({
   // only when the callback must resolve on a different origin than
   // FLOW_PUBLIC_BASE_URL/api/v1/operator/mcp-oauth/callback (the default).
   MCP_OAUTH_REDIRECT_URI: z.string().url().optional(),
+  // Issue #1342 — stdio MCP servers run as child processes of the middleware,
+  // with its OS user, filesystem and network. `false` refuses to save new
+  // stdio servers (manual or catalog import) and refuses existing stdio rows
+  // at connect time, so no process is spawned. Default on (backwards-compatible).
+  MCP_STDIO_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(true),
   // Absolute URL Azure AD redirects to after login. MUST be registered
   // verbatim in the MS365 App Registration. In prod: middleware's own
   // /api/v1/auth/callback. In dev: http://localhost:3000/bot-api/v1/auth/callback
