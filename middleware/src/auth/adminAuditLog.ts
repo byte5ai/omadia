@@ -45,6 +45,10 @@ export type AuditAction =
   // `target` is the client key, `after` the scope and Retry-After. Never the
   // account that was tried.
   | 'auth.login_rate_limited'
+  // #1342 — a stdio MCP server was saved (manual or catalog import). It runs
+  // as a child process of the middleware, so who added it belongs in the
+  // trail. `after` holds name + source, never the command line.
+  | 'mcp_server.stdio_create'
   // #1329 — public API-key lifecycle (`@omadia/channel-api` /admin/keys),
   // written through `ctx.operatorAuth.recordAdminAction`. Never carries the
   // token or its hash.

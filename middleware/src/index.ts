@@ -98,6 +98,7 @@ import {
   refreshMcpGrantPolicy,
 } from './services/mcpGrantPolicy.js';
 import { rescanAllMcpServers } from './services/mcpRescan.js';
+import { createMcpConnectGuard } from './services/mcpOutboundHostGuard.js';
 import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
 import { HttpSkillSpectorScanner } from './services/pluginScanner.js';
 import {
@@ -2728,6 +2729,10 @@ async function main(): Promise<void> {
       const mcpManager: McpManager = new McpManager({
         // #547 / #569 — see `mcpStructuredSink` above (accounting only).
         structuredSink: mcpStructuredSink,
+        // Issues #1341 / #1342 — runtime tool calls and the periodic rescan
+        // pass the operator outbound host rule and the stdio switch before
+        // any transport is built.
+        connectGuard: createMcpConnectGuard({ stdioEnabled: config.MCP_STDIO_ENABLED }),
         // W2-1 (#544) — where a `resultType: "input_required"` call is parked.
         // The process-shared instance, so the Orchestrator's turn drain reads
         // exactly what this manager wrote.
@@ -4063,6 +4068,23 @@ async function main(): Promise<void> {
       ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
       ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
       ...(mcpRegistrySecrets ? { mcpRegistrySecrets } : {}),
+      // Issue #1342 — stdio switch + durable trace of saved stdio servers.
+      // Closure like auditFacilitationTerminate: adminAudit is constructed
+      // further down, and stays undefined without Postgres (log line only).
+      mcpStdioEnabled: config.MCP_STDIO_ENABLED,
+      auditMcpStdioServerSaved: async (entry) => {
+        // #775 lesson — the SUB is an email and must NEVER land in the uuid
+        // actor_id column; the uuid rides separately when the session has one.
+        await adminAudit?.record({
+          actor: {
+            ...(entry.actorUserId ? { id: entry.actorUserId } : {}),
+            ...(entry.actor ? { email: entry.actor } : {}),
+          },
+          action: 'mcp_server.stdio_create',
+          target: `mcp-server:${entry.serverId}`,
+          after: { name: entry.serverName, source: entry.source },
+        });
+      },
       // W5-1 — the operator surface for `public_mcp_key_bindings`, without
       // which the public MCP endpoint cannot be configured except by hand in
       // psql. A fresh store per call so a graphPool that arrives later is
