@@ -140,7 +140,7 @@ playbook:
     Ab @omadia/plugin-api 1.25.0 maskieren die Memory-Jobs außerhalb eines
     Turns über `openStoredTextScope` (dieses Plugin ab 0.8.0). Fehlt es,
     überspringen sie ihren Modellaufruf.
-    Ab @omadia/plugin-api 1.28.0 liefert `runV4Tool` den Canvas-Snapshot eines
+    Ab @omadia/plugin-api 1.29.0 liefert `runV4Tool` den Canvas-Snapshot eines
     Tabellen-Renders als `canvasSentinel` (dieses Plugin ab 0.10.0), nie im
     `resultText` (#1402). Ein neuerer Orchestrator mit einer älteren Kopie
     zieht einen eingebetteten Snapshot selbst aus dem `tool_result`. Ein

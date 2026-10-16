@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.28.0 — 2026-10-16
+## 1.29.0 — 2026-10-16
 
 Additive. A Privacy Shield v4 table render keeps its canvas snapshot off the
 model's `tool_result` (#1402).
@@ -21,6 +21,48 @@ model's `tool_result` (#1402).
   `_pendingCanvasTree` snapshot with the real cells. The kernel hands it to
   the turn's canvas-sentinel sink, never to the model. A provider that
   returns `{ resultText }` alone still conforms.
+
+## 1.28.0 — 2026-10-16
+
+Additive. A plugin tool can refuse a call with a message written for the
+model (#1343). Until now every exception a tool threw reached the model only
+as the withheld notice ("The error text was withheld … The outcome is
+unknown"), so an agent could not say why a host was blocked or what an
+operator can change.
+
+### Added
+
+- **`ToolRefusalError`** (`name === 'ToolRefusalError'`) — throw it when the
+  tool did NOT carry the call out and the message is safe to show: written by
+  the tool, free of records, response bodies and upstream error text. Hosts
+  recognise it by `name`, so a plugin that must also load on an older host can
+  throw `Object.assign(new Error(msg), { name: 'ToolRefusalError' })` instead
+  of importing the class; an older host withholds it like any error.
+- **`modelReadableToolErrorMessage(err)`** — the cleaned message (control
+  characters removed, at most `MAX_REFUSAL_MESSAGE_CHARS` = 600) of a
+  `ToolRefusalError` or of a kernel `ctx.http` permission error
+  (`HttpForbiddenError`, `HttpBlockedAddressError`, `HttpRateLimitError`,
+  recognised by name AND by the kernel's message shape); `undefined` for
+  everything else.
+  A message with a line break stays withheld.
+- **`refusedToolErrorNotice(toolName, message)`** — the model-facing text,
+  `Error: tool \`<name>\` refused the call: <message>`, without the
+  unknown-outcome clause.
+- **`blockedToolErrorNotice(toolName, message)`** — for a kernel `ctx.http`
+  block the tool did not catch: `… was stopped by omadia: <message>`, with the
+  unknown-outcome clause, because the tool may have acted before the block.
+- **`readableToolErrorNotice(toolName, err)`** — picks one of the two (or
+  `undefined`), with `refused` telling whether the outcome is known.
+- **`isUnknownOutcomeToolErrorNotice(text)`** — the withheld notice or a
+  kernel block; the kernel's loops use it to refuse an identical repeat.
+- `isToolRefusalError`, `TOOL_REFUSAL_ERROR_NAME`, `MAX_REFUSAL_MESSAGE_CHARS`.
+
+### Changed
+
+- **`toolErrorFromException`** returns the refusal notice for such an error
+  (still logged under a ref) instead of the withheld notice. Every other error
+  is withheld as before. The kernel's dispatch seams run the refusal through
+  the Privacy Shield's returned-error redactor like any `Error:` text.
 
 ## 1.27.0 — 2026-10-15
 

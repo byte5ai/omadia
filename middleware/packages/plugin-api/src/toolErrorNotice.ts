@@ -32,6 +32,15 @@
  * outcome is unknown and not to repeat a call that changes data, and a
  * sub-agent loop refuses an identical repeat of a call that ended this way
  * ({@link isWithheldToolErrorNotice}).
+ *
+ * One kind of exception is written FOR the model: a refusal
+ * ({@link ToolRefusalError}, and the kernel's own `ctx.http` permission errors).
+ * The tool did not carry the call out, and its message says why and what an
+ * operator can change. That message reaches the model as a refusal notice
+ * ({@link refusedToolErrorNotice}) — without the "outcome is unknown" clause,
+ * because nothing happened. It is still an `Error:` result, so the dispatch
+ * seams run it through the Privacy Shield's free-text redactor like any other
+ * returned error text.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -149,9 +158,11 @@ export interface ToolErrorFromExceptionOptions {
 /**
  * For a tool wrapper that catches an exception and must answer with a tool
  * result: logs the full error under a reference and returns the withheld
- * notice. Use this instead of `Error: ${err.message}`. A wrapper's OWN typed
- * errors whose messages it authored (a validation hint, "quota exceeded") are
- * not exceptions in this sense and may keep their text.
+ * notice. Use this instead of `Error: ${err.message}`. A refusal — a
+ * {@link ToolRefusalError} or a kernel `ctx.http` permission error — is the
+ * exception: its message was written for the model, so it comes back as the
+ * refusal notice ({@link refusedToolErrorNotice}) and is still logged under the
+ * ref.
  */
 export function toolErrorFromException(
   toolName: string,
@@ -165,9 +176,176 @@ export function toolErrorFromException(
           console.error(line, e);
         }
       : options.log;
+  const readable = readableToolErrorNotice(toolName, err);
+  if (readable !== undefined) {
+    log?.(
+      `[${options?.site ?? 'tool'}:${toolName}] tool refused the call (ref=${ref}) — message passed to the model:`,
+      err,
+    );
+    return readable.text;
+  }
   log?.(
     `[${options?.site ?? 'tool'}:${toolName}] tool threw (ref=${ref}) — message withheld from the model:`,
     err,
   );
   return withheldToolErrorNotice(toolName, err, ref);
+}
+
+// ---------------------------------------------------------------------------
+// Refusals — exception messages written for the model (#1343)
+// ---------------------------------------------------------------------------
+
+/** The `name` a {@link ToolRefusalError} carries, and the one it is recognised by. */
+export const TOOL_REFUSAL_ERROR_NAME = 'ToolRefusalError';
+
+/**
+ * The kernel's `ctx.http` permission errors. omadia writes their messages
+ * itself from the plugin id and the host (`plugin '<id>' is not permitted to
+ * reach '<host>' — …`, `plugin '<id>' exceeded its per-minute HTTP request
+ * budget`), and each one is thrown before a request leaves the middleware.
+ */
+const KERNEL_HTTP_REFUSAL_NAMES: ReadonlySet<string> = new Set([
+  'HttpForbiddenError',
+  'HttpBlockedAddressError',
+  'HttpRateLimitError',
+]);
+/** Every kernel `ctx.http` refusal message starts like this. A library error
+ *  that merely shares one of the names above keeps being withheld. */
+const KERNEL_HTTP_REFUSAL_HEAD = /^plugin '[^'\n]{1,214}' (?:is not permitted to reach|exceeded its)/;
+
+/** Longest refusal text a notice carries; the rest is cut. */
+export const MAX_REFUSAL_MESSAGE_CHARS = 600;
+// A line break. A refusal is one sentence or two; a message with lines is
+// treated as a dump (a stack trace, a quoted body) and stays withheld — the
+// detectors that would recognise it are line-based, and flattening it first
+// would hide it from them.
+const REFUSAL_LINE_BREAK = /[\r\n\u2028\u2029]/;
+// The remaining C0 and C1 control characters — anything that could break the
+// notice's framing.
+// eslint-disable-next-line no-control-regex
+const REFUSAL_UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f]+/g;
+
+/**
+ * A tool refusing a call, with a message written for the model.
+ *
+ * Throw it when the tool did NOT carry the call out (nothing was read from or
+ * written to anything upstream) and the reason is something the model can act
+ * on or tell the user: a host the audit mode forbids, a target that could not
+ * be reached, a precondition the operator has to change. The message reaches
+ * the model as written (one line, trimmed to {@link MAX_REFUSAL_MESSAGE_CHARS},
+ * control characters removed; a message with line breaks stays withheld)
+ * instead of the withheld notice, so write it yourself and keep it free of
+ * data: no record, no response body, no upstream error text. Because nothing
+ * was carried out, the model is not told the outcome is unknown, and a
+ * sub-agent may repeat the call. Every other exception stays withheld.
+ *
+ * Recognised by its `name`, not by `instanceof`: a plugin bundles its own copy
+ * of this package, and a plugin that must run on a host older than plugin-api
+ * 1.28.0 can throw `Object.assign(new Error(msg), { name: 'ToolRefusalError' })`
+ * instead of importing the class. An older host withholds it like any error.
+ */
+export class ToolRefusalError extends Error {
+  constructor(message: string, options?: { readonly cause?: unknown }) {
+    super(message, options);
+    this.name = TOOL_REFUSAL_ERROR_NAME;
+  }
+}
+
+/**
+ * The message of a caught value when it is written for the model: a
+ * {@link ToolRefusalError} (by name) or one of the kernel's `ctx.http`
+ * permission errors (by name and message shape). `undefined` for anything else,
+ * which stays withheld. The returned text is cleaned and bounded.
+ */
+export function modelReadableToolErrorMessage(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const { message } = err;
+  if (typeof message !== 'string') return undefined;
+  if (!isToolRefusalError(err) && !isKernelHttpRefusal(err)) return undefined;
+  if (REFUSAL_LINE_BREAK.test(message)) return undefined;
+  const cleaned = message.replace(REFUSAL_UNSAFE_CHARS, ' ').replace(/\s+/g, ' ').trim();
+  if (cleaned.length === 0) return undefined;
+  return cleaned.length > MAX_REFUSAL_MESSAGE_CHARS
+    ? `${cleaned.slice(0, MAX_REFUSAL_MESSAGE_CHARS - 1)}…`
+    : cleaned;
+}
+
+/** True for a {@link ToolRefusalError}, recognised by `name`. */
+export function isToolRefusalError(err: unknown): boolean {
+  return err instanceof Error && err.name === TOOL_REFUSAL_ERROR_NAME;
+}
+
+/** True for a kernel `ctx.http` permission error (by name AND message shape). */
+function isKernelHttpRefusal(err: Error): boolean {
+  return (
+    KERNEL_HTTP_REFUSAL_NAMES.has(err.name) &&
+    typeof err.message === 'string' &&
+    KERNEL_HTTP_REFUSAL_HEAD.test(err.message)
+  );
+}
+
+/**
+ * The model-facing text for a refused call: the tool name and the refusal's
+ * own message. No "outcome is unknown" clause — the call was not carried out.
+ * `message` must already be cleaned ({@link modelReadableToolErrorMessage}).
+ */
+export function refusedToolErrorNotice(toolName: string, message: string): string {
+  return (
+    `${TOOL_ERROR_PREFIX} tool \`${safeToken(toolName, 'unknown')}\` refused the call: ` +
+    message
+  );
+}
+
+/**
+ * The model-facing text for a kernel `ctx.http` block the tool did not catch.
+ * omadia refused that request, but the tool may have done something before it
+ * (written a record, then failed to notify a host), so unlike a
+ * {@link ToolRefusalError} the outcome stays unknown.
+ */
+export function blockedToolErrorNotice(toolName: string, message: string): string {
+  return (
+    `${TOOL_ERROR_PREFIX} tool \`${safeToken(toolName, 'unknown')}\` was stopped by omadia: ` +
+    `${message} ${BLOCKED_NOTICE_TAIL}`
+  );
+}
+
+const BLOCKED_NOTICE_TAIL =
+  'Anything the tool did before this point may have taken effect, so do not ' +
+  'repeat a call that changes data.';
+const BLOCKED_NOTICE_HEAD = /^Error: tool `[A-Za-z0-9_.:-]+` was stopped by omadia: /;
+
+/** A readable notice for a caught value, and whether the call was refused
+ *  before doing anything (`refused`) or its outcome stays unknown. */
+export interface ReadableToolErrorNotice {
+  readonly text: string;
+  readonly refused: boolean;
+}
+
+/**
+ * The notice for an exception whose message may reach the model: a
+ * {@link ToolRefusalError} ({@link refusedToolErrorNotice}, `refused: true`)
+ * or a kernel `ctx.http` block ({@link blockedToolErrorNotice},
+ * `refused: false`). `undefined` for every other exception, which stays
+ * withheld ({@link withheldToolErrorNotice}).
+ */
+export function readableToolErrorNotice(
+  toolName: string,
+  err: unknown,
+): ReadableToolErrorNotice | undefined {
+  const message = modelReadableToolErrorMessage(err);
+  if (message === undefined) return undefined;
+  return isToolRefusalError(err)
+    ? { text: refusedToolErrorNotice(toolName, message), refused: true }
+    : { text: blockedToolErrorNotice(toolName, message), refused: false };
+}
+
+/**
+ * True when `text` is a notice for a call whose outcome is unknown: the
+ * withheld notice ({@link isWithheldToolErrorNotice}) or a kernel block
+ * ({@link blockedToolErrorNotice}). The kernel's sub-agent loop refuses an
+ * identical repeat of such a call. Recognised by shape, which any tool can
+ * imitate: use it only to RESTRICT what happens next.
+ */
+export function isUnknownOutcomeToolErrorNotice(text: string): boolean {
+  return isWithheldToolErrorNotice(text) || BLOCKED_NOTICE_HEAD.test(text);
 }

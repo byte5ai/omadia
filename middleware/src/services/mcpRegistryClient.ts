@@ -14,6 +14,13 @@
 
 import { isDeprecatedMcpTransport, type McpConfigField } from '@omadia/orchestrator';
 
+import {
+  checkOperatorOutboundUrl,
+  classifyHostSync,
+  isBlockedResolvedIp,
+  unmapIpv4,
+} from './mcpOutboundHostGuard.js';
+
 export interface McpRegistryConfig {
   readonly id: string;
   readonly name: string;
@@ -299,46 +306,17 @@ function normalizeSmitheryEntry(raw: Record<string, unknown>): McpCatalogEntry |
   };
 }
 
-/** Hostname aliases for cloud-metadata endpoints — refused even before DNS,
- *  since a name can front a link-local address (codex fold). */
-const METADATA_HOSTNAMES = new Set([
-  'metadata.google.internal',
-  'metadata.goog',
-  'metadata',
-]);
-
-/** Sync host classification, no DNS. Returns a refusal reason or null. */
-function classifyHostSync(host: string): string | null {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
-  const v4 = h.startsWith('::ffff:') ? h.slice('::ffff:'.length) : h;
-  if (METADATA_HOSTNAMES.has(h)) return `metadata hostname refused: ${h}`;
-  // Link-local (covers 169.254.169.254 IMDS) + IPv6 link-local.
-  if (/^169\.254\./.test(v4) || /^fe[89ab][0-9a-f]:/.test(h)) {
-    return `link-local/metadata address refused: ${h}`;
-  }
-  return null;
-}
-
-/** True for a resolved IP in a range a server-side fetch must never reach. */
-function isBlockedResolvedIp(ip: string): boolean {
-  const v = ip.toLowerCase();
-  const v4 = v.startsWith('::ffff:') ? v.slice('::ffff:'.length) : v;
-  // Link-local / IMDS.
-  if (/^169\.254\./.test(v4) || /^fe[89ab][0-9a-f]:/.test(v)) return true;
-  return false;
-}
-
 /** True for a resolved IP an UNTRUSTED (catalog-sourced) endpoint must never
  *  reach — the full internal set, not just link-local. */
 function isPrivateResolvedIp(ip: string): boolean {
   const v = ip.toLowerCase();
-  const v4 = v.startsWith('::ffff:') ? v.slice('::ffff:'.length) : v;
+  const v4 = unmapIpv4(v);
   if (isBlockedResolvedIp(ip)) return true;
   if (/^127\./.test(v4) || v4 === '::1') return true;
   if (/^10\./.test(v4) || /^192\.168\./.test(v4)) return true;
   if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(v4)) return true;
   if (/^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(v4)) return true;
-  if (v4 === '0.0.0.0' || /^fc[0-9a-f]|^fd[0-9a-f]/.test(v)) return true; // unspecified + ULA
+  if (v4 === '0.0.0.0' || v4 === '::' || /^fc[0-9a-f]|^fd[0-9a-f]/.test(v)) return true; // unspecified + ULA
   return false;
 }
 
@@ -362,7 +340,8 @@ async function assertUntrustedEndpointSafe(rawUrl: string): Promise<void> {
   }
   try {
     const { lookup } = await import('node:dns/promises');
-    const results = await lookup(parsed.hostname, { all: true });
+    // Brackets off: `dns.lookup` fails on a bracketed IPv6 literal.
+    const results = await lookup(parsed.hostname.replace(/^\[|\]$/g, ''), { all: true });
     for (const r of results) {
       if (isPrivateResolvedIp(r.address)) {
         throw new McpRegistryError(
@@ -391,44 +370,14 @@ function safeHttpUrl(url: string | null): string | null {
 }
 
 /**
- * Registry URLs are OPERATOR configuration (same trust class as an SMTP relay
- * in `netAccessor.ts`): private/loopback hosts stay reachable because a
- * private registry on the intranet is a legitimate setup. What we refuse is
- * the link-local/cloud-metadata block — a classic SSRF pivot. The check is
- * two-layer (codex fold): the literal host string AND the RESOLVED address, so
- * a hostname or DNS alias that points at link-local is caught too.
+ * Registry URLs are OPERATOR configuration: the operator outbound host rule in
+ * `mcpOutboundHostGuard.ts` applies (link-local/metadata refused on the literal
+ * host and the resolved addresses; private/loopback allowed). Thin wrapper so
+ * the catalog code keeps its typed `McpRegistryError`.
  */
 async function assertFetchableRegistryUrl(raw: string): Promise<void> {
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new McpRegistryError('invalid_url', `not a valid URL: ${raw}`);
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new McpRegistryError('invalid_url', `unsupported protocol: ${parsed.protocol}`);
-  }
-  const host = parsed.hostname;
-  const syncReason = classifyHostSync(host);
-  if (syncReason) throw new McpRegistryError('blocked_host', syncReason);
-  // Resolve and re-check: a DNS alias (metadata.google.internal, or an
-  // attacker-controlled name resolving to 169.254.x) only shows its true
-  // target after resolution.
-  try {
-    const { lookup } = await import('node:dns/promises');
-    const results = await lookup(host, { all: true });
-    for (const r of results) {
-      if (isBlockedResolvedIp(r.address)) {
-        throw new McpRegistryError(
-          'blocked_host',
-          `host "${host}" resolves to a link-local/metadata address (${r.address})`,
-        );
-      }
-    }
-  } catch (err) {
-    if (err instanceof McpRegistryError) throw err;
-    // DNS failure is surfaced by the fetch itself; don't hard-fail here.
-  }
+  const refusal = await checkOperatorOutboundUrl(raw);
+  if (refusal) throw new McpRegistryError(refusal.code, refusal.message);
 }
 
 /**
@@ -444,9 +393,10 @@ function isUntrustedRemoteHostSafe(host: string): boolean {
   if (classifyHostSync(h) !== null) return false;
   if (h === 'localhost' || h.endsWith('.localhost')) return false;
   if (h.endsWith('.internal') || h.endsWith('.local')) return false;
-  const v4 = h.startsWith('::ffff:') ? h.slice('::ffff:'.length) : h;
-  // Loopback + RFC-1918 + CGNAT literals.
+  const v4 = unmapIpv4(h);
+  // Loopback + RFC-1918 + CGNAT literals, unspecified and ULA IPv6.
   if (/^127\./.test(v4) || v4 === '::1') return false;
+  if (v4 === '::' || /^f[cd][0-9a-f]{0,2}:/.test(v4)) return false;
   if (/^10\./.test(v4) || /^192\.168\./.test(v4)) return false;
   if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(v4)) return false;
   if (/^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(v4)) return false;

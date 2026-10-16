@@ -52,6 +52,12 @@ import {
   parseDelegation,
   resolveMcpUserKey,
 } from '../services/mcpDelegation.js';
+import {
+  checkOperatorOutboundUrl,
+  createMcpConnectGuard,
+  isMcpEndpointRefusal,
+  MCP_STDIO_DISABLED_MESSAGE,
+} from '../services/mcpOutboundHostGuard.js';
 import { rescanAllMcpServers } from '../services/mcpRescan.js';
 import { redactSecrets } from '../services/secretRedaction.js';
 import {
@@ -180,6 +186,21 @@ export interface AgentBuilderRouterOptions {
    *  router; absent ⇒ existence is never checked. Built in `index.ts`, the one
    *  place with both the registry and the API-key vault in scope. */
   readonly publicMcpBindingExistence?: BindingExistenceCheck;
+  /** Issue #1342 — `MCP_STDIO_ENABLED`. `false` refuses to save stdio servers
+   *  (manual and catalog import) and the router's McpManager refuses existing
+   *  stdio rows at connect time. Omitted → enabled (pre-#1342 behaviour). */
+  readonly mcpStdioEnabled?: boolean;
+  /** Issue #1342 — durable trace for a saved stdio server, which runs as a
+   *  child process of the middleware. Best-effort: a failed write is logged,
+   *  never turned into a failed request. Never receives the command line
+   *  (its args can carry tokens). Absent → only the log line is written. */
+  readonly auditMcpStdioServerSaved?: (entry: {
+    readonly actor: string | null;
+    readonly actorUserId?: string;
+    readonly serverId: string;
+    readonly serverName: string;
+    readonly source: 'manual' | 'marketplace';
+  }) => Promise<void>;
 }
 
 interface Live {
@@ -263,8 +284,12 @@ export function createAgentBuilderRouter(
     }),
   );
 
+  const mcpStdioEnabled = options.mcpStdioEnabled ?? true;
   const mcp = new McpManager({
     ...(options.mcpCallObserver ? { onToolCall: options.mcpCallObserver } : {}),
+    // Issues #1341 / #1342 — every Discover, test-call and Re-scan all connect
+    // passes the operator outbound host rule and the stdio switch first.
+    connectGuard: createMcpConnectGuard({ stdioEnabled: mcpStdioEnabled }),
     ...(options.mcpCallGuard ? { guard: options.mcpCallGuard } : {}),
     // Resolve Vault-backed config (stdio env + http secret headers) and OAuth
     // tokens at connect time — the SAME provider the orchestrator's manager
@@ -315,6 +340,45 @@ export function createAgentBuilderRouter(
         : {}),
     },
   });
+  /** Issue #1342 — a stdio server runs as a child process of the middleware,
+   *  with its OS user, filesystem and network, so saving one leaves a trace:
+   *  a log line always, an `admin_audit` row when the hook is wired. Id, name
+   *  and source only — the command line can carry tokens in its args. */
+  const recordStdioServerSaved = async (
+    req: Request,
+    row: McpServerRow,
+    source: 'manual' | 'marketplace',
+  ): Promise<void> => {
+    const actor = sessionIdentity(req);
+    console.log(
+      `[mcp] stdio server saved: id=${row.id} name=${JSON.stringify(row.name)} source=${source} actor=${actor ?? 'unknown'}`,
+    );
+    if (!options.auditMcpStdioServerSaved) return;
+    const actorUserId = req.session?.omadia_user_id;
+    try {
+      await options.auditMcpStdioServerSaved({
+        actor,
+        ...(actorUserId ? { actorUserId } : {}),
+        serverId: row.id,
+        serverName: row.name,
+        source,
+      });
+    } catch (err) {
+      console.warn(`[mcp] stdio server audit write failed for id=${row.id}: ${msg(err)}`);
+    }
+  };
+  /** Issues #1341 / #1342 — the operator outbound host rule for a stored
+   *  server's OAuth surface (`describeAuth`, `beginAuthorization` and
+   *  `issuerFor` all fetch metadata from the endpoint). Checks the endpoint as
+   *  it is dialled, placeholders substituted. stdio rows never reach the OAuth
+   *  discovery, so they pass. */
+  const oauthEndpointRefusal = async (server: McpServerRow): Promise<string | null> => {
+    if (server.transport === 'stdio' || !server.endpoint) return null;
+    const refusal = await checkOperatorOutboundUrl(
+      substituteMcpConfig(server.endpoint, server.config),
+    );
+    return refusal?.code === 'blocked_host' ? refusal.message : null;
+  };
   /** Issue #563 — a server's identity, config or token just changed on disk, so
    *  every live connection built from the old values is stale. Drops this
    *  router's own pooled connection and lets the runtime manager drop its one.
@@ -1109,12 +1173,39 @@ export function createAgentBuilderRouter(
     if (!l) return;
     try {
       const b = req.body ?? {};
+      const transport: unknown = b.transport;
+      const endpoint: unknown = b.endpoint ?? null;
+      if (transport === 'stdio' && !mcpStdioEnabled) {
+        res.status(400).json({
+          error: 'mcp_stdio_disabled',
+          code: 'stdio_disabled',
+          message: MCP_STDIO_DISABLED_MESSAGE,
+        });
+        return;
+      }
+      // Issue #1342 — a manual http/sse endpoint is operator configuration, the
+      // same trust class as a registry URL, so the same host rule applies.
+      // Only `blocked_host` is refused: an endpoint that does not parse yet may
+      // still hold `{placeholder}` templates that become a valid URL after
+      // config substitution, and the connect guard checks that final URL.
+      if ((transport === 'http' || transport === 'sse') && typeof endpoint === 'string') {
+        const refusal = await checkOperatorOutboundUrl(endpoint);
+        if (refusal?.code === 'blocked_host') {
+          res.status(400).json({
+            error: 'mcp_endpoint_refused',
+            code: 'blocked_host',
+            message: refusal.message,
+          });
+          return;
+        }
+      }
       const row = await l.graph.createMcpServer({
         name: String(b.name ?? '').trim(),
         transport: b.transport,
         endpoint: b.endpoint ?? null,
         status: b.status ?? 'enabled',
       });
+      if (row.transport === 'stdio') await recordStdioServerSaved(req, row, 'manual');
       res.json(mcpNode(row));
     } catch (err) {
       fail(res, err);
@@ -1286,6 +1377,13 @@ export function createAgentBuilderRouter(
       res.json(mcpNode(decorated ?? updated ?? row));
     } catch (err) {
       const raw = msg(err);
+      // Refused by the connect guard (#1341 / #1342): nothing was dialled. The
+      // auth branch below is skipped on purpose — `describeAuth` would fetch
+      // OAuth metadata from the very host that was just refused.
+      if (isMcpEndpointRefusal(err)) {
+        res.status(502).json({ error: 'mcp_discover_failed', code: err.code, message: err.message });
+        return;
+      }
       // A protected server can't even list tools without a token — a failed
       // discovery is almost always "not authorized yet". Tell the client to
       // prompt Connect instead of surfacing a cryptic 502 (issue #459).
@@ -1597,6 +1695,12 @@ export function createAgentBuilderRouter(
         });
         return;
       }
+      // `describeAuth` fetches OAuth metadata from the endpoint (#1341 / #1342).
+      const refused = await oauthEndpointRefusal(server);
+      if (refused) {
+        res.status(502).json({ error: 'mcp_endpoint_refused', code: 'blocked_host', message: refused });
+        return;
+      }
       const desc = await options.mcpOAuth.describeAuth(server);
       if (!desc.protected) {
         res.json({
@@ -1666,6 +1770,13 @@ export function createAgentBuilderRouter(
       const userKey = oauthUserKeyFor(req, server);
       if (userKey === null) {
         res.status(403).json({ error: 'delegation_identity_unresolved' });
+        return;
+      }
+      // `beginAuthorization` (and `issuerFor` below) fetch OAuth metadata from
+      // the endpoint (#1341 / #1342).
+      const refused = await oauthEndpointRefusal(server);
+      if (refused) {
+        res.status(502).json({ error: 'mcp_endpoint_refused', code: 'blocked_host', message: refused });
         return;
       }
       try {
@@ -2157,6 +2268,18 @@ export function createAgentBuilderRouter(
         res.status(400).json({ error: 'invalid_registry' });
         return;
       }
+      // Issue #1341 — the catalog fetch refuses link-local/metadata hosts
+      // anyway; refusing at save time keeps such a registry from being stored
+      // and failing only once the operator selects it.
+      const refusal = await checkOperatorOutboundUrl(url);
+      if (refusal?.code === 'blocked_host') {
+        res.status(400).json({
+          error: 'invalid_registry',
+          code: 'blocked_host',
+          message: refusal.message,
+        });
+        return;
+      }
       const authKind = b.authKind === 'bearer' ? 'bearer' : 'none';
       const token =
         authKind === 'bearer' && typeof b.token === 'string' && b.token !== '' ? b.token : null;
@@ -2247,6 +2370,14 @@ export function createAgentBuilderRouter(
         res.status(422).json({ error: 'mcp_catalog_entry_not_importable', id: entry.id });
         return;
       }
+      if (entry.transport === 'stdio' && !mcpStdioEnabled) {
+        res.status(400).json({
+          error: 'mcp_stdio_disabled',
+          code: 'stdio_disabled',
+          message: MCP_STDIO_DISABLED_MESSAGE,
+        });
+        return;
+      }
       const row = await l.graph.createMcpServer({
         name: entry.name,
         transport: entry.transport,
@@ -2259,6 +2390,7 @@ export function createAgentBuilderRouter(
         sourceUrl: entry.sourceUrl,
         configSchema: entry.configSchema ?? [],
       });
+      if (row.transport === 'stdio') await recordStdioServerSaved(req, row, 'marketplace');
       res.json(mcpNode(row));
     } catch (err) {
       if (err instanceof McpRegistryError) {

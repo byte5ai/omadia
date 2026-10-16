@@ -165,7 +165,7 @@ import type {
 } from '@omadia/plugin-api';
 import {
   agentScopePrefix,
-  isWithheldToolErrorNotice,
+  isUnknownOutcomeToolErrorNotice,
   PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
   PRIVACY_MODE_CONFIG_KEY,
   resolveEffectivePrivacyMode,
@@ -8867,7 +8867,7 @@ export class Orchestrator {
           recorder,
         }),
       );
-      if (isWithheldToolErrorNotice(result)) tracked.noteUnknownOutcome(name, input);
+      if (isUnknownOutcomeToolErrorNotice(result)) tracked.noteUnknownOutcome(name, input);
     }
     // Phase C.2 — Raw tool-result capture. Outer scope (routine runner)
     // may install a callback that stashes the raw result keyed by tool

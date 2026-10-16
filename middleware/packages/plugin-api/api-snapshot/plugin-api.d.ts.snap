@@ -2546,6 +2546,23 @@ readonly site?: string;
 readonly log?: ((line: string, err: unknown) => void) | null;
 }
 export declare function toolErrorFromException(toolName: string, err: unknown, options?: ToolErrorFromExceptionOptions): string;
+export declare const TOOL_REFUSAL_ERROR_NAME = "ToolRefusalError";
+export declare const MAX_REFUSAL_MESSAGE_CHARS = 600;
+export declare class ToolRefusalError extends Error {
+constructor(message: string, options?: {
+readonly cause?: unknown;
+});
+}
+export declare function modelReadableToolErrorMessage(err: unknown): string | undefined;
+export declare function isToolRefusalError(err: unknown): boolean;
+export declare function refusedToolErrorNotice(toolName: string, message: string): string;
+export declare function blockedToolErrorNotice(toolName: string, message: string): string;
+export interface ReadableToolErrorNotice {
+readonly text: string;
+readonly refused: boolean;
+}
+export declare function readableToolErrorNotice(toolName: string, err: unknown): ReadableToolErrorNotice | undefined;
+export declare function isUnknownOutcomeToolErrorNotice(text: string): boolean;
 
 // ===== topic.d.ts =====
 import type { GraphNode } from './knowledgeGraph.js';
