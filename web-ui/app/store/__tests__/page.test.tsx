@@ -31,6 +31,8 @@ vi.mock('../../_lib/api', async (importOriginal) => ({
   listProfiles: mockListProfiles,
 }));
 
+vi.mock('../../_lib/appVersion', () => ({ APP_VERSION: 'v9.9.9' }));
+
 vi.mock('../../_lib/authRedirect', () => ({
   redirectIfUnauthorized: vi.fn(),
 }));
@@ -119,5 +121,26 @@ describe('store page — profile modal wiring (#1089)', () => {
     // over an established deployment that would claim nothing is installed.
     mockListStorePlugins.mockRejectedValue(new Error('upstream 502'));
     expect(await renderedModals()).toEqual([]);
+  });
+});
+
+/** Plain text of the first <footer> in the tree StorePage returns. */
+function footerText(node: ReactNode, inFooter = false): string {
+  if (typeof node === 'string' || typeof node === 'number') {
+    return inFooter ? String(node) : '';
+  }
+  if (Array.isArray(node)) return node.map((n) => footerText(n, inFooter)).join('');
+  if (!isValidElement<{ children?: ReactNode }>(node)) return '';
+  return footerText(node.props.children, inFooter || node.type === 'footer');
+}
+
+describe('store page — footer (#1383)', () => {
+  it('shows the running build instead of a literal v1', async () => {
+    mockListProfiles.mockResolvedValue({ items: PROFILES });
+    mockListStorePlugins.mockResolvedValue({ items: [] });
+    const text = footerText(await StorePage({ searchParams: Promise.resolve({}) }));
+    expect(text).toContain('omadia · v9.9.9');
+    expect(text).not.toContain('docs/harness-platform/examples');
+    expect(text).toContain('footerSourceValue');
   });
 });
