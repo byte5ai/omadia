@@ -1,5 +1,7 @@
 import type { Pool } from 'pg';
 
+import { auditInsertStatement, type AuditActor } from '../auth/adminAuditLog.js';
+
 /**
  * `memory_purge_audit` — one row per Danger-Zone memory purge (#1336).
  *
@@ -9,22 +11,20 @@ import type { Pool } from 'pg';
  * with no record is not. The route refuses the purge when `recordStart`
  * throws.
  *
- * The actor columns mirror `admin_audit` (`actor_id` = omadia user id,
- * `actor_email` = session email or sub). `actor` stays for old readers and
- * holds the same human-readable identity — never the old constant
- * `'admin-ui'`.
+ * The actor is `auditActorFromRequest` (C07): `actor_id` = the session's
+ * `users.id`, `actor_email` = its email — the same rule as `admin_audit`.
+ * `actor` stays for old readers and holds the same human-readable identity,
+ * never the old constant `'admin-ui'`. `recordStart` also appends a
+ * `memory.purge` row to `admin_audit` in the same transaction, so the purge
+ * shows on /admin/audit next to the other admin actions; the outcome lives
+ * only here (`admin_audit` is append-only).
  *
  * The table predates the migration runner's reach (it was always created on
  * first use), so its new columns are added the same way: idempotent
  * `ADD COLUMN IF NOT EXISTS`, safe on an existing install.
  */
 
-export interface MemoryPurgeActor {
-  /** omadia user id (session `omadia_user_id`), when the session has one. */
-  id?: string;
-  /** Session email, else the session subject. */
-  email?: string;
-}
+export type MemoryPurgeActor = AuditActor;
 
 export interface MemoryPurgeCounts {
   scratch: number;
@@ -97,25 +97,47 @@ export function createMemoryPurgeAuditStore(pool: Pool): MemoryPurgeAuditStore {
   return {
     async recordStart(entry) {
       await ensureTable();
-      const res = await pool.query<{ id: string }>(
-        `INSERT INTO memory_purge_audit
-           (actor, actor_id, actor_email, axis, selector, reseed, status,
-            scratch_deleted, kg_deleted, conversation_deleted, planned)
-         VALUES ($1, $2, $3, $4, $5, $6, 'started', 0, 0, 0, $7)
-         RETURNING id`,
-        [
-          entry.actor.email ?? entry.actor.id ?? 'unknown',
-          entry.actor.id ?? null,
-          entry.actor.email ?? null,
-          entry.axis,
-          entry.selector,
-          entry.reseed,
-          JSON.stringify(entry.planned),
-        ],
-      );
-      const id = res.rows[0]?.id;
-      if (!id) throw new Error('memory_purge_audit insert returned no id');
-      return id;
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const res = await client.query<{ id: string }>(
+          `INSERT INTO memory_purge_audit
+             (actor, actor_id, actor_email, axis, selector, reseed, status,
+              scratch_deleted, kg_deleted, conversation_deleted, planned)
+           VALUES ($1, $2, $3, $4, $5, $6, 'started', 0, 0, 0, $7)
+           RETURNING id`,
+          [
+            entry.actor.email ?? entry.actor.id ?? 'unknown',
+            entry.actor.id ?? null,
+            entry.actor.email ?? null,
+            entry.axis,
+            entry.selector,
+            entry.reseed,
+            JSON.stringify(entry.planned),
+          ],
+        );
+        const id = res.rows[0]?.id;
+        if (!id) throw new Error('memory_purge_audit insert returned no id');
+        const ledger = auditInsertStatement({
+          actor: entry.actor,
+          action: 'memory.purge',
+          target: `memory-purge:${id}`,
+          after: {
+            axis: entry.axis,
+            selector: entry.selector,
+            reseed: entry.reseed,
+            planned: entry.planned,
+          },
+        });
+        await client.query(ledger.text, ledger.values);
+        await client.query('COMMIT');
+        return id;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        client.release();
+      }
     },
 
     async recordOutcome(id, outcome) {

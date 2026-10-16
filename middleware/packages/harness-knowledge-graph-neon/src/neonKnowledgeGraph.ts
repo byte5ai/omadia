@@ -229,7 +229,7 @@ const TRANSIENT_DB_ERROR_CODES = new Set<string>([
   '57P03', // cannot_connect_now — server is starting up
 ]);
 
-function isTransientDbError(err: unknown): boolean {
+export function isTransientDbError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
   if (typeof code === 'string' && TRANSIENT_DB_ERROR_CODES.has(code)) {
     return true;

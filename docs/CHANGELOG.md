@@ -51,7 +51,9 @@ shared selection
 `core` and UI preferences and seed nothing; it now resets only the entries the
 bundled seed contains (today `_rules`), writes them back at once, and the
 preview counts it. The audit row names the signed-in user (`actor_id`,
-`actor_email`) instead of `admin-ui`, is written before anything is deleted
+`actor_email`, the `admin_audit` actor rule) instead of `admin-ui`, also lands
+in `admin_audit` as `memory.purge` (filter "Memory purges" on `/admin/audit`),
+is written before anything is deleted
 (a failed write refuses the purge with `audit_write_failed`), and the response
 says when a purge was not recorded. The server now requires a preview of the
 same selection (`previewToken`, else `409 preview_required`). The page shows
@@ -63,6 +65,101 @@ the selector hints with `<code>`, and offers no delete for an empty preview.
 `memory_purge_audit` gains columns on first use (`ADD COLUMN IF NOT EXISTS`).
 Breaking for direct API callers: `DELETE` needs the `previewToken`, and
 `warning` became `warnings`.
+
+### Fixed — usage dashboard: bars, local days, missing calls, what a row costs
+
+2026-10-16 (#1388, #1390, #1392, #1393, #1396). Admin → Usage & Cost was
+wrong in five ways; all are fixed together because they share the ledger and
+the page.
+
+- **Chart (#1388).** Every "Cost over time" bar was 0 px tall: the buckets in
+  the `items-end` container had no height, so the bars' percentage heights
+  resolved to `auto`. Buckets now span the chart (`h-full`). Idle buckets come
+  back from the middleware as zero rows instead of being skipped, render no
+  bar, and the chart has a first/last axis label. Bars scale to the busiest
+  bucket instead of a fixed $1.
+- **Local days (#1396).** `GET /api/usage/dashboard` takes `tz` (IANA name
+  only; a bare offset is refused because Postgres reads it with POSIX sign
+  semantics) and cuts buckets in that zone instead of the Postgres session
+  zone (UTC). `since` is now always floored to the start of its bucket in that
+  zone (UTC when `tz` is absent), so the first bar is a whole day and the KPI
+  totals cover the same span as the chart. Hourly buckets stay unique across a
+  DST change (a fall-back hour is one bucket of two real hours), a zone Postgres
+  does not know falls back to UTC, and `bucket=hour` needs `since`.
+  The web UI sends the zone it formats in (`omadia-tz`), "7 days" / "30 days"
+  are today plus 6 / 29 whole local days, and a daily bar is labelled with its
+  date only.
+- **Missing calls (#1390).** The buffered orchestrator path
+  (`completeWithFallback`, behind `runTurn()`: routines, scheduled runs,
+  `ChatAgent.chat()`) wrote no `token_usage` row; it now writes one per model
+  call, including the fallback hop (with the fallback's provider and model).
+  Plugin `ctx.llm` calls write a row sourced `plugin <id>` (builder preview
+  runs: `plugin <id> (preview)`). No orchestrator seam records a `claude-cli`
+  call any more, since that adapter writes its own `claude-cli-completion` row
+  (`providerRecordsOwnUsage`). That includes the **streamed** path: a sub-agent
+  streaming on `claude-cli` (possible since the #1405 fallback) used to be
+  counted twice, and now appears only as `claude-cli-completion`, no longer
+  under its `sub-agent <name>` source. The page intro and the migration 0028 comment no
+  longer claim "every LLM call".
+- **Builder attribution (#1392).** `BuilderAgent.runTurn` opens a turn scope
+  (`turnId` of the request, `sessionScope: builder:<draftId>`), so the builder
+  sub-agent's rows carry `turn_id` / `session_id`. AutoFix turns go through the
+  same method.
+- **Breakdown rows (#1393).** "By model" / "By source" rows carry
+  `cacheCreationTokens` and show `cache read` and `cache write` separately; a
+  subscription row shows `≈ $x API equivalent`. All `sub-agent builder-<draftId>`
+  sources fold into one "Builder (n drafts)" row, and "By source" ends in an
+  "Other (n sources)" row after the top ten (`capByKey`). The reference cost is
+  labelled as the subscription share, because one model row can mix metered
+  and subscription calls.
+
+No migration and no new env var. The dashboard response gains fields
+(`cacheCreationTokens`, `group`, `members`); older clients ignore them.
+
+### Fixed — the middleware waits for Postgres at boot instead of crash-looping
+
+2026-10-16 (#1386). Core migrations are the first thing in boot that talks to
+Postgres, and they rethrew `ENOTFOUND`/`ECONNREFUSED` at once, so a middleware
+that started before its database (`docker compose restart`, a restart-policy
+restart, the DNS-alias race on a fresh `up`) exited and crash-looped until
+Postgres answered. `runCoreMigrations` now retries transient connection errors
+(`isTransientDbError`, now exported by `@omadia/knowledge-graph-neon` and shared
+with its `waitForPostgres`) with backoff from 0.5 s up to 5 s, for up to 60 s,
+logging `waiting for Postgres (…)` per attempt. Each connect attempt is capped
+at 5 s, and the separate lock-contention budget now starts at the first
+contention, so a long database wait cannot use it up. Past that budget the error
+still ends the process. Bad credentials or a missing database still fail on the
+first attempt. The HTTP listener is not up during the wait, so the Compose
+healthcheck (90 s `start_period`) and Fly's `/health` check (no restarts, only
+routing and deploy gating) see "not answering yet", not "degraded".
+
+### Fixed — a database outage is named as one, and `/system` shows platform health
+
+2026-10-16 (#1384, #1385, #1387, #1332). `GET /health` has a new
+`checks.database` (`ok` | `unreachable` | `unknown` | `none`). It is additive:
+`status` and the HTTP code keep their meaning, so the updater's health gate and
+the desktop supervisor are unaffected. Master-key posture is deliberately not
+on this public endpoint (see `docs/security-architecture.md` §8).
+
+- Dashboard: a card whose data could not be loaded now says "Status
+  unavailable" instead of its empty state ("No plugins installed yet" on an
+  instance with 15). A 503 `auth.unavailable` (the session check, which needs
+  the database) is its own readiness state, `database_unavailable`: the
+  middleware card reads "Database unreachable · API responds, database
+  unreachable", onboarding step 1 and the readiness card name the database and
+  link to `/system` instead of `/admin/update`.
+- `/system` renders the middleware's `/health` (database, embeddings, the
+  middleware's warnings) next to the vault card, loaded
+  independently so a failed vault call no longer hides it.
+- `/api/v1/admin/vault-status` returns `keychain_key_source`, and
+  `production_ready` is true only when both `VAULT_KEY` and
+  `CREDENTIAL_KEYCHAIN_KEY` come from env. The vault card shows a keychain row
+  and no longer says "production" for the vault key alone (that string was also
+  hard-coded English).
+- A shared banner on the dashboard and `/admin` reports a database outage, an
+  unreachable middleware, or (from vault-status) a master key read from the
+  dev file, naming the env var to set; `/admin` has a "Platform health" card linking to `/system`.
+- The boot log names the keychain dev key file path, like the vault line.
 
 ### Fixed — API keys: known scopes only, expiry/owner/delete, audit trail (#1327, #1328, #1329, #1324)
 
@@ -152,6 +249,54 @@ response body's `message` instead of `failed: 502`, and the add-server form
 warns that a stdio server runs with the middleware's permissions. Known gap: a
 DNS answer that changes between check and connect (rebinding) is not covered.
 
+### Fixed — the admin audit trail can be read, and records who did what
+
+2026-10-16. `admin_audit` had no read route and no UI, stored only the email
+for every `user.*`, `auth.provider_*` and `profile_snapshot.*` row
+(`actor_id` NULL), and recorded neither failed sign-ins nor plugin grant
+changes (#1315, #1347). Now one helper (`auditActorFromRequest`,
+`auth/adminAuditLog.ts`) sets the actor of every row a signed-in user causes:
+`actor_id` is the `users.id` from the session's `uid` claim, `actor_email` the
+session email. The conductor's baton and terminate rows used the
+knowledge-graph id (`omadia_user_id`) and now follow the same rule.
+`GET /api/v1/admin/audit` (paged, `action` and `actor_id` filters) and the
+admin page `/admin/audit` read the trail. New actions: `auth.login_failed`
+(first failure per account and client per minute; the account only as the
+`users` row it resolves to, never the typed text or the password), `plugin.grants_change` (public paths
+and SQL ledger, before/after — a revoke no longer erases the record of who
+opened a path), `plugin.install` and `plugin.uninstall`. The setup wizard logs
+the first admin's creation (#1092; the audit row already existed since #1262),
+and the registry route logs `ingested` instead of `installed` for a package
+that still needs the install wizard. See `docs/security-architecture.md` §10q.
+
+### Fixed — user admin refuses what it cannot apply; one email rule
+
+2026-10-16. `PATCH /api/v1/admin/users/:id` answered 200 to `{"role":"viewer"}`
+and to unknown `status` values and left the user unchanged (#1314). It now
+answers 400 (`admin_users.invalid_role`, `invalid_status`,
+`invalid_display_name`, `unknown_field`, `invalid_body`) and writes nothing.
+omadia has one role: every user is an administrator, which the users page now
+says. The admin create route, the setup wizard and `ADMIN_BOOTSTRAP_EMAIL`
+checked addresses only for `includes('@')`, so `a@` and `@b` became admin
+accounts via the API (#1321). All three now use `isValidLoginEmail`
+(`auth/loginEmail.ts`): exactly one `@`, non-empty local part and domain, no
+whitespace, control or invisible format characters, at most 254 characters.
+
+### Fixed — a revoked session no longer says "expired"; sign-out says "everywhere"
+
+2026-10-16. The web UI's session watcher showed "Session expired" for a
+session an admin ended (disable, password reset) or a sign-out on another
+device ended, and the "Sign out" button did not say it ends the sessions on
+every device (#1322). `/me`'s `401 auth.revoked` now shows "Session ended",
+the button reads "Sign out everywhere", and the API-keys and registries pages
+map `auth.revoked` the same way.
+
+### Fixed — the boot log no longer claims `/api/v1/auth/*` returns 503 without Entra
+
+2026-10-16. Without `MICROSOFT_APP_*` the middleware warned that the whole
+auth API returns 503, while local sign-in worked (#1323). The line now reads
+`Entra sign-in disabled (MICROSOFT_APP_* missing). Local login is unaffected.`
+
 ### Added — plugin tools can refuse a call with a message the model reads
 
 2026-10-16 — #1343. Every exception a plugin tool threw reached the model as
@@ -171,6 +316,22 @@ unknown-outcome clause: the tool may have written something before the block. Bo
 (the tool bridges and in-tree wrappers) and `withholdThrownToolError` (the
 dispatch seams) handle it, and the text still goes through the Privacy
 Shield's returned-error redactor. Every other exception stays withheld.
+
+### Fixed — Haiku 5.5 prompts over 100k tokens priced at the long-context rate
+
+2026-10-16. #1307 priced `claude-haiku-5-5` at $0.10/$0.50, but Anthropic
+bills a Haiku 5.5 prompt above 100k tokens at $0.50/$2.50, and `ModelPrice`
+had no way to say so. Those calls were under-counted fivefold. `ModelPrice`
+now has an optional `longContext` tier (`abovePromptTokens` plus the tier's
+price). When a call's prompt is over the threshold, `computeCostUsd` bills the
+whole call at the tier: input, output and cache tokens. The prompt counts
+input plus cache reads and writes, the way Anthropic measures it for its
+long-context tiers, so a short question over a large cached prefix counts.
+Only Haiku 5.5 carries a tier. `test/usageTelemetryPricing.test.ts` also
+checks that every seeded model of an API-key provider in
+`builtinLlmProviders.ts` and every current Anthropic id that live discovery
+admits has its own price. The dashboard still does not mark a model without a
+known price: it records at $0 behind a log warning (#1389, open).
 
 ### Fixed — the SEO analyst no longer reports on a site it never reached
 
@@ -536,7 +697,8 @@ platform.claude.com/docs/en/about-claude/pricing on 2026-10-05.
   is $0.10/$0.50 with standard 0.1x reads. It runs the background calls after
   every turn, so it is the most frequent call of an instance and was
   over-billed tenfold. Prompts above 100k tokens bill at $0.50/$2.50, which
-  `ModelPrice` cannot express yet; those calls stay under-counted.
+  `ModelPrice` cannot express yet; those calls stay under-counted (fixed
+  2026-10-16, see the long-context entry under [Unreleased]).
 - Dated snapshots of all three were still mispriced after the exact entries,
   because a snapshot misses the exact table and the only keywords were the
   broad family ones — `claude-opus-5-5-20260922` resolved to `opus` at $5/$25,

@@ -20,6 +20,7 @@ import {
   type MemoryPurgeDeps,
 } from '../src/routes/memoryPurge.js';
 import type { MemoryPurgeAuditStore } from '../src/services/memoryPurgeAudit.js';
+import { runAuthMigrations } from '../src/auth/migrator.js';
 import { seedConversationTurn, seedTeamsIdentity } from './_helpers/conversationFixture.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
@@ -45,6 +46,9 @@ const MOUNT = '/api/v1/admin/memory/purge';
 const ADMIN_SESSION = {
   sub: 'admin@example.com',
   email: 'admin@example.com',
+  /** `users.id` — what `admin_audit.actor_id` records (C07). */
+  uid: '5d2e7a90-2222-4333-8444-a55566667777',
+  /** KG cluster id — another namespace, never the audit actor. */
   omadia_user_id: '0b6f2c1e-1111-4222-8333-944455556666',
 };
 
@@ -206,6 +210,8 @@ async function maybePgPool(): Promise<Pool | undefined> {
   try {
     await pool.query('SELECT 1');
     await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+    // `admin_audit` lives in the auth series; the purge writes to it.
+    await runAuthMigrations(pool);
     return pool;
   } catch {
     await pool.end().catch(() => undefined);
@@ -578,7 +584,7 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
         assert.deepEqual(codes(r.body), []);
         assert.deepEqual(starts, [
           {
-            actor: { id: ADMIN_SESSION.omadia_user_id, email: ADMIN_SESSION.email },
+            actor: { id: ADMIN_SESSION.uid, email: ADMIN_SESSION.email },
             axis: 'agent',
             selector: 'a',
             reseed: false,
@@ -674,7 +680,7 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
         );
         const audit = row.rows[0]!;
         assert.equal(audit['actor'], ADMIN_SESSION.email);
-        assert.equal(audit['actor_id'], ADMIN_SESSION.omadia_user_id);
+        assert.equal(audit['actor_id'], ADMIN_SESSION.uid);
         assert.equal(audit['actor_email'], ADMIN_SESSION.email);
         assert.equal(audit['axis'], 'agent');
         assert.equal(audit['selector'], 'a');
@@ -683,6 +689,23 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
         assert.equal(audit['kg_deleted'], 1);
         assert.equal(audit['conversation_deleted'], 17);
         assert.ok(audit['completed_at'] instanceof Date);
+
+        // The same purge sits in the admin trail (/admin/audit) next to the
+        // other admin actions.
+        const ledger = await pool.query<Record<string, unknown>>(
+          `SELECT actor_id, actor_email, after FROM admin_audit
+            WHERE action = 'memory.purge' AND target = $1`,
+          [`memory-purge:${String(r.body['auditId'])}`],
+        );
+        assert.equal(ledger.rowCount, 1);
+        assert.equal(ledger.rows[0]!['actor_id'], ADMIN_SESSION.uid);
+        assert.equal(ledger.rows[0]!['actor_email'], ADMIN_SESSION.email);
+        assert.deepEqual((ledger.rows[0]!['after'] as Record<string, unknown>)['planned'], {
+          scratch: 2,
+          kg: 1,
+          conversation: 17,
+          reseedEntries: [],
+        });
       } finally {
         await h.close();
       }

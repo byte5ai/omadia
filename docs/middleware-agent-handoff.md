@@ -2814,6 +2814,35 @@ vergleicht), `test/auth/adminUsersRoute.test.ts`, `test/auth/localPasswordProvid
 Postgres `test/auth/loginAccountFold.pg.test.ts`; UI
 `web-ui/app/login/__tests__/page.test.tsx`.
 
+### Admin-Audit-Trail: ein Schreib-Helper, eine Lese-Route (#1315, #1347, #1092)
+
+`admin_audit` hat seit #1315 eine Lese-Seite und eine Akteur-Regel.
+
+- **Akteur:** Jede Route, die im Namen einer angemeldeten Person schreibt, nimmt
+  `auditActorFromRequest(req)` aus `auth/adminAuditLog.ts`. `actor_id` ist die
+  `users.id` aus dem Session-Claim `uid` (dieselbe uuid wie bei `auth.session_renew`
+  und `auth.first_admin_create`), `actor_email` die Session-E-Mail. Nie
+  `omadia_user_id` (KG-Cluster-Id, anderer Namensraum) und nie `sub` (bei lokalen
+  Konten eine E-Mail, #775). Ein Token ohne `uid` liefert keine id, keine geratene.
+  Ohne Session `{}` = Systemakteur. Neue Aktionen kommen als Member in den
+  `AuditAction`-Union-Typ; die Konvention gilt auch für den API-Key-Cluster (#1329).
+- **Lesen:** `GET /api/v1/admin/audit` (`routes/adminAudit.ts`, hinter `requireAuth`
+  wie `/admin/users`) mit `limit` 1..200 (Default 50), `offset`, `action` (exakt oder
+  Präfix mit Punkt, z. B. `user.`) und `actor_id` (uuid). Antwort
+  `{ entries, limit, offset, has_more }`, neueste zuerst; `has_more` liest eine Zeile
+  voraus statt `COUNT(*)`. Ungültige Parameter → 400 `admin_audit.invalid_query`.
+  UI: `/admin/audit`.
+- **Neue Aktionen:** `auth.login_failed` (erster Fehlversuch je Konto + Client und
+  Minute, `auth/loginFailureAudit.ts`, Systemakteur; Konto nur als aufgelöste
+  `users`-Zeile, nie der eingetippte Text), `plugin.grants_change` (jede Änderung an Public-Path- oder SQL-Consent,
+  `before`/`after` = gewährte Menge, `routes/runtimeGrants.ts`), `plugin.install`
+  (Install-Wizard endet in `active`/`errored`) und `plugin.uninstall` (mit den Grants,
+  die mit dem Plugin gehen, `routes/install.ts`).
+- **Logzeilen:** `[auth] login failed (…)` pro Audit-Zeile,
+  `[grants] <actor> changed consent for "<id>": …` pro Consent-Änderung,
+  `[auth] setup: first admin created via the setup wizard (…)` beim Wizard (#1092),
+  `[registry] ingested … — package registered, not yet installed` statt „installed“.
+
 ### Replay-Ledger: ein Verifier-Wiedereintritt führt keinen Write aus
 
 `VerifierService` betritt in `enforce` einen Turn erneut — Borderline-Resample
@@ -2963,6 +2992,41 @@ Tests: `test/toolReplayLedger.test.ts`, `test/toolReplaySeams.test.ts`,
 `test/correctionPromptEvidence.test.ts`, `test/mcpWriteIdempotency.test.ts`,
 `test/orchestrator/internFailureFailsClosed.test.ts`,
 `test/orchestratorPrivacyEgress.test.ts`.
+
+### Plattform-Checks auf `/health` + Postgres-Wartezeit beim Boot (#1384–#1387, #1332)
+
+**Boot (#1386).** `runCoreMigrations` (`platform/coreMigrations.ts`) ist der
+erste Postgres-Kontakt im Boot. Transiente Verbindungsfehler
+(`isTransientDbError` aus `@omadia/knowledge-graph-neon`, dieselbe Liste wie
+`waitForPostgres`: `ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`, `57P03`, …) werden
+mit Backoff (0,5 s → max. 5 s) bis zu 60 s wiederholt, mit einer Logzeile
+`waiting for Postgres (…)` pro Versuch. Danach endet der Prozess wie bisher.
+Das Budget ist unabhängig vom 60-s-Budget für Lock-Contention, das erst mit
+der ersten Contention startet. Jeder Verbindungsversuch ist auf 5 s begrenzt. Der
+HTTP-Listener bindet erst am Ende von `main()`, während der Wartezeit gibt es
+also kein `/health`. Compose (`start_period: 90s`) und Fly (Check startet
+keine Maschine neu) vertragen das.
+
+**`GET /health` → `checks.database`** (`health/platformHealth.ts`), additiv
+zu `kg`, `disclosure`, `attachments`: `ok` / `unreachable` / `unknown` /
+`none`, abgeleitet aus `kg.pool` und ob `DATABASE_URL` gesetzt ist. `status`
+und HTTP-Code bleiben unverändert (503 nur bei totem Pool), weil
+Updater-Health-Gate und Desktop-Supervisor darauf schauen. Die Herkunft der
+Master-Keys steht bewusst **nicht** auf dem öffentlichen Endpoint
+(siehe `docs/security-architecture.md` §8): der Dev-Key-Hinweis wird nur bei
+laufender DB gezeigt und liest dann die authentifizierte Vault-Status-Route.
+
+**`/api/v1/admin/vault-status`** liefert zusätzlich `keychain_key_source`.
+`production_ready` ist nur noch `true`, wenn beide Keys aus env kommen.
+
+**Web-UI.** `_lib/platformHealth.ts` liest `/health` serverseitig
+(`MIDDLEWARE_URL`, 10-s-Timeout, Body auch bei 503) und leitet
+`platformNotice()` ab: `databaseUnreachable` > `middlewareUnreachable` >
+`devMasterKey` (letzteres aus `/api/v1/admin/vault-status`). `PlatformHealthBanner` zeigt das auf `/` und `/admin`.
+`/system` rendert `PlatformHealthCard` neben der Vault-Karte. Ein 503
+`auth.unavailable` (Session-Check braucht die DB) ist im geteilten Klassifizierer
+`_lib/runtimeReadiness.ts` der Zustand `database_unavailable`. Dashboard-Karten
+ohne Daten zeigen „Status nicht abrufbar“ statt ihres Leerzustands.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -4439,8 +4503,6 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 - **User-Achse, rohe Channel-Ids**: ein Turn mit roher Channel-Id in `user_id` (Telegram,
   Teams `29:` ohne AAD-Id) wird nur über die `BELONGS_TO`-Kante gefunden; fehlt der Run-Trace,
   bleibt er stehen.
-- **`memory_purge_audit` → `admin_audit`**: Purges stehen nicht neben den anderen Admin-Aktionen
-  (#1315 / Cluster C07).
 
 ### Public API keys: Rotation (#1328)
 
@@ -6578,8 +6640,8 @@ plugin-api 1.30.0: Turn, Session, Run, AgentInvocation, ToolCall, Plan, PlanStep
 Facts; Agent-Achse über den Scope-Präfix `<slug>::`, User-Achse über `user_id` = omadia-User-Id).
 Response-Felder: `scratchCount|kgCount|conversationCount`, `reseedEntries`, `warnings[{code,params}]`
 (keine fertigen englischen Sätze mehr), `previewToken`. `DELETE` verlangt den `previewToken`
-derselben Auswahl (sonst `409 preview_required`), nimmt den Actor aus der Session und schreibt die
-`memory_purge_audit`-Zeile **vor** dem Löschen (Fehler → `500 audit_write_failed`, nichts gelöscht).
+derselben Auswahl (sonst `409 preview_required`), nimmt den Actor über `auditActorFromRequest` (C07) und schreibt die
+`memory_purge_audit`-Zeile plus eine `memory.purge`-Zeile in `admin_audit` **vor** dem Löschen (Fehler → `500 audit_write_failed`, nichts gelöscht).
 `reseed:true` (nur `axis:'all'`) setzt nur die Einträge des gebündelten Seed-Verzeichnisses
 (`MEMORY_SEED_DIR`, heute `_rules`) zurück und schreibt sie sofort neu — Chat-Sessions,
 Transkripte, `_brand`, `core`, `ui-prefs` bleiben immer. Details: `docs/security-architecture.md` §10q.
@@ -6909,6 +6971,40 @@ liegt die Turn-ID inzwischen vor: die `PrivacyEgressContinuation` trägt sie als
 `receiptId`, solange der Verifier läuft — die Ledger-Attribution kann daran
 anknüpfen (Privacy-Hand-over, siehe Turn-Receipts). ⚠️ Wie bei 0032:
 Migration vor Deploy, sonst verwirft jeder Flush den ganzen Batch.
+
+### Kosten-Ledger: Lücken und Dashboard-Korrektheit (#1388, #1390, #1392, #1393, #1396)
+
+Capture-Seams, die vorher fehlten: `completeWithFallback` (gepufferter
+Orchestrator-Pfad hinter `runTurn()` — Routinen, Schedule-Worker,
+`ChatAgent.chat()`) schreibt pro Modell-Call eine Zeile (`source` = Stream-Label,
+`provider` = der tatsächlich antwortende Provider, auch nach Fallback).
+Plugin-`ctx.llm` schreibt `plugin <id>` (Builder-Preview: `plugin <id> (preview)`)
+über `platform/pluginLlmUsage.ts`. Alle Orchestrator-Seams — auch der
+gestreamte Pfad — überspringen Provider, die selbst buchen
+(`providerRecordsOwnUsage` in `@omadia/usage-telemetry`, heute die Provider-ID
+`claude-cli`) — sonst zählt jeder Abo-Call doppelt. Folge: ein auf `claude-cli`
+laufender Sub-Agent erscheint nur als `claude-cli-completion`, nicht unter
+`sub-agent <name>`. ⚠️ Die Prüfung hängt an der Provider-ID, nicht am
+Wire-Format; ein zweiter Provider auf dem `claude-cli`-Wire bräuchte einen
+eigenen Eintrag. `BuilderAgent.runTurn`
+öffnet einen Turn-Scope (`sessionScope: builder:<draftId>`), damit
+Builder-Zeilen `turn_id`/`session_id` tragen.
+
+Lesepfad: `GET /api/usage/dashboard?…&tz=<IANA>` schneidet Buckets in dieser
+Zone (Default `UTC`) und rundet `since` immer auf den Bucket-Anfang in dieser
+Zone ab — Totals und Chart decken denselben Zeitraum. Stündliche Buckets sind
+nach Instant gruppiert (DST-sicher); eine Zone, die Postgres nicht kennt, fällt
+auf UTC zurück; `bucket=hour` verlangt `since`. Die Zeitreihe ist lückenlos (Leer-Buckets =
+0). `byModel`/`bySource` tragen `cacheCreationTokens`; `bySource` faltet alle
+`sub-agent builder-*` zu einer Zeile (`group: 'builder'`, `members`) und kappt
+nach `BY_SOURCE_LIMIT` (10) auf eine `other`-Zeile.
+
+Noch offen: der Verifier läuft nach dem Turn-Scope (Zeilen ohne Turn-ID,
+siehe #1098); `ctx.llm` liefert keine Cache-Zahlen (Plugin-Vertrag hat keine);
+ein `ctx.llm`-Call innerhalb verschachtelter Scopes ohne `sessionScope`
+(`pluginContext.callTool`, skill-gebundene Tools) bleibt ohne Turn-Zuordnung;
+Extras/Verifier über `withProviderUsageTracking` auf `claude-cli` zählen
+weiterhin doppelt (älter als dieser Fix).
 
 ### Systemstatus: "Letzter Turn" (OM-100b, §3)
 

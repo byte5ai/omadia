@@ -117,7 +117,12 @@ describe('<AuthBadge /> sign-out', () => {
     renderWithIntl(<AuthBadge />, { locale: 'de' });
     await openMenu();
     stubLocation();
-    fireEvent.click(screen.getByRole('button', { name: /Abmelden/ }));
+    // #1322 — sign-out ends every session, and the label + hint say so.
+    const signOut = screen.getByRole('button', { name: /Überall abmelden/ });
+    expect(signOut.getAttribute('title')).toBe(
+      'Meldet dich auf all deinen Geräten ab, nicht nur auf diesem.',
+    );
+    fireEvent.click(signOut);
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Du bist noch angemeldet.');

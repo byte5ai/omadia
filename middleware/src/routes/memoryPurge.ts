@@ -18,6 +18,7 @@ import {
   resolvePurgeTargets,
   type MemoryPurgeAxis,
 } from '../services/memoryPurge.js';
+import { auditActorFromRequest } from '../auth/adminAuditLog.js';
 import {
   createMemoryPurgeAuditStore,
   type MemoryPurgeActor,
@@ -177,12 +178,12 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Who is purging — from the session, never from the body. */
+/** Who is purging — from the session, never from the body; the one actor
+ *  rule of `admin_audit` (C07). A session that yields neither id nor email
+ *  cannot be attributed, so it cannot purge. */
 function actorOf(req: Request): MemoryPurgeActor | null {
-  const id = req.session?.omadia_user_id;
-  const email = req.session?.email ?? req.session?.sub;
-  if (!id && !email) return null;
-  return { ...(id ? { id } : {}), ...(email ? { email } : {}) };
+  const actor = auditActorFromRequest(req);
+  return actor.id || actor.email ? actor : null;
 }
 
 /** Selection identity a preview token is bound to. */

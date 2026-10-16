@@ -1,4 +1,8 @@
+import type { Request } from 'express';
 import type { Pool } from 'pg';
+
+// Type-only: the augmentation that puts `session?: SessionClaims` on Request.
+import type {} from './requireAuth.js';
 
 /**
  * Append-only ledger of privileged admin actions (user CRUD, provider
@@ -45,6 +49,19 @@ export type AuditAction =
   // `target` is the client key, `after` the scope and Retry-After. Never the
   // account that was tried.
   | 'auth.login_rate_limited'
+  // #1315 — a password sign-in that failed verification. One row per
+  // (account, client) per minute (`auth/loginFailureAudit.ts`), system actor;
+  // `target` is the client key, `after` the account only as the users row it
+  // resolves to, and the provider. Never the typed text or the password.
+  | 'auth.login_failed'
+  // #1347 — operator consent for a plugin's unauthenticated public paths and
+  // its SQL grant. `before`/`after` carry the granted set, so the history
+  // survives a revoke that DELETEs the grant row.
+  | 'plugin.grants_change'
+  // #1347 — a plugin finished its install wizard / was removed. The uninstall
+  // row lists the grants that left with it.
+  | 'plugin.install'
+  | 'plugin.uninstall'
   // #1342 — a stdio MCP server was saved (manual or catalog import). It runs
   // as a child process of the middleware, so who added it belongs in the
   // trail. `after` holds name + source, never the command line.
@@ -52,6 +69,10 @@ export type AuditAction =
   // #1329 — public API-key lifecycle (`@omadia/channel-api` /admin/keys),
   // written through `ctx.operatorAuth.recordAdminAction`. Never carries the
   // token or its hash.
+  // #1336 — a Danger-Zone memory purge. Written before anything is deleted,
+  // in the same transaction as its `memory_purge_audit` row (which then gets
+  // the outcome); `target` is `memory-purge:<that row's id>`.
+  | 'memory.purge'
   | 'api_key.create'
   | 'api_key.revoke'
   | 'api_key.delete';
@@ -86,6 +107,44 @@ export function isPluginAuditAllowed(pluginId: string, action: string, target: s
 export interface AuditActor {
   id?: string;
   email?: string;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The actor of a row whose writer only has a free-form label: a users.id, an
+ * email, or a system name such as `conductor-ephemeral-reaper`. Only a uuid
+ * goes to `id` — anything else in the uuid column makes the INSERT fail and
+ * the row is lost (#775) — and the label is kept in `email`, the free-text
+ * column, so it is not lost either.
+ */
+export function auditActorFromLabel(label: string | undefined): AuditActor {
+  if (!label) return {};
+  return UUID_RE.test(label) ? { id: label } : { email: label };
+}
+
+/**
+ * #1315 — THE actor of an audit row written on behalf of a signed-in user.
+ * Every writer that has a request uses this, so no event type can drift into
+ * its own convention again.
+ *
+ * `id` is the `users.id` the session was minted for (claim `uid`) — the same
+ * uuid `auth.session_renew` and `auth.first_admin_create` store. Not
+ * `omadia_user_id` (the knowledge-graph cluster id, another namespace) and
+ * not `sub` (an email for local accounts — #775: an email in the uuid column
+ * makes the INSERT fail). A token minted before `uid` existed yields no id,
+ * never a guess. `email` is denormalised for reading the trail.
+ *
+ * No session (a public route, a test harness) → `{}`, the system actor.
+ */
+export function auditActorFromRequest(req: Request): AuditActor {
+  const session = req.session;
+  if (!session) return {};
+  const uid = session.uid;
+  return {
+    ...(typeof uid === 'string' && UUID_RE.test(uid) ? { id: uid } : {}),
+    ...(session.email ? { email: session.email } : {}),
+  };
 }
 
 export interface AuditEntryInput {
@@ -152,17 +211,53 @@ export class AdminAuditLog {
     await this.pool.query(text, values);
   }
 
-  async list(opts: { limit?: number; offset?: number } = {}): Promise<AuditEntry[]> {
+  /**
+   * Newest first. `action` is an exact action (`user.create`) or a prefix
+   * ending in `.` (`user.`); `actorId` filters on the uuid. Both are bound
+   * parameters — the prefix's LIKE metacharacters are escaped, so `_` in an
+   * action name matches only itself.
+   */
+  async list(opts: AuditListOptions = {}): Promise<AuditEntry[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
     const offset = Math.max(0, opts.offset ?? 0);
+    const where: string[] = [];
+    const values: unknown[] = [];
+    if (opts.action !== undefined) {
+      if (opts.action.endsWith('.')) {
+        values.push(`${escapeLike(opts.action)}%`);
+        // Backslash is Postgres's default LIKE escape — no ESCAPE clause, so the
+        // text does not depend on standard_conforming_strings.
+        where.push(`action LIKE $${String(values.length)}`);
+      } else {
+        values.push(opts.action);
+        where.push(`action = $${String(values.length)}`);
+      }
+    }
+    if (opts.actorId !== undefined) {
+      values.push(opts.actorId);
+      where.push(`actor_id = $${String(values.length)}`);
+    }
+    values.push(limit, offset);
     const res = await this.pool.query<AuditRow>(
       `SELECT * FROM admin_audit
-       ORDER BY created_at DESC
-       LIMIT $1 OFFSET $2`,
-      [limit, offset],
+       ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY created_at DESC, id DESC
+       LIMIT $${String(values.length - 1)} OFFSET $${String(values.length)}`,
+      values,
     );
     return res.rows.map(rowToEntry);
   }
+}
+
+export interface AuditListOptions {
+  limit?: number;
+  offset?: number;
+  action?: string;
+  actorId?: string;
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
 function rowToEntry(row: AuditRow): AuditEntry {
@@ -189,8 +284,8 @@ function rowToEntry(row: AuditRow): AuditEntry {
  * email subs, i.e. the normal local-auth case.
  *
  * Mapping: the uuid goes to `id` only when the session actually carried one;
- * the sub always goes to `email` — same treatment the adminUsers routes give
- * it, and for the `'operator'` fallback it is the only place the actor can be
+ * the caller's actor label (the session email, else the sub) goes to `email`;
+ * for the `'operator'` fallback it is the only place the actor can be
  * preserved at all (the column is free-text, like `target`).
  */
 export function roleChangeAuditEntry(entry: {
