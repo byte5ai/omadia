@@ -3309,7 +3309,14 @@ Confirmed empirically against a deployment under our control: uncredentialed
    convention.
 3. `DEV_ENDPOINTS_LOOPBACK_ONLY=true` (optional, default off) additionally
    refuses any `/api/dev` request that did not arrive over a loopback socket.
-   It reads `req.socket.remoteAddress`, never `X-Forwarded-For` — wherever
+   `mountDevLoopbackGuard` mounts it on the `/api/dev` prefix ahead of both the
+   graph browser and the session plugin routes (`pluginRouteRegistry.mountAll`,
+   and hot-installed ones after it), so it covers the `@omadia/memory` browser
+   at `/api/dev/memory` too. Before #1350 it sat on `/api/dev/graph` only, and
+   the memory browser answered any address while the boot log said
+   "loopback-only". `auth: 'public'`/`'custom'` plugin routes are dispatched
+   earlier and are not covered; none lives under `/api/dev`. The guard reads
+   `req.socket.remoteAddress`, never `X-Forwarded-For` — wherever
    `TRUSTED_PROXY_ADDRESSES` names a hop (§10o), a guard on `req.ip` would be
    defeated by a header. Leave it off in
    containerised setups, where the Next.js server proxies from a container
@@ -3326,7 +3333,9 @@ short of turning it off or blocking `/api/dev` upstream.
 
 Tests: `middleware/test/devEndpoints/` (one no-credentials case per route,
 including all three destructive `POST`s, plus the negative control that
-restores the old allowlist entry and requires the surface to go open again).
+restores the old allowlist entry and requires the surface to go open again;
+#1350 adds non-loopback `403` cases for the graph and the memory browser,
+mounted through a real `PluginRouteRegistry`).
 `bash middleware/test/devEndpoints/mutation-check.sh` breaks each guard in
 source and requires the suite to go red.
 

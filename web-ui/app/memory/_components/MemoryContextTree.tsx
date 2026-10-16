@@ -33,10 +33,10 @@ import {
  * `listDir` is now backed by `GET /bot-api/v1/operator/memory/contexts/list`
  * (`middleware/src/routes/operatorMemoryContexts.ts`), which is `requireAuth`-
  * gated and structurally unable to read outside `/memories/contexts`. It
- * replaces the unauthenticated `/bot-api/dev/memory/list`, which the memory
- * plugin only mounted behind `dev_memory_endpoints_enabled` — a flag the kernel
- * forbids in production, so this tree used to be dead precisely where an
- * operator needs it.
+ * replaces the dev scaffolding route `/bot-api/dev/memory/list`, which the
+ * memory plugin only mounts behind `dev_memory_endpoints_enabled` — a flag that
+ * stays off on deployed environments, so this tree used to be dead precisely
+ * where an operator needs it.
  *
  * The agent tier (`/memories/orchestrators/<slug>`) is consequently NOT a node
  * here any more: it lies outside the one subtree this gate can serve, and a
