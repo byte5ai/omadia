@@ -31,9 +31,11 @@ import { LLM_PLUGINS } from '../src/platform/pluginLlmReadiness.js';
 import { applyProviderAssignment } from '../src/platform/providerAssignment.js';
 import {
   ProviderDependentRebuildError,
+  capturingPluginOf,
   isEffectiveProviderChange,
   providerDependentsOf,
   reactivateAfterProviderWrite,
+  rebuildOrder,
 } from '../src/platform/providerDependents.js';
 import type { SecretVault } from '../src/secrets/vault.js';
 
@@ -133,11 +135,12 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
     assert.deepEqual(reactivated, [ORCH]);
   });
 
-  // Pins TODAY's behaviour, not the intended end state: a direct extras
-  // rebuild leaves the running orchestrator on the previous extras instances.
-  // That reverse direction is the open follow-up in
-  // docs/middleware-agent-handoff.md §13 ("Umgekehrte Richtung").
-  it('assigning extras or the verifier directly rebuilds only that plugin', async () => {
+  // #1394 case 1 — the orchestrator captures extras' and the verifier's
+  // services in its own activate(). A direct extras (Background-Scorer) or
+  // verifier assignment used to rebuild only that plugin, so the running
+  // orchestrator kept the old instances: background calls stayed on the old
+  // provider although the UI and the extras log said otherwise.
+  it('assigning extras or the verifier directly rebuilds it, then the orchestrator that captures it (#1394)', async () => {
     const { reactivated, deps } = await makeDeps([
       { id: ORCH },
       { id: VERIFIER },
@@ -149,7 +152,7 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
       model: 'gpt-5.4-mini',
     });
     assert.equal(extras.ok, true, JSON.stringify(extras));
-    assert.deepEqual(reactivated, [EXTRAS]);
+    assert.deepEqual(reactivated, [EXTRAS, ORCH]);
 
     reactivated.length = 0;
     const verifier = await applyProviderAssignment(deps, {
@@ -158,7 +161,30 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
       model: 'gpt-5.4-mini',
     });
     assert.equal(verifier.ok, true, JSON.stringify(verifier));
-    assert.deepEqual(reactivated, [VERIFIER]);
+    assert.deepEqual(reactivated, [VERIFIER, ORCH]);
+  });
+
+  it('an extras assignment without an installed orchestrator rebuilds only extras', async () => {
+    const { reactivated, deps } = await makeDeps([{ id: EXTRAS }]);
+    const extras = await applyProviderAssignment(deps, {
+      pluginId: EXTRAS,
+      provider: 'openai',
+      model: 'gpt-5.4-mini',
+    });
+    assert.equal(extras.ok, true, JSON.stringify(extras));
+    assert.deepEqual(reactivated, [EXTRAS]);
+  });
+
+  it('rebuildOrder puts the capturing orchestrator last and adds it when missing (#1394)', () => {
+    const all = (): boolean => true;
+    assert.deepEqual(rebuildOrder([ORCH, VERIFIER, EXTRAS], all), [VERIFIER, EXTRAS, ORCH]);
+    assert.deepEqual(rebuildOrder([EXTRAS], all), [EXTRAS, ORCH]);
+    assert.deepEqual(rebuildOrder([EXTRAS], (id) => id !== ORCH), [EXTRAS]);
+    assert.deepEqual(rebuildOrder([ORCH], all), [ORCH]);
+    assert.deepEqual(rebuildOrder(['@acme/other', ORCH, '@acme/other'], all), ['@acme/other', ORCH]);
+    assert.equal(capturingPluginOf(EXTRAS), ORCH);
+    assert.equal(capturingPluginOf(VERIFIER), ORCH);
+    assert.equal(capturingPluginOf(ORCH), undefined);
   });
 
   it('a dependent the production reactivate leaves errored still rebuilds the orchestrator, then reports dependent_rebuild_failed', async () => {

@@ -16,6 +16,12 @@
  * Every writer of `llm_provider` runs {@link reactivateAfterProviderWrite}:
  * `applyProviderAssignment` (providerAssignment.ts) and the generic config /
  * secrets writes in routes/runtime.ts.
+ *
+ * #1394 — the capture also runs the other way: a write to extras (or the
+ * verifier) rebuilds that plugin, and the orchestrator then still holds the
+ * torn-down instances. So the plugin that captures a rebuilt one is rebuilt
+ * after it ({@link rebuildOrder}); the settings PATCH, which reactivates
+ * several scopes at once, sorts by the same rule.
  */
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { DEFAULT_PROVIDER, LLM_PLUGINS, readStringConfig } from './pluginLlmReadiness.js';
@@ -25,6 +31,36 @@ export function providerDependentsOf(pluginId: string): string[] {
   return LLM_PLUGINS.filter((p) => p.inheritsProviderFrom === pluginId).map(
     (p) => p.id,
   );
+}
+
+/** The plugin that captures `pluginId`'s published services in its own
+ *  `activate()` (`LlmPluginDesc.capturedBy`), if any. */
+export function capturingPluginOf(pluginId: string): string | undefined {
+  return LLM_PLUGINS.find((p) => p.id === pluginId)?.capturedBy;
+}
+
+/**
+ * The order to rebuild `pluginIds` in, plus every installed plugin that
+ * captures one of them: a capturing plugin comes after everything it
+ * captures, otherwise it re-captures the instances about to be torn down
+ * (#1394). The relative order of the rest is kept. `isInstalled` filters the
+ * capturing plugins that are added; the given ids are taken as they are.
+ */
+export function rebuildOrder(
+  pluginIds: Iterable<string>,
+  isInstalled: (pluginId: string) => boolean,
+): string[] {
+  const ids = [...new Set(pluginIds)];
+  for (const id of [...ids]) {
+    const capturer = capturingPluginOf(id);
+    if (capturer !== undefined && !ids.includes(capturer) && isInstalled(capturer)) {
+      ids.push(capturer);
+    }
+  }
+  const capturers = new Set(
+    ids.map(capturingPluginOf).filter((c): c is string => c !== undefined),
+  );
+  return [...ids.filter((id) => !capturers.has(id)), ...ids.filter((id) => capturers.has(id))];
 }
 
 function effectiveProvider(cfg: Record<string, unknown> | undefined): string {
@@ -142,6 +178,9 @@ export interface ProviderWriteFacts {
    * reach a dependent still left `errored`.
    */
   readonly providerWritten?: boolean;
+  /** Rebuild the plugin that captures the written one afterwards (#1394).
+   *  Default `true`; a batch that rebuilds it itself passes `false`. */
+  readonly rebuildCapturer?: boolean;
 }
 
 /**
@@ -165,9 +204,11 @@ function dependentsToRebuild(
 
 /**
  * Reactivate `pluginId` after a config write, rebuilding its installed
- * provider dependents first (see {@link dependentsToRebuild} for which). A
- * failing dependent does not stop the primary from being rebuilt. Afterwards
- * the first dependent failure is thrown as a
+ * provider dependents first (see {@link dependentsToRebuild} for which), and
+ * the installed plugin that captures `pluginId`'s services last (#1394: a
+ * Background-Scorer assignment rebuilt only extras, and the orchestrator kept
+ * the old extras instances). A failing dependent does not stop the primary
+ * from being rebuilt. Afterwards the first dependent failure is thrown as a
  * {@link ProviderDependentRebuildError}; a dependent counts as failed when
  * `reactivate` throws OR leaves it `errored` (the production `reactivate`
  * only ever does the latter).
@@ -204,6 +245,11 @@ export async function reactivateAfterProviderWrite(
     providerChanged: opts.providerChanged,
     primaryFailure: activationFailure(deps.installedRegistry, pluginId),
   };
+  const capturer = opts.rebuildCapturer === false ? undefined : capturingPluginOf(pluginId);
+  if (capturer !== undefined && deps.installedRegistry.has(capturer)) {
+    const reason = await rebuildDependent(deps.installedRegistry, reactivate, capturer);
+    if (reason !== undefined) dependentFailures.push({ id: capturer, reason });
+  }
   const failures = dependentFailures.map(
     (f) => new ProviderDependentRebuildError(pluginId, f.id, f.reason, outcome),
   );

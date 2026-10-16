@@ -185,6 +185,18 @@ describe('admin settings route — PATCH /', () => {
     assert.deepEqual(h.reactivated.sort(), [ORCH, EXTRAS, VERIFIER].sort());
   });
 
+  // #1394 case 2 — the orchestrator captures extras' and the verifier's
+  // services in its own activate(). Catalog order (orchestrator first) left it
+  // holding extras' key-less boot instances after the first key save.
+  it('rebuilds the verifier and extras BEFORE the orchestrator that captures them', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    const { status } = await patch(h, [
+      { key: 'ANTHROPIC_API_KEY', value: 'sk-ant-test123' },
+    ]);
+    assert.equal(status, 200);
+    assert.deepEqual(h.reactivated, [VERIFIER, EXTRAS, ORCH]);
+  });
+
   it('writes the Mistral secret to every scope and accepts a key with no special prefix', async () => {
     // Mistral keys have no public sk-/sk-ant- prefix, so the handler must NOT
     // prefix-validate them — any non-empty value is accepted and fans out to

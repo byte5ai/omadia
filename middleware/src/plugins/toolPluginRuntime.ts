@@ -149,6 +149,10 @@ export interface ToolPluginRuntimeDeps {
     entry: PluginCatalogEntry,
     packagePath: string,
   ) => void | Promise<void>;
+  /** Fired right before a plugin's own `activate()` runs, i.e. before it reads
+   *  anything (config, the model catalog). Lets the wiring record what the
+   *  activation is about to see (#1359). Synchronous; a throw is logged. */
+  onActivating?: (agentId: string) => void;
   /** Counterpart to `onActivated`: fired after a plugin is removed from the
    *  active set, so the wiring can `unregisterServiceType` its entries. */
   onDeactivated?: (agentId: string) => void | Promise<void>;
@@ -337,6 +341,16 @@ export class ToolPluginRuntime {
     await fs.access(entryAbs).catch(() => {
       throw new Error(`tool-runtime: entry file not readable at ${entryAbs}`);
     });
+
+    if (this.deps.onActivating) {
+      try {
+        this.deps.onActivating(agentId);
+      } catch (err) {
+        log(
+          `[tool-runtime] onActivating hook FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
 
     const mod = (await import(pathToFileURL(entryAbs).href)) as ToolPluginModuleShape;
     const activateFn = mod.activate ?? mod.default?.activate;

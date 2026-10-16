@@ -49,6 +49,12 @@ export interface LlmPluginDesc {
    *  (`reactivateAfterProviderWrite` in `providerDependents.ts`), because the
    *  inherited provider is resolved once per `activate()`. */
   readonly inheritsProviderFrom?: string;
+  /** The plugin whose `activate()` captures this plugin's published services
+   *  (`verifier`, `factExtractor`, `contextRetriever`, …) eagerly. Rebuilding
+   *  this plugin must rebuild THAT one afterwards, or it keeps serving the old,
+   *  torn-down instances until a restart (#1394). See `rebuildOrder` in
+   *  `providerDependents.ts`. */
+  readonly capturedBy?: string;
 }
 
 export const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
@@ -67,6 +73,8 @@ export const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
     // The verifier uses FORCED single-tool structured output (claimExtractor /
     // evidenceJudge), which the claude-cli provider now supports via a
     // JSON-schema prompt — so the subscription CLI is a valid choice here.
+    // The orchestrator captures the `verifier` bundle in its own activate().
+    capturedBy: '@omadia/orchestrator',
   },
   {
     id: '@omadia/orchestrator-extras',
@@ -76,6 +84,10 @@ export const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
     // orchestrator's assignment (`INHERITS_PROVIDER_FROM_PLUGIN_ID` in
     // `@omadia/orchestrator-extras`; a drift test keeps the two equal).
     inheritsProviderFrom: '@omadia/orchestrator',
+    // ...and the orchestrator captures extras' `knowledgeGraph` (scorer
+    // wrapper), `factExtractor`, `contextRetriever`, excerpt extractor and
+    // `sessionBriefing` in its own activate() (#1394).
+    capturedBy: '@omadia/orchestrator',
   },
 ];
 
