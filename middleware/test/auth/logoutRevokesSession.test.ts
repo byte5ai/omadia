@@ -128,7 +128,7 @@ class UsersTable {
 function seedRow(overrides: Partial<Row>): Row {
   const now = new Date();
   return {
-    id: 'row-local-1',
+    id: '00000000-0000-4000-8000-00000000a001',
     email: EMAIL,
     provider: 'local',
     providerUserId: EMAIL,
@@ -183,7 +183,7 @@ async function start(): Promise<Harness> {
   const table = new UsersTable();
   table.rows.push(seedRow({ passwordHash }));
   table.rows.push(
-    seedRow({ id: 'row-local-2', email: SECOND, providerUserId: SECOND, passwordHash }),
+    seedRow({ id: '00000000-0000-4000-8000-00000000a002', email: SECOND, providerUserId: SECOND, passwordHash }),
   );
   table.rows.push(
     seedRow({
@@ -297,7 +297,7 @@ describe('POST /api/v1/auth/logout ends the session server-side', () => {
 
     const minted = await verifySession(copied, KEY);
     assert.equal(minted.sv, 0, 'minted at the row version');
-    assert.equal(minted.uid, 'row-local-1', 'bound to the verified row');
+    assert.equal(minted.uid, '00000000-0000-4000-8000-00000000a001', 'bound to the verified row');
     assert.ok(minted.sid, 'every sign-in carries a session id');
     assert.equal((await call(h, 'GET', '/api/v1/admin/ping', copied)).status, 200);
 
@@ -305,7 +305,7 @@ describe('POST /api/v1/auth/logout ends the session server-side', () => {
     assert.equal(out.status, 200);
     assert.ok(clearsSessionCookie(out.res), 'the browser cookie is cleared as before');
     assert.equal(h.table.row('local', EMAIL).sessionVersion, 1, 'the version moved on');
-    assert.deepEqual(h.table.patches, [{ id: 'row-local-1', patch: { revokeSessions: true } }]);
+    assert.deepEqual(h.table.patches, [{ id: '00000000-0000-4000-8000-00000000a001', patch: { revokeSessions: true } }]);
 
     // The replay: the same bytes, after the sign-out.
     assert.deepEqual(
@@ -350,7 +350,7 @@ describe('POST /api/v1/auth/logout ends the session server-side', () => {
   it('answers 200 and bumps nothing for a garbage or expired cookie', async () => {
     const h = await start();
     const expired = await signSession(
-      { sub: EMAIL, email: EMAIL, display_name: 'Operator', role: 'admin', provider: 'local', sv: 0, uid: 'row-local-1' },
+      { sub: EMAIL, email: EMAIL, display_name: 'Operator', role: 'admin', provider: 'local', sv: 0, uid: '00000000-0000-4000-8000-00000000a001' },
       KEY,
       Math.floor(Date.now() / 1000) - 60,
     );
@@ -502,7 +502,7 @@ describe('admin actions end sessions end to end (real admin router, real gate)',
   it('an unrelated profile edit leaves the session valid', async () => {
     const h = await start();
     const operator = await login(h);
-    assert.equal(await admin(h, operator, 'PATCH', '/row-local-1', { display_name: 'Renamed' }), 200);
+    assert.equal(await admin(h, operator, 'PATCH', '/00000000-0000-4000-8000-00000000a001', { display_name: 'Renamed' }), 200);
     assert.equal((await call(h, 'GET', '/api/v1/admin/ping', operator)).status, 200);
     assert.equal((await call(h, 'GET', '/api/v1/auth/me', operator)).status, 200);
   });
@@ -512,7 +512,7 @@ describe('admin actions end sessions end to end (real admin router, real gate)',
     const operator = await login(h);
     const target = await login(h, SECOND);
     assert.equal(
-      await admin(h, operator, 'POST', '/row-local-2/reset-password', { password: 'a new passphrase' }),
+      await admin(h, operator, 'POST', '/00000000-0000-4000-8000-00000000a002/reset-password', { password: 'a new passphrase' }),
       200,
     );
     assert.deepEqual(pick(await call(h, 'GET', '/api/v1/admin/ping', target)), revoked);
@@ -524,10 +524,10 @@ describe('admin actions end sessions end to end (real admin router, real gate)',
     const h = await start();
     const operator = await login(h);
     const target = await login(h, SECOND);
-    assert.equal(await admin(h, operator, 'PATCH', '/row-local-2', { status: 'disabled' }), 200);
+    assert.equal(await admin(h, operator, 'PATCH', '/00000000-0000-4000-8000-00000000a002', { status: 'disabled' }), 200);
     assert.deepEqual(pick(await call(h, 'GET', '/api/v1/admin/ping', target)), revoked);
 
-    assert.equal(await admin(h, operator, 'PATCH', '/row-local-2', { status: 'active' }), 200);
+    assert.equal(await admin(h, operator, 'PATCH', '/00000000-0000-4000-8000-00000000a002', { status: 'active' }), 200);
     assert.deepEqual(
       pick(await call(h, 'GET', '/api/v1/admin/ping', target)),
       revoked,
@@ -541,7 +541,7 @@ describe('admin actions end sessions end to end (real admin router, real gate)',
     const h = await start();
     const operator = await login(h);
     const target = await login(h, SECOND);
-    assert.equal(await admin(h, operator, 'DELETE', '/row-local-2'), 204);
+    assert.equal(await admin(h, operator, 'DELETE', '/00000000-0000-4000-8000-00000000a002'), 204);
     assert.deepEqual(pick(await call(h, 'GET', '/api/v1/admin/ping', target)), revoked);
   });
 
@@ -549,7 +549,7 @@ describe('admin actions end sessions end to end (real admin router, real gate)',
     const h = await start();
     const here = await login(h);
     const hashBefore = h.table.row('local', EMAIL).passwordHash;
-    const res = await fetch(`${h.base}/api/v1/admin/users/row-local-1/reset-password`, {
+    const res = await fetch(`${h.base}/api/v1/admin/users/00000000-0000-4000-8000-00000000a001/reset-password`, {
       method: 'POST',
       headers: { cookie: `${SESSION_COOKIE}=${here}`, 'content-type': 'application/json' },
       body: JSON.stringify({ password: 'x'.repeat(1025) }),
@@ -568,7 +568,7 @@ describe('admin actions end sessions end to end (real admin router, real gate)',
     const here = await login(h);
     const longest = 'x'.repeat(1022) + '\u{1F511}';
     assert.equal(
-      await admin(h, here, 'POST', '/row-local-1/reset-password', { password: longest }),
+      await admin(h, here, 'POST', '/00000000-0000-4000-8000-00000000a001/reset-password', { password: longest }),
       200,
     );
     const res = await fetch(`${h.base}/api/v1/auth/login/local`, {
@@ -584,7 +584,7 @@ describe('admin actions end sessions end to end (real admin router, real gate)',
     const here = await login(h);
     const elsewhere = await login(h);
     assert.equal(
-      await admin(h, here, 'POST', '/row-local-1/reset-password', { password: 'a new passphrase' }),
+      await admin(h, here, 'POST', '/00000000-0000-4000-8000-00000000a001/reset-password', { password: 'a new passphrase' }),
       200,
     );
     assert.deepEqual(pick(await call(h, 'GET', '/api/v1/admin/ping', here)), revoked);

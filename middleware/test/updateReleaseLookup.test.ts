@@ -101,6 +101,117 @@ describe('createReleaseLookup', () => {
     assert.equal(result.error, 'github_status_403');
   });
 
+  it('does not ask GitHub again inside the backoff after a failure (#1381)', async () => {
+    let calls = 0;
+    let clock = 0;
+    const lookup = createReleaseLookup({
+      now: () => clock,
+      failureBackoffMs: 60_000,
+      fetchImpl: async () => {
+        calls += 1;
+        throw new Error('connect ETIMEDOUT');
+      },
+    });
+
+    const first = await lookup.get();
+    clock = 30_000; // one idle poll of /admin/update later
+    const second = await lookup.get();
+    assert.equal(calls, 1, 'the second poll is served from the negative cache');
+    assert.equal(second.stale, true);
+    assert.equal(second.error, first.error);
+
+    await lookup.get(true);
+    assert.equal(calls, 2, '"Check now" bypasses the backoff');
+
+    clock = 30_000 + 60_000; // past the first backoff, but it doubled
+    await lookup.get();
+    assert.equal(calls, 2, 'the backoff doubles per consecutive failure');
+    clock = 30_000 + 120_000;
+    await lookup.get();
+    assert.equal(calls, 3);
+  });
+
+  it('caps the backoff and resets it after a success', async () => {
+    let calls = 0;
+    let clock = 0;
+    let online = false;
+    const lookup = createReleaseLookup({
+      now: () => clock,
+      ttlMs: 10,
+      failureBackoffMs: 1_000,
+      maxFailureBackoffMs: 3_000,
+      fetchImpl: async () => {
+        calls += 1;
+        if (!online) throw new Error('offline');
+        return jsonResponse(RELEASE);
+      },
+    });
+
+    for (let i = 0; i < 5; i += 1) await lookup.get(true); // 5 failures
+    clock += 3_000;
+    await lookup.get();
+    assert.equal(calls, 6, 'the wait never exceeds maxFailureBackoffMs');
+
+    online = true;
+    await lookup.get(true);
+    online = false;
+    clock += 1_000; // past the TTL, fails again
+    await lookup.get();
+    assert.equal(calls, 8);
+    clock += 1_000;
+    await lookup.get();
+    assert.equal(calls, 9, 'a success resets the backoff to its base');
+  });
+
+  it('waits as long as a rate-limited GitHub asks', async () => {
+    let calls = 0;
+    let clock = 1_000_000;
+    const lookup = createReleaseLookup({
+      now: () => clock,
+      failureBackoffMs: 1_000,
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response('{"message":"API rate limit exceeded"}', {
+          status: 403,
+          headers: {
+            'x-ratelimit-remaining': '0',
+            // Reset 10 minutes from now, in epoch seconds.
+            'x-ratelimit-reset': String((clock + 600_000) / 1000),
+          },
+        });
+      },
+    });
+
+    await lookup.get();
+    clock += 599_000;
+    await lookup.get();
+    assert.equal(calls, 1, 'no request before x-ratelimit-reset');
+    clock += 1_000;
+    await lookup.get();
+    assert.equal(calls, 2);
+  });
+
+  it('honours retry-after on a 429', async () => {
+    let calls = 0;
+    let clock = 0;
+    const lookup = createReleaseLookup({
+      now: () => clock,
+      failureBackoffMs: 1_000,
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response('', { status: 429, headers: { 'retry-after': '120' } });
+      },
+    });
+
+    await lookup.get();
+    clock = 119_000;
+    await lookup.get();
+    assert.equal(calls, 1);
+    clock = 120_000;
+    await lookup.get();
+    assert.equal(calls, 2);
+  });
+
   it('treats a payload without a usable tag as no answer', async () => {
     const lookup = createReleaseLookup({
       fetchImpl: async () => jsonResponse({ html_url: 'x' }),

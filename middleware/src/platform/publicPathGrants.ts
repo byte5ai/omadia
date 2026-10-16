@@ -344,6 +344,23 @@ export class PublicPathGrantRegistry {
     return best;
   }
 
+  /**
+   * #1349 — the declared prefix `requestPath` falls under when the operator has
+   * NOT granted it, or `null`. Never used for routing (an ungranted prefix is
+   * closed whatever this returns); it only lets the final 404 say why.
+   */
+  resolveUngranted(requestPath: string): PublicPathMatch | null {
+    let best: PublicPathMatch | null = null;
+    for (const [prefix, owner] of this.byPrefix) {
+      if (owner.granted) continue;
+      if (!isUnderPrefix(requestPath, prefix)) continue;
+      if (best === null || prefix.length > best.prefix.length) {
+        best = { pluginId: owner.pluginId, prefix };
+      }
+    }
+    return best;
+  }
+
   /** Drop every claim held by `pluginId`. Returns how many were released. */
   releaseBySource(pluginId: string): number {
     let count = 0;
