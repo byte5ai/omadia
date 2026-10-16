@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.30.0 — 2026-10-16
+## 1.31.0 — 2026-10-16
 
 Additive. A plugin tool that only some channels can serve can say so per turn,
 so the model is not offered a call that can only fail (#1346).
@@ -21,7 +21,22 @@ so the model is not offered a call that can only fail (#1346).
   `promptDoc` for that turn (on `registerHandler`, the `promptDoc` only).
   Must answer the same for the whole turn. Advertisement only: dispatch is not gated, so the
   handler must still answer a call on such a turn truthfully. Absent ⇒ always
-  offered; a kernel before 1.30.0 ignores it.
+  offered; a kernel before 1.31.0 ignores it.
+
+## 1.30.0 — 2026-10-16
+
+Additive. One boundary-preset library for both places an operator can forbid an
+agent something (#1104): the per-agent "Boundaries" tab and the install-wide
+defaults of a `responseGuard@1` provider. They used to carry separate
+libraries (12 and 10 ids) with only 2 ids in common.
+
+### Added
+
+- **`BOUNDARY_PRESETS`**, **`getBoundaryPreset(id)`**, **`BoundaryPreset`**,
+  **`BoundaryPresetCategory`** — the 12 curated presets (id, category, label
+  key, rule wording). The builder compiles them into an agent's
+  `## Boundaries` section; `@omadia/plugin-quality-guard` 0.2.0 resolves its
+  `default_boundary_presets` against the same entries.
 
 ## 1.29.0 — 2026-10-16
 

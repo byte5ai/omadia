@@ -48,6 +48,11 @@ export * from './embeddingClient.js';
 // same contract without a dependency between them.
 export * from './responseGuard.js';
 
+// The shared boundary-preset library (#1104): the builder's per-agent
+// "Boundaries" and the `responseGuard@1` provider's install-wide defaults read
+// the same ids and rule wording.
+export * from './boundaryPresets.js';
+
 // Palaia-Phase-5 (OB-74): per-agent block/boost list, consumed by the
 // `ContextRetriever.assembleForBudget` assembler. Provider:
 // `harness-knowledge-graph-neon` (durable, tenant-scoped); no-op default

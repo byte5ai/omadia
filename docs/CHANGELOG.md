@@ -156,6 +156,33 @@ it is. No DB migration: key records and the usage log stay vault entries;
 old records read as "no expiry, owner unknown". Rotation is not implemented
 (open question on the PR).
 
+### Fixed — plugin UI host page no longer 404s for scoped plugin ids
+
+2026-10-16 (#1399). Core links a plugin's own UI as
+`/plugin-ui/%40omadia%2F<name>`, and Next 16 passes that route param to the
+page still percent-encoded (`getParamValue` re-encodes it). The host page
+validated the raw value, so every scoped id — every omadia plugin — got the
+Next 404 page. `decodePluginIdSegment` (`web-ui/app/_lib/pluginId.ts`) now
+decodes first and runs the id gate on the decoded value (broken encoding and
+encoded traversal still 404); the page and the tab title use it. The new
+route test builds params with Next's own `getDynamicParam`, so a Next upgrade
+that changes the encoding is caught there.
+
+### Changed — one boundary-preset library for agents and Quality Guard
+
+2026-10-16 (#1104). The per-agent "Boundaries" tab and the Quality Guard
+plugin's install-wide defaults read the same preset library,
+`BOUNDARY_PRESETS` in `@omadia/plugin-api` 1.30.0. Every id the agent tab
+offers now works in the plugin's `default_boundary_presets` field, with the
+same rule wording. Quality Guard 0.2.0 keeps its 8 own v0.1 ids
+(`no-financial-advice`, `privacy-first`, …) with their old wording, so saved
+configs keep working; `no-legal-advice` and `no-speculation` switch to the
+shared wording (for `no-speculation` that is a different rule: "do not guess
+when uncertain" instead of "do not speculate about the future"). Unknown ids
+are logged at activation instead of being dropped without a trace.
+**Check `default_boundary_presets` before upgrading:** an agent-UI id that
+0.1 silently dropped (e.g. `no-pii`) now applies to every agent. The plugin's setup fields now carry English and German text.
+
 ### Fixed — channel-bound tools are offered only on turns that can serve them (#1346, #1086)
 
 2026-10-16. `discussion_start` and `discussion_partners` were offered on
@@ -170,7 +197,7 @@ principal, so every action refused.
 
 - **Per-turn tool availability.** Plugins can pass
   `isAvailable: () => boolean` when they register a tool (`@omadia/plugin-api`
-  1.30.0). The kernel evaluates it inside the turn and hides the tool's spec
+  1.31.0). The kernel evaluates it inside the turn and hides the tool's spec
   and prompt doc wherever it says `false` — in the API tool list, the system
   prompt, and the list the subscription-CLI loopback and the public MCP server
   advertise. Dispatch is not gated; the handler still answers truthfully.
