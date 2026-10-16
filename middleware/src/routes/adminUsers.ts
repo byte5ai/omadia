@@ -11,6 +11,7 @@ import { checkNewPassword, MAX_PASSWORD_LENGTH } from '../auth/passwordPolicy.js
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
 import type { SessionRevocation } from '../auth/sessionRevocation.js';
 import type { UserRecord, UserRole, UserStatus, UserStore } from '../auth/userStore.js';
+import { requireUuidParam } from '../http/uuidParam.js';
 
 interface AdminUsersDeps {
   userStore: UserStore;
@@ -67,6 +68,9 @@ interface AdminUsersDeps {
  */
 export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
   const router = Router();
+  // #1318 — `users.id` is a uuid column; a malformed id is an unknown user,
+  // not a Postgres 22P02 surfacing as a 500.
+  router.param('id', requireUuidParam('admin_users.not_found'));
 
   // ── GET /admin/users ──────────────────────────────────────────────────────
   router.get('/', async (req: Request, res: Response) => {

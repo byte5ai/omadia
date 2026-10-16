@@ -104,6 +104,21 @@ function stubProvider(responses: StubResponse[]): StubClientCapture {
   return { calls, provider };
 }
 
+/** The trailing content part of the newest message of a captured request. */
+function lastUserPart(
+  req: LlmRequest | undefined,
+): { type: string; text?: string } | undefined {
+  const last = req?.messages.at(-1);
+  assert.equal(last?.role, 'user');
+  const content = last?.content as AnyContent;
+  return Array.isArray(content) ? content.at(-1) : undefined;
+}
+
+/** How often `pattern` occurs in a captured request's messages. */
+function countMatches(req: LlmRequest | undefined, pattern: RegExp): number {
+  return (JSON.stringify(req?.messages ?? []).match(pattern) ?? []).length;
+}
+
 function makeFakeStream(response: StubResponse): AsyncIterable<LlmStreamEvent> {
   return {
     async *[Symbol.asyncIterator]() {
@@ -215,13 +230,88 @@ describe('LocalSubAgent.ask', () => {
     }
     // 4th call: forced text-only.
     assert.deepEqual(calls[3]?.toolChoice, { type: 'none' });
-    // 4th call's system trailer carries the repeat-failure addendum
-    // (in German — the agent operates in German) so the model knows
-    // why it's been stripped of tools.
-    const sys = calls[3]?.system as Array<{ text: string; cache?: boolean }>;
-    assert.ok(Array.isArray(sys));
-    const trailer = sys[1]?.text ?? '';
-    assert.match(trailer, /Tool-Call.*identischem Input.*mehrfach/i);
+    // #1212 — the repeat-failure note (in German — the agent operates in
+    // German) rides as a trailing text block on the newest user turn, after
+    // its tool_result blocks. The system prompt stays unchanged for the run,
+    // so the prefix (cache, thinking-block binding) stays valid.
+    const lastPart = lastUserPart(calls[3]);
+    assert.equal(lastPart?.type, 'text');
+    assert.match(lastPart?.text ?? '', /Tool-Call.*identischem Input.*mehrfach/i);
+    assert.doesNotMatch(lastPart?.text ?? '', /IMPORTANT|NICHT/);
+    assert.equal(countMatches(calls[3], /identischem Input/g), 1);
+    assert.deepEqual(calls[3]?.system, calls[0]?.system);
+  });
+
+  it('adds each wrap-up note once when a provider ignores tool_choice:none (#1212)', async () => {
+    // A provider that keeps returning tool_use under `tool_choice: none`
+    // keeps the loop running after the repeat-failure iteration. The note
+    // must not stack onto every following tool_result turn.
+    const dupInput = { patches: [{ op: 'add', path: '/x', value: 1 }] };
+    const responses = Array.from({ length: 5 }, (_, i) => ({
+      content: [toolUse(`t${String(i)}`, 'patch_spec', dupInput)],
+      stop_reason: 'tool_use' as const,
+    }));
+    const { provider, calls } = stubProvider([
+      ...responses,
+      { content: [textBlock('giving up')], stop_reason: 'end_turn' },
+    ]);
+    const agent = new LocalSubAgent({
+      name: 'test',
+      provider,
+      model: 'claude-haiku',
+      maxTokens: 1024,
+      maxIterations: 6,
+      systemPrompt: 'you are a test',
+      tools: [{ spec: baseToolSpec, handle: async () => 'Error: schema rejected' }],
+    });
+    assert.equal(await agent.ask('do the thing'), 'giving up');
+    const final = calls.at(-1);
+    assert.equal(countMatches(final, /identischem Input/g), 1);
+    assert.equal(countMatches(final, /letzte Iteration/g), 1);
+    assert.deepEqual(final?.system, calls[0]?.system);
+  });
+
+  it('puts the last-iteration note into the newest user turn, not the system prompt (#1212)', async () => {
+    const { provider, calls } = stubProvider([
+      { content: [toolUse('t1', 'patch_spec', { patches: [] })], stop_reason: 'tool_use' },
+      { content: [textBlock('partial answer')], stop_reason: 'end_turn' },
+    ]);
+    const agent = new LocalSubAgent({
+      name: 'test',
+      provider,
+      model: 'claude-haiku',
+      maxTokens: 1024,
+      maxIterations: 2,
+      systemPrompt: 'you are a test',
+      tools: [{ spec: baseToolSpec, handle: async () => 'ok' }],
+    });
+    assert.equal(await agent.ask('do the thing'), 'partial answer');
+    assert.deepEqual(calls[1]?.toolChoice, { type: 'none' });
+    const lastPart = lastUserPart(calls[1]);
+    assert.equal(lastPart?.type, 'text');
+    assert.match(lastPart?.text ?? '', /letzte Iteration/);
+    assert.deepEqual(calls[1]?.system, calls[0]?.system);
+    // Earlier turns are untouched: the first call carried no note.
+    assert.doesNotMatch(JSON.stringify(calls[0]?.messages), /letzte Iteration/);
+  });
+
+  it('appends the last-iteration note to a plain-string question (#1212)', async () => {
+    const { provider, calls } = stubProvider([
+      { content: [textBlock('only answer')], stop_reason: 'end_turn' },
+    ]);
+    const agent = new LocalSubAgent({
+      name: 'test',
+      provider,
+      model: 'claude-haiku',
+      maxTokens: 1024,
+      maxIterations: 1,
+      systemPrompt: 'you are a test',
+      tools: [{ spec: baseToolSpec, handle: async () => 'ok' }],
+    });
+    assert.equal(await agent.ask('the question'), 'only answer');
+    const content = calls[0]?.messages.at(-1)?.content as AnyContent[];
+    assert.equal(content[0]?.text, 'the question');
+    assert.match(content.at(-1)?.text ?? '', /letzte Iteration/);
   });
 
   it('does NOT trigger early termination when inputs vary across calls', async () => {
@@ -335,6 +425,27 @@ const fillSlotSpec = {
 };
 
 describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
+  it('does not escalate when the next iteration is the last, text-only one (#1212)', async () => {
+    // An escalation into the last iteration could not force the tool (it
+    // runs with tool_choice:none) and would put the "call it now" reminder
+    // next to the last-iteration note. The turn ends instead.
+    const { provider, calls } = stubProvider([
+      { content: [textBlock('kein Slot nötig')], stop_reason: 'end_turn' },
+    ]);
+    const agent = new LocalSubAgent({
+      name: 'test',
+      provider,
+      model: 'claude-haiku',
+      maxTokens: 1024,
+      maxIterations: 2,
+      systemPrompt: 'you are a test',
+      tools: [{ spec: fillSlotSpec, handle: async () => 'ok' }],
+    });
+    const answer = await agent.ask('baue', undefined, { expectedTurnToolUse: 'fill_slot' });
+    assert.equal(answer, 'kein Slot nötig');
+    assert.equal(calls.length, 1);
+  });
+
   it('escalates with tool_choice when the model exits without ever calling the obligation tool', async () => {
     // Iter 0: model emits a build-announcement text + 0 tool_use blocks
     //         and stop_reason=end_turn. Without the OB-31 guard the loop

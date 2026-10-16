@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, it } from 'node:test';
 
@@ -38,6 +39,10 @@ class InMemoryUserStore {
     return this.rows.length;
   }
   async findById(id: string): Promise<UserRecord | null> {
+    // Postgres rejects a non-UUID against the uuid column with 22P02 (#1318).
+    if (!/^[0-9a-f-]{36}$/i.test(id)) {
+      throw new Error(`invalid input syntax for type uuid: "${id}"`);
+    }
     return this.rows.find((r) => r.id === id) ?? null;
   }
   async findByEmail(provider: string, email: string): Promise<UserRecord | null> {
@@ -65,7 +70,7 @@ class InMemoryUserStore {
   async create(input: CreateUserInput): Promise<UserRecord> {
     const now = new Date();
     const row: UserRecord = {
-      id: `mock-${this.rows.length + 1}`,
+      id: randomUUID(),
       email: input.email,
       provider: input.provider,
       providerUserId: input.providerUserId,
@@ -650,4 +655,26 @@ describe('/api/v1/admin/users router', () => {
       ],
     );
   });
+
+
+  // #1318 — a non-UUID id is an unknown user (404), not a Postgres 22P02 (500).
+  for (const [method, suffix, body] of [
+    ['GET', '', undefined],
+    ['PATCH', '', { display_name: 'x' }],
+    ['POST', '/reset-password', { password: 'another-pass-1' }],
+    ['DELETE', '', undefined],
+  ] as const) {
+    it(`${method} /:id${suffix} answers 404 admin_users.not_found for a non-UUID id`, async () => {
+      setSession(adminSession());
+      const res = await fetch(`${baseUrl}/api/v1/admin/users/not-a-uuid${suffix}`, {
+        method,
+        ...(body
+          ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
+          : {}),
+      });
+      assert.equal(res.status, 404);
+      assert.match(res.headers.get('content-type') ?? '', /application\/json/);
+      assert.equal(((await res.json()) as { code?: string }).code, 'admin_users.not_found');
+    });
+  }
 });

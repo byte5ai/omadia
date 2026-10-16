@@ -137,8 +137,8 @@ afterEach(async () => {
 
 async function start(): Promise<Harness> {
   const table = new UsersTable();
-  table.rows.push(seedRow('row-local-1', EMAIL, passwordHash));
-  table.rows.push(seedRow('row-local-2', SECOND, passwordHash));
+  table.rows.push(seedRow('00000000-0000-4000-8000-00000000a001', EMAIL, passwordHash));
+  table.rows.push(seedRow('00000000-0000-4000-8000-00000000a002', SECOND, passwordHash));
   const userStore = table as unknown as UserStore;
 
   const sessions = new SessionRevocationGuard(() => undefined);
@@ -279,7 +279,7 @@ describe('live channel sockets follow the session that opened them', () => {
     const targetWs = await openSocket(h, target);
 
     const closed = closedWithin(targetWs, 2000);
-    const res = await post(h, '/api/v1/admin/users/row-local-2', operator, { status: 'disabled' });
+    const res = await post(h, '/api/v1/admin/users/00000000-0000-4000-8000-00000000a002', operator, { status: 'disabled' });
     assert.equal(res.status, 200);
     assert.deepEqual(await closed, [4403, 'session revoked']);
     assert.equal(await echo(operatorWs, 'still mine'), 'still mine');

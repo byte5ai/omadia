@@ -24,14 +24,28 @@ keys, and shifts in the plugin API.
    [README quickstart](../README.md#quickstart).
 4. Restart with `docker compose up -d`. If you run overlays, pass the same
    `-f` files you start the stack with; a plain `up` leaves their services
-   running as they were.
+   running as they were, and recreates `middleware` from `docker-compose.yaml`
+   alone, without any overlay's environment (embeddings, storage, diagrams,
+   PII detector, skillspector, updater). To make the plain command safe, list
+   your files once in the project-root `.env`, for example
+   `COMPOSE_FILE=docker-compose.yaml:docker-compose.embeddings.yaml`.
+   Compose then reads them on every call.
 5. Verify the admin UI comes up and an existing agent run still works.
 
 ## Updating from the Operator UI
 
 **Admin → Update** reports the version this instance is running and whether a
 newer release exists. What it can *do* from there depends on which optional
-pieces are deployed:
+pieces are deployed.
+
+The release check asks the GitHub API and caches a successful answer for 30
+minutes. A failed check is cached too: the middleware waits 1 minute before it
+asks again, doubling up to 5 minutes, or as long as a rate-limited GitHub asks
+for (`retry-after`, `x-ratelimit-reset`). **Check now** skips the wait. While no
+release is known, the page says so instead of reporting the instance as up to
+date. Behind a NAT shared with other GitHub users, set `OMADIA_RELEASE_TOKEN` (a
+read-only PAT) to get the authenticated rate limit. `OMADIA_RELEASE_REPO` points
+the check at a fork.
 
 | Deployment | Admin → Update can |
 |---|---|
@@ -227,7 +241,10 @@ the updater has reached the proxy at the same name and address.
 
 1. Pulls every new image **before** stopping anything.
 2. Pins `OMADIA_VERSION=<target>` in the project-root `.env`, so your next
-   manual `docker compose up -d` keeps the version you chose.
+   manual `docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d`
+   (with the rest of your `-f` files, or a bare `up -d` with `COMPOSE_FILE`
+   set, see [General upgrade steps](#general-upgrade-steps)) keeps the version
+   you chose.
 3. Recreates `middleware` and `web-ui` from their own container config — same
    labels, mounts, ports, restart policy, network aliases; only the image
    changes.

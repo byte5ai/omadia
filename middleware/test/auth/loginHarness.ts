@@ -14,6 +14,7 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { createHash } from 'node:crypto';
 
 import cookieParser from 'cookie-parser';
 import express, { type Express } from 'express';
@@ -69,10 +70,17 @@ export function pgLower(s: string): string {
   return Array.from(s, (c) => (c === '\u0130' ? 'i' : c.toLowerCase())).join('');
 }
 
+/** A stable UUID per email: `users.id` is a uuid column, and the admin-users
+ *  router refuses anything else with 404 (#1318). */
+function idFor(email: string): string {
+  const h = createHash('sha256').update(email).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
 function userRecord(email: string, displayName: string): UserRecord {
   const now = new Date();
   return {
-    id: `mock-${email}`,
+    id: idFor(email),
     email,
     provider: LOCAL_PROVIDER_ID,
     providerUserId: email.toLowerCase(),
