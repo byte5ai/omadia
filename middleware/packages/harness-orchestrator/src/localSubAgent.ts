@@ -4,7 +4,7 @@ import type {
   LocalSubAgentToolResult,
   LocalSubAgentToolSpec,
 } from '@omadia/plugin-api';
-import { appendLimitSignalNote, isWithheldToolErrorNotice } from '@omadia/plugin-api';
+import { appendLimitSignalNote, isUnknownOutcomeToolErrorNotice } from '@omadia/plugin-api';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import { isProviderWideFailure, streamMessageWithObserver } from './streaming.js';
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
@@ -596,7 +596,8 @@ export class LocalSubAgent {
       });
       return {
         output: withheld.text,
-        outcomeUnknown: true,
+        // A refusal was not carried out, so its outcome is known (#1343).
+        ...(withheld.refused ? {} : { outcomeUnknown: true as const }),
         ...(replay !== undefined ? { replayed: true as const } : {}),
       };
     }
@@ -617,10 +618,10 @@ export class LocalSubAgent {
     // notice instead of throwing: that call's outcome is just as unknown.
     const carried = {
       ...(postcondition ? { postcondition } : {}),
-      ...(isWithheldToolErrorNotice(rawOutput) ? { outcomeUnknown: true as const } : {}),
+      ...(isUnknownOutcomeToolErrorNotice(rawOutput) ? { outcomeUnknown: true as const } : {}),
       ...(replay !== undefined ? { replayed: true as const } : {}),
     };
-    if (replay === undefined && isWithheldToolErrorNotice(rawOutput)) {
+    if (replay === undefined && isUnknownOutcomeToolErrorNotice(rawOutput)) {
       ledger?.noteUnknownOutcome(toolName, input);
     }
     // Phase C.2 — Raw tool-result capture (parallel to orchestrator.dispatchTool).
