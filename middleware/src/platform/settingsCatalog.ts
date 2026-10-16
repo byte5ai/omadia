@@ -9,10 +9,12 @@
  * has been removed: per-plugin settings now live exclusively in that editor.
  *
  * What remains here are only the settings that genuinely DON'T map 1:1 to a
- * single plugin's setup field — currently just the Anthropic API key, whose
- * secret fans out across THREE vault scopes (orchestrator, verifier,
- * orchestrator-extras). Setting it once centrally writes all three; the
- * per-plugin editor would require editing each scope separately.
+ * single plugin's setup field — the LLM provider API keys, whose secrets fan
+ * out across THREE vault scopes (orchestrator, verifier, orchestrator-extras).
+ * Setting one centrally writes all three; the per-plugin editor would require
+ * editing each scope separately. The web UI edits them under Admin → LLM
+ * access → "API keys" (`/admin/providers`); the old `/admin/settings` page that
+ * rendered this catalog directly was removed in #1397.
  *
  * The admin PATCH handler still writes config values via
  * `installedRegistry.updateConfig` and secrets via `vault.setMany` /
@@ -41,7 +43,8 @@ export type SettingValueType =
 export interface SettingDef {
   /** Stable identifier — the `.env` variable name. Also the GET/PATCH key. */
   readonly key: string;
-  /** German UI label. */
+  /** Field label. English: the API carries no locale (see `errorHelp.ts` in
+   *  web-ui); the admin UI renders provider keys from its own catalog. */
   readonly label: string;
   /** Optional help text shown under the field. */
   readonly help?: string;
@@ -76,19 +79,20 @@ export interface SettingDef {
   };
 }
 
-// Category labels (German — the admin section is hardcoded-German, matching
-// the sibling admin pages which don't use the i18n catalog).
-const C_MODELS = 'Modelle & Routing';
+// Category label. The web UI no longer renders this overview (#1397: provider
+// keys are managed under Admin → LLM access), so it is plain English like every
+// other string this API returns.
+const C_MODELS = 'Models & routing';
 
 export const SETTINGS_CATALOG: readonly SettingDef[] = [
-  // ── Modelle & Routing — cross-plugin secret only ────────────────────────
+  // ── Models & routing — cross-plugin secret only ────────────────────────
   // Everything else that used to live here (orchestrator/verifier/embeddings/
   // knowledge-graph/diagrams/integration settings) is now edited per-plugin via
   // the runtime editor, driven by each plugin's manifest setup.fields.
   {
     key: 'ANTHROPIC_API_KEY',
-    label: 'Anthropic API-Key',
-    help: 'Wird für Orchestrator, Verifier und die Background-Tasks benötigt. Beginnt mit "sk-ant-". Bestehender Wert wird nie angezeigt. Wird zentral in alle drei Plugin-Vaults geschrieben.',
+    label: 'Anthropic API key',
+    help: 'Used by the orchestrator, the verifier and the background tasks. Starts with "sk-ant-". The stored value is never shown. Written to all three plugin vaults.',
     category: C_MODELS,
     type: 'secret',
     placeholder: 'sk-ant-…',
@@ -104,8 +108,8 @@ export const SETTINGS_CATALOG: readonly SettingDef[] = [
   },
   {
     key: 'OPENAI_API_KEY',
-    label: 'OpenAI API-Key',
-    help: 'Optional. Für Provider-Auswahl "openai" (pro Plugin via llm_provider). Beginnt mit "sk-". Bestehender Wert wird nie angezeigt. Wird in alle drei Plugin-Vaults geschrieben.',
+    label: 'OpenAI API key',
+    help: 'Optional. For the provider "openai" (chosen per plugin via llm_provider). Starts with "sk-". The stored value is never shown. Written to all three plugin vaults.',
     category: C_MODELS,
     type: 'secret',
     placeholder: 'sk-…',
@@ -117,11 +121,11 @@ export const SETTINGS_CATALOG: readonly SettingDef[] = [
   },
   {
     key: 'MISTRAL_API_KEY',
-    label: 'Mistral API-Key',
-    help: 'Optional. Für Provider-Auswahl "mistral" (pro Plugin via llm_provider). Mistral ist EU-gehostet (Frankreich) — keine Drittlandübermittlung. Bestehender Wert wird nie angezeigt. Wird in alle drei Plugin-Vaults geschrieben.',
+    label: 'Mistral API key',
+    help: 'Optional. For the provider "mistral" (chosen per plugin via llm_provider). Mistral is hosted in the EU (France), so there is no third-country transfer. The stored value is never shown. Written to all three plugin vaults.',
     category: C_MODELS,
     type: 'secret',
-    placeholder: 'API-Key aus console.mistral.ai …',
+    placeholder: 'API key from console.mistral.ai …',
     secret: {
       // Mistral is canonical-only (no legacy flat key), like OpenAI.
       vaultKey: providerApiKeyVaultKey('mistral'),
@@ -130,25 +134,59 @@ export const SETTINGS_CATALOG: readonly SettingDef[] = [
   },
 ];
 
-/** Provider ids already covered by the static catalog entries above. */
-const STATIC_PROVIDER_IDS = new Set(['anthropic', 'openai']);
+/** Vault keys the static entries above already write. A provider whose own
+ *  key (`providerApiKeyVaultKey(id)`) is one of them is covered there, so it
+ *  gets no generated field. Derived from the catalog instead of kept as a
+ *  second hand-maintained id list: that list once read `['anthropic',
+ *  'openai']` while the catalog also held Mistral, and Mistral got a second
+ *  `MISTRAL_API_KEY` field (#1331). */
+const STATIC_VAULT_KEYS: ReadonlySet<string> = new Set(
+  SETTINGS_CATALOG.flatMap((def) => (def.secret ? [def.secret.vaultKey] : [])),
+);
+
+/** What `providerKeySettings` needs to know about a registered provider. */
+export interface ProviderKeySource {
+  readonly id: string;
+  readonly label: string;
+  readonly policy?: { readonly requiresApiKey?: boolean };
+  /** `'claude-cli'` — the subscription CLI, signed in via `claude auth login`. */
+  readonly wireFormat?: string;
+  /** Present when the provider connects through an OAuth sign-in (ChatGPT). */
+  readonly oauth?: unknown;
+}
+
+/**
+ * A provider that is keyless AND signs in some other way — the subscription
+ * CLI or an OAuth connect — gets no key field: it would ask for a key nothing
+ * reads (#1331). A keyless provider WITHOUT another sign-in (a local model
+ * server) keeps its optional field, because the provider factory still sends a
+ * stored key when there is one (e.g. Ollama behind an auth proxy), and the LLM
+ * access page offers the same optional key.
+ */
+function signsInWithoutKey(p: ProviderKeySource): boolean {
+  if (p.policy?.requiresApiKey !== false) return false;
+  return p.wireFormat === 'claude-cli' || p.oauth !== undefined;
+}
 
 /** Build per-provider API-key settings for plugin-contributed providers (e.g.
  *  MiniMax) so the operator connects them on the same admin overview as the
  *  built-in keys. The secret fans out to the same three LLM-plugin scopes.
- *  Providers already covered statically (anthropic/openai) are skipped. */
+ *  Skipped: providers the static entries already cover, and providers that
+ *  sign in without a key (see `signsInWithoutKey`). */
 export function providerKeySettings(
-  providers: ReadonlyArray<{ readonly id: string; readonly label: string }>,
+  providers: ReadonlyArray<ProviderKeySource>,
 ): SettingDef[] {
   const seen = new Set<string>();
   const out: SettingDef[] = [];
   for (const p of providers) {
-    if (STATIC_PROVIDER_IDS.has(p.id) || seen.has(p.id)) continue;
+    if (seen.has(p.id)) continue;
+    if (STATIC_VAULT_KEYS.has(providerApiKeyVaultKey(p.id))) continue;
+    if (signsInWithoutKey(p)) continue;
     seen.add(p.id);
     out.push({
       key: `${p.id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`,
-      label: `${p.label} API-Key`,
-      help: `Optional. Für Provider-Auswahl "${p.id}" (pro Plugin via llm_provider). Bestehender Wert wird nie angezeigt. Wird in alle drei Plugin-Vaults geschrieben.`,
+      label: `${p.label} API key`,
+      help: `Optional. For the provider "${p.id}" (chosen per plugin via llm_provider). The stored value is never shown. Written to all three plugin vaults.`,
       category: C_MODELS,
       type: 'secret',
       secret: {
@@ -163,9 +201,20 @@ export function providerKeySettings(
 /** The effective catalog: static cross-plugin settings + per-provider API-key
  *  settings for plugin-contributed providers. */
 export function buildSettingsCatalog(
-  providers: ReadonlyArray<{ readonly id: string; readonly label: string }> = [],
+  providers: ReadonlyArray<ProviderKeySource> = [],
 ): readonly SettingDef[] {
-  return [...SETTINGS_CATALOG, ...providerKeySettings(providers)];
+  // Keys are the GET/PATCH identity, so the first definition of a key wins.
+  // Two providers whose ids normalise to the same `<ID>_API_KEY` (say `foo-bar`
+  // and `foo_bar`) would otherwise render two fields writing different vault
+  // keys under one name.
+  const seen = new Set<string>();
+  return [...SETTINGS_CATALOG, ...providerKeySettings(providers)].filter(
+    (def) => {
+      if (seen.has(def.key)) return false;
+      seen.add(def.key);
+      return true;
+    },
+  );
 }
 
 /** Lookup by `.env` key over a given catalog (defaults to the static one). */
