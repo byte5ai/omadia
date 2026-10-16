@@ -134,7 +134,7 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
   ),
 }));
 
-import DashboardPage from '../page';
+import DashboardPage from '../(dashboard)/page';
 
 function provider(over: Partial<AdminProvider> = {}): AdminProvider {
   return {

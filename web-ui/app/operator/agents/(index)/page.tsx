@@ -1,13 +1,13 @@
 import type { Metadata } from 'next';
 import { getTranslations } from 'next-intl/server';
 
-import { redirectIfUnauthorized } from '../../_lib/authRedirect';
-import { listOperatorAgents } from '../../_lib/agents';
-import { listOperatorChannels } from '../../_lib/channels';
-import { runtimeUnavailableCause } from '../../_lib/runtimeReadiness';
-import { AgentsDashboard } from './_components/AgentsDashboard';
-import { OrchestratorSetupState } from './_components/OrchestratorSetupState';
-import { ChannelsDashboard } from '../channels/_components/ChannelsDashboard';
+import { redirectIfUnauthorized } from '../../../_lib/authRedirect';
+import { listOperatorAgents } from '../../../_lib/agents';
+import { listOperatorChannels } from '../../../_lib/channels';
+import { runtimeUnavailableCause } from '../../../_lib/runtimeReadiness';
+import { AgentsDashboard } from '../_components/AgentsDashboard';
+import { OrchestratorSetupState } from '../_components/OrchestratorSetupState';
+import { ChannelsDashboard } from '../../channels/_components/ChannelsDashboard';
 
 /**
  * US9 — operator-facing multi-orchestrator dashboard.

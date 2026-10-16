@@ -36,6 +36,27 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — missing web UI pages answer HTTP 404, not 200
+
+2026-10-16. Pages that call `notFound()` showed the 404 page with status
+`200`: an unknown agent, plugin UI, routine run, store plugin or builder
+draft. Monitoring, link checkers and crawlers saw each of them as healthy
+(#1398). The cause was the root `app/loading.tsx` (OM-96). A loading boundary
+is a Suspense boundary, so Next flushed the shell and the status line before
+the page could run its existence check. There is no root boundary now. Each
+segment has its own `loading.tsx` rendering the shared
+`_components/PageLoading`, and none sits above a `notFound()` page. The index
+pages that share a segment with such a detail route moved into route groups
+so they keep their skeleton, with the same URLs: `(dashboard)` for `/`,
+`(index)` under `/operator/agents`, `/routines`, `/store` and
+`/store/builder`. The trade-off is that a navigation into one of those five
+detail pages commits once its data arrives instead of showing the skeleton.
+`app/__tests__/loadingBoundaries.test.ts` reads the route tree. It fails if a
+boundary is ever added above a `notFound()` page, including a new root
+`loading.tsx`, and if any other page is left without one. Measured on a
+production build: all five detail pages answer 404, and `/` and the index
+pages still stream the skeleton.
+
 ### Security — Privacy Shield table renders no longer hand real rows to the model (#1402)
 
 2026-10-16. A `v4_render_answer` table render returned its canvas snapshot —

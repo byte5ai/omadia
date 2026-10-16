@@ -19,15 +19,15 @@ import {
   getProviders,
   getVaultStatus,
   listStorePlugins,
-} from './_lib/api';
-import { getMcpServerSummary, listOperatorAgents } from './_lib/agents';
-import { redirectIfUnauthorized } from './_lib/authRedirect';
-import { isDatabaseUnavailable, runtimeStateOf } from './_lib/runtimeReadiness';
-import { fetchMiddlewareHealth, platformNotice } from './_lib/platformHealth';
-import { cn } from './_lib/cn';
-import { isInstalled, isOperatorInstalled, isReady } from './_lib/pluginCounts';
-import { DashboardOnboarding } from './_components/dashboard/DashboardOnboarding';
-import { PlatformHealthBanner } from './_components/PlatformHealthBanner';
+} from '../_lib/api';
+import { getMcpServerSummary, listOperatorAgents } from '../_lib/agents';
+import { redirectIfUnauthorized } from '../_lib/authRedirect';
+import { isDatabaseUnavailable, runtimeStateOf } from '../_lib/runtimeReadiness';
+import { fetchMiddlewareHealth, platformNotice } from '../_lib/platformHealth';
+import { cn } from '../_lib/cn';
+import { isInstalled, isOperatorInstalled, isReady } from '../_lib/pluginCounts';
+import { DashboardOnboarding } from '../_components/dashboard/DashboardOnboarding';
+import { PlatformHealthBanner } from '../_components/PlatformHealthBanner';
 
 /**
  * Operator landing surface. Replaces the chat as the first screen (chat now

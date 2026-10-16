@@ -1,9 +1,9 @@
 import type { Metadata } from 'next';
 import { getTranslations } from 'next-intl/server';
 
-import { listRoutines, type RoutineDto } from '../_lib/api';
-import { redirectIfUnauthorized } from '../_lib/authRedirect';
-import { RoutineRow } from './_components/RoutineRow';
+import { listRoutines, type RoutineDto } from '../../_lib/api';
+import { redirectIfUnauthorized } from '../../_lib/authRedirect';
+import { RoutineRow } from '../_components/RoutineRow';
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations('routines.page');

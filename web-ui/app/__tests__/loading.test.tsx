@@ -5,7 +5,7 @@ import deMessages from '../../messages/de.json';
 import enMessages from '../../messages/en.json';
 
 /**
- * OM-96 / #1077 — the root navigation boundary.
+ * OM-96 / #1077 — the navigation boundary every `loading.tsx` renders.
  *
  * Without a `loading.tsx`, Next kept the current page mounted while a dynamic
  * route's payload was in flight, so a working DASHBOARD click looked like a
@@ -33,9 +33,9 @@ vi.mock('next-intl/server', () => ({
   },
 }));
 
-import Loading from '../loading';
+import { PageLoading as Loading } from '../_components/PageLoading';
 
-describe('root loading boundary (OM-96)', () => {
+describe('navigation loading boundary (OM-96)', () => {
   it('announces the pending navigation as a polite, busy status region', async () => {
     locale = 'en';
     render(await Loading());
