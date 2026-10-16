@@ -9,13 +9,16 @@ import type {
   VaultBackupStatus,
 } from '../secrets/vaultBackup.js';
 import { createDisabledVaultBackupStatus } from '../secrets/vaultBackup.js';
+import type { MasterKeySource } from '../health/platformHealth.js';
 
 interface VaultStatusDeps {
   vault: SecretVault;
   registry: InstalledRegistry;
   vaultPath: string;
   dataDir: string;
-  masterKeySource: 'env' | 'dev-file-existed' | 'dev-file-created';
+  masterKeySource: MasterKeySource;
+  /** #1387 — the credential keychain's own master key (`CREDENTIAL_KEYCHAIN_KEY`). */
+  keychainKeySource: MasterKeySource;
   backup: VaultBackupService | null;
   backupDisabledReason?: string;
 }
@@ -41,7 +44,10 @@ export interface VaultStatusResponse {
     size_bytes: number | null;
     last_modified: string | null;
     agent_count: number;
-    master_key_source: 'env' | 'dev-file-existed' | 'dev-file-created';
+    master_key_source: MasterKeySource;
+    /** #1387 — source of the keychain master key, same values as `master_key_source`. */
+    keychain_key_source: MasterKeySource;
+    /** Both master keys come from env. One dev-file key is enough to say no. */
     production_ready: boolean;
   };
   backup: VaultStatusBackupBody;
@@ -51,7 +57,8 @@ export interface VaultStatusResponse {
  * Read-only observability endpoint for the encrypted secret vault.
  *
  * Returns metadata only — file path, ciphertext size, mtime, number of
- * installed agents, and the source the master key was loaded from. No
+ * installed agents, and the sources the vault and keychain master keys were
+ * loaded from. No
  * plaintext, no key material, no per-agent secret keys.
  *
  * Mounted behind `requireAuth`.
@@ -82,7 +89,12 @@ export function createVaultStatusRouter(deps: VaultStatusDeps): Router {
           last_modified: vaultFile ? vaultFile.mtime.toISOString() : null,
           agent_count: agentCount,
           master_key_source: deps.masterKeySource,
-          production_ready: deps.masterKeySource === 'env',
+          keychain_key_source: deps.keychainKeySource,
+          // #1387 — this used to check the vault key alone, so an operator who
+          // followed the vault warning and set only VAULT_KEY got a green
+          // "production" card while the keychain key still sat in the dev file.
+          production_ready:
+            deps.masterKeySource === 'env' && deps.keychainKeySource === 'env',
         },
         backup: toBackupBody(backupStatus),
       };

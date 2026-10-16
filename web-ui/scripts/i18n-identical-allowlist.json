@@ -94,6 +94,8 @@
     "operatorAgents.peers.chatSelectLabel": "loanword",
     "operatorAgents.detailTabs.teams": "brand",
     "operatorAgents.detailTabs.plugins": "loanword",
-    "operatorAgents.detailTabs.memory": "glossary"
+    "operatorAgents.detailTabs.memory": "glossary",
+    "system.vaultStatus.keySourceEnv": "code",
+    "system.platformHealth.eyebrow": "code"
   }
 }

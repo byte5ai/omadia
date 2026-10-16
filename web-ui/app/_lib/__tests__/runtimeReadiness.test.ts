@@ -4,6 +4,7 @@ import { ApiError } from '../api';
 import {
   classifyProbeResponse,
   classifyRuntimeRejection,
+  isDatabaseUnavailable,
   runtimeStateOf,
   runtimeUnavailableCause,
 } from '../runtimeReadiness';
@@ -193,5 +194,46 @@ describe('runtimeUnavailableCause', () => {
     ['a transport error', new TypeError('fetch failed')],
   ])('returns null for %s — that is a failure, not a first start', (_label, reason) => {
     expect(runtimeUnavailableCause(reason)).toBeNull();
+  });
+});
+
+/**
+ * #1384 — during a Postgres outage every authenticated route answers 503
+ * `{"code":"auth.unavailable"}`. That used to read as `unreachable`, so the
+ * dashboard blamed the middleware and pointed at the update page.
+ */
+describe('#1384 — a 503 auth.unavailable is the database, not the middleware', () => {
+  const AUTH_UNAVAILABLE_BODY = JSON.stringify({
+    code: 'auth.unavailable',
+    message: 'session check unavailable, try again',
+  });
+
+  it('classifies the rejection as database_unavailable', () => {
+    expect(classifyRuntimeRejection(new ApiError(503, 'x', AUTH_UNAVAILABLE_BODY))).toBe(
+      'database_unavailable',
+    );
+    expect(
+      runtimeStateOf({
+        status: 'rejected',
+        reason: new ApiError(503, 'x', AUTH_UNAVAILABLE_BODY),
+      }),
+    ).toBe('database_unavailable');
+  });
+
+  it('classifies the banner probe the same way', () => {
+    expect(
+      classifyProbeResponse(503, { code: 'auth.unavailable' }),
+    ).toBe('database_unavailable');
+  });
+
+  it('is not a structured orchestrator cause', () => {
+    expect(runtimeUnavailableCause(new ApiError(503, 'x', AUTH_UNAVAILABLE_BODY))).toBeNull();
+  });
+
+  it('isDatabaseUnavailable matches only that 503', () => {
+    expect(isDatabaseUnavailable(new ApiError(503, 'x', AUTH_UNAVAILABLE_BODY))).toBe(true);
+    expect(isDatabaseUnavailable(new ApiError(500, 'x', AUTH_UNAVAILABLE_BODY))).toBe(false);
+    expect(isDatabaseUnavailable(new ApiError(503, 'x', UNAVAILABLE_BODY))).toBe(false);
+    expect(isDatabaseUnavailable(new TypeError('fetch failed'))).toBe(false);
   });
 });
