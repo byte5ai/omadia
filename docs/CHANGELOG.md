@@ -36,7 +36,6 @@ changelog.
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 ### Added — the subscription CLI can remember things (`memory` tool)
 
 2026-10-16. On the Claude subscription CLI (`claude-cli`) the agent had no
@@ -48,7 +47,7 @@ memory plugin's root-store registration, and with the same memory rules in
 its prompt. As in-process, a binder that fails for the turn's origin falls back
 to the agent-private stack; a turn with no handler at all (or a binding past its
 15 s deadline) has no memory tool and says so. No migration, no new env var.
-=======
+
 ### Fixed — missing web UI pages answer HTTP 404, not 200
 
 2026-10-16. Pages that call `notFound()` showed the 404 page with status
@@ -69,7 +68,6 @@ boundary is ever added above a `notFound()` page, including a new root
 `loading.tsx`, and if any other page is left without one. Measured on a
 production build: all five detail pages answer 404, and `/` and the index
 pages still stream the skeleton.
->>>>>>> origin/main
 
 ### Security — Privacy Shield table renders no longer hand real rows to the model (#1402)
 
