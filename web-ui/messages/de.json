@@ -1012,6 +1012,12 @@
     "digestLabel": "Fehler-Referenz",
     "digestHint": "Gib diese Referenz bei einer Fehlermeldung an — die vollständige Meldung steht im Server-Log."
   },
+  "notFound": {
+    "metaTitle": "Seite nicht gefunden · omadia",
+    "title": "Seite nicht gefunden",
+    "description": "Diese Seite gibt es nicht oder nicht mehr. Prüf die Adresse oder geh zurück zum Dashboard.",
+    "backToDashboard": "Zurück zum Dashboard"
+  },
   "errorHelp": {
     "admin_users": {
       "password_too_long": {
@@ -1967,6 +1973,7 @@
     "agentsEmpty": "Noch keine Orchestratoren. Leg oben einen an.",
     "agentMeta": "id: {id} · privacy: {privacy} (nicht wirksam) · status: {status} · runtime: {runtime}",
     "detailMetaTitle": "Orchestrator: {slug} · omadia",
+    "detailNotFoundMetaTitle": "Orchestrator nicht gefunden · omadia",
     "detailOpenLink": "Details",
     "detailBackToList": "Alle Orchestratoren",
     "detailAssignedHeading": "Zugewiesene Plugins",
@@ -4151,7 +4158,7 @@
         "flagCredentialFlows": "Führt Credential-Flows auf eigenen Routes aus",
         "publicPathsTitle": "Öffentliche (nicht authentifizierte) Pfade",
         "publicPathsBody": "Dieses Plugin möchte die folgenden URL-Präfixe ohne Operator-Sitzung beantworten. Jede und jeder mit Zugriff auf diese Installation erreicht sie, und das Plugin allein verantwortet die Authentifizierung dieser Anfragen.",
-        "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Jedes Präfix bleibt hinter der Sitzungsprüfung, bis Sie zustimmen. Die Zustimmung wird automatisch entzogen, sobald das Plugin deaktiviert wird.",
+        "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Ein Präfix ist erst erreichbar, wenn Sie zustimmen. Die Zustimmung wird automatisch entzogen, sobald das Plugin deaktiviert wird.",
         "none": "Keine Berechtigungen deklariert.",
         "runtimeCredentials": "Laufzeit-Credentials"
       },
@@ -4367,7 +4374,7 @@
       "sqlLedger": "Migrations-Ledger: {ledger}",
       "sqlLedgerDrift": "Es liegt eine Freigabe für eine andere Tabelle vor ({ledger}). Das Plugin fragt inzwischen eine andere Tabelle an, die alte Freigabe zählt deshalb nicht mehr — setzen Sie den Haken, um die neue zu erteilen.",
       "publicPathsIntro": "Diese Pfade antworten ohne omadia-Login, weil der Aufrufer keinen vorweisen kann. Authentifiziert wird trotzdem — vom Plugin selbst.",
-      "publicPathBody": "Wird ohne Session ausgeliefert. Ohne Freigabe bleibt der Pfad hinter dem Login und antwortet mit 401.",
+      "publicPathBody": "Wird nach Ihrer Freigabe ohne Session ausgeliefert. Bis dahin ist der Pfad gar nicht erreichbar, auch nicht mit Login.",
       "orphaned": "Ebenfalls freigegeben, wird vom Plugin aber nicht mehr angefragt: {paths}. Diese Freigaben bewirken nichts; ein Speichern des Formulars unten entfernt sie.",
       "optionalRequiresIntro": "Optionale Voraussetzungen. Das Plugin funktioniert auch ohne sie, mit eingeschränktem Funktionsumfang — es handelt sich nicht um Berechtigungen, hier ist nichts freizugeben.",
       "currentGranted": "Aktuell freigegeben",
@@ -4468,6 +4475,7 @@
       "transport": "Transport",
       "transportDeprecated": "Veraltet",
       "transportDeprecatedHint": "Der alte HTTP+SSE-Transport ist seit MCP 2026-07-28 als veraltet markiert und wird nach einer Übergangsfrist von mindestens 12 Monaten entfernt. Bestehende SSE-Server funktionieren weiterhin — neue Server sollten aber Streamable HTTP (http) verwenden, bestehende dorthin migriert werden.",
+      "stdioHint": "Ein stdio-Server läuft als Prozess im Middleware-Container – mit den Rechten der Middleware (gleicher Benutzer, Dateisystem- und Netzwerkzugriff). Mit MCP_STDIO_ENABLED=false lässt sich stdio abschalten.",
       "showDeprecatedTransports": "Veraltete Transports anzeigen",
       "deprecatedOption": "{transport} (veraltet)",
       "endpoint": "Endpoint",
@@ -4598,13 +4606,16 @@
       "errorTimeout": "Die Registry „{name}“ hat nicht rechtzeitig geantwortet.",
       "errorUnreachable": "Die Registry „{name}“ ist nicht erreichbar.",
       "errorGeneric": "Der Katalog von „{name}“ konnte nicht gelesen werden.",
-      "errorUnreachableHint": "Der Registry-Host ist offline oder aus dieser Installation heraus blockiert. Wähle oben eine andere Registry oder versuche es gleich noch einmal.",
+      "errorUnreachableHint": "Der Registry-Host ist offline oder aus dieser Installation heraus nicht erreichbar. Wähle oben eine andere Registry oder versuche es gleich noch einmal.",
       "removeRegistryBody": "Registry „{name}“ entfernen? Bereits importierte Server bleiben bestehen.",
       "unlicensedShort": "ohne Lizenz",
       "refresh": "Aktualisieren",
       "scopeCachedPage": "nur geladene Seite",
       "scopeCachedPageWhy": "Die Suche dieser Registry hat nicht geantwortet. Diese Treffer sind deshalb ein Textabgleich über die bereits geladene Katalogseite — Server weiter hinten im Katalog sind nicht erfasst. Mit „Aktualisieren“ die Registry-Suche erneut versuchen.",
-      "errorTimeoutHint": "Die Registry hat die Verbindung angenommen, aber nicht rechtzeitig zu Ende geantwortet. Ihre Katalogliste funktioniert womöglich trotzdem — Suchfeld leeren, um den Katalog zu listen, oder erneut versuchen."
+      "errorTimeoutHint": "Die Registry hat die Verbindung angenommen, aber nicht rechtzeitig zu Ende geantwortet. Ihre Katalogliste funktioniert womöglich trotzdem — Suchfeld leeren, um den Katalog zu listen, oder erneut versuchen.",
+      "errorBlocked": "Die Registry „{name}“ ist aus Sicherheitsgründen gesperrt.",
+      "errorBlockedHint": "Eine Registry darf nicht auf eine Link-local- oder Cloud-Metadaten-Adresse wie 169.254.169.254 oder metadata.google.internal zeigen. Private und Intranet-Adressen sind erlaubt. Ändere die Registry-URL oder wähle oben eine andere Registry.",
+      "errorDetail": "Grund: {detail}"
     },
     "grants": {
       "grantHeading": "Tools einem Orchestrator zuweisen",
@@ -4660,6 +4671,10 @@
         "unattributed": "Nicht zugeordnet",
         "api_key": "API-Key (Public MCP)"
       }
+    },
+    "guard": {
+      "blockedHost": "Diese Adresse ist aus Sicherheitsgründen gesperrt. Ein MCP-Server oder eine Registry darf nicht auf eine Link-local- oder Cloud-Metadaten-Adresse wie 169.254.169.254 oder metadata.google.internal zeigen; private und Intranet-Adressen sind erlaubt. Ändere die URL. Grund: {detail}",
+      "stdioDisabled": "stdio-MCP-Server sind auf dieser Installation deaktiviert (MCP_STDIO_ENABLED=false). Nutze stattdessen einen Remote-Server (http) oder setze MCP_STDIO_ENABLED=true für die Middleware und starte sie neu. Grund: {detail}"
     }
   },
   "adminRegistries": {

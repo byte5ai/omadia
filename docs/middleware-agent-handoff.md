@@ -167,7 +167,7 @@ src/
 ### Plugin-Tools per Turn ausblenden — `isAvailable` (#1346, #1086)
 
 - **Vertrag:** `ToolRegistrationOptions.isAvailable?: () => boolean`
-  (`@omadia/plugin-api` 1.28.0). Der Kernel ruft es **im Turn-Scope** auf,
+  (`@omadia/plugin-api` 1.29.0). Der Kernel ruft es **im Turn-Scope** auf,
   sobald er die Tool-Liste baut; `false` (oder ein Throw) blendet Spec **und**
   `promptDoc` für diesen Turn aus. Fehlt es, bleibt das Tool angeboten.
 - **Eine Prüfung, drei Advertise-Stellen:** `isOfferedThisTurn(entry)` in
@@ -728,7 +728,7 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   sessionSigningKey, whitelist: emailWhitelist, sessions: sessionRevocation })`
   vor `createCoreApi({ … webSockets })`, zusätzlich an die `DefaultChannelRegistry`
   gereicht (Lifecycle-Spiegel zu `routes`), und
-  `webSocketRegistry.attach(server)` nach `const server = app.listen(PORT, '::')`
+  `webSocketRegistry.attach(server)` nach `const server = createAppServer(app, terminalHandler).listen(PORT, '::')`
   — dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit. Über
   `sessions` (derselbe `SessionRevocationGuard` wie `requireAuth`) kommen sowohl
   der Upgrade-Check als auch `onRevoked`, die Frame-Prüfung und der Sweep.
@@ -2427,8 +2427,11 @@ Regeln, die daraus folgen:
   dem Beta-Header `thinking-binding-controls-2026-08-01` (ohne Header ist das
   Feld ein 400). Prefix-Edits führen damit zu einem **Drop statt zu einem
   Fehler** — der Turn läuft weiter, aber ohne das Reasoning ab der ersten
-  geänderten Stelle. Der Finalize-Pass und `LocalSubAgent` editieren `system`
-  bzw. `tools` noch mitten im Turn (eigene Issues); jeder Drop steht als
+  geänderten Stelle. Der Finalize-Pass editiert `system` bzw. `tools` noch
+  mitten im Turn (eigenes Issue). `LocalSubAgent` hält `system` über den
+  ganzen Lauf fest: die Abschluss-Notiz (Repeat-Failure / letzte Iteration)
+  hängt als Text-Block am neuesten, noch nicht gesendeten User-Turn, hinter
+  dessen `tool_result`-Blöcken (#1212). Jeder Drop steht als
   `input_transformations`-Eintrag im Adapter-Log (`prefix_binding_mismatch` =
   wir editieren noch, `model_binding_mismatch` = Provider-Fallback, erwartet).
 - **Nur der In-Turn-Loop braucht die Blöcke.** `maskPriorTurnsForWire`
@@ -3401,6 +3404,15 @@ Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konst
 | `AUTH_LOGIN_IPV6_PREFIX` | Wie viele führende Bit einer IPv6-Adresse einen Client ausmachen. Default `64`, erlaubt `32`–`64`. Ein /56 enthält 256 /64, ein /48 65.536, bei 64 jedes ein eigener Client-Key mit eigenem Burst. 56 oder 48 fasst so eine Zuteilung zu einem Key zusammen, aber auch fremde Clients, die sich eine teilen (Mobilfunk, Hoster). |
 | `AUTH_LOGIN_MAX_INFLIGHT` | Gleichzeitige argon2-Läufe (Anmeldung und Setup-Hash), danach 503 `auth.busy`; einer davon bleibt Browsern mit Geräte-Cookie vorbehalten (bei `1` keiner). Default `4`, erlaubt `1`–`16`. Jeder Lauf braucht 19 MiB und einen Thread des libuv-Pools (`UV_THREADPOOL_SIZE`, Default 4); mehr Slots als Pool-Threads stehen nur Schlange. 16 × 19 MiB ≈ 300 MiB. |
 
+### MCP-Server (#1341, #1342, security-architecture §10p)
+
+| Variable | Wirkung |
+|---|---|
+| `MCP_STDIO_ENABLED` | `true`/`false`, Default `true` (Verhalten wie vor #1342). Ein stdio-MCP-Server startet seine Kommandozeile als Kindprozess der Middleware, mit deren OS-User, Dateisystem und Netz. `false` schaltet das ab: Anlegen wird mit 400 `mcp_stdio_disabled` / `code: stdio_disabled` abgelehnt, manuell (`POST /api/v1/operator/mcp-servers` mit `transport: stdio`) wie per Katalog-Import (`POST …/mcp-servers/from-registry`, der auf einen stdio-/`npx`-Eintrag auflöst). Bestehende stdio-Zeilen bleiben gespeichert, werden aber beim Verbinden abgewiesen (Discover → 502 `mcp_discover_failed` / `code: stdio_disabled`, Re-Scan aller Server, periodischer Re-Scan, Tool-Aufrufe zur Laufzeit); es wird kein Prozess gestartet. Ob Compose-Deployments mit `false` ausgeliefert werden, ist nicht entschieden. |
+| `MCP_RESCAN_INTERVAL_MS` | Intervall des periodischen Re-Scans aller aktiven MCP-Server in ms (`src/index.ts`), Default 6 h, `0` schaltet ihn ab. Prüft bei jedem Lauf dieselbe Outbound-Regel und denselben stdio-Schalter wie ein manueller Discover. |
+
+Die Outbound-Regel für operator-konfigurierte MCP-Ziele (Registry-URL, `http`-/`sse`-Endpoint) hat keine Env-Variable: Link-Local- und Cloud-Metadata-Ziele werden immer abgewiesen (400 bzw. 502 mit `code: blocked_host`), private und Loopback-Adressen bleiben erlaubt.
+
 ### Test-Schalter (nicht von der Middleware gelesen)
 
 Vier Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
@@ -4178,6 +4190,27 @@ die gefangene Transport-Exception auf `cause` und den Upstream-Body auf
 `body`, und `web_search` / `render_diagram` bauen ihr Ergebnis nur aus
 Provider-Id bzw. Diagramm-Art und HTTP-Status, nie aus der Message; der Rest
 steht unter der Ref im Log.
+**Absagen (`ToolRefusalError`, plugin-api 1.28.0, #1343)** sind die eine
+Exception, deren Text das Modell liest: Ein Plugin-Tool wirft sie, wenn es den
+Call NICHT ausgeführt hat und die Meldung selbst für das Modell formuliert hat
+(gesperrter Host, Ziel nicht erreichbar, eine Vorbedingung, die der Operator
+ändern muss). Erkannt wird sie am `name` (`'ToolRefusalError'`), nicht per
+`instanceof`, damit ein Plugin sie ohne Import werfen kann; dazu zählen die
+`ctx.http`-Sperren des Kernels (`HttpForbiddenError`,
+`HttpBlockedAddressError`, `HttpRateLimitError`, nur mit der Kernel-Message
+`plugin '<id>' is not permitted to reach …` / `… exceeded its …`).
+`toolErrorFromException` und `withholdThrownToolError` machen daraus
+`Error: tool \`<name>\` refused the call: <Meldung>` (Steuerzeichen raus,
+höchstens 600 Zeichen; eine Meldung mit Zeilenumbruch bleibt zurückgehalten),
+ohne den Satz „The outcome is unknown“ und ohne `outcomeUnknown`, denn es ist
+nichts passiert. Eine `ctx.http`-Sperre, die das Tool nicht selbst fängt,
+lautet `… was stopped by omadia: <Meldung>` und behält Hinweis und Marker
+(`isUnknownOutcomeToolErrorNotice`), weil das Tool vorher schon geschrieben
+haben kann. Der Text läuft danach wie jeder
+zurückgegebene `Error:`-Text durch `guardControlFlowResult` (redigiert, bei
+Exception-Form zurückgehalten). Jede andere Exception bleibt zurückgehalten.
+Erster Nutzer: der SEO-Analyst (0.2.0, #1344) für gesperrte und nicht
+erreichbare Ziel-URLs.
 Auf dem **öffentlichen MCP-Endpunkt** läuft jeder Tool-Handler mit dem
 Privacy-Handle des Dispatches als ambientem `turnContext.privacyHandle`
 (`runHandlerInPrivacyScope`): der Sub-Agent eines Domain-Tools bekommt
@@ -7230,3 +7263,38 @@ Der Quality-Guard-Plugin-Block (`harness-plugin-quality-guard`, `MEDIUM_EXTRA`) 
 per `${prependRules}\n\n---\n\n${body}` vorangestellt und drückt in dieselbe Richtung;
 Fix A lässt ihn bewusst unangetastet — die Präzedenz-Klausel deckt ihn über „every other
 instruction in this prompt" mit ab.
+
+## HTTP-Fehlerantworten: Terminal-Handler statt `finalhandler` (#1326 / #1318 / #1349, 2026-10-16)
+
+`src/index.ts` startet den Server **nicht** mehr mit `app.listen`, sondern mit
+`createAppServer(app, terminalHandler).listen(...)` (`src/http/terminalHandler.ts`).
+`createAppServer` ruft die Express-App mit einem dritten `done`-Argument auf;
+das läuft erst, wenn der **gesamte** Router-Stack den Request abgelehnt hat,
+und ersetzt Express' `finalhandler`. Der antwortet mit HTML und schreibt
+außerhalb von `NODE_ENV=production` den Stack hinein — Compose läuft mit
+`development`, also bekam jeder anonyme Client mit kaputtem JSON-Body einen
+Stack mit Container-Pfaden.
+
+Der Terminal-Handler antwortet immer JSON `{ code, message }`, nie mit Stack:
+
+| Fall | Status / `code` |
+|---|---|
+| body-parser `entity.parse.failed` | `400 request.invalid_json` |
+| body-parser `entity.too.large` | `413 request.payload_too_large` |
+| andere 4xx-Fehler mit `status` | ihr Status, `request.*` bzw. `unauthorized` / `forbidden` / … |
+| kein Router zuständig | `404 not_found` |
+| Pfad unter einem deklarierten, aber nicht freigegebenen Public-Prefix | `404 public_path.not_granted` |
+| sonstiger unbehandelter Fehler | `500 internal` (Stack nur ins Log) |
+
+**Regeln für spätere Änderungen:**
+
+- Nicht zurück auf `app.listen` — das bringt `finalhandler` und damit HTML +
+  Stack zurück.
+- Keinen Catch-all `app.use((req, res) => 404)` / Error-Middleware ans Ende
+  von `main()` hängen: `PluginRouteRegistry` mountet Plugin-Router nach dem
+  Boot live per `app.use`, die landeten **hinter** dem Catch-all und wären bis
+  zum Neustart tot. Der Terminal-Callback ist per Konstruktion immer zuletzt.
+- Routen, deren `:id` eine Postgres-`uuid`-Spalte ist, prüfen die Id per
+  `router.param('id', requireUuidParam('<area>.not_found'))`
+  (`src/http/uuidParam.ts`) — sonst wird ein Tippfehler zum `22P02`-500, der
+  die DB-Meldung zurückgibt. Aktuell: admin-users, routines (`:id`, `:runId`).

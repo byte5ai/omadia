@@ -1012,6 +1012,12 @@
     "digestLabel": "Error reference",
     "digestHint": "Quote this reference when reporting the problem — the full message is in the server log."
   },
+  "notFound": {
+    "metaTitle": "Page not found · omadia",
+    "title": "Page not found",
+    "description": "This page doesn't exist or is no longer available. Check the address, or head back to the dashboard.",
+    "backToDashboard": "Back to the dashboard"
+  },
   "errorHelp": {
     "admin_users": {
       "password_too_long": {
@@ -1967,6 +1973,7 @@
     "agentsEmpty": "No orchestrators yet. Create one above.",
     "agentMeta": "id: {id} · privacy: {privacy} (not enforced) · status: {status} · runtime: {runtime}",
     "detailMetaTitle": "Orchestrator: {slug} · omadia",
+    "detailNotFoundMetaTitle": "Orchestrator not found · omadia",
     "detailOpenLink": "Details",
     "detailBackToList": "All orchestrators",
     "detailAssignedHeading": "Assigned plugins",
@@ -4151,7 +4158,7 @@
         "flagCredentialFlows": "Runs credential flows on its own routes",
         "publicPathsTitle": "Public (unauthenticated) paths",
         "publicPathsBody": "This plugin asks to answer the URL prefixes below without an operator session. Anyone who can reach this deployment can reach them, and the plugin alone is responsible for authenticating those requests.",
-        "publicPathsNotGranted": "Declaring is not granting: each prefix stays behind the session gate until you consent to it, and consent is withdrawn automatically when the plugin is deactivated.",
+        "publicPathsNotGranted": "Declaring is not granting: a prefix is not reachable at all until you consent to it, and consent is withdrawn automatically when the plugin is deactivated.",
         "none": "No permissions declared.",
         "runtimeCredentials": "Runtime credentials"
       },
@@ -4367,7 +4374,7 @@
       "sqlLedger": "Migration ledger: {ledger}",
       "sqlLedgerDrift": "A grant is on record for a different table ({ledger}). The plugin has since changed the table it asks for, so the old grant no longer counts — tick the box to grant the new one.",
       "publicPathsIntro": "These paths answer without an omadia login, because the caller has none to present. Each one is still authenticated by the plugin itself.",
-      "publicPathBody": "Served without a session. If you do not grant it, the path stays behind the login and returns 401.",
+      "publicPathBody": "Served without a session once you grant it. Until you do, the path is not reachable at all, not even when signed in.",
       "orphaned": "Also granted, but no longer requested by the plugin: {paths}. These serve nothing; applying the form below clears them.",
       "optionalRequiresIntro": "Optional prerequisites. The plugin works without them, with reduced functionality — these are not permissions and there is nothing to grant here.",
       "currentGranted": "Currently granted",
@@ -4468,6 +4475,7 @@
       "transport": "Transport",
       "transportDeprecated": "Deprecated",
       "transportDeprecatedHint": "The legacy HTTP+SSE transport is deprecated as of MCP 2026-07-28 and will be removed after a transition window of at least 12 months. Existing SSE servers keep working — but new servers should use Streamable HTTP (http), and existing ones should be migrated to it.",
+      "stdioHint": "A stdio server runs as a process inside the middleware container, with the middleware's permissions (same user, filesystem and network access). Operators can turn stdio off with MCP_STDIO_ENABLED=false.",
       "showDeprecatedTransports": "Show deprecated transports",
       "deprecatedOption": "{transport} (deprecated)",
       "endpoint": "Endpoint",
@@ -4598,13 +4606,16 @@
       "errorTimeout": "The registry \"{name}\" did not answer in time.",
       "errorUnreachable": "The registry \"{name}\" could not be reached.",
       "errorGeneric": "The catalog of \"{name}\" could not be read.",
-      "errorUnreachableHint": "The registry host is down or blocked from this installation. Pick another registry above, or try again in a moment.",
+      "errorUnreachableHint": "The registry host is down or cannot be reached from this installation. Pick another registry above, or try again in a moment.",
       "removeRegistryBody": "Remove the registry \"{name}\"? Servers already imported from it stay.",
       "unlicensedShort": "unlicensed",
       "refresh": "Refresh",
       "scopeCachedPage": "cached page only",
       "scopeCachedPageWhy": "This registry’s own search did not answer, so these hits are a text match over the catalog page already loaded — servers further into the catalog are not covered. Use Refresh to try the registry’s search again.",
-      "errorTimeoutHint": "The registry accepted the connection but did not finish answering in time. Its browse listing may still work — clear the search box to list the catalog, or try again."
+      "errorTimeoutHint": "The registry accepted the connection but did not finish answering in time. Its browse listing may still work — clear the search box to list the catalog, or try again.",
+      "errorBlocked": "The registry \"{name}\" is blocked for security reasons.",
+      "errorBlockedHint": "A registry must not point at a link-local or cloud-metadata address such as 169.254.169.254 or metadata.google.internal. Private and intranet addresses are allowed. Change the registry URL or pick another registry above.",
+      "errorDetail": "Details: {detail}"
     },
     "grants": {
       "grantHeading": "Grant tools to an orchestrator",
@@ -4660,6 +4671,10 @@
         "unattributed": "Unattributed",
         "api_key": "API key (public MCP)"
       }
+    },
+    "guard": {
+      "blockedHost": "This address is blocked for security reasons. An MCP server or registry must not point at a link-local or cloud-metadata address such as 169.254.169.254 or metadata.google.internal; private and intranet addresses are allowed. Change the URL. Details: {detail}",
+      "stdioDisabled": "stdio MCP servers are disabled on this installation (MCP_STDIO_ENABLED=false). Use a remote (http) server instead, or set MCP_STDIO_ENABLED=true for the middleware and restart it. Details: {detail}"
     }
   },
   "adminRegistries": {

@@ -50,7 +50,7 @@ principal, so every action refused.
 
 - **Per-turn tool availability.** Plugins can pass
   `isAvailable: () => boolean` when they register a tool (`@omadia/plugin-api`
-  1.28.0). The kernel evaluates it inside the turn and hides the tool's spec
+  1.29.0). The kernel evaluates it inside the turn and hides the tool's spec
   and prompt doc wherever it says `false` — in the API tool list, the system
   prompt, and the list the subscription-CLI loopback and the public MCP server
   advertise. Dispatch is not gated; the handler still answers truthfully.
@@ -67,6 +67,126 @@ principal, so every action refused.
   (routine runs, Conductor) arrive the same way. Full routines support there
   needs those adapters to dispatch through `handleTurnStream` or call
   `beginRoutineTurn` themselves.
+
+### Fixed — MCP: link-local guard for manual servers, `MCP_STDIO_ENABLED`, readable refusals in the admin UI
+
+2026-10-16 — #1341, #1342. Manual MCP `http`/`sse` endpoints and MCP registry
+URLs now share one operator outbound rule (`src/services/mcpOutboundHostGuard.ts`,
+extracted from `mcpRegistryClient.ts`): link-local and cloud-metadata targets
+(`169.254.0.0/16`, `fe80::/10`, the IPv6 metadata endpoints
+`fd00:ec2::254` / `fd20:ce::254`, `169.254.x` inside any IPv6 embedding,
+`metadata.google.internal` / `metadata.goog` / `metadata`) are refused on the
+literal host and on the resolved addresses; private and loopback hosts
+(intranet registries, Compose services such as `postgres`) stay allowed on
+purpose. `POST /mcp-registries` rejects such a URL with
+`400 invalid_registry / blocked_host` instead of storing it, `POST /mcp-servers`
+with `400 mcp_endpoint_refused / blocked_host`. The same check runs at connect
+time through a new optional `connectGuard` on `McpManager`, wired into the
+operator router and the runtime manager: Discover, test-call, Re-scan all, the
+periodic rescan and agent tool calls refuse older rows with `blocked_host` and
+never contact the host, the OAuth metadata probe and the `auth-status` /
+`authorize` routes included. The extraction also closes a gap in the old check:
+WHATWG `URL` rewrites `[::ffff:169.254.169.254]` to `[::ffff:a9fe:a9fe]`, which
+the dotted-only comparison missed. New env switch `MCP_STDIO_ENABLED` (default
+`true`): with `false`, stdio servers can no longer be saved manually or
+imported from a catalog (`400 mcp_stdio_disabled / stdio_disabled`), and
+existing stdio rows are refused at connect time without spawning a process.
+Saving a stdio server writes a log line and an `admin_audit` row
+(`mcp_server.stdio_create`, name and source only, never the command line). In
+`/admin/mcp`, a `blocked_host` registry gets its own card (no "Try again"),
+transport failures show the server's reason, a failed Discover shows the
+response body's `message` instead of `failed: 502`, and the add-server form
+warns that a stdio server runs with the middleware's permissions. Known gap: a
+DNS answer that changes between check and connect (rebinding) is not covered.
+
+### Added — plugin tools can refuse a call with a message the model reads
+
+2026-10-16 — #1343. Every exception a plugin tool threw reached the model as
+the withheld notice ("The error text was withheld … The outcome is unknown"),
+so the SEO analyst could never say that the audit mode blocked a host, or that
+an operator can allow it. `@omadia/plugin-api` 1.28.0 adds `ToolRefusalError`:
+a tool throws it when it did NOT carry the call out and wrote the message for
+the model. The kernel recognises it by `name` (a plugin can throw it without
+importing the class, so it still loads on an older host) and passes it on as
+`Error: tool \`<name>\` refused the call: <message>` — control characters
+removed, at most 600 characters, no unknown-outcome clause and no
+`outcomeUnknown` marker (a message with line breaks stays withheld). The
+kernel's own `ctx.http` blocks (`HttpForbiddenError`, `HttpBlockedAddressError`,
+`HttpRateLimitError`, only with the message shape omadia writes) become
+readable too, as `… was stopped by omadia: <message>`, but keep the
+unknown-outcome clause: the tool may have written something before the block. Both `toolErrorFromException`
+(the tool bridges and in-tree wrappers) and `withholdThrownToolError` (the
+dispatch seams) handle it, and the text still goes through the Privacy
+Shield's returned-error redactor. Every other exception stays withheld.
+
+### Fixed — the SEO analyst no longer reports on a site it never reached
+
+2026-10-16 — #1344. `check_technical_seo` and `audit_site` ignored a blocked or
+unreachable root/start URL and returned a full report — "robots.txt nicht
+erreichbar", "Root-URL ist kein HTTPS", grade F — for a site the middleware
+never contacted. All three tools now share one check (`assertFetched`) and
+fail with a `ToolRefusalError` naming the audit mode and what the operator can
+change, or with `fetch failed for <url>` for an unreachable host. A blocked
+follow-up fetch (robots.txt, a sitemap on another host) is reported as
+`fetch.blocked` instead of `robots.missing` / `sitemap.missing`; later crawl
+pages keep the per-page handling. `@omadia/agent-seo-analyst` 0.2.0.
+
+### Fixed — the SEO analyst activates without internet access
+
+2026-10-16 — #1351. The activation self-test failed the plugin whenever
+`target_base_url` was unreachable (air-gapped host, egress firewall, an outage
+at boot), and with `request_timeout_ms` (15 s) it outlasted the runtime's 10 s
+`activate()` budget, so the operator saw the runtime timeout instead of the
+plugin's message. The self-test now has its own 5 s budget and only a policy
+refusal (audit mode or allow-list forbids the target) stops activation; an
+unreachable target logs a warning and the plugin activates, since every tool
+call checks its own target. The fetch log carries undici's `cause`
+(`getaddrinfo ENOTFOUND …`). Not changed: the runtime still does not retry a
+failed activation while it runs.
+
+### Fixed — sub-agents no longer rewrite their system prompt for the wrap-up turn
+
+2026-10-16. When a `LocalSubAgent` hit its last iteration or repeated the same
+failing tool call, it appended the wrap-up note to its system prompt for that
+one request. Changing the system prompt mid-run breaks the prompt-cache prefix
+and, on Opus 5.5 / Fable 5.1, the binding of the run's thinking blocks, so the
+final answer lost the reasoning it was meant to summarise. The system prompt
+now stays the same for the whole run; the note rides as a text block on the
+newest user turn, after its `tool_result` blocks, and is worded plainly
+(`tool_choice: none` already withdraws the tools) (#1212). The OB-31
+`expectedTurnToolUse` escalation no longer fires into that last, text-only
+iteration, where it could not force the tool and contradicted the note.
+
+### Fixed — JSON errors instead of Express HTML pages, and an omadia 404 page
+
+2026-10-16. Express's built-in `finalhandler` answered everything no router
+took. It sends HTML, and outside `NODE_ENV=production` (the Compose default is
+`development`) it wrote the stack trace with container paths into the page.
+Anyone could trigger that without credentials with a truncated or oversized
+JSON body, because the global body parser runs before any auth check (#1326).
+A non-UUID id on `/api/v1/admin/users/:id` ended the same way (#1318), and an
+ungranted public path such as `/documents/dl/…` answered
+`<pre>Cannot GET …</pre>` (#1349). The middleware now runs the app through a
+terminal callback (`http/terminalHandler.ts`, `createAppServer` replaces
+`app.listen`). It answers in the usual `{ code, message }` shape and never
+sends a stack: `400 request.invalid_json`, `413 request.payload_too_large`,
+other body-parser rejections with their 4xx status, `404 not_found` for an
+unknown path, `404 public_path.not_granted` for a prefix a plugin declared but
+the operator did not grant, and `500 internal` for an unhandled error, whose
+stack goes only to the log. Client mistakes are logged as one line instead of
+a stack. It is a callback rather than a trailing `app.use`, so routes plugins
+mount after boot are not shadowed. The admin-users and routines routers
+check `:id` / `:runId` as UUIDs (`http/uuidParam.ts`) and answer their own
+404 (`admin_users.not_found`, `routines.not_found`, `routines.run_not_found`)
+instead of a Postgres `22P02` 500 that echoed the database message (#1318,
+#1398). The install wizard and store text no longer promise that an ungranted
+public path "stays behind the login and returns 401": it is not reachable at
+all until granted. The web UI has its own `not-found.tsx`, which is themed,
+translated (EN/DE) and links back to the dashboard, and an unknown agent slug
+gets the tab title "Orchestrator not found" (#1398). Unknown routes answer
+HTTP 404. Pages that call `notFound()` still answer 200, because the root
+`loading.tsx` starts streaming before the page runs. That needs a decision on
+where the loading boundaries go and is tracked on #1398.
 
 ### Fixed — `DEV_ENDPOINTS_LOOPBACK_ONLY` covers every `/api/dev` route; compose stack sets its public URLs
 

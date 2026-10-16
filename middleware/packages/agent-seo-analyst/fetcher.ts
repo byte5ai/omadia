@@ -71,9 +71,13 @@ export function createFetcher(opts: FetcherOptions) {
         err instanceof Error && PERMISSION_ERROR_NAMES.has(err.name)
           ? err.message
           : undefined;
+      // undici reports `TypeError: fetch failed` and keeps the reason
+      // (`getaddrinfo ENOTFOUND …`, a connect timeout) in `cause` (#1351).
+      const cause = err instanceof Error && err.cause !== undefined ? String(err.cause) : undefined;
       opts.log('fetch error', {
         url,
         err: String(err),
+        ...(cause !== undefined ? { cause } : {}),
         blocked: blocked !== undefined,
       });
       return {
