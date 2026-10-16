@@ -1,12 +1,12 @@
 import { getFormatter, getTranslations } from 'next-intl/server';
 
 import type { VaultStatusResponse } from '../../_lib/api';
+import { Row, StatusDot, dotLabel, type TFn, type Tone } from './statusParts';
 
 interface Props {
   status: VaultStatusResponse;
 }
 
-type TFn = (key: string, values?: Record<string, string | number>) => string;
 type Formatter = Awaited<ReturnType<typeof getFormatter>>;
 
 export async function VaultStatusCard({
@@ -15,8 +15,17 @@ export async function VaultStatusCard({
   const t = await getTranslations('system.vaultStatus');
   const format = await getFormatter();
   const { vault, backup } = status;
-  const keySourceLabel = formatKeySource(vault.master_key_source, t);
-  const keyTone = vault.production_ready ? 'ok' : 'warn';
+  // #1387 — two master keys, two rows. The header dot follows
+  // `production_ready`, which the middleware now sets only when BOTH keys
+  // come from env; each row carries its own key's tone.
+  const keyTone: Tone = vault.master_key_source === 'env' ? 'ok' : 'warn';
+  const keychainTone: Tone =
+    vault.keychain_key_source === undefined
+      ? 'muted'
+      : vault.keychain_key_source === 'env'
+        ? 'ok'
+        : 'warn';
+  const statusTone: Tone = vault.production_ready ? 'ok' : 'warn';
   const backupTone: Tone = backup.enabled
     ? backup.last_error
       ? 'danger'
@@ -36,11 +45,24 @@ export async function VaultStatusCard({
             {t('heading')}
           </h2>
         </div>
-        <StatusDot tone={keyTone} label={dotLabel(keyTone, t)} />
+        <StatusDot tone={statusTone} label={dotLabel(statusTone, t)} />
       </header>
 
       <dl className="mt-6 grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
-        <Row label={t('masterKey')} value={keySourceLabel} tone={keyTone} />
+        <Row
+          label={t('masterKey')}
+          value={formatKeySource(vault.master_key_source, 'VAULT_KEY', t)}
+          tone={keyTone}
+        />
+        <Row
+          label={t('keychainKey')}
+          value={
+            vault.keychain_key_source === undefined
+              ? t('keySourceUnknown')
+              : formatKeySource(vault.keychain_key_source, 'CREDENTIAL_KEYCHAIN_KEY', t)
+          }
+          tone={keychainTone}
+        />
         <Row
           label={t('persistence')}
           value={vault.data_dir}
@@ -125,93 +147,23 @@ export async function VaultStatusCard({
   );
 }
 
-type Tone = 'ok' | 'warn' | 'danger' | 'muted';
-
-interface RowProps {
-  label: string;
-  value: string;
-  mono?: boolean;
-  tone?: Tone;
-}
-
-function Row({ label, value, mono, tone = 'muted' }: RowProps): React.ReactElement {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-        {label}
-      </dt>
-      <dd
-        className={[
-          mono ? 'font-mono text-xs' : 'text-sm',
-          toneClass(tone),
-        ].join(' ')}
-      >
-        {value}
-      </dd>
-    </div>
-  );
-}
-
-function StatusDot({
-  tone,
-  label,
-}: {
-  tone: Tone;
-  label: string;
-}): React.ReactElement {
-  const color =
-    tone === 'ok'
-      ? 'bg-[color:var(--success)]/100'
-      : tone === 'warn'
-        ? 'bg-[color:var(--warning)]/100'
-        : tone === 'danger'
-          ? 'bg-[color:var(--danger)]/80'
-          : 'bg-[color:var(--fg-subtle)]';
-  return (
-    <span className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[color:var(--fg-subtle)]">
-      <span className={`h-2 w-2 rounded-full ${color}`} />
-      {label}
-    </span>
-  );
-}
-
-function dotLabel(tone: Tone, t: TFn): string {
-  switch (tone) {
-    case 'ok':
-      return t('dotOk');
-    case 'warn':
-      return t('dotWarn');
-    case 'danger':
-      return t('dotDanger');
-    default:
-      return t('dotInactive');
-  }
-}
-
-function toneClass(tone: Tone): string {
-  switch (tone) {
-    case 'ok':
-      return 'text-[color:var(--fg-strong)]';
-    case 'warn':
-      return 'text-[color:var(--warning)]';
-    case 'danger':
-      return 'text-[color:var(--danger)]';
-    default:
-      return 'text-[color:var(--fg-strong)]';
-  }
-}
-
+/**
+ * #1387 — names the env var on every branch. The env case used to be a
+ * hard-coded "VAULT_KEY (env) — production", which claimed production for the
+ * whole card from one of its two keys (and bypassed the catalog).
+ */
 function formatKeySource(
   source: VaultStatusResponse['vault']['master_key_source'],
+  envVar: string,
   t: TFn,
 ): string {
   switch (source) {
     case 'env':
-      return 'VAULT_KEY (env) — production';
+      return t('keySourceEnv', { envVar });
     case 'dev-file-existed':
-      return t('keySourceDevFile');
+      return t('keySourceDevFile', { envVar });
     case 'dev-file-created':
-      return t('keySourceDevFileCreated');
+      return t('keySourceDevFileCreated', { envVar });
     default:
       return source;
   }
