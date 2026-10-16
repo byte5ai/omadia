@@ -1351,6 +1351,14 @@
       }
     },
     "settings": {
+      "anthropic_key_format": {
+        "what": "This is not an Anthropic API key. Anthropic keys start with “sk-ant-”.",
+        "next": "Copy the key again from the Anthropic console and paste it in full."
+      },
+      "api_key_format": {
+        "what": "This does not look like an API key: it contains spaces or is too short.",
+        "next": "Copy the key again from the provider’s console and paste it in full, without spaces or line breaks."
+      },
       "invalid_request": {
         "what": "The settings change was sent in a shape the server rejected.",
         "next": "Reload the page and make the change again."
@@ -1362,6 +1370,10 @@
       "no_valid_changes": {
         "what": "None of the submitted changes matches a setting this server currently offers.",
         "next": "Reload the page so the field list matches the server, then make the change again."
+      },
+      "openai_key_format": {
+        "what": "This is not an OpenAI API key. OpenAI keys start with “sk-”, and a key starting with “sk-ant-” belongs to Anthropic.",
+        "next": "Copy the key again from the OpenAI dashboard and paste it in full."
       },
       "read_failed": {
         "what": "The settings could not be read.",
@@ -3794,43 +3806,6 @@
       }
     }
   },
-  "adminSettings": {
-    "pluginDirectory": {
-      "heading": "Per-plugin settings",
-      "intro": "Most configuration now lives with each plugin and is edited in its own settings panel. Only genuinely cross-plugin values (like the shared Anthropic key above) remain on this page.",
-      "open": "Open settings",
-      "plugins": {
-        "orchestrator": "Orchestrator & model routing",
-        "verifier": "Verifier",
-        "embeddings": "Embeddings",
-        "knowledgeGraph": "Knowledge graph",
-        "diagrams": "Diagrams & storage",
-        "integrations": "Integrations (Microsoft, Teams, Telegram)"
-      }
-    },
-    "title": "Configuration",
-    "intro": "All <envFile>.env</envFile> values that are written to the config store or the secret vault at startup. Changes are saved automatically and the affected plugin is re-activated — they take effect immediately, without a restart. Secrets only show whether a value is set; the value itself is never displayed.",
-    "loading": "Loading …",
-    "loadError": "Failed to load: {message}",
-    "vaultUnavailable": "Vault unavailable — secrets cannot be edited.",
-    "notInstalled": "not installed",
-    "boolean": {
-      "on": "on",
-      "off": "off"
-    },
-    "secret": {
-      "set": "set",
-      "unset": "not set",
-      "replacePlaceholder": "•••••• (replace)",
-      "enterPlaceholder": "Enter value",
-      "remove": "Remove"
-    },
-    "status": {
-      "saving": "saving …",
-      "saved": "✓ saved",
-      "error": "✗ error"
-    }
-  },
   "adminProviders": {
     "intro": "Connect LLM providers and choose which one each agent runs on. Keys are stored encrypted in the vault and never leave your server. Anthropic is the default; switching an agent to another provider takes effect live.",
     "loading": "Loading …",
@@ -3881,7 +3856,8 @@
         "noProbe": "This provider type cannot be probed cheaply, so the key stays unverified."
       },
       "oauthConnect": "Sign in with ChatGPT",
-      "oauthReconnect": "Reconnect ChatGPT"
+      "oauthReconnect": "Reconnect ChatGPT",
+      "saveRejectedReason": "Reason: {reason}"
     },
     "assignments": {
       "heading": "Per-agent assignment",
@@ -4779,14 +4755,14 @@
       "delete": "Delete",
       "deleting": "Deleting",
       "secretRevealed": "New secret — copy it now, it will not be shown again:",
-      "dismiss": "Dismiss",
       "noDeliveries": "No deliveries recorded yet.",
       "confirmDelete": "Really delete this endpoint? Any sender using it will start getting 401s.",
       "table": {
         "deliveryId": "Delivery id",
         "outcome": "Outcome",
         "receivedAt": "Received"
-      }
+      },
+      "blockedByReveal": "Copy and dismiss this secret before you create or rotate another one."
     },
     "subscriptions": {
       "heading": "Outbound subscriptions",
@@ -4808,7 +4784,6 @@
       "delete": "Delete",
       "deleting": "Deleting",
       "secretRevealed": "New secret — copy it now, it will not be shown again:",
-      "dismiss": "Dismiss",
       "noDeliveries": "No deliveries recorded yet.",
       "confirmDelete": "Really delete this subscription?",
       "table": {
@@ -4817,7 +4792,17 @@
         "lastError": "Last error",
         "nextAttemptAt": "Next attempt",
         "createdAt": "Created"
-      }
+      },
+      "blockedByReveal": "Copy and dismiss this secret before you create or rotate another one."
+    },
+    "errors": {
+      "urlForbidden": "This address is not allowed. Webhooks may only call public http(s) targets.",
+      "invalidInput": "The request is missing a required value.",
+      "notFound": "This entry no longer exists. Reload the page.",
+      "unavailable": "Webhooks are not available on this server.",
+      "serverFailed": "The server could not complete this action. Try again; if it repeats, check the middleware logs.",
+      "requestFailed": "The request failed (HTTP {status}).",
+      "unexpected": "The request could not be sent."
     }
   },
   "adminDomains": {
@@ -5314,7 +5299,9 @@
       "gcTitle": "Run GC quotas",
       "gcDescription": "Per-scope eviction by type-weight × decay-score. Enforces hot_max_entries + max_total_chars.",
       "accessFlushTitle": "Run access flush only",
-      "accessFlushDescription": "Drain the access tracker into access_count + accessed_at without rotating. Debug-only."
+      "accessFlushDescription": "Drain the access tracker into access_count + accessed_at without rotating. Debug-only.",
+      "runNow": "Run now",
+      "running": "Running …"
     },
     "cards": {
       "tierBreakdown": "Tier breakdown",
@@ -5349,7 +5336,7 @@
       "promotedColdToWarm": "Promoted COLD → WARM"
     },
     "title": "Knowledge-Graph Lifecycle",
-    "intro": "Palaia Phase 4 — tier rotation, decay, GC. Sweeps run on the cron schedule; the buttons below trigger them on demand.",
+    "intro": "Tier rotation, decay and GC for the knowledge graph. Sweeps run on the cron schedule; the buttons below trigger them on demand.",
     "refresh": "Refresh"
   },
   "adminKgPriorities": {
@@ -5963,8 +5950,8 @@
       },
       "pluginNeedsConfig": {
         "question": "A plugin says it needs configuration",
-        "answer": "The plugin is installed but at least one required field has no value. Open the plugin in the store and fill in the setup fields. Secret fields never want an account password — they want a technical key from the provider's console.",
-        "action": "Open the store"
+        "answer": "The plugin is installed but at least one required field has no value. Open the plugin in the Hub and fill in the setup fields. Secret fields never want an account password — they want a technical key from the provider's console.",
+        "action": "Open the Hub"
       },
       "cliNotInstalled": {
         "question": "A subscription CLI shows as not installed",
@@ -5973,13 +5960,13 @@
       },
       "noModels": {
         "question": "No models show up for a provider",
-        "answer": "Models are contributed by the provider plugin. If the list is empty, the plugin is not active — check LLM access and the plugin's status in the store.",
+        "answer": "Models are contributed by the provider plugin. If the list is empty, the plugin is not active — check LLM access and the plugin's status in the Hub.",
         "action": "Open LLM access"
       }
     },
     "docs": {
       "heading": "Documentation",
-      "documentation": "Documentation",
+      "documentation": "Docs on GitHub",
       "repository": "Source code on GitHub",
       "discussions": "Ask in Discussions"
     },
@@ -6055,5 +6042,11 @@
       "teams_sign_in_failed": "The Teams sign-in failed.",
       "unknown": "The Teams sign-in request failed: {detail}"
     }
+  },
+  "oneTimeSecret": {
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Couldn't copy automatically — select the secret above and copy it manually.",
+    "dismiss": "I've copied it, dismiss"
   }
 }

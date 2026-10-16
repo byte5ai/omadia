@@ -245,7 +245,9 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
       detail: middlewareOk
         ? t('health.middleware.okDetail')
         : t('health.middleware.downDetail'),
-      href: '/admin/settings',
+      // The card is about the middleware itself, so "Manage" opens the system
+      // page (vault, runtime), not a provider-key form (#1397).
+      href: '/system',
       manage: t('health.manage'),
     },
     {
