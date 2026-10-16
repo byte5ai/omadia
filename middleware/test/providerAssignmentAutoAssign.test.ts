@@ -200,6 +200,22 @@ describe('autoAssignSubscriptionCli (OM-79)', () => {
     assert.equal(reactivated.at(-1), ORCH, 'the orchestrator is rebuilt last');
   });
 
+  // #1394 — the orchestrator captures extras' services. When the hand-off
+  // switches extras but skips the orchestrator itself (here: an explicit
+  // provider), the orchestrator must still be rebuilt, once, at the end.
+  it('rebuilds a skipped orchestrator once after switching the extras it captures', async () => {
+    const { reactivated, deps } = await makeDeps([
+      { id: ORCH, config: { llm_provider: 'openai' } },
+      { id: EXTRAS, config: {} },
+    ]);
+
+    const outcome = await autoAssignSubscriptionCli(deps);
+
+    assert.deepEqual(outcome.assigned, [EXTRAS]);
+    assert.ok(outcome.skipped.some((s) => s.pluginId === ORCH));
+    assert.deepEqual(reactivated, [EXTRAS, ORCH]);
+  });
+
   it('reports a failing reactivate as apply_failed and does not throw', async () => {
     const { deps } = await makeDeps([{ id: ORCH, config: {} }], { reactivateThrows: true });
 

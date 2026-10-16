@@ -1537,10 +1537,9 @@ POST fail-closed mit `400 providers.model_class_unavailable`. Qualifizierte IDs
 `modelId` normalisiert. Das Ergebnis trägt zusätzlich `resolvedModel` (auch in
 der POST-Antwort). `GET /admin/providers` liefert pro Assignment `model` (der
 gespeicherte Ref) plus `resolvedModel` (derselbe Resolver wie zur Laufzeit,
-gegen den AKTUELLEN Katalog; Plugins, die bei der Aktivierung auflösen, behalten
-ihr Modell bis zur nächsten Reaktivierung — verschiebt die Model-Discovery
-(`modelCatalogSync`) danach das Ziel einer Klasse, kann das Label vom laufenden
-Modell abweichen, siehe §13 „Klassen-Refs veralten nach Discovery“; `null` wenn nichts gesetzt ist oder der
+gegen den AKTUELLEN Katalog; Plugins, die bei der Aktivierung auflösen, werden
+neu gebaut, sobald die Model-Discovery (`modelCatalogSync`) das Ziel ihrer
+Klasse verschiebt, siehe §13 „Klassen-Refs veralten nach Discovery“; `null` wenn nichts gesetzt ist oder der
 Ref nicht auflösbar ist) und pro Provider `classDefaults` (Klasse →
 `modelId` via `modelForClass`). Die Admin-UI rendert Klassen als eigene,
 beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
@@ -1580,8 +1579,17 @@ Jetzt ruft `toolPluginRuntime.onActivated` für dieses Plugin
 LIVE-Registry inkl. `setOnAgentBuilt`. Die Tool-Quelle ist `liveDomainTools`:
 Kernel-Built-ins aus dem Boot-Set, Dynamic-Agent-Tools aus der Runtime (der
 Boot-Handle eines später neu hochgeladenen oder entfernten Agents ist tot).
-Offen: ein key-loser Erst-Boot installiert diese Verdrahtung nicht und braucht
-für Sub-Agent-Stacks weiterhin einen Neustart.
+Die Verdrahtung steckt in `createOrchestratorToolRebinder`
+(`runtimeToolPropagation.ts`) und wird auch bei einem key-losen Erst-Boot
+installiert (mit Datenbank inkl. MCP-Pool und Registry-Hydration): das erste
+Key-Speichern veröffentlicht Chat-Orchestrator und Registry, `rebind()` bindet
+beide (#1358). Alle Auslöser — Key-Speichern auf `/admin/settings` (#1345),
+Modellwechsel auf der LLM-Zugangsseite (#1400), OAuth-Login, Setup-Editor —
+enden in `reactivateAgent` → `toolPluginRuntime.onActivated`; Regressionstests
+pro Auslöser in `test/orchestratorReactivationTriggers.test.ts`. Vor dem
+Re-Bind wartet `onActivated` auf den Refresh des geteilten Anthropic-Clients;
+DB-definierte Sub-Agents bekommen `currentAnthropicClient()` statt des
+Boot-`client` aus der ENV.
 
 ### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
 
@@ -5453,22 +5461,18 @@ mit `ask.owner` überein, und niemand kann das Ask beantworten
 ab). Offen im Epic: das agent-aufrufbare Broker-/Ask-Tool, die Benachrichtigung
 des Owners (heute nur per `GET /pending` auffindbar) und die Admin-UIs (P4).
 
-### Umgekehrte Richtung: extras allein neu gebaut, Orchestrator hält alte Instanzen (#1076 follow-up)
+### Umgekehrte Richtung: extras allein neu gebaut, Orchestrator hält alte Instanzen (#1076 follow-up) — erledigt (#1394)
 
-#1076 baut bei einer Provider-Änderung des Orchestrators extras **vor** dem
-Orchestrator neu. Offen ist die Gegenrichtung: wird extras allein reaktiviert
-(direkte Zuweisung an extras; `adminSettings`, das nach einem Key-Speichern
-den Orchestrator vor extras reaktiviert; oder der OAuth-Fan-out
-`fanOutProviderOAuthTokens` in `src/routes/adminProviders.ts`, der in
-`LLM_PLUGINS`-Reihenfolge reaktiviert und Fehler per `.catch(() => undefined)`
-verschluckt), hält der laufende Orchestrator
-weiter die vorherigen `FactExtractor`/`ContextRetriever`/`SessionBriefing` und
-den KG-Wrapper, weil er sie eager in `activate()` abgreift und ein Teardown
-nicht kaskadiert. Die allgemeine Lösung — nach einem Provider-Rebuild die eager
-Konsumenten neu bauen — gehört in das gemeinsame `reactivateAgent` in
-`src/index.ts`. #1080 (PR #1186, gemergt) hat dort nur den Refresh des
-geteilten Host-Clients ergänzt, keinen Rebuild eager Konsumenten; die
-Gegenrichtung bleibt offen und bewusst außerhalb von #1076.
+Der Orchestrator greift die Dienste von extras **und** Verifier eager in
+`activate()` ab (`LlmPluginDesc.capturedBy`). `rebuildOrder`
+(`src/platform/providerDependents.ts`) baut deshalb den abgreifenden Plugin
+immer **nach** den abgegriffenen neu und ergänzt ihn, wenn er fehlt. Genutzt
+von `reactivateAfterProviderWrite` (direkte Zuweisung an extras/Verifier →
+danach Orchestrator), vom Settings-`PATCH` (Key landet in allen drei Scopes →
+Verifier, extras, Orchestrator) und vom OAuth-Fan-out
+`fanOutProviderOAuthTokens`. Der Subscription-Hand-off verschiebt den Rebuild
+(`deferCapturerRebuild`) und baut den Orchestrator nur dann einmal am Ende,
+wenn dessen eigener Schritt übersprungen wurde.
 
 ### Weitere eager Abgriffe, die ein extras- oder Provider-Rebuild nicht erreicht
 
@@ -5499,23 +5503,31 @@ Modellaufrufen `LlmBudgetExceededError`; `shouldPlan` fängt ihn und plant bis
 zur nächsten Aktivierung nichts mehr, ohne Meldung. Budget pro Turn zählen oder
 die Obergrenze des Plan-Runners anheben.
 
-**Klassen-Refs veralten nach Discovery (#1083, offen).** Orchestrator, Verifier
-und extras lösen einen Klassen-Ref (`class:frontier` …) **einmal bei der
-Aktivierung** auf. Verschiebt `modelCatalogSync` danach das Ziel der Klasse,
-laufen sie auf dem alten Modell weiter, während `GET /admin/providers` das
-`resolvedModel` (und damit das Label `Frontier (auto → X)`) gegen den
-AKTUELLEN Katalog berechnet — das Label kann dem laufenden Modell also
-vorauseilen. Ein Neustart repariert das nicht verlässlich: Discovery-Ergebnisse
-werden nicht persistiert, und `void modelCatalogSync.refreshAll()` in
-`src/index.ts` läuft beim Boot fire-and-forget, während die Plugin-Aktivierung
-später awaited wird — sie kann gegen den gebündelten Katalog auflösen. Eine
-automatische Reaktivierung nach Discovery wurde in #1083 bewusst wieder
-entfernt, weil sie so nicht sicher ist. Voraussetzungen für eine sichere
-Variante: (1) nach einer Orchestrator-Reaktivierung die Kernel-Hydration erneut
-ausführen (Domain-Tools, `dynamicAgentRuntime.attachOrchestrator`,
-`setOnAgentBuilt`) — heute läuft sie nur beim Boot; (2) den Status nach der
-Reaktivierung prüfen, statt Erfolg anzunehmen; (3) den Orchestrator **nach**
-Verifier und extras reaktivieren, damit er deren neue Instanzen bindet.
+**Klassen-Refs veralten nach Discovery (#1083) — erledigt (#1359).**
+Orchestrator, Verifier und extras lösen einen Klassen-Ref (`class:frontier` …)
+**einmal bei der Aktivierung** auf; beim Boot also gegen den gebündelten Seed,
+weil `modelCatalogSync.refreshAll()` fire-and-forget erst danach landet.
+`createClassDefaultRebuilder` (`src/platform/classDefaultRebuild.ts`) stempelt
+jede Aktivierung eines LLM-Plugins mit einer Katalog-Generation — beim
+**Start** der Aktivierung (`ToolPluginRuntime`-Hook `onActivating`), damit ein
+Discovery-Lauf, der während `activate()` landet, als neuer zählt;
+`modelCatalogSync` meldet über `onDefaultsChanged`, wenn ein Lauf die
+Klassen-Defaults eines Providers verschiebt. Dann werden genau die
+installierten LLM-Plugins neu gebaut, die auf einer älteren Generation
+aktiviert wurden, auf diesem Provider laufen und einem Klassen-Ref folgen
+(Orchestrator-Default `class:frontier`; Verifier/extras haben konkrete
+Defaults). Die drei Voraussetzungen aus #1083 sind erfüllt: (1) Re-Bind der
+Domain-Tools bei jeder Orchestrator-Aktivierung (#1406, key-los inklusive);
+(2) der Status wird nach jedem Rebuild gelesen (`errored` → geloggt, nicht als
+Erfolg gezählt); (3) Reihenfolge nach `rebuildOrder`. Rebuilds warten auf
+`bootWired` (gesetzt nach der Kernel-Verdrahtung in `src/index.ts`), ein Lauf
+vor der Aktivierung löst nichts aus. Läufe werden serialisiert und prüfen
+„veraltet?“ erst, wenn sie dran sind (ein schon neu gebautes Plugin wird
+übersprungen). Gilt auch für den 6-Stunden-Timer und „Modelle aktualisieren“:
+verschiebt der Anbieter die Klasse, wird unbeaufsichtigt reaktiviert — derselbe
+Teardown wie beim Speichern eines Modells auf der LLM-Zugangsseite. Nicht
+serialisiert gegen gleichzeitige Admin-Reaktivierungen (`InstallService.reactivate`
+hat keinen Lock); ein globaler Reaktivierungs-Lock wäre ein eigener Schritt.
 
 ### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
 
