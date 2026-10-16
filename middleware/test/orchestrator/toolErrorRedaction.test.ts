@@ -22,6 +22,7 @@ import { strict as assert } from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { format, inspect } from 'node:util';
 
+import { ToolRefusalError } from '@omadia/plugin-api';
 import type {
   PrivacyToolErrorRedactResult,
   PrivacyToolErrorRequest,
@@ -359,6 +360,74 @@ describe('guardControlFlowResult — returned `Error:` text', () => {
 describe('withholdThrownToolError', () => {
   const err = new Error(`Fault on record {"email":"${EMAIL}"}`);
 
+  it('passes a refusal through the returned-error redactor, not the withheld notice (#1343)', async () => {
+    const recorded: RecordedEntry[] = [];
+    const redactCalls: string[] = [];
+    const refusal = new ToolRefusalError(
+      `host blocked for ${EMAIL}'s request — ask the operator to add it to the allow-list`,
+    );
+    const out = await withholdThrownToolError({
+      toolName: 'analyze_page',
+      err: refusal,
+      privacy: fakeHandle(recorded, redactCalls),
+      site: 'test',
+      ref: 'r-refusal',
+    });
+    assert.equal(out.refused, true);
+    assert.equal(out.withheld, false);
+    assert.equal(
+      out.text,
+      "Error: tool `analyze_page` refused the call: host blocked for [masked:email]'s request — ask the operator to add it to the allow-list",
+    );
+    assert.equal(out.text.includes('outcome is unknown'), false);
+    assert.equal(redactCalls.length, 1, 'the shield redacts the refusal text');
+    assert.deepEqual(
+      recorded.map((r) => [r.carrier, r.outcome]),
+      [['returned', 'redacted']],
+    );
+  });
+
+  it("does not mistake the SEO analyst's blocked-host refusal for an exception dump", () => {
+    const seo =
+      " tool `analyze_page` refused the call: plugin '@omadia/agent-seo-analyst' is not permitted " +
+      "to reach '10.0.0.5' — is a private, loopback, link-local or otherwise non-public address " +
+      '(audit mode: public-web). The requested URL was NOT analysed — ask the operator to widen ' +
+      'the audit mode or add the host to the allow-list.';
+    assert.equal(looksExceptionShaped(seo), false);
+  });
+
+  it('keeps a kernel ctx.http block readable but outcome-unknown', async () => {
+    const blocked = Object.assign(
+      new Error("plugin '@omadia/x' is not permitted to reach 'hooks.example.com' — missing from permissions.network.outbound"),
+      { name: 'HttpForbiddenError' },
+    );
+    const out = await withholdThrownToolError({
+      toolName: 'crm_update',
+      err: blocked,
+      privacy: fakeHandle([], []),
+      site: 'test',
+      ref: 'r-k',
+    });
+    assert.equal(out.refused, false, 'the tool may have written before the block');
+    assert.equal(out.withheld, false);
+    assert.match(out.text, /^Error: tool `crm_update` was stopped by omadia: plugin '@omadia\/x' is not permitted/);
+    assert.match(out.text, /do not repeat a call that changes data\.$/);
+  });
+
+  it('passes a refusal unmasked without a privacy provider (parity)', async () => {
+    const out = await withholdThrownToolError({
+      toolName: 'analyze_page',
+      err: Object.assign(new Error('not permitted'), { name: 'ToolRefusalError' }),
+      privacy: undefined,
+      site: 'test',
+    });
+    assert.deepEqual(out, {
+      text: 'Error: tool `analyze_page` refused the call: not permitted',
+      withheld: false,
+      refused: true,
+    });
+  });
+
   it('withholds under a privacy handle, logs the full error, records the entry', async () => {
     const recorded: RecordedEntry[] = [];
     const out = await withholdThrownToolError({
@@ -403,7 +472,11 @@ describe('withholdThrownToolError', () => {
       site: 'test',
       ref: 'r-2',
     });
-    assert.deepEqual(out, { text: thrownToolErrorForModel('memory', err, 'r-2'), withheld: true });
+    assert.deepEqual(out, {
+      text: thrownToolErrorForModel('memory', err, 'r-2'),
+      withheld: true,
+      refused: false,
+    });
     assert.equal(out.text.includes(EMAIL), false);
     assert.deepEqual(recorded, [
       {
@@ -417,7 +490,7 @@ describe('withholdThrownToolError', () => {
 
   it('keeps the raw message without a privacy provider (parity), formatted by the caller', async () => {
     const plain = await withholdThrownToolError({ toolName: 't', err, privacy: undefined, site: 'test' });
-    assert.deepEqual(plain, { text: `Error: ${err.message}`, withheld: false });
+    assert.deepEqual(plain, { text: `Error: ${err.message}`, withheld: false, refused: false });
     const raw = await withholdThrownToolError({
       toolName: 't',
       err,

@@ -14,6 +14,12 @@
  *
  * The policy follows PROVENANCE, not the carrier's shape:
  *
+ *  - THROWN REFUSAL (`withholdThrownToolError`): a `ToolRefusalError` or a
+ *    kernel `ctx.http` permission error (#1343) carries a message written for
+ *    the model. It becomes `Error: tool \`<name>\` refused the call: <message>`
+ *    (the kernel block: `… was stopped by omadia: <message>`, outcome still
+ *    unknown) and then takes the RETURNED policy below, so the shield still
+ *    redacts it.
  *  - THROWN (`withholdThrownToolError`): the message is never forwarded. The
  *    model gets `Error: tool \`<name>\` failed with <ErrorClass> (code <code>)
  *    [ref <ref>] …` — class name and a sanitised code only — and the full error
@@ -60,6 +66,7 @@ import {
   TOOL_ERROR_PREFIX,
   describeThrownError,
   newToolErrorRef,
+  readableToolErrorNotice,
   withheldToolErrorNotice,
 } from '@omadia/plugin-api';
 import type {
@@ -302,11 +309,15 @@ async function recordSafely(
 }
 
 export interface ThrownToolErrorOutcome {
-  /** The model-facing text: the withheld notice, or — parity — the raw message
-   *  formatted by `formatRaw`. */
+  /** The model-facing text: the withheld notice, the refusal notice, or —
+   *  parity — the raw message formatted by `formatRaw`. */
   readonly text: string;
   /** True when the message was withheld (and receipted). */
   readonly withheld: boolean;
+  /** True when the tool refused the call (`ToolRefusalError`): nothing was
+   *  carried out, so the outcome is KNOWN. False for a kernel `ctx.http`
+   *  block, whose message is readable but whose tool may have acted before. */
+  readonly refused: boolean;
 }
 
 /**
@@ -327,6 +338,15 @@ export async function withholdThrownToolError(input: {
 }): Promise<ThrownToolErrorOutcome> {
   const { toolName, err, privacy, site } = input;
   const ref = input.ref !== undefined && input.ref !== '' ? input.ref : toolErrorRef();
+  const readable = readableToolErrorNotice(toolName, err);
+  if (readable !== undefined) {
+    console.warn(`[${site}:${toolName}] tool refused the call (ref=${ref}):`, err);
+    const text =
+      privacy === undefined
+        ? readable.text
+        : await guardControlFlowResult({ toolName, result: readable.text, privacy, site });
+    return { text, withheld: false, refused: readable.refused };
+  }
   const message = messageOf(err);
   const withhold = privacy !== undefined;
   console.error(
@@ -336,7 +356,7 @@ export async function withholdThrownToolError(input: {
   );
   if (!withhold) {
     const format = input.formatRaw ?? ((m: string): string => `${TOOL_ERROR_PREFIX} ${m}`);
-    return { text: format(message), withheld: false };
+    return { text: format(message), withheld: false, refused: false };
   }
   await recordSafely(
     privacy,
@@ -348,7 +368,7 @@ export async function withholdThrownToolError(input: {
     },
     site,
   );
-  return { text: thrownToolErrorForModel(toolName, err, ref), withheld: true };
+  return { text: thrownToolErrorForModel(toolName, err, ref), withheld: true, refused: false };
 }
 
 /**
