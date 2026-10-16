@@ -406,8 +406,18 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
             {t('updateAvailable', { version: target })}
           </p>
         )}
-        {status !== null && !status.updateAvailable && status.current.source === 'release' && (
-          <p className="mt-3 text-sm text-[color:var(--fg-muted)]">{t('upToDate')}</p>
+        {/* #1378 — `updateAvailable: false` also means "the lookup produced
+            nothing to compare against". Claim up-to-date only on a fresh,
+            successful lookup; with no release known, say that instead. */}
+        {status !== null &&
+          !status.updateAvailable &&
+          status.current.source === 'release' &&
+          status.latest !== null &&
+          !status.check.stale && (
+            <p className="mt-3 text-sm text-[color:var(--fg-muted)]">{t('upToDate')}</p>
+          )}
+        {status !== null && status.latest === null && (
+          <p className="mt-3 text-sm text-[color:var(--fg-muted)]">{t('latestUnknownHint')}</p>
         )}
         {status?.check.stale === true && (
           <p className="mt-3 text-xs text-[color:var(--fg-muted)]">
@@ -444,6 +454,11 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
               version: target.length > 0 ? target : 'vX.Y.Z',
             })}
           </pre>
+          {/* #1380 — a bare `up -d` recreates the middleware from
+              docker-compose.yaml alone and silently drops every overlay's env. */}
+          <p className="mt-2 text-xs text-[color:var(--fg-muted)]">
+            {t('notifyOnlyComposeOverlayHint')}
+          </p>
           <p className="mt-3 text-[11px] tracking-wider text-[color:var(--fg-muted)] uppercase">
             {t('notifyOnlyFlyLabel')}
           </p>

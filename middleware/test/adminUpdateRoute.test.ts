@@ -201,6 +201,7 @@ interface StatusBody {
 
 interface ErrorBody {
   error: string;
+  code?: string;
   message?: string;
   auditId?: string;
 }
@@ -400,7 +401,10 @@ describe('POST /api/v1/admin/update', () => {
     });
 
     assert.equal(res.status, 400);
-    assert.equal((await readJson<ErrorBody>(res)).error, 'confirmation_mismatch');
+    const body = await readJson<ErrorBody>(res);
+    assert.equal(body.error, 'confirmation_mismatch');
+    // #1379 — the web-ui ApiError reads `code`; `error` stays for old clients.
+    assert.equal(body.code, 'confirmation_mismatch');
     assert.deepEqual(updater.requested, []);
     assert.deepEqual(audit.rows, []);
   });
