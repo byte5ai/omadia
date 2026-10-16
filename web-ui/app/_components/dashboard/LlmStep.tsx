@@ -16,6 +16,8 @@ import type { RuntimeReadiness } from '../../_lib/runtimeReadiness';
  *                            actually runs on (OM-74, #999)
  *   2. unreachable         → the middleware did not answer, so nothing about
  *                            the runtime can be claimed (#1088)
+ *   2b. database down     → the middleware answered, but its database did
+ *                            not (#1384) — same "cannot be checked", other cause
  *   3. access, no runtime  → the assignment is missing (OM-78 / #1001, the
  *                            handoff gap of #994)
  *   4. nothing yet         → the two connect CTAs
@@ -103,6 +105,25 @@ export function LlmStepBody({
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <Link href="/admin/update" className={PRIMARY_CTA}>
             {t('openSystemStatus')}
+            <ArrowRight className="size-3.5" aria-hidden />
+          </Link>
+        </div>
+      </>
+    );
+  }
+
+  if (runtimeState === 'database_unavailable') {
+    // #1384 — the API answered 503 `auth.unavailable`: the middleware is up,
+    // Postgres is not. Blaming the middleware (the `unreachable` copy) or
+    // pointing at the update page would send the operator to the wrong place.
+    return (
+      <>
+        <p data-testid="onboarding-step-1-database-unavailable" className={BODY}>
+          {t('databaseUnavailable')}
+        </p>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Link href="/system" className={PRIMARY_CTA}>
+            {t('openPlatformHealth')}
             <ArrowRight className="size-3.5" aria-hidden />
           </Link>
         </div>
