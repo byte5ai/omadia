@@ -695,7 +695,7 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   sessionSigningKey, whitelist: emailWhitelist, sessions: sessionRevocation })`
   vor `createCoreApi({ … webSockets })`, zusätzlich an die `DefaultChannelRegistry`
   gereicht (Lifecycle-Spiegel zu `routes`), und
-  `webSocketRegistry.attach(server)` nach `const server = app.listen(PORT, '::')`
+  `webSocketRegistry.attach(server)` nach `const server = createAppServer(app, terminalHandler).listen(PORT, '::')`
   — dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit. Über
   `sessions` (derselbe `SessionRevocationGuard` wie `requireAuth`) kommen sowohl
   der Upgrade-Check als auch `onRevoked`, die Frame-Prüfung und der Sweep.
@@ -2394,8 +2394,11 @@ Regeln, die daraus folgen:
   dem Beta-Header `thinking-binding-controls-2026-08-01` (ohne Header ist das
   Feld ein 400). Prefix-Edits führen damit zu einem **Drop statt zu einem
   Fehler** — der Turn läuft weiter, aber ohne das Reasoning ab der ersten
-  geänderten Stelle. Der Finalize-Pass und `LocalSubAgent` editieren `system`
-  bzw. `tools` noch mitten im Turn (eigene Issues); jeder Drop steht als
+  geänderten Stelle. Der Finalize-Pass editiert `system` bzw. `tools` noch
+  mitten im Turn (eigenes Issue). `LocalSubAgent` hält `system` über den
+  ganzen Lauf fest: die Abschluss-Notiz (Repeat-Failure / letzte Iteration)
+  hängt als Text-Block am neuesten, noch nicht gesendeten User-Turn, hinter
+  dessen `tool_result`-Blöcken (#1212). Jeder Drop steht als
   `input_transformations`-Eintrag im Adapter-Log (`prefix_binding_mismatch` =
   wir editieren noch, `model_binding_mismatch` = Provider-Fallback, erwartet).
 - **Nur der In-Turn-Loop braucht die Blöcke.** `maskPriorTurnsForWire`
@@ -3335,6 +3338,15 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 | Variable | Wirkung |
 |---|---|
 | `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
+
+### Self-Update und Release-Check (#432, #1381)
+
+| Variable | Wirkung |
+|---|---|
+| `OMADIA_VERSION` | Build-Stempel, von `publish-images.yml` ins Image geschrieben. Middleware und web-ui melden ihn über `/health` (`version`, web-ui seit #1382), der Updater-Gate wartet darauf. Ungesetzt ⇒ `unknown`. In `docker-compose.yaml` bewusst nicht gesetzt (ein leerer Wert würde den Stempel überschreiben); im Projekt-`.env` pinnt er nur das Image-Tag. |
+| `OMADIA_UPDATER_URL` / `OMADIA_UPDATER_TOKEN` | Updater-Sidecar aus `docker-compose.update.yaml`. Ungesetzt ⇒ Admin → Update ist notify-only. Token ≥ 16 Zeichen, Pflicht sobald die URL gesetzt ist. |
+| `OMADIA_RELEASE_REPO` | `owner/repo` für den „neueres Release?“-Check, Default `byte5ai/omadia`. |
+| `OMADIA_RELEASE_TOKEN` | Optionaler PAT für denselben Check. Unauthentifiziert erlaubt GitHub 60 Requests/h pro IP, geteilt hinter einem NAT. Ein fehlgeschlagener Check wird negativ gecacht (`update/releaseLookup.ts`): 1 min, verdoppelt bis 5 min, oder bis `retry-after` / `x-ratelimit-reset` bei 403/429; „Jetzt prüfen“ (`?refresh=true`) umgeht die Wartezeit. |
 
 ### Ersteinrichtung
 
@@ -5934,12 +5946,13 @@ Test-Prompts, Golden-Antworten pro Domain, Diff-Report. Könnte als
 `scripts/eval.ts` starten. Ohne das kann man kein Skill-Tuning
 verteidigen.
 
-### Phase 9 — Proper Auth für Dev-Endpoints
+### Phase 9 — Proper Auth für Dev-Endpoints — ✅ erledigt (#669, #1350)
 
-Aktuell sind `/api/dev/*` unauth'd hinter einer Flag. Sobald die
-Middleware außerhalb localhost gehostet wird, muss mindestens ein
-`DEV_TOKEN` ran. Der Memory-Admin-Router hat schon Constant-Time-Compare,
-Pattern vorhanden.
+Erledigt durch #669: Statt eines `DEV_TOKEN` laufen alle `/api/dev/*`-Routen
+hinter dem `/api`-Session-Gate (Operator-Login). `DEV_ENDPOINTS_LOOPBACK_ONLY=true`
+bindet seit #1350 das ganze `/api/dev`-Präfix an Loopback, auch die
+Plugin-Route `/api/dev/memory`. Die Flag bleibt Dev-Scaffolding und auf
+deployten Umgebungen aus. Siehe `docs/security-architecture.md`.
 
 ### Phase 10 — Ollama-basierte Entity-Extraction aus Prose
 
@@ -7187,3 +7200,38 @@ Der Quality-Guard-Plugin-Block (`harness-plugin-quality-guard`, `MEDIUM_EXTRA`) 
 per `${prependRules}\n\n---\n\n${body}` vorangestellt und drückt in dieselbe Richtung;
 Fix A lässt ihn bewusst unangetastet — die Präzedenz-Klausel deckt ihn über „every other
 instruction in this prompt" mit ab.
+
+## HTTP-Fehlerantworten: Terminal-Handler statt `finalhandler` (#1326 / #1318 / #1349, 2026-10-16)
+
+`src/index.ts` startet den Server **nicht** mehr mit `app.listen`, sondern mit
+`createAppServer(app, terminalHandler).listen(...)` (`src/http/terminalHandler.ts`).
+`createAppServer` ruft die Express-App mit einem dritten `done`-Argument auf;
+das läuft erst, wenn der **gesamte** Router-Stack den Request abgelehnt hat,
+und ersetzt Express' `finalhandler`. Der antwortet mit HTML und schreibt
+außerhalb von `NODE_ENV=production` den Stack hinein — Compose läuft mit
+`development`, also bekam jeder anonyme Client mit kaputtem JSON-Body einen
+Stack mit Container-Pfaden.
+
+Der Terminal-Handler antwortet immer JSON `{ code, message }`, nie mit Stack:
+
+| Fall | Status / `code` |
+|---|---|
+| body-parser `entity.parse.failed` | `400 request.invalid_json` |
+| body-parser `entity.too.large` | `413 request.payload_too_large` |
+| andere 4xx-Fehler mit `status` | ihr Status, `request.*` bzw. `unauthorized` / `forbidden` / … |
+| kein Router zuständig | `404 not_found` |
+| Pfad unter einem deklarierten, aber nicht freigegebenen Public-Prefix | `404 public_path.not_granted` |
+| sonstiger unbehandelter Fehler | `500 internal` (Stack nur ins Log) |
+
+**Regeln für spätere Änderungen:**
+
+- Nicht zurück auf `app.listen` — das bringt `finalhandler` und damit HTML +
+  Stack zurück.
+- Keinen Catch-all `app.use((req, res) => 404)` / Error-Middleware ans Ende
+  von `main()` hängen: `PluginRouteRegistry` mountet Plugin-Router nach dem
+  Boot live per `app.use`, die landeten **hinter** dem Catch-all und wären bis
+  zum Neustart tot. Der Terminal-Callback ist per Konstruktion immer zuletzt.
+- Routen, deren `:id` eine Postgres-`uuid`-Spalte ist, prüfen die Id per
+  `router.param('id', requireUuidParam('<area>.not_found'))`
+  (`src/http/uuidParam.ts`) — sonst wird ein Tippfehler zum `22P02`-500, der
+  die DB-Meldung zurückgibt. Aktuell: admin-users, routines (`:id`, `:runId`).

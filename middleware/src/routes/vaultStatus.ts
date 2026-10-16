@@ -54,9 +54,7 @@ export interface VaultStatusResponse {
  * installed agents, and the source the master key was loaded from. No
  * plaintext, no key material, no per-agent secret keys.
  *
- * Currently unauthenticated; A.1 will gate this behind the JWT middleware
- * once OAuth lands. The payload is deliberately non-sensitive so a short
- * window of open access during the M.0 rollout does not leak credentials.
+ * Mounted behind `requireAuth`.
  */
 export function createVaultStatusRouter(deps: VaultStatusDeps): Router {
   const router = Router();
