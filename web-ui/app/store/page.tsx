@@ -4,6 +4,7 @@ import { HardDrive, PackageCheck, Store } from 'lucide-react';
 import { getTranslations } from 'next-intl/server';
 
 import { listProfiles, listStorePlugins } from '../_lib/api';
+import { APP_VERSION } from '../_lib/appVersion';
 import {
   countReadiness,
   isInstalled,
@@ -235,12 +236,13 @@ export default async function StorePage({
       <footer className="mt-20 flex items-center justify-between border-t border-[color:var(--divider)] pt-4 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
         <span>
           {tPage('footerSource')}{' '}
-          <span className="font-mono-num normal-case tracking-normal text-[color:var(--fg-muted)]">
-            docs/harness-platform/examples
+          <span className="normal-case tracking-normal text-[color:var(--fg-muted)]">
+            {tPage('footerSourceValue')}
           </span>
         </span>
-        <span className="font-mono-num text-[color:var(--fg-muted)]">
-          omadia · v1
+        {/* #1383 — the running build, as on /help; this used to be a literal `v1`. */}
+        <span className="font-mono-num normal-case text-[color:var(--fg-muted)]">
+          omadia · {APP_VERSION}
         </span>
       </footer>
     </main>
