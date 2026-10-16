@@ -1090,6 +1090,24 @@ history are convenience layers, not security layers. They:
 - Do not extend a credential's lifetime beyond the originating request.
 - Are flushed on process restart; they are not a substitute for persistence.
 
+### Rendered tables stay off the model wire (#1402)
+
+`v4_render_answer` materializes the answer from the turn's real rows. Until
+privacy-guard 0.10.0 a `format: table` render returned its `_pendingCanvasTree`
+snapshot — real cell values — as the tool's `tool_result`, and the tool loop
+always calls the model once more after a tool round, so every table render
+sent those values to the provider (and a memory-tool call after it could
+persist them). Since 0.10.0 (`@omadia/plugin-api` 1.33.0) `runV4Tool`
+returns only a shape acknowledgement as `resultText` — the row count and the
+column labels the model chose itself — and hands the snapshot back as
+`PrivacyV4ToolResult.canvasSentinel`. The orchestrator gives that to the
+turn's canvas-sentinel sink (the side channel every other canvas tool uses
+before interning), never to the model. A guard that predates the field and
+still embeds a `_pending*` sentinel in `resultText` is caught at the same
+seam (`v4RenderSideChannel.ts`): the sentinel goes to the sink and the model
+gets a kernel-authored note. The user-facing answer (`takeRenderedAnswerV4`)
+and the verifier hand-over of its prose are unchanged.
+
 ## 6a. Dataset link keys — a deliberate identity handle inside the Privacy Shield
 
 Uploaded CSV/XLSX rows are PII-masked irreversibly at import, and the surrogate a

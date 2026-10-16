@@ -2041,6 +2041,10 @@ readonly turnId: string;
 readonly toolName: string;
 readonly input: unknown;
 }
+export interface PrivacyV4ToolResult {
+readonly resultText: string;
+readonly canvasSentinel?: string;
+}
 export interface PrivacyV4ToolSpec {
 readonly name: string;
 readonly description: string;
@@ -2154,9 +2158,7 @@ recordBypassedTool(request: PrivacyBypassedToolRequest): Promise<void>;
 recordStructuredPayload?(request: PrivacyStructuredPayloadRequest): Promise<void>;
 recordToolError?(request: PrivacyToolErrorRequest): Promise<void>;
 redactToolErrorText?(request: PrivacyToolErrorRedactRequest): Promise<PrivacyToolErrorRedactResult>;
-runV4Tool(request: PrivacyV4ToolRequest): Promise<{
-readonly resultText: string;
-}>;
+runV4Tool(request: PrivacyV4ToolRequest): Promise<PrivacyV4ToolResult>;
 subAgentResultV4(request: PrivacySubAgentResultV4Request): Promise<{
 readonly resultText: string;
 }>;

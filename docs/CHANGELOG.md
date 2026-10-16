@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Security — Privacy Shield table renders no longer hand real rows to the model (#1402)
+
+2026-10-16. A `v4_render_answer` table render returned its canvas snapshot —
+the real, unmasked cell values — as the `tool_result`, and the tool loop
+always asks the model once more after a tool round, so every table render
+sent names and e-mails to the LLM provider; a memory-tool call after the
+render could write them to memory. The privacy guard (0.10.0, plugin-api
+1.33.0) now returns the model only a shape acknowledgement (row count and
+the column labels it chose) and hands the snapshot to the canvas through the
+canvas-sentinel side channel (`PrivacyV4ToolResult.canvasSentinel`). The
+orchestrator also strips a snapshot an older guard still embeds. The chat
+answer, the canvas table and the verifier's prose check are unchanged. The
+privacy acceptance test counts the render's `tool_result` as LLM-bound again.
+
 ### Fixed — the Danger-Zone memory purge deletes what it shows, and records who
 
 2026-10-16 (#1333, #1334, #1335, #1336). The purge on `/admin/danger-zone`
