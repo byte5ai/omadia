@@ -234,4 +234,19 @@ describe('runAuthBootstrap', () => {
     assert.deepEqual(result, { seeded: false, setupRequired: false, totalUsers: 1 });
     assert.equal(store.firstAdminCalls, 0);
   });
+  it('refuses an address with an empty local part or domain (#1321)', async () => {
+    for (const bootstrapEmail of ['a@', '@b']) {
+      const store = new InMemoryUserStore();
+      const result = await runAuthBootstrap({
+        userStore: store,
+        bootstrapEmail,
+        bootstrapPassword: 'long-enough-password-1',
+        bootstrapDisplayName: undefined,
+        log: () => {},
+      });
+      assert.equal(result.seeded, false, bootstrapEmail);
+      assert.equal(result.setupRequired, true);
+      assert.equal(store.rows.length, 0);
+    }
+  });
 });

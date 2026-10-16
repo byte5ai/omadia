@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import type { AdminAuditLog } from '../auth/adminAuditLog.js';
+import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import type {
   ProviderCatalog,
   ProviderRegistry,
@@ -86,7 +86,7 @@ export function createAdminAuthRouter(deps: AdminAuthDeps): Router {
     deps.registry.register(provider);
     await persistActive(deps);
     await deps.audit.record({
-      actor: { email: req.session?.email },
+      actor: auditActorFromRequest(req),
       action: 'auth.provider_enable',
       target: `provider:${id}`,
       after: { id, active: true },
@@ -131,7 +131,7 @@ export function createAdminAuthRouter(deps: AdminAuthDeps): Router {
     }
     await persistActive(deps);
     await deps.audit.record({
-      actor: { email: req.session?.email },
+      actor: auditActorFromRequest(req),
       action: 'auth.provider_disable',
       target: `provider:${id}`,
       after: { id, active: false },

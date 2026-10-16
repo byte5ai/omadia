@@ -9,6 +9,7 @@ import {
   type ClientAddressPolicy,
 } from '../auth/clientAddress.js';
 import { loginAccountKey, readLoginAccountId } from '../auth/loginAccount.js';
+import { createLoginFailureReporter, type ResolveLoginAccount } from '../auth/loginFailureAudit.js';
 import {
   createLoginDevices,
   usersTableEpochs,
@@ -70,6 +71,9 @@ export interface LoginGuardDeps {
   ipv6PrefixBits?: number;
   /** One `auth.login_rate_limited` row per refusal episode — never the account. */
   audit?: Pick<AdminAuditLog, 'record'>;
+  /** #1315 — names the `users` row a failed sign-in asked for, so the
+   *  `auth.login_failed` row records a real account and never the typed text. */
+  resolveAccount?: ResolveLoginAccount;
   /**
    * The device cookies the limiter honours. Absent → the auth router builds
    * them from its own signing key and user store. Production passes the
@@ -121,6 +125,10 @@ export function createLoginGuard(opts: {
       epochs: usersTableEpochs(opts.accounts),
     }),
     ...(opts.audit ? { audit: opts.audit } : {}),
+    resolveAccount: async (providerId, accountId) => {
+      const user = await opts.accounts.findByEmailWithHash(providerId, accountId);
+      return user ? { id: user.id, email: user.email } : undefined;
+    },
   };
 }
 
@@ -143,6 +151,11 @@ export interface PasswordLoginDeps {
 
 export function createPasswordLoginHandler(deps: PasswordLoginDeps): RequestHandler {
   const log = deps.log ?? ((m: string) => console.warn(m));
+  const failures = createLoginFailureReporter({
+    ...(deps.guard.audit ? { audit: deps.guard.audit } : {}),
+    ...(deps.guard.resolveAccount ? { resolveAccount: deps.guard.resolveAccount } : {}),
+    log,
+  });
 
   return async (req: Request, res: Response) => {
     const id = readProviderId(req);
@@ -163,6 +176,12 @@ export function createPasswordLoginHandler(deps: PasswordLoginDeps): RequestHand
 
     const result = await verifyCounted(provider, req.body, admission.attempt);
     if (result.outcome === 'error') {
+      failures.report({
+        providerId: provider.id,
+        accountId: account.accountId,
+        clientKey: keys.clientKey,
+        code: result.code,
+      });
       res.status(httpForAuthErrorCode(result.code)).json({ code: `auth.${result.code}` });
       return;
     }
