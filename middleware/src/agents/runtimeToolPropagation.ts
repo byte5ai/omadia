@@ -201,3 +201,66 @@ export function hydrateAgentRegistry<B extends HydratableAgent['built']>(
   });
   return attached;
 }
+
+export interface OrchestratorToolRebinderDeps<
+  C extends Pick<DomainToolHost, 'hasDomainTool' | 'registerDomainTool'>,
+  R,
+> {
+  /** The LIVE chat orchestrator (`chatAgent@1`), which routines run on too. */
+  readonly getChat: () => C | undefined;
+  /** The LIVE per-Agent registry (`orchestratorRegistry@1`). */
+  readonly getRegistry: () => R | undefined;
+  /** The kernel built-in tools (boot set minus dynamic-agent handles). */
+  readonly kernelTools: () => readonly DomainTool[];
+  /** Point the dynamic-agent runtime at `chat`: registers the live
+   *  dynamic-agent tools there and makes it the hot-install target. */
+  readonly attachDynamicAgents: (chat: C) => void;
+  readonly log: (message: string) => void;
+}
+
+export interface OrchestratorToolRebinder<C, R> {
+  /** Bind the kernel + dynamic-agent tools to one chat orchestrator. */
+  bindChat(chat: C): void;
+  /** Install the registry hydration (absent on a registry-less host). */
+  setRegistryHydrator(hydrate: (reg: R) => void): void;
+  /** Re-bind both LIVE services after a re-activation of the orchestrator plugin. */
+  rebind(): void;
+}
+
+/**
+ * The kernel's half of every re-activation of `@omadia/orchestrator`
+ * (provider key save, model assignment, OAuth login, setup editor, provider
+ * switch — all of them end in `toolPluginRuntime.onActivated`). The plugin
+ * publishes a fresh chat orchestrator and a fresh per-Agent registry that
+ * start without domain tools (#1345, #1400), and routines resolve that same
+ * chat orchestrator per run (#1358). `rebind` resolves both LIVE and binds
+ * them, so it works the same on a key-less first boot, where neither existed
+ * when the kernel wired up.
+ */
+export function createOrchestratorToolRebinder<
+  C extends Pick<DomainToolHost, 'hasDomainTool' | 'registerDomainTool'>,
+  R,
+>(deps: OrchestratorToolRebinderDeps<C, R>): OrchestratorToolRebinder<C, R> {
+  let hydrateRegistry: ((reg: R) => void) | undefined;
+  const bindChat = (chat: C): void => {
+    for (const t of deps.kernelTools()) {
+      if (!chat.hasDomainTool(t.name)) chat.registerDomainTool(t);
+    }
+    deps.attachDynamicAgents(chat);
+  };
+  return {
+    bindChat,
+    setRegistryHydrator(hydrate) {
+      hydrateRegistry = hydrate;
+    },
+    rebind() {
+      const chat = deps.getChat();
+      if (chat) bindChat(chat);
+      const reg = deps.getRegistry();
+      if (reg && hydrateRegistry) hydrateRegistry(reg);
+      deps.log(
+        `orchestrator re-activated — domain tools re-bound (chat=${chat ? 'yes' : 'no'}, registry=${reg && hydrateRegistry ? 'yes' : 'no'})`,
+      );
+    },
+  };
+}
