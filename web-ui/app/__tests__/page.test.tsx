@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError, type AdminProvider, type ProvidersResponse } from '../_lib/api';
 
@@ -22,14 +22,29 @@ const {
   mockMcp,
   mockGetCliBackends,
   mockGetEmbeddingStatus,
-} = vi.hoisted(() => ({
-  mockGetProviders: vi.fn(),
-  mockListStorePlugins: vi.fn(),
-  mockListOperatorAgents: vi.fn(),
-  mockMcp: vi.fn(),
-  mockGetCliBackends: vi.fn(),
-  mockGetEmbeddingStatus: vi.fn(),
-}));
+  mockFetchHealth,
+  mockGetVaultStatus,
+  healthyHealth,
+} = vi.hoisted(() => {
+  // #1384 — the middleware's /health. Healthy by default, so the suites that
+  // predate it keep describing a running stack.
+  const healthyHealth = async (): Promise<unknown> => ({
+    reachable: true,
+    body: { checks: { database: 'ok' } },
+  });
+  return {
+    healthyHealth,
+    mockFetchHealth: vi.fn(healthyHealth),
+    // #1332 — the dev-key banner reads the authenticated vault status.
+    mockGetVaultStatus: vi.fn(async (): Promise<unknown> => null),
+    mockGetProviders: vi.fn(),
+    mockListStorePlugins: vi.fn(),
+    mockListOperatorAgents: vi.fn(),
+    mockMcp: vi.fn(),
+    mockGetCliBackends: vi.fn(),
+    mockGetEmbeddingStatus: vi.fn(),
+  };
+});
 
 vi.mock('next-intl/server', () => ({
   getTranslations: async () =>
@@ -56,11 +71,29 @@ vi.mock('../_lib/api', async (importOriginal) => ({
   listStorePlugins: mockListStorePlugins,
   getCliBackends: mockGetCliBackends,
   getEmbeddingProviderStatus: mockGetEmbeddingStatus,
+  getVaultStatus: mockGetVaultStatus,
 }));
 
 vi.mock('../_lib/agents', () => ({
   listOperatorAgents: mockListOperatorAgents,
   getMcpServerSummary: mockMcp,
+}));
+
+// `platformNotice` stays real: which banner the page derives is under test.
+vi.mock('../_lib/platformHealth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/platformHealth')>()),
+  fetchMiddlewareHealth: mockFetchHealth,
+}));
+
+vi.mock('../_components/PlatformHealthBanner', () => ({
+  PlatformHealthBanner: ({
+    notice,
+  }: {
+    notice: { kind: string } | null;
+  }): React.ReactElement | null =>
+    notice === null ? null : (
+      <div data-testid="platform-health-banner" data-kind={notice.kind} />
+    ),
 }));
 
 vi.mock('../_lib/authRedirect', () => ({
@@ -498,7 +531,9 @@ describe('dashboard — embeddings health card', () => {
   it('does not claim "off" when the status route is unreachable', async () => {
     mockGetEmbeddingStatus.mockRejectedValue(new Error('boom'));
     const text = await renderEmbeddingsCard();
-    expect(text).toContain('health.embeddings.unknown');
+    // #1384 — the shared "status unavailable" every card now uses.
+    expect(text).toContain('health.unavailable');
+    expect(text).not.toContain('health.embeddings.none');
     expect(screen.getByTestId('onboarding').dataset['embeddingsOff']).toBe('false');
   });
 
@@ -585,5 +620,134 @@ describe('dashboard — embeddings health card', () => {
     const text = await renderEmbeddingsCard();
     expect(text).toContain('health.ok');
     expect(text).not.toContain('health.embeddings.memory');
+  });
+});
+
+/**
+ * #1384 — with Postgres stopped, every authenticated call answers 503
+ * `auth.unavailable`. The dashboard used to blame the middleware, render each
+ * failed fetch as its EMPTY state ("No provider connected", "No orchestrator
+ * configured", "No plugins installed yet") and never mention the database.
+ */
+describe('dashboard — database outage (#1384)', () => {
+  afterEach(() => {
+    mockFetchHealth.mockReset();
+    mockFetchHealth.mockImplementation(healthyHealth);
+  });
+
+  const authUnavailable = (): ApiError =>
+    new ApiError(
+      503,
+      'GET failed: 503',
+      JSON.stringify({ code: 'auth.unavailable', message: 'session check unavailable, try again' }),
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    for (const m of [
+      mockGetProviders,
+      mockListStorePlugins,
+      mockListOperatorAgents,
+      mockMcp,
+      mockGetCliBackends,
+      mockGetEmbeddingStatus,
+    ]) {
+      m.mockRejectedValue(authUnavailable());
+    }
+    mockFetchHealth.mockResolvedValueOnce({
+      reachable: true,
+      body: { checks: { database: 'unreachable' } },
+    });
+  });
+
+  it('renders no empty-state copy for data it could not load', async () => {
+    render(await DashboardPage());
+    const text = document.body.textContent ?? '';
+    for (const key of [
+      'health.llm.none',
+      'health.orchestrators.none',
+      'health.plugins.none',
+      'health.mcp.none',
+      'health.lastTurn.none',
+      'health.embeddings.none',
+    ]) {
+      expect(text).not.toContain(key);
+    }
+    expect(text).toContain('health.unavailable');
+  });
+
+  it('names the database on the middleware card instead of blaming the middleware', async () => {
+    render(await DashboardPage());
+    const card = screen.getByText('health.middleware.title').closest('li');
+    expect(card?.textContent).toContain('health.middleware.databaseStatus');
+    expect(card?.textContent).toContain('health.middleware.databaseDetail');
+    expect(card?.textContent).not.toContain('health.middleware.downDetail');
+    expect(card?.querySelector('a')?.getAttribute('href')).toBe('/system');
+  });
+
+  it('raises the database banner and hands step 1 the database state', async () => {
+    render(await DashboardPage());
+    expect(screen.getByTestId('platform-health-banner').dataset['kind']).toBe(
+      'databaseUnreachable',
+    );
+    expect(screen.getByTestId('onboarding').dataset['runtimeState']).toBe(
+      'database_unavailable',
+    );
+  });
+
+  it('names the database from the API answers alone when /health is unreachable', async () => {
+    mockFetchHealth.mockReset();
+    mockFetchHealth.mockResolvedValue({ reachable: false });
+    render(await DashboardPage());
+    expect(screen.getByTestId('platform-health-banner').dataset['kind']).toBe(
+      'databaseUnreachable',
+    );
+    const card = screen.getByText('health.middleware.title').closest('li');
+    expect(card?.textContent).toContain('health.middleware.databaseStatus');
+  });
+});
+
+/** A vault status with the given key sources (#1332 / #1387). */
+function vaultWith(
+  vaultKey: 'env' | 'dev-file-existed',
+  keychainKey: 'env' | 'dev-file-existed',
+): unknown {
+  return {
+    vault: {
+      path: '/data/vault.enc',
+      data_dir: '/data',
+      exists: true,
+      size_bytes: 1,
+      last_modified: null,
+      agent_count: 0,
+      master_key_source: vaultKey,
+      keychain_key_source: keychainKey,
+      production_ready: vaultKey === 'env' && keychainKey === 'env',
+    },
+    backup: { enabled: false },
+  };
+}
+
+describe('dashboard — dev master key banner (#1332)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetProviders.mockResolvedValue(providersResponse([]));
+    mockListStorePlugins.mockResolvedValue({ items: [] });
+    mockListOperatorAgents.mockResolvedValue({ agents: [] });
+    mockMcp.mockResolvedValue({ total: 0, enabled: 0, tools: 0, needsDiscovery: 0 });
+    mockGetCliBackends.mockResolvedValue({ backends: [], generatedAt: Date.now() });
+    mockGetEmbeddingStatus.mockResolvedValue(null);
+  });
+
+  it('shows the dev-key warning on the dashboard, not only on /system', async () => {
+    mockGetVaultStatus.mockResolvedValueOnce(vaultWith('dev-file-existed', 'env'));
+    render(await DashboardPage());
+    expect(screen.getByTestId('platform-health-banner').dataset['kind']).toBe('devMasterKey');
+  });
+
+  it('stays quiet when both keys come from env', async () => {
+    mockGetVaultStatus.mockResolvedValueOnce(vaultWith('env', 'env'));
+    render(await DashboardPage());
+    expect(screen.queryByTestId('platform-health-banner')).toBeNull();
   });
 });

@@ -1283,6 +1283,9 @@ export interface VaultStatusResponse {
     last_modified: string | null;
     agent_count: number;
     master_key_source: 'env' | 'dev-file-existed' | 'dev-file-created';
+    /** #1387 — the credential keychain's master key. Absent on older middleware. */
+    keychain_key_source?: 'env' | 'dev-file-existed' | 'dev-file-created';
+    /** Both master keys come from env. */
     production_ready: boolean;
   };
   backup: VaultBackupStatus;
@@ -5784,6 +5787,29 @@ export interface ApiKeyPublicView {
   createdAt: number;
   /** Epoch ms. Present iff the key has been revoked. */
   revokedAt?: number;
+  /** #1328 — epoch ms after which the key stops authenticating. Absent = no expiry. */
+  expiresAt?: number;
+  /** #1328 — the operator who minted the key. Absent on keys minted before #1328. */
+  createdBy?: { userId?: string; email: string };
+  /** #1329 — epoch ms of the key's latest authenticated request. Absent = not used yet. */
+  lastUsedAt?: number;
+}
+
+/** #1327 — `GET .../admin/keys/scopes`: every scope a key may be minted with. */
+export interface ApiKeyScopeCatalog {
+  scopes: string[];
+  /** Prefix of the per-tool write scope, `mcp:write:<tool>`. */
+  mcpWritePrefix: string;
+}
+
+/** #1329 — one entry of a key's usage log. */
+export interface ApiKeyUsageEntry {
+  keyId: string;
+  route: string;
+  method: string;
+  /** Epoch ms. */
+  at: number;
+  status: 'ok' | 'rate_limited' | 'forbidden' | 'error' | 'invalid_request';
 }
 
 export interface CreateApiKeyInput {
@@ -5796,6 +5822,8 @@ export interface CreateApiKeyInput {
    * request, never as "use the default". Callers must never pass `[]`.
    */
   scopes?: string[];
+  /** #1328 — epoch ms, in the future. Omit for a key that never expires. */
+  expiresAt?: number;
 }
 
 export interface CreateApiKeyResult {
@@ -5815,6 +5843,19 @@ export async function createApiKey(input: CreateApiKeyInput): Promise<CreateApiK
 
 export async function revokeApiKey(id: string): Promise<{ key: ApiKeyPublicView }> {
   return postJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/revoke`, {});
+}
+
+/** #1328 — only a revoked or expired key can be deleted (409 otherwise). */
+export async function deleteApiKey(id: string): Promise<void> {
+  return deleteRequest(`${API_KEYS_BASE}/${encodeURIComponent(id)}`);
+}
+
+export async function listApiKeyScopes(): Promise<ApiKeyScopeCatalog> {
+  return getJson(`${API_KEYS_BASE}/scopes`);
+}
+
+export async function listApiKeyUsage(id: string): Promise<{ entries: ApiKeyUsageEntry[] }> {
+  return getJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/usage`);
 }
 
 // -----------------------------------------------------------------------------

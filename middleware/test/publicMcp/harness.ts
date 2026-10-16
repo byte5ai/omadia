@@ -114,6 +114,7 @@ export function fakeApiKeyStore(keys: readonly FakeKey[]): ApiKeyStore {
     create: () => Promise.reject(new Error('not used')),
     list: () => Promise.reject(new Error('not used')),
     revoke: () => Promise.reject(new Error('not used')),
+    delete: () => Promise.reject(new Error('not used')),
     verify: (token) =>
       Promise.resolve(records.find((r) => r.hash === sha256Hex(String(token)))),
   };

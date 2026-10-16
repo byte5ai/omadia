@@ -58,6 +58,108 @@ Phase 4" (#1337). New shared helper `web-ui/app/_lib/apiErrorMessage.ts`
 (`serverErrorMessage`, `serverFieldErrors`) reads the server's message out of
 a failed API call.
 
+### Fixed — the middleware waits for Postgres at boot instead of crash-looping
+
+2026-10-16 (#1386). Core migrations are the first thing in boot that talks to
+Postgres, and they rethrew `ENOTFOUND`/`ECONNREFUSED` at once, so a middleware
+that started before its database (`docker compose restart`, a restart-policy
+restart, the DNS-alias race on a fresh `up`) exited and crash-looped until
+Postgres answered. `runCoreMigrations` now retries transient connection errors
+(`isTransientDbError`, now exported by `@omadia/knowledge-graph-neon` and shared
+with its `waitForPostgres`) with backoff from 0.5 s up to 5 s, for up to 60 s,
+logging `waiting for Postgres (…)` per attempt. Each connect attempt is capped
+at 5 s, and the separate lock-contention budget now starts at the first
+contention, so a long database wait cannot use it up. Past that budget the error
+still ends the process. Bad credentials or a missing database still fail on the
+first attempt. The HTTP listener is not up during the wait, so the Compose
+healthcheck (90 s `start_period`) and Fly's `/health` check (no restarts, only
+routing and deploy gating) see "not answering yet", not "degraded".
+
+### Fixed — a database outage is named as one, and `/system` shows platform health
+
+2026-10-16 (#1384, #1385, #1387, #1332). `GET /health` has a new
+`checks.database` (`ok` | `unreachable` | `unknown` | `none`). It is additive:
+`status` and the HTTP code keep their meaning, so the updater's health gate and
+the desktop supervisor are unaffected. Master-key posture is deliberately not
+on this public endpoint (see `docs/security-architecture.md` §8).
+
+- Dashboard: a card whose data could not be loaded now says "Status
+  unavailable" instead of its empty state ("No plugins installed yet" on an
+  instance with 15). A 503 `auth.unavailable` (the session check, which needs
+  the database) is its own readiness state, `database_unavailable`: the
+  middleware card reads "Database unreachable · API responds, database
+  unreachable", onboarding step 1 and the readiness card name the database and
+  link to `/system` instead of `/admin/update`.
+- `/system` renders the middleware's `/health` (database, embeddings, the
+  middleware's warnings) next to the vault card, loaded
+  independently so a failed vault call no longer hides it.
+- `/api/v1/admin/vault-status` returns `keychain_key_source`, and
+  `production_ready` is true only when both `VAULT_KEY` and
+  `CREDENTIAL_KEYCHAIN_KEY` come from env. The vault card shows a keychain row
+  and no longer says "production" for the vault key alone (that string was also
+  hard-coded English).
+- A shared banner on the dashboard and `/admin` reports a database outage, an
+  unreachable middleware, or (from vault-status) a master key read from the
+  dev file, naming the env var to set; `/admin` has a "Platform health" card linking to `/system`.
+- The boot log names the keychain dev key file path, like the vault line.
+
+### Fixed — API keys: known scopes only, expiry/owner/delete, audit trail (#1327, #1328, #1329, #1324)
+
+2026-10-16. `POST /api/public/v1/admin/keys` accepted any well-formed scope,
+so a typo (`chat:wirte`) minted a key every route refused; it now answers
+`400 invalid_scope` naming the unknown entries. Scopes are checked against a
+catalog in `@omadia/api-key-auth` (`chat:write`, `mcp:list`, `mcp:invoke`,
+`*`, `mcp:write:<tool>`; `registerApiKeyScope` is ready for a future
+plugin-defined scope but has no caller yet), served at `GET .../admin/keys/scopes`; the admin page
+offers every scope instead of one hardcoded `chat:write` checkbox, plus a
+write-tool list for `mcp:write:<tool>`. Keys gain an optional `expiresAt`
+(`verify()` refuses an expired key like a revoked one), `createdBy` from the
+operator session, and `DELETE .../admin/keys/:id` for revoked or expired keys
+(409 for an active one); the page hides inactive keys behind a toggle. Create,
+revoke and delete write `api_key.create|revoke|delete` rows to `admin_audit`
+(actor = `users.id` + email, never the token or hash) through the new
+`ctx.operatorAuth.recordAdminAction` (plugin-api 1.29.0). The usage log is
+readable: `GET .../admin/keys/:id/usage`, and the list carries `lastUsedAt`
+(kept beside the 200-entry cap, so a quiet key does not look unused). Public
+MCP requests are now recorded there too (they never were), through one
+process-wide write queue shared with the chat writer. The
+one-time token banner now renders above the create form, where the hint says
+it is. No DB migration: key records and the usage log stay vault entries;
+old records read as "no expiry, owner unknown". Rotation is not implemented
+(open question on the PR).
+
+### Fixed — the subscription CLI fails a turn honestly, and its turns reach Memory
+
+2026-10-16. Three gaps between the Claude subscription CLI (`claude-cli`) and
+the API-key path:
+
+- **A failed CLI turn was delivered as an answer (#1325).** When the CLI ended a
+  turn with an error result ("Not logged in · Please run /login", a used-up
+  quota, an expired token), the stream sent a `done` whose answer was that
+  error text, marked AI-generated, followed by a generic `error` ("CLI exited
+  with code 1"). With exit code 0 there was no `error` at all. Now a failed
+  turn sends no `done` and ends with exactly one `error` that names the cause
+  and what to do ("…not logged in, or its login expired. Sign in again on the
+  LLM access page, Subscriptions tab."), and the middleware log records the
+  CLI's text.
+  The `done` of a successful result is also held back until the CLI's exit is
+  checked.
+- **CLI turns were never written to the knowledge graph (#1391).** A CLI turn
+  wrote a usage row and nothing else: no transcript, no `Session`/`Turn`/`Run`/
+  `ToolCall` nodes, no capture filter, fact extraction, auto-promotion or
+  `onAfterTurn`, and no recall on later turns. Every successful CLI chat turn is
+  now persisted like an in-process one (`Orchestrator.recordCliTurn`), and before
+  the spawn it recalls graph context the same way (`recallCliContext`) into the
+  CLI's prompt, with the `kg_recall` cards. The answer verifier still
+  does not run on this provider; the Subscriptions page now says so.
+- **The CLI's chat memory ignored `context_tail_size` (#1087).** The replayed
+  chat history now has the operator's tail size instead of a fixed 10.
+
+No Privacy Shield runs on this path, so the recalled context reaches the CLI
+unmasked, like the replayed history, and the recorded turn reaches the capture
+scorer, embeddings, fact and excerpt extraction unmasked
+(`docs/security-architecture.md` §3a). No migration, no new env var.
+
 ### Fixed — MCP: link-local guard for manual servers, `MCP_STDIO_ENABLED`, readable refusals in the admin UI
 
 2026-10-16 — #1341, #1342. Manual MCP `http`/`sse` endpoints and MCP registry

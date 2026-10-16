@@ -258,6 +258,25 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
     });
   });
 
+  // #1384 — the middleware answered 503 `auth.unavailable`: the API is up,
+  // its database is not. Step 1 must not tick, and must not blame the
+  // middleware or point at the update page.
+  describe('#1384 — a database outage', () => {
+    it('leaves step 1 open, names the database and links to /system', () => {
+      renderCard({ llmVerified: true, runtimeState: 'database_unavailable' });
+
+      const step1 = screen.getByTestId('onboarding-step-1');
+      expect(step1.dataset['done']).toBe('false');
+      expect(screen.getByTestId('onboarding-step-1-database-unavailable').textContent).toMatch(
+        /Datenbank/,
+      );
+      expect(screen.queryByTestId('onboarding-step-1-unreachable')).toBeNull();
+      const links = Array.from(step1.querySelectorAll('a'));
+      expect(links).toHaveLength(1);
+      expect(links[0]?.getAttribute('href')).toBe('/system');
+    });
+  });
+
   it('OM-74: the done-copy follows the ASSIGNMENT — a CLI-backed orchestrator is not "its key was verified"', () => {
     renderCard({
       cliLoggedIn: true,

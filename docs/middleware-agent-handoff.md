@@ -1332,6 +1332,21 @@ Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
   Accessor wiederverwenden können, statt sich auf dieselbe Koinzidenz zu
   verlassen. Siehe `docs/security-architecture.md` § 9 für die volle
   Mechanik.
+- **Key-Lifecycle-Erweiterung (#1327/#1328/#1329/#1324):** weitere Routen
+  unter demselben operator-gegateten Router: `GET .../admin/keys/scopes`
+  (Scope-Katalog aus `@omadia/api-key-auth`; `registerApiKeyScope` existiert,
+  hat aber noch keinen Aufrufer), `DELETE .../admin/keys/:id` (nur widerrufene/abgelaufene
+  Keys, sonst `409 key_active`), `GET .../admin/keys/:id/usage` (Usage-Log
+  pro Key; seit #1329 schreibt auch der öffentliche MCP-Endpunkt hinein).
+  Create akzeptiert nur bekannte Scopes (`400 invalid_scope`) und
+  optional `expiresAt`; der Record bekommt `createdBy` aus der Session, die
+  Liste `lastUsedAt`. Create/Revoke/Delete schreiben
+  `api_key.create|revoke|delete` nach `admin_audit` über
+  `ctx.operatorAuth.recordAdminAction` (plugin-api 1.29.0; Kernel löst den
+  Actor aus dem Cookie auf, `LateBoundAdminAudit` wird beim Bau von
+  `AdminAuditLog` attached). Keine Migration — alles bleibt im Vault.
+  **Offen:** Rotation (`POST .../:id/rotate`, Grace-Period?) — Entscheidung
+  Marcel.
 - **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
   extend to other flows" — weitere Flows sind Folge-Issues).
 - **Request-Contract (issue #1109):** der Body wird strikt validiert. Das
@@ -2976,6 +2991,41 @@ Tests: `test/toolReplayLedger.test.ts`, `test/toolReplaySeams.test.ts`,
 `test/orchestrator/internFailureFailsClosed.test.ts`,
 `test/orchestratorPrivacyEgress.test.ts`.
 
+### Plattform-Checks auf `/health` + Postgres-Wartezeit beim Boot (#1384–#1387, #1332)
+
+**Boot (#1386).** `runCoreMigrations` (`platform/coreMigrations.ts`) ist der
+erste Postgres-Kontakt im Boot. Transiente Verbindungsfehler
+(`isTransientDbError` aus `@omadia/knowledge-graph-neon`, dieselbe Liste wie
+`waitForPostgres`: `ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`, `57P03`, …) werden
+mit Backoff (0,5 s → max. 5 s) bis zu 60 s wiederholt, mit einer Logzeile
+`waiting for Postgres (…)` pro Versuch. Danach endet der Prozess wie bisher.
+Das Budget ist unabhängig vom 60-s-Budget für Lock-Contention, das erst mit
+der ersten Contention startet. Jeder Verbindungsversuch ist auf 5 s begrenzt. Der
+HTTP-Listener bindet erst am Ende von `main()`, während der Wartezeit gibt es
+also kein `/health`. Compose (`start_period: 90s`) und Fly (Check startet
+keine Maschine neu) vertragen das.
+
+**`GET /health` → `checks.database`** (`health/platformHealth.ts`), additiv
+zu `kg`, `disclosure`, `attachments`: `ok` / `unreachable` / `unknown` /
+`none`, abgeleitet aus `kg.pool` und ob `DATABASE_URL` gesetzt ist. `status`
+und HTTP-Code bleiben unverändert (503 nur bei totem Pool), weil
+Updater-Health-Gate und Desktop-Supervisor darauf schauen. Die Herkunft der
+Master-Keys steht bewusst **nicht** auf dem öffentlichen Endpoint
+(siehe `docs/security-architecture.md` §8): der Dev-Key-Hinweis wird nur bei
+laufender DB gezeigt und liest dann die authentifizierte Vault-Status-Route.
+
+**`/api/v1/admin/vault-status`** liefert zusätzlich `keychain_key_source`.
+`production_ready` ist nur noch `true`, wenn beide Keys aus env kommen.
+
+**Web-UI.** `_lib/platformHealth.ts` liest `/health` serverseitig
+(`MIDDLEWARE_URL`, 10-s-Timeout, Body auch bei 503) und leitet
+`platformNotice()` ab: `databaseUnreachable` > `middlewareUnreachable` >
+`devMasterKey` (letzteres aus `/api/v1/admin/vault-status`). `PlatformHealthBanner` zeigt das auf `/` und `/admin`.
+`/system` rendert `PlatformHealthCard` neben der Vault-Karte. Ein 503
+`auth.unavailable` (Session-Check braucht die DB) ist im geteilten Klassifizierer
+`_lib/runtimeReadiness.ts` der Zustand `database_unavailable`. Dashboard-Karten
+ohne Daten zeigen „Status nicht abrufbar“ statt ihres Leerzustands.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -4441,6 +4491,15 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Public API keys: Rotation (#1328)
+
+Expiry, Owner und Delete sind gebaut (#1328). Offen ist die Rotation: ein
+`POST /api/public/v1/admin/keys/:id/rotate`, der einen Nachfolger mit
+gleichem Label/Scopes/Rate-Limit mintet. Zu entscheiden: alter Key sofort
+widerrufen oder Grace-Period (wie lang, und läuft der alte Key dann über
+`expiresAt` aus?), und ob eine MCP-Key-Binding des alten Keys auf den
+Nachfolger übergeht.
 
 ### Sitzungs-Widerruf: offene Verbindungen, gerätegenaues Abmelden, Cache
 
@@ -6750,8 +6809,8 @@ erfüllt jetzt den vollen `Askable`-Vertrag `ask(question, observer?, options?)`
 liegt dafür neben `Askable` in `tools/domainQueryTool.ts`, `localSubAgent.ts` re-exportiert
 den Typ). `CliChatAgent.chat(input, hooks?)` reicht jedes Lifecycle-Event an
 `hooks.onEvent` und nach einem erfolgreichen Turn die CLI-Usage an `hooks.onUsage`; ein
-terminales `is_error` wirft weiterhin. Bewusst nicht `chatStream()`: `streamTurn` prüft
-`parser.isError()` nicht und meldet einen toten Turn als normales `done`.
+terminales `is_error` wirft weiterhin. (Bis #1325 meldete `chatStream()` einen solchen Turn
+noch als normales `done`; das ist behoben, siehe unten.)
 
 `CliObserverBridge` (`cliSubAgentObserverBridge.ts`) übersetzt die Events pro `ask()` auf den
 `AskObserver`, wie `LocalSubAgent` + `streaming.ts` ihn treiben:
@@ -6789,6 +6848,65 @@ liefert keine Tool-Input-Deltas); Usage ist pro Spawn, nicht pro Modell-Iteratio
 `ToolDispatchService.dispatch` ruft `domainTool.handle(input)` ohne Observer auf, und fremde
 Tool-Calls landen dort nur in `console.error`, nicht in `recordForeignToolCall`. Eigene Unit
 nach #1079.
+
+### Abo-CLI-Turns: Fehler, Gedächtnis, Knowledge Graph (#1325, #1087, #1391)
+
+**Fehler (#1325).** Ein terminales `{"type":"result","is_error":true}` der CLI ist ein
+gescheiterter Turn. `StreamJsonParser` erzeugt dafür kein `done` mehr, und `runLifecycle`
+hält auch das `done` eines erfolgreichen Results zurück, bis die Exit-Prüfungen durch sind.
+Danach wirft der Lifecycle mit dem Text aus `describeCliTerminalError`: bei
+"Not logged in", `/login`, abgelaufenem OAuth-Token → *"Claude subscription CLI is not
+logged in, or its login expired. Sign in again on the LLM access page, Subscriptions
+tab."*, bei
+Kontingent/Rate-Limit ein eigener Text, sonst *"Claude subscription CLI failed: …"* — vor
+der Exit-Code-Prüfung, also bei Code 0 wie bei Code 1. `chatStream()` endet dann mit genau
+einem `error`, ohne `done`; der Middleware-Log hat die Zeile *"claude CLI ended the turn
+with an error result"* mit dem Originaltext.
+
+**Gedächtnis (#1087).** Der Replay-Tail aus dem `ChatSessionStore` (#1180) hat jetzt die
+Tiefe des Operator-Werts `context_tail_size`: `buildOrchestratorForAgent` reicht
+`deps.contextRetriever.tailSize` als `sessionTailSize` durch (neuer Getter auf
+`ContextRetriever`). Ohne Retriever bleibt es bei 10.
+
+**Knowledge Graph (#1391).** Zwei neue Hooks am `CliChatAgent`, verdrahtet in
+`buildOrchestratorForAgent`:
+
+- `recallContext` → `Orchestrator.recallCliContext(input)`: derselbe
+  `retrievePriorContext` wie im In-Process-Turn (Graph-Tail, Entitäten, Volltext,
+  Pläne/Prozesse/Insights, Session-Briefing, mit Audience-Floor und Context-Memory-
+  Isolation). Der Text kommt über stdin vor den Verlauf (`System Hint:`-Kopf,
+  Rollenmarker neutralisiert), nie über argv; die `kg_recall`/`kg_graph`-
+  Annotationen gehen vor dem Spawn raus. Deadline 15 s (`recallTimeoutMs`). Nur für
+  Chat-Turns (`sessionScope` gesetzt), nie für CLI-Sub-Agenten.
+- `recordTurn` → `Orchestrator.recordCliTurn(input, turn)`: nach einem erfolgreichen Turn
+  und vor dem `done` dieselbe Persistenz wie im In-Process-`done`-Zweig —
+  `SessionLogger.log` (Markdown-Transkript, Chat-Session-Spiegel, Graph-`Session`/`Turn`
+  mit Capture-Filter, `Run`/`ToolCall` aus dem Run-Trace), Faktenextraktion,
+  Palaia-Excerpt, Auto-Promotion, KG-Insert-Puls und `onAfterTurn` (mit der
+  Turn-ID der CLI, derselben wie in der Kosten-Ledger-Zeile; `onBeforeTurn` läuft auf
+  diesem Weg nicht). Der Trace-Owner wird wie im In-Process-Pfad aufgelöst
+  (`runTraceUserSpread`). `turnId`,
+  `palaiaExcerpt` und `autoPromotedMkId` reiten auf dem `done`. Den Run-Trace baut
+  `CliToolTrace` (`cliTurnRecord.ts`) aus den `tool_use`/`tool_result`-Events der CLI;
+  alle Calls sind `agentContext: 'orchestrator'`, der Präfix `mcp__omadia__` wird
+  abgeschnitten.
+
+Beide Hooks laufen im beim Turn-Einstieg gefangenen Async-Kontext (#1016) und können den
+Turn nicht scheitern lassen: ein Fehler wird geloggt, der Turn läuft ohne Recall bzw. die
+Antwort geht ohne Record raus. Ein gescheiterter Turn wird nie aufgezeichnet.
+Turn-Budget- und Idle-Timer werden gelöscht, sobald die CLI beendet ist, damit ein
+langsamer Record keinen falschen Timeout meldet. Bekannte Unschärfe: die
+Memory-Bindung (`bindTurnMemoryForTurn`) läuft für Recall und Record je einmal, im
+`members`-Modus also zwei Roster-Lookups pro Turn. Kein Privacy
+Shield auf diesem Weg: Recall-Text und persistierte Zeile sind unmaskiert
+(`docs/security-architecture.md` §3a). Der Replay-Tail bleibt beim rohen Session-Store,
+weil der Capture-Filter kurze Turns aus dem Graph-Tail fallen lässt; Graph-Tail und Replay
+können sich im Prompt daher teilweise überschneiden.
+
+Weiter offen: der Antwort-Prüfer (`VerifierService` hängt am In-Process-`Orchestrator`
+mit Re-Entry und Privacy-Hand-over; der CLI-Zweig kehrt vorher zurück) — die
+Abo-Seite sagt das dem Operator jetzt (`adminSubscriptionClis.explainer.featureNote`).
+Das `memory`-Tool auf dem Abo-Weg ist #1102.
 
 ### Kosten-Ledger nimmt Abo-Turns (OM-103)
 

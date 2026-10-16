@@ -37,6 +37,35 @@ export interface ApiKeyRecord {
   readonly scopes: readonly ApiKeyScope[];
   readonly createdAt: number;
   readonly revokedAt?: number;
+  /** #1328 — epoch ms after which `verify()` refuses the key. Absent = no
+   *  expiry (every key minted before #1328). A present-but-unreadable value is
+   *  hydrated to `0`, i.e. expired: a corrupt end date must fail closed. */
+  readonly expiresAt?: number;
+  /** #1328 — the operator who minted the key. Absent on keys minted before
+   *  #1328 ("unknown owner"). */
+  readonly createdBy?: ApiKeyOwner;
+}
+
+/** #1328 — the operator behind a key (from the creating session). */
+export interface ApiKeyOwner {
+  readonly userId?: string;
+  readonly email: string;
+}
+
+/** #1328 — true once `expiresAt` has passed. */
+export function isApiKeyExpired(
+  record: Pick<ApiKeyRecord, 'expiresAt'>,
+  now: number = Date.now(),
+): boolean {
+  return record.expiresAt !== undefined && record.expiresAt <= now;
+}
+
+/** #1328 — a key that can still authenticate: neither revoked nor expired. */
+export function isApiKeyActive(
+  record: Pick<ApiKeyRecord, 'revokedAt' | 'expiresAt'>,
+  now: number = Date.now(),
+): boolean {
+  return record.revokedAt === undefined && !isApiKeyExpired(record, now);
 }
 
 /** `ApiKeyRecord` minus the hash — the shape every caller outside this
@@ -50,7 +79,19 @@ export interface CreateApiKeyOptions {
    *  could do. Throws on a malformed scope rather than dropping it silently
    *  (see `assertValidScopes`). */
   readonly scopes?: readonly ApiKeyScope[];
+  /** #1328 — epoch ms; must lie in the future. Omitted → never expires. */
+  readonly expiresAt?: number;
+  /** #1328 — the creating operator, when the caller knows it. */
+  readonly createdBy?: ApiKeyOwner;
 }
+
+/** #1328 — outcome of `delete()`. `active` means the key still works and was
+ *  left alone: only a revoked or expired key may be deleted, so deleting can
+ *  never be a silent revoke that skips the revoke step's audit row. */
+export type DeleteApiKeyResult =
+  | { readonly status: 'deleted'; readonly key: ApiKeyPublicView }
+  | { readonly status: 'not_found' }
+  | { readonly status: 'active'; readonly key: ApiKeyPublicView };
 
 export interface CreatedApiKey {
   readonly record: ApiKeyPublicView;
@@ -64,8 +105,10 @@ export interface ApiKeyStore {
   /** Idempotent: revoking an already-revoked key returns its (unchanged)
    *  view. Returns `undefined` when no key with that id exists. */
   revoke(id: string): Promise<ApiKeyPublicView | undefined>;
+  /** #1328 — removes a revoked or expired key's record for good. */
+  delete(id: string): Promise<DeleteApiKeyResult>;
   /** Resolves the presented plaintext key to its record — only if a
-   *  matching, non-revoked key exists. Every stored hash is compared in
+   *  matching, non-revoked, non-expired key exists. Every stored hash is compared in
    *  constant time via `verifyApiKey`; no early return keyed off which
    *  record is checked first. */
   verify(token: string): Promise<ApiKeyRecord | undefined>;
@@ -101,7 +144,36 @@ function toPublicView(record: ApiKeyRecord): ApiKeyPublicView {
  */
 function hydrate(raw: unknown): ApiKeyRecord {
   const record = raw as ApiKeyRecord;
-  return { ...record, scopes: normalizeScopes((record as { scopes?: unknown }).scopes) };
+  const rawExpiry = (record as { expiresAt?: unknown }).expiresAt;
+  const { createdBy: rawOwner, ...rest } = record as ApiKeyRecord & { createdBy?: unknown };
+  const owner = sanitizeOwner(rawOwner);
+  return {
+    ...rest,
+    ...(owner ? { createdBy: owner } : {}),
+    scopes: normalizeScopes((record as { scopes?: unknown }).scopes),
+    ...(rawExpiry === undefined
+      ? {}
+      : { expiresAt: typeof rawExpiry === 'number' && Number.isFinite(rawExpiry) ? rawExpiry : 0 }),
+  };
+}
+
+/** A stored `createdBy` without a string email reads as "owner unknown"
+ *  rather than reaching the UI malformed. */
+function sanitizeOwner(raw: unknown): ApiKeyOwner | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const { userId, email } = raw as { userId?: unknown; email?: unknown };
+  if (typeof email !== 'string') return undefined;
+  return { ...(typeof userId === 'string' ? { userId } : {}), email };
+}
+
+/** Throws on an end date that is not a finite epoch-ms value in the future.
+ *  The HTTP boundary validates first (400); reaching this is a programmer
+ *  error. */
+function assertValidExpiry(expiresAt: number, now: number): number {
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+    throw new Error('API-key expiresAt must be a future epoch-ms timestamp');
+  }
+  return Math.floor(expiresAt);
 }
 
 /**
@@ -130,7 +202,7 @@ function requireWriter<T>(fn: T | undefined, name: string): T {
  */
 export function createApiKeyStore(secrets: ApiKeySecretStorage): ApiKeyStore {
   const write = requireWriter(secrets.set, 'set');
-  requireWriter(secrets.delete, 'delete');
+  const remove = requireWriter(secrets.delete, 'delete');
 
   async function readRecord(id: string): Promise<ApiKeyRecord | undefined> {
     const raw = await secrets.get(VAULT_KEY_PREFIX + id);
@@ -165,6 +237,7 @@ export function createApiKeyStore(secrets: ApiKeySecretStorage): ApiKeyStore {
   return {
     async create(opts) {
       const { token, hash } = mintApiKey();
+      const now = Date.now();
       const record: ApiKeyRecord = {
         id: randomUUID(),
         ...(opts.label ? { label: opts.label } : {}),
@@ -185,7 +258,11 @@ export function createApiKeyStore(secrets: ApiKeySecretStorage): ApiKeyStore {
         // rather than "written by us and lost".
         scopes:
           opts.scopes === undefined ? LEGACY_DEFAULT_SCOPES : assertValidScopes(opts.scopes),
-        createdAt: Date.now(),
+        createdAt: now,
+        ...(opts.expiresAt !== undefined
+          ? { expiresAt: assertValidExpiry(opts.expiresAt, now) }
+          : {}),
+        ...(opts.createdBy ? { createdBy: opts.createdBy } : {}),
       };
       await writeRecord(record);
       return { record: toPublicView(record), token };
@@ -208,15 +285,24 @@ export function createApiKeyStore(secrets: ApiKeySecretStorage): ApiKeyStore {
       return toPublicView(revoked);
     },
 
+    async delete(id) {
+      const record = await readRecord(id);
+      if (!record) return { status: 'not_found' };
+      if (isApiKeyActive(record)) return { status: 'active', key: toPublicView(record) };
+      await remove(VAULT_KEY_PREFIX + id);
+      return { status: 'deleted', key: toPublicView(record) };
+    },
+
     async verify(token) {
       if (typeof token !== 'string' || token.length === 0) return undefined;
       const records = await allRecords();
+      const now = Date.now();
       let match: ApiKeyRecord | undefined;
       // Deliberately do NOT `break`/`return` on the first hit — walk every
       // record so the total work (and therefore the timing signal) doesn't
       // depend on which key, if any, matched.
       for (const record of records) {
-        if (record.revokedAt !== undefined) continue;
+        if (!isApiKeyActive(record, now)) continue;
         if (verifyApiKey(token, record.hash)) match = record;
       }
       return match;

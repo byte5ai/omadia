@@ -13,7 +13,9 @@
       "middleware": {
         "title": "Middleware",
         "okDetail": "API reachable",
-        "downDetail": "No response from the middleware API."
+        "downDetail": "No response from the middleware API.",
+        "databaseStatus": "Database unreachable",
+        "databaseDetail": "API responds, database unreachable."
       },
       "llm": {
         "title": "LLM access",
@@ -32,7 +34,6 @@
         "title": "Memory / embeddings",
         "active": "Active: {model}",
         "none": "No embedding provider configured. Process memory, semantic search and duplicate detection are off.",
-        "unknown": "Status unavailable",
         "memory": {
           "allActive": "Memory features active",
           "allActiveWithProvider": "Memory features active (LLM: {provider})",
@@ -75,7 +76,9 @@
         "cliTimeout": "The last turn exceeded its time limit. Raise the per-turn time limit in the subscription section.",
         "failure": "The last turn failed: {message}",
         "unknownVersion": "unknown version"
-      }
+      },
+      "unknownStatus": "Unknown",
+      "unavailable": "Status unavailable"
     },
     "quick": {
       "heading": "Quick access",
@@ -156,7 +159,9 @@
         "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the orchestrator just has not been assigned to that access.",
         "assignOrchestrator": "Assign the orchestrator",
         "unreachable": "The agent runtime did not answer, so this step cannot be checked. The middleware may be unavailable, still starting, or returning an error.",
-        "openSystemStatus": "Open update & status"
+        "openSystemStatus": "Open update & status",
+        "databaseUnavailable": "The middleware answers, but its database is not reachable, so this step cannot be checked.",
+        "openPlatformHealth": "Open platform health"
       },
       "embeddingsNote": "Memory is limited: no embedding provider is active. Process memory, semantic search and duplicate detection stay off until one runs. There is a keyless option too — no API key and no separate server.",
       "embeddingsCta": "Set up an embedding provider",
@@ -301,6 +306,10 @@
         "dangerZone": {
           "title": "Memory Purge",
           "description": "Irreversibly delete memory along one axis (all, agent, user, team, channel); preview-gated with a confirm phrase, no undo."
+        },
+        "platformHealth": {
+          "title": "Platform health",
+          "description": "Database, vault and keychain master keys, off-site backup. Shows whether this instance runs on development keys."
         }
       }
     },
@@ -1357,14 +1366,6 @@
       }
     },
     "settings": {
-      "anthropic_key_format": {
-        "what": "This is not an Anthropic API key. Anthropic keys start with “sk-ant-”.",
-        "next": "Copy the key again from the Anthropic console and paste it in full."
-      },
-      "api_key_format": {
-        "what": "This does not look like an API key: it contains spaces or is too short.",
-        "next": "Copy the key again from the provider’s console and paste it in full, without spaces or line breaks."
-      },
       "invalid_request": {
         "what": "The settings change was sent in a shape the server rejected.",
         "next": "Reload the page and make the change again."
@@ -1377,10 +1378,6 @@
         "what": "None of the submitted changes matches a setting this server currently offers.",
         "next": "Reload the page so the field list matches the server, then make the change again."
       },
-      "openai_key_format": {
-        "what": "This is not an OpenAI API key. OpenAI keys start with “sk-”, and a key starting with “sk-ant-” belongs to Anthropic.",
-        "next": "Copy the key again from the OpenAI dashboard and paste it in full."
-      },
       "read_failed": {
         "what": "The settings could not be read.",
         "next": "Reload the page. If it stays empty, the middleware cannot reach its config store."
@@ -1392,6 +1389,18 @@
       "write_failed": {
         "what": "The settings could not be written.",
         "next": "Save again. If it repeats, the middleware cannot write to its config store."
+      },
+      "openai_key_format": {
+        "what": "This is not an OpenAI API key. OpenAI keys start with “sk-”, and a key starting with “sk-ant-” belongs to Anthropic.",
+        "next": "Copy the key again from the OpenAI dashboard and paste it in full."
+      },
+      "api_key_format": {
+        "next": "Copy the key again from the provider’s console and paste it in full, without spaces or line breaks.",
+        "what": "This does not look like an API key: it contains spaces or is too short."
+      },
+      "anthropic_key_format": {
+        "next": "Copy the key again from the Anthropic console and paste it in full.",
+        "what": "This is not an Anthropic API key. Anthropic keys start with “sk-ant-”."
       }
     },
     "store": {
@@ -1461,7 +1470,10 @@
     "cta": "Open LLM access",
     "ctaNoAssignment": "Open assignment",
     "ctaUnreachable": "Open update & status",
-    "dismiss": "Later"
+    "dismiss": "Later",
+    "titleDatabaseUnavailable": "Database unreachable",
+    "bodyDatabaseUnavailable": "The middleware answers, but it cannot reach its database (Postgres), so every request that needs stored data fails. Check the Postgres container or DATABASE_URL. This card disappears once the database is back.",
+    "ctaDatabaseUnavailable": "Open platform health"
   },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} tool calls",
@@ -3920,7 +3932,7 @@
       "heading": "Subscription vs API key",
       "body": "An API key bills you per token. A subscription CLI runs on your existing plan: you log in once with the official tool and omadia reuses that session. This is the same sanctioned path the official CLI uses, not token extraction.",
       "singleOperator": "Subscription credits belong to one account and cannot be shared, so this fits a single-operator self-host. For a shared or production gateway, use an API key on the LLM access page.",
-      "featureNote": "One gap versus an API key: on the subscription path the assistant has no long-term memory yet, so it will not remember facts across chats. Knowledge-graph lookups, choice cards, follow-up buttons and calendar all work as usual."
+      "featureNote": "One gap versus an API key: on the subscription path the assistant cannot save notes on request yet (\"remember that …\"), and the answer verifier does not check its answers. Conversation memory, knowledge-graph recall and lookups, choice cards, follow-up buttons and calendar all work as usual."
     },
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
@@ -4695,18 +4707,32 @@
   },
   "adminApiKeys": {
     "title": "Public API Keys",
-    "intro": "Server-to-server bearer credentials for the public chat API. A key’s plaintext token is shown exactly once, right after creation — copy it immediately, it cannot be retrieved again, even by an operator.",
+    "intro": "Server-to-server bearer credentials for the public chat API and the public MCP endpoint. A key’s plaintext token is shown exactly once, right after creation — copy it immediately, it cannot be retrieved again, even by an operator.",
     "create": {
       "heading": "Create a new key",
       "fields": {
         "label": "Label (optional)",
-        "rateLimit": "Rate limit (requests/minute, optional)"
+        "rateLimit": "Rate limit (requests/minute, optional)",
+        "scopes": "Scopes",
+        "expiry": "Expires on (optional)",
+        "mcpWriteTools": "Write tools (optional)"
       },
       "rateLimitInvalid": "Rate limit must be between {min} and {max} requests/minute.",
       "scopesRequired": "Select at least one scope — a key with none cannot do anything.",
       "blockedByReveal": "Dismiss the token above before creating another key.",
       "submit": "Create key",
-      "creating": "Creating"
+      "creating": "Creating",
+      "scopeHelp": {
+        "chatWrite": "Public chat API",
+        "mcpList": "List public MCP tools",
+        "mcpInvoke": "Call read-only MCP tools",
+        "wildcard": "Everything except MCP write tools",
+        "plugin": "Plugin scope"
+      },
+      "mcpWriteToolsHint": "Comma-separated tool names. Each name grants the scope {prefix}name for exactly that tool.",
+      "mcpWriteToolsInvalid": "Tool names may contain only lowercase letters, digits, “_” and “-”, starting with a letter.",
+      "expiryInvalid": "The expiry date must lie in the future.",
+      "scopesUnavailable": "The scope list could not be loaded, so only chat:write is offered."
     },
     "reveal": {
       "heading": "New API key created",
@@ -4729,7 +4755,8 @@
       "rateLimitValue": "{value}/min",
       "status": {
         "active": "Active",
-        "revoked": "Revoked"
+        "revoked": "Revoked",
+        "expired": "Expired"
       },
       "revoke": "Revoke",
       "revoking": "Revoking",
@@ -4737,6 +4764,35 @@
         "message": "Revoke this key? Anything using it stops working immediately — this can't be undone.",
         "confirm": "Confirm revoke",
         "cancel": "Cancel"
+      },
+      "expiresAt": "Expires {date}",
+      "expiredAt": "Expired {date}",
+      "createdBy": "Created by {email}",
+      "createdByUnknown": "Creator unknown",
+      "lastUsed": "Last used {date}",
+      "neverUsed": "Not used yet",
+      "showInactive": "Show revoked and expired keys ({count})",
+      "hideInactive": "Hide revoked and expired keys",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "confirmDelete": {
+        "message": "Delete this key for good? It disappears from this list, and its request history is no longer shown here. Its create, revoke and delete records stay in the admin audit log.",
+        "confirm": "Confirm delete",
+        "cancel": "Cancel"
+      },
+      "usage": {
+        "show": "Recent activity",
+        "hide": "Hide activity",
+        "loading": "Loading activity …",
+        "empty": "No requests from this key in the recent log.",
+        "failed": "The activity could not be loaded.",
+        "status": {
+          "ok": "OK",
+          "rate_limited": "Rate limited",
+          "forbidden": "Missing scope",
+          "invalid_request": "Invalid request",
+          "error": "Error"
+        }
       }
     },
     "errors": {
@@ -4744,7 +4800,10 @@
       "authUnavailable": "Operator authentication is unavailable right now. Try again shortly.",
       "sessionExpired": "Your session has expired. Redirecting to sign in…",
       "invalidRequest": "That request was invalid — check the values above and try again.",
-      "generic": "Something went wrong (error {status})."
+      "generic": "Something went wrong (error {status}).",
+      "invalidScope": "That scope is unknown — pick one from the list.",
+      "invalidExpiry": "The expiry date must lie in the future and at most five years ahead.",
+      "keyActive": "Revoke the key before deleting it."
     }
   },
   "adminWebhooks": {
@@ -4814,13 +4873,13 @@
       "blockedByReveal": "Copy and dismiss this secret before you create or rotate another one."
     },
     "errors": {
-      "urlForbidden": "This address is not allowed. Webhooks may only call public http(s) targets.",
-      "invalidInput": "The request is missing a required value.",
+      "unexpected": "The request could not be sent.",
       "notFound": "This entry no longer exists. Reload the page.",
+      "urlForbidden": "This address is not allowed. Webhooks may only call public http(s) targets.",
       "unavailable": "Webhooks are not available on this server.",
       "serverFailed": "The server could not complete this action. Try again; if it repeats, check the middleware logs.",
-      "requestFailed": "The request failed (HTTP {status}).",
-      "unexpected": "The request could not be sent."
+      "invalidInput": "The request is missing a required value.",
+      "requestFailed": "The request failed (HTTP {status})."
     }
   },
   "adminDomains": {
@@ -5320,8 +5379,8 @@
       "gcDescription": "Per-scope eviction by type-weight × decay-score. Enforces hot_max_entries + max_total_chars.",
       "accessFlushTitle": "Run access flush only",
       "accessFlushDescription": "Drain the access tracker into access_count + accessed_at without rotating. Debug-only.",
-      "runNow": "Run now",
-      "running": "Running …"
+      "running": "Running …",
+      "runNow": "Run now"
     },
     "cards": {
       "tierBreakdown": "Tier breakdown",
@@ -5923,7 +5982,8 @@
       "title": "Platform health.",
       "intro": "Runtime, persistence, backup. Metadata only — no secrets.",
       "errorUnknownLoad": "Unknown error while loading the vault status.",
-      "loadErrorTitle": "Vault status unreachable"
+      "loadErrorTitle": "Vault status unreachable",
+      "loadErrorDatabase": "The middleware could not check your session because its database is unreachable. See the platform health card."
     },
     "vaultStatus": {
       "masterKey": "Master key",
@@ -5948,12 +6008,35 @@
       "dotWarn": "Warning",
       "dotDanger": "Error",
       "dotInactive": "Inactive",
-      "keySourceDevFile": "dev file (not for production)",
-      "keySourceDevFileCreated": "dev file (newly generated — DEV ONLY)",
+      "keySourceDevFile": "dev file, set {envVar} for production",
+      "keySourceDevFileCreated": "dev file (newly generated, DEV ONLY), set {envVar} for production",
       "eyebrow": "Encrypted secret vault",
       "heading": "Vault",
       "bucket": "Bucket",
-      "prefix": "Prefix"
+      "prefix": "Prefix",
+      "keychainKey": "Keychain master key",
+      "keySourceEnv": "{envVar} (env)",
+      "keySourceUnknown": "not reported by this middleware version"
+    },
+    "platformHealth": {
+      "eyebrow": "Middleware /health",
+      "heading": "Platform",
+      "middleware": "Middleware",
+      "middlewareReachable": "reachable · version {version}",
+      "middlewareUnreachable": "The middleware did not answer its health check, so the status of the database and the master keys cannot be read. It may be stopped, still starting, or restarting after a crash.",
+      "database": "Database (Postgres)",
+      "databaseState": {
+        "ok": "reachable",
+        "unreachable": "not answering. Check that Postgres is running and DATABASE_URL is right; if both are fine, restart the middleware",
+        "unknown": "configured, but no connection to check",
+        "none": "none (in-memory knowledge graph)",
+        "unreported": "not reported"
+      },
+      "embeddings": "Embeddings",
+      "semanticRecall": "Semantic recall",
+      "active": "active",
+      "off": "off",
+      "warningsHeading": "Reported by the middleware"
     }
   },
   "help": {
@@ -6063,10 +6146,28 @@
       "unknown": "The Teams sign-in request failed: {detail}"
     }
   },
+  "platformHealth": {
+    "banner": {
+      "databaseUnreachable": {
+        "title": "Database unreachable",
+        "body": "The middleware is running, but its database (Postgres) is not answering. Everything that needs stored data fails until it is back, so the status cards below may read as unknown. Check that Postgres is running and DATABASE_URL is right; if both are fine, restart the middleware."
+      },
+      "middlewareUnreachable": {
+        "title": "Middleware not reachable",
+        "body": "The web UI could not reach the middleware, so no status on this page can be checked. It may be stopped, still starting, or restarting after a crash."
+      },
+      "devMasterKey": {
+        "title": "Development master key in use",
+        "body": "{which, select, vault {VAULT_KEY is} keychain {CREDENTIAL_KEYCHAIN_KEY is} other {VAULT_KEY and CREDENTIAL_KEYCHAIN_KEY are}} not set, so the master key is read from a dev file on the data volume, right next to the data it encrypts. Fine for local development, not for production."
+      },
+      "cta": "Open platform health",
+      "dismiss": "Later"
+    }
+  },
   "oneTimeSecret": {
+    "dismiss": "I've copied it, dismiss",
     "copy": "Copy",
     "copied": "Copied",
-    "copyFailed": "Couldn't copy automatically — select the secret above and copy it manually.",
-    "dismiss": "I've copied it, dismiss"
+    "copyFailed": "Couldn't copy automatically — select the secret above and copy it manually."
   }
 }

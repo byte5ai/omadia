@@ -116,29 +116,54 @@ The gate, asserted by `test/cliBridge/cliSpawnGate.test.ts` and
 | Binary resolution (#1085) | Every spawn site — chat turn, completion provider, and the CLI sub-agents (`ask_<slug>`, agent builder, preview chat) — resolves the binary through the kernel's `resolveCliBin()` — `<CLI_TOOLS_DIR>/bin/claude` (default `<PLATFORM_DATA_DIR>/cli-tools`) when a runtime install put one there, else the bare name from PATH. Previously they spawned the bare name while the version badge, the login flow and the "Install now" button all used the resolved path, so an operator could install a CLI ≥ 2.1.248 through the UI and every turn kept running the older image binary — including the `--restricted` version probe above, which then dropped the flag against a deployment the UI reported as up to date. The rule is published as the `cliBinaryResolver` kernel service (`optional_requires` in the orchestrator manifest) because `@omadia/orchestrator` cannot import the app layer; kernel-side callers share `src/platform/cliBinary.ts` (`resolveClaudeCliBin()`). Absent, every site falls back to PATH. Resolution runs **per turn / per completion**, so an install takes effect on the next turn rather than the next restart, and the spawn log names the resolved path. Credentials are unaffected either way: both binaries read the same `CLAUDE_CONFIG_DIR`. The candidate must be executable (`X_OK`, which follows symlinks) and is made absolute, because every spawn runs in a temp `cwd` where a relative path would not resolve; otherwise PATH. **Trust consequence:** the install dir is now the binary every turn executes, so its writers — the authenticated `POST /api/v1/admin/cli-backends/:id/install` and anything with write access to the data volume — choose the binary the gate wraps. That route accepts any strict-semver version, so a runtime install below 2.1.248 drops `--restricted` for turns exactly as an old image pin does; the spawn log's `restrictedFlag` shows it. Like any kernel service, `cliBinaryResolver` can be swapped with `ctx.services.replace` by a plugin that declares it under `requires`/`optional_requires` (the #788 gate treats `replace` like `get`); that is no escalation over in-process plugin code, but if such a plugin activates before the orchestrator (which resolves the service once, in `activate()`), it chooses the binary for every chat turn, so a manifest declaring this service deserves review. |
 | Env allowlist (#1014) | `buildGatedCliEnv()` passes only `PATH`, `HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR`, locale/`TZ`, proxy and CA vars, and `USER`/`LOGNAME`. It replaced a deny list that removed credentials and billing switches but passed `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and the whole `CLAUDE_CODE_*` family. The deny list is kept as a second layer, and a test asserts the two never overlap. |
 
-### No Privacy Shield on this path — and chat history is replayed (#1087)
+### No Privacy Shield on this path — chat history and graph recall are replayed (#1087, #1391)
 
 "Privacy guard" in the list above does not mean the CLI child receives masked
 data. Only the in-process orchestrator installs a per-turn privacy handle, so on
-the subscription-CLI path the live user message,
-tool results and — since #1087 — the replayed chat history reach the vendor
-unmasked. `CliChatAgent` replays the newest `DEFAULT_CLI_SESSION_TAIL_SIZE` (10)
-completed turns of the session into the child's stdin prompt, truncated to 600
-characters per question and 1,200 per answer, with role markers neutralised so
-replayed text cannot forge a `User:`/`Assistant:` line. For a session whose
-earlier turns ran on an API-key provider with Privacy Shield active, those
-persisted turns hold RESTORED real values, so up to ten of them now reach the
-CLI child raw. This is a deliberate trade-off in line with the UI's notice not
-to route personal data through this provider. `maskHistory` already routes the
-replay through the turn's privacy handle and becomes effective the moment one is
-installed on this path; masking parity is tracked on #1087.
+the subscription-CLI path the live user message, tool results, the replayed chat
+history (#1087) and the knowledge-graph recall (#1391) reach the vendor
+unmasked. `CliChatAgent` replays the newest completed turns of the session into
+the child's stdin prompt — as many as the operator's `context_tail_size`
+(default 10, the `ContextRetriever`'s `tailSize`) — truncated to 600 characters
+per question and 1,200 per answer, with role markers neutralised so replayed
+text cannot forge a `User:`/`Assistant:` line. For a session whose earlier turns
+ran on an API-key provider with Privacy Shield active, those persisted turns
+hold RESTORED real values, so they reach the CLI child raw.
+
+Since #1391 the CLI turn also recalls context the way the in-process turn does
+(`Orchestrator.recallCliContext` → `retrievePriorContext`: verbatim graph tail,
+entity and full-text hits from the user's other chats, cross-session plans,
+processes and insights, the session briefing) and puts the rendered text into
+the child's stdin prompt — never argv, where `ps` / `/proc/<pid>/cmdline` would
+show other chats' content to every process in the container (and one argument
+is capped at 128 KiB). The same gates apply as in-process — audience floor,
+context-memory isolation (`enforce-strict`, `members`), fresh check — but the
+text is not masked, so recalled real values from other chats reach the vendor
+too. The recall has a 15 s deadline (`recallTimeoutMs`); past it the turn runs
+without.
+
+Every successful CLI turn is now also persisted like an in-process one
+(`Orchestrator.recordCliTurn`: transcript, chat-session mirror, graph
+`Turn`/`Run`/`ToolCall`, fact extraction, excerpt, auto-promotion,
+`onAfterTurn`), with the real texts and no masked view, because there is none.
+That opens outbound flows this path did not have before, all unmasked: the
+graph's capture scorer (it scores with a model of its own and gets no
+`maskedView` here), the embedding provider, the fact-extraction plugin and the
+excerpt extractor. They may be a different vendor than the CLI's. On the
+API-key path with Privacy Shield the same calls get the masked wire text.
+
+This is a deliberate trade-off in line with the UI's notice not to route
+personal data through this provider; the decision is recorded on #1087.
+`maskHistory` already routes the replay through the turn's privacy handle and
+becomes effective the moment one is installed on this path.
 
 The answer verifier is never installed on this path: `buildOrchestratorForAgent`
 returns the `CliChatAgent` bundle before the `VerifierService` wrap, so a
-subscription-CLI chat turn has no verifier egress at all. The reverse case is
-covered by §6e — the verifier plugin's OWN model may be the `claude-cli`
-completion provider (Shape 2), and its requests are masked before
-`llm.complete` like on any other provider.
+subscription-CLI chat turn has no verifier egress at all, and the subscription
+page tells the operator so (#1391). The reverse case is covered by §6e — the
+verifier plugin's OWN model may be the `claude-cli` completion provider
+(Shape 2), and its requests are masked before `llm.complete` like on any other
+provider.
 
 ### Why the deny list is generated, not written (#1014)
 
@@ -2829,6 +2854,18 @@ At a minimum, your deployment vault holds:
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
 
+### Master-key posture is not on the public `/health` (#1385, #1387, #1332)
+
+The unauthenticated `GET /health` reports the database verdict
+(`checks.database`) so the web UI can name a Postgres outage while every
+authenticated route answers 503. It deliberately does **not** report whether
+`VAULT_KEY` / `CREDENTIAL_KEYCHAIN_KEY` came from env or from the dev file:
+that would tell any scanner "this instance runs on dev-grade keys". The UI's
+dev-key warning is only shown while the database is up, and then reads the
+authenticated `/api/v1/admin/vault-status`, which reports both sources
+(`master_key_source`, `keychain_key_source`); its `production_ready` requires
+both keys from env.
+
 ## 8a. Desktop secret custody (`desktop/src/secrets.ts`)
 
 The desktop app has no deployment vault. It generates the kernel's master keys
@@ -3252,6 +3289,41 @@ already-revoked key is a no-op that returns its unchanged view). `verify()`
 skips any record with `revokedAt` set, so a revoked key starts failing
 immediately on its very next call — no propagation delay, no cache to
 invalidate.
+
+**Lifecycle, scope catalog and admin audit (#1327 / #1328 / #1329).**
+Creation requires every scope to be *known* (`isKnownScope`,
+`apiKeyScopeCatalog.ts`): a built-in, a registered scope
+(`registerApiKeyScope`; no caller yet, and not exposed through `ctx`), or a
+well-formed `mcp:write:<tool>` (tool sets are decided later by the key's MCP
+binding, so tools are admitted by shape). The read path keeps the shape-only
+`normalizeScopes`, so a key minted with a scope whose plugin is later removed
+keeps it rather than flipping to deny-all. `expiresAt` (≤ 5 years ahead) makes
+`verify()` refuse the key once passed; an unreadable persisted `expiresAt`
+hydrates to `0` — expired, fail closed. `isApiKeyActive` (not revoked, not
+expired) is the one predicate for "can authenticate", used by `verify()`, the
+channel directory and the public-MCP binding lister. `DELETE` removes only a
+revoked or expired record, so deletion can never be an un-audited revoke.
+`createdBy` and every `admin_audit` row take the actor from the kernel's
+session evaluation (`ctx.operatorAuth.sessionPrincipal` /
+`recordAdminAction`), never from plugin-supplied data: `actor_id` is the
+session's `uid` (`users.id`), `actor_email` its email. `PLUGIN_AUDIT_POLICY` admits an
+action only for named plugins and a target shape (`api_key.*` → only
+`@omadia/channel-api`, target `api-key:<uuid>`), so no plugin can forge
+kernel events such as `user.delete` or another plugin's events. The plugin id
+in that decision comes from the kernel: the unscoped accessor refuses every
+write, and only the per-plugin wrapper (`scopeOperatorAuthToPlugin`, applied
+in `createPluginContext`) can call `recordForPlugin` with its id. That id is
+stamped last into `before.plugin` and `after.plugin`, and each payload is
+capped at 4 KB. Audit payloads carry id, label,
+scopes, rate limit and expiry — never the token or its hash. A failed audit
+write is logged, not turned into an error response (the action already
+happened). The usage log is readable per key (`GET .../keys/:id/usage`,
+operator session required like every route on that router). The public MCP
+endpoint writes to it as well (`createPublicMcpUsageLog`), with a writer that
+may set only the `usage-audit-log` entry of the key namespace; both writers
+share one process-wide queue. Deleting a key drops its `lastUsed` stamp but
+keeps its request entries until the cap ages them out — after a leak that
+history is evidence.
 
 **Usage audit.** Every call that gets *past key verification* — i.e. every
 authenticated call, regardless of what happens next — is recorded as one
