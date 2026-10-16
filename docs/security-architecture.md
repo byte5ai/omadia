@@ -940,8 +940,12 @@ signature and expiry, exactly like a presigned S3 URL — beneath the prefixes
 `/documents/dl` and `/diagrams/dl`, declared in their manifests'
 `permissions.public_paths` (a claim must be at least two segments deep, hence
 `/dl`). The prefix is only served session-less once the operator has granted
-it (`PUT /api/v1/admin/runtime/installed/:id/public-paths`); until then the
-kernel keeps the session gate in front, fail-closed. What the link buys is
+it (`PUT /api/v1/admin/runtime/installed/:id/public-paths`); until then it is
+not served at all, fail-closed. A session does not open it either: `requireAuth`
+runs only under `/api`, and a non-session plugin route is never mounted
+ambiently, so the request ends in the middleware's terminal JSON
+`404 public_path.not_granted` (#1349). Under `/api` an anonymous request still
+meets `requireAuth`'s 401 first. What the link buys is
 what it always bought: whoever holds it can fetch that one object until it
 expires; there is no per-tenant or per-session authorisation on top.
 
