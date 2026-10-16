@@ -49,6 +49,13 @@ services:
     image: ghcr.io/byte5ai/omadia-middleware:${OMADIA_VERSION:-latest}
     restart: unless-stopped
     env_file:
+      # Stack defaults (#1317): PUBLIC_BASE_URL and the redirect URIs, set to
+      # the origins this stack actually serves (UI :3333, middleware :8080) —
+      # the middleware's own default, :3979, has nothing listening here. Listed
+      # FIRST so middleware/.env below overrides any of them. They are not under
+      # `environment:` on purpose: that key beats every env_file.
+      - path: middleware/compose.defaults.env
+        required: true
       # Optional: operator copies .env.example → .env and fills in
       # ANTHROPIC_API_KEY (+ any plugin-specific creds). Compose tolerates a
       # missing file when `required: false`, so a fresh clone still validates.
@@ -97,15 +104,19 @@ services:
       # separate trust domain — never reuse the VAULT_KEY value.
       CREDENTIAL_KEYCHAIN_KEY: ${CREDENTIAL_KEYCHAIN_KEY:-}
       NODE_ENV: ${NODE_ENV:-development}
-      # NB: `DEV_ENDPOINTS_ENABLED` (the unauthenticated /api/dev/graph +
-      # /api/dev/memory mount) is intentionally NOT hard-coded here. The
-      # admin UI's Graph + Memory viewers depend on it, but it exposes raw
-      # KG + memory state without auth — anyone who reuses this compose file
-      # as a template for a non-local deploy (and accidentally removes the
-      # 127.0.0.1 port-binding above) would otherwise expose internal state.
-      # To enable for local inspection, uncomment `DEV_ENDPOINTS_ENABLED=true`
-      # in `middleware/.env` (already picked up via `env_file` above).
-      # **NEVER set this on a public deployment.**
+      # NB: `DEV_ENDPOINTS_ENABLED` (the session-gated /api/dev/graph +
+      # /api/dev/memory dev mounts) is intentionally NOT hard-coded here. The
+      # admin UI's Graph viewer depends on it. The routes need an operator
+      # login, but they hand raw KG + memory state (every user's chat
+      # sessions included) to any logged-in session — anyone who reuses this
+      # compose file as a template for a non-local deploy would otherwise
+      # publish that. To enable for local inspection, uncomment
+      # `DEV_ENDPOINTS_ENABLED=true` in `middleware/.env` (already picked up
+      # via `env_file` above). `DEV_ENDPOINTS_LOOPBACK_ONLY=true` additionally
+      # refuses every /api/dev request that is not from loopback — note that
+      # requests from the host and from web-ui reach this container from a
+      # Docker bridge address, so that flag closes the routes here entirely.
+      # **NEVER set DEV_ENDPOINTS_ENABLED on a public deployment.**
       # Redirect kernel persistent state (vault, installed.json, builder
       # drafts.db, uploaded plugin packages) to the volume mount below.
       # Without this, the kernel writes under /app/data which lives in the
