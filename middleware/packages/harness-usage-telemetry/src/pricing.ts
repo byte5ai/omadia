@@ -22,6 +22,9 @@
  *    — otherwise the cached portion would be billed twice. OpenAI has no cache
  *    write, so `cacheCreationTokens` is 0 on that path.
  *
+ * A model may carry a `longContext` tier: a call whose prompt is over the
+ * tier's threshold bills entirely at the tier's rates (Haiku 5.5 above 100k).
+ *
  * Model matching is by id first, then by family keyword (fable/opus/sonnet/
  * haiku, gpt-5.x variants, mistral sizes) so dated snapshots (e.g.
  * `claude-opus-5-5-2026…`, `claude-haiku-4-5-20251001`, `gpt-5.4-mini-2026-…`)
@@ -53,6 +56,15 @@ export interface ModelPrice {
    *  before being billed at the cached rate, preventing double-counting.
    *  Anthropic excludes cached reads from input, so this stays false/undefined. */
   readonly cacheIncludedInInput?: boolean;
+  /** A higher rate for long prompts (Haiku 5.5: $0.50/$2.50 above 100k). When
+   *  a call's prompt — input plus cache reads and writes, the way Anthropic
+   *  counts it for its long-context tiers — exceeds `abovePromptTokens`, the
+   *  whole call bills at the tier's rates, output and cache tokens included.
+   *  The tier names rates only; the cache flags stay the base entry's. */
+  readonly longContext?: {
+    readonly abovePromptTokens: number;
+    readonly price: Pick<ModelPrice, 'inputPerMTok' | 'outputPerMTok' | 'cachedInputPerMTok'>;
+  };
 }
 
 /** Cache-read tokens bill at this fraction of the base input rate when a model
@@ -68,9 +80,12 @@ export const CACHE_WRITE_MULTIPLIER = 1.25;
 const FABLE_5_1: ModelPrice = { inputPerMTok: 10, outputPerMTok: 50, cachedInputPerMTok: 0.25 };
 const OPUS_5_5: ModelPrice = { inputPerMTok: 4, outputPerMTok: 20, cachedInputPerMTok: 0.2 };
 const SONNET_5_5: ModelPrice = { inputPerMTok: 2, outputPerMTok: 10 };
-// Prompts above 100k tokens bill at $0.50/$2.50; ModelPrice has no tier field,
-// so those calls are under-counted until it gets one.
-const HAIKU_5_5: ModelPrice = { inputPerMTok: 0.1, outputPerMTok: 0.5 };
+// Prompts above 100k tokens bill at $0.50/$2.50 (#1389); reads stay at 0.1×.
+const HAIKU_5_5: ModelPrice = {
+  inputPerMTok: 0.1,
+  outputPerMTok: 0.5,
+  longContext: { abovePromptTokens: 100_000, price: { inputPerMTok: 0.5, outputPerMTok: 2.5 } },
+};
 
 /** Exact-id price table. Falls through to family matching for anything else. */
 const EXACT_PRICES: Readonly<Record<string, ModelPrice>> = {
@@ -171,12 +186,23 @@ export interface UsageTokens {
   readonly cacheCreationTokens: number;
 }
 
+/** The price a call bills at: the long-context tier when its prompt is over
+ *  the model's threshold, else the base price. */
+function tierFor(price: ModelPrice, usage: UsageTokens): ModelPrice {
+  const tier = price.longContext;
+  if (!tier) return price;
+  const promptTokens =
+    (price.cacheIncludedInInput ? usage.inputTokens : usage.inputTokens + usage.cacheReadTokens) +
+    usage.cacheCreationTokens;
+  return promptTokens > tier.abovePromptTokens ? { ...price, ...tier.price } : price;
+}
+
 /**
  * Computes the USD cost of a single call from its model + token usage.
  * Rounds to 8 decimals (sub-micro-cent) so summing many rows stays exact.
  */
 export function computeCostUsd(model: string, usage: UsageTokens): number {
-  const price = priceForModel(model);
+  const price = tierFor(priceForModel(model), usage);
   const inRate = price.inputPerMTok / 1_000_000;
   const outRate = price.outputPerMTok / 1_000_000;
   // Cached reads bill at the model's absolute cached rate when published
