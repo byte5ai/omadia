@@ -64,30 +64,45 @@ export function toFriendlyError(err: unknown, t: TFn): string {
     ) {
       return t('errors.sessionExpired');
     }
+    if (err.body.includes('invalid_scope')) return t('errors.invalidScope');
+    if (err.body.includes('invalid_expiry')) return t('errors.invalidExpiry');
+    if (err.body.includes('key_active')) return t('errors.keyActive');
     if (err.body.includes('invalid_request')) return t('errors.invalidRequest');
     return t('errors.generic', { status: err.status });
   }
   return err instanceof Error ? err.message : String(err);
 }
 
+export type KeyStatus = 'active' | 'revoked' | 'expired';
+
+/** #1328 — revoked wins over expired: a revoke is an operator decision, an
+ *  expiry only a date. */
+export function keyStatusOf(
+  key: { revokedAt?: number; expiresAt?: number },
+  now: number,
+): KeyStatus {
+  if (key.revokedAt !== undefined) return 'revoked';
+  if (key.expiresAt !== undefined && key.expiresAt <= now) return 'expired';
+  return 'active';
+}
+
 /**
- * Active/revoked status — text + a 1px edge + at most a light tint, never a
- * solid-filled pill (Lume state-color rule, spec §2.6). Same recipe as
- * `admin/webhooks/_components/shared.tsx`'s `StatusBadge`.
+ * Active/revoked/expired status — text + a 1px edge + at most a light tint,
+ * never a solid-filled pill (Lume state-color rule, spec §2.6). Same recipe
+ * as `admin/webhooks/_components/shared.tsx`'s `StatusBadge`.
  */
-export function KeyStatusBadge({ revokedAt }: { revokedAt?: number }): React.ReactElement {
+export function KeyStatusBadge({ status }: { status: KeyStatus }): React.ReactElement {
   const t = useTranslations('adminApiKeys.list.status');
-  const revoked = revokedAt !== undefined;
   return (
     <span
       className={[
         'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
-        revoked
-          ? 'border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/8 text-[color:var(--danger)]'
-          : 'border-[color:var(--success)]/50 bg-[color:var(--success)]/8 text-[color:var(--success)]',
+        status === 'active'
+          ? 'border-[color:var(--success)]/50 bg-[color:var(--success)]/8 text-[color:var(--success)]'
+          : 'border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/8 text-[color:var(--danger)]',
       ].join(' ')}
     >
-      {revoked ? t('revoked') : t('active')}
+      {t(status)}
     </span>
   );
 }
