@@ -2421,8 +2421,11 @@ Regeln, die daraus folgen:
   dem Beta-Header `thinking-binding-controls-2026-08-01` (ohne Header ist das
   Feld ein 400). Prefix-Edits führen damit zu einem **Drop statt zu einem
   Fehler** — der Turn läuft weiter, aber ohne das Reasoning ab der ersten
-  geänderten Stelle. Der Finalize-Pass und `LocalSubAgent` editieren `system`
-  bzw. `tools` noch mitten im Turn (eigene Issues); jeder Drop steht als
+  geänderten Stelle. Der Finalize-Pass editiert `system` bzw. `tools` noch
+  mitten im Turn (eigenes Issue). `LocalSubAgent` hält `system` über den
+  ganzen Lauf fest: die Abschluss-Notiz (Repeat-Failure / letzte Iteration)
+  hängt als Text-Block am neuesten, noch nicht gesendeten User-Turn, hinter
+  dessen `tool_result`-Blöcken (#1212). Jeder Drop steht als
   `input_transformations`-Eintrag im Adapter-Log (`prefix_binding_mismatch` =
   wir editieren noch, `model_binding_mismatch` = Provider-Fallback, erwartet).
 - **Nur der In-Turn-Loop braucht die Blöcke.** `maskPriorTurnsForWire`
