@@ -88,6 +88,7 @@ import type {
   AclAuditEntry,
   AclMutationOptions,
   MemorableKnowledgePurgeFilter,
+  ConversationHistoryPurgeFilter,
   PalaiaExcerptNode,
   PalaiaExcerptUpdate,
   MemorableKnowledgeSearchOptions,
@@ -141,6 +142,14 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
    * rendering a confidently wrong total.
    */
   readonly countDatasets?: (opts: { ownerOmadiaUserId: string }) => Promise<number>;
+  // #1334 — optional on the contract: forwarded only when the inner graph has
+  // them, so the purge route can tell an unsupported provider from an empty one.
+  readonly countConversationHistory?: (
+    filter: ConversationHistoryPurgeFilter,
+  ) => Promise<{ count: number }>;
+  readonly purgeConversationHistory?: (
+    filter: ConversationHistoryPurgeFilter,
+  ) => Promise<{ deletedNodes: number }>;
 
   constructor(opts: CaptureFilteringKnowledgeGraphOptions) {
     this.inner = opts.inner;
@@ -148,6 +157,10 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     this.log = opts.log ?? ((msg): void => console.error(msg));
     const innerCount = opts.inner.countDatasets?.bind(opts.inner);
     if (innerCount) this.countDatasets = innerCount;
+    const innerCountHistory = opts.inner.countConversationHistory?.bind(opts.inner);
+    if (innerCountHistory) this.countConversationHistory = innerCountHistory;
+    const innerPurgeHistory = opts.inner.purgeConversationHistory?.bind(opts.inner);
+    if (innerPurgeHistory) this.purgeConversationHistory = innerPurgeHistory;
   }
 
   async ingestTurn(ingest: TurnIngest): Promise<TurnIngestResult> {

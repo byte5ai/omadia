@@ -5014,6 +5014,7 @@
         "auth": "Sign-in & sessions",
         "plugin": "Plugin changes",
         "apikey": "API keys",
+        "memory": "Memory purges",
         "conductor": "Conductor changes",
         "profileSnapshot": "Profile snapshots",
         "channel": "Channels"
@@ -5217,8 +5218,8 @@
   },
   "adminDangerZone": {
     "title": "Danger Zone · Memory Purge",
-    "intro": "Deletes memory irreversibly along one axis. <strong>Everything</strong> wipes agent scratch <em>and</em> knowledge graph; the user / team / channel axes hit the knowledge graph and the matching context tree under /memories/contexts. There is no undo — always check the preview first.",
-    "note": "<strong>Note:</strong> The user / team / channel selector is a context key (<code>channelType~id</code>) or the raw native id — it addresses one context tree across every agent.",
+    "intro": "Deletes memory irreversibly along one axis: agent scratch, the knowledge graph’s <strong>remembered facts</strong> and its <strong>conversation history</strong> (turns, sessions, runs, tool calls, plans). The <em>team</em> and <em>channel</em> axes only delete the context trees under /memories/contexts — the knowledge graph has no team or channel scoping yet. Chat tabs, conversation transcripts under /memories/sessions, brand assets, core and UI preferences are never deleted. There is no undo — the server only accepts a delete after a preview of the same selection.",
+    "note": "<strong>Selector:</strong> for user / team / channel always <code>channelType~id</code>, where the id is either the raw native id or the key shown in the memory browser — e.g. <code>teams~AAD-OBJECT-ID</code> (user), <code>teams~19:abc@thread.tacv2</code> (team), <code>telegram~-1001234567890</code> (channel). On the user axis an omadia user id (UUID) instead selects that person’s member notes, remembered facts and conversation turns.",
     "targetTitle": "Target",
     "axisLabel": "Axis",
     "axes": {
@@ -5231,20 +5232,20 @@
     "selectorLabel": "Selector",
     "selectorPlaceholder": {
       "agent": "de.byte5.agent.calendar",
-      "user": "teams~29-1a2b… (never a bare id)",
-      "team": "teams~19-abc… (never a bare id)",
-      "channel": "telegram~-1001234567890 (never a bare id)"
+      "user": "teams~AAD-OBJECT-ID or omadia user id",
+      "team": "teams~19:abc@thread.tacv2",
+      "channel": "telegram~-1001234567890"
     },
     "selectorRequired": "Selector required for this axis.",
-    "reseedLabel": "Re-seed default memories after deletion (re-seed defaults)",
+    "reseedLabel": "Reset rules to the bundled defaults",
     "loading": "loading…",
     "previewButton": "Preview",
     "previewError": "Preview error: {message}",
     "previewTitle": "Preview — will be deleted",
     "agentScratch": "Agent scratch",
-    "knowledgeGraph": "Knowledge graph",
+    "knowledgeGraph": "Remembered facts (knowledge graph)",
     "confirmTitle": "Confirm deletion",
-    "previewFirst": "Run a preview first — deletion is only possible after that.",
+    "previewFirst": "Run a preview first — the server only accepts a delete after a preview of the same selection.",
     "noSelector": "No selector set.",
     "confirmInstruction": "To confirm, type exactly: <code>{phrase}</code>",
     "deleting": "deleting…",
@@ -5253,10 +5254,31 @@
     "deletedTitle": "Deleted",
     "forbiddenError": "Not authorized (403) — memory purge requires admin rights.",
     "selectorHint": {
-      "agent": "Agent slug. Also removes that agent’s context trees under /memories/contexts.",
-      "user": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw user id. Deletes the user tier across all agents.",
-      "team": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw team id. Deletes the team tier across all agents.",
-      "channel": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw conversation id. Deletes the channel tier across all agents."
+      "agent": "Agent slug. Deletes the agent’s scratch tree, its context trees under /memories/contexts, its remembered facts and its conversation history.",
+      "user": "Always <code>channelType~id</code> (raw user id or the key from the memory browser), e.g. <code>teams~AAD-OBJECT-ID</code> — deletes the user tier across all agents. Or an omadia user id: deletes that person’s member notes, remembered facts and conversation turns.",
+      "team": "Always <code>channelType~id</code> (raw team id or the key from the memory browser), e.g. <code>teams~19:abc@thread.tacv2</code>. Deletes the team tier across all agents.",
+      "channel": "Always <code>channelType~id</code> (raw conversation id or the key from the memory browser), e.g. <code>telegram~-1001234567890</code>. Deletes the channel tier across all agents."
+    },
+    "reseedHint": "Deletes /memories/_rules, including rules added at runtime, and writes the bundled defaults back right away. Chat tabs, conversation transcripts, brand assets, core and UI preferences are always kept.",
+    "reseedPreview": "Reset to the bundled defaults: {entries}",
+    "reseeded": "{count, plural, one {# default file written back.} other {# default files written back.}}",
+    "conversationHistory": "Conversation history (knowledge graph)",
+    "nothingToDelete": "The preview found nothing to delete for this selection — check the selector.",
+    "warnings": {
+      "kg_not_modelled": "The knowledge graph has no {axis, select, team {team} channel {channel} other {such}} scoping yet: remembered facts and conversation history stay untouched. Only the context trees under /memories/contexts are deleted.",
+      "kg_history_unsupported": "This knowledge-graph provider cannot delete conversation history: turns, sessions and runs stay. Only remembered facts and scratch memory are deleted.",
+      "user_axis_kg_only": "The selector matched knowledge-graph data but no context tree under /memories/contexts — the user’s scratch memory is not deleted.",
+      "user_axis_scratch_only": "The selector matched context trees but no knowledge-graph data — remembered facts and conversation turns are matched by omadia user id, not by a channelType~id key.",
+      "audit_unavailable": "No audit store is configured (no Postgres) — this purge is not recorded.",
+      "audit_update_failed": "The purge ran, but its audit record {auditId} could not be completed and still shows as started.",
+      "reseed_failed": "The defaults could not be written back; they return at the next restart unless MEMORY_SEED_MODE is skip."
+    },
+    "errors": {
+      "invalid_selector": "The selector must be spelled channelType~id, e.g. teams~19:abc@thread.tacv2 (raw native id) or the key shown in the memory browser.",
+      "selector_required": "Selector required for this axis.",
+      "preview_required": "The preview expired or belongs to another selection — run the preview again.",
+      "confirmation_mismatch": "The confirmation does not match the required phrase.",
+      "audit_write_failed": "The purge could not be recorded in the audit log, so nothing was deleted."
     }
   },
   "adminDuplicates": {

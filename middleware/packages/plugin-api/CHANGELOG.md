@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.32.0 — 2026-10-16
+## 1.33.0 — 2026-10-16
 
 Additive. A Privacy Shield v4 table render keeps its canvas snapshot off the
 model's `tool_result` (#1402).
@@ -21,6 +21,21 @@ model's `tool_result` (#1402).
   `_pendingCanvasTree` snapshot with the real cells. The kernel hands it to
   the turn's canvas-sentinel sink, never to the model. A provider that
   returns `{ resultText }` alone still conforms.
+
+## 1.32.0 — 2026-10-16
+
+Additive. The Danger-Zone memory purge deletes the conversation history, not
+only the remembered facts (#1334).
+
+### Added
+
+- **`KnowledgeGraph.countConversationHistory?` / `purgeConversationHistory?`**
+  — count and hard-delete the Turns of a scope or user and everything derived
+  from them (Session, Run, AgentInvocation, ToolCall, Plan, PlanStep, Fact),
+  through one shared selection so the preview counts what the purge deletes.
+  Optional: a provider without them is reported as unsupported by the purge.
+- **`ConversationHistoryPurgeFilter`** and
+  **`CONVERSATION_HISTORY_NODE_TYPES`**.
 
 ## 1.31.0 — 2026-10-16
 

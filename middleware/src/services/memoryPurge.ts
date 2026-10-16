@@ -1,4 +1,8 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+
 import { memoryContextKey } from '@omadia/channel-sdk';
+import { MemorySeeder } from '@omadia/memory';
 import { MembersIndex, membersIndexRoot, membersTierRoot } from '@omadia/orchestrator';
 import type { MemoryStore } from '@omadia/plugin-api';
 
@@ -28,10 +32,13 @@ import type { MemoryStore } from '@omadia/plugin-api';
  *   /memories/core                                 — shared kernel namespace
  *   /memories/sessions, /chat-sessions             — shared session scratch
  *
- * The seed prefixes below are PROTECTED from `axis: 'all'` purges unless the
- * caller explicitly opts into `reseed` (in which case the caller is expected
- * to re-seed them afterwards). `contexts` is deliberately NOT among them: it
- * is ordinary scratch, so an `axis: 'all'` purge takes it along for free.
+ * The prefixes below are PROTECTED from `axis: 'all'` purges. A re-seed
+ * purge (#1335) lifts the protection ONLY for the entries the bundled seed
+ * directory writes back (`reseedEntries`, today `_rules`), and the caller runs
+ * {@link reseedMemory} right after. Chat sessions, transcripts, brand assets,
+ * `core` and UI preferences are never part of the seed, so no purge deletes
+ * them. `contexts` is deliberately NOT protected: it is ordinary scratch, so
+ * an `axis: 'all'` purge takes it along for free.
  */
 
 export type MemoryPurgeAxis = 'all' | 'agent' | 'user' | 'team' | 'channel';
@@ -39,8 +46,9 @@ export type MemoryPurgeAxis = 'all' | 'agent' | 'user' | 'team' | 'channel';
 /**
  * Top-level `/memories/...` entries that hold seed / shared kernel data, plus
  * durable per-user settings that a scratch purge must not wipe. Protected from
- * `axis: 'all'` unless `reseed` is requested. Stored as the leaf entry names
- * (the segment directly under `/memories`).
+ * `axis: 'all'`; a re-seed purge deletes only those of them it restores (see
+ * `reseedEntries`). Stored as the leaf entry names (the segment directly under
+ * `/memories`).
  */
 export const PROTECTED_SEED_ENTRIES: readonly string[] = [
   '_rules',
@@ -50,8 +58,8 @@ export const PROTECTED_SEED_ENTRIES: readonly string[] = [
   'chat-sessions',
   // Per-user UI preferences (Lume palette/appearance, issue #287). Not seed
   // data, but a durable cross-device user setting — a Danger-Zone scratch
-  // purge should not silently reset every operator's palette. A full `reseed`
-  // purge still clears it (the explicit "wipe everything" path).
+  // purge should not silently reset every operator's palette. Not part of the
+  // bundled seed either, so a re-seed purge keeps it too (#1335).
   'ui-prefs',
 ];
 
@@ -76,10 +84,12 @@ function selectorRequired(): Error {
   });
 }
 
-interface PurgeMemoryOptions {
-  /** When true, an `axis: 'all'` purge ALSO removes the protected seed
-   *  prefixes (caller re-seeds afterwards). Ignored for non-'all' axes. */
-  reseed?: boolean;
+export interface PurgeMemoryOptions {
+  /** Top-level `/memories` entries an `axis: 'all'` purge also removes
+   *  because the caller writes them back from the bundled seed right after
+   *  ({@link bundledSeedEntries} → {@link reseedMemory}). Protected entries
+   *  NOT listed here stay. Ignored for non-'all' axes. */
+  reseedEntries?: readonly string[];
 }
 
 /** First path segment of `virtualPath` below `parent`, or null when the entry
@@ -196,7 +206,7 @@ async function membersTargets(store: MemoryStore, userId: string): Promise<strin
  * delete, given the axis + selector. Returns absolute virtual paths.
  *
  *   - 'all'   → every top-level entry except the protected seed prefixes
- *               (unless `reseed`, which includes them). `contexts` is not
+ *               (save the `reseedEntries` the caller restores). `contexts` is not
  *               protected, so it is included.
  *   - 'agent' → everything that belongs to one agent: its
  *               `/memories/orchestrators/<selector>` tree AND its whole
@@ -210,11 +220,11 @@ async function membersTargets(store: MemoryStore, userId: string): Promise<strin
  * Returned paths are always the DEEPEST node that may be removed wholesale;
  * `delete` is recursive, so no descendant needs to be listed.
  */
-async function resolvePurgeTargets(
+export async function resolvePurgeTargets(
   store: MemoryStore,
   axis: MemoryPurgeAxis,
   selector: string | undefined,
-  reseed: boolean,
+  options: PurgeMemoryOptions = {},
 ): Promise<string[]> {
   if (axis === 'agent') {
     const slug = (selector ?? '').trim();
@@ -253,6 +263,8 @@ async function resolvePurgeTargets(
   // axis === 'all' — every top-level entry the seed guard lets through.
   // `contexts` is one of them (it is not in PROTECTED_SEED_ENTRIES), so a full
   // purge clears the context forest without naming it here.
+  const reseedEntries = options.reseedEntries ?? [];
+  if (!(await store.directoryExists(MEMORIES_ROOT))) return [];
   const entries = await store.list(MEMORIES_ROOT);
   const seen = new Set<string>();
   const targets: string[] = [];
@@ -260,7 +272,9 @@ async function resolvePurgeTargets(
     const name = topLevelName(entry.virtualPath);
     if (name === null || seen.has(name)) continue;
     seen.add(name);
-    if (!reseed && PROTECTED_SEED_ENTRIES.includes(name)) continue;
+    if (PROTECTED_SEED_ENTRIES.includes(name) && !reseedEntries.includes(name)) {
+      continue;
+    }
     targets.push(`${MEMORIES_ROOT}/${name}`);
   }
   return targets;
@@ -281,12 +295,7 @@ export async function previewMemoryPurge(
   selector?: string,
   options: PurgeMemoryOptions = {},
 ): Promise<number> {
-  const targets = await resolvePurgeTargets(
-    store,
-    axis,
-    selector,
-    options.reseed === true,
-  );
+  const targets = await resolvePurgeTargets(store, axis, selector, options);
   return targets.length;
 }
 
@@ -308,16 +317,49 @@ export async function purgeMemory(
   selector?: string,
   options: PurgeMemoryOptions = {},
 ): Promise<number> {
-  const targets = await resolvePurgeTargets(
-    store,
-    axis,
-    selector,
-    options.reseed === true,
-  );
+  const targets = await resolvePurgeTargets(store, axis, selector, options);
+  return deletePurgeTargets(store, targets);
+}
+
+/** Delete targets resolved by {@link resolvePurgeTargets}; returns the count.
+ *  Split out so a caller that previewed a resolved list deletes exactly it. */
+export async function deletePurgeTargets(
+  store: MemoryStore,
+  targets: readonly string[],
+): Promise<number> {
   let deleted = 0;
   for (const target of targets) {
     await store.delete(target);
     deleted += 1;
   }
   return deleted;
+}
+
+/**
+ * Top-level entry names the bundled seed directory writes under `/memories`
+ * (#1335) — the only protected entries a re-seed purge may delete, because
+ * {@link reseedMemory} restores exactly these. A missing directory yields
+ * `[]`, which turns re-seed into a no-op instead of a wipe.
+ */
+export async function bundledSeedEntries(seedDir: string): Promise<string[]> {
+  try {
+    const children = await fs.readdir(path.resolve(seedDir), { withFileTypes: true });
+    return children
+      .filter((c) => !c.name.startsWith('.') && (c.isDirectory() || c.isFile()))
+      .map((c) => c.name)
+      .sort();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+/** Write the bundled seed back after a re-seed purge. `overwrite` so the
+ *  result is the bundled version even if something raced a write in. Returns
+ *  the number of files written. */
+export async function reseedMemory(store: MemoryStore, seedDir: string): Promise<number> {
+  const result = await new MemorySeeder({ seedDir, store, mode: 'overwrite' }).run();
+  return result.files.filter(
+    (f) => f.action === 'created' || f.action === 'overwritten',
+  ).length;
 }
