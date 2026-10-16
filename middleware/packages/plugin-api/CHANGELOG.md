@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.30.0 — 2026-10-16
+## 1.31.0 — 2026-10-16
 
 Additive. The Danger-Zone memory purge deletes the conversation history, not
 only the remembered facts (#1334).
@@ -22,6 +22,21 @@ only the remembered facts (#1334).
   Optional: a provider without them is reported as unsupported by the purge.
 - **`ConversationHistoryPurgeFilter`** and
   **`CONVERSATION_HISTORY_NODE_TYPES`**.
+
+## 1.30.0 — 2026-10-16
+
+Additive. One boundary-preset library for both places an operator can forbid an
+agent something (#1104): the per-agent "Boundaries" tab and the install-wide
+defaults of a `responseGuard@1` provider. They used to carry separate
+libraries (12 and 10 ids) with only 2 ids in common.
+
+### Added
+
+- **`BOUNDARY_PRESETS`**, **`getBoundaryPreset(id)`**, **`BoundaryPreset`**,
+  **`BoundaryPresetCategory`** — the 12 curated presets (id, category, label
+  key, rule wording). The builder compiles them into an agent's
+  `## Boundaries` section; `@omadia/plugin-quality-guard` 0.2.0 resolves its
+  `default_boundary_presets` against the same entries.
 
 ## 1.29.0 — 2026-10-16
 

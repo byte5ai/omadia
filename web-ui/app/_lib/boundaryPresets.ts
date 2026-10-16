@@ -1,11 +1,11 @@
 /**
- * Frontend mirror of `middleware/src/plugins/builder/boundaryPresets.ts`.
+ * Frontend mirror of the shared preset library, `BOUNDARY_PRESETS` in
+ * `middleware/packages/plugin-api/src/boundaryPresets.ts` — the library the
+ * builder and the Quality Guard plugin both read (#1104).
  *
  * Lets the Builder UI render the structured Boundaries section without
- * a round-trip to the server. Stays in sync with the middleware module
- * manually until a shared package lands — the count/structure assertion
- * in `boundaryPresets.test.ts` flags drift on the middleware side, and
- * the equivalent (this file) flags drift on the UI side.
+ * a round-trip to the server. `__tests__/boundaryPresets.test.ts` pins ids,
+ * categories and label keys to the shared library, so drift fails a test.
  *
  * @see Issue #54
  */

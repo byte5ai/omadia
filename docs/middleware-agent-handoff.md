@@ -6636,7 +6636,7 @@ weiterhin gegen den **getippten** Selector, nie gegen den abgeleiteten `ctxKey`.
 Seit #1333–#1336 (2026-10-16): Preview und Delete teilen **einen** Plan (`planPurge` in
 `routes/memoryPurge.ts`), die Preview zählt also exakt, was gelöscht wird. Der KG-Teil umfasst
 neben `MemorableKnowledge` den **Gesprächsverlauf** (`KnowledgeGraph.count/purgeConversationHistory?`,
-plugin-api 1.30.0: Turn, Session, Run, AgentInvocation, ToolCall, Plan, PlanStep, abgeleitete
+plugin-api 1.31.0: Turn, Session, Run, AgentInvocation, ToolCall, Plan, PlanStep, abgeleitete
 Facts; Agent-Achse über den Scope-Präfix `<slug>::`, User-Achse über `user_id` = omadia-User-Id).
 Response-Felder: `scratchCount|kgCount|conversationCount`, `reseedEntries`, `warnings[{code,params}]`
 (keine fertigen englischen Sätze mehr), `previewToken`. `DELETE` verlangt den `previewToken`
@@ -7369,13 +7369,33 @@ Diese beiden Blöcke wissen nichts voneinander → sie **stapeln**. Ein in beide
 Ebenen gesetztes Verbot erscheint doppelt (ggf. in zwei Sprachen); Plugin-Default-
 Sycophancy + Agent-Slider ergeben zwei konkurrierende Anti-Schmeichel-Blöcke.
 
-Die zwei Preset-Libraries sind zudem fast disjunkt (Agent-UI 12 IDs englisch in
-`web-ui/app/_lib/boundaryPresets.ts`; Plugin 10 IDs deutsch in
-`harness-plugin-quality-guard/src/boundaryPresets.ts`; Schnittmenge nur
-`no-legal-advice`, `no-speculation`). Eine aus der Agent-UI kopierte ID (z. B.
-`no-financial-data`) wird vom Plugin still verworfen. Die Vereinheitlichung auf eine
-gemeinsame Library ist bewusst **nicht** Teil dieses Changes (braucht Migrations-/
-Alias-Entscheidung, siehe #1104).
+**Eine gemeinsame Preset-Library (seit 2026-10-16, plugin-api 1.30.0, Quality Guard
+0.2.0).** Vorher waren die zwei Libraries fast disjunkt (Agent-UI 12 IDs englisch,
+Plugin 10 IDs deutsch, Schnittmenge nur `no-legal-advice`, `no-speculation`); eine aus
+der Agent-UI kopierte ID wurde vom Plugin still verworfen. Jetzt:
+
+- `BOUNDARY_PRESETS` in `packages/plugin-api/src/boundaryPresets.ts` ist die Library of
+  Record (12 IDs, Kategorie, Label-Key, Regeltext). `src/plugins/builder/boundaryPresets.ts`
+  re-exportiert sie; `web-ui/app/_lib/boundaryPresets.ts` ist eine per Test
+  (`app/_lib/__tests__/boundaryPresets.test.ts`) gepinnte Kopie ohne Regeltext.
+- Das Plugin löst jede dieser 12 IDs mit **demselben** Regeltext auf wie der
+  Agent-Tab. Die 8 Plugin-eigenen v0.1-IDs (`no-financial-advice`, `no-medical-advice`,
+  `internal-only`, `no-pii-collection`, `no-external-quotes`, `privacy-first`,
+  `factual-only`, `no-reasoning-disclosure`) bleiben als Legacy-IDs mit altem
+  (deutschem) Wortlaut gültig — gespeicherte Configs mit diesen IDs behalten ihre Regeln. **Kein Alias** auf die Near-Synonyme
+  (`no-financial-advice` ≠ `no-financial-data`: „keine Anlageberatung" vs. „keine
+  Finanzdaten anfassen" — ein Alias würde die Regel still verschärfen).
+- Verhaltensänderungen beim Upgrade:
+  - `no-legal-advice` und `no-speculation` gab es in beiden Libraries; im Plugin gilt
+    jetzt der gemeinsame (englische) Wortlaut. Bei `no-speculation` ändert sich damit
+    die Bedeutung: alt „nicht über Zukunft/Geschäft/Personal spekulieren", neu „nicht
+    raten, wenn unsicher". Betrifft u. a. die Frontmatter von `agent-reference-maximum`
+    (dessen Block ist jetzt gemischtsprachig).
+  - Agent-UI-IDs (z. B. `no-pii`), die in 0.1 in `default_boundary_presets` standen,
+    wurden still verworfen und **greifen jetzt** — install-weit für alle Agents.
+    Operatoren sollten das Feld vor dem Upgrade prüfen.
+- Unbekannte IDs in `default_boundary_presets` loggt das Plugin bei `activate`
+  (`unknown preset id(s) … — ignored`), statt sie spurlos zu verwerfen.
 
 Hinweistexte, die das jetzt sagen: `messages/{en,de}.json`
 `operatorAgents.identity.boundaries.pluginStackNote` und
