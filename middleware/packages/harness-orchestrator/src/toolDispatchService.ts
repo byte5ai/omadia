@@ -12,7 +12,7 @@
  */
 
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
-import { isWithheldToolErrorNotice, isWriteCapableTool } from '@omadia/plugin-api';
+import { isUnknownOutcomeToolErrorNotice, isWriteCapableTool } from '@omadia/plugin-api';
 import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
 import { replayMissNotice, runHandlerAtMostOnce } from './toolReplayLedger.js';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
@@ -417,7 +417,7 @@ export class ToolDispatchService {
     }
     if (replay === undefined) {
       ledger?.record('dispatch', name, input, { kind: 'result', value: raw });
-      if (isWithheldToolErrorNotice(raw)) ledger?.noteUnknownOutcome(name, input);
+      if (isUnknownOutcomeToolErrorNotice(raw)) ledger?.noteUnknownOutcome(name, input);
     }
     try {
       return await this.afterDispatch(name, raw, authPromptMint, options, replay !== undefined);
