@@ -1634,6 +1634,18 @@ get(fieldKey: string): Promise<string>;
 export type OAuthTokenErrorCode = 'not_connected' | 'refresh_failed';
 export interface OperatorAuthAccessor {
 hasValidSession(cookieHeader: string | undefined): Promise<boolean>;
+sessionPrincipal?(cookieHeader: string | undefined): Promise<OperatorPrincipal | null>;
+recordAdminAction?(cookieHeader: string | undefined, entry: OperatorAdminAuditEntry): Promise<boolean>;
+}
+export interface OperatorPrincipal {
+readonly userId?: string;
+readonly email: string;
+}
+export interface OperatorAdminAuditEntry {
+readonly action: string;
+readonly target: string;
+readonly before?: Readonly<Record<string, unknown>>;
+readonly after?: Readonly<Record<string, unknown>>;
 }
 export declare class OAuthTokenError extends Error {
 readonly code: OAuthTokenErrorCode;

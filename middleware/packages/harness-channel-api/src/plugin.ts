@@ -5,7 +5,8 @@
  *   - `POST /chat`         — public, self-authenticating (API key). The only
  *                            path `publicPaths.ts` exempts from the session
  *                            gate for this plugin.
- *   - `/admin/keys`        — key lifecycle (create/list/revoke). NOT
+ *   - `/admin/keys`        — key lifecycle (create/list/revoke/delete,
+ *                            scope catalog, per-key usage). NOT
  *                            exempted in `publicPaths.ts`, and (as of the
  *                            issue #438 follow-up) actually enforced: gated
  *                            by `ctx.operatorAuth` inside
@@ -84,7 +85,13 @@ export async function activate(
       auditLog,
     }),
   );
-  router.use('/admin/keys', createAdminKeysRouter(apiKeys, ctx.operatorAuth));
+  router.use(
+    '/admin/keys',
+    createAdminKeysRouter(apiKeys, ctx.operatorAuth, {
+      usageLog: auditLog,
+      log: (...args) => ctx.log(...args),
+    }),
+  );
 
   core.registerRouter(ctx.agentId, API_PREFIX, router);
   ctx.log(
