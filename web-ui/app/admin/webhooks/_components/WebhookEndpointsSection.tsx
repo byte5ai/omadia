@@ -16,12 +16,21 @@ import {
   type ConductorWebhookInboundDelivery,
 } from '@/app/_lib/api';
 
-import { StatusBadge, card, inputCls, toFriendlyError } from './shared';
+import { OneTimeSecret } from '@/app/_components/OneTimeSecret';
+
+import {
+  StatusBadge,
+  WebhookError,
+  card,
+  inputCls,
+  toFriendlyError,
+  type FriendlyWebhookError,
+} from './shared';
 
 type State =
   | { kind: 'loading' }
   | { kind: 'ready'; endpoints: ConductorWebhookEndpoint[] }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; error: FriendlyWebhookError };
 
 /**
  * Issue #437 — inbound endpoints (`POST /api/hooks/:endpointId`). Minimal admin
@@ -31,9 +40,11 @@ type State =
  */
 export function WebhookEndpointsSection(): React.ReactElement {
   const t = useTranslations('adminWebhooks.endpoints');
+  const tErr = useTranslations('adminWebhooks');
   const format = useFormatter();
   const [state, setState] = useState<State>({ kind: 'loading' });
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<FriendlyWebhookError | null>(null);
+  const [createError, setCreateError] = useState<FriendlyWebhookError | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [revealedSecret, setRevealedSecret] = useState<{ id: string; secret: string } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -48,9 +59,9 @@ export function WebhookEndpointsSection(): React.ReactElement {
       const res = await listWebhookEndpoints();
       setState({ kind: 'ready', endpoints: res.endpoints });
     } catch (err) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+      setState({ kind: 'error', error: toFriendlyError(err, tErr) });
     }
-  }, []);
+  }, [tErr]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -58,8 +69,8 @@ export function WebhookEndpointsSection(): React.ReactElement {
   }, [reload]);
 
   const onCreate = useCallback(async (): Promise<void> => {
-    if (!eventId.trim()) return;
-    setActionError(null);
+    if (!eventId.trim() || revealedSecret) return;
+    setCreateError(null);
     setCreating(true);
     try {
       const { endpoint, secret } = await createWebhookEndpoint({
@@ -71,24 +82,25 @@ export function WebhookEndpointsSection(): React.ReactElement {
       setRevealedSecret({ id: endpoint.endpointId, secret });
       await reload();
     } catch (err) {
-      setActionError(toFriendlyError(err));
+      setCreateError(toFriendlyError(err, tErr));
     } finally {
       setCreating(false);
     }
-  }, [eventId, description, reload]);
+  }, [eventId, description, reload, revealedSecret, tErr]);
 
   const onRotate = useCallback(async (endpointId: string): Promise<void> => {
+    if (revealedSecret) return;
     setActionError(null);
     setPending(endpointId);
     try {
       const { secret } = await rotateWebhookEndpointSecret(endpointId);
       setRevealedSecret({ id: endpointId, secret });
     } catch (err) {
-      setActionError(toFriendlyError(err));
+      setActionError(toFriendlyError(err, tErr));
     } finally {
       setPending(null);
     }
-  }, []);
+  }, [revealedSecret, tErr]);
 
   const onToggle = useCallback(
     async (endpointId: string, enabled: boolean): Promise<void> => {
@@ -98,12 +110,12 @@ export function WebhookEndpointsSection(): React.ReactElement {
         await setWebhookEndpointEnabled(endpointId, enabled);
         await reload();
       } catch (err) {
-        setActionError(toFriendlyError(err));
+        setActionError(toFriendlyError(err, tErr));
       } finally {
         setPending(null);
       }
     },
-    [reload],
+    [reload, tErr],
   );
 
   const onDelete = useCallback(
@@ -115,12 +127,12 @@ export function WebhookEndpointsSection(): React.ReactElement {
         await deleteWebhookEndpoint(endpointId);
         await reload();
       } catch (err) {
-        setActionError(toFriendlyError(err));
+        setActionError(toFriendlyError(err, tErr));
       } finally {
         setPending(null);
       }
     },
-    [reload, t],
+    [reload, t, tErr],
   );
 
   const onToggleHistory = useCallback(
@@ -134,10 +146,10 @@ export function WebhookEndpointsSection(): React.ReactElement {
         const res = await listWebhookEndpointDeliveries(endpointId);
         setDeliveries(res.deliveries);
       } catch (err) {
-        setActionError(toFriendlyError(err));
+        setActionError(toFriendlyError(err, tErr));
       }
     },
-    [expanded],
+    [expanded, tErr],
   );
 
   // Review finding (issue #437): this must be the middleware's own base URL, not
@@ -163,15 +175,31 @@ export function WebhookEndpointsSection(): React.ReactElement {
           <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">{t('fields.description')}</span>
           <input className={inputCls} value={description} onChange={(e) => setDescription(e.target.value)} />
         </label>
-        <Button variant="primary" onClick={() => void onCreate()} disabled={!eventId.trim() || creating}>
+        <Button variant="primary" onClick={() => void onCreate()} disabled={!eventId.trim() || creating || revealedSecret !== null}>
           {creating ? '…' : t('create')}
         </Button>
       </div>
+      {/* Above the list, not inside the row it belongs to: if that row vanishes
+          (deleted, or the reload after a create failed) the secret and its
+          Dismiss button must stay reachable, or Create and Rotate stay
+          blocked with no way out (#1339). */}
+      {revealedSecret !== null && (
+        <div className="-mt-2 mb-4">
+          <p className="text-[13px] text-[color:var(--fg-muted)]">{t('blockedByReveal')}</p>
+          <OneTimeSecret
+            secret={revealedSecret.secret}
+            heading={t('secretRevealed')}
+            onDismiss={() => setRevealedSecret(null)}
+          />
+        </div>
+      )}
+      {/* This form has no URL field, so every create error shows here. */}
+      {createError !== null && <WebhookError error={createError} className="-mt-2 mb-4" />}
 
       {state.kind === 'loading' ? (
         <p className="text-sm opacity-70">{t('loading')}</p>
       ) : state.kind === 'error' ? (
-        <p className="text-sm text-[color:var(--danger)]">{state.message}</p>
+        <WebhookError error={state.error} />
       ) : state.endpoints.length === 0 ? (
         <p className="text-sm text-[color:var(--fg-muted)]">{t('empty')}</p>
       ) : (
@@ -194,7 +222,7 @@ export function WebhookEndpointsSection(): React.ReactElement {
                   <Button variant="secondary" onClick={() => void onToggle(ep.endpointId, !ep.enabled)} disabled={pending === ep.endpointId}>
                     {ep.enabled ? t('disable') : t('enable')}
                   </Button>
-                  <Button variant="secondary" onClick={() => void onRotate(ep.endpointId)} busy={pending === ep.endpointId} busyLabel={t('rotating')}>
+                  <Button variant="secondary" onClick={() => void onRotate(ep.endpointId)} disabled={revealedSecret !== null} busy={pending === ep.endpointId} busyLabel={t('rotating')}>
                     {t('rotateSecret')}
                   </Button>
                   <Button variant="danger" onClick={() => void onDelete(ep.endpointId)} busy={pending === ep.endpointId} busyLabel={t('deleting')}>
@@ -203,15 +231,6 @@ export function WebhookEndpointsSection(): React.ReactElement {
                 </div>
               </div>
 
-              {revealedSecret?.id === ep.endpointId && (
-                <div className="mt-3 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/5 p-3">
-                  <p className="mb-1 text-[12px] font-semibold text-[color:var(--fg-strong)]">{t('secretRevealed')}</p>
-                  <code className="block break-all text-[12px] text-[color:var(--fg-strong)]">{revealedSecret.secret}</code>
-                  <Button variant="ghost" onClick={() => setRevealedSecret(null)}>
-                    {t('dismiss')}
-                  </Button>
-                </div>
-              )}
 
               {expanded === ep.endpointId && (
                 <div className="mt-3 border-t border-[color:var(--border)] pt-3">
@@ -246,7 +265,7 @@ export function WebhookEndpointsSection(): React.ReactElement {
         </ul>
       )}
 
-      {actionError && <p className="mt-4 text-sm text-[color:var(--danger)]">{actionError}</p>}
+      {actionError && <WebhookError error={actionError} className="mt-4" />}
     </section>
   );
 }

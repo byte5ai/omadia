@@ -277,7 +277,9 @@ function expectArray<T>(value: unknown, path: string, key: string): T[] {
 }
 
 // -----------------------------------------------------------------------------
-// Admin settings — the .env-based config/vault overview (/api/v1/admin/settings)
+// Admin settings — the cross-plugin provider-key writes (/api/v1/admin/settings).
+// The UI edits these on the LLM access page (ProvidersPanel); the old
+// /admin/settings overview page was removed in #1397.
 // -----------------------------------------------------------------------------
 
 export type SettingValueType =
@@ -304,16 +306,6 @@ export interface ResolvedSetting {
   isSet?: boolean;
 }
 
-export interface SettingsCategory {
-  category: string;
-  settings: ResolvedSetting[];
-}
-
-export interface SettingsResponse {
-  categories: SettingsCategory[];
-  vault_available: boolean;
-}
-
 export interface SettingChange {
   key: string;
   /** New value, or null to clear/delete. */
@@ -322,11 +314,9 @@ export interface SettingChange {
 
 export interface SettingsPatchResponse {
   updated: ResolvedSetting[];
-  errors: Array<{ key: string; message: string }>;
-}
-
-export async function getSettings(): Promise<SettingsResponse> {
-  return getJson<SettingsResponse>('/v1/admin/settings');
+  /** Same shape a rejected (400) PATCH carries; read that one with
+   *  `serverFieldErrors` from `apiErrorMessage.ts`. */
+  errors: Array<{ key: string; message: string; code?: string }>;
 }
 
 export async function patchSettings(

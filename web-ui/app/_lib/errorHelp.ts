@@ -164,10 +164,14 @@ export const ERROR_HELP_CODES = [
   'runtime.vault_read_failed',
   'runtime.vault_unavailable',
   'runtime.vault_write_failed',
-  // adminSettings.ts
+  // adminSettings.ts — the three `*_key_format` codes are per-field
+  // rejections inside a `settings.invalid_values` envelope (#1330/#1331).
+  'settings.anthropic_key_format',
+  'settings.api_key_format',
   'settings.invalid_request',
   'settings.invalid_values',
   'settings.no_valid_changes',
+  'settings.openai_key_format',
   'settings.read_failed',
   'settings.vault_unavailable',
   'settings.write_failed',
