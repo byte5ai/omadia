@@ -96,7 +96,10 @@ answer:
   the answer, and in the requests of the memory jobs (below). Under `guarded`
   it replaces each tool result in a turn's requests with the
   digest. It redacts the `Error:` text a tool returns, or withholds it whole,
-  and it withholds the message of a tool that throws. It masks prompt text
+  and it withholds the message of a tool that throws. The one exception is a
+  refusal (`ToolRefusalError`, or omadia's own `ctx.http` block): the tool did
+  not carry out the call and wrote the message for the model, so the shield
+  redacts that message like a returned `Error:` text. It masks prompt text
   only while an operator has switched on prompt masking (`mask_user_prompt`,
   default off). The user's message, text inlined from uploads, the user
   messages a channel replays and a direct-line relay are

@@ -98,7 +98,7 @@ function parseIpv4(ip: string): [number, number, number, number] | null {
  * Returns null on anything malformed. Callers should pass strings already
  * confirmed as IPv6 by `node:net.isIP`.
  */
-function parseIpv6(ip: string): Uint8Array | null {
+export function parseIpv6(ip: string): Uint8Array | null {
   const zone = ip.indexOf('%');
   let s = zone >= 0 ? ip.slice(0, zone) : ip;
 
