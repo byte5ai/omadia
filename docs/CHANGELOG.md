@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the `memory` tool can no longer read the stored chat copies
+
+2026-10-16. `/memories/chat-sessions/` holds the web UI's copy of every chat,
+including answers Privacy Shield rendered server-side from a dataset: real
+rows that were deliberately never sent to the model. The tree passed through
+the memory namespacer, and `memory` is exempt from interning, so asking the
+agent to `view` it sent those rows to the model in clear. The memory tool now
+refuses that tree in every context-memory mode; session transcripts under
+`/memories/sessions/` are unaffected (#1102).
+
+### Added — the subscription CLI can remember things (`memory` tool)
+
+2026-10-16. On the Claude subscription CLI (`claude-cli`) the agent had no
+`memory` tool: asked to remember something it said so honestly since #1143,
+but nothing was stored (#1102). The CLI now gets `memory` over its loopback MCP
+server, served from the same per-turn stack the API-key path uses
+(`MemoryBinder`: agent-private tree, context-memory tiers), never from the
+memory plugin's root-store registration, and with the same memory rules in
+its prompt. As in-process, a binder that fails for the turn's origin falls back
+to the agent-private stack; a turn with no handler at all (or a binding past its
+15 s deadline) has no memory tool and says so. No migration, no new env var.
+
 ### Fixed — missing web UI pages answer HTTP 404, not 200
 
 2026-10-16. Pages that call `notFound()` showed the 404 page with status

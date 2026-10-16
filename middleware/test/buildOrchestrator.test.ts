@@ -22,7 +22,10 @@ import {
   buildOrchestratorForAgent,
   type OrchestratorDeps,
 } from '../packages/harness-orchestrator/src/buildOrchestrator.js';
-import type { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
+import {
+  NativeToolRegistry as RealNativeToolRegistry,
+  type NativeToolRegistry,
+} from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import { RunTraceOutcomeStats } from '../packages/harness-orchestrator/src/runTraceObservability.js';
 
 /** Minimal NativeToolRegistry — the Orchestrator constructor only calls
@@ -563,4 +566,44 @@ test('a claude-cli agent recalls through the context retriever and keeps its tai
   assert.equal(asked.length, 1);
   assert.equal(asked[0]?.['userMessage'], 'Wann ist der Freeze?');
   assert.match(String(asked[0]?.['sessionScope']), /sess-1391/);
+});
+
+/**
+ * #1102 — the WIRING pin for `memory` on the subscription-CLI path. The handler
+ * the factory hands the CLI agent must be this agent's scoped stack (what the
+ * in-process loop dispatches `memory` to), so a note lands in the agent's own
+ * tree — never at the raw root path the memory plugin's registry entry writes.
+ */
+test('a claude-cli agent gets the agent-scoped memory handler for its turns (#1102)', async () => {
+  const memoryStore = inMemoryMemoryStore();
+  const built = buildOrchestratorForAgent(
+    { agentId: 'cli-mem', model: 'opus-cli', maxTokens: 100, maxToolIterations: 4 },
+    { ...cliDeps(), memoryStore, nativeToolRegistry: new RealNativeToolRegistry() },
+  );
+  const bind = (
+    built.bundle.agent as unknown as {
+      deps?: {
+        bindTurnMemory?: (
+          input: unknown,
+        ) => Promise<{ handler: { handle(i: unknown): Promise<string> }; instructions: string } | undefined>;
+      };
+    }
+  ).deps?.bindTurnMemory;
+  assert.ok(bind, 'the claude-cli branch must install a memory binder');
+
+  const bound = await bind({ userMessage: 'Merk dir: pg_dump', sessionScope: 'sess-1102' });
+  assert.ok(bound, 'context memory off still binds the agent-scoped stack');
+  assert.match(bound.instructions, /_rules/);
+  const result = await bound.handler.handle({
+    command: 'create',
+    path: '/memories/backup.md',
+    file_text: 'Lieblingsbackup: pg_dump',
+  });
+  assert.doesNotMatch(result, /^Error/);
+
+  const written = await memoryStore.list('/memories');
+  const paths = written.map((f) => f.virtualPath);
+  assert.equal(paths.length, 1, `one note written, got ${JSON.stringify(paths)}`);
+  assert.notEqual(paths[0], '/memories/backup.md', 'never the raw root path');
+  assert.match(paths[0]!, /cli-mem/, 'inside this agent\'s own tree');
 });

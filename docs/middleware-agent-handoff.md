@@ -7011,10 +7011,32 @@ Shield auf diesem Weg: Recall-Text und persistierte Zeile sind unmaskiert
 weil der Capture-Filter kurze Turns aus dem Graph-Tail fallen lässt; Graph-Tail und Replay
 können sich im Prompt daher teilweise überschneiden.
 
+**`memory`-Tool (#1102).** Der Registry-Eintrag `memory` gehört dem Memory-Plugin
+(Handler auf dem rohen Root-Store, prozessweit), darf also nie über den Loopback laufen.
+Stattdessen bindet `CliChatAgent` pro Turn (`bindTurnMemory` →
+`Orchestrator.bindCliTurnMemory` → `bindTurnMemoryForTurn`, also `MemoryBinder` wie
+In-Process, plus Readiness-Gate des Memory-Plugins) einen Handler. Ist einer da,
+annonciert der Turn `CLI_MEMORY_TOOL_SPEC` (die sechs Kommandos als JSON-Schema, geteilt
+mit dem Sub-Agent-Memory-Tool aus #904) und reicht dem Loopback-Server
+`turnMemoryDispatch` statt der geteilten `ToolDispatchService`: `memory` geht an den
+gebundenen Handler, alles andere an die geteilte Dispatch; die Memory-Regeln
+(`CLI_MEMORY_RULES` plus Tier-Block) kommen in den System-Prompt. Wirft
+`MemoryBinder.forOrigin`, gibt es wie In-Process den agent-privaten Stack. Ohne Handler,
+nach der 15-s-Deadline oder bei Fehler kein Tool (ein `memory`-Call wird dann
+abgewiesen), und der Ehrlichkeitssatz nennt das Gedächtnis weiter als fehlend. Bekannte
+Lücken gegenüber In-Process: kein `memoryFileRead`-Flag (Fresh-Check), ein geworfener
+Handler-Fehler wird nicht serverseitig geloggt, und die Memory-Bindung läuft pro
+CLI-Turn dreimal (Tool, Recall, Record).
+`LoopbackMcpServerDeps.dispatch` ist dafür auf `Pick<ToolDispatchService, 'dispatch'>`
+verengt. Voraussetzung der Entscheidung (Marcel, 2026-10-16): Memory darf keine
+Daten tragen, die Privacy Shield dem Modell vorenthalten hat. Darum verweigern die
+Memory-Namespacer jetzt `/memories/chat-sessions/` (`MemoryPathDenied`) — dort liegen
+die vom Shield gerenderten Tabellenzeilen; vorher per `view` im Klartext erreichbar,
+auch auf dem API-Weg.
+
 Weiter offen: der Antwort-Prüfer (`VerifierService` hängt am In-Process-`Orchestrator`
 mit Re-Entry und Privacy-Hand-over; der CLI-Zweig kehrt vorher zurück) — die
 Abo-Seite sagt das dem Operator jetzt (`adminSubscriptionClis.explainer.featureNote`).
-Das `memory`-Tool auf dem Abo-Weg ist #1102.
 
 ### Kosten-Ledger nimmt Abo-Turns (OM-103)
 
