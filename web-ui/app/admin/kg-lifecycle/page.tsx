@@ -430,6 +430,7 @@ function ActionCard({
   busy: boolean;
   onClick: () => void;
 }): JSX.Element {
+  const t = useTranslations('adminKgLifecycle.actions');
   return (
     <div className="flex flex-col rounded-lg border border-[color:var(--border)] bg-[color:var(--bg)]/40 p-4">
       <h3 className="mb-2 font-medium text-[color:var(--fg-strong)]">
@@ -445,7 +446,7 @@ function ActionCard({
         className="self-start rounded-md border border-[color:var(--highlight)] bg-[color:var(--highlight)]/10 px-3 py-2 text-sm text-[color:var(--highlight)] transition-colors hover:bg-[color:var(--highlight)]/20 disabled:opacity-50"
         onClick={onClick}
       >
-        {busy ? 'Running…' : 'Run now'}
+        {busy ? t('running') : t('runNow')}
       </button>
     </div>
   );

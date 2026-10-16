@@ -66,6 +66,28 @@ the selector hints with `<code>`, and offers no delete for an empty preview.
 Breaking for direct API callers: `DELETE` needs the `previewToken`, and
 `warning` became `warnings`.
 
+### Fixed — admin settings, webhook and help-page copy (C11)
+
+2026-10-16. `/admin/settings` was an outdated, half-German duplicate of the
+provider-key form on Admin → LLM access. It now redirects to
+`/admin/providers`, and the dashboard's "Middleware" card opens `/system`
+(#1397). The settings catalog lists each keyed provider once: Mistral is no
+longer duplicated, and providers that sign in without a key (the
+subscription CLI, ChatGPT OAuth) get no key field (#1331).
+`PATCH /api/v1/admin/settings` now checks every provider key (Mistral and
+plugin providers too: no whitespace, and at least 20 characters for Mistral
+or 6 for a plugin provider), and each rejected field carries a `code`
+(`settings.{anthropic,openai,api}_key_format`). The LLM access page shows that
+reason instead of "PATCH settings failed: 400" (#1330). The webhook admin page
+shows translated errors next to the URL field instead of raw JSON (#1338). Its
+one-time secret gets a copy button, and you can't create or rotate another
+secret while one is still on screen (#1339). The help FAQ's subscription-CLI
+link opens the Subscriptions tab and says "Hub" (#1395). The KG lifecycle
+"Run now" button is translated, and the intro no longer starts with "Palaia
+Phase 4" (#1337). New shared helper `web-ui/app/_lib/apiErrorMessage.ts`
+(`serverErrorMessage`, `serverFieldErrors`) reads the server's message out of
+a failed API call.
+
 ### Fixed — usage dashboard: bars, local days, missing calls, what a row costs
 
 2026-10-16 (#1388, #1390, #1392, #1393, #1396). Admin → Usage & Cost was
