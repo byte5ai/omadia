@@ -4701,18 +4701,32 @@
   },
   "adminApiKeys": {
     "title": "Öffentliche API-Schlüssel",
-    "intro": "Server-zu-Server-Bearer-Zugangsdaten für die öffentliche Chat-API. Das Klartext-Token eines Schlüssels wird genau einmal angezeigt, direkt nach dem Erstellen — sofort kopieren, es kann danach nicht erneut abgerufen werden, auch nicht von einem Operator.",
+    "intro": "Server-zu-Server-Bearer-Zugangsdaten für die öffentliche Chat-API und den öffentlichen MCP-Endpunkt. Das Klartext-Token eines Schlüssels wird genau einmal angezeigt, direkt nach dem Erstellen — sofort kopieren, es kann danach nicht erneut abgerufen werden, auch nicht von einem Operator.",
     "create": {
       "heading": "Neuen Schlüssel erstellen",
       "fields": {
         "label": "Bezeichnung (optional)",
-        "rateLimit": "Rate-Limit (Anfragen/Minute, optional)"
+        "rateLimit": "Rate-Limit (Anfragen/Minute, optional)",
+        "scopes": "Scopes",
+        "expiry": "Läuft ab am (optional)",
+        "mcpWriteTools": "Schreib-Tools (optional)"
       },
       "rateLimitInvalid": "Rate-Limit muss zwischen {min} und {max} Anfragen/Minute liegen.",
       "scopesRequired": "Mindestens einen Scope auswählen — ein Schlüssel ohne Scope kann nichts tun.",
       "blockedByReveal": "Das Token oben zuerst ausblenden, bevor ein weiterer Schlüssel erstellt wird.",
       "submit": "Schlüssel erstellen",
-      "creating": "Wird erstellt"
+      "creating": "Wird erstellt",
+      "scopeHelp": {
+        "chatWrite": "Öffentliche Chat-API",
+        "mcpList": "Öffentliche MCP-Tools auflisten",
+        "mcpInvoke": "Lesende MCP-Tools aufrufen",
+        "wildcard": "Alles außer MCP-Schreib-Tools",
+        "plugin": "Plugin-Scope"
+      },
+      "mcpWriteToolsHint": "Tool-Namen, durch Kommas getrennt. Jeder Name gewährt den Scope {prefix}name für genau dieses Tool.",
+      "mcpWriteToolsInvalid": "Tool-Namen dürfen nur Kleinbuchstaben, Ziffern, „_“ und „-“ enthalten und müssen mit einem Buchstaben beginnen.",
+      "expiryInvalid": "Das Ablaufdatum muss in der Zukunft liegen.",
+      "scopesUnavailable": "Die Scope-Liste konnte nicht geladen werden, daher wird nur chat:write angeboten."
     },
     "reveal": {
       "heading": "Neuer API-Schlüssel erstellt",
@@ -4735,7 +4749,8 @@
       "rateLimitValue": "{value}/Min",
       "status": {
         "active": "Aktiv",
-        "revoked": "Widerrufen"
+        "revoked": "Widerrufen",
+        "expired": "Abgelaufen"
       },
       "revoke": "Widerrufen",
       "revoking": "Wird widerrufen",
@@ -4743,6 +4758,35 @@
         "message": "Diesen Schlüssel widerrufen? Alles, was ihn verwendet, hört sofort auf zu funktionieren — das kann nicht rückgängig gemacht werden.",
         "confirm": "Widerruf bestätigen",
         "cancel": "Abbrechen"
+      },
+      "expiresAt": "Läuft ab {date}",
+      "expiredAt": "Abgelaufen {date}",
+      "createdBy": "Erstellt von {email}",
+      "createdByUnknown": "Ersteller unbekannt",
+      "lastUsed": "Zuletzt genutzt {date}",
+      "neverUsed": "Noch nicht genutzt",
+      "showInactive": "Widerrufene und abgelaufene Schlüssel anzeigen ({count})",
+      "hideInactive": "Widerrufene und abgelaufene Schlüssel ausblenden",
+      "delete": "Löschen",
+      "deleting": "Wird gelöscht",
+      "confirmDelete": {
+        "message": "Diesen Schlüssel endgültig löschen? Er verschwindet aus dieser Liste, und seine Anfrage-Historie wird hier nicht mehr angezeigt. Die Einträge zu Erstellen, Widerrufen und Löschen bleiben im Admin-Audit-Log.",
+        "confirm": "Löschen bestätigen",
+        "cancel": "Abbrechen"
+      },
+      "usage": {
+        "show": "Letzte Aktivität",
+        "hide": "Aktivität ausblenden",
+        "loading": "Aktivität wird geladen …",
+        "empty": "Keine Anfragen dieses Schlüssels im aktuellen Protokoll.",
+        "failed": "Die Aktivität konnte nicht geladen werden.",
+        "status": {
+          "ok": "OK",
+          "rate_limited": "Rate-Limit erreicht",
+          "forbidden": "Scope fehlt",
+          "invalid_request": "Ungültige Anfrage",
+          "error": "Fehler"
+        }
       }
     },
     "errors": {
@@ -4750,7 +4794,10 @@
       "authUnavailable": "Operator-Authentifizierung ist gerade nicht verfügbar. Bitte in Kürze erneut versuchen.",
       "sessionExpired": "Die Sitzung ist abgelaufen. Weiterleitung zur Anmeldung …",
       "invalidRequest": "Die Anfrage war ungültig — bitte die Werte oben prüfen und erneut versuchen.",
-      "generic": "Etwas ist schiefgelaufen (Fehler {status})."
+      "generic": "Etwas ist schiefgelaufen (Fehler {status}).",
+      "invalidScope": "Dieser Scope ist unbekannt — bitte einen aus der Liste wählen.",
+      "invalidExpiry": "Das Ablaufdatum muss in der Zukunft und höchstens fünf Jahre voraus liegen.",
+      "keyActive": "Den Schlüssel vor dem Löschen widerrufen."
     }
   },
   "adminWebhooks": {
