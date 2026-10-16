@@ -116,6 +116,25 @@ describe('bridgeTool — a dynamic agent tool that fails', () => {
     );
   });
 
+  it('passes a ToolRefusalError message to the model, without the unknown-outcome clause (#1343)', async () => {
+    const message =
+      "plugin '@omadia/agent-seo-analyst' is not permitted to reach '10.0.0.5' (audit mode: public-web). " +
+      'The requested URL was NOT analysed — ask the operator to widen the audit mode or add the host to the allow-list.';
+    const bridged = bridgeTool(
+      toolWith(async () => {
+        // Built by hand, as a plugin that must run on an older host does.
+        throw Object.assign(new Error(message), { name: 'ToolRefusalError' });
+      }),
+    );
+    const out = await textOf(bridged.handle({ query: 'x' }));
+    assert.equal(out, `Error: tool \`crm_search\` refused the call: ${message}`);
+    assert.equal(out.includes('outcome is unknown'), false);
+    assert.ok(
+      errorCalls.some((args) => String(args[0]).includes('tool refused the call (ref=err_')),
+      'the refusal is still logged under a ref',
+    );
+  });
+
   it("answers the model's own invalid input with a hint it can act on", async () => {
     const bridged = bridgeTool(toolWith(async () => 'unused'));
     const out = await textOf(bridged.handle({ query: '' }));

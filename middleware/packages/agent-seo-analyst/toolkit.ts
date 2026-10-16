@@ -3,8 +3,9 @@ import { z } from 'zod';
 import { analyzePage } from './analyzers/onPage.js';
 import { analyzeTechnical } from './analyzers/technical.js';
 import { crawlAndAudit } from './analyzers/crawler.js';
-import type { createFetcher} from './fetcher.js';
+import type { createFetcher } from './fetcher.js';
 import { extractDocument } from './fetcher.js';
+import { assertFetched } from './refusal.js';
 import type {
   PageReport,
   SiteAuditReport,
@@ -92,16 +93,7 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
         const { url } = analyzePageInput.parse(raw);
         opts.log('tool:analyze_page', { url });
         const res = await opts.fetcher.get(url, true);
-        if (res.blocked !== undefined) {
-          throw new Error(
-            `${res.blocked} (audit mode: ${opts.auditMode}). The requested ` +
-              'URL was NOT analysed — ask the operator to widen the audit ' +
-              'mode or add the host to the allow-list.',
-          );
-        }
-        if (res.status === 0) {
-          throw new Error(`fetch failed for ${url}`);
-        }
+        assertFetched(res, url, opts.auditMode);
         const doc = extractDocument(res.body);
         return analyzePage(res, doc);
       },
@@ -112,13 +104,14 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
         'Prüft robots.txt, sitemap.xml, HTTPS-Config und Security-Header einer ' +
         'Domain. Nutze das Tool bei Fragen zu Crawlbarkeit, Indexierung oder ' +
         'Transport-Sicherheit. Ohne `base_url` läuft die Prüfung gegen die für ' +
-        'diesen Agenten konfigurierte Domain.',
+        'diesen Agenten konfigurierte Domain. Ist die Root-URL gesperrt oder ' +
+        'nicht erreichbar, schlägt der Call fehl und es wird NICHTS geprüft.',
       input: checkTechnicalInput as z.ZodType<unknown>,
       async run(raw): Promise<TechnicalReport> {
         const { base_url } = checkTechnicalInput.parse(raw);
         const target = base_url ?? opts.targetBaseUrl;
         opts.log('tool:check_technical_seo', { target });
-        return analyzeTechnical(opts.fetcher, target, opts.userAgent);
+        return analyzeTechnical(opts.fetcher, target, opts.userAgent, opts.auditMode);
       },
     },
     {
@@ -130,7 +123,8 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
         'liegen, `max_depth` zwischen 1 und 5 — höhere Werte werden nicht ' +
         'gekappt, sondern abgelehnt. Ohne `start_url` startet der Crawl auf der ' +
         'konfigurierten Domain, ohne die beiden Grenzen auf den für diesen ' +
-        'Agenten konfigurierten Werten.',
+        'Agenten konfigurierten Werten. Ist die Einstiegs-URL gesperrt oder ' +
+        'nicht erreichbar, schlägt der Call fehl und es wird NICHTS gecrawlt.',
       input: auditSiteInput as z.ZodType<unknown>,
       async run(raw): Promise<SiteAuditReport> {
         const { start_url, max_pages, max_depth } = auditSiteInput.parse(raw);
@@ -143,6 +137,7 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
           startUrl: target,
           maxPages,
           maxDepth,
+          auditMode: opts.auditMode,
           log: opts.log,
         });
       },

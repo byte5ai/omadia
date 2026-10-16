@@ -1,4 +1,5 @@
 import { extractDocument, type createFetcher } from '../fetcher.js';
+import { assertFetched } from '../refusal.js';
 import type { SeoIssue, SiteAuditReport } from '../types.js';
 import { analyzePage } from './onPage.js';
 import { scoreSiteAudit } from './scoring.js';
@@ -10,6 +11,8 @@ export interface CrawlOptions {
   startUrl: string;
   maxPages: number;
   maxDepth: number;
+  /** Operator-selected audit mode, named in the refusal for a blocked start URL. */
+  auditMode: string;
   log: (...args: unknown[]) => void;
 }
 
@@ -31,6 +34,9 @@ export async function crawlAndAudit(opts: CrawlOptions): Promise<SiteAuditReport
     opts.log('crawl', { url, depth, pages: pages.length });
 
     const fetched = await opts.fetcher.get(url, true);
+    // #1344 — a blocked or unreachable START url means nothing was crawled.
+    // Later pages keep the per-page handling below.
+    if (url === start) assertFetched(fetched, url, opts.auditMode);
     if (fetched.status !== 200 || !fetched.contentType?.includes('text/html')) {
       pages.push({ url, status: fetched.status, score: 0, issue_count: 0 });
       continue;
