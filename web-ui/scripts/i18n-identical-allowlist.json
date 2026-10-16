@@ -74,6 +74,8 @@
     "adminUsage.kpi.tokens": "loanword",
     "adminUsers.edit.providerAndId": "diagnostic",
     "adminDangerZone.selectorPlaceholder.agent": "placeholder",
+    "adminDangerZone.selectorPlaceholder.channel": "placeholder",
+    "adminDangerZone.selectorPlaceholder.team": "placeholder",
     "adminMemoryBackend.backends.postgres": "brand",
     "adminEmbeddingProvider.title": "loanword",
     "graph.filters.traceHint": "glossary",
@@ -94,6 +96,8 @@
     "operatorAgents.peers.chatSelectLabel": "loanword",
     "operatorAgents.detailTabs.teams": "brand",
     "operatorAgents.detailTabs.plugins": "loanword",
-    "operatorAgents.detailTabs.memory": "glossary"
+    "operatorAgents.detailTabs.memory": "glossary",
+    "system.vaultStatus.keySourceEnv": "code",
+    "system.platformHealth.eyebrow": "code"
   }
 }

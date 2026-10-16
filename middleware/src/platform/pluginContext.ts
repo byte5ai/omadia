@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import { scopeOperatorAuthToPlugin } from '../auth/operatorAuthAccessor.js';
+
 import {
   KgEntityNamespaceError,
   KgServiceUnavailableError,
@@ -88,6 +90,7 @@ import {
   writeStoredTokens,
 } from '../plugins/oauth/tokenStore.js';
 import { createLlmProviderFromNeutral } from './anthropicLlmProvider.js';
+import { pluginLlmUsageSource, recordPluginLlmUsage } from './pluginLlmUsage.js';
 import { builtinClassDefault } from './builtinLlmProviders.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
@@ -625,6 +628,11 @@ export function createPluginContext(
         ...(options?.writeCapabilities !== undefined
           ? { writeCapabilities: options.writeCapabilities }
           : {}),
+        // #1346 — per-turn availability; the orchestrator reads it when it
+        // builds the tool list and prompt docs (`isOfferedThisTurn`).
+        ...(options?.isAvailable !== undefined
+          ? { isAvailable: options.isAvailable }
+          : {}),
       });
     },
     registerHandler(name, handler, options) {
@@ -649,6 +657,11 @@ export function createPluginContext(
         // dispatchable by name, so it needs the same protection.
         ...(options?.writeCapabilities !== undefined
           ? { writeCapabilities: options.writeCapabilities }
+          : {}),
+        // #1346 — per-turn availability; the orchestrator reads it when it
+        // builds the tool list and prompt docs (`isOfferedThisTurn`).
+        ...(options?.isAvailable !== undefined
+          ? { isAvailable: options.isAvailable }
           : {}),
       });
     },
@@ -1066,7 +1079,10 @@ export function createPluginContext(
     ...(flows ? { flows } : {}),
     ...(oauthTokens ? { oauthTokens } : {}),
     ...(events ? { events } : {}),
-    ...(opts.operatorAuth ? { operatorAuth: opts.operatorAuth } : {}),
+    // #1329 — scoped per plugin so every audit row it writes names the plugin.
+    ...(opts.operatorAuth
+      ? { operatorAuth: scopeOperatorAuthToPlugin(opts.operatorAuth, agentId) }
+      : {}),
     status,
     log,
   };
@@ -1786,11 +1802,13 @@ function createLlmAccessor(
       });
 
       callsUsed += 1;
-      return provider.complete({
+      const result = await provider.complete({
         ...req,
         model,
         maxTokens: effectiveMaxTokens,
       });
+      recordPluginLlmUsage(pluginLlmUsageSource(callerAgentId), activeProvider, result);
+      return result;
     },
   };
 }

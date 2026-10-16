@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 
-import { scramOnlyPoolOptions } from '@omadia/knowledge-graph-neon';
+import { isTransientDbError, scramOnlyPoolOptions } from '@omadia/knowledge-graph-neon';
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
 /**
@@ -73,6 +73,33 @@ import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
  * takes the migrator's own "applied by another replica while waiting" path and
  * returns clean. Every other error still propagates on its first occurrence:
  * core without its schema must fail loudly, which is the entire point of #796.
+ *
+ * POSTGRES NOT REACHABLE YET (#1386)
+ * ----------------------------------
+ * This is the first thing in boot that talks to Postgres, so it is the call
+ * that meets a database which is not up yet: `docker compose restart`, a
+ * restart-policy restart, a stack outside Compose, or the DNS-alias race on a
+ * fresh `up`. It used to rethrow `ENOTFOUND`/`ECONNREFUSED` at once, and the
+ * process crash-looped until Postgres answered — on a platform with restart
+ * backoff (Kubernetes `CrashLoopBackOff`) that kept the middleware down for
+ * minutes after the database was back. The knowledge-graph plugin's
+ * `waitForPostgres` already rode out this race, but only when it activates,
+ * long after this point.
+ *
+ * So a transient connection error (the same predicate `waitForPostgres` uses,
+ * `isTransientDbError`) is now retried here with capped exponential backoff,
+ * for up to {@link DATABASE_WAIT_TOTAL_MS}, with one "waiting for Postgres"
+ * log line per attempt. Past that budget the error propagates and the process
+ * exits, exactly as before. Auth failures and a missing database are not
+ * transient and still fail on the first attempt.
+ *
+ * The HTTP listener is not up during this wait (it binds at the end of
+ * `main()`), so health checks see "not answering yet" rather than "degraded".
+ * Each connect attempt is capped at {@link BOOT_CONNECT_TIMEOUT_MS}, so the
+ * budget holds against a host that never answers.
+ * The budget is sized to stay inside the shipped Compose healthcheck's
+ * `start_period` (90 s); Fly's `/health` check does not restart a machine,
+ * it only keeps traffic and a deploy waiting.
  */
 
 /** Outcome of a boot-time core-migration run. Returned rather than logged-only
@@ -104,6 +131,10 @@ export interface CoreMigrationsOptions {
   readonly runMigrations?:
     | ((pool: Pool, log: (msg: string) => void) => Promise<void>)
     | undefined;
+  /** How long to wait for an unreachable Postgres (#1386). Tests shrink it. */
+  readonly databaseWaitMs?: number | undefined;
+  /** Delay seam, so tests can drive the backoff without real waiting. */
+  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
 }
 
 /**
@@ -133,6 +164,26 @@ function isLockContentionError(err: unknown): boolean {
   );
 }
 
+/**
+ * How long boot waits for a Postgres that is not reachable yet (#1386).
+ * Below the shipped Compose healthcheck's 90 s `start_period`, so a database
+ * that comes up inside the window never costs the container its health.
+ */
+const DATABASE_WAIT_TOTAL_MS = 60_000;
+/** First pause after a failed connection; doubles up to the cap below. */
+const DATABASE_WAIT_INITIAL_DELAY_MS = 500;
+const DATABASE_WAIT_MAX_DELAY_MS = 5_000;
+/** Per-attempt connect ceiling for the boot pool, so the wait budget holds. */
+const BOOT_CONNECT_TIMEOUT_MS = 5_000;
+
+function describeDbError(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  const message = err instanceof Error ? err.message : String(err);
+  return typeof code === 'string' && !message.includes(code)
+    ? `${code}: ${message}`
+    : message;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((done) => setTimeout(done, ms));
 }
@@ -152,25 +203,56 @@ export async function runCoreMigrations(
       // is closed before boot continues, so it never competes with the
       // long-lived pools plugins open later. SCRAM-only when the process
       // requires it, like the graph pool (`createNeonPool`).
-      new Pool({ connectionString, max: 2, idleTimeoutMillis: 1_000, ...scramOnlyPoolOptions() }));
+      //
+      // #1386 — a bounded connect, so one attempt against a blackholed host
+      // cannot sit in the OS TCP timeout (75 s+) and blow the wait budget.
+      // The SCRAM options, when present, set their own value and win.
+      new Pool({
+        connectionString,
+        max: 2,
+        idleTimeoutMillis: 1_000,
+        connectionTimeoutMillis: BOOT_CONNECT_TIMEOUT_MS,
+        ...scramOnlyPoolOptions(),
+      }));
 
   const runMigrations = opts.runMigrations ?? runMultiOrchestratorMigrations;
 
+  const pause = opts.sleep ?? sleep;
   const pool = createPool(databaseUrl);
-  const deadline = Date.now() + LOCK_CONTENTION_TOTAL_WAIT_MS;
+  // The two budgets are independent on purpose: a slow Postgres start must not
+  // eat the time a lock race is owed. So the lock budget starts at the FIRST
+  // contention, not at function entry — after a database restart every replica
+  // waits for Postgres and then races for the lock at the same moment.
+  let lockDeadline: number | undefined;
+  const databaseDeadline = Date.now() + (opts.databaseWaitMs ?? DATABASE_WAIT_TOTAL_MS);
+  let databaseDelay = DATABASE_WAIT_INITIAL_DELAY_MS;
   try {
     for (;;) {
       try {
         await runMigrations(pool, log);
         return 'applied';
       } catch (err) {
-        const remaining = deadline - Date.now();
-        if (!isLockContentionError(err) || remaining <= 0) throw err;
+        if (isTransientDbError(err)) {
+          const remaining = databaseDeadline - Date.now();
+          if (remaining <= 0) throw err;
+          const wait = Math.min(databaseDelay, remaining);
+          log(
+            `[middleware] waiting for Postgres (${describeDbError(err)}) — retrying in ` +
+              `${String(wait)}ms, giving up in ${String(Math.ceil(remaining / 1_000))}s`,
+          );
+          await pause(wait);
+          databaseDelay = Math.min(databaseDelay * 2, DATABASE_WAIT_MAX_DELAY_MS);
+          continue;
+        }
+        if (!isLockContentionError(err)) throw err;
+        lockDeadline ??= Date.now() + LOCK_CONTENTION_TOTAL_WAIT_MS;
+        const remaining = lockDeadline - Date.now();
+        if (remaining <= 0) throw err;
         log(
           '[middleware] core migrations: another replica holds the migration lock — ' +
             `retrying for up to ${String(Math.ceil(remaining / 1_000))}s`,
         );
-        await sleep(Math.min(LOCK_CONTENTION_RETRY_DELAY_MS, remaining));
+        await pause(Math.min(LOCK_CONTENTION_RETRY_DELAY_MS, remaining));
       }
     }
   } finally {

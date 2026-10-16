@@ -4,7 +4,7 @@ import type {
   LlmResponse,
   ProviderHealth,
 } from '@omadia/llm-provider';
-import { recordUsage } from '@omadia/usage-telemetry';
+import { providerRecordsOwnUsage, recordUsage } from '@omadia/usage-telemetry';
 import { fromLlmResponse, toLlmRequest } from './llmProviderSeam.js';
 import type { AskObserver } from './tools/domainQueryTool.js';
 import { ensureWellFormedParams } from './privacyHandle.js';
@@ -317,19 +317,10 @@ export async function* streamMessageEvents(args: {
             'onIterationUsage',
           );
 
-          recordUsage({
-            source: streamLabel,
-            model: ev.response.model,
-            // #1098: the provider this attempt actually ran on — after a
-            // fallback hop `provider` is the fallback, so the ledger shows
-            // which provider generated the cost. turnId/sessionId are filled
-            // from the ambient turn context by the recorder.
-            provider: provider.id,
-            inputTokens: ev.response.usage.inputTokens,
-            outputTokens: ev.response.usage.outputTokens,
-            cacheReadTokens: ev.response.usage.cacheReadTokens ?? 0,
-            cacheCreationTokens: ev.response.usage.cacheWriteTokens ?? 0,
-          });
+          // #1098: the provider this attempt actually ran on — after a
+          // fallback hop `provider` is the fallback, so the ledger shows
+          // which provider generated the cost.
+          recordResponseUsage(ev.response, provider.id, streamLabel);
 
           yield { type: 'final', message };
           return;
@@ -379,6 +370,26 @@ export async function* streamMessageEvents(args: {
 }
 
 /**
+ * One `token_usage` row for one model response. turnId/sessionId are filled
+ * from the ambient turn context by the recorder. Shared by the streamed and the
+ * buffered path so both write the same fields (#1390: the buffered path used to
+ * write nothing). A provider that writes its own rows (`claude-cli`) is skipped
+ * so a subscription call is not counted twice.
+ */
+function recordResponseUsage(response: LlmResponse, providerId: string, source: string): void {
+  if (providerRecordsOwnUsage(providerId)) return;
+  recordUsage({
+    source,
+    model: response.model,
+    provider: providerId,
+    inputTokens: response.usage.inputTokens,
+    outputTokens: response.usage.outputTokens,
+    cacheReadTokens: response.usage.cacheReadTokens ?? 0,
+    cacheCreationTokens: response.usage.cacheWriteTokens ?? 0,
+  });
+}
+
+/**
  * #1033 W3 — the buffered counterpart of the stream fallback: one
  * `complete()` on the primary (the SDK's own retries inside), and on an
  * availability failure one `complete()` on the fallback. Nothing has reached
@@ -397,13 +408,15 @@ export async function completeWithFallback(args: {
       `[${streamLabel}] provider '${args.provider.id}' is in cooldown — completing on fallback '${fallback.provider.id}'`,
     );
     const response = await fallback.provider.complete(fallback.request);
+    recordResponseUsage(response, fallback.provider.id, streamLabel);
     return {
       response,
       fallbackUsed: { providerId: fallback.provider.id, model: fallback.request.model, reason: 'cooldown' },
     };
   }
+  let response: LlmResponse;
   try {
-    return { response: await args.provider.complete(args.request) };
+    response = await args.provider.complete(args.request);
   } catch (err) {
     // The SDK has already spent its retry budget by the time `complete`
     // throws, so a rate-limit/overload here counts as "retries exhausted".
@@ -414,12 +427,15 @@ export async function completeWithFallback(args: {
       `[${streamLabel}] provider '${args.provider.id}' failed (${reason}) — completing on fallback '${fallback.provider.id}':`,
       err instanceof Error ? err.message : err,
     );
-    const response = await fallback.provider.complete(fallback.request);
+    const fallbackResponse = await fallback.provider.complete(fallback.request);
+    recordResponseUsage(fallbackResponse, fallback.provider.id, streamLabel);
     return {
-      response,
+      response: fallbackResponse,
       fallbackUsed: { providerId: fallback.provider.id, model: fallback.request.model, reason },
     };
   }
+  recordResponseUsage(response, args.provider.id, streamLabel);
+  return { response };
 }
 
 /**

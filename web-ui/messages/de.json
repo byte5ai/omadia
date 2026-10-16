@@ -13,7 +13,9 @@
       "middleware": {
         "title": "Middleware",
         "okDetail": "API erreichbar",
-        "downDetail": "Keine Antwort von der Middleware-API."
+        "downDetail": "Keine Antwort von der Middleware-API.",
+        "databaseStatus": "Datenbank nicht erreichbar",
+        "databaseDetail": "API antwortet, Datenbank nicht erreichbar."
       },
       "llm": {
         "title": "LLM-Zugang",
@@ -32,7 +34,6 @@
         "title": "Gedächtnis / Embeddings",
         "active": "Aktiv: {model}",
         "none": "Kein Embedding-Anbieter konfiguriert. Prozessgedächtnis, semantische Suche und Dublettenerkennung sind aus.",
-        "unknown": "Status nicht abrufbar",
         "memory": {
           "allActive": "Gedächtnis-Funktionen aktiv",
           "allActiveWithProvider": "Gedächtnis-Funktionen aktiv (LLM: {provider})",
@@ -75,7 +76,9 @@
         "cliTimeout": "Der letzte Turn hat sein Zeitlimit überschritten. Erhöhe das Zeitlimit pro Turn im Abo-Bereich.",
         "failure": "Der letzte Turn ist fehlgeschlagen: {message}",
         "unknownVersion": "unbekannte Version"
-      }
+      },
+      "unknownStatus": "Unbekannt",
+      "unavailable": "Status nicht abrufbar"
     },
     "quick": {
       "heading": "Schnellzugriff",
@@ -156,7 +159,9 @@
         "accessWithoutRuntime": "Ein LLM-Zugang ist hinterlegt, aber die Agent-Runtime läuft noch nicht. Meist fehlt nur die Zuordnung des Orchestrators zu diesem Zugang.",
         "assignOrchestrator": "Orchestrator zuordnen",
         "unreachable": "Die Agent-Runtime hat nicht geantwortet, dieser Schritt lässt sich deshalb nicht prüfen. Möglicherweise ist die Middleware nicht verfügbar, startet noch oder liefert einen Fehler.",
-        "openSystemStatus": "Update & Status öffnen"
+        "openSystemStatus": "Update & Status öffnen",
+        "databaseUnavailable": "Die Middleware antwortet, ihre Datenbank ist aber nicht erreichbar. Dieser Schritt lässt sich deshalb nicht prüfen.",
+        "openPlatformHealth": "Plattform-Zustand öffnen"
       },
       "embeddingsNote": "Gedächtnis eingeschränkt: Es ist kein Embedding-Anbieter aktiv. Prozessgedächtnis, semantische Suche und Dublettenerkennung bleiben aus, bis einer läuft. Es gibt auch einen schlüssellosen Weg — ohne API-Schlüssel und ohne eigenen Server.",
       "embeddingsCta": "Embedding-Anbieter einrichten",
@@ -294,6 +299,10 @@
           "title": "Öffentliche API-Schlüssel",
           "description": "Bearer-Zugangsdaten für die öffentliche Chat-API erstellen, auflisten und widerrufen."
         },
+        "audit": {
+          "title": "Audit-Protokoll",
+          "description": "Nachvollziehen, wer Benutzer, Anmeldeeinstellungen, Plugin-Freigaben, API-Schlüssel und mehr geändert hat. Nur lesend, neueste zuerst."
+        },
         "update": {
           "title": "Update",
           "description": "Zeigt die laufende Version, prüft auf ein neueres Release und hebt den Stack – mit installiertem Updater-Overlay – direkt von hier an."
@@ -301,6 +310,10 @@
         "dangerZone": {
           "title": "Memory-Purge",
           "description": "Memory unwiderruflich entlang einer Achse löschen (Alles, Agent, User, Team, Channel); Vorschau-gated mit Confirm-Phrase, kein Undo."
+        },
+        "platformHealth": {
+          "title": "Plattform-Zustand",
+          "description": "Datenbank, Master-Keys von Vault und Keychain, Off-Site-Backup. Zeigt, ob diese Instanz mit Entwicklungs-Keys läuft."
         }
       }
     },
@@ -999,7 +1012,8 @@
     "loginLink": "Login",
     "authError": "Auth-Fehler",
     "signedInAs": "Angemeldet als",
-    "signOut": "Abmelden",
+    "signOut": "Überall abmelden",
+    "signOutHint": "Meldet dich auf all deinen Geräten ab, nicht nur auf diesem.",
     "signOutFailed": "Die Abmeldung hat nicht geklappt. Du bist noch angemeldet.",
     "signOutRetry": "Erneut abmelden"
   },
@@ -1380,6 +1394,18 @@
       "write_failed": {
         "what": "Die Einstellungen konnten nicht geschrieben werden.",
         "next": "Speichere erneut. Bleibt es dabei, kann die Middleware ihren Config-Store nicht schreiben."
+      },
+      "openai_key_format": {
+        "what": "Das ist kein OpenAI-API-Key. OpenAI-Keys beginnen mit „sk-“; ein Key mit „sk-ant-“ gehört zu Anthropic.",
+        "next": "Kopiere den Key erneut aus dem OpenAI-Dashboard und füge ihn vollständig ein."
+      },
+      "api_key_format": {
+        "next": "Kopiere den Key erneut aus der Konsole des Anbieters und füge ihn vollständig ein, ohne Leerzeichen oder Zeilenumbrüche.",
+        "what": "Das sieht nicht nach einem API-Key aus: Er enthält Leerzeichen oder ist zu kurz."
+      },
+      "anthropic_key_format": {
+        "next": "Kopiere den Key erneut aus der Anthropic-Konsole und füge ihn vollständig ein.",
+        "what": "Das ist kein Anthropic-API-Key. Anthropic-Keys beginnen mit „sk-ant-“."
       }
     },
     "store": {
@@ -1435,7 +1461,9 @@
     "expiredKicker": "Sitzung",
     "expiredTitle": "Sitzung abgelaufen",
     "expiredBody": "Deine Sitzung ist abgelaufen. Bitte melde dich erneut an, um weiterzuarbeiten.",
-    "expiredCta": "Neu anmelden"
+    "expiredCta": "Neu anmelden",
+    "revokedTitle": "Sitzung beendet",
+    "revokedBody": "Deine Sitzung wurde beendet, zum Beispiel durch einen Administrator oder durch eine Abmeldung auf einem anderen Gerät. Bitte melde dich erneut an."
   },
   "runtimeReadiness": {
     "title": "LLM-Zugang fehlt",
@@ -1449,7 +1477,10 @@
     "cta": "LLM-Zugang öffnen",
     "ctaNoAssignment": "Zuordnung öffnen",
     "ctaUnreachable": "Update & Status öffnen",
-    "dismiss": "Später"
+    "dismiss": "Später",
+    "titleDatabaseUnavailable": "Datenbank nicht erreichbar",
+    "bodyDatabaseUnavailable": "Die Middleware antwortet, erreicht aber ihre Datenbank (Postgres) nicht. Jede Anfrage, die gespeicherte Daten braucht, schlägt fehl. Prüfe den Postgres-Container oder DATABASE_URL. Diese Karte verschwindet, sobald die Datenbank wieder da ist.",
+    "ctaDatabaseUnavailable": "Plattform-Zustand öffnen"
   },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} Tool-Aufrufe",
@@ -3801,43 +3832,6 @@
       }
     }
   },
-  "adminSettings": {
-    "pluginDirectory": {
-      "heading": "Plugin-Einstellungen",
-      "intro": "Die meisten Einstellungen liegen jetzt direkt beim jeweiligen Plugin und werden in dessen eigenem Einstellungs-Panel bearbeitet. Auf dieser Seite verbleiben nur echte Plugin-übergreifende Werte (wie der gemeinsame Anthropic-Key oben).",
-      "open": "Einstellungen öffnen",
-      "plugins": {
-        "orchestrator": "Orchestrator & Model-Routing",
-        "verifier": "Verifier",
-        "embeddings": "Embeddings",
-        "knowledgeGraph": "Knowledge-Graph",
-        "diagrams": "Diagramme & Speicher",
-        "integrations": "Integrationen (Microsoft, Teams, Telegram)"
-      }
-    },
-    "title": "Konfiguration",
-    "intro": "Alle <envFile>.env</envFile>-Werte, die beim Start in den Config-Store bzw. den Secret-Vault geschrieben werden. Änderungen werden automatisch gespeichert und das betroffene Plugin neu aktiviert — sie wirken sofort, ohne Neustart. Secrets zeigen nur, ob ein Wert hinterlegt ist; der Wert selbst wird nie angezeigt.",
-    "loading": "Lädt …",
-    "loadError": "Fehler beim Laden: {message}",
-    "vaultUnavailable": "Vault nicht verfügbar — Secrets können nicht bearbeitet werden.",
-    "notInstalled": "nicht installiert",
-    "boolean": {
-      "on": "an",
-      "off": "aus"
-    },
-    "secret": {
-      "set": "gesetzt",
-      "unset": "nicht gesetzt",
-      "replacePlaceholder": "•••••• (ersetzen)",
-      "enterPlaceholder": "Wert eingeben",
-      "remove": "Entfernen"
-    },
-    "status": {
-      "saving": "speichert …",
-      "saved": "✓ gespeichert",
-      "error": "✗ Fehler"
-    }
-  },
   "adminProviders": {
     "intro": "Verbinde LLM-Provider und lege fest, mit welchem jeder Agent läuft. Schlüssel werden verschlüsselt im Vault gespeichert und verlassen deinen Server nie. Anthropic ist der Standard; ein Provider-Wechsel pro Agent wirkt sofort.",
     "loading": "Lädt …",
@@ -3888,7 +3882,8 @@
         "noProbe": "Dieser Provider-Typ lässt sich nicht günstig prüfen, der Schlüssel bleibt daher unbestätigt."
       },
       "oauthConnect": "Mit ChatGPT anmelden",
-      "oauthReconnect": "ChatGPT neu verbinden"
+      "oauthReconnect": "ChatGPT neu verbinden",
+      "saveRejectedReason": "Grund: {reason}"
     },
     "assignments": {
       "heading": "Zuordnung pro Agent",
@@ -4713,24 +4708,39 @@
       "notFound": "Registry nicht gefunden — Liste neu geladen.",
       "missingFields": "Name und URL sind erforderlich.",
       "sessionExpired": "Die Sitzung ist nicht mehr gültig. Weiterleitung zur Anmeldung …",
+      "sessionEnded": "Die Sitzung wurde beendet, zum Beispiel durch eine Abmeldung auf einem anderen Gerät. Weiterleitung zur Anmeldung …",
       "authUnavailable": "Die Sitzung kann gerade nicht geprüft werden. Bitte in Kürze erneut versuchen.",
       "generic": "Fehler {status}."
     }
   },
   "adminApiKeys": {
     "title": "Öffentliche API-Schlüssel",
-    "intro": "Server-zu-Server-Bearer-Zugangsdaten für die öffentliche Chat-API. Das Klartext-Token eines Schlüssels wird genau einmal angezeigt, direkt nach dem Erstellen — sofort kopieren, es kann danach nicht erneut abgerufen werden, auch nicht von einem Operator.",
+    "intro": "Server-zu-Server-Bearer-Zugangsdaten für die öffentliche Chat-API und den öffentlichen MCP-Endpunkt. Das Klartext-Token eines Schlüssels wird genau einmal angezeigt, direkt nach dem Erstellen — sofort kopieren, es kann danach nicht erneut abgerufen werden, auch nicht von einem Operator.",
     "create": {
       "heading": "Neuen Schlüssel erstellen",
       "fields": {
         "label": "Bezeichnung (optional)",
-        "rateLimit": "Rate-Limit (Anfragen/Minute, optional)"
+        "rateLimit": "Rate-Limit (Anfragen/Minute, optional)",
+        "scopes": "Scopes",
+        "expiry": "Läuft ab am (optional)",
+        "mcpWriteTools": "Schreib-Tools (optional)"
       },
       "rateLimitInvalid": "Rate-Limit muss zwischen {min} und {max} Anfragen/Minute liegen.",
       "scopesRequired": "Mindestens einen Scope auswählen — ein Schlüssel ohne Scope kann nichts tun.",
       "blockedByReveal": "Das Token oben zuerst ausblenden, bevor ein weiterer Schlüssel erstellt wird.",
       "submit": "Schlüssel erstellen",
-      "creating": "Wird erstellt"
+      "creating": "Wird erstellt",
+      "scopeHelp": {
+        "chatWrite": "Öffentliche Chat-API",
+        "mcpList": "Öffentliche MCP-Tools auflisten",
+        "mcpInvoke": "Lesende MCP-Tools aufrufen",
+        "wildcard": "Alles außer MCP-Schreib-Tools",
+        "plugin": "Plugin-Scope"
+      },
+      "mcpWriteToolsHint": "Tool-Namen, durch Kommas getrennt. Jeder Name gewährt den Scope {prefix}name für genau dieses Tool.",
+      "mcpWriteToolsInvalid": "Tool-Namen dürfen nur Kleinbuchstaben, Ziffern, „_“ und „-“ enthalten und müssen mit einem Buchstaben beginnen.",
+      "expiryInvalid": "Das Ablaufdatum muss in der Zukunft liegen.",
+      "scopesUnavailable": "Die Scope-Liste konnte nicht geladen werden, daher wird nur chat:write angeboten."
     },
     "reveal": {
       "heading": "Neuer API-Schlüssel erstellt",
@@ -4753,7 +4763,8 @@
       "rateLimitValue": "{value}/Min",
       "status": {
         "active": "Aktiv",
-        "revoked": "Widerrufen"
+        "revoked": "Widerrufen",
+        "expired": "Abgelaufen"
       },
       "revoke": "Widerrufen",
       "revoking": "Wird widerrufen",
@@ -4761,14 +4772,47 @@
         "message": "Diesen Schlüssel widerrufen? Alles, was ihn verwendet, hört sofort auf zu funktionieren — das kann nicht rückgängig gemacht werden.",
         "confirm": "Widerruf bestätigen",
         "cancel": "Abbrechen"
+      },
+      "expiresAt": "Läuft ab {date}",
+      "expiredAt": "Abgelaufen {date}",
+      "createdBy": "Erstellt von {email}",
+      "createdByUnknown": "Ersteller unbekannt",
+      "lastUsed": "Zuletzt genutzt {date}",
+      "neverUsed": "Noch nicht genutzt",
+      "showInactive": "Widerrufene und abgelaufene Schlüssel anzeigen ({count})",
+      "hideInactive": "Widerrufene und abgelaufene Schlüssel ausblenden",
+      "delete": "Löschen",
+      "deleting": "Wird gelöscht",
+      "confirmDelete": {
+        "message": "Diesen Schlüssel endgültig löschen? Er verschwindet aus dieser Liste, und seine Anfrage-Historie wird hier nicht mehr angezeigt. Die Einträge zu Erstellen, Widerrufen und Löschen bleiben im Admin-Audit-Log.",
+        "confirm": "Löschen bestätigen",
+        "cancel": "Abbrechen"
+      },
+      "usage": {
+        "show": "Letzte Aktivität",
+        "hide": "Aktivität ausblenden",
+        "loading": "Aktivität wird geladen …",
+        "empty": "Keine Anfragen dieses Schlüssels im aktuellen Protokoll.",
+        "failed": "Die Aktivität konnte nicht geladen werden.",
+        "status": {
+          "ok": "OK",
+          "rate_limited": "Rate-Limit erreicht",
+          "forbidden": "Scope fehlt",
+          "invalid_request": "Ungültige Anfrage",
+          "error": "Fehler"
+        }
       }
     },
     "errors": {
       "notFound": "Dieser Schlüssel existiert nicht mehr — die Liste wurde aktualisiert.",
       "authUnavailable": "Operator-Authentifizierung ist gerade nicht verfügbar. Bitte in Kürze erneut versuchen.",
       "sessionExpired": "Die Sitzung ist abgelaufen. Weiterleitung zur Anmeldung …",
+      "sessionEnded": "Die Sitzung wurde beendet, zum Beispiel durch eine Abmeldung auf einem anderen Gerät. Weiterleitung zur Anmeldung …",
       "invalidRequest": "Die Anfrage war ungültig — bitte die Werte oben prüfen und erneut versuchen.",
-      "generic": "Etwas ist schiefgelaufen (Fehler {status})."
+      "generic": "Etwas ist schiefgelaufen (Fehler {status}).",
+      "invalidScope": "Dieser Scope ist unbekannt — bitte einen aus der Liste wählen.",
+      "invalidExpiry": "Das Ablaufdatum muss in der Zukunft und höchstens fünf Jahre voraus liegen.",
+      "keyActive": "Den Schlüssel vor dem Löschen widerrufen."
     }
   },
   "adminWebhooks": {
@@ -4797,14 +4841,14 @@
       "delete": "Löschen",
       "deleting": "Löscht",
       "secretRevealed": "Neues Secret — jetzt kopieren, es wird nicht erneut angezeigt:",
-      "dismiss": "Ausblenden",
       "noDeliveries": "Noch keine Zustellungen aufgezeichnet.",
       "confirmDelete": "Diesen Endpunkt wirklich löschen? Jeder Sender, der ihn nutzt, erhält danach 401.",
       "table": {
         "deliveryId": "Delivery-ID",
         "outcome": "Ergebnis",
         "receivedAt": "Empfangen"
-      }
+      },
+      "blockedByReveal": "Kopiere dieses Secret und blende es aus, bevor du ein weiteres anlegst oder rotierst."
     },
     "subscriptions": {
       "heading": "Ausgehende Subscriptions",
@@ -4826,7 +4870,6 @@
       "delete": "Löschen",
       "deleting": "Löscht",
       "secretRevealed": "Neues Secret — jetzt kopieren, es wird nicht erneut angezeigt:",
-      "dismiss": "Ausblenden",
       "noDeliveries": "Noch keine Zustellungen aufgezeichnet.",
       "confirmDelete": "Diese Subscription wirklich löschen?",
       "table": {
@@ -4835,7 +4878,17 @@
         "lastError": "Letzter Fehler",
         "nextAttemptAt": "Nächster Versuch",
         "createdAt": "Erstellt"
-      }
+      },
+      "blockedByReveal": "Kopiere dieses Secret und blende es aus, bevor du ein weiteres anlegst oder rotierst."
+    },
+    "errors": {
+      "unexpected": "Die Anfrage konnte nicht gesendet werden.",
+      "notFound": "Dieser Eintrag existiert nicht mehr. Lade die Seite neu.",
+      "urlForbidden": "Diese Adresse ist nicht erlaubt. Webhooks dürfen nur öffentliche http(s)-Ziele ansprechen.",
+      "unavailable": "Webhooks sind auf diesem Server nicht verfügbar.",
+      "serverFailed": "Der Server konnte die Aktion nicht ausführen. Versuche es erneut; tritt es wieder auf, prüfe die Middleware-Logs.",
+      "invalidInput": "In der Anfrage fehlt ein Pflichtwert.",
+      "requestFailed": "Die Anfrage ist fehlgeschlagen (HTTP {status})."
     }
   },
   "adminDomains": {
@@ -4855,7 +4908,7 @@
   },
   "adminUsage": {
     "title": "Nutzung & Kosten",
-    "intro": "Erfasst jeden LLM-Call — Orchestrator, Sub-Agents und die Background-Tasks. Abo-Turns über die Claude-CLI zählen als Calls, werden aber nicht pro Token abgerechnet.",
+    "intro": "Erfasst die LLM-Calls des Orchestrators, seiner Sub-Agents, des Builders, der Plugins und der Background-Tasks, gestreamt oder nicht. Abo-Turns über die Claude-CLI zählen als Calls, werden aber nicht pro Token abgerechnet.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
     "ranges": {
@@ -4878,7 +4931,12 @@
     },
     "empty": "Keine Daten im Zeitraum.",
     "barTitle": "{date} · {cost} · {calls, plural, one {# Call} other {# Calls}}",
-    "rowStats": "{calls} Calls · {input} in · {output} out · {cache} cache",
+    "rowStats": "{calls} Calls · {input} in · {output} out · {cacheRead} Cache gelesen · {cacheWrite} Cache geschrieben",
+    "rowReference": " · Abo-Calls ≈ {reference} API-Gegenwert",
+    "groups": {
+      "builder": "Builder ({count, plural, one {# Entwurf} other {# Entwürfe}})",
+      "other": "Sonstige ({count, plural, one {# Quelle} other {# Quellen}})"
+    },
     "subscription": {
       "headline": "{count, plural, one {# Abo-Turn} other {# Abo-Turns}} in diesem Zeitraum",
       "explainer": "Abo-Turns laufen über das Claude-Abo, nicht über Token-Abrechnung. Sie zählen als Calls, kosten hier aber nichts. Auf der API hätten sie {reference} gekostet."
@@ -4900,6 +4958,7 @@
     "list": {
       "title": "Benutzer",
       "intro": "Lokale Konten und föderierte Identitäten. Nur lokale Nutzer können hier neu angelegt werden — föderierte Konten erscheinen, sobald der Nutzer sich einmal über den IdP angemeldet hat.",
+      "rolesNote": "Alle Benutzer sind Administratoren mit vollem Zugriff. Rollenbasierte Berechtigungen gibt es noch nicht.",
       "create": "Neuen Nutzer anlegen",
       "cancel": "Abbrechen",
       "form": {
@@ -4939,6 +4998,51 @@
       "confirmDelete": "Diesen Nutzer wirklich löschen? Die Aktion ist nicht umkehrbar.",
       "delete": "Nutzer löschen",
       "deleting": "Lösche …"
+    }
+  },
+  "adminAudit": {
+    "title": "Audit-Protokoll",
+    "intro": "Ein nur lesbares Protokoll administrativer Änderungen: wer hat was an welchem Ziel wann geändert. Neueste Einträge zuerst.",
+    "loading": "Audit-Protokoll wird geladen…",
+    "empty": "Noch keine Audit-Einträge.",
+    "emptyFiltered": "Keine Audit-Einträge passen zu diesem Filter.",
+    "filter": {
+      "label": "Aktion",
+      "options": {
+        "all": "Alle Aktionen",
+        "user": "Benutzerkonten",
+        "auth": "Anmeldung & Sitzungen",
+        "plugin": "Plugin-Änderungen",
+        "apikey": "API-Schlüssel",
+        "memory": "Memory-Purges",
+        "conductor": "Conductor-Änderungen",
+        "profileSnapshot": "Profil-Snapshots",
+        "channel": "Kanäle"
+      }
+    },
+    "table": {
+      "time": "Zeitpunkt",
+      "actor": "Akteur",
+      "action": "Aktion",
+      "target": "Ziel",
+      "changes": "Änderungen"
+    },
+    "actorSystem": "System (automatisch)",
+    "details": {
+      "show": "Vorher / Nachher anzeigen",
+      "before": "Vorher",
+      "after": "Nachher",
+      "empty": "(leer)"
+    },
+    "paging": {
+      "newer": "← Neuere",
+      "older": "Ältere →",
+      "range": "Einträge {from}–{to}"
+    },
+    "errors": {
+      "invalidQuery": "Filter oder Seite sind ungültig. Setze den Filter zurück und versuche es erneut.",
+      "generic": "Das Audit-Protokoll konnte nicht geladen werden (Fehler {status}).",
+      "network": "Das Audit-Protokoll konnte nicht geladen werden. Prüfe die Verbindung und versuche es erneut."
     }
   },
   "adminTopics": {
@@ -5114,8 +5218,8 @@
   },
   "adminDangerZone": {
     "title": "Danger Zone · Memory-Purge",
-    "intro": "Löscht Memory unwiderruflich entlang einer Achse. <strong>Alles</strong> wischt Agent-Scratch <em>und</em> Knowledge-Graph; die Achsen User / Team / Channel treffen den Knowledge-Graph und den passenden Kontext-Baum unter /memories/contexts. Es gibt kein Undo — immer zuerst die Vorschau prüfen.",
-    "note": "<strong>Hinweis:</strong> Der Selector für User / Team / Channel ist ein Kontext-Key (<code>channelType~id</code>) oder die rohe native Id — er adressiert einen Kontext-Baum über alle Agenten hinweg.",
+    "intro": "Löscht Memory unwiderruflich entlang einer Achse: Agent-Scratch, die <strong>gemerkten Fakten</strong> und den <strong>Gesprächsverlauf</strong> des Knowledge-Graphs (Turns, Sessions, Runs, Tool-Aufrufe, Pläne). Die Achsen <em>Team</em> und <em>Channel</em> löschen nur die Kontext-Bäume unter /memories/contexts — der Knowledge-Graph kennt noch keine Team- oder Channel-Zuordnung. Chat-Tabs, Gesprächsprotokolle unter /memories/sessions, Brand-Assets, core und UI-Einstellungen werden nie gelöscht. Es gibt kein Undo — der Server nimmt eine Löschung nur nach einer Vorschau derselben Auswahl an.",
+    "note": "<strong>Selector:</strong> für User / Team / Channel immer <code>channelType~id</code>, wobei die Id entweder die rohe native Id oder der Key aus dem Memory-Browser ist — z. B. <code>teams~AAD-OBJECT-ID</code> (User), <code>teams~19:abc@thread.tacv2</code> (Team), <code>telegram~-1001234567890</code> (Channel). Auf der User-Achse wählt eine omadia-User-Id (UUID) stattdessen die Member-Notizen, gemerkten Fakten und Gesprächs-Turns dieser Person.",
     "targetTitle": "Ziel",
     "axisLabel": "Achse",
     "axes": {
@@ -5128,20 +5232,20 @@
     "selectorLabel": "Selector",
     "selectorPlaceholder": {
       "agent": "de.byte5.agent.calendar",
-      "user": "teams~29-1a2b… (nie eine nackte Id)",
-      "team": "teams~19-abc… (nie eine nackte Id)",
-      "channel": "telegram~-1001234567890 (nie eine nackte Id)"
+      "user": "teams~AAD-OBJECT-ID oder omadia-User-Id",
+      "team": "teams~19:abc@thread.tacv2",
+      "channel": "telegram~-1001234567890"
     },
     "selectorRequired": "Selector erforderlich für diese Achse.",
-    "reseedLabel": "Default-Memories nach dem Löschen neu seeden (re-seed defaults)",
+    "reseedLabel": "Regeln auf die mitgelieferten Defaults zurücksetzen",
     "loading": "lädt…",
     "previewButton": "Vorschau",
     "previewError": "Vorschau-Fehler: {message}",
     "previewTitle": "Vorschau — wird gelöscht",
     "agentScratch": "Agent-Scratch",
-    "knowledgeGraph": "Knowledge-Graph",
+    "knowledgeGraph": "Gemerkte Fakten (Knowledge-Graph)",
     "confirmTitle": "Löschen bestätigen",
-    "previewFirst": "Zuerst eine Vorschau ausführen — Löschen ist erst danach möglich.",
+    "previewFirst": "Zuerst eine Vorschau ausführen — der Server nimmt eine Löschung nur nach einer Vorschau derselben Auswahl an.",
     "noSelector": "Kein Selector gesetzt.",
     "confirmInstruction": "Zum Bestätigen exakt eingeben: <code>{phrase}</code>",
     "deleting": "löscht…",
@@ -5150,10 +5254,31 @@
     "deletedTitle": "Gelöscht",
     "forbiddenError": "Nicht berechtigt (403) — Memory-Purge erfordert Admin-Rechte.",
     "selectorHint": {
-      "agent": "Agent-Slug. Löscht zusätzlich dessen Kontext-Bäume unter /memories/contexts.",
-      "user": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe User-Id. Löscht das User-Tier über alle Agenten.",
-      "team": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe Team-Id. Löscht das Team-Tier über alle Agenten.",
-      "channel": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe Conversation-Id. Löscht das Kanal-Tier über alle Agenten."
+      "agent": "Agent-Slug. Löscht den Scratch-Baum des Agenten, seine Kontext-Bäume unter /memories/contexts, seine gemerkten Fakten und seinen Gesprächsverlauf.",
+      "user": "Immer <code>channelType~id</code> (rohe User-Id oder Key aus dem Memory-Browser), z. B. <code>teams~AAD-OBJECT-ID</code> — löscht das User-Tier über alle Agenten. Oder eine omadia-User-Id: löscht Member-Notizen, gemerkte Fakten und Gesprächs-Turns dieser Person.",
+      "team": "Immer <code>channelType~id</code> (rohe Team-Id oder Key aus dem Memory-Browser), z. B. <code>teams~19:abc@thread.tacv2</code>. Löscht das Team-Tier über alle Agenten.",
+      "channel": "Immer <code>channelType~id</code> (rohe Conversation-Id oder Key aus dem Memory-Browser), z. B. <code>telegram~-1001234567890</code>. Löscht das Kanal-Tier über alle Agenten."
+    },
+    "reseedHint": "Löscht /memories/_rules, auch zur Laufzeit hinzugefügte Regeln, und schreibt die mitgelieferten Defaults sofort zurück. Chat-Tabs, Gesprächsprotokolle, Brand-Assets, core und UI-Einstellungen bleiben immer erhalten.",
+    "reseedPreview": "Auf die mitgelieferten Defaults zurückgesetzt: {entries}",
+    "reseeded": "{count, plural, one {# Default-Datei zurückgeschrieben.} other {# Default-Dateien zurückgeschrieben.}}",
+    "conversationHistory": "Gesprächsverlauf (Knowledge-Graph)",
+    "nothingToDelete": "Die Vorschau hat für diese Auswahl nichts zu löschen gefunden — bitte den Selector prüfen.",
+    "warnings": {
+      "kg_not_modelled": "Der Knowledge-Graph kennt noch keine {axis, select, team {Team} channel {Channel} other {solche}}-Zuordnung: gemerkte Fakten und Gesprächsverlauf bleiben unberührt. Gelöscht werden nur die Kontext-Bäume unter /memories/contexts.",
+      "kg_history_unsupported": "Dieser Knowledge-Graph-Provider kann den Gesprächsverlauf nicht löschen: Turns, Sessions und Runs bleiben erhalten. Gelöscht werden nur gemerkte Fakten und Scratch-Memory.",
+      "user_axis_kg_only": "Der Selector hat Knowledge-Graph-Daten getroffen, aber keinen Kontext-Baum unter /memories/contexts — das Scratch-Memory des Users wird nicht gelöscht.",
+      "user_axis_scratch_only": "Der Selector hat Kontext-Bäume getroffen, aber keine Knowledge-Graph-Daten — gemerkte Fakten und Gesprächs-Turns werden über die omadia-User-Id gefunden, nicht über einen channelType~id-Key.",
+      "audit_unavailable": "Kein Audit-Speicher konfiguriert (kein Postgres) — dieser Purge wird nicht protokolliert.",
+      "audit_update_failed": "Der Purge ist gelaufen, aber sein Audit-Eintrag {auditId} konnte nicht abgeschlossen werden und steht noch auf „gestartet“.",
+      "reseed_failed": "Die Defaults konnten nicht zurückgeschrieben werden; sie kommen beim nächsten Neustart zurück, außer MEMORY_SEED_MODE steht auf skip."
+    },
+    "errors": {
+      "invalid_selector": "Der Selector muss channelType~id lauten, z. B. teams~19:abc@thread.tacv2 (rohe native Id) oder der Key aus dem Memory-Browser.",
+      "selector_required": "Selector erforderlich für diese Achse.",
+      "preview_required": "Die Vorschau ist abgelaufen oder gehört zu einer anderen Auswahl — bitte die Vorschau erneut ausführen.",
+      "confirmation_mismatch": "Die Bestätigung stimmt nicht mit der geforderten Phrase überein.",
+      "audit_write_failed": "Der Purge konnte nicht im Audit-Log protokolliert werden, deshalb wurde nichts gelöscht."
     }
   },
   "adminDuplicates": {
@@ -5334,7 +5459,9 @@
       "gcTitle": "GC-Quoten ausführen",
       "gcDescription": "Eviction pro Scope nach Typ-Gewicht × Decay-Score. Erzwingt hot_max_entries + max_total_chars.",
       "accessFlushTitle": "Nur Access-Flush ausführen",
-      "accessFlushDescription": "Access-Tracker ohne Rotation in access_count + accessed_at schreiben. Nur zum Debuggen."
+      "accessFlushDescription": "Access-Tracker ohne Rotation in access_count + accessed_at schreiben. Nur zum Debuggen.",
+      "running": "Läuft …",
+      "runNow": "Jetzt ausführen"
     },
     "cards": {
       "tierBreakdown": "Verteilung nach Tier",
@@ -5369,7 +5496,7 @@
       "promotedColdToWarm": "COLD → WARM hochgestuft"
     },
     "title": "Knowledge-Graph-Lifecycle",
-    "intro": "Palaia Phase 4 — Tier-Rotation, Decay, GC. Die Sweeps laufen nach Cron-Zeitplan; die Buttons unten stoßen sie sofort an.",
+    "intro": "Tier-Rotation, Decay und GC des Knowledge Graphs. Die Sweeps laufen nach Cron-Zeitplan; die Buttons unten stoßen sie sofort an.",
     "refresh": "Aktualisieren"
   },
   "adminKgPriorities": {
@@ -5936,7 +6063,8 @@
       "title": "Plattform-Zustand.",
       "intro": "Laufzeit, Persistenz, Backup. Nur Metadaten — keine Secrets.",
       "errorUnknownLoad": "Unbekannter Fehler beim Laden des Vault-Status.",
-      "loadErrorTitle": "Vault-Status nicht erreichbar"
+      "loadErrorTitle": "Vault-Status nicht erreichbar",
+      "loadErrorDatabase": "Die Middleware konnte deine Sitzung nicht prüfen, weil ihre Datenbank nicht erreichbar ist. Details in der Karte zum Plattform-Zustand."
     },
     "vaultStatus": {
       "masterKey": "Master-Key",
@@ -5961,12 +6089,35 @@
       "dotWarn": "Warnung",
       "dotDanger": "Fehler",
       "dotInactive": "Inaktiv",
-      "keySourceDevFile": "dev-file (nicht für Produktion)",
-      "keySourceDevFileCreated": "dev-file (neu generiert — DEV ONLY)",
+      "keySourceDevFile": "dev-file, für Produktion {envVar} setzen",
+      "keySourceDevFileCreated": "dev-file (neu generiert, DEV ONLY), für Produktion {envVar} setzen",
       "eyebrow": "Verschlüsselter Secret Vault",
       "heading": "Vault",
       "bucket": "Bucket",
-      "prefix": "Präfix"
+      "prefix": "Präfix",
+      "keychainKey": "Keychain-Master-Key",
+      "keySourceEnv": "{envVar} (env)",
+      "keySourceUnknown": "von dieser Middleware-Version nicht gemeldet"
+    },
+    "platformHealth": {
+      "eyebrow": "Middleware /health",
+      "heading": "Plattform",
+      "middleware": "Middleware",
+      "middlewareReachable": "erreichbar · Version {version}",
+      "middlewareUnreachable": "Die Middleware hat auf ihren Health-Check nicht geantwortet. Der Status von Datenbank und Master-Keys lässt sich deshalb nicht lesen. Sie ist möglicherweise gestoppt, startet noch oder startet nach einem Absturz neu.",
+      "database": "Datenbank (Postgres)",
+      "databaseState": {
+        "ok": "erreichbar",
+        "unreachable": "antwortet nicht. Prüfe, ob Postgres läuft und DATABASE_URL stimmt; ist beides in Ordnung, starte die Middleware neu",
+        "unknown": "konfiguriert, aber keine Verbindung zum Prüfen",
+        "none": "keine (In-Memory-Knowledge-Graph)",
+        "unreported": "nicht gemeldet"
+      },
+      "embeddings": "Embeddings",
+      "semanticRecall": "Semantische Suche",
+      "active": "aktiv",
+      "off": "aus",
+      "warningsHeading": "Von der Middleware gemeldet"
     }
   },
   "help": {
@@ -5983,23 +6134,23 @@
       },
       "pluginNeedsConfig": {
         "question": "Ein Plugin meldet, dass es Konfiguration braucht",
-        "answer": "Das Plugin ist installiert, aber mindestens ein Pflichtfeld hat keinen Wert. Öffne das Plugin im Store und fülle die Setup-Felder aus. Secret-Felder wollen nie ein Konto-Passwort — sie wollen einen technischen Schlüssel aus der Anbieter-Konsole.",
-        "action": "Store öffnen"
+        "answer": "Das Plugin ist installiert, aber mindestens ein Pflichtfeld hat keinen Wert. Öffne das Plugin im Hub und fülle die Setup-Felder aus. Secret-Felder wollen nie ein Konto-Passwort — sie wollen einen technischen Schlüssel aus der Anbieter-Konsole.",
+        "action": "Hub öffnen"
       },
       "cliNotInstalled": {
         "question": "Eine Abo-CLI wird als nicht installiert angezeigt",
-        "answer": "Die CLI muss auf dem Server installiert sein, der omadia betreibt — nicht auf deinem Laptop. Der Abo-Tab zeigt den genauen Installationsbefehl; danach „Erneut prüfen“ nutzen.",
+        "answer": "Die CLI muss auf dem Server installiert sein, der omadia betreibt — nicht auf deinem Laptop. Der Tab „Abos“ zeigt den genauen Installationsbefehl; danach „Erneut prüfen“ nutzen.",
         "action": "LLM-Zugang öffnen"
       },
       "noModels": {
         "question": "Für einen Anbieter erscheinen keine Modelle",
-        "answer": "Modelle kommen vom Anbieter-Plugin. Ist die Liste leer, ist das Plugin nicht aktiv — prüfe den LLM-Zugang und den Status des Plugins im Store.",
+        "answer": "Modelle kommen vom Anbieter-Plugin. Ist die Liste leer, ist das Plugin nicht aktiv — prüfe den LLM-Zugang und den Status des Plugins im Hub.",
         "action": "LLM-Zugang öffnen"
       }
     },
     "docs": {
       "heading": "Dokumentation",
-      "documentation": "Dokumentation",
+      "documentation": "Docs auf GitHub",
       "repository": "Quellcode auf GitHub",
       "discussions": "In Discussions fragen"
     },
@@ -6075,5 +6226,29 @@
       "teams_sign_in_failed": "Die Teams-Anmeldung ist fehlgeschlagen.",
       "unknown": "Die Anfrage zur Teams-Anmeldung ist fehlgeschlagen: {detail}"
     }
+  },
+  "platformHealth": {
+    "banner": {
+      "databaseUnreachable": {
+        "title": "Datenbank nicht erreichbar",
+        "body": "Die Middleware läuft, aber ihre Datenbank (Postgres) antwortet nicht. Alles, was gespeicherte Daten braucht, schlägt fehl, bis sie wieder da ist. Die Statuskarten unten zeigen deshalb womöglich „Unbekannt“. Prüfe, ob Postgres läuft und DATABASE_URL stimmt; ist beides in Ordnung, starte die Middleware neu."
+      },
+      "middlewareUnreachable": {
+        "title": "Middleware nicht erreichbar",
+        "body": "Die Web-UI erreicht die Middleware nicht. Kein Status auf dieser Seite lässt sich deshalb prüfen. Sie ist möglicherweise gestoppt, startet noch oder startet nach einem Absturz neu."
+      },
+      "devMasterKey": {
+        "title": "Entwicklungs-Master-Key in Verwendung",
+        "body": "{which, select, vault {VAULT_KEY ist} keychain {CREDENTIAL_KEYCHAIN_KEY ist} other {VAULT_KEY und CREDENTIAL_KEYCHAIN_KEY sind}} nicht gesetzt. Der Master-Key wird deshalb aus einer Dev-Datei auf dem Daten-Volume gelesen, direkt neben den Daten, die er verschlüsselt. Für lokale Entwicklung in Ordnung, nicht für Produktion."
+      },
+      "cta": "Plattform-Zustand öffnen",
+      "dismiss": "Später"
+    }
+  },
+  "oneTimeSecret": {
+    "dismiss": "Kopiert, ausblenden",
+    "copy": "Kopieren",
+    "copied": "Kopiert",
+    "copyFailed": "Automatisches Kopieren fehlgeschlagen — markiere das Secret oben und kopiere es von Hand."
   }
 }

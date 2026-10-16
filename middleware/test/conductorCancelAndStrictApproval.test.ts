@@ -313,7 +313,7 @@ describe('#759 routes: cancel endpoint + role-holder audit', () => {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      (req as express.Request & { session?: unknown }).session = { sub: 'op-1', omadia_user_id: 'uuid-op-1' } as never;
+      (req as express.Request & { session?: unknown }).session = { sub: 'op-1', omadia_user_id: 'kg-cluster-op-1', uid: '9b1c2d3e-4f50-4a61-8b72-0c9d1e2f3a4b' } as never;
       next();
     });
     const deps = {
@@ -386,8 +386,9 @@ describe('#759 routes: cancel endpoint + role-holder audit', () => {
       actor: 'op-1',
       // #775 — the session uuid travels alongside the sub, because the sub is
       // an email under local auth and must never land in the uuid actor_id
-      // column. The harness session carries omadia_user_id for exactly this.
-      actorUserId: 'uuid-op-1',
+      // column. #1315 — the uuid is the session's `uid` (users.id), never the
+      // knowledge-graph `omadia_user_id` the harness session also carries.
+      actorUserId: '9b1c2d3e-4f50-4a61-8b72-0c9d1e2f3a4b',
       roleKey: 'approvers',
       action: 'add',
       holderId: 'op-1',

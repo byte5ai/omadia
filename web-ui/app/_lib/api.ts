@@ -201,23 +201,28 @@ async function postJson<T>(
   }
 }
 
+/** A non-empty string field of a JSON error body, else `null`. */
+function bodyField(body: string, field: 'code' | 'error' | 'message'): string | null {
+  try {
+    const value = (JSON.parse(body) as Record<string, unknown> | null)?.[field];
+    return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The middleware's machine-readable error code, pulled out of a JSON error
- * body (`{ code, message }`). Returns `null` when the body is not JSON, has
- * no `code`, or carries one that is not a non-empty string.
+ * body. Most routes send `{ code, message }`; older ones (the memory purge
+ * among them, #1333) send `{ error, message }`, so `error` is the fallback.
+ * Returns `null` when the body is not JSON or carries neither as a non-empty
+ * string.
  *
  * Pure by construction: no module state is read or written, which is what
  * keeps the constructor invariant documented below intact.
  */
 function parseErrorCode(body: string): string | null {
-  try {
-    const parsed = JSON.parse(body) as { code?: unknown };
-    return typeof parsed.code === 'string' && parsed.code.trim().length > 0
-      ? parsed.code
-      : null;
-  } catch {
-    return null;
-  }
+  return bodyField(body, 'code') ?? bodyField(body, 'error');
 }
 
 /**
@@ -242,6 +247,12 @@ function parseErrorCode(body: string): string | null {
 export class ApiError extends Error {
   /** Machine-readable code from the JSON error body; `null` when absent. */
   public readonly code: string | null;
+  /**
+   * The server's own explanation (`message` of the JSON error body), `null`
+   * when absent (#1333). Usually English — prefer localized copy keyed on
+   * {@link code} and fall back to this before the bare `… failed: <status>`.
+   */
+  public readonly serverMessage: string | null;
 
   constructor(
     public readonly status: number,
@@ -251,6 +262,7 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
     this.code = parseErrorCode(body);
+    this.serverMessage = bodyField(body, 'message');
   }
 }
 
@@ -277,7 +289,9 @@ function expectArray<T>(value: unknown, path: string, key: string): T[] {
 }
 
 // -----------------------------------------------------------------------------
-// Admin settings — the .env-based config/vault overview (/api/v1/admin/settings)
+// Admin settings — the cross-plugin provider-key writes (/api/v1/admin/settings).
+// The UI edits these on the LLM access page (ProvidersPanel); the old
+// /admin/settings overview page was removed in #1397.
 // -----------------------------------------------------------------------------
 
 export type SettingValueType =
@@ -304,16 +318,6 @@ export interface ResolvedSetting {
   isSet?: boolean;
 }
 
-export interface SettingsCategory {
-  category: string;
-  settings: ResolvedSetting[];
-}
-
-export interface SettingsResponse {
-  categories: SettingsCategory[];
-  vault_available: boolean;
-}
-
 export interface SettingChange {
   key: string;
   /** New value, or null to clear/delete. */
@@ -322,11 +326,9 @@ export interface SettingChange {
 
 export interface SettingsPatchResponse {
   updated: ResolvedSetting[];
-  errors: Array<{ key: string; message: string }>;
-}
-
-export async function getSettings(): Promise<SettingsResponse> {
-  return getJson<SettingsResponse>('/v1/admin/settings');
+  /** Same shape a rejected (400) PATCH carries; read that one with
+   *  `serverFieldErrors` from `apiErrorMessage.ts`. */
+  errors: Array<{ key: string; message: string; code?: string }>;
 }
 
 export async function patchSettings(
@@ -1293,6 +1295,9 @@ export interface VaultStatusResponse {
     last_modified: string | null;
     agent_count: number;
     master_key_source: 'env' | 'dev-file-existed' | 'dev-file-created';
+    /** #1387 — the credential keychain's master key. Absent on older middleware. */
+    keychain_key_source?: 'env' | 'dev-file-existed' | 'dev-file-created';
+    /** Both master keys come from env. */
     production_ready: boolean;
   };
   backup: VaultBackupStatus;
@@ -1345,6 +1350,19 @@ export interface SessionStatus {
    *  unauthenticated or when the server cannot renew; the watcher then
    *  offers only a re-login. */
   renewableUntil: number | null;
+  /** #1322 — why an unauthenticated probe failed: `revoked` when the server
+   *  ended the session (`auth.revoked`: sign-out elsewhere, admin action),
+   *  `expired` for everything else (missing/invalid/expired cookie). Absent
+   *  when authenticated. */
+  reason?: SessionEndReason;
+}
+
+export type SessionEndReason = 'revoked' | 'expired';
+
+/** #1322 — map a 401 body from /auth/me to the reason the session ended.
+ *  Tolerates a non-JSON body (falls back to `expired`). */
+function sessionEndReason(body: string): SessionEndReason {
+  return parseErrorCode(body) === 'auth.revoked' ? 'revoked' : 'expired';
 }
 
 /**
@@ -1429,12 +1447,14 @@ export async function getSessionStatus(): Promise<SessionStatus> {
     credentials: 'include',
   });
   if (res.status === 401) {
+    const body = await res.text().catch(() => '');
     return {
       authenticated: false,
       user: null,
       expiresAt: null,
       serverNow: null,
       renewableUntil: null,
+      reason: sessionEndReason(body),
     };
   }
   if (!res.ok) {
@@ -1687,6 +1707,52 @@ export async function deleteAdminUser(id: string): Promise<void> {
   if (res.status === 204) return;
   const text = await res.text().catch(() => '');
   throw new ApiError(res.status, `DELETE admin/users/${id} failed: ${res.status}`, text);
+}
+
+// -----------------------------------------------------------------------------
+// Admin — audit log (#1315, read-only)
+// -----------------------------------------------------------------------------
+
+export interface AuditEntryDto {
+  id: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  action: string;
+  target: string;
+  before: unknown;
+  after: unknown;
+  /** ISO timestamp. */
+  created_at: string;
+}
+
+export interface AdminAuditListResponse {
+  entries: AuditEntryDto[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export interface AdminAuditQuery {
+  /** 1..200, server default 50. */
+  limit?: number;
+  offset?: number;
+  /** Exact action (`user.create`) or a prefix ending in `.` (`user.`). */
+  action?: string;
+}
+
+export async function listAdminAudit(
+  query: AdminAuditQuery = {},
+): Promise<AdminAuditListResponse> {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  if (query.offset !== undefined) params.set('offset', String(query.offset));
+  if (query.action !== undefined && query.action.length > 0) {
+    params.set('action', query.action);
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const path = `/v1/admin/audit${suffix}`;
+  const res = await getJson<AdminAuditListResponse>(path);
+  return { ...res, entries: expectArray<AuditEntryDto>(res.entries, path, 'entries') };
 }
 
 // -----------------------------------------------------------------------------
@@ -4100,22 +4166,45 @@ export async function uploadDataset(
 
 export type MemoryPurgeAxis = 'all' | 'agent' | 'user' | 'team' | 'channel';
 
+/** A server warning as code + params; the page translates it under
+ *  `adminDangerZone.warnings.<code>` (#1333). */
+export interface MemoryPurgeWarning {
+  code: string;
+  params?: Record<string, string>;
+}
+
 export interface MemoryPurgePreviewResult {
+  /** Scratch targets (agent subtrees / context trees / top-level entries). */
   scratchCount: number;
+  /** Knowledge-Graph `MemorableKnowledge` nodes (remembered facts). */
   kgCount: number;
-  warning?: string;
+  /** Knowledge-Graph conversation history: turns, sessions, runs, tool
+   *  calls, plans and derived facts (#1334). */
+  conversationCount: number;
+  /** Top-level entries a re-seed resets and writes back (#1335). */
+  reseedEntries: string[];
+  warnings: MemoryPurgeWarning[];
+  /** Arms a DELETE of exactly this selection for a short while. */
+  previewToken: string;
+  previewExpiresAt: string;
 }
 
 export interface MemoryPurgeResult {
   scratchDeleted: number;
   kgDeleted: number;
-  warning?: string;
+  conversationDeleted: number;
+  /** Files the re-seed wrote back; present only on a re-seed purge. */
+  reseededFiles?: number;
+  /** `memory_purge_audit` row id; absent when the purge was not recorded. */
+  auditId?: string;
+  warnings: MemoryPurgeWarning[];
 }
 
-/** Dry-run: count the rows a purge would delete. Never writes. */
+/** Dry-run: count what a purge would delete. Never writes. */
 export async function previewMemoryPurge(body: {
   axis: MemoryPurgeAxis;
   selector?: string;
+  reseed?: boolean;
 }): Promise<MemoryPurgePreviewResult> {
   return postJson<MemoryPurgePreviewResult>(
     '/v1/admin/memory/purge/preview',
@@ -4125,15 +4214,19 @@ export async function previewMemoryPurge(body: {
 
 /**
  * Irreversible purge. `confirm` must match the phrase the operator typed
- * (`DELETE ALL MEMORY` for axis 'all', otherwise the selector value); the
- * backend re-checks it server-side. `reseed` re-installs the default seed
- * memories after wiping and is only meaningful for axis 'all'.
+ * (`DELETE ALL MEMORY` for axis 'all', otherwise the selector value) and
+ * `previewToken` must come from a preview of the same selection; the backend
+ * checks both. `reseed` (axis 'all' only) resets the entries the bundled seed
+ * contains — today the rules — and writes the bundled versions back right
+ * away; chat sessions, transcripts, brand assets and UI preferences are never
+ * touched.
  */
 export async function purgeMemory(body: {
   axis: MemoryPurgeAxis;
   selector?: string;
   confirm: string;
   reseed?: boolean;
+  previewToken: string;
 }): Promise<MemoryPurgeResult> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(botApi('/v1/admin/memory/purge'), {
@@ -5794,6 +5887,29 @@ export interface ApiKeyPublicView {
   createdAt: number;
   /** Epoch ms. Present iff the key has been revoked. */
   revokedAt?: number;
+  /** #1328 — epoch ms after which the key stops authenticating. Absent = no expiry. */
+  expiresAt?: number;
+  /** #1328 — the operator who minted the key. Absent on keys minted before #1328. */
+  createdBy?: { userId?: string; email: string };
+  /** #1329 — epoch ms of the key's latest authenticated request. Absent = not used yet. */
+  lastUsedAt?: number;
+}
+
+/** #1327 — `GET .../admin/keys/scopes`: every scope a key may be minted with. */
+export interface ApiKeyScopeCatalog {
+  scopes: string[];
+  /** Prefix of the per-tool write scope, `mcp:write:<tool>`. */
+  mcpWritePrefix: string;
+}
+
+/** #1329 — one entry of a key's usage log. */
+export interface ApiKeyUsageEntry {
+  keyId: string;
+  route: string;
+  method: string;
+  /** Epoch ms. */
+  at: number;
+  status: 'ok' | 'rate_limited' | 'forbidden' | 'error' | 'invalid_request';
 }
 
 export interface CreateApiKeyInput {
@@ -5806,6 +5922,8 @@ export interface CreateApiKeyInput {
    * request, never as "use the default". Callers must never pass `[]`.
    */
   scopes?: string[];
+  /** #1328 — epoch ms, in the future. Omit for a key that never expires. */
+  expiresAt?: number;
 }
 
 export interface CreateApiKeyResult {
@@ -5825,6 +5943,19 @@ export async function createApiKey(input: CreateApiKeyInput): Promise<CreateApiK
 
 export async function revokeApiKey(id: string): Promise<{ key: ApiKeyPublicView }> {
   return postJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/revoke`, {});
+}
+
+/** #1328 — only a revoked or expired key can be deleted (409 otherwise). */
+export async function deleteApiKey(id: string): Promise<void> {
+  return deleteRequest(`${API_KEYS_BASE}/${encodeURIComponent(id)}`);
+}
+
+export async function listApiKeyScopes(): Promise<ApiKeyScopeCatalog> {
+  return getJson(`${API_KEYS_BASE}/scopes`);
+}
+
+export async function listApiKeyUsage(id: string): Promise<{ entries: ApiKeyUsageEntry[] }> {
+  return getJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/usage`);
 }
 
 // -----------------------------------------------------------------------------

@@ -144,6 +144,17 @@ upsert(_record: AgentPriorityUpsert): Promise<void>;
 remove(_agentId: string, _entryExternalId: string): Promise<void>;
 }
 
+// ===== boundaryPresets.d.ts =====
+export type BoundaryPresetCategory = 'data' | 'scope' | 'authority' | 'communication';
+export interface BoundaryPreset {
+readonly id: string;
+readonly category: BoundaryPresetCategory;
+readonly labelKey: string;
+readonly prompt: string;
+}
+export declare const BOUNDARY_PRESETS: readonly BoundaryPreset[];
+export declare function getBoundaryPreset(id: string): BoundaryPreset | undefined;
+
 // ===== bulkInconsistency.d.ts =====
 export interface BulkInconsistencyPreview {
 unchecked: number;
@@ -411,6 +422,7 @@ export * from './knowledgeGraph.js';
 export * from './datasetId.js';
 export * from './embeddingClient.js';
 export * from './responseGuard.js';
+export * from './boundaryPresets.js';
 export * from './agentPriorities.js';
 export * from './privacyReceipt.js';
 export * from './privacyReceiptFixtures.js';
@@ -481,6 +493,12 @@ countMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<{
 count: number;
 }>;
 purgeMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<{
+deletedNodes: number;
+}>;
+countConversationHistory?(filter: ConversationHistoryPurgeFilter): Promise<{
+count: number;
+}>;
+purgeConversationHistory?(filter: ConversationHistoryPurgeFilter): Promise<{
 deletedNodes: number;
 }>;
 listMemoryAclAudit(memorableKnowledgeNodeId: string, opts?: {
@@ -846,6 +864,12 @@ tenantId: string;
 originAgent?: string;
 aclOwner?: string;
 }
+export interface ConversationHistoryPurgeFilter {
+tenantId: string;
+agentSlug?: string;
+userId?: string;
+}
+export declare const CONVERSATION_HISTORY_NODE_TYPES: readonly ["Turn", "Run", "AgentInvocation", "ToolCall", "Plan", "PlanStep"];
 export interface FactIngest {
 factId: string;
 sourceTurnId: string;
@@ -1585,6 +1609,7 @@ export interface ToolRegistrationOptions {
 readonly promptDoc?: string;
 readonly attachmentSink?: NativeToolAttachmentSink;
 readonly writeCapabilities?: readonly WriteCapability[];
+readonly isAvailable?: () => boolean;
 }
 export type RouteAuthMode = 'session' | 'public' | 'custom';
 export type RouteBodyMode = 'json' | 'raw' | 'none';
@@ -1622,6 +1647,18 @@ get(fieldKey: string): Promise<string>;
 export type OAuthTokenErrorCode = 'not_connected' | 'refresh_failed';
 export interface OperatorAuthAccessor {
 hasValidSession(cookieHeader: string | undefined): Promise<boolean>;
+sessionPrincipal?(cookieHeader: string | undefined): Promise<OperatorPrincipal | null>;
+recordAdminAction?(cookieHeader: string | undefined, entry: OperatorAdminAuditEntry): Promise<boolean>;
+}
+export interface OperatorPrincipal {
+readonly userId?: string;
+readonly email: string;
+}
+export interface OperatorAdminAuditEntry {
+readonly action: string;
+readonly target: string;
+readonly before?: Readonly<Record<string, unknown>>;
+readonly after?: Readonly<Record<string, unknown>>;
 }
 export declare class OAuthTokenError extends Error {
 readonly code: OAuthTokenErrorCode;
@@ -2004,6 +2041,10 @@ readonly turnId: string;
 readonly toolName: string;
 readonly input: unknown;
 }
+export interface PrivacyV4ToolResult {
+readonly resultText: string;
+readonly canvasSentinel?: string;
+}
 export interface PrivacyV4ToolSpec {
 readonly name: string;
 readonly description: string;
@@ -2117,9 +2158,7 @@ recordBypassedTool(request: PrivacyBypassedToolRequest): Promise<void>;
 recordStructuredPayload?(request: PrivacyStructuredPayloadRequest): Promise<void>;
 recordToolError?(request: PrivacyToolErrorRequest): Promise<void>;
 redactToolErrorText?(request: PrivacyToolErrorRedactRequest): Promise<PrivacyToolErrorRedactResult>;
-runV4Tool(request: PrivacyV4ToolRequest): Promise<{
-readonly resultText: string;
-}>;
+runV4Tool(request: PrivacyV4ToolRequest): Promise<PrivacyV4ToolResult>;
 subAgentResultV4(request: PrivacySubAgentResultV4Request): Promise<{
 readonly resultText: string;
 }>;

@@ -505,7 +505,8 @@ export const turnContext = {
  * as attribution would stamp plausible-looking wrong ids on the row, which is
  * worse than an honest NULL. Nested scopes that copy fields selectively
  * (`pluginContext.callTool`, skill-bound tools) drop `sessionScope` too and read
- * as "no turn"; no capture seam runs inside them today.
+ * as "no turn": a plugin `ctx.llm` call made inside them (#1390) is recorded
+ * without turn attribution.
  *
  * Structural return type so this module keeps its dependency-free shape; it is
  * assignable to `@omadia/usage-telemetry`'s `UsageContext`.

@@ -29,6 +29,11 @@ export {
   scramOnlyPoolOptions,
 } from './scramOnlyClient.js';
 
+// "Postgres is not reachable YET" — shared with core's boot-time wait in
+// `platform/coreMigrations.ts` (#1386), so the two waits cannot disagree on
+// which errors are worth riding out.
+export { isTransientDbError } from './neonKnowledgeGraph.js';
+
 // Embedding-backfill scheduler. The InMemory sibling has no persistence
 // layer to back-fill, so this lives only here.
 export { startEmbeddingBackfill } from './embeddingBackfill.js';

@@ -36,6 +36,7 @@ import type {
   PrivacyToolResultV4Request,
   PrivacyToolResultV4Result,
   PrivacyV4ToolRequest,
+  PrivacyV4ToolResult,
   PrivacyV4ToolSpec,
   PrivacyVerifierProjectionRequest,
   PromptMaskedSpanInfo,
@@ -210,9 +211,15 @@ interface PendingCanvasTreeEnvelope {
   readonly _note: string;
 }
 
-function buildRenderSnapshotResultText(
-  structuredTable: NonNullable<ReturnType<typeof materialize>['structuredTable']>,
-): string {
+type RenderedStructuredTable = NonNullable<
+  ReturnType<typeof materialize>['structuredTable']
+>;
+
+/** #1402 — the `_pendingCanvasTree` snapshot of a table render. It carries the
+ *  REAL cell values, so it leaves `runV4Tool` only as `canvasSentinel` (the
+ *  kernel's pre-intern canvas side channel) and never as the `resultText` the
+ *  model reads back. */
+function buildRenderSnapshotSentinel(structuredTable: RenderedStructuredTable): string {
   const payload: PendingCanvasTreeEnvelope = {
     _pendingCanvasTree: {
       tree: {
@@ -232,6 +239,21 @@ function buildRenderSnapshotResultText(
     _note: V4_RENDER_NOTE,
   };
   return JSON.stringify(payload);
+}
+
+/** #1402 — the model's `tool_result` for a table render: shape only (row
+ *  counts and the column labels the model itself chose), never a cell. */
+function buildRenderAckText(
+  structuredTable: RenderedStructuredTable,
+  rowCount: number,
+  renderedRowCount: number,
+): string {
+  const labels = structuredTable.columns.map((c) => c.label);
+  const rows =
+    renderedRowCount < rowCount
+      ? `${String(renderedRowCount)} of ${String(rowCount)} rows`
+      : `${String(rowCount)} rows`;
+  return `${V4_RENDER_NOTE} Rendered a table with ${rows}; columns: ${JSON.stringify(labels)}.`;
 }
 
 /**
@@ -699,9 +721,7 @@ export function createPrivacyGuardService(deps?: {
       );
     },
 
-    async runV4Tool(
-      request: PrivacyV4ToolRequest,
-    ): Promise<{ readonly resultText: string }> {
+    async runV4Tool(request: PrivacyV4ToolRequest): Promise<PrivacyV4ToolResult> {
       const store = storeFor(request.turnId);
       try {
         if (request.toolName === RENDER_TOOL_SPEC.name) {
@@ -729,11 +749,16 @@ export function createPrivacyGuardService(deps?: {
               `rendered=${String(rendered.renderedRowCount)} format=${directive.format}` +
               `${renderIsError ? ' isError=true' : ''}`,
           );
+          if (rendered.structuredTable === undefined) {
+            return { resultText: V4_RENDER_NOTE };
+          }
           return {
-            resultText:
-              rendered.structuredTable !== undefined
-                ? buildRenderSnapshotResultText(rendered.structuredTable)
-                : V4_RENDER_NOTE,
+            resultText: buildRenderAckText(
+              rendered.structuredTable,
+              rendered.rowCount,
+              rendered.renderedRowCount,
+            ),
+            canvasSentinel: buildRenderSnapshotSentinel(rendered.structuredTable),
           };
         }
         const engine = createVerbEngine({

@@ -216,7 +216,7 @@ import {
   type DirectLineStickyStore,
   type StickyScopeClassification,
 } from './directLineSticky.js';
-import type { NativeToolRegistry } from './nativeToolRegistry.js';
+import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
 import type { CliTurnCards } from './cliChatAgent.js';
@@ -312,6 +312,7 @@ import {
 import { resolveTurnAudience, type TurnAudience } from './turnAudience.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
+import { splitV4ToolResult } from './v4RenderSideChannel.js';
 
 /**
  * The `userId` a `RunTraceCollector` is built with — the canonical cluster id
@@ -8822,9 +8823,17 @@ export class Orchestrator {
     // Verb tools + the terminal render tool are served by the privacy
     // provider's per-turn data-plane engine, not by a tool handler. They stay
     // outside the replay ledger: pure data-plane over THIS pass's datasets.
+    // #1402 — a table render's snapshot carries the real rows: it goes to the
+    // canvas through the sentinel sink, the model gets the shape-only ack.
     if (privacy !== undefined && name.startsWith('v4_')) {
-      const v4Tool = await privacy.runV4Tool({ toolName: name, input });
-      return v4Tool.resultText;
+      const v4Tool = splitV4ToolResult(
+        name,
+        await privacy.runV4Tool({ toolName: name, input }),
+      );
+      if (v4Tool.canvasSentinel !== undefined) {
+        tapCanvasSentinel(name, v4Tool.canvasSentinel);
+      }
+      return v4Tool.llmText;
     }
     // The request's tool replay ledger (`toolReplayLedger.ts`), asked BEFORE
     // the handler runs. A verifier re-entry gets the first run's outcome back
@@ -9166,14 +9175,7 @@ export class Orchestrator {
       // synthesis is server-side and must compose from the RAW directive
       // (incl. dataset rows resolved server-side that the LLM never sees).
       // Tap before interning; the LLM still gets only the digest below.
-      const sentinelSink = turnContext.current()?.canvasSentinelSink;
-      if (sentinelSink !== undefined && result.includes('"_pending')) {
-        try {
-          sentinelSink(name, result);
-        } catch (err) {
-          console.warn(`[orchestrator.dispatchTool:${name}] canvasSentinelSink threw:`, err);
-        }
-      }
+      if (result.includes('"_pending')) tapCanvasSentinel(name, result);
       // #1105 / #1097 — a guarded tool that returned control-flow prose (the
       // orchestrator's `Error:` tool-error convention — the same prefix the
       // tool-result assembly reads to stamp `is_error` — or the MCP connect
@@ -9534,7 +9536,9 @@ export class Orchestrator {
     // has already hidden from its `tools[]` for this same turn.
     const extraDocs = this.nativeTools
       .listWithHandler()
-      .filter((e) => this.isToolAvailable(e.agentId))
+      // #1346 — and the same per-turn gate: a tool hidden from this turn's
+      // tools[] must not be described to the model either.
+      .filter((e) => this.isToolAvailable(e.agentId) && isOfferedThisTurn(e))
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
     // Issue #474 (round 3) — same isToolAvailable gate as buildToolsList()'s
@@ -10222,7 +10226,9 @@ export class Orchestrator {
       // pushes those above — advertising them again duplicated five names and
       // 400'd every turn (`tools: Tool names must be unique.`).
       if (entry.spec && KERNEL_NATIVE_SPECS.has(entry.spec)) continue;
-      if (entry.spec && this.isToolAvailable(entry.agentId)) {
+      // #1346 — a plugin may declare per turn that it cannot serve this
+      // channel (e.g. a discussion needs a conversation the turn can name).
+      if (entry.spec && this.isToolAvailable(entry.agentId) && isOfferedThisTurn(entry)) {
         nativeSpecs.push(entry.spec);
       }
     }
@@ -10515,3 +10521,16 @@ function collectTextBlocks(content: ContentBlock[]): string[] {
 // It's imported at the top of this file and re-exported via the back-compat
 // barrel so `import { toSemanticAnswer } from '../orchestrator.js'` callers
 // (verifier wrapper today, channel adapters until S+11) keep working.
+
+/** Hand a raw, sentinel-bearing tool result to the turn's canvas-sentinel
+ *  sink (installed by the canvas UI orchestrator), if one is set. The raw
+ *  text is user-destined — callers keep it off the LLM wire. */
+function tapCanvasSentinel(toolName: string, raw: string): void {
+  const sentinelSink = turnContext.current()?.canvasSentinelSink;
+  if (sentinelSink === undefined) return;
+  try {
+    sentinelSink(toolName, raw);
+  } catch (err) {
+    console.warn(`[orchestrator.dispatchTool:${toolName}] canvasSentinelSink threw:`, err);
+  }
+}

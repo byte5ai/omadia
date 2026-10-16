@@ -122,14 +122,19 @@ import { resolveSkillManifestSigningKey } from './services/skillManifestSigningK
 import { createCredentialAskRouter } from './routes/credentialAsks.js';
 import { InMemoryCredentialAskStore } from './credentials/asks.js';
 import { PostgresCredentialAskStore } from './credentials/postgresCredentialAskStore.js';
-import { resolveCredentialMasterKey } from './credentials/crypto.js';
+import {
+  credentialKeychainDevKeyPath,
+  resolveCredentialMasterKey,
+} from './credentials/crypto.js';
 import { createCredentialStore } from './credentials/credentialStoreFactory.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
 import { createTopicsRouter } from './routes/topics.js';
 import { createUsageRouter } from './routes/usage.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
+import { createClassDefaultRebuilder } from './platform/classDefaultRebuild.js';
 import {
+  createOrchestratorToolRebinder,
   hydrateAgentRegistry,
   kernelDomainTools,
   liveDomainTools,
@@ -164,6 +169,7 @@ import { createHarnessAdminUiRouter } from './routes/harnessAdminUi.js';
 import { createPluginUiStaticRouter } from './routes/pluginUiStatic.js';
 import { createStoreRouter } from './routes/store.js';
 import { createInstallRouter } from './routes/install.js';
+import { readGrantSnapshot } from './routes/runtimeGrants.js';
 import { createAdminRegistriesRouter } from './routes/adminRegistries.js';
 import { RegistryClient } from './plugins/registryClient.js';
 import {
@@ -206,6 +212,7 @@ import {
 } from './platform/pluginLlmReadiness.js';
 import { createServiceRegistryBackedSqlGrantStore } from './platform/pluginSqlGrantStore.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
+import { buildPlatformChecks } from './health/platformHealth.js';
 import { createBuilderRouter } from './routes/builder.js';
 import {
   OperatorGate,
@@ -273,6 +280,7 @@ import { publicPaths } from './auth/publicPaths.js';
 import { recordRawBodyBytes } from './http/rawBodySize.js';
 import { createAppServer, createTerminalHandler } from './http/terminalHandler.js';
 import { redactAuditError } from './services/secretRedaction.js';
+import { isApiKeyActive } from '@omadia/api-key-auth';
 import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp.js';
 // W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
 // OPERATOR router only. `mountPublicMcp` above must never be handed this: the
@@ -284,7 +292,7 @@ import {
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
 import { createRequireAuth, evaluateSessionToken } from './auth/requireAuth.js';
-import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
+import { createOperatorAuthAccessor, LateBoundAdminAudit } from './auth/operatorAuthAccessor.js';
 import {
   createConductorWebhooksInboundRouter,
   type ConductorWebhookInboundDeps,
@@ -323,7 +331,7 @@ import {
   EntraProvider,
 } from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
-import { AdminAuditLog, roleChangeAuditEntry } from './auth/adminAuditLog.js';
+import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry } from './auth/adminAuditLog.js';
 import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
@@ -336,6 +344,7 @@ import {
   requestIsSecure,
 } from './http/requestTrust.js';
 import { createAdminUsersRouter } from './routes/adminUsers.js';
+import { createAdminAuditRouter } from './routes/adminAudit.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
 import {
@@ -991,7 +1000,7 @@ async function main(): Promise<void> {
   if (credentialMasterKey.source === 'env') {
     console.log('[middleware] credential-keychain master key loaded from CREDENTIAL_KEYCHAIN_KEY env');
   } else if (credentialMasterKey.source === 'dev-file-existed') {
-    console.log('[middleware] ⚠ credential-keychain master key loaded from dev file — set CREDENTIAL_KEYCHAIN_KEY for production');
+    console.log(`[middleware] ⚠ credential-keychain master key loaded from dev file (${credentialKeychainDevKeyPath(DATA_DIR)}) — set CREDENTIAL_KEYCHAIN_KEY for production`);
   } else {
     console.warn('[middleware] ⚠ credential-keychain master key GENERATED (dev file) — DEV ONLY. Set CREDENTIAL_KEYCHAIN_KEY for production.');
   }
@@ -1012,10 +1021,15 @@ async function main(): Promise<void> {
   // `@omadia/channel-api`'s `/admin/keys`) can check the real operator
   // session without re-implementing it. Threaded into every plugin runtime
   // below so any plugin — not just channel plugins — can use it.
+  // #1329 — `admin_audit` for plugin-originated admin actions (API-key
+  // lifecycle). Late-bound: the AdminAuditLog needs the Postgres pool, which
+  // exists only further down; attached right where it is constructed.
+  const pluginAdminAudit = new LateBoundAdminAudit();
   const operatorAuth = createOperatorAuthAccessor({
     signingKey: sessionSigningKey,
     whitelist: emailWhitelist,
     sessions: sessionRevocation,
+    audit: pluginAdminAudit,
   });
 
   const installedRegistry = new FileInstalledRegistry(
@@ -1035,9 +1049,30 @@ async function main(): Promise<void> {
   // hot-install path below can refresh a runtime-installed provider through
   // it; the boot refresh + timer start further down, once installed provider
   // plugins are in the catalog too.
+  // #1359 — a discovery run that moves a provider's class defaults rebuilds
+  // the LLM plugins that resolved a class ref against the older catalog (at
+  // boot: the seed). It waits for `bootWired` (resolved once the domain-tool
+  // re-bind is installed), and reactivates through `reactivateAgent`, which is
+  // defined further below — hence the forward reference.
+  let resolveBootWired: () => void = () => undefined;
+  const bootWired = new Promise<void>((resolve) => {
+    resolveBootWired = resolve;
+  });
+  // eslint-disable-next-line prefer-const -- assigned further below; closures read it first
+  let reactivateAgentRef: ((agentId: string) => Promise<void>) | undefined;
+  const classDefaultRebuilder = createClassDefaultRebuilder({
+    installedRegistry,
+    reactivate: async (agentId) => {
+      await reactivateAgentRef?.(agentId);
+    },
+    ready: bootWired,
+  });
   const modelCatalogSync: ModelCatalogSync = createModelCatalogSync({
     catalog: llmProviderCatalog,
     getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
+    onDefaultsChanged: (providerId) => {
+      void classDefaultRebuilder.onDefaultsChanged(providerId);
+    },
   });
   // #1033 W1 — the kernel's own provider pool: same credentials source as the
   // orchestrator plugin (the vault scope `@omadia/orchestrator`), same
@@ -1384,7 +1419,13 @@ async function main(): Promise<void> {
   // orchestrator-wiring block far below (it needs the hydration closures) and
   // called from `onActivated` here; the boot activation runs before the
   // assignment and stays a no-op, since the boot block hydrates itself.
+  // eslint-disable-next-line prefer-const -- assigned further below; closures read it first
   let rebindOrchestratorToolsRef: (() => void) | undefined;
+  // The shared Anthropic client refresher, defined further below. Awaited
+  // before the re-bind so DB-defined sub-agents are hydrated with the client
+  // that holds the key just saved, not the one before it.
+  // eslint-disable-next-line prefer-const -- assigned further below; closures read it first
+  let refreshSharedAnthropicClientRef: (() => Promise<void>) | undefined;
 
   const toolPluginRuntime = new ToolPluginRuntime({
     catalog: pluginCatalog,
@@ -1424,9 +1465,14 @@ async function main(): Promise<void> {
     // against it typecheck. `lookupServiceType()` is read live by the
     // manifest-linter and codegen, so a newly-online platform becomes
     // buildable immediately, with no middleware restart.
+    // #1359 — stamped when the activation STARTS: a discovery run landing
+    // while the plugin's activate() runs must still count as newer than what
+    // it resolved.
+    onActivating: (agentId) => classDefaultRebuilder.noteActivated(agentId),
     onActivated: async (entry, packagePath) => {
       if (entry.plugin.id === '@omadia/orchestrator') {
         try {
+          await refreshSharedAnthropicClientRef?.();
           rebindOrchestratorToolsRef?.();
         } catch (err) {
           console.error(
@@ -1811,11 +1857,15 @@ async function main(): Promise<void> {
     // /api/v1/admin/runtime/installed/:id/secrets): the consumer plugin's
     // vault was just (re)seeded. Re-source the shared providers so any
     // plugin reaching the host LLM via `ctx.llm` picks up the real key without
-    // a restart.
+    // a restart. (The orchestrator's `onActivated` already awaited one refresh
+    // before the domain-tool re-bind; this second one is a cheap, serialized
+    // no-op then, and stays for any path where that hook did not run.)
     if (agentId === ORCHESTRATOR_SECRET_SOURCE) {
       await sharedAnthropicClientRefresher.refresh();
     }
   };
+  reactivateAgentRef = reactivateAgent;
+  refreshSharedAnthropicClientRef = () => sharedAnthropicClientRefresher.refresh();
 
   // ── Vault off-site backup ─────────────────────────────────────────────────
   // Only starts when VAULT_BACKUP_ENABLED=true AND Tigris/MinIO credentials
@@ -1934,8 +1984,11 @@ async function main(): Promise<void> {
         })
       : null;
   if (!oauthClient) {
+    // #1323 — only Entra is off here. The auth router is mounted regardless,
+    // and local sign-in works; the real 503 fallback (no graph pool) logs its
+    // own warning further down.
     console.warn(
-      '[middleware] ⚠ admin OAuth disabled — MICROSOFT_APP_* missing. /api/v1/auth/* returns 503.',
+      '[middleware] ⚠ Entra sign-in disabled (MICROSOFT_APP_* missing). Local login is unaffected.',
     );
   } else {
     console.log(
@@ -2565,16 +2618,15 @@ async function main(): Promise<void> {
   // routes below resolve those services LIVE from the registry per request,
   // so chat goes live the moment the key is saved — no restart needed.
   //
-  // The domain-tool wiring guarded on `orchestrator` below (hydration of the
-  // chat and per-Agent orchestrators) runs at boot, and again on every later
-  // re-activation of the orchestrator plugin (provider switch, secret save,
-  // reactivate — `rebindOrchestratorToolsRef`). Only a boot WITHOUT a chat
-  // orchestrator (key-less first boot) still needs a restart for advanced
-  // stacks (sub-agents): the wiring is never installed on that path. The
-  // default out-of-the-box stack has no domain tools, so chat is fully
-  // functional hot. Routines follows the same
-  // live-resolution pattern as chat (issue #473): its runner resolves
-  // chatAgent per run, so it hot-enables on key save too.
+  // The domain-tool wiring below (hydration of the chat and per-Agent
+  // orchestrators) runs at boot, and again on every later re-activation of
+  // the orchestrator plugin (provider switch, secret save, model assignment,
+  // reactivate — `rebindOrchestratorToolsRef`). It is installed on a key-less
+  // first boot too (#1358): there the first key save publishes the chat
+  // orchestrator and the registry, and the re-bind hydrates both, so neither
+  // chat nor routines need a restart to reach their sub-agents. Routines
+  // follow the same live-resolution pattern as chat (issue #473): the runner
+  // resolves chatAgent per run, i.e. the re-bound instance.
   const chatAgentBundle = serviceRegistry.get<ChatAgentBundle>('chatAgent');
   const orchestrator = chatAgentBundle?.raw;
   if (!chatAgentBundle) {
@@ -2593,438 +2645,434 @@ async function main(): Promise<void> {
   // consumers but no longer threaded through the kernel — graphBackfill
   // doesn't need it (uses memoryStore + KG directly), and the chat-API
   // route resolves the orchestrator live from the registry.
-  if (orchestrator) {
-    // Push all kernel-collected DomainTools (native sub-agents + uploaded
-    // dynamic agents) into the plugin-built Orchestrator. Plugin construction
-    // happens BEFORE these are accumulated, so the registerDomainTool calls
-    // here finish the wiring. Re-run on every later re-activation of the
-    // orchestrator plugin (see `rebindOrchestratorToolsRef`), which publishes
-    // a fresh Orchestrator that starts with no domain tools.
-    const bindChatOrchestrator = (target: typeof orchestrator): void => {
-      for (const t of bootKernelDomainTools()) {
-        if (!target.hasDomainTool(t.name)) target.registerDomainTool(t);
-      }
-      // Registers the runtime's LIVE dynamic-agent tools, and is the
-      // hot-register pathway for future agent installs while the process runs.
-      dynamicAgentRuntime.attachOrchestrator(target);
-    };
-    bindChatOrchestrator(orchestrator);
-    // Set inside the registry block below; absent on a registry-less (no-DB) host.
-    let hydrateRegistryForRebind: ((reg: MultiOrchestratorRegistry) => void) | undefined;
-    // Re-bind after a post-boot re-activation of the orchestrator plugin
-    // (fired from `toolPluginRuntime.onActivated`). Resolves both services
-    // LIVE: the re-activation replaced the chat bundle and the registry.
-    rebindOrchestratorToolsRef = (): void => {
-      const chat = serviceRegistry.get<ChatAgentBundle>('chatAgent')?.raw;
-      if (chat) bindChatOrchestrator(chat);
-      const reg =
-        serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-      if (reg) hydrateRegistryForRebind?.(reg);
-      console.log(
-        `[middleware] orchestrator re-activated — domain tools re-bound (chat=${chat ? 'yes' : 'no'}, registry=${reg && hydrateRegistryForRebind ? 'yes' : 'no'})`,
-      );
-    };
+  // Push all kernel-collected DomainTools (native sub-agents + uploaded
+  // dynamic agents) into the plugin-built Orchestrator. Plugin construction
+  // happens BEFORE these are accumulated, so the registerDomainTool calls
+  // here finish the wiring. Re-run on every later re-activation of the
+  // orchestrator plugin (fired from `toolPluginRuntime.onActivated` via
+  // `rebindOrchestratorToolsRef`), which publishes a fresh chat Orchestrator
+  // and registry that start with no domain tools. Both are resolved LIVE.
+  const orchestratorToolRebinder = createOrchestratorToolRebinder({
+    getChat: () => serviceRegistry.get<ChatAgentBundle>('chatAgent')?.raw,
+    getRegistry: () =>
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+    kernelTools: bootKernelDomainTools,
+    // Registers the runtime's LIVE dynamic-agent tools, and is the
+    // hot-register pathway for future agent installs while the process runs.
+    attachDynamicAgents: (chat) => dynamicAgentRuntime.attachOrchestrator(chat),
+    log: (m) => console.log(`[middleware] ${m}`),
+  });
+  if (orchestrator) orchestratorToolRebinder.bindChat(orchestrator);
+  rebindOrchestratorToolsRef = (): void => orchestratorToolRebinder.rebind();
 
-    // Phase B fix — the multi-orchestrator registry built one Orchestrator per
-    // Agent earlier in boot (inside the orchestrator plugin's activate, during
-    // `toolPluginRuntime.activateAllInstalled`). At that point `domainTools`
-    // was still empty, so every per-Agent orchestrator started with
-    // `domainTools: []` — chat hitting the fallback Agent could not see
-    // `query_odoo_accounting`, `query_confluence`, etc. Push the populated
-    // list into every registry-built Orchestrator now. Skip duplicates so a
-    // hot-installed tool that already self-registered does not throw.
-    const registryForHydrate =
-      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-    if (registryForHydrate) {
-      // Per-Agent tool isolation. A domain tool's `agentId` is the id of the
-      // agent-plugin that exposes it (set by `createDomainTool` /
-      // `dynamicAgentRuntime`), e.g. `query_odoo_accounting` →
-      // `de.byte5.agent.odoo-accounting`. An Agent may only reach a sub-agent
-      // query tool when that backing plugin is ENABLED on it; a tool with no
-      // `agentId` is a core helper available to everyone. The fallback Agent
-      // has every plugin enabled, so it still receives the full set
-      // (preserving the original Phase-B hydration intent) — but a scoped
-      // Agent (e.g. "marketing", which only enables the X plugin) no longer
-      // inherits `query_odoo_accounting` et al. it was never granted.
-      // See `scopeDomainToolsToPlugins` for the rule.
-      //
-      // Tools come from the LIVE source `currentDomainTools` (defined after
-      // the dynamic-agent activation above), so a runtime-installed agent's
-      // tool reaches a per-Agent orchestrator on a later rebuild.
+  // Phase B fix — the multi-orchestrator registry built one Orchestrator per
+  // Agent earlier in boot (inside the orchestrator plugin's activate, during
+  // `toolPluginRuntime.activateAllInstalled`). At that point `domainTools`
+  // was still empty, so every per-Agent orchestrator started with
+  // `domainTools: []` — chat hitting the fallback Agent could not see
+  // `query_odoo_accounting`, `query_confluence`, etc. Push the populated
+  // list into every registry-built Orchestrator now. Skip duplicates so a
+  // hot-installed tool that already self-registered does not throw.
+  const registryForHydrate =
+    serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+  // Installed on a key-less boot too: with a database the per-Agent registry
+  // is published on the first key save, and it needs the same hydration (and
+  // the MCP pool behind its sub-agent tools) as one that existed at boot.
+  if (registryForHydrate !== undefined || graphPool !== undefined) {
+    // Per-Agent tool isolation. A domain tool's `agentId` is the id of the
+    // agent-plugin that exposes it (set by `createDomainTool` /
+    // `dynamicAgentRuntime`), e.g. `query_odoo_accounting` →
+    // `de.byte5.agent.odoo-accounting`. An Agent may only reach a sub-agent
+    // query tool when that backing plugin is ENABLED on it; a tool with no
+    // `agentId` is a core helper available to everyone. The fallback Agent
+    // has every plugin enabled, so it still receives the full set
+    // (preserving the original Phase-B hydration intent) — but a scoped
+    // Agent (e.g. "marketing", which only enables the X plugin) no longer
+    // inherits `query_odoo_accounting` et al. it was never granted.
+    // See `scopeDomainToolsToPlugins` for the rule.
+    //
+    // Tools come from the LIVE source `currentDomainTools` (defined after
+    // the dynamic-agent activation above), so a runtime-installed agent's
+    // tool reaches a per-Agent orchestrator on a later rebuild.
 
-      // Agent Builder P2/P4 — shared MCP connection pool + a closure that
-      // materialises each agent's DB-defined sub-agents into DomainTools and
-      // registers them on its orchestrator. Called on initial hydrate AND
-      // from `onAgentBuilt` so a rebuilt agent re-acquires its sub-agents.
-      // Audit observer (issue #462): every callTool lands one row in
-      // mcp_call_log, fire-and-forget so the tool-call path never blocks on
-      // the database. Identity comes from turnContext inside the manager.
-      const mcpAuditStore = graphPool ? new AgentGraphStore(graphPool) : undefined;
-      // #547 / #569 — the structured-output sidecar's first consumer: privacy
-      // ACCOUNTING, not rendering. The payload is emitted out-of-band from
-      // `McpManager.callTool` and never reaches the model wire (the model sees
-      // only the interned digest of the TEXT result), so nothing here is
-      // masked — but the sidecar fired beneath every dispatcher, so structured
-      // content appeared in no turn receipt at all. This records a PII-free
-      // entry (tool + server + byte count + schema flag) into the turn's
-      // privacy receipt so an operator audit accounts for it. Deliberately does
-      // NOT forward the payload anywhere a renderer could consume it — that is
-      // #547's remaining half, unblocked by this accounting decision but out of
-      // scope here. Fail-closed: an accounting failure must never break a tool
-      // call, and a payload with no turn identity is skipped (there is no
-      // receipt to attribute it to) rather than mis-filed.
-      const mcpStructuredSink: McpStructuredSink = (payload: McpSidecarPayload) => {
-        if (payload.kind !== 'structured_output') return;
-        if (payload.turnId === null) {
-          console.warn(
-            `[middleware] structured sidecar for '${payload.toolName}' has no turnId — not accounted`,
-          );
-          return;
-        }
-        const privacy = serviceRegistry.get<PrivacyGuardService>(
-          PRIVACY_REDACT_SERVICE_NAME,
+    // Agent Builder P2/P4 — shared MCP connection pool + a closure that
+    // materialises each agent's DB-defined sub-agents into DomainTools and
+    // registers them on its orchestrator. Called on initial hydrate AND
+    // from `onAgentBuilt` so a rebuilt agent re-acquires its sub-agents.
+    // Audit observer (issue #462): every callTool lands one row in
+    // mcp_call_log, fire-and-forget so the tool-call path never blocks on
+    // the database. Identity comes from turnContext inside the manager.
+    const mcpAuditStore = graphPool ? new AgentGraphStore(graphPool) : undefined;
+    // #547 / #569 — the structured-output sidecar's first consumer: privacy
+    // ACCOUNTING, not rendering. The payload is emitted out-of-band from
+    // `McpManager.callTool` and never reaches the model wire (the model sees
+    // only the interned digest of the TEXT result), so nothing here is
+    // masked — but the sidecar fired beneath every dispatcher, so structured
+    // content appeared in no turn receipt at all. This records a PII-free
+    // entry (tool + server + byte count + schema flag) into the turn's
+    // privacy receipt so an operator audit accounts for it. Deliberately does
+    // NOT forward the payload anywhere a renderer could consume it — that is
+    // #547's remaining half, unblocked by this accounting decision but out of
+    // scope here. Fail-closed: an accounting failure must never break a tool
+    // call, and a payload with no turn identity is skipped (there is no
+    // receipt to attribute it to) rather than mis-filed.
+    const mcpStructuredSink: McpStructuredSink = (payload: McpSidecarPayload) => {
+      if (payload.kind !== 'structured_output') return;
+      if (payload.turnId === null) {
+        console.warn(
+          `[middleware] structured sidecar for '${payload.toolName}' has no turnId — not accounted`,
         );
-        // Feature-detected: a privacy provider that predates #569 (or none
-        // installed at all) makes the sink a no-op — no receipt entry, no side
-        // effect. (Not byte-identical at the manager: wiring this sink means
-        // `emitStructured` now runs its body per structured result where before
-        // it early-returned on the absent sink. The work is a turnContext read
-        // and a Map lookup, and produces nothing observable without a provider.)
-        if (privacy?.recordStructuredPayload === undefined) return;
-        // Fail closed on our OWN terms, not on the manager's `emitStructured`
-        // try/catch: `structuredContent` is a post-`JSON.parse` value so
-        // re-serialising it cannot realistically throw, but a byte count that
-        // could take down accounting is not worth trusting a caller's guard
-        // for. An unmeasurable payload is still worth accounting — record it
-        // with `bytes: 0` rather than dropping the entry.
-        let bytes = 0;
-        try {
-          bytes = Buffer.byteLength(JSON.stringify(payload.structured), 'utf8');
-        } catch {
-          /* leave bytes at 0 — the entry still records that structured output
-             was received, which is the load-bearing accounting fact */
-        }
-        void privacy
-          .recordStructuredPayload({
-            turnId: payload.turnId,
-            toolName: payload.toolName,
-            serverName: payload.serverName,
-            bytes,
-            hasOutputSchema: payload.outputSchema !== undefined,
-          })
-          .catch((err: unknown) => {
-            console.warn(
-              `[middleware] structured sidecar accounting failed for '${payload.toolName}': ${String(err)}`,
-            );
-          });
-      };
-      // Generic MCP OAuth (epic #459 W9) wired as the manager's auth provider;
-      // the service instance is created at outer scope (shared with the router).
-      const mcpManager: McpManager = new McpManager({
-        // #547 / #569 — see `mcpStructuredSink` above (accounting only).
-        structuredSink: mcpStructuredSink,
-        // Issues #1341 / #1342 — runtime tool calls and the periodic rescan
-        // pass the operator outbound host rule and the stdio switch before
-        // any transport is built.
-        connectGuard: createMcpConnectGuard({ stdioEnabled: config.MCP_STDIO_ENABLED }),
-        // W2-1 (#544) — where a `resultType: "input_required"` call is parked.
-        // The process-shared instance, so the Orchestrator's turn drain reads
-        // exactly what this manager wrote.
-        pendingInput: sharedPendingMcpInputStore(),
-        ...(mcpAuditStore
-          ? {
-              onToolCall: (entry: McpCallLogEntry) => {
-                // `entry.error` is upstream text — a remote MCP server's own
-                // protocol/transport message. The orchestrator bounds it to 300
-                // characters, but truncation is not redaction: a server that
-                // echoes `refresh_token=…`, an `Authorization: Bearer …`, or a
-                // secret-shaped JSON field puts that credential into an
-                // append-only table, and the operator audit API returns the
-                // stored string verbatim.
+        return;
+      }
+      const privacy = serviceRegistry.get<PrivacyGuardService>(
+        PRIVACY_REDACT_SERVICE_NAME,
+      );
+      // Feature-detected: a privacy provider that predates #569 (or none
+      // installed at all) makes the sink a no-op — no receipt entry, no side
+      // effect. (Not byte-identical at the manager: wiring this sink means
+      // `emitStructured` now runs its body per structured result where before
+      // it early-returned on the absent sink. The work is a turnContext read
+      // and a Map lookup, and produces nothing observable without a provider.)
+      if (privacy?.recordStructuredPayload === undefined) return;
+      // Fail closed on our OWN terms, not on the manager's `emitStructured`
+      // try/catch: `structuredContent` is a post-`JSON.parse` value so
+      // re-serialising it cannot realistically throw, but a byte count that
+      // could take down accounting is not worth trusting a caller's guard
+      // for. An unmeasurable payload is still worth accounting — record it
+      // with `bytes: 0` rather than dropping the entry.
+      let bytes = 0;
+      try {
+        bytes = Buffer.byteLength(JSON.stringify(payload.structured), 'utf8');
+      } catch {
+        /* leave bytes at 0 — the entry still records that structured output
+           was received, which is the load-bearing accounting fact */
+      }
+      void privacy
+        .recordStructuredPayload({
+          turnId: payload.turnId,
+          toolName: payload.toolName,
+          serverName: payload.serverName,
+          bytes,
+          hasOutputSchema: payload.outputSchema !== undefined,
+        })
+        .catch((err: unknown) => {
+          console.warn(
+            `[middleware] structured sidecar accounting failed for '${payload.toolName}': ${String(err)}`,
+          );
+        });
+    };
+    // Generic MCP OAuth (epic #459 W9) wired as the manager's auth provider;
+    // the service instance is created at outer scope (shared with the router).
+    const mcpManager: McpManager = new McpManager({
+      // #547 / #569 — see `mcpStructuredSink` above (accounting only).
+      structuredSink: mcpStructuredSink,
+      // Issues #1341 / #1342 — runtime tool calls and the periodic rescan
+      // pass the operator outbound host rule and the stdio switch before
+      // any transport is built.
+      connectGuard: createMcpConnectGuard({ stdioEnabled: config.MCP_STDIO_ENABLED }),
+      // W2-1 (#544) — where a `resultType: "input_required"` call is parked.
+      // The process-shared instance, so the Orchestrator's turn drain reads
+      // exactly what this manager wrote.
+      pendingInput: sharedPendingMcpInputStore(),
+      ...(mcpAuditStore
+        ? {
+            onToolCall: (entry: McpCallLogEntry) => {
+              // `entry.error` is upstream text — a remote MCP server's own
+              // protocol/transport message. The orchestrator bounds it to 300
+              // characters, but truncation is not redaction: a server that
+              // echoes `refresh_token=…`, an `Authorization: Bearer …`, or a
+              // secret-shaped JSON field puts that credential into an
+              // append-only table, and the operator audit API returns the
+              // stored string verbatim.
+              //
+              // Redacted HERE rather than in the orchestrator because
+              // `secretRedaction` lives in this package and `onToolCall` is
+              // the injected seam — the alternative was a second copy of the
+              // patterns inside `@omadia/orchestrator`, and two copies of a
+              // redaction rule is one that drifts loose.
+              //
+              // LIMIT, deliberately not papered over: this removes
+              // CREDENTIALS, not PII. An upstream error quoting a customer
+              // name or address still lands in `mcp_call_log`. Masking that
+              // would mean running the privacy pipeline inside the audit
+              // writer, which is a design decision rather than a patch.
+              void mcpAuditStore.insertMcpCallLog(redactAuditError(entry)).catch((err: unknown) => {
+                console.warn(`[middleware] mcp call audit write failed: ${String(err)}`);
+              });
+            },
+          }
+        : {}),
+      // Dispatch-time policy gate (issue #454): fail-closed on unscanned or
+      // unacknowledged-risk tools, evaluated on every call.
+      guard: mcpDispatchDenial,
+      ...(mcpOAuthService && mcpAuditStore
+        ? {
+            auth: {
+              getToken: async (cfg: McpServerConfig) => {
+                const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                if (!server) return null;
+                // Per-user token (codex W9 fold): the turn's authenticated
+                // user when the entry point set it.
                 //
-                // Redacted HERE rather than in the orchestrator because
-                // `secretRedaction` lives in this package and `onToolCall` is
-                // the injected seam — the alternative was a second copy of the
-                // patterns inside `@omadia/orchestrator`, and two copies of a
-                // redaction rule is one that drifts loose.
-                //
-                // LIMIT, deliberately not papered over: this removes
-                // CREDENTIALS, not PII. An upstream error quoting a customer
-                // name or address still lands in `mcp_call_log`. Masking that
-                // would mean running the privacy pipeline inside the audit
-                // writer, which is a design decision rather than a patch.
-                void mcpAuditStore.insertMcpCallLog(redactAuditError(entry)).catch((err: unknown) => {
-                  console.warn(`[middleware] mcp call audit write failed: ${String(err)}`);
-                });
+                // W0-1 (D2) — THE confused-deputy fix. This used to end in
+                // `?? mcpOAuthUserKey`, i.e. `'operator'`. A Teams/Telegram
+                // turn whose user has no mapped identity therefore reached
+                // the customer's MCP server holding the OPERATOR's token.
+                // Now a `per_user` server with no identity gets no token and
+                // the call fails closed through onAuthFailure below;
+                // `service` delegation is the explicit shared-identity
+                // opt-in.
+                const userKey = resolveMcpUserKey(
+                  server,
+                  turnContext.current()?.mcpUserKey,
+                  mcpOAuthUserKey,
+                );
+                if (userKey === null) return null;
+                return mcpOAuthService.getValidAccessToken(server, userKey);
               },
-            }
-          : {}),
-        // Dispatch-time policy gate (issue #454): fail-closed on unscanned or
-        // unacknowledged-risk tools, evaluated on every call.
-        guard: mcpDispatchDenial,
-        ...(mcpOAuthService && mcpAuditStore
-          ? {
-              auth: {
-                getToken: async (cfg: McpServerConfig) => {
-                  const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
-                  if (!server) return null;
-                  // Per-user token (codex W9 fold): the turn's authenticated
-                  // user when the entry point set it.
-                  //
-                  // W0-1 (D2) — THE confused-deputy fix. This used to end in
-                  // `?? mcpOAuthUserKey`, i.e. `'operator'`. A Teams/Telegram
-                  // turn whose user has no mapped identity therefore reached
-                  // the customer's MCP server holding the OPERATOR's token.
-                  // Now a `per_user` server with no identity gets no token and
-                  // the call fails closed through onAuthFailure below;
-                  // `service` delegation is the explicit shared-identity
-                  // opt-in.
-                  const userKey = resolveMcpUserKey(
-                    server,
-                    turnContext.current()?.mcpUserKey,
-                    mcpOAuthUserKey,
-                  );
-                  if (userKey === null) return null;
-                  return mcpOAuthService.getValidAccessToken(server, userKey);
-                },
-                resolveIdentity: async (cfg: McpServerConfig) => {
-                  const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
-                  if (!server) return null;
-                  // W0-1: every audit row names the identity it acted as —
-                  // `unresolved` when there was none.
-                  return auditIdentity(server, turnContext.current()?.mcpUserKey, mcpOAuthUserKey);
-                },
-                onAuthFailure: async (cfg: McpServerConfig) => {
-                  const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
-                  if (!server) return null;
-                  // W0-1 (D2): fail closed FIRST. A `per_user` server with no
-                  // caller identity must never be "fixed" by starting an OAuth
-                  // flow — that flow would bind a token to whoever happens to
-                  // click through, which is the same confused deputy one step
-                  // removed. Explain instead, and send nothing upstream.
-                  const userKey = resolveMcpUserKey(
-                    server,
-                    turnContext.current()?.mcpUserKey,
-                    mcpOAuthUserKey,
-                  );
-                  if (userKey === null) return delegationBlockedMessage(server.name);
-                  // Only OAuth-protected servers get an auth prompt (cached
-                  // discovery keeps this cheap per call).
-                  const desc = await mcpOAuthService.describeAuth(server);
-                  if (!desc.protected) return null;
-                  // Machine block the chat parses into an in-line "Connect" card
-                  // + modal (web-ui McpAuthRequiredCard). Mirrors the <nudge>
-                  // block contract: human text stays readable for the model and
-                  // the raw <pre>; the block is stripped from the UI output.
-                  const authBlock = (needsClient: boolean): string =>
-                    `\n<mcp-auth-required serverId="${xmlAttr(server.id)}" server="${xmlAttr(server.name)}"${desc.issuerHost ? ` host="${xmlAttr(desc.issuerHost)}"` : ''} needsClient="${needsClient ? 'true' : 'false'}"></mcp-auth-required>`;
-                  try {
-                    const { authorizeUrl } = await mcpOAuthService.beginAuthorization(server, userKey);
-                    return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to click Connect (this opens the provider's login), then retry: ${authorizeUrl}${authBlock(false)}`;
-                  } catch {
-                    // Delegating server with no registered client yet — point
-                    // the user at the one-time setup instead of a raw error.
-                    return `🔒 The MCP server "${server.name}" needs authorization, but it isn't set up yet. Click Connect to register it${desc.issuerHost ? ` — it delegates OAuth to ${desc.issuerHost}, which needs a one-time app registration` : ''}.${authBlock(true)}`;
+              resolveIdentity: async (cfg: McpServerConfig) => {
+                const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                if (!server) return null;
+                // W0-1: every audit row names the identity it acted as —
+                // `unresolved` when there was none.
+                return auditIdentity(server, turnContext.current()?.mcpUserKey, mcpOAuthUserKey);
+              },
+              onAuthFailure: async (cfg: McpServerConfig) => {
+                const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                if (!server) return null;
+                // W0-1 (D2): fail closed FIRST. A `per_user` server with no
+                // caller identity must never be "fixed" by starting an OAuth
+                // flow — that flow would bind a token to whoever happens to
+                // click through, which is the same confused deputy one step
+                // removed. Explain instead, and send nothing upstream.
+                const userKey = resolveMcpUserKey(
+                  server,
+                  turnContext.current()?.mcpUserKey,
+                  mcpOAuthUserKey,
+                );
+                if (userKey === null) return delegationBlockedMessage(server.name);
+                // Only OAuth-protected servers get an auth prompt (cached
+                // discovery keeps this cheap per call).
+                const desc = await mcpOAuthService.describeAuth(server);
+                if (!desc.protected) return null;
+                // Machine block the chat parses into an in-line "Connect" card
+                // + modal (web-ui McpAuthRequiredCard). Mirrors the <nudge>
+                // block contract: human text stays readable for the model and
+                // the raw <pre>; the block is stripped from the UI output.
+                const authBlock = (needsClient: boolean): string =>
+                  `\n<mcp-auth-required serverId="${xmlAttr(server.id)}" server="${xmlAttr(server.name)}"${desc.issuerHost ? ` host="${xmlAttr(desc.issuerHost)}"` : ''} needsClient="${needsClient ? 'true' : 'false'}"></mcp-auth-required>`;
+                try {
+                  const { authorizeUrl } = await mcpOAuthService.beginAuthorization(server, userKey);
+                  return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to click Connect (this opens the provider's login), then retry: ${authorizeUrl}${authBlock(false)}`;
+                } catch {
+                  // Delegating server with no registered client yet — point
+                  // the user at the one-time setup instead of a raw error.
+                  return `🔒 The MCP server "${server.name}" needs authorization, but it isn't set up yet. Click Connect to register it${desc.issuerHost ? ` — it delegates OAuth to ${desc.issuerHost}, which needs a one-time app registration` : ''}.${authBlock(true)}`;
+                }
+              },
+              // Vault-resolved config: secret headers (http) + env (stdio).
+              ...(mcpConfigService
+                ? {
+                    getConfigHeaders: (cfg: McpServerConfig) =>
+                      mcpConfigService.getConfigHeaders(cfg),
+                    getConfigEnv: (cfg: McpServerConfig) =>
+                      mcpConfigService.getConfigEnv(cfg),
                   }
-                },
-                // Vault-resolved config: secret headers (http) + env (stdio).
-                ...(mcpConfigService
-                  ? {
-                      getConfigHeaders: (cfg: McpServerConfig) =>
-                        mcpConfigService.getConfigHeaders(cfg),
-                      getConfigEnv: (cfg: McpServerConfig) =>
-                        mcpConfigService.getConfigEnv(cfg),
-                    }
-                  : {}),
-              },
-            }
-          : {}),
-      });
-      // Publish the handle so the operator router can invalidate a changed
-      // server and `shutdownBuilder` can close the pooled stdio children.
-      runtimeMcpManager = mcpManager;
-      // W2-1 (#544) — the replayer. Registered here because this is the only
-      // place that holds BOTH the manager and the server registry: a replay is
-      // a fresh `tools/call`, so it needs the server's live config (endpoint,
-      // headers, Vault-resolved env) re-resolved rather than a snapshot taken
-      // when the call was parked.
-      //
-      // A server the operator deleted (or renamed away) between the two turns
-      // returns `undefined`, which the orchestrator surfaces to the user as
-      // "no longer reachable" instead of silently dropping their input.
-      if (mcpAuditStore) {
-        setSharedMcpInputReplayer({
-          replay: async (record, inputResponses) => {
-            const server = (await mcpAuditStore.listMcpServers()).find(
-              (s) => s.id === record.serverId,
-            );
-            if (!server) return undefined;
-            const cfg: McpServerConfig = {
-              id: server.id,
-              name: server.name,
-              transport: server.transport,
-              endpoint: server.endpoint,
-              ...(server.privacyBypass ? { privacyBypass: true } : {}),
-            };
-            // #562 phase 3 — the RECORD decides which dialect the retry
-            // speaks: omadia's flat `inputResponses` argument for a 2025-era
-            // peer, the spec's per-request `inputResponses` param plus a
-            // verbatim `requestState` echo for a 2026-07-28 one. See
-            // `planMcpInputReplay` for why that is derived from the card
-            // rather than from the connection.
-            const plan = planMcpInputReplay(record, inputResponses);
-            return mcpManager.callTool(cfg, record.toolName, plan.args, plan.replay);
-          },
-        });
-      }
-      // Host MCP service for plugin ctx.mcp (epic #459 W5, issue #458):
-      // resolved lazily by createPluginContext, exactly like the 'llm'
-      // provider. Grants are read live per call (deny-by-default).
-      serviceRegistry.provide('mcp', {
-        listTools: (cfg: McpServerConfig) => mcpManager.listTools(cfg),
-        callTool: (cfg: McpServerConfig, toolName: string, args: Record<string, unknown>) =>
-          mcpManager.callTool(cfg, toolName, args),
-        listServers: async () => (mcpAuditStore ? mcpAuditStore.listMcpServers() : []),
-        listGrantedServerIds: async (pluginId: string) =>
-          mcpAuditStore ? mcpAuditStore.listGrantedServerIdsForPlugin(pluginId) : [],
-      });
-      // Scan-verdict grant policy (issue #454): load once before the initial
-      // hydration below so blocked (server, tool) pairs never materialize.
-      // The Builder routes refresh it after discover/ack and trigger reloads.
-      if (graphPool) {
-        try {
-          await refreshMcpGrantPolicy(new AgentGraphStore(graphPool));
-        } catch (err) {
-          console.warn(
-            `[middleware] mcp grant policy initial load failed (continuing warn-only): ${String(err)}`,
+                : {}),
+            },
+          }
+        : {}),
+    });
+    // Publish the handle so the operator router can invalidate a changed
+    // server and `shutdownBuilder` can close the pooled stdio children.
+    runtimeMcpManager = mcpManager;
+    // W2-1 (#544) — the replayer. Registered here because this is the only
+    // place that holds BOTH the manager and the server registry: a replay is
+    // a fresh `tools/call`, so it needs the server's live config (endpoint,
+    // headers, Vault-resolved env) re-resolved rather than a snapshot taken
+    // when the call was parked.
+    //
+    // A server the operator deleted (or renamed away) between the two turns
+    // returns `undefined`, which the orchestrator surfaces to the user as
+    // "no longer reachable" instead of silently dropping their input.
+    if (mcpAuditStore) {
+      setSharedMcpInputReplayer({
+        replay: async (record, inputResponses) => {
+          const server = (await mcpAuditStore.listMcpServers()).find(
+            (s) => s.id === record.serverId,
           );
-        }
-      }
-      // A class ref: resolved per sub-agent against the active provider's
-      // live catalog (`resolveSubAgentModel`), never sent raw.
-      const SUBAGENT_DEFAULT_MODEL = 'class:balanced';
-      // Read the orchestrator provider from LIVE installed config on each
-      // hydrate so a runtime switch to/from the CLI provider is picked up on
-      // the next agent build without a process restart.
-      const orchestratorProviderId = (): string => {
-        const raw = installedRegistry.get('@omadia/orchestrator')?.config?.[
-          'llm_provider'
-        ];
-        return typeof raw === 'string' && raw.trim().length > 0
-          ? raw.trim()
-          : 'anthropic';
-      };
-      const hydrateSubAgentTools = (
-        reg: MultiOrchestratorRegistry,
-        slug: string,
-        built: { orchestrator: { hasDomainTool(n: string): boolean; registerDomainTool(t: DomainTool): void } },
-      ): number => {
-        const entry = reg.get(slug);
-        if (!entry) return 0;
-        const snapshot = reg.currentSnapshot();
-        const mcpServers = snapshot?.mcpServers ?? [];
-        // Persona skills + operator bindings for skill capability contracts
-        // (issue #456) — resolved from the same snapshot the registry built
-        // this agent from, so tool surface and signature stay consistent.
-        const skillsById = new Map((snapshot?.skills ?? []).map((s) => [s.id, s]));
-        const personaSkills = (snapshot?.personaSkillLinks ?? [])
-          .filter((l) => l.agentId === entry.agent.id)
-          .map((l) => skillsById.get(l.skillId))
-          .filter((s): s is NonNullable<typeof s> => s !== undefined);
-        const providerId = orchestratorProviderId();
-        return registerDbSubAgentTools(
-          {
-            subAgents: entry.subAgents,
-            toolGrants: entry.toolGrants,
-            skills: entry.skills,
-          },
-          built,
-          {
-            client,
-            nativeToolRegistry,
-            mcpManager,
-            mcpServers,
-            personaSkills,
-            skillToolBindings: snapshot?.skillToolBindings ?? [],
-            defaultModel: SUBAGENT_DEFAULT_MODEL,
-            hostIsCliProvider: providerId === 'claude-cli',
-            cliModelAlias: (model: string): string =>
-              model.replace(/-cli$/, '') || 'sonnet',
-            blockedMcpGrant: isMcpGrantBlocked,
-            // W2-2 (issue #543) — deferred sub-agent dispatch. Empty allowlist
-            // (the default) leaves every sub-agent on today's inline path.
-            longRunningSubAgentTools: longRunningSubAgentTools,
-            taskStore: subAgentTaskStore,
-            // Issue #560 — collect each deferred tool's handle so the resume
-            // driver can re-drive its tasks (`resumeOne`) with no id hint.
-            deferredTaskToolHandles,
-            log: (m: string) => console.log(`[middleware] ${m}`),
-          },
-        );
-      };
-
-      // Hydrate every per-Agent orchestrator of `reg` and keep its rebuilds
-      // hydrated. Runs at boot and again on each re-activation of the
-      // orchestrator plugin (provider switch, secret save, reactivate): that
-      // publishes a NEW registry whose orchestrators start with
-      // `domainTools: []` and carry no `onAgentBuilt` hook, so without this
-      // every agent lost its sub-agents until the next restart.
-      const hydrateRegistry = (reg: MultiOrchestratorRegistry): void => {
-        hydrateAgentRegistry(reg, {
-          currentDomainTools,
-          hydrateSubAgentTools: (slug, built) => hydrateSubAgentTools(reg, slug, built),
-          log: (m: string) => console.log(`[middleware] ${m}`),
-        });
-      };
-      hydrateRegistry(registryForHydrate);
-
-      hydrateRegistryForRebind = hydrateRegistry;
-      // Issue #560 — start the boot resume driver once the deferred tool handles
-      // exist. It claims and re-drives any `working` task with no lease (a
-      // durable row a restart orphaned before its runner claimed it, or a task a
-      // later turn un-parked via `provideInput`), calling `claimNextPending` with
-      // no task-id hint — the boot claim loop criterion 3 asks for. A no-op
-      // against the in-memory store (its rows die with the process) and against
-      // an empty handle set.
-      // Gated on the feature, not on handles being present yet: the sink is a
-      // shared array a later agent rebuild may append to, and each sweep re-reads
-      // it, so a handle registered after boot is still driven.
-      if (longRunningSubAgentTools.length > 0) {
-        startTaskResumeDriver(deferredTaskToolHandles, {
-          onError: (err: unknown) =>
-            console.warn('[middleware] long-running task resume sweep failed:', err),
-        });
-      }
-
-      // Periodic MCP re-scan (epic #459 W6, #455 Phase 3): re-discovers and
-      // re-scans every enabled server so post-import drift surfaces without
-      // operator action. Default every 6h; MCP_RESCAN_INTERVAL_MS=0 disables.
-      const rescanIntervalMs = Number(
-        process.env['MCP_RESCAN_INTERVAL_MS'] ?? String(6 * 60 * 60 * 1000),
-      );
-      if (graphPool && Number.isFinite(rescanIntervalMs) && rescanIntervalMs > 0) {
-        const rescanStore = new AgentGraphStore(graphPool);
-        const rescanTimer = setInterval(() => {
-          void rescanAllMcpServers(rescanStore, mcpManager, (m) =>
-            console.log(`[middleware] ${m}`),
-          )
-            .then(() =>
-              serviceRegistry
-                .get<MultiOrchestratorRegistry>('orchestratorRegistry')
-                ?.reload(),
-            )
-            .catch((err: unknown) => {
-              console.warn(`[middleware] periodic mcp re-scan failed: ${String(err)}`);
-            });
-        }, rescanIntervalMs);
-        rescanTimer.unref();
-        console.log(
-          `[middleware] periodic mcp re-scan armed (every ${String(Math.round(rescanIntervalMs / 60000))}min)`,
-        );
-      }
-
+          if (!server) return undefined;
+          const cfg: McpServerConfig = {
+            id: server.id,
+            name: server.name,
+            transport: server.transport,
+            endpoint: server.endpoint,
+            ...(server.privacyBypass ? { privacyBypass: true } : {}),
+          };
+          // #562 phase 3 — the RECORD decides which dialect the retry
+          // speaks: omadia's flat `inputResponses` argument for a 2025-era
+          // peer, the spec's per-request `inputResponses` param plus a
+          // verbatim `requestState` echo for a 2026-07-28 one. See
+          // `planMcpInputReplay` for why that is derived from the card
+          // rather than from the connection.
+          const plan = planMcpInputReplay(record, inputResponses);
+          return mcpManager.callTool(cfg, record.toolName, plan.args, plan.replay);
+        },
+      });
     }
+    // Host MCP service for plugin ctx.mcp (epic #459 W5, issue #458):
+    // resolved lazily by createPluginContext, exactly like the 'llm'
+    // provider. Grants are read live per call (deny-by-default).
+    serviceRegistry.provide('mcp', {
+      listTools: (cfg: McpServerConfig) => mcpManager.listTools(cfg),
+      callTool: (cfg: McpServerConfig, toolName: string, args: Record<string, unknown>) =>
+        mcpManager.callTool(cfg, toolName, args),
+      listServers: async () => (mcpAuditStore ? mcpAuditStore.listMcpServers() : []),
+      listGrantedServerIds: async (pluginId: string) =>
+        mcpAuditStore ? mcpAuditStore.listGrantedServerIdsForPlugin(pluginId) : [],
+    });
+    // Scan-verdict grant policy (issue #454): load once before the initial
+    // hydration below so blocked (server, tool) pairs never materialize.
+    // The Builder routes refresh it after discover/ack and trigger reloads.
+    if (graphPool) {
+      try {
+        await refreshMcpGrantPolicy(new AgentGraphStore(graphPool));
+      } catch (err) {
+        console.warn(
+          `[middleware] mcp grant policy initial load failed (continuing warn-only): ${String(err)}`,
+        );
+      }
+    }
+    // A class ref: resolved per sub-agent against the active provider's
+    // live catalog (`resolveSubAgentModel`), never sent raw.
+    const SUBAGENT_DEFAULT_MODEL = 'class:balanced';
+    // Read the orchestrator provider from LIVE installed config on each
+    // hydrate so a runtime switch to/from the CLI provider is picked up on
+    // the next agent build without a process restart.
+    const orchestratorProviderId = (): string => {
+      const raw = installedRegistry.get('@omadia/orchestrator')?.config?.[
+        'llm_provider'
+      ];
+      return typeof raw === 'string' && raw.trim().length > 0
+        ? raw.trim()
+        : 'anthropic';
+    };
+    const hydrateSubAgentTools = (
+      reg: MultiOrchestratorRegistry,
+      slug: string,
+      built: { orchestrator: { hasDomainTool(n: string): boolean; registerDomainTool(t: DomainTool): void } },
+    ): number => {
+      const entry = reg.get(slug);
+      if (!entry) return 0;
+      const snapshot = reg.currentSnapshot();
+      const mcpServers = snapshot?.mcpServers ?? [];
+      // Persona skills + operator bindings for skill capability contracts
+      // (issue #456) — resolved from the same snapshot the registry built
+      // this agent from, so tool surface and signature stay consistent.
+      const skillsById = new Map((snapshot?.skills ?? []).map((s) => [s.id, s]));
+      const personaSkills = (snapshot?.personaSkillLinks ?? [])
+        .filter((l) => l.agentId === entry.agent.id)
+        .map((l) => skillsById.get(l.skillId))
+        .filter((s): s is NonNullable<typeof s> => s !== undefined);
+      const providerId = orchestratorProviderId();
+      return registerDbSubAgentTools(
+        {
+          subAgents: entry.subAgents,
+          toolGrants: entry.toolGrants,
+          skills: entry.skills,
+        },
+        built,
+        {
+          // The CURRENT shared client, not the boot-time env one: on a
+          // vault-keyed install the boot client is unauthenticated forever.
+          client: currentAnthropicClient(),
+          nativeToolRegistry,
+          mcpManager,
+          mcpServers,
+          personaSkills,
+          skillToolBindings: snapshot?.skillToolBindings ?? [],
+          defaultModel: SUBAGENT_DEFAULT_MODEL,
+          hostIsCliProvider: providerId === 'claude-cli',
+          cliModelAlias: (model: string): string =>
+            model.replace(/-cli$/, '') || 'sonnet',
+          blockedMcpGrant: isMcpGrantBlocked,
+          // W2-2 (issue #543) — deferred sub-agent dispatch. Empty allowlist
+          // (the default) leaves every sub-agent on today's inline path.
+          longRunningSubAgentTools: longRunningSubAgentTools,
+          taskStore: subAgentTaskStore,
+          // Issue #560 — collect each deferred tool's handle so the resume
+          // driver can re-drive its tasks (`resumeOne`) with no id hint.
+          deferredTaskToolHandles,
+          log: (m: string) => console.log(`[middleware] ${m}`),
+        },
+      );
+    };
+
+    // Hydrate every per-Agent orchestrator of `reg` and keep its rebuilds
+    // hydrated. Runs at boot and again on each re-activation of the
+    // orchestrator plugin (provider switch, secret save, reactivate): that
+    // publishes a NEW registry whose orchestrators start with
+    // `domainTools: []` and carry no `onAgentBuilt` hook, so without this
+    // every agent lost its sub-agents until the next restart.
+    const hydrateRegistry = (reg: MultiOrchestratorRegistry): void => {
+      hydrateAgentRegistry(reg, {
+        currentDomainTools,
+        hydrateSubAgentTools: (slug, built) => hydrateSubAgentTools(reg, slug, built),
+        log: (m: string) => console.log(`[middleware] ${m}`),
+      });
+    };
+    if (registryForHydrate) hydrateRegistry(registryForHydrate);
+
+    orchestratorToolRebinder.setRegistryHydrator(hydrateRegistry);
+    // Issue #560 — start the boot resume driver once the deferred tool handles
+    // exist. It claims and re-drives any `working` task with no lease (a
+    // durable row a restart orphaned before its runner claimed it, or a task a
+    // later turn un-parked via `provideInput`), calling `claimNextPending` with
+    // no task-id hint — the boot claim loop criterion 3 asks for. A no-op
+    // against the in-memory store (its rows die with the process) and against
+    // an empty handle set.
+    // Gated on the feature, not on handles being present yet: the sink is a
+    // shared array a later agent rebuild may append to, and each sweep re-reads
+    // it, so a handle registered after boot is still driven.
+    if (longRunningSubAgentTools.length > 0) {
+      startTaskResumeDriver(deferredTaskToolHandles, {
+        onError: (err: unknown) =>
+          console.warn('[middleware] long-running task resume sweep failed:', err),
+      });
+    }
+
+    // Periodic MCP re-scan (epic #459 W6, #455 Phase 3): re-discovers and
+    // re-scans every enabled server so post-import drift surfaces without
+    // operator action. Default every 6h; MCP_RESCAN_INTERVAL_MS=0 disables.
+    const rescanIntervalMs = Number(
+      process.env['MCP_RESCAN_INTERVAL_MS'] ?? String(6 * 60 * 60 * 1000),
+    );
+    if (graphPool && Number.isFinite(rescanIntervalMs) && rescanIntervalMs > 0) {
+      const rescanStore = new AgentGraphStore(graphPool);
+      const rescanTimer = setInterval(() => {
+        void rescanAllMcpServers(rescanStore, mcpManager, (m) =>
+          console.log(`[middleware] ${m}`),
+        )
+          .then(() =>
+            serviceRegistry
+              .get<MultiOrchestratorRegistry>('orchestratorRegistry')
+              ?.reload(),
+          )
+          .catch((err: unknown) => {
+            console.warn(`[middleware] periodic mcp re-scan failed: ${String(err)}`);
+          });
+      }, rescanIntervalMs);
+      rescanTimer.unref();
+      console.log(
+        `[middleware] periodic mcp re-scan armed (every ${String(Math.round(rescanIntervalMs / 60000))}min)`,
+      );
+    }
+
   }
+
+  // The domain-tool re-bind is installed: a class-default rebuild (#1359) may
+  // reactivate plugins from here on.
+  resolveBootWired();
 
   console.log('[middleware] context retriever ready (tail + entity-anchor + FTS)');
 
@@ -3046,7 +3094,8 @@ async function main(): Promise<void> {
   // canvas). An adapter that calls the `chatAgent` capability directly —
   // Teams, Telegram, Slack, Discord, WhatsApp — still has to install it
   // itself via `captureRoutineTurn` / `beginRoutineTurn`; without one the
-  // tool refuses with `ROUTINE_NO_CONTEXT_ERROR`.
+  // tool is not offered on that turn (#1346 `isAvailable`), and a call that
+  // still arrives refuses with `ROUTINE_NO_CONTEXT_ERROR`.
   let routinesHandle: RoutinesHandle | undefined;
   // #1086 — held in a variable (not only in the service registry) so the
   // channel CoreApi below can wire the channel-agnostic routine-turn producer.
@@ -3062,6 +3111,9 @@ async function main(): Promise<void> {
           spec: options.spec,
           ...(options.promptDoc !== undefined
             ? { promptDoc: options.promptDoc }
+            : {}),
+          ...(options.isAvailable !== undefined
+            ? { isAvailable: options.isAvailable }
             : {}),
         }),
       // #1071 — the browser chat's sender: a routine created from the web
@@ -3205,6 +3257,15 @@ async function main(): Promise<void> {
       // it is a legitimate operator decision, and #648 is explicit that the
       // hint informs rather than blocks.
       const status = kg.pool === 'dead' ? 'error' : 'ok';
+      // #1385 / #1384 — the database verdict as its own field, so the web UI
+      // can name a Postgres outage while every authenticated route answers
+      // 503. Additive: `status` and the HTTP code keep their meaning, because
+      // the updater's health gate and the desktop supervisor key on them.
+      // Master-key posture is NOT here on purpose (see platformHealth.ts).
+      const checks = buildPlatformChecks({
+        kg,
+        databaseConfigured: Boolean(process.env['DATABASE_URL']?.trim()),
+      });
       // #432 — the build stamp (`unknown` when the image was built without
       // one). Load-bearing beyond display: the updater sidecar's health gate
       // polls THIS field to decide whether the new image is actually serving,
@@ -3218,6 +3279,7 @@ async function main(): Promise<void> {
         .json({
           status,
           version: appVersion.version,
+          checks,
           kg,
           disclosure,
           attachments: attachmentStoreHealth(attachmentStore),
@@ -3584,6 +3646,7 @@ async function main(): Promise<void> {
       store: memoryStore,
       ...(knowledgeGraph ? { knowledgeGraph } : {}),
       ...(graphPool ? { graphPool } : {}),
+      seedDir: config.MEMORY_SEED_DIR,
       tenantId: graphTenantId,
     }),
   );
@@ -4136,12 +4199,12 @@ async function main(): Promise<void> {
             // rather than hidden in a closure.
             const keyStore = createVerifyOnlyApiKeyStore(secretVault);
             const keys = await keyStore.list();
-            // NOT revoked. Authentication skips a revoked record, so counting
+            // NOT revoked or expired (#1328). Authentication skips both, so counting
             // one as "known" reports a binding as healthy that can only ever
             // 401. Same reasoning as the enabled-agent filter above: this set
             // answers "would a real request resolve this id", not "is there a
             // row somewhere".
-            return new Set(keys.filter((k) => k.revokedAt === undefined).map((k) => k.id));
+            return new Set(keys.filter((k) => isApiKeyActive(k)).map((k) => k.id));
           } catch (err) {
             console.warn(
               `[middleware] public-mcp binding key lister unavailable: ${String(err)}`,
@@ -4283,7 +4346,9 @@ async function main(): Promise<void> {
       roleStore: facilitationRoleStore,
       auditRoleChange: async (entry) => {
         await adminAudit?.record({
-          actor: { id: entry.actor },
+          // #775 class — a system label (the ephemeral reaper) in the uuid
+          // column made this INSERT fail; only a uuid goes to actor_id.
+          actor: auditActorFromLabel(entry.actor),
           action: 'conductor.role_holders_change',
           target: `conductor-role:${entry.roleKey}`,
           before: { action: entry.action, holderId: entry.holderId },
@@ -4300,7 +4365,7 @@ async function main(): Promise<void> {
       agentSlug: string;
     }): Promise<void> => {
       await adminAudit?.record({
-        actor: { id: entry.actor },
+        actor: auditActorFromLabel(entry.actor),
         action: 'channel.binding_change',
         target: `channel-binding:${entry.channelType}/${entry.channelKey}`,
         before: { action: entry.action },
@@ -4739,6 +4804,7 @@ async function main(): Promise<void> {
 
     const platformSettings = new PlatformSettingsStore(graphPool);
     adminAudit = new AdminAuditLog(graphPool);
+    pluginAdminAudit.attach(adminAudit);
     const storedActive = await platformSettings.get<string[]>(
       SETTING_AUTH_ACTIVE_PROVIDERS,
     );
@@ -4878,6 +4944,8 @@ async function main(): Promise<void> {
         loginDevices: loginGuard.devices,
       }),
     );
+    // #1315 — the read side of the audit trail (admin UI: /admin/audit).
+    app.use('/api/v1/admin/audit', requireAuth, createAdminAuditRouter({ audit: adminAudit }));
     app.use(
       '/api/v1/admin/auth',
       requireAuth,
@@ -4889,7 +4957,7 @@ async function main(): Promise<void> {
       }),
     );
     console.log(
-      '[middleware] admin user-management + auth-toggle endpoints ready at /api/v1/admin/users and /api/v1/admin/auth (auth: required)',
+      '[middleware] admin user-management, audit-trail + auth-toggle endpoints ready at /api/v1/admin/users, /api/v1/admin/audit and /api/v1/admin/auth (auth: required)',
     );
   } else {
     console.warn(
@@ -5004,7 +5072,15 @@ async function main(): Promise<void> {
   app.use(
     '/api/v1/install',
     requireAuth,
-    createInstallRouter({ service: installService, oauthBroker }),
+    createInstallRouter({
+      service: installService,
+      oauthBroker,
+      // #1347 — install/uninstall rows; the uninstall row lists the grants
+      // that leave with the plugin.
+      ...(adminAudit ? { audit: adminAudit } : {}),
+      grantsOf: (pluginId) =>
+        readGrantSnapshot({ publicPathGrantStore, sqlGrantStore }, pluginId),
+    }),
   );
   console.log('[middleware] plugin install endpoints ready at /api/v1/install (auth: required)');
   console.log('[middleware] OAuth broker ready at /api/v1/install/oauth/{start,callback}');
@@ -5225,6 +5301,7 @@ async function main(): Promise<void> {
       vaultPath: VAULT_PATH,
       dataDir: DATA_DIR,
       masterKeySource: masterKey.source,
+      keychainKeySource: credentialMasterKey.source,
       backup: vaultBackupService,
       ...(vaultBackupDisabledReason
         ? { backupDisabledReason: vaultBackupDisabledReason }
@@ -5253,6 +5330,8 @@ async function main(): Promise<void> {
       publicPathGrants,
       // Epic #470 C16 (#817) — the half C7 shipped a gate for but no answer to.
       sqlGrantStore,
+      // #1347 — who opened or closed which path lands in admin_audit.
+      ...(adminAudit ? { audit: adminAudit } : {}),
     }),
   );
   console.log('[middleware] runtime introspection endpoint ready at /api/v1/admin/runtime (auth: required)');

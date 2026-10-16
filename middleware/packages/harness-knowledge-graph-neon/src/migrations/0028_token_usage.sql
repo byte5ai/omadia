@@ -1,7 +1,10 @@
 -- Cost telemetry (OB-cost-dashboard): append-only LLM token-usage ledger.
 --
--- Every Anthropic call — orchestrator, sub-agents, and the Haiku background
--- extras/verifier — writes one row here via @omadia/usage-telemetry. The cost
+-- One row per LLM call from the seams that record into it via
+-- @omadia/usage-telemetry: the orchestrator (streamed and buffered), sub-agents,
+-- the builder, plugin ctx.llm, the extras/verifier background calls and the
+-- subscription CLI. A call through a path without a capture seam is not here
+-- (#1390: the buffered orchestrator path and ctx.llm were missing). The cost
 -- dashboard aggregates over it (per model, per source, over time, cache-hit
 -- ratio). Cost is computed at write time from a model price table and frozen
 -- into cost_usd, so later price-table edits never rewrite history.

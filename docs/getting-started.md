@@ -102,6 +102,12 @@ for it:
 What the Privacy Shield, the answer verifier and the receipts cover, and where
 they stop, is listed in [Trust & privacy](trust-and-privacy.md).
 
+**Users are all administrators.** Every account you add under `/admin/users`
+gets full access: user management, API keys and the danger zone included.
+Role-based permissions are not available yet, and the user API refuses any
+other role (`400 admin_users.invalid_role`). Who did what is recorded in the
+admin audit trail under `/admin/audit`.
+
 ## Optional features
 
 The minimal core is postgres + middleware + admin UI. Diagrams, embeddings, and

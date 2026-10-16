@@ -95,9 +95,9 @@ export interface UiOrchestratorPluginHandle {
 export const CANVAS_PUBLISH_TOOL = 'canvas_publish_rows';
 
 /** Privacy Shield v4 table renders publish a full `_pendingCanvasTree`
- *  snapshot in the streamed `tool_result` itself: v4 tools bypass the
- *  orchestrator's pre-intern canvas-sentinel tap, so this tool must be
- *  authorised on the direct-output path. */
+ *  snapshot through the canvas-sentinel tap — never in the streamed
+ *  `tool_result`, which is the model's shape-only ack (#1402). The tool must
+ *  still be authorised so synthesis takes its tapped snapshot. */
 export const V4_RENDER_TOOL = 'v4_render_answer';
 
 /** Resolves a privacy-shield datasetId to its real rows within the current
@@ -126,8 +126,8 @@ const MAX_DATASET_PUBLISH_ROWS = 500;
  *  `synthesizeSurfaceEvents`. On privacy-guard servers most sentinel-bearing
  *  tool results reaching the stream are interned digests, so the guard's
  *  dispatch sites hand the RAW sentinel-bearing result to this sink BEFORE
- *  interning; `v4_render_answer` is the deliberate exception, publishing its
- *  full `_pendingCanvasTree` snapshot directly in the streamed output. The
+ *  interning; `v4_render_answer` hands its full `_pendingCanvasTree` snapshot
+ *  to the same sink (its streamed output only acknowledges the render). The
  *  sink is set on the CURRENT (outer) scope —
  *  the orchestrator's turn scope carries it inward (same merge contract as
  *  `captureRawToolResult`); when no scope exists yet (canvas channel
@@ -460,9 +460,9 @@ export async function activate(
     CANVAS_PUBLISH_TOOL,
     CANVAS_CHOICE_TOOL,
     CANVAS_LUMEN_TOOL,
-    // Privacy Shield v4 table renders stream a full `_pendingCanvasTree`
-    // snapshot themselves; synthesis must therefore authorise this tool even
-    // though it bypasses the normal pre-intern raw-sentinel sink.
+    // Privacy Shield v4 table renders tap a full `_pendingCanvasTree`
+    // snapshot into the raw-sentinel sink (#1402); synthesis must authorise
+    // the tool to take it.
     V4_RENDER_TOOL,
     ...(ctx.config?.get<string>('canvas_output_tools') ?? '')
       .split(',')

@@ -8,6 +8,83 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.33.0 — 2026-10-16
+
+Additive. A Privacy Shield v4 table render keeps its canvas snapshot off the
+model's `tool_result` (#1402).
+
+### Added
+
+- **`PrivacyV4ToolResult`** — the return type of
+  `PrivacyGuardService.runV4Tool`: `resultText` (LLM-bound, never a real
+  value) plus the optional **`canvasSentinel`**, a table render's
+  `_pendingCanvasTree` snapshot with the real cells. The kernel hands it to
+  the turn's canvas-sentinel sink, never to the model. A provider that
+  returns `{ resultText }` alone still conforms.
+
+## 1.32.0 — 2026-10-16
+
+Additive. The Danger-Zone memory purge deletes the conversation history, not
+only the remembered facts (#1334).
+
+### Added
+
+- **`KnowledgeGraph.countConversationHistory?` / `purgeConversationHistory?`**
+  — count and hard-delete the Turns of a scope or user and everything derived
+  from them (Session, Run, AgentInvocation, ToolCall, Plan, PlanStep, Fact),
+  through one shared selection so the preview counts what the purge deletes.
+  Optional: a provider without them is reported as unsupported by the purge.
+- **`ConversationHistoryPurgeFilter`** and
+  **`CONVERSATION_HISTORY_NODE_TYPES`**.
+
+## 1.31.0 — 2026-10-16
+
+Additive. A plugin tool that only some channels can serve can say so per turn,
+so the model is not offered a call that can only fail (#1346).
+
+### Added
+
+- **`ToolRegistrationOptions.isAvailable?: () => boolean`** — evaluated by the
+  kernel inside the turn scope whenever it builds the tool list and the
+  system-prompt tool docs; `false` (or a throw) hides the tool's spec and
+  `promptDoc` for that turn (on `registerHandler`, the `promptDoc` only).
+  Must answer the same for the whole turn. Advertisement only: dispatch is not gated, so the
+  handler must still answer a call on such a turn truthfully. Absent ⇒ always
+  offered; a kernel before 1.31.0 ignores it.
+
+## 1.30.0 — 2026-10-16
+
+Additive. One boundary-preset library for both places an operator can forbid an
+agent something (#1104): the per-agent "Boundaries" tab and the install-wide
+defaults of a `responseGuard@1` provider. They used to carry separate
+libraries (12 and 10 ids) with only 2 ids in common.
+
+### Added
+
+- **`BOUNDARY_PRESETS`**, **`getBoundaryPreset(id)`**, **`BoundaryPreset`**,
+  **`BoundaryPresetCategory`** — the 12 curated presets (id, category, label
+  key, rule wording). The builder compiles them into an agent's
+  `## Boundaries` section; `@omadia/plugin-quality-guard` 0.2.0 resolves its
+  `default_boundary_presets` against the same entries.
+
+## 1.29.0 — 2026-10-16
+
+Additive. A plugin's admin surface can learn who the operator is and write
+its privileged actions into the kernel's `admin_audit` ledger (#1329, first
+user: `@omadia/channel-api`'s API-key lifecycle).
+
+### Added
+
+- **`OperatorAuthAccessor.sessionPrincipal?(cookieHeader)`** — the
+  `OperatorPrincipal` (`userId` = `users.id`, `email`) behind a valid
+  operator session, or `null`.
+- **`OperatorAuthAccessor.recordAdminAction?(cookieHeader, entry)`** — appends
+  one `admin_audit` row. The kernel resolves the actor from the cookie and
+  stamps the calling plugin's id into the row; only actions the kernel admits
+  for the calling plugin and target are written (today `api_key.*` for
+  `@omadia/channel-api`). Resolves `false` instead of throwing.
+- **`OperatorPrincipal`**, **`OperatorAdminAuditEntry`**.
+
 ## 1.28.0 — 2026-10-16
 
 Additive. A plugin tool can refuse a call with a message written for the

@@ -12,18 +12,22 @@ import {
 } from 'lucide-react';
 
 import {
+  ApiError,
   getCliBackends,
   getEmbeddingProviderStatus,
   getLastTurn,
   getProviders,
+  getVaultStatus,
   listStorePlugins,
 } from './_lib/api';
 import { getMcpServerSummary, listOperatorAgents } from './_lib/agents';
 import { redirectIfUnauthorized } from './_lib/authRedirect';
-import { runtimeStateOf } from './_lib/runtimeReadiness';
+import { isDatabaseUnavailable, runtimeStateOf } from './_lib/runtimeReadiness';
+import { fetchMiddlewareHealth, platformNotice } from './_lib/platformHealth';
 import { cn } from './_lib/cn';
 import { isInstalled, isOperatorInstalled, isReady } from './_lib/pluginCounts';
 import { DashboardOnboarding } from './_components/dashboard/DashboardOnboarding';
+import { PlatformHealthBanner } from './_components/PlatformHealthBanner';
 
 /**
  * Operator landing surface. Replaces the chat as the first screen (chat now
@@ -34,6 +38,12 @@ import { DashboardOnboarding } from './_components/dashboard/DashboardOnboarding
  * All data is best-effort: each fetch is isolated via `allSettled` so one dead
  * endpoint degrades a single card instead of blanking the page. A 401 from any
  * call still bounces to /login (handled before deriving health).
+ *
+ * #1384 — a card whose data could not be loaded says "status unavailable".
+ * It used to fall through to its empty state, so a Postgres outage read as
+ * "No provider connected", "No orchestrator configured" and "No plugins
+ * installed yet" on a fully configured instance. A failed fetch is not an
+ * empty list.
  */
 
 export const dynamic = 'force-dynamic';
@@ -48,6 +58,15 @@ type Tone = 'ok' | 'warn' | 'down' | 'neutral';
 export default async function DashboardPage(): Promise<React.ReactElement> {
   const t = await getTranslations('dashboard');
 
+  // #1384 / #1332 — the middleware's own /health, read alongside the API calls.
+  // It is unauthenticated, so it still answers (with the database verdict)
+  // while every authenticated call below comes back 503 `auth.unavailable`.
+  // Never rejects.
+  const healthP = fetchMiddlewareHealth();
+  // #1332 — master-key posture for the dev-key banner, from the authenticated
+  // vault status (it is deliberately not on the public /health). A failure
+  // only means no posture line; the outage lines come from /health.
+  const vaultP = getVaultStatus().catch(() => null);
   const [provP, plugP, agentP, mcpP, cliP, embP, turnP] = await Promise.allSettled([
     getProviders(),
     listStorePlugins(),
@@ -65,10 +84,19 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     getLastTurn(),
   ]);
 
+  const settled = [provP, plugP, agentP, mcpP, cliP, embP, turnP];
   // 401 anywhere → re-login (redirect throws and escapes before render).
-  for (const r of [provP, plugP, agentP, mcpP, cliP, embP, turnP]) {
+  for (const r of settled) {
     if (r.status === 'rejected') await redirectIfUnauthorized(r.reason);
   }
+  const [health, vault] = await Promise.all([healthP, vaultP]);
+  // #1384 — the API answered, but its database did not. Every authenticated
+  // route reports a Postgres outage as 503 `auth.unavailable`.
+  const databaseUnavailable = settled.some(
+    (r) => r.status === 'rejected' && isDatabaseUnavailable(r.reason),
+  );
+  const notice = platformNotice({ health, vault, databaseUnavailable });
+  const databaseDown = notice?.kind === 'databaseUnreachable';
 
   const providers = provP.status === 'fulfilled' ? provP.value : null;
   const plugins = plugP.status === 'fulfilled' ? plugP.value : null;
@@ -96,9 +124,14 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   // middleware container was stopped.
   const runtimeState = runtimeStateOf(agentP);
 
-  // Middleware is "connected" if any call came back at all — a transport
-  // failure rejects every call with the same network error.
-  const middlewareOk = providers !== null || plugins !== null || agents !== null;
+  // Middleware is "connected" if it answered at all — a transport failure
+  // rejects every call with the same network error. An HTTP error IS an
+  // answer: server-side calls go straight to MIDDLEWARE_URL, so an `ApiError`
+  // carries the middleware's own status (#1384 — a 503 used to count as "no
+  // response", and the card blamed the middleware for a database outage).
+  const middlewareOk =
+    health.reachable ||
+    settled.some((r) => r.status === 'fulfilled' || r.reason instanceof ApiError);
 
   // OM-02/03/04: this tile used to read "VERBUNDEN · Aktiv: Anthropic" purely
   // because a non-empty string sat in the vault — while every chat request
@@ -237,162 +270,197 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
                 message: lastTurn.errorMessage ?? '',
               });
 
-  const cards: HealthCardProps[] = [
-    {
-      title: t('health.middleware.title'),
-      tone: middlewareOk ? 'ok' : 'down',
-      status: middlewareOk ? t('health.ok') : t('health.down'),
-      detail: middlewareOk
-        ? t('health.middleware.okDetail')
-        : t('health.middleware.downDetail'),
-      href: '/admin/settings',
-      manage: t('health.manage'),
-    },
-    {
-      title: t('health.llm.title'),
-      tone: !middlewareOk ? 'down' : lastTurnFailed ? 'warn' : llmTone,
-      status:
-        llmTone === 'ok' && !lastTurnFailed ? t('health.ok') : t('health.warn'),
-      detail: llmDetail,
-      href: '/admin/providers',
-      manage: t('health.manage'),
-    },
-    {
-      title: t('health.orchestrators.title'),
-      tone:
-        !middlewareOk
-          ? 'down'
-          : orchestratorCount > 0 && !lastTurnFailed
-            ? 'ok'
-            : 'warn',
-      status:
-        orchestratorCount > 0 && !lastTurnFailed ? t('health.ok') : t('health.warn'),
-      detail:
-        orchestratorCount > 0
-          ? t('health.orchestrators.available', { count: orchestratorCount })
-          : t('health.orchestrators.none'),
-      href: '/operator/agents',
-      manage: t('health.manage'),
-    },
-    {
-      // OM-84 (#1003) — memory, semantic search and dedup all hang off
-      // `embeddingClient@1`. A default install has none, and until now no
-      // surface said so: the tester learned it from an agent failing mid-answer.
-      //
-      // OM-102 — embeddings are only HALF the card's subject. Fact extraction,
-      // topic detection and the scratch reaper hang off the extras plugin's
-      // LLM provider instead, and on an abo-only install all three were off
-      // while this tile still read a confident "OK".
-      title: t('health.embeddings.title'),
-      tone: !middlewareOk
-        ? 'down'
-        : embeddings === null
-          ? 'neutral'
-          : embeddings.capabilityPublished && !memoryFeaturesDegraded
-            ? 'ok'
-            : 'warn',
-      status:
-        embeddings !== null &&
-        embeddings.capabilityPublished &&
-        !memoryFeaturesDegraded
-          ? t('health.ok')
-          : t('health.warn'),
-      detail:
-        embeddings === null
-          ? t('health.embeddings.unknown')
-          : [
-              embeddings.capabilityPublished
-                ? t('health.embeddings.active', {
-                    model:
-                      embeddings.activeModel?.modelId ??
-                      embeddings.activeProviderId ??
-                      '',
+  // #1384 — what a card shows when its own data could not be loaded. Neutral,
+  // not red: the page cannot support a verdict on data it never saw, and the
+  // middleware card (plus the banner) already says what IS known.
+  const unavailable = (title: string, href: string): HealthCardProps => ({
+    title,
+    tone: 'neutral',
+    status: t('health.unknownStatus'),
+    detail: t('health.unavailable'),
+    href,
+    manage: t('health.manage'),
+  });
+
+  const middlewareCard: HealthCardProps = databaseDown
+    ? {
+        title: t('health.middleware.title'),
+        tone: 'down',
+        status: t('health.middleware.databaseStatus'),
+        detail: t('health.middleware.databaseDetail'),
+        href: '/system',
+        manage: t('health.manage'),
+      }
+    : {
+        title: t('health.middleware.title'),
+        tone: middlewareOk ? 'ok' : 'down',
+        status: middlewareOk ? t('health.ok') : t('health.down'),
+        detail: middlewareOk
+          ? t('health.middleware.okDetail')
+          : t('health.middleware.downDetail'),
+        // The card is about the middleware itself, so "Manage" opens the system
+        // page (vault, runtime), not a provider-key form (#1397).
+        href: '/system',
+        manage: t('health.manage'),
+      };
+
+  const llmCard: HealthCardProps =
+    providers === null
+      ? unavailable(t('health.llm.title'), '/admin/providers')
+      : {
+          title: t('health.llm.title'),
+          tone: lastTurnFailed ? 'warn' : llmTone,
+          status:
+            llmTone === 'ok' && !lastTurnFailed ? t('health.ok') : t('health.warn'),
+          detail: llmDetail,
+          href: '/admin/providers',
+          manage: t('health.manage'),
+        };
+
+  // A structured 503 (`runtimeState === 'down'`) is the runtime's own answer
+  // that no orchestrator can run — a real verdict, so it keeps the "none"
+  // copy. Any other failure is unknown.
+  const orchestratorCard: HealthCardProps =
+    agents === null && runtimeState !== 'down'
+      ? unavailable(t('health.orchestrators.title'), '/operator/agents')
+      : {
+          title: t('health.orchestrators.title'),
+          tone: orchestratorCount > 0 && !lastTurnFailed ? 'ok' : 'warn',
+          status:
+            orchestratorCount > 0 && !lastTurnFailed ? t('health.ok') : t('health.warn'),
+          detail:
+            orchestratorCount > 0
+              ? t('health.orchestrators.available', { count: orchestratorCount })
+              : t('health.orchestrators.none'),
+          href: '/operator/agents',
+          manage: t('health.manage'),
+        };
+
+  // OM-84 (#1003) — memory, semantic search and dedup all hang off
+  // `embeddingClient@1`. A default install has none, and until now no surface
+  // said so: the tester learned it from an agent failing mid-answer.
+  //
+  // OM-102 — embeddings are only HALF the card's subject. Fact extraction,
+  // topic detection and the scratch reaper hang off the extras plugin's LLM
+  // provider instead, and on an abo-only install all three were off while
+  // this tile still read a confident "OK".
+  const embeddingsCard: HealthCardProps =
+    embeddings === null
+      ? unavailable(t('health.embeddings.title'), '/admin/embedding-provider')
+      : {
+          title: t('health.embeddings.title'),
+          tone:
+            embeddings.capabilityPublished && !memoryFeaturesDegraded ? 'ok' : 'warn',
+          status:
+            embeddings.capabilityPublished && !memoryFeaturesDegraded
+              ? t('health.ok')
+              : t('health.warn'),
+          detail: [
+            embeddings.capabilityPublished
+              ? t('health.embeddings.active', {
+                  model:
+                    embeddings.activeModel?.modelId ?? embeddings.activeProviderId ?? '',
+                })
+              : t('health.embeddings.none'),
+            memoryFeaturesDetail,
+          ]
+            .filter((part): part is string => part !== null)
+            .join(' · '),
+          href: '/admin/embedding-provider',
+          manage: t('health.manage'),
+        };
+
+  const pluginsCard: HealthCardProps =
+    plugins === null
+      ? unavailable(t('health.plugins.title'), '/store')
+      : {
+          title: t('health.plugins.title'),
+          tone:
+            installedCount === 0
+              ? 'neutral'
+              : readyCount < installedCount
+                ? 'warn'
+                : 'ok',
+          status:
+            installedCount > 0 && readyCount === installedCount
+              ? t('health.ok')
+              : t('health.warn'),
+          // OM-16/OM-27 — "installed" alone hid the OM-16 failure mode: a
+          // plugin present in the registry with every credential emptied.
+          // Report the readiness split whenever it differs from the raw count.
+          detail:
+            installedCount === 0
+              ? t('health.plugins.none')
+              : readyCount < installedCount
+                ? `${t('health.plugins.installed', { count: installedCount })} · ${t(
+                    'health.plugins.ready',
+                    { n: readyCount, total: installedCount },
+                  )}`
+                : t('health.plugins.installed', { count: installedCount }),
+          href: '/store',
+          manage: t('health.manage'),
+        };
+
+  const mcpCard: HealthCardProps =
+    mcp === null
+      ? unavailable(t('health.mcp.title'), '/admin/mcp')
+      : {
+          title: t('health.mcp.title'),
+          tone: mcp.total > 0 ? (mcp.enabled > 0 ? 'ok' : 'warn') : 'neutral',
+          status: mcp.enabled > 0 ? t('health.ok') : t('health.warn'),
+          detail:
+            mcp.total > 0
+              ? mcp.needsDiscovery > 0
+                ? t('health.mcp.summaryPending', {
+                    enabled: mcp.enabled,
+                    total: mcp.total,
+                    tools: mcp.tools,
+                    pending: mcp.needsDiscovery,
                   })
-                : t('health.embeddings.none'),
-              memoryFeaturesDetail,
-            ]
-              .filter((part): part is string => part !== null)
-              .join(' · '),
-      href: '/admin/embedding-provider',
-      manage: t('health.manage'),
-    },
-    {
-      title: t('health.plugins.title'),
-      tone: !middlewareOk
-        ? 'down'
-        : installedCount === 0
-          ? 'neutral'
-          : readyCount < installedCount
-            ? 'warn'
-            : 'ok',
-      status:
-        installedCount > 0 && readyCount === installedCount
-          ? t('health.ok')
-          : t('health.warn'),
-      // OM-16/OM-27 — "installed" alone hid the OM-16 failure mode: a plugin
-      // present in the registry with every credential emptied. Report the
-      // readiness split whenever it differs from the raw install count.
-      detail:
-        installedCount === 0
-          ? t('health.plugins.none')
-          : readyCount < installedCount
-            ? `${t('health.plugins.installed', { count: installedCount })} · ${t(
-                'health.plugins.ready',
-                { n: readyCount, total: installedCount },
-              )}`
-            : t('health.plugins.installed', { count: installedCount }),
-      href: '/store',
-      manage: t('health.manage'),
-    },
-    {
-      title: t('health.mcp.title'),
-      tone: !middlewareOk
-        ? 'down'
-        : mcp && mcp.total > 0
-          ? mcp.enabled > 0
-            ? 'ok'
-            : 'warn'
-          : 'neutral',
-      status: mcp && mcp.enabled > 0 ? t('health.ok') : t('health.warn'),
-      detail:
-        mcp && mcp.total > 0
-          ? mcp.needsDiscovery > 0
-            ? t('health.mcp.summaryPending', {
-                enabled: mcp.enabled,
-                total: mcp.total,
-                tools: mcp.tools,
-                pending: mcp.needsDiscovery,
-              })
-            : t('health.mcp.summary', {
-                enabled: mcp.enabled,
-                total: mcp.total,
-                tools: mcp.tools,
-              })
-          : t('health.mcp.none'),
-      href: '/admin/mcp',
-      manage: t('health.manage'),
-    },
-    {
-      // OM-100b — the runtime card. `null` stays neutral on purpose: "no turn
-      // has run yet" is genuinely unknown, and a green tick there would be the
-      // same false comfort this card exists to remove.
-      title: t('health.lastTurn.title'),
-      tone: !middlewareOk ? 'down' : lastTurn === null ? 'neutral' : turnTone,
-      status:
-        lastTurn === null
-          ? t('health.lastTurn.unknownStatus')
-          : lastTurnFailed
-            ? t('health.warn')
-            : t('health.lastTurn.okStatus'),
-      detail: lastTurnDetail,
-      // A timeout is fixed on the subscription tab (the turn budget lives
-      // there); everything else starts at the provider list.
-      href:
-        lastTurn?.errorCode === 'cli_timeout'
-          ? '/admin/providers?tab=subscriptions'
-          : '/admin/providers',
-      manage: t('health.manage'),
-    },
+                : t('health.mcp.summary', {
+                    enabled: mcp.enabled,
+                    total: mcp.total,
+                    tools: mcp.tools,
+                  })
+              : t('health.mcp.none'),
+          href: '/admin/mcp',
+          manage: t('health.manage'),
+        };
+
+  // OM-100b — the runtime card. A fulfilled `null` stays neutral on purpose:
+  // "no turn has run yet" is genuinely unknown, and a green tick there would
+  // be the same false comfort this card exists to remove. A FAILED call is a
+  // different unknown (#1384) and must not claim that no turn has run.
+  const lastTurnCard: HealthCardProps =
+    turnP.status === 'rejected'
+      ? unavailable(t('health.lastTurn.title'), '/admin/providers')
+      : {
+          title: t('health.lastTurn.title'),
+          tone: lastTurn === null ? 'neutral' : turnTone,
+          status:
+            lastTurn === null
+              ? t('health.lastTurn.unknownStatus')
+              : lastTurnFailed
+                ? t('health.warn')
+                : t('health.lastTurn.okStatus'),
+          detail: lastTurnDetail,
+          // A timeout is fixed on the subscription tab (the turn budget lives
+          // there); everything else starts at the provider list.
+          href:
+            lastTurn?.errorCode === 'cli_timeout'
+              ? '/admin/providers?tab=subscriptions'
+              : '/admin/providers',
+          manage: t('health.manage'),
+        };
+
+  const cards: HealthCardProps[] = [
+    middlewareCard,
+    llmCard,
+    orchestratorCard,
+    embeddingsCard,
+    pluginsCard,
+    mcpCard,
+    lastTurnCard,
   ];
 
   const quick: QuickCardProps[] = [
@@ -406,6 +474,7 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
 
   return (
     <main className="mx-auto w-full max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
+      <PlatformHealthBanner notice={notice} />
       <header className="mb-10">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           {t('h1')}

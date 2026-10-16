@@ -13,7 +13,9 @@
       "middleware": {
         "title": "Middleware",
         "okDetail": "API reachable",
-        "downDetail": "No response from the middleware API."
+        "downDetail": "No response from the middleware API.",
+        "databaseStatus": "Database unreachable",
+        "databaseDetail": "API responds, database unreachable."
       },
       "llm": {
         "title": "LLM access",
@@ -32,7 +34,6 @@
         "title": "Memory / embeddings",
         "active": "Active: {model}",
         "none": "No embedding provider configured. Process memory, semantic search and duplicate detection are off.",
-        "unknown": "Status unavailable",
         "memory": {
           "allActive": "Memory features active",
           "allActiveWithProvider": "Memory features active (LLM: {provider})",
@@ -75,7 +76,9 @@
         "cliTimeout": "The last turn exceeded its time limit. Raise the per-turn time limit in the subscription section.",
         "failure": "The last turn failed: {message}",
         "unknownVersion": "unknown version"
-      }
+      },
+      "unknownStatus": "Unknown",
+      "unavailable": "Status unavailable"
     },
     "quick": {
       "heading": "Quick access",
@@ -156,7 +159,9 @@
         "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the orchestrator just has not been assigned to that access.",
         "assignOrchestrator": "Assign the orchestrator",
         "unreachable": "The agent runtime did not answer, so this step cannot be checked. The middleware may be unavailable, still starting, or returning an error.",
-        "openSystemStatus": "Open update & status"
+        "openSystemStatus": "Open update & status",
+        "databaseUnavailable": "The middleware answers, but its database is not reachable, so this step cannot be checked.",
+        "openPlatformHealth": "Open platform health"
       },
       "embeddingsNote": "Memory is limited: no embedding provider is active. Process memory, semantic search and duplicate detection stay off until one runs. There is a keyless option too — no API key and no separate server.",
       "embeddingsCta": "Set up an embedding provider",
@@ -294,6 +299,10 @@
           "title": "Public API Keys",
           "description": "Create, list, and revoke bearer credentials for the public chat API."
         },
+        "audit": {
+          "title": "Audit log",
+          "description": "See who changed users, sign-in settings, plugin grants, API keys and more. Read-only, newest first."
+        },
         "update": {
           "title": "Update",
           "description": "See the version this instance is running, check for a newer release, and — with the updater overlay deployed — bump the stack from here."
@@ -301,6 +310,10 @@
         "dangerZone": {
           "title": "Memory Purge",
           "description": "Irreversibly delete memory along one axis (all, agent, user, team, channel); preview-gated with a confirm phrase, no undo."
+        },
+        "platformHealth": {
+          "title": "Platform health",
+          "description": "Database, vault and keychain master keys, off-site backup. Shows whether this instance runs on development keys."
         }
       }
     },
@@ -999,7 +1012,8 @@
     "loginLink": "Login",
     "authError": "auth err",
     "signedInAs": "Signed in as",
-    "signOut": "Sign out",
+    "signOut": "Sign out everywhere",
+    "signOutHint": "Signs you out on all your devices, not just this one.",
     "signOutFailed": "Sign-out did not go through. You are still signed in.",
     "signOutRetry": "Try signing out again"
   },
@@ -1380,6 +1394,18 @@
       "write_failed": {
         "what": "The settings could not be written.",
         "next": "Save again. If it repeats, the middleware cannot write to its config store."
+      },
+      "openai_key_format": {
+        "what": "This is not an OpenAI API key. OpenAI keys start with “sk-”, and a key starting with “sk-ant-” belongs to Anthropic.",
+        "next": "Copy the key again from the OpenAI dashboard and paste it in full."
+      },
+      "api_key_format": {
+        "next": "Copy the key again from the provider’s console and paste it in full, without spaces or line breaks.",
+        "what": "This does not look like an API key: it contains spaces or is too short."
+      },
+      "anthropic_key_format": {
+        "next": "Copy the key again from the Anthropic console and paste it in full.",
+        "what": "This is not an Anthropic API key. Anthropic keys start with “sk-ant-”."
       }
     },
     "store": {
@@ -1435,7 +1461,9 @@
     "expiredKicker": "Session",
     "expiredTitle": "Session expired",
     "expiredBody": "Your session has expired. Please sign in again to continue working.",
-    "expiredCta": "Sign in again"
+    "expiredCta": "Sign in again",
+    "revokedTitle": "Session ended",
+    "revokedBody": "Your session was ended, for example by an administrator or by signing out on another device. Please sign in again."
   },
   "runtimeReadiness": {
     "title": "LLM access missing",
@@ -1449,7 +1477,10 @@
     "cta": "Open LLM access",
     "ctaNoAssignment": "Open assignment",
     "ctaUnreachable": "Open update & status",
-    "dismiss": "Later"
+    "dismiss": "Later",
+    "titleDatabaseUnavailable": "Database unreachable",
+    "bodyDatabaseUnavailable": "The middleware answers, but it cannot reach its database (Postgres), so every request that needs stored data fails. Check the Postgres container or DATABASE_URL. This card disappears once the database is back.",
+    "ctaDatabaseUnavailable": "Open platform health"
   },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} tool calls",
@@ -3801,43 +3832,6 @@
       }
     }
   },
-  "adminSettings": {
-    "pluginDirectory": {
-      "heading": "Per-plugin settings",
-      "intro": "Most configuration now lives with each plugin and is edited in its own settings panel. Only genuinely cross-plugin values (like the shared Anthropic key above) remain on this page.",
-      "open": "Open settings",
-      "plugins": {
-        "orchestrator": "Orchestrator & model routing",
-        "verifier": "Verifier",
-        "embeddings": "Embeddings",
-        "knowledgeGraph": "Knowledge graph",
-        "diagrams": "Diagrams & storage",
-        "integrations": "Integrations (Microsoft, Teams, Telegram)"
-      }
-    },
-    "title": "Configuration",
-    "intro": "All <envFile>.env</envFile> values that are written to the config store or the secret vault at startup. Changes are saved automatically and the affected plugin is re-activated — they take effect immediately, without a restart. Secrets only show whether a value is set; the value itself is never displayed.",
-    "loading": "Loading …",
-    "loadError": "Failed to load: {message}",
-    "vaultUnavailable": "Vault unavailable — secrets cannot be edited.",
-    "notInstalled": "not installed",
-    "boolean": {
-      "on": "on",
-      "off": "off"
-    },
-    "secret": {
-      "set": "set",
-      "unset": "not set",
-      "replacePlaceholder": "•••••• (replace)",
-      "enterPlaceholder": "Enter value",
-      "remove": "Remove"
-    },
-    "status": {
-      "saving": "saving …",
-      "saved": "✓ saved",
-      "error": "✗ error"
-    }
-  },
   "adminProviders": {
     "intro": "Connect LLM providers and choose which one each agent runs on. Keys are stored encrypted in the vault and never leave your server. Anthropic is the default; switching an agent to another provider takes effect live.",
     "loading": "Loading …",
@@ -3888,7 +3882,8 @@
         "noProbe": "This provider type cannot be probed cheaply, so the key stays unverified."
       },
       "oauthConnect": "Sign in with ChatGPT",
-      "oauthReconnect": "Reconnect ChatGPT"
+      "oauthReconnect": "Reconnect ChatGPT",
+      "saveRejectedReason": "Reason: {reason}"
     },
     "assignments": {
       "heading": "Per-agent assignment",
@@ -4713,24 +4708,39 @@
       "notFound": "Registry not found — list reloaded.",
       "missingFields": "Name and URL are required.",
       "sessionExpired": "Your session is no longer valid. Redirecting to sign in…",
+      "sessionEnded": "Your session was ended, for example by signing out on another device. Redirecting to sign in…",
       "authUnavailable": "Your session can't be checked right now. Try again shortly.",
       "generic": "Error {status}."
     }
   },
   "adminApiKeys": {
     "title": "Public API Keys",
-    "intro": "Server-to-server bearer credentials for the public chat API. A key’s plaintext token is shown exactly once, right after creation — copy it immediately, it cannot be retrieved again, even by an operator.",
+    "intro": "Server-to-server bearer credentials for the public chat API and the public MCP endpoint. A key’s plaintext token is shown exactly once, right after creation — copy it immediately, it cannot be retrieved again, even by an operator.",
     "create": {
       "heading": "Create a new key",
       "fields": {
         "label": "Label (optional)",
-        "rateLimit": "Rate limit (requests/minute, optional)"
+        "rateLimit": "Rate limit (requests/minute, optional)",
+        "scopes": "Scopes",
+        "expiry": "Expires on (optional)",
+        "mcpWriteTools": "Write tools (optional)"
       },
       "rateLimitInvalid": "Rate limit must be between {min} and {max} requests/minute.",
       "scopesRequired": "Select at least one scope — a key with none cannot do anything.",
       "blockedByReveal": "Dismiss the token above before creating another key.",
       "submit": "Create key",
-      "creating": "Creating"
+      "creating": "Creating",
+      "scopeHelp": {
+        "chatWrite": "Public chat API",
+        "mcpList": "List public MCP tools",
+        "mcpInvoke": "Call read-only MCP tools",
+        "wildcard": "Everything except MCP write tools",
+        "plugin": "Plugin scope"
+      },
+      "mcpWriteToolsHint": "Comma-separated tool names. Each name grants the scope {prefix}name for exactly that tool.",
+      "mcpWriteToolsInvalid": "Tool names may contain only lowercase letters, digits, “_” and “-”, starting with a letter.",
+      "expiryInvalid": "The expiry date must lie in the future.",
+      "scopesUnavailable": "The scope list could not be loaded, so only chat:write is offered."
     },
     "reveal": {
       "heading": "New API key created",
@@ -4753,7 +4763,8 @@
       "rateLimitValue": "{value}/min",
       "status": {
         "active": "Active",
-        "revoked": "Revoked"
+        "revoked": "Revoked",
+        "expired": "Expired"
       },
       "revoke": "Revoke",
       "revoking": "Revoking",
@@ -4761,14 +4772,47 @@
         "message": "Revoke this key? Anything using it stops working immediately — this can't be undone.",
         "confirm": "Confirm revoke",
         "cancel": "Cancel"
+      },
+      "expiresAt": "Expires {date}",
+      "expiredAt": "Expired {date}",
+      "createdBy": "Created by {email}",
+      "createdByUnknown": "Creator unknown",
+      "lastUsed": "Last used {date}",
+      "neverUsed": "Not used yet",
+      "showInactive": "Show revoked and expired keys ({count})",
+      "hideInactive": "Hide revoked and expired keys",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "confirmDelete": {
+        "message": "Delete this key for good? It disappears from this list, and its request history is no longer shown here. Its create, revoke and delete records stay in the admin audit log.",
+        "confirm": "Confirm delete",
+        "cancel": "Cancel"
+      },
+      "usage": {
+        "show": "Recent activity",
+        "hide": "Hide activity",
+        "loading": "Loading activity …",
+        "empty": "No requests from this key in the recent log.",
+        "failed": "The activity could not be loaded.",
+        "status": {
+          "ok": "OK",
+          "rate_limited": "Rate limited",
+          "forbidden": "Missing scope",
+          "invalid_request": "Invalid request",
+          "error": "Error"
+        }
       }
     },
     "errors": {
       "notFound": "That key no longer exists — the list has been refreshed.",
       "authUnavailable": "Operator authentication is unavailable right now. Try again shortly.",
       "sessionExpired": "Your session has expired. Redirecting to sign in…",
+      "sessionEnded": "Your session was ended, for example by signing out on another device. Redirecting to sign in…",
       "invalidRequest": "That request was invalid — check the values above and try again.",
-      "generic": "Something went wrong (error {status})."
+      "generic": "Something went wrong (error {status}).",
+      "invalidScope": "That scope is unknown — pick one from the list.",
+      "invalidExpiry": "The expiry date must lie in the future and at most five years ahead.",
+      "keyActive": "Revoke the key before deleting it."
     }
   },
   "adminWebhooks": {
@@ -4797,14 +4841,14 @@
       "delete": "Delete",
       "deleting": "Deleting",
       "secretRevealed": "New secret — copy it now, it will not be shown again:",
-      "dismiss": "Dismiss",
       "noDeliveries": "No deliveries recorded yet.",
       "confirmDelete": "Really delete this endpoint? Any sender using it will start getting 401s.",
       "table": {
         "deliveryId": "Delivery id",
         "outcome": "Outcome",
         "receivedAt": "Received"
-      }
+      },
+      "blockedByReveal": "Copy and dismiss this secret before you create or rotate another one."
     },
     "subscriptions": {
       "heading": "Outbound subscriptions",
@@ -4826,7 +4870,6 @@
       "delete": "Delete",
       "deleting": "Deleting",
       "secretRevealed": "New secret — copy it now, it will not be shown again:",
-      "dismiss": "Dismiss",
       "noDeliveries": "No deliveries recorded yet.",
       "confirmDelete": "Really delete this subscription?",
       "table": {
@@ -4835,7 +4878,17 @@
         "lastError": "Last error",
         "nextAttemptAt": "Next attempt",
         "createdAt": "Created"
-      }
+      },
+      "blockedByReveal": "Copy and dismiss this secret before you create or rotate another one."
+    },
+    "errors": {
+      "unexpected": "The request could not be sent.",
+      "notFound": "This entry no longer exists. Reload the page.",
+      "urlForbidden": "This address is not allowed. Webhooks may only call public http(s) targets.",
+      "unavailable": "Webhooks are not available on this server.",
+      "serverFailed": "The server could not complete this action. Try again; if it repeats, check the middleware logs.",
+      "invalidInput": "The request is missing a required value.",
+      "requestFailed": "The request failed (HTTP {status})."
     }
   },
   "adminDomains": {
@@ -4855,7 +4908,7 @@
   },
   "adminUsage": {
     "title": "Usage & Cost",
-    "intro": "Records every LLM call — orchestrator, sub-agents and background tasks. Subscription turns via the Claude CLI count as calls but are not billed per token.",
+    "intro": "Records the LLM calls of the orchestrator, its sub-agents, the builder, plugins and background tasks, streamed or not. Subscription turns via the Claude CLI count as calls but are not billed per token.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "ranges": {
@@ -4878,7 +4931,12 @@
     },
     "empty": "No data in this period.",
     "barTitle": "{date} · {cost} · {calls, plural, one {# call} other {# calls}}",
-    "rowStats": "{calls} calls · {input} in · {output} out · {cache} cache",
+    "rowStats": "{calls} calls · {input} in · {output} out · {cacheRead} cache read · {cacheWrite} cache write",
+    "rowReference": " · subscription calls ≈ {reference} API equivalent",
+    "groups": {
+      "builder": "Builder ({count, plural, one {# draft} other {# drafts}})",
+      "other": "Other ({count, plural, one {# source} other {# sources}})"
+    },
     "subscription": {
       "headline": "{count, plural, one {# subscription turn} other {# subscription turns}} in this window",
       "explainer": "Subscription turns run on the Claude plan, not on per-token billing. They count as calls but cost nothing here. On the metered API they would have cost {reference}."
@@ -4900,6 +4958,7 @@
     "list": {
       "title": "Users",
       "intro": "Local accounts and federated identities. Only local users can be created here — federated accounts appear once the user has signed in through the IdP.",
+      "rolesNote": "All users are administrators with full access. Role-based permissions are not available yet.",
       "create": "Create new user",
       "cancel": "Cancel",
       "form": {
@@ -4939,6 +4998,51 @@
       "confirmDelete": "Really delete this user? This action cannot be undone.",
       "delete": "Delete user",
       "deleting": "Deleting …"
+    }
+  },
+  "adminAudit": {
+    "title": "Audit log",
+    "intro": "A read-only record of administrative changes: who did what, to which target, and when. Newest entries first.",
+    "loading": "Loading audit log…",
+    "empty": "No audit entries yet.",
+    "emptyFiltered": "No audit entries match this filter.",
+    "filter": {
+      "label": "Action",
+      "options": {
+        "all": "All actions",
+        "user": "User accounts",
+        "auth": "Sign-in & sessions",
+        "plugin": "Plugin changes",
+        "apikey": "API keys",
+        "memory": "Memory purges",
+        "conductor": "Conductor changes",
+        "profileSnapshot": "Profile snapshots",
+        "channel": "Channels"
+      }
+    },
+    "table": {
+      "time": "Time",
+      "actor": "Actor",
+      "action": "Action",
+      "target": "Target",
+      "changes": "Changes"
+    },
+    "actorSystem": "System (automatic)",
+    "details": {
+      "show": "Show before / after",
+      "before": "Before",
+      "after": "After",
+      "empty": "(none)"
+    },
+    "paging": {
+      "newer": "← Newer",
+      "older": "Older →",
+      "range": "Entries {from}–{to}"
+    },
+    "errors": {
+      "invalidQuery": "The filter or page is not valid. Reset the filter and try again.",
+      "generic": "The audit log could not be loaded (error {status}).",
+      "network": "The audit log could not be loaded. Check the connection and try again."
     }
   },
   "adminTopics": {
@@ -5114,8 +5218,8 @@
   },
   "adminDangerZone": {
     "title": "Danger Zone · Memory Purge",
-    "intro": "Deletes memory irreversibly along one axis. <strong>Everything</strong> wipes agent scratch <em>and</em> knowledge graph; the user / team / channel axes hit the knowledge graph and the matching context tree under /memories/contexts. There is no undo — always check the preview first.",
-    "note": "<strong>Note:</strong> The user / team / channel selector is a context key (<code>channelType~id</code>) or the raw native id — it addresses one context tree across every agent.",
+    "intro": "Deletes memory irreversibly along one axis: agent scratch, the knowledge graph’s <strong>remembered facts</strong> and its <strong>conversation history</strong> (turns, sessions, runs, tool calls, plans). The <em>team</em> and <em>channel</em> axes only delete the context trees under /memories/contexts — the knowledge graph has no team or channel scoping yet. Chat tabs, conversation transcripts under /memories/sessions, brand assets, core and UI preferences are never deleted. There is no undo — the server only accepts a delete after a preview of the same selection.",
+    "note": "<strong>Selector:</strong> for user / team / channel always <code>channelType~id</code>, where the id is either the raw native id or the key shown in the memory browser — e.g. <code>teams~AAD-OBJECT-ID</code> (user), <code>teams~19:abc@thread.tacv2</code> (team), <code>telegram~-1001234567890</code> (channel). On the user axis an omadia user id (UUID) instead selects that person’s member notes, remembered facts and conversation turns.",
     "targetTitle": "Target",
     "axisLabel": "Axis",
     "axes": {
@@ -5128,20 +5232,20 @@
     "selectorLabel": "Selector",
     "selectorPlaceholder": {
       "agent": "de.byte5.agent.calendar",
-      "user": "teams~29-1a2b… (never a bare id)",
-      "team": "teams~19-abc… (never a bare id)",
-      "channel": "telegram~-1001234567890 (never a bare id)"
+      "user": "teams~AAD-OBJECT-ID or omadia user id",
+      "team": "teams~19:abc@thread.tacv2",
+      "channel": "telegram~-1001234567890"
     },
     "selectorRequired": "Selector required for this axis.",
-    "reseedLabel": "Re-seed default memories after deletion (re-seed defaults)",
+    "reseedLabel": "Reset rules to the bundled defaults",
     "loading": "loading…",
     "previewButton": "Preview",
     "previewError": "Preview error: {message}",
     "previewTitle": "Preview — will be deleted",
     "agentScratch": "Agent scratch",
-    "knowledgeGraph": "Knowledge graph",
+    "knowledgeGraph": "Remembered facts (knowledge graph)",
     "confirmTitle": "Confirm deletion",
-    "previewFirst": "Run a preview first — deletion is only possible after that.",
+    "previewFirst": "Run a preview first — the server only accepts a delete after a preview of the same selection.",
     "noSelector": "No selector set.",
     "confirmInstruction": "To confirm, type exactly: <code>{phrase}</code>",
     "deleting": "deleting…",
@@ -5150,10 +5254,31 @@
     "deletedTitle": "Deleted",
     "forbiddenError": "Not authorized (403) — memory purge requires admin rights.",
     "selectorHint": {
-      "agent": "Agent slug. Also removes that agent’s context trees under /memories/contexts.",
-      "user": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw user id. Deletes the user tier across all agents.",
-      "team": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw team id. Deletes the team tier across all agents.",
-      "channel": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw conversation id. Deletes the channel tier across all agents."
+      "agent": "Agent slug. Deletes the agent’s scratch tree, its context trees under /memories/contexts, its remembered facts and its conversation history.",
+      "user": "Always <code>channelType~id</code> (raw user id or the key from the memory browser), e.g. <code>teams~AAD-OBJECT-ID</code> — deletes the user tier across all agents. Or an omadia user id: deletes that person’s member notes, remembered facts and conversation turns.",
+      "team": "Always <code>channelType~id</code> (raw team id or the key from the memory browser), e.g. <code>teams~19:abc@thread.tacv2</code>. Deletes the team tier across all agents.",
+      "channel": "Always <code>channelType~id</code> (raw conversation id or the key from the memory browser), e.g. <code>telegram~-1001234567890</code>. Deletes the channel tier across all agents."
+    },
+    "reseedHint": "Deletes /memories/_rules, including rules added at runtime, and writes the bundled defaults back right away. Chat tabs, conversation transcripts, brand assets, core and UI preferences are always kept.",
+    "reseedPreview": "Reset to the bundled defaults: {entries}",
+    "reseeded": "{count, plural, one {# default file written back.} other {# default files written back.}}",
+    "conversationHistory": "Conversation history (knowledge graph)",
+    "nothingToDelete": "The preview found nothing to delete for this selection — check the selector.",
+    "warnings": {
+      "kg_not_modelled": "The knowledge graph has no {axis, select, team {team} channel {channel} other {such}} scoping yet: remembered facts and conversation history stay untouched. Only the context trees under /memories/contexts are deleted.",
+      "kg_history_unsupported": "This knowledge-graph provider cannot delete conversation history: turns, sessions and runs stay. Only remembered facts and scratch memory are deleted.",
+      "user_axis_kg_only": "The selector matched knowledge-graph data but no context tree under /memories/contexts — the user’s scratch memory is not deleted.",
+      "user_axis_scratch_only": "The selector matched context trees but no knowledge-graph data — remembered facts and conversation turns are matched by omadia user id, not by a channelType~id key.",
+      "audit_unavailable": "No audit store is configured (no Postgres) — this purge is not recorded.",
+      "audit_update_failed": "The purge ran, but its audit record {auditId} could not be completed and still shows as started.",
+      "reseed_failed": "The defaults could not be written back; they return at the next restart unless MEMORY_SEED_MODE is skip."
+    },
+    "errors": {
+      "invalid_selector": "The selector must be spelled channelType~id, e.g. teams~19:abc@thread.tacv2 (raw native id) or the key shown in the memory browser.",
+      "selector_required": "Selector required for this axis.",
+      "preview_required": "The preview expired or belongs to another selection — run the preview again.",
+      "confirmation_mismatch": "The confirmation does not match the required phrase.",
+      "audit_write_failed": "The purge could not be recorded in the audit log, so nothing was deleted."
     }
   },
   "adminDuplicates": {
@@ -5334,7 +5459,9 @@
       "gcTitle": "Run GC quotas",
       "gcDescription": "Per-scope eviction by type-weight × decay-score. Enforces hot_max_entries + max_total_chars.",
       "accessFlushTitle": "Run access flush only",
-      "accessFlushDescription": "Drain the access tracker into access_count + accessed_at without rotating. Debug-only."
+      "accessFlushDescription": "Drain the access tracker into access_count + accessed_at without rotating. Debug-only.",
+      "running": "Running …",
+      "runNow": "Run now"
     },
     "cards": {
       "tierBreakdown": "Tier breakdown",
@@ -5369,7 +5496,7 @@
       "promotedColdToWarm": "Promoted COLD → WARM"
     },
     "title": "Knowledge-Graph Lifecycle",
-    "intro": "Palaia Phase 4 — tier rotation, decay, GC. Sweeps run on the cron schedule; the buttons below trigger them on demand.",
+    "intro": "Tier rotation, decay and GC for the knowledge graph. Sweeps run on the cron schedule; the buttons below trigger them on demand.",
     "refresh": "Refresh"
   },
   "adminKgPriorities": {
@@ -5936,7 +6063,8 @@
       "title": "Platform health.",
       "intro": "Runtime, persistence, backup. Metadata only — no secrets.",
       "errorUnknownLoad": "Unknown error while loading the vault status.",
-      "loadErrorTitle": "Vault status unreachable"
+      "loadErrorTitle": "Vault status unreachable",
+      "loadErrorDatabase": "The middleware could not check your session because its database is unreachable. See the platform health card."
     },
     "vaultStatus": {
       "masterKey": "Master key",
@@ -5961,12 +6089,35 @@
       "dotWarn": "Warning",
       "dotDanger": "Error",
       "dotInactive": "Inactive",
-      "keySourceDevFile": "dev file (not for production)",
-      "keySourceDevFileCreated": "dev file (newly generated — DEV ONLY)",
+      "keySourceDevFile": "dev file, set {envVar} for production",
+      "keySourceDevFileCreated": "dev file (newly generated, DEV ONLY), set {envVar} for production",
       "eyebrow": "Encrypted secret vault",
       "heading": "Vault",
       "bucket": "Bucket",
-      "prefix": "Prefix"
+      "prefix": "Prefix",
+      "keychainKey": "Keychain master key",
+      "keySourceEnv": "{envVar} (env)",
+      "keySourceUnknown": "not reported by this middleware version"
+    },
+    "platformHealth": {
+      "eyebrow": "Middleware /health",
+      "heading": "Platform",
+      "middleware": "Middleware",
+      "middlewareReachable": "reachable · version {version}",
+      "middlewareUnreachable": "The middleware did not answer its health check, so the status of the database and the master keys cannot be read. It may be stopped, still starting, or restarting after a crash.",
+      "database": "Database (Postgres)",
+      "databaseState": {
+        "ok": "reachable",
+        "unreachable": "not answering. Check that Postgres is running and DATABASE_URL is right; if both are fine, restart the middleware",
+        "unknown": "configured, but no connection to check",
+        "none": "none (in-memory knowledge graph)",
+        "unreported": "not reported"
+      },
+      "embeddings": "Embeddings",
+      "semanticRecall": "Semantic recall",
+      "active": "active",
+      "off": "off",
+      "warningsHeading": "Reported by the middleware"
     }
   },
   "help": {
@@ -5983,8 +6134,8 @@
       },
       "pluginNeedsConfig": {
         "question": "A plugin says it needs configuration",
-        "answer": "The plugin is installed but at least one required field has no value. Open the plugin in the store and fill in the setup fields. Secret fields never want an account password — they want a technical key from the provider's console.",
-        "action": "Open the store"
+        "answer": "The plugin is installed but at least one required field has no value. Open the plugin in the Hub and fill in the setup fields. Secret fields never want an account password — they want a technical key from the provider's console.",
+        "action": "Open the Hub"
       },
       "cliNotInstalled": {
         "question": "A subscription CLI shows as not installed",
@@ -5993,13 +6144,13 @@
       },
       "noModels": {
         "question": "No models show up for a provider",
-        "answer": "Models are contributed by the provider plugin. If the list is empty, the plugin is not active — check LLM access and the plugin's status in the store.",
+        "answer": "Models are contributed by the provider plugin. If the list is empty, the plugin is not active — check LLM access and the plugin's status in the Hub.",
         "action": "Open LLM access"
       }
     },
     "docs": {
       "heading": "Documentation",
-      "documentation": "Documentation",
+      "documentation": "Docs on GitHub",
       "repository": "Source code on GitHub",
       "discussions": "Ask in Discussions"
     },
@@ -6075,5 +6226,29 @@
       "teams_sign_in_failed": "The Teams sign-in failed.",
       "unknown": "The Teams sign-in request failed: {detail}"
     }
+  },
+  "platformHealth": {
+    "banner": {
+      "databaseUnreachable": {
+        "title": "Database unreachable",
+        "body": "The middleware is running, but its database (Postgres) is not answering. Everything that needs stored data fails until it is back, so the status cards below may read as unknown. Check that Postgres is running and DATABASE_URL is right; if both are fine, restart the middleware."
+      },
+      "middlewareUnreachable": {
+        "title": "Middleware not reachable",
+        "body": "The web UI could not reach the middleware, so no status on this page can be checked. It may be stopped, still starting, or restarting after a crash."
+      },
+      "devMasterKey": {
+        "title": "Development master key in use",
+        "body": "{which, select, vault {VAULT_KEY is} keychain {CREDENTIAL_KEYCHAIN_KEY is} other {VAULT_KEY and CREDENTIAL_KEYCHAIN_KEY are}} not set, so the master key is read from a dev file on the data volume, right next to the data it encrypts. Fine for local development, not for production."
+      },
+      "cta": "Open platform health",
+      "dismiss": "Later"
+    }
+  },
+  "oneTimeSecret": {
+    "dismiss": "I've copied it, dismiss",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Couldn't copy automatically — select the secret above and copy it manually."
   }
 }

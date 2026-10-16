@@ -45,8 +45,15 @@ import { ApiError } from './api';
  * possible mistakes, "reports a working system as unknown for one render" is
  * the recoverable one. Flap-resistance, if it is ever wanted back, belongs in
  * a bounded retry — not in calling an unknown state healthy.
+ *
+ * #1384 — a fourth state, `database_unavailable`: the middleware answered,
+ * but with 503 `auth.unavailable`. That is the session-revocation lookup
+ * failing, and it reads the `users` table, so in practice it means Postgres
+ * is gone. Every authenticated route answers it during a database outage. It
+ * used to land in `unreachable`, so the dashboard blamed the middleware and
+ * sent the operator to the update page; the database was never mentioned.
  */
-export type RuntimeReadiness = 'up' | 'down' | 'unreachable';
+export type RuntimeReadiness = 'up' | 'down' | 'unreachable' | 'database_unavailable';
 
 /** Mirrors `RuntimeReadinessCause` in middleware/src/platform/pluginLlmReadiness.ts. */
 export type RuntimeReadinessCause = 'no_llm_access' | 'no_assignment' | 'unknown';
@@ -54,17 +61,44 @@ export type RuntimeReadinessCause = 'no_llm_access' | 'no_assignment' | 'unknown
 /**
  * What the readiness card can show: the middleware's own causes, plus the one
  * verdict the middleware can never report about itself — that it is not
- * answering.
+ * answering — and the database outage it reports only as a failed session
+ * check (#1384).
  */
-export type ReadinessCardCause = RuntimeReadinessCause | 'unreachable';
+export type ReadinessCardCause =
+  | RuntimeReadinessCause
+  | 'unreachable'
+  | 'database_unavailable';
 
 /** The middleware's structured "no orchestrator" marker on a 503. */
 const UNAVAILABLE = 'multi_orchestrator_unavailable';
 
-/** The 503 body shape: `{ error, message, cause? }` (see operatorAgents.ts). */
+/**
+ * `requireAuth`'s code when the session check could not run (#1384). Mirrors
+ * `SESSION_CHECK_UNAVAILABLE_CODE` in middleware/src/auth/sessionRevocation.ts.
+ */
+export const SESSION_CHECK_UNAVAILABLE_CODE = 'auth.unavailable';
+
+/**
+ * The 503 body shapes: `{ error, message, cause? }` from the operator routes
+ * (see operatorAgents.ts), `{ code, message }` from `requireAuth`.
+ */
 export interface ReadinessProbeBody {
   readonly error?: unknown;
   readonly cause?: unknown;
+  readonly code?: unknown;
+}
+
+/**
+ * Did the middleware answer a call with 503 `auth.unavailable` — i.e. is the
+ * API up while its database is not (#1384)? Works on any rejected API call,
+ * not only the operator route, so the dashboard can ask it of every card.
+ */
+export function isDatabaseUnavailable(reason: unknown): boolean {
+  return (
+    reason instanceof ApiError &&
+    reason.status === 503 &&
+    reason.code === SESSION_CHECK_UNAVAILABLE_CODE
+  );
 }
 
 export function parseCause(value: unknown): RuntimeReadinessCause {
@@ -74,8 +108,9 @@ export function parseCause(value: unknown): RuntimeReadinessCause {
 /**
  * Does this 503 body carry the middleware's own structured verdict?
  *
- * Note this reads `error`, not `ApiError.code`: `parseErrorCode` (api.ts)
- * parses a `code` field, and the middleware sends this marker under `error`.
+ * Note this reads the probe body's `error` directly: the body here is a
+ * parsed readiness payload, not an `ApiError` (whose `code` falls back to
+ * `error` since #1333).
  */
 function isStructuredUnavailable(body: ReadinessProbeBody | null): boolean {
   return body?.error === UNAVAILABLE;
@@ -113,6 +148,7 @@ export function classifyRuntimeRejection(
 ): Exclude<RuntimeReadiness, 'up'> {
   if (!(reason instanceof ApiError)) return 'unreachable';
   if (reason.status !== 503) return 'unreachable';
+  if (isDatabaseUnavailable(reason)) return 'database_unavailable';
   return isStructuredUnavailable(parseBody(reason.body)) ? 'down' : 'unreachable';
 }
 
@@ -156,6 +192,7 @@ export function classifyProbeResponse(
   body: ReadinessProbeBody | null,
 ): ReadinessCardCause | null {
   if (status === 503) {
+    if (body?.code === SESSION_CHECK_UNAVAILABLE_CODE) return 'database_unavailable';
     return isStructuredUnavailable(body) ? parseCause(body?.cause) : 'unreachable';
   }
   if (status >= 500) return 'unreachable';

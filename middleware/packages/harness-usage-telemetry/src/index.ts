@@ -23,6 +23,7 @@ export {
   initUsageRecorder,
   isUsageRecorderReady,
   recordUsage,
+  providerRecordsOwnUsage,
   setUsageContextProvider,
   flush as flushUsageRecorder,
   shutdownUsageRecorder,
@@ -36,7 +37,14 @@ export {
   type UsageByKey,
   type UsageBucket,
   type UsageDashboard,
+  type UsageBucketSize,
+  type UsageKeyGroup,
   SUBSCRIPTION_SOURCES,
+  BUILDER_SOURCE_PREFIX,
+  BUILDER_SOURCE_KEY,
+  OTHER_SOURCE_KEY,
+  BY_SOURCE_LIMIT,
+  capByKey,
   getUsageDashboard,
 } from './queries.js';
 

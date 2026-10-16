@@ -217,6 +217,7 @@ export function AuthBadge(): React.ReactElement | null {
                 type="button"
                 onClick={handleLogout}
                 disabled={signingOut}
+                title={t('signOutHint')}
                 className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-[color:var(--fg-strong)] transition-colors hover:bg-[color:var(--accent)]/10 disabled:opacity-50"
               >
                 <span>{signOutFailure ? t('signOutRetry') : t('signOut')}</span>
