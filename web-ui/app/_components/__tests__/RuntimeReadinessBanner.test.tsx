@@ -204,6 +204,22 @@ describe('<RuntimeReadinessBanner />', () => {
    * swallowed the throw, so the one card whose job is to say the runtime
    * cannot serve agents disappeared exactly when it was true.
    */
+  // #1384 — a Postgres outage answers 503 `auth.unavailable` on every
+  // authenticated route. The card must name the database and must not send
+  // the operator to the update page, which fails with the same 503.
+  it('names the database and links to /system on a 503 auth.unavailable', async () => {
+    respondWith(503, { code: 'auth.unavailable', message: 'session check unavailable, try again' });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+    await flush();
+
+    const card = screen.getByTestId('runtime-readiness-card');
+    expect(card.dataset['cause']).toBe('database_unavailable');
+    expect(screen.getByText('Datenbank nicht erreichbar')).toBeInTheDocument();
+    const link = card.querySelector('a');
+    expect(link?.getAttribute('href')).toBe('/system');
+    expect(card.textContent).not.toMatch(TITLE_UNREACHABLE_DE);
+  });
+
   describe('#1088 — a middleware that does not answer', () => {
     it.each([500, 502, 504])('shows the unreachable card on a proxy %i', async (status) => {
       respondWith(status, null);

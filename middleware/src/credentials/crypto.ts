@@ -24,11 +24,16 @@ import { resolveMasterKey, type MasterKeyResult } from '../secrets/fileVault.js'
 
 const DEV_KEY_FILENAME = '.dev-credential-keychain.key';
 
+/** Where the dev-only keychain key lives. Exported for the boot log (#1387). */
+export function credentialKeychainDevKeyPath(dataDir: string): string {
+  return path.join(dataDir, DEV_KEY_FILENAME);
+}
+
 export async function resolveCredentialMasterKey(
   dataDir: string,
   productionMode = false,
 ): Promise<MasterKeyResult> {
-  const devKeyPath = path.join(dataDir, DEV_KEY_FILENAME);
+  const devKeyPath = credentialKeychainDevKeyPath(dataDir);
   return resolveMasterKey(
     process.env.CREDENTIAL_KEYCHAIN_KEY,
     devKeyPath,

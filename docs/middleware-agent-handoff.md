@@ -2993,6 +2993,41 @@ Tests: `test/toolReplayLedger.test.ts`, `test/toolReplaySeams.test.ts`,
 `test/orchestrator/internFailureFailsClosed.test.ts`,
 `test/orchestratorPrivacyEgress.test.ts`.
 
+### Plattform-Checks auf `/health` + Postgres-Wartezeit beim Boot (#1384–#1387, #1332)
+
+**Boot (#1386).** `runCoreMigrations` (`platform/coreMigrations.ts`) ist der
+erste Postgres-Kontakt im Boot. Transiente Verbindungsfehler
+(`isTransientDbError` aus `@omadia/knowledge-graph-neon`, dieselbe Liste wie
+`waitForPostgres`: `ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`, `57P03`, …) werden
+mit Backoff (0,5 s → max. 5 s) bis zu 60 s wiederholt, mit einer Logzeile
+`waiting for Postgres (…)` pro Versuch. Danach endet der Prozess wie bisher.
+Das Budget ist unabhängig vom 60-s-Budget für Lock-Contention, das erst mit
+der ersten Contention startet. Jeder Verbindungsversuch ist auf 5 s begrenzt. Der
+HTTP-Listener bindet erst am Ende von `main()`, während der Wartezeit gibt es
+also kein `/health`. Compose (`start_period: 90s`) und Fly (Check startet
+keine Maschine neu) vertragen das.
+
+**`GET /health` → `checks.database`** (`health/platformHealth.ts`), additiv
+zu `kg`, `disclosure`, `attachments`: `ok` / `unreachable` / `unknown` /
+`none`, abgeleitet aus `kg.pool` und ob `DATABASE_URL` gesetzt ist. `status`
+und HTTP-Code bleiben unverändert (503 nur bei totem Pool), weil
+Updater-Health-Gate und Desktop-Supervisor darauf schauen. Die Herkunft der
+Master-Keys steht bewusst **nicht** auf dem öffentlichen Endpoint
+(siehe `docs/security-architecture.md` §8): der Dev-Key-Hinweis wird nur bei
+laufender DB gezeigt und liest dann die authentifizierte Vault-Status-Route.
+
+**`/api/v1/admin/vault-status`** liefert zusätzlich `keychain_key_source`.
+`production_ready` ist nur noch `true`, wenn beide Keys aus env kommen.
+
+**Web-UI.** `_lib/platformHealth.ts` liest `/health` serverseitig
+(`MIDDLEWARE_URL`, 10-s-Timeout, Body auch bei 503) und leitet
+`platformNotice()` ab: `databaseUnreachable` > `middlewareUnreachable` >
+`devMasterKey` (letzteres aus `/api/v1/admin/vault-status`). `PlatformHealthBanner` zeigt das auf `/` und `/admin`.
+`/system` rendert `PlatformHealthCard` neben der Vault-Karte. Ein 503
+`auth.unavailable` (Session-Check braucht die DB) ist im geteilten Klassifizierer
+`_lib/runtimeReadiness.ts` der Zustand `database_unavailable`. Dashboard-Karten
+ohne Daten zeigen „Status nicht abrufbar“ statt ihres Leerzustands.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert

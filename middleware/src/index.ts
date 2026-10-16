@@ -122,7 +122,10 @@ import { resolveSkillManifestSigningKey } from './services/skillManifestSigningK
 import { createCredentialAskRouter } from './routes/credentialAsks.js';
 import { InMemoryCredentialAskStore } from './credentials/asks.js';
 import { PostgresCredentialAskStore } from './credentials/postgresCredentialAskStore.js';
-import { resolveCredentialMasterKey } from './credentials/crypto.js';
+import {
+  credentialKeychainDevKeyPath,
+  resolveCredentialMasterKey,
+} from './credentials/crypto.js';
 import { createCredentialStore } from './credentials/credentialStoreFactory.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
@@ -207,6 +210,7 @@ import {
 } from './platform/pluginLlmReadiness.js';
 import { createServiceRegistryBackedSqlGrantStore } from './platform/pluginSqlGrantStore.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
+import { buildPlatformChecks } from './health/platformHealth.js';
 import { createBuilderRouter } from './routes/builder.js';
 import {
   OperatorGate,
@@ -994,7 +998,7 @@ async function main(): Promise<void> {
   if (credentialMasterKey.source === 'env') {
     console.log('[middleware] credential-keychain master key loaded from CREDENTIAL_KEYCHAIN_KEY env');
   } else if (credentialMasterKey.source === 'dev-file-existed') {
-    console.log('[middleware] ⚠ credential-keychain master key loaded from dev file — set CREDENTIAL_KEYCHAIN_KEY for production');
+    console.log(`[middleware] ⚠ credential-keychain master key loaded from dev file (${credentialKeychainDevKeyPath(DATA_DIR)}) — set CREDENTIAL_KEYCHAIN_KEY for production`);
   } else {
     console.warn('[middleware] ⚠ credential-keychain master key GENERATED (dev file) — DEV ONLY. Set CREDENTIAL_KEYCHAIN_KEY for production.');
   }
@@ -3216,6 +3220,15 @@ async function main(): Promise<void> {
       // it is a legitimate operator decision, and #648 is explicit that the
       // hint informs rather than blocks.
       const status = kg.pool === 'dead' ? 'error' : 'ok';
+      // #1385 / #1384 — the database verdict as its own field, so the web UI
+      // can name a Postgres outage while every authenticated route answers
+      // 503. Additive: `status` and the HTTP code keep their meaning, because
+      // the updater's health gate and the desktop supervisor key on them.
+      // Master-key posture is NOT here on purpose (see platformHealth.ts).
+      const checks = buildPlatformChecks({
+        kg,
+        databaseConfigured: Boolean(process.env['DATABASE_URL']?.trim()),
+      });
       // #432 — the build stamp (`unknown` when the image was built without
       // one). Load-bearing beyond display: the updater sidecar's health gate
       // polls THIS field to decide whether the new image is actually serving,
@@ -3229,6 +3242,7 @@ async function main(): Promise<void> {
         .json({
           status,
           version: appVersion.version,
+          checks,
           kg,
           disclosure,
           attachments: attachmentStoreHealth(attachmentStore),
@@ -5249,6 +5263,7 @@ async function main(): Promise<void> {
       vaultPath: VAULT_PATH,
       dataDir: DATA_DIR,
       masterKeySource: masterKey.source,
+      keychainKeySource: credentialMasterKey.source,
       backup: vaultBackupService,
       ...(vaultBackupDisabledReason
         ? { backupDisabledReason: vaultBackupDisabledReason }

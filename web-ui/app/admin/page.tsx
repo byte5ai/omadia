@@ -2,7 +2,10 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { getLocale, getTranslations } from 'next-intl/server';
 
+import { getVaultStatus } from '../_lib/api';
 import { fetchNavEntries } from '../_lib/navigation';
+import { fetchMiddlewareHealth, platformNotice } from '../_lib/platformHealth';
+import { PlatformHealthBanner } from '../_components/PlatformHealthBanner';
 
 export const dynamic = 'force-dynamic';
 
@@ -90,7 +93,14 @@ const GROUPS: readonly GroupDef[] = [
     // Rolling self-update (#432). Always shown: even without the opt-in
     // updater overlay the page is the honest answer to "what version am I
     // running, and is there a newer one".
-    cards: [{ href: '/admin/update', key: 'update' }],
+    //
+    // #1332 — platform health (`/system`: database, vault and keychain master
+    // keys, backup). It was reachable only through the nav entry, so a vault
+    // running on the dev key was invisible from here.
+    cards: [
+      { href: '/system', key: 'platformHealth' },
+      { href: '/admin/update', key: 'update' },
+    ],
   },
   {
     key: 'danger',
@@ -101,9 +111,14 @@ const GROUPS: readonly GroupDef[] = [
 export default async function AdminIndexPage(): Promise<React.ReactElement> {
   const t = await getTranslations('admin.index');
   const locale = await getLocale();
-  const contributed = new Set(
-    (await fetchNavEntries(locale)).map((e) => `${e.pluginId}::${e.href}`),
-  );
+  // #1332 — /health for outages, the authenticated vault status for the
+  // dev-key posture (deliberately not on the public endpoint).
+  const [navEntries, health, vault] = await Promise.all([
+    fetchNavEntries(locale),
+    fetchMiddlewareHealth(),
+    getVaultStatus().catch(() => null),
+  ]);
+  const contributed = new Set(navEntries.map((e) => `${e.pluginId}::${e.href}`));
   const groups = GROUPS.map((group) => ({
     ...group,
     cards: group.cards.filter(
@@ -114,6 +129,7 @@ export default async function AdminIndexPage(): Promise<React.ReactElement> {
   })).filter((group) => group.cards.length > 0);
   return (
     <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
+      <PlatformHealthBanner notice={platformNotice({ health, vault })} />
       <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           {t('h1')}

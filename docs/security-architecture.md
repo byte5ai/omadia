@@ -2854,6 +2854,18 @@ At a minimum, your deployment vault holds:
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
 
+### Master-key posture is not on the public `/health` (#1385, #1387, #1332)
+
+The unauthenticated `GET /health` reports the database verdict
+(`checks.database`) so the web UI can name a Postgres outage while every
+authenticated route answers 503. It deliberately does **not** report whether
+`VAULT_KEY` / `CREDENTIAL_KEYCHAIN_KEY` came from env or from the dev file:
+that would tell any scanner "this instance runs on dev-grade keys". The UI's
+dev-key warning is only shown while the database is up, and then reads the
+authenticated `/api/v1/admin/vault-status`, which reports both sources
+(`master_key_source`, `keychain_key_source`); its `production_ready` requires
+both keys from env.
+
 ## 8a. Desktop secret custody (`desktop/src/secrets.ts`)
 
 The desktop app has no deployment vault. It generates the kernel's master keys

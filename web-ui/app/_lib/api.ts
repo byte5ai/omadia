@@ -1293,6 +1293,9 @@ export interface VaultStatusResponse {
     last_modified: string | null;
     agent_count: number;
     master_key_source: 'env' | 'dev-file-existed' | 'dev-file-created';
+    /** #1387 — the credential keychain's master key. Absent on older middleware. */
+    keychain_key_source?: 'env' | 'dev-file-existed' | 'dev-file-created';
+    /** Both master keys come from env. */
     production_ready: boolean;
   };
   backup: VaultBackupStatus;

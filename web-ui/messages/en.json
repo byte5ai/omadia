@@ -13,7 +13,9 @@
       "middleware": {
         "title": "Middleware",
         "okDetail": "API reachable",
-        "downDetail": "No response from the middleware API."
+        "downDetail": "No response from the middleware API.",
+        "databaseStatus": "Database unreachable",
+        "databaseDetail": "API responds, database unreachable."
       },
       "llm": {
         "title": "LLM access",
@@ -32,7 +34,6 @@
         "title": "Memory / embeddings",
         "active": "Active: {model}",
         "none": "No embedding provider configured. Process memory, semantic search and duplicate detection are off.",
-        "unknown": "Status unavailable",
         "memory": {
           "allActive": "Memory features active",
           "allActiveWithProvider": "Memory features active (LLM: {provider})",
@@ -75,7 +76,9 @@
         "cliTimeout": "The last turn exceeded its time limit. Raise the per-turn time limit in the subscription section.",
         "failure": "The last turn failed: {message}",
         "unknownVersion": "unknown version"
-      }
+      },
+      "unknownStatus": "Unknown",
+      "unavailable": "Status unavailable"
     },
     "quick": {
       "heading": "Quick access",
@@ -156,7 +159,9 @@
         "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the orchestrator just has not been assigned to that access.",
         "assignOrchestrator": "Assign the orchestrator",
         "unreachable": "The agent runtime did not answer, so this step cannot be checked. The middleware may be unavailable, still starting, or returning an error.",
-        "openSystemStatus": "Open update & status"
+        "openSystemStatus": "Open update & status",
+        "databaseUnavailable": "The middleware answers, but its database is not reachable, so this step cannot be checked.",
+        "openPlatformHealth": "Open platform health"
       },
       "embeddingsNote": "Memory is limited: no embedding provider is active. Process memory, semantic search and duplicate detection stay off until one runs. There is a keyless option too — no API key and no separate server.",
       "embeddingsCta": "Set up an embedding provider",
@@ -305,6 +310,10 @@
         "dangerZone": {
           "title": "Memory Purge",
           "description": "Irreversibly delete memory along one axis (all, agent, user, team, channel); preview-gated with a confirm phrase, no undo."
+        },
+        "platformHealth": {
+          "title": "Platform health",
+          "description": "Database, vault and keychain master keys, off-site backup. Shows whether this instance runs on development keys."
         }
       }
     },
@@ -1456,7 +1465,10 @@
     "cta": "Open LLM access",
     "ctaNoAssignment": "Open assignment",
     "ctaUnreachable": "Open update & status",
-    "dismiss": "Later"
+    "dismiss": "Later",
+    "titleDatabaseUnavailable": "Database unreachable",
+    "bodyDatabaseUnavailable": "The middleware answers, but it cannot reach its database (Postgres), so every request that needs stored data fails. Check the Postgres container or DATABASE_URL. This card disappears once the database is back.",
+    "ctaDatabaseUnavailable": "Open platform health"
   },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} tool calls",
@@ -6037,7 +6049,8 @@
       "title": "Platform health.",
       "intro": "Runtime, persistence, backup. Metadata only — no secrets.",
       "errorUnknownLoad": "Unknown error while loading the vault status.",
-      "loadErrorTitle": "Vault status unreachable"
+      "loadErrorTitle": "Vault status unreachable",
+      "loadErrorDatabase": "The middleware could not check your session because its database is unreachable. See the platform health card."
     },
     "vaultStatus": {
       "masterKey": "Master key",
@@ -6062,12 +6075,35 @@
       "dotWarn": "Warning",
       "dotDanger": "Error",
       "dotInactive": "Inactive",
-      "keySourceDevFile": "dev file (not for production)",
-      "keySourceDevFileCreated": "dev file (newly generated — DEV ONLY)",
+      "keySourceDevFile": "dev file, set {envVar} for production",
+      "keySourceDevFileCreated": "dev file (newly generated, DEV ONLY), set {envVar} for production",
       "eyebrow": "Encrypted secret vault",
       "heading": "Vault",
       "bucket": "Bucket",
-      "prefix": "Prefix"
+      "prefix": "Prefix",
+      "keychainKey": "Keychain master key",
+      "keySourceEnv": "{envVar} (env)",
+      "keySourceUnknown": "not reported by this middleware version"
+    },
+    "platformHealth": {
+      "eyebrow": "Middleware /health",
+      "heading": "Platform",
+      "middleware": "Middleware",
+      "middlewareReachable": "reachable · version {version}",
+      "middlewareUnreachable": "The middleware did not answer its health check, so the status of the database and the master keys cannot be read. It may be stopped, still starting, or restarting after a crash.",
+      "database": "Database (Postgres)",
+      "databaseState": {
+        "ok": "reachable",
+        "unreachable": "not answering. Check that Postgres is running and DATABASE_URL is right; if both are fine, restart the middleware",
+        "unknown": "configured, but no connection to check",
+        "none": "none (in-memory knowledge graph)",
+        "unreported": "not reported"
+      },
+      "embeddings": "Embeddings",
+      "semanticRecall": "Semantic recall",
+      "active": "active",
+      "off": "off",
+      "warningsHeading": "Reported by the middleware"
     }
   },
   "help": {
@@ -6175,6 +6211,24 @@
       "device_code_flow_failed": "Microsoft refused the sign-in flow. Check that the connector's publisher app allows device-code sign-ins as a public client, and that no Conditional Access policy blocks them.",
       "teams_sign_in_failed": "The Teams sign-in failed.",
       "unknown": "The Teams sign-in request failed: {detail}"
+    }
+  },
+  "platformHealth": {
+    "banner": {
+      "databaseUnreachable": {
+        "title": "Database unreachable",
+        "body": "The middleware is running, but its database (Postgres) is not answering. Everything that needs stored data fails until it is back, so the status cards below may read as unknown. Check that Postgres is running and DATABASE_URL is right; if both are fine, restart the middleware."
+      },
+      "middlewareUnreachable": {
+        "title": "Middleware not reachable",
+        "body": "The web UI could not reach the middleware, so no status on this page can be checked. It may be stopped, still starting, or restarting after a crash."
+      },
+      "devMasterKey": {
+        "title": "Development master key in use",
+        "body": "{which, select, vault {VAULT_KEY is} keychain {CREDENTIAL_KEYCHAIN_KEY is} other {VAULT_KEY and CREDENTIAL_KEYCHAIN_KEY are}} not set, so the master key is read from a dev file on the data volume, right next to the data it encrypts. Fine for local development, not for production."
+      },
+      "cta": "Open platform health",
+      "dismiss": "Later"
     }
   }
 }
