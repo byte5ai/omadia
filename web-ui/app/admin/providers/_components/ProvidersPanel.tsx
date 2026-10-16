@@ -6,6 +6,8 @@ import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import { ErrorHelp } from '@/app/_components/ErrorHelp';
+import { serverFieldErrors } from '@/app/_lib/apiErrorMessage';
+import { isErrorHelpCode } from '@/app/_lib/errorHelp';
 import { ChatGptConnectModal } from './ChatGptConnectModal';
 import { buildModelSelect, isClassRef, type ClassOption } from './assignmentModelOptions';
 import {
@@ -719,7 +721,7 @@ function ProviderRow({
             </Button>
             <StatusChip status={saveStatus} t={t} />
           </div>
-          <SaveError error={saveError} />
+          <SaveError error={saveError} fieldKey={envKey} />
         </div>
       )}
 
@@ -747,7 +749,7 @@ function ProviderRow({
 
       {/* removeKey runs while `editing` is false, so surface its failures here —
           otherwise a destructive remove that errors gives the operator no feedback. */}
-      {!p.toolLess && !editing && <SaveError error={saveError} />}
+      {!p.toolLess && !editing && <SaveError error={saveError} fieldKey={envKey} />}
 
       {/* #294 — the device-code modal for an OAuth provider connect. */}
       {oauthOpen && (
@@ -769,13 +771,41 @@ function ProviderRow({
  * One failed key save. A per-field message from a 200 PATCH response is
  * already a plain per-key string and stays as-is; a thrown `ApiError` goes
  * through the catalogue, so its code never reaches the screen as text.
+ *
+ * #1330: a rejected key answers 400 `settings.invalid_values` with the reason
+ * per field. The field's own code (`settings.openai_key_format`, …) is the
+ * headline when the catalogue knows it; otherwise the envelope's code is, and
+ * the server's reason for THIS field follows as a visible line — it is the one
+ * thing the operator needs to correct the value, so it must not hide in the
+ * support disclosure.
  */
-function SaveError({ error }: { error: unknown }): React.ReactElement | null {
+function SaveError({
+  error,
+  fieldKey,
+}: {
+  error: unknown;
+  fieldKey: string;
+}): React.ReactElement | null {
+  const t = useTranslations('adminProviders');
   if (error === undefined || error === null) return null;
   if (typeof error === 'string') {
     return <p className="text-[12px] text-[color:var(--danger)]">{error}</p>;
   }
-  return <ErrorHelp code={errorCode(error)} rawDetail={error} />;
+  const field = serverFieldErrors(error).find((f) => f.key === fieldKey);
+  if (field === undefined) {
+    return <ErrorHelp code={errorCode(error)} rawDetail={error} />;
+  }
+  if (isErrorHelpCode(field.code)) {
+    return <ErrorHelp code={field.code} />;
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      <ErrorHelp code={errorCode(error)} />
+      <p className="text-[12px] text-[color:var(--fg-muted)]">
+        {t('providers.saveRejectedReason', { reason: field.message })}
+      </p>
+    </div>
+  );
 }
 
 /** Chip colours per Lume: text + edge only, never a filled state block. */

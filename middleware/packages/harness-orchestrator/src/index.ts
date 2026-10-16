@@ -575,7 +575,7 @@ export {
 } from './knowledgeGraphTool.js';
 
 // Native-tool registry — kernel-shared dispatch table
-export { NativeToolRegistry } from './nativeToolRegistry.js';
+export { NativeToolRegistry, isOfferedThisTurn } from './nativeToolRegistry.js';
 export type {
   NativeToolRegistration,
   NativeToolRegistrationOptions,

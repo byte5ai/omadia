@@ -36,6 +36,112 @@ changelog.
 
 ## [Unreleased]
 
+### Security — Privacy Shield table renders no longer hand real rows to the model (#1402)
+
+2026-10-16. A `v4_render_answer` table render returned its canvas snapshot —
+the real, unmasked cell values — as the `tool_result`, and the tool loop
+always asks the model once more after a tool round, so every table render
+sent names and e-mails to the LLM provider; a memory-tool call after the
+render could write them to memory. The privacy guard (0.10.0, plugin-api
+1.33.0) now returns the model only a shape acknowledgement (row count and
+the column labels it chose) and hands the snapshot to the canvas through the
+canvas-sentinel side channel (`PrivacyV4ToolResult.canvasSentinel`). The
+orchestrator also strips a snapshot an older guard still embeds. The chat
+answer, the canvas table and the verifier's prose check are unchanged. The
+privacy acceptance test counts the render's `tool_result` as LLM-bound again.
+
+### Fixed — the Danger-Zone memory purge deletes what it shows, and records who
+
+2026-10-16 (#1333, #1334, #1335, #1336). The purge on `/admin/danger-zone`
+deleted only remembered facts (`MemorableKnowledge`); every captured turn —
+the full user message and answer — stayed in the knowledge graph while the
+preview reported 0. It now also deletes the conversation history of the
+selection (Turn, Session, Run, AgentInvocation, ToolCall, Plan, PlanStep and
+the Facts derived from deleted turns; on the user axis also the Teams turns,
+which store the AAD id) and counts it separately; preview and delete run one
+shared selection
+(`KnowledgeGraph.count/purgeConversationHistory?`, plugin-api 1.32.0). The
+"Re-seed" checkbox used to delete chat sessions, transcripts, brand assets,
+`core` and UI preferences and seed nothing; it now resets only the entries the
+bundled seed contains (today `_rules`), writes them back at once, and the
+preview counts it. The audit row names the signed-in user (`actor_id`,
+`actor_email`, the `admin_audit` actor rule) instead of `admin-ui`, also lands
+in `admin_audit` as `memory.purge` (filter "Memory purges" on `/admin/audit`),
+is written before anything is deleted
+(a failed write refuses the purge with `audit_write_failed`), and the response
+says when a purge was not recorded. The server now requires a preview of the
+same selection (`previewToken`, else `409 preview_required`). The page shows
+the server's explanation for a rejected selector instead of `… failed: 400`
+(`ApiError.code` falls back to the body's `error`, new
+`ApiError.serverMessage`), translates the server's warnings (now
+`warnings: [{code, params}]` instead of an English `warning` string), renders
+the selector hints with `<code>`, and offers no delete for an empty preview.
+`memory_purge_audit` gains columns on first use (`ADD COLUMN IF NOT EXISTS`).
+Breaking for direct API callers: `DELETE` needs the `previewToken`, and
+`warning` became `warnings`.
+
+### Fixed — runtime config changes keep agent tools, background services and the discovered model
+
+2026-10-16. Follow-up to the provider-switch fix (#1406), closing the
+remaining gaps of cluster C02:
+
+- **Key-less first boot (#1358, #1345).** The domain-tool re-bind was only
+  installed when a chat orchestrator existed at boot, so a fresh install that
+  got its key in the UI ran chat and routines without any `query_*` tool until
+  a restart. The re-bind (`createOrchestratorToolRebinder`) and, with a
+  database, the registry hydration and its MCP pool are now installed either
+  way; the first key save binds both new instances. On a key-less boot with a
+  database this block now also provides the host `mcp` service (`ctx.mcp`),
+  the MCP input replayer, the long-running task resume driver (when enabled)
+  and the periodic MCP re-scan, as a boot with a key always did. Triggers covered by tests:
+  key save on `/admin/settings` (#1345), model change on the LLM access page
+  (#1400), routines plus a later agent-plugin reactivation (#1358).
+- **Extras and verifier rebuilds reach the orchestrator (#1394).** The
+  orchestrator captures extras' and the verifier's services in its own
+  `activate()`. A Background-Scorer assignment rebuilt only extras, and the
+  settings PATCH rebuilt the orchestrator first, so after the first key save
+  on a fresh stack fact extraction and Palaia excerpts stayed off until a
+  restart. `rebuildOrder` now rebuilds the orchestrator after the plugins it
+  captures, in the assignment, the settings PATCH and the OAuth fan-out.
+- **Discovered default model after a restart (#1359).** Plugins resolve a
+  class ref (`class:frontier`) at activation, which at boot happens before the
+  fire-and-forget discovery lands, so the orchestrator ran on the seed's
+  `claude-opus-5` instead of the discovered `claude-opus-5-5`. A discovery
+  run that moves a provider's class defaults now rebuilds the LLM plugins that
+  follow a class ref and activated on the older catalog, after the boot wiring
+  is done, with the orchestrator last and the status checked afterwards.
+  Activations are stamped when they start (new `ToolPluginRuntime`
+  `onActivating` hook), and rebuild runs are serialized. Operator-visible:
+  this also fires from the periodic discovery timer and "Refresh models", so
+  when a vendor moves a class the orchestrator (and a class-ref verifier or
+  extras) is reactivated unattended — the same teardown as saving a model on
+  the LLM access page. On a fresh stack the first key save can reactivate the
+  orchestrator twice (the save, then the discovery run it triggers).
+- DB-defined sub-agents use the current shared Anthropic client instead of the
+  boot-time env client, which stays unauthenticated on vault-keyed installs.
+
+### Fixed — admin settings, webhook and help-page copy (C11)
+
+2026-10-16. `/admin/settings` was an outdated, half-German duplicate of the
+provider-key form on Admin → LLM access. It now redirects to
+`/admin/providers`, and the dashboard's "Middleware" card opens `/system`
+(#1397). The settings catalog lists each keyed provider once: Mistral is no
+longer duplicated, and providers that sign in without a key (the
+subscription CLI, ChatGPT OAuth) get no key field (#1331).
+`PATCH /api/v1/admin/settings` now checks every provider key (Mistral and
+plugin providers too: no whitespace, and at least 20 characters for Mistral
+or 6 for a plugin provider), and each rejected field carries a `code`
+(`settings.{anthropic,openai,api}_key_format`). The LLM access page shows that
+reason instead of "PATCH settings failed: 400" (#1330). The webhook admin page
+shows translated errors next to the URL field instead of raw JSON (#1338). Its
+one-time secret gets a copy button, and you can't create or rotate another
+secret while one is still on screen (#1339). The help FAQ's subscription-CLI
+link opens the Subscriptions tab and says "Hub" (#1395). The KG lifecycle
+"Run now" button is translated, and the intro no longer starts with "Palaia
+Phase 4" (#1337). New shared helper `web-ui/app/_lib/apiErrorMessage.ts`
+(`serverErrorMessage`, `serverFieldErrors`) reads the server's message out of
+a failed API call.
+
 ### Fixed — usage dashboard: bars, local days, missing calls, what a row costs
 
 2026-10-16 (#1388, #1390, #1392, #1393, #1396). Admin → Usage & Cost was
@@ -198,6 +304,38 @@ when uncertain" instead of "do not speculate about the future"). Unknown ids
 are logged at activation instead of being dropped without a trace.
 **Check `default_boundary_presets` before upgrading:** an agent-UI id that
 0.1 silently dropped (e.g. `no-pii`) now applies to every agent. The plugin's setup fields now carry English and German text.
+
+### Fixed — channel-bound tools are offered only on turns that can serve them (#1346, #1086)
+
+2026-10-16. `discussion_start` and `discussion_partners` were offered on
+every channel but work only in a Teams chat with the agents' own bots in it.
+In the web chat and over the public API the model called them on its own
+(once in the middle of an SEO question), and each call failed with *"no
+conversation could be attributed to this turn … this call did not come from
+one"* — blaming a call that had in fact come from a chat. `manage_routine`
+had the same shape on channels whose adapter calls the `chatAgent`
+capability directly (Telegram, Slack, Discord, WhatsApp): no routines
+principal, so every action refused.
+
+- **Per-turn tool availability.** Plugins can pass
+  `isAvailable: () => boolean` when they register a tool (`@omadia/plugin-api`
+  1.31.0). The kernel evaluates it inside the turn and hides the tool's spec
+  and prompt doc wherever it says `false` — in the API tool list, the system
+  prompt, and the list the subscription-CLI loopback and the public MCP server
+  advertise. Dispatch is not gated; the handler still answers truthfully.
+- **Discussion tools** (`@omadia/plugin-discussion` 0.3.0) are offered only
+  where `conductorDiscussions.availableHere()` holds: the turn names a
+  conversation and the bot that received it belongs to an agent. The refusal
+  for a call that still arrives now says discussions are not available in
+  this chat and need a Teams group chat.
+- **`manage_routine`** is offered only on a turn that carries a routines
+  principal — the web chat, every channel that dispatches through
+  `CoreApi.handleTurnStream` (public API, canvas), and Teams. The kernel
+  cannot write a principal for adapters that call `chatAgent` directly: that
+  call carries neither a channel nor a conversation, and internal turns
+  (routine runs, Conductor) arrive the same way. Full routines support there
+  needs those adapters to dispatch through `handleTurnStream` or call
+  `beginRoutineTurn` themselves.
 
 ### Fixed — the subscription CLI fails a turn honestly, and its turns reach Memory
 

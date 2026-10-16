@@ -746,6 +746,73 @@ describe('<ProvidersPanel />', () => {
     ).toBeNull();
   });
 
+  // #1330: the server says WHY it refused the key, per field. That reason used
+  // to be lost behind "PATCH settings failed: 400" (or the envelope's generic
+  // help). A field code with catalogue copy is now the headline.
+  it('#1330: a coded field rejection shows its own localized reason', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
+    );
+    mockPatchSettings.mockRejectedValue(
+      new ApiError(
+        400,
+        'PATCH /v1/admin/settings failed: 400',
+        JSON.stringify({
+          code: 'settings.invalid_values',
+          errors: [
+            {
+              key: 'ANTHROPIC_API_KEY',
+              message: 'Anthropic keys start with a fixed prefix',
+              code: 'settings.anthropic_key_format',
+            },
+          ],
+        }),
+      ),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    fireEvent.click(await screen.findByText(/Change key/));
+    const input = await screen.findByPlaceholderText('Paste API key …');
+    fireEvent.change(input, { target: { value: 'not-an-anthropic-key' } });
+    fireEvent.click(screen.getByText('Save key'));
+
+    expect(
+      await screen.findByText(en.errorHelp.settings.anthropic_key_format.what),
+    ).toBeTruthy();
+    expect(screen.queryByText(/PATCH \/v1\/admin\/settings failed/)).toBeNull();
+  });
+
+  it('#1330: an uncoded field rejection shows the server reason, not only the envelope', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
+    );
+    mockPatchSettings.mockRejectedValue(
+      new ApiError(
+        400,
+        'PATCH /v1/admin/settings failed: 400',
+        JSON.stringify({
+          code: 'settings.invalid_values',
+          errors: [{ key: 'ANTHROPIC_API_KEY', message: 'key looks truncated' }],
+        }),
+      ),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    fireEvent.click(await screen.findByText(/Change key/));
+    const input = await screen.findByPlaceholderText('Paste API key …');
+    fireEvent.change(input, { target: { value: 'whatever' } });
+    fireEvent.click(screen.getByText('Save key'));
+
+    expect(
+      await screen.findByText(en.errorHelp.settings.invalid_values.what),
+    ).toBeTruthy();
+    expect(screen.getByText('Reason: key looks truncated')).toBeTruthy();
+  });
+
   it('OM-09: the raw body is disclosed only through supportDetail, redacted', async () => {
     mockGetProviders.mockResolvedValue(
       providersResponse({

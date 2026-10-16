@@ -164,6 +164,39 @@ src/
   gilt für Plugin-Tools mit `agentId`; `get_chat_participants` ist
   kernel-intern und wird stattdessen am Turn-Roster gegatet.
 
+### Plugin-Tools per Turn ausblenden — `isAvailable` (#1346, #1086)
+
+- **Vertrag:** `ToolRegistrationOptions.isAvailable?: () => boolean`
+  (`@omadia/plugin-api` 1.31.0). Der Kernel ruft es **im Turn-Scope** auf,
+  sobald er die Tool-Liste baut; `false` (oder ein Throw) blendet Spec **und**
+  `promptDoc` für diesen Turn aus. Fehlt es, bleibt das Tool angeboten.
+- **Eine Prüfung, drei Advertise-Stellen:** `isOfferedThisTurn(entry)` in
+  `nativeToolRegistry.ts`, konsultiert von `Orchestrator.buildToolsList()`,
+  `getSystemPrompt()` (Plugin-`promptDoc`s) und
+  `ToolDispatchService.listDispatchableToolSpecs()` (CLI-Loopback und
+  Public-MCP `tools/list`). Außerhalb eines Turns (Public MCP) ist so ein Tool
+  damit verborgen **und** nicht aufrufbar — richtig, es braucht einen Turn.
+- **Nur Advertise, nicht Dispatch:** Ein Aufruf, der trotzdem ankommt (alte
+  Tool-Liste, Replay), läuft in den Handler und muss dort eine wahre
+  `Error:`-Antwort bekommen.
+- **Nutzer heute:**
+  - `discussion_start` / `discussion_partners` — angeboten nur, wenn
+    `conductorDiscussions.availableHere()` true ist: der Turn nennt eine
+    Konversation **und** den empfangenden Bot eines Agents (heute nur Teams).
+    Web-Chat (`{ kind: 'http-chat' }`) und `CoreApi`-Kanäle
+    (`{ kind: 'channel' }`) können keine Diskussion tragen. Ohne Capability
+    (kein Postgres) bleiben die Tools sichtbar und sagen "nicht auf diesem
+    Deployment". `DiscussionNoConversationError` sagt jetzt, dass Diskussionen
+    in diesem Chat nicht verfügbar sind (Teams-Gruppenchat nötig), statt dem
+    Aufruf die Schuld zu geben.
+  - `manage_routine` — angeboten nur mit Routines-Principal
+    (`isManageRoutineOffered`: Web-Chat, jeder `CoreApi.handleTurnStream`-Kanal,
+    Teams). Adapter, die `chatAgent` direkt rufen (Telegram, Slack, Discord,
+    WhatsApp, Stand 2026-10), liefern weder Kanal noch Konversation; der Kernel
+    kann für sie keinen ehrlichen Principal bauen — auf demselben Weg laufen
+    auch interne Turns (Routine-Runs, Conductor). Dort ist das Tool jetzt
+    unsichtbar statt bei jeder Aktion zu scheitern.
+
 ### `find_free_slots` + `book_meeting` — M365-Kalender-Tools (#1214)
 
 - **Dateien:** `packages/harness-orchestrator/src/tools/findFreeSlotsTool.ts`
@@ -1537,10 +1570,9 @@ POST fail-closed mit `400 providers.model_class_unavailable`. Qualifizierte IDs
 `modelId` normalisiert. Das Ergebnis trägt zusätzlich `resolvedModel` (auch in
 der POST-Antwort). `GET /admin/providers` liefert pro Assignment `model` (der
 gespeicherte Ref) plus `resolvedModel` (derselbe Resolver wie zur Laufzeit,
-gegen den AKTUELLEN Katalog; Plugins, die bei der Aktivierung auflösen, behalten
-ihr Modell bis zur nächsten Reaktivierung — verschiebt die Model-Discovery
-(`modelCatalogSync`) danach das Ziel einer Klasse, kann das Label vom laufenden
-Modell abweichen, siehe §13 „Klassen-Refs veralten nach Discovery“; `null` wenn nichts gesetzt ist oder der
+gegen den AKTUELLEN Katalog; Plugins, die bei der Aktivierung auflösen, werden
+neu gebaut, sobald die Model-Discovery (`modelCatalogSync`) das Ziel ihrer
+Klasse verschiebt, siehe §13 „Klassen-Refs veralten nach Discovery“; `null` wenn nichts gesetzt ist oder der
 Ref nicht auflösbar ist) und pro Provider `classDefaults` (Klasse →
 `modelId` via `modelForClass`). Die Admin-UI rendert Klassen als eigene,
 beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
@@ -1580,8 +1612,17 @@ Jetzt ruft `toolPluginRuntime.onActivated` für dieses Plugin
 LIVE-Registry inkl. `setOnAgentBuilt`. Die Tool-Quelle ist `liveDomainTools`:
 Kernel-Built-ins aus dem Boot-Set, Dynamic-Agent-Tools aus der Runtime (der
 Boot-Handle eines später neu hochgeladenen oder entfernten Agents ist tot).
-Offen: ein key-loser Erst-Boot installiert diese Verdrahtung nicht und braucht
-für Sub-Agent-Stacks weiterhin einen Neustart.
+Die Verdrahtung steckt in `createOrchestratorToolRebinder`
+(`runtimeToolPropagation.ts`) und wird auch bei einem key-losen Erst-Boot
+installiert (mit Datenbank inkl. MCP-Pool und Registry-Hydration): das erste
+Key-Speichern veröffentlicht Chat-Orchestrator und Registry, `rebind()` bindet
+beide (#1358). Alle Auslöser — Key-Speichern auf `/admin/settings` (#1345),
+Modellwechsel auf der LLM-Zugangsseite (#1400), OAuth-Login, Setup-Editor —
+enden in `reactivateAgent` → `toolPluginRuntime.onActivated`; Regressionstests
+pro Auslöser in `test/orchestratorReactivationTriggers.test.ts`. Vor dem
+Re-Bind wartet `onActivated` auf den Refresh des geteilten Anthropic-Clients;
+DB-definierte Sub-Agents bekommen `currentAnthropicClient()` statt des
+Boot-`client` aus der ENV.
 
 ### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
 
@@ -1611,6 +1652,33 @@ behalten wir für Logs.**
   Einstellung gemeldet, mit "Seite neu laden" als Aktion. **Wer eine neue
   Wert-Validierung ergänzt, nutzt `rejectValue(key, message)` statt
   `errors.push(...)`** — sonst landet der Fall wieder im falschen Code.
+- **Per-Feld-Codes bei `PATCH /v1/admin/settings` (#1330/#1331):** Ein
+  abgelehnter Provider-Key trägt im `errors[]`-Eintrag zusätzlich `code`
+  (`settings.anthropic_key_format`, `settings.openai_key_format`,
+  `settings.api_key_format`); `message` bleibt der englische Satz.
+  `checkApiKeyFormat()` prüft Anthropic/OpenAI per Präfix und jeden anderen
+  Provider-Key (Mistral, Plugin-Provider) auf "kein Whitespace, mindestens
+  `MIN_PROVIDER_KEY_LENGTH` (6; Mistral 20) Zeichen" — vorher wurde dort alles
+  gespeichert. Kurz gehalten, weil Plugin-Provider auch Self-Hosted-Gateways mit
+  kurzen Tokens sein können.
+  Der Katalog (`settingsCatalog.ts`) leitet die Skip-Liste aus den statischen
+  Einträgen ab (Mistral stand doppelt drin), überspringt Provider mit
+  `requiresApiKey: false`, die sich per CLI oder OAuth anmelden (kein
+  `CLAUDE_CLI_API_KEY` mehr; lokale Keyless-Provider behalten ihr optionales Feld) und
+  dedupliziert Keys. Labels sind jetzt Englisch; die Web-UI rendert diesen
+  Katalog nicht mehr direkt.
+- **`/admin/settings` entfernt (#1397):** Die Seite war ein veraltetes Duplikat
+  von Admin → LLM-Zugang → "API keys" und leitet jetzt auf `/admin/providers`
+  um; die Dashboard-Karte "Middleware" verlinkt `/system`. Provider-Keys werden
+  nur noch in `ProvidersPanel` gepflegt, das den Feld-Code einer Ablehnung als
+  Überschrift zeigt bzw. den Server-Grund als sichtbare Zeile.
+- **Server-Fehlertext lesen: `web-ui/app/_lib/apiErrorMessage.ts`.**
+  `serverErrorMessage(err)` liefert das `message` (bzw. `error`) aus dem
+  JSON-Body eines `ApiError`, nie den Roh-Body; `serverFieldErrors(err)` die
+  `errors[]` eines Validierungs-Envelopes. Neue Fehleranzeigen bauen darauf auf
+  statt `err.body` selbst zu parsen oder roh zu rendern — Überschrift bleibt
+  ein lokalisierter Katalog-Text, der Server-Satz ist Detail (#1338,
+  `admin/webhooks/_components/shared.tsx`).
 - **Web-UI-Seite:** `ApiError.code` parst den Code einmal zentral,
   `web-ui/app/_lib/errorHelp.ts` löst ihn gegen
   `messages/{en,de}.json → errorHelp.<code>.{what,next}` auf, und
@@ -4108,6 +4176,17 @@ sie nicht kennt, ignoriert sie, und NDJSON-Framing wie JSON-RPC-Envelope bleiben
 rückwärtskompatibel. Vollständige Darstellung samt Grenzen:
 [`ai-act-transparency.md`](ai-act-transparency.md).
 
+**Tabellen-Render und `tool_result` (#1402).** Der `tool_result` von
+`v4_render_answer` ist LLM-gebunden und enthält nur eine Form-Quittung
+(Zeilenzahl, vom Modell gewählte Spaltennamen). Den `_pendingCanvasTree`-
+Snapshot mit den echten Zellen liefert die Privacy-Guard als
+`PrivacyV4ToolResult.canvasSentinel`; `dispatchToolDeadlined` reicht ihn an den
+`canvasSentinelSink` des Turns (die Canvas-Synthese holt ihn per
+`takeRawSentinel`), nie ans Modell. `splitV4ToolResult`
+(`v4RenderSideChannel.ts`) fängt auch eine ältere Guard ab, die den Snapshot
+noch in `resultText` packt. Wer neue `v4_*`-Ergebnisse baut: echte Werte nie
+in `resultText`.
+
 **Contract-Erweiterung — `answerSource` (#1105).** Wenn Privacy Shield v4 die
 Antwort serverseitig rendert (`v4_render_answer`), tauscht der Orchestrator den
 gerenderten Text kurz vor dem `done`-Event in `answer` — die zuvor als
@@ -4493,6 +4572,16 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Memory-Purge: offene Punkte nach #1333–#1336
+
+- **Q&A-Transkripte unter `/memories/sessions`** (und `/memories/chat-sessions`) bleiben bei
+  jedem Purge stehen; für eine vollständige Löschung pro Agent/User fehlt eine Zuordnung dieser
+  Bäume zu Agent bzw. Person.
+- **Team/Channel im KG**: keine Scope-Spalte, also kein KG-Purge für diese Achsen.
+- **User-Achse, rohe Channel-Ids**: ein Turn mit roher Channel-Id in `user_id` (Telegram,
+  Teams `29:` ohne AAD-Id) wird nur über die `BELONGS_TO`-Kante gefunden; fehlt der Run-Trace,
+  bleibt er stehen.
 
 ### Public API keys: Rotation (#1328)
 
@@ -5415,22 +5504,18 @@ mit `ask.owner` überein, und niemand kann das Ask beantworten
 ab). Offen im Epic: das agent-aufrufbare Broker-/Ask-Tool, die Benachrichtigung
 des Owners (heute nur per `GET /pending` auffindbar) und die Admin-UIs (P4).
 
-### Umgekehrte Richtung: extras allein neu gebaut, Orchestrator hält alte Instanzen (#1076 follow-up)
+### Umgekehrte Richtung: extras allein neu gebaut, Orchestrator hält alte Instanzen (#1076 follow-up) — erledigt (#1394)
 
-#1076 baut bei einer Provider-Änderung des Orchestrators extras **vor** dem
-Orchestrator neu. Offen ist die Gegenrichtung: wird extras allein reaktiviert
-(direkte Zuweisung an extras; `adminSettings`, das nach einem Key-Speichern
-den Orchestrator vor extras reaktiviert; oder der OAuth-Fan-out
-`fanOutProviderOAuthTokens` in `src/routes/adminProviders.ts`, der in
-`LLM_PLUGINS`-Reihenfolge reaktiviert und Fehler per `.catch(() => undefined)`
-verschluckt), hält der laufende Orchestrator
-weiter die vorherigen `FactExtractor`/`ContextRetriever`/`SessionBriefing` und
-den KG-Wrapper, weil er sie eager in `activate()` abgreift und ein Teardown
-nicht kaskadiert. Die allgemeine Lösung — nach einem Provider-Rebuild die eager
-Konsumenten neu bauen — gehört in das gemeinsame `reactivateAgent` in
-`src/index.ts`. #1080 (PR #1186, gemergt) hat dort nur den Refresh des
-geteilten Host-Clients ergänzt, keinen Rebuild eager Konsumenten; die
-Gegenrichtung bleibt offen und bewusst außerhalb von #1076.
+Der Orchestrator greift die Dienste von extras **und** Verifier eager in
+`activate()` ab (`LlmPluginDesc.capturedBy`). `rebuildOrder`
+(`src/platform/providerDependents.ts`) baut deshalb den abgreifenden Plugin
+immer **nach** den abgegriffenen neu und ergänzt ihn, wenn er fehlt. Genutzt
+von `reactivateAfterProviderWrite` (direkte Zuweisung an extras/Verifier →
+danach Orchestrator), vom Settings-`PATCH` (Key landet in allen drei Scopes →
+Verifier, extras, Orchestrator) und vom OAuth-Fan-out
+`fanOutProviderOAuthTokens`. Der Subscription-Hand-off verschiebt den Rebuild
+(`deferCapturerRebuild`) und baut den Orchestrator nur dann einmal am Ende,
+wenn dessen eigener Schritt übersprungen wurde.
 
 ### Weitere eager Abgriffe, die ein extras- oder Provider-Rebuild nicht erreicht
 
@@ -5461,23 +5546,31 @@ Modellaufrufen `LlmBudgetExceededError`; `shouldPlan` fängt ihn und plant bis
 zur nächsten Aktivierung nichts mehr, ohne Meldung. Budget pro Turn zählen oder
 die Obergrenze des Plan-Runners anheben.
 
-**Klassen-Refs veralten nach Discovery (#1083, offen).** Orchestrator, Verifier
-und extras lösen einen Klassen-Ref (`class:frontier` …) **einmal bei der
-Aktivierung** auf. Verschiebt `modelCatalogSync` danach das Ziel der Klasse,
-laufen sie auf dem alten Modell weiter, während `GET /admin/providers` das
-`resolvedModel` (und damit das Label `Frontier (auto → X)`) gegen den
-AKTUELLEN Katalog berechnet — das Label kann dem laufenden Modell also
-vorauseilen. Ein Neustart repariert das nicht verlässlich: Discovery-Ergebnisse
-werden nicht persistiert, und `void modelCatalogSync.refreshAll()` in
-`src/index.ts` läuft beim Boot fire-and-forget, während die Plugin-Aktivierung
-später awaited wird — sie kann gegen den gebündelten Katalog auflösen. Eine
-automatische Reaktivierung nach Discovery wurde in #1083 bewusst wieder
-entfernt, weil sie so nicht sicher ist. Voraussetzungen für eine sichere
-Variante: (1) nach einer Orchestrator-Reaktivierung die Kernel-Hydration erneut
-ausführen (Domain-Tools, `dynamicAgentRuntime.attachOrchestrator`,
-`setOnAgentBuilt`) — heute läuft sie nur beim Boot; (2) den Status nach der
-Reaktivierung prüfen, statt Erfolg anzunehmen; (3) den Orchestrator **nach**
-Verifier und extras reaktivieren, damit er deren neue Instanzen bindet.
+**Klassen-Refs veralten nach Discovery (#1083) — erledigt (#1359).**
+Orchestrator, Verifier und extras lösen einen Klassen-Ref (`class:frontier` …)
+**einmal bei der Aktivierung** auf; beim Boot also gegen den gebündelten Seed,
+weil `modelCatalogSync.refreshAll()` fire-and-forget erst danach landet.
+`createClassDefaultRebuilder` (`src/platform/classDefaultRebuild.ts`) stempelt
+jede Aktivierung eines LLM-Plugins mit einer Katalog-Generation — beim
+**Start** der Aktivierung (`ToolPluginRuntime`-Hook `onActivating`), damit ein
+Discovery-Lauf, der während `activate()` landet, als neuer zählt;
+`modelCatalogSync` meldet über `onDefaultsChanged`, wenn ein Lauf die
+Klassen-Defaults eines Providers verschiebt. Dann werden genau die
+installierten LLM-Plugins neu gebaut, die auf einer älteren Generation
+aktiviert wurden, auf diesem Provider laufen und einem Klassen-Ref folgen
+(Orchestrator-Default `class:frontier`; Verifier/extras haben konkrete
+Defaults). Die drei Voraussetzungen aus #1083 sind erfüllt: (1) Re-Bind der
+Domain-Tools bei jeder Orchestrator-Aktivierung (#1406, key-los inklusive);
+(2) der Status wird nach jedem Rebuild gelesen (`errored` → geloggt, nicht als
+Erfolg gezählt); (3) Reihenfolge nach `rebuildOrder`. Rebuilds warten auf
+`bootWired` (gesetzt nach der Kernel-Verdrahtung in `src/index.ts`), ein Lauf
+vor der Aktivierung löst nichts aus. Läufe werden serialisiert und prüfen
+„veraltet?“ erst, wenn sie dran sind (ein schon neu gebautes Plugin wird
+übersprungen). Gilt auch für den 6-Stunden-Timer und „Modelle aktualisieren“:
+verschiebt der Anbieter die Klasse, wird unbeaufsichtigt reaktiviert — derselbe
+Teardown wie beim Speichern eines Modells auf der LLM-Zugangsseite. Nicht
+serialisiert gegen gleichzeitige Admin-Reaktivierungen (`InstallService.reactivate`
+hat keinen Lock); ein globaler Reaktivierungs-Lock wäre ein eigener Schritt.
 
 ### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
 
@@ -6622,6 +6715,19 @@ schlimmer als ein Fehler. Beide Lesarten (verbatim Key / roher Native-Id) werden
 und die Vereinigung der real existierenden Bäume gelöscht — `memoryContextKey` ist auf seiner
 eigenen Digest-Form bewusst nicht idempotent. Das server-seitige Type-to-confirm prüft
 weiterhin gegen den **getippten** Selector, nie gegen den abgeleiteten `ctxKey`.
+
+Seit #1333–#1336 (2026-10-16): Preview und Delete teilen **einen** Plan (`planPurge` in
+`routes/memoryPurge.ts`), die Preview zählt also exakt, was gelöscht wird. Der KG-Teil umfasst
+neben `MemorableKnowledge` den **Gesprächsverlauf** (`KnowledgeGraph.count/purgeConversationHistory?`,
+plugin-api 1.32.0: Turn, Session, Run, AgentInvocation, ToolCall, Plan, PlanStep, abgeleitete
+Facts; Agent-Achse über den Scope-Präfix `<slug>::`, User-Achse über `user_id` = omadia-User-Id).
+Response-Felder: `scratchCount|kgCount|conversationCount`, `reseedEntries`, `warnings[{code,params}]`
+(keine fertigen englischen Sätze mehr), `previewToken`. `DELETE` verlangt den `previewToken`
+derselben Auswahl (sonst `409 preview_required`), nimmt den Actor über `auditActorFromRequest` (C07) und schreibt die
+`memory_purge_audit`-Zeile plus eine `memory.purge`-Zeile in `admin_audit` **vor** dem Löschen (Fehler → `500 audit_write_failed`, nichts gelöscht).
+`reseed:true` (nur `axis:'all'`) setzt nur die Einträge des gebündelten Seed-Verzeichnisses
+(`MEMORY_SEED_DIR`, heute `_rules`) zurück und schreibt sie sofort neu — Chat-Sessions,
+Transkripte, `_brand`, `core`, `ui-prefs` bleiben immer. Details: `docs/security-architecture.md` §10q.
 
 **Promote** (`POST|GET /api/v1/admin/memory/promotions/:slug`, gleiches `requireAuth`-Gate
 und gleicher Prefix wie Purge): kopiert/verschiebt Files und Subtrees zwischen den Tiers

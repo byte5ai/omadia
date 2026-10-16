@@ -1394,6 +1394,18 @@
       "write_failed": {
         "what": "Die Einstellungen konnten nicht geschrieben werden.",
         "next": "Speichere erneut. Bleibt es dabei, kann die Middleware ihren Config-Store nicht schreiben."
+      },
+      "openai_key_format": {
+        "what": "Das ist kein OpenAI-API-Key. OpenAI-Keys beginnen mit „sk-“; ein Key mit „sk-ant-“ gehört zu Anthropic.",
+        "next": "Kopiere den Key erneut aus dem OpenAI-Dashboard und füge ihn vollständig ein."
+      },
+      "api_key_format": {
+        "next": "Kopiere den Key erneut aus der Konsole des Anbieters und füge ihn vollständig ein, ohne Leerzeichen oder Zeilenumbrüche.",
+        "what": "Das sieht nicht nach einem API-Key aus: Er enthält Leerzeichen oder ist zu kurz."
+      },
+      "anthropic_key_format": {
+        "next": "Kopiere den Key erneut aus der Anthropic-Konsole und füge ihn vollständig ein.",
+        "what": "Das ist kein Anthropic-API-Key. Anthropic-Keys beginnen mit „sk-ant-“."
       }
     },
     "store": {
@@ -3820,43 +3832,6 @@
       }
     }
   },
-  "adminSettings": {
-    "pluginDirectory": {
-      "heading": "Plugin-Einstellungen",
-      "intro": "Die meisten Einstellungen liegen jetzt direkt beim jeweiligen Plugin und werden in dessen eigenem Einstellungs-Panel bearbeitet. Auf dieser Seite verbleiben nur echte Plugin-übergreifende Werte (wie der gemeinsame Anthropic-Key oben).",
-      "open": "Einstellungen öffnen",
-      "plugins": {
-        "orchestrator": "Orchestrator & Model-Routing",
-        "verifier": "Verifier",
-        "embeddings": "Embeddings",
-        "knowledgeGraph": "Knowledge-Graph",
-        "diagrams": "Diagramme & Speicher",
-        "integrations": "Integrationen (Microsoft, Teams, Telegram)"
-      }
-    },
-    "title": "Konfiguration",
-    "intro": "Alle <envFile>.env</envFile>-Werte, die beim Start in den Config-Store bzw. den Secret-Vault geschrieben werden. Änderungen werden automatisch gespeichert und das betroffene Plugin neu aktiviert — sie wirken sofort, ohne Neustart. Secrets zeigen nur, ob ein Wert hinterlegt ist; der Wert selbst wird nie angezeigt.",
-    "loading": "Lädt …",
-    "loadError": "Fehler beim Laden: {message}",
-    "vaultUnavailable": "Vault nicht verfügbar — Secrets können nicht bearbeitet werden.",
-    "notInstalled": "nicht installiert",
-    "boolean": {
-      "on": "an",
-      "off": "aus"
-    },
-    "secret": {
-      "set": "gesetzt",
-      "unset": "nicht gesetzt",
-      "replacePlaceholder": "•••••• (ersetzen)",
-      "enterPlaceholder": "Wert eingeben",
-      "remove": "Entfernen"
-    },
-    "status": {
-      "saving": "speichert …",
-      "saved": "✓ gespeichert",
-      "error": "✗ Fehler"
-    }
-  },
   "adminProviders": {
     "intro": "Verbinde LLM-Provider und lege fest, mit welchem jeder Agent läuft. Schlüssel werden verschlüsselt im Vault gespeichert und verlassen deinen Server nie. Anthropic ist der Standard; ein Provider-Wechsel pro Agent wirkt sofort.",
     "loading": "Lädt …",
@@ -3907,7 +3882,8 @@
         "noProbe": "Dieser Provider-Typ lässt sich nicht günstig prüfen, der Schlüssel bleibt daher unbestätigt."
       },
       "oauthConnect": "Mit ChatGPT anmelden",
-      "oauthReconnect": "ChatGPT neu verbinden"
+      "oauthReconnect": "ChatGPT neu verbinden",
+      "saveRejectedReason": "Grund: {reason}"
     },
     "assignments": {
       "heading": "Zuordnung pro Agent",
@@ -4908,14 +4884,14 @@
       "delete": "Löschen",
       "deleting": "Löscht",
       "secretRevealed": "Neues Secret — jetzt kopieren, es wird nicht erneut angezeigt:",
-      "dismiss": "Ausblenden",
       "noDeliveries": "Noch keine Zustellungen aufgezeichnet.",
       "confirmDelete": "Diesen Endpunkt wirklich löschen? Jeder Sender, der ihn nutzt, erhält danach 401.",
       "table": {
         "deliveryId": "Delivery-ID",
         "outcome": "Ergebnis",
         "receivedAt": "Empfangen"
-      }
+      },
+      "blockedByReveal": "Kopiere dieses Secret und blende es aus, bevor du ein weiteres anlegst oder rotierst."
     },
     "subscriptions": {
       "heading": "Ausgehende Subscriptions",
@@ -4937,7 +4913,6 @@
       "delete": "Löschen",
       "deleting": "Löscht",
       "secretRevealed": "Neues Secret — jetzt kopieren, es wird nicht erneut angezeigt:",
-      "dismiss": "Ausblenden",
       "noDeliveries": "Noch keine Zustellungen aufgezeichnet.",
       "confirmDelete": "Diese Subscription wirklich löschen?",
       "table": {
@@ -4946,7 +4921,17 @@
         "lastError": "Letzter Fehler",
         "nextAttemptAt": "Nächster Versuch",
         "createdAt": "Erstellt"
-      }
+      },
+      "blockedByReveal": "Kopiere dieses Secret und blende es aus, bevor du ein weiteres anlegst oder rotierst."
+    },
+    "errors": {
+      "unexpected": "Die Anfrage konnte nicht gesendet werden.",
+      "notFound": "Dieser Eintrag existiert nicht mehr. Lade die Seite neu.",
+      "urlForbidden": "Diese Adresse ist nicht erlaubt. Webhooks dürfen nur öffentliche http(s)-Ziele ansprechen.",
+      "unavailable": "Webhooks sind auf diesem Server nicht verfügbar.",
+      "serverFailed": "Der Server konnte die Aktion nicht ausführen. Versuche es erneut; tritt es wieder auf, prüfe die Middleware-Logs.",
+      "invalidInput": "In der Anfrage fehlt ein Pflichtwert.",
+      "requestFailed": "Die Anfrage ist fehlgeschlagen (HTTP {status})."
     }
   },
   "adminDomains": {
@@ -5072,6 +5057,7 @@
         "auth": "Anmeldung & Sitzungen",
         "plugin": "Plugin-Änderungen",
         "apikey": "API-Schlüssel",
+        "memory": "Memory-Purges",
         "conductor": "Conductor-Änderungen",
         "profileSnapshot": "Profil-Snapshots",
         "channel": "Kanäle"
@@ -5275,8 +5261,8 @@
   },
   "adminDangerZone": {
     "title": "Danger Zone · Memory-Purge",
-    "intro": "Löscht Memory unwiderruflich entlang einer Achse. <strong>Alles</strong> wischt Agent-Scratch <em>und</em> Knowledge-Graph; die Achsen User / Team / Channel treffen den Knowledge-Graph und den passenden Kontext-Baum unter /memories/contexts. Es gibt kein Undo — immer zuerst die Vorschau prüfen.",
-    "note": "<strong>Hinweis:</strong> Der Selector für User / Team / Channel ist ein Kontext-Key (<code>channelType~id</code>) oder die rohe native Id — er adressiert einen Kontext-Baum über alle Agenten hinweg.",
+    "intro": "Löscht Memory unwiderruflich entlang einer Achse: Agent-Scratch, die <strong>gemerkten Fakten</strong> und den <strong>Gesprächsverlauf</strong> des Knowledge-Graphs (Turns, Sessions, Runs, Tool-Aufrufe, Pläne). Die Achsen <em>Team</em> und <em>Channel</em> löschen nur die Kontext-Bäume unter /memories/contexts — der Knowledge-Graph kennt noch keine Team- oder Channel-Zuordnung. Chat-Tabs, Gesprächsprotokolle unter /memories/sessions, Brand-Assets, core und UI-Einstellungen werden nie gelöscht. Es gibt kein Undo — der Server nimmt eine Löschung nur nach einer Vorschau derselben Auswahl an.",
+    "note": "<strong>Selector:</strong> für User / Team / Channel immer <code>channelType~id</code>, wobei die Id entweder die rohe native Id oder der Key aus dem Memory-Browser ist — z. B. <code>teams~AAD-OBJECT-ID</code> (User), <code>teams~19:abc@thread.tacv2</code> (Team), <code>telegram~-1001234567890</code> (Channel). Auf der User-Achse wählt eine omadia-User-Id (UUID) stattdessen die Member-Notizen, gemerkten Fakten und Gesprächs-Turns dieser Person.",
     "targetTitle": "Ziel",
     "axisLabel": "Achse",
     "axes": {
@@ -5289,20 +5275,20 @@
     "selectorLabel": "Selector",
     "selectorPlaceholder": {
       "agent": "de.byte5.agent.calendar",
-      "user": "teams~29-1a2b… (nie eine nackte Id)",
-      "team": "teams~19-abc… (nie eine nackte Id)",
-      "channel": "telegram~-1001234567890 (nie eine nackte Id)"
+      "user": "teams~AAD-OBJECT-ID oder omadia-User-Id",
+      "team": "teams~19:abc@thread.tacv2",
+      "channel": "telegram~-1001234567890"
     },
     "selectorRequired": "Selector erforderlich für diese Achse.",
-    "reseedLabel": "Default-Memories nach dem Löschen neu seeden (re-seed defaults)",
+    "reseedLabel": "Regeln auf die mitgelieferten Defaults zurücksetzen",
     "loading": "lädt…",
     "previewButton": "Vorschau",
     "previewError": "Vorschau-Fehler: {message}",
     "previewTitle": "Vorschau — wird gelöscht",
     "agentScratch": "Agent-Scratch",
-    "knowledgeGraph": "Knowledge-Graph",
+    "knowledgeGraph": "Gemerkte Fakten (Knowledge-Graph)",
     "confirmTitle": "Löschen bestätigen",
-    "previewFirst": "Zuerst eine Vorschau ausführen — Löschen ist erst danach möglich.",
+    "previewFirst": "Zuerst eine Vorschau ausführen — der Server nimmt eine Löschung nur nach einer Vorschau derselben Auswahl an.",
     "noSelector": "Kein Selector gesetzt.",
     "confirmInstruction": "Zum Bestätigen exakt eingeben: <code>{phrase}</code>",
     "deleting": "löscht…",
@@ -5311,10 +5297,31 @@
     "deletedTitle": "Gelöscht",
     "forbiddenError": "Nicht berechtigt (403) — Memory-Purge erfordert Admin-Rechte.",
     "selectorHint": {
-      "agent": "Agent-Slug. Löscht zusätzlich dessen Kontext-Bäume unter /memories/contexts.",
-      "user": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe User-Id. Löscht das User-Tier über alle Agenten.",
-      "team": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe Team-Id. Löscht das Team-Tier über alle Agenten.",
-      "channel": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe Conversation-Id. Löscht das Kanal-Tier über alle Agenten."
+      "agent": "Agent-Slug. Löscht den Scratch-Baum des Agenten, seine Kontext-Bäume unter /memories/contexts, seine gemerkten Fakten und seinen Gesprächsverlauf.",
+      "user": "Immer <code>channelType~id</code> (rohe User-Id oder Key aus dem Memory-Browser), z. B. <code>teams~AAD-OBJECT-ID</code> — löscht das User-Tier über alle Agenten. Oder eine omadia-User-Id: löscht Member-Notizen, gemerkte Fakten und Gesprächs-Turns dieser Person.",
+      "team": "Immer <code>channelType~id</code> (rohe Team-Id oder Key aus dem Memory-Browser), z. B. <code>teams~19:abc@thread.tacv2</code>. Löscht das Team-Tier über alle Agenten.",
+      "channel": "Immer <code>channelType~id</code> (rohe Conversation-Id oder Key aus dem Memory-Browser), z. B. <code>telegram~-1001234567890</code>. Löscht das Kanal-Tier über alle Agenten."
+    },
+    "reseedHint": "Löscht /memories/_rules, auch zur Laufzeit hinzugefügte Regeln, und schreibt die mitgelieferten Defaults sofort zurück. Chat-Tabs, Gesprächsprotokolle, Brand-Assets, core und UI-Einstellungen bleiben immer erhalten.",
+    "reseedPreview": "Auf die mitgelieferten Defaults zurückgesetzt: {entries}",
+    "reseeded": "{count, plural, one {# Default-Datei zurückgeschrieben.} other {# Default-Dateien zurückgeschrieben.}}",
+    "conversationHistory": "Gesprächsverlauf (Knowledge-Graph)",
+    "nothingToDelete": "Die Vorschau hat für diese Auswahl nichts zu löschen gefunden — bitte den Selector prüfen.",
+    "warnings": {
+      "kg_not_modelled": "Der Knowledge-Graph kennt noch keine {axis, select, team {Team} channel {Channel} other {solche}}-Zuordnung: gemerkte Fakten und Gesprächsverlauf bleiben unberührt. Gelöscht werden nur die Kontext-Bäume unter /memories/contexts.",
+      "kg_history_unsupported": "Dieser Knowledge-Graph-Provider kann den Gesprächsverlauf nicht löschen: Turns, Sessions und Runs bleiben erhalten. Gelöscht werden nur gemerkte Fakten und Scratch-Memory.",
+      "user_axis_kg_only": "Der Selector hat Knowledge-Graph-Daten getroffen, aber keinen Kontext-Baum unter /memories/contexts — das Scratch-Memory des Users wird nicht gelöscht.",
+      "user_axis_scratch_only": "Der Selector hat Kontext-Bäume getroffen, aber keine Knowledge-Graph-Daten — gemerkte Fakten und Gesprächs-Turns werden über die omadia-User-Id gefunden, nicht über einen channelType~id-Key.",
+      "audit_unavailable": "Kein Audit-Speicher konfiguriert (kein Postgres) — dieser Purge wird nicht protokolliert.",
+      "audit_update_failed": "Der Purge ist gelaufen, aber sein Audit-Eintrag {auditId} konnte nicht abgeschlossen werden und steht noch auf „gestartet“.",
+      "reseed_failed": "Die Defaults konnten nicht zurückgeschrieben werden; sie kommen beim nächsten Neustart zurück, außer MEMORY_SEED_MODE steht auf skip."
+    },
+    "errors": {
+      "invalid_selector": "Der Selector muss channelType~id lauten, z. B. teams~19:abc@thread.tacv2 (rohe native Id) oder der Key aus dem Memory-Browser.",
+      "selector_required": "Selector erforderlich für diese Achse.",
+      "preview_required": "Die Vorschau ist abgelaufen oder gehört zu einer anderen Auswahl — bitte die Vorschau erneut ausführen.",
+      "confirmation_mismatch": "Die Bestätigung stimmt nicht mit der geforderten Phrase überein.",
+      "audit_write_failed": "Der Purge konnte nicht im Audit-Log protokolliert werden, deshalb wurde nichts gelöscht."
     }
   },
   "adminDuplicates": {
@@ -5495,7 +5502,9 @@
       "gcTitle": "GC-Quoten ausführen",
       "gcDescription": "Eviction pro Scope nach Typ-Gewicht × Decay-Score. Erzwingt hot_max_entries + max_total_chars.",
       "accessFlushTitle": "Nur Access-Flush ausführen",
-      "accessFlushDescription": "Access-Tracker ohne Rotation in access_count + accessed_at schreiben. Nur zum Debuggen."
+      "accessFlushDescription": "Access-Tracker ohne Rotation in access_count + accessed_at schreiben. Nur zum Debuggen.",
+      "running": "Läuft …",
+      "runNow": "Jetzt ausführen"
     },
     "cards": {
       "tierBreakdown": "Verteilung nach Tier",
@@ -5530,7 +5539,7 @@
       "promotedColdToWarm": "COLD → WARM hochgestuft"
     },
     "title": "Knowledge-Graph-Lifecycle",
-    "intro": "Palaia Phase 4 — Tier-Rotation, Decay, GC. Die Sweeps laufen nach Cron-Zeitplan; die Buttons unten stoßen sie sofort an.",
+    "intro": "Tier-Rotation, Decay und GC des Knowledge Graphs. Die Sweeps laufen nach Cron-Zeitplan; die Buttons unten stoßen sie sofort an.",
     "refresh": "Aktualisieren"
   },
   "adminKgPriorities": {
@@ -6168,23 +6177,23 @@
       },
       "pluginNeedsConfig": {
         "question": "Ein Plugin meldet, dass es Konfiguration braucht",
-        "answer": "Das Plugin ist installiert, aber mindestens ein Pflichtfeld hat keinen Wert. Öffne das Plugin im Store und fülle die Setup-Felder aus. Secret-Felder wollen nie ein Konto-Passwort — sie wollen einen technischen Schlüssel aus der Anbieter-Konsole.",
-        "action": "Store öffnen"
+        "answer": "Das Plugin ist installiert, aber mindestens ein Pflichtfeld hat keinen Wert. Öffne das Plugin im Hub und fülle die Setup-Felder aus. Secret-Felder wollen nie ein Konto-Passwort — sie wollen einen technischen Schlüssel aus der Anbieter-Konsole.",
+        "action": "Hub öffnen"
       },
       "cliNotInstalled": {
         "question": "Eine Abo-CLI wird als nicht installiert angezeigt",
-        "answer": "Die CLI muss auf dem Server installiert sein, der omadia betreibt — nicht auf deinem Laptop. Der Abo-Tab zeigt den genauen Installationsbefehl; danach „Erneut prüfen“ nutzen.",
+        "answer": "Die CLI muss auf dem Server installiert sein, der omadia betreibt — nicht auf deinem Laptop. Der Tab „Abos“ zeigt den genauen Installationsbefehl; danach „Erneut prüfen“ nutzen.",
         "action": "LLM-Zugang öffnen"
       },
       "noModels": {
         "question": "Für einen Anbieter erscheinen keine Modelle",
-        "answer": "Modelle kommen vom Anbieter-Plugin. Ist die Liste leer, ist das Plugin nicht aktiv — prüfe den LLM-Zugang und den Status des Plugins im Store.",
+        "answer": "Modelle kommen vom Anbieter-Plugin. Ist die Liste leer, ist das Plugin nicht aktiv — prüfe den LLM-Zugang und den Status des Plugins im Hub.",
         "action": "LLM-Zugang öffnen"
       }
     },
     "docs": {
       "heading": "Dokumentation",
-      "documentation": "Dokumentation",
+      "documentation": "Docs auf GitHub",
       "repository": "Quellcode auf GitHub",
       "discussions": "In Discussions fragen"
     },
@@ -6278,5 +6287,11 @@
       "cta": "Plattform-Zustand öffnen",
       "dismiss": "Später"
     }
+  },
+  "oneTimeSecret": {
+    "dismiss": "Kopiert, ausblenden",
+    "copy": "Kopieren",
+    "copied": "Kopiert",
+    "copyFailed": "Automatisches Kopieren fehlgeschlagen — markiere das Secret oben und kopiere es von Hand."
   }
 }

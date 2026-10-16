@@ -8,6 +8,50 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.33.0 — 2026-10-16
+
+Additive. A Privacy Shield v4 table render keeps its canvas snapshot off the
+model's `tool_result` (#1402).
+
+### Added
+
+- **`PrivacyV4ToolResult`** — the return type of
+  `PrivacyGuardService.runV4Tool`: `resultText` (LLM-bound, never a real
+  value) plus the optional **`canvasSentinel`**, a table render's
+  `_pendingCanvasTree` snapshot with the real cells. The kernel hands it to
+  the turn's canvas-sentinel sink, never to the model. A provider that
+  returns `{ resultText }` alone still conforms.
+
+## 1.32.0 — 2026-10-16
+
+Additive. The Danger-Zone memory purge deletes the conversation history, not
+only the remembered facts (#1334).
+
+### Added
+
+- **`KnowledgeGraph.countConversationHistory?` / `purgeConversationHistory?`**
+  — count and hard-delete the Turns of a scope or user and everything derived
+  from them (Session, Run, AgentInvocation, ToolCall, Plan, PlanStep, Fact),
+  through one shared selection so the preview counts what the purge deletes.
+  Optional: a provider without them is reported as unsupported by the purge.
+- **`ConversationHistoryPurgeFilter`** and
+  **`CONVERSATION_HISTORY_NODE_TYPES`**.
+
+## 1.31.0 — 2026-10-16
+
+Additive. A plugin tool that only some channels can serve can say so per turn,
+so the model is not offered a call that can only fail (#1346).
+
+### Added
+
+- **`ToolRegistrationOptions.isAvailable?: () => boolean`** — evaluated by the
+  kernel inside the turn scope whenever it builds the tool list and the
+  system-prompt tool docs; `false` (or a throw) hides the tool's spec and
+  `promptDoc` for that turn (on `registerHandler`, the `promptDoc` only).
+  Must answer the same for the whole turn. Advertisement only: dispatch is not gated, so the
+  handler must still answer a call on such a turn truthfully. Absent ⇒ always
+  offered; a kernel before 1.31.0 ignores it.
+
 ## 1.30.0 — 2026-10-16
 
 Additive. One boundary-preset library for both places an operator can forbid an

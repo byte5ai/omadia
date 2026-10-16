@@ -8,6 +8,7 @@ import {
   buildSettingsCatalog,
   findSetting,
   settingPluginIds,
+  type ProviderKeySource,
   type SettingDef,
 } from '../platform/settingsCatalog.js';
 import {
@@ -15,6 +16,7 @@ import {
   providerIdFromApiKeyVaultKey,
   providerVerifiedAtVaultKey,
 } from '../platform/providerCredentialVerifier.js';
+import { rebuildOrder } from '../platform/providerDependents.js';
 
 /**
  * Operator settings overview — a single editable view of every `.env`-based
@@ -37,7 +39,7 @@ interface AdminSettingsDeps {
   /** Plugin-contributed providers — adds a per-provider API-key setting so they
    *  can be connected on the overview (structural to avoid a hard dep). */
   llmProviderCatalog?: {
-    list(): ReadonlyArray<{ readonly id: string; readonly label: string }>;
+    list(): ReadonlyArray<ProviderKeySource>;
   };
 }
 
@@ -61,6 +63,67 @@ function stringifyConfigValue(v: unknown): string | null {
   if (v === undefined || v === null) return null;
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return null;
+}
+
+/** One rejected change in a PATCH answer. `code` is set for the rejections
+ *  the web UI has localized copy for. */
+interface SettingFieldError {
+  key: string;
+  message: string;
+  code?: string;
+}
+
+interface KeyFormatRejection {
+  code: string;
+  message: string;
+}
+
+/** Shortest provider API key accepted without a known prefix. Low on
+ *  purpose: a plugin provider can be a self-hosted gateway whose tokens are
+ *  short (LiteLLM's sample master key is 7 characters). It only catches an
+ *  obvious slip — a stray character, a half-pasted value (#1331). */
+export const MIN_PROVIDER_KEY_LENGTH = 6;
+
+/** Mistral issues 32-character keys; anything far shorter is a partial paste. */
+export const MIN_MISTRAL_KEY_LENGTH = 20;
+
+/**
+ * Plausibility check for a provider API key. Anthropic and OpenAI keys have a
+ * known prefix. Every other provider (Mistral, plugin-contributed ones) gets
+ * the minimum any key meets: no whitespace, and not implausibly short. Before
+ * #1331 those were stored unchecked, so `"!!!"` showed as a connected key.
+ */
+export function checkApiKeyFormat(
+  settingKey: string,
+  value: string,
+): KeyFormatRejection | null {
+  if (settingKey === 'ANTHROPIC_API_KEY') {
+    return value.startsWith('sk-ant-')
+      ? null
+      : {
+          code: 'settings.anthropic_key_format',
+          message: 'Anthropic keys start with "sk-ant-"',
+        };
+  }
+  if (settingKey === 'OPENAI_API_KEY') {
+    return value.startsWith('sk-') && !value.startsWith('sk-ant-')
+      ? null
+      : {
+          code: 'settings.openai_key_format',
+          message: 'OpenAI keys start with "sk-" (not "sk-ant-")',
+        };
+  }
+  const minLength =
+    settingKey === 'MISTRAL_API_KEY'
+      ? MIN_MISTRAL_KEY_LENGTH
+      : MIN_PROVIDER_KEY_LENGTH;
+  if (/\s/.test(value) || value.length < minLength) {
+    return {
+      code: 'settings.api_key_format',
+      message: `an API key has no whitespace and at least ${String(minLength)} characters`,
+    };
+  }
   return null;
 }
 
@@ -155,7 +218,7 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
       return;
     }
 
-    const errors: Array<{ key: string; message: string }> = [];
+    const errors: SettingFieldError[] = [];
     // Per-plugin config patches and per-scope secret patches, batched so each
     // plugin is written + reactivated at most once.
     const configPatch = new Map<string, Record<string, unknown>>();
@@ -175,9 +238,18 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
      *  operator can only act on the right one, and "the field list is stale,
      *  reload" is the wrong advice for a malformed API key. */
     let rejectedValue = false;
-    /** Reject a change whose key is known but whose value is not. */
-    const rejectValue = (key: string, message: string): void => {
-      errors.push({ key, message });
+    /** Reject a change whose key is known but whose value is not. A
+     *  rejection with a code lets the web UI explain it in the operator's
+     *  language (`errorHelp.<code>`); `message` stays as the English detail. */
+    const rejectValue = (
+      key: string,
+      rejection: string | KeyFormatRejection,
+    ): void => {
+      errors.push(
+        typeof rejection === 'string'
+          ? { key, message: rejection }
+          : { key, ...rejection },
+      );
       rejectedValue = true;
     };
 
@@ -223,18 +295,10 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
           rejectValue(key, 'not an allowed option');
           continue;
         }
-        if (
-          def.key === 'ANTHROPIC_API_KEY' &&
-          !value.startsWith('sk-ant-')
-        ) {
-          rejectValue(key, 'Anthropic-Keys beginnen mit "sk-ant-"');
-          continue;
-        }
-        if (
-          def.key === 'OPENAI_API_KEY' &&
-          (!value.startsWith('sk-') || value.startsWith('sk-ant-'))
-        ) {
-          rejectValue(key, 'OpenAI-Keys beginnen mit "sk-" (nicht "sk-ant-")');
+        const keyRejection =
+          def.type === 'secret' ? checkApiKeyFormat(def.key, value) : null;
+        if (keyRejection) {
+          rejectValue(key, keyRejection);
           continue;
         }
       }
@@ -327,8 +391,14 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
         }
       }
       // Live apply: reactivate every touched plugin so it re-reads config.
+      // A key lands in the orchestrator, verifier and extras scopes, in
+      // catalog order; the orchestrator captures the other two's services in
+      // its own activate(), so it goes last (#1394) — otherwise the first key
+      // save on a fresh stack left it holding extras' key-less boot instances
+      // (fact extraction off until a restart).
       if (deps.reactivate) {
-        for (const pluginId of affected) {
+        const order = rebuildOrder(affected, (id) => deps.installedRegistry.has(id));
+        for (const pluginId of order) {
           await deps.reactivate(pluginId);
         }
       }

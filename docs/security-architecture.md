@@ -328,6 +328,25 @@ working across it:
   `handleTurnStream` must supply ids that cannot collide with another
   channel's (`key:<uuid>` on the public API).
 
+  **#1086 (via the #1346 mechanism): `manage_routine` is advertised only where a principal exists.** The
+  tool is registered with a per-turn `isAvailable` predicate
+  (`routineTurnContext.current() !== undefined`), so a direct-`chatAgent` turn
+  without a principal no longer sees the tool. This is advertisement only:
+  a principal that is present — including a stale `enterWith` one — still
+  shows the tool, and this guard still decides the dispatch. The same
+  predicate is evaluated by `listDispatchableToolSpecs()`, which also feeds the
+  public MCP server's `callableToolNames`; outside a turn the tool is therefore
+  neither listed nor callable there, which narrows that surface (the tool
+  refused every action there anyway).
+
+  The discussion tools use the same advertisement mechanism via
+  `conductorDiscussions.availableHere()`, but this guard does not cover them:
+  it protects routines on the CLI path only. `availableHere` reads the same
+  `routineTurnContext`, so a stale Teams `enterWith` context can show the
+  discussion tools on a later turn, and `startHere` would act on that stale
+  conversation. That was already true before #1346 (the tools were always
+  offered); the gate neither adds nor removes that exposure.
+
   **The declaration is part of the mechanism, not bookkeeping.** Both
   `services.get` and `services.getOptional` run `assertServiceGranted`, which
   throws `ServiceNotDeclaredError` for a name in none of `requires:`,
@@ -1070,6 +1089,24 @@ history are convenience layers, not security layers. They:
 - Honour the same scope filters as the underlying graph queries.
 - Do not extend a credential's lifetime beyond the originating request.
 - Are flushed on process restart; they are not a substitute for persistence.
+
+### Rendered tables stay off the model wire (#1402)
+
+`v4_render_answer` materializes the answer from the turn's real rows. Until
+privacy-guard 0.10.0 a `format: table` render returned its `_pendingCanvasTree`
+snapshot — real cell values — as the tool's `tool_result`, and the tool loop
+always calls the model once more after a tool round, so every table render
+sent those values to the provider (and a memory-tool call after it could
+persist them). Since 0.10.0 (`@omadia/plugin-api` 1.33.0) `runV4Tool`
+returns only a shape acknowledgement as `resultText` — the row count and the
+column labels the model chose itself — and hands the snapshot back as
+`PrivacyV4ToolResult.canvasSentinel`. The orchestrator gives that to the
+turn's canvas-sentinel sink (the side channel every other canvas tool uses
+before interning), never to the model. A guard that predates the field and
+still embeds a `_pending*` sentinel in `resultText` is caught at the same
+seam (`v4RenderSideChannel.ts`): the sentinel goes to the sink and the model
+gets a kernel-authored note. The user-facing answer (`takeRenderedAnswerV4`)
+and the verifier hand-over of its prose are unchanged.
 
 ## 6a. Dataset link keys — a deliberate identity handle inside the Privacy Shield
 
@@ -5432,6 +5469,56 @@ the same for the browser-facing descriptor.
 route and asserts it reads the SAME app-setting key the kernel writes — the two
 literal spellings are what a rename would silently break, and the symptom would
 be a `ws://` URL on exactly the deployments that declared HTTPS.
+
+## 10q. Danger-Zone memory purge: complete, previewed, attributed (#1333–#1336)
+
+The memory purge (`/api/v1/admin/memory/purge`, page `/admin/danger-zone`) is
+the operator's tool for erasure requests, so it has to delete what it says and
+leave a record of who did it.
+
+- **Complete.** Besides scratch memory and the knowledge graph's
+  `MemorableKnowledge`, a purge deletes the conversation history of its
+  selection: `Turn` nodes (the full user message and answer), their `Session`,
+  `Run`, `AgentInvocation`, `ToolCall`, `Plan`, `PlanStep` and the `Fact`s
+  derived only from deleted turns (by edge or, when the edge is missing, by
+  their `sourceTurnId` / `turnId` prop). Agent axis = scopes `<slug>::…`; user
+  axis with an omadia user id = nodes whose `user_id` is that id or the AAD id
+  of one of their channel identities, plus Turns that `BELONGS_TO` the user
+  cluster (a group `Session` stays while another speaker's turns remain);
+  everything = the
+  tenant. Team and channel have no KG scoping yet and say so. Kept on purpose:
+  the per-scope Q&A transcripts under `/memories/sessions` and the chat tabs
+  under `/memories/chat-sessions` (open point, see handoff §13).
+- **One selection.** Preview and delete run the same plan (scratch targets +
+  KG filters, one shared SQL CTE in the Neon backend), so both select by the
+  same rules. The delete re-resolves the plan when it runs: data that arrived
+  after the preview (a new turn) goes too, and the audit row keeps the counts
+  planned at that moment next to the counts deleted.
+- **Preview enforced server-side.** `POST /preview` returns a single-use token (spent before the delete's first await)
+  bound to axis + selector + re-seed, valid 10 minutes, process-local. A
+  `DELETE` without a matching token gets `409 preview_required`.
+- **Re-seed cannot wipe user data.** It resets only the top-level entries the
+  bundled seed directory (`MEMORY_SEED_DIR`) contains — today `_rules` — and
+  writes them back immediately. Chat sessions, transcripts, brand assets,
+  `core` and UI preferences are never deleted by any purge.
+- **Attributed, audit first.** The actor comes from the session through
+  `auditActorFromRequest` (the `admin_audit` actor rule: `actor_id` = the
+  session's `users.id`, `actor_email` = its email), never the body. The
+  `memory_purge_audit` row is written as `started` — together with a
+  `memory.purge` row in `admin_audit`, in one transaction — before anything
+  is deleted; if that write fails the purge is refused with
+  `500 audit_write_failed`. Afterwards the row gets the real counts and
+  `completed` (or `failed` with the error and the counts of the layers that
+  finished before it; a failed re-seed is noted in `error`); if that update fails the response
+  carries `audit_update_failed`. Without a Postgres pool there is no audit
+  store, and every response says `audit_unavailable`.
+
+Residual: the preview token does not survive a restart or span several
+middleware processes; the outcome (counts, `completed`/`failed`) is only in
+`memory_purge_audit`, since `admin_audit` is append-only.
+A user purge misses a Turn whose `user_id` is a raw channel id (Telegram id,
+Teams `29:` id without an AAD id) when its run trace was never ingested, since
+the `BELONGS_TO` edge to the user cluster is the only other link.
 
 ## 10p. MCP outbound targets and stdio servers (#1341, #1342)
 

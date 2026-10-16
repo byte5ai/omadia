@@ -495,6 +495,12 @@ count: number;
 purgeMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<{
 deletedNodes: number;
 }>;
+countConversationHistory?(filter: ConversationHistoryPurgeFilter): Promise<{
+count: number;
+}>;
+purgeConversationHistory?(filter: ConversationHistoryPurgeFilter): Promise<{
+deletedNodes: number;
+}>;
 listMemoryAclAudit(memorableKnowledgeNodeId: string, opts?: {
 limit?: number;
 }): Promise<AclAuditEntry[]>;
@@ -858,6 +864,12 @@ tenantId: string;
 originAgent?: string;
 aclOwner?: string;
 }
+export interface ConversationHistoryPurgeFilter {
+tenantId: string;
+agentSlug?: string;
+userId?: string;
+}
+export declare const CONVERSATION_HISTORY_NODE_TYPES: readonly ["Turn", "Run", "AgentInvocation", "ToolCall", "Plan", "PlanStep"];
 export interface FactIngest {
 factId: string;
 sourceTurnId: string;
@@ -1597,6 +1609,7 @@ export interface ToolRegistrationOptions {
 readonly promptDoc?: string;
 readonly attachmentSink?: NativeToolAttachmentSink;
 readonly writeCapabilities?: readonly WriteCapability[];
+readonly isAvailable?: () => boolean;
 }
 export type RouteAuthMode = 'session' | 'public' | 'custom';
 export type RouteBodyMode = 'json' | 'raw' | 'none';
@@ -2028,6 +2041,10 @@ readonly turnId: string;
 readonly toolName: string;
 readonly input: unknown;
 }
+export interface PrivacyV4ToolResult {
+readonly resultText: string;
+readonly canvasSentinel?: string;
+}
 export interface PrivacyV4ToolSpec {
 readonly name: string;
 readonly description: string;
@@ -2141,9 +2158,7 @@ recordBypassedTool(request: PrivacyBypassedToolRequest): Promise<void>;
 recordStructuredPayload?(request: PrivacyStructuredPayloadRequest): Promise<void>;
 recordToolError?(request: PrivacyToolErrorRequest): Promise<void>;
 redactToolErrorText?(request: PrivacyToolErrorRedactRequest): Promise<PrivacyToolErrorRedactResult>;
-runV4Tool(request: PrivacyV4ToolRequest): Promise<{
-readonly resultText: string;
-}>;
+runV4Tool(request: PrivacyV4ToolRequest): Promise<PrivacyV4ToolResult>;
 subAgentResultV4(request: PrivacySubAgentResultV4Request): Promise<{
 readonly resultText: string;
 }>;

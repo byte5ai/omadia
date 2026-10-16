@@ -128,6 +128,14 @@ treats the cell values as system data; a render with no prose is released as
 from an older guard that does not report it — that one fails closed in
 `enforce` (security-architecture §7c).
 
+### Table renders and the canvas (from 0.10.0)
+
+A `format: table` render returns the model only a shape acknowledgement —
+row count and the column labels it chose — as `resultText`. The
+`_pendingCanvasTree` snapshot with the real cells comes back as
+`canvasSentinel` (plugin-api 1.33.0) for the kernel's canvas-sentinel sink;
+it never reaches the model's `tool_result` (#1402).
+
 ### Answer-verifier requests (stage `verifier`)
 
 The answer verifier's post-turn model requests run under the same turn map

@@ -201,23 +201,28 @@ async function postJson<T>(
   }
 }
 
+/** A non-empty string field of a JSON error body, else `null`. */
+function bodyField(body: string, field: 'code' | 'error' | 'message'): string | null {
+  try {
+    const value = (JSON.parse(body) as Record<string, unknown> | null)?.[field];
+    return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The middleware's machine-readable error code, pulled out of a JSON error
- * body (`{ code, message }`). Returns `null` when the body is not JSON, has
- * no `code`, or carries one that is not a non-empty string.
+ * body. Most routes send `{ code, message }`; older ones (the memory purge
+ * among them, #1333) send `{ error, message }`, so `error` is the fallback.
+ * Returns `null` when the body is not JSON or carries neither as a non-empty
+ * string.
  *
  * Pure by construction: no module state is read or written, which is what
  * keeps the constructor invariant documented below intact.
  */
 function parseErrorCode(body: string): string | null {
-  try {
-    const parsed = JSON.parse(body) as { code?: unknown };
-    return typeof parsed.code === 'string' && parsed.code.trim().length > 0
-      ? parsed.code
-      : null;
-  } catch {
-    return null;
-  }
+  return bodyField(body, 'code') ?? bodyField(body, 'error');
 }
 
 /**
@@ -242,6 +247,12 @@ function parseErrorCode(body: string): string | null {
 export class ApiError extends Error {
   /** Machine-readable code from the JSON error body; `null` when absent. */
   public readonly code: string | null;
+  /**
+   * The server's own explanation (`message` of the JSON error body), `null`
+   * when absent (#1333). Usually English — prefer localized copy keyed on
+   * {@link code} and fall back to this before the bare `… failed: <status>`.
+   */
+  public readonly serverMessage: string | null;
 
   constructor(
     public readonly status: number,
@@ -251,6 +262,7 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
     this.code = parseErrorCode(body);
+    this.serverMessage = bodyField(body, 'message');
   }
 }
 
@@ -277,7 +289,9 @@ function expectArray<T>(value: unknown, path: string, key: string): T[] {
 }
 
 // -----------------------------------------------------------------------------
-// Admin settings — the .env-based config/vault overview (/api/v1/admin/settings)
+// Admin settings — the cross-plugin provider-key writes (/api/v1/admin/settings).
+// The UI edits these on the LLM access page (ProvidersPanel); the old
+// /admin/settings overview page was removed in #1397.
 // -----------------------------------------------------------------------------
 
 export type SettingValueType =
@@ -304,16 +318,6 @@ export interface ResolvedSetting {
   isSet?: boolean;
 }
 
-export interface SettingsCategory {
-  category: string;
-  settings: ResolvedSetting[];
-}
-
-export interface SettingsResponse {
-  categories: SettingsCategory[];
-  vault_available: boolean;
-}
-
 export interface SettingChange {
   key: string;
   /** New value, or null to clear/delete. */
@@ -322,11 +326,9 @@ export interface SettingChange {
 
 export interface SettingsPatchResponse {
   updated: ResolvedSetting[];
-  errors: Array<{ key: string; message: string }>;
-}
-
-export async function getSettings(): Promise<SettingsResponse> {
-  return getJson<SettingsResponse>('/v1/admin/settings');
+  /** Same shape a rejected (400) PATCH carries; read that one with
+   *  `serverFieldErrors` from `apiErrorMessage.ts`. */
+  errors: Array<{ key: string; message: string; code?: string }>;
 }
 
 export async function patchSettings(
@@ -4164,22 +4166,45 @@ export async function uploadDataset(
 
 export type MemoryPurgeAxis = 'all' | 'agent' | 'user' | 'team' | 'channel';
 
+/** A server warning as code + params; the page translates it under
+ *  `adminDangerZone.warnings.<code>` (#1333). */
+export interface MemoryPurgeWarning {
+  code: string;
+  params?: Record<string, string>;
+}
+
 export interface MemoryPurgePreviewResult {
+  /** Scratch targets (agent subtrees / context trees / top-level entries). */
   scratchCount: number;
+  /** Knowledge-Graph `MemorableKnowledge` nodes (remembered facts). */
   kgCount: number;
-  warning?: string;
+  /** Knowledge-Graph conversation history: turns, sessions, runs, tool
+   *  calls, plans and derived facts (#1334). */
+  conversationCount: number;
+  /** Top-level entries a re-seed resets and writes back (#1335). */
+  reseedEntries: string[];
+  warnings: MemoryPurgeWarning[];
+  /** Arms a DELETE of exactly this selection for a short while. */
+  previewToken: string;
+  previewExpiresAt: string;
 }
 
 export interface MemoryPurgeResult {
   scratchDeleted: number;
   kgDeleted: number;
-  warning?: string;
+  conversationDeleted: number;
+  /** Files the re-seed wrote back; present only on a re-seed purge. */
+  reseededFiles?: number;
+  /** `memory_purge_audit` row id; absent when the purge was not recorded. */
+  auditId?: string;
+  warnings: MemoryPurgeWarning[];
 }
 
-/** Dry-run: count the rows a purge would delete. Never writes. */
+/** Dry-run: count what a purge would delete. Never writes. */
 export async function previewMemoryPurge(body: {
   axis: MemoryPurgeAxis;
   selector?: string;
+  reseed?: boolean;
 }): Promise<MemoryPurgePreviewResult> {
   return postJson<MemoryPurgePreviewResult>(
     '/v1/admin/memory/purge/preview',
@@ -4189,15 +4214,19 @@ export async function previewMemoryPurge(body: {
 
 /**
  * Irreversible purge. `confirm` must match the phrase the operator typed
- * (`DELETE ALL MEMORY` for axis 'all', otherwise the selector value); the
- * backend re-checks it server-side. `reseed` re-installs the default seed
- * memories after wiping and is only meaningful for axis 'all'.
+ * (`DELETE ALL MEMORY` for axis 'all', otherwise the selector value) and
+ * `previewToken` must come from a preview of the same selection; the backend
+ * checks both. `reseed` (axis 'all' only) resets the entries the bundled seed
+ * contains — today the rules — and writes the bundled versions back right
+ * away; chat sessions, transcripts, brand assets and UI preferences are never
+ * touched.
  */
 export async function purgeMemory(body: {
   axis: MemoryPurgeAxis;
   selector?: string;
   confirm: string;
   reseed?: boolean;
+  previewToken: string;
 }): Promise<MemoryPurgeResult> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(botApi('/v1/admin/memory/purge'), {

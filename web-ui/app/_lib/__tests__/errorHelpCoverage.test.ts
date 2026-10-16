@@ -180,6 +180,12 @@ const ACKNOWLEDGED_NON_LITERAL_CODE: Readonly<
       why: 'a thrown InstallError — followed via FORWARDED_CODE_SOURCES',
     },
   ],
+  'adminSettings.ts': [
+    {
+      expr: 'code: string;',
+      why: "type annotation on checkApiKeyFormat's rejection; its codes are literals (#1331)",
+    },
+  ],
   'adminProviders.ts': [
     {
       expr: 'code: result.code',

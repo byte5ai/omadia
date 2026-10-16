@@ -108,8 +108,9 @@ export function parseCause(value: unknown): RuntimeReadinessCause {
 /**
  * Does this 503 body carry the middleware's own structured verdict?
  *
- * Note this reads `error`, not `ApiError.code`: `parseErrorCode` (api.ts)
- * parses a `code` field, and the middleware sends this marker under `error`.
+ * Note this reads the probe body's `error` directly: the body here is a
+ * parsed readiness payload, not an `ApiError` (whose `code` falls back to
+ * `error` since #1333).
  */
 function isStructuredUnavailable(body: ReadinessProbeBody | null): boolean {
   return body?.error === UNAVAILABLE;
