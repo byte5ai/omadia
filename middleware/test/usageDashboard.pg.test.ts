@@ -205,13 +205,16 @@ describe('OM-103 — getUsageDashboard over real token_usage rows', () => {
     assert.equal(firstDay.totals.calls, 3);
     assert.equal(firstDay.totals.subscriptionCalls, 2);
     assert.equal(firstDay.totals.referenceCostUsd, 0.05);
-    assert.equal(firstDay.timeSeries.length, 2);
+    // #1388 — one hourly bucket per hour of the window, idle hours included.
+    assert.equal(firstDay.timeSeries.length, 24);
+    assert.equal(firstDay.timeSeries.filter((b) => b.calls > 0).length, 2);
   });
 
   it('buckets the cost series by hour or by day', { skip }, async () => {
-    const hourly = await getUsageDashboard(pool!, {}, 'hour');
+    const until = '2026-01-11T09:30:00Z';
+    const hourly = await getUsageDashboard(pool!, { until }, 'hour');
     assert.deepEqual(
-      hourly.timeSeries.map((b) => [b.bucket, b.calls, b.costUsd]),
+      hourly.timeSeries.filter((b) => b.calls > 0).map((b) => [b.bucket, b.calls, b.costUsd]),
       [
         ['2026-01-10T10:00:00.000Z', 2, 0.5],
         ['2026-01-10T11:00:00.000Z', 1, 0],
@@ -219,7 +222,7 @@ describe('OM-103 — getUsageDashboard over real token_usage rows', () => {
       ],
     );
 
-    const daily = await getUsageDashboard(pool!, {}, 'day');
+    const daily = await getUsageDashboard(pool!, { until }, 'day');
     assert.deepEqual(
       daily.timeSeries.map((b) => [b.bucket, b.calls, b.costUsd]),
       [
@@ -227,5 +230,60 @@ describe('OM-103 — getUsageDashboard over real token_usage rows', () => {
         ['2026-01-11T00:00:00.000Z', 1, 0.25],
       ],
     );
+  });
+
+  it('#1388 — fills idle buckets with zero, from the window start to its end', { skip }, async () => {
+    const { timeSeries } = await getUsageDashboard(
+      pool!,
+      { since: '2026-01-08T12:00:00Z', until: '2026-01-12T06:00:00Z' },
+      'day',
+    );
+    assert.deepEqual(
+      timeSeries.map((b) => [b.bucket.slice(0, 10), b.calls]),
+      [
+        ['2026-01-08', 0],
+        ['2026-01-09', 0],
+        ['2026-01-10', 3],
+        ['2026-01-11', 1],
+        ['2026-01-12', 0],
+      ],
+    );
+  });
+
+  it('#1396 — cuts days in the requested zone, not the session zone', { skip }, async () => {
+    const until = '2026-01-12T00:00:00Z';
+    // UTC+14: every seed row (10:15Z on the 10th … 09:00Z on the 11th) falls on
+    // 11 January local time — one bar, starting at local midnight.
+    const kiritimati = await getUsageDashboard(pool!, { until }, 'day', 'Pacific/Kiritimati');
+    assert.deepEqual(
+      kiritimati.timeSeries.filter((b) => b.calls > 0).map((b) => [b.bucket, b.calls]),
+      [['2026-01-10T10:00:00.000Z', 4]],
+    );
+    // UTC-8: the 11th's 09:00Z row is 01:00 local; local midnight is 08:00Z.
+    const la = await getUsageDashboard(pool!, { until }, 'day', 'America/Los_Angeles');
+    assert.deepEqual(
+      la.timeSeries.filter((b) => b.calls > 0).map((b) => [b.bucket, b.calls]),
+      [
+        ['2026-01-10T08:00:00.000Z', 3],
+        ['2026-01-11T08:00:00.000Z', 1],
+      ],
+    );
+    // Berlin: the first bar starts at local midnight (23:00Z), not 00:00Z.
+    // The 23:30Z next-day case is in usageDashboardBreakdown.pg.test.ts.
+    const berlin = await getUsageDashboard(pool!, { until }, 'day', 'Europe/Berlin');
+    assert.equal(berlin.timeSeries[0]?.bucket, '2026-01-09T23:00:00.000Z');
+  });
+
+  it('#1396 — floors `since` to its bucket start, so the first bar and the totals are whole', { skip }, async () => {
+    const since = '2026-01-10T10:30:00Z';
+    const exact = await getUsageDashboard(pool!, { since, until: '2026-01-10T12:00:00Z' }, 'hour');
+    // 10:15 is before `since` but inside its hour: it counts, in the bar and
+    // in the KPI totals alike.
+    assert.equal(exact.totals.calls, 3);
+    assert.equal(exact.timeSeries[0]?.bucket, '2026-01-10T10:00:00.000Z');
+    assert.equal(exact.timeSeries[0]?.calls, 2);
+
+    const day = await getUsageDashboard(pool!, { since: '2026-01-11T08:00:00Z' }, 'day', 'Europe/Berlin');
+    assert.equal(day.totals.calls, 1, 'floored to 11 Jan 00:00 Berlin = 10 Jan 23:00Z');
   });
 });

@@ -8,6 +8,7 @@ import type { HttpAccessor, RouteRegisterOptions } from '@omadia/plugin-api';
 
 import { extractZipToDir, type ExtractLimits } from '../zipExtractor.js';
 import { createHttpAccessor, isAuditMode } from '../../platform/httpAccessor.js';
+import { pluginLlmUsageSource, recordPluginLlmUsage } from '../../platform/pluginLlmUsage.js';
 import {
   createPreviewMemoryAccessor,
   type PreviewMemoryAccessor,
@@ -766,8 +767,10 @@ async function manifestLlmConfig(
  * Preview does NOT thread non-Anthropic provider pins or the vault; it always
  * serves on the host default `'llm'` provider, which is the common case and
  * keeps the preview decoupled from the kernel's ServiceRegistry/vault types.
+ *
+ * @internal Exported for tests only.
  */
-function createPreviewLlmAccessor(opts: {
+export function createPreviewLlmAccessor(opts: {
   agentId: string;
   config: PreviewLlmConfig;
   provider: PreviewHostLlmProvider;
@@ -801,7 +804,11 @@ function createPreviewLlmAccessor(opts: {
         log(`clamped maxTokens ${String(requested)} → ${String(effective)} (manifest cap)`);
       }
       callsUsed += 1;
-      return provider.complete({ ...req, maxTokens: effective });
+      const result = await provider.complete({ ...req, maxTokens: effective });
+      // #1390 — a preview run spends real API money on the host's Anthropic
+      // `'llm'` service; record it like an installed plugin's call.
+      recordPluginLlmUsage(`${pluginLlmUsageSource(agentId)} (preview)`, 'anthropic', result);
+      return result;
     },
   };
 }
