@@ -8,6 +8,8 @@ import { resolveClaudeCliBin } from '../../platform/cliBinary.js';
 import {
   LocalSubAgent,
   createCliSubAgent,
+  today,
+  turnContext,
   type AskObserver,
   type AskOptions,
   type LocalSubAgentTool,
@@ -428,8 +430,24 @@ export class BuilderAgent {
     this.log = deps.logger ?? (() => {});
   }
 
-  async *runTurn(opts: RunBuilderTurnOptions): AsyncIterable<BuilderEvent> {
+  runTurn(opts: RunBuilderTurnOptions): AsyncIterable<BuilderEvent> {
     const turnId = opts.turnId ?? randomUUID();
+    // #1392 — open a turn scope so the cost ledger can attribute the rows the
+    // builder sub-agent writes (one per streamed iteration). The recorder only
+    // reads ids from a scope that carries `sessionScope`; without one every
+    // `sub-agent builder-<draftId>` row had NULL `turn_id`/`session_id`. Both
+    // callers (the builder chat route and AutoFix) come through here.
+    // `runGenerator`, not `enter`: this is a generator (see turnContext.enter).
+    return turnContext.runGenerator(
+      { turnId, turnDate: today(), sessionScope: `builder:${opts.draftId}` },
+      () => this.runTurnInScope(opts, turnId),
+    );
+  }
+
+  private async *runTurnInScope(
+    opts: RunBuilderTurnOptions,
+    turnId: string,
+  ): AsyncGenerator<BuilderEvent> {
     yield { type: 'turn_started', turnId };
 
     const draft = await this.draftStore.load(opts.userEmail, opts.draftId);
