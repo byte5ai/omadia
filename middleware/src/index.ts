@@ -3646,6 +3646,7 @@ async function main(): Promise<void> {
       store: memoryStore,
       ...(knowledgeGraph ? { knowledgeGraph } : {}),
       ...(graphPool ? { graphPool } : {}),
+      seedDir: config.MEMORY_SEED_DIR,
       tenantId: graphTenantId,
     }),
   );

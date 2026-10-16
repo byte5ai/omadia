@@ -69,6 +69,10 @@ export type AuditAction =
   // #1329 — public API-key lifecycle (`@omadia/channel-api` /admin/keys),
   // written through `ctx.operatorAuth.recordAdminAction`. Never carries the
   // token or its hash.
+  // #1336 — a Danger-Zone memory purge. Written before anything is deleted,
+  // in the same transaction as its `memory_purge_audit` row (which then gets
+  // the outcome); `target` is `memory-purge:<that row's id>`.
+  | 'memory.purge'
   | 'api_key.create'
   | 'api_key.revoke'
   | 'api_key.delete';
