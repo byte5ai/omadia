@@ -8,7 +8,8 @@
 # first-admin /setup wizard at runtime, so nothing else is required.
 #
 # DEV_ENDPOINTS_ENABLED stays unset on purpose: this app is publicly
-# reachable, and the dev mounts expose raw KG + memory state without auth.
+# reachable, and the dev mounts are dev scaffolding that hand raw KG + memory
+# state to any logged-in session.
 
 primary_region = "fra"
 
