@@ -20,6 +20,7 @@
 
 import type { ChannelKeyDirectory, ChannelKeyEntry } from '@omadia/channel-sdk';
 import type { ApiKeyStore } from '@omadia/api-key-auth';
+import { isApiKeyActive } from '@omadia/api-key-auth';
 
 import { channelKeyOf } from './channelKey.js';
 
@@ -59,10 +60,10 @@ export function createApiChannelDirectory(
     async listKeys(): Promise<readonly ChannelKeyEntry[]> {
       const keys = await deps.apiKeys.list();
       return keys
-        // `list()` returns every key including revoked ones (it carries
-        // `revokedAt` for the admin view); a revoked key must not remain a
-        // bindable routing target.
-        .filter((k) => k.revokedAt === undefined)
+        // `list()` returns every key including revoked and expired ones (the
+        // admin view shows them); neither may remain a bindable routing
+        // target (#1328 added expiry).
+        .filter((k) => isApiKeyActive(k))
         .map((k) => ({
           key: channelKeyOf(k.id),
           label: labelFor(k.id, k.label),

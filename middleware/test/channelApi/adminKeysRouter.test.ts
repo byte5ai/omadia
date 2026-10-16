@@ -79,18 +79,18 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
     const created = await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ label: 'scoped', scopes: ['chat:write', 'memory:read'] }),
+      body: JSON.stringify({ label: 'scoped', scopes: ['chat:write', 'mcp:list'] }),
     });
     assert.equal(created.status, 201);
     const body = (await created.json()) as { key: { id: string; scopes: string[] } };
-    assert.deepEqual(body.key.scopes, ['chat:write', 'memory:read']);
+    assert.deepEqual(body.key.scopes, ['chat:write', 'mcp:list']);
 
     const listed = (await (await client.fetch(baseUrl)).json()) as {
       keys: Array<{ id: string; scopes: string[] }>;
     };
     assert.deepEqual(
       listed.keys.find((k) => k.id === body.key.id)?.scopes,
-      ['chat:write', 'memory:read'],
+      ['chat:write', 'mcp:list'],
     );
   });
 

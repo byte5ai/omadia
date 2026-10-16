@@ -48,7 +48,40 @@ export type AuditAction =
   // #1342 — a stdio MCP server was saved (manual or catalog import). It runs
   // as a child process of the middleware, so who added it belongs in the
   // trail. `after` holds name + source, never the command line.
-  | 'mcp_server.stdio_create';
+  | 'mcp_server.stdio_create'
+  // #1329 — public API-key lifecycle (`@omadia/channel-api` /admin/keys),
+  // written through `ctx.operatorAuth.recordAdminAction`. Never carries the
+  // token or its hash.
+  | 'api_key.create'
+  | 'api_key.revoke'
+  | 'api_key.delete';
+
+/**
+ * #1329 — the actions a PLUGIN may write via
+ * `ctx.operatorAuth.recordAdminAction`, who may write them and what they may
+ * point at. Keyed on action AND plugin: a plugin must never be able to forge
+ * a kernel event (`user.delete`, `auth.provider_disable`) or another plugin's
+ * event into the ledger an incident responder trusts.
+ */
+const API_KEY_TARGET = /^api-key:[0-9a-f-]{36}$/;
+const API_KEY_PLUGINS: readonly string[] = ['@omadia/channel-api'];
+
+export const PLUGIN_AUDIT_POLICY: Readonly<
+  Partial<Record<AuditAction, { readonly plugins: readonly string[]; readonly target: RegExp }>>
+> = {
+  'api_key.create': { plugins: API_KEY_PLUGINS, target: API_KEY_TARGET },
+  'api_key.revoke': { plugins: API_KEY_PLUGINS, target: API_KEY_TARGET },
+  'api_key.delete': { plugins: API_KEY_PLUGINS, target: API_KEY_TARGET },
+};
+
+/** True when `pluginId` may write `action` against `target`. */
+export function isPluginAuditAllowed(pluginId: string, action: string, target: string): boolean {
+  const policy = (PLUGIN_AUDIT_POLICY as Record<string, (typeof PLUGIN_AUDIT_POLICY)[AuditAction]>)[
+    action
+  ];
+  return !!policy && policy.plugins.includes(pluginId) && policy.target.test(target);
+}
+
 
 export interface AuditActor {
   id?: string;
