@@ -69,50 +69,86 @@ requires:
 setup:
   fields:
     - key: "anthropic_api_key"
-      label: "Anthropic API Key"
+      label:
+        en: "Anthropic API Key"
+        de: "Anthropic-API-Key"
       type: "secret"
       required: false
-      help: "Erforderlich für ClaimExtractor + EvidenceJudge (Haiku-LLM-Calls). Ohne Key publiziert das Plugin KEIN `verifier@1` — der Kernel fällt auf den Orchestrator ohne Verifier-Wrapper zurück. Geteilt mit @omadia/orchestrator-extras (gleicher Anthropic-Account). Bootstrap migriert ANTHROPIC_API_KEY aus dem legacy .env in den Vault. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
+      help:
+        en: "Required for ClaimExtractor + EvidenceJudge (Haiku LLM calls). Without a key the plugin does NOT publish `verifier@1` — the kernel falls back to the orchestrator without the verifier wrapper. Shared with @omadia/orchestrator-extras (same Anthropic account). Bootstrap migrates ANTHROPIC_API_KEY from the legacy .env into the vault. (S+12.6: type: secret — the key is stored in the vault, not in the installed.json config.)"
+        de: "Erforderlich für ClaimExtractor + EvidenceJudge (Haiku-LLM-Calls). Ohne Key publiziert das Plugin KEIN `verifier@1` — der Kernel fällt auf den Orchestrator ohne Verifier-Wrapper zurück. Geteilt mit @omadia/orchestrator-extras (gleicher Anthropic-Account). Bootstrap migriert ANTHROPIC_API_KEY aus dem legacy .env in den Vault. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
     - key: "verifier_enabled"
-      label: "Verifier Enabled"
+      label:
+        en: "Verifier Enabled"
+        de: "Verifier aktiviert"
       type: "string"
       required: false
-      help: "'true' aktiviert die Verifier-Pipeline; jeder andere Wert (oder leer) lässt sie aus. Migriert aus VERIFIER_ENABLED. Default: 'false' (per env-default + Plugin-Default)."
+      help:
+        en: "'true' enables the verifier pipeline; any other value (or empty) leaves it off. Migrated from VERIFIER_ENABLED. Default: 'false' (via env default + plugin default)."
+        de: "'true' aktiviert die Verifier-Pipeline; jeder andere Wert (oder leer) lässt sie aus. Migriert aus VERIFIER_ENABLED. Default: 'false' (per env-default + Plugin-Default)."
     - key: "verifier_mode"
-      label: "Verifier Mode"
+      label:
+        en: "Verifier Mode"
+        de: "Verifier-Modus"
       type: "string"
       required: false
-      help: "'shadow' prüft und protokolliert nur — die Antwort geht unverändert raus. 'enforce' hält jede Antwort bis zum Urteil zurück (im Stream kommt vorher kein Antworttext an): Bei einem Widerspruch, einer fehlenden oder erfundenen Quelle, nicht abgerufenen Daten oder wenn die Prüfung nicht möglich war (Verifier lief nicht, alle Prüfungen scheiterten technisch) sieht der Nutzer einen Hinweis statt der Antwort. Eine Antwort, deren Angaben sich nicht alle bestätigen ließen, ohne dass eine widerlegt wurde, geht mit dem Zusatz raus, dass sich (ein Teil der) Angaben nicht automatisch bestätigen ließ. Ausnahmen: ein Turn mit Eingabekarte (Auswahl, MCP-Formular, Terminwahl, Anmeldung) geht ungeprüft raus, samt der Antwort, an der die Karte hängt; eine von Privacy Shield gerenderte Antwort (hinter dem Shield ebenso ein Direct-Line-Relay) geht nie an den Verifier und wird zurückgehalten. Bei einem Widerspruch versucht 'enforce' vorher einen Retry mit Correction-Prompt (im Stream nicht bei Canvas-Turns); bei einer Grenzfall-Antwort zieht der nicht-streamende Pfad eine zweite Stichprobe (abschaltbar über verifier_resample_on_borderline). Retry und Stichprobe erzeugen nur die Antwort neu: jeder Tool-Call des ersten Durchlaufs wird mit dessen Ergebnis wiedergegeben statt erneut ausgeführt, und ein hochgeladenes CSV/XLSX wird nur einmal importiert. Braucht der neue Durchlauf einen Call, den der erste nicht gemacht hat und der nicht nur liest, wird er abgebrochen und es gilt die erste Antwort. Der Correction-Prompt nennt nur die widerlegten Aussagen, keine vom Verifier ermittelten Werte, und wird wie die Nutzernachricht maskiert; würde die Maskierung hinter dem Privacy Shield ihn verändern, unterbleibt der Retry. Wirkt nicht auf Agenten mit dem Abo-CLI-Runtime (claude-cli) und nicht auf Routinen. Default: 'shadow'."
+      help:
+        en: "'shadow' only checks and logs — the answer goes out unchanged. 'enforce' holds back every answer until the verdict (in the stream no answer text arrives before that): on a contradiction, a missing or invented source, data that was not retrieved, or when the check was not possible (the verifier did not run, all checks failed technically), the user sees a notice instead of the answer. An answer whose statements could not all be confirmed, without any of them being refuted, goes out with a note that (some of) the statements could not be confirmed automatically. Exceptions: a turn with an input card (choice, MCP form, date picker, sign-in) goes out unchecked, together with the answer the card is attached to; an answer rendered by Privacy Shield (likewise a Direct Line relay behind the shield) never goes to the verifier and is held back. On a contradiction, 'enforce' first tries a retry with a correction prompt (in the stream not for canvas turns); for a borderline answer, the non-streaming path draws a second sample (can be turned off via verifier_resample_on_borderline). Retry and sample only regenerate the answer: every tool call of the first run is replayed with its result instead of being executed again, and an uploaded CSV/XLSX is imported only once. If the new run needs a call that the first run did not make and that does more than read, it is aborted and the first answer stands. The correction prompt names only the refuted statements, no values determined by the verifier, and is masked like the user message; if masking behind the Privacy Shield would change it, the retry is skipped. Has no effect on agents with the subscription CLI runtime (claude-cli) or on routines. Default: 'shadow'."
+        de: "'shadow' prüft und protokolliert nur — die Antwort geht unverändert raus. 'enforce' hält jede Antwort bis zum Urteil zurück (im Stream kommt vorher kein Antworttext an): Bei einem Widerspruch, einer fehlenden oder erfundenen Quelle, nicht abgerufenen Daten oder wenn die Prüfung nicht möglich war (Verifier lief nicht, alle Prüfungen scheiterten technisch) sieht der Nutzer einen Hinweis statt der Antwort. Eine Antwort, deren Angaben sich nicht alle bestätigen ließen, ohne dass eine widerlegt wurde, geht mit dem Zusatz raus, dass sich (ein Teil der) Angaben nicht automatisch bestätigen ließ. Ausnahmen: ein Turn mit Eingabekarte (Auswahl, MCP-Formular, Terminwahl, Anmeldung) geht ungeprüft raus, samt der Antwort, an der die Karte hängt; eine von Privacy Shield gerenderte Antwort (hinter dem Shield ebenso ein Direct-Line-Relay) geht nie an den Verifier und wird zurückgehalten. Bei einem Widerspruch versucht 'enforce' vorher einen Retry mit Correction-Prompt (im Stream nicht bei Canvas-Turns); bei einer Grenzfall-Antwort zieht der nicht-streamende Pfad eine zweite Stichprobe (abschaltbar über verifier_resample_on_borderline). Retry und Stichprobe erzeugen nur die Antwort neu: jeder Tool-Call des ersten Durchlaufs wird mit dessen Ergebnis wiedergegeben statt erneut ausgeführt, und ein hochgeladenes CSV/XLSX wird nur einmal importiert. Braucht der neue Durchlauf einen Call, den der erste nicht gemacht hat und der nicht nur liest, wird er abgebrochen und es gilt die erste Antwort. Der Correction-Prompt nennt nur die widerlegten Aussagen, keine vom Verifier ermittelten Werte, und wird wie die Nutzernachricht maskiert; würde die Maskierung hinter dem Privacy Shield ihn verändern, unterbleibt der Retry. Wirkt nicht auf Agenten mit dem Abo-CLI-Runtime (claude-cli) und nicht auf Routinen. Default: 'shadow'."
     - key: "verifier_model"
-      label: "Verifier Model"
+      label:
+        en: "Verifier Model"
+        de: "Verifier-Modell"
       type: "string"
       required: false
-      help: "Model-ID oder Class-Ref (z.B. class:fast) für ClaimExtractor + EvidenceJudge; wird auf den konfigurierten llm_provider aufgelöst. Default: claude-haiku-4-5-20251001."
+      help:
+        en: "Model ID or class ref (e.g. class:fast) for ClaimExtractor + EvidenceJudge; resolved against the configured llm_provider. Default: claude-haiku-4-5-20251001."
+        de: "Model-ID oder Class-Ref (z.B. class:fast) für ClaimExtractor + EvidenceJudge; wird auf den konfigurierten llm_provider aufgelöst. Default: claude-haiku-4-5-20251001."
     - key: "verifier_max_claims"
-      label: "Max Claims per Answer"
+      label:
+        en: "Max Claims per Answer"
+        de: "Max. Claims pro Antwort"
       type: "string"
       required: false
-      help: "Höchstzahl geprüfter Claims pro Antwort. Der ClaimExtractor fragt das Modell nach höchstens einem Claim mehr; weitere Claims und eine bis zu diesem Limit gefüllte Liste (das Modell hat dann womöglich Claims ausgelassen) bleiben als 'nicht geprüft' im Verdict, die Antwort gilt dann höchstens als teilweise geprüft. Das Limit bestimmt auch das Ausgabe-Budget der Extraktion (ca. 110 Tokens pro Claim, mindestens 1024, höchstens 16000) — ein höheres Limit verlängert lange Prüfungen. Default: 20."
+      help:
+        en: "Maximum number of claims checked per answer. The ClaimExtractor asks the model for at most one claim more; additional claims and a list filled up to this limit (the model may then have left out claims) remain as 'not checked' in the verdict, and the answer then counts as partially checked at most. The limit also sets the output budget of the extraction (about 110 tokens per claim, at least 1024, at most 16000) — a higher limit makes long checks take longer. Default: 20."
+        de: "Höchstzahl geprüfter Claims pro Antwort. Der ClaimExtractor fragt das Modell nach höchstens einem Claim mehr; weitere Claims und eine bis zu diesem Limit gefüllte Liste (das Modell hat dann womöglich Claims ausgelassen) bleiben als 'nicht geprüft' im Verdict, die Antwort gilt dann höchstens als teilweise geprüft. Das Limit bestimmt auch das Ausgabe-Budget der Extraktion (ca. 110 Tokens pro Claim, mindestens 1024, höchstens 16000) — ein höheres Limit verlängert lange Prüfungen. Default: 20."
     - key: "verifier_amount_tolerance"
-      label: "Amount Tolerance"
+      label:
+        en: "Amount Tolerance"
+        de: "Betragstoleranz"
       type: "string"
       required: false
-      help: "Relative Toleranz für Betragsvergleiche im DeterministicChecker (0.01 = 1%). Default: 0.01."
+      help:
+        en: "Relative tolerance for amount comparisons in the DeterministicChecker (0.01 = 1%). Default: 0.01."
+        de: "Relative Toleranz für Betragsvergleiche im DeterministicChecker (0.01 = 1%). Default: 0.01."
     - key: "verifier_max_retries"
-      label: "Max Retries (enforce mode)"
+      label:
+        en: "Max Retries (enforce mode)"
+        de: "Max. Retries (enforce-Modus)"
       type: "string"
       required: false
-      help: "Maximale Retry-Anzahl im enforce-Mode bei detektierter Contradiction — auf dem nicht-streamenden Pfad (Teams, Telegram, /api/chat) und im Stream (nicht bei Canvas-Turns); 0 schaltet den Retry ab. Ein Retry führt kein Tool erneut aus, er erzeugt die Antwort über den Tool-Ergebnissen des ersten Durchlaufs neu. Default: 1, Max: 2 (vom Kernel-Schema clamped)."
+      help:
+        en: "Maximum number of retries in enforce mode when a contradiction is detected — on the non-streaming path (Teams, Telegram, /api/chat) and in the stream (not for canvas turns); 0 turns the retry off. A retry does not run any tool again, it regenerates the answer over the tool results of the first run. Default: 1, max: 2 (clamped by the kernel schema)."
+        de: "Maximale Retry-Anzahl im enforce-Mode bei detektierter Contradiction — auf dem nicht-streamenden Pfad (Teams, Telegram, /api/chat) und im Stream (nicht bei Canvas-Turns); 0 schaltet den Retry ab. Ein Retry führt kein Tool erneut aus, er erzeugt die Antwort über den Tool-Ergebnissen des ersten Durchlaufs neu. Default: 1, Max: 2 (vom Kernel-Schema clamped)."
     - key: "verifier_resample_on_borderline"
-      label: "Resample Borderline Answers (enforce mode)"
+      label:
+        en: "Resample Borderline Answers (enforce mode)"
+        de: "Zweite Stichprobe bei Grenzfall-Antworten (enforce-Modus)"
       type: "string"
       required: false
-      help: "'false' schaltet im enforce-Mode die zweite Stichprobe für Grenzfall-Antworten ab (die Prüfung bestätigte Angaben, konnte eine andere aber nicht bestätigen); jeder andere Wert lässt sie an. Die Stichprobe kostet einen zweiten Modell-Durchlauf und führt kein Tool erneut aus. Wird beim ersten Start aus VERIFIER_RESAMPLE_ON_BORDERLINE übernommen. Default: 'true'."
+      help:
+        en: "'false' turns off the second sample for borderline answers in enforce mode (the check confirmed some statements but could not confirm another); any other value leaves it on. The sample costs a second model run and does not run any tool again. Taken over from VERIFIER_RESAMPLE_ON_BORDERLINE on first start. Default: 'true'."
+        de: "'false' schaltet im enforce-Mode die zweite Stichprobe für Grenzfall-Antworten ab (die Prüfung bestätigte Angaben, konnte eine andere aber nicht bestätigen); jeder andere Wert lässt sie an. Die Stichprobe kostet einen zweiten Modell-Durchlauf und führt kein Tool erneut aus. Wird beim ersten Start aus VERIFIER_RESAMPLE_ON_BORDERLINE übernommen. Default: 'true'."
     - key: "graph_tenant_id"
-      label: "Graph Tenant ID"
+      label:
+        en: "Graph Tenant ID"
+        de: "Graph-Tenant-ID"
       type: "string"
       required: false
-      help: "Tenant-Schlüssel für die VerifierStore-Persistenz (verifier_verdicts + verifier_contradictions Tabellen). Migriert aus GRAPH_TENANT_ID. Default: 'default'."
+      help:
+        en: "Tenant key for the VerifierStore persistence (verifier_verdicts + verifier_contradictions tables). Migrated from GRAPH_TENANT_ID. Default: 'default'."
+        de: "Tenant-Schlüssel für die VerifierStore-Persistenz (verifier_verdicts + verifier_contradictions Tabellen). Migriert aus GRAPH_TENANT_ID. Default: 'default'."
 
 playbook:
   when_to_use: |

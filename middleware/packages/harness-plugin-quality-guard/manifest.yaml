@@ -54,13 +54,21 @@ setup:
       default: "medium"
       enum:
         - value: "off"
-          label: "Off — keine Anti-Schmeichel-Regeln"
+          label:
+            en: "Off — no anti-flattery rules"
+            de: "Off — keine Anti-Schmeichel-Regeln"
         - value: "low"
-          label: "Low — leichte Korrektur bei expliziter Falsch-Bestätigung"
+          label:
+            en: "Low — light correction on explicit false confirmation"
+            de: "Low — leichte Korrektur bei expliziter Falsch-Bestätigung"
         - value: "medium"
-          label: "Medium — balanciert (Default für Beratungs-Use-Cases)"
+          label:
+            en: "Medium — balanced (default for advisory use cases)"
+            de: "Medium — balanciert (Default für Beratungs-Use-Cases)"
         - value: "high"
-          label: "High — devil's advocate, hinterfragt Prämissen"
+          label:
+            en: "High — devil's advocate, challenges premises"
+            de: "High — devil's advocate, hinterfragt Prämissen"
 
     - key: "default_boundary_presets"
       type: "string"

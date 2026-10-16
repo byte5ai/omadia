@@ -38,63 +38,89 @@ setup:
   fields:
     - key: "kroki_base_url"
       type: "url"
-      label: "Kroki Base URL"
-      help: "Endpoint der Kroki-Installation, z.B. https://kroki.io"
+      label:
+        en: "Kroki Base URL"
+        de: "Kroki-Base-URL"
+      help:
+        en: "Endpoint of the Kroki installation, e.g. https://kroki.io"
+        de: "Endpoint der Kroki-Installation, z.B. https://kroki.io"
       required: true
 
     - key: "public_base_url"
       type: "url"
-      label: "Öffentliche Middleware-Base-URL"
-      help: "Wird in signierten Bild-URLs verwendet, z.B. https://bot.omadia.ai"
+      label:
+        en: "Public middleware base URL"
+        de: "Öffentliche Middleware-Base-URL"
+      help:
+        en: "Used in signed image URLs, e.g. https://bot.omadia.ai"
+        de: "Wird in signierten Bild-URLs verwendet, z.B. https://bot.omadia.ai"
       required: true
 
     - key: "tigris_endpoint"
       type: "url"
-      label: "Tigris/S3 Endpoint"
+      label:
+        en: "Tigris/S3 Endpoint"
+        de: "Tigris/S3-Endpoint"
       required: true
 
     - key: "tigris_bucket"
       type: "string"
-      label: "Tigris/S3 Bucket-Name"
+      label:
+        en: "Tigris/S3 bucket name"
+        de: "Tigris/S3 Bucket-Name"
       required: true
 
     - key: "tenant_id"
       type: "string"
-      label: "Tenant-Prefix für Keys"
+      label:
+        en: "Tenant prefix for keys"
+        de: "Tenant-Prefix für Keys"
       required: false
       default: "dev"
 
     - key: "signed_url_ttl_sec"
       type: "integer"
-      label: "Signed-URL-TTL (Sekunden)"
+      label:
+        en: "Signed URL TTL (seconds)"
+        de: "Signed-URL-TTL (Sekunden)"
       required: false
       default: 3600
 
     - key: "max_source_bytes"
       type: "integer"
-      label: "Max. Diagram-Source-Größe (Bytes)"
+      label:
+        en: "Max. diagram source size (bytes)"
+        de: "Max. Diagram-Source-Größe (Bytes)"
       required: false
       default: 1048576
 
     - key: "max_png_bytes"
       type: "integer"
-      label: "Max. PNG-Größe (Bytes)"
+      label:
+        en: "Max. PNG size (bytes)"
+        de: "Max. PNG-Größe (Bytes)"
       required: false
       default: 10485760
 
     - key: "diagram_url_secret"
       type: "secret"
-      label: "HMAC-Secret für signierte URLs"
+      label:
+        en: "HMAC secret for signed URLs"
+        de: "HMAC-Secret für signierte URLs"
       required: true
 
     - key: "aws_access_key_id"
       type: "secret"
-      label: "Tigris Access Key ID"
+      label:
+        en: "Tigris Access Key ID"
+        de: "Tigris Access Key ID"
       required: true
 
     - key: "aws_secret_access_key"
       type: "secret"
-      label: "Tigris Secret Access Key"
+      label:
+        en: "Tigris Secret Access Key"
+        de: "Tigris Secret Access Key"
       required: true
 
 playbook:

@@ -75,51 +75,71 @@ setup:
   fields:
     - key: "public_base_url"
       type: "url"
-      label: "Öffentliche Middleware-Base-URL"
-      help: "Wird in signierten Datei-URLs verwendet, z.B. https://bot.omadia.ai"
+      label:
+        en: "Public middleware base URL"
+        de: "Öffentliche Middleware-Base-URL"
+      help:
+        en: "Used in signed file URLs, e.g. https://bot.omadia.ai"
+        de: "Wird in signierten Datei-URLs verwendet, z.B. https://bot.omadia.ai"
       required: true
 
     - key: "tigris_endpoint"
       type: "url"
-      label: "Tigris/S3 Endpoint"
+      label:
+        en: "Tigris/S3 endpoint"
+        de: "Tigris/S3 Endpoint"
       required: true
 
     - key: "tigris_bucket"
       type: "string"
-      label: "Tigris/S3 Bucket-Name"
+      label:
+        en: "Tigris/S3 bucket name"
+        de: "Tigris/S3 Bucket-Name"
       required: true
 
     - key: "tenant_id"
       type: "string"
-      label: "Tenant-Prefix für Keys"
+      label:
+        en: "Tenant prefix for keys"
+        de: "Tenant-Prefix für Keys"
       required: false
       default: "dev"
 
     - key: "signed_url_ttl_sec"
       type: "integer"
-      label: "Signed-URL-TTL (Sekunden)"
+      label:
+        en: "Signed URL TTL (seconds)"
+        de: "Signed-URL-TTL (Sekunden)"
       required: false
       default: 3600
 
     - key: "max_rows"
       type: "integer"
-      label: "Max. Zeilen pro Dokument (Schutz gegen Runaways)"
+      label:
+        en: "Max. rows per document (runaway protection)"
+        de: "Max. Zeilen pro Dokument (Schutz gegen Runaways)"
       required: false
       default: 100000
 
     - key: "document_url_secret"
       type: "secret"
-      label: "HMAC-Secret für signierte Datei-URLs"
+      label:
+        en: "HMAC secret for signed file URLs"
+        de: "HMAC-Secret für signierte Datei-URLs"
       required: true
 
     - key: "aws_access_key_id"
       type: "secret"
-      label: "Tigris Access Key ID"
+      label:
+        en: "Tigris access key ID"
+        de: "Tigris Access Key ID"
       required: true
 
     - key: "aws_secret_access_key"
       type: "secret"
-      label: "Tigris Secret Access Key"
+      label:
+        en: "Tigris secret access key"
+        de: "Tigris Secret Access Key"
       required: true
 
 playbook:

@@ -42,14 +42,22 @@ setup:
   fields:
     - key: "ui_orchestrator_model"
       type: "string"
-      label: "Composition model"
-      help: "Skeleton composition model. Default 'class:fast' = always the cheapest tier on whatever LLM provider is active (anthropic→haiku, openai→gpt-mini, mistral→small). Pin a concrete id or 'class:balanced' only if the tree-validity gate (<95% first-attempt schema-valid) fails — implementation-plan §8 risk #1."
+      label:
+        en: "Composition model"
+        de: "Kompositionsmodell"
+      help:
+        en: "Skeleton composition model. Default 'class:fast' = always the cheapest tier on whatever LLM provider is active (anthropic→haiku, openai→gpt-mini, mistral→small). Pin a concrete id or 'class:balanced' only if the tree-validity gate (<95% first-attempt schema-valid) fails — implementation-plan §8 risk #1."
+        de: "Modell für die Skeleton-Komposition. Default 'class:fast' = immer die günstigste Stufe beim gerade aktiven LLM-Provider (anthropic→haiku, openai→gpt-mini, mistral→small). Pinne eine konkrete ID oder 'class:balanced' nur, wenn das Tree-Validity-Gate (<95 % schema-valide beim ersten Versuch) fehlschlägt — implementation-plan §8, Risiko #1."
       required: false
       default: "class:fast"
     - key: "canvas_output_tools"
       type: "string"
-      label: "Canvas-output tool allow-set"
-      help: "Comma-separated tool names authorised to emit canvas sentinels (_pendingCanvasTree / _pendingStructuredPayload). Interim operator-managed allow-set until the boot-computed canvas-output capability wiring (PR-7b) lands. Empty → deny-by-default, no synthesis."
+      label:
+        en: "Canvas-output tool allow-set"
+        de: "Erlaubte Tools für Canvas-Output"
+      help:
+        en: "Comma-separated tool names authorised to emit canvas sentinels (_pendingCanvasTree / _pendingStructuredPayload). Interim operator-managed allow-set until the boot-computed canvas-output capability wiring (PR-7b) lands. Empty → deny-by-default, no synthesis."
+        de: "Kommagetrennte Tool-Namen, die Canvas-Sentinels ausgeben dürfen (_pendingCanvasTree / _pendingStructuredPayload). Übergangsweise vom Operator gepflegte Allow-Liste, bis die beim Boot berechnete Verdrahtung der Canvas-Output-Capability (PR-7b) da ist. Leer → standardmäßig alles verweigert, keine Synthese."
       required: false
       default: ""
 
