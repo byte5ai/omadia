@@ -274,6 +274,7 @@ import { publicPaths } from './auth/publicPaths.js';
 import { recordRawBodyBytes } from './http/rawBodySize.js';
 import { createAppServer, createTerminalHandler } from './http/terminalHandler.js';
 import { redactAuditError } from './services/secretRedaction.js';
+import { isApiKeyActive } from '@omadia/api-key-auth';
 import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp.js';
 // W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
 // OPERATOR router only. `mountPublicMcp` above must never be handed this: the
@@ -285,7 +286,7 @@ import {
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
 import { createRequireAuth, evaluateSessionToken } from './auth/requireAuth.js';
-import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
+import { createOperatorAuthAccessor, LateBoundAdminAudit } from './auth/operatorAuthAccessor.js';
 import {
   createConductorWebhooksInboundRouter,
   type ConductorWebhookInboundDeps,
@@ -1014,10 +1015,15 @@ async function main(): Promise<void> {
   // `@omadia/channel-api`'s `/admin/keys`) can check the real operator
   // session without re-implementing it. Threaded into every plugin runtime
   // below so any plugin — not just channel plugins — can use it.
+  // #1329 — `admin_audit` for plugin-originated admin actions (API-key
+  // lifecycle). Late-bound: the AdminAuditLog needs the Postgres pool, which
+  // exists only further down; attached right where it is constructed.
+  const pluginAdminAudit = new LateBoundAdminAudit();
   const operatorAuth = createOperatorAuthAccessor({
     signingKey: sessionSigningKey,
     whitelist: emailWhitelist,
     sessions: sessionRevocation,
+    audit: pluginAdminAudit,
   });
 
   const installedRegistry = new FileInstalledRegistry(
@@ -4141,12 +4147,12 @@ async function main(): Promise<void> {
             // rather than hidden in a closure.
             const keyStore = createVerifyOnlyApiKeyStore(secretVault);
             const keys = await keyStore.list();
-            // NOT revoked. Authentication skips a revoked record, so counting
+            // NOT revoked or expired (#1328). Authentication skips both, so counting
             // one as "known" reports a binding as healthy that can only ever
             // 401. Same reasoning as the enabled-agent filter above: this set
             // answers "would a real request resolve this id", not "is there a
             // row somewhere".
-            return new Set(keys.filter((k) => k.revokedAt === undefined).map((k) => k.id));
+            return new Set(keys.filter((k) => isApiKeyActive(k)).map((k) => k.id));
           } catch (err) {
             console.warn(
               `[middleware] public-mcp binding key lister unavailable: ${String(err)}`,
@@ -4746,6 +4752,7 @@ async function main(): Promise<void> {
 
     const platformSettings = new PlatformSettingsStore(graphPool);
     adminAudit = new AdminAuditLog(graphPool);
+    pluginAdminAudit.attach(adminAudit);
     const storedActive = await platformSettings.get<string[]>(
       SETTING_AUTH_ACTIVE_PROVIDERS,
     );

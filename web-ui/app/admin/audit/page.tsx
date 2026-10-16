@@ -28,7 +28,7 @@ const ACTION_FILTERS = [
   { key: 'user', prefix: 'user.' },
   { key: 'auth', prefix: 'auth.' },
   { key: 'plugin', prefix: 'plugin.' },
-  { key: 'apikey', prefix: 'apikey.' },
+  { key: 'apikey', prefix: 'api_key.' },
   { key: 'conductor', prefix: 'conductor.' },
   { key: 'profileSnapshot', prefix: 'profile_snapshot.' },
   { key: 'channel', prefix: 'channel.' },

@@ -36,17 +36,30 @@ export {
 } from './apiKeyScopes.js';
 
 export {
+  BUILTIN_API_KEY_SCOPES,
+  isKnownScope,
+  listApiKeyScopes,
+  registerApiKeyScope,
+  type ApiKeyScopeCatalog,
+} from './apiKeyScopeCatalog.js';
+
+export {
   createApiKeyStore,
+  isApiKeyActive,
+  isApiKeyExpired,
+  type ApiKeyOwner,
   type ApiKeyPublicView,
   type ApiKeyRecord,
   type ApiKeyStore,
   type CreateApiKeyOptions,
   type CreatedApiKey,
+  type DeleteApiKeyResult,
 } from './apiKeyStore.js';
 
 export {
   createAuditLog,
   MAX_ENTRIES as AUDIT_LOG_MAX_ENTRIES,
+  USAGE_LOG_VAULT_KEY,
   type AuditEntry,
   type AuditLog,
   type AuditStatus,

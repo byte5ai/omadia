@@ -115,9 +115,9 @@ describe('<AdminAuditPage />', () => {
     renderWithIntl(<AdminAuditPage />);
     expect(await screen.findByText('No audit entries yet.')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'apikey.' } });
+    fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'api_key.' } });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(requestedUrl(1).searchParams.get('action')).toBe('apikey.');
+    expect(requestedUrl(1).searchParams.get('action')).toBe('api_key.');
     expect(requestedUrl(1).searchParams.get('offset')).toBe('0');
     expect(await screen.findByText('No audit entries match this filter.')).toBeInTheDocument();
   });
