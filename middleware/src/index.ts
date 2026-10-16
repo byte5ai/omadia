@@ -268,6 +268,7 @@ import {
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
 import { recordRawBodyBytes } from './http/rawBodySize.js';
+import { createAppServer, createTerminalHandler } from './http/terminalHandler.js';
 import { redactAuditError } from './services/secretRedaction.js';
 import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp.js';
 // W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
@@ -3337,10 +3338,12 @@ async function main(): Promise<void> {
   //     with no session attached. That is the hole a plain `publicPaths` entry
   //     leaves open, and the reason `auth/publicPaths.ts` stays a frozen
   //     core-owned literal instead of becoming a dynamic set.
-  //   * Anything else calls next() and meets requireAuth exactly as before.
+  //   * Anything else calls next() and meets the ordinary stack exactly as
+  //     before: requireAuth's 401 under `/api`, and outside `/api` the
+  //     terminal JSON 404 (#1349 — a session does not open such a path).
   //
   // Fail-closed by construction: no grants, no store, no registry, no live
-  // plugin — every one of those is a next(), i.e. a 401. There is no failure
+  // plugin — every one of those is a next(), i.e. a 401 or 404. There is no failure
   // mode of this mount that produces LESS authentication than a build without
   // it. Mounted after express.json/cookieParser so plugin handlers see the
   // same parsed request they see through the ordinary boot-time mount.
@@ -6433,7 +6436,15 @@ async function main(): Promise<void> {
   // anyway, this only moves the cost off the critical path.
   void warmPatternWorker();
 
-  const server = app.listen(config.PORT, config.HOST, () => {
+  // #1326 / #1318 / #1349 — answer whatever no router took (unknown path,
+  // body-parser rejection, unhandled route error) with a JSON `{ code, message }`
+  // and never a stack, instead of Express's HTML `finalhandler`. A terminal
+  // callback rather than a trailing `app.use`, so routes plugins mount after
+  // boot still come before it — see http/terminalHandler.ts.
+  const terminalHandler = createTerminalHandler({
+    ungrantedPublicPrefix: (path) => publicPathGrants.resolveUngranted(path)?.prefix ?? null,
+  });
+  const server = createAppServer(app, terminalHandler).listen(config.PORT, config.HOST, () => {
     console.log(`[middleware] listening on [${config.HOST}]:${config.PORT}`);
     console.log(`[middleware] skills dir: ${config.SKILLS_DIR}`);
     console.log(`[middleware] orchestrator model: ${config.ORCHESTRATOR_MODEL}`);
