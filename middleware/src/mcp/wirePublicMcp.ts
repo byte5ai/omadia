@@ -14,7 +14,12 @@ import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
 
 import type { ApiKeySecretStorage, ApiKeyStore, AuditLog, RateLimiter } from '@omadia/api-key-auth';
-import { createApiKeyStore, createRateLimiter } from '@omadia/api-key-auth';
+import {
+  createApiKeyStore,
+  createAuditLog,
+  createRateLimiter,
+  USAGE_LOG_VAULT_KEY,
+} from '@omadia/api-key-auth';
 import {
   AgentGraphStore,
   createPrivacyTurnHandle,
@@ -95,6 +100,27 @@ export function createVerifyOnlyApiKeyStore(vault: SecretVault): ApiKeyStore {
       throw new Error(
         'public MCP endpoint must not revoke API keys — use @omadia/channel-api /admin/keys',
       );
+    },
+  });
+}
+
+/**
+ * #1329 — the per-key usage log, so MCP requests show up in a key's "last
+ * used" and recent activity on `/admin/api-keys` exactly like chat requests.
+ *
+ * Same vault entry `@omadia/channel-api` writes (`createAuditLog`'s writes go
+ * through one process-wide queue, so the two writers cannot drop each other's
+ * appends). The writer may touch that ONE entry and nothing else in the key
+ * namespace — minting and revoking stay with the admin routes.
+ */
+export function createPublicMcpUsageLog(vault: SecretVault): AuditLog {
+  return createAuditLog({
+    ...readOnlyVaultStorage(vault),
+    set: (key, value) => {
+      if (key !== USAGE_LOG_VAULT_KEY) {
+        throw new Error('public MCP endpoint may only write the API-key usage log');
+      }
+      return vault.set(API_KEY_VAULT_NAMESPACE, key, value);
     },
   });
 }
@@ -343,7 +369,9 @@ export function mountPublicMcp(app: Express, requireAuth: RequestHandler, deps: 
     createPublicMcpRouter({
       apiKeys,
       rateLimiter: deps.rateLimiter ?? createRateLimiter(),
-      ...(deps.keyAuditLog ? { keyAuditLog: deps.keyAuditLog } : {}),
+      ...(deps.keyAuditLog || deps.vault
+        ? { keyAuditLog: deps.keyAuditLog ?? createPublicMcpUsageLog(requireVault(deps)) }
+        : {}),
       bindings,
       // A SECOND limiter instance, not the one above. Writes get their own
       // budget so a read-heavy integration's unused read headroom cannot fund a
