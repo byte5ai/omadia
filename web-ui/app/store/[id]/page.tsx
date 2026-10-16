@@ -22,6 +22,7 @@ import { PluginVerdictBadge } from '../../_components/admin/PluginVerdictBadge';
 import { pickLocalized } from '../../_lib/localized';
 
 import { ApiError, getStorePlugin } from '../../_lib/api';
+import { APP_VERSION } from '../../_lib/appVersion';
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
 import type { Plugin, PluginSetupField } from '../../_lib/storeTypes';
 import {
@@ -505,9 +506,10 @@ export default async function PluginDetailPage({
       <footer className="mt-20 flex items-center justify-between border-t border-[color:var(--rule)] pt-4 text-[11px] uppercase tracking-[0.18em] text-[color:var(--faint-ink)]">
         <span className="flex items-center gap-2">
           <BookCheck className="size-3.5" aria-hidden />
-          Manifest: {isLegacy ? 'Legacy' : 'Schema v1'}
+          {isLegacy ? t('footerManifestLegacy') : t('footerManifestSchema', { version: 1 })}
         </span>
-        <span className="font-mono-num">omadia · v1</span>
+        {/* #1383 — the running build, as on /help; this used to be a literal `v1`. */}
+        <span className="font-mono-num normal-case">omadia · {APP_VERSION}</span>
       </footer>
     </main>
   );

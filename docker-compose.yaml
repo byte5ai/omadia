@@ -151,6 +151,19 @@ services:
     ports:
       - '127.0.0.1:3333:3000'
     networks: [omadia]
+    healthcheck:
+      # Same node-based probe as the middleware (#1382): the runtime image has
+      # neither curl nor wget. /health is static liveness, so this goes red
+      # only when Next itself stops serving, not when the middleware is down.
+      test:
+        - 'CMD'
+        - 'node'
+        - '-e'
+        - "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
 
   # --- Postgres + pgvector (knowledge graph, routines, verifier store) -----
   # Same image as Neon-style production deployments — pgvector pre-installed.
