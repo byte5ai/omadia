@@ -51,8 +51,8 @@ export type AuditAction =
   | 'auth.login_rate_limited'
   // #1315 — a password sign-in that failed verification. One row per
   // (account, client) per minute (`auth/loginFailureAudit.ts`), system actor;
-  // `target` is the client key, `after` the account (only when it is a
-  // well-formed address) and the provider. Never the password.
+  // `target` is the client key, `after` the account only as the users row it
+  // resolves to, and the provider. Never the typed text or the password.
   | 'auth.login_failed'
   // #1347 — operator consent for a plugin's unauthenticated public paths and
   // its SQL grant. `before`/`after` carry the granted set, so the history
@@ -61,7 +61,11 @@ export type AuditAction =
   // #1347 — a plugin finished its install wizard / was removed. The uninstall
   // row lists the grants that left with it.
   | 'plugin.install'
-  | 'plugin.uninstall';
+  | 'plugin.uninstall'
+  // #1342 — a stdio MCP server was saved (manual or catalog import). It runs
+  // as a child process of the middleware, so who added it belongs in the
+  // trail. `after` holds name + source, never the command line.
+  | 'mcp_server.stdio_create';
 
 export interface AuditActor {
   id?: string;

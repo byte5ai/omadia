@@ -56,6 +56,12 @@ import {
   type PublicMcpKeyBindingWarning,
   type SkillVerdictSeverity,
 } from '../../_lib/agentBuilder';
+import {
+  apiErrorBodyMessage,
+  catalogErrorKind,
+  mcpGuardCode,
+  type CatalogErrorKind,
+} from './mcpErrors';
 
 type Tab = 'servers' | 'marketplace' | 'grants' | 'plugins' | 'bindings' | 'audit';
 
@@ -109,8 +115,29 @@ export default function AdminMcpPage(): React.ReactElement {
   );
 }
 
+/** Technical detail for an error line. Prefers the route's JSON `message`
+ *  over ApiError's generic "POST … failed: 502" status line (issue #1341). */
 function errText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return apiErrorBodyMessage(err) ?? (err instanceof Error ? err.message : String(err));
+}
+
+/**
+ * Error text for actions the middleware's outbound guard can refuse (create,
+ * discover, catalog import, add registry — issues #1341 / #1342). A guard
+ * refusal gets a localized explanation of the rule with the server's reason as
+ * detail; everything else falls back to `errText`.
+ */
+function useMcpErrorText(): (err: unknown) => string {
+  const t = useTranslations('adminMcp');
+  return useCallback(
+    (err: unknown) => {
+      const code = mcpGuardCode(err);
+      if (code === 'blocked_host') return t('guard.blockedHost', { detail: errText(err) });
+      if (code === 'stdio_disabled') return t('guard.stdioDisabled', { detail: errText(err) });
+      return errText(err);
+    },
+    [t],
+  );
 }
 
 /** Detect the discover route's 409 "needs authorization" response so the UI can
@@ -221,6 +248,7 @@ function isDeprecatedTransport(server: McpServerNode): boolean {
 
 function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): React.ReactElement {
   const t = useTranslations('adminMcp');
+  const mcpErrorText = useMcpErrorText();
   const [servers, setServers] = useState<McpServerNode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authNotice, setAuthNotice] = useState<{ name: string; host: string } | null>(null);
@@ -285,7 +313,7 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
           }),
         );
       } else {
-        setError(errText(err));
+        setError(mcpErrorText(err));
       }
     } finally {
       setBusy(null);
@@ -325,6 +353,9 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
               : null}
           </select>
         </label>
+        {transport === 'stdio' ? (
+          <p className="basis-full text-xs text-[color:var(--fg-muted)]">{t('servers.stdioHint')}</p>
+        ) : null}
         <label className="flex items-center gap-2 self-center text-xs text-[color:var(--fg-muted)]">
           <input
             type="checkbox"
@@ -1047,27 +1078,6 @@ const CATALOG_SEARCH_DEBOUNCE_MS = 400;
  *  has to look like "a list is coming", not predict the real result count. */
 const CATALOG_SKELETON_ROWS = 6;
 
-/**
- * Classify a catalog failure into the three things an operator can actually do
- * something about. `code` comes from the route's JSON body (`McpRegistryError`
- * codes), so this stays a lookup rather than message-sniffing.
- *
- * The distinction is not cosmetic: "the host never answered" (the official
- * registry black-holing packets) needs a different reaction — pick another
- * registry — than "the registry answered with something unparseable".
- */
-type CatalogErrorKind = 'timeout' | 'unreachable' | 'generic';
-
-function catalogErrorKind(err: unknown): CatalogErrorKind {
-  if (!(err instanceof ApiError)) return 'generic';
-  if (err.code === 'timeout') return 'timeout';
-  // Only genuinely transport-level codes claim "unreachable". `http_error` /
-  // `bad_catalog_shape` mean the registry answered badly, which is a different
-  // problem with a different remedy.
-  if (err.code === 'transport_failed' || err.code === 'blocked_host') return 'unreachable';
-  return 'generic';
-}
-
 interface CatalogFailure {
   kind: CatalogErrorKind;
   detail: string;
@@ -1075,6 +1085,7 @@ interface CatalogFailure {
 
 function MarketplacePane(): React.ReactElement {
   const t = useTranslations('adminMcp');
+  const mcpErrorText = useMcpErrorText();
   const [registries, setRegistries] = useState<McpRegistryInfo[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [entries, setEntries] = useState<McpCatalogEntry[] | null>(null);
@@ -1184,7 +1195,7 @@ function MarketplacePane(): React.ReactElement {
       const server = await importMcpServerFromRegistry(selected, entry.id);
       setConnected(server.name);
     } catch (err) {
-      setError(errText(err));
+      setError(mcpErrorText(err));
     } finally {
       setBusy(null);
     }
@@ -1313,7 +1324,7 @@ function MarketplacePane(): React.ReactElement {
                     setRegToken('');
                     return refreshRegistries();
                   })
-                  .catch((err: unknown) => setError(errText(err)))
+                  .catch((err: unknown) => setError(mcpErrorText(err)))
                   .finally(() => setBusy(null));
               }}
             >
@@ -1361,26 +1372,39 @@ function MarketplacePane(): React.ReactElement {
               ? t('marketplace.errorTimeout', { name: registryLabel })
               : failure.kind === 'unreachable'
                 ? t('marketplace.errorUnreachable', { name: registryLabel })
-                : t('marketplace.errorGeneric', { name: registryLabel })}
+                : failure.kind === 'blocked'
+                  ? t('marketplace.errorBlocked', { name: registryLabel })
+                  : t('marketplace.errorGeneric', { name: registryLabel })}
           </div>
           <div className="text-xs text-[color:var(--fg-muted)]">
             {failure.kind === 'generic'
               ? failure.detail
               : failure.kind === 'timeout'
                 ? t('marketplace.errorTimeoutHint')
-                : t('marketplace.errorUnreachableHint')}
+                : failure.kind === 'blocked'
+                  ? t('marketplace.errorBlockedHint')
+                  : t('marketplace.errorUnreachableHint')}
           </div>
-          <div>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                if (selected) void runSearch(selected, query.trim(), { refresh: true });
-              }}
-            >
-              {t('marketplace.retry')}
-            </Button>
-          </div>
+          {failure.kind !== 'generic' ? (
+            <div className="break-words font-mono text-xs text-[color:var(--fg-muted)]">
+              {t('marketplace.errorDetail', { detail: failure.detail })}
+            </div>
+          ) : null}
+          {/* A blocked_host refusal is a fixed security rule — retrying the
+              same URL can never succeed, so no retry is offered. */}
+          {failure.kind !== 'blocked' ? (
+            <div>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  if (selected) void runSearch(selected, query.trim(), { refresh: true });
+                }}
+              >
+                {t('marketplace.retry')}
+              </Button>
+            </div>
+          ) : null}
         </div>
       ) : entries === null ? (
         <div className="text-sm text-[color:var(--fg-muted)]">{t('marketplace.hint')}</div>

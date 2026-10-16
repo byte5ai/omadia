@@ -1,4 +1,5 @@
 import type { createFetcher } from '../fetcher.js';
+import { assertFetched } from '../refusal.js';
 import type {
   RobotsReport,
   SeoIssue,
@@ -13,19 +14,29 @@ export async function analyzeTechnical(
   fetcher: Fetcher,
   baseUrl: string,
   userAgent: string,
+  auditMode: string,
 ): Promise<TechnicalReport> {
   const root = normalizeBase(baseUrl);
   const [robots, rootResponse] = await Promise.all([
     fetchRobots(fetcher, root, userAgent),
     fetcher.get(root, true),
   ]);
+  // #1344 — no report on a site that was never reached: a blocked or
+  // unreachable root fails the call before any issue is built.
+  assertFetched(rootResponse, root, auditMode);
 
   const sitemapUrls = robots.sitemaps.length > 0 ? robots.sitemaps : [joinUrl(root, '/sitemap.xml')];
   const sitemaps = await Promise.all(sitemapUrls.map((u) => fetchSitemap(fetcher, u)));
 
   const issues: SeoIssue[] = [];
 
-  if (!robots.fetched) {
+  if (robots.blocked === true) {
+    issues.push({
+      severity: 'warning',
+      code: 'fetch.blocked',
+      message: 'robots.txt: Abruf durch Audit-Modus oder Allow-List gesperrt.',
+    });
+  } else if (!robots.fetched) {
     issues.push({
       severity: 'warning',
       code: 'robots.missing',
@@ -39,7 +50,16 @@ export async function analyzeTechnical(
       message: `robots.txt blockiert den User-Agent ${userAgent}.`,
     });
   }
-  if (sitemaps.every((s) => s.status !== 200)) {
+  for (const s of sitemaps) {
+    if (s.blocked !== true) continue;
+    issues.push({
+      severity: 'warning',
+      code: 'fetch.blocked',
+      message: `${s.url}: Abruf durch Audit-Modus oder Allow-List gesperrt.`,
+    });
+  }
+  const unblockedSitemaps = sitemaps.filter((s) => s.blocked !== true);
+  if (unblockedSitemaps.length > 0 && unblockedSitemaps.every((s) => s.status !== 200)) {
     issues.push({
       severity: 'warning',
       code: 'sitemap.missing',
@@ -128,6 +148,7 @@ async function fetchRobots(
       disallows_root: false,
       allows_our_ua: true,
       raw_length: 0,
+      ...(res.blocked !== undefined ? { blocked: true as const } : {}),
     };
   }
   return parseRobotsTxt(res.body, userAgent);
@@ -193,7 +214,14 @@ export function parseRobotsTxt(raw: string, userAgent: string): RobotsReport {
 async function fetchSitemap(fetcher: Fetcher, url: string): Promise<SitemapEntry> {
   const res = await fetcher.get(url, false);
   if (res.status !== 200) {
-    return { url, status: res.status, url_count: null, is_index: false, errors: [] };
+    return {
+      url,
+      status: res.status,
+      url_count: null,
+      is_index: false,
+      errors: [],
+      ...(res.blocked !== undefined ? { blocked: true as const } : {}),
+    };
   }
   const errors: string[] = [];
   const body = res.body;
