@@ -63,6 +63,35 @@ are logged at activation instead of being dropped without a trace.
 **Check `default_boundary_presets` before upgrading:** an agent-UI id that
 0.1 silently dropped (e.g. `no-pii`) now applies to every agent. The plugin's setup fields now carry English and German text.
 
+### Fixed — `DEV_ENDPOINTS_LOOPBACK_ONLY` covers every `/api/dev` route; compose stack sets its public URLs
+
+2026-10-16. Three fixes to the dev endpoints and the deploy configuration.
+
+- **Loopback guard (#1350).** `DEV_ENDPOINTS_LOOPBACK_ONLY=true` guarded only
+  `/api/dev/graph`. The `@omadia/memory` browser at `/api/dev/memory`, a
+  plugin route, still served the whole `/memories` tree, every user's chat
+  sessions included, to a logged-in session from any address. The boot log
+  said "loopback-only" all the same. The new `mountDevLoopbackGuard` mounts
+  the guard on the `/api/dev` prefix ahead of the graph browser and the plugin
+  routes. The session gate is unchanged.
+- **Docs and comments (#1352).** The Compose file, `middleware/.env.example`,
+  `fly/middleware.fly.toml`, `render.yaml`, code comments and the handoff doc
+  no longer call `/api/dev/*` and `/api/v1/admin/vault-status` unauthenticated.
+  Both have needed a session since #669. Only the Graph viewer still needs
+  `DEV_ENDPOINTS_ENABLED`, and the flag stays off on deployed environments.
+- **Compose public URLs (#1317).** The Compose stack never set
+  `PUBLIC_BASE_URL`, so the middleware sent browsers to its built-in default
+  `http://localhost:3979`, where nothing listens in that stack, for example
+  after sign-in. The stack now loads `middleware/compose.defaults.env` before
+  `middleware/.env`. It sets `PUBLIC_BASE_URL` to the admin UI
+  (`http://localhost:3333`), routes the Entra and MCP OAuth callbacks through
+  `/bot-api` on that origin, and sets the Conductor webhook base to the
+  middleware (`http://localhost:8080`). Values in `middleware/.env` still
+  override these. The four are fixed values, so an operator who moves the
+  stack to another origin sets all four there, not `PUBLIC_BASE_URL` alone. The middleware's own defaults are unchanged, so Fly and
+  Render deployments are not affected. `middleware/.env.example` now documents
+  `PUBLIC_BASE_URL` and `AUTH_REDIRECT_URI`.
+
 ### Fixed — Admin → Update tells the truth, and the release check backs off
 
 2026-10-16. Six fixes around `/admin/update` and version reporting (#1378–#1383).

@@ -14,7 +14,8 @@
 # prints to its log on first boot (or set ADMIN_SETUP_TOKEN), and the LLM key
 # is connected in the admin UI afterwards and stored encrypted in the vault.
 # DEV_ENDPOINTS_ENABLED stays unset: these services are publicly reachable,
-# and the dev mounts expose raw KG + memory state without auth.
+# and the dev mounts are dev scaffolding that hand raw KG + memory state to
+# any logged-in session.
 #
 # Costs: the middleware needs a persistent disk, which requires paid
 # instance types — `starter` for both services plus `basic-256mb`
