@@ -4,6 +4,7 @@ import {
   MAX_PASSWORD_LENGTH,
   MIN_PASSWORD_LENGTH,
 } from './passwordPolicy.js';
+import { isValidLoginEmail } from './loginEmail.js';
 import { LOCAL_PROVIDER_ID } from './providers/LocalPasswordProvider.js';
 import type { UserStore } from './userStore.js';
 
@@ -74,7 +75,7 @@ export async function runAuthBootstrap(
     );
     return { seeded: false, setupRequired: true, totalUsers: 0 };
   }
-  if (!email.includes('@')) {
+  if (!isValidLoginEmail(email)) {
     log(
       `[auth] bootstrap: ADMIN_BOOTSTRAP_EMAIL "${email}" is not a valid email — falling back to /setup wizard`,
     );

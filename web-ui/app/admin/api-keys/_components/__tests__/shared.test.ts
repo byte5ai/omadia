@@ -5,9 +5,10 @@ import { toFriendlyError } from '../shared';
 
 /**
  * Session refusals from the kernel's `requireAuth` map to the session
- * messages — a server-side revocation (`auth.revoked`) reads like an expired
- * session, and a failed session check (`auth.unavailable`, 503) like the
- * transient outage it is, never the generic "error (status N)".
+ * messages — a server-side revocation (`auth.revoked`) reads as an ended
+ * session, not an expired one (#1322), and a failed session check
+ * (`auth.unavailable`, 503) like the transient outage it is, never the
+ * generic "error (status N)".
  */
 const t = (key: string): string => key;
 
@@ -16,10 +17,14 @@ function refusal(status: number, code: string): ApiError {
 }
 
 describe('toFriendlyError — session refusals', () => {
-  it('maps every dead-session code to sessionExpired', () => {
-    for (const code of ['auth.missing', 'auth.invalid', 'auth.revoked']) {
+  it('maps missing/invalid sessions to sessionExpired', () => {
+    for (const code of ['auth.missing', 'auth.invalid']) {
       expect(toFriendlyError(refusal(401, code), t)).toBe('errors.sessionExpired');
     }
+  });
+
+  it('maps a server-side revocation to sessionEnded, not sessionExpired (#1322)', () => {
+    expect(toFriendlyError(refusal(401, 'auth.revoked'), t)).toBe('errors.sessionEnded');
   });
 
   it('maps a failed session check to authUnavailable, like the plugin outage', () => {

@@ -201,6 +201,54 @@ response body's `message` instead of `failed: 502`, and the add-server form
 warns that a stdio server runs with the middleware's permissions. Known gap: a
 DNS answer that changes between check and connect (rebinding) is not covered.
 
+### Fixed — the admin audit trail can be read, and records who did what
+
+2026-10-16. `admin_audit` had no read route and no UI, stored only the email
+for every `user.*`, `auth.provider_*` and `profile_snapshot.*` row
+(`actor_id` NULL), and recorded neither failed sign-ins nor plugin grant
+changes (#1315, #1347). Now one helper (`auditActorFromRequest`,
+`auth/adminAuditLog.ts`) sets the actor of every row a signed-in user causes:
+`actor_id` is the `users.id` from the session's `uid` claim, `actor_email` the
+session email. The conductor's baton and terminate rows used the
+knowledge-graph id (`omadia_user_id`) and now follow the same rule.
+`GET /api/v1/admin/audit` (paged, `action` and `actor_id` filters) and the
+admin page `/admin/audit` read the trail. New actions: `auth.login_failed`
+(first failure per account and client per minute; the account only as the
+`users` row it resolves to, never the typed text or the password), `plugin.grants_change` (public paths
+and SQL ledger, before/after — a revoke no longer erases the record of who
+opened a path), `plugin.install` and `plugin.uninstall`. The setup wizard logs
+the first admin's creation (#1092; the audit row already existed since #1262),
+and the registry route logs `ingested` instead of `installed` for a package
+that still needs the install wizard. See `docs/security-architecture.md` §10q.
+
+### Fixed — user admin refuses what it cannot apply; one email rule
+
+2026-10-16. `PATCH /api/v1/admin/users/:id` answered 200 to `{"role":"viewer"}`
+and to unknown `status` values and left the user unchanged (#1314). It now
+answers 400 (`admin_users.invalid_role`, `invalid_status`,
+`invalid_display_name`, `unknown_field`, `invalid_body`) and writes nothing.
+omadia has one role: every user is an administrator, which the users page now
+says. The admin create route, the setup wizard and `ADMIN_BOOTSTRAP_EMAIL`
+checked addresses only for `includes('@')`, so `a@` and `@b` became admin
+accounts via the API (#1321). All three now use `isValidLoginEmail`
+(`auth/loginEmail.ts`): exactly one `@`, non-empty local part and domain, no
+whitespace, control or invisible format characters, at most 254 characters.
+
+### Fixed — a revoked session no longer says "expired"; sign-out says "everywhere"
+
+2026-10-16. The web UI's session watcher showed "Session expired" for a
+session an admin ended (disable, password reset) or a sign-out on another
+device ended, and the "Sign out" button did not say it ends the sessions on
+every device (#1322). `/me`'s `401 auth.revoked` now shows "Session ended",
+the button reads "Sign out everywhere", and the API-keys and registries pages
+map `auth.revoked` the same way.
+
+### Fixed — the boot log no longer claims `/api/v1/auth/*` returns 503 without Entra
+
+2026-10-16. Without `MICROSOFT_APP_*` the middleware warned that the whole
+auth API returns 503, while local sign-in worked (#1323). The line now reads
+`Entra sign-in disabled (MICROSOFT_APP_* missing). Local login is unaffected.`
+
 ### Added — plugin tools can refuse a call with a message the model reads
 
 2026-10-16 — #1343. Every exception a plugin tool threw reached the model as

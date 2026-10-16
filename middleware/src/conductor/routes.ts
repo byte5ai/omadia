@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { auditActorFromRequest } from '../auth/adminAuditLog.js';
+
 import { validate } from '@omadia/conductor-core';
 import type { JsonObject, KnownRefs, WorkflowGraph } from '@omadia/conductor-core';
 
@@ -354,8 +356,9 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       if (deps.auditRoleChange) {
         try {
           await deps.auditRoleChange({
-            actor: req.session?.sub ?? 'operator',
-            actorUserId: req.session?.omadia_user_id,
+            // The email column holds an email when there is one: an Entra sub is not.
+            actor: req.session?.email ?? req.session?.sub ?? 'operator',
+            actorUserId: auditActorFromRequest(req).id,
             roleKey: key,
             action,
             holderId,
@@ -399,7 +402,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       const result = await deps.facilitationAdmin.terminate(
         paramStr(req.params.workflowId),
         req.session?.sub ?? 'operator',
-        req.session?.omadia_user_id,
+        auditActorFromRequest(req).id,
       );
       if (result.outcome === 'not_found') {
         res.status(404).json({ code: 'conductor.not_found', message: 'no such facilitation' });

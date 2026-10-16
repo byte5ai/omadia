@@ -167,6 +167,7 @@ import { createHarnessAdminUiRouter } from './routes/harnessAdminUi.js';
 import { createPluginUiStaticRouter } from './routes/pluginUiStatic.js';
 import { createStoreRouter } from './routes/store.js';
 import { createInstallRouter } from './routes/install.js';
+import { readGrantSnapshot } from './routes/runtimeGrants.js';
 import { createAdminRegistriesRouter } from './routes/adminRegistries.js';
 import { RegistryClient } from './plugins/registryClient.js';
 import {
@@ -328,7 +329,7 @@ import {
   EntraProvider,
 } from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
-import { AdminAuditLog, roleChangeAuditEntry } from './auth/adminAuditLog.js';
+import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry } from './auth/adminAuditLog.js';
 import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
@@ -341,6 +342,7 @@ import {
   requestIsSecure,
 } from './http/requestTrust.js';
 import { createAdminUsersRouter } from './routes/adminUsers.js';
+import { createAdminAuditRouter } from './routes/adminAudit.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
 import {
@@ -1944,8 +1946,11 @@ async function main(): Promise<void> {
         })
       : null;
   if (!oauthClient) {
+    // #1323 — only Entra is off here. The auth router is mounted regardless,
+    // and local sign-in works; the real 503 fallback (no graph pool) logs its
+    // own warning further down.
     console.warn(
-      '[middleware] ⚠ admin OAuth disabled — MICROSOFT_APP_* missing. /api/v1/auth/* returns 503.',
+      '[middleware] ⚠ Entra sign-in disabled (MICROSOFT_APP_* missing). Local login is unaffected.',
     );
   } else {
     console.log(
@@ -4307,7 +4312,9 @@ async function main(): Promise<void> {
       roleStore: facilitationRoleStore,
       auditRoleChange: async (entry) => {
         await adminAudit?.record({
-          actor: { id: entry.actor },
+          // #775 class — a system label (the ephemeral reaper) in the uuid
+          // column made this INSERT fail; only a uuid goes to actor_id.
+          actor: auditActorFromLabel(entry.actor),
           action: 'conductor.role_holders_change',
           target: `conductor-role:${entry.roleKey}`,
           before: { action: entry.action, holderId: entry.holderId },
@@ -4324,7 +4331,7 @@ async function main(): Promise<void> {
       agentSlug: string;
     }): Promise<void> => {
       await adminAudit?.record({
-        actor: { id: entry.actor },
+        actor: auditActorFromLabel(entry.actor),
         action: 'channel.binding_change',
         target: `channel-binding:${entry.channelType}/${entry.channelKey}`,
         before: { action: entry.action },
@@ -4903,6 +4910,8 @@ async function main(): Promise<void> {
         loginDevices: loginGuard.devices,
       }),
     );
+    // #1315 — the read side of the audit trail (admin UI: /admin/audit).
+    app.use('/api/v1/admin/audit', requireAuth, createAdminAuditRouter({ audit: adminAudit }));
     app.use(
       '/api/v1/admin/auth',
       requireAuth,
@@ -4914,7 +4923,7 @@ async function main(): Promise<void> {
       }),
     );
     console.log(
-      '[middleware] admin user-management + auth-toggle endpoints ready at /api/v1/admin/users and /api/v1/admin/auth (auth: required)',
+      '[middleware] admin user-management, audit-trail + auth-toggle endpoints ready at /api/v1/admin/users, /api/v1/admin/audit and /api/v1/admin/auth (auth: required)',
     );
   } else {
     console.warn(
@@ -5029,7 +5038,15 @@ async function main(): Promise<void> {
   app.use(
     '/api/v1/install',
     requireAuth,
-    createInstallRouter({ service: installService, oauthBroker }),
+    createInstallRouter({
+      service: installService,
+      oauthBroker,
+      // #1347 — install/uninstall rows; the uninstall row lists the grants
+      // that leave with the plugin.
+      ...(adminAudit ? { audit: adminAudit } : {}),
+      grantsOf: (pluginId) =>
+        readGrantSnapshot({ publicPathGrantStore, sqlGrantStore }, pluginId),
+    }),
   );
   console.log('[middleware] plugin install endpoints ready at /api/v1/install (auth: required)');
   console.log('[middleware] OAuth broker ready at /api/v1/install/oauth/{start,callback}');
@@ -5279,6 +5296,8 @@ async function main(): Promise<void> {
       publicPathGrants,
       // Epic #470 C16 (#817) — the half C7 shipped a gate for but no answer to.
       sqlGrantStore,
+      // #1347 — who opened or closed which path lands in admin_audit.
+      ...(adminAudit ? { audit: adminAudit } : {}),
     }),
   );
   console.log('[middleware] runtime introspection endpoint ready at /api/v1/admin/runtime (auth: required)');
