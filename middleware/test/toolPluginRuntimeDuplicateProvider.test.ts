@@ -61,6 +61,7 @@ interface RuntimeHarness {
   readonly registry: RecordingInstalledRegistry;
   readonly serviceRegistry: ServiceRegistry;
   readonly activated: string[];
+  readonly starts: string[];
   readonly logs: string[];
   readonly retryDeps: RetryErroredPluginsDeps;
 }
@@ -154,6 +155,7 @@ async function makeRuntime(
   } as unknown as PluginCatalog;
   const serviceRegistry = new ServiceRegistry();
   const activated: string[] = [];
+  const starts: string[] = [];
   const logs: string[] = [];
   const stub = (): (() => void) => (): void => {};
   const deps = {
@@ -173,6 +175,10 @@ async function makeRuntime(
     notificationRouter: { dispatch: (): void => {}, registerChannel: stub },
     uiRouteCatalog: new UiRouteCatalog(),
     jobScheduler: { register: stub, stopForPlugin: (): void => {} },
+    onActivating: (id: string): void => {
+      // What the plugin's own activate() has published by now: nothing yet.
+      starts.push(`${id}:${serviceRegistry.get('fooClient') === undefined ? 'before' : 'after'}`);
+    },
     onActivated: (entry: PluginCatalogEntry): void => {
       activated.push(entry.plugin.id);
     },
@@ -185,6 +191,7 @@ async function makeRuntime(
     registry,
     serviceRegistry,
     activated,
+    starts,
     logs,
     retryDeps: { catalog, registry, uploadedStore: deps.uploadedStore, log: deps.log },
   };
@@ -220,6 +227,15 @@ describe('ToolPluginRuntime.activateAllInstalled — duplicate providers (OM-87)
     assert.ok(younger.last_activation_error_at);
     assert.equal(harness.registry.get(OLDER)?.status, 'active');
     assert.ok(harness.registry.get(OLDER)?.last_activated_at);
+  });
+
+  // #1359 — the class-default rebuilder stamps a plugin when its activation
+  // STARTS, before its activate() reads anything.
+  it('fires onActivating before the plugin\'s own activate() runs', async (t) => {
+    const harness = await makeRuntime(t, { pluginIds: [OLDER] });
+    await harness.runtime.activate(OLDER);
+    assert.deepEqual(harness.starts, [`${OLDER}:before`]);
+    assert.deepEqual(harness.activated, [OLDER]);
   });
 
   it('immediately blocks a duplicate that already has transient failures', async (t) => {

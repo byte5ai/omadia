@@ -15,6 +15,7 @@ import {
   providerIdFromApiKeyVaultKey,
   providerVerifiedAtVaultKey,
 } from '../platform/providerCredentialVerifier.js';
+import { rebuildOrder } from '../platform/providerDependents.js';
 
 /**
  * Operator settings overview — a single editable view of every `.env`-based
@@ -327,8 +328,14 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
         }
       }
       // Live apply: reactivate every touched plugin so it re-reads config.
+      // A key lands in the orchestrator, verifier and extras scopes, in
+      // catalog order; the orchestrator captures the other two's services in
+      // its own activate(), so it goes last (#1394) — otherwise the first key
+      // save on a fresh stack left it holding extras' key-less boot instances
+      // (fact extraction off until a restart).
       if (deps.reactivate) {
-        for (const pluginId of affected) {
+        const order = rebuildOrder(affected, (id) => deps.installedRegistry.has(id));
+        for (const pluginId of order) {
           await deps.reactivate(pluginId);
         }
       }
