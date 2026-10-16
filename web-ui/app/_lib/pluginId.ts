@@ -44,3 +44,30 @@ export const PLUGIN_ID_MAX_LENGTH = 214;
 export function isValidPluginId(id: string): boolean {
   return id.length <= PLUGIN_ID_MAX_LENGTH && PLUGIN_ID_PATTERN.test(id);
 }
+
+/**
+ * Decode the `[pluginId]` route segment and gate it — the value the
+ * `/plugin-ui/[pluginId]` host page may use, or `null` (#1399).
+ *
+ * Core builds the nav entry with `encodeURIComponent`, so `@omadia/example-ui`
+ * stays ONE path segment: `/plugin-ui/%40omadia%2Fexample-ui`. Next 16 hands
+ * that segment to the page STILL ENCODED — `getParamValue` in
+ * `next/dist/shared/lib/router/utils/get-dynamic-param.js` re-encodes the
+ * matched value before it reaches user code. An earlier comment assumed the
+ * opposite and validated the raw param, so every scoped id 404'd.
+ *
+ * Decoding is safe in either case: a valid id contains no `%`, so a segment
+ * that already arrived decoded is unchanged by a second decode. Malformed
+ * escapes (`%E0%A4%A`) make `decodeURIComponent` throw → `null`. The charset
+ * gate runs AFTER decoding, so `%2e%2e` → `..` and `%40omadia%2F..` →
+ * `@omadia/..` are rejected by the pattern, not waved through as opaque text.
+ */
+export function decodePluginIdSegment(segment: string): string | null {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+  return isValidPluginId(decoded) ? decoded : null;
+}

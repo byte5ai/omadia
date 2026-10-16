@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  decodePluginIdSegment,
   isValidPluginId,
   PLUGIN_ID_MAX_LENGTH,
   PLUGIN_ID_PATTERN,
@@ -49,9 +50,9 @@ describe('plugin-id gate — pinned to the middleware authority', () => {
 describe('the host route uses the shared gate rather than its own', () => {
   const PAGE = path.resolve(__dirname, '../../plugin-ui/[pluginId]/page.tsx');
 
-  it('imports isValidPluginId', () => {
+  it('imports decodePluginIdSegment (which runs isValidPluginId)', () => {
     expect(readFileSync(PAGE, 'utf-8')).toContain(
-      "import { isValidPluginId } from '@/app/_lib/pluginId'",
+      "import { decodePluginIdSegment } from '@/app/_lib/pluginId'",
     );
   });
 
@@ -110,15 +111,39 @@ describe('isValidPluginId', () => {
     ).toBe(false);
   });
 
-  it('accepts the id the host route receives after Next has decoded the segment', () => {
-    // `plugin.ts` percent-encodes the id so `@omadia/example-ui` survives as
-    // ONE path segment; Next hands the route the decoded value. Both forms are
-    // asserted so a future change to either side of that round-trip is visible.
-    const encoded = encodeURIComponent('@omadia/example-ui');
-    expect(encoded).toBe('%40omadia%2Fexample-ui');
-    expect(isValidPluginId(decodeURIComponent(encoded))).toBe(true);
-    // The still-encoded form must NOT pass: it would mean the decode never
-    // happened, and the id would not resolve to a package.
-    expect(isValidPluginId(encoded)).toBe(false);
+  it('rejects the still-encoded segment — it is not an id', () => {
+    // Next 16 hands the route the ENCODED segment (#1399); the raw value must
+    // go through `decodePluginIdSegment`, never straight into the gate.
+    expect(isValidPluginId('%40omadia%2Fexample-ui')).toBe(false);
+  });
+});
+
+describe('decodePluginIdSegment — the host route param (#1399)', () => {
+  it('decodes the percent-encoded segment Next 16 passes to the page', () => {
+    expect(decodePluginIdSegment('%40omadia%2Fexample-ui')).toBe('@omadia/example-ui');
+    expect(decodePluginIdSegment('%40omadia%2Fdev-platform')).toBe('@omadia/dev-platform');
+  });
+
+  it('accepts a segment that already arrived decoded', () => {
+    expect(decodePluginIdSegment('@omadia/example-ui')).toBe('@omadia/example-ui');
+    expect(decodePluginIdSegment('some-plugin')).toBe('some-plugin');
+  });
+
+  it('returns null for broken percent-encoding instead of throwing', () => {
+    expect(decodePluginIdSegment('%E0%A4%A')).toBeNull();
+    expect(decodePluginIdSegment('%40omadia%2')).toBeNull();
+  });
+
+  it('gates the DECODED value, so encoded traversal is rejected', () => {
+    expect(decodePluginIdSegment('%2e%2e')).toBeNull();
+    expect(decodePluginIdSegment('%40omadia%2F..')).toBeNull();
+    expect(decodePluginIdSegment('%40omadia%2F%2e%2e')).toBeNull();
+    expect(decodePluginIdSegment('%2Fetc%2Fpasswd')).toBeNull();
+    expect(decodePluginIdSegment('plugin%00')).toBeNull();
+  });
+
+  it('rejects a doubly-encoded id rather than decoding twice', () => {
+    // `%2540omadia…` decodes once to `%40omadia…`, which is not an id.
+    expect(decodePluginIdSegment('%2540omadia%252Fexample-ui')).toBeNull();
   });
 });
