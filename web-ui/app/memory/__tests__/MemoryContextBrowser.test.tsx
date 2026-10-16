@@ -152,8 +152,8 @@ describe('memory context browser — operator endpoint', () => {
     const urls = requestedUrls(stub);
     expect(urls.length).toBeGreaterThan(0);
     expect(urls.every((u) => u.pathname === LIST_PATH)).toBe(true);
-    // The dev router is unauthenticated and unmounted in production; a
-    // regression back to it would make this whole panel dead there again.
+    // The dev router is dev scaffolding and unmounted on deployed environments;
+    // a regression back to it would make this whole panel dead there again.
     expect(urls.some((u) => u.pathname.startsWith('/bot-api/dev/'))).toBe(false);
   });
 

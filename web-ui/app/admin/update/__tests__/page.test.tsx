@@ -22,23 +22,11 @@ const { mockGetUpdateStatus, mockGetUpdateHistory, mockTriggerUpdate } = vi.hois
   }),
 );
 
-vi.mock('../../../_lib/api', () => ({
-  ApiError: class ApiError extends Error {
-    public readonly code: string | null;
-    constructor(
-      public status: number,
-      message: string,
-      public body = '',
-    ) {
-      super(message);
-      this.name = 'ApiError';
-      try {
-        this.code = (JSON.parse(body) as { error?: string }).error ?? null;
-      } catch {
-        this.code = null;
-      }
-    }
-  },
+// The REAL ApiError, not a stand-in (#1379): a mock that parsed `error`
+// instead of `code` let this suite pass while the page never showed a single
+// specific refusal message in production.
+vi.mock('../../../_lib/api', async (importOriginal) => ({
+  ApiError: (await importOriginal<typeof import('../../../_lib/api')>()).ApiError,
   getUpdateStatus: mockGetUpdateStatus,
   getUpdateHistory: mockGetUpdateHistory,
   triggerUpdate: mockTriggerUpdate,
@@ -118,8 +106,12 @@ describe('/admin/update', () => {
       expect(screen.getByText(/no updater is configured/i)).toBeInTheDocument();
     });
     expect(
-      screen.getByText(/OMADIA_VERSION=v0\.75\.0 docker compose up -d/),
+      screen.getByText(
+        /OMADIA_VERSION=v0\.75\.0 docker compose -f docker-compose\.yaml \[-f docker-compose\.OVERLAY\.yaml …\] up -d/,
+      ),
     ).toBeInTheDocument();
+    // #1380 — a bare `up -d` drops every overlay's env from the middleware.
+    expect(screen.getByText(/pass the same -f files/i)).toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: /update to/i }),
     ).not.toBeInTheDocument();
@@ -452,10 +444,11 @@ describe('/admin/update', () => {
     const user = userEvent.setup();
     const { ApiError } = await import('../../../_lib/api');
     mockTriggerUpdate.mockRejectedValue(
-      new (ApiError as new (s: number, m: string, b?: string) => Error)(
+      new ApiError(
         409,
-        'POST failed',
-        JSON.stringify({ error: 'update_in_progress' }),
+        'POST /v1/admin/update failed: 409',
+        // The exact body the middleware route sends.
+        JSON.stringify({ error: 'update_in_progress', code: 'update_in_progress' }),
       ),
     );
     renderWithIntl(<UpdateClient />);
@@ -467,6 +460,7 @@ describe('/admin/update', () => {
     expect(
       await screen.findByText(/an update is already running/i),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/failed: 409/)).not.toBeInTheDocument();
   });
 
   it('warns that the Fly executor cannot make the version stick', async () => {
@@ -551,6 +545,38 @@ describe('/admin/update', () => {
     await waitFor(() => {
       expect(screen.getByText(/could not reach GitHub/i)).toBeInTheDocument();
     });
+  });
+
+  it('does not claim up-to-date when the release lookup failed (#1378)', async () => {
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        latest: null,
+        updateAvailable: false,
+        check: { checkedAt: null, stale: true, error: 'github_status_403' },
+      }),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/not known right now/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/running the latest release/i)).not.toBeInTheDocument();
+  });
+
+  it('does not claim up-to-date from a stale cached release either', async () => {
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        current: { version: 'v0.75.0', source: 'release' },
+        updateAvailable: false,
+        check: { checkedAt: 1, stale: true, error: 'ENOTFOUND' },
+      }),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/could not reach GitHub/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/running the latest release/i)).not.toBeInTheDocument();
   });
 
   it('shows the audit trail when there is one', async () => {

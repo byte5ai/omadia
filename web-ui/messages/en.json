@@ -1012,6 +1012,12 @@
     "digestLabel": "Error reference",
     "digestHint": "Quote this reference when reporting the problem — the full message is in the server log."
   },
+  "notFound": {
+    "metaTitle": "Page not found · omadia",
+    "title": "Page not found",
+    "description": "This page doesn't exist or is no longer available. Check the address, or head back to the dashboard.",
+    "backToDashboard": "Back to the dashboard"
+  },
   "errorHelp": {
     "admin_users": {
       "password_too_long": {
@@ -1967,6 +1973,7 @@
     "agentsEmpty": "No orchestrators yet. Create one above.",
     "agentMeta": "id: {id} · privacy: {privacy} (not enforced) · status: {status} · runtime: {runtime}",
     "detailMetaTitle": "Orchestrator: {slug} · omadia",
+    "detailNotFoundMetaTitle": "Orchestrator not found · omadia",
     "detailOpenLink": "Details",
     "detailBackToList": "All orchestrators",
     "detailAssignedHeading": "Assigned plugins",
@@ -4108,7 +4115,8 @@
       "errorKicker": "Error",
       "errorTitle": "The catalog could not be loaded.",
       "errorHint": "Check that the middleware is reachable and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
-      "footerSource": "Source:"
+      "footerSource": "Source:",
+      "footerSourceValue": "connected registries and uploaded packages"
     },
     "detail": {
       "notFoundTitle": "Plugin not found · Store",
@@ -4150,7 +4158,7 @@
         "flagCredentialFlows": "Runs credential flows on its own routes",
         "publicPathsTitle": "Public (unauthenticated) paths",
         "publicPathsBody": "This plugin asks to answer the URL prefixes below without an operator session. Anyone who can reach this deployment can reach them, and the plugin alone is responsible for authenticating those requests.",
-        "publicPathsNotGranted": "Declaring is not granting: each prefix stays behind the session gate until you consent to it, and consent is withdrawn automatically when the plugin is deactivated.",
+        "publicPathsNotGranted": "Declaring is not granting: a prefix is not reachable at all until you consent to it, and consent is withdrawn automatically when the plugin is deactivated.",
         "none": "No permissions declared.",
         "runtimeCredentials": "Runtime credentials"
       },
@@ -4161,7 +4169,9 @@
         "noRequirements": "No prerequisites.",
         "installHint": "During install the middleware checks these prerequisites transitively. If a provider is missing, a wizard opens with the matching plugins from the catalog."
       },
-      "sectionGrants": "Permissions"
+      "sectionGrants": "Permissions",
+      "footerManifestLegacy": "Manifest: Legacy",
+      "footerManifestSchema": "Manifest: Schema v{version}"
     },
     "card": {
       "updateTitle": "Update available",
@@ -4364,7 +4374,7 @@
       "sqlLedger": "Migration ledger: {ledger}",
       "sqlLedgerDrift": "A grant is on record for a different table ({ledger}). The plugin has since changed the table it asks for, so the old grant no longer counts — tick the box to grant the new one.",
       "publicPathsIntro": "These paths answer without an omadia login, because the caller has none to present. Each one is still authenticated by the plugin itself.",
-      "publicPathBody": "Served without a session. If you do not grant it, the path stays behind the login and returns 401.",
+      "publicPathBody": "Served without a session once you grant it. Until you do, the path is not reachable at all, not even when signed in.",
       "orphaned": "Also granted, but no longer requested by the plugin: {paths}. These serve nothing; applying the form below clears them.",
       "optionalRequiresIntro": "Optional prerequisites. The plugin works without them, with reduced functionality — these are not permissions and there is nothing to grant here.",
       "currentGranted": "Currently granted",
@@ -4991,13 +5001,15 @@
     "floating": "(moving tag — no comparison possible)",
     "updateAvailable": "{version} is available.",
     "upToDate": "This instance is running the latest release.",
-    "checkStale": "The release check could not reach GitHub; the value shown may be out of date.",
+    "latestUnknownHint": "Whether a newer release exists is not known right now.",
+    "checkStale": "The release check could not reach GitHub, or GitHub refused it (rate limit); the value shown may be out of date.",
     "checkNow": "Check now",
     "checking": "Checking…",
     "notifyOnlyTitle": "Manual update",
     "notifyOnlyBody": "No updater is configured, so this instance can report versions but not apply an update. On Docker Compose, deploy the optional overlay (docker-compose.update.yaml) to enable it. Otherwise update from the host:",
     "notifyOnlyComposeLabel": "Docker Compose",
-    "notifyOnlyComposeCmd": "OMADIA_VERSION={version} docker compose up -d",
+    "notifyOnlyComposeCmd": "OMADIA_VERSION={version} docker compose -f docker-compose.yaml [-f docker-compose.OVERLAY.yaml …] up -d",
+    "notifyOnlyComposeOverlayHint": "Pass the same -f files you start the stack with. A plain docker compose up -d recreates the middleware from docker-compose.yaml alone, and it loses the settings of every overlay (embeddings, storage, diagrams, …). Setting COMPOSE_FILE in the project .env makes the plain command safe.",
     "notifyOnlyFlyLabel": "Fly.io",
     "notifyOnlyFlyOrderHint": "Run these in order — the middleware applies the schema migrations at boot, so let it report the new version before you move the admin UI.",
     "notifyOnlyFlyPinHint": "Also update the image line in your fly.toml: --image applies to this deploy only, so a later plain fly deploy would put the app back on the old tag.",
