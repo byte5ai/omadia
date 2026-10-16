@@ -60,7 +60,9 @@ function describeIssue(issue: InputIssue): string {
 
 /**
  * The `Error:` result for a failed bridged call. Never contains the text of an
- * exception the tool's own code threw.
+ * exception the tool's own code threw — except a refusal (`ToolRefusalError`,
+ * a kernel `ctx.http` block), whose message is written for the model
+ * (`toolErrorFromException`, #1343).
  */
 export function bridgedToolError(
   toolId: string,
