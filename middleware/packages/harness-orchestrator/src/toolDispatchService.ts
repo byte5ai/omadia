@@ -25,7 +25,7 @@ import {
 import type { WriteCapability } from '@omadia/plugin-api';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import type { DomainTool } from './tools/domainQueryTool.js';
-import type { NativeToolRegistry } from './nativeToolRegistry.js';
+import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
 import { sortByToolName } from './toolOrdering.js';
 import { turnContext } from './turnContext.js';
 import { runHandlerInPrivacyScope } from './handlerPrivacyScope.js';
@@ -618,6 +618,13 @@ export class ToolDispatchService {
       // Issue #474 — same gate as `dispatch()`; a not-yet-ready plugin's
       // tools are excluded from the advertised list too.
       if (!this.isToolAvailable(registration.agentId)) {
+        continue;
+      }
+      // #1346 — per-turn availability, same gate as the orchestrator's own
+      // tool list. The CLI lifecycle calls this inside the turn scope; a
+      // caller outside any turn (public MCP `tools/list`) sees such tools
+      // hidden, which is right — they need a turn to work.
+      if (!isOfferedThisTurn(registration)) {
         continue;
       }
 

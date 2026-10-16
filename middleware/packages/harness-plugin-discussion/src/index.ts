@@ -9,6 +9,7 @@ export {
   createDiscussionStartHandler,
   discussionPartnersToolSpec,
   discussionStartToolSpec,
+  discussionToolsAvailable,
 } from './discussionTool.js';
 export type {
   DiscussionPartner,

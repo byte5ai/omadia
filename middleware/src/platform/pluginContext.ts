@@ -625,6 +625,11 @@ export function createPluginContext(
         ...(options?.writeCapabilities !== undefined
           ? { writeCapabilities: options.writeCapabilities }
           : {}),
+        // #1346 — per-turn availability; the orchestrator reads it when it
+        // builds the tool list and prompt docs (`isOfferedThisTurn`).
+        ...(options?.isAvailable !== undefined
+          ? { isAvailable: options.isAvailable }
+          : {}),
       });
     },
     registerHandler(name, handler, options) {
@@ -649,6 +654,11 @@ export function createPluginContext(
         // dispatchable by name, so it needs the same protection.
         ...(options?.writeCapabilities !== undefined
           ? { writeCapabilities: options.writeCapabilities }
+          : {}),
+        // #1346 — per-turn availability; the orchestrator reads it when it
+        // builds the tool list and prompt docs (`isOfferedThisTurn`).
+        ...(options?.isAvailable !== undefined
+          ? { isAvailable: options.isAvailable }
           : {}),
       });
     },

@@ -36,6 +36,38 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — channel-bound tools are offered only on turns that can serve them (#1346, #1086)
+
+2026-10-16. `discussion_start` and `discussion_partners` were offered on
+every channel but work only in a Teams chat with the agents' own bots in it.
+In the web chat and over the public API the model called them on its own
+(once in the middle of an SEO question), and each call failed with *"no
+conversation could be attributed to this turn … this call did not come from
+one"* — blaming a call that had in fact come from a chat. `manage_routine`
+had the same shape on channels whose adapter calls the `chatAgent`
+capability directly (Telegram, Slack, Discord, WhatsApp): no routines
+principal, so every action refused.
+
+- **Per-turn tool availability.** Plugins can pass
+  `isAvailable: () => boolean` when they register a tool (`@omadia/plugin-api`
+  1.28.0). The kernel evaluates it inside the turn and hides the tool's spec
+  and prompt doc wherever it says `false` — in the API tool list, the system
+  prompt, and the list the subscription-CLI loopback and the public MCP server
+  advertise. Dispatch is not gated; the handler still answers truthfully.
+- **Discussion tools** (`@omadia/plugin-discussion` 0.3.0) are offered only
+  where `conductorDiscussions.availableHere()` holds: the turn names a
+  conversation and the bot that received it belongs to an agent. The refusal
+  for a call that still arrives now says discussions are not available in
+  this chat and need a Teams group chat.
+- **`manage_routine`** is offered only on a turn that carries a routines
+  principal — the web chat, every channel that dispatches through
+  `CoreApi.handleTurnStream` (public API, canvas), and Teams. The kernel
+  cannot write a principal for adapters that call `chatAgent` directly: that
+  call carries neither a channel nor a conversation, and internal turns
+  (routine runs, Conductor) arrive the same way. Full routines support there
+  needs those adapters to dispatch through `handleTurnStream` or call
+  `beginRoutineTurn` themselves.
+
 ### Fixed — `enforce` no longer withholds every Privacy Shield rendered answer
 
 2026-10-15. With the answer verifier in `enforce`, every answer Privacy

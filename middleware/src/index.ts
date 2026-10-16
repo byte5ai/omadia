@@ -3038,7 +3038,8 @@ async function main(): Promise<void> {
   // canvas). An adapter that calls the `chatAgent` capability directly —
   // Teams, Telegram, Slack, Discord, WhatsApp — still has to install it
   // itself via `captureRoutineTurn` / `beginRoutineTurn`; without one the
-  // tool refuses with `ROUTINE_NO_CONTEXT_ERROR`.
+  // tool is not offered on that turn (#1346 `isAvailable`), and a call that
+  // still arrives refuses with `ROUTINE_NO_CONTEXT_ERROR`.
   let routinesHandle: RoutinesHandle | undefined;
   // #1086 — held in a variable (not only in the service registry) so the
   // channel CoreApi below can wire the channel-agnostic routine-turn producer.
@@ -3054,6 +3055,9 @@ async function main(): Promise<void> {
           spec: options.spec,
           ...(options.promptDoc !== undefined
             ? { promptDoc: options.promptDoc }
+            : {}),
+          ...(options.isAvailable !== undefined
+            ? { isAvailable: options.isAvailable }
             : {}),
         }),
       // #1071 — the browser chat's sender: a routine created from the web

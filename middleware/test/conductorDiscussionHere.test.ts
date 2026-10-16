@@ -479,7 +479,7 @@ describe('discussion tools — a failure that is not a kernel refusal is withhel
       resolveDiscussions: () =>
         fakeCapability({ partnersHere: async () => Promise.reject(new DiscussionNoConversationError()) }),
     });
-    assert.match(await refused({}), /^Error: no conversation could be attributed/);
+    assert.match(await refused({}), /^Error: agent discussions are not available in this chat/);
 
     const failing = createDiscussionPartnersHandler({
       resolveDiscussions: () => fakeCapability({ partnersHere: async () => Promise.reject(dbError()) }),

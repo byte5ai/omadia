@@ -895,6 +895,24 @@ export interface ToolRegistrationOptions {
    * a public endpoint, that means a duplicate is possible.
    */
   readonly writeCapabilities?: readonly WriteCapability[];
+  /**
+   * #1346 — per-turn availability. The kernel calls it inside the turn scope
+   * each time it builds the tool list and the system-prompt tool docs; `false`
+   * hides the tool (spec AND `promptDoc`) for that turn. On `registerHandler`
+   * it gates the `promptDoc` only: the wire spec of a handler-only tool is
+   * the kernel's to emit. Use it for a tool
+   * that only some channels can serve — e.g. one that needs a conversation the
+   * turn cannot name — so the model is never offered a call that can only
+   * fail. A throw counts as `false`. Absent ⇒ always offered.
+   *
+   * Advertisement only: dispatch is NOT gated, so the handler must still
+   * answer a call on such a turn with a truthful `Error:` result. Keep it
+   * cheap and synchronous — it runs once per model round — and give the same
+   * answer for the whole turn: the system prompt is built once per turn, the
+   * tool list every round, and a predicate that flips mid-turn would make the
+   * two disagree and break the cached prompt prefix.
+   */
+  readonly isAvailable?: () => boolean;
 }
 
 /**

@@ -1585,6 +1585,7 @@ export interface ToolRegistrationOptions {
 readonly promptDoc?: string;
 readonly attachmentSink?: NativeToolAttachmentSink;
 readonly writeCapabilities?: readonly WriteCapability[];
+readonly isAvailable?: () => boolean;
 }
 export type RouteAuthMode = 'session' | 'public' | 'custom';
 export type RouteBodyMode = 'json' | 'raw' | 'none';
