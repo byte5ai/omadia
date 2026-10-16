@@ -133,7 +133,7 @@ from an older guard that does not report it — that one fails closed in
 A `format: table` render returns the model only a shape acknowledgement —
 row count and the column labels it chose — as `resultText`. The
 `_pendingCanvasTree` snapshot with the real cells comes back as
-`canvasSentinel` (plugin-api 1.30.0) for the kernel's canvas-sentinel sink;
+`canvasSentinel` (plugin-api 1.31.0) for the kernel's canvas-sentinel sink;
 it never reaches the model's `tool_result` (#1402).
 
 ### Answer-verifier requests (stage `verifier`)

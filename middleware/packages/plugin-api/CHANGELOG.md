@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.30.0 — 2026-10-16
+## 1.31.0 — 2026-10-16
 
 Additive. A Privacy Shield v4 table render keeps its canvas snapshot off the
 model's `tool_result` (#1402).
@@ -21,6 +21,21 @@ model's `tool_result` (#1402).
   `_pendingCanvasTree` snapshot with the real cells. The kernel hands it to
   the turn's canvas-sentinel sink, never to the model. A provider that
   returns `{ resultText }` alone still conforms.
+
+## 1.30.0 — 2026-10-16
+
+Additive. One boundary-preset library for both places an operator can forbid an
+agent something (#1104): the per-agent "Boundaries" tab and the install-wide
+defaults of a `responseGuard@1` provider. They used to carry separate
+libraries (12 and 10 ids) with only 2 ids in common.
+
+### Added
+
+- **`BOUNDARY_PRESETS`**, **`getBoundaryPreset(id)`**, **`BoundaryPreset`**,
+  **`BoundaryPresetCategory`** — the 12 curated presets (id, category, label
+  key, rule wording). The builder compiles them into an agent's
+  `## Boundaries` section; `@omadia/plugin-quality-guard` 0.2.0 resolves its
+  `default_boundary_presets` against the same entries.
 
 ## 1.29.0 — 2026-10-16
 

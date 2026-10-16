@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { getTranslations } from 'next-intl/server';
 
-import { isValidPluginId } from '@/app/_lib/pluginId';
+import { decodePluginIdSegment } from '@/app/_lib/pluginId';
 
 import { PluginUiFrame } from './_components/PluginUiFrame';
 
@@ -33,7 +33,11 @@ export async function generateMetadata({
 }: {
   params: Promise<{ pluginId: string }>;
 }): Promise<Metadata> {
-  const { pluginId } = await params;
+  const { pluginId: segment } = await params;
+  const pluginId = decodePluginIdSegment(segment);
+  // An invalid id renders the 404 page; it gets the default title rather
+  // than echoing the raw segment into the tab.
+  if (pluginId === null) return {};
   const t = await getTranslations('pluginUi');
   return { title: t('metaTitle', { pluginId }) };
 }
@@ -43,19 +47,18 @@ export default async function PluginUiPage({
 }: {
   params: Promise<{ pluginId: string }>;
 }): Promise<React.ReactElement> {
-  const { pluginId } = await params;
+  const { pluginId: segment } = await params;
   // Rejected here rather than passed on: an id outside the charset can never
   // resolve to a package, and refusing it keeps a malformed value out of the
   // iframe URL entirely.
   //
-  // The gate lives in `_lib/pluginId.ts` and is pinned by test to the
-  // middleware definition it claims to mirror. The version that shipped with
-  // C8 declared the same intention in a comment and then omitted the optional
-  // `@scope/`, so `@omadia/example-ui` — the id of the very plugin this
-  // route was built for, and the shape of every omadia plugin id — was
-  // rejected here. Next hands us the DECODED segment, so the value compared is
-  // `@omadia/example-ui`, not its percent-encoded form.
-  if (!isValidPluginId(pluginId)) notFound();
+  // Next 16 passes the segment still percent-encoded (`%40omadia%2Fexample-ui`),
+  // not decoded — see `decodePluginIdSegment` for the evidence. The helper
+  // decodes first and runs the charset gate (pinned by test to the middleware
+  // definition) on the decoded value; `PluginUiFrame` re-encodes it for the
+  // iframe `src`. Validating the raw param 404'd every scoped id (#1399).
+  const pluginId = decodePluginIdSegment(segment);
+  if (pluginId === null) notFound();
 
   const t = await getTranslations('pluginUi');
 
