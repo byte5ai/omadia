@@ -80,6 +80,7 @@ on this public endpoint (see `docs/security-architecture.md` §8).
   unreachable middleware, or (from vault-status) a master key read from the
   dev file, naming the env var to set; `/admin` has a "Platform health" card linking to `/system`.
 - The boot log names the keychain dev key file path, like the vault line.
+
 ### Fixed — `DEV_ENDPOINTS_LOOPBACK_ONLY` covers every `/api/dev` route; compose stack sets its public URLs
 
 2026-10-16. Three fixes to the dev endpoints and the deploy configuration.
