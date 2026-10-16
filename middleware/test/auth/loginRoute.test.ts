@@ -310,12 +310,28 @@ describe('POST /login/:id — observability', () => {
     for (let i = 0; i < 5; i += 1) await login(h, wrong(), { remoteAddress: '203.0.113.7' });
     for (let i = 0; i < 3; i += 1) await login(h, wrong(), { remoteAddress: '203.0.113.7' });
     await new Promise((r) => setImmediate(r));
-    assert.equal(h.audit.length, 1, 'one row per episode, not per refused request');
-    const row = h.audit[0];
+    const refusals = h.audit.filter((r) => r.action === 'auth.login_rate_limited');
+    assert.equal(refusals.length, 1, 'one row per episode, not per refused request');
+    const row = refusals[0];
     assert.equal(row?.action, 'auth.login_rate_limited');
     assert.equal(row?.target, 'login-client:203.0.113.7');
     assert.deepEqual(row?.after, { scope: 'account', retry_after_s: 1 });
     assert.ok(!JSON.stringify(row).includes(ADMIN), 'the account never reaches the audit row');
+  });
+
+  it('records failed passwords once per account and client per minute, never the password (#1315)', async () => {
+    const h = await harness();
+    for (let i = 0; i < 4; i += 1) await login(h, wrong(), { remoteAddress: '203.0.113.8' });
+    await new Promise((r) => setImmediate(r));
+    const failures = h.audit.filter((r) => r.action === 'auth.login_failed');
+    assert.equal(failures.length, 1, 'aggregated, not one row per attempt');
+    assert.equal(failures[0]?.target, 'login-client:203.0.113.8');
+    assert.deepEqual(failures[0]?.actor, {});
+    const after = failures[0]?.after as { account: string; account_user_id: string; reason: string };
+    assert.equal(after.account, ADMIN);
+    assert.equal(after.account_user_id, h.store.idOf(ADMIN));
+    assert.equal(after.reason, 'invalid_credentials');
+    assert.ok(!JSON.stringify(failures[0]).includes('not the password'), 'the password never reaches the row');
   });
 });
 

@@ -5,6 +5,7 @@ import { credentialEpoch } from '../auth/loginDevices.js';
 import type { LoginRateLimiter } from '../auth/loginRateLimiter.js';
 import { hashPassword } from '../auth/passwordHasher.js';
 import { checkNewPassword, MAX_PASSWORD_LENGTH } from '../auth/passwordPolicy.js';
+import { isValidLoginEmail } from '../auth/loginEmail.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
 import type { ProviderRegistry } from '../auth/providerRegistry.js';
 import { setupTokenMatches } from '../auth/setupToken.js';
@@ -246,7 +247,7 @@ export function createSetupHandler(deps: SetupRouteDeps): RequestHandler {
       return;
     }
 
-    if (body.email.length === 0 || !body.email.includes('@')) {
+    if (!isValidLoginEmail(body.email)) {
       res.status(400).json({ code: 'auth.setup_invalid_email' });
       return;
     }
@@ -321,6 +322,11 @@ export function createSetupHandler(deps: SetupRouteDeps): RequestHandler {
       return;
     }
     const user = result.user;
+    // #1092 — the moment the install was claimed, visible to an operator
+    // tailing the log (the audit row is written in the same transaction).
+    log(
+      `[auth] setup: first admin created via the setup wizard (${user.email}, id=${user.id}, peer ${req.socket.remoteAddress ?? 'unknown'})`,
+    );
 
     if (body.anthropicApiKey.length > 0) {
       await seedAnthropicKey(deps, body.anthropicApiKey, anthropicVerifiedAt);
