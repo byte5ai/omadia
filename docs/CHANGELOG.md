@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — an unconfirmed answer no longer carries a "Hinweis" paragraph
+
+2026-10-16. In `enforce` mode an answer whose claims the verifier could not
+all confirm (none refuted) went out with an appended paragraph: "Hinweis: Die
+Angaben in dieser Antwort ließen sich nicht automatisch bestätigen. Prüfe
+wichtige Angaben bei Bedarf im Quellsystem." It now goes out unchanged; the
+state rides on the verifier summary, which the web chat shows as its badge.
+The log line is now `answer released unconfirmed`. `@omadia/channel-sdk` no
+longer exports `composeVerifierDisclaimerText` (no plugin used it). Teams
+0.30.0 also marks Privacy Shield renders as "Originaldaten aus dem System".
+
 ### Fixed — the `memory` tool can no longer read the stored chat copies
 
 2026-10-16. `/memories/chat-sessions/` holds the web UI's copy of every chat,

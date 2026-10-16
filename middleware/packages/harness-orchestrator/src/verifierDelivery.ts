@@ -1,7 +1,6 @@
 import {
   applyAiDisclosure,
   composeVerifierBlockedText,
-  composeVerifierDisclaimerText,
   NO_REPLY_SENTINEL,
 } from '@omadia/channel-sdk';
 import type { AiDisclosure, AnswerSource } from '@omadia/channel-sdk';
@@ -41,8 +40,8 @@ import { withheldCauseOf } from './verifierVerdicts.js';
  *    verdictReleasesAnswer}). The answer's text goes out as one `text_delta`
  *    right before `done` — the text the verdict is about, never the deltas
  *    the model streamed ({@link releasedTurn}). Claims left unconfirmed, not
- *    checked or not covered add the localized disclaimer to that text
- *    ({@link verdictNeedsDisclaimer}, {@link withVerifierDisclaimer}).
+ *    checked or not covered add nothing to that text: the summary's badge
+ *    says so ({@link verdictLeavesUnconfirmed}).
  *  - A contradiction, or a verifier that could not run, withholds the answer
  *    — that part fails closed. The client gets one `text_delta` with the
  *    notice and a `done` marked `answerSource: 'verifier-blocked'` ({@link
@@ -176,8 +175,8 @@ export function privacyShieldVerdict(): VerifierVerdict {
  * (`answerSource: 'privacy-render'`), and its model wrote no prose around
  * the rows. Its values are the source system's own, materialized
  * deterministically, so there is no claim to check. The model still chose
- * the dataset and wrote the column labels — neither is checked. Released
- * without the disclaimer; clients mark it as original system data.
+ * the dataset and wrote the column labels — neither is checked. Released as
+ * is; clients mark it as original system data.
  */
 export function systemDataVerdict(): VerifierVerdict {
   return { status: 'skipped', reason: 'system_data', claims: [], latencyMs: 0 };
@@ -191,9 +190,9 @@ export function systemDataVerdict(): VerifierVerdict {
  * an `approved_with_disclaimer` whose every check that ran failed — the same
  * technical fault, claim by claim (`withheldCauseOf` → `check_failed`).
  * Everything else goes out: `approved`, `skipped` with nothing to check
- * (`no_trigger` / `no_claims`), and — since 2026-10-08, with a disclaimer
- * ({@link verdictNeedsDisclaimer}) — answers whose claims could not all be
- * confirmed: `approved_with_disclaimer` (claims not confirmed, not checked,
+ * (`no_trigger` / `no_claims`), and — since 2026-10-08 — answers whose
+ * claims could not all be confirmed ({@link verdictLeavesUnconfirmed}):
+ * `approved_with_disclaimer` (claims not confirmed, not checked,
  * not covered, or contradicted by the evidence judge without the
  * contradiction being confirmed) and `skipped` with `no_checkable_claims` /
  * `incomplete_coverage`. Unconfirmed is not wrong; withholding it hid most
@@ -209,8 +208,9 @@ export function verdictReleasesAnswer(returned: VerifierVerdict): boolean {
     case 'approved_with_disclaimer':
       return withheldCauseOf(verdict) !== 'check_failed';
     case 'skipped':
-      // Every reason releases; whether with the disclaimer is decided per
-      // reason in `skipDisclaimer`, which a new reason must pass to compile.
+      // Every reason releases; whether it leaves claims unconfirmed is decided
+      // per reason in `skipLeavesUnconfirmed`, which a new reason must pass to
+      // compile.
       return true;
     case 'blocked':
     case 'unavailable':
@@ -219,21 +219,22 @@ export function verdictReleasesAnswer(returned: VerifierVerdict): boolean {
 }
 
 /**
- * Whether a released answer goes out with the disclaimer that not every
- * statement in it could be confirmed (`composeVerifierDisclaimerText`): an
- * `approved_with_disclaimer` over at least one claim it could not confirm,
- * and `skipped` with `no_checkable_claims` / `incomplete_coverage`. An
+ * Whether a released answer leaves statements the check could not confirm:
+ * an `approved_with_disclaimer` over at least one unverified claim, and
+ * `skipped` with `no_checkable_claims` / `incomplete_coverage`. An
  * `approved_with_disclaimer` whose claims are all verified — a weaker status
- * an injected pipeline reported, which binding keeps — has nothing to
- * disclaim. Bound first, like {@link verdictReleasesAnswer}.
+ * an injected pipeline reported, which binding keeps — leaves none. The
+ * answer text stays as the model wrote it (the summary's badge carries the
+ * state); this only decides the support log line. Bound first, like
+ * {@link verdictReleasesAnswer}.
  */
-export function verdictNeedsDisclaimer(returned: VerifierVerdict): boolean {
+export function verdictLeavesUnconfirmed(returned: VerifierVerdict): boolean {
   const { verdict } = bindVerdictToClaims(returned);
   switch (verdict.status) {
     case 'approved_with_disclaimer':
       return verdict.claims.some((c) => c.status === 'unverified');
     case 'skipped':
-      return skipDisclaimer(verdict.reason);
+      return skipLeavesUnconfirmed(verdict.reason);
     case 'approved':
     case 'blocked':
     case 'unavailable':
@@ -241,9 +242,9 @@ export function verdictNeedsDisclaimer(returned: VerifierVerdict): boolean {
   }
 }
 
-/** Per skip reason, whether its released answer carries the disclaimer.
+/** Per skip reason, whether its released answer leaves claims unconfirmed.
  *  Exhaustive: a new reason does not compile until it is decided here. */
-function skipDisclaimer(reason: VerifierSkipReason): boolean {
+function skipLeavesUnconfirmed(reason: VerifierSkipReason): boolean {
   switch (reason) {
     case 'no_trigger':
     case 'no_claims':
@@ -253,32 +254,6 @@ function skipDisclaimer(reason: VerifierSkipReason): boolean {
     case 'incomplete_coverage':
       return true;
   }
-}
-
-/** The sentinel on its own last line — `isNoReply`'s trailing form. */
-const TRAILING_NO_REPLY = /(?:^|\n)\s*NO_REPLY\s*$/;
-
-/**
- * `answer` with the verifier's disclaimer as its own paragraph — before the
- * AI-disclosure block when the turn folded one into the answer (first turn
- * of a scope), so the marking stays last, exactly as the fold put it; and
- * before a trailing `NO_REPLY` line, so a channel that honours the sentinel
- * (`isNoReply` anchors it at the end) still stays silent, while a stream
- * consumer, which shows the text, shows the note with it.
- */
-export function withVerifierDisclaimer(
-  answer: string,
-  disclaimer: string,
-  disclosure: AiDisclosure | undefined,
-): string {
-  const folded = disclosure !== undefined && foldedDisclosureBlock(answer, disclosure) !== undefined;
-  const base = folded ? withoutFoldedDisclosure(answer, disclosure) : answer;
-  // Deliberate silence states nothing to disclaim — and a note would end it.
-  if (isDeliberateSilence(base)) return answer;
-  const sentinel = TRAILING_NO_REPLY.exec(base);
-  const body = sentinel ? base.slice(0, sentinel.index) : base;
-  const withNote = `${body.trim().length > 0 ? `${body}\n\n` : ''}${disclaimer}${sentinel?.[0] ?? ''}`;
-  return folded ? applyAiDisclosure(withNote, { disclosure }).text : withNote;
 }
 
 /**
@@ -478,11 +453,6 @@ export async function* shadowVerifiedStream(
 export interface EnforcedVerdict {
   readonly summary: VerifierResultSummary;
   readonly releases: boolean;
-  /** A released answer goes out with the "not every statement could be
-   *  confirmed" disclaimer ({@link verdictNeedsDisclaimer}). Required, so a
-   *  verdict callback cannot release an unconfirmed answer without it by
-   *  leaving the field out. */
-  readonly disclaimer: boolean;
   /**
    * A correction re-entry to run instead of delivering this verdict. Its
    * stream is held exactly like the first turn's — liveness passes, nothing
@@ -609,19 +579,10 @@ export async function* enforcedVerifiedStream(
   }
   const { summary, releases } = outcome;
   if (releases) {
-    // An answer with claims nobody could confirm goes out with the
-    // disclaimer — in `done.answer` and so in the one delta built from it.
-    const answer = outcome.disclaimer
-      ? withVerifierDisclaimer(
-          terminal.answer,
-          composeVerifierDisclaimerText(terminal.aiDisclosure?.locale ?? operatorLocale, summary),
-          terminal.aiDisclosure,
-        )
-      : terminal.answer;
     yield* releasedTurn(
       held,
       terminal,
-      await finishDone({ ...terminal, answer, verifier: summary }, fromRetry),
+      await finishDone({ ...terminal, verifier: summary }, fromRetry),
     );
   } else {
     const finished = await finishDone(terminal, fromRetry);

@@ -113,7 +113,7 @@ describe('VerifierService.chatStream — enforce retries a contradiction over fr
     assert.ok(t.logs.some((l) => /retry abandoned/.test(l) && l.includes('create_invoice')));
   });
 
-  it('control: a verdict that is not a contradiction buys no retry — released with the disclaimer', async () => {
+  it('control: a verdict that is not a contradiction buys no retry — released unchanged', async () => {
     const { invoice, t } = setup(
       [toolCalls(['create_invoice', INVOICE]), text(WRONG)],
       [partlyChecked()],
@@ -124,7 +124,7 @@ describe('VerifierService.chatStream — enforce retries a contradiction over fr
     assert.equal(t.model.requests.length, 2);
     assert.deepEqual(invoice.inputs, [INVOICE]);
     assert.equal(doneOf(events)?.answerSource, undefined);
-    assert.match(doneOf(events)?.answer ?? '', /Hinweis: Ein Teil der Angaben/);
+    assert.doesNotMatch(doneOf(events)?.answer ?? '', /Hinweis:/);
     assert.equal(t.logs.some((l) => /retry run=/.test(l)), false, 'no retry');
   });
 

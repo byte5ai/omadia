@@ -126,11 +126,11 @@ describe('VerifierService.chat — a re-entry replays the first run, it never re
       `a log line names the tool: ${t.logs.join(' | ')}`,
     );
     // The first verdict stands (no second verdict was taken): unconfirmed,
-    // not refuted, so the first answer goes out with the disclaimer.
+    // not refuted, so the first answer goes out unchanged.
     assert.equal(t.verifyInputs.length, 1);
     assert.deepEqual(t.persisted, [{ status: 'approved_with_disclaimer', retryCount: 0 }]);
     assert.equal(sa.answerSource, undefined);
-    assert.match(sa.text, /Hinweis: Ein Teil der Angaben/);
+    assert.doesNotMatch(sa.text, /Hinweis:/);
   });
 
   it('an abandoned correction retry withholds the first answer with the failed badge', async () => {
@@ -288,7 +288,7 @@ describe('VerifierService.chat — when no re-entry happens', () => {
     assert.equal(t.model.requests.length, 2, 'no second sample');
     assert.deepEqual(invoice.inputs, [INVOICE]);
     assert.deepEqual(t.persisted, [{ status: 'approved_with_disclaimer', retryCount: 0 }]);
-    assert.equal(sa.answerSource, undefined, 'released with the disclaimer');
-    assert.match(sa.text, /Hinweis:/);
+    assert.equal(sa.answerSource, undefined, 'released');
+    assert.doesNotMatch(sa.text, /Hinweis:/);
   });
 });

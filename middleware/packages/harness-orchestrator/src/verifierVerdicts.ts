@@ -148,12 +148,12 @@ export function withheldLogLine(runId: string, verdict: VerifierVerdict): string
 }
 
 /**
- * The support diagnosis for an answer released WITH the verifier disclaimer
- * (`verdictNeedsDisclaimer`): the same content-free fields as a withhold, so
- * a released-but-unconfirmed answer is just as traceable.
+ * The support diagnosis for an answer released with claims the check could
+ * not confirm (`verdictLeavesUnconfirmed`): the same content-free fields as a
+ * withhold, so a released-but-unconfirmed answer is just as traceable.
  */
-export function releasedWithDisclaimerLogLine(runId: string, verdict: VerifierVerdict): string {
-  return `[verifier/service] answer released with disclaimer run=${runId} ${diagnosis(verdict)}`;
+export function releasedUnconfirmedLogLine(runId: string, verdict: VerifierVerdict): string {
+  return `[verifier/service] answer released unconfirmed run=${runId} ${diagnosis(verdict)}`;
 }
 
 /**

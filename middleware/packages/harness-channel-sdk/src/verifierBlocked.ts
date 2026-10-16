@@ -6,7 +6,7 @@
  * (a contradiction) or could not run on never reaches the user, on the stream
  * (`VerifierService.chatStream`) or on the non-streaming path
  * (`VerifierService.chat`); one whose claims it merely could not all confirm
- * goes out with {@link composeVerifierDisclaimerText}. A verifier that could
+ * goes out unchanged, its state on the verifier badge. A verifier that could
  * not run includes one whose every check failed. What reaches the user
  * in place of a withheld answer is this sentence, composed at the delivery
  * boundary through the same locale mechanism as the AI-Act marking and the
@@ -88,49 +88,6 @@ export function composeVerifierBlockedText(
     return `This answer was withheld: ${EN[cause](n)}`;
   }
   return `Diese Antwort wurde zurückgehalten. ${DE[cause](n)}`;
-}
-
-/**
- * The disclaimer on a RELEASED answer whose claims the check could not all
- * confirm (`approved_with_disclaimer`, or `skipped` with claims no check
- * accepts or parts the extraction did not cover). "Confirm", never "check":
- * a claim the judge checked and found no support for was checked, and the
- * note must be true for it too. True to the counts: "some statements" only
- * when the counts are valid and show at least one confirmed claim next to an
- * unconfirmed one; otherwise "the statements" — never more confirmation than
- * the counts back. For a summary with an unconfirmed claim or none at all.
- * Plain text, one paragraph, added to the answer by the delivery gate.
- */
-export function composeVerifierDisclaimerText(
-  locale: string | undefined,
-  summary: Pick<VerifierResultSummary, 'claimCount' | 'contradictionCount' | 'unverifiedCount'>,
-): string {
-  const some = someConfirmed(summary);
-  if (normalizeDisclosureLocale(locale) === 'en') {
-    return some
-      ? 'Note: some statements in this answer could not be confirmed automatically. Check important details in the source system if needed.'
-      : 'Note: the statements in this answer could not be confirmed automatically. Check important details in the source system if needed.';
-  }
-  return some
-    ? 'Hinweis: Ein Teil der Angaben in dieser Antwort ließ sich nicht automatisch bestätigen. Prüfe wichtige Angaben bei Bedarf im Quellsystem.'
-    : 'Hinweis: Die Angaben in dieser Antwort ließen sich nicht automatisch bestätigen. Prüfe wichtige Angaben bei Bedarf im Quellsystem.';
-}
-
-/** True only when every count is a valid non-negative integer and they show
- *  a confirmed claim next to an unconfirmed one; a missing or broken count
- *  never yields "some". */
-function someConfirmed(
-  summary: Pick<VerifierResultSummary, 'claimCount' | 'contradictionCount' | 'unverifiedCount'>,
-): boolean {
-  const { claimCount, contradictionCount, unverifiedCount } = summary;
-  if (!isCount(claimCount) || !isCount(contradictionCount) || !isCount(unverifiedCount)) {
-    return false;
-  }
-  return unverifiedCount > 0 && claimCount - contradictionCount - unverifiedCount > 0;
-}
-
-function isCount(n: number | undefined): n is number {
-  return typeof n === 'number' && Number.isInteger(n) && n >= 0;
 }
 
 /** The contradiction count when it is a positive integer, else 0. */

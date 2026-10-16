@@ -40,7 +40,7 @@ export type { AiDisclosure } from './aiDisclosure.js';
  * model's answer: a refuted claim, a missing or invented citation, data the
  * run never fetched, or a check that could not run or whose every check
  * failed. (An answer it merely could not fully confirm is released as
- * `'model'` with a disclaimer paragraph, `composeVerifierDisclaimerText`.)
+ * `'model'`, unchanged; the verifier badge carries its state.)
  * The answer is
  * then a localized notice saying so (`composeVerifierBlockedText`), always
  * with `answerIsError: true`; the model's own text never reaches the client,
