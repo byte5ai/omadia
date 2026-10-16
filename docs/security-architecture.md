@@ -3931,7 +3931,7 @@ has its own reason:
 | `/login`, `/setup` | The sign-in page and the first-user wizard. |
 | `/bot-api/v1/auth/*` | Sign-in, sign-out, OIDC callback, provider list. The middleware lists `/api/v1/auth` as public too (`auth/publicPaths.ts`). |
 | `/_next/*` | Framework assets and dev tooling. |
-| `/health`, `/favicon.ico` | Fly health checks must answer before anyone has signed in. |
+| `/health`, `/favicon.ico` | Fly and Compose health checks must answer before anyone has signed in. Since #1382 `/health` also returns the build `version` (`OMADIA_VERSION`), as the middleware's `/health` already did. That exposes the running release to unauthenticated callers. We accept it: the release tags are public, the version is what an operator's script or the updater needs to tell which image serves, and hiding it would not hide a vulnerable build from anyone probing behaviour. |
 | `/p/*` | Plugin UI iframed by Teams Tabs, where only a Teams SSO token exists. The plugin handler runs its own auth. |
 | `/.well-known/omadia-ui`, `/pairing-discovery` | The pairing descriptor (#293), see below. |
 
