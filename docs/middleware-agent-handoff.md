@@ -7028,7 +7028,11 @@ Lücken gegenüber In-Process: kein `memoryFileRead`-Flag (Fresh-Check), ein gew
 Handler-Fehler wird nicht serverseitig geloggt, und die Memory-Bindung läuft pro
 CLI-Turn dreimal (Tool, Recall, Record).
 `LoopbackMcpServerDeps.dispatch` ist dafür auf `Pick<ToolDispatchService, 'dispatch'>`
-verengt.
+verengt. Voraussetzung der Entscheidung (Marcel, 2026-10-16): Memory darf keine
+Daten tragen, die Privacy Shield dem Modell vorenthalten hat. Darum verweigern die
+Memory-Namespacer jetzt `/memories/chat-sessions/` (`MemoryPathDenied`) — dort liegen
+die vom Shield gerenderten Tabellenzeilen; vorher per `view` im Klartext erreichbar,
+auch auf dem API-Weg.
 
 Weiter offen: der Antwort-Prüfer (`VerifierService` hängt am In-Process-`Orchestrator`
 mit Re-Entry und Privacy-Hand-over; der CLI-Zweig kehrt vorher zurück) — die

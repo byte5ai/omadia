@@ -169,7 +169,16 @@ dispatch. The CLI system prompt carries the in-process memory rules (curated
 the same as on the API-key path, where `memory` is on the Privacy Shield's
 intern-exempt list (`privacyInternPolicy.ts`) and goes to the model in clear.
 Decided with Marcel on #1102 (2026-10-16): parity with the API path, including
-the agent-private fallback when the binder throws.
+the agent-private fallback when the binder throws — on condition that memory
+cannot carry data Privacy Shield withheld from the model. It could:
+`/memories/chat-sessions/<id>.json` (the web UI's chat copy) holds answers the
+shield rendered from datasets (`answerSource: 'privacy-render'`, real rows that
+never went to the model), and that tree was a shared passthrough of the memory
+namespacer, so an intern-exempt `view` sent those rows to the model in clear —
+on the API path too. The namespacers now refuse `chat-sessions` for every
+operation (`MemoryPathDenied`); the kernel's own `ChatSessionStore` writes
+around them. The `/memories/sessions/` transcripts stay readable: they are
+written before the render swap and hold the model's own prose.
 
 This is a deliberate trade-off in line with the UI's notice not to route
 personal data through this provider; the decision is recorded on #1087.

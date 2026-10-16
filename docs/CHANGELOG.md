@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the `memory` tool can no longer read the stored chat copies
+
+2026-10-16. `/memories/chat-sessions/` holds the web UI's copy of every chat,
+including answers Privacy Shield rendered server-side from a dataset: real
+rows that were deliberately never sent to the model. The tree passed through
+the memory namespacer, and `memory` is exempt from interning, so asking the
+agent to `view` it sent those rows to the model in clear. The memory tool now
+refuses that tree in every context-memory mode; session transcripts under
+`/memories/sessions/` are unaffected (#1102).
+
 ### Added — the subscription CLI can remember things (`memory` tool)
 
 2026-10-16. On the Claude subscription CLI (`claude-cli`) the agent had no

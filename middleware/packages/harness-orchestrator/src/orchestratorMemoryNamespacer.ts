@@ -7,9 +7,11 @@ import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
  * unaware that several Agents share one physical store. This wrapper makes
  * each Agent see a PRIVATE `/memories` root that is physically backed by
  * `/memories/orchestrators/<slug>/...`, while a small allow-list of shared
- * namespaces (`core`, `sessions`, `chat-sessions`, brand `_*`) passes through
- * untouched so cross-agent kernel data (session transcripts, brand files,
- * system rules) stays common.
+ * namespaces (`core`, `sessions`, brand `_*`) passes through untouched so
+ * cross-agent kernel data (session transcripts, brand files, system rules)
+ * stays common. `chat-sessions` is refused outright (see
+ * {@link MODEL_DENIED_SEGMENTS}).
+ *
  *
  * It is a transparent bijection:
  *   - inbound paths are rewritten into the private tree (`toInner`)
@@ -38,7 +40,31 @@ const MEMORIES_ROOT = '/memories';
  * `contexts` is deliberately NOT in here: the per-context trees are private
  * per Agent × context, never shared.
  */
-const SHARED_SEGMENTS = new Set(['core', 'sessions', 'chat-sessions']);
+const SHARED_SEGMENTS = new Set(['core', 'sessions']);
+
+/**
+ * First segments the model-facing `memory` tool may not address at all.
+ *
+ * `/memories/chat-sessions/<id>.json` is the web UI's copy of a chat, kept by
+ * `ChatSessionStore` (which writes through the scoped store, not through this
+ * mapper). It holds every answer as the user saw it — including answers
+ * Privacy Shield rendered server-side from a dataset (`answerSource:
+ * 'privacy-render'`): real rows that never went to the model. `memory` is
+ * exempt from interning (`privacyInternPolicy.ts`), so a `view` here handed
+ * those rows to the model in clear (#1102). The model has no use for the raw
+ * chat JSON; the `/memories/sessions/` transcripts, written before the render
+ * swap, stay readable.
+ */
+const MODEL_DENIED_SEGMENTS = new Set(['chat-sessions']);
+
+/** Thrown for a path in {@link MODEL_DENIED_SEGMENTS}; the memory tool turns
+ *  it into an `Error:` result. */
+export class MemoryPathDenied extends Error {
+  constructor(path: string) {
+    super(`The path ${path} is not available to the memory tool.`);
+    this.name = 'MemoryPathDenied';
+  }
+}
 
 /**
  * Reserved model-facing first segments, recognised ONLY in context mode.
@@ -108,6 +134,7 @@ abstract class MemoryNamespacerBase implements MemoryStore {
     const rest = path.slice(MEMORIES_ROOT.length); // '/...'
 
     const seg = firstSegment(rest);
+    if (MODEL_DENIED_SEGMENTS.has(seg)) throw new MemoryPathDenied(path);
     if (this.reservedSegments.has(seg)) {
       const root = this.reservedRoots.get(seg);
       // Unbound reserved segment → leave it outside every compiled scope.
@@ -130,37 +157,37 @@ abstract class MemoryNamespacerBase implements MemoryStore {
     return path; // shared / unmapped — already in the outer namespace
   }
 
-  list(virtualPath: string): Promise<MemoryEntry[]> {
-    return this.inner.list(this.toInner(virtualPath)).then((entries) =>
-      entries.map((e) => ({ ...e, virtualPath: this.toOuter(e.virtualPath) })),
-    );
+  // `async`, so a denied path (`toInner` throws) rejects like any store error.
+  async list(virtualPath: string): Promise<MemoryEntry[]> {
+    const entries = await this.inner.list(this.toInner(virtualPath));
+    return entries.map((e) => ({ ...e, virtualPath: this.toOuter(e.virtualPath) }));
   }
 
-  fileExists(virtualPath: string): Promise<boolean> {
+  async fileExists(virtualPath: string): Promise<boolean> {
     return this.inner.fileExists(this.toInner(virtualPath));
   }
 
-  directoryExists(virtualPath: string): Promise<boolean> {
+  async directoryExists(virtualPath: string): Promise<boolean> {
     return this.inner.directoryExists(this.toInner(virtualPath));
   }
 
-  readFile(virtualPath: string): Promise<string> {
+  async readFile(virtualPath: string): Promise<string> {
     return this.inner.readFile(this.toInner(virtualPath));
   }
 
-  createFile(virtualPath: string, content: string): Promise<void> {
+  async createFile(virtualPath: string, content: string): Promise<void> {
     return this.inner.createFile(this.toInner(virtualPath), content);
   }
 
-  writeFile(virtualPath: string, content: string): Promise<void> {
+  async writeFile(virtualPath: string, content: string): Promise<void> {
     return this.inner.writeFile(this.toInner(virtualPath), content);
   }
 
-  delete(virtualPath: string): Promise<void> {
+  async delete(virtualPath: string): Promise<void> {
     return this.inner.delete(this.toInner(virtualPath));
   }
 
-  rename(fromVirtualPath: string, toVirtualPath: string): Promise<void> {
+  async rename(fromVirtualPath: string, toVirtualPath: string): Promise<void> {
     return this.inner.rename(
       this.toInner(fromVirtualPath),
       this.toInner(toVirtualPath),
@@ -235,6 +262,7 @@ export interface ContextMemoryNamespacerOptions {
  * /memories/~agent/... → <agentRoot>/...     (read-only via the `ro:` pattern)
  * /memories/core/...   → unchanged           (shared passthrough)
  * /memories/_rules/... → unchanged           (shared passthrough)
+ * /memories/chat-sessions/... → refused      (MemoryPathDenied)
  * ```
  *
  * `list` never leaks a physical `contexts/...` path outward: every entry is
