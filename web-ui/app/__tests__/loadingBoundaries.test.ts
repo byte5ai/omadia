@@ -5,6 +5,10 @@ import { describe, expect, it } from 'vitest';
 /**
  * #1398 — where `loading.tsx` boundaries may sit.
  *
+ * `notFound()` is detected as a literal call in the page file. A page that
+ * reaches it through a helper must call it itself, or this guard (and its
+ * 404 status) does not cover it.
+ *
  * A loading boundary flushes the shell, and the `200` status line with it,
  * before the page below it runs. A page that then calls `notFound()` serves
  * the not-found UI with status 200. So:
@@ -19,6 +23,11 @@ import { describe, expect, it } from 'vitest';
  */
 
 const APP_DIR = path.resolve(__dirname, '..');
+/** Every extension Next accepts for a route convention file. */
+const EXTENSIONS = ['tsx', 'ts', 'jsx', 'js'];
+const conventionFile = (dir: string, name: string): string | undefined =>
+  EXTENSIONS.map((ext) => path.join(dir, `${name}.${ext}`)).find((f) => existsSync(f));
+const isPageFile = (entry: string): boolean => EXTENSIONS.some((ext) => entry === `page.${ext}`);
 
 function listPages(dir: string): string[] {
   const pages: string[] = [];
@@ -26,7 +35,7 @@ function listPages(dir: string): string[] {
     if (entry === 'node_modules' || entry === '__tests__' || entry.startsWith('_')) continue;
     const full = path.join(dir, entry);
     if (statSync(full).isDirectory()) pages.push(...listPages(full));
-    else if (entry === 'page.tsx') pages.push(full);
+    else if (isPageFile(entry)) pages.push(full);
   }
   return pages;
 }
@@ -42,7 +51,16 @@ function dirsFromPageToApp(page: string): string[] {
   }
 }
 
-const hasBoundary = (dir: string): boolean => existsSync(path.join(dir, 'loading.tsx'));
+/**
+ * A `loading` file, or a layout/template that renders `<Suspense>` — either
+ * one flushes the status line before the page below it runs.
+ */
+const hasBoundary = (dir: string): boolean =>
+  conventionFile(dir, 'loading') !== undefined ||
+  ['layout', 'template'].some((name) => {
+    const file = conventionFile(dir, name);
+    return file !== undefined && /<Suspense\b/.test(readFileSync(file, 'utf8'));
+  });
 const callsNotFound = (page: string): boolean =>
   /\bnotFound\(\)/.test(readFileSync(page, 'utf8'));
 const rel = (p: string): string => path.relative(APP_DIR, p);
