@@ -271,6 +271,17 @@ describe('#470 C4/H1 — exclusive prefix ownership', () => {
     // is a different path segment.
     assert.equal(grants.resolve('/api/plugins/acme-evil/ping'), null);
   });
+
+  it('#1349 — resolveUngranted names a declared prefix only while it is not granted', () => {
+    grants.claim('acme', [PREFIX], { ...CTX, grantedPrefixes: new Set() });
+    assert.deepEqual(grants.resolveUngranted(`${PREFIX}/ping`), {
+      pluginId: 'acme',
+      prefix: PREFIX,
+    });
+    assert.equal(grants.resolveUngranted('/api/plugins/acme-evil/ping'), null);
+    grants.setGranted('acme', new Set([PREFIX]));
+    assert.equal(grants.resolveUngranted(`${PREFIX}/ping`), null);
+  });
 });
 
 describe('#470 C4/H1 — terminating early mount (production order)', () => {

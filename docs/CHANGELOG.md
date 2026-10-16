@@ -63,6 +63,37 @@ are logged at activation instead of being dropped without a trace.
 **Check `default_boundary_presets` before upgrading:** an agent-UI id that
 0.1 silently dropped (e.g. `no-pii`) now applies to every agent. The plugin's setup fields now carry English and German text.
 
+### Fixed — JSON errors instead of Express HTML pages, and an omadia 404 page
+
+2026-10-16. Express's built-in `finalhandler` answered everything no router
+took. It sends HTML, and outside `NODE_ENV=production` (the Compose default is
+`development`) it wrote the stack trace with container paths into the page.
+Anyone could trigger that without credentials with a truncated or oversized
+JSON body, because the global body parser runs before any auth check (#1326).
+A non-UUID id on `/api/v1/admin/users/:id` ended the same way (#1318), and an
+ungranted public path such as `/documents/dl/…` answered
+`<pre>Cannot GET …</pre>` (#1349). The middleware now runs the app through a
+terminal callback (`http/terminalHandler.ts`, `createAppServer` replaces
+`app.listen`). It answers in the usual `{ code, message }` shape and never
+sends a stack: `400 request.invalid_json`, `413 request.payload_too_large`,
+other body-parser rejections with their 4xx status, `404 not_found` for an
+unknown path, `404 public_path.not_granted` for a prefix a plugin declared but
+the operator did not grant, and `500 internal` for an unhandled error, whose
+stack goes only to the log. Client mistakes are logged as one line instead of
+a stack. It is a callback rather than a trailing `app.use`, so routes plugins
+mount after boot are not shadowed. The admin-users and routines routers
+check `:id` / `:runId` as UUIDs (`http/uuidParam.ts`) and answer their own
+404 (`admin_users.not_found`, `routines.not_found`, `routines.run_not_found`)
+instead of a Postgres `22P02` 500 that echoed the database message (#1318,
+#1398). The install wizard and store text no longer promise that an ungranted
+public path "stays behind the login and returns 401": it is not reachable at
+all until granted. The web UI has its own `not-found.tsx`, which is themed,
+translated (EN/DE) and links back to the dashboard, and an unknown agent slug
+gets the tab title "Orchestrator not found" (#1398). Unknown routes answer
+HTTP 404. Pages that call `notFound()` still answer 200, because the root
+`loading.tsx` starts streaming before the page runs. That needs a decision on
+where the loading boundaries go and is tracked on #1398.
+
 ### Fixed — `DEV_ENDPOINTS_LOOPBACK_ONLY` covers every `/api/dev` route; compose stack sets its public URLs
 
 2026-10-16. Three fixes to the dev endpoints and the deploy configuration.
