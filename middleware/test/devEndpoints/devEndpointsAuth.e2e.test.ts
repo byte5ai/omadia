@@ -30,9 +30,11 @@ import {
   PLUGIN_DOMAINS_ADMIN_PATH,
 } from '../../src/routes/graphRouterMounts.js';
 import {
+  DEV_MEMORY_PATH,
   isSandboxListenDenied,
   startDevEndpointsHarness,
   type DevEndpointsHarness,
+  type DevEndpointsHarnessOptions,
 } from './harness.js';
 
 /**
@@ -304,5 +306,79 @@ describe('#669 — DEV_ENDPOINTS_LOOPBACK_ONLY', () => {
     } finally {
       await h.close();
     }
+  });
+});
+
+/**
+ * Issue #1350 — the guard covered `/api/dev/graph` only, so the memory browser
+ * (a plugin route under `/api/dev/memory`) served the whole `/memories` tree to
+ * a non-loopback session while the boot log said "loopback-only".
+ */
+describe('#1350 — DEV_ENDPOINTS_LOOPBACK_ONLY covers every /api/dev route', () => {
+  /** A Docker bridge peer — what the middleware container sees from the host. */
+  const BRIDGE_PEER = '172.18.0.1';
+
+  async function withHarness(
+    t: { skip: (msg: string) => void },
+    opts: DevEndpointsHarnessOptions,
+    body: (h: DevEndpointsHarness) => Promise<void>,
+  ): Promise<void> {
+    let h: DevEndpointsHarness;
+    try {
+      h = await startDevEndpointsHarness({ withDevMemoryPluginRoute: true, ...opts });
+    } catch (err) {
+      if (isSandboxListenDenied(err)) {
+        t.skip('sandbox denies loopback listeners');
+        return;
+      }
+      throw err;
+    }
+    try {
+      await body(h);
+    } finally {
+      await h.close();
+    }
+  }
+
+  const GUARDED_PATHS = [
+    `${DEV_GRAPH_PATH}/stats`,
+    `${DEV_MEMORY_PATH}/list?path=/memories`,
+    `${DEV_MEMORY_PATH}/file?path=/memories/chat-sessions/s1.json`,
+  ];
+
+  for (const path of GUARDED_PATHS) {
+    it(`refuses a non-loopback session on ${path} with 403`, async (t) => {
+      await withHarness(t, { loopbackOnly: true, remoteAddress: BRIDGE_PEER }, async (h) => {
+        const res = await h.request(path, { authenticated: true });
+        assert.equal(res.status, 403);
+        const body = (await res.json()) as { code?: string };
+        assert.equal(body.code, 'dev.loopback_only');
+      });
+    });
+  }
+
+  it('serves the memory browser to a loopback session when enabled', async (t) => {
+    await withHarness(t, { loopbackOnly: true }, async (h) => {
+      const res = await h.request(`${DEV_MEMORY_PATH}/list?path=/memories`, {
+        authenticated: true,
+      });
+      assert.equal(res.status, 200);
+    });
+  });
+
+  it('serves the memory browser to a non-loopback session when the flag is off', async (t) => {
+    await withHarness(t, { loopbackOnly: false, remoteAddress: BRIDGE_PEER }, async (h) => {
+      const res = await h.request(`${DEV_MEMORY_PATH}/list?path=/memories`, {
+        authenticated: true,
+      });
+      assert.equal(res.status, 200);
+    });
+  });
+
+  it('still answers 401 before 403 for a non-loopback request without a session', async (t) => {
+    await withHarness(t, { loopbackOnly: true, remoteAddress: BRIDGE_PEER }, async (h) => {
+      const res = await h.request(`${DEV_MEMORY_PATH}/list?path=/memories`);
+      assert.equal(res.status, 401);
+    });
   });
 });

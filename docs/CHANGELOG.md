@@ -76,6 +76,212 @@ remaining gaps of cluster C02:
 - DB-defined sub-agents use the current shared Anthropic client instead of the
   boot-time env client, which stays unauthenticated on vault-keyed installs.
 
+### Fixed — the subscription CLI fails a turn honestly, and its turns reach Memory
+
+2026-10-16. Three gaps between the Claude subscription CLI (`claude-cli`) and
+the API-key path:
+
+- **A failed CLI turn was delivered as an answer (#1325).** When the CLI ended a
+  turn with an error result ("Not logged in · Please run /login", a used-up
+  quota, an expired token), the stream sent a `done` whose answer was that
+  error text, marked AI-generated, followed by a generic `error` ("CLI exited
+  with code 1"). With exit code 0 there was no `error` at all. Now a failed
+  turn sends no `done` and ends with exactly one `error` that names the cause
+  and what to do ("…not logged in, or its login expired. Sign in again on the
+  LLM access page, Subscriptions tab."), and the middleware log records the
+  CLI's text.
+  The `done` of a successful result is also held back until the CLI's exit is
+  checked.
+- **CLI turns were never written to the knowledge graph (#1391).** A CLI turn
+  wrote a usage row and nothing else: no transcript, no `Session`/`Turn`/`Run`/
+  `ToolCall` nodes, no capture filter, fact extraction, auto-promotion or
+  `onAfterTurn`, and no recall on later turns. Every successful CLI chat turn is
+  now persisted like an in-process one (`Orchestrator.recordCliTurn`), and before
+  the spawn it recalls graph context the same way (`recallCliContext`) into the
+  CLI's prompt, with the `kg_recall` cards. The answer verifier still
+  does not run on this provider; the Subscriptions page now says so.
+- **The CLI's chat memory ignored `context_tail_size` (#1087).** The replayed
+  chat history now has the operator's tail size instead of a fixed 10.
+
+No Privacy Shield runs on this path, so the recalled context reaches the CLI
+unmasked, like the replayed history, and the recorded turn reaches the capture
+scorer, embeddings, fact and excerpt extraction unmasked
+(`docs/security-architecture.md` §3a). No migration, no new env var.
+
+### Fixed — MCP: link-local guard for manual servers, `MCP_STDIO_ENABLED`, readable refusals in the admin UI
+
+2026-10-16 — #1341, #1342. Manual MCP `http`/`sse` endpoints and MCP registry
+URLs now share one operator outbound rule (`src/services/mcpOutboundHostGuard.ts`,
+extracted from `mcpRegistryClient.ts`): link-local and cloud-metadata targets
+(`169.254.0.0/16`, `fe80::/10`, the IPv6 metadata endpoints
+`fd00:ec2::254` / `fd20:ce::254`, `169.254.x` inside any IPv6 embedding,
+`metadata.google.internal` / `metadata.goog` / `metadata`) are refused on the
+literal host and on the resolved addresses; private and loopback hosts
+(intranet registries, Compose services such as `postgres`) stay allowed on
+purpose. `POST /mcp-registries` rejects such a URL with
+`400 invalid_registry / blocked_host` instead of storing it, `POST /mcp-servers`
+with `400 mcp_endpoint_refused / blocked_host`. The same check runs at connect
+time through a new optional `connectGuard` on `McpManager`, wired into the
+operator router and the runtime manager: Discover, test-call, Re-scan all, the
+periodic rescan and agent tool calls refuse older rows with `blocked_host` and
+never contact the host, the OAuth metadata probe and the `auth-status` /
+`authorize` routes included. The extraction also closes a gap in the old check:
+WHATWG `URL` rewrites `[::ffff:169.254.169.254]` to `[::ffff:a9fe:a9fe]`, which
+the dotted-only comparison missed. New env switch `MCP_STDIO_ENABLED` (default
+`true`): with `false`, stdio servers can no longer be saved manually or
+imported from a catalog (`400 mcp_stdio_disabled / stdio_disabled`), and
+existing stdio rows are refused at connect time without spawning a process.
+Saving a stdio server writes a log line and an `admin_audit` row
+(`mcp_server.stdio_create`, name and source only, never the command line). In
+`/admin/mcp`, a `blocked_host` registry gets its own card (no "Try again"),
+transport failures show the server's reason, a failed Discover shows the
+response body's `message` instead of `failed: 502`, and the add-server form
+warns that a stdio server runs with the middleware's permissions. Known gap: a
+DNS answer that changes between check and connect (rebinding) is not covered.
+
+### Added — plugin tools can refuse a call with a message the model reads
+
+2026-10-16 — #1343. Every exception a plugin tool threw reached the model as
+the withheld notice ("The error text was withheld … The outcome is unknown"),
+so the SEO analyst could never say that the audit mode blocked a host, or that
+an operator can allow it. `@omadia/plugin-api` 1.28.0 adds `ToolRefusalError`:
+a tool throws it when it did NOT carry the call out and wrote the message for
+the model. The kernel recognises it by `name` (a plugin can throw it without
+importing the class, so it still loads on an older host) and passes it on as
+`Error: tool \`<name>\` refused the call: <message>` — control characters
+removed, at most 600 characters, no unknown-outcome clause and no
+`outcomeUnknown` marker (a message with line breaks stays withheld). The
+kernel's own `ctx.http` blocks (`HttpForbiddenError`, `HttpBlockedAddressError`,
+`HttpRateLimitError`, only with the message shape omadia writes) become
+readable too, as `… was stopped by omadia: <message>`, but keep the
+unknown-outcome clause: the tool may have written something before the block. Both `toolErrorFromException`
+(the tool bridges and in-tree wrappers) and `withholdThrownToolError` (the
+dispatch seams) handle it, and the text still goes through the Privacy
+Shield's returned-error redactor. Every other exception stays withheld.
+
+### Fixed — the SEO analyst no longer reports on a site it never reached
+
+2026-10-16 — #1344. `check_technical_seo` and `audit_site` ignored a blocked or
+unreachable root/start URL and returned a full report — "robots.txt nicht
+erreichbar", "Root-URL ist kein HTTPS", grade F — for a site the middleware
+never contacted. All three tools now share one check (`assertFetched`) and
+fail with a `ToolRefusalError` naming the audit mode and what the operator can
+change, or with `fetch failed for <url>` for an unreachable host. A blocked
+follow-up fetch (robots.txt, a sitemap on another host) is reported as
+`fetch.blocked` instead of `robots.missing` / `sitemap.missing`; later crawl
+pages keep the per-page handling. `@omadia/agent-seo-analyst` 0.2.0.
+
+### Fixed — the SEO analyst activates without internet access
+
+2026-10-16 — #1351. The activation self-test failed the plugin whenever
+`target_base_url` was unreachable (air-gapped host, egress firewall, an outage
+at boot), and with `request_timeout_ms` (15 s) it outlasted the runtime's 10 s
+`activate()` budget, so the operator saw the runtime timeout instead of the
+plugin's message. The self-test now has its own 5 s budget and only a policy
+refusal (audit mode or allow-list forbids the target) stops activation; an
+unreachable target logs a warning and the plugin activates, since every tool
+call checks its own target. The fetch log carries undici's `cause`
+(`getaddrinfo ENOTFOUND …`). Not changed: the runtime still does not retry a
+failed activation while it runs.
+
+### Fixed — sub-agents no longer rewrite their system prompt for the wrap-up turn
+
+2026-10-16. When a `LocalSubAgent` hit its last iteration or repeated the same
+failing tool call, it appended the wrap-up note to its system prompt for that
+one request. Changing the system prompt mid-run breaks the prompt-cache prefix
+and, on Opus 5.5 / Fable 5.1, the binding of the run's thinking blocks, so the
+final answer lost the reasoning it was meant to summarise. The system prompt
+now stays the same for the whole run; the note rides as a text block on the
+newest user turn, after its `tool_result` blocks, and is worded plainly
+(`tool_choice: none` already withdraws the tools) (#1212). The OB-31
+`expectedTurnToolUse` escalation no longer fires into that last, text-only
+iteration, where it could not force the tool and contradicted the note.
+
+### Fixed — JSON errors instead of Express HTML pages, and an omadia 404 page
+
+2026-10-16. Express's built-in `finalhandler` answered everything no router
+took. It sends HTML, and outside `NODE_ENV=production` (the Compose default is
+`development`) it wrote the stack trace with container paths into the page.
+Anyone could trigger that without credentials with a truncated or oversized
+JSON body, because the global body parser runs before any auth check (#1326).
+A non-UUID id on `/api/v1/admin/users/:id` ended the same way (#1318), and an
+ungranted public path such as `/documents/dl/…` answered
+`<pre>Cannot GET …</pre>` (#1349). The middleware now runs the app through a
+terminal callback (`http/terminalHandler.ts`, `createAppServer` replaces
+`app.listen`). It answers in the usual `{ code, message }` shape and never
+sends a stack: `400 request.invalid_json`, `413 request.payload_too_large`,
+other body-parser rejections with their 4xx status, `404 not_found` for an
+unknown path, `404 public_path.not_granted` for a prefix a plugin declared but
+the operator did not grant, and `500 internal` for an unhandled error, whose
+stack goes only to the log. Client mistakes are logged as one line instead of
+a stack. It is a callback rather than a trailing `app.use`, so routes plugins
+mount after boot are not shadowed. The admin-users and routines routers
+check `:id` / `:runId` as UUIDs (`http/uuidParam.ts`) and answer their own
+404 (`admin_users.not_found`, `routines.not_found`, `routines.run_not_found`)
+instead of a Postgres `22P02` 500 that echoed the database message (#1318,
+#1398). The install wizard and store text no longer promise that an ungranted
+public path "stays behind the login and returns 401": it is not reachable at
+all until granted. The web UI has its own `not-found.tsx`, which is themed,
+translated (EN/DE) and links back to the dashboard, and an unknown agent slug
+gets the tab title "Orchestrator not found" (#1398). Unknown routes answer
+HTTP 404. Pages that call `notFound()` still answer 200, because the root
+`loading.tsx` starts streaming before the page runs. That needs a decision on
+where the loading boundaries go and is tracked on #1398.
+
+### Fixed — `DEV_ENDPOINTS_LOOPBACK_ONLY` covers every `/api/dev` route; compose stack sets its public URLs
+
+2026-10-16. Three fixes to the dev endpoints and the deploy configuration.
+
+- **Loopback guard (#1350).** `DEV_ENDPOINTS_LOOPBACK_ONLY=true` guarded only
+  `/api/dev/graph`. The `@omadia/memory` browser at `/api/dev/memory`, a
+  plugin route, still served the whole `/memories` tree, every user's chat
+  sessions included, to a logged-in session from any address. The boot log
+  said "loopback-only" all the same. The new `mountDevLoopbackGuard` mounts
+  the guard on the `/api/dev` prefix ahead of the graph browser and the plugin
+  routes. The session gate is unchanged.
+- **Docs and comments (#1352).** The Compose file, `middleware/.env.example`,
+  `fly/middleware.fly.toml`, `render.yaml`, code comments and the handoff doc
+  no longer call `/api/dev/*` and `/api/v1/admin/vault-status` unauthenticated.
+  Both have needed a session since #669. Only the Graph viewer still needs
+  `DEV_ENDPOINTS_ENABLED`, and the flag stays off on deployed environments.
+- **Compose public URLs (#1317).** The Compose stack never set
+  `PUBLIC_BASE_URL`, so the middleware sent browsers to its built-in default
+  `http://localhost:3979`, where nothing listens in that stack, for example
+  after sign-in. The stack now loads `middleware/compose.defaults.env` before
+  `middleware/.env`. It sets `PUBLIC_BASE_URL` to the admin UI
+  (`http://localhost:3333`), routes the Entra and MCP OAuth callbacks through
+  `/bot-api` on that origin, and sets the Conductor webhook base to the
+  middleware (`http://localhost:8080`). Values in `middleware/.env` still
+  override these. The four are fixed values, so an operator who moves the
+  stack to another origin sets all four there, not `PUBLIC_BASE_URL` alone. The middleware's own defaults are unchanged, so Fly and
+  Render deployments are not affected. `middleware/.env.example` now documents
+  `PUBLIC_BASE_URL` and `AUTH_REDIRECT_URI`.
+
+### Fixed — Admin → Update tells the truth, and the release check backs off
+
+2026-10-16. Six fixes around `/admin/update` and version reporting (#1378–#1383).
+The Versions card no longer says "running the latest release" when the release
+lookup failed or only a stale cached answer exists; with no release known it
+says that is not known right now (#1378). A refused update trigger shows its
+own message ("An update is already running.") instead of
+`POST /v1/admin/update failed: 409`: the route sends the machine code as `code`
+too (kept as `error`), and the page test now uses the real `ApiError` instead
+of a mock that parsed the wrong field (#1379). The manual Compose command
+carries `-f` files plus a hint, and `docs/upgrading.md` recommends
+`COMPOSE_FILE` in the project `.env`, because a bare
+`OMADIA_VERSION=… docker compose up -d` recreated the middleware without any
+overlay's env (#1380). A failed GitHub release lookup is cached: 1 min backoff
+doubling to 5 min, or GitHub's `retry-after` / `x-ratelimit-reset`, with
+"Check now" bypassing it; before, every 30 s poll per tab went back to GitHub
+(#1381). `OMADIA_RELEASE_REPO` / `OMADIA_RELEASE_TOKEN` are now in
+`.env.example`. The web-ui `/health` returns `version` (the `OMADIA_VERSION`
+stamp) and the Compose `web-ui` service has a node-based healthcheck (#1382);
+unauthenticated callers can now read the web-ui build version, as they already
+could from the middleware (`security-architecture.md`, public-path table).
+The Plugin Hub footers show the running build instead of a literal
+`omadia · v1`, the source line names registries and uploads instead of a
+directory that does not exist, and `Manifest: …` is translated (#1383).
+
 ### Fixed — `enforce` no longer withholds every Privacy Shield rendered answer
 
 2026-10-15. With the answer verifier in `enforce`, every answer Privacy

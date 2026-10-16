@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { requireUuidParam } from '../http/uuidParam.js';
 import {
   parseRoutineOutputTemplate,
   type RoutineOutputTemplate,
@@ -187,6 +188,11 @@ function toDto(r: Routine): RoutineDto {
  */
 export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
   const router = Router();
+  // #1398 — `routines.id` and `routine_runs.id` are uuid columns. A malformed
+  // id names no row; answer the route's 404 instead of letting Postgres 22P02
+  // become a 500 that echoes the database error.
+  router.param('id', requireUuidParam('routines.not_found'));
+  router.param('runId', requireUuidParam('routines.run_not_found'));
   const log = deps.log ?? ((m) => console.log(m));
 
   router.get('/', async (_req: Request, res: Response): Promise<void> => {

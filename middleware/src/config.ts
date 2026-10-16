@@ -182,11 +182,16 @@ export const ConfigSchema = z.object({
   // without this flag still needs the token (a same-host reverse proxy makes
   // a loopback kernel public), and so does this flag without loopback.
   OMADIA_DESKTOP_EMBEDDED: devFlag(),
-  // Public base URL the `return` redirect lands on after a successful
-  // login. In prod this is the middleware host itself (admin UI eventually
-  // moves to its own Fly app → point this at that host). In dev it's the
-  // Next.js origin (localhost:3000) so the Set-Cookie from the callback
-  // lands on the SAME domain the browser is on — cookies don't cross hosts.
+  // Public origin for the absolute URLs the middleware hands to a browser:
+  // the login `return` redirect, the Entra post-logout redirect, plugin flow
+  // callbacks (`/bot-api/...`), and — unless their own override is set — the
+  // `/api/*` callbacks (AUTH_REDIRECT_URI, MCP_OAUTH_REDIRECT_URI,
+  // CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL, TEAMS_PUBLIC_BASE_URL). Point it at the
+  // origin users open, so the Set-Cookie from the callback lands on the SAME
+  // domain the browser is on. In dev that's the Next.js origin
+  // (localhost:3000); the docker-compose stack sets localhost:3333 in
+  // `middleware/compose.defaults.env` (#1317). The default below is the port
+  // of a from-source run.
   PUBLIC_BASE_URL: z
     .string()
     .url()
@@ -200,6 +205,14 @@ export const ConfigSchema = z.object({
   // only when the callback must resolve on a different origin than
   // FLOW_PUBLIC_BASE_URL/api/v1/operator/mcp-oauth/callback (the default).
   MCP_OAUTH_REDIRECT_URI: z.string().url().optional(),
+  // Issue #1342 — stdio MCP servers run as child processes of the middleware,
+  // with its OS user, filesystem and network. `false` refuses to save new
+  // stdio servers (manual or catalog import) and refuses existing stdio rows
+  // at connect time, so no process is spawned. Default on (backwards-compatible).
+  MCP_STDIO_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(true),
   // Absolute URL Azure AD redirects to after login. MUST be registered
   // verbatim in the MS365 App Registration. In prod: middleware's own
   // /api/v1/auth/callback. In dev: http://localhost:3000/bot-api/v1/auth/callback
