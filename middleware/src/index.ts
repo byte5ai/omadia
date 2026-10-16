@@ -140,10 +140,12 @@ import {
 import { createChatSessionsRouter } from './routes/chatSessions.js';
 import {
   DEV_GRAPH_PATH,
+  DEV_PATH_PREFIX,
   KG_LIFECYCLE_ADMIN_PATH,
   KG_PRIORITIES_ADMIN_PATH,
   PLUGIN_DOMAINS_ADMIN_PATH,
   mountDevGraph,
+  mountDevLoopbackGuard,
   mountKnowledgeGraphAdmin,
 } from './routes/graphRouterMounts.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
@@ -3924,8 +3926,8 @@ async function main(): Promise<void> {
   // cookie session JWT), NOT the machine-to-machine ADMIN_TOKEN surface in
   // `admin.ts`: the memory browser in web-ui authenticates as a logged-in
   // admin user. It replaces `/bot-api/dev/memory/*` (the @omadia/memory dev
-  // router), which is unauthenticated, exposes the WHOLE `/memories` tree and
-  // is forbidden in production — so before this mount the browser had no
+  // router), which exposes the WHOLE `/memories` tree to any logged-in session
+  // and is dev scaffolding only — so before this mount the browser had no
   // production endpoint at all.
   //
   // The ROOT (undecorated) `memoryStore` is handed in on purpose: the router's
@@ -6187,7 +6189,9 @@ async function main(): Promise<void> {
   // `/api/dev/memory` is now mounted by the @omadia/memory plugin via
   // ctx.routes.register when its `dev_memory_endpoints_enabled` config is true.
   // It is authenticated by the same OB-106 `/api` requireAuth line as everything
-  // else here — issue #669 removed the `/api/dev` entry from `publicPaths`.
+  // else here — issue #669 removed the `/api/dev` entry from `publicPaths` — and
+  // bound to loopback by `mountDevLoopbackGuard` below when
+  // DEV_ENDPOINTS_LOOPBACK_ONLY is set (#1350).
 
   // Issue #669 — the operator surfaces (KG lifecycle, per-agent priorities,
   // plugin domains) no longer live behind DEV_ENDPOINTS_ENABLED. They are
@@ -6210,16 +6214,19 @@ async function main(): Promise<void> {
 
   // The flag is read inside `mountDevGraph`, not in an `if` here — see its doc
   // comment: one tested consumer, and an admin mount that cannot depend on it.
+  // #1350 — the loopback guard covers the whole `/api/dev` prefix, including
+  // the plugin routes `pluginRouteRegistry.mountAll(app)` mounts further down
+  // (the `@omadia/memory` browser). It must stay ahead of both mounts.
+  mountDevLoopbackGuard(app, { loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY });
   if (
     mountDevGraph(app, requireAuth, {
       graph: knowledgeGraph,
       enabled: config.DEV_ENDPOINTS_ENABLED,
-      loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY,
     })
   ) {
     console.log(
       `[middleware] DEV endpoints enabled at ${DEV_GRAPH_PATH} (auth: required${
-        config.DEV_ENDPOINTS_LOOPBACK_ONLY ? ', loopback-only' : ''
+        config.DEV_ENDPOINTS_LOOPBACK_ONLY ? `, ${DEV_PATH_PREFIX}/* loopback-only` : ''
       })`,
     );
   }
