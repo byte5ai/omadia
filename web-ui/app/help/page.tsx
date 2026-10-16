@@ -4,6 +4,8 @@ import { getTranslations } from 'next-intl/server';
 
 import { APP_VERSION } from '../_lib/appVersion';
 
+import { FAQ } from './faq';
+
 /**
  * OM-09 — in-product help.
  *
@@ -31,14 +33,6 @@ const DOCS_URL = 'https://github.com/byte5ai/omadia/tree/main/docs';
 const REPO_URL = 'https://github.com/byte5ai/omadia';
 const ISSUES_URL = 'https://github.com/byte5ai/omadia/issues';
 const DISCUSSIONS_URL = 'https://github.com/byte5ai/omadia/discussions';
-
-/** FAQ entries. `href` points at the page that actually resolves the state. */
-const FAQ = [
-  { key: 'invalidKey', href: '/admin/providers' },
-  { key: 'pluginNeedsConfig', href: '/store' },
-  { key: 'cliNotInstalled', href: '/admin/providers' },
-  { key: 'noModels', href: '/admin/providers' },
-] as const;
 
 export default async function HelpPage(): Promise<React.ReactElement> {
   const t = await getTranslations('help');
