@@ -15,6 +15,7 @@ import type {
   InstallActivationState,
   InstallJob,
   InstallJobState,
+  InstallJobStep,
   InstallSetupField,
   InstallSetupSchema,
 } from '../api/admin-v1.js';
@@ -276,6 +277,7 @@ export class InstallService {
       plugin_version: entry.plugin.version,
       state: 'awaiting_config',
       current_step: 'Warte auf Konfiguration',
+      step_code: 'awaiting_config',
       error: null,
       setup_schema: setupSchema,
       activation_state: null,
@@ -330,7 +332,7 @@ export class InstallService {
       );
     }
 
-    this.transition(job, 'configuring', 'Validiere Eingaben');
+    this.transition(job, 'configuring', 'Validiere Eingaben', 'validating');
 
     // #603 (OM-17) — a `json_file` upload submitted WITH the install form. The
     // parse happens HERE, per the platform doctrine on the post-install
@@ -444,7 +446,7 @@ export class InstallService {
       // rather than written optimistically here. Writing `active` at this point
       // is the whole of #825: it made the job disagree with the registry (and
       // with `GET …/grants`) for every install whose activation failed.
-      this.transition(job, 'configuring', 'Aktiviere Plugin');
+      this.transition(job, 'configuring', 'Aktiviere Plugin', 'activating');
 
       // #478 — register the gated template manifests as read-only 'plugin'
       // catalog entries. Registration is in-memory; boot re-registers via
@@ -528,16 +530,24 @@ export class InstallService {
     const activation = await this.buildActivationState(job.plugin_id, hookError);
     job.activation_state = activation;
     if (activation.ok) {
-      this.transition(job, 'active', 'Installation abgeschlossen');
+      this.transition(job, 'active', 'Installation abgeschlossen', 'completed');
       return;
     }
-    this.transition(
-      job,
-      'errored',
-      activation.missing.length > 0
-        ? 'Installiert — Berechtigungen fehlen'
-        : 'Installiert — Aktivierung fehlgeschlagen',
-    );
+    if (activation.missing.length > 0) {
+      this.transition(
+        job,
+        'errored',
+        'Installiert — Berechtigungen fehlen',
+        'installed_missing_permissions',
+      );
+    } else {
+      this.transition(
+        job,
+        'errored',
+        'Installiert — Aktivierung fehlgeschlagen',
+        'installed_activation_failed',
+      );
+    }
   }
 
   /**
@@ -869,7 +879,7 @@ export class InstallService {
     if (isInstalledTerminal(job.state) || job.state === 'cancelled') {
       return job;
     }
-    this.transition(job, 'cancelled', 'Vom Nutzer abgebrochen');
+    this.transition(job, 'cancelled', 'Vom Nutzer abgebrochen', 'cancelled');
     return job;
   }
 
@@ -881,15 +891,18 @@ export class InstallService {
     job: InstallJob,
     state: InstallJobState,
     step: string,
+    stepCode: InstallJobStep,
   ): void {
     job.state = state;
     job.current_step = step;
+    job.step_code = stepCode;
     job.updated_at = new Date().toISOString();
   }
 
   private fail(job: InstallJob, error: ApiError): void {
     job.state = 'failed';
     job.current_step = 'Fehlgeschlagen';
+    job.step_code = 'failed';
     job.error = error;
     job.updated_at = new Date().toISOString();
   }
@@ -1172,7 +1185,7 @@ function privacyModeLabel(value: string): string {
 
 interface ValidationResult {
   values: Record<string, unknown>;
-  errors: Array<{ key: string; code: string; message: string }>;
+  errors: InstallFieldError[];
 }
 
 async function validateValues(
@@ -1180,16 +1193,17 @@ async function validateValues(
   incoming: Record<string, unknown>,
 ): Promise<ValidationResult> {
   const values: Record<string, unknown> = {};
-  const errors: Array<{ key: string; code: string; message: string }> = [];
+  const errors: InstallFieldError[] = [];
 
   for (const field of schema.fields) {
     // #602 (OM-17) — these validation messages are German templates and this
     // path has no request locale, so resolve the localized label to German
     // (falling back to en/any, else the key). A German sentence with a German
     // label beats the mixed-locale message that was a named cause of OM-17.
-    // NB: 'de' is hardcoded because the surrounding templates are German-only;
-    // if they ever localize, thread the request locale here — same root cause
-    // as the server-side always-English pattern hint tracked in #605.
+    // NB: 'de' is hardcoded because the surrounding templates are German-only.
+    // They are a fallback: the web UI renders each error from its catalog by
+    // `code` (+ `params`) in the operator's locale (#1401), so a new error
+    // here needs a code and a catalog key, not a request locale.
     const label = resolveLocalized(field.label, 'de') ?? field.key;
     const raw = incoming[field.key];
     const missing =
@@ -1225,6 +1239,7 @@ async function validateValues(
         key: field.key,
         code: coerced.error.code,
         message: coerced.error.message,
+        ...(coerced.error.params ? { params: coerced.error.params } : {}),
       });
       continue;
     }
@@ -1266,9 +1281,28 @@ async function validateValues(
   return { values, errors };
 }
 
+/**
+ * One field-level install validation error. `message` is German display text
+ * (no request locale here); `code` plus `params` let a client render the error
+ * in the operator's locale instead (#1401). `params` carries only what the
+ * client cannot read from the setup schema it already holds.
+ */
+interface InstallFieldError {
+  key: string;
+  code: string;
+  message: string;
+  params?: Record<string, string>;
+}
+
 type CoerceResult =
   | { value: unknown }
-  | { error: { code: string; message: string } };
+  | {
+      error: {
+        code: string;
+        message: string;
+        params?: Record<string, string>;
+      };
+    };
 
 function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
   // #602 (OM-17) — see validateValues: German templates, no request locale.
@@ -1396,6 +1430,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
             error: {
               code: 'invalid_host',
               message: `"${host}" ist kein gültiger Hostname (kein Protokoll, kein Pfad).`,
+              params: { host },
             },
           };
         }

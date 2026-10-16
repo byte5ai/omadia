@@ -4250,7 +4250,17 @@
       "privacyGuardedHelp": "Tool results are masked server-side behind Privacy Shield v4; the LLM only sees identity-free digests.",
       "privacyBypassHelp": "Raw tool results reach the LLM unmasked. Suitable for trusted internal sources whose content the Privacy Shield cannot structurally digest (e.g. Confluence page bodies).",
       "privacyPerToolHelp": "Per-tool whitelist: only explicitly listed tools are bypassed. Set the list via the `_privacy_bypass_scopes` field (comma-separated).",
-      "saving": "Saving …"
+      "saving": "Saving …",
+      "steps": {
+        "awaiting_config": "Waiting for configuration",
+        "validating": "Validating input",
+        "activating": "Activating plugin",
+        "completed": "Installation complete",
+        "installed_missing_permissions": "Installed — permissions missing",
+        "installed_activation_failed": "Installed — activation failed",
+        "cancelled": "Cancelled by user",
+        "failed": "Failed"
+      }
     },
     "auditMode": {
       "singleHostHelp": "Only the hosts declared in the manifest.",
@@ -4330,7 +4340,8 @@
       "installing": "Installing …",
       "allInstalled": "Everything installed",
       "allActive": "{name} and all prerequisites are active.",
-      "errorKicker": "Error"
+      "errorKicker": "Error",
+      "stepValidationFailed": "{label}: the input contains errors."
     },
     "upload": {
       "onlyZip": "Only .zip allowed, got: {name}",
@@ -4345,13 +4356,41 @@
       "peersMissing": "⚠ Missing peer deps: {peers} — the agent may fail at runtime.",
       "close": "Close",
       "failedKicker": "Upload failed",
-      "reset": "Reset"
+      "reset": "Reset",
+      "errors": {
+        "tooLarge": "The upload exceeds the limit of {maxBytes} bytes.",
+        "manifestMissing": "No manifest.yaml found at the root of the zip.",
+        "manifestInvalid": "manifest.yaml does not match schema_version \"1\".",
+        "idMismatch": "package.json name ({packageName}) does not match manifest identity.id ({pluginId}).",
+        "versionMismatch": "package.json version ({packageVersion}) does not match manifest identity.version ({pluginVersion}).",
+        "entryMissing": "The lifecycle entry {entry} is not in the zip.",
+        "idConflictBundled": "Plugin id {pluginId} belongs to a plugin bundled with this installation. An upload cannot replace a bundled plugin — give the package its own id. To override deliberately, set {overrideEnv}=1 in the middleware environment.",
+        "idConflictBuiltin": "Plugin id {pluginId} collides with a built-in catalog entry.",
+        "duplicateVersion": "Version {version} of {pluginId} is already uploaded. Bump the version or remove the upload first.",
+        "noFile": "The request contains no file."
+      }
     },
     "setupForm": {
       "enable": "Enable",
       "dontSet": "(leave unset)",
       "noPasswordWarning": "No account password belongs here. This expects a technical key from the provider's console.",
-      "patternUnavailable": "This field declares a format check that could not be applied — its value is not validated."
+      "patternUnavailable": "This field declares a format check that could not be applied — its value is not validated.",
+      "errors": {
+        "required": "{label} is required.",
+        "patternMismatch": "{label} does not match the expected format.",
+        "invalidUrl": "{label} is not a valid http(s) URL.",
+        "notSubmittable": "{label} is uploaded, not typed — it cannot be set directly.",
+        "wrongTypeText": "{label} must be text.",
+        "wrongTypeUrl": "{label} must be a URL.",
+        "wrongTypeBoolean": "{label} must be true or false.",
+        "wrongTypeInteger": "{label} must be a whole number.",
+        "wrongTypeHostList": "{label} must be a list of host names.",
+        "enumMismatch": "{label} must be one of the allowed values: {allowed}.",
+        "invalidHost": "“{host}” is not a valid host name (no protocol, no path).",
+        "uploadTooLarge": "The uploaded file is too large.",
+        "uploadNotJson": "The uploaded file is not valid JSON.",
+        "uploadNotAnObject": "The uploaded file must contain a JSON object."
+      }
     },
     "adminUi": {
       "iframeTitle": "{plugin} admin UI"

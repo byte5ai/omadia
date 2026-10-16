@@ -7187,3 +7187,30 @@ Der Quality-Guard-Plugin-Block (`harness-plugin-quality-guard`, `MEDIUM_EXTRA`) 
 per `${prependRules}\n\n---\n\n${body}` vorangestellt und drückt in dieselbe Richtung;
 Fix A lässt ihn bewusst unangetastet — die Präzedenz-Klausel deckt ihn über „every other
 instruction in this prompt" mit ab.
+
+## Server-Texte ohne Request-Locale: Code + Params, Text im Client (#1401, 2026-10-16)
+
+Install-Flow und Package-Upload haben keine Request-Locale und schreiben ihre
+Texte deutsch. Statt der Middleware eine Locale durchzureichen, gilt jetzt das
+`errorHelp`-Muster: der Server liefert einen **stabilen Code** plus die
+**Parameter**, die der Client nicht selbst kennt; die Web-UI rendert den Text aus
+ihrem Katalog in der aktiven Sprache und fällt für unbekannte Codes (oder fehlende
+Params, ältere Server) auf `message` zurück. Alles additiv:
+
+- `InstallJob.step_code` (`InstallJobStep` in `src/api/admin-v1.ts`) neben dem
+  deutschen `current_step` → `store.install.steps.*`.
+- Feld-Validierungsfehler (`details[]` von `install.validation_failed`) behalten
+  `{key, code, message}`; neu `params` wo nötig (`invalid_host` → `host`). Label,
+  Feldtyp und Enum-Werte nimmt der Client aus dem Setup-Schema →
+  `store.setupForm.errors.*` (`localizedFieldError` in `setupForm.tsx`).
+- Upload-Ablehnungen (`IngestFailure.params`, durchgereicht von
+  `routes/packages.ts`) → `store.upload.errors.*` (`web-ui/app/_lib/packageErrorText.ts`).
+
+Neue Server-Texte in diesen Pfaden: Code vergeben, Params mitschicken, Katalog-Key
+in `en`+`de` anlegen. `message` bleibt als Fallback und für API-Clients.
+
+Offen (Entscheidung nötig, siehe PR): Pflicht-Konvention `{en, de}` für sichtbaren
+Manifest-Text inkl. Loader-Warnung/CI-Lint, `identity.name` lokalisierbar oder
+sprachneutral, Übersetzungspass der In-Tree-Setup-Felder, Safety-Refusal-Notice im
+Orchestrator, `i18n:check`/`i18n:literals` in CI. `ui.commands[].label` wird derzeit
+von keiner Oberfläche gelesen.

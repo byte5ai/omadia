@@ -948,12 +948,30 @@ export interface InstallSetupSchema {
   fields: InstallSetupField[];
 }
 
+/**
+ * #1401 — a stable code for {@link InstallJob.current_step}. `current_step`
+ * is display text in ONE language (the server has no request locale); a
+ * client renders `step_code` from its own catalog in the operator's locale
+ * and falls back to `current_step` for a code it does not know.
+ */
+export type InstallJobStep =
+  | 'awaiting_config'
+  | 'validating'
+  | 'activating'
+  | 'completed'
+  | 'installed_missing_permissions'
+  | 'installed_activation_failed'
+  | 'cancelled'
+  | 'failed';
+
 export interface InstallJob {
   id: string;
   plugin_id: AgentId;
   plugin_version: string;
   state: InstallJobState;
   current_step: string;
+  /** #1401 — see {@link InstallJobStep}. Optional for older servers. */
+  step_code?: InstallJobStep;
   error: ApiError | null;
   setup_schema: InstallSetupSchema | null;
   /** #825 — the activation outcome, set once the install reaches a terminal

@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — install and upload errors follow the UI language
+
+2026-10-16 (#1401, partly). The install drawer's step line, the setup form's
+field errors and the Hub upload's rejections came from the middleware in
+German, so the English UI showed "Feld … ist erforderlich.", "Eingaben
+enthalten Fehler" and "Version … ist bereits hochgeladen." The server now also
+sends a stable code — `InstallJob.step_code`, and `params` on field errors and
+upload rejections — and the web UI renders it from its catalog in the active
+locale, falling back to the server text for unknown codes. Covered: the
+install drawer and the requires-wizard, every `validateValues` code, three of
+the `json_file` upload codes, and the common upload rejections (incl. multer's
+size limit). Additive; older servers keep working. Still open on #1401: the
+manifest text convention, in-tree setup-field translations, the remaining
+`json_file` codes (English in the German UI) and the orchestrator's refusal
+notice.
+
 ### Fixed — `enforce` no longer withholds every Privacy Shield rendered answer
 
 2026-10-15. With the answer verifier in `enforce`, every answer Privacy

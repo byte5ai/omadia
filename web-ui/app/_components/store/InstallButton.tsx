@@ -392,7 +392,11 @@ export function InstallButton({
       ) {
         next[entry.key] =
           typeof entry.code === 'string'
-            ? { code: entry.code, message: entry.message }
+            ? {
+                code: entry.code,
+                message: entry.message,
+                ...(stringParams(entry.params) ?? {}),
+              }
             : { message: entry.message };
       }
     }
@@ -697,6 +701,43 @@ interface InstallDrawerProps {
   setupGuide?: string;
 }
 
+/** #1401 — keep only string-valued params; the body is untrusted JSON. */
+function stringParams(raw: unknown): { params: Record<string, string> } | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const params = Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>).filter(
+      (e): e is [string, string] => typeof e[1] === 'string',
+    ),
+  );
+  return Object.keys(params).length > 0 ? { params } : undefined;
+}
+
+/** Step codes with a catalog entry under `store.install.steps`. */
+const KNOWN_STEP_CODES: ReadonlySet<string> = new Set([
+  'awaiting_config',
+  'validating',
+  'activating',
+  'completed',
+  'installed_missing_permissions',
+  'installed_activation_failed',
+  'cancelled',
+  'failed',
+]);
+
+/**
+ * #1401 — the job's current step in the operator's locale. `current_step` is
+ * server text in one fixed language; `step_code` names it. A server older
+ * than #1401, or a code this build does not know, shows `current_step` as is.
+ */
+export function jobStepText(
+  job: Pick<InstallJob, 'current_step' | 'step_code'>,
+  tStep: (key: string) => string,
+): string {
+  return job.step_code !== undefined && KNOWN_STEP_CODES.has(job.step_code)
+    ? tStep(job.step_code)
+    : job.current_step;
+}
+
 function InstallDrawer({
   phase,
   pluginName,
@@ -706,6 +747,7 @@ function InstallDrawer({
   setupGuide,
 }: InstallDrawerProps): React.ReactElement {
   const t = useTranslations('store.install');
+  const tStep = useTranslations('store.install.steps');
   const jobFromPhase =
     phase.kind === 'form'
       ? phase.job
@@ -765,7 +807,7 @@ function InstallDrawer({
               <p className="font-mono-num mt-2 text-[11px] text-[color:var(--faint-ink)]">
                 Job · {jobFromPhase.id.slice(0, 8)}… ·{' '}
                 <span className="text-[color:var(--muted-ink)]">
-                  {jobFromPhase.current_step}
+                  {jobStepText(jobFromPhase, tStep)}
                 </span>
               </p>
             ) : null}
