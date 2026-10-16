@@ -48,6 +48,7 @@ newest user turn, after its `tool_result` blocks, and is worded plainly
 (`tool_choice: none` already withdraws the tools) (#1212). The OB-31
 `expectedTurnToolUse` escalation no longer fires into that last, text-only
 iteration, where it could not force the tool and contradicted the note.
+
 ### Fixed — `DEV_ENDPOINTS_LOOPBACK_ONLY` covers every `/api/dev` route; compose stack sets its public URLs
 
 2026-10-16. Three fixes to the dev endpoints and the deploy configuration.
