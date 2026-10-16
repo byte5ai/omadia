@@ -507,6 +507,16 @@ export class ContextRetriever {
     this.opts = { ...DEFAULTS, ...opts };
   }
 
+  /**
+   * How many verbatim turns of the active chat this retriever replays — the
+   * operator's `context_tail_size`, or the default. Read by the
+   * subscription-CLI path (#1087), which replays the raw chat session itself
+   * and must keep the same depth as this one.
+   */
+  get tailSize(): number {
+    return this.opts.tailSize;
+  }
+
   async build(input: ContextBuildInput): Promise<ContextBuildResult> {
     const extractedTerms = extractCandidateTerms(input.userMessage);
 
