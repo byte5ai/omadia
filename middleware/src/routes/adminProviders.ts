@@ -78,6 +78,7 @@ import {
   type ModelCatalogSync,
 } from '../platform/modelCatalogSync.js';
 import { applyProviderAssignment } from '../platform/providerAssignment.js';
+import { rebuildOrder } from '../platform/providerDependents.js';
 
 export interface AdminProvidersDeps {
   readonly installedRegistry: InstalledRegistry;
@@ -152,10 +153,13 @@ async function fanOutProviderOAuthTokens(
     );
   }
   if (deps.reactivate) {
-    for (const desc of LLM_PLUGINS) {
-      if (deps.installedRegistry.has(desc.id)) {
-        await deps.reactivate(desc.id).catch(() => undefined);
-      }
+    // Capture order (#1394): the orchestrator captures the verifier's and
+    // extras' services in its own activate(), so it is rebuilt last.
+    const installed = LLM_PLUGINS.map((d) => d.id).filter((id) =>
+      deps.installedRegistry.has(id),
+    );
+    for (const id of rebuildOrder(installed, (pid) => deps.installedRegistry.has(pid))) {
+      await deps.reactivate(id).catch(() => undefined);
     }
   }
 }
@@ -332,7 +336,8 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           // #1083 — the concrete model the stored ref currently resolves to,
           // computed by the runtime's own resolver: a class ref follows the
           // provider's catalog, an alias maps to its vendor id. Plugins that
-          // resolve once at activation keep that model until reactivated.
+          // resolve once at activation are rebuilt when discovery moves the
+          // class (#1359), so this matches the running model.
           // `null` when unset or unresolvable. `model` stays the raw stored
           // ref (the intent).
           resolvedModel: model === null ? null : (resolveConfiguredModel(model, provider) ?? null),

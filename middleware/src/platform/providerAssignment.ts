@@ -13,9 +13,9 @@
  * catalog instead of being pinned to today's frontier model. The consumers of
  * the keys written here resolve it with `resolveConfiguredModel` /
  * `resolveModelRefStrict` (#1079): the orchestrator, verifier and extras once
- * at activation (the assignment reactivates the plugin; they keep that model
- * until the next reactivation, even if a later discovery run moves the class —
- * see handoff §13 "Klassen-Refs veralten nach Discovery"), the issue reformulation (`issuesRouter`, reading
+ * at activation (the assignment reactivates the plugin; a later discovery run
+ * that moves the class rebuilds them — `classDefaultRebuild.ts`, #1359), the
+ * issue reformulation (`issuesRouter`, reading
  * `orchestrator_model`) per call.
  * It fails closed only when the provider serves no model at all.
  * Provider-qualified ids and legacy aliases are still normalised to the bare
@@ -43,6 +43,7 @@ import {
 } from './pluginLlmReadiness.js';
 import {
   ProviderDependentRebuildError,
+  capturingPluginOf,
   isEffectiveProviderChange,
   providerDependentsOf,
   reactivateAfterProviderWrite,
@@ -60,6 +61,10 @@ export interface ProviderAssignmentInput {
   readonly pluginId: string;
   readonly provider: string;
   readonly model: string;
+  /** Leave the rebuild of the plugin that captures this one (the
+   *  orchestrator, for extras and the verifier — #1394) to the caller. For a
+   *  batch that rebuilds the capturer itself afterwards. */
+  readonly deferCapturerRebuild?: boolean;
 }
 
 export type ProviderAssignmentResult =
@@ -163,6 +168,7 @@ export async function applyProviderAssignment(
     outcome = await reactivateAfterProviderWrite(deps, pluginId, {
       providerChanged: isEffectiveProviderChange(entry?.config, nextConfig),
       providerWritten: true,
+      ...(input.deferCapturerRebuild === true ? { rebuildCapturer: false } : {}),
     });
   } catch (err) {
     if (err instanceof ProviderDependentRebuildError) {
@@ -319,6 +325,8 @@ export async function autoAssignSubscriptionCli(
     ...LLM_PLUGINS.filter((p) => hasDependents(p.id)),
   ];
 
+  const rebuilt = new Set<string>();
+  const capturersToRebuild = new Set<string>();
   for (const desc of handOffOrder) {
     if (!deps.installedRegistry.has(desc.id)) {
       skipped.push({ pluginId: desc.id, reason: 'not_installed' });
@@ -357,7 +365,17 @@ export async function autoAssignSubscriptionCli(
       pluginId: desc.id,
       provider: SUBSCRIPTION_CLI_PROVIDER,
       model: model.modelId,
+      // The capturing orchestrator is processed last and rebuilt by its own
+      // step; when that step does not run, it is rebuilt once below.
+      deferCapturerRebuild: true,
     });
+    // Only a step that actually rebuilt the plugin counts: a validation
+    // failure returns before any reactivation.
+    if (result.ok || result.primaryApplied !== undefined) {
+      rebuilt.add(desc.id);
+      const capturer = capturingPluginOf(desc.id);
+      if (capturer !== undefined) capturersToRebuild.add(capturer);
+    }
     if (result.ok) {
       assigned.push(desc.id);
       log(
@@ -380,6 +398,19 @@ export async function autoAssignSubscriptionCli(
       skipped.push({ pluginId: desc.id, reason: result.code });
       const verdict = result.primaryApplied === false ? 'saved but not running' : 'not switched';
       log(`[providers] subscription hand-off: ${desc.id} ${verdict} (${result.code}: ${result.message})`);
+    }
+  }
+  // #1394 — a switched extras / verifier is captured by the orchestrator; when
+  // the orchestrator's own step did not rebuild it (skipped: it has a
+  // credential, an explicit provider, …), rebuild it once now.
+  for (const capturer of capturersToRebuild) {
+    if (rebuilt.has(capturer) || !deps.installedRegistry.has(capturer)) continue;
+    try {
+      await deps.reactivate?.(capturer);
+    } catch (err) {
+      log(
+        `[providers] subscription hand-off: rebuilding ${capturer} after its captured plugins switched FAILED: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
   return { assigned, skipped };

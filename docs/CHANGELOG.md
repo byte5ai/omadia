@@ -36,6 +36,46 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — runtime config changes keep agent tools, background services and the discovered model
+
+2026-10-16. Follow-up to the provider-switch fix (#1406), closing the
+remaining gaps of cluster C02:
+
+- **Key-less first boot (#1358, #1345).** The domain-tool re-bind was only
+  installed when a chat orchestrator existed at boot, so a fresh install that
+  got its key in the UI ran chat and routines without any `query_*` tool until
+  a restart. The re-bind (`createOrchestratorToolRebinder`) and, with a
+  database, the registry hydration and its MCP pool are now installed either
+  way; the first key save binds both new instances. On a key-less boot with a
+  database this block now also provides the host `mcp` service (`ctx.mcp`),
+  the MCP input replayer, the long-running task resume driver (when enabled)
+  and the periodic MCP re-scan, as a boot with a key always did. Triggers covered by tests:
+  key save on `/admin/settings` (#1345), model change on the LLM access page
+  (#1400), routines plus a later agent-plugin reactivation (#1358).
+- **Extras and verifier rebuilds reach the orchestrator (#1394).** The
+  orchestrator captures extras' and the verifier's services in its own
+  `activate()`. A Background-Scorer assignment rebuilt only extras, and the
+  settings PATCH rebuilt the orchestrator first, so after the first key save
+  on a fresh stack fact extraction and Palaia excerpts stayed off until a
+  restart. `rebuildOrder` now rebuilds the orchestrator after the plugins it
+  captures, in the assignment, the settings PATCH and the OAuth fan-out.
+- **Discovered default model after a restart (#1359).** Plugins resolve a
+  class ref (`class:frontier`) at activation, which at boot happens before the
+  fire-and-forget discovery lands, so the orchestrator ran on the seed's
+  `claude-opus-5` instead of the discovered `claude-opus-5-5`. A discovery
+  run that moves a provider's class defaults now rebuilds the LLM plugins that
+  follow a class ref and activated on the older catalog, after the boot wiring
+  is done, with the orchestrator last and the status checked afterwards.
+  Activations are stamped when they start (new `ToolPluginRuntime`
+  `onActivating` hook), and rebuild runs are serialized. Operator-visible:
+  this also fires from the periodic discovery timer and "Refresh models", so
+  when a vendor moves a class the orchestrator (and a class-ref verifier or
+  extras) is reactivated unattended — the same teardown as saving a model on
+  the LLM access page. On a fresh stack the first key save can reactivate the
+  orchestrator twice (the save, then the discovery run it triggers).
+- DB-defined sub-agents use the current shared Anthropic client instead of the
+  boot-time env client, which stays unauthenticated on vault-keyed installs.
+
 ### Fixed — admin settings, webhook and help-page copy (C11)
 
 2026-10-16. `/admin/settings` was an outdated, half-German duplicate of the
