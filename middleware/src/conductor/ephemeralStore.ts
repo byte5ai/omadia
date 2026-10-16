@@ -1,5 +1,6 @@
 // Persistence for the ephemeral-workflow lifecycle (#330 Workstream A):
-// guardrail counters, the reapable-row query, and the two removal shapes.
+// guardrail counters, the reapable-row query, and the two removal shapes
+// (the logical one also purges conductor_ephemeral_run_state, 0012).
 // "Removal" is logical by default (disable + reaped_at — the run history and
 // version graph stay as audit trace); a physical DELETE happens only for rows
 // no run references (a failed start left them behind), which the versions
@@ -98,14 +99,43 @@ export class ConductorEphemeralStore {
   }
 
   /** Logical removal: not startable (disabled), never listed (origin filter),
-   *  stamped `reaped_at`. Idempotent — a reaped row is never re-stamped. */
+   *  stamped `reaped_at`. Idempotent — a reaped row is never re-stamped.
+   *  The same statement purges the runs' durable plugin state (0012): it is
+   *  agent working memory, not audit trace, and must not outlive the reap.
+   *  One statement (data-modifying CTE), so a reap never strands state rows. */
   async markReaped(workflowId: string): Promise<void> {
     await this.pool.query(
-      `UPDATE conductor_workflows
+      `WITH purged_state AS (
+         DELETE FROM conductor_ephemeral_run_state s
+          USING conductor_runs r, conductor_workflow_versions v
+          WHERE s.run_id = r.id
+            AND r.workflow_version_id = v.id
+            AND v.workflow_id = $1
+       )
+       UPDATE conductor_workflows
           SET status = 'disabled', reaped_at = now(), updated_at = now()
         WHERE id = $1 AND origin = 'ephemeral' AND reaped_at IS NULL`,
       [workflowId],
     );
+  }
+
+  /**
+   * Idempotent sweep: delete durable run state (0012) whose workflow is already
+   * reaped. markReaped purges in the same statement, but a saveRunState that
+   * committed while that statement's snapshot was taken can still land a row
+   * afterwards — without this sweep it would outlive the reap forever (the FK
+   * cascade never fires: the reap is logical). Run on every reaper tick.
+   */
+  async purgeReapedRunState(): Promise<number> {
+    const r = await this.pool.query(
+      `DELETE FROM conductor_ephemeral_run_state s
+        USING conductor_runs r, conductor_workflow_versions v, conductor_workflows w
+        WHERE s.run_id = r.id
+          AND r.workflow_version_id = v.id
+          AND v.workflow_id = w.id
+          AND w.reaped_at IS NOT NULL`,
+    );
+    return r.rowCount ?? 0;
   }
 
   /**

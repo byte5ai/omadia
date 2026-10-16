@@ -33,6 +33,7 @@ import { loadPatternCatalog } from './patternCatalog.js';
 import type { PatternCatalog } from './patternCatalog.js';
 import { ConductorEphemeralStore } from './ephemeralStore.js';
 import { ConductorEphemeralRunService } from './ephemeralRunService.js';
+import { ConductorEphemeralRunStateStore } from './ephemeralRunStateStore.js';
 import { ConductorEphemeralReaper } from './ephemeralReaper.js';
 import { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.js';
 import { createTemplateStore } from './templateStore.js';
@@ -114,8 +115,9 @@ export {
   EphemeralQuotaExceededError,
   EphemeralInvalidInputError,
 } from './ephemeralRunService.js';
-export type { CreateEphemeralRunInput, EphemeralRunHandle, EphemeralRunLimits } from './ephemeralRunService.js';
+export type { CreateEphemeralRunInput, EphemeralRunHandle, EphemeralRunLimits, OwnEphemeralRun, CancelOwnRunResult } from './ephemeralRunService.js';
 export { ConductorEphemeralReaper } from './ephemeralReaper.js';
+export { bindEphemeralRunsToCaller } from './ephemeralRunsCapability.js';
 export { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.js';
 export type { EphemeralAttachment } from './ephemeralAttachmentsStore.js';
 
@@ -504,6 +506,8 @@ export async function wireConductor(deps: {
     ephemeralStore,
     executor,
     awaitStore,
+    // Durable per-run plugin state (0012) — survives restarts, purged on reap.
+    runState: new ConductorEphemeralRunStateStore(deps.pool),
     limits: {
       defaultTtlMs: deps.ephemeral?.defaultTtlMs ?? 24 * 60 * 60 * 1000,
       maxTtlMs: deps.ephemeral?.maxTtlMs ?? 7 * 24 * 60 * 60 * 1000,

@@ -2039,10 +2039,55 @@ Patterns (#1234): Output wird über das Publikum geformt (`WHO READS THIS:` —
 wer liest das, wo, was ist dort lesbar), NICHT über numerische Wort-/Item-Caps;
 die Teams-Markdown-Regeln, die Sektions-Struktur, die
 Fenced-JSON-Verdict-Kontrakte und die Transcript-is-Data-Guards bleiben hart. Gate dafür:
-`test/conductorPatternPromptAudience.test.ts`. Achtung: das Schema-CI-Gate re-applied
-`src/conductor/migrations` noch NICHT (Verzeichnis steht in ci.yml unter
-"still uncovered") — 0009 ist nach 0008-Muster idempotent geschrieben, aber
-CI-unbewiesen.
+`test/conductorPatternPromptAudience.test.ts`. Das Schema-CI-Gate (`ci.yml`, Job
+`schema`) applied `src/conductor/migrations` zweimal (Idempotenz-Check) — jede
+neue Conductor-Migration muss das überstehen.
+
+**Durable Run-State + Owner-Seams (2026-10-16, Migration `0012_ephemeral_run_state.sql`).**
+Anlass: Facilitation-Vorfall 2026-10-15 — ein Deploy-Restart löschte den
+In-Memory-Store des Facilitator-Plugins, der durable Run tickte 17× mit „Keine
+aktive Facilitation bekannt" weiter. Neue Tabelle `conductor_ephemeral_run_state`
+(`run_id` PK → `conductor_runs(id)` ON DELETE CASCADE, `agent_id`, `state JSONB`
+≤ 16 KiB per CHECK, `updated_at`); Store `src/conductor/ephemeralRunStateStore.ts`.
+`conductorEphemeralRuns` bekommt drei owner-scoped Methoden (Kernel↔Plugin-Kontrakt,
+das Plugin `omadia-agent-facilitator` ≥ 0.6.0 ruft sie optional auf):
+
+- `listOwnRuns({ agentId })` → `{ runId, workflowId, workflowSlug, patternId|null,
+  expiresAt (ISO), payload, state|null }[]` — alle un-reapten, nicht abgelaufenen,
+  running/waiting Runs ohne Cancel-Request, die dieser Agent erzeugt hat;
+  `payload` = Run-Context ohne die executor-eigenen Keys
+  (`steps`/`stepAttempts`/`transcript`/`transcriptText`, eine gemeinsame Konstante
+  mit `createEphemeralRun`).
+- `saveRunState({ agentId, runId, state })` → `{ saved }` — EIN owner-guarded
+  `INSERT…SELECT … ON CONFLICT` (Owner = `created_by_agent`, nur aktive,
+  un-reapte Runs); `saved:false` für fremde/beendete/unbekannte Runs.
+  Boundary: runId muss UUID sein, state ein Plain-Object ≤ 16 KiB
+  (`EphemeralInvalidInputError`).
+- `cancelOwnRun({ agentId, runId, reason? })` → `{ cancelled, reason?:
+  'not_found'|'already_ended' }` — Owner-Precheck, dann `executor.cancelRun`
+  (NICHT `requestCancelActiveRuns`: cancelRun finalisiert wartende Runs sofort und
+  löst damit Reap/Dispose aus). Jeder Cancel wird geloggt.
+
+Der State ist Plugin-Arbeitsspeicher, kein Audit-Trace: `markReaped` löscht ihn
+im selben Statement (data-modifying CTE); `upsertOwned` hält `FOR SHARE OF w`,
+und `purgeReapedRunState` fegt bei jedem Reaper-Tick Zeilen reapter Workflows
+weg, die ein Write im Race mit dem Reap hinterlassen hat. Der Service ist per
+`perCallerService` registriert (`ephemeralRunsCapability.ts`): bei
+`listOwnRuns`/`saveRunState`/`cancelOwnRun` muss das übergebene `agentId` der
+kernel-bekannten Plugin-Id entsprechen, sonst leere Liste / `saved:false` /
+`not_found` + Log; der Kernel selbst bekommt den ungebundenen Service. Security:
+`docs/security-architecture.md` §10r. Pattern `facilitation` ist jetzt
+**v5**: moderate/report/abort-report reichen `{{ctx.conversationId}}` als
+`conversationId`-Argument an die Facilitation-Tools durch (leer → Argument
+weglassen), moderate zeigt `{{ctx.deadline}}`; Step-IDs unverändert (laufende
+Runs behalten ihren Snapshot-Graph, also v4-Prompts).
+
+**Boot-Order-Regel für Plugins:** Agent-Plugins aktivieren in `src/index.ts`
+(`dynamicAgentRuntime.activateAllInstalled()`) VOR der Conductor-Verdrahtung —
+`conductorEphemeralRuns` und `conversationBindings` werden erst später im
+`if (graphPool)`-Block provided. Ein Plugin darf Kernel-Services daher nicht
+nur in `activate()` auflösen; Rehydrierung muss lazy beim ersten Tool-Call
+passieren (Facilitator 0.6.0: `Hydrator.ensure()`).
 
 ### Group-Conversation-Primitives im Channel-SDK (#330 Workstream B1)
 
@@ -4572,6 +4617,19 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Ephemere Runs: stiller TTL-Kill + Per-Caller-Service (nach 0012)
+
+- **TTL-Ablauf ist ein stiller Kill.** Läuft `expires_at` ab, cancelt der Reaper
+  den Run ohne Abschlussbericht an die Gruppe (Vorfall 2026-10-15: TTL 18h lag
+  4,5h vor der genannten Abstimmungsfrist). Facilitator 0.6.0 verlängert die TTL
+  bei angegebener Deadline; der Kernel sollte vor dem Kill einen
+  `abort-report`-Pfad auslösen oder das Plugin benachrichtigen.
+- **`createEphemeralRun`/`poke` vertrauen noch dem Caller.** Die owner-scoped
+  Methoden sind seit 0012 per `perCallerService` gebunden; `createEphemeralRun`
+  nimmt das `agentId` weiter vom Plugin (nur geloggt bei Abweichung), `poke`
+  nimmt eine nackte Run-Id. Härtung: beide an den Caller binden, sobald kein
+  Plugin mehr einen fremden Namen übergibt.
 
 ### Memory-Purge: offene Punkte nach #1333–#1336
 

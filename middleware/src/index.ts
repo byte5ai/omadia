@@ -78,9 +78,9 @@ import {
 } from './services/teamsAppPackageAssets.js';
 import { createBotPresenceStore } from './conductor/botPresenceStore.js';
 import { createChatPeerAgentsProvider, createPeerGate } from './conductor/peerPolicy.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability } from './conductor/index.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability, bindEphemeralRunsToCaller } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
-import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
+import { TURN_RECEIPT_STORE_SERVICE_NAME, perCallerService } from '@omadia/plugin-api';
 import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
@@ -417,7 +417,7 @@ import { createUiNavigationRouter } from './routes/uiNavigation.js';
 import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
 import { EventCatalogRegistry } from './platform/eventCatalogRegistry.js';
 import { DeterministicActionRegistry } from './platform/deterministicActionRegistry.js';
-import { ServiceRegistry } from './platform/serviceRegistry.js';
+import { ServiceRegistry, KERNEL_SERVICE_CALLER } from './platform/serviceRegistry.js';
 import {
   createLateBoundAttachmentBindingStore,
   createLateBoundGrantStore,
@@ -4586,7 +4586,17 @@ async function main(): Promise<void> {
     // #330 — agent-facing create+start seam for ephemeral (JIT) workflows.
     // Deny-by-default like every kernel service: a plugin only reaches it after
     // declaring the service name in its manifest (pluginServiceGrants catalog).
-    serviceRegistry.provide('conductorEphemeralRuns', conductorWiring.ephemeralRunService);
+    // Per-caller since 0012: the owner-scoped methods (listOwnRuns/saveRunState/
+    // cancelOwnRun) bind agentId to the kernel-known plugin id, so a granted
+    // plugin cannot act as another agent. Core itself gets the unscoped service.
+    serviceRegistry.provide(
+      'conductorEphemeralRuns',
+      perCallerService((caller) =>
+        caller.pluginId === KERNEL_SERVICE_CALLER.pluginId
+          ? conductorWiring.ephemeralRunService
+          : bindEphemeralRunsToCaller(conductorWiring.ephemeralRunService, caller, (m) => console.warn(m)),
+      ),
+    );
     // Agent topic discussions, startable FROM A CHAT. No conversation id in the
     // signature on purpose: the kernel reads the conversation off the inbound
     // turn the calling plugin is answering, so a granted plugin can open a

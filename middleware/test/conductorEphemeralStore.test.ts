@@ -87,7 +87,7 @@ describe('ConductorEphemeralStore', () => {
     assert.deepEqual(queries[0]!.params, ['wf-1', 'reaper']);
   });
 
-  it('markReaped disables + stamps exactly once (idempotent WHERE)', async () => {
+  it('markReaped disables + stamps exactly once (idempotent WHERE) and purges run state', async () => {
     const { pool, queries } = fakePool(() => ({ rows: [] }));
     await new ConductorEphemeralStore(pool).markReaped('wf-1');
 
@@ -95,6 +95,11 @@ describe('ConductorEphemeralStore', () => {
     assert.ok(sql.includes("SET status = 'disabled', reaped_at = now()"));
     assert.ok(sql.includes("origin = 'ephemeral'"));
     assert.ok(sql.includes('reaped_at IS NULL'));
+    // 0012 — the durable run state is purged in the SAME statement (one query).
+    assert.equal(queries.length, 1);
+    assert.ok(sql.startsWith('WITH purged_state AS ( DELETE FROM conductor_ephemeral_run_state'));
+    assert.ok(sql.includes('v.workflow_id = $1'));
+    assert.deepEqual(queries[0]!.params, ['wf-1']);
   });
 
   it('hardDeleteUnreferenced deletes only when no run references the workflow', async () => {
@@ -107,5 +112,19 @@ describe('ConductorEphemeralStore', () => {
     assert.ok(sql.includes("w.origin = 'ephemeral'"));
     assert.ok(sql.includes('NOT EXISTS'));
     assert.ok(sql.includes('conductor_runs'));
+  });
+});
+
+describe('ConductorEphemeralStore.purgeReapedRunState (0012 race sweep)', () => {
+  it('deletes run state only for workflows that are already reaped', async () => {
+    const { pool, queries } = fakePool(() => ({ rows: [], rowCount: 3 }));
+    const purged = await new ConductorEphemeralStore(pool).purgeReapedRunState();
+
+    assert.equal(purged, 3);
+    assert.equal(queries.length, 1);
+    const sql = norm(queries[0]!);
+    assert.ok(sql.startsWith('DELETE FROM conductor_ephemeral_run_state s'));
+    assert.ok(sql.includes('v.workflow_id = w.id'));
+    assert.ok(sql.includes('w.reaped_at IS NOT NULL'));
   });
 });

@@ -47,6 +47,29 @@ The log line is now `answer released unconfirmed`. `@omadia/channel-sdk` no
 longer exports `composeVerifierDisclaimerText` (no plugin used it). Teams
 0.30.0 also marks Privacy Shield renders as "Originaldaten aus dem System".
 
+### Fixed — facilitations survive a middleware restart (conductor migration `0012`)
+
+2026-10-16. A facilitation started 2026-10-15 lost its whole state when a
+deploy restarted the middleware: progress, nudge count and the conversation
+link lived only in the Facilitator plugin's memory, while the durable run kept
+ticking hourly with "no active facilitation known". New conductor migration
+**`0012_ephemeral_run_state.sql`** adds `conductor_ephemeral_run_state` (one
+JSONB blob per ephemeral run, ≤ 16 KiB, FK-cascaded to `conductor_runs`,
+purged in the same statement that reaps the workflow). `conductorEphemeralRuns`
+gains three owner-scoped methods: `listOwnRuns`, `saveRunState` and
+`cancelOwnRun` (the latter goes through `executor.cancelRun`, so a waiting run
+finalizes and reaps at once). The service is now registered per caller: for
+those three methods the `agentId` must match the calling plugin's id. A write
+racing the reap waits on the workflow row lock, and the reaper sweeps any state
+row of an already-reaped workflow on every tick. The `facilitation` pattern is now v5: its tool
+steps pass `{{ctx.conversationId}}` so a restarted plugin finds the right
+facilitation instead of the latest one. Root cause worth knowing: agent plugins
+activate before the conductor services are provided in `src/index.ts`, so
+activate-time rehydration never ran on a cold boot; plugins must resolve kernel
+services lazily. Note that `run.context`, which now carries the facilitation's
+`conversationId` and optional `deadline`, goes out in conductor run webhooks
+like every other context key. Plugin side: `omadia-agent-facilitator` 0.6.0.
+
 ### Fixed — the `memory` tool can no longer read the stored chat copies
 
 2026-10-16. `/memories/chat-sessions/` holds the web UI's copy of every chat,
