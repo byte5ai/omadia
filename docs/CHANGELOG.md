@@ -66,6 +66,7 @@ gets the tab title "Orchestrator not found" (#1398). Unknown routes answer
 HTTP 404. Pages that call `notFound()` still answer 200, because the root
 `loading.tsx` starts streaming before the page runs. That needs a decision on
 where the loading boundaries go and is tracked on #1398.
+
 ### Fixed — Admin → Update tells the truth, and the release check backs off
 
 2026-10-16. Six fixes around `/admin/update` and version reporting (#1378–#1383).
