@@ -4923,7 +4923,7 @@
   },
   "adminUsage": {
     "title": "Usage & Cost",
-    "intro": "Records every LLM call — orchestrator, sub-agents and background tasks. Subscription turns via the Claude CLI count as calls but are not billed per token.",
+    "intro": "Records the LLM calls of the orchestrator, its sub-agents, the builder, plugins and background tasks, streamed or not. Subscription turns via the Claude CLI count as calls but are not billed per token.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "ranges": {
@@ -4946,7 +4946,12 @@
     },
     "empty": "No data in this period.",
     "barTitle": "{date} · {cost} · {calls, plural, one {# call} other {# calls}}",
-    "rowStats": "{calls} calls · {input} in · {output} out · {cache} cache",
+    "rowStats": "{calls} calls · {input} in · {output} out · {cacheRead} cache read · {cacheWrite} cache write",
+    "rowReference": " · subscription calls ≈ {reference} API equivalent",
+    "groups": {
+      "builder": "Builder ({count, plural, one {# draft} other {# drafts}})",
+      "other": "Other ({count, plural, one {# source} other {# sources}})"
+    },
     "subscription": {
       "headline": "{count, plural, one {# subscription turn} other {# subscription turns}} in this window",
       "explainer": "Subscription turns run on the Claude plan, not on per-token billing. They count as calls but cost nothing here. On the metered API they would have cost {reference}."
