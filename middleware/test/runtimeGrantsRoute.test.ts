@@ -28,6 +28,7 @@ import type { PluginSqlGrantRow, PluginSqlGrantStore } from '../src/platform/plu
 import { LedgerAlreadyOwnedError } from '../src/platform/pluginSqlGrantStore.js';
 import type { PublicPathGrantRow, PublicPathGrantStore } from '../src/platform/publicPathGrantStore.js';
 import type { SecretVault } from '../src/secrets/vault.js';
+import type { AuditEntryInput } from '../src/auth/adminAuditLog.js';
 
 /**
  * Epic #470 C16 (issue #817) — the operator consent surface for the two grants
@@ -51,6 +52,7 @@ const LEDGER = 'plg_test_grants_migrations';
 const P_ONE = '/api/plugins/test-grants/hook';
 const P_TWO = '/api/plugins/test-grants/callback';
 const OPERATOR = 'operator@example.com';
+const OPERATOR_UID = '5e4d3c2b-1a09-48f7-a6e5-d4c3b2a19087';
 
 // ── in-memory stores ───────────────────────────────────────────────────────
 //
@@ -182,6 +184,9 @@ async function makeHarness(
      *  unrelated reason. */
     activationNeedsSql?: boolean;
     sqlStore?: PluginSqlGrantStore | null;
+    /** #1347 — collects `plugin.grants_change` rows when given. */
+    auditRows?: AuditEntryInput[];
+    logLines?: string[];
   } = {},
 ): Promise<Harness> {
   const declareSql = opts.declareSql ?? true;
@@ -256,7 +261,7 @@ async function makeHarness(
     // Only `email` matters here — it is what `actorOf` reads. Cast rather than
     // fabricating a full SessionClaims: inventing the other four fields would
     // suggest the route reads them, and it must not.
-    Object.assign(req, { session: { email: OPERATOR } });
+    Object.assign(req, { session: { email: OPERATOR, uid: OPERATOR_UID } });
     next();
   });
   const stub = { names: () => [], counts: () => ({}) };
@@ -275,6 +280,17 @@ async function makeHarness(
       reactivate: async (agentId) => {
         await installService.reactivate(agentId);
       },
+      ...(opts.auditRows
+        ? {
+            audit: {
+              record: (entry: AuditEntryInput) => {
+                opts.auditRows?.push(entry);
+                return Promise.resolve();
+              },
+            },
+          }
+        : {}),
+      ...(opts.logLines ? { log: (m: string) => opts.logLines?.push(m) } : {}),
     }),
   );
 
@@ -864,6 +880,60 @@ void describe('#470 C16 — GET /grants describes the whole ask', () => {
         `${h.baseUrl}/api/v1/admin/runtime/installed/@test%2Fnope/grants`,
       );
       assert.equal(res.status, 404);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+// ── #1347 — every consent change leaves an audit row ─────────────────────────
+
+void describe('#1347 — grant changes are audited with before/after', () => {
+  void it('grant then revoke a public path writes two rows; the revoke keeps the history', async () => {
+    const auditRows: AuditEntryInput[] = [];
+    const logLines: string[] = [];
+    const h = await makeHarness({
+      declareSql: false,
+      activationNeedsSql: false,
+      auditRows,
+      logLines,
+    });
+    try {
+      assert.equal((await putGrants(h, { public_paths: [P_ONE] })).status, 200);
+      assert.equal((await putGrants(h, { public_paths: [] })).status, 200);
+      assert.equal(h.pathState.rows.size, 0, 'the revoke still deletes the grant row');
+      assert.deepEqual(auditRows, [
+        {
+          actor: { id: OPERATOR_UID, email: OPERATOR },
+          action: 'plugin.grants_change',
+          target: `plugin:${PLUGIN}`,
+          before: { public_paths: [], sql: null },
+          after: { public_paths: [P_ONE], sql: null },
+        },
+        {
+          actor: { id: OPERATOR_UID, email: OPERATOR },
+          action: 'plugin.grants_change',
+          target: `plugin:${PLUGIN}`,
+          before: { public_paths: [P_ONE], sql: null },
+          after: { public_paths: [], sql: null },
+        },
+      ]);
+      assert.equal(logLines.length, 2);
+      assert.match(logLines[0]!, /operator@example\.com changed consent for "@test\/grants": opened public paths \["\/api\/plugins\/test-grants\/hook"\]/);
+      assert.match(logLines[1]!, /closed public paths/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  void it('records the SQL ledger grant and writes nothing for a no-op request', async () => {
+    const auditRows: AuditEntryInput[] = [];
+    const h = await makeHarness({ auditRows, logLines: [] });
+    try {
+      assert.equal((await putGrants(h, { sql: true })).status, 200);
+      assert.equal((await putGrants(h, { sql: true })).status, 200);
+      assert.equal(auditRows.length, 1, 'an unchanged grant is not a change');
+      assert.deepEqual(auditRows[0]?.after, { public_paths: [], sql: { ledger: LEDGER } });
     } finally {
       await h.close();
     }
