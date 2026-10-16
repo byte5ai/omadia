@@ -7,15 +7,21 @@ import {
   ProfileQualityConfigSchema,
   SYCOPHANCY_SECTION_HEADING,
   SycophancyLevelSchema,
+  activate,
+  canonicalBoundaryPresetIds,
   createResponseGuardService,
   expandPresets,
   formatRulesBlock,
   knownBoundaryPresetIds,
+  legacyBoundaryPresetIds,
+  partitionPresetIds,
   parseProfileQualityConfig,
   rulesForSycophancy,
 } from '@omadia/plugin-quality-guard';
 import {
+  BOUNDARY_PRESETS,
   RESPONSE_GUARD_CAPABILITY,
+  type PluginContext,
   RESPONSE_GUARD_SERVICE_NAME,
   type ResponseGuardRequest,
   type ResponseGuardService,
@@ -87,8 +93,35 @@ describe('rulesForSycophancy', () => {
 // ---------------------------------------------------------------------------
 
 describe('boundary presets', () => {
-  it('exposes a 10-id library', () => {
-    assert.equal(knownBoundaryPresetIds().length, 10);
+  it('exposes the 12 shared ids plus the 8 legacy v0.1 ids', () => {
+    assert.equal(canonicalBoundaryPresetIds().length, 12);
+    assert.equal(legacyBoundaryPresetIds().length, 8);
+    assert.equal(knownBoundaryPresetIds().length, 20);
+    assert.equal(new Set(knownBoundaryPresetIds()).size, 20, 'id collision');
+  });
+
+  it('resolves every agent-UI id to the SAME wording the agent tab compiles (#1104)', () => {
+    // The two libraries used to share 2 of 22 ids; an agent-UI id typed into
+    // the plugin field was dropped. Now each one resolves, word for word.
+    for (const preset of BOUNDARY_PRESETS) {
+      assert.deepEqual(expandPresets([preset.id]), [preset.prompt], preset.id);
+    }
+  });
+
+  it('keeps the legacy v0.1 ids working so saved configs do not empty out', () => {
+    for (const id of legacyBoundaryPresetIds()) {
+      assert.equal(expandPresets([id]).length, 1, id);
+    }
+    // The AGENT.md frontmatter of the in-tree reference agents uses them
+    // (alongside `no-speculation`, which now resolves to the shared wording).
+    assert.equal(expandPresets(['factual-only', 'no-external-quotes']).length, 2);
+  });
+
+  it('reports unknown ids instead of hiding them', () => {
+    assert.deepEqual(
+      partitionPresetIds(['no-pii', 'no-such-preset', 'privacy-first', 'no-such-preset']),
+      { known: ['no-pii', 'privacy-first'], unknown: ['no-such-preset'] },
+    );
   });
 
   it('returns the wording for a known id', () => {
@@ -384,5 +417,46 @@ describe('capability metadata', () => {
 
   it('exports the well-known capability string', () => {
     assert.equal(RESPONSE_GUARD_CAPABILITY, 'responseGuard@1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Activation — unknown default preset ids are logged (#1104)
+// ---------------------------------------------------------------------------
+
+describe('activate', () => {
+  function fakeCtx(config: Record<string, unknown>): {
+    ctx: PluginContext;
+    logs: string[];
+  } {
+    const logs: string[] = [];
+    const ctx = {
+      log: (msg: string) => logs.push(msg),
+      config: { get: (key: string) => config[key] },
+      services: { provide: () => () => undefined },
+    } as unknown as PluginContext;
+    return { ctx, logs };
+  }
+
+  it('logs default preset ids it does not know, and keeps the known ones', async () => {
+    const { ctx, logs } = fakeCtx({
+      default_boundary_presets: 'no-financial-data, no-such-id, privacy-first',
+    });
+    const handle = await activate(ctx);
+    assert.ok(
+      logs.some((l) => l.includes('unknown preset id(s) no-such-id')),
+      logs.join('\n'),
+    );
+    assert.ok(
+      logs.some((l) => l.includes('default presets=2 (+1 unknown, ignored)')),
+      logs.join('\n'),
+    );
+    await handle.close();
+  });
+
+  it('logs nothing about unknown ids when every id resolves', async () => {
+    const { ctx, logs } = fakeCtx({ default_boundary_presets: 'no-pii,no-commitments' });
+    await activate(ctx);
+    assert.ok(!logs.some((l) => l.includes('unknown preset id')));
   });
 });
