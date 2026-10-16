@@ -1821,8 +1821,31 @@ export const SECURITY_QUARANTINE_NOTICE =
  * reply that looked like a platform bug. DE-first with an EN line, same shape
  * as {@link SECURITY_QUARANTINE_NOTICE}.
  */
-export const MODEL_REFUSAL_NOTICE =
-  'Das Modell hat diese Anfrage aus Sicherheitsgründen abgelehnt. Formuliere sie bitte anders oder wähle für diesen Agenten ein anderes Modell. / The model declined this request for safety reasons. Please rephrase it or choose a different model for this agent.';
+const MODEL_REFUSAL_NOTICE_DE =
+  'Das Modell hat diese Anfrage aus Sicherheitsgründen abgelehnt. Formuliere sie bitte anders oder wähle für diesen Agenten ein anderes Modell.';
+const MODEL_REFUSAL_NOTICE_EN =
+  'The model declined this request for safety reasons. Please rephrase it or choose a different model for this agent.';
+
+/**
+ * The refusal notice as the turn produces and PERSISTS it: language-neutral in
+ * the sense of carrying both languages, so the session log and the next turn's
+ * context do not depend on who asked. Delivery swaps it for one language via
+ * {@link localizeRefusalNotice} (#1401).
+ */
+export const MODEL_REFUSAL_NOTICE = `${MODEL_REFUSAL_NOTICE_DE} / ${MODEL_REFUSAL_NOTICE_EN}`;
+
+/**
+ * #1401 — replace the bilingual refusal notice in a delivered answer with the
+ * turn's language. Same locale rule as the AI-Act marking and the
+ * turn-incomplete notice: `en*` → English, anything else (incl. unknown) →
+ * German. An answer without the notice is returned unchanged.
+ */
+export function localizeRefusalNotice(answer: string, locale: string | undefined): string {
+  if (!answer.includes(MODEL_REFUSAL_NOTICE)) return answer;
+  const notice =
+    locale !== undefined && /^en\b/i.test(locale) ? MODEL_REFUSAL_NOTICE_EN : MODEL_REFUSAL_NOTICE_DE;
+  return answer.split(MODEL_REFUSAL_NOTICE).join(notice);
+}
 
 /**
  * The turn's final answer text. A refusal is made explicit: an empty answer
@@ -4064,9 +4087,13 @@ export class Orchestrator {
     // this path returns (choice cards, direct-line, gate returns included),
     // so a channel can always offer the neighbouring steps. Resolved here,
     // once, at the boundary; the inner success path sets the same value.
-    const result: ChatTurnResult = turn.answerVerbosity
+    const verbosityResolved: ChatTurnResult = turn.answerVerbosity
       ? turn
       : { ...turn, answerVerbosity: this.resolveAnswerVerbosity(input) };
+    const result: ChatTurnResult = {
+      ...verbosityResolved,
+      answer: localizeRefusalNotice(verbosityResolved.answer, this.turnLocale(input)),
+    };
     // #644 — the disclosure resolution rides `result.aiDisclosure` (set by
     // `runTurn`). Thread the scope + shared seen-store ONLY when there is a
     // marker to fold, so `toSemanticAnswer` folds it on the FIRST turn of the
@@ -4207,8 +4234,10 @@ export class Orchestrator {
     // Phase 3 — the level this answer ran under rides every `done` the
     // stream yields (this is the single funnel), on the disclosure-off path
     // as well; `chat()` does the same for the non-streaming result.
+    const expanded = this.expandDegradedDoneEvent(done, input);
     const delivered = {
-      ...this.expandDegradedDoneEvent(done, input),
+      ...expanded,
+      answer: localizeRefusalNotice(expanded.answer, this.turnLocale(input)),
       answerVerbosity: this.resolveAnswerVerbosity(input),
     };
     const aiDisclosure = this.resolveTurnDisclosure(input);
@@ -4245,6 +4274,12 @@ export class Orchestrator {
    * replacing that table with "your question is still unanswered" would drop
    * a real answer. The event stays flagged `degraded` for audit/health/verifier.
    */
+  /** The language a delivered notice is written in: the turn's disclosure
+   *  locale, else the operator's configured one (composers default to `de`). */
+  private turnLocale(input: ChatTurnInput): string | undefined {
+    return this.resolveTurnDisclosure(input)?.locale ?? this.aiDisclosure?.locale;
+  }
+
   private expandDegradedDoneEvent(
     done: Extract<ChatStreamEvent, { type: 'done' }>,
     input: ChatTurnInput,
@@ -4254,7 +4289,7 @@ export class Orchestrator {
     // `'off'`; the notice is not a disclosure and must still be localized, so
     // it falls back to the operator's configured locale and then to the
     // composer's own `'de'` default.
-    const locale = this.resolveTurnDisclosure(input)?.locale ?? this.aiDisclosure?.locale;
+    const locale = this.turnLocale(input);
     return {
       ...done,
       answer: composeTurnIncompleteText(

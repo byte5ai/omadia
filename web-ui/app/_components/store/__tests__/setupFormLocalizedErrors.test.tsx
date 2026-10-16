@@ -91,6 +91,34 @@ describe('<FieldRow /> — server validation errors in the active locale', () =>
     ).toBe('“https://a.example” is not a valid host name (no protocol, no path).');
   });
 
+  it('renders json_file missing_value from its params, in German', () => {
+    expect(
+      errorText(
+        { code: 'missing_value', message: 'english', params: { path: '$.client_email', target: 'sa_email' } },
+        'de',
+        { type: 'json_file' },
+      ),
+    ).toBe(
+      'Die hochgeladene Datei enthält bei $.client_email keinen verwendbaren Wert (benötigt für sa_email). Prüfe, ob du die richtige Datei gewählt hast.',
+    );
+  });
+
+  it('picks the unexpected_document sentence by which params arrived', () => {
+    expect(
+      errorText(
+        { code: 'unexpected_document', message: 'x', params: { key: 'type', expected: '"service_account"' } },
+        'en',
+        { type: 'json_file' },
+      ),
+    ).toBe('This does not look like the expected file: type is missing, expected "service_account".');
+  });
+
+  it('keeps the server message for json_file codes from an older server (no params)', () => {
+    expect(errorText({ code: 'missing_value', message: 'old english' }, 'de', { type: 'json_file' })).toBe(
+      'old english',
+    );
+  });
+
   it('keeps the server message for a code this build does not know', () => {
     expect(errorText({ code: 'missing_value', message: 'server text' }, 'en')).toBe(
       'server text',

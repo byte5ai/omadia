@@ -165,12 +165,12 @@ enthalten Fehler" and "Version … ist bereits hochgeladen." The server now also
 sends a stable code — `InstallJob.step_code`, and `params` on field errors and
 upload rejections — and the web UI renders it from its catalog in the active
 locale, falling back to the server text for unknown codes. Covered: the
-install drawer and the requires-wizard, every `validateValues` code, three of
-the `json_file` upload codes, and the common upload rejections (incl. multer's
-size limit). Additive; older servers keep working. Still open on #1401: the
-manifest text convention, in-tree setup-field translations, the remaining
-`json_file` codes (English in the German UI) and the orchestrator's refusal
-notice.
+install drawer and the requires-wizard, every `validateValues` code, the
+operator-facing `json_file` upload codes (`JsonFileFailure.params`), and the
+common upload rejections (incl. multer's size limit). The model-refusal notice
+was one bilingual string; delivery (`chat()`, `chatStream`) now shows it in
+the turn's locale (the AI-Act marking locale, default German) while the
+persisted turn keeps both. Additive; older servers keep working.
 
 ### Fixed — plugin UI host page no longer 404s for scoped plugin ids
 

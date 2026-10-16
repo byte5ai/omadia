@@ -7453,11 +7453,19 @@ Params, ältere Server) auf `message` zurück. Alles additiv:
 Neue Server-Texte in diesen Pfaden: Code vergeben, Params mitschicken, Katalog-Key
 in `en`+`de` anlegen. `message` bleibt als Fallback und für API-Clients.
 
-Offen (Entscheidung nötig, siehe PR): Pflicht-Konvention `{en, de}` für sichtbaren
-Manifest-Text inkl. Loader-Warnung/CI-Lint, `identity.name` lokalisierbar oder
-sprachneutral, Übersetzungspass der In-Tree-Setup-Felder, Safety-Refusal-Notice im
-Orchestrator, `i18n:check`/`i18n:literals` in CI. `ui.commands[].label` wird derzeit
-von keiner Oberfläche gelesen.
+- `json_file`-Fehler (`setupJsonFile.ts`) tragen `params` (Pfad, Ziel, erwarteter
+  Wert — nie ein extrahierter Wert).
+- Die Safety-Refusal-Notice (`MODEL_REFUSAL_NOTICE`) bleibt intern/persistiert
+  zweisprachig; `localizeRefusalNotice` tauscht sie an der Auslieferungsgrenze
+  (`chat()`, `discloseDoneEvent`) gegen die Turn-Sprache (gleiche Regel wie das
+  AI-Act-Marking: `en*` → Englisch, sonst Deutsch).
+
+Nicht lokalisiert, weil nicht sichtbar: Fehler von `DELETE /install/packages/:id`
+landen in der Web-UI nur in `console.warn`. `ui.commands[].label` wird von keiner
+Oberfläche gelesen.
+
+Entschieden (Marcel, 2026-10-16): `{en, de}` für sichtbaren Manifest-Text ist
+Konvention mit **Warnung, keine Ablehnung**; `identity.name` bleibt sprachneutral.
 
 ## HTTP-Fehlerantworten: Terminal-Handler statt `finalhandler` (#1326 / #1318 / #1349, 2026-10-16)
 

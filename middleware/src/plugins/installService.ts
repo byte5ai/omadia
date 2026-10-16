@@ -358,7 +358,12 @@ export class InstallService {
             code: 'install.validation_failed',
             message: 'Eingaben enthalten Fehler',
             details: [
-              { key: field.key, code: out.failure.code, message: out.failure.message },
+              {
+                key: field.key,
+                code: out.failure.code,
+                message: out.failure.message,
+                ...(out.failure.params ? { params: { ...out.failure.params } } : {}),
+              },
             ],
           });
           return job;

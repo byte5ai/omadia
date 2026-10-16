@@ -331,6 +331,7 @@ export {
   assertTimeoutHierarchy,
   // `stop_reason: "refusal"` → explicit notice instead of an empty answer.
   MODEL_REFUSAL_NOTICE,
+  localizeRefusalNotice,
   finalAnswerText,
 } from './orchestrator.js';
 export type { OrchestratorOptions, AiDisclosureSetup } from './orchestrator.js';

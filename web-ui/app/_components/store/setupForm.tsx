@@ -61,6 +61,44 @@ const UPLOAD_KEYS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Codes whose text interpolates server `params` (`setupJsonFile.ts`). Listed
+ * as [catalog key, params required]; the first entry whose params are all
+ * present wins, so `unexpected_document` picks the "has value X" sentence
+ * when the server sent `actual`, and the "is missing" one otherwise.
+ */
+export const PARAM_KEYS: Readonly<
+  Record<string, ReadonlyArray<readonly [string, readonly string[]]>>
+> = {
+  invalid_host: [['invalidHost', ['host']]],
+  unexpected_document: [
+    ['uploadUnexpectedValue', ['key', 'actual', 'expected']],
+    ['uploadUnexpectedMissing', ['key', 'expected']],
+  ],
+  missing_value: [['uploadMissingValue', ['path', 'target']]],
+  bad_extract_path: [['uploadBadExtractPath', ['path', 'target']]],
+};
+
+function paramText(
+  error: SetupFieldError,
+  t: ErrorTranslator,
+): string | undefined {
+  for (const [key, needed] of PARAM_KEYS[error.code ?? ''] ?? []) {
+    const values: Record<string, string> = {};
+    let complete = true;
+    for (const name of needed) {
+      const v = error.params?.[name];
+      if (typeof v !== 'string') {
+        complete = false;
+        break;
+      }
+      values[name] = v;
+    }
+    if (complete) return t(key, values);
+  }
+  return undefined;
+}
+
+/**
  * #1401 — the text for one server validation error, in the active locale.
  * Unknown codes, and codes whose parameters the response lacks, keep the
  * server's own `message`.
@@ -85,10 +123,7 @@ export function localizedFieldError(
     const allowed = (field.enum ?? []).map((o) => o.value).join(', ');
     return allowed ? t('enumMismatch', { label, allowed }) : error.message;
   }
-  if (code === 'invalid_host') {
-    const host = error.params?.['host'];
-    return host ? t('invalidHost', { host }) : error.message;
-  }
+  if (PARAM_KEYS[code]) return paramText(error, t) ?? error.message;
   const upload = UPLOAD_KEYS[code];
   return upload ? t(upload) : error.message;
 }

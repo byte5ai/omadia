@@ -4418,7 +4418,11 @@
         "invalidHost": "„{host}“ ist kein gültiger Hostname (kein Protokoll, kein Pfad).",
         "uploadTooLarge": "Die hochgeladene Datei ist zu groß.",
         "uploadNotJson": "Die hochgeladene Datei ist kein gültiges JSON.",
-        "uploadNotAnObject": "Die hochgeladene Datei muss ein JSON-Objekt enthalten."
+        "uploadNotAnObject": "Die hochgeladene Datei muss ein JSON-Objekt enthalten.",
+        "uploadUnexpectedValue": "Das sieht nicht nach der erwarteten Datei aus: {key} ist {actual}, erwartet wurde {expected}.",
+        "uploadUnexpectedMissing": "Das sieht nicht nach der erwarteten Datei aus: {key} fehlt, erwartet wurde {expected}.",
+        "uploadMissingValue": "Die hochgeladene Datei enthält bei {path} keinen verwendbaren Wert (benötigt für {target}). Prüfe, ob du die richtige Datei gewählt hast.",
+        "uploadBadExtractPath": "Das Plugin deklariert einen nicht unterstützten Extraktionspfad {path} für {target}. Das ist ein Fehler im Plugin, nicht in deiner Datei."
       }
     },
     "adminUi": {

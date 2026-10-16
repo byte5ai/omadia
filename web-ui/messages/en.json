@@ -4418,7 +4418,11 @@
         "invalidHost": "“{host}” is not a valid host name (no protocol, no path).",
         "uploadTooLarge": "The uploaded file is too large.",
         "uploadNotJson": "The uploaded file is not valid JSON.",
-        "uploadNotAnObject": "The uploaded file must contain a JSON object."
+        "uploadNotAnObject": "The uploaded file must contain a JSON object.",
+        "uploadUnexpectedValue": "This does not look like the expected file: {key} is {actual}, expected {expected}.",
+        "uploadUnexpectedMissing": "This does not look like the expected file: {key} is missing, expected {expected}.",
+        "uploadMissingValue": "The uploaded file has no usable value at {path} (needed for {target}). Check that you selected the right file.",
+        "uploadBadExtractPath": "The plugin declares an unsupported extract path {path} for {target}. This is a problem in the plugin, not in your file."
       }
     },
     "adminUi": {
