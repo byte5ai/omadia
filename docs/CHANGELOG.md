@@ -262,6 +262,22 @@ it is. No DB migration: key records and the usage log stay vault entries;
 old records read as "no expiry, owner unknown". Rotation is not implemented
 (open question on the PR).
 
+### Fixed — install and upload errors follow the UI language
+
+2026-10-16 (#1401, partly). The install drawer's step line, the setup form's
+field errors and the Hub upload's rejections came from the middleware in
+German, so the English UI showed "Feld … ist erforderlich.", "Eingaben
+enthalten Fehler" and "Version … ist bereits hochgeladen." The server now also
+sends a stable code — `InstallJob.step_code`, and `params` on field errors and
+upload rejections — and the web UI renders it from its catalog in the active
+locale, falling back to the server text for unknown codes. Covered: the
+install drawer and the requires-wizard, every `validateValues` code, the
+operator-facing `json_file` upload codes (`JsonFileFailure.params`), and the
+common upload rejections (incl. multer's size limit). The model-refusal notice
+was one bilingual string; delivery (`chat()`, `chatStream`) now shows it in
+the turn's locale (the AI-Act marking locale, default German) while the
+persisted turn keeps both. Additive; older servers keep working.
+
 ### Fixed — plugin UI host page no longer 404s for scoped plugin ids
 
 2026-10-16 (#1399). Core links a plugin's own UI as

@@ -7,6 +7,7 @@ import { useTranslations } from 'next-intl';
 import { ApiError, uploadPackage } from '../../_lib/api';
 import type { UploadedPackage } from '../../_lib/storeTypes';
 import { cn } from '../../_lib/cn';
+import { packageErrorText } from '../../_lib/packageErrorText';
 import { Button } from '@/app/_components/ui/Button';
 
 type UploadState =
@@ -19,6 +20,7 @@ const ACCEPTED_MIME = 'application/zip,application/x-zip-compressed,.zip';
 
 export function UploadDropzone(): React.ReactElement {
   const t = useTranslations('store.upload');
+  const tErr = useTranslations('store.upload.errors');
   const [state, setState] = useState<UploadState>({ kind: 'idle' });
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -58,10 +60,16 @@ export function UploadDropzone(): React.ReactElement {
       } catch (err) {
         if (err instanceof ApiError) {
           const parsed = parseErrorBody(err.body);
+          const code = parsed.code ?? `http.${err.status}`;
           setState({
             kind: 'error',
-            code: parsed.code ?? `http.${err.status}`,
-            message: parsed.message ?? err.message,
+            code,
+            message: packageErrorText(
+              code,
+              parsed.params,
+              parsed.message ?? err.message,
+              tErr,
+            ),
           });
         } else {
           setState({
@@ -72,7 +80,7 @@ export function UploadDropzone(): React.ReactElement {
         }
       }
     },
-    [router, t],
+    [router, t, tErr],
   );
 
   const onDrop = useCallback(
@@ -369,12 +377,29 @@ function humanBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function parseErrorBody(body: string): { code?: string; message?: string } {
+function parseErrorBody(body: string): {
+  code?: string;
+  message?: string;
+  params?: Record<string, string>;
+} {
   try {
-    const parsed = JSON.parse(body) as { code?: string; message?: string };
+    const parsed = JSON.parse(body) as {
+      code?: string;
+      message?: string;
+      params?: unknown;
+    };
+    const params =
+      parsed.params && typeof parsed.params === 'object' && !Array.isArray(parsed.params)
+        ? Object.fromEntries(
+            Object.entries(parsed.params as Record<string, unknown>).filter(
+              (e): e is [string, string] => typeof e[1] === 'string',
+            ),
+          )
+        : undefined;
     return {
       ...(typeof parsed.code === 'string' ? { code: parsed.code } : {}),
       ...(typeof parsed.message === 'string' ? { message: parsed.message } : {}),
+      ...(params ? { params } : {}),
     };
   } catch {
     return {};

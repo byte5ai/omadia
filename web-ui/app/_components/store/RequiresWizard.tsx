@@ -349,12 +349,17 @@ export function RequiresWizard({
 
         const configured = await configureInstallJob(job.id, values);
         if (!isInstalledTerminal(configured.job.state)) {
+          // #1401 — `validation_failed` carries German server text; say it
+          // from the catalog. Other codes keep the server message.
+          const error = configured.job.error;
           const message =
-            configured.job.error?.message ??
-            t('stepEndedInState', {
-              label: step.label,
-              state: configured.job.state,
-            });
+            error?.code === 'install.validation_failed'
+              ? t('stepValidationFailed', { label: step.label })
+              : (error?.message ??
+                t('stepEndedInState', {
+                  label: step.label,
+                  state: configured.job.state,
+                }));
           setPhase({ kind: 'error', message });
           return;
         }

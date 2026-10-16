@@ -7538,6 +7538,41 @@ per `${prependRules}\n\n---\n\n${body}` vorangestellt und drückt in dieselbe Ri
 Fix A lässt ihn bewusst unangetastet — die Präzedenz-Klausel deckt ihn über „every other
 instruction in this prompt" mit ab.
 
+## Server-Texte ohne Request-Locale: Code + Params, Text im Client (#1401, 2026-10-16)
+
+Install-Flow und Package-Upload haben keine Request-Locale und schreiben ihre
+Texte deutsch. Statt der Middleware eine Locale durchzureichen, gilt jetzt das
+`errorHelp`-Muster: der Server liefert einen **stabilen Code** plus die
+**Parameter**, die der Client nicht selbst kennt; die Web-UI rendert den Text aus
+ihrem Katalog in der aktiven Sprache und fällt für unbekannte Codes (oder fehlende
+Params, ältere Server) auf `message` zurück. Alles additiv:
+
+- `InstallJob.step_code` (`InstallJobStep` in `src/api/admin-v1.ts`) neben dem
+  deutschen `current_step` → `store.install.steps.*`.
+- Feld-Validierungsfehler (`details[]` von `install.validation_failed`) behalten
+  `{key, code, message}`; neu `params` wo nötig (`invalid_host` → `host`). Label,
+  Feldtyp und Enum-Werte nimmt der Client aus dem Setup-Schema →
+  `store.setupForm.errors.*` (`localizedFieldError` in `setupForm.tsx`).
+- Upload-Ablehnungen (`IngestFailure.params`, durchgereicht von
+  `routes/packages.ts`) → `store.upload.errors.*` (`web-ui/app/_lib/packageErrorText.ts`).
+
+Neue Server-Texte in diesen Pfaden: Code vergeben, Params mitschicken, Katalog-Key
+in `en`+`de` anlegen. `message` bleibt als Fallback und für API-Clients.
+
+- `json_file`-Fehler (`setupJsonFile.ts`) tragen `params` (Pfad, Ziel, erwarteter
+  Wert — nie ein extrahierter Wert).
+- Die Safety-Refusal-Notice (`MODEL_REFUSAL_NOTICE`) bleibt intern/persistiert
+  zweisprachig; `localizeRefusalNotice` tauscht sie an der Auslieferungsgrenze
+  (`chat()`, `discloseDoneEvent`) gegen die Turn-Sprache (gleiche Regel wie das
+  AI-Act-Marking: `en*` → Englisch, sonst Deutsch).
+
+Nicht lokalisiert, weil nicht sichtbar: Fehler von `DELETE /install/packages/:id`
+landen in der Web-UI nur in `console.warn`. `ui.commands[].label` wird von keiner
+Oberfläche gelesen.
+
+Entschieden (Marcel, 2026-10-16): `{en, de}` für sichtbaren Manifest-Text ist
+Konvention mit **Warnung, keine Ablehnung**; `identity.name` bleibt sprachneutral.
+
 ## HTTP-Fehlerantworten: Terminal-Handler statt `finalhandler` (#1326 / #1318 / #1349, 2026-10-16)
 
 `src/index.ts` startet den Server **nicht** mehr mit `app.listen`, sondern mit
