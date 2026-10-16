@@ -4923,7 +4923,7 @@
   },
   "adminUsage": {
     "title": "Nutzung & Kosten",
-    "intro": "Erfasst jeden LLM-Call — Orchestrator, Sub-Agents und die Background-Tasks. Abo-Turns über die Claude-CLI zählen als Calls, werden aber nicht pro Token abgerechnet.",
+    "intro": "Erfasst die LLM-Calls des Orchestrators, seiner Sub-Agents, des Builders, der Plugins und der Background-Tasks, gestreamt oder nicht. Abo-Turns über die Claude-CLI zählen als Calls, werden aber nicht pro Token abgerechnet.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
     "ranges": {
@@ -4946,7 +4946,12 @@
     },
     "empty": "Keine Daten im Zeitraum.",
     "barTitle": "{date} · {cost} · {calls, plural, one {# Call} other {# Calls}}",
-    "rowStats": "{calls} Calls · {input} in · {output} out · {cache} cache",
+    "rowStats": "{calls} Calls · {input} in · {output} out · {cacheRead} Cache gelesen · {cacheWrite} Cache geschrieben",
+    "rowReference": " · Abo-Calls ≈ {reference} API-Gegenwert",
+    "groups": {
+      "builder": "Builder ({count, plural, one {# Entwurf} other {# Entwürfe}})",
+      "other": "Sonstige ({count, plural, one {# Quelle} other {# Quellen}})"
+    },
     "subscription": {
       "headline": "{count, plural, one {# Abo-Turn} other {# Abo-Turns}} in diesem Zeitraum",
       "explainer": "Abo-Turns laufen über das Claude-Abo, nicht über Token-Abrechnung. Sie zählen als Calls, kosten hier aber nichts. Auf der API hätten sie {reference} gekostet."
