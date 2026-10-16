@@ -63,6 +63,7 @@ the selector hints with `<code>`, and offers no delete for an empty preview.
 `memory_purge_audit` gains columns on first use (`ADD COLUMN IF NOT EXISTS`).
 Breaking for direct API callers: `DELETE` needs the `previewToken`, and
 `warning` became `warnings`.
+
 ### Fixed — JSON errors instead of Express HTML pages, and an omadia 404 page
 
 2026-10-16. Express's built-in `finalhandler` answered everything no router
