@@ -36,6 +36,51 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the middleware waits for Postgres at boot instead of crash-looping
+
+2026-10-16 (#1386). Core migrations are the first thing in boot that talks to
+Postgres, and they rethrew `ENOTFOUND`/`ECONNREFUSED` at once, so a middleware
+that started before its database (`docker compose restart`, a restart-policy
+restart, the DNS-alias race on a fresh `up`) exited and crash-looped until
+Postgres answered. `runCoreMigrations` now retries transient connection errors
+(`isTransientDbError`, now exported by `@omadia/knowledge-graph-neon` and shared
+with its `waitForPostgres`) with backoff from 0.5 s up to 5 s, for up to 60 s,
+logging `waiting for Postgres (…)` per attempt. Each connect attempt is capped
+at 5 s, and the separate lock-contention budget now starts at the first
+contention, so a long database wait cannot use it up. Past that budget the error
+still ends the process. Bad credentials or a missing database still fail on the
+first attempt. The HTTP listener is not up during the wait, so the Compose
+healthcheck (90 s `start_period`) and Fly's `/health` check (no restarts, only
+routing and deploy gating) see "not answering yet", not "degraded".
+
+### Fixed — a database outage is named as one, and `/system` shows platform health
+
+2026-10-16 (#1384, #1385, #1387, #1332). `GET /health` has a new
+`checks.database` (`ok` | `unreachable` | `unknown` | `none`). It is additive:
+`status` and the HTTP code keep their meaning, so the updater's health gate and
+the desktop supervisor are unaffected. Master-key posture is deliberately not
+on this public endpoint (see `docs/security-architecture.md` §8).
+
+- Dashboard: a card whose data could not be loaded now says "Status
+  unavailable" instead of its empty state ("No plugins installed yet" on an
+  instance with 15). A 503 `auth.unavailable` (the session check, which needs
+  the database) is its own readiness state, `database_unavailable`: the
+  middleware card reads "Database unreachable · API responds, database
+  unreachable", onboarding step 1 and the readiness card name the database and
+  link to `/system` instead of `/admin/update`.
+- `/system` renders the middleware's `/health` (database, embeddings, the
+  middleware's warnings) next to the vault card, loaded
+  independently so a failed vault call no longer hides it.
+- `/api/v1/admin/vault-status` returns `keychain_key_source`, and
+  `production_ready` is true only when both `VAULT_KEY` and
+  `CREDENTIAL_KEYCHAIN_KEY` come from env. The vault card shows a keychain row
+  and no longer says "production" for the vault key alone (that string was also
+  hard-coded English).
+- A shared banner on the dashboard and `/admin` reports a database outage, an
+  unreachable middleware, or (from vault-status) a master key read from the
+  dev file, naming the env var to set; `/admin` has a "Platform health" card linking to `/system`.
+- The boot log names the keychain dev key file path, like the vault line.
+
 ### Fixed — API keys: known scopes only, expiry/owner/delete, audit trail (#1327, #1328, #1329, #1324)
 
 2026-10-16. `POST /api/public/v1/admin/keys` accepted any well-formed scope,

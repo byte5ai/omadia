@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion } from 'framer-motion';
-import { Cpu, KeyRound, PlugZap } from 'lucide-react';
+import { Cpu, Database, KeyRound, PlugZap } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import { Button } from './ui/Button';
@@ -108,8 +108,9 @@ export function RuntimeReadinessBanner(): React.ReactElement | null {
           credentials: 'include',
           signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
         });
-        // Only the 503 carries a structured body; a proxy's HTML error page
-        // has nothing to classify on, so don't read it.
+        // Only the 503 carries a structured body (the operator route's
+        // `error`, or requireAuth's `code` during a database outage); a
+        // proxy's HTML error page has nothing to classify on, so don't read it.
         const body =
           res.status === 503
             ? ((await res.json().catch(() => null)) as ReadinessProbeBody | null)
@@ -172,30 +173,52 @@ function ReadinessCard({
   // a middleware that did not answer cannot tell us. Its CTA leads to the
   // version/update page instead of the provider page, because a stopped
   // container is not a provider problem.
+  //
+  // #1384 — `database_unavailable` is the middleware answering 503
+  // `auth.unavailable`: the API is up, Postgres is not. It must neither blame
+  // the middleware nor send the operator to the update page (which fails with
+  // the same 503); its CTA leads to /system, where the database check lives.
   const noAssignment = cause === 'no_assignment';
   const unknown = cause === 'unknown';
   const unreachable = cause === 'unreachable';
-  const Icon = unreachable ? PlugZap : noAssignment ? Cpu : KeyRound;
-  const title = unreachable
-    ? t('titleUnreachable')
-    : noAssignment
-      ? t('titleNoAssignment')
-      : unknown
-        ? t('titleUnknown')
-        : t('title');
-  const body = unreachable
-    ? t('bodyUnreachable')
-    : noAssignment
-      ? t('bodyNoAssignment')
-      : unknown
-        ? t('bodyUnknown')
-        : t('body');
-  const href = unreachable ? '/admin/update' : '/admin/providers';
-  const cta = unreachable
-    ? t('ctaUnreachable')
-    : noAssignment
-      ? t('ctaNoAssignment')
-      : t('cta');
+  const databaseDown = cause === 'database_unavailable';
+  const Icon = databaseDown
+    ? Database
+    : unreachable
+      ? PlugZap
+      : noAssignment
+        ? Cpu
+        : KeyRound;
+  const title = databaseDown
+    ? t('titleDatabaseUnavailable')
+    : unreachable
+      ? t('titleUnreachable')
+      : noAssignment
+        ? t('titleNoAssignment')
+        : unknown
+          ? t('titleUnknown')
+          : t('title');
+  const body = databaseDown
+    ? t('bodyDatabaseUnavailable')
+    : unreachable
+      ? t('bodyUnreachable')
+      : noAssignment
+        ? t('bodyNoAssignment')
+        : unknown
+          ? t('bodyUnknown')
+          : t('body');
+  const href = databaseDown
+    ? '/system'
+    : unreachable
+      ? '/admin/update'
+      : '/admin/providers';
+  const cta = databaseDown
+    ? t('ctaDatabaseUnavailable')
+    : unreachable
+      ? t('ctaUnreachable')
+      : noAssignment
+        ? t('ctaNoAssignment')
+        : t('cta');
 
   return (
     <motion.div

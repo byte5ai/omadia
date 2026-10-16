@@ -65,6 +65,19 @@ vi.mock('../_lib/agents', () => ({
   getMcpServerSummary: mockMcp,
 }));
 
+// #1384 — the page also reads the middleware's /health; a healthy stack here.
+vi.mock('../_lib/platformHealth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/platformHealth')>()),
+  fetchMiddlewareHealth: async () => ({
+    reachable: true,
+    body: { checks: { database: 'ok' } },
+  }),
+}));
+
+vi.mock('../_components/PlatformHealthBanner', () => ({
+  PlatformHealthBanner: (): null => null,
+}));
+
 vi.mock('../_lib/authRedirect', () => ({
   redirectIfUnauthorized: vi.fn(),
 }));
