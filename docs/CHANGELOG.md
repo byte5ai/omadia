@@ -63,6 +63,19 @@ are logged at activation instead of being dropped without a trace.
 **Check `default_boundary_presets` before upgrading:** an agent-UI id that
 0.1 silently dropped (e.g. `no-pii`) now applies to every agent. The plugin's setup fields now carry English and German text.
 
+### Fixed — sub-agents no longer rewrite their system prompt for the wrap-up turn
+
+2026-10-16. When a `LocalSubAgent` hit its last iteration or repeated the same
+failing tool call, it appended the wrap-up note to its system prompt for that
+one request. Changing the system prompt mid-run breaks the prompt-cache prefix
+and, on Opus 5.5 / Fable 5.1, the binding of the run's thinking blocks, so the
+final answer lost the reasoning it was meant to summarise. The system prompt
+now stays the same for the whole run; the note rides as a text block on the
+newest user turn, after its `tool_result` blocks, and is worded plainly
+(`tool_choice: none` already withdraws the tools) (#1212). The OB-31
+`expectedTurnToolUse` escalation no longer fires into that last, text-only
+iteration, where it could not force the tool and contradicted the note.
+
 ### Fixed — JSON errors instead of Express HTML pages, and an omadia 404 page
 
 2026-10-16. Express's built-in `finalhandler` answered everything no router
