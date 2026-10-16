@@ -695,7 +695,7 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   sessionSigningKey, whitelist: emailWhitelist, sessions: sessionRevocation })`
   vor `createCoreApi({ … webSockets })`, zusätzlich an die `DefaultChannelRegistry`
   gereicht (Lifecycle-Spiegel zu `routes`), und
-  `webSocketRegistry.attach(server)` nach `const server = app.listen(PORT, '::')`
+  `webSocketRegistry.attach(server)` nach `const server = createAppServer(app, terminalHandler).listen(PORT, '::')`
   — dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit. Über
   `sessions` (derselbe `SessionRevocationGuard` wie `requireAuth`) kommen sowohl
   der Upgrade-Check als auch `onRevoked`, die Frame-Prüfung und der Sweep.
@@ -7197,3 +7197,38 @@ Der Quality-Guard-Plugin-Block (`harness-plugin-quality-guard`, `MEDIUM_EXTRA`) 
 per `${prependRules}\n\n---\n\n${body}` vorangestellt und drückt in dieselbe Richtung;
 Fix A lässt ihn bewusst unangetastet — die Präzedenz-Klausel deckt ihn über „every other
 instruction in this prompt" mit ab.
+
+## HTTP-Fehlerantworten: Terminal-Handler statt `finalhandler` (#1326 / #1318 / #1349, 2026-10-16)
+
+`src/index.ts` startet den Server **nicht** mehr mit `app.listen`, sondern mit
+`createAppServer(app, terminalHandler).listen(...)` (`src/http/terminalHandler.ts`).
+`createAppServer` ruft die Express-App mit einem dritten `done`-Argument auf;
+das läuft erst, wenn der **gesamte** Router-Stack den Request abgelehnt hat,
+und ersetzt Express' `finalhandler`. Der antwortet mit HTML und schreibt
+außerhalb von `NODE_ENV=production` den Stack hinein — Compose läuft mit
+`development`, also bekam jeder anonyme Client mit kaputtem JSON-Body einen
+Stack mit Container-Pfaden.
+
+Der Terminal-Handler antwortet immer JSON `{ code, message }`, nie mit Stack:
+
+| Fall | Status / `code` |
+|---|---|
+| body-parser `entity.parse.failed` | `400 request.invalid_json` |
+| body-parser `entity.too.large` | `413 request.payload_too_large` |
+| andere 4xx-Fehler mit `status` | ihr Status, `request.*` bzw. `unauthorized` / `forbidden` / … |
+| kein Router zuständig | `404 not_found` |
+| Pfad unter einem deklarierten, aber nicht freigegebenen Public-Prefix | `404 public_path.not_granted` |
+| sonstiger unbehandelter Fehler | `500 internal` (Stack nur ins Log) |
+
+**Regeln für spätere Änderungen:**
+
+- Nicht zurück auf `app.listen` — das bringt `finalhandler` und damit HTML +
+  Stack zurück.
+- Keinen Catch-all `app.use((req, res) => 404)` / Error-Middleware ans Ende
+  von `main()` hängen: `PluginRouteRegistry` mountet Plugin-Router nach dem
+  Boot live per `app.use`, die landeten **hinter** dem Catch-all und wären bis
+  zum Neustart tot. Der Terminal-Callback ist per Konstruktion immer zuletzt.
+- Routen, deren `:id` eine Postgres-`uuid`-Spalte ist, prüfen die Id per
+  `router.param('id', requireUuidParam('<area>.not_found'))`
+  (`src/http/uuidParam.ts`) — sonst wird ein Tippfehler zum `22P02`-500, der
+  die DB-Meldung zurückgibt. Aktuell: admin-users, routines (`:id`, `:runId`).
