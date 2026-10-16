@@ -6,7 +6,7 @@ import type { Pool } from 'pg';
 import multer from 'multer';
 import { stringify as stringifyYaml } from 'yaml';
 
-import type { AdminAuditLog } from '../auth/adminAuditLog.js';
+import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import type { DraftStore } from '../plugins/builder/draftStore.js';
 import {
   reconstructSpecFromBundle,
@@ -833,14 +833,14 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
       | 'profile_snapshot.create'
       | 'profile_snapshot.mark_deploy_ready'
       | 'profile_snapshot.rollback',
-    actorEmail: string,
+    req: Request,
     target: string,
     after: unknown,
   ): Promise<void> => {
     if (!auditLog) return;
     try {
       await auditLog.record({
-        actor: { email: actorEmail },
+        actor: auditActorFromRequest(req),
         action,
         target,
         after,
@@ -879,7 +879,7 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
       if (!result.wasExisting) {
         await writeAudit(
           'profile_snapshot.create',
-          actorOf(req),
+          req,
           `profile:${id}:snapshot:${result.snapshotId}`,
           {
             snapshot_id: result.snapshotId,
@@ -1048,7 +1048,7 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
         });
         await writeAudit(
           'profile_snapshot.mark_deploy_ready',
-          actorOf(req),
+          req,
           `profile:${id}:snapshot:${sid}`,
           { snapshot_id: sid, profile_id: id },
         );
@@ -1106,7 +1106,7 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
       });
       await writeAudit(
         'profile_snapshot.rollback',
-        operator,
+        req,
         `profile:${id}:snapshot:${sid}`,
         {
           snapshot_id: sid,

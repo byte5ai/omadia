@@ -2814,6 +2814,35 @@ vergleicht), `test/auth/adminUsersRoute.test.ts`, `test/auth/localPasswordProvid
 Postgres `test/auth/loginAccountFold.pg.test.ts`; UI
 `web-ui/app/login/__tests__/page.test.tsx`.
 
+### Admin-Audit-Trail: ein Schreib-Helper, eine Lese-Route (#1315, #1347, #1092)
+
+`admin_audit` hat seit #1315 eine Lese-Seite und eine Akteur-Regel.
+
+- **Akteur:** Jede Route, die im Namen einer angemeldeten Person schreibt, nimmt
+  `auditActorFromRequest(req)` aus `auth/adminAuditLog.ts`. `actor_id` ist die
+  `users.id` aus dem Session-Claim `uid` (dieselbe uuid wie bei `auth.session_renew`
+  und `auth.first_admin_create`), `actor_email` die Session-E-Mail. Nie
+  `omadia_user_id` (KG-Cluster-Id, anderer Namensraum) und nie `sub` (bei lokalen
+  Konten eine E-Mail, #775). Ein Token ohne `uid` liefert keine id, keine geratene.
+  Ohne Session `{}` = Systemakteur. Neue Aktionen kommen als Member in den
+  `AuditAction`-Union-Typ; die Konvention gilt auch für den API-Key-Cluster (#1329).
+- **Lesen:** `GET /api/v1/admin/audit` (`routes/adminAudit.ts`, hinter `requireAuth`
+  wie `/admin/users`) mit `limit` 1..200 (Default 50), `offset`, `action` (exakt oder
+  Präfix mit Punkt, z. B. `user.`) und `actor_id` (uuid). Antwort
+  `{ entries, limit, offset, has_more }`, neueste zuerst; `has_more` liest eine Zeile
+  voraus statt `COUNT(*)`. Ungültige Parameter → 400 `admin_audit.invalid_query`.
+  UI: `/admin/audit`.
+- **Neue Aktionen:** `auth.login_failed` (erster Fehlversuch je Konto + Client und
+  Minute, `auth/loginFailureAudit.ts`, Systemakteur; Konto nur als aufgelöste
+  `users`-Zeile, nie der eingetippte Text), `plugin.grants_change` (jede Änderung an Public-Path- oder SQL-Consent,
+  `before`/`after` = gewährte Menge, `routes/runtimeGrants.ts`), `plugin.install`
+  (Install-Wizard endet in `active`/`errored`) und `plugin.uninstall` (mit den Grants,
+  die mit dem Plugin gehen, `routes/install.ts`).
+- **Logzeilen:** `[auth] login failed (…)` pro Audit-Zeile,
+  `[grants] <actor> changed consent for "<id>": …` pro Consent-Änderung,
+  `[auth] setup: first admin created via the setup wizard (…)` beim Wizard (#1092),
+  `[registry] ingested … — package registered, not yet installed` statt „installed“.
+
 ### Replay-Ledger: ein Verifier-Wiedereintritt führt keinen Write aus
 
 `VerifierService` betritt in `enforce` einen Turn erneut — Borderline-Resample

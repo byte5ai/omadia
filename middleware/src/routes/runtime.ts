@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import type { AdminAuditLog } from '../auth/adminAuditLog.js';
+
 import type { BackgroundJobRegistry } from '../platform/backgroundJobRegistry.js';
 import type { ChatAgentWrapIntrospection } from '../platform/chatAgentWrapRegistry.js';
 import type { PromptContributionRegistry } from '../platform/promptContributionRegistry.js';
@@ -100,6 +102,8 @@ interface RuntimeDeps {
    *  503 for an `sql: true` request when it is absent, and reports the SQL grant
    *  as ungranted (the fail-closed reading the activation path already uses). */
   sqlGrantStore?: PluginSqlGrantStore;
+  /** #1347 — consent changes land in the admin audit trail. */
+  audit?: Pick<AdminAuditLog, 'record'>;
 }
 
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
