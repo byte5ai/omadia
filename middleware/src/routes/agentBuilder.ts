@@ -40,6 +40,8 @@ import {
 } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
+import { auditActorFromRequest } from '../auth/adminAuditLog.js';
+
 import {
   parseRequiresTools,
   mcpRowToConfig,
@@ -354,10 +356,12 @@ export function createAgentBuilderRouter(
       `[mcp] stdio server saved: id=${row.id} name=${JSON.stringify(row.name)} source=${source} actor=${actor ?? 'unknown'}`,
     );
     if (!options.auditMcpStdioServerSaved) return;
-    const actorUserId = req.session?.omadia_user_id;
+    // #1315 — the one actor rule: users.id (uid claim) and the session email,
+    // not the knowledge-graph id or the sub.
+    const { id: actorUserId, email: actorEmail } = auditActorFromRequest(req);
     try {
       await options.auditMcpStdioServerSaved({
-        actor,
+        actor: actorEmail ?? actor,
         ...(actorUserId ? { actorUserId } : {}),
         serverId: row.id,
         serverName: row.name,

@@ -839,3 +839,20 @@ describe('POST /api/v1/auth/setup — the shared password policy', () => {
     }
   });
 });
+
+describe('POST /api/v1/auth/setup — the shared email rule (#1321)', () => {
+  it('refuses an empty local part or domain with 400 auth.setup_invalid_email and creates no admin', async () => {
+    const h = await startHarness({});
+    try {
+      for (const email of ['a@', '@b', 'a@@b']) {
+        const res = await postSetup(h, { ...VALID_SETUP, email });
+        assert.equal(res.status, 400, email);
+        assert.equal(res.code, 'auth.setup_invalid_email');
+      }
+      assert.equal(h.store.firstAdminCalls, 0);
+      assert.equal(h.store.rows.length, 0);
+    } finally {
+      await stopHarness(h);
+    }
+  });
+});
